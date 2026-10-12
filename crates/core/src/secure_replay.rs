@@ -545,6 +545,16 @@ fn sort_structure_snapshot(records: &mut [WireValue], heads: &mut [WireValue]) {
     });
 }
 
+struct StructureSnapshotProgress {
+    source: WireValue,
+    root: String,
+    record_count: usize,
+    head_count: usize,
+    offset: usize,
+    expected_records: Vec<WireValue>,
+    expected_heads: Vec<WireValue>,
+}
+
 fn validate_signed_structure_slice(
     operation: &WireValue,
     context: &WireValue,
@@ -552,12 +562,13 @@ fn validate_signed_structure_slice(
     prior_objects: &[WireValue],
     chain: &HeaderChainFacts,
     commit_wires: &[&[u8]],
+    progress: &mut Option<StructureSnapshotProgress>,
 ) -> Result<(), ReplayError> {
     let p = policy.get("payload").ok_or(ReplayError::Invalid)?;
     let structured = integer(p, "v")? == 2
         || integer(p, "v")? == 3 && string(p, "structure_mode")? == "STRUCTURED";
     if !structured {
-        return if context.get("structure").is_none() {
+        return if context.get("structure").is_none() && progress.is_none() {
             Ok(())
         } else {
             Err(ReplayError::Invalid)
@@ -584,6 +595,18 @@ fn validate_signed_structure_slice(
             return Err(ReplayError::Invalid);
         };
         let (expected_records, expected_heads) = project_structure_data(objects, contract)?;
+        if progress.is_some()
+            && (string(operation, "kind")? != "ADMIN"
+                || !objects.is_empty()
+                || string(context, "action_id")? != "secure.rotate"
+                || string(context, "actor_id")? != string(p, "owner_id")?
+                || string(context, "signing_key")? != string(p, "signing_key")?
+                || !matches!(context.get("delegation"), Some(WireValue::Null))
+                || !matches!(context.get("instance_id"), Some(WireValue::Null))
+                || integer(p, "effective_sequence")? != integer(context, "sequence")?)
+        {
+            return Err(ReplayError::Invalid);
+        }
         return if same_wire(
             &WireValue::Array(records.clone()),
             &WireValue::Array(expected_records),
@@ -596,14 +619,111 @@ fn validate_signed_structure_slice(
             Err(ReplayError::Invalid)
         };
     }
-    if mode != "SNAPSHOT_BEGIN"
-        || !exact_fields(envelope, &["v", "mode", "records", "heads", "snapshot"])
-        || !records.is_empty()
-        || !heads.is_empty()
+    if !matches!(
+        mode.as_str(),
+        "SNAPSHOT_BEGIN" | "SNAPSHOT_PAGE" | "SNAPSHOT_END"
+    ) || !exact_fields(envelope, &["v", "mode", "records", "heads", "snapshot"])
+        || string(operation, "kind")? != "ADMIN"
+        || string(context, "actor_id")? != string(p, "owner_id")?
+        || string(context, "signing_key")? != string(p, "signing_key")?
+        || !matches!(context.get("delegation"), Some(WireValue::Null))
+        || !matches!(context.get("instance_id"), Some(WireValue::Null))
     {
         return Err(ReplayError::Invalid);
     }
     let snapshot = envelope.get("snapshot").ok_or(ReplayError::Invalid)?;
+    let action = string(context, "action_id")?;
+    let expected_action = match mode.as_str() {
+        "SNAPSHOT_BEGIN" => "secure.structure.begin",
+        "SNAPSHOT_PAGE" => "secure.structure.page",
+        "SNAPSHOT_END" => "secure.structure.end",
+        _ => unreachable!(),
+    };
+    if action != expected_action
+        && !(mode == "SNAPSHOT_BEGIN" && action == "secure.fields.begin")
+        && !(mode == "SNAPSHOT_BEGIN"
+            && action == "secure.recover"
+            && context.get("recovery").is_some())
+        || !exact_fields(snapshot, &["source", "root", "records", "heads", "offset"])
+    {
+        return Err(ReplayError::Invalid);
+    }
+    let record_count =
+        usize::try_from(integer(snapshot, "records")?).map_err(|_| ReplayError::Invalid)?;
+    let head_count =
+        usize::try_from(integer(snapshot, "heads")?).map_err(|_| ReplayError::Invalid)?;
+    let total = record_count
+        .checked_add(head_count)
+        .filter(|n| *n <= 100_000)
+        .ok_or(ReplayError::Invalid)?;
+    let offset = usize::try_from(integer(snapshot, "offset")?).map_err(|_| ReplayError::Invalid)?;
+    if offset > total {
+        return Err(ReplayError::Invalid);
+    }
+    let root = string(snapshot, "root")?;
+    if root.len() != 64
+        || !root
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
+        return Err(ReplayError::Invalid);
+    }
+    let source = snapshot.get("source").ok_or(ReplayError::Invalid)?;
+    if mode != "SNAPSHOT_BEGIN" {
+        let state = progress.as_mut().ok_or(ReplayError::Invalid)?;
+        if !same_wire(source, &state.source)?
+            || root != state.root
+            || record_count != state.record_count
+            || head_count != state.head_count
+            || offset != state.offset
+        {
+            return Err(ReplayError::Invalid);
+        }
+        if mode == "SNAPSHOT_END" {
+            if !records.is_empty() || !heads.is_empty() || offset != total {
+                return Err(ReplayError::Invalid);
+            }
+            *progress = None;
+            return Ok(());
+        }
+        let count = records
+            .len()
+            .checked_add(heads.len())
+            .ok_or(ReplayError::Invalid)?;
+        if count == 0
+            || offset.checked_add(count).is_none_or(|end| end > total)
+            || offset < record_count && !heads.is_empty()
+            || offset >= record_count && !records.is_empty()
+            || offset < record_count && offset + records.len() > record_count
+        {
+            return Err(ReplayError::Invalid);
+        }
+        let expected_records = if offset < record_count {
+            &state.expected_records[offset..offset + records.len()]
+        } else {
+            &[]
+        };
+        let expected_heads = if offset >= record_count {
+            let start = offset - record_count;
+            &state.expected_heads[start..start + heads.len()]
+        } else {
+            &[]
+        };
+        if !same_wire(
+            &WireValue::Array(records.clone()),
+            &WireValue::Array(expected_records.to_vec()),
+        )? || !same_wire(
+            &WireValue::Array(heads.clone()),
+            &WireValue::Array(expected_heads.to_vec()),
+        )? {
+            return Err(ReplayError::Invalid);
+        }
+        state.offset += count;
+        return Ok(());
+    }
+    if progress.is_some() || !records.is_empty() || !heads.is_empty() || offset != 0 {
+        return Err(ReplayError::Invalid);
+    }
     let prior_sequence = integer(context, "sequence")?
         .checked_sub(1)
         .ok_or(ReplayError::Invalid)?;
@@ -623,13 +743,10 @@ fn validate_signed_structure_slice(
     } else {
         signed_checkpoint_at(prior_sequence, chain, commit_wires)?
     };
-    if !exact_fields(snapshot, &["source", "root", "records", "heads", "offset"])
-        || integer(snapshot, "offset")? != 0
-        || !same_wire(
-            snapshot.get("source").ok_or(ReplayError::Invalid)?,
-            &prior_checkpoint,
-        )?
-    {
+    if !same_wire(
+        snapshot.get("source").ok_or(ReplayError::Invalid)?,
+        &prior_checkpoint,
+    )? {
         return Err(ReplayError::Invalid);
     }
     let (mut expected_records, mut expected_heads) =
@@ -644,12 +761,21 @@ fn validate_signed_structure_slice(
             .map_err(|_| ReplayError::Invalid)?
             .as_bytes(),
     );
-    if integer(snapshot, "records")? != expected_records.len() as u64
-        || integer(snapshot, "heads")? != expected_heads.len() as u64
+    if record_count != expected_records.len()
+        || head_count != expected_heads.len()
         || string(snapshot, "root")? != root
     {
         return Err(ReplayError::Invalid);
     }
+    *progress = Some(StructureSnapshotProgress {
+        source: source.clone(),
+        root,
+        record_count,
+        head_count,
+        offset: 0,
+        expected_records,
+        expected_heads,
+    });
     Ok(())
 }
 
@@ -1043,6 +1169,7 @@ pub(crate) fn replay_basic_content(
     let mut latest_revisions: HashMap<String, u64> = HashMap::new();
     let mut prior_objects = Vec::new();
     let mut role_history = RoleHistory::new();
+    let mut structure_progress = None;
     let mut operations = Vec::with_capacity(commit_wires.len());
     let mut legacy = false;
     let mut migration_pending = false;
@@ -1108,6 +1235,7 @@ pub(crate) fn replay_basic_content(
             &prior_objects,
             &chain,
             commit_wires,
+            &mut structure_progress,
         )?;
         if migration_pending && kind != "MIGRATE" {
             // finishMigration must authenticate the entire batch before any
@@ -3395,6 +3523,116 @@ mod tests {
     }
 
     #[test]
+    fn structure_snapshot_pages_follow_projected_order_and_root() {
+        let parse = |value: Value| {
+            parse_wire_json_js_bounded(&serde_json::to_vec(&value).unwrap(), 32, 16_384).unwrap()
+        };
+        let vector: Value = serde_json::from_str(include_str!(
+            "../../../conformance/structure-order-vectors.json"
+        ))
+        .unwrap();
+        let objects = parse(vector["objects"].clone());
+        let WireValue::Array(prior) = objects else {
+            panic!("objects")
+        };
+        let snapshot_data = parse(vector["snapshot"].clone());
+        let root = sha256_hex(
+            canonical_wire_value(&snapshot_data, Path::SecureArtifact)
+                .unwrap()
+                .as_bytes(),
+        );
+        let owner = "o".repeat(43);
+        let key = "k".repeat(43);
+        let workspace = "w".repeat(43);
+        let policy_hash = "b".repeat(64);
+        let source = json!({"v":1,"workspace_id":workspace,"owner_id":owner,
+            "owner_key":key,"sequence":0,"head":null,"policy_hash":policy_hash});
+        let snapshot = json!({"source":source,"root":root,"records":0,"heads":2,"offset":0});
+        let policy = parse(json!({"payload":{"v":2,"owner_id":owner,"signing_key":key,
+            "structure":{"protocols":[]}}}));
+        let operation = parse(json!({"v":1,"kind":"ADMIN","input":{},"objects":[]}));
+        let chain = HeaderChainFacts {
+            workspace_id: workspace.clone(),
+            owner_id: owner.clone(),
+            owner_key: key.clone(),
+            sequence: 0,
+            head: None,
+            policy_hash: policy_hash.clone(),
+            policy_hashes: Vec::new(),
+            commit_hashes: Vec::new(),
+        };
+        let make_context = |sequence: u64, action: &str, mode: &str, offset: u64, heads: Value| {
+            let mut page = snapshot.clone();
+            page["offset"] = json!(offset);
+            parse(json!({"v":2,"sequence":sequence,"action_id":action,
+                "actor_id":owner,"signing_key":key,"policy_hash":policy_hash,
+                "instance_id":null,"delegation":null,
+                "structure":{"v":1,"mode":mode,"records":[],"heads":heads,"snapshot":page}}))
+        };
+        let mut progress = None;
+        let begin = make_context(1, "secure.structure.begin", "SNAPSHOT_BEGIN", 0, json!([]));
+        validate_signed_structure_slice(
+            &operation,
+            &begin,
+            &policy,
+            &prior,
+            &chain,
+            &[],
+            &mut progress,
+        )
+        .unwrap();
+        let expected = vector["snapshot"]["heads"].as_array().unwrap();
+        let wrong = make_context(
+            2,
+            "secure.structure.page",
+            "SNAPSHOT_PAGE",
+            0,
+            json!([expected[1].clone()]),
+        );
+        assert!(validate_signed_structure_slice(
+            &operation,
+            &wrong,
+            &policy,
+            &prior,
+            &chain,
+            &[],
+            &mut progress
+        )
+        .is_err());
+        for (index, head) in expected.iter().enumerate() {
+            let page = make_context(
+                index as u64 + 2,
+                "secure.structure.page",
+                "SNAPSHOT_PAGE",
+                index as u64,
+                json!([head]),
+            );
+            validate_signed_structure_slice(
+                &operation,
+                &page,
+                &policy,
+                &prior,
+                &chain,
+                &[],
+                &mut progress,
+            )
+            .unwrap();
+        }
+        let end = make_context(4, "secure.structure.end", "SNAPSHOT_END", 2, json!([]));
+        validate_signed_structure_slice(
+            &operation,
+            &end,
+            &policy,
+            &prior,
+            &chain,
+            &[],
+            &mut progress,
+        )
+        .unwrap();
+        assert!(progress.is_none());
+    }
+
+    #[test]
     fn signed_package_stages_bind_compiled_install_to_history() {
         let vector: Value = serde_json::from_str(include_str!(
             "../../../conformance/protocol-package-source-vectors.json"
@@ -3602,6 +3840,56 @@ mod tests {
             )
         };
         assert_eq!(check(&bootstrap, &stage, &install).unwrap().object_count, 3);
+        let mut end_envelope = snapshot.clone();
+        end_envelope["mode"] = json!("SNAPSHOT_END");
+        let end_operation = json!({"v":1,"kind":"ADMIN","input":{},"objects":[]});
+        let end = make_commit(
+            4,
+            Some(&hash(&install)),
+            "secure.structure.end",
+            end_envelope.clone(),
+            end_operation.clone(),
+        );
+        let end_checkpoint = serde_json::to_vec(&json!({"v":1,"workspace_id":workspace,
+            "owner_id":owner_id,"owner_key":owner_key,"sequence":4,"head":hash(&end),
+            "policy_hash":policy_hash}))
+        .unwrap();
+        assert_eq!(
+            replay_basic_content(
+                &[&policy],
+                &[&bootstrap, &stage, &install, &end],
+                &end_checkpoint,
+                &workspace,
+                Some(&owner_pin),
+                None,
+                Some(&keyring),
+            )
+            .unwrap()
+            .object_count,
+            3,
+        );
+        end_envelope["snapshot"]["offset"] = json!(1);
+        let wrong_end = make_commit(
+            4,
+            Some(&hash(&install)),
+            "secure.structure.end",
+            end_envelope,
+            end_operation,
+        );
+        let wrong_end_checkpoint = serde_json::to_vec(&json!({"v":1,"workspace_id":workspace,
+            "owner_id":owner_id,"owner_key":owner_key,"sequence":4,"head":hash(&wrong_end),
+            "policy_hash":policy_hash}))
+        .unwrap();
+        assert!(replay_basic_content(
+            &[&policy],
+            &[&bootstrap, &stage, &install, &wrong_end],
+            &wrong_end_checkpoint,
+            &workspace,
+            Some(&owner_pin),
+            None,
+            Some(&keyring),
+        )
+        .is_err());
         let final_checkpoint = serde_json::to_vec(&json!({"v":1,"workspace_id":workspace,
             "owner_id":owner_id,"owner_key":owner_key,"sequence":3,"head":hash(&install),
             "policy_hash":policy_hash}))
