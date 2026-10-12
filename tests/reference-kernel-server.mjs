@@ -202,7 +202,9 @@ const proxy = createServer(async (request, response) => {
     for await (const chunk of request) chunks.push(chunk);
     const original = await fetch(realOrigin + request.url, {
       method: request.method,
-      headers: {'content-type': request.headers['content-type'] || 'application/json'},
+      headers: {'content-type': request.headers['content-type'] || 'application/json',
+        ...(typeof request.headers['x-peerwork-read'] === 'string'
+          ? {'X-Peerwork-Read': request.headers['x-peerwork-read']} : {})},
       body: request.method === 'GET' ? undefined : Buffer.concat(chunks),
     });
     let bytes = Buffer.from(await original.arrayBuffer());

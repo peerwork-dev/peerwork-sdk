@@ -438,7 +438,7 @@ mod tests {
         assert_eq!(applied["commits"].as_u64(), Some(1));
         assert_eq!(applied["head_sequence"].as_u64(), Some(1));
         assert_eq!(applied["head_hash"].as_str(), Some(expected_head.as_str()));
-        let lifecycle =
+        let mut lifecycle =
             SecureLifecycle::open(&lifecycle_path, origin, actor, &workspace, actor, signer)
                 .unwrap();
         let mut journal = SecureIntentJournal::open(&journal_path, origin, actor).unwrap();
@@ -464,6 +464,121 @@ mod tests {
             applied,
             "same-ID exact retry must not reapply"
         );
+        // Fixture-only activation stands in for the unavailable complete
+        // replay/grant proof. These 50 service-accepted packets exercise
+        // pagination; they do not establish valid action effects.
+        lifecycle.confirm_pending_for_test().unwrap();
+        let genesis: serde_json::Value = serde_json::from_slice(&exact).unwrap();
+        let policy_hash = genesis["commit"]["payload"]["policy_hash"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let mut previous = expected_head.clone();
+        for sequence in 2..=51_u64 {
+            let next_id = base64url(&[(sequence + 120) as u8; 32]);
+            let context = json!({"v":3,"workspace_id":workspace,"sequence":sequence,
+                "previous":previous,"policy_hash":policy_hash,"epoch":1,
+                "actor_id":identity.actor_id(),"signing_key":identity.key_id(),
+                "command_id":next_id,"action_id":"discussion.post","instance_id":ids[0],
+                "issued_at":now+sequence,"delegation":null,"protocol_format_ceiling":1});
+            let operation = json!({"v":1,"kind":"ACTION",
+                "input":{"message":format!("pagination fixture {sequence}")},"objects":[]});
+            let pins = SecureCommitRequestPins {
+                actor_id: identity.actor_id(),
+                signing_key: identity.key_id(),
+                workspace_id: &workspace,
+                policy_hash: &policy_hash,
+                sequence,
+                previous: Some(&previous),
+                epoch: 1,
+                mode: "PRIVATE",
+                version: 3,
+                protocol_format_ceiling: Some(1),
+            };
+            prepare_new_private_commit(
+                &mut journal,
+                &identity,
+                &lifecycle,
+                &next_id,
+                &serde_json::to_vec(&context).unwrap(),
+                &serde_json::to_vec(&operation).unwrap(),
+                &pins,
+            )
+            .unwrap();
+            let (proof, _) = journal
+                .verified_saved_commit(&next_id, &identity, &transport, identity.key_id(), &pins)
+                .unwrap();
+            let next_head = proof.commit_digest().to_owned();
+            journal
+                .submit_saved_commit(
+                    &next_id,
+                    &identity,
+                    &transport,
+                    identity.key_id(),
+                    &pins,
+                    &CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+            previous = next_head;
+        }
+        let paginated = counts().await;
+        assert_eq!(paginated["commits"].as_u64(), Some(51));
+        assert_eq!(paginated["head_sequence"].as_u64(), Some(51));
+        assert_eq!(paginated["head_hash"].as_str(), Some(previous.as_str()));
+        // A separate signed GET obtains exact, unverified journal bytes after
+        // the lost-reply restart. This read cannot promote the pending key or
+        // secure intent to an authenticated final outcome.
+        let discovery_response = transport
+            .discovery(&CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(discovery_response.status, 200);
+        let discovery = peerwork_core::discovery::parse_discovery_wire(
+            &discovery_response.wire,
+            crate::transport::MAX_DISCOVERY_BYTES,
+        )
+        .unwrap();
+        let read_path = root.path().join("native-journal-pages.state");
+        let mut read = crate::secure_journal_read::SecureJournalRead::open(
+            &read_path, &transport, &discovery, &identity, &workspace,
+        )
+        .unwrap();
+        assert_eq!(read.progress().unwrap().pages, 0);
+        let progress = read
+            .fetch_next(&transport, &discovery, &identity, &CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(progress.pages, 1);
+        assert_eq!(progress.saved_commits, 50);
+        assert_eq!(progress.checkpoint_sequence, Some(51));
+        assert_eq!(progress.next_after, Some(50));
+        assert!(!progress.complete_transport);
+        let exact_pages = read.exact_pages().unwrap();
+        assert_eq!(exact_pages.len(), 1);
+        drop(read);
+        let mut reopened = crate::secure_journal_read::SecureJournalRead::open(
+            &read_path, &transport, &discovery, &identity, &workspace,
+        )
+        .unwrap();
+        assert_eq!(reopened.exact_pages().unwrap(), exact_pages);
+        assert_eq!(reopened.progress().unwrap(), progress);
+        let finished = reopened
+            .fetch_next(&transport, &discovery, &identity, &CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(finished.pages, 2);
+        assert_eq!(finished.saved_commits, 51);
+        assert_eq!(finished.checkpoint_sequence, Some(51));
+        assert!(finished.complete_transport);
+        drop(reopened);
+        let reopened = crate::secure_journal_read::SecureJournalRead::open(
+            &read_path, &transport, &discovery, &identity, &workspace,
+        )
+        .unwrap();
+        assert_eq!(reopened.progress().unwrap(), finished);
+        assert_eq!(reopened.exact_pages().unwrap().len(), 2);
+        assert_eq!(counts().await, paginated, "signed reads must not submit");
     }
 
     #[tokio::test]

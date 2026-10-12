@@ -246,7 +246,7 @@ fn journal_path(workspace: &str, after: u64, first: Option<&PageFacts>) -> Strin
     let base = format!("/api/workspace/v1/secure/workspaces/{workspace}/journal?");
     if let Some(first) = first {
         format!(
-            "{base}at_head={}&at_sequence={}&after={after}&limit=50",
+            "{base}after={after}&at_head={}&at_sequence={}&limit=50",
             first_head(&first.checkpoint),
             first.sequence
         )
@@ -475,7 +475,7 @@ mod tests {
         let facts = validate_page(&first, &workspace, 0, None).unwrap();
         assert_eq!(facts.next, Some(1));
         assert_eq!(journal_path(&workspace,1,Some(&facts)),format!(
-            "/api/workspace/v1/secure/workspaces/{workspace}/journal?at_head={head}&at_sequence=2&after=1&limit=50"));
+            "/api/workspace/v1/secure/workspaces/{workspace}/journal?after=1&at_head={head}&at_sequence=2&limit=50"));
         let second = page(&workspace, &head, &[2], None);
         assert!(validate_page(&second, &workspace, 1, Some(&facts))
             .unwrap()
