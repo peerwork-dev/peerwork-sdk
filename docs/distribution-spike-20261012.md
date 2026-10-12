@@ -66,3 +66,39 @@ artifact was run on macOS or Windows. The restricted sandbox initially timed
 out during Python async smoke; a standard-library-only
 `asyncio.to_thread(lambda: 42)` timed out there too, while both it and the
 installed wheel's async calls passed via the approved thread-capable route.
+
+## Windows ICU source-build candidate (`b388755`)
+
+The target-native x64 MSVC branch now verifies the pinned ICU 78.3 source
+archive and embedded-data SHA-256 hashes before extraction. It transforms the
+archive's `stubdata`, `common`, and `i18n` Visual Studio projects to static
+libraries, adds `U_STATIC_IMPLEMENTATION` and `_78_peerwork` symbol suffix
+definitions, builds them with the detected native MSBuild, and links those
+libraries into Rust. The Linux/macOS configure path remains intact. This is
+source support only: no MSVC compiler, Windows linker, installed artifact, or
+Windows runtime was exercised here. The branch explicitly accepts only
+`x86_64-pc-windows-msvc` and requires HOST==TARGET.
+The committed `build.rs` SHA-256 is
+`e24cf89f284d3b1f564b4f80ae423b0bd75d0c4067eacc2454c672654ecba4a5`;
+the workflow SHA-256 is
+`321b9436960c53bba809385218625160385900230b4f92d18ab985378cc39c0f`.
+
+Local Rust 1.89 `cargo check -p peerwork-core --offline --locked` passed twice
+with `CARGO_HOME=.build-target/cargo-home` and the existing task-local target.
+A fake-MSBuild execution of the Windows branch against the exact extracted
+archive passed all three project transformations and emitted the expected
+static link directives. It created placeholder `.lib` files solely to inspect
+the build-script path, so it is not compilation evidence. The first dry run
+extracted into `/tmp`, hit `ENOSPC` before MSBuild, and its exact 44 MiB
+task-owned partial tree was removed. The corrected dry run used task-owned
+workspace output and removed its 122 MiB extraction afterward. No unrelated
+cache or fixture was deleted.
+
+The Windows workflow now requests the 28 pinned Node 24/ICU 78.3 collation
+vectors with `ICU_DATA` unset, then checks built CLI, wheel `.pyd`, and Node
+addon PE imports for dynamic ICU DLLs and probes Node Intl comparison before
+and after addon import. Those workflow steps have not run. A real Windows x64
+runner must still establish MSBuild compilation, FFI symbol consistency,
+static linking and dependencies, embedded-data behavior, installed
+Python/Node/CLI APIs, protected filesystem and cancellation semantics. The
+workflow's other platform/runtime variations and release gates remain open.
