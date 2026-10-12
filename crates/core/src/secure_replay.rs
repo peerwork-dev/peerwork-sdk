@@ -4,7 +4,7 @@
 
 use crate::{
     canonical::Path,
-    crypto::{base64url, decode_base64url, sha256, sha256_hex, verify_secure_signed_wire},
+    crypto::{decode_base64url, sha256_hex, verify_secure_signed_wire},
     e2ee::{open_content_wire, SealedContent},
     interpreter::{evaluate_action, InterpreterAuth},
     legacy_protocol_bindings::validate_legacy_protocol_bindings,
@@ -2531,15 +2531,6 @@ fn validate_action_state_slice(
             .get("protocol_digest")
             .ok_or("REFERENCE_SCOPE_MISMATCH")?,
     )?;
-    let seen_refs = exact_inputs
-        .iter()
-        .map(|row| {
-            (
-                row.record_id.encode_utf16().collect::<Vec<_>>(),
-                row.revision,
-            )
-        })
-        .collect::<HashSet<_>>();
     let policy_payload = policy.get("payload").ok_or("AUTHOR_NOT_MEMBER")?;
     let delegation_wire = match context.get("delegation") {
         Some(WireValue::Null) => None,
@@ -2636,192 +2627,32 @@ fn validate_action_state_slice(
         None,
     )
     .map_err(|_| "INVALID_PAYLOAD")?;
-    if allocations.len() != interpreted.records.len() {
-        return Err("ALLOCATION_INVALID");
-    }
+    let crate::secure_action_allocations::AllocationPlan {
+        assigned,
+        record_slots,
+        entity_slots,
+        assigned_records,
+    } = crate::secure_action_allocations::resolve_record_allocations(
+        &interpreted.records,
+        allocations,
+        prior,
+        &exact_inputs,
+        context,
+        context.get("instance_id").ok_or("INVALID_PAYLOAD")?,
+        instance_value
+            .get("protocol_digest")
+            .ok_or("INVALID_PAYLOAD")?,
+    )?;
     let mut expected_objects = Vec::new();
-    let mut allocated_ids = HashSet::new();
-    let mut allocated_entities = HashSet::new();
-    let mut entity_max = HashMap::<Vec<u16>, u64>::new();
     let mut head_changes = Vec::new();
     let mut head_ids = HashSet::new();
-    let mut record_slots = HashMap::<Vec<u16>, WireValue>::new();
-    let mut entity_slots = HashMap::<Vec<u16>, WireValue>::new();
-    let mut assigned_records = HashMap::<Vec<u16>, u64>::new();
     let mut pending_relations = Vec::<crate::secure_action_relations::PendingRelation>::new();
-    for (record, allocation) in interpreted.records.iter().zip(allocations) {
+    for assigned_record in &assigned {
+        let record = &assigned_record.record;
         let entity = record.get("entity");
-        if entity.is_some_and(|entity| {
-            !matches!(
-                entity.get("mode").and_then(WireValue::as_string).as_deref(),
-                Some("new" | "revise")
-            )
-        }) || entity.is_none()
-            && record
-                .get("selectHead")
-                .is_some_and(|value| matches!(value, WireValue::Bool(true)))
-        {
-            return Err("UNSUPPORTED");
-        }
-        let record_id = allocation
-            .get("record_id")
-            .and_then(WireValue::as_utf16)
-            .ok_or("ALLOCATION_INVALID")?;
-        let entity_id = allocation
-            .get("entity_id")
-            .and_then(WireValue::as_utf16)
-            .ok_or("ALLOCATION_INVALID")?;
-        if !token_utf16(record_id)
-            || !token_utf16(entity_id)
-            || !allocated_ids.insert(record_id.to_vec())
-        {
-            return Err("ALLOCATION_INVALID");
-        }
-        if prior.iter().any(|object| {
-            object.get("kind").and_then(WireValue::as_string).as_deref() == Some("records")
-                && object.get("id").and_then(WireValue::as_utf16) == Some(record_id)
-        }) {
-            return Err("RECORD_ALREADY_EXISTS");
-        }
-        let mut assigned_entity = entity_id.to_vec();
-        let mut assigned_revision = 1_u64;
-        if let Some(slot) = record.get("entitySlot").and_then(WireValue::as_utf16) {
-            let instance = String::from_utf16(instance_id).map_err(|_| "INVALID_PAYLOAD")?;
-            // TextEncoder replaces an unpaired UTF-16 surrogate with U+FFFD.
-            let slot_text = String::from_utf16_lossy(slot);
-            assigned_entity = base64url(&sha256(format!("{instance}\0{slot_text}").as_bytes()))
-                .encode_utf16()
-                .collect();
-            let existing = prior
-                .iter()
-                .filter(|object| {
-                    object.get("kind").and_then(WireValue::as_string).as_deref() == Some("records")
-                        && object
-                            .get("value")
-                            .and_then(|value| value.get("entity_id"))
-                            .and_then(WireValue::as_utf16)
-                            == Some(&assigned_entity)
-                })
-                .max_by_key(|object| {
-                    object
-                        .get("value")
-                        .and_then(|value| integer(value, "revision").ok())
-                        .unwrap_or(0)
-                });
-            if let Some(existing) = existing {
-                let row = existing.get("value").ok_or("STALE_REVISION")?;
-                let old_revision = integer(row, "revision").map_err(|_| "STALE_REVISION")?;
-                let old_id = existing
-                    .get("id")
-                    .and_then(WireValue::as_utf16)
-                    .ok_or("STALE_REVISION")?;
-                if !seen_refs.contains(&(old_id.to_vec(), old_revision)) {
-                    return Err("STALE_REVISION");
-                }
-                assigned_revision = safe_add(
-                    entity_max
-                        .get(&assigned_entity)
-                        .copied()
-                        .unwrap_or(old_revision),
-                    1,
-                )?;
-            }
-            entity_max.insert(assigned_entity.clone(), assigned_revision);
-        } else if entity.is_some_and(|entity| {
-            entity.get("mode").and_then(WireValue::as_string).as_deref() == Some("revise")
-        }) {
-            let parent = entity
-                .and_then(|value| value.get("parent"))
-                .ok_or("ENTITY_PARENT_INVALID")?;
-            let parent_id = parent
-                .get("recordId")
-                .and_then(WireValue::as_utf16)
-                .ok_or("ENTITY_PARENT_INVALID")?;
-            let parent_revision =
-                integer(parent, "revision").map_err(|_| "ENTITY_PARENT_INVALID")?;
-            let old = prior
-                .iter()
-                .find(|object| {
-                    object.get("kind").and_then(WireValue::as_string).as_deref() == Some("records")
-                        && object.get("id").and_then(WireValue::as_utf16) == Some(parent_id)
-                        && object
-                            .get("value")
-                            .and_then(|value| integer(value, "revision").ok())
-                            == Some(parent_revision)
-                })
-                .ok_or("ENTITY_PARENT_INVALID")?;
-            let old_row = old.get("value").ok_or("ENTITY_PARENT_INVALID")?;
-            if old_row.get("workspace_id") != context.get("workspace_id")
-                || old_row.get("instance_id").and_then(WireValue::as_utf16) != Some(instance_id)
-                || old_row.get("protocol_digest").and_then(WireValue::as_utf16) != Some(digest)
-            {
-                return Err("ENTITY_PARENT_INVALID");
-            }
-            assigned_entity = old_row
-                .get("entity_id")
-                .and_then(WireValue::as_utf16)
-                .ok_or("ENTITY_PARENT_INVALID")?
-                .to_vec();
-            let max_revision = prior
-                .iter()
-                .filter(|object| {
-                    object.get("kind").and_then(WireValue::as_string).as_deref() == Some("records")
-                        && object
-                            .get("value")
-                            .and_then(|value| value.get("entity_id"))
-                            .and_then(WireValue::as_utf16)
-                            == Some(&assigned_entity)
-                })
-                .filter_map(|object| {
-                    object
-                        .get("value")
-                        .and_then(|value| integer(value, "revision").ok())
-                })
-                .max()
-                .ok_or("ENTITY_PARENT_INVALID")?;
-            assigned_revision = safe_add(
-                entity_max
-                    .get(&assigned_entity)
-                    .copied()
-                    .unwrap_or(max_revision),
-                1,
-            )?;
-            entity_max.insert(assigned_entity.clone(), assigned_revision);
-            if record
-                .get("selectHead")
-                .is_some_and(|value| matches!(value, WireValue::Bool(true)))
-            {
-                let current_head = prior
-                    .iter()
-                    .filter(|object| {
-                        object.get("kind").and_then(WireValue::as_string).as_deref()
-                            == Some("entity_heads")
-                            && object.get("id").and_then(WireValue::as_utf16)
-                                == Some(&assigned_entity)
-                    })
-                    .max_by_key(|object| integer(object, "revision").unwrap_or(0))
-                    .ok_or("STALE_REVISION")?;
-                let current = current_head.get("value").ok_or("STALE_REVISION")?;
-                if current.get("record_id").and_then(WireValue::as_utf16) != Some(parent_id)
-                    || integer(current, "revision").map_err(|_| "STALE_REVISION")?
-                        != parent_revision
-                {
-                    return Err("STALE_REVISION");
-                }
-            }
-        } else if allocated_entities.contains(&assigned_entity)
-            || prior.iter().any(|object| {
-                object.get("kind").and_then(WireValue::as_string).as_deref() == Some("records")
-                    && object
-                        .get("value")
-                        .and_then(|value| value.get("entity_id"))
-                        .and_then(WireValue::as_utf16)
-                        == Some(&assigned_entity)
-            })
-        {
-            return Err("ENTITY_ALREADY_EXISTS");
-        }
-        allocated_entities.insert(assigned_entity.clone());
+        let record_id = &assigned_record.id;
+        let assigned_entity = assigned_record.entity_id.clone();
+        let assigned_revision = assigned_record.revision;
         let schema = record
             .get("schema")
             .and_then(WireValue::as_utf16)
@@ -2832,28 +2663,6 @@ fn validate_action_state_slice(
             .and_then(|schemas| schemas.get(&schema_key))
             .ok_or("RECORD_SCHEMA_INVALID")?;
         let payload = record.get("payload").ok_or("RECORD_SCHEMA_INVALID")?;
-        if let Some(slot) = record.get("recordSlot").and_then(WireValue::as_utf16) {
-            if record_slots
-                .insert(
-                    slot.to_vec(),
-                    fields_object(vec![
-                        ("record_id", WireValue::String(record_id.to_vec())),
-                        ("revision", WireValue::Number(assigned_revision as f64)),
-                    ]),
-                )
-                .is_some()
-            {
-                return Err("INVALID_PROTOCOL_TRANSITION");
-            }
-        }
-        if let Some(slot) = record
-            .get("entitySlot")
-            .or_else(|| entity.and_then(|value| value.get("slot")))
-            .and_then(WireValue::as_utf16)
-        {
-            entity_slots.insert(slot.to_vec(), WireValue::String(assigned_entity.clone()));
-        }
-        assigned_records.insert(record_id.to_vec(), assigned_revision);
         let value = fields_object(vec![
             ("id", WireValue::String(record_id.to_vec())),
             (
