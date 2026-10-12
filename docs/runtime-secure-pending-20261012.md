@@ -708,3 +708,18 @@ text), then the endpoint parses and emits the same JSON objects. This makes
 the 64 MiB response budget conservatively larger than a valid response from
 this pinned service, by source inference; it is not a promise for later
 server versions or other read routes.
+
+Empty-root discovery correction at exact SDK source
+`957e9870b745ed437987a78ae9121cb1f5ee73a6`: the prior new-reader path
+constructed a D0 document in memory but wrote no protected root until the
+first page. Thus a reader with zero pages could reopen with a different
+discovery and lacked an independent persisted continuity baseline. Open now
+writes the protected v4 root before returning, including configured origin,
+identity, authority, workspace and exact D0 discovery. An additive D1 update
+advances that same root before use; D0 rollback is then rejected even before
+the first GET. Rust 1.89 locked-offline focused read tests remain 5/5; the
+clean-detached opt-in actual-service regression at this exact source passed
+1/1 in 9.22 seconds with the same explicit reference root and Node24 binary
+above. It now asserts the root exists while progress is zero pages, before
+the delayed/cancelled GET. This is transport pin custody, not final journal
+authority or an Agent workflow-compliance pass.
