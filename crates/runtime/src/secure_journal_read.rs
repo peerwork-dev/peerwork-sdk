@@ -3,15 +3,16 @@
 //! commit, grant, effect, or final action outcome.
 
 use crate::{
+    kernel_client::KernelClient,
     kernel_identity::KernelIdentity,
     secure_state::{SecureStateError, SecureStateStore},
-    transport::{HttpTransport, TransportError},
+    transport::{TransportError, MAX_DISCOVERY_BYTES},
 };
 use ed25519_dalek::Signer;
 use peerwork_core::{
     canonical::Path as CanonicalPath,
-    crypto::{base64url, decode_base64url, sha256_hex},
-    discovery::ParsedDiscovery,
+    crypto::{base64url, decode_base64url},
+    discovery::{parse_discovery_wire, ParsedDiscovery},
     wire_json::{canonical_wire_value, parse_wire_json_bounded, WireValue},
 };
 use rand_core::{OsRng, RngCore};
@@ -59,8 +60,10 @@ struct Document {
     version: u8,
     origin: String,
     discovery_context: String,
+    discovery_b64: String,
     actor_id: String,
     key_id: String,
+    authority: String,
     workspace_id: String,
     pages: Vec<SavedPage>,
 }
@@ -91,22 +94,24 @@ pub(crate) struct SecureJournalRead {
 impl SecureJournalRead {
     pub(crate) fn open(
         path: &Path,
-        transport: &HttpTransport,
-        discovery: &ParsedDiscovery,
+        client: &KernelClient,
         identity: &KernelIdentity,
         workspace_id: &str,
+        authority: &str,
     ) -> Result<Self, JournalReadError> {
-        if !valid_id(workspace_id) {
+        if !valid_id(workspace_id) || !valid_hex(authority) {
             return Err(JournalReadError::Incompatible);
         }
         let store = SecureStateStore::open(path)?;
-        let context = discovery.canonical_context();
+        let discovery = client.discovery();
         let expected = Document {
-            version: 1,
-            origin: transport.trusted_origin().into(),
-            discovery_context: context.to_owned(),
+            version: 2,
+            origin: client.origin().into(),
+            discovery_context: discovery.canonical_context().to_owned(),
+            discovery_b64: base64url(discovery.raw_wire()),
             actor_id: identity.actor_id().into(),
             key_id: identity.key_id().into(),
+            authority: authority.into(),
             workspace_id: workspace_id.into(),
             pages: Vec::new(),
         };
@@ -121,11 +126,12 @@ impl SecureJournalRead {
         } else {
             expected.clone()
         };
-        if document.version != 1
+        if document.version != 2
             || document.origin != expected.origin
-            || document.discovery_context != expected.discovery_context
+            || !permits_discovery(&document, discovery)
             || document.actor_id != expected.actor_id
             || document.key_id != expected.key_id
+            || document.authority != expected.authority
             || document.workspace_id != expected.workspace_id
             || document.pages.len() > MAX_PAGES
         {
@@ -159,12 +165,11 @@ impl SecureJournalRead {
 
     pub(crate) async fn fetch_next(
         &mut self,
-        transport: &HttpTransport,
-        discovery: &ParsedDiscovery,
+        client: &KernelClient,
         identity: &KernelIdentity,
         cancel: &CancellationToken,
     ) -> Result<UnverifiedJournalProgress, JournalReadError> {
-        self.check_pins(transport, discovery, identity)?;
+        self.check_pins(client, identity)?;
         let (last, _) = self.inspect()?;
         if last.as_ref().is_some_and(|p| p.next.is_none()) {
             return self.progress();
@@ -174,8 +179,14 @@ impl SecureJournalRead {
         }
         let after = last.as_ref().and_then(|p| p.next).unwrap_or(0);
         let path = journal_path(&self.document.workspace_id, after, last.as_ref());
-        let proof = sign_read_proof(&path, discovery, identity)?;
-        let response = transport
+        let proof = sign_read_proof(
+            &path,
+            client.discovery(),
+            identity,
+            &self.document.authority,
+        )?;
+        let response = client
+            .transport()
             .get_secure_journal_exact(&path, &proof, cancel)
             .await?;
         if !(200..300).contains(&response.status) {
@@ -210,12 +221,11 @@ impl SecureJournalRead {
 
     fn check_pins(
         &self,
-        transport: &HttpTransport,
-        discovery: &ParsedDiscovery,
+        client: &KernelClient,
         identity: &KernelIdentity,
     ) -> Result<(), JournalReadError> {
-        if self.document.origin != transport.trusted_origin()
-            || self.document.discovery_context != discovery.canonical_context()
+        if self.document.origin != client.origin()
+            || !permits_discovery(&self.document, client.discovery())
             || self.document.actor_id != identity.actor_id()
             || self.document.key_id != identity.key_id()
         {
@@ -262,11 +272,29 @@ fn first_head(checkpoint: &str) -> String {
         .unwrap_or_default()
 }
 
+fn permits_discovery(saved: &Document, current: &ParsedDiscovery) -> bool {
+    if saved.discovery_b64.len() > (MAX_DISCOVERY_BYTES * 4 / 3 + 8) {
+        return false;
+    }
+    let Ok(raw) = decode_base64url(&saved.discovery_b64) else {
+        return false;
+    };
+    let Ok(previous) = parse_discovery_wire(&raw, MAX_DISCOVERY_BYTES) else {
+        return false;
+    };
+    previous.canonical_context() == saved.discovery_context
+        && current.permits_update_from(&previous)
+}
+
 fn sign_read_proof(
     path: &str,
     discovery: &ParsedDiscovery,
     identity: &KernelIdentity,
+    authority: &str,
 ) -> Result<String, JournalReadError> {
+    if !valid_hex(authority) {
+        return Err(JournalReadError::Incompatible);
+    }
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| JournalReadError::Clock)?
@@ -294,10 +322,7 @@ fn sign_read_proof(
             WireValue::String(discovery.audience_utf16().to_vec()),
         ),
         ("actor_id".encode_utf16().collect(), s(identity.actor_id())),
-        (
-            "authority".encode_utf16().collect(),
-            s(&sha256_hex(identity.actor_id().as_bytes())),
-        ),
+        ("authority".encode_utf16().collect(), s(authority)),
         ("method".encode_utf16().collect(), s("GET")),
         ("target".encode_utf16().collect(), s(path)),
         ("nonce".encode_utf16().collect(), s(&base64url(&nonce))),
@@ -496,5 +521,41 @@ mod tests {
             validate_page(&wrong_next, &workspace, 1, Some(&facts)),
             Err(JournalReadError::Incompatible)
         ));
+    }
+
+    #[test]
+    fn saved_discovery_only_permits_additive_continuity() {
+        let key = peerwork_core::crypto::key_id(&[27; 32]);
+        let base = serde_json::json!({"semantics":"peerwork.kernel.v1",
+            "audience":"https://control.example",
+            "command_type":"peerwork.kernel-command.v1+jws",
+            "receipt_type":"peerwork.kernel-receipt.v1+jws",
+            "receipt_public_key":key,"limits":{"old":1},
+            "protocol_features":["old"],"manifest_language":"v1"});
+        let parse = |v: &serde_json::Value| {
+            let wire = serde_json::to_vec(v).unwrap();
+            parse_discovery_wire(&wire, wire.len()).unwrap()
+        };
+        let original = parse(&base);
+        let mut document = Document {
+            version: 2,
+            origin: "https://control.example/".into(),
+            discovery_context: original.canonical_context().into(),
+            discovery_b64: base64url(original.raw_wire()),
+            actor_id: "a".repeat(43),
+            key_id: "b".repeat(43),
+            authority: "c".repeat(64),
+            workspace_id: "d".repeat(43),
+            pages: Vec::new(),
+        };
+        assert!(permits_discovery(&document, &original));
+        let mut added = base.clone();
+        added["limits"]["new"] = serde_json::json!(2);
+        added["protocol_features"] = serde_json::json!(["old", "new"]);
+        assert!(permits_discovery(&document, &parse(&added)));
+        added["receipt_public_key"] = serde_json::json!(peerwork_core::crypto::key_id(&[28; 32]));
+        assert!(!permits_discovery(&document, &parse(&added)));
+        document.discovery_b64 = base64url(b"{}");
+        assert!(!permits_discovery(&document, &original));
     }
 }

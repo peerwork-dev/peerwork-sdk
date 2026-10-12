@@ -354,6 +354,11 @@ mod tests {
         let origin = ready["origin"].as_str().unwrap();
         let actor = ready["bootstrap"]["actor_id"].as_str().unwrap();
         let signer = ready["bootstrap"]["signing_key"].as_str().unwrap();
+        let authority = ready["bootstrap"]["authority"].as_str().unwrap();
+        assert_eq!(
+            authority,
+            peerwork_core::crypto::sha256_hex(actor.as_bytes())
+        );
         let identity = KernelIdentity::import_pkcs8_pem_file(
             &root.path().join("native-owner.state"),
             &root.path().join("synthetic-bootstrap-owner.pem"),
@@ -530,19 +535,19 @@ mod tests {
         // A separate signed GET obtains exact, unverified journal bytes after
         // the lost-reply restart. This read cannot promote the pending key or
         // secure intent to an authenticated final outcome.
-        let discovery_response = transport
-            .discovery(&CancellationToken::new())
-            .await
-            .unwrap();
-        assert_eq!(discovery_response.status, 200);
-        let discovery = peerwork_core::discovery::parse_discovery_wire(
-            &discovery_response.wire,
-            crate::transport::MAX_DISCOVERY_BYTES,
+        let mut read_config = TransportConfig::new(origin);
+        read_config.allow_loopback_http = true;
+        let client = crate::kernel_client::KernelClient::open(
+            read_config,
+            &root.path().join("native-discovery.sqlite"),
+            &[],
+            &CancellationToken::new(),
         )
+        .await
         .unwrap();
         let read_path = root.path().join("native-journal-pages.state");
         let mut read = crate::secure_journal_read::SecureJournalRead::open(
-            &read_path, &transport, &discovery, &identity, &workspace,
+            &read_path, &client, &identity, &workspace, &authority,
         )
         .unwrap();
         assert_eq!(read.progress().unwrap().pages, 0);
@@ -553,8 +558,7 @@ mod tests {
             trigger.cancel();
         });
         assert!(matches!(
-            read.fetch_next(&transport, &discovery, &identity, &cancelled)
-                .await,
+            read.fetch_next(&client, &identity, &cancelled).await,
             Err(crate::secure_journal_read::JournalReadError::Transport(
                 TransportError::Cancelled
             ))
@@ -562,11 +566,11 @@ mod tests {
         assert_eq!(read.progress().unwrap().pages, 0);
         drop(read);
         let mut read = crate::secure_journal_read::SecureJournalRead::open(
-            &read_path, &transport, &discovery, &identity, &workspace,
+            &read_path, &client, &identity, &workspace, &authority,
         )
         .unwrap();
         let progress = read
-            .fetch_next(&transport, &discovery, &identity, &CancellationToken::new())
+            .fetch_next(&client, &identity, &CancellationToken::new())
             .await
             .unwrap();
         assert_eq!(progress.pages, 1);
@@ -578,13 +582,13 @@ mod tests {
         assert_eq!(exact_pages.len(), 1);
         drop(read);
         let mut reopened = crate::secure_journal_read::SecureJournalRead::open(
-            &read_path, &transport, &discovery, &identity, &workspace,
+            &read_path, &client, &identity, &workspace, &authority,
         )
         .unwrap();
         assert_eq!(reopened.exact_pages().unwrap(), exact_pages);
         assert_eq!(reopened.progress().unwrap(), progress);
         let finished = reopened
-            .fetch_next(&transport, &discovery, &identity, &CancellationToken::new())
+            .fetch_next(&client, &identity, &CancellationToken::new())
             .await
             .unwrap();
         assert_eq!(finished.pages, 2);
@@ -593,11 +597,63 @@ mod tests {
         assert!(finished.complete_transport);
         drop(reopened);
         let reopened = crate::secure_journal_read::SecureJournalRead::open(
-            &read_path, &transport, &discovery, &identity, &workspace,
+            &read_path, &client, &identity, &workspace, &authority,
         )
         .unwrap();
         assert_eq!(reopened.progress().unwrap(), finished);
         assert_eq!(reopened.exact_pages().unwrap().len(), 2);
+        drop(reopened);
+        let wrong_identity =
+            KernelIdentity::create(&root.path().join("wrong-reader.state")).unwrap();
+        assert!(matches!(
+            crate::secure_journal_read::SecureJournalRead::open(
+                &read_path,
+                &client,
+                &wrong_identity,
+                &workspace,
+                authority
+            ),
+            Err(crate::secure_journal_read::JournalReadError::Incompatible)
+        ));
+        let mut other_config = TransportConfig::new(format!(
+            "{}/",
+            ready["bootstrap"]["real_origin"].as_str().unwrap()
+        ));
+        other_config.allow_loopback_http = true;
+        let other_client = crate::kernel_client::KernelClient::open(
+            other_config,
+            &root.path().join("other-origin-discovery.sqlite"),
+            &[],
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            crate::secure_journal_read::SecureJournalRead::open(
+                &read_path,
+                &other_client,
+                &identity,
+                &workspace,
+                authority
+            ),
+            Err(crate::secure_journal_read::JournalReadError::Incompatible)
+        ));
+        let wrong_authority = "f".repeat(64);
+        let mut wrong = crate::secure_journal_read::SecureJournalRead::open(
+            &root.path().join("wrong-authority-pages.state"),
+            &client,
+            &identity,
+            &workspace,
+            &wrong_authority,
+        )
+        .unwrap();
+        assert!(matches!(
+            wrong
+                .fetch_next(&client, &identity, &CancellationToken::new())
+                .await,
+            Err(crate::secure_journal_read::JournalReadError::ServerRejected(401))
+        ));
+        assert_eq!(wrong.progress().unwrap().pages, 0);
         assert_eq!(counts().await, paginated, "signed reads must not submit");
     }
 

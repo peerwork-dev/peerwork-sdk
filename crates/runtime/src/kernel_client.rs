@@ -370,6 +370,12 @@ impl KernelClient {
         &self.discovery
     }
 
+    /// Origin-bound transport for private secure read composition. Callers
+    /// cannot supply an unrelated parsed discovery to this handle.
+    pub(crate) fn transport(&self) -> &HttpTransport {
+        &self.transport
+    }
+
     pub fn pending(
         &self,
         local_key_id: &str,

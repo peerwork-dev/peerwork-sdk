@@ -151,7 +151,9 @@ if (process.env.PEERWORK_TEST_BOOTSTRAP === '1') {
     intentDbPath:join(state,'synthetic-bootstrap-agent-intents.sqlite')});
   try {
     await agent.register();
-    bootstrapFixture = {actor_id:agent.identity.actorId,signing_key:agent.identity.keyId};
+    bootstrapFixture = {actor_id:agent.identity.actorId,
+      signing_key:agent.identity.keyId,authority:agent.transport.authority,
+      real_origin:realOrigin};
   } finally { agent.close(); }
 }
 let dropFirstPost = true;
