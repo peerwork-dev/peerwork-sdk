@@ -593,3 +593,49 @@ opt-in actual-service filter above 1/1 in 10.91 seconds. The bridge's
 fresh state and pinned tracked build-input checks still apply. The ordinary
 environment-unset test is vacuous for service evidence. Agent workflow
 compliance remains unverified separately from these scripted business tests.
+
+Paged custody and monotonic read discovery at exact SDK source
+`5e0b56dd10c901f867617cb2b8fd48e0f4d03328` supersede the interim
+inline-page v2 read store. Version 3 keeps bounded index metadata in the
+protected state file and each exact HTTP page in a separately protected,
+digest-and-length-pinned file. Open verifies every referenced page and cursor;
+the future core verifier can consume one exact page at a time through a private
+callback. A v2 index migrates only after validating its full old page sequence;
+the v3 index is replaced last, so an interrupted migration can rewrite orphaned
+page files from the still-authoritative v2 index. A changed page is rejected on
+reopen. The reader now persists an accepted additive discovery update before
+returning; a fresh client context with earlier D0 discovery cannot roll back
+the protected reader after D1 added a feature. The focused D0→D1→D0 regression
+asserts saved bytes and rollback refusal. The old 64 MiB and 2048-page
+aggregate limits, and a first follow-up's 512 MiB whole-history cap, were
+removed; the latter was caught before this evidence run.
+
+This is bounded custody, not unlimited valid-history support. Each HTTP
+response is currently capped at 32 MiB and the metadata index at 64 MiB;
+the index is rewritten per appended page. A valid page exceeding the response
+cap or a very large index still fails, and metadata append cost grows with
+history. Adaptive fixed-snapshot page sizing/streamed response and segmented
+index metadata remain implementation work. The future signed replay/activation
+proof is also absent, so every saved page remains unverified transport evidence.
+
+From a clean detached checkout at that exact SDK pin, Rust 1.89, task-local
+Cargo cache/target, and `--offline --locked`, the focused
+`cargo test -p peerwork-runtime secure_journal_read::tests` passed 4/4.
+The opt-in
+`cargo test -p peerwork-runtime actual_service_native_owner_bootstrap_lost_reply_exact_retry --offline --locked -- --nocapture`
+passed 1/1 in 8.15 seconds with
+`PEERWORK_REFERENCE_ROOT=/root/workdir/message/.worktrees/e2ee-main-integration-20261006`
+and `PEERWORK_NODE_BIN=/root/workdir/message/.tools/node-v24.20.0-linux-x64/bin/node`
+through the authorized localhost route. The fixture's established fresh
+native-create/reply-loss and 51-commit, 50+1-page reopen assertions execute
+against the paged schema; this is not >64 MiB or >2048-page stress evidence.
+The first new unit fixture run failed because this environment's `tempdir()`
+created mode 0755 while protected storage requires 0700; the fixture now sets
+0700, then the four focused tests passed. No product protection was loosened.
+SHA-256 at the exact detached pin: `secure_journal_read.rs`
+`b853e73eff126bf5d0af39888b0091963d1c8b67bbc47134071c010993d256af`,
+`secure_native_prepare.rs`
+`213a571587ce0e36af33a8c369fadc7cca91cb488ca23167849079976502f6c1`,
+`Cargo.lock` `48775117e96fe4cba67314559398d3d08c75fc211952e22473ceacc389003f17`.
+This scripted test establishes transport behavior only; Agent workflow
+compliance remains separately unverified.
