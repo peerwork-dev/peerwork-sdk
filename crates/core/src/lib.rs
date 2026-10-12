@@ -16,8 +16,7 @@ mod package_namespace;
 #[allow(dead_code)]
 mod package_schema;
 pub mod prepared_command;
-#[allow(dead_code)]
-mod prepared_secure_author;
+pub mod prepared_secure_author;
 pub mod prepared_secure_request;
 #[allow(dead_code)]
 mod protocol_composition;
