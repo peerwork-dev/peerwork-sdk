@@ -387,13 +387,19 @@ mod tests {
                 || case["name"] == "v2_structured_recovery_snapshot_base"
                 || case["name"] == "v2_structured_recovery_snapshot_end"
                 || case["name"] == "v2_structured_recovery_wrong_snapshot_root"
+                || case["name"] == "v2_recovery_nonempty_record_and_head_pages"
+                || case["name"] == "v2_recovery_head_page_before_record_denied"
             {
+                let offset = u64::from(
+                    case["name"] == "v2_recovery_nonempty_record_and_head_pages"
+                        || case["name"] == "v2_recovery_head_page_before_record_denied",
+                );
                 assert_eq!(
                     preflight.unwrap(),
                     vec![RecoverySegment {
-                        base: 1,
-                        through: 2,
-                        marker: 3
+                        base: 1 + offset,
+                        through: 2 + offset,
+                        marker: 3 + offset,
                     }]
                 );
             } else {

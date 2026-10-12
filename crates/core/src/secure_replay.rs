@@ -4289,6 +4289,31 @@ mod tests {
                 case["name"]
             );
             if let Ok(facts) = actual {
+                if !case["structure_records"].is_null() {
+                    let policy =
+                        parse_wire_json_js_bounded(&policies[0], 64, 32 * 1024 * 1024).unwrap();
+                    let contract = policy.get("payload").unwrap().get("structure").unwrap();
+                    let (mut records, mut heads) =
+                        project_structure_data(&facts.objects, contract).unwrap();
+                    sort_structure_snapshot(&mut records, &mut heads);
+                    for (field, actual) in
+                        [("structure_records", records), ("structure_heads", heads)]
+                    {
+                        let expected = parse_wire_json_js_bounded(
+                            &serde_json::to_vec(&case[field]).unwrap(),
+                            64,
+                            32 * 1024 * 1024,
+                        )
+                        .unwrap();
+                        assert_eq!(
+                            canonical_wire_value(&WireValue::Array(actual), Path::SecureArtifact)
+                                .unwrap(),
+                            canonical_wire_value(&expected, Path::SecureArtifact).unwrap(),
+                            "{}: {field}",
+                            case["name"]
+                        );
+                    }
+                }
                 for (field, native) in [
                     ("objects", facts.objects),
                     ("operations", facts.operations),

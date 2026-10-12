@@ -1,6 +1,6 @@
 // Direct signed recovery outcomes from the pinned TypeScript journal verifier.
 // All keys are freshly generated test identities or fixed synthetic epoch bytes.
-import {mkdtemp, rm, writeFile} from 'node:fs/promises';
+import {mkdtemp, rm, writeFile, readFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
 import {fileURLToPath, pathToFileURL} from 'node:url';
@@ -11,11 +11,14 @@ try {
   const source = resolve(fileURLToPath(new URL('reference/src/', import.meta.url)));
   const output = join(directory, 'oracle.mjs');
   await build({stdin: {contents: `export {createSigningIdentity,createEncryptionIdentity,certifyEncryptionKey,encodeCanonicalJson,sealContent} from '${source}/workspace-secure-crypto.ts';
-    export {createPolicy,createCommit,secureHash,verifyJournal,prepareJournalRecovery,signSecure} from '${source}/workspace-secure-client.ts';`,
+    export {createPolicy,createCommit,createCommitContext,secureHash,verifyJournal,prepareJournalRecovery,signSecure} from '${source}/workspace-secure-client.ts';
+    export {structurePolicyFromObjects,projectStructureRecords,projectStructureHeads} from '${source}/workspace-structure.ts';
+    export {prepareSecureAction} from '${source}/workspace-secure-engine.ts';`,
     resolveDir: source, sourcefile: 'oracle.ts'}, outfile: output, bundle: true,
     platform: 'node', format: 'esm', logLevel: 'silent'});
   const {createSigningIdentity,createEncryptionIdentity,certifyEncryptionKey,encodeCanonicalJson,sealContent,signSecure,createPolicy,
-    createCommit,secureHash,verifyJournal,prepareJournalRecovery} = await import(pathToFileURL(output));
+    createCommit,createCommitContext,secureHash,verifyJournal,prepareJournalRecovery,
+    structurePolicyFromObjects,projectStructureRecords,projectStructureHeads,prepareSecureAction} = await import(pathToFileURL(output));
   const identity = await createSigningIdentity();
   const recipient = await createEncryptionIdentity();
   const certificate = await certifyEncryptionKey(identity, recipient, 1, 100000);
@@ -241,6 +244,113 @@ try {
         owner: {actor_id: identity.actorId, key: identity.keyId},
         ok: false, error: String(error.message)});
     }
+  }
+  const presetFixture = JSON.parse(await readFile(new URL('./bootstrap-presets.json', import.meta.url), 'utf8'));
+  const wiki = presetFixture.entries.find(entry => entry.entrypoint === 'wiki');
+  const wikiInstance = 'k'.repeat(43);
+  const wikiObjects = [
+    {kind:'workspaces',id:workspaceId,revision:1,provenance:'AUTHOR_SIGNED',value:{
+      id:workspaceId,name:'Recovery pages',visibility:'PRIVATE',owner:identity.actorId,created:3}},
+    {kind:'protocols',id:wiki.digest,revision:1,provenance:'AUTHOR_SIGNED',value:{
+      workspace_id:workspaceId,digest:wiki.digest,manifest:wiki.manifest,resolved_manifest:wiki.manifest}},
+    {kind:'instances',id:wikiInstance,revision:1,provenance:'AUTHOR_SIGNED',value:{
+      id:wikiInstance,workspace_id:workspaceId,protocol_digest:wiki.digest,
+      origin_entrypoint:'wiki',semantics:'peerwork.kernel.v1',state:wiki.manifest.initial_state,
+      revision:0,event_revision:0,created:3}},
+  ];
+  const wikiStructure = structurePolicyFromObjects(wikiObjects);
+  const wikiPolicy = await createPolicy(identity,{v:2,workspace_id:workspaceId,
+    owner_id:identity.actorId,signing_key:identity.keyId,version:1,previous_policy:null,
+    effective_sequence:1,visibility:'PRIVATE',epoch:1,issued_at:2,structure:wikiStructure,
+    members:[{actor_id:identity.actorId,certificate,role:'OWNER',scopes:[{
+      instance_id:wikiInstance,actions:['wiki.create'],protocol_roles:['EDITOR'],
+      capabilities:['EDIT'],expires_at:null}]}]});
+  const wikiCp0 = {...checkpoint0,policy_hash:await secureHash(wikiPolicy)};
+  const wikiBoot = await createCommit({identity,policy:wikiPolicy,checkpoint:wikiCp0,
+    operation:{v:1,kind:'BOOTSTRAP',input:{},objects:wikiObjects},actionId:'secure.bootstrap',
+    instanceId:null,commandId:'p'.repeat(43),issuedAt:3,keyring});
+  const wikiCp1 = {...wikiCp0,sequence:1,head:await secureHash(wikiBoot)};
+  const actionInput = {v:1,kind:'ACTION',input:{},objects:[]};
+  const wikiContext = await createCommitContext({identity,policy:wikiPolicy,checkpoint:wikiCp1,
+    operation:actionInput,actionId:'wiki.create',instanceId:wikiInstance,
+    commandId:'q'.repeat(43),issuedAt:4});
+  const wikiAction = await prepareSecureAction({objects:wikiObjects,context:wikiContext,
+    policy:wikiPolicy,body:{title:'One',body:'Snapshot page'},
+    allocations:[{record_id:'s'.repeat(43),entity_id:'t'.repeat(43)}]});
+  const wikiActionCommit = await createCommit({identity,policy:wikiPolicy,checkpoint:wikiCp1,
+    operation:wikiAction,actionId:'wiki.create',instanceId:wikiInstance,
+    commandId:'q'.repeat(43),issuedAt:4,keyring});
+  const wikiCp2 = {...wikiCp0,sequence:2,head:await secureHash(wikiActionCommit)};
+  const wikiBad = await createCommit({identity,policy:wikiPolicy,checkpoint:wikiCp2,
+    operation:{v:1,kind:'ADMIN',input:{},objects:[{kind:'forbidden',id:'u'.repeat(43),
+      revision:1,provenance:'AUTHOR_SIGNED',value:{}}]},actionId:'secure.invalid',
+    instanceId:null,commandId:'v'.repeat(43),issuedAt:5,keyring});
+  const wikiCp3 = {...wikiCp0,sequence:3,head:await secureHash(wikiBad)};
+  const wikiPrepared = await prepareJournalRecovery({workspaceId,policies:[wikiPolicy],
+    commits:[wikiBoot,wikiActionCommit,wikiBad],checkpoint:wikiCp3,keyring,
+    trustedOwner:{actorId:identity.actorId,key:identity.keyId}});
+  const wikiPriorObjects = [...wikiObjects,...wikiAction.objects];
+  const wikiRecords = projectStructureRecords(wikiPriorObjects,wikiStructure)
+    .sort((a,b)=>a.record_id<b.record_id?-1:a.record_id>b.record_id?1:0);
+  const wikiHeads = projectStructureHeads(wikiPriorObjects)
+    .sort((a,b)=>a.entity_id<b.entity_id?-1:a.entity_id>b.entity_id?1:0);
+  const wikiSnapshot = {source:wikiPrepared.recovery.base,
+    root:await secureHash({records:wikiRecords,heads:wikiHeads}),
+    records:wikiRecords.length,heads:wikiHeads.length,offset:0};
+  let wikiCursor = wikiCp3;
+  const wikiPages = [];
+  for (const [actionId,mode,records,heads,offset,recovery] of [
+    ['secure.recover','SNAPSHOT_BEGIN',[],[],0,wikiPrepared.recovery],
+    ['secure.structure.page','SNAPSHOT_PAGE',wikiRecords,[],0,undefined],
+    ['secure.structure.page','SNAPSHOT_PAGE',[],wikiHeads,wikiRecords.length,undefined],
+    ['secure.structure.end','SNAPSHOT_END',[],[],wikiRecords.length+wikiHeads.length,undefined],
+  ]) {
+    const commit = await createCommit({identity,policy:wikiPolicy,checkpoint:wikiCursor,
+      operation:{v:1,kind:'ADMIN',input:{},objects:[]},actionId,instanceId:null,
+      commandId:String(wikiPages.length).repeat(43),issuedAt:6+wikiPages.length,keyring,
+      structure:{v:1,mode,records,heads,snapshot:{...wikiSnapshot,offset}},
+      ...(recovery?{recovery}:{})});
+    wikiPages.push(commit);
+    wikiCursor = {...wikiCp0,sequence:wikiCursor.sequence+1,head:await secureHash(commit)};
+  }
+  const wikiCommits = [wikiBoot,wikiActionCommit,wikiBad,...wikiPages];
+  try {
+    const journal = await verifyJournal({workspaceId,policies:[wikiPolicy],
+      commits:wikiCommits,checkpoint:wikiCursor,keyring,
+      trustedOwner:{actorId:identity.actorId,key:identity.keyId}});
+    cases.push({name:'v2_recovery_nonempty_record_and_head_pages',policy:wikiPolicy,
+      commits:wikiCommits,checkpoint:wikiCursor,keyring,workspace_id:workspaceId,
+      owner:{actor_id:identity.actorId,key:identity.keyId},ok:true,
+      operations:journal.operations,objects:journal.objects,recoveries:journal.recoveries,
+      legacy:journal.legacy,structure_state:journal.structure?.state??null,
+      structure_records:journal.structure?.records??null,
+      structure_heads:journal.structure?.heads??null});
+  } catch (error) {
+    cases.push({name:'v2_recovery_nonempty_record_and_head_pages',policy:wikiPolicy,
+      commits:wikiCommits,checkpoint:wikiCursor,keyring,workspace_id:workspaceId,
+      owner:{actor_id:identity.actorId,key:identity.keyId},ok:false,error:String(error.message)});
+  }
+  const wikiCp4 = {...wikiCp0,sequence:4,head:await secureHash(wikiPages[0])};
+  const headFirst = await createCommit({identity,policy:wikiPolicy,checkpoint:wikiCp4,
+    operation:{v:1,kind:'ADMIN',input:{},objects:[]},
+    actionId:'secure.structure.page',instanceId:null,commandId:'z'.repeat(43),
+    issuedAt:7,keyring,structure:{v:1,mode:'SNAPSHOT_PAGE',records:[],heads:wikiHeads,
+      snapshot:{...wikiSnapshot,offset:0}}});
+  const headFirstCp = {...wikiCp0,sequence:5,head:await secureHash(headFirst)};
+  const headFirstCommits = [wikiBoot,wikiActionCommit,wikiBad,wikiPages[0],headFirst];
+  try {
+    const journal = await verifyJournal({workspaceId,policies:[wikiPolicy],
+      commits:headFirstCommits,checkpoint:headFirstCp,keyring,
+      trustedOwner:{actorId:identity.actorId,key:identity.keyId}});
+    cases.push({name:'v2_recovery_head_page_before_record_denied',policy:wikiPolicy,
+      commits:headFirstCommits,checkpoint:headFirstCp,keyring,workspace_id:workspaceId,
+      owner:{actor_id:identity.actorId,key:identity.keyId},ok:true,
+      operations:journal.operations,objects:journal.objects,recoveries:journal.recoveries,
+      legacy:journal.legacy,structure_state:journal.structure?.state??null});
+  } catch (error) {
+    cases.push({name:'v2_recovery_head_page_before_record_denied',policy:wikiPolicy,
+      commits:headFirstCommits,checkpoint:headFirstCp,keyring,workspace_id:workspaceId,
+      owner:{actor_id:identity.actorId,key:identity.keyId},ok:false,error:String(error.message)});
   }
   await writeFile(new URL('./signed-recovery-vectors.json', import.meta.url),
     `${JSON.stringify({prepared: {recovery: prepared.recovery,
