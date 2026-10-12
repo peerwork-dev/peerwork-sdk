@@ -912,9 +912,17 @@ fn validate_signed_package_install(
     let WireValue::Array(descriptors) = proof.get("parts").ok_or(ReplayError::Invalid)? else {
         return Err(ReplayError::Invalid);
     };
+    let stage_start = prior_operations
+        .len()
+        .checked_sub(object_parts)
+        .and_then(|end| end.checked_sub(descriptors.len()))
+        .ok_or(ReplayError::Invalid)?;
     for (offset, descriptor) in descriptors.iter().enumerate() {
+        // Journal.operations can omit earlier recovered commits. Sequence
+        // numbers authenticate the stage range above; this tail position is
+        // relative to the decoded operation list, as in the tracked verifier.
         let operation = prior_operations
-            .get(base as usize + offset)
+            .get(stage_start + offset)
             .ok_or(ReplayError::Invalid)?;
         let stage = operation
             .get("input")
@@ -3552,6 +3560,46 @@ mod tests {
             )
         };
         assert_eq!(check(&bootstrap, &stage, &install).unwrap().object_count, 3);
+        let final_checkpoint = serde_json::to_vec(&json!({"v":1,"workspace_id":workspace,
+            "owner_id":owner_id,"owner_key":owner_key,"sequence":3,"head":hash(&install),
+            "policy_hash":policy_hash}))
+        .unwrap();
+        let chain = scan_signed_chain_headers(
+            &[&policy],
+            &[&bootstrap, &stage, &install],
+            &final_checkpoint,
+            &workspace,
+            Some(&owner_pin),
+            None,
+        )
+        .unwrap();
+        let signed_stage =
+            parse_wire_json_js_bounded(&serde_json::to_vec(&stage_operation).unwrap(), 64, 196_608)
+                .unwrap();
+        let signed_install = parse_wire_json_js_bounded(
+            &serde_json::to_vec(&install_operation).unwrap(),
+            64,
+            196_608,
+        )
+        .unwrap();
+        let install_commit = parse_wire_json_js_bounded(&install, 64, 196_608).unwrap();
+        let prior_part = signed_stage.get("objects").unwrap();
+        let WireValue::Array(prior_parts) = prior_part else {
+            panic!("stage part array")
+        };
+        // A recovered earlier commit is omitted from journal.operations, but
+        // the signed sequence/checkpoint and contiguous stage suffix remain.
+        assert!(validate_signed_package_install(
+            &signed_install,
+            install_commit.get("payload").unwrap(),
+            prior_parts,
+            &[signed_stage.clone()],
+            &chain,
+            &[&bootstrap, &stage, &install],
+            &workspace,
+            None,
+        )
+        .is_ok());
         let mut wrong_snapshot = snapshot.clone();
         wrong_snapshot["snapshot"]["root"] = json!("a".repeat(64));
         let wrong_install = make_commit(
