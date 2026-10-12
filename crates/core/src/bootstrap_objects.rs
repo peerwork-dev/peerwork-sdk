@@ -11,6 +11,7 @@ use serde_json::{json, Value};
 use thiserror::Error;
 
 const EMBEDDED: &str = include_str!("../../../conformance/bootstrap-presets.json");
+const COORDINATION_EMBEDDED: &str = include_str!("../../../conformance/coordination-presets.json");
 const EXPECTED_SOURCE: &str = "2e85ed64b4ff63737cfe5fc2fd47f270dc8bb488533a5a287a0270d5702223bd";
 const ENTRIES: [&str; 6] = [
     "discussion",
@@ -153,6 +154,84 @@ pub fn owner_bootstrap_objects_with_visibility(
     })
 }
 
+/// The tracked optional coordination preset adds exactly one protocol and
+/// instance after the six default collaboration presets. Version 2 selects
+/// the result-aware manifest; neither variant is downloaded at runtime.
+pub fn owner_bootstrap_objects_with_coordination(
+    name: &str,
+    workspace_id: &str,
+    owner_actor: &str,
+    created: u64,
+    instance_ids: &[String; 7],
+    visibility: &str,
+    coordination_version: u8,
+) -> Result<OwnerBootstrapObjects, BootstrapObjectsError> {
+    let bad = || BootstrapObjectsError::Invalid;
+    if !matches!(coordination_version, 1 | 2)
+        || instance_ids[..6].contains(&instance_ids[6])
+        || !token(&instance_ids[6])
+        || instance_ids[6] == workspace_id
+    {
+        return Err(bad());
+    }
+    let first_six: [String; 6] = std::array::from_fn(|i| instance_ids[i].clone());
+    let mut built = owner_bootstrap_objects_with_visibility(
+        name,
+        workspace_id,
+        owner_actor,
+        created,
+        &first_six,
+        visibility,
+    )?;
+    let fixture: Value = serde_json::from_str(COORDINATION_EMBEDDED).map_err(|_| bad())?;
+    if fixture["source_sha256"] != EXPECTED_SOURCE {
+        return Err(bad());
+    }
+    let entries = fixture["entries"].as_array().ok_or_else(bad)?;
+    if entries.len() != 2 {
+        return Err(bad());
+    }
+    let entry = entries
+        .iter()
+        .find(|e| e["version"] == coordination_version)
+        .ok_or_else(bad)?;
+    let manifest = entry.get("manifest").ok_or_else(bad)?;
+    let wire = serde_json::to_vec(manifest).map_err(|_| bad())?;
+    let parsed = parse_wire_json_bounded(&wire, 40, 196_608).map_err(|_| bad())?;
+    let canonical = validate_full_manifest(&parsed).map_err(|_| bad())?;
+    let digest = sha256_hex(canonical.as_bytes());
+    if entry["digest"] != digest {
+        return Err(bad());
+    }
+    let instance = &instance_ids[6];
+    let objects = built.operation["objects"].as_array_mut().ok_or_else(bad)?;
+    objects.push(json!({"kind":"protocols","id":digest,"revision":1,
+        "provenance":"AUTHOR_SIGNED","value":{"workspace_id":workspace_id,
+            "digest":digest,"manifest":manifest,"resolved_manifest":manifest}}));
+    objects.push(json!({"kind":"instances","id":instance,"revision":1,
+        "provenance":"AUTHOR_SIGNED","value":{"id":instance,"workspace_id":workspace_id,
+            "protocol_digest":digest,"origin_entrypoint":"coordination",
+            "semantics":"peerwork.kernel.v1","state":manifest["initial_state"],
+            "revision":0,"event_revision":0,"created":created}}));
+    let roles = manifest["protocol_roles"]
+        .as_array()
+        .ok_or_else(bad)?
+        .iter()
+        .map(|r| r.as_str().map(str::to_owned).ok_or_else(bad))
+        .collect::<Result<Vec<_>, _>>()?;
+    let actions = manifest["actions"]
+        .as_array()
+        .ok_or_else(bad)?
+        .iter()
+        .map(|a| a["id"].as_str().map(str::to_owned).ok_or_else(bad))
+        .collect::<Result<Vec<_>, _>>()?;
+    built
+        .scopes
+        .push(json!({"instance_id":instance,"actions":actions,
+        "protocol_roles":roles,"capabilities":manifest["capabilities"]}));
+    Ok(built)
+}
+
 fn token(value: &str) -> bool {
     value.len() == 43 && decode_base64url(value).is_ok_and(|bytes| bytes.len() == 32)
 }
@@ -197,5 +276,30 @@ mod tests {
             "e31188a871138c8065682517931fba8c3fbd288516cda6c7aad88ff70c135c17"
         );
         assert!(owner_bootstrap_objects("", &workspace, &owner, 100, &ids).is_err());
+    }
+
+    #[test]
+    fn pinned_optional_coordination_presets_add_one_instance() {
+        let workspace = base64url(&[7; 32]);
+        let owner = base64url(&[8; 32]);
+        let ids = std::array::from_fn(|i| base64url(&[i as u8 + 20; 32]));
+        for version in [1, 2] {
+            let built = owner_bootstrap_objects_with_coordination(
+                "Coordinated",
+                &workspace,
+                &owner,
+                100,
+                &ids,
+                "PUBLIC",
+                version,
+            )
+            .unwrap();
+            assert_eq!(built.operation()["objects"].as_array().unwrap().len(), 15);
+            assert_eq!(built.scopes().len(), 7);
+            assert_eq!(
+                built.operation()["objects"][14]["value"]["origin_entrypoint"],
+                "coordination"
+            );
+        }
     }
 }

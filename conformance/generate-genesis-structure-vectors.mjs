@@ -29,9 +29,14 @@ try {
       value:{id:'z'.repeat(43),workspace_id:'w'.repeat(43),protocol_digest:official.protocol_digest}},
   ];
   const cases=[{name:'six_presets',objects:rows()},
-    {name:'six_presets_plus_public_proposal_package',objects:rows(custom)}];
+    {name:'six_presets_plus_public_proposal_package',objects:rows(custom)},
+    {name:'six_presets_keep_author_encrypted',objects:rows(),
+      keep_encrypted:[{schema:'discussion.message',fields:['author'],
+        protocol_digest:fixture.entries[0].digest}]}];
   for(const item of cases){item.objects_wire=JSON.stringify(item.objects);
-    item.policy=structurePolicyFromObjects(item.objects);}
+    item.choices_wire=JSON.stringify(item.keep_encrypted??[]);
+    item.policy=structurePolicyFromObjects(item.objects,{keep_encrypted:item.keep_encrypted??[]});}
   await writeFile(new URL('genesis-structure-vectors.json',import.meta.url),
-    JSON.stringify(cases.map(({name,objects_wire,policy})=>({name,objects_wire,policy})),null,2)+'\n');
+    JSON.stringify(cases.map(({name,objects_wire,choices_wire,policy})=>
+      ({name,objects_wire,choices_wire,policy})),null,2)+'\n');
 } finally {await rm(dir,{recursive:true,force:true});}

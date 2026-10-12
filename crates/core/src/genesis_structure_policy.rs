@@ -7,7 +7,7 @@ use crate::{
     structure_policy::validate_structure_policy,
     wire_json::{canonical_wire_value, parse_wire_json_bounded, WireValue},
 };
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use thiserror::Error;
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -26,13 +26,99 @@ fn obj(fields: Vec<(&str, WireValue)>) -> WireValue {
     WireValue::Object(fields.into_iter().map(|(k, v)| (key(k), v)).collect())
 }
 
+struct Choice {
+    schema: String,
+    fields: Vec<String>,
+    protocol_digest: Option<String>,
+}
+fn name(value: &str) -> bool {
+    value.len() <= 80
+        && value
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphabetic)
+        && value.as_bytes()[1..]
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(*b, b'_' | b'.' | b'-'))
+}
+fn choices(wire: &[u8]) -> Result<Vec<Choice>, GenesisStructureError> {
+    let bad = || GenesisStructureError::Invalid;
+    let parsed = parse_wire_json_bounded(wire, 32, 65_536).map_err(|_| bad())?;
+    let WireValue::Array(items) = parsed else {
+        return Err(bad());
+    };
+    if items.len() > 256 {
+        return Err(bad());
+    }
+    items
+        .iter()
+        .map(|item| {
+            let count = item.object_len().ok_or_else(bad)?;
+            if count != 2 && count != 3 {
+                return Err(bad());
+            }
+            let schema = item
+                .get("schema")
+                .and_then(WireValue::as_string)
+                .ok_or_else(bad)?;
+            if !name(&schema) {
+                return Err(bad());
+            }
+            let protocol_digest = item
+                .get("protocol_digest")
+                .map(|v| v.as_string().ok_or_else(bad))
+                .transpose()?;
+            if count != 2 + usize::from(protocol_digest.is_some()) {
+                return Err(bad());
+            }
+            if protocol_digest.as_ref().is_some_and(|d| {
+                d.len() != 64
+                    || !d
+                        .bytes()
+                        .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+            }) {
+                return Err(bad());
+            }
+            let Some(WireValue::Array(raw_fields)) = item.get("fields") else {
+                return Err(bad());
+            };
+            if raw_fields.is_empty() || raw_fields.len() > 64 {
+                return Err(bad());
+            }
+            let mut seen = HashSet::new();
+            let mut fields = Vec::new();
+            for field in raw_fields {
+                let value = field.as_string().ok_or_else(bad)?;
+                if !name(&value) || !seen.insert(value.clone()) {
+                    return Err(bad());
+                }
+                fields.push(value);
+            }
+            Ok(Choice {
+                schema,
+                fields,
+                protocol_digest,
+            })
+        })
+        .collect()
+}
+
 /// Mirrors `structurePolicyFromObjects(objects,{})` for a genesis set with no
 /// `keep_encrypted` overrides. The caller must bind these objects into its
 /// separately signed operation and policy before transport.
 pub fn derive_genesis_structure_policy(
     objects_wire: &[u8],
 ) -> Result<String, GenesisStructureError> {
+    derive_genesis_structure_policy_with_keep_encrypted(objects_wire, b"[]")
+}
+
+pub fn derive_genesis_structure_policy_with_keep_encrypted(
+    objects_wire: &[u8],
+    keep_encrypted_wire: &[u8],
+) -> Result<String, GenesisStructureError> {
     let bad = || GenesisStructureError::Invalid;
+    let choices = choices(keep_encrypted_wire)?;
+    let mut matched = vec![false; choices.len()];
     let parsed = parse_wire_json_bounded(objects_wire, 64, 2_000_000).map_err(|_| bad())?;
     let WireValue::Array(objects) = parsed else {
         return Err(bad());
@@ -63,8 +149,59 @@ pub fn derive_genesis_structure_policy(
                 .get("resolved_manifest")
                 .or_else(|| value.get("manifest"))
                 .ok_or_else(bad)?;
-            let protocol =
+            let default =
                 derive_genesis_protocol(&id, manifest, &obj(vec![("schemas", obj(vec![]))]))
+                    .map_err(|_| bad())?;
+            let mut declared: BTreeMap<String, BTreeMap<String, WireValue>> = BTreeMap::new();
+            let mut selected = HashSet::new();
+            for (i, choice) in choices.iter().enumerate() {
+                if choice.protocol_digest.as_deref().is_some_and(|d| d != id)
+                    || default
+                        .get("schemas")
+                        .and_then(|v| v.get(&choice.schema))
+                        .is_none()
+                {
+                    continue;
+                }
+                matched[i] = true;
+                for field in &choice.fields {
+                    if default
+                        .get("schemas")
+                        .and_then(|v| v.get(&choice.schema))
+                        .and_then(|v| v.get("fields"))
+                        .and_then(|v| v.get(field))
+                        .is_none()
+                        || !selected.insert((choice.schema.clone(), field.clone()))
+                    {
+                        return Err(bad());
+                    }
+                    declared
+                        .entry(choice.schema.clone())
+                        .or_default()
+                        .insert(field.clone(), obj(vec![("protection", text("e2ee"))]));
+                }
+            }
+            let declared = WireValue::Object(
+                declared
+                    .into_iter()
+                    .map(|(schema, fields)| {
+                        (
+                            key(&schema),
+                            obj(vec![(
+                                "fields",
+                                WireValue::Object(
+                                    fields
+                                        .into_iter()
+                                        .map(|(field, rule)| (key(&field), rule))
+                                        .collect(),
+                                ),
+                            )]),
+                        )
+                    })
+                    .collect(),
+            );
+            let protocol =
+                derive_genesis_protocol(&id, manifest, &obj(vec![("schemas", declared)]))
                     .map_err(|_| bad())?;
             let WireValue::Object(schemas) = manifest.get("record_schemas").ok_or_else(bad)? else {
                 return Err(bad());
@@ -118,6 +255,9 @@ pub fn derive_genesis_structure_policy(
             ]));
         }
     }
+    if matched.iter().any(|value| !value) {
+        return Err(bad());
+    }
     let policy = obj(vec![
         ("v", WireValue::Number(1.0)),
         ("protocols", WireValue::Array(protocols)),
@@ -125,6 +265,69 @@ pub fn derive_genesis_structure_policy(
         ("instances", WireValue::Array(instances)),
     ]);
     validate_structure_policy(&policy).map_err(|_| bad())?;
+    validate_object_bindings(&policy, &objects).map_err(|_| bad())?;
+    canonical_wire_value(&policy, Path::SecureArtifact).map_err(|_| bad())
+}
+
+/// Attach the tracked default coordination policy to an object-derived
+/// genesis declaration. The owner is the initial coordinator; version 2
+/// selects result-aware routing. Signed policy authority is still separate.
+pub fn derive_genesis_structure_policy_with_coordination(
+    objects_wire: &[u8],
+    instance_id: &str,
+    protocol_digest: &str,
+    owner_actor: &str,
+    version: u8,
+) -> Result<String, GenesisStructureError> {
+    derive_genesis_structure_policy_with_coordination_and_keep_encrypted(
+        objects_wire,
+        b"[]",
+        instance_id,
+        protocol_digest,
+        owner_actor,
+        version,
+    )
+}
+
+pub fn derive_genesis_structure_policy_with_coordination_and_keep_encrypted(
+    objects_wire: &[u8],
+    keep_encrypted_wire: &[u8],
+    instance_id: &str,
+    protocol_digest: &str,
+    owner_actor: &str,
+    version: u8,
+) -> Result<String, GenesisStructureError> {
+    let bad = || GenesisStructureError::Invalid;
+    if !matches!(version, 1 | 2) {
+        return Err(bad());
+    }
+    let base =
+        derive_genesis_structure_policy_with_keep_encrypted(objects_wire, keep_encrypted_wire)?;
+    let mut policy = parse_wire_json_bounded(base.as_bytes(), 64, 2_000_000).map_err(|_| bad())?;
+    let WireValue::Object(fields) = &mut policy else {
+        return Err(bad());
+    };
+    fields.push((
+        key("coordination"),
+        obj(vec![
+            ("v", WireValue::Number(version as f64)),
+            ("instance_id", text(instance_id)),
+            ("protocol_digest", text(protocol_digest)),
+            ("coordinator", text(owner_actor)),
+            ("initial_delay_ms", WireValue::Number(60_000.0)),
+            ("max_delay_ms", WireValue::Number(3_600_000.0)),
+            ("escalate_after", WireValue::Number(5.0)),
+            ("window_ms", WireValue::Number(60_000.0)),
+            ("workspace_limit", WireValue::Number(60.0)),
+            ("sender_limit", WireValue::Number(10.0)),
+            ("recipient_limit", WireValue::Number(10.0)),
+        ]),
+    ));
+    validate_structure_policy(&policy).map_err(|_| bad())?;
+    let objects = parse_wire_json_bounded(objects_wire, 64, 2_000_000).map_err(|_| bad())?;
+    let WireValue::Array(objects) = objects else {
+        return Err(bad());
+    };
     validate_object_bindings(&policy, &objects).map_err(|_| bad())?;
     canonical_wire_value(&policy, Path::SecureArtifact).map_err(|_| bad())
 }
@@ -184,13 +387,24 @@ mod tests {
         let WireValue::Array(cases) = fixture else {
             panic!("fixture cases");
         };
-        assert_eq!(cases.len(), 2);
+        assert_eq!(cases.len(), 3);
         for case in cases {
             let name = case.get("name").and_then(WireValue::as_string).unwrap();
-            let objects = case.get("objects_wire").and_then(WireValue::as_string).unwrap();
+            let objects = case
+                .get("objects_wire")
+                .and_then(WireValue::as_string)
+                .unwrap();
             let expected =
                 canonical_wire_value(case.get("policy").unwrap(), Path::SecureArtifact).unwrap();
-            let actual = derive_genesis_structure_policy(objects.as_bytes()).unwrap();
+            let choices = case
+                .get("choices_wire")
+                .and_then(WireValue::as_string)
+                .unwrap();
+            let actual = derive_genesis_structure_policy_with_keep_encrypted(
+                objects.as_bytes(),
+                choices.as_bytes(),
+            )
+            .unwrap();
             let expected: serde_json::Value = serde_json::from_str(&expected).unwrap();
             let actual: serde_json::Value = serde_json::from_str(&actual).unwrap();
             assert!(

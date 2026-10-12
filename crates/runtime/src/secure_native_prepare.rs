@@ -11,11 +11,15 @@ use crate::{
 };
 use peerwork_core::{
     bootstrap_objects::{
-        owner_bootstrap_objects, owner_bootstrap_objects_with_visibility, BootstrapObjectsError,
+        owner_bootstrap_objects, owner_bootstrap_objects_with_coordination,
+        owner_bootstrap_objects_with_visibility, BootstrapObjectsError, OwnerBootstrapObjects,
     },
     canonical::{canonical, Path as CanonicalPath},
     crypto::{sha256_hex, sign_canonical},
-    genesis_structure_policy::derive_genesis_structure_policy,
+    genesis_structure_policy::{
+        derive_genesis_structure_policy_with_coordination_and_keep_encrypted,
+        derive_genesis_structure_policy_with_keep_encrypted,
+    },
     prepared_secure_author::{
         author_private_bootstrap, author_private_commit, author_public_bootstrap, SecureAuthorError,
     },
@@ -137,6 +141,111 @@ pub(crate) fn prepare_default_public_owner_workspace_with_structure(
     instance_ids: &[String; 6],
     structured: bool,
 ) -> Result<PendingSecureIntent, NativePrepareError> {
+    let built = owner_bootstrap_objects_with_visibility(
+        name,
+        workspace_id,
+        identity.actor_id(),
+        created,
+        instance_ids,
+        "PUBLIC",
+    )?;
+    prepare_public_owner_workspace_from_built(
+        journal,
+        identity,
+        recipient,
+        workspace_id,
+        intent_id,
+        created,
+        built,
+        structured,
+        None,
+        b"[]",
+    )
+}
+
+pub(crate) fn prepare_coordinated_public_owner_workspace(
+    journal: &mut SecureIntentJournal,
+    identity: &KernelIdentity,
+    recipient: &crate::secure_recipient_state::RecipientState,
+    workspace_id: &str,
+    intent_id: &str,
+    name: &str,
+    created: u64,
+    instance_ids: &[String; 7],
+    coordination_version: u8,
+) -> Result<PendingSecureIntent, NativePrepareError> {
+    let built = owner_bootstrap_objects_with_coordination(
+        name,
+        workspace_id,
+        identity.actor_id(),
+        created,
+        instance_ids,
+        "PUBLIC",
+        coordination_version,
+    )?;
+    let digest = built.operation()["objects"][13]["id"]
+        .as_str()
+        .ok_or(NativePrepareError::Context)?
+        .to_owned();
+    prepare_public_owner_workspace_from_built(
+        journal,
+        identity,
+        recipient,
+        workspace_id,
+        intent_id,
+        created,
+        built,
+        true,
+        Some((&instance_ids[6], &digest, coordination_version)),
+        b"[]",
+    )
+}
+
+pub(crate) fn prepare_public_owner_workspace_with_options(
+    journal: &mut SecureIntentJournal,
+    identity: &KernelIdentity,
+    recipient: &crate::secure_recipient_state::RecipientState,
+    workspace_id: &str,
+    intent_id: &str,
+    name: &str,
+    created: u64,
+    instance_ids: &[String; 6],
+    keep_encrypted_wire: &[u8],
+) -> Result<PendingSecureIntent, NativePrepareError> {
+    let built = owner_bootstrap_objects_with_visibility(
+        name,
+        workspace_id,
+        identity.actor_id(),
+        created,
+        instance_ids,
+        "PUBLIC",
+    )?;
+    prepare_public_owner_workspace_from_built(
+        journal,
+        identity,
+        recipient,
+        workspace_id,
+        intent_id,
+        created,
+        built,
+        true,
+        None,
+        keep_encrypted_wire,
+    )
+}
+
+fn prepare_public_owner_workspace_from_built(
+    journal: &mut SecureIntentJournal,
+    identity: &KernelIdentity,
+    recipient: &crate::secure_recipient_state::RecipientState,
+    workspace_id: &str,
+    intent_id: &str,
+    created: u64,
+    built: OwnerBootstrapObjects,
+    structured: bool,
+    coordination: Option<(&str, &str, u8)>,
+    keep_encrypted_wire: &[u8],
+) -> Result<PendingSecureIntent, NativePrepareError> {
     if journal.contains_id(intent_id) {
         return Err(NativePrepareError::Existing);
     }
@@ -152,19 +261,23 @@ pub(crate) fn prepare_default_public_owner_workspace_with_structure(
             created,
         )
         .map_err(|_| NativePrepareError::Context)?;
-    let built = owner_bootstrap_objects_with_visibility(
-        name,
-        workspace_id,
-        identity.actor_id(),
-        created,
-        instance_ids,
-        "PUBLIC",
-    )?;
     let structure = if structured {
         let objects = serde_json::to_vec(&built.operation()["objects"])
             .map_err(|_| NativePrepareError::Context)?;
-        let canonical =
-            derive_genesis_structure_policy(&objects).map_err(|_| NativePrepareError::Context)?;
+        let canonical = if let Some((instance, digest, version)) = coordination {
+            derive_genesis_structure_policy_with_coordination_and_keep_encrypted(
+                &objects,
+                keep_encrypted_wire,
+                instance,
+                digest,
+                identity.actor_id(),
+                version,
+            )
+            .map_err(|_| NativePrepareError::Context)?
+        } else {
+            derive_genesis_structure_policy_with_keep_encrypted(&objects, keep_encrypted_wire)
+                .map_err(|_| NativePrepareError::Context)?
+        };
         Some(
             serde_json::from_str::<serde_json::Value>(&canonical)
                 .map_err(|_| NativePrepareError::Context)?,
@@ -455,15 +568,30 @@ mod tests {
 
     #[tokio::test]
     async fn actual_service_native_public_owner_bootstrap_lost_reply_exact_retry() {
-        actual_service_public_owner_bootstrap(false).await;
+        actual_service_public_owner_bootstrap(false, None, false).await;
     }
 
     #[tokio::test]
     async fn actual_service_native_structured_public_owner_bootstrap_lost_reply_exact_retry() {
-        actual_service_public_owner_bootstrap(true).await;
+        actual_service_public_owner_bootstrap(true, None, false).await;
     }
 
-    async fn actual_service_public_owner_bootstrap(structured: bool) {
+    #[tokio::test]
+    async fn actual_service_native_coordinated_public_owner_bootstrap_lost_reply_exact_retry() {
+        actual_service_public_owner_bootstrap(true, Some(1), false).await;
+        actual_service_public_owner_bootstrap(true, Some(2), false).await;
+    }
+
+    #[tokio::test]
+    async fn actual_service_native_keep_encrypted_owner_bootstrap_lost_reply_exact_retry() {
+        actual_service_public_owner_bootstrap(true, None, true).await;
+    }
+
+    async fn actual_service_public_owner_bootstrap(
+        structured: bool,
+        coordination: Option<u8>,
+        keep_encrypted: bool,
+    ) {
         let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else {
             return;
         };
@@ -518,7 +646,8 @@ mod tests {
         )
         .unwrap();
         let workspace = base64url(&[201; 32]);
-        let ids = std::array::from_fn(|i| base64url(&[i as u8 + 210; 32]));
+        let ids: [String; 7] = std::array::from_fn(|i| base64url(&[i as u8 + 210; 32]));
+        let first_six = std::array::from_fn(|i| ids[i].clone());
         let command = base64url(&[202; 32]);
         let journal_path = root.path().join("native-public-intents.state");
         let mut journal = SecureIntentJournal::open(&journal_path, origin, actor).unwrap();
@@ -539,18 +668,61 @@ mod tests {
         };
         let before = counts().await;
         assert_eq!(before["commits"].as_u64(), Some(0));
-        prepare_default_public_owner_workspace_with_structure(
-            &mut journal,
-            &identity,
-            &recipient,
-            &workspace,
-            &command,
-            "Native public workspace",
-            now,
-            &ids,
-            structured,
-        )
-        .unwrap();
+        if let Some(version) = coordination {
+            prepare_coordinated_public_owner_workspace(
+                &mut journal,
+                &identity,
+                &recipient,
+                &workspace,
+                &command,
+                "Native public workspace",
+                now,
+                &ids,
+                version,
+            )
+            .unwrap();
+        } else if keep_encrypted {
+            let built = owner_bootstrap_objects_with_visibility(
+                "Native public workspace",
+                &workspace,
+                actor,
+                now,
+                &first_six,
+                "PUBLIC",
+            )
+            .unwrap();
+            let digest = built.operation()["objects"][0]["id"].as_str().unwrap();
+            let choices = serde_json::to_vec(&json!([{
+                "schema":"discussion.message", "fields":["author"],
+                "protocol_digest":digest,
+            }]))
+            .unwrap();
+            prepare_public_owner_workspace_with_options(
+                &mut journal,
+                &identity,
+                &recipient,
+                &workspace,
+                &command,
+                "Native public workspace",
+                now,
+                &first_six,
+                &choices,
+            )
+            .unwrap();
+        } else {
+            prepare_default_public_owner_workspace_with_structure(
+                &mut journal,
+                &identity,
+                &recipient,
+                &workspace,
+                &command,
+                "Native public workspace",
+                now,
+                &first_six,
+                structured,
+            )
+            .unwrap();
+        }
         let exact = journal.exact_request(&command).unwrap();
         let (prepared, _) = journal
             .verified_saved_public_bootstrap(&command, &workspace, &identity, &transport)
@@ -570,9 +742,31 @@ mod tests {
                     .as_array()
                     .unwrap()
                     .len(),
-                6
+                if coordination.is_some() { 7 } else { 6 }
             );
             assert_eq!(packet["commit"]["payload"]["structure"]["mode"], "DELTA");
+            if keep_encrypted {
+                let fields = &packet["policy"]["payload"]["structure"]["protocols"][0]["schemas"]
+                    ["discussion.message"]["fields"];
+                assert_eq!(fields["author"]["protection"], "e2ee");
+                assert!(
+                    !packet["policy"]["payload"]["structure"]["disclosure"][0]["fields"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|field| field == "author")
+                );
+            }
+            if let Some(version) = coordination {
+                assert_eq!(
+                    packet["policy"]["payload"]["structure"]["coordination"]["v"],
+                    version
+                );
+                assert_eq!(
+                    packet["policy"]["payload"]["structure"]["coordination"]["instance_id"],
+                    ids[6]
+                );
+            }
         } else {
             assert!(packet["policy"]["payload"].get("structure").is_none());
             assert!(packet["commit"]["payload"].get("structure").is_none());
@@ -582,7 +776,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            13
+            if coordination.is_some() { 15 } else { 13 }
         );
         assert_eq!(counts().await, before, "preparation must not submit");
         let first = journal
