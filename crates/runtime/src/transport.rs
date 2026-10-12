@@ -155,6 +155,7 @@ fn valid_command_path(path: &str) -> bool {
         "/api/workspace/v1/commands"
             | "/api/workspace/v1/catalog/upload"
             | "/api/workspace/v1/private/packages/upload"
+            | "/api/workspace/v1/secure/workspaces"
     ) || path
         .strip_prefix("/api/workspace/v1/browser/sessions/")
         .and_then(|tail| tail.strip_suffix("/commands"))
@@ -319,5 +320,18 @@ mod tests {
             HttpTransport::new(TransportConfig::new("https://user:pass@example.com/")),
             Err(TransportError::InvalidOrigin)
         ));
+    }
+
+    #[test]
+    fn bootstrap_post_route_is_exactly_allowlisted() {
+        assert!(valid_command_path("/api/workspace/v1/secure/workspaces"));
+        for path in [
+            "/api/workspace/v1/secure/workspaces/",
+            "/api/workspace/v1/secure/workspaces?x=1",
+            "/api/workspace/v1/secure/workspaces/other",
+            "/api/workspace/v1/secure/invitations",
+        ] {
+            assert!(!valid_command_path(path), "{path}");
+        }
     }
 }
