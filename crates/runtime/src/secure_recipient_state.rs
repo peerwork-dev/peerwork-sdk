@@ -30,6 +30,7 @@ pub enum RecipientStateError {
 }
 
 pub(crate) struct RecipientState {
+    _store: SecureStateStore,
     recipient: SecretRecipient,
     certificate: RecipientCertificate,
 }
@@ -51,6 +52,7 @@ impl RecipientState {
         let bytes = encode(identity, &recipient, &certificate)?;
         store.write_exact(&bytes)?;
         Ok(Self {
+            _store: store,
             recipient,
             certificate,
         })
@@ -67,7 +69,12 @@ impl RecipientState {
         let bytes = store
             .read_exact_secret()?
             .ok_or(RecipientStateError::NotFound)?;
-        decode(&bytes, identity)
+        let (recipient, certificate) = decode(&bytes, identity)?;
+        Ok(Self {
+            _store: store,
+            recipient,
+            certificate,
+        })
     }
 
     pub(crate) fn recipient(&self) -> &SecretRecipient {
@@ -99,7 +106,10 @@ fn encode(
     Ok(bytes)
 }
 
-fn decode(bytes: &[u8], identity: &KernelIdentity) -> Result<RecipientState, RecipientStateError> {
+fn decode(
+    bytes: &[u8],
+    identity: &KernelIdentity,
+) -> Result<(SecretRecipient, RecipientCertificate), RecipientStateError> {
     if !bytes.starts_with(MAGIC) || bytes.len() < MAGIC.len() + 43 + 43 + 32 + 4 {
         return Err(RecipientStateError::Invalid);
     }
@@ -122,10 +132,7 @@ fn decode(bytes: &[u8], identity: &KernelIdentity) -> Result<RecipientState, Rec
         .as_u64()
         .ok_or(RecipientStateError::Invalid)?;
     recipient.verify_local_certificate(&certificate, identity.actor_id(), identity.key_id(), at)?;
-    Ok(RecipientState {
-        recipient,
-        certificate,
-    })
+    Ok((recipient, certificate))
 }
 
 #[cfg(test)]
@@ -148,11 +155,15 @@ mod tests {
         ));
         let created = RecipientState::create(&path, &identity, 1_700_000_000_000).unwrap();
         assert!(matches!(
-            RecipientState::create(&path, &identity, 1_700_000_000_001),
-            Err(RecipientStateError::AlreadyExists)
+            RecipientState::open(&path, &identity),
+            Err(RecipientStateError::Store(SecureStateError::Busy))
         ));
         let public = created.recipient().public_jwk().x.clone();
         drop(created);
+        assert!(matches!(
+            RecipientState::create(&path, &identity, 1_700_000_000_001),
+            Err(RecipientStateError::AlreadyExists)
+        ));
         let reopened = RecipientState::open(&path, &identity).unwrap();
         assert_eq!(reopened.recipient().public_jwk().x, public);
         assert_eq!(
