@@ -3,7 +3,7 @@
 //! grants no read, action, or key-activation authority by itself.
 
 use crate::{
-    secure_chain::{scan_signed_chain_headers, CheckpointPin, OwnerPin},
+    secure_chain::{CheckpointPin, OwnerPin},
     secure_replay::replay_basic_content,
     wire_json::WireValue,
 };
@@ -134,15 +134,10 @@ pub fn replay_secure_journal_exact(
         input.keyring_wire,
     )
     .map_err(|_| JournalReplayError::Invalid)?;
-    let chain = scan_signed_chain_headers(
-        input.policy_wires,
-        input.commit_wires,
-        input.checkpoint_wire,
-        input.workspace_id,
-        Some(&owner),
-        Some(&final_pin),
-    )
-    .map_err(|_| JournalReplayError::Invalid)?;
+    // Replay may restore an authenticated archived PUBLIC prefix from signed
+    // migration fragments. Reuse its scanner result, not the original
+    // truncated transport suffix, for the final checkpoint binding.
+    let chain = facts.chain;
     if chain.sequence != input.final_sequence
         || chain.head.as_deref() != input.final_head
         || chain.policy_hash != input.final_policy_hash

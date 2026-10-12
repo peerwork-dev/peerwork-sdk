@@ -1174,6 +1174,7 @@ fn validate_signed_package_install(
 
 #[derive(Debug, Clone)]
 pub(crate) struct ReplayFacts {
+    pub chain: HeaderChainFacts,
     pub operations: Vec<WireValue>,
     pub objects: Vec<WireValue>,
     pub object_count: usize,
@@ -2163,6 +2164,7 @@ fn replay_basic_content_depth(
         || integer(final_payload, "v")? == 3
             && string(final_payload, "structure_mode")? == "STRUCTURED";
     Ok(ReplayFacts {
+        chain,
         operations,
         objects: prior_objects,
         object_count: seen_objects.len(),
