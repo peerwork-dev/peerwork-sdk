@@ -185,12 +185,13 @@ let dropFirstPost = true;
 let alterFirstChunk = process.env.PEERWORK_TEST_WRONG_CHUNK_STATE === '1';
 const firstPostMode = process.env.PEERWORK_TEST_FIRST_POST_MODE || 'drop';
 const firstPostDelayMs = Number(process.env.PEERWORK_TEST_FIRST_POST_DELAY_MS || 0);
-const firstJournalDelayMs = Number(process.env.PEERWORK_TEST_FIRST_JOURNAL_DELAY_MS || 0);
+let firstJournalDelayMs = Number(process.env.PEERWORK_TEST_FIRST_JOURNAL_DELAY_MS || 0);
 if (!['drop', 'delay', 'normal'].includes(firstPostMode) || !Number.isSafeInteger(firstPostDelayMs) || firstPostDelayMs < 0 || firstPostDelayMs > 10000)
   throw new Error('invalid first POST fixture mode or delay');
 if (!Number.isSafeInteger(firstJournalDelayMs) || firstJournalDelayMs < 0 || firstJournalDelayMs > 10000)
   throw new Error('invalid journal delay fixture');
 let delayFirstJournal = firstJournalDelayMs > 0;
+let journalDelayStarted = false;
 const proxy = createServer(async (request, response) => {
   try {
     if (request.url === '/__test/append-public' && request.method === 'POST') {
@@ -216,6 +217,19 @@ const proxy = createServer(async (request, response) => {
       serveStalePublicPage = true;
       response.writeHead(200, {'content-type':'application/json'});
       response.end(JSON.stringify({enabled:true}));
+      return;
+    }
+    if (request.url === '/__test/delay-next-journal' && request.method === 'POST') {
+      if (!publicReadFixture || firstJournalDelayMs !== 0) throw new Error('journal delay fixture unavailable');
+      firstJournalDelayMs = 2000;
+      delayFirstJournal = true;
+      response.writeHead(200, {'content-type':'application/json'});
+      response.end(JSON.stringify({enabled:true}));
+      return;
+    }
+    if (request.url === '/__test/journal-delay-status' && request.method === 'GET') {
+      response.writeHead(200, {'content-type':'application/json'});
+      response.end(JSON.stringify({started:journalDelayStarted}));
       return;
     }
     if (request.url === '/__test/counts') {
@@ -289,7 +303,10 @@ const proxy = createServer(async (request, response) => {
     }
     if (request.method === 'GET' && request.url?.includes('/journal?') && delayFirstJournal) {
       delayFirstJournal = false;
+      journalDelayStarted = true;
       await new Promise(resolve => setTimeout(resolve, firstJournalDelayMs));
+      journalDelayStarted = false;
+      firstJournalDelayMs = 0;
       if (response.destroyed) return;
     }
     response.writeHead(original.status, {'content-type': original.headers.get('content-type') || 'application/json'});

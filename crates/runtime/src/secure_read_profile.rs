@@ -390,6 +390,52 @@ mod tests {
         let second: serde_json::Value = serde_json::from_str(&second).unwrap();
         assert_eq!(second["sequence"], 2);
         assert_ne!(first["head"], second["head"]);
+
+        let delayed = reqwest::Client::new()
+            .post(format!("{origin}__test/delay-next-journal"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(delayed.status(), reqwest::StatusCode::OK);
+        let cancel = CancellationToken::new();
+        let cancelled_config = reopened.clone();
+        let worker_cancel = cancel.clone();
+        let worker = tokio::task::spawn_blocking(move || {
+            SecureReadProfile::new(cancelled_config).read_latest_json_with_cancel(&worker_cancel)
+        });
+        let started = tokio::time::timeout(std::time::Duration::from_secs(4), async {
+            loop {
+                let status = reqwest::get(format!("{origin}__test/journal-delay-status"))
+                    .await
+                    .unwrap()
+                    .bytes()
+                    .await
+                    .unwrap();
+                let status: serde_json::Value = serde_json::from_slice(&status).unwrap();
+                if status["started"] == true {
+                    break true;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(started);
+        cancel.cancel();
+        assert_eq!(
+            worker.await.unwrap().unwrap_err(),
+            SecureReadAccessError::Cancelled
+        );
+        let resumed_config = reopened.clone();
+        let resumed = tokio::task::spawn_blocking(move || {
+            SecureReadProfile::new(resumed_config).read_latest_json()
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        let resumed: serde_json::Value = serde_json::from_str(&resumed).unwrap();
+        assert_eq!(resumed["sequence"], 2);
+
         let stale = reqwest::Client::new()
             .post(format!("{origin}__test/serve-stale-public"))
             .send()
