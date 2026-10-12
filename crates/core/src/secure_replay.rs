@@ -611,9 +611,11 @@ fn validate_action_state_slice(
         }
         let mut assigned_entity = entity_id.to_vec();
         let mut assigned_revision = 1_u64;
-        if let Some(slot) = record.get("entitySlot").and_then(WireValue::as_string) {
+        if let Some(slot) = record.get("entitySlot").and_then(WireValue::as_utf16) {
             let instance = String::from_utf16(instance_id).map_err(|_| "INVALID_PAYLOAD")?;
-            assigned_entity = base64url(&sha256(format!("{instance}\0{slot}").as_bytes()))
+            // TextEncoder replaces an unpaired UTF-16 surrogate with U+FFFD.
+            let slot_text = String::from_utf16_lossy(slot);
+            assigned_entity = base64url(&sha256(format!("{instance}\0{slot_text}").as_bytes()))
                 .encode_utf16()
                 .collect();
             let existing = prior
@@ -733,7 +735,7 @@ fn validate_action_state_slice(
                     return Err("STALE_REVISION");
                 }
             }
-        } else if !allocated_entities.insert(assigned_entity.clone())
+        } else if allocated_entities.contains(&assigned_entity)
             || prior.iter().any(|object| {
                 object.get("kind").and_then(WireValue::as_string).as_deref() == Some("records")
                     && object
@@ -745,18 +747,16 @@ fn validate_action_state_slice(
         {
             return Err("ENTITY_ALREADY_EXISTS");
         }
+        allocated_entities.insert(assigned_entity.clone());
         let schema = record
             .get("schema")
             .and_then(WireValue::as_utf16)
             .ok_or("RECORD_SCHEMA_INVALID")?;
         let schema_key = String::from_utf16(schema).map_err(|_| "RECORD_SCHEMA_INVALID")?;
-        let definition = manifest
+        let _definition = manifest
             .get("record_schemas")
             .and_then(|schemas| schemas.get(&schema_key))
             .ok_or("RECORD_SCHEMA_INVALID")?;
-        if definition.get("workflow").is_some() {
-            return Err("UNSUPPORTED");
-        }
         let payload = record.get("payload").ok_or("RECORD_SCHEMA_INVALID")?;
         if let Some(slot) = record.get("recordSlot").and_then(WireValue::as_utf16) {
             if record_slots
@@ -1031,6 +1031,15 @@ fn validate_action_state_slice(
         ]));
     }
     expected_objects.extend(head_changes);
+    validate_action_workflows(
+        &manifest,
+        instance_id,
+        digest,
+        &action_id,
+        prior,
+        &expected_objects,
+        policy,
+    )?;
     let mut next = instance_value.clone();
     let next_state = substitute_produced(&interpreted.next_state, &record_slots, &entity_slots, 0)?;
     crate::full_manifest::validate_state_array_state(&manifest, &next_state)
@@ -1083,6 +1092,418 @@ fn validate_action_state_slice(
     }
     Ok(())
 }
+#[derive(Clone)]
+struct WorkflowValues {
+    status: String,
+    parent: Option<(String, u64)>,
+    assignee: Option<String>,
+    dependencies: Vec<(String, u64)>,
+}
+
+fn wire_array(value: &WireValue) -> Option<&[WireValue]> {
+    if let WireValue::Array(items) = value {
+        Some(items)
+    } else {
+        None
+    }
+}
+
+fn workflow_reference(value: &WireValue) -> Result<(String, u64), &'static str> {
+    let WireValue::Object(fields) = value else {
+        return Err("WORKFLOW_REFERENCE_INVALID");
+    };
+    let id = value
+        .get("record_id")
+        .and_then(WireValue::as_string)
+        .ok_or("WORKFLOW_REFERENCE_INVALID")?;
+    let revision = integer(value, "revision").map_err(|_| "WORKFLOW_REFERENCE_INVALID")?;
+    if fields.len() != 2 || !token_utf16(&id.encode_utf16().collect::<Vec<_>>()) || revision == 0 {
+        return Err("WORKFLOW_REFERENCE_INVALID");
+    }
+    Ok((id, revision))
+}
+
+fn workflow_values(rule: &WireValue, record: &WireValue) -> Result<WorkflowValues, &'static str> {
+    let payload = record.get("payload").ok_or("WORKFLOW_STATUS_INVALID")?;
+    let decoded;
+    let fields = if let WireValue::String(raw) = payload {
+        decoded = parse_js_json_string_bounded(raw, 32, MAX_OBJECT_BYTES)
+            .map_err(|_| "WORKFLOW_STATUS_INVALID")?;
+        &decoded
+    } else {
+        payload
+    };
+    let field_name = |name| -> Result<String, &'static str> {
+        rule.get(name)
+            .and_then(WireValue::as_string)
+            .ok_or("WORKFLOW_STATUS_INVALID")
+    };
+    let status = fields
+        .get(&field_name("status_field")?)
+        .and_then(WireValue::as_string)
+        .ok_or("WORKFLOW_STATUS_INVALID")?;
+    let declared = rule
+        .get("states")
+        .and_then(wire_array)
+        .ok_or("WORKFLOW_STATUS_INVALID")?;
+    if !declared
+        .iter()
+        .any(|value| value.as_string().as_deref() == Some(&status))
+    {
+        return Err("WORKFLOW_STATUS_INVALID");
+    }
+    let parent = match fields.get(&field_name("parent_field")?) {
+        Some(WireValue::Null) => None,
+        Some(value) => Some(workflow_reference(value)?),
+        None => return Err("WORKFLOW_REFERENCE_INVALID"),
+    };
+    if let Some(deadline) = rule.get("deadline") {
+        let name = deadline
+            .get("field")
+            .and_then(WireValue::as_string)
+            .ok_or("WORKFLOW_DEADLINE_INVALID")?;
+        let value = fields.get(&name).ok_or("WORKFLOW_DEADLINE_INVALID")?;
+        if !matches!(value, WireValue::Null)
+            && !value.as_number().is_some_and(|n| {
+                n.is_finite() && n >= 0.0 && n.fract() == 0.0 && n <= 9_007_199_254_740_991.0
+            })
+        {
+            return Err("WORKFLOW_DEADLINE_INVALID");
+        }
+    }
+    let assignee = if let Some(name) = rule.get("assignee_field").and_then(WireValue::as_string) {
+        match fields.get(&name) {
+            Some(WireValue::Null) => None,
+            None => return Err("WORKFLOW_ASSIGNEE_INVALID"),
+            Some(value) => {
+                let id = value.as_string().ok_or("WORKFLOW_ASSIGNEE_INVALID")?;
+                if !token_utf16(&id.encode_utf16().collect::<Vec<_>>()) {
+                    return Err("WORKFLOW_ASSIGNEE_INVALID");
+                }
+                Some(id)
+            }
+        }
+    } else {
+        None
+    };
+    let dependencies = if let Some(config) = rule.get("dependencies") {
+        let name = config
+            .get("field")
+            .and_then(WireValue::as_string)
+            .ok_or("WORKFLOW_DEPENDENCIES_INVALID")?;
+        let items = fields
+            .get(&name)
+            .and_then(wire_array)
+            .ok_or("WORKFLOW_DEPENDENCIES_INVALID")?;
+        if items.len() > 32 {
+            return Err("WORKFLOW_DEPENDENCIES_INVALID");
+        }
+        items
+            .iter()
+            .map(workflow_reference)
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        Vec::new()
+    };
+    Ok(WorkflowValues {
+        status,
+        parent,
+        assignee,
+        dependencies,
+    })
+}
+
+fn workflow_matches(record: &WireValue, schema: &str, instance: &[u16], protocol: &[u16]) -> bool {
+    record
+        .get("schema_ref")
+        .and_then(WireValue::as_string)
+        .as_deref()
+        == Some(schema)
+        && record.get("instance_id").and_then(WireValue::as_utf16) == Some(instance)
+        && record.get("protocol_digest").and_then(WireValue::as_utf16) == Some(protocol)
+}
+
+fn workflow_rows(objects: &[WireValue]) -> HashMap<String, WireValue> {
+    objects
+        .iter()
+        .filter(|o| o.get("kind").and_then(WireValue::as_string).as_deref() == Some("records"))
+        .filter_map(|o| Some((o.get("id")?.as_string()?, o.get("value")?.clone())))
+        .collect()
+}
+
+fn workflow_heads(objects: &[WireValue]) -> HashMap<String, WireValue> {
+    let mut rows = HashMap::<String, (u64, WireValue)>::new();
+    for object in objects
+        .iter()
+        .filter(|o| o.get("kind").and_then(WireValue::as_string).as_deref() == Some("entity_heads"))
+    {
+        let (Some(id), Some(value), Ok(revision)) = (
+            object.get("id").and_then(WireValue::as_string),
+            object.get("value"),
+            integer(object, "revision"),
+        ) else {
+            continue;
+        };
+        if rows.get(&id).is_none_or(|(latest, _)| revision >= *latest) {
+            rows.insert(id, (revision, value.clone()));
+        }
+    }
+    rows.into_iter()
+        .map(|(id, (_, value))| (id, value))
+        .collect()
+}
+
+fn validate_action_workflows(
+    manifest: &WireValue,
+    instance: &[u16],
+    protocol: &[u16],
+    action: &[u16],
+    prior: &[WireValue],
+    produced: &[WireValue],
+    policy: &WireValue,
+) -> Result<(), &'static str> {
+    let Some(WireValue::Object(schemas)) = manifest.get("record_schemas") else {
+        return Ok(());
+    };
+    if !schemas
+        .iter()
+        .any(|(_, schema)| schema.get("workflow").is_some())
+    {
+        return Ok(());
+    }
+    let before = workflow_rows(prior);
+    let changed = workflow_rows(produced);
+    let mut after = before.clone();
+    after.extend(changed.clone());
+    let before_heads = workflow_heads(prior);
+    let mut all = prior.to_vec();
+    all.extend_from_slice(produced);
+    let after_heads = workflow_heads(&all);
+    let members: HashSet<String> = policy
+        .get("payload")
+        .and_then(|p| p.get("members"))
+        .and_then(wire_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|m| m.get("actor_id").and_then(WireValue::as_string))
+        .collect();
+    let action = String::from_utf16(action).map_err(|_| "WORKFLOW_TRANSITION_INVALID")?;
+    for (schema_units, definition) in schemas {
+        let Some(rule) = definition.get("workflow") else {
+            continue;
+        };
+        let schema = String::from_utf16(schema_units).map_err(|_| "WORKFLOW_STATUS_INVALID")?;
+        for old_head in before_heads.values() {
+            let Some(old_id) = old_head.get("record_id").and_then(WireValue::as_string) else {
+                continue;
+            };
+            let Some(old) = before.get(&old_id) else {
+                continue;
+            };
+            if !workflow_matches(old, &schema, instance, protocol) {
+                continue;
+            }
+            let entity = old_head
+                .get("entity_id")
+                .and_then(WireValue::as_string)
+                .ok_or("WORKFLOW_ENTITY_SCHEMA_CHANGED")?;
+            let next = after_heads
+                .get(&entity)
+                .and_then(|h| h.get("record_id"))
+                .and_then(WireValue::as_string)
+                .and_then(|id| after.get(&id))
+                .ok_or("WORKFLOW_ENTITY_SCHEMA_CHANGED")?;
+            if !workflow_matches(next, &schema, instance, protocol)
+                || next.get("entity_id") != old.get("entity_id")
+                || changed.values().any(|r| {
+                    r.get("entity_id") == old.get("entity_id")
+                        && !workflow_matches(r, &schema, instance, protocol)
+                })
+            {
+                return Err("WORKFLOW_ENTITY_SCHEMA_CHANGED");
+            }
+        }
+        for record in changed
+            .values()
+            .filter(|r| workflow_matches(r, &schema, instance, protocol))
+        {
+            let own = workflow_values(rule, record)?;
+            if own
+                .assignee
+                .as_ref()
+                .is_some_and(|id| !members.contains(id))
+            {
+                return Err("WORKFLOW_ASSIGNEE_NOT_MEMBER");
+            }
+            let entity = record
+                .get("entity_id")
+                .and_then(WireValue::as_string)
+                .ok_or("WORKFLOW_PARENT_INVALID")?;
+            let revision = integer(record, "revision").map_err(|_| "WORKFLOW_PARENT_INVALID")?;
+            let previous = if let Some((id, expected)) = &own.parent {
+                let parent = before.get(id).ok_or("WORKFLOW_PARENT_INVALID")?;
+                let old_head = before_heads.get(&entity).ok_or("WORKFLOW_PARENT_INVALID")?;
+                if integer(parent, "revision").ok() != Some(*expected)
+                    || parent.get("entity_id") != record.get("entity_id")
+                    || !workflow_matches(parent, &schema, instance, protocol)
+                    || old_head
+                        .get("record_id")
+                        .and_then(WireValue::as_string)
+                        .as_deref()
+                        != Some(id)
+                    || revision != expected.checked_add(1).ok_or("WORKFLOW_PARENT_INVALID")?
+                {
+                    return Err("WORKFLOW_PARENT_INVALID");
+                }
+                Some(workflow_values(rule, parent)?.status)
+            } else {
+                if revision != 1 || before_heads.contains_key(&entity) {
+                    return Err("WORKFLOW_PARENT_INVALID");
+                }
+                None
+            };
+            let transitions = rule
+                .get("transitions")
+                .and_then(wire_array)
+                .ok_or("WORKFLOW_TRANSITION_INVALID")?;
+            if !transitions.iter().any(|t| {
+                t.get("action").and_then(WireValue::as_string).as_deref() == Some(&action)
+                    && t.get("from").and_then(WireValue::as_string) == previous
+                    && t.get("to").and_then(WireValue::as_string).as_deref() == Some(&own.status)
+            }) {
+                return Err("WORKFLOW_TRANSITION_INVALID");
+            }
+            if after_heads.get(&entity).and_then(|h| h.get("record_id")) != record.get("id") {
+                return Err("WORKFLOW_REVISION_MUST_BE_HEAD");
+            }
+        }
+        for (entity, head) in &after_heads {
+            let Some(record_id) = head.get("record_id").and_then(WireValue::as_string) else {
+                continue;
+            };
+            let Some(record) = after.get(&record_id) else {
+                continue;
+            };
+            if workflow_matches(record, &schema, instance, protocol)
+                && before_heads.get(entity).and_then(|h| h.get("record_id"))
+                    != head.get("record_id")
+                && !changed.contains_key(&record_id)
+            {
+                return Err("WORKFLOW_HEAD_SELECTION_DENIED");
+            }
+        }
+        validate_workflow_graph(rule, &schema, instance, protocol, &after, &after_heads)?;
+    }
+    Ok(())
+}
+
+fn validate_workflow_graph(
+    rule: &WireValue,
+    schema: &str,
+    instance: &[u16],
+    protocol: &[u16],
+    records: &HashMap<String, WireValue>,
+    heads: &HashMap<String, WireValue>,
+) -> Result<(), &'static str> {
+    let mut selected = HashMap::<String, WireValue>::new();
+    for head in heads.values() {
+        let Some(id) = head.get("record_id").and_then(WireValue::as_string) else {
+            continue;
+        };
+        let Some(record) = records.get(&id) else {
+            continue;
+        };
+        if !workflow_matches(record, schema, instance, protocol) {
+            continue;
+        }
+        let entity = record
+            .get("entity_id")
+            .and_then(WireValue::as_string)
+            .ok_or("WORKFLOW_HEAD_INVALID")?;
+        if head.get("entity_id") != record.get("entity_id")
+            || integer(head, "revision").ok() != integer(record, "revision").ok()
+            || head.get("instance_id").and_then(WireValue::as_utf16) != Some(instance)
+        {
+            return Err("WORKFLOW_HEAD_INVALID");
+        }
+        selected.insert(entity, record.clone());
+    }
+    let mut edges = HashMap::<String, Vec<String>>::new();
+    for (entity, record) in &selected {
+        let own = workflow_values(rule, record)?;
+        let mut dependencies = Vec::new();
+        for (id, revision) in own.dependencies {
+            let anchor = records.get(&id).ok_or("WORKFLOW_DEPENDENCY_SCOPE")?;
+            if integer(anchor, "revision").ok() != Some(revision)
+                || !workflow_matches(anchor, schema, instance, protocol)
+            {
+                return Err("WORKFLOW_DEPENDENCY_SCOPE");
+            }
+            let target_entity = anchor
+                .get("entity_id")
+                .and_then(WireValue::as_string)
+                .ok_or("WORKFLOW_DEPENDENCY_SCOPE")?;
+            if &target_entity == entity || dependencies.contains(&target_entity) {
+                return Err("WORKFLOW_DEPENDENCY_DUPLICATE_OR_SELF");
+            }
+            let target = selected
+                .get(&target_entity)
+                .ok_or("WORKFLOW_DEPENDENCY_HEAD_REQUIRED")?;
+            let status = workflow_values(rule, target)?.status;
+            let config = rule
+                .get("dependencies")
+                .ok_or("WORKFLOW_DEPENDENCIES_INVALID")?;
+            let gated = config
+                .get("gated_states")
+                .and_then(wire_array)
+                .ok_or("WORKFLOW_DEPENDENCIES_INVALID")?;
+            let satisfied = config
+                .get("satisfied_states")
+                .and_then(wire_array)
+                .ok_or("WORKFLOW_DEPENDENCIES_INVALID")?;
+            if gated
+                .iter()
+                .any(|v| v.as_string().as_deref() == Some(&own.status))
+                && !satisfied
+                    .iter()
+                    .any(|v| v.as_string().as_deref() == Some(&status))
+            {
+                return Err("WORKFLOW_DEPENDENCY_NOT_SATISFIED");
+            }
+            dependencies.push(target_entity);
+        }
+        edges.insert(entity.clone(), dependencies);
+    }
+    let mut done = HashSet::new();
+    let mut active = HashSet::new();
+    for start in edges.keys() {
+        if done.contains(start) {
+            continue;
+        }
+        let mut stack = vec![(start.clone(), 0_usize)];
+        active.insert(start.clone());
+        while let Some((id, index)) = stack.last_mut() {
+            let next = edges.get(id).and_then(|v| v.get(*index)).cloned();
+            *index += 1;
+            if let Some(next) = next {
+                if active.contains(&next) {
+                    return Err("WORKFLOW_DEPENDENCY_CYCLE");
+                }
+                if !done.contains(&next) {
+                    active.insert(next.clone());
+                    stack.push((next, 0));
+                }
+            } else {
+                let id = id.clone();
+                stack.pop();
+                active.remove(&id);
+                done.insert(id);
+            }
+        }
+    }
+    Ok(())
+}
+
 fn substitute_produced(
     value: &WireValue,
     record_slots: &HashMap<Vec<u16>, WireValue>,

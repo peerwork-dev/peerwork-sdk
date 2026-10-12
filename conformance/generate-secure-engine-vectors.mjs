@@ -170,6 +170,121 @@ try {
     catch(error){item.error=error.code??error.message;}
     cases.push(item);
   }
+  const rawSlot=String.fromCharCode(0xd800);
+  const surrogateSlotManifest=structuredClone(slotManifest);
+  surrogateSlotManifest.actions[0].variants[0].effects[0].entitySlot=rawSlot;
+  surrogateSlotManifest.actions[0].revisionEffects.contentEntities=[rawSlot];
+  const surrogateSlotPrior=structuredClone(slotPrior);
+  surrogateSlotPrior[0].value.resolved_manifest=surrogateSlotManifest;
+  const surrogateSlotResult=await prepareSecureAction({objects:surrogateSlotPrior,context:actionContext,
+    policy:actionPolicy,body:actionBody,exactRefs:[],allocations});
+  const surrogateSlotCase={name:'action_entity_slot_lone_surrogate',operation:surrogateSlotResult,
+    context:actionContext,policy:actionPolicy,prior:surrogateSlotPrior};
+  try{await validateSecureOperation(surrogateSlotResult,actionContext,actionPolicy,surrogateSlotPrior);surrogateSlotCase.result='ok';}
+  catch(error){surrogateSlotCase.error=error.code??error.message;}
+  cases.push(surrogateSlotCase);
+  const collisionManifest=structuredClone(recordManifest);
+  collisionManifest.actions[0].revisionEffects.contentEntities=['shared','other'];
+  const plainAppend={op:'append',schema:'entry',value:{from:'literal',value:{text:'hello'}}};
+  const newAppend={...plainAppend,recordSlot:'first',entity:{mode:'new',slot:'other'}};
+  const slotAppend={...plainAppend,recordSlot:'second',entitySlot:'shared'};
+  collisionManifest.actions[0].variants[0].effects=[newAppend,slotAppend];
+  const collisionPrior=structuredClone(recordPrior);collisionPrior[0].value.resolved_manifest=collisionManifest;
+  const collisionEntity=createHash('sha256').update(instanceId+'\0shared').digest('base64url');
+  const collisionAllocations=[{record_id:'B'.repeat(43),entity_id:collisionEntity},
+    {record_id:'D'.repeat(43),entity_id:'F'.repeat(43)}];
+  const reverseCollision=await prepareSecureAction({objects:collisionPrior,context:actionContext,
+    policy:actionPolicy,body:actionBody,exactRefs:[],allocations:collisionAllocations});
+  const reverseCollisionCase={name:'action_entity_slot_after_same_new_entity_permitted',operation:reverseCollision,
+    context:actionContext,policy:actionPolicy,prior:structuredClone(collisionPrior)};
+  try{await validateSecureOperation(reverseCollision,actionContext,actionPolicy,reverseCollisionCase.prior);reverseCollisionCase.result='ok';}
+  catch(error){reverseCollisionCase.error=error.code??error.message;}
+  cases.push(reverseCollisionCase);
+  const forwardCollisionCase={name:'action_new_entity_after_same_entity_slot_rejected',operation:structuredClone(reverseCollision),
+    context:actionContext,policy:actionPolicy,prior:structuredClone(collisionPrior)};
+  forwardCollisionCase.prior[0].value.resolved_manifest.actions[0].variants[0].effects=[slotAppend,newAppend];
+  forwardCollisionCase.operation.input.allocations[1].entity_id=collisionEntity;
+  try{await validateSecureOperation(forwardCollisionCase.operation,actionContext,actionPolicy,forwardCollisionCase.prior);forwardCollisionCase.result='ok';}
+  catch(error){forwardCollisionCase.error=error.code??error.message;}
+  cases.push(forwardCollisionCase);
+  const workflowManifest=structuredClone(recordManifest);
+  workflowManifest.record_schemas.entry={type:'object',fields:{status:'string',parent:'json'},
+    required:['status','parent'],max_bytes:16384,protection:{v:1,fields:{
+      status:{protection:'server_readable',type:'enum',values:['OPEN','DONE']},
+      parent:{protection:'server_readable',type:'optional_reference'}}},
+    workflow:{v:1,status_field:'status',parent_field:'parent',states:['OPEN','DONE'],
+      transitions:[{action:'test.set',from:null,to:'OPEN'},{action:'test.set',from:'OPEN',to:'DONE'}]}};
+  workflowManifest.actions[0].revisionEffects.contentEntities=['task'];
+  workflowManifest.actions[0].variants[0].effects[0]={op:'append',schema:'entry',
+    entity:{mode:'new',slot:'task'},selectHead:true,
+    value:{from:'literal',value:{status:'OPEN',parent:null}}};
+  const workflowPrior=structuredClone(recordPrior);workflowPrior[0].value.resolved_manifest=workflowManifest;
+  const workflowResult=await prepareSecureAction({objects:workflowPrior,context:actionContext,
+    policy:actionPolicy,body:actionBody,exactRefs:[],allocations});
+  for(const item of [
+    {name:'action_workflow_new_selected_head',operation:structuredClone(workflowResult)},
+    {name:'action_workflow_transition_denied',operation:structuredClone(workflowResult),badTransition:true},
+  ]){
+    item.context=actionContext;item.policy=actionPolicy;item.prior=structuredClone(workflowPrior);
+    if(item.badTransition)item.prior[0].value.resolved_manifest.record_schemas.entry.workflow.transitions=[
+      {action:'test.set',from:null,to:'DONE'}];
+    try{await validateSecureOperation(item.operation,item.context,item.policy,item.prior);item.result='ok';}
+    catch(error){item.error=error.code??error.message;}
+    cases.push(item);
+  }
+  const workflowReviseManifest=structuredClone(workflowManifest);
+  const workflowParentSelector={from:'ref',source:'body',path:['parent'],schema:'entry',scope:'INSTANCE'};
+  workflowReviseManifest.actions[0].variants[0].effects[0]={op:'append',schema:'entry',
+    entity:{mode:'revise',slot:'task',parent:workflowParentSelector},selectHead:true,
+    value:{from:'object',fields:{status:{from:'literal',value:'DONE'},parent:workflowParentSelector}}};
+  const workflowRevisePrior=structuredClone(workflowPrior);
+  workflowRevisePrior[0].value.resolved_manifest=workflowReviseManifest;
+  workflowRevisePrior.push(structuredClone(workflowResult.objects[0]),structuredClone(workflowResult.objects[1]));
+  const workflowParent={record_id:allocations[0].record_id,revision:1};
+  const workflowRevise=await prepareSecureAction({objects:workflowRevisePrior,context:actionContext,
+    policy:actionPolicy,body:{parent:workflowParent},exactRefs:[workflowParent],
+    allocations:[{record_id:'N'.repeat(43),entity_id:'F'.repeat(43)}]});
+  for(const item of [
+    {name:'action_workflow_revision_selected_head',operation:structuredClone(workflowRevise)},
+    {name:'action_workflow_revision_stale_head',operation:structuredClone(workflowRevise),stale:true},
+  ]){
+    item.context=actionContext;item.policy=actionPolicy;item.prior=structuredClone(workflowRevisePrior);
+    if(item.stale)item.prior[3].value.record_id='X'.repeat(43);
+    try{await validateSecureOperation(item.operation,item.context,item.policy,item.prior);item.result='ok';}
+    catch(error){item.error=error.code??error.message;}
+    cases.push(item);
+  }
+  const dependencyManifest=structuredClone(workflowManifest);
+  dependencyManifest.record_schemas.entry.fields.depends='json';
+  dependencyManifest.record_schemas.entry.required.push('depends');
+  dependencyManifest.record_schemas.entry.protection.fields.depends={protection:'server_readable',type:'references'};
+  dependencyManifest.record_schemas.entry.workflow.dependencies={field:'depends',
+    satisfied_states:['DONE'],gated_states:['OPEN']};
+  const anchorId='Q'.repeat(43),anchorEntity='Y'.repeat(43);
+  const anchorRef={record_id:anchorId,revision:1};
+  dependencyManifest.actions[0].variants[0].effects[0].value={from:'literal',
+    value:{status:'OPEN',parent:null,depends:[anchorRef]}};
+  const dependencyPrior=structuredClone(recordPrior);
+  dependencyPrior[0].value.resolved_manifest=dependencyManifest;
+  dependencyPrior.push(object('records',anchorId,1,{id:anchorId,workspace_id:workspaceId,
+    instance_id:instanceId,protocol_digest:digest,entity_id:anchorEntity,schema_ref:'entry',
+    payload:{status:'DONE',parent:null,depends:[]},actor_id:actorId,revision:1,created:1}));
+  dependencyPrior.push(object('entity_heads',anchorEntity,1,{entity_id:anchorEntity,
+    workspace_id:workspaceId,instance_id:instanceId,record_id:anchorId,revision:1,updated:1}));
+  const dependencyResult=await prepareSecureAction({objects:dependencyPrior,context:actionContext,
+    policy:actionPolicy,body:actionBody,exactRefs:[],allocations});
+  for(const item of [
+    {name:'action_workflow_dependency_satisfied',operation:structuredClone(dependencyResult)},
+    {name:'action_workflow_dependency_unsatisfied',operation:structuredClone(dependencyResult),unsatisfied:true},
+    {name:'action_workflow_dependency_cycle',operation:structuredClone(dependencyResult),cycle:true},
+  ]){
+    item.context=actionContext;item.policy=actionPolicy;item.prior=structuredClone(dependencyPrior);
+    if(item.unsatisfied)item.prior[2].value.payload.status='OPEN';
+    if(item.cycle)item.prior[2].value.payload.depends=[{record_id:allocations[0].record_id,revision:1}];
+    try{await validateSecureOperation(item.operation,item.context,item.policy,item.prior);item.result='ok';}
+    catch(error){item.error=error.code??error.message;}
+    cases.push(item);
+  }
   const headManifest=structuredClone(recordManifest);
   headManifest.actions[0].revisionEffects.contentEntities=['entry'];
   headManifest.actions[0].variants[0].effects[0].entity={mode:'new',slot:'entry'};
