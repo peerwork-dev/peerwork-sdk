@@ -11,6 +11,8 @@ pub mod kernel_intents;
 // Prepared secure-packet proof is not public yet; this pending-only module is
 // staged internally until the complete core verifier can authorize submits.
 #[allow(dead_code)]
+mod secure_grant_pending;
+#[allow(dead_code)]
 mod secure_intents;
 #[allow(dead_code)]
 mod secure_lifecycle;
