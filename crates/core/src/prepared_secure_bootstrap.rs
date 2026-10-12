@@ -5,6 +5,7 @@ use crate::{
     canonical::Path,
     crypto::{actor_id, decode_base64url, sha256_hex},
     secure_chain::{scan_signed_chain_headers, OwnerPin},
+    structure_bindings::validate_object_bindings,
     wire_json::{canonical_wire_value, parse_wire_json_bounded, WireValue},
 };
 use thiserror::Error;
@@ -133,6 +134,12 @@ pub fn verify_prepared_owner_bootstrap(
         validate_ciphertext(body)?;
     } else {
         validate_public_bootstrap(body)?;
+        if let Some(structure) = pp.get("structure") {
+            let Some(WireValue::Array(objects)) = body.get("objects") else {
+                return Err(bad());
+            };
+            validate_object_bindings(structure, objects).map_err(|_| bad())?;
+        }
     }
     let command_id = string(cp, "command_id")?;
     if !token(&command_id) {
@@ -405,6 +412,51 @@ mod tests {
             verify_prepared_owner_bootstrap(&serde_json::to_vec(&public).unwrap(), ROUTE, &pins)
                 .unwrap();
         assert_eq!(public_proof.visibility(), "PUBLIC");
+        let mut structured = public.clone();
+        structured["policy"]["payload"]["structure_mode"] = json!("STRUCTURED");
+        structured["policy"]["payload"]["structure"] =
+            json!({"v":1,"protocols":[],"disclosure":[],"instances":[]});
+        structured["policy"]["signature"] = json!(sign_canonical(
+            "peerwork.secure.policy.v3",
+            &structured["policy"]["payload"],
+            &key
+        )
+        .unwrap());
+        structured["commit"]["payload"]["policy_hash"] = json!(sha256_hex(
+            canonical(&structured["policy"], Path::SecureArtifact)
+                .unwrap()
+                .as_bytes()
+        ));
+        structured["commit"]["payload"]["structure"] =
+            json!({"v":1,"mode":"DELTA","records":[],"heads":[]});
+        structured["commit"]["signature"] = json!(sign_canonical(
+            "peerwork.secure.commit.v3",
+            &structured["commit"]["payload"],
+            &key
+        )
+        .unwrap());
+        assert!(verify_prepared_owner_bootstrap(
+            &serde_json::to_vec(&structured).unwrap(),
+            ROUTE,
+            &pins
+        )
+        .is_ok());
+        structured["commit"]["payload"]["body"]["objects"] = json!([
+            {"kind":"protocols","id":base64url(&[51u8;32]),"revision":1,
+             "provenance":"AUTHOR_SIGNED","value":{}}
+        ]);
+        structured["commit"]["signature"] = json!(sign_canonical(
+            "peerwork.secure.commit.v3",
+            &structured["commit"]["payload"],
+            &key
+        )
+        .unwrap());
+        assert!(verify_prepared_owner_bootstrap(
+            &serde_json::to_vec(&structured).unwrap(),
+            ROUTE,
+            &pins
+        )
+        .is_err());
         let mut wrong_mode = public.clone();
         wrong_mode["commit"]["payload"]["mode"] = json!("PRIVATE");
         wrong_mode["commit"]["signature"] = json!(sign_canonical(
