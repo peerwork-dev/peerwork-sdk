@@ -4,7 +4,9 @@
 
 use crate::{
     canonical::Path,
-    crypto::{actor_id, base64url, decode_base64url, sha256, sha256_hex},
+    crypto::{
+        actor_id, base64url, decode_base64url, sha256, sha256_hex, verify_secure_signed_wire,
+    },
     e2ee::{open_content_wire, SealedContent},
     interpreter::{evaluate_action, InterpreterAuth, ResolvedInput},
     migration_fragments::{inflate_fragments, MigrationBatch},
@@ -1260,6 +1262,11 @@ fn restore_archived_public_history(
                     .ok_or(ReplayError::Invalid)?,
                 source,
             )?
+        {
+            return Err(ReplayError::Invalid);
+        }
+        if !verify_secure_signed_wire(wire, "peerwork.secure.commit.v1", &owner_key)
+            .map_err(|_| ReplayError::Invalid)?
         {
             return Err(ReplayError::Invalid);
         }
@@ -3930,6 +3937,15 @@ mod tests {
             &[&migration],
             &workspace,
             None
+        )
+        .is_err());
+        let mut tampered: Value = serde_json::from_slice(&migration).unwrap();
+        tampered["signature"] = json!(base64url(&[0; 64]));
+        assert!(restore_archived_public_history(
+            &[&policy1, &policy2],
+            &[&serde_json::to_vec(&tampered).unwrap()],
+            &workspace,
+            Some(&keyring),
         )
         .is_err());
     }
