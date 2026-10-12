@@ -102,3 +102,14 @@ runner must still establish MSBuild compilation, FFI symbol consistency,
 static linking and dependencies, embedded-data behavior, installed
 Python/Node/CLI APIs, protected filesystem and cancellation semantics. The
 workflow's other platform/runtime variations and release gates remain open.
+
+## Native musl environment check
+
+This host has no `podman`, `nerdctl`, `musl-gcc`, musl loader, local Alpine
+root filesystem, or Docker socket. A task-local Docker 29.8 CLI is present;
+its default sandbox probe returned permission denied, and the authorized
+unsandboxed probe returned `dial unix /var/run/docker.sock: connect: no such
+file or directory`. No local native musl build or installed-interface test was
+run. A cross-compiled binary on this glibc host would not establish native
+musl runtime behavior. The declared musl platform packages still require
+target-native build, install, and API tests in a provisioned environment.
