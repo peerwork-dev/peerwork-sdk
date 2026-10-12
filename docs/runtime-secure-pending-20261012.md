@@ -503,9 +503,7 @@ policy-prefix equality, increasing commit sequence and cursor continuity.
 The store exposes only **unverified transport progress** internally; signed
 policy/commit replay, key activation, action effects and final outcomes still
 require the complete core proof. The native 32 MiB page, 64 MiB store and
-2048-page caps are interim storage limits, not full protocol parity; a
-configured nondefault authority and additive discovery upgrade also need
-supported read-context handling before the public secure read surface.
+2048-page caps are interim storage limits, not full protocol parity.
 
 Exact source SHA-256: `secure_journal_read.rs`
 `4f20d19b81c655b97ea4372dc2cf7e9151d02e4d65fab3357ed692d7eef20359`,
@@ -543,3 +541,55 @@ as noncanonical; it now uses `after,at_head,at_sequence,limit`. Both failures
 are preserved as first-attempt evidence, and the corrected exact-pin two-page
 run passed. This scripted test exercises business transport behavior, not
 Agent instruction or space-protocol compliance; those remain unverified.
+
+Read-context and cancellation correction at exact SDK source
+`26be8ad3b0bfda6042ddfb1cd9a57e596b21d046` (prior cancellation-only
+source `aa423b23cd70fff298d527cd1d0e500a3a87d239`) removes a caller's
+ability to pair an arbitrary parsed discovery with the read transport. The
+private reader now accepts an origin-bound `KernelClient`, whose open fetches
+and schema-checks discovery from its configured origin and persists the
+continuity pin in SQLite. Its protected read store pins the original exact
+discovery wire, origin, actor/key, explicit configured authority and
+workspace. Reopen permits only the tracked additive discovery update rule;
+a changed receipt key or removed feature fails. Stored schema v2 refuses
+the earlier private v1 interim format until a deliberate migration exists.
+
+The pinned service requires first identity registration authority
+`SHA256(actor_id)` (`workspace-kernel.ts::executePath` around line 680), then
+requires that registered root authority on signed reads. A synthetic
+`WorkspaceClient` registration with a nondefault authority was attempted
+first and received HTTP 401 `SIGNATURE_INVALID`; there is no supported
+nondefault registration/rotation route in this pinned service. The reader
+still takes and pins an explicit authority from client configuration, and
+the actual service regression verifies a wrong authority gets HTTP 401 with
+zero saved pages. It also verifies a different local identity and a different
+configured origin both refuse reopening the protected two-page store before
+GET. No service database was seeded or altered to manufacture a positive
+nondefault-authority case.
+
+The same fresh actual-service fixture holds the first journal GET response
+after the service processes it, cancels the native request in flight, and
+asserts zero saved pages. Reopen signs a fresh nonce and downloads the same
+50+1 pages at fixed checkpoint sequence 51; service counts remain 51/51.
+This checks read cancellation and exact transport recovery only. The
+first custom-authority fixture failed 401 as above; a preceding local source
+mistake (`WorkspaceClient` not imported in the bootstrap fixture) caused a
+bridge-before-ready failure and was corrected before the protocol attempt.
+Both are preserved, not counted as successful evidence.
+
+SHA-256 at `26be8ad`: `kernel_client.rs`
+`f8485e5955d51cb947df19ed36e49d35f360fec071887e3136141d78b35a018b`,
+`secure_journal_read.rs`
+`6401d20fbc20e5b07cc0a9721b859ea95a964e7417ff842f1b32ee3f47cf04ad`,
+`secure_native_prepare.rs`
+`213a571587ce0e36af33a8c369fadc7cca91cb488ca23167849079976502f6c1`,
+and reference bridge
+`4fa7792cd13099bba500961d55789b4e6da0e4753c37c4cc2651b5d50853c6f3`.
+A clean detached checkout with Rust 1.89, task-local Cargo cache/target,
+`--offline --locked`, the same explicit `PEERWORK_REFERENCE_ROOT` and
+`PEERWORK_NODE_BIN` values above, passed focused
+`cargo test -p peerwork-runtime secure_journal_read::tests` 2/2 and the
+opt-in actual-service filter above 1/1 in 10.91 seconds. The bridge's
+fresh state and pinned tracked build-input checks still apply. The ordinary
+environment-unset test is vacuous for service evidence. Agent workflow
+compliance remains unverified separately from these scripted business tests.
