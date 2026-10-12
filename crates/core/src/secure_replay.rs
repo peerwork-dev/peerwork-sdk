@@ -289,8 +289,8 @@ pub(crate) fn replay_basic_content(
     })
 }
 
-/// Historical authored protocol binding without composition/package-source
-/// dependencies. The other source formats need their own proof before release.
+/// Private authored protocol identity and composition binding. Package-source
+/// compilation and migrated legacy rows need separate proofs before release.
 fn validate_authored_protocol_simple(
     object: &WireValue,
     workspace_id: &str,
@@ -307,7 +307,6 @@ fn validate_authored_protocol_simple(
             .all(|b| b.is_ascii_digit() || matches!(b, b'a'..=b'f'))
         || string(value, "digest")? != id
         || string(value, "workspace_id")? != workspace_id
-        || value.get("composition").is_some()
         || value.get("package_source").is_some()
     {
         return Err(ReplayError::Invalid);
@@ -322,15 +321,7 @@ fn validate_authored_protocol_simple(
         .map_err(|_| ReplayError::Invalid)?;
     let format_two =
         source.get("format_version").is_some() || resolved.get("format_version").is_some();
-    if format_two && format_ceiling != 2
-        || source.get("dependencies") != Some(&WireValue::Array(vec![]))
-        || source
-            .get("constraints")
-            .is_some_and(|value| value.object_len() != Some(0))
-        || canonical_wire_value(&source, Path::SecureArtifact).map_err(|_| ReplayError::Invalid)?
-            != canonical_wire_value(&resolved, Path::SecureArtifact)
-                .map_err(|_| ReplayError::Invalid)?
-    {
+    if format_two && format_ceiling != 2 {
         return Err(ReplayError::Invalid);
     }
     if format_two {
@@ -349,7 +340,7 @@ fn validate_authored_protocol_simple(
     }
     let source_envelope = fields_object(vec![
         ("semantics", string_value("peerwork.kernel.v1")),
-        ("manifest", source),
+        ("manifest", source.clone()),
     ]);
     let digest = sha256_hex(
         canonical_wire_value(&source_envelope, Path::SecureArtifact)
@@ -357,6 +348,25 @@ fn validate_authored_protocol_simple(
             .as_bytes(),
     );
     if digest != id {
+        return Err(ReplayError::Invalid);
+    }
+    if let Some(proof) = value.get("composition") {
+        crate::protocol_composition::verify_composition(
+            proof,
+            &source,
+            &resolved,
+            &id,
+            format_ceiling,
+        )
+        .map_err(|_| ReplayError::Invalid)?;
+    } else if source.get("dependencies") != Some(&WireValue::Array(vec![]))
+        || source
+            .get("constraints")
+            .is_some_and(|value| value.object_len() != Some(0))
+        || canonical_wire_value(&source, Path::SecureArtifact).map_err(|_| ReplayError::Invalid)?
+            != canonical_wire_value(&resolved, Path::SecureArtifact)
+                .map_err(|_| ReplayError::Invalid)?
+    {
         return Err(ReplayError::Invalid);
     }
     Ok(())
@@ -2681,6 +2691,49 @@ mod tests {
             .len(),
             2
         );
+        let composition_vectors: Value = serde_json::from_str(include_str!(
+            "../../../conformance/protocol-composition-vectors.json"
+        ))
+        .unwrap();
+        let composed = composition_vectors
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|case| case["name"] == "action_dependency")
+            .unwrap();
+        let composed_digest = composed["result"]["digest"].as_str().unwrap();
+        let mut composed_prior = base_prior.clone();
+        composed_prior[0]["id"] = json!(composed_digest);
+        composed_prior[0]["value"]["digest"] = json!(composed_digest);
+        composed_prior[0]["value"]["manifest"] = composed["result"]["manifest"].clone();
+        composed_prior[0]["value"]["resolved_manifest"] = composed["result"]["manifest"].clone();
+        composed_prior[0]["value"]["composition"] = composed["result"]["composition"].clone();
+        composed_prior[1]["value"]["protocol_digest"] = json!(composed_digest);
+        let mut composed_action = base_action.clone();
+        composed_action["objects"][0]["value"]["protocol_digest"] = json!(composed_digest);
+        assert_eq!(
+            run(
+                "composed",
+                composed_prior.clone(),
+                composed_action.clone(),
+                true,
+                false
+            )
+            .unwrap()
+            .operations
+            .len(),
+            2
+        );
+        composed_prior[0]["value"]["composition"]["dependencies"][0]["manifest"]["name"] =
+            json!("tampered");
+        assert!(run(
+            "composition_tamper",
+            composed_prior,
+            composed_action,
+            true,
+            false
+        )
+        .is_err());
         let mut tampered = base_action.clone();
         tampered["objects"][0]["value"]["state"]["count"] = json!(99);
         assert!(run("output", base_prior.clone(), tampered, true, false).is_err());

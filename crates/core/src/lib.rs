@@ -9,6 +9,8 @@ pub mod e2ee;
 mod full_manifest;
 #[allow(dead_code)]
 mod interpreter;
+#[allow(dead_code)]
+mod protocol_composition;
 pub mod prepared_command;
 pub mod receipt;
 pub mod receipt_wire;
