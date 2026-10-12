@@ -40,6 +40,10 @@ pub mod receipt_wire;
 mod secure_chain;
 #[allow(dead_code)]
 mod secure_action_delegation;
+#[allow(dead_code)]
+mod secure_action_inputs;
+#[allow(dead_code)]
+mod secure_action_relations;
 pub mod secure_keyring;
 pub mod secure_recipient;
 #[allow(dead_code)]
