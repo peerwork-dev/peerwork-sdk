@@ -124,6 +124,7 @@ if (process.env.PEERWORK_TEST_SECURE === '1') {
       workspace_id: created.workspaceId,
       actor_id: agent.identity.actorId,
       signing_key: agent.identity.keyId,
+      authority: agent.transport.authority,
       owner_key: journal.policy.payload.signing_key,
       policy_hash: await secureHash(journal.policy),
       sequence: commit.payload.sequence,
