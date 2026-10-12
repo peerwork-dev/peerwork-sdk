@@ -746,6 +746,18 @@ mod tests {
         let mut config = crate::transport::TransportConfig::new(origin.clone());
         config.allow_loopback_http = true;
         let transport = HttpTransport::new(config).unwrap();
+        let counts_url = format!("{origin}__test/secure-counts");
+        let baseline_counts: serde_json::Value = serde_json::from_str(
+            &reqwest::get(&counts_url)
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(baseline_counts["commits"].as_u64(), Some(1));
+        assert_eq!(baseline_counts["head_sequence"].as_u64(), Some(1));
         let pins = SecureCommitRequestPins {
             actor_id: &actor,
             signing_key: &signing_key,
@@ -772,6 +784,16 @@ mod tests {
                 exact_request: &request,
             })
             .unwrap();
+        let after_prepare: serde_json::Value = serde_json::from_str(
+            &reqwest::get(&counts_url)
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(after_prepare, baseline_counts);
         let cancel = CancellationToken::new();
         assert!(matches!(
             journal
@@ -783,7 +805,6 @@ mod tests {
         ));
         assert_eq!(journal.pending()[0].observed_responses, 0);
         drop(journal);
-        let counts_url = format!("{origin}__test/secure-counts");
         let first_counts: serde_json::Value = serde_json::from_str(
             &reqwest::get(&counts_url)
                 .await
