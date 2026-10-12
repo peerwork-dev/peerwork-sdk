@@ -62,6 +62,9 @@ struct PolicyHeader {
     owner_id: String,
     owner_key: String,
     members: HashMap<String, MemberHeader>,
+    structured: bool,
+    format_ceiling: Option<u64>,
+    format_raise_guard: Option<String>,
 }
 
 struct MemberHeader {
@@ -75,6 +78,12 @@ struct ScopeHeader {
     instance_id: Option<String>,
     actions: Vec<Vec<u16>>,
     expires_at: Option<u64>,
+}
+
+struct CertificateHeader {
+    actor_id: String,
+    signing_key: String,
+    encryption_key: String,
 }
 
 pub(crate) fn scan_signed_chain_headers(
@@ -121,7 +130,13 @@ pub(crate) fn scan_signed_chain_headers(
         let epoch = unsigned(payload, "epoch")?;
         let issued_at = unsigned(payload, "issued_at")?;
         let visibility = field(payload, "visibility")?;
-        let members = validate_members(payload, issued_at, &owner_id, &owner_key)?;
+        let (structured, format_ceiling) = validate_policy_shape(payload, wire_version)?;
+        let format_raise_guard = if wire_version == 3 {
+            Some(format_raise_guard(payload)?)
+        } else {
+            None
+        };
+        let members = validate_members(payload, issued_at, &owner_id, &owner_key, wire_version)?;
         if version != previous.map_or(1, |p: &PolicyHeader| p.version + 1)
             || effective_sequence == 0
             || nullable_field(payload, "previous_policy")?.as_deref() != prior_hash
@@ -139,6 +154,19 @@ pub(crate) fn scan_signed_chain_headers(
                 || epoch < prior.epoch
                 || (prior.visibility == "PRIVATE" && visibility == "PUBLIC")
                 || (prior.wire_version == 3 && wire_version != 3)
+                || (prior.structured && !structured)
+            {
+                return Err(ChainError::Invalid);
+            }
+            if wire_version == 3
+                && (prior.wire_version != 3 && format_ceiling != Some(1)
+                    || prior.wire_version == 3
+                        && format_ceiling != prior.format_ceiling
+                        && !(prior.format_ceiling == Some(1)
+                            && format_ceiling == Some(2)
+                            && prior.visibility == "PRIVATE"
+                            && visibility == "PRIVATE"
+                            && prior.format_raise_guard == format_raise_guard))
             {
                 return Err(ChainError::Invalid);
             }
@@ -154,6 +182,8 @@ pub(crate) fn scan_signed_chain_headers(
                 return Err(ChainError::Invalid);
             }
         } else if effective_sequence != 1 {
+            return Err(ChainError::Invalid);
+        } else if wire_version == 3 && format_ceiling != Some(1) {
             return Err(ChainError::Invalid);
         }
         let hash = secure_hash(&artifact)?;
@@ -171,6 +201,9 @@ pub(crate) fn scan_signed_chain_headers(
             owner_id,
             owner_key,
             members,
+            structured,
+            format_ceiling,
+            format_raise_guard,
         });
     }
     let genesis = &policies[0];
@@ -212,23 +245,21 @@ pub(crate) fn scan_signed_chain_headers(
             .ok_or(ChainError::Invalid)?;
         let issued_at = unsigned(payload, "issued_at")?;
         let instance_id = nullable_field(payload, "instance_id")?;
-        let direct_author = policy.members.get(&actor).is_some_and(|member| {
-            member.signing_key == signing_key
-                && ((member.role == "OWNER" && instance_id.is_none())
-                    || member.scopes.iter().any(|scope| {
-                        (scope.instance_id.is_none() || scope.instance_id == instance_id)
-                            && scope.expires_at.is_none_or(|expiry| expiry > issued_at)
-                            && scope
-                                .actions
-                                .iter()
-                                .any(|action| action.as_slice() == action_id)
-                    }))
-        });
+        let authorized = resolve_author(
+            policy,
+            payload,
+            workspace_id,
+            &actor,
+            &signing_key,
+            issued_at,
+            instance_id.as_deref(),
+            action_id,
+        )?;
+        validate_commit_shape(payload, policy)?;
         if field(payload, "workspace_id")? != workspace_id
             || unsigned(payload, "sequence")? != sequence
             || nullable_field(payload, "previous")?.as_deref() != head.as_deref()
-            || !direct_author
-            || !matches!(payload.get("delegation"), Some(WireValue::Null))
+            || !authorized
             || !token(&actor)
             || !token(&signing_key)
             || !token(&command_id)
@@ -305,11 +336,234 @@ fn envelope_payload(value: &WireValue) -> Result<&WireValue, ChainError> {
     value.get("payload").ok_or(ChainError::Invalid)
 }
 
+fn validate_certificate(certificate: &WireValue, at: u64) -> Result<CertificateHeader, ChainError> {
+    let cert = envelope_payload(certificate)?;
+    let signing_key = field(cert, "signing_key")?;
+    let actor = field(cert, "actor_id")?;
+    let key_bytes: [u8; 32] = decode_base64url(&signing_key)
+        .map_err(|_| ChainError::Invalid)?
+        .try_into()
+        .map_err(|_| ChainError::Invalid)?;
+    let issued = unsigned(cert, "issued_at")?;
+    let expires = unsigned(cert, "expires_at")?;
+    if unsigned(cert, "v")? != 1
+        || !token(&signing_key)
+        || !token(&actor)
+        || actor_id(&key_bytes) != actor
+        || expires <= issued
+        || expires - issued > 366 * 86_400_000
+        || at < issued
+        || at >= expires
+    {
+        return Err(ChainError::Invalid);
+    }
+    let cert_wire =
+        canonical_wire_value(certificate, Path::SecureArtifact).map_err(|_| ChainError::Invalid)?;
+    if !verify_secure_signed_wire(
+        cert_wire.as_bytes(),
+        "peerwork.secure.key-certificate.v1",
+        &signing_key,
+    )
+    .map_err(|_| ChainError::Invalid)?
+    {
+        return Err(ChainError::Invalid);
+    }
+    let encryption = cert.get("encryption_key").ok_or(ChainError::Invalid)?;
+    if encryption.object_len() != Some(4)
+        || field(encryption, "kty")? != "EC"
+        || field(encryption, "crv")? != "P-256"
+    {
+        return Err(ChainError::Invalid);
+    }
+    let x = field(encryption, "x")?;
+    let y = field(encryption, "y")?;
+    if !token(&x) || !token(&y) {
+        return Err(ChainError::Invalid);
+    }
+    let x: [u8; 32] = decode_base64url(&x)
+        .map_err(|_| ChainError::Invalid)?
+        .try_into()
+        .map_err(|_| ChainError::Invalid)?;
+    let y: [u8; 32] = decode_base64url(&y)
+        .map_err(|_| ChainError::Invalid)?
+        .try_into()
+        .map_err(|_| ChainError::Invalid)?;
+    let mut point = [0u8; 65];
+    point[0] = 4;
+    point[1..33].copy_from_slice(&x);
+    point[33..65].copy_from_slice(&y);
+    <DhP256HkdfSha256 as Kem>::PublicKey::from_bytes(&point).map_err(|_| ChainError::Invalid)?;
+    let encryption_key =
+        canonical_wire_value(encryption, Path::SecureArtifact).map_err(|_| ChainError::Invalid)?;
+    if field(cert, "encryption_key_id")? != base64url(&sha256(encryption_key.as_bytes())) {
+        return Err(ChainError::Invalid);
+    }
+    Ok(CertificateHeader {
+        actor_id: actor,
+        signing_key,
+        encryption_key,
+    })
+}
+
+fn exact_keys(value: &WireValue, required: &[&str], optional: &[&str]) -> Result<(), ChainError> {
+    let WireValue::Object(fields) = value else {
+        return Err(ChainError::Invalid);
+    };
+    if required.iter().any(|key| value.get(key).is_none())
+        || fields.iter().any(|(name, _)| {
+            !required
+                .iter()
+                .chain(optional)
+                .any(|allowed| name.iter().copied().eq(allowed.encode_utf16()))
+        })
+    {
+        return Err(ChainError::Invalid);
+    }
+    Ok(())
+}
+
+fn validate_policy_shape(
+    payload: &WireValue,
+    version: u64,
+) -> Result<(bool, Option<u64>), ChainError> {
+    let base = [
+        "v",
+        "workspace_id",
+        "owner_id",
+        "signing_key",
+        "version",
+        "previous_policy",
+        "effective_sequence",
+        "visibility",
+        "epoch",
+        "members",
+        "issued_at",
+    ];
+    match version {
+        1 => {
+            if !matches!(payload.get("structure"), None | Some(WireValue::Null)) {
+                return Err(ChainError::Invalid);
+            }
+            Ok((false, None))
+        }
+        2 => {
+            let mut required = base.to_vec();
+            required.push("structure");
+            exact_keys(payload, &required, &[])?;
+            if matches!(payload.get("structure"), None | Some(WireValue::Null)) {
+                return Err(ChainError::Invalid);
+            }
+            Ok((true, None))
+        }
+        3 => {
+            let mut required = base.to_vec();
+            required.extend(["protocol_format_ceiling", "structure_mode"]);
+            let mode = field(payload, "structure_mode")?;
+            let structured = match mode.as_str() {
+                "STRUCTURED" => true,
+                "NONE" => false,
+                _ => return Err(ChainError::Invalid),
+            };
+            exact_keys(
+                payload,
+                &required,
+                if structured { &["structure"] } else { &[] },
+            )?;
+            if structured != payload.get("structure").is_some() {
+                return Err(ChainError::Invalid);
+            }
+            let ceiling = unsigned(payload, "protocol_format_ceiling")?;
+            if ceiling != 1 && !(ceiling == 2 && field(payload, "visibility")? == "PRIVATE") {
+                return Err(ChainError::Invalid);
+            }
+            Ok((structured, Some(ceiling)))
+        }
+        _ => Err(ChainError::Invalid),
+    }
+}
+
+fn format_raise_guard(payload: &WireValue) -> Result<String, ChainError> {
+    let WireValue::Object(fields) = payload else {
+        return Err(ChainError::Invalid);
+    };
+    let unchanged = WireValue::Object(
+        fields
+            .iter()
+            .filter(|(name, _)| {
+                ![
+                    "protocol_format_ceiling",
+                    "version",
+                    "previous_policy",
+                    "effective_sequence",
+                    "issued_at",
+                ]
+                .iter()
+                .any(|mutable| name.iter().copied().eq(mutable.encode_utf16()))
+            })
+            .cloned()
+            .collect(),
+    );
+    Ok(sha256_hex(
+        canonical_wire_value(&unchanged, Path::SecureArtifact)
+            .map_err(|_| ChainError::Invalid)?
+            .as_bytes(),
+    ))
+}
+
+fn validate_commit_shape(payload: &WireValue, policy: &PolicyHeader) -> Result<(), ChainError> {
+    if policy.wire_version == 1 {
+        return Ok(());
+    }
+    let mut required = vec![
+        "v",
+        "workspace_id",
+        "sequence",
+        "previous",
+        "policy_hash",
+        "epoch",
+        "actor_id",
+        "signing_key",
+        "command_id",
+        "action_id",
+        "instance_id",
+        "issued_at",
+        "delegation",
+        "mode",
+        "body",
+    ];
+    if policy.wire_version == 2 || policy.structured {
+        required.push("structure");
+    }
+    if policy.wire_version == 3 {
+        required.push("protocol_format_ceiling");
+        if unsigned(payload, "protocol_format_ceiling")? != policy.format_ceiling.unwrap_or(0) {
+            return Err(ChainError::Invalid);
+        }
+    }
+    exact_keys(
+        payload,
+        &required,
+        &["migration", "conversion_excluded_members", "recovery"],
+    )?;
+    if policy.wire_version == 3 && !policy.structured && payload.get("structure").is_some() {
+        return Err(ChainError::Invalid);
+    }
+    if policy.visibility == "PRIVATE" {
+        exact_keys(
+            payload.get("body").ok_or(ChainError::Invalid)?,
+            &["v", "alg", "nonce", "chunks"],
+            &[],
+        )?;
+    }
+    Ok(())
+}
+
 fn validate_members(
     policy: &WireValue,
     issued_at: u64,
     owner_id: &str,
     owner_key: &str,
+    wire_version: u64,
 ) -> Result<HashMap<String, MemberHeader>, ChainError> {
     let WireValue::Array(members) = policy.get("members").ok_or(ChainError::Invalid)? else {
         return Err(ChainError::Invalid);
@@ -320,6 +574,25 @@ fn validate_members(
     let mut result = HashMap::new();
     let mut owners = 0;
     for member in members {
+        if wire_version >= 2 {
+            exact_keys(member, &["actor_id", "certificate", "role", "scopes"], &[])?;
+            let certificate = member.get("certificate").ok_or(ChainError::Invalid)?;
+            exact_keys(certificate, &["payload", "signature"], &[])?;
+            let cert = envelope_payload(certificate)?;
+            exact_keys(
+                cert,
+                &[
+                    "v",
+                    "actor_id",
+                    "signing_key",
+                    "encryption_key",
+                    "encryption_key_id",
+                    "issued_at",
+                    "expires_at",
+                ],
+                &[],
+            )?;
+        }
         let actor = field(member, "actor_id")?;
         let role = field(member, "role")?;
         if !token(&actor) || !matches!(role.as_str(), "OWNER" | "MEMBER") {
@@ -329,120 +602,17 @@ fn validate_members(
             owners += 1;
         }
         let certificate = member.get("certificate").ok_or(ChainError::Invalid)?;
-        let cert = envelope_payload(certificate)?;
-        let signing_key = field(cert, "signing_key")?;
-        let key_bytes: [u8; 32] = decode_base64url(&signing_key)
-            .map_err(|_| ChainError::Invalid)?
-            .try_into()
-            .map_err(|_| ChainError::Invalid)?;
-        let cert_issued = unsigned(cert, "issued_at")?;
-        let cert_expires = unsigned(cert, "expires_at")?;
-        if unsigned(cert, "v")? != 1
-            || !token(&signing_key)
-            || field(cert, "actor_id")? != actor
-            || actor_id(&key_bytes) != actor
-            || cert_expires <= cert_issued
-            || cert_expires - cert_issued > 366 * 86_400_000
-            || issued_at < cert_issued
-            || issued_at >= cert_expires
-        {
+        let certificate = validate_certificate(certificate, issued_at)?;
+        if certificate.actor_id != actor {
             return Err(ChainError::Invalid);
         }
-        let cert_wire = canonical_wire_value(certificate, Path::SecureArtifact)
-            .map_err(|_| ChainError::Invalid)?;
-        if !verify_secure_signed_wire(
-            cert_wire.as_bytes(),
-            "peerwork.secure.key-certificate.v1",
-            &signing_key,
-        )
-        .map_err(|_| ChainError::Invalid)?
-        {
-            return Err(ChainError::Invalid);
-        }
-        let encryption = cert.get("encryption_key").ok_or(ChainError::Invalid)?;
-        if encryption.object_len() != Some(4)
-            || field(encryption, "kty")? != "EC"
-            || field(encryption, "crv")? != "P-256"
-        {
-            return Err(ChainError::Invalid);
-        }
-        let x = field(encryption, "x")?;
-        let y = field(encryption, "y")?;
-        if !token(&x) || !token(&y) {
-            return Err(ChainError::Invalid);
-        }
-        let x: [u8; 32] = decode_base64url(&x)
-            .map_err(|_| ChainError::Invalid)?
-            .try_into()
-            .map_err(|_| ChainError::Invalid)?;
-        let y: [u8; 32] = decode_base64url(&y)
-            .map_err(|_| ChainError::Invalid)?
-            .try_into()
-            .map_err(|_| ChainError::Invalid)?;
-        let mut point = [0u8; 65];
-        point[0] = 4;
-        point[1..33].copy_from_slice(&x);
-        point[33..65].copy_from_slice(&y);
-        <DhP256HkdfSha256 as Kem>::PublicKey::from_bytes(&point)
-            .map_err(|_| ChainError::Invalid)?;
-        let encryption_key = canonical_wire_value(encryption, Path::SecureArtifact)
-            .map_err(|_| ChainError::Invalid)?;
-        if field(cert, "encryption_key_id")? != base64url(&sha256(encryption_key.as_bytes())) {
-            return Err(ChainError::Invalid);
-        }
-        let WireValue::Array(scopes) = member.get("scopes").ok_or(ChainError::Invalid)? else {
-            return Err(ChainError::Invalid);
-        };
-        if scopes.len() > 128 {
-            return Err(ChainError::Invalid);
-        }
-        let mut scope_headers = Vec::with_capacity(scopes.len());
-        for scope in scopes {
-            let WireValue::Object(fields) = scope else {
-                return Err(ChainError::Invalid);
-            };
-            if fields.iter().any(|(name, _)| {
-                ![
-                    "instance_id",
-                    "actions",
-                    "protocol_roles",
-                    "capabilities",
-                    "expires_at",
-                ]
-                .iter()
-                .any(|allowed| name.iter().copied().eq(allowed.encode_utf16()))
-            }) {
-                return Err(ChainError::Invalid);
-            }
-            let instance_id = nullable_field(scope, "instance_id")?;
-            if instance_id.as_ref().is_some_and(|id| !token(id)) {
-                return Err(ChainError::Invalid);
-            }
-            let actions = scope_strings(scope, "actions")?;
-            scope_strings(scope, "protocol_roles")?;
-            scope_strings(scope, "capabilities")?;
-            let expires_at = match scope.get("expires_at") {
-                None | Some(WireValue::Null) => None,
-                Some(_) => {
-                    let expiry = unsigned(scope, "expires_at")?;
-                    if expiry == 0 {
-                        return Err(ChainError::Invalid);
-                    }
-                    Some(expiry)
-                }
-            };
-            scope_headers.push(ScopeHeader {
-                instance_id,
-                actions,
-                expires_at,
-            });
-        }
+        let scope_headers = validate_scopes(member.get("scopes").ok_or(ChainError::Invalid)?)?;
         if result
             .insert(
                 actor,
                 MemberHeader {
-                    signing_key,
-                    encryption_key,
+                    signing_key: certificate.signing_key,
+                    encryption_key: certificate.encryption_key,
                     role,
                     scopes: scope_headers,
                 },
@@ -460,6 +630,140 @@ fn validate_members(
         return Err(ChainError::Invalid);
     }
     Ok(result)
+}
+
+fn validate_scopes(value: &WireValue) -> Result<Vec<ScopeHeader>, ChainError> {
+    let WireValue::Array(scopes) = value else {
+        return Err(ChainError::Invalid);
+    };
+    if scopes.len() > 128 {
+        return Err(ChainError::Invalid);
+    }
+    let mut result = Vec::with_capacity(scopes.len());
+    for scope in scopes {
+        let WireValue::Object(fields) = scope else {
+            return Err(ChainError::Invalid);
+        };
+        if fields.iter().any(|(name, _)| {
+            ![
+                "instance_id",
+                "actions",
+                "protocol_roles",
+                "capabilities",
+                "expires_at",
+            ]
+            .iter()
+            .any(|allowed| name.iter().copied().eq(allowed.encode_utf16()))
+        }) {
+            return Err(ChainError::Invalid);
+        }
+        let instance_id = nullable_field(scope, "instance_id")?;
+        if instance_id.as_ref().is_some_and(|id| !token(id)) {
+            return Err(ChainError::Invalid);
+        }
+        let actions = scope_strings(scope, "actions")?;
+        scope_strings(scope, "protocol_roles")?;
+        scope_strings(scope, "capabilities")?;
+        let expires_at = match scope.get("expires_at") {
+            None | Some(WireValue::Null) => None,
+            Some(_) => {
+                let expiry = unsigned(scope, "expires_at")?;
+                if expiry == 0 {
+                    return Err(ChainError::Invalid);
+                }
+                Some(expiry)
+            }
+        };
+        result.push(ScopeHeader {
+            instance_id,
+            actions,
+            expires_at,
+        });
+    }
+    Ok(result)
+}
+
+fn permits(
+    scopes: &[ScopeHeader],
+    action_id: &[u16],
+    instance_id: Option<&str>,
+    issued_at: u64,
+) -> bool {
+    scopes.iter().any(|scope| {
+        (scope.instance_id.is_none() || scope.instance_id.as_deref() == instance_id)
+            && scope.expires_at.is_none_or(|expiry| expiry > issued_at)
+            && scope
+                .actions
+                .iter()
+                .any(|action| action.as_slice() == action_id)
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resolve_author(
+    policy: &PolicyHeader,
+    payload: &WireValue,
+    workspace_id: &str,
+    actor: &str,
+    signing_key: &str,
+    issued_at: u64,
+    instance_id: Option<&str>,
+    action_id: &[u16],
+) -> Result<bool, ChainError> {
+    let key_bytes: [u8; 32] = decode_base64url(signing_key)
+        .map_err(|_| ChainError::Invalid)?
+        .try_into()
+        .map_err(|_| ChainError::Invalid)?;
+    if actor_id(&key_bytes) != actor {
+        return Ok(false);
+    }
+    match payload.get("delegation").ok_or(ChainError::Invalid)? {
+        WireValue::Null => Ok(policy.members.get(actor).is_some_and(|member| {
+            member.signing_key == signing_key
+                && ((member.role == "OWNER" && instance_id.is_none())
+                    || permits(&member.scopes, action_id, instance_id, issued_at))
+        })),
+        delegation => {
+            let grant = envelope_payload(delegation)?;
+            let grant_issued = unsigned(grant, "issued_at")?;
+            let grant_expires = unsigned(grant, "expires_at")?;
+            if unsigned(grant, "v")? != 1
+                || field(grant, "workspace_id")? != workspace_id
+                || grant_expires == 0
+                || issued_at < grant_issued
+                || issued_at >= grant_expires
+            {
+                return Ok(false);
+            }
+            let device =
+                validate_certificate(grant.get("device").ok_or(ChainError::Invalid)?, issued_at)?;
+            if device.actor_id != actor || device.signing_key != signing_key {
+                return Ok(false);
+            }
+            let principal_id = field(grant, "actor_id")?;
+            let principal_key = field(grant, "signing_key")?;
+            let Some(principal) = policy.members.get(&principal_id) else {
+                return Ok(false);
+            };
+            if principal.signing_key != principal_key {
+                return Ok(false);
+            }
+            let grant_wire = canonical_wire_value(delegation, Path::SecureArtifact)
+                .map_err(|_| ChainError::Invalid)?;
+            if !verify_secure_signed_wire(
+                grant_wire.as_bytes(),
+                "peerwork.secure.delegation.v1",
+                &principal_key,
+            )
+            .map_err(|_| ChainError::Invalid)?
+            {
+                return Ok(false);
+            }
+            let scopes = validate_scopes(grant.get("scope").ok_or(ChainError::Invalid)?)?;
+            Ok(permits(&scopes, action_id, instance_id, issued_at)
+                && permits(&principal.scopes, action_id, instance_id, issued_at))
+        }
+    }
 }
 
 fn scope_strings(scope: &WireValue, name: &str) -> Result<Vec<Vec<u16>>, ChainError> {
@@ -570,32 +874,49 @@ mod tests {
             &key,
         ))
         .unwrap();
-        let members =
-            json!([{"actor_id":owner,"certificate":certificate,"role":"OWNER","scopes":[]}]);
+        let delegated_instance = base64url(&[77; 32]);
+        let member_scope = json!({"instance_id":delegated_instance,"actions":["test.action"],"protocol_roles":[],"capabilities":[]});
+        let members = json!([{"actor_id":owner,"certificate":certificate,"role":"OWNER","scopes":[member_scope]}]);
         let mut policies = Vec::new();
         let mut commits = Vec::new();
         let mut prior_policy: Option<String> = None;
         let mut prior_commit: Option<String> = None;
         for version in 1..=3 {
+            let mut policy_payload = json!({
+                "v":version,"workspace_id":workspace,"owner_id":owner,"signing_key":owner_key,
+                "version":version,"previous_policy":prior_policy,"effective_sequence":version,
+                "visibility":"PUBLIC","epoch":0,"members":members,"issued_at":version
+            });
+            if version >= 2 {
+                policy_payload["structure"] =
+                    json!({"v":1,"protocols":[],"disclosure":[],"instances":[]});
+            }
+            if version == 3 {
+                policy_payload["protocol_format_ceiling"] = json!(1);
+                policy_payload["structure_mode"] = json!("STRUCTURED");
+            }
             let policy = signed(
-                json!({
-                    "v":version,"workspace_id":workspace,"owner_id":owner,"signing_key":owner_key,
-                    "version":version,"previous_policy":prior_policy,"effective_sequence":version,
-                    "visibility":"PUBLIC","epoch":0,"members":members,"issued_at":version
-                }),
+                policy_payload,
                 &format!("peerwork.secure.policy.v{version}"),
                 &key,
             );
             let policy_hash = hash(&policy);
             policies.push(policy);
+            let mut commit_payload = json!({
+                "v":version,"workspace_id":workspace,"sequence":version,"previous":prior_commit,
+                "policy_hash":policy_hash,"epoch":0,"actor_id":owner,"signing_key":owner_key,
+                "command_id":base64url(&[version as u8;32]),"action_id":"test.action",
+                "instance_id":null,"issued_at":version,"delegation":null,"mode":"PUBLIC",
+                "body":{"v":1,"kind":"ADMIN","input":{},"objects":[]}
+            });
+            if version >= 2 {
+                commit_payload["structure"] = json!({"v":1,"mode":"DELTA","records":[],"heads":[]});
+            }
+            if version == 3 {
+                commit_payload["protocol_format_ceiling"] = json!(1);
+            }
             let commit = signed(
-                json!({
-                    "v":version,"workspace_id":workspace,"sequence":version,"previous":prior_commit,
-                    "policy_hash":policy_hash,"epoch":0,"actor_id":owner,"signing_key":owner_key,
-                    "command_id":base64url(&[version as u8;32]),"action_id":"test.action",
-                    "instance_id":null,"issued_at":version,"delegation":null,"mode":"PUBLIC",
-                    "body":{"v":1,"kind":"ADMIN","input":{},"objects":[]}
-                }),
+                commit_payload,
                 &format!("peerwork.secure.commit.v{version}"),
                 &key,
             );
@@ -632,6 +953,69 @@ mod tests {
         assert_eq!(facts.head.as_deref(), prior_commit.as_deref());
         assert_eq!(facts.policy_hashes.len(), 3);
         assert_eq!(facts.commit_hashes.len(), 3);
+
+        let device_key = SigningKey::from_bytes(&[88; 32]);
+        let device_signing_key = key_id(&device_key.verifying_key().to_bytes());
+        let device_actor = actor_id(&device_key.verifying_key().to_bytes());
+        let device_certificate: Value = serde_json::from_slice(&signed(
+            json!({"v":1,"actor_id":device_actor,"signing_key":device_signing_key,"encryption_key":encryption_key,"encryption_key_id":encryption_key_id,"issued_at":0,"expires_at":1000}),
+            "peerwork.secure.key-certificate.v1",
+            &device_key,
+        ))
+        .unwrap();
+        let delegation: Value = serde_json::from_slice(&signed(
+            json!({"v":1,"workspace_id":workspace,"actor_id":owner,"signing_key":owner_key,"device":device_certificate,"request_id":base64url(&[66; 32]),"scope":[member_scope],"read":false,"origin":"https://example.test","audience":"example","issued_at":0,"expires_at":1000}),
+            "peerwork.secure.delegation.v1",
+            &key,
+        ))
+        .unwrap();
+        let mut delegated_payload: Value = serde_json::from_slice(&commits[0]).unwrap();
+        delegated_payload["payload"]["actor_id"] = json!(device_actor);
+        delegated_payload["payload"]["signing_key"] = json!(device_signing_key);
+        delegated_payload["payload"]["instance_id"] = json!(delegated_instance);
+        delegated_payload["payload"]["delegation"] = delegation.clone();
+        let delegated = signed(
+            delegated_payload["payload"].clone(),
+            "peerwork.secure.commit.v1",
+            &device_key,
+        );
+        let delegated_checkpoint = serde_json::to_vec(&json!({
+            "v":1,"workspace_id":workspace,"owner_id":owner,"owner_key":owner_key,
+            "sequence":1,"head":hash(&delegated),"policy_hash":hash(&policies[0])
+        }))
+        .unwrap();
+        assert_eq!(
+            scan_signed_chain_headers(
+                &[policies[0].as_slice()],
+                &[delegated.as_slice()],
+                &delegated_checkpoint,
+                &workspace,
+                Some(&owner_pin),
+                None
+            )
+            .unwrap()
+            .sequence,
+            1
+        );
+        delegated_payload["payload"]["delegation"]["payload"]["workspace_id"] =
+            json!(base64url(&[11; 32]));
+        let invalid_delegation = signed(
+            delegated_payload["payload"].clone(),
+            "peerwork.secure.commit.v1",
+            &device_key,
+        );
+        assert_eq!(
+            scan_signed_chain_headers(
+                &[policies[0].as_slice()],
+                &[invalid_delegation.as_slice()],
+                &delegated_checkpoint,
+                &workspace,
+                Some(&owner_pin),
+                None
+            )
+            .unwrap_err(),
+            ChainError::Invalid
+        );
         let forked = CheckpointPin {
             sequence: 2,
             head: Some("0"),
@@ -724,6 +1108,56 @@ mod tests {
             scan_signed_chain_headers(
                 &invalid_policy_refs,
                 &commit_refs,
+                &checkpoint,
+                &workspace,
+                Some(&owner_pin),
+                None
+            )
+            .unwrap_err(),
+            ChainError::Invalid
+        );
+
+        let mut invalid_v3_policy: Value = serde_json::from_slice(&policies[2]).unwrap();
+        invalid_v3_policy["payload"]["surplus"] = json!(true);
+        let invalid_v3_policy = signed(
+            invalid_v3_policy["payload"].clone(),
+            "peerwork.secure.policy.v3",
+            &key,
+        );
+        assert_eq!(
+            scan_signed_chain_headers(
+                &[
+                    policies[0].as_slice(),
+                    policies[1].as_slice(),
+                    invalid_v3_policy.as_slice()
+                ],
+                &commit_refs,
+                &checkpoint,
+                &workspace,
+                Some(&owner_pin),
+                None
+            )
+            .unwrap_err(),
+            ChainError::Invalid
+        );
+        let mut invalid_v3_commit: Value = serde_json::from_slice(&commits[2]).unwrap();
+        invalid_v3_commit["payload"]
+            .as_object_mut()
+            .unwrap()
+            .remove("protocol_format_ceiling");
+        let invalid_v3_commit = signed(
+            invalid_v3_commit["payload"].clone(),
+            "peerwork.secure.commit.v3",
+            &key,
+        );
+        assert_eq!(
+            scan_signed_chain_headers(
+                &policy_refs,
+                &[
+                    commits[0].as_slice(),
+                    commits[1].as_slice(),
+                    invalid_v3_commit.as_slice()
+                ],
                 &checkpoint,
                 &workspace,
                 Some(&owner_pin),
