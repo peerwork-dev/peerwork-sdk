@@ -8,7 +8,7 @@ use peerwork_core::{
     discovery::ParsedDiscovery,
     prepared_command::{verify_prepared_command_wire, CommandPins},
     receipt_wire::verify_http_response_for_prepared,
-    wire_json::{canonical_wire_value, parse_wire_json_bounded, WireValue},
+    wire_json::{canonical_wire_json, canonical_wire_value, parse_wire_json_bounded, WireValue},
 };
 use rusqlite::{backup::Backup, Connection, OpenFlags};
 use std::fs::{self, File};
@@ -325,6 +325,12 @@ fn prepare_row(
     let response = match (row.status.as_str(), row.response.as_ref()) {
         ("PENDING", None) => None,
         ("ACCEPTED", Some(response)) => {
+            if canonical_wire_json(response.as_bytes(), CanonicalPath::RESPONSE)
+                .map_err(|_| invalid())?
+                != *response
+            {
+                return Err(invalid());
+            }
             verify_http_response_for_prepared(
                 response.as_bytes(),
                 &proof,
@@ -618,6 +624,20 @@ mod tests {
             CanonicalPath::RESPONSE,
         )
         .unwrap();
+        let noncanonical_accepted = TsStoredRow {
+            command_id: accepted_id.clone(),
+            jws: accepted_jws.clone(),
+            intent_digest: sha256_hex(accepted_jws.as_bytes()),
+            command: accepted_command.clone(),
+            status: "ACCEPTED".into(),
+            response: Some(format!(" {response}")),
+            created: 2,
+            updated: 3,
+        };
+        assert!(matches!(
+            prepare_row(&noncanonical_accepted, &discovery, &[kid.clone()]),
+            Err(TsMigrationError::Incompatible)
+        ));
         {
             let db = Connection::open(&source_path).unwrap();
             db.execute_batch(&format!("{CONTEXT_SQL}; {INTENTS_SQL}; PRAGMA application_id={TS_APPLICATION_ID}; PRAGMA user_version=1;")).unwrap();
@@ -660,6 +680,34 @@ mod tests {
         }
         fs::set_permissions(&source_path, fs::Permissions::from_mode(0o644)).unwrap();
         let original_source = fs::read(&source_path).unwrap();
+        let mut conflicting =
+            KernelIntentJournal::open(&dir.path().join("conflict.sqlite")).unwrap();
+        conflicting
+            .bind_discovery("https://workspace.example/", &discovery)
+            .unwrap();
+        conflicting
+            .prepare(
+                &accepted_id,
+                crate::kernel_intents::KernelPath::Command,
+                "foreign",
+                b"{}",
+            )
+            .unwrap();
+        assert!(matches!(
+            conflicting.import_ts_backup(
+                &source_path,
+                &backup_path,
+                &[kid.clone(), other_kid.clone()],
+                &discovery
+            ),
+            Err(TsMigrationError::DestinationConflict)
+        ));
+        assert_eq!(conflicting.all_prepared().unwrap().len(), 1);
+        assert!(conflicting
+            .exact_request_for_test(&pending_id)
+            .unwrap()
+            .is_none());
+        drop(conflicting);
         let mut native = KernelIntentJournal::open(&native_path).unwrap();
         native
             .bind_discovery("https://workspace.example/", &discovery)

@@ -232,57 +232,91 @@ impl KernelIntentJournal {
         )?;
         let source_ids: std::collections::HashSet<&str> =
             rows.iter().map(|row| row.command_id.as_str()).collect();
-        for existing in self.all_prepared()? {
-            if !source_ids.contains(existing.command_id.as_str()) {
+        // Hold the write reservation through complete preflight and import.
+        // Any conflict rolls the entire target transaction back, including
+        // otherwise valid earlier rows; concurrent clients cannot insert
+        // between this check and the accepted-response write.
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let existing_ids: Vec<String> = tx
+            .prepare("SELECT command_id FROM kernel_intents")?
+            .query_map([], |record| record.get(0))?
+            .collect::<Result<_, _>>()?;
+        for existing in existing_ids {
+            if !source_ids.contains(existing.as_str()) {
                 return Err(TsMigrationError::DestinationConflict);
             }
         }
-        let mut pending = 0;
-        let mut accepted = 0;
+        for row in &rows {
+            if !valid_token(&row.command_id)
+                || row.jws.len() > MAX_JWS_BYTES
+                || row.body.is_empty()
+                || row.body.len() > MAX_BODY_BYTES
+            {
+                return Err(TsMigrationError::DestinationConflict);
+            }
+            let proof = verify_prepared_command_wire(
+                &row.jws,
+                &row.body,
+                &CommandPins {
+                    local_key_id: &row.local_key_id,
+                    audience_utf16: discovery.audience_utf16(),
+                },
+            )
+            .map_err(|_| TsMigrationError::DestinationConflict)?;
+            if proof.command_id() != row.command_id
+                || proof.path() != row.path.as_str()
+                || proof.intent_digest() != sha256_hex(row.jws.as_bytes())
+            {
+                return Err(TsMigrationError::DestinationConflict);
+            }
+            if let Some(response) = &row.response {
+                verify_http_response_for_prepared(response, &proof, discovery.receipt_public_key())
+                    .map_err(|_| TsMigrationError::DestinationConflict)?;
+            }
+            let existing: Option<(String, String, String, Vec<u8>, String, i64)> = tx.query_row(
+                "SELECT path,signed_jws,intent_digest,http_body,state,created_at_ms FROM kernel_intents WHERE command_id=?1",
+                [&row.command_id],
+                |record| Ok((record.get(0)?, record.get(1)?, record.get(2)?, record.get(3)?, record.get(4)?, record.get(5)?)),
+            ).optional()?;
+            if let Some((path, jws, digest, body, state, created)) = existing {
+                if path != row.path.as_str()
+                    || jws != row.jws
+                    || digest != proof.intent_digest()
+                    || body != row.body
+                    || state != "PENDING"
+                    || created != row.created
+                {
+                    return Err(TsMigrationError::DestinationConflict);
+                }
+                let accepted: Option<Vec<u8>> = tx
+                    .query_row(
+                        "SELECT response_wire FROM accepted_responses WHERE command_id=?1",
+                        [&row.command_id],
+                        |record| record.get(0),
+                    )
+                    .optional()?;
+                if accepted.as_deref() != row.response.as_deref() {
+                    return Err(TsMigrationError::DestinationConflict);
+                }
+            }
+        }
+        let pending = rows.iter().filter(|row| row.response.is_none()).count();
+        let accepted = rows.len() - pending;
         for row in rows {
-            let prepared =
-                self.prepare_at_time(&row.command_id, row.path, &row.jws, &row.body, row.created)?;
-            if prepared.created_at_ms != row.created {
-                return Err(TsMigrationError::DestinationConflict);
-            }
-            let saved = self
-                .verified_pending(
-                    &row.command_id,
-                    &row.local_key_id,
-                    discovery.audience_utf16(),
-                )?
-                .ok_or(TsMigrationError::DestinationConflict)?;
-            match row.response {
-                Some(response) => {
-                    let existing: Option<Vec<u8>> = self
-                        .db
-                        .query_row(
-                            "SELECT response_wire FROM accepted_responses WHERE command_id=?1",
-                            [&row.command_id],
-                            |record| record.get(0),
-                        )
-                        .optional()?;
-                    if existing.as_ref().is_some_and(|old| old != &response) {
-                        return Err(TsMigrationError::DestinationConflict);
-                    }
-                    self.record_verified_response(
-                        &saved,
-                        &response,
-                        discovery.receipt_public_key(),
-                    )?;
-                    accepted += 1;
-                }
-                None => {
-                    if self
-                        .accepted_response(&saved, discovery.receipt_public_key())?
-                        .is_some()
-                    {
-                        return Err(TsMigrationError::DestinationConflict);
-                    }
-                    pending += 1;
-                }
+            tx.execute(
+                "INSERT OR IGNORE INTO kernel_intents(command_id,path,signed_jws,intent_digest,http_body,state,created_at_ms) VALUES (?1,?2,?3,?4,?5,'PENDING',?6)",
+                params![&row.command_id, row.path.as_str(), &row.jws, sha256_hex(row.jws.as_bytes()), &row.body, row.created],
+            )?;
+            if let Some(response) = row.response {
+                tx.execute(
+                    "INSERT OR IGNORE INTO accepted_responses(command_id,response_wire) VALUES (?1,?2)",
+                    params![&row.command_id, response],
+                )?;
             }
         }
+        tx.commit()?;
         Ok((pending, accepted))
     }
 

@@ -8,6 +8,7 @@ use crate::{
 };
 use peerwork_core::discovery::{parse_discovery_wire, ParsedDiscovery};
 use peerwork_core::receipt_wire::VerifiedCommandResponse;
+use peerwork_core::wire_json::{parse_wire_json_bounded, WireValue};
 use std::path::Path;
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -28,11 +29,94 @@ pub enum KernelClientError {
     IntentNotFound,
     #[error("server rejected the saved command with HTTP {0}")]
     ServerRejected(u16),
+    #[error("verified result has an unsupported public summary shape")]
+    InvalidResult,
 }
 
 pub enum KernelOperationStatus {
     Pending,
-    Accepted(VerifiedCommandResponse),
+    Accepted(KernelAcceptedResult),
+}
+
+/// Audited public fields of a command-bound, signed result. Arbitrary result
+/// content, signed packets, identity material and private state stay internal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KernelAcceptedResult {
+    pub command_id: String,
+    pub workspace_id: Option<String>,
+    pub protocol_digest: Option<String>,
+    pub instance_id: Option<String>,
+    pub event_sequence: Option<u64>,
+    pub revision: Option<u64>,
+    pub produced_record_ids: Vec<String>,
+}
+
+impl KernelAcceptedResult {
+    fn from_verified(proof: VerifiedCommandResponse) -> Result<Self, KernelClientError> {
+        let result = parse_wire_json_bounded(
+            proof.result_canonical_json().as_bytes(),
+            12,
+            32 * 1024 * 1024,
+        )
+        .map_err(|_| KernelClientError::InvalidResult)?;
+        let optional_token = |field: &str| -> Result<Option<String>, KernelClientError> {
+            match result.get(field) {
+                None | Some(WireValue::Null) => Ok(None),
+                Some(WireValue::String(_)) => result
+                    .get(field)
+                    .and_then(WireValue::as_string)
+                    .filter(|value| valid_token(value))
+                    .map(Some)
+                    .ok_or(KernelClientError::InvalidResult),
+                _ => Err(KernelClientError::InvalidResult),
+            }
+        };
+        let instance_id = optional_token("instance_id")?;
+        let revision = match result.get("revision") {
+            None | Some(WireValue::Null) => None,
+            Some(WireValue::Number(number))
+                if number.is_finite()
+                    && *number >= 0.0
+                    && *number <= 9_007_199_254_740_991.0
+                    && number.fract() == 0.0 =>
+            {
+                Some(*number as u64)
+            }
+            _ => return Err(KernelClientError::InvalidResult),
+        };
+        if revision != proof.instance_revision() && proof.instance_revision().is_some() {
+            return Err(KernelClientError::InvalidResult);
+        }
+        let produced_record_ids = match result.get("produced_record_ids") {
+            None => Vec::new(),
+            Some(WireValue::Array(values)) if values.len() <= 1024 => values
+                .iter()
+                .map(|value| {
+                    value
+                        .as_string()
+                        .filter(|id| valid_token(id))
+                        .ok_or(KernelClientError::InvalidResult)
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            _ => return Err(KernelClientError::InvalidResult),
+        };
+        Ok(Self {
+            command_id: proof.command_id().to_owned(),
+            workspace_id: proof.workspace_id().map(str::to_owned),
+            protocol_digest: proof.protocol_digest().map(str::to_owned),
+            instance_id,
+            event_sequence: proof.event_sequence(),
+            revision,
+            produced_record_ids,
+        })
+    }
+}
+
+fn valid_token(value: &str) -> bool {
+    value.len() == 43
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,7 +223,9 @@ impl KernelClient {
             .journal
             .accepted_response(&saved, self.discovery.receipt_public_key())?
         {
-            Some(verified) => Ok(Some(KernelOperationStatus::Accepted(verified))),
+            Some(verified) => Ok(Some(KernelOperationStatus::Accepted(
+                KernelAcceptedResult::from_verified(verified)?,
+            ))),
             None => Ok(Some(KernelOperationStatus::Pending)),
         }
     }
@@ -151,7 +237,7 @@ impl KernelClient {
         command_id: &str,
         local_key_id: &str,
         cancel: &CancellationToken,
-    ) -> Result<VerifiedCommandResponse, KernelClientError> {
+    ) -> Result<KernelAcceptedResult, KernelClientError> {
         let saved = self
             .journal
             .verified_pending(command_id, local_key_id, self.discovery.audience_utf16())?
@@ -160,7 +246,7 @@ impl KernelClient {
             .journal
             .accepted_response(&saved, self.discovery.receipt_public_key())?
         {
-            return Ok(verified);
+            return KernelAcceptedResult::from_verified(verified);
         }
         let response = self
             .transport
@@ -169,7 +255,7 @@ impl KernelClient {
         if !(200..300).contains(&response.status) {
             return Err(KernelClientError::ServerRejected(response.status));
         }
-        Ok(self.journal.record_verified_response(
+        KernelAcceptedResult::from_verified(self.journal.record_verified_response(
             &saved,
             &response.wire,
             self.discovery.receipt_public_key(),
@@ -409,7 +495,7 @@ mod tests {
             .submit_saved(&command_id, &kid, &CancellationToken::new())
             .await
             .unwrap();
-        assert_eq!(verified.command_id(), command_id);
+        assert_eq!(verified.command_id, command_id);
         assert!(client.pending(&kid).unwrap().is_empty());
         drop(client);
 
@@ -432,6 +518,194 @@ mod tests {
             Err(KernelClientError::Store(JournalError::IncompatibleStore))
         ));
         server.await.unwrap();
+    }
+
+    /// Opt-in test against the tracked TypeScript service, not a fake HTTP
+    /// responder. The bridge forwards first POST, awaits the real committed
+    /// response, then drops the client socket.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore = "requires PEERWORK_REFERENCE_ROOT and PEERWORK_TEST_NODE"]
+    async fn real_reference_kernel_recovers_committed_lost_reply_and_deduplicates_two_clients() {
+        use std::io::{BufRead, BufReader};
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::{Command, Stdio};
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        struct Server(std::process::Child);
+        impl Drop for Server {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let reference =
+            std::env::var("PEERWORK_REFERENCE_ROOT").expect("pinned reference checkout");
+        let node = std::env::var("PEERWORK_TEST_NODE").expect("pinned Node 24 binary");
+        let state = tempfile::tempdir().unwrap();
+        fs::set_permissions(state.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let mut child = Server(
+            Command::new(node)
+                .arg(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../tests/reference-kernel-server.mjs"
+                ))
+                .env("PEERWORK_REFERENCE_ROOT", reference)
+                .env("PEERWORK_TEST_STATE", state.path())
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit())
+                .spawn()
+                .unwrap(),
+        );
+        let mut line = String::new();
+        BufReader::new(child.0.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let origin = serde_json::from_str::<serde_json::Value>(&line).unwrap()["origin"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let config = || {
+            let mut config = TransportConfig::new(&origin);
+            config.allow_loopback_http = true;
+            config
+        };
+        let signing = SigningKey::from_bytes(&[31; 32]);
+        let public = signing.verifying_key().to_bytes();
+        let kid = key_id(&public);
+        let actor = actor_id(&public);
+        let command_id = base64url(&[71; 32]);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let make_signed = |name: &str| {
+            let command = json!({
+                "v":1,"audience":"reference-kernel","command_id":command_id,
+                "actor_id":actor,"authority":sha256_hex(actor.as_bytes()),
+                "method":"POST","path":"/api/workspace/v1/commands",
+                "workspace_id":null,"instance_id":null,"protocol_digest":null,
+                "action_id":"workspace.create","expected_workspace_revision":null,
+                "expected_instance_revision":null,"exact_input_refs":[],
+                "body":{"name":name,"visibility":"PUBLIC"},
+                "issued_at":now,"expires_at":now+60_000
+            });
+            let payload = canonical(&command, CanonicalPath::COMMAND).unwrap();
+            let header = canonical(
+                &json!({"alg":"EdDSA","typ":"peerwork.kernel-command.v1+jws","kid":kid}),
+                CanonicalPath::SecureArtifact,
+            )
+            .unwrap();
+            let input = format!(
+                "{}.{}",
+                base64url(header.as_bytes()),
+                base64url(payload.as_bytes())
+            );
+            format!(
+                "{}.{}",
+                input,
+                base64url(&signing.sign(input.as_bytes()).to_bytes())
+            )
+        };
+        let jws = make_signed("Recovery");
+        let body = canonical(&json!({"jws":jws}), CanonicalPath::COMMAND).unwrap();
+        let mut first = KernelClient::open(
+            config(),
+            &state.path().join("first.sqlite"),
+            &[],
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        first
+            .journal
+            .prepare(&command_id, KernelPath::Command, &jws, body.as_bytes())
+            .unwrap();
+        assert!(matches!(
+            first
+                .submit_saved(&command_id, &kid, &CancellationToken::new())
+                .await,
+            Err(KernelClientError::Transport(
+                TransportError::SubmittedUncertain
+            ))
+        ));
+        assert!(matches!(
+            first.status(&command_id, &kid).unwrap(),
+            Some(KernelOperationStatus::Pending)
+        ));
+        let after_lost_reply = serde_json::from_slice::<serde_json::Value>(
+            &reqwest::get(format!("{origin}__test/counts"))
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(after_lost_reply["commands"], 1);
+        assert_eq!(after_lost_reply["workspaces"], 1);
+        drop(first);
+        let mut first = KernelClient::open(
+            config(),
+            &state.path().join("first.sqlite"),
+            &[],
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        let accepted = first
+            .submit_saved(&command_id, &kid, &CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(accepted.command_id, command_id);
+        assert!(accepted.workspace_id.is_some());
+        assert!(accepted.event_sequence.is_some());
+        assert!(matches!(
+            first.status(&command_id, &kid).unwrap(),
+            Some(KernelOperationStatus::Accepted(_))
+        ));
+
+        let mut second = KernelClient::open(
+            config(),
+            &state.path().join("second.sqlite"),
+            &[],
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        second
+            .journal
+            .prepare(&command_id, KernelPath::Command, &jws, body.as_bytes())
+            .unwrap();
+        assert_eq!(
+            second
+                .submit_saved(&command_id, &kid, &CancellationToken::new())
+                .await
+                .unwrap(),
+            accepted
+        );
+        let changed = make_signed("Different");
+        let conflict = reqwest::Client::new()
+            .post(format!("{origin}api/workspace/v1/commands"))
+            .header("content-type", "application/json")
+            .body(canonical(&json!({"jws":changed}), CanonicalPath::COMMAND).unwrap())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(conflict.status(), reqwest::StatusCode::CONFLICT);
+        let counts = serde_json::from_slice::<serde_json::Value>(
+            &reqwest::get(format!("{origin}__test/counts"))
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(counts["commands"], 1);
+        assert_eq!(counts["workspaces"], 1);
+        drop(child);
     }
 
     #[cfg(unix)]

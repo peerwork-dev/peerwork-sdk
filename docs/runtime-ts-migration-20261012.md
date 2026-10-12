@@ -23,8 +23,13 @@ using the tracked submit format, then authenticated against the signed
 command with the shared core. Pending rows stay pending. Accepted rows enter
 the native accepted table only after the stored receipt/result verifies
 against that row's signer, the pinned receipt key, exact command and result.
-Native import is idempotent across restart; existing native rows with other
-IDs, changed timestamps, body bytes, or accepted response bytes are refused.
+Native import is one `BEGIN IMMEDIATE` transaction: all existing IDs, byte
+bindings, timestamps and accepted responses are preflighted under the same
+write reservation before any row is inserted. A conflict rolls the whole
+target import back. An unchanged source can be imported again after restart;
+existing native rows with other IDs, changed timestamps, body bytes, or
+accepted response bytes are refused. Accepted saved responses must equal
+their lossless kernel-canonical encoding, matching TypeScript's saved format.
 Actor-specific pending listing verifies saved rows and filters by signer, so
 a legacy database containing more than one actor can be preserved without
 relabeling records.
@@ -37,15 +42,16 @@ writes while taking the backup and importing; the before/backup/after
 comparison detects changed snapshots but cannot establish future quiescence.
 The source saved a canonical parsed response, not raw HTTP status/headers or
 original response octets, so the imported accepted body preserves those
-saved canonical bytes only. A crash between imported rows can leave a
-partial native import; retry with the same unchanged source and backup is
+saved canonical bytes only. An import crash before commit leaves the native
+transaction rolled back; retry with the same unchanged source and backup is
 the recovery path. The old client remains usable from its unmodified source.
 
 Three focused synthetic Linux tests passed under Rust 1.89 with the locked
 offline workspace. They cover exact JWS/body reconstruction for ordinary and
 catalog upload paths, pending and signed accepted import, two actors,
 omitted-signer refusal before native writes, source preservation,
-backup/readback, restart idempotence, changed-source refusal, weak matching
+backup/readback, restart idempotence, changed-source refusal, conflicting
+destination rollback, noncanonical saved-response refusal, weak matching
 table names/columns refusal, forged accepted receipt and pending-with-response
 refusal. This is not yet a real Peerwork service migration run, a Windows
 backup/readback execution, or full Python/Node/CLI migration coverage.
