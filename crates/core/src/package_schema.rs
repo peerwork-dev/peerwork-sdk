@@ -574,6 +574,7 @@ fn validate_source_inner(source: &WireValue) -> Result<WireValue, PackageSchemaE
         .unwrap_or_else(|| array(vec![]));
     let ps = arr(&params, 32, 0)?;
     let mut pnames = Vec::<String>::new();
+    let mut locally_bound_params = Vec::<String>::new();
     for p in ps {
         shape(
             p,
@@ -591,6 +592,9 @@ fn validate_source_inner(source: &WireValue) -> Result<WireValue, PackageSchemaE
             return Err(Invalid);
         }
         pnames.push(n);
+        if p.get("binding").is_some() {
+            locally_bound_params.push(pnames.last().unwrap().clone());
+        }
         let t = ascii(get(p, "type")?, 1, 16)?;
         if !matches!(t.as_str(), "string" | "enum" | "integer" | "boolean") {
             return Err(Invalid);
@@ -665,12 +669,12 @@ fn validate_source_inner(source: &WireValue) -> Result<WireValue, PackageSchemaE
         .cloned()
         .unwrap_or_else(|| array(vec![]));
     let mut targets = Vec::<(String, Vec<u16>)>::new();
-    let mut bound_params = Vec::new();
     for x in arr(&bindings, 32, 0)? {
         shape(x, &["parameter", "import_alias", "slot"], &[])?;
         let p = ascii(get(x, "parameter")?, 1, 80)?;
         let a = ascii(get(x, "import_alias")?, 1, 40)?;
         let s = as_str(get(x, "slot")?)?.to_vec();
+        string_len(get(x, "slot")?, 1, 120)?;
         if !pnames.contains(&p)
             || !aliases.contains(&a)
             || targets.contains(&(a.clone(), s.clone()))
@@ -678,10 +682,11 @@ fn validate_source_inner(source: &WireValue) -> Result<WireValue, PackageSchemaE
             return Err(Invalid);
         }
         targets.push((a, s));
-        bound_params.push(p);
     }
-    for p in &pnames {
-        if !bound_params.contains(p) && !exported_parameters.contains(p) {
+    for parameter in &pnames {
+        if !locally_bound_params.contains(parameter)
+            && !exported_parameters.contains(parameter)
+        {
             return Err(Invalid);
         }
     }
