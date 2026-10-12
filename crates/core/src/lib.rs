@@ -7,6 +7,8 @@ pub mod e2ee;
 pub mod prepared_command;
 pub mod receipt;
 pub mod receipt_wire;
+#[allow(dead_code)]
+mod secure_chain;
 pub mod strict_json;
 pub mod wire_json;
 

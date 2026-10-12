@@ -296,7 +296,9 @@ pub fn hpke_open(
     )
     .map_err(|_| E2eeError::Format)?;
     let plaintext = hpke_open_with_aad(recipient_private_key, box_value, aad.as_bytes())?;
-    crate::strict_json::parse_strict_json(&plaintext).map_err(|_| E2eeError::Format)
+    // TS decodeJson uses JSON.parse here: decoded duplicate names take the last
+    // value. The lossless wire API remains necessary for lone UTF-16 surrogates.
+    serde_json::from_slice(&plaintext).map_err(|_| E2eeError::Format)
 }
 
 pub fn hpke_open_wire(
@@ -362,4 +364,33 @@ fn join_chunks(chunks: &[String], max: usize) -> Result<Vec<u8>, E2eeError> {
         out.extend(bytes);
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hpke_convenience_open_uses_js_duplicate_member_semantics() {
+        let (private, public) = DhP256HkdfSha256::gen_keypair();
+        let point = public.to_bytes();
+        let jwk = RecipientPublicJwk {
+            kty: "EC".into(),
+            crv: "P-256".into(),
+            x: base64url(&point[1..33]),
+            y: base64url(&point[33..65]),
+        };
+        let context = json!({"workspace_id":"example"});
+        let aad = canonical(
+            &json!({"domain":"peerwork.secure.key-box.v1","context":context}),
+            Path::SecureArtifact,
+        )
+        .unwrap();
+        let keybox =
+            hpke_seal_with_aad(&jwk, br#"{"key":1,"\u006bey":2}"#, aad.as_bytes()).unwrap();
+        assert_eq!(
+            hpke_open(&private.to_bytes(), &keybox, &context).unwrap(),
+            json!({"key":2})
+        );
+    }
 }
