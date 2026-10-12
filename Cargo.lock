@@ -1341,10 +1341,12 @@ dependencies = [
 name = "peerwork-runtime"
 version = "0.0.1"
 dependencies = [
+ "ed25519-dalek",
  "libc",
  "peerwork-core",
  "reqwest",
  "rusqlite",
+ "serde_json",
  "tempfile",
  "thiserror",
  "tokio",

@@ -58,11 +58,20 @@ demonstrates a WAL mode-change busy conflict and the bounded retry now used
 during initialization. Child stderr is retained on future failures. The
 affected regression and full 13-test runtime suite passed under Rust 1.89.0
 with `--offline --locked`; this does not establish a cross-OS result.
-The separate v1-to-v2 migration regression passed with all seven journal tests
-under the same compiler and locked offline dependencies; it retained a pending
-request containing an escaped lone surrogate exactly across migration and
-restart. The 18-test runtime suite from the transport checkpoint preceded the
-schema migration, so the new combined source has not yet had a full suite run.
+The v1-to-v2 migration regression retained a pending request containing an
+escaped lone surrogate exactly across migration and restart.
+An additional journal boundary regression constructs a real signed command,
+persists it, then requires the core's private-constructor prepared-command
+proof to match the exact saved JWS, body, command ID, path, digest, local key,
+and audience before it can be used. A wrong key and a modified saved digest
+fail closed. Native preparation recognizes all four command path shapes that
+the core proof accepts: ordinary commands, catalog uploads, private-package
+uploads, and a validated browser-session command path. The full 20-test
+runtime suite passed with Rust 1.89.0, locked offline dependencies, and
+authorized localhost socket access after core's concurrent discovery edit
+reached a stable source window. The earlier locked repeat did not compile
+while that module file was briefly absent; it is recorded as a build-state
+failure, not a runtime regression.
 
 ## Open gates
 

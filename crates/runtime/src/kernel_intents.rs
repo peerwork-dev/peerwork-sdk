@@ -2,6 +2,9 @@
 //! inferred accepted from an HTTP status or a missing response.
 
 use peerwork_core::crypto::sha256_hex;
+use peerwork_core::prepared_command::{
+    verify_prepared_command_wire, CommandPins, VerifiedPreparedCommand,
+};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
@@ -52,19 +55,40 @@ pub struct PendingKernelIntent {
     pub created_at_ms: i64,
 }
 
-/// The only supported kernel POST paths at this checkpoint. This is local
-/// preparation, not authorization to transmit the signed bytes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Internal exact saved request plus a private-constructor core signature
+/// proof. Only a higher layer holding local identity and pinned discovery may
+/// request this value; neither the signed packet nor body is a public DTO.
+pub(crate) struct VerifiedPendingCommand {
+    pub(crate) proof: VerifiedPreparedCommand,
+    pub(crate) body: Vec<u8>,
+}
+
+/// Core-recognized kernel POST paths. This is local preparation, not
+/// authorization to transmit the signed bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KernelPath {
     Command,
     CatalogUpload,
+    PrivatePackageUpload,
+    BrowserSessionCommand(String),
 }
 
 impl KernelPath {
-    fn as_str(self) -> &'static str {
+    pub fn browser_session_command(session_id: &str) -> Result<Self, JournalError> {
+        if !valid_token(session_id) {
+            return Err(JournalError::InvalidIntent);
+        }
+        Ok(Self::BrowserSessionCommand(format!(
+            "/api/workspace/v1/browser/sessions/{session_id}/commands"
+        )))
+    }
+
+    fn as_str(&self) -> &str {
         match self {
             Self::Command => "/api/workspace/v1/commands",
             Self::CatalogUpload => "/api/workspace/v1/catalog/upload",
+            Self::PrivatePackageUpload => "/api/workspace/v1/private/packages/upload",
+            Self::BrowserSessionCommand(path) => path,
         }
     }
 }
@@ -164,6 +188,46 @@ impl KernelIntentJournal {
         })?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(JournalError::Storage)
+    }
+
+    pub(crate) fn verified_pending(
+        &self,
+        command_id: &str,
+        local_key_id: &str,
+        audience_utf16: &[u16],
+    ) -> Result<Option<VerifiedPendingCommand>, JournalError> {
+        if !valid_token(command_id) {
+            return Err(JournalError::InvalidIntent);
+        }
+        let row: Option<(String, String, String, Vec<u8>, String)> = self
+            .db
+            .query_row(
+                "SELECT path,signed_jws,intent_digest,http_body,state FROM kernel_intents WHERE command_id=?1",
+                [command_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            )
+            .optional()?;
+        let Some((path, jws, digest, body, state)) = row else {
+            return Ok(None);
+        };
+        let proof = verify_prepared_command_wire(
+            &jws,
+            &body,
+            &CommandPins {
+                local_key_id,
+                audience_utf16,
+            },
+        )
+        .map_err(|_| JournalError::IncompatibleStore)?;
+        if state != "PENDING"
+            || proof.command_id() != command_id
+            || proof.path() != path
+            || proof.intent_digest() != digest
+            || sha256_hex(jws.as_bytes()) != digest
+        {
+            return Err(JournalError::IncompatibleStore);
+        }
+        Ok(Some(VerifiedPendingCommand { proof, body }))
     }
 
     #[cfg(test)]
@@ -352,6 +416,12 @@ fn create_or_check_private_file(_: &Path) -> Result<(), JournalError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ed25519_dalek::{Signer, SigningKey};
+    use peerwork_core::{
+        canonical::{canonical, Path as CanonicalPath},
+        crypto::{actor_id, base64url, key_id},
+    };
+    use serde_json::json;
     use tempfile::TempDir;
 
     #[cfg(unix)]
@@ -457,6 +527,70 @@ mod tests {
             reopened.exact_request_for_test(&id).unwrap().unwrap().1,
             body
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exact_saved_row_requires_core_command_proof_and_matching_pins() {
+        let dir = private_dir();
+        let path = dir.path().join("intents.sqlite");
+        let signing = SigningKey::from_bytes(&[21; 32]);
+        let public = signing.verifying_key().to_bytes();
+        let kid = key_id(&public);
+        let actor = actor_id(&public);
+        let command_id = key_id(&[23; 32]);
+        let audience: Vec<u16> = "https://workspace.example".encode_utf16().collect();
+        let header = canonical(
+            &json!({"alg":"EdDSA","typ":"peerwork.kernel-command.v1+jws","kid":kid}),
+            CanonicalPath::SecureArtifact,
+        )
+        .unwrap();
+        let command = json!({
+            "v":1,"audience":"https://workspace.example","command_id":command_id,
+            "actor_id":actor,"authority":sha256_hex(actor.as_bytes()),"method":"POST",
+            "path":"/api/workspace/v1/commands","workspace_id":null,"instance_id":null,
+            "protocol_digest":null,"action_id":"catalog.namespace.claim",
+            "expected_workspace_revision":null,"expected_instance_revision":null,
+            "exact_input_refs":[],"body":{"namespace":actor},"issued_at":1,"expires_at":600001
+        });
+        let payload = canonical(&command, CanonicalPath::COMMAND).unwrap();
+        let input = format!(
+            "{}.{}",
+            base64url(header.as_bytes()),
+            base64url(payload.as_bytes())
+        );
+        let jws = format!(
+            "{}.{}",
+            input,
+            base64url(&signing.sign(input.as_bytes()).to_bytes())
+        );
+        let body = canonical(&json!({"jws":jws}), CanonicalPath::COMMAND).unwrap();
+
+        let mut journal = KernelIntentJournal::open(&path).unwrap();
+        journal
+            .prepare(&command_id, KernelPath::Command, &jws, body.as_bytes())
+            .unwrap();
+        let pending = journal
+            .verified_pending(&command_id, &kid, &audience)
+            .unwrap()
+            .unwrap();
+        assert_eq!(pending.proof.command_id(), command_id);
+        assert_eq!(pending.body, body.as_bytes());
+        assert!(matches!(
+            journal.verified_pending(&command_id, &key_id(&[24; 32]), &audience),
+            Err(JournalError::IncompatibleStore)
+        ));
+        journal
+            .db
+            .execute(
+                "UPDATE kernel_intents SET intent_digest=?1 WHERE command_id=?2",
+                params!["0".repeat(64), command_id],
+            )
+            .unwrap();
+        assert!(matches!(
+            journal.verified_pending(&command_id, &kid, &audience),
+            Err(JournalError::IncompatibleStore)
+        ));
     }
 
     #[cfg(unix)]
