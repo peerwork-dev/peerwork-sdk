@@ -1865,8 +1865,8 @@ fn apply_connections(
             .ok_or(ClosureError::Invalid)?;
         let mut guards = Vec::new();
         if input_type == "exact_ref" {
-            let scope = output_scope.ok_or(ClosureError::Invalid)?;
-            let schema = output_schema.ok_or(ClosureError::Invalid)?;
+            let scope = output_scope.clone().ok_or(ClosureError::Invalid)?;
+            let schema = output_schema.clone().ok_or(ClosureError::Invalid)?;
             let runtime_field = field_mut(
                 field_mut(field_mut(action, "inputs")?, "fields")?,
                 &body_field,
@@ -1950,6 +1950,78 @@ fn apply_connections(
             return Err(ClosureError::Invalid);
         };
         when.extend(guards);
+        if let Some(hook) = input.get("provenance_hook") {
+            if input_type != "exact_ref" {
+                return Err(ClosureError::Invalid);
+            }
+            let slot = scalar(field(hook, "record_slot")?)?;
+            let schema = format!(
+                "{}.{}",
+                consumer.namespace,
+                scalar(field(hook, "record_schema")?)?
+            );
+            let kind = format!(
+                "{}.{}",
+                consumer.namespace,
+                scalar(field(hook, "relation_kind")?)?
+            );
+            let WireValue::Array(effects) = field_mut(variant, "effects")? else {
+                return Err(ClosureError::Invalid);
+            };
+            let matching = effects
+                .iter()
+                .enumerate()
+                .filter(|(_, effect)| {
+                    effect.get("op").and_then(WireValue::as_string).as_deref() == Some("append")
+                        && effect
+                            .get("recordSlot")
+                            .and_then(WireValue::as_string)
+                            .as_deref()
+                            == Some(&slot)
+                        && effect
+                            .get("schema")
+                            .and_then(WireValue::as_string)
+                            .as_deref()
+                            == Some(&schema)
+                })
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
+            if matching.len() != 1 {
+                return Err(ClosureError::Mismatch);
+            }
+            let append = effects.get_mut(matching[0]).ok_or(ClosureError::Invalid)?;
+            let WireValue::Array(relations) = field_mut(append, "relations")? else {
+                return Err(ClosureError::Invalid);
+            };
+            if relations.iter().any(|relation| {
+                relation
+                    .get("kind")
+                    .and_then(WireValue::as_string)
+                    .as_deref()
+                    == Some(&kind)
+            }) {
+                return Err(ClosureError::Mismatch);
+            }
+            relations.push(object(vec![
+                ("kind", text(&kind)),
+                (
+                    "target",
+                    object(vec![
+                        ("from", text("ref")),
+                        ("source", text("body")),
+                        ("path", WireValue::Array(body_path.clone())),
+                        (
+                            "scope",
+                            text(output_scope.as_deref().ok_or(ClosureError::Invalid)?),
+                        ),
+                        (
+                            "schema",
+                            text(output_schema.as_deref().ok_or(ClosureError::Invalid)?),
+                        ),
+                    ]),
+                ),
+            ]));
+        }
         let WireValue::Array(reads) = field_mut(action, "reads")? else {
             return Err(ClosureError::Invalid);
         };
@@ -2676,6 +2748,36 @@ mod tests {
         .unwrap();
         assert_eq!(vector["passed"], true);
         assert_eq!(vector["interfaces_complete"], true);
+        let closure = parse_wire_json_bounded(
+            &serde_json::to_vec(&vector["closure"]).unwrap(),
+            32,
+            6 * 1024 * 1024,
+        )
+        .unwrap();
+        let compiled = compile_simple_baseline(&scan_package_closure(&closure).unwrap()).unwrap();
+        assert_eq!(
+            compiled.protocol_digest,
+            vector["protocol_digest"].as_str().unwrap()
+        );
+        let expected = parse_wire_json_bounded(
+            &serde_json::to_vec(&vector["compiled_manifest"]).unwrap(),
+            32,
+            65_536,
+        )
+        .unwrap();
+        assert_eq!(
+            canonical(&compiled.manifest).unwrap(),
+            canonical(&expected).unwrap()
+        );
+    }
+
+    #[test]
+    fn v2_provenance_hook_adds_exact_reference_relation() {
+        let vector: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../conformance/public-package-provenance-hook-vectors.json"
+        ))
+        .unwrap();
+        assert_eq!(vector["passed"], true);
         let closure = parse_wire_json_bounded(
             &serde_json::to_vec(&vector["closure"]).unwrap(),
             32,
