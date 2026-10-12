@@ -33,3 +33,20 @@ exports.version = binding.version;
 exports.capabilities = () => JSON.parse(binding.capabilitiesJson());
 exports.createIdentity = async path => JSON.parse(await binding.identityCreateJson(path));
 exports.openIdentity = async path => JSON.parse(await binding.identityOpenJson(path));
+
+/** An explicit origin and protected local paths anchor every operation. */
+exports.openKernel = async options => {
+  const { origin, journalPath, identityPath, requiredFeatures = [], allowLoopbackHttp = false, authority } = options;
+  const call = async (operation, commandJson, commandId) => JSON.parse(await binding.kernelJson(
+    operation, origin, journalPath, identityPath, requiredFeatures,
+    allowLoopbackHttp, authority, commandJson, commandId,
+  ));
+  const info = await call('open');
+  return Object.freeze({
+    ...info,
+    prepare: command => call('prepare', JSON.stringify(command)),
+    pending: () => call('pending'),
+    status: commandId => call('status', undefined, commandId),
+    submitSaved: commandId => call('submit_saved', undefined, commandId),
+  });
+};

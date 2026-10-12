@@ -699,6 +699,58 @@ mod tests {
             first.status(&command_id, &kid).unwrap(),
             Some(KernelOperationStatus::Accepted(_))
         ));
+        // Exercise the public binding authority boundary after process-style
+        // reopen: only redacted accepted data and new pending IDs leave it.
+        let facade_origin = origin.clone();
+        let facade_db = state.path().join("first.sqlite");
+        let facade_identity = state.path().join("owner.state");
+        let facade_accepted = accepted.clone();
+        let facade_kid = kid.clone();
+        let facade_command_id = command_id.clone();
+        let unsent_id = base64url(&[74; 32]);
+        let unsent_command = command_wire(
+            &unsent_id,
+            "workspace.create",
+            json!({"name":"Not sent","visibility":"PUBLIC"}),
+            None,
+            None,
+        );
+        tokio::task::spawn_blocking(move || {
+            let access = crate::kernel_access::KernelAccess::new(
+                facade_origin,
+                facade_db,
+                facade_identity,
+                &[],
+                true,
+            );
+            let info = access.open().unwrap();
+            assert_eq!(info.key_id, facade_kid);
+            assert!(matches!(
+                access.status(&facade_command_id).unwrap(),
+                Some(KernelOperationStatus::Accepted(result)) if result == facade_accepted
+            ));
+            assert_eq!(
+                access.submit_saved(&facade_command_id).unwrap(),
+                facade_accepted
+            );
+            assert!(access.pending().unwrap().is_empty());
+            let pending = access.prepare(unsent_command.as_bytes(), None).unwrap();
+            assert_eq!(pending.command_id, unsent_id);
+            assert!(matches!(
+                access.status(&unsent_id).unwrap(),
+                Some(KernelOperationStatus::Pending)
+            ));
+            assert_eq!(access.pending().unwrap().len(), 1);
+            let mut wrong_authority: serde_json::Value =
+                serde_json::from_str(&unsent_command).unwrap();
+            wrong_authority["authority"] = serde_json::Value::String("0".repeat(64));
+            assert!(matches!(
+                access.prepare(wrong_authority.to_string().as_bytes(), None),
+                Err(crate::kernel_access::KernelAccessError::Authority)
+            ));
+        })
+        .await
+        .unwrap();
         let signed_body = |command: String| {
             let parsed = parse_wire_json_bounded(command.as_bytes(), 40, 180_000).unwrap();
             prepare_signed_command_wire(&parsed, identity.signing_key(), first.discovery(), None)

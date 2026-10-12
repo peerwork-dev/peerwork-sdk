@@ -73,3 +73,31 @@ PEERWORK_REFERENCE_ROOT=/absolute/pinned/integration-checkout \
 PEERWORK_TEST_NODE=/absolute/node-v24.20.0/bin/node \
 cargo test -p peerwork-runtime real_reference_kernel_recovers --offline --locked -- --ignored
 ```
+
+## Configured kernel facade checkpoint
+
+`KernelAccess` now carries the configured origin, identity path, intent
+journal path, required features and optional authority digest. Its default
+authority is SHA-256 of the local actor ID, matching `WorkspaceClient`; a
+fully specified command is refused before signing unless its authority
+matches the configured value. The core separately checks the command actor
+against the local signing key and audience against discovery. Every facade
+operation reopens discovery over the configured origin, checks persisted
+continuity, and reopens the protected identity. `prepare` signs and saves the
+exact request without POST; `submit_saved` sends only a saved command and
+returns receipt-verified redacted fields. `status` and `pending` recheck saved
+proofs after restart. No JWS, raw result JSON or private key is returned.
+
+The actual tracked-service test was extended to reopen through this facade,
+check accepted status and idempotent accepted `submit_saved`, prepare a new
+unsent command and observe `PENDING`, then reject a mismatched authority.
+With Rust 1.89, `cargo check -p peerwork-runtime -p peerwork-cli
+-p peerwork-python-native -p peerwork-node-native --offline --locked` passed,
+and the opt-in real service test passed 1/1. Python, Node and CLI source
+wrappers now call this same boundary, but this checkpoint does not yet claim
+installed wrapper end-to-end service execution. Their async work can outlive
+an abandoned Python await or Node Promise; there is no exposed in-flight
+cancel handle yet. Submitted uncertainty leaves a saved pending row for
+status/retry, while a newly prepared row has not been submitted. Verified
+secure-agent reads/actions, complete typed result models, and the real
+macOS/Windows runner gates remain open.

@@ -1,4 +1,7 @@
+use peerwork_runtime::kernel_access::KernelAccess;
+use peerwork_runtime::kernel_client::{KernelAcceptedResult, KernelOperationStatus};
 use peerwork_runtime::kernel_identity::KernelIdentity;
+use std::fs;
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -48,9 +51,96 @@ fn main() -> ExitCode {
                 }
             }
         }
+        [noun, verb, rest @ ..] if noun == "kernel" => match kernel_command(verb, rest) {
+            Ok(value) => {
+                println!("{value}");
+                ExitCode::SUCCESS
+            }
+            Err(message) => {
+                eprintln!(
+                    "{}",
+                    serde_json::json!({"code":"KERNEL_OPERATION", "message":message})
+                );
+                ExitCode::FAILURE
+            }
+        },
         _ => {
-            eprintln!("{{\"code\":\"USAGE\",\"message\":\"peerwork version|capabilities|identity create PATH|identity info PATH\"}}");
+            eprintln!("{{\"code\":\"USAGE\",\"message\":\"peerwork version|capabilities|identity create PATH|identity info PATH|kernel open|prepare|pending|status|submit ORIGIN JOURNAL IDENTITY [COMMAND_FILE|COMMAND_ID] [--allow-loopback-http]\"}}");
             ExitCode::FAILURE
         }
+    }
+}
+
+fn accepted_json(result: KernelAcceptedResult) -> serde_json::Value {
+    serde_json::json!({
+        "command_id": result.command_id,
+        "workspace_id": result.workspace_id,
+        "protocol_digest": result.protocol_digest,
+        "instance_id": result.instance_id,
+        "event_sequence": result.event_sequence,
+        "revision": result.revision,
+        "produced_record_ids": result.produced_record_ids,
+    })
+}
+
+fn kernel_command(verb: &str, args: &[String]) -> Result<serde_json::Value, String> {
+    let mut args = args.to_vec();
+    let mut allow_loopback = false;
+    let mut authority = None;
+    args.retain(|argument| {
+        if argument == "--allow-loopback-http" {
+            allow_loopback = true;
+            false
+        } else if let Some(value) = argument.strip_prefix("--authority=") {
+            authority = Some(value.to_owned());
+            false
+        } else {
+            true
+        }
+    });
+    if args.len() != 3 + usize::from(matches!(verb, "prepare" | "status" | "submit")) {
+        return Err("kernel command requires ORIGIN JOURNAL IDENTITY and optional target".into());
+    }
+    let access = KernelAccess::new(&args[0], &args[1], &args[2], &[], allow_loopback)
+        .with_authority(authority);
+    match verb {
+        "open" => {
+            let info = access.open().map_err(|error| error.to_string())?;
+            Ok(
+                serde_json::json!({"actor_id":info.actor_id,"key_id":info.key_id,"origin":info.origin}),
+            )
+        }
+        "prepare" => {
+            let metadata = fs::metadata(&args[3]).map_err(|_| "command file cannot be read")?;
+            if metadata.len() > 180_000 {
+                return Err("command file exceeds limit".into());
+            }
+            let command = fs::read(&args[3]).map_err(|_| "command file cannot be read")?;
+            let pending = access
+                .prepare(&command, None)
+                .map_err(|error| error.to_string())?;
+            Ok(
+                serde_json::json!({"command_id":pending.command_id,"intent_digest":pending.intent_digest,"created_at_ms":pending.created_at_ms}),
+            )
+        }
+        "pending" => {
+            let pending = access.pending().map_err(|error| error.to_string())?;
+            Ok(serde_json::json!(pending.into_iter().map(|row| serde_json::json!({
+                "command_id":row.command_id,"intent_digest":row.intent_digest,"created_at_ms":row.created_at_ms
+            })).collect::<Vec<_>>()))
+        }
+        "status" => match access.status(&args[3]).map_err(|error| error.to_string())? {
+            None => Ok(serde_json::json!({"state":"NOT_FOUND"})),
+            Some(KernelOperationStatus::Pending) => Ok(serde_json::json!({"state":"PENDING"})),
+            Some(KernelOperationStatus::Accepted(result)) => {
+                Ok(serde_json::json!({"state":"ACCEPTED","result":accepted_json(result)}))
+            }
+        },
+        "submit" => Ok(accepted_json(
+            access
+                .submit_saved(&args[3])
+                .map_err(|error| error.to_string())?,
+        )),
+        _ => Err("unsupported kernel operation".into()),
     }
 }

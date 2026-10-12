@@ -40,3 +40,29 @@ The manylinux_2_34 tag is an observed Linux wheel result, not a declared
 minimum. Signing, reproducibility, SBOM, public registry download tests,
 protocol parity, operation recovery, and cold-start Agent acceptance remain
 open. No production package publication is authorized by this checkpoint.
+
+## Later Linux identity package check
+
+After the initial version-only spike, the native identity parser correction
+was committed as `e3b961a` and `67165fd`. Rust 1.89 focused identity test
+passed. A task-local Cargo registry copy under ignored `.build-target/cargo-home`
+allowed a locked offline `maturin build` without writing to the read-only
+shared registry. The resulting development wheel is
+`peerwork_sdk-0.0.1-cp311-abi3-manylinux_2_38_x86_64.whl`, SHA-256
+`241aba26fb1165028325ac1fafaf885df8f8010c318b6c5377aa137c6f229526`.
+It installed into a fresh target with `pip install --no-index --no-deps`
+and no build step; sync and async identity create/open plus repeated-create
+refusal passed from that installed target. The Node 24 optional-package-shaped
+development addon SHA-256 is
+`8962c3bc035db7ff3017142ec90a39612028953ad4f43e8d7fec19a11b73e51b`;
+Promise create/open and repeated-create refusal passed on a Unicode path.
+
+These hashes identify local artifacts, not reproducible release inputs: the
+core private replay source was modified concurrently during their builds, so
+its exact source snapshot was not frozen for these two outputs. Both artifacts
+need rebuilding from a committed tree before release qualification. The
+measured manylinux_2_38 tag is not the supported Linux minimum, and neither
+artifact was run on macOS or Windows. The restricted sandbox initially timed
+out during Python async smoke; a standard-library-only
+`asyncio.to_thread(lambda: 42)` timed out there too, while both it and the
+installed wheel's async calls passed via the approved thread-capable route.
