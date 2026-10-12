@@ -79,6 +79,42 @@ fn signed_prepared_command_binds_identity_discovery_body_and_digest() {
     };
     assert!(verify_prepared_command_wire(&jws, body.as_bytes(), &wrong_pins).is_err());
 
+    // These requests have valid local signatures and canonical HTTP wrappers.
+    // The persisted-row verifier must reject their invalid command schema.
+    let verify_signed_mutation = |mutated: serde_json::Value| {
+        // serde_json retains the unsafe numeric lexeme for this negative case;
+        // the production canonicalizer correctly refuses to create it.
+        let bytes = serde_json::to_string(&mutated).unwrap();
+        let input = format!(
+            "{}.{}",
+            base64url(header.as_bytes()),
+            base64url(bytes.as_bytes())
+        );
+        let signed = format!(
+            "{}.{}",
+            input,
+            base64url(&signing.sign(input.as_bytes()).to_bytes())
+        );
+        let wrapped = canonical(&json!({"jws":signed}), Path::COMMAND).unwrap();
+        assert!(verify_prepared_command_wire(&signed, wrapped.as_bytes(), &pins).is_err());
+    };
+    let mut extra = command.clone();
+    extra["unexpected"] = json!(true);
+    verify_signed_mutation(extra);
+    let mut missing_action = command.clone();
+    missing_action.as_object_mut().unwrap().remove("action_id");
+    verify_signed_mutation(missing_action);
+    let mut malformed_authority = command.clone();
+    malformed_authority["authority"] = json!("bad");
+    verify_signed_mutation(malformed_authority);
+    let mut unsafe_time = command.clone();
+    unsafe_time["issued_at"] = json!(9_007_199_254_740_992_u64);
+    verify_signed_mutation(unsafe_time);
+    let mut too_many_refs = command.clone();
+    too_many_refs["exact_input_refs"] =
+        json!(vec![json!({"record_id":command_id,"revision":1}); 33]);
+    verify_signed_mutation(too_many_refs);
+
     let discovery_wire = format!(
         r#"{{"semantics":"peerwork.kernel.v1","audience":"https://workspace.example","command_type":"peerwork.kernel-command.v1+jws","receipt_type":"peerwork.kernel-receipt.v1+jws","receipt_public_key":"{kid}","limits":{{"max":1}}}}"#
     );

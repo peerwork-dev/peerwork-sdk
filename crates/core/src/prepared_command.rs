@@ -427,57 +427,18 @@ pub fn verify_prepared_command_wire(
     )
     .map_err(|_| invalid())?;
     let payload = parse_wire_json_bounded(&payload_bytes, 40, 180_000).map_err(|_| invalid())?;
-    let fields = [
-        "v",
-        "audience",
-        "command_id",
-        "actor_id",
-        "authority",
-        "method",
-        "path",
-        "workspace_id",
-        "instance_id",
-        "protocol_digest",
-        "action_id",
-        "expected_workspace_revision",
-        "expected_instance_revision",
-        "exact_input_refs",
-        "body",
-        "issued_at",
-        "expires_at",
-    ];
-    if payload.object_len() != Some(fields.len())
-        || fields.iter().any(|name| payload.get(name).is_none())
-        || payload.get("v").and_then(WireValue::as_number) != Some(1.0)
-        || payload.get("audience").and_then(WireValue::as_utf16) != Some(pins.audience_utf16)
-        || string(&payload, "method").as_deref() != Some("POST")
-        || canonical_wire_value(&payload, Path::COMMAND)
-            .map_err(|_| invalid())?
-            .as_bytes()
-            != payload_bytes.as_slice()
+    let expected_actor = actor_id(&key.to_bytes());
+    validate_command_schema(&payload, pins.audience_utf16, &expected_actor)
+        .map_err(|_| invalid())?;
+    if canonical_wire_value(&payload, Path::COMMAND)
+        .map_err(|_| invalid())?
+        .as_bytes()
+        != payload_bytes.as_slice()
     {
         return Err(invalid());
     }
     let command_id = string(&payload, "command_id").ok_or_else(invalid)?;
-    let claimed_actor = string(&payload, "actor_id").ok_or_else(invalid)?;
-    let expected_actor = actor_id(&key.to_bytes());
     let path = string(&payload, "path").ok_or_else(invalid)?;
-    if !token(&command_id)
-        || claimed_actor != expected_actor
-        || !matches!(
-            path.as_str(),
-            "/api/workspace/v1/commands"
-                | "/api/workspace/v1/catalog/upload"
-                | "/api/workspace/v1/private/packages/upload"
-        ) && !(path.starts_with("/api/workspace/v1/browser/sessions/")
-            && path.ends_with("/commands")
-            && path.len() == "/api/workspace/v1/browser/sessions/".len() + 43 + "/commands".len()
-            && token(
-                &path["/api/workspace/v1/browser/sessions/".len()..path.len() - "/commands".len()],
-            ))
-    {
-        return Err(invalid());
-    }
     let workspace_id = nullable_string(&payload, "workspace_id").ok_or_else(invalid)?;
     let protocol_digest = nullable_string(&payload, "protocol_digest").ok_or_else(invalid)?;
     let body = parse_wire_json_bounded(http_body, 42, 262_144).map_err(|_| invalid())?;
@@ -491,20 +452,12 @@ pub fn verify_prepared_command_wire(
             .and_then(WireValue::as_string)
             .ok_or_else(invalid)?;
         let chunk_bytes = decode_base64url(&chunk).map_err(|_| invalid())?;
-        let declared_bytes = payload
-            .get("body")
-            .and_then(|v| v.get("byte_length"))
-            .and_then(WireValue::as_number);
-        let declared_digest = payload
-            .get("body")
-            .and_then(|v| v.get("chunk_digest"))
-            .and_then(WireValue::as_string);
         if nested.object_len() != Some(1)
             || string(&payload, "action_id").as_deref() != Some("catalog.upload.chunk")
             || chunk_bytes.is_empty()
             || chunk_bytes.len() > 64 * 1024
-            || declared_bytes != Some(chunk_bytes.len() as f64)
-            || declared_digest.as_deref() != Some(sha256_hex(&chunk_bytes).as_str())
+            || validate_catalog_chunk(payload.get("body").ok_or_else(invalid)?, &chunk_bytes)
+                .is_err()
         {
             return Err(invalid());
         }
