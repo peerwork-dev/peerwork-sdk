@@ -208,6 +208,7 @@ pub fn replay_secure_journal_exact(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wire_json::{canonical_wire_value, parse_wire_json_bounded};
     use serde_json::Value;
 
     #[test]
@@ -323,5 +324,73 @@ mod tests {
                 "{name}: wrong final pin"
             );
         }
+    }
+
+    #[test]
+    fn writer_generated_two_record_action_binds_both_effects_and_rejects_wrong_head() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../conformance/signed-many-action-vectors.json"
+        ))
+        .unwrap();
+        let policies = fixture["policies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|wire| serde_json::to_vec(wire).unwrap())
+            .collect::<Vec<_>>();
+        let policy_refs = policies.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        let commits = fixture["commits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|wire| serde_json::to_vec(wire).unwrap())
+            .collect::<Vec<_>>();
+        let commit_refs = commits.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        let checkpoint = serde_json::to_vec(&fixture["checkpoint"]).unwrap();
+        let keyring = serde_json::to_vec(&fixture["keyring"]).unwrap();
+        let pins = || JournalReplayInput {
+            policy_wires: &policy_refs,
+            commit_wires: &commit_refs,
+            checkpoint_wire: &checkpoint,
+            workspace_id: fixture["workspace_id"].as_str().unwrap(),
+            owner_actor_id: fixture["owner"]["actor_id"].as_str().unwrap(),
+            owner_signing_key: fixture["owner"]["key"].as_str().unwrap(),
+            final_sequence: 2,
+            final_head: fixture["checkpoint"]["head"].as_str(),
+            final_policy_hash: fixture["checkpoint"]["policy_hash"].as_str().unwrap(),
+            keyring_wire: Some(&keyring),
+        };
+        let replay = replay_secure_journal_exact(pins()).unwrap();
+        let command = fixture["receipt"]["command_id"].as_str().unwrap();
+        let receipt = replay.action_receipt(command).unwrap().unwrap();
+        let expected = parse_wire_json_bounded(
+            &serde_json::to_vec(&fixture["receipt"]).unwrap(),
+            16,
+            1024 * 1024,
+        )
+        .unwrap();
+        assert_eq!(
+            canonical_wire_value(receipt, crate::canonical::Path::SecureArtifact).unwrap(),
+            canonical_wire_value(&expected, crate::canonical::Path::SecureArtifact).unwrap()
+        );
+        assert!(
+            matches!(receipt.get("effects"), Some(WireValue::Array(effects)) if effects.len() == 2)
+        );
+        assert_eq!(fixture["wrong_head"]["error"], "PROTOCOL_OUTPUT_MISMATCH");
+        let bad_commits = fixture["wrong_head"]["commits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|wire| serde_json::to_vec(wire).unwrap())
+            .collect::<Vec<_>>();
+        let bad_refs = bad_commits.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        let bad_checkpoint = serde_json::to_vec(&fixture["wrong_head"]["checkpoint"]).unwrap();
+        assert!(replay_secure_journal_exact(JournalReplayInput {
+            commit_wires: &bad_refs,
+            checkpoint_wire: &bad_checkpoint,
+            final_head: fixture["wrong_head"]["checkpoint"]["head"].as_str(),
+            ..pins()
+        })
+        .is_err());
     }
 }
