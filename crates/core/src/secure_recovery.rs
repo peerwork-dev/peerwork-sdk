@@ -52,6 +52,14 @@ fn digest(value: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
+fn js_truthy(value: &WireValue) -> bool {
+    match value {
+        WireValue::Null | WireValue::Bool(false) => false,
+        WireValue::Number(n) => *n != 0.0 && !n.is_nan(),
+        WireValue::String(units) => !units.is_empty(),
+        _ => true,
+    }
+}
 fn checkpoint(value: &WireValue) -> Result<u64> {
     exact(
         value,
@@ -77,6 +85,126 @@ fn checkpoint(value: &WireValue) -> Result<u64> {
         return Err(InvalidRecovery);
     }
     Ok(sequence)
+}
+
+fn v3_closed(p: &WireValue) -> Result<bool> {
+    let action = text(p, "action_id")?;
+    Ok(p.get("migration").is_some()
+        || p.get("conversion_excluded_members").is_some()
+        || action.starts_with("secure.convert."))
+}
+
+fn v3_range(
+    commits: &[WireValue],
+    base: u64,
+    through: u64,
+    owner: &str,
+    owner_key: &str,
+) -> Result<()> {
+    let at = |sequence: u64| -> Result<&WireValue> {
+        commits
+            .get(usize::try_from(sequence - 1).map_err(|_| InvalidRecovery)?)
+            .ok_or(InvalidRecovery)
+    };
+    let first = at(1)?;
+    let base_commit = at(base)?;
+    if number(base_commit, "v")? != 3 || text(base_commit, "mode")? != "PRIVATE" {
+        return Err(InvalidRecovery);
+    }
+    for n in (base + 1)..=through {
+        let p = at(n)?;
+        let previous = at(n - 1)?;
+        if number(previous, "v")? != 3
+            && number(p, "v")? == 3
+            && text(previous, "mode")? == text(p, "mode")?
+        {
+            return Err(InvalidRecovery);
+        }
+        if text(p, "action_id")? == "secure.protocol-format.raise" {
+            return Err(InvalidRecovery);
+        }
+    }
+    if number(first, "v")? == 3 {
+        if text(first, "mode")? != "PRIVATE"
+            || number(first, "sequence")? != 1
+            || text(first, "action_id")? != "secure.bootstrap"
+            || first.get("migration").is_some()
+            || first.get("recovery").is_some()
+            || first.get("conversion_excluded_members").is_some()
+        {
+            return Err(InvalidRecovery);
+        }
+        for n in 1..=base {
+            let p = at(n)?;
+            if v3_closed(p)? || text(p, "action_id")? == "secure.protocol-format.upgrade" {
+                return Err(InvalidRecovery);
+            }
+        }
+    } else {
+        if !matches!(number(first, "v")?, 1 | 2) {
+            return Err(InvalidRecovery);
+        }
+        let mut upgrades = Vec::new();
+        for n in 2..=base {
+            let p = at(n)?;
+            let prior = at(n - 1)?;
+            if matches!(number(prior, "v")?, 1 | 2)
+                && text(prior, "mode")? == "PRIVATE"
+                && number(p, "v")? == 3
+                && text(p, "mode")? == "PRIVATE"
+            {
+                upgrades.push(n);
+            }
+        }
+        if upgrades.len() != 1 {
+            return Err(InvalidRecovery);
+        }
+        let upgrade_n = upgrades[0];
+        let upgrade = at(upgrade_n)?;
+        let previous = at(upgrade_n - 1)?;
+        if text(upgrade, "action_id")? != "secure.protocol-format.upgrade"
+            || field(upgrade, "instance_id")? != &WireValue::Null
+            || field(upgrade, "delegation")? != &WireValue::Null
+            || text(upgrade, "actor_id")? != owner
+            || text(upgrade, "signing_key")? != owner_key
+            || number(upgrade, "epoch")? != number(previous, "epoch")?
+            || upgrade.get("migration").is_some()
+            || upgrade.get("recovery").is_some()
+            || upgrade.get("conversion_excluded_members").is_some()
+        {
+            return Err(InvalidRecovery);
+        }
+        for n in 1..=base {
+            let p = at(n)?;
+            if n < upgrade_n {
+                if !matches!(number(p, "v")?, 1 | 2) {
+                    return Err(InvalidRecovery);
+                }
+            } else if number(p, "v")? != 3
+                || text(p, "mode")? != "PRIVATE"
+                || v3_closed(p)?
+                || text(p, "action_id")? == "secure.protocol-format.upgrade" && n != upgrade_n
+            {
+                return Err(InvalidRecovery);
+            }
+        }
+    }
+    for n in (base + 1)..=through {
+        let p = at(n)?;
+        let action = text(p, "action_id")?;
+        if number(p, "v")? != 3
+            || text(p, "mode")? != "PRIVATE"
+            || v3_closed(p)?
+            || p.get("recovery").is_some() && action != "secure.recover"
+            || matches!(
+                action.as_str(),
+                "secure.bootstrap" | "secure.protocol-format.upgrade"
+            )
+        {
+            return Err(InvalidRecovery);
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn preflight_recovery(
@@ -132,6 +260,13 @@ pub(crate) fn preflight_recovery(
         let policy_hash = text(p, "policy_hash")?;
         let policy = policies.get(policy_hash.as_str()).ok_or(InvalidRecovery)?;
         let policy = field(policy, "payload")?;
+        let strict_optional_presence = number(p, "v")? != 1;
+        let forbidden_optional = ["migration", "conversion_excluded_members"]
+            .iter()
+            .any(|name| {
+                p.get(name)
+                    .is_some_and(|value| strict_optional_presence || js_truthy(value))
+            });
         if number(r, "v")? != 1
             || text(r, "reason")? != "INVALID_ENCRYPTED_OPERATION"
             || !digest(&text(r, "excluded_root")?)
@@ -145,8 +280,7 @@ pub(crate) fn preflight_recovery(
             || field(p, "delegation")? != &WireValue::Null
             || text(p, "actor_id")? != text(policy, "owner_id")?
             || text(p, "signing_key")? != text(policy, "signing_key")?
-            || p.get("migration").is_some()
-            || p.get("conversion_excluded_members").is_some()
+            || forbidden_optional
             || text(base_cp, "workspace_id")? != chain.workspace_id
             || text(through_cp, "workspace_id")? != chain.workspace_id
             || text(base_cp, "owner_id")? != chain.owner_id
@@ -193,10 +327,11 @@ pub(crate) fn preflight_recovery(
         if root != text(r, "excluded_root")? {
             return Err(InvalidRecovery);
         }
-        // V3 has stricter origin/range and operation exclusions. Its complete
-        // source-equivalent gate must run before this segment is usable.
         if number(p, "v")? == 3 {
-            return Err(InvalidRecovery);
+            if number(policy, "v")? != 3 || number(p, "epoch")? != number(policy, "epoch")? {
+                return Err(InvalidRecovery);
+            }
+            v3_range(&commits, base, through, &chain.owner_id, &chain.owner_key)?;
         }
         segments.push(RecoverySegment {
             base,
@@ -246,6 +381,10 @@ mod tests {
                 assert!(preflight.is_err());
             } else if case["name"] == "recovered_invalid_encrypted_commit"
                 || case["name"] == "invented_failure_over_valid_content"
+                || case["name"] == "v1_null_migration_and_conversion_marker"
+                || case["name"] == "v3_recovered_invalid_admin"
+                || case["name"] == "v3_hidden_decryptable_migration_denied"
+                || case["name"] == "v2_structured_recovery_snapshot_base"
             {
                 assert_eq!(
                     preflight.unwrap(),

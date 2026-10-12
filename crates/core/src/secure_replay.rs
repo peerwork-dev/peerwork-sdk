@@ -574,11 +574,7 @@ fn validate_signed_structure_slice(
     let p = policy.get("payload").ok_or(ReplayError::Invalid)?;
     let structured = integer(p, "v")? == 2
         || integer(p, "v")? == 3 && string(p, "structure_mode")? == "STRUCTURED";
-    // A structured marker must restart its snapshot from the recovery base;
-    // that complete transition remains gated until its source proof lands.
-    if context.get("recovery").is_some() && structured {
-        return Err(ReplayError::Invalid);
-    }
+    let recovery = context.get("recovery");
     if !structured {
         return if context.get("structure").is_none() && progress.is_none() {
             Ok(())
@@ -591,6 +587,14 @@ fn validate_signed_structure_slice(
         .map_err(|_| ReplayError::Invalid)?;
     let envelope = context.get("structure").ok_or(ReplayError::Invalid)?;
     let mode = string(envelope, "mode")?;
+    if recovery.is_some() {
+        if mode != "SNAPSHOT_BEGIN" {
+            return Err(ReplayError::Invalid);
+        }
+        // The signed recovery disposition discards a partial snapshot and
+        // restarts from the independently replayed base objects.
+        *progress = None;
+    }
     let WireValue::Array(records) = envelope.get("records").ok_or(ReplayError::Invalid)? else {
         return Err(ReplayError::Invalid);
     };
@@ -668,7 +672,10 @@ fn validate_signed_structure_slice(
         "SNAPSHOT_END" => "secure.structure.end",
         _ => unreachable!(),
     };
-    if action != expected_action && !(mode == "SNAPSHOT_BEGIN" && action == "secure.fields.begin")
+    if action != expected_action
+        && !(mode == "SNAPSHOT_BEGIN"
+            && (action == "secure.fields.begin"
+                || recovery.is_some() && action == "secure.recover"))
         || !exact_fields(snapshot, &["source", "root", "records", "heads", "offset"])
     {
         return Err(ReplayError::Invalid);
@@ -758,7 +765,9 @@ fn validate_signed_structure_slice(
     let prior_sequence = integer(context, "sequence")?
         .checked_sub(1)
         .ok_or(ReplayError::Invalid)?;
-    let prior_checkpoint = if prior_sequence == 0 {
+    let prior_checkpoint = if let Some(recovery) = recovery {
+        recovery.get("base").ok_or(ReplayError::Invalid)?.clone()
+    } else if prior_sequence == 0 {
         fields_object(vec![
             ("v", WireValue::Number(1.0)),
             ("workspace_id", string_value(&chain.workspace_id)),
@@ -1172,6 +1181,7 @@ pub(crate) struct ReplayFacts {
     pub object_count: usize,
     pub legacy: bool,
     pub recoveries: Vec<WireValue>,
+    pub structure_state: Option<&'static str>,
 }
 
 /// Reconstruct a signed PUBLIC prefix exported into the first PRIVATE
@@ -1470,6 +1480,32 @@ fn replay_basic_content_depth(
             let policy = policies
                 .get(policy_hash.as_str())
                 .ok_or(ReplayError::Invalid)?;
+            if integer(payload, "v")? == 3 {
+                // A decryptable v3 BOOTSTRAP or MIGRATE body cannot be hidden
+                // inside a recovery range under an ordinary action header.
+                let decoded = (|| -> Result<WireValue, ReplayError> {
+                    let key = epoch_key(
+                        keyring_wire.ok_or(ReplayError::Invalid)?,
+                        workspace_id,
+                        integer(payload, "epoch")?,
+                    )?;
+                    let sealed = sealed_content(payload.get("body").ok_or(ReplayError::Invalid)?)?;
+                    let context = commit_context(payload)?;
+                    let context_text = canonical_wire_value(&context, Path::SecureArtifact)
+                        .map_err(|_| ReplayError::Invalid)?;
+                    let plaintext = open_content_wire(&key, &sealed, context_text.as_bytes())
+                        .map_err(|_| ReplayError::Invalid)?;
+                    parse_wire_json_js_bounded(&plaintext, 2048, MAX_CONTENT_BYTES)
+                        .map_err(|_| ReplayError::Invalid)
+                })();
+                if let Ok(operation) = decoded {
+                    if let Some(kind) = operation.get("kind") {
+                        if !matches!(kind.as_string().as_deref(), Some("ACTION" | "ADMIN")) {
+                            return Err(ReplayError::Invalid);
+                        }
+                    }
+                }
+            }
             if sequence == segment.base + 1 {
                 let base_checkpoint = signed_checkpoint_at(segment.base, &chain, commit_wires)?;
                 let marker_index =
@@ -2033,12 +2069,25 @@ fn replay_basic_content_depth(
         &mut role_history,
     )
     .map_err(|_| ReplayError::Invalid)?;
+    let final_payload = final_policy.get("payload").ok_or(ReplayError::Invalid)?;
+    let structured = integer(final_payload, "v")? == 2
+        || integer(final_payload, "v")? == 3
+            && string(final_payload, "structure_mode")? == "STRUCTURED";
     Ok(ReplayFacts {
         operations,
         objects: prior_objects,
         object_count: seen_objects.len(),
         legacy,
         recoveries,
+        structure_state: if structured {
+            Some(if structure_progress.is_some() {
+                "SEEDING"
+            } else {
+                "ACTIVE"
+            })
+        } else {
+            None
+        },
     })
 }
 
@@ -4263,6 +4312,12 @@ mod tests {
                     facts.legacy,
                     case["legacy"].as_bool().unwrap(),
                     "{}: legacy",
+                    case["name"]
+                );
+                assert_eq!(
+                    facts.structure_state,
+                    case["structure_state"].as_str(),
+                    "{}: structure status",
                     case["name"]
                 );
             }
