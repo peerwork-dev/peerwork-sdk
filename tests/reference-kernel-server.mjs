@@ -158,8 +158,12 @@ let dropFirstPost = true;
 let alterFirstChunk = process.env.PEERWORK_TEST_WRONG_CHUNK_STATE === '1';
 const firstPostMode = process.env.PEERWORK_TEST_FIRST_POST_MODE || 'drop';
 const firstPostDelayMs = Number(process.env.PEERWORK_TEST_FIRST_POST_DELAY_MS || 0);
+const firstJournalDelayMs = Number(process.env.PEERWORK_TEST_FIRST_JOURNAL_DELAY_MS || 0);
 if (!['drop', 'delay', 'normal'].includes(firstPostMode) || !Number.isSafeInteger(firstPostDelayMs) || firstPostDelayMs < 0 || firstPostDelayMs > 10000)
   throw new Error('invalid first POST fixture mode or delay');
+if (!Number.isSafeInteger(firstJournalDelayMs) || firstJournalDelayMs < 0 || firstJournalDelayMs > 10000)
+  throw new Error('invalid journal delay fixture');
+let delayFirstJournal = firstJournalDelayMs > 0;
 const proxy = createServer(async (request, response) => {
   try {
     if (request.url === '/__test/counts') {
@@ -225,6 +229,11 @@ const proxy = createServer(async (request, response) => {
       }
       // Hold the committed real response for an in-flight client abort test.
       await new Promise(resolve => setTimeout(resolve, firstPostDelayMs));
+      if (response.destroyed) return;
+    }
+    if (request.method === 'GET' && request.url?.includes('/journal?') && delayFirstJournal) {
+      delayFirstJournal = false;
+      await new Promise(resolve => setTimeout(resolve, firstJournalDelayMs));
       if (response.destroyed) return;
     }
     response.writeHead(original.status, {'content-type': original.headers.get('content-type') || 'application/json'});

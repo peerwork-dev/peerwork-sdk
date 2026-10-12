@@ -331,6 +331,7 @@ mod tests {
             .env("PEERWORK_REFERENCE_ROOT", reference_root)
             .env("PEERWORK_TEST_STATE", root.path())
             .env("PEERWORK_TEST_BOOTSTRAP", "1")
+            .env("PEERWORK_TEST_FIRST_JOURNAL_DELAY_MS", "300")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -545,6 +546,25 @@ mod tests {
         )
         .unwrap();
         assert_eq!(read.progress().unwrap().pages, 0);
+        let cancelled = CancellationToken::new();
+        let trigger = cancelled.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            trigger.cancel();
+        });
+        assert!(matches!(
+            read.fetch_next(&transport, &discovery, &identity, &cancelled)
+                .await,
+            Err(crate::secure_journal_read::JournalReadError::Transport(
+                TransportError::Cancelled
+            ))
+        ));
+        assert_eq!(read.progress().unwrap().pages, 0);
+        drop(read);
+        let mut read = crate::secure_journal_read::SecureJournalRead::open(
+            &read_path, &transport, &discovery, &identity, &workspace,
+        )
+        .unwrap();
         let progress = read
             .fetch_next(&transport, &discovery, &identity, &CancellationToken::new())
             .await
