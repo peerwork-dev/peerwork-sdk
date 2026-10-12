@@ -9,7 +9,7 @@ baseline is the tracked Peerwork protocols TypeScript SDK at source commit
 The root Apache-2.0 `LICENSE` is copied byte-for-byte from that tracked
 baseline; its SHA-256 is
 `c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4`.
-The Node package carries the same license. Rust/Python/Node source in this
+The Node and Python packages carry the same license. Rust/Python/Node source in this
 repository is newly authored for the native port. The baseline is consulted
 for behavior and differential vectors; the old SDK bundle, operator key
 material, state databases, and private fixture data are excluded.
