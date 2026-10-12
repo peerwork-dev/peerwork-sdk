@@ -218,7 +218,8 @@ python3 tests/installed-cancellation-smoke.py
 This covers an already submitted HTTP request. Local identity creation can
 finish after its caller abandons the await; its documented reopen behavior
 still needs a bounded executable lifecycle regression. Windows console
-interruption and actual Windows/macOS runner execution remain open.
+interruption source was added later; its actual delivery and recovery, and
+the full Windows/macOS runner execution gates, remain open.
 
 Reviewer follow-up found that a second Python task cancellation could escape
 the worker-drain await, and two simultaneous Unix CLI monitors could replace
@@ -243,3 +244,55 @@ workspace after recovery. Cancellation during local preparation can still
 race with durable insertion of a new `PENDING` row; callers inspect
 `pending()`/`status(command_id)` before attempting another prepare. This
 scripted run does not establish Agent workflow compliance.
+
+## Installed catalog upload and publication
+
+At exact SDK source commit `632bd159830eddfb4f20f9d0de39ffed330d8cfb`,
+an isolated Rust 1.89 locked-offline build produced a Python wheel (SHA-256
+`fdd86fcb3fea6bed83b39f60b29a1884d7d09097431e812716104324ee508403`),
+Node `index.node` (SHA-256
+`89450c1c82c69b0e354f737dcb86e85384748c6b19dc623ac686e8eb568fa2ec`),
+and CLI (SHA-256
+`346c0cdf1a31dd077c3b764fdab843fb96801af9fa04a0aa82477cf86c62b6a7`).
+The wheel was installed with `pip --no-index --no-deps`. These are measured
+Linux x64 development artifacts, not release packages or a minimum platform
+claim.
+
+The opt-in [installed catalog regression](../tests/installed-catalog-smoke.py)
+used fresh synthetic protected identity/journal/service state, the tracked
+Peerwork kernel HTTP app, and the tracked protocol-package parser/compiler
+adapter from the official catalog publish fixture. The official
+`protocols/proposal-adoption` bundle was canonicalized by the tracked
+TypeScript package code: 24,804 bytes, SHA-256
+`a7b9713067524ab85e988be2e665998e15a42c813c60e0a92880afec32b5c95c`.
+The installed Python SDK registered the identity, claimed its namespace,
+began the upload, sent the one binary chunk, and published the package.
+Before the valid chunk, a payload whose bytes differed from its signed digest
+was refused before a saved row or POST. The final receipt-verified public
+catalog result matched the exact signed namespace, package ID, version and
+bundle digest; no raw JWS, private key, or source bundle was returned.
+Reopening the saved publish returned the same accepted result in Python,
+Node, and CLI. The service counted five commands, one namespace, one consumed
+upload, zero staged chunks, one package and one outbox entry; an accepted
+same-ID retry did not create another package or outbox entry.
+
+Observed stages from installed Python import were official bundle
+canonicalization 168 ms, namespace claim 1080 ms, upload begin 1312 ms,
+wrong-chunk refusal 1411 ms, verified binary chunk 1686 ms, verified
+publication 1922 ms, accepted retry 2063 ms, and Node/CLI recovered status
+2402 ms. These are one scripted synthetic run's elapsed times. The existing
+runtime suite initially had one failure: its signed namespace receipt fixture
+contained no namespace/owner fields, which the new semantic result binding
+correctly refused. Its fixture was corrected to the tracked server shape and
+the focused lost-reply/invalid-receipt regression passed; the other 28 tests
+had passed in that initial suite. This business-path test does not establish
+Agent workflow compliance, multi-chunk upload behavior, or macOS/Windows
+execution.
+
+To reproduce from a pinned SDK checkout after building the pinned reference
+checkout and installing the locally built wheel/Node addon/CLI, use the
+same artifact environment variables as the cancellation regression above
+with `PEERWORK_TEST_SOURCE_COMMIT=632bd159830eddfb4f20f9d0de39ffed330d8cfb`,
+then run `python3 tests/installed-catalog-smoke.py`. The script asserts its
+source pin before touching service state and writes only sanitized task-local
+counts, hashes, and stages to `.build-artifacts/catalog-service-evidence.json`.
