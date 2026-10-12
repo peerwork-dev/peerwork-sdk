@@ -185,7 +185,6 @@ pub fn verify_direct_key_grant(
             input.workspace_id,
             input.trusted_owner_actor,
             input.trusted_owner_key,
-            &policy_hash,
             issued,
             grantor_role.as_deref() == Some("OWNER"),
         )?,
@@ -203,6 +202,7 @@ pub fn verify_direct_key_grant(
             latest_payload,
             input.workspace_id,
             issued,
+            input.now,
             input.expected_delegation_origin.ok_or_else(bad)?,
             input.expected_delegation_audience.ok_or_else(bad)?,
         )?,
@@ -288,6 +288,12 @@ fn unsigned(value: &WireValue, name: &str) -> Result<u64, GrantError> {
 fn token(value: &str) -> bool {
     value.len() == 43 && decode_base64url(value).is_ok_and(|bytes| bytes.len() == 32)
 }
+fn hex_digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
 fn same(left: &WireValue, right: &WireValue) -> Result<bool, GrantError> {
     Ok(
         canonical_wire_value(left, Path::SecureArtifact).map_err(|_| GrantError::Invalid)?
@@ -357,7 +363,6 @@ fn verify_invitation(
     workspace: &str,
     owner_actor: &str,
     owner_key: &str,
-    selected_policy_hash: &str,
     issued: u64,
     grantor_is_owner: bool,
 ) -> Result<(), GrantError> {
@@ -379,7 +384,7 @@ fn verify_invitation(
         || string(op, "workspace_id")? != workspace
         || string(op, "actor_id")? != owner_actor
         || string(op, "signing_key")? != owner_key
-        || string(op, "policy_hash")? != selected_policy_hash
+        || !hex_digest(&string(op, "policy_hash")?)
         || !valid_scopes(op.get("scopes").ok_or(GrantError::Invalid)?)?
         || end <= issued
         || start > issued
@@ -418,6 +423,7 @@ fn verify_delegation(
     latest: &WireValue,
     workspace: &str,
     issued: u64,
+    now: u64,
     expected_origin: &str,
     expected_audience: &str,
 ) -> Result<(), GrantError> {
@@ -439,6 +445,8 @@ fn verify_delegation(
         || !matches!(dp.get("read"), Some(WireValue::Bool(true)))
         || start > issued
         || end <= issued
+        || start > now
+        || end <= now
         || !has_member_actor_key(latest, grantor_actor, grantor_key)?
     {
         return Err(GrantError::Invalid);
@@ -544,11 +552,31 @@ mod tests {
         let mut private = Zeroizing::new([0u8; 32]);
         private.copy_from_slice(&decoded);
         let recipient = SecretRecipient::from_private(private).unwrap();
-        let policy_wire = serde_json::to_vec(&vector["policy"]).unwrap();
+        let policy_wires: Vec<Vec<u8>> = vector
+            .get("policies")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .map(|item| serde_json::to_vec(item).unwrap())
+                    .collect()
+            })
+            .unwrap_or_else(|| vec![serde_json::to_vec(&vector["policy"]).unwrap()]);
+        let commit_wires: Vec<Vec<u8>> = vector
+            .get("commits")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .map(|item| serde_json::to_vec(item).unwrap())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let policy_refs: Vec<&[u8]> = policy_wires.iter().map(Vec::as_slice).collect();
+        let commit_refs: Vec<&[u8]> = commit_wires.iter().map(Vec::as_slice).collect();
         let checkpoint_wire = serde_json::to_vec(&vector["checkpoint"]).unwrap();
         let grant_wire = serde_json::to_vec(&vector["grant"]).unwrap();
         let certificate_wire = serde_json::to_vec(&vector["certificate"]).unwrap();
-        let policy_refs: [&[u8]; 1] = [&policy_wire];
         let workspace = vector["workspace"].as_str().unwrap();
         let owner_actor = vector["owner_actor"].as_str().unwrap();
         let owner_key = vector["owner_key"].as_str().unwrap();
@@ -567,7 +595,7 @@ mod tests {
         let verify = |grant: &[u8], certificate: &[u8], policies: &[&[u8]]| {
             verify_direct_key_grant(GrantProofInput {
                 policy_wires: policies,
-                commit_wires: &[],
+                commit_wires: &commit_refs,
                 checkpoint_wire: &checkpoint_wire,
                 grant_wire: grant,
                 recipient_certificate_wire: certificate,
@@ -602,7 +630,7 @@ mod tests {
         if offer_wire.is_some() {
             let omitted = verify_direct_key_grant(GrantProofInput {
                 policy_wires: &policy_refs,
-                commit_wires: &[],
+                commit_wires: &commit_refs,
                 checkpoint_wire: &checkpoint_wire,
                 grant_wire: &grant_wire,
                 recipient_certificate_wire: &certificate_wire,
@@ -622,7 +650,7 @@ mod tests {
             let bad_offer_wire = serde_json::to_vec(&bad_offer).unwrap();
             let altered = verify_direct_key_grant(GrantProofInput {
                 policy_wires: &policy_refs,
-                commit_wires: &[],
+                commit_wires: &commit_refs,
                 checkpoint_wire: &checkpoint_wire,
                 grant_wire: &grant_wire,
                 recipient_certificate_wire: &certificate_wire,
@@ -645,7 +673,7 @@ mod tests {
             let bad_decision_wire = serde_json::to_vec(&bad_decision).unwrap();
             let altered = verify_direct_key_grant(GrantProofInput {
                 policy_wires: &policy_refs,
-                commit_wires: &[],
+                commit_wires: &commit_refs,
                 checkpoint_wire: &checkpoint_wire,
                 grant_wire: &grant_wire,
                 recipient_certificate_wire: &certificate_wire,
@@ -667,7 +695,7 @@ mod tests {
         if delegation_wire.is_some() {
             let omitted = verify_direct_key_grant(GrantProofInput {
                 policy_wires: &policy_refs,
-                commit_wires: &[],
+                commit_wires: &commit_refs,
                 checkpoint_wire: &checkpoint_wire,
                 grant_wire: &grant_wire,
                 recipient_certificate_wire: &certificate_wire,
@@ -695,7 +723,7 @@ mod tests {
             let bad_delegation_wire = serde_json::to_vec(&bad_delegation).unwrap();
             let altered = verify_direct_key_grant(GrantProofInput {
                 policy_wires: &policy_refs,
-                commit_wires: &[],
+                commit_wires: &commit_refs,
                 checkpoint_wire: &checkpoint_wire,
                 grant_wire: &grant_wire,
                 recipient_certificate_wire: &certificate_wire,
@@ -710,6 +738,23 @@ mod tests {
                 expected_delegation_audience: delegation_audience,
             });
             assert!(altered.is_err());
+            let expired = verify_direct_key_grant(GrantProofInput {
+                policy_wires: &policy_refs,
+                commit_wires: &commit_refs,
+                checkpoint_wire: &checkpoint_wire,
+                grant_wire: &grant_wire,
+                recipient_certificate_wire: &certificate_wire,
+                recipient: &recipient,
+                workspace_id: workspace,
+                trusted_owner_actor: owner_actor,
+                trusted_owner_key: owner_key,
+                now: vector["delegation_expired_now"].as_u64().unwrap(),
+                expected_invitation: None,
+                expected_delegation_wire: delegation_wire.as_deref(),
+                expected_delegation_origin: delegation_origin,
+                expected_delegation_audience: delegation_audience,
+            });
+            assert!(expired.is_err());
         }
 
         let mut bad_grant = vector["grant"].clone();

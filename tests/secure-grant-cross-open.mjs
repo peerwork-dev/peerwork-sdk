@@ -61,24 +61,41 @@ try {
   const memberEncryption = await crypto.createEncryptionIdentity(true);
   const memberCertificate = await crypto.certifyEncryptionKey(member,memberEncryption,now);
   const invitedWorkspace = client.secureToken();
-  const invitedPolicy = await client.createPolicy(owner,{
+  const invitationPolicy = await client.createPolicy(owner,{
     v:1,workspace_id:invitedWorkspace,owner_id:owner.actorId,signing_key:owner.keyId,
     version:1,previous_policy:null,effective_sequence:1,visibility:'PRIVATE',epoch:1,
-    members:[{actor_id:owner.actorId,certificate,role:'OWNER',scopes:[]},
-      {actor_id:member.actorId,certificate:memberCertificate,role:'MEMBER',scopes:[]}],issued_at:now,
+    members:[{actor_id:owner.actorId,certificate,role:'OWNER',scopes:[]}],issued_at:now,
   });
-  const offer = await client.createInvitation({identity:owner,policy:invitedPolicy,
+  const offer = await client.createInvitation({identity:owner,policy:invitationPolicy,
     recipient:memberCertificate,scopes:[],message:'synthetic',issuedAt:now,expiresAt:now+86_400_000});
   const decision = await client.createInviteDecision(member,offer,'ACCEPT',
     {actorId:owner.actorId,key:owner.keyId},now+1);
+  const invitedPolicy = await client.createPolicy(owner,{
+    v:1,workspace_id:invitedWorkspace,owner_id:owner.actorId,signing_key:owner.keyId,
+    version:2,previous_policy:await client.secureHash(invitationPolicy),effective_sequence:2,
+    visibility:'PRIVATE',epoch:1,members:[
+      {actor_id:owner.actorId,certificate,role:'OWNER',scopes:[]},
+      {actor_id:member.actorId,certificate:memberCertificate,role:'MEMBER',scopes:[]}],issued_at:now+1,
+  });
+  await client.verifyPolicyChain([invitationPolicy,invitedPolicy],invitedWorkspace);
+  const signedCommit = async (selected,sequence,previous) => client.signSecure(owner,
+    'peerwork.secure.commit.v1',{
+      v:1,workspace_id:invitedWorkspace,sequence,previous,policy_hash:await client.secureHash(selected),
+      epoch:1,actor_id:owner.actorId,signing_key:owner.keyId,command_id:client.secureToken(),
+      action_id:'synthetic.header',instance_id:null,issued_at:now+sequence,delegation:null,
+      mode:'PRIVATE',body:{v:1,alg:'AES-256-GCM',nonce:client.secureToken(),chunks:[client.secureToken()]},
+    });
+  const firstCommit = await signedCommit(invitationPolicy,1,null);
+  const secondCommit = await signedCommit(invitedPolicy,2,await client.secureHash(firstCommit));
+  const invitedCommits = [firstCommit,secondCommit];
   const invitedRing = client.newSecureKeyring(invitedWorkspace);
   const invitedGrant = await client.createKeyGrant({identity:owner,recipient:memberCertificate,
     policy:invitedPolicy,keyring:invitedRing,invite:{offer,decision},issuedAt:now+2});
   assert.deepEqual(await client.openKeyGrant({grant:invitedGrant,recipient:memberCertificate,
-    privateKey:memberEncryption.privateKey,policy:invitedPolicy,policies:[invitedPolicy],
+    privateKey:memberEncryption.privateKey,policy:invitedPolicy,policies:[invitationPolicy,invitedPolicy],
     owner:{actorId:owner.actorId,key:owner.keyId},expectedInvite:{offer,decision},now:now+3}),invitedRing);
   await assert.rejects(client.openKeyGrant({grant:invitedGrant,recipient:memberCertificate,
-    privateKey:memberEncryption.privateKey,policy:invitedPolicy,policies:[invitedPolicy],
+    privateKey:memberEncryption.privateKey,policy:invitedPolicy,policies:[invitationPolicy,invitedPolicy],
     owner:{actorId:owner.actorId,key:owner.keyId},now:now+3}));
   const device = await crypto.createSigningIdentity();
   const deviceEncryption = await crypto.createEncryptionIdentity(true);
@@ -96,20 +113,26 @@ try {
   await assert.rejects(client.openKeyGrant({grant:delegatedGrant,recipient:deviceCertificate,
     privateKey:deviceEncryption.privateKey,policy,policies:[policy],
     owner:{actorId:owner.actorId,key:owner.keyId},now:now+3}));
+  await assert.rejects(client.openKeyGrant({grant:delegatedGrant,recipient:deviceCertificate,
+    privateKey:deviceEncryption.privateKey,policy,policies:[policy],
+    owner:{actorId:owner.actorId,key:owner.keyId},expectedDelegation:delegation,
+    now:now+86_400_000}));
   const invitePrivate = Buffer.from(await crypto.exportRecipientPrivateKey(memberEncryption.privateKey));
   const devicePrivate = Buffer.from(await crypto.exportRecipientPrivateKey(deviceEncryption.privateKey));
   const vectors = [vector,{
-    policy:invitedPolicy,grant:invitedGrant,certificate:memberCertificate,wrong_recipient:wrongRecipient,
+    policy:invitedPolicy,policies:[invitationPolicy,invitedPolicy],commits:invitedCommits,
+    grant:invitedGrant,certificate:memberCertificate,wrong_recipient:wrongRecipient,
     workspace:invitedWorkspace,owner_actor:owner.actorId,owner_key:owner.keyId,
     recipient_actor:member.actorId,recipient_key:member.keyId,
     checkpoint:{v:1,workspace_id:invitedWorkspace,owner_id:owner.actorId,owner_key:owner.keyId,
-      sequence:0,head:null,policy_hash:await client.secureHash(invitedPolicy)},
+      sequence:2,head:await client.secureHash(secondCommit),policy_hash:await client.secureHash(invitedPolicy)},
     recipient_private:invitePrivate.toString('base64url'),offer,decision,now:now+3,
   },{
     policy,grant:delegatedGrant,certificate:deviceCertificate,wrong_recipient:wrongRecipient,
     workspace,owner_actor:owner.actorId,owner_key:owner.keyId,
     recipient_actor:device.actorId,recipient_key:device.keyId,
-    checkpoint:vector.checkpoint,recipient_private:devicePrivate.toString('base64url'),delegation,now:now+3,
+    checkpoint:vector.checkpoint,recipient_private:devicePrivate.toString('base64url'),delegation,
+    now:now+3,delegation_expired_now:now+86_400_000,
   }];
   invitePrivate.fill(0);devicePrivate.fill(0);
   const cargo = process.env.PEERWORK_CARGO_BIN ?? 'cargo';
