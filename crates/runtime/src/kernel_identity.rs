@@ -69,11 +69,11 @@ impl KernelIdentity {
             std::str::from_utf8(encoded_bytes).map_err(|_| KernelIdentityError::Invalid)?;
         let decoded =
             Zeroizing::new(decode_base64url(encoded).map_err(|_| KernelIdentityError::Invalid)?);
-        let seed: [u8; 32] = decoded
-            .as_slice()
-            .try_into()
-            .map_err(|_| KernelIdentityError::Invalid)?;
-        let seed = Zeroizing::new(seed);
+        if decoded.len() != 32 {
+            return Err(KernelIdentityError::Invalid);
+        }
+        let mut seed = Zeroizing::new([0u8; 32]);
+        seed.copy_from_slice(&decoded);
         let reencoded = Zeroizing::new(base64url(&*seed));
         if reencoded.as_str() != encoded {
             return Err(KernelIdentityError::Invalid);
