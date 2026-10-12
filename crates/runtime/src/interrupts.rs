@@ -95,7 +95,91 @@ mod unix {
 #[cfg(unix)]
 pub use unix::InterruptMonitor;
 
-#[cfg(all(test, unix))]
+#[cfg(windows)]
+mod windows {
+    use super::*;
+    use std::io;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    use std::thread::{self, JoinHandle};
+    use std::time::Duration;
+    use windows_sys::Win32::System::Console::{
+        SetConsoleCtrlHandler, CTRL_BREAK_EVENT, CTRL_C_EVENT,
+    };
+
+    static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+    static ACTIVE: AtomicBool = AtomicBool::new(false);
+
+    unsafe extern "system" fn on_interrupt(event: u32) -> i32 {
+        if event == CTRL_C_EVENT || event == CTRL_BREAK_EVENT {
+            INTERRUPTED.store(true, Ordering::Relaxed);
+            1
+        } else {
+            0
+        }
+    }
+
+    pub struct InterruptMonitor {
+        done: Arc<AtomicBool>,
+        worker: Option<JoinHandle<()>>,
+    }
+
+    impl InterruptMonitor {
+        pub fn start(cancel: KernelCancellationToken) -> io::Result<Self> {
+            if ACTIVE
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "interrupt monitor already active",
+                ));
+            }
+            INTERRUPTED.store(false, Ordering::Relaxed);
+            if unsafe { SetConsoleCtrlHandler(Some(on_interrupt), 1) } == 0 {
+                ACTIVE.store(false, Ordering::Release);
+                return Err(io::Error::last_os_error());
+            }
+            let done = Arc::new(AtomicBool::new(false));
+            let watch = done.clone();
+            let worker = thread::spawn(move || {
+                while !watch.load(Ordering::Relaxed) {
+                    if INTERRUPTED.load(Ordering::Relaxed) {
+                        cancel.cancel();
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                }
+            });
+            Ok(Self {
+                done,
+                worker: Some(worker),
+            })
+        }
+
+        pub fn interrupted() -> bool {
+            INTERRUPTED.load(Ordering::Relaxed)
+        }
+    }
+
+    impl Drop for InterruptMonitor {
+        fn drop(&mut self) {
+            self.done.store(true, Ordering::Relaxed);
+            if let Some(worker) = self.worker.take() {
+                let _ = worker.join();
+            }
+            unsafe { SetConsoleCtrlHandler(Some(on_interrupt), 0) };
+            ACTIVE.store(false, Ordering::Release);
+        }
+    }
+}
+
+#[cfg(windows)]
+pub use windows::InterruptMonitor;
+
+#[cfg(all(test, any(unix, windows)))]
 mod tests {
     use super::InterruptMonitor;
     use crate::KernelCancellationToken;
@@ -104,17 +188,20 @@ mod tests {
     fn monitor_has_one_signal_handler_owner() {
         let first = InterruptMonitor::start(KernelCancellationToken::new()).unwrap();
         let second = InterruptMonitor::start(KernelCancellationToken::new());
-        assert_eq!(second.err().unwrap().kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            second.err().unwrap().kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
         drop(first);
         let third = InterruptMonitor::start(KernelCancellationToken::new()).unwrap();
         drop(third);
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 pub struct InterruptMonitor;
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 impl InterruptMonitor {
     pub fn start(_: KernelCancellationToken) -> std::io::Result<Self> {
         Ok(Self)

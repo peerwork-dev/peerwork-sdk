@@ -47,3 +47,18 @@ UNC/network state paths are currently refused by the local-drive path policy;
 their locking and durability semantics require a separate target contract.
 The public SDK capability manifest must continue to label Windows durable
 state and secure-agent behavior as unverified until those gates pass.
+
+## CLI console cancellation source checkpoint
+
+`InterruptMonitor` now registers a Windows `SetConsoleCtrlHandler` callback
+for `CTRL_C_EVENT` and `CTRL_BREAK_EVENT`. The callback sets only an atomic
+flag; an ordinary worker thread cancels the native HTTP token. Other console
+events are passed to the next handler. The registration has one active owner
+per process, matching the Unix monitor guard. This follows the documented
+[Windows console-handler contract](https://learn.microsoft.com/windows/console/setconsolectrlhandler).
+The task-local Rust 1.89 isolated source/test check for
+`x86_64-pc-windows-gnu` passed with `windows-sys 0.61.2` and its Console
+feature; the host Linux runtime and CLI `cargo check --offline --locked`
+also passed. The isolated Windows check did not link or execute a binary,
+exercise console delivery, or validate persisted recovery on Windows. Those
+remain actual-runner acceptance gates.
