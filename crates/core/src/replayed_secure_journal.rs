@@ -50,6 +50,8 @@ pub struct ReplayedSecureJournal {
     sequence: u64,
     head: Option<String>,
     policy_hash: String,
+    policy_hashes: Vec<String>,
+    commit_hashes: Vec<String>,
     objects: Vec<WireValue>,
     operations: Vec<WireValue>,
     recoveries: Vec<WireValue>,
@@ -76,6 +78,30 @@ impl ReplayedSecureJournal {
     }
     pub fn policy_hash(&self) -> &str {
         &self.policy_hash
+    }
+    /// Check whether an independently protected, previously verified
+    /// checkpoint is an ancestor of this complete signed history. The caller
+    /// must bind the old workspace/owner/origin separately; arbitrary caller
+    /// strings do not become a trusted floor through this method.
+    pub fn contains_checkpoint(
+        &self,
+        sequence: u64,
+        head: Option<&str>,
+        policy_hash: &str,
+    ) -> bool {
+        if sequence > self.sequence || !self.policy_hashes.iter().any(|hash| hash == policy_hash) {
+            return false;
+        }
+        match sequence {
+            0 => head.is_none(),
+            _ => {
+                usize::try_from(sequence - 1)
+                    .ok()
+                    .and_then(|index| self.commit_hashes.get(index))
+                    .map(String::as_str)
+                    == head
+            }
+        }
     }
     pub fn structure_status(&self) -> StructureStatus {
         self.structure_status
@@ -159,6 +185,8 @@ pub fn replay_secure_journal_exact(
         sequence: chain.sequence,
         head: chain.head,
         policy_hash: chain.policy_hash,
+        policy_hashes: chain.policy_hashes,
+        commit_hashes: chain.commit_hashes,
         objects: facts.objects,
         operations: facts.operations,
         recoveries: facts.recoveries,
@@ -225,6 +253,24 @@ mod tests {
             let replay = replay_secure_journal_exact(pins()).unwrap();
             assert_eq!(replay.sequence(), pins().final_sequence, "{name}");
             assert_eq!(replay.head(), pins().final_head, "{name}");
+            assert!(replay.contains_checkpoint(
+                replay.sequence(),
+                replay.head(),
+                replay.policy_hash()
+            ));
+            assert!(!replay.contains_checkpoint(
+                replay.sequence(),
+                Some("wrong-head"),
+                replay.policy_hash()
+            ));
+            assert!(!replay.contains_checkpoint(replay.sequence(), replay.head(), "wrong-policy"));
+            if replay.sequence() > 1 {
+                assert!(replay.contains_checkpoint(
+                    1,
+                    Some(&replay.commit_hashes[0]),
+                    &replay.policy_hashes[0],
+                ));
+            }
             if name == "v2_structured_recovery_snapshot_base" {
                 assert_eq!(replay.structure_status(), StructureStatus::Seeding);
                 assert!(matches!(
