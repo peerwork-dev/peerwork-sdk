@@ -296,3 +296,46 @@ with `PEERWORK_TEST_SOURCE_COMMIT=632bd159830eddfb4f20f9d0de39ffed330d8cfb`,
 then run `python3 tests/installed-catalog-smoke.py`. The script asserts its
 source pin before touching service state and writes only sanitized task-local
 counts, hashes, and stages to `.build-artifacts/catalog-service-evidence.json`.
+
+## Multi-chunk catalog result binding
+
+Commit `84233c4f27e88eb721d9efbde953084fbde2bea8` binds a chunk receipt's
+`STAGING` or `READY` result to the verified, locally accepted upload-begin
+command in the same durable journal. The signed chunk command itself contains
+no total-byte or chunk-count field. A missing or conflicting begin therefore
+keeps the chunk pending. The focused Rust socket test passed 1/1; the four
+workspace crates passed a Rust 1.89 locked-offline check. A separate signed
+namespace-result mismatch stayed pending before its valid exact retry.
+
+Installed Linux artifacts from exact source pin
+`bb53fafebfa5d322868051bbeadbfa8acb204a25` passed the opt-in actual
+Peerwork HTTP catalog regression with two chunks. SHA-256: Python wheel
+`b8965bf4d5c79f34b5fce695ebd6345cb324291893fe488929fd595a34abb375`,
+Node addon `feb8fd4fb80cb06bc3b723dd6ccab3100d0722ee4555b81378aeef2a4022d156`,
+CLI `43edcab8d1d2b9ec8ebb37fd94904c3d62819202ad62b84e9d19d6a4caf2e68f`.
+The official proposal-adoption package was extended only for this synthetic
+two-chunk test with 70,000 bytes of harmless padding, yielding a canonical
+94,835-byte bundle with SHA-256
+`6a28cc3afcb900dd07f85246047056cea5f92b4f5480905d39caf1da000501d1`.
+The bridge returned a validly signed receipt with a wrong first-chunk state;
+the SDK identified the semantic result mismatch, retained `PENDING`, and
+retried the same saved command against the actual service. Both chunks and
+publication then received verified typed results. After restart, Python,
+Node, and CLI read the same accepted publish; the real service counted six
+commands, one namespace, one consumed upload, zero remaining chunks, one
+package, and one outbox entry. Observed stages from installed Python import
+were namespace claim 1,379 ms, upload begin 1,572 ms, signed wrong-state
+refusal 2,582 ms, both chunks 4,514 ms, verified publish 4,879 ms, and
+cross-language recovered status 5,277 ms. The first install attempt failed
+because `/tmp` had insufficient space; setting `TMPDIR` to the task-local
+workspace build directory allowed the offline wheel install. These are
+scripted synthetic business-path observations, not performance guarantees or
+Agent workflow-compliance evidence. Actual macOS and Windows execution is
+still unverified.
+
+Reproduce the two-chunk signed-negative case with the pinned artifact inputs
+above and `PEERWORK_TEST_SOURCE_COMMIT=bb53fafebfa5d322868051bbeadbfa8acb204a25`,
+`PEERWORK_TEST_PADDING_BYTES=70000`, and
+`PEERWORK_TEST_WRONG_CHUNK_STATE=1` when running
+`tests/installed-catalog-smoke.py`. The script writes only sanitized stage,
+artifact-hash, and service-count evidence under `.build-artifacts`.
