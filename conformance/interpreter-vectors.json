@@ -1,0 +1,1706 @@
+[
+  {
+    "name": "one_set",
+    "manifest": {
+      "actions": [
+        {
+          "id": "test.set",
+          "reads": [
+            [
+              "count"
+            ]
+          ],
+          "writes": [
+            [
+              "count"
+            ]
+          ],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [
+                {
+                  "op": "eq",
+                  "left": {
+                    "from": "state",
+                    "path": [
+                      "count"
+                    ]
+                  },
+                  "right": {
+                    "from": "literal",
+                    "value": 0
+                  }
+                }
+              ],
+              "effects": [
+                {
+                  "op": "set",
+                  "path": [
+                    "count"
+                  ],
+                  "value": {
+                    "from": "literal",
+                    "value": 1
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "state": {
+      "count": 0
+    },
+    "body": {},
+    "result": {
+      "nextState": {
+        "count": 1
+      },
+      "records": [],
+      "headSelections": [],
+      "revisionEffects": {
+        "control": true,
+        "contentEntities": []
+      }
+    }
+  },
+  {
+    "name": "one_zero_effect",
+    "manifest": {
+      "actions": [
+        {
+          "id": "test.set",
+          "reads": [
+            [
+              "count"
+            ]
+          ],
+          "writes": [
+            [
+              "count"
+            ]
+          ],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [
+                {
+                  "op": "eq",
+                  "left": {
+                    "from": "state",
+                    "path": [
+                      "count"
+                    ]
+                  },
+                  "right": {
+                    "from": "literal",
+                    "value": 1
+                  }
+                }
+              ],
+              "effects": []
+            }
+          ]
+        }
+      ]
+    },
+    "state": {
+      "count": 1
+    },
+    "body": {},
+    "result": {
+      "nextState": {
+        "count": 1
+      },
+      "records": [],
+      "headSelections": [],
+      "revisionEffects": {
+        "control": true,
+        "contentEntities": []
+      }
+    }
+  },
+  {
+    "name": "zero_variants",
+    "manifest": {
+      "actions": [
+        {
+          "id": "test.set",
+          "reads": [
+            [
+              "count"
+            ]
+          ],
+          "writes": [
+            [
+              "count"
+            ]
+          ],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [
+                {
+                  "op": "eq",
+                  "left": {
+                    "from": "state",
+                    "path": [
+                      "count"
+                    ]
+                  },
+                  "right": {
+                    "from": "literal",
+                    "value": 1
+                  }
+                }
+              ],
+              "effects": []
+            }
+          ]
+        }
+      ]
+    },
+    "state": {
+      "count": 2
+    },
+    "body": {},
+    "error": "CONSTRAINT_FAILED"
+  },
+  {
+    "name": "many_variants",
+    "manifest": {
+      "actions": [
+        {
+          "id": "test.set",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            },
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        }
+      ]
+    },
+    "state": {},
+    "body": {},
+    "error": "CONSTRAINT_FAILED"
+  },
+  {
+    "name": "exact_ref_payload",
+    "manifest": {
+      "actions": [
+        {
+          "id": "test.set",
+          "reads": [
+            [
+              "ref"
+            ]
+          ],
+          "writes": [
+            [
+              "result"
+            ]
+          ],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [
+                {
+                  "op": "exact_ref",
+                  "ref": {
+                    "from": "ref",
+                    "source": "state",
+                    "path": [
+                      "ref"
+                    ],
+                    "schema": "entry",
+                    "scope": "INSTANCE"
+                  }
+                }
+              ],
+              "effects": [
+                {
+                  "op": "set",
+                  "path": [
+                    "result"
+                  ],
+                  "value": {
+                    "from": "resolved_payload",
+                    "ref": {
+                      "from": "ref",
+                      "source": "state",
+                      "path": [
+                        "ref"
+                      ],
+                      "schema": "entry",
+                      "scope": "INSTANCE"
+                    },
+                    "path": [
+                      "value"
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "state": {
+      "ref": {
+        "record_id": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "revision": 1
+      },
+      "result": 0
+    },
+    "body": {},
+    "exactInputs": [
+      {
+        "recordId": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "revision": 1,
+        "schema": "entry",
+        "payload": {
+          "value": 42
+        },
+        "scope": "INSTANCE",
+        "entityId": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+      }
+    ],
+    "result": {
+      "nextState": {
+        "ref": {
+          "record_id": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+          "revision": 1
+        },
+        "result": 42
+      },
+      "records": [],
+      "headSelections": [],
+      "revisionEffects": {
+        "control": true,
+        "contentEntities": []
+      }
+    }
+  },
+  {
+    "name": "exact_ref_wrong_scope",
+    "manifest": {
+      "actions": [
+        {
+          "id": "test.set",
+          "reads": [
+            [
+              "ref"
+            ]
+          ],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [
+                {
+                  "op": "exact_ref",
+                  "ref": {
+                    "from": "ref",
+                    "source": "state",
+                    "path": [
+                      "ref"
+                    ],
+                    "schema": "entry",
+                    "scope": "INSTANCE"
+                  }
+                }
+              ],
+              "effects": []
+            }
+          ]
+        }
+      ]
+    },
+    "state": {
+      "ref": {
+        "record_id": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "revision": 1
+      }
+    },
+    "body": {},
+    "exactInputs": [
+      {
+        "recordId": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "revision": 1,
+        "schema": "entry",
+        "payload": {
+          "value": 42
+        },
+        "scope": "WORKSPACE"
+      }
+    ],
+    "error": "INVALID_PAYLOAD"
+  },
+  {
+    "name": "time_and_auth",
+    "manifest": {
+      "actions": [
+        {
+          "id": "test.set",
+          "reads": [],
+          "writes": [
+            [
+              "actor"
+            ],
+            [
+              "when"
+            ]
+          ],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [
+                {
+                  "op": "has_capability",
+                  "capability": "clock"
+                }
+              ],
+              "effects": [
+                {
+                  "op": "set",
+                  "path": [
+                    "actor"
+                  ],
+                  "value": {
+                    "from": "auth",
+                    "field": "actorId"
+                  }
+                },
+                {
+                  "op": "set",
+                  "path": [
+                    "when"
+                  ],
+                  "value": {
+                    "from": "time_add",
+                    "timestamp": {
+                      "from": "time"
+                    },
+                    "milliseconds": {
+                      "from": "literal",
+                      "value": 5
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "state": {
+      "actor": "",
+      "when": 0
+    },
+    "body": {},
+    "auth": {
+      "actorId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "capabilities": [
+        "clock"
+      ]
+    },
+    "executionTimeMs": 1000,
+    "result": {
+      "nextState": {
+        "actor": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "when": 1005
+      },
+      "records": [],
+      "headSelections": [],
+      "revisionEffects": {
+        "control": true,
+        "contentEntities": []
+      },
+      "evaluatedAt": 1000
+    }
+  },
+  {
+    "name": "body_selector",
+    "manifest": {
+      "actions": [
+        {
+          "id": "test.set",
+          "reads": [],
+          "writes": [
+            [
+              "out"
+            ]
+          ],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [
+                {
+                  "op": "eq",
+                  "left": {
+                    "from": "body",
+                    "path": [
+                      "value"
+                    ]
+                  },
+                  "right": {
+                    "from": "literal",
+                    "value": "ok"
+                  }
+                }
+              ],
+              "effects": [
+                {
+                  "op": "set",
+                  "path": [
+                    "out"
+                  ],
+                  "value": {
+                    "from": "body",
+                    "path": [
+                      "value"
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "state": {
+      "out": ""
+    },
+    "body": {
+      "value": "ok"
+    },
+    "result": {
+      "nextState": {
+        "out": "ok"
+      },
+      "records": [],
+      "headSelections": [],
+      "revisionEffects": {
+        "control": true,
+        "contentEntities": []
+      }
+    }
+  },
+  {
+    "name": "guard_set_and_numeric",
+    "manifest": {
+      "actions": [
+        {
+          "id": "test.set",
+          "reads": [
+            [
+              "count"
+            ]
+          ],
+          "writes": [
+            [
+              "out"
+            ]
+          ],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [
+                {
+                  "op": "and",
+                  "rules": [
+                    {
+                      "op": "in",
+                      "value": {
+                        "from": "state",
+                        "path": [
+                          "count"
+                        ]
+                      },
+                      "set": [
+                        {
+                          "from": "literal",
+                          "value": 1
+                        },
+                        {
+                          "from": "literal",
+                          "value": 2
+                        }
+                      ]
+                    },
+                    {
+                      "op": "lt",
+                      "left": {
+                        "from": "state",
+                        "path": [
+                          "count"
+                        ]
+                      },
+                      "right": {
+                        "from": "literal",
+                        "value": 3
+                      }
+                    },
+                    {
+                      "op": "gte",
+                      "left": {
+                        "from": "state",
+                        "path": [
+                          "count"
+                        ]
+                      },
+                      "right": {
+                        "from": "literal",
+                        "value": 2
+                      }
+                    }
+                  ]
+                }
+              ],
+              "effects": [
+                {
+                  "op": "set",
+                  "path": [
+                    "out"
+                  ],
+                  "value": {
+                    "from": "object",
+                    "fields": {
+                      "array": {
+                        "from": "array",
+                        "items": [
+                          {
+                            "from": "literal",
+                            "value": "a"
+                          },
+                          {
+                            "from": "state",
+                            "path": [
+                              "count"
+                            ]
+                          }
+                        ]
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "state": {
+      "count": 2,
+      "out": {}
+    },
+    "body": {},
+    "result": {
+      "nextState": {
+        "count": 2,
+        "out": {
+          "array": [
+            "a",
+            2
+          ]
+        }
+      },
+      "records": [],
+      "headSelections": [],
+      "revisionEffects": {
+        "control": true,
+        "contentEntities": []
+      }
+    }
+  },
+  {
+    "name": "guard_or_not_roles",
+    "manifest": {
+      "actions": [
+        {
+          "id": "test.set",
+          "reads": [],
+          "writes": [
+            [
+              "out"
+            ]
+          ],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [
+                {
+                  "op": "or",
+                  "rules": [
+                    {
+                      "op": "has_role",
+                      "role": "editor"
+                    },
+                    {
+                      "op": "not",
+                      "rule": {
+                        "op": "has_protocol_role",
+                        "role": "viewer"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "effects": [
+                {
+                  "op": "set",
+                  "path": [
+                    "out"
+                  ],
+                  "value": {
+                    "from": "auth",
+                    "field": "workspaceRoles"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "state": {
+      "out": []
+    },
+    "body": {},
+    "auth": {
+      "actorId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "workspaceRoles": [
+        "editor"
+      ],
+      "protocolRoles": [
+        "viewer"
+      ],
+      "capabilities": []
+    },
+    "result": {
+      "nextState": {
+        "out": [
+          "editor"
+        ]
+      },
+      "records": [],
+      "headSelections": [],
+      "revisionEffects": {
+        "control": true,
+        "contentEntities": []
+      }
+    }
+  },
+  {
+    "name": "append_entity_and_relation",
+    "manifest": {
+      "actions": [
+        {
+          "id": "test.set",
+          "reads": [
+            [
+              "ref"
+            ]
+          ],
+          "writes": [],
+          "revisionEffects": {
+            "control": false,
+            "contentEntities": [
+              "entity"
+            ]
+          },
+          "variants": [
+            {
+              "when": [
+                {
+                  "op": "exact_ref",
+                  "ref": {
+                    "from": "ref",
+                    "source": "state",
+                    "path": [
+                      "ref"
+                    ],
+                    "schema": "entry",
+                    "scope": "INSTANCE"
+                  }
+                }
+              ],
+              "effects": [
+                {
+                  "op": "append",
+                  "schema": "entry",
+                  "recordSlot": "created",
+                  "entity": {
+                    "mode": "new",
+                    "slot": "entity"
+                  },
+                  "selectHead": true,
+                  "value": {
+                    "from": "object",
+                    "fields": {
+                      "source": {
+                        "from": "resolved_entity",
+                        "ref": {
+                          "from": "ref",
+                          "source": "state",
+                          "path": [
+                            "ref"
+                          ],
+                          "schema": "entry",
+                          "scope": "INSTANCE"
+                        }
+                      }
+                    }
+                  },
+                  "relations": [
+                    {
+                      "kind": "parent",
+                      "target": {
+                        "from": "ref",
+                        "source": "state",
+                        "path": [
+                          "ref"
+                        ],
+                        "schema": "entry",
+                        "scope": "INSTANCE"
+                      }
+                    },
+                    {
+                      "kind": "sibling",
+                      "target": {
+                        "from": "produced_ref",
+                        "slot": "created"
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "state": {
+      "ref": {
+        "record_id": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "revision": 1
+      }
+    },
+    "body": {},
+    "exactInputs": [
+      {
+        "recordId": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "revision": 1,
+        "schema": "entry",
+        "payload": {},
+        "scope": "INSTANCE",
+        "entityId": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+      }
+    ],
+    "result": {
+      "nextState": {
+        "ref": {
+          "record_id": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+          "revision": 1
+        }
+      },
+      "records": [
+        {
+          "schema": "entry",
+          "recordSlot": "created",
+          "entity": {
+            "mode": "new",
+            "slot": "entity"
+          },
+          "selectHead": true,
+          "payload": {
+            "source": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+          },
+          "relations": [
+            {
+              "kind": "parent",
+              "target": {
+                "recordId": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+                "revision": 1
+              }
+            },
+            {
+              "kind": "sibling",
+              "target": {
+                "$produced": "record",
+                "slot": "created"
+              }
+            }
+          ]
+        }
+      ],
+      "headSelections": [],
+      "revisionEffects": {
+        "control": false,
+        "contentEntities": [
+          "entity"
+        ]
+      }
+    }
+  },
+  {
+    "name": "input_contract_accept",
+    "manifest": {
+      "actions": [
+        {
+          "id": "test.set",
+          "reads": [],
+          "writes": [
+            [
+              "out"
+            ]
+          ],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": [
+                {
+                  "op": "set",
+                  "path": [
+                    "out"
+                  ],
+                  "value": {
+                    "from": "body",
+                    "path": [
+                      "label"
+                    ]
+                  }
+                }
+              ]
+            }
+          ],
+          "inputs": {
+            "fields": {
+              "label": {
+                "type": "string",
+                "maxBytes": 10
+              },
+              "count": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4
+              },
+              "enabled": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "label"
+            ],
+            "additionalProperties": false
+          }
+        }
+      ]
+    },
+    "state": {
+      "out": ""
+    },
+    "body": {
+      "label": "ready",
+      "count": 3,
+      "enabled": true
+    },
+    "result": {
+      "nextState": {
+        "out": "ready"
+      },
+      "records": [],
+      "headSelections": [],
+      "revisionEffects": {
+        "control": true,
+        "contentEntities": []
+      }
+    }
+  },
+  {
+    "name": "input_contract_reject",
+    "manifest": {
+      "actions": [
+        {
+          "id": "test.set",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ],
+          "inputs": {
+            "fields": {
+              "label": {
+                "type": "string",
+                "maxBytes": 2
+              }
+            },
+            "required": [
+              "label"
+            ],
+            "additionalProperties": false
+          }
+        }
+      ]
+    },
+    "state": {},
+    "body": {
+      "label": "long"
+    },
+    "error": "INVALID_PAYLOAD"
+  },
+  {
+    "name": "invalid_write_ownership",
+    "manifest": {
+      "actions": [
+        {
+          "id": "test.set",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": [
+                {
+                  "op": "set",
+                  "path": [
+                    "out"
+                  ],
+                  "value": {
+                    "from": "literal",
+                    "value": 1
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "state": {
+      "out": 0
+    },
+    "body": {},
+    "error": "INVALID_PAYLOAD"
+  },
+  {
+    "name": "exact_ref_list",
+    "manifest": {
+      "actions": [
+        {
+          "id": "test.set",
+          "reads": [],
+          "writes": [
+            [
+              "out"
+            ]
+          ],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [
+                {
+                  "op": "exact_ref_list",
+                  "source": "body",
+                  "path": [
+                    "refs"
+                  ],
+                  "scope": "INSTANCE_OR_WORKSPACE",
+                  "schema": "entry",
+                  "max": 2
+                }
+              ],
+              "effects": [
+                {
+                  "op": "set",
+                  "path": [
+                    "out"
+                  ],
+                  "value": {
+                    "from": "literal",
+                    "value": true
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "state": {
+      "out": false
+    },
+    "body": {
+      "refs": [
+        {
+          "record_id": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+          "revision": 1
+        }
+      ]
+    },
+    "exactInputs": [
+      {
+        "recordId": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "revision": 1,
+        "schema": "entry",
+        "payload": {},
+        "scope": "WORKSPACE"
+      }
+    ],
+    "result": {
+      "nextState": {
+        "out": true
+      },
+      "records": [],
+      "headSelections": [],
+      "revisionEffects": {
+        "control": true,
+        "contentEntities": []
+      }
+    }
+  },
+  {
+    "name": "select_head",
+    "manifest": {
+      "actions": [
+        {
+          "id": "test.set",
+          "reads": [
+            [
+              "ref"
+            ]
+          ],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": [
+                {
+                  "op": "select_head",
+                  "expected": {
+                    "from": "ref",
+                    "source": "state",
+                    "path": [
+                      "ref"
+                    ],
+                    "schema": "entry",
+                    "scope": "INSTANCE"
+                  },
+                  "target": {
+                    "from": "ref",
+                    "source": "state",
+                    "path": [
+                      "ref"
+                    ],
+                    "schema": "entry",
+                    "scope": "INSTANCE"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "state": {
+      "ref": {
+        "record_id": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "revision": 1
+      }
+    },
+    "body": {},
+    "exactInputs": [
+      {
+        "recordId": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "revision": 1,
+        "schema": "entry",
+        "payload": {},
+        "scope": "INSTANCE"
+      }
+    ],
+    "result": {
+      "nextState": {
+        "ref": {
+          "record_id": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+          "revision": 1
+        }
+      },
+      "records": [],
+      "headSelections": [
+        {
+          "expected": {
+            "recordId": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+            "revision": 1
+          },
+          "target": {
+            "recordId": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+            "revision": 1
+          }
+        }
+      ],
+      "revisionEffects": {
+        "control": true,
+        "contentEntities": []
+      }
+    }
+  },
+  {
+    "name": "append_entity_revise",
+    "manifest": {
+      "actions": [
+        {
+          "id": "test.set",
+          "reads": [
+            [
+              "ref"
+            ]
+          ],
+          "writes": [],
+          "revisionEffects": {
+            "control": false,
+            "contentEntities": [
+              "entity"
+            ]
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": [
+                {
+                  "op": "append",
+                  "schema": "entry",
+                  "entity": {
+                    "mode": "revise",
+                    "slot": "entity",
+                    "parent": {
+                      "from": "ref",
+                      "source": "state",
+                      "path": [
+                        "ref"
+                      ],
+                      "schema": "entry",
+                      "scope": "INSTANCE"
+                    }
+                  },
+                  "value": {
+                    "from": "literal",
+                    "value": {
+                      "kind": "revision"
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "state": {
+      "ref": {
+        "record_id": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "revision": 1
+      }
+    },
+    "body": {},
+    "exactInputs": [
+      {
+        "recordId": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "revision": 1,
+        "schema": "entry",
+        "payload": {},
+        "scope": "INSTANCE"
+      }
+    ],
+    "result": {
+      "nextState": {
+        "ref": {
+          "record_id": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+          "revision": 1
+        }
+      },
+      "records": [
+        {
+          "schema": "entry",
+          "entity": {
+            "mode": "revise",
+            "slot": "entity",
+            "parent": {
+              "recordId": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+              "revision": 1
+            }
+          },
+          "selectHead": false,
+          "payload": {
+            "kind": "revision"
+          },
+          "relations": []
+        }
+      ],
+      "headSelections": [],
+      "revisionEffects": {
+        "control": false,
+        "contentEntities": [
+          "entity"
+        ]
+      }
+    }
+  },
+  {
+    "name": "duplicate_action_id",
+    "manifest": {
+      "actions": [
+        {
+          "id": "test.set",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "test.set",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        }
+      ]
+    },
+    "state": {},
+    "body": {},
+    "error": "INVALID_PAYLOAD"
+  },
+  {
+    "name": "undeclared_produced_slot",
+    "manifest": {
+      "actions": [
+        {
+          "id": "test.set",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": [
+                {
+                  "op": "append",
+                  "schema": "entry",
+                  "value": {
+                    "from": "produced_ref",
+                    "slot": "missing"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "state": {},
+    "body": {},
+    "error": "INVALID_PAYLOAD"
+  },
+  {
+    "name": "duplicate_content_entity",
+    "manifest": {
+      "actions": [
+        {
+          "id": "test.set",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": false,
+            "contentEntities": [
+              "entity",
+              "entity"
+            ]
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        }
+      ]
+    },
+    "state": {},
+    "body": {},
+    "error": "INVALID_PAYLOAD"
+  },
+  {
+    "name": "input_exact_ref",
+    "manifest": {
+      "actions": [
+        {
+          "id": "test.set",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ],
+          "inputs": {
+            "fields": {
+              "reference": {
+                "type": "exact_ref",
+                "schema": "entry",
+                "scope": "INSTANCE"
+              }
+            },
+            "required": [
+              "reference"
+            ],
+            "additionalProperties": false
+          }
+        }
+      ]
+    },
+    "state": {},
+    "body": {
+      "reference": {
+        "record_id": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "revision": 1
+      }
+    },
+    "exactInputs": [
+      {
+        "recordId": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "revision": 1,
+        "schema": "entry",
+        "payload": {},
+        "scope": "INSTANCE"
+      }
+    ],
+    "result": {
+      "nextState": {},
+      "records": [],
+      "headSelections": [],
+      "revisionEffects": {
+        "control": true,
+        "contentEntities": []
+      }
+    }
+  },
+  {
+    "name": "input_enum_reject",
+    "manifest": {
+      "actions": [
+        {
+          "id": "test.set",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ],
+          "inputs": {
+            "fields": {
+              "mode": {
+                "type": "enum",
+                "values": [
+                  "on",
+                  "off"
+                ]
+              }
+            },
+            "required": [
+              "mode"
+            ],
+            "additionalProperties": false
+          }
+        }
+      ]
+    },
+    "state": {},
+    "body": {
+      "mode": "other"
+    },
+    "error": "INVALID_PAYLOAD"
+  },
+  {
+    "name": "utf16_surrogate_payload",
+    "manifest": {
+      "actions": [
+        {
+          "id": "test.set",
+          "reads": [],
+          "writes": [
+            [
+              "out"
+            ]
+          ],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": [
+                {
+                  "op": "set",
+                  "path": [
+                    "out"
+                  ],
+                  "value": {
+                    "from": "body",
+                    "path": [
+                      "text"
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "state": {
+      "out": ""
+    },
+    "body": {
+      "text": "\ud800"
+    },
+    "result": {
+      "nextState": {
+        "out": "\ud800"
+      },
+      "records": [],
+      "headSelections": [],
+      "revisionEffects": {
+        "control": true,
+        "contentEntities": []
+      }
+    }
+  },
+  {
+    "name": "input_nullable_accept",
+    "manifest": {
+      "actions": [
+        {
+          "id": "test.set",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ],
+          "inputs": {
+            "fields": {
+              "label": {
+                "type": "string",
+                "nullable": true
+              }
+            },
+            "required": [
+              "label"
+            ],
+            "additionalProperties": false
+          }
+        }
+      ]
+    },
+    "state": {},
+    "body": {
+      "label": null
+    },
+    "result": {
+      "nextState": {},
+      "records": [],
+      "headSelections": [],
+      "revisionEffects": {
+        "control": true,
+        "contentEntities": []
+      }
+    }
+  },
+  {
+    "name": "produced_guard_rejected",
+    "manifest": {
+      "actions": [
+        {
+          "id": "test.set",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [
+                {
+                  "op": "eq",
+                  "left": {
+                    "from": "produced_ref",
+                    "slot": "made"
+                  },
+                  "right": {
+                    "from": "literal",
+                    "value": 1
+                  }
+                }
+              ],
+              "effects": [
+                {
+                  "op": "append",
+                  "schema": "entry",
+                  "recordSlot": "made",
+                  "value": {
+                    "from": "literal",
+                    "value": {}
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "state": {},
+    "body": {},
+    "error": "INVALID_PAYLOAD"
+  },
+  {
+    "name": "missing_exact_ref_list",
+    "manifest": {
+      "actions": [
+        {
+          "id": "test.set",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [
+                {
+                  "op": "exact_ref_list",
+                  "source": "body",
+                  "path": [
+                    "refs"
+                  ],
+                  "scope": "INSTANCE",
+                  "max": 1
+                }
+              ],
+              "effects": []
+            }
+          ]
+        }
+      ]
+    },
+    "state": {},
+    "body": {
+      "refs": [
+        {
+          "record_id": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+          "revision": 1
+        }
+      ]
+    },
+    "error": "INVALID_PAYLOAD"
+  }
+]

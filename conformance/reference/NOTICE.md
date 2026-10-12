@@ -1,7 +1,7 @@
 # Pinned TypeScript conformance reference
 
 `src/` contains the minimal tracked TypeScript source closure needed by the
-current kernel/secure canonicalization and E2EE cross-open generators. It was
+current kernel/secure canonicalization, E2EE cross-open, and interpreter generators. It was
 copied byte-for-byte from the accepted local baseline commit
 `dd8a9d2e5a4cb315a980e7e35e94a7469d3a8afa` (evidence
 `4065739efff3e45cdea3bc7be2e0309682a475a2`) at
@@ -36,10 +36,19 @@ and zod (`3f1189b28e3866e0d979968d466b78f813f76827cfdca1fbb124cc0a5c8841f8`).
 Node `24.20.0` was used for the recorded run. The `node_modules/` installation
 is disposable and ignored; it contains no copied project state or credentials.
 
-From the new repository root after `cd conformance && npm ci`, run
-`node conformance/generate-ts-vectors.mjs` and
-`node conformance/cross-open-ts-rust.mjs` (build the Rust `e2ee_bridge` example
-first). `PEERWORK_TS_SOURCE` and `PEERWORK_REFERENCE_NODE_MODULES` remain
+From the new repository root, the current self-contained regeneration sequence is:
+
+```sh
+(cd conformance && npm ci)
+cargo build -p peerwork-core --example e2ee_bridge
+node conformance/generate-ts-vectors.mjs
+node conformance/cross-open-ts-rust.mjs
+node conformance/generate-interpreter-vectors.mjs
+```
+
+The cross-open script's default bridge path is relative to the repository root
+(`target/debug/examples/e2ee_bridge`), so run it there after the Cargo build.
+`PEERWORK_TS_SOURCE` and `PEERWORK_REFERENCE_NODE_MODULES` remain
 optional audit overrides. The source closure here covers these entrypoints;
-full policy/journal/evaluator differential tests will require their additional
+full policy/journal differential tests will require their additional
 tracked dependencies to be added and pinned separately.

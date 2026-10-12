@@ -5,6 +5,8 @@ pub mod canonical;
 pub mod crypto;
 pub mod discovery;
 pub mod e2ee;
+#[allow(dead_code)]
+mod interpreter;
 pub mod prepared_command;
 pub mod receipt;
 pub mod receipt_wire;
