@@ -3,13 +3,19 @@
 
 pub mod canonical;
 pub mod crypto;
+pub mod e2ee;
+pub mod prepared_command;
 pub mod receipt;
+pub mod receipt_wire;
 pub mod strict_json;
+pub mod wire_json;
 
 use serde::Serialize;
 
 pub const SDK_VERSION: &str = "0.0.1";
-pub fn version() -> &'static str { SDK_VERSION }
+pub fn version() -> &'static str {
+    SDK_VERSION
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CapabilityManifest {

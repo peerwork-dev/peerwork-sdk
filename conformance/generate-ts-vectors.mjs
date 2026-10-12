@@ -17,6 +17,7 @@ try {
   const entries = [
     ['kernel', 'workspace-manifest.ts'],
     ['secure', 'workspace-secure-crypto.ts'],
+    ['strict', 'json.ts'],
   ];
   for (const [name, file] of entries) {
     await build({ entryPoints: [resolve(source, file)], outfile: join(dir, `${name}.mjs`),
@@ -24,6 +25,7 @@ try {
   }
   const kernel = await import(pathToFileURL(join(dir, 'kernel.mjs')));
   const secure = await import(pathToFileURL(join(dir, 'secure.mjs')));
+  const strict = await import(pathToFileURL(join(dir, 'strict.mjs')));
   const cases = [
     ['plain', { z: null, a: [true, -0, 9007199254740991] }],
     ['numeric_keys', { '10': 'ten', '2': 'two', '01': 'leading', a: 1 }],
@@ -38,6 +40,18 @@ try {
   const b64 = value => Buffer.from(value, 'utf8').toString('base64url');
   out.push({ name: 'lone_surrogate', input_wire_base64: b64(JSON.stringify(surrogate)),
     kernel_base64: b64(kernel.canonical(surrogate)), secure_base64: b64(secure.canonicalJsonText(surrogate)) });
+  const rawCases = [
+    ['negative_zero_exponent', '{"n":-0e0,"e":1e0,"decimal":1.0}'],
+    ['surrogate_key_and_pair', '{"\\ud800":"\\udfff","pair":"\\ud800\\udc00"}'],
+    ['array_index_boundary', '{"4294967295":1,"4294967294":2,"01":3,"2":4}'],
+    ['duplicate_decoded_key', '{"a":1,"\\u0061":2}'],
+  ].map(([name, wire]) => {
+    const value = JSON.parse(wire);
+    let kernelWireReject = false;
+    try { strict.parseJson(wire); } catch { kernelWireReject = true; }
+    return { name, input_wire_base64: b64(wire), kernel_base64: b64(kernel.canonical(value)),
+      secure_base64: b64(secure.canonicalJsonText(value)), kernel_wire_reject: kernelWireReject };
+  });
   const negatives = [
     ['unsafe_integer', { a: 9007199254740992 }],
     ['fraction', { a: 1.5 }],
@@ -53,6 +67,6 @@ try {
     out.push(row);
   }
   await writeFile(new URL('./ts-differential-vectors.json', import.meta.url), JSON.stringify({
-    source_commit: 'dd8a9d2', evidence_commit: '4065739', cases: out,
+    source_commit: 'dd8a9d2', evidence_commit: '4065739', cases: out, raw_cases: rawCases,
   }, null, 2) + '\n');
 } finally { await rm(dir, { recursive: true, force: true }); }

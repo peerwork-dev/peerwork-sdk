@@ -37,30 +37,55 @@ pub fn canonical(value: &Value, path: Path) -> Result<String, CanonicalError> {
     Ok(out)
 }
 
-fn write_value(value: &Value, path: Path, depth: usize, nodes: &mut usize, out: &mut String) -> Result<(), CanonicalError> {
+fn write_value(
+    value: &Value,
+    path: Path,
+    depth: usize,
+    nodes: &mut usize,
+    out: &mut String,
+) -> Result<(), CanonicalError> {
     if let Path::Kernel { max_depth } = path {
         *nodes += 1;
-        if *nodes > 2048 || depth > max_depth { return Err(CanonicalError::BoundExceeded); }
+        if *nodes > 2048 || depth > max_depth {
+            return Err(CanonicalError::BoundExceeded);
+        }
     }
     match value {
         Value::Null => out.push_str("null"),
         Value::Bool(v) => out.push_str(if *v { "true" } else { "false" }),
-        Value::String(v) => out.push_str(&serde_json::to_string(v).map_err(|_| CanonicalError::InvalidValue)?),
+        Value::String(v) => {
+            out.push_str(&serde_json::to_string(v).map_err(|_| CanonicalError::InvalidValue)?)
+        }
         Value::Number(v) => {
-            if let Some(i) = v.as_i64() { if i.unsigned_abs() > MAX_SAFE_INTEGER as u64 { return Err(CanonicalError::UnsafeNumber); } }
-            if let Some(i) = v.as_u64() { if i > MAX_SAFE_INTEGER as u64 { return Err(CanonicalError::UnsafeNumber); } }
+            if let Some(i) = v.as_i64() {
+                if i.unsigned_abs() > MAX_SAFE_INTEGER as u64 {
+                    return Err(CanonicalError::UnsafeNumber);
+                }
+            }
+            if let Some(i) = v.as_u64() {
+                if i > MAX_SAFE_INTEGER as u64 {
+                    return Err(CanonicalError::UnsafeNumber);
+                }
+            }
             let number = v.as_f64().ok_or(CanonicalError::UnsafeNumber)?;
             if !number.is_finite() || number.abs() > MAX_SAFE_INTEGER || number.fract() != 0.0 {
                 return Err(CanonicalError::UnsafeNumber);
             }
-            if number == 0.0 { out.push('0'); }
-            else { out.push_str(&format!("{number:.0}")); }
+            if number == 0.0 {
+                out.push('0');
+            } else {
+                out.push_str(&format!("{number:.0}"));
+            }
         }
         Value::Array(items) => {
-            if matches!(path, Path::Kernel { .. }) && items.len() > 128 { return Err(CanonicalError::BoundExceeded); }
+            if matches!(path, Path::Kernel { .. }) && items.len() > 128 {
+                return Err(CanonicalError::BoundExceeded);
+            }
             out.push('[');
             for (index, item) in items.iter().enumerate() {
-                if index != 0 { out.push(','); }
+                if index != 0 {
+                    out.push(',');
+                }
                 write_value(item, path, depth + 1, nodes, out)?;
             }
             out.push(']');
@@ -82,11 +107,17 @@ fn write_value(value: &Value, path: Path, depth: usize, nodes: &mut usize, out: 
                 a.encode_utf16().cmp(b.encode_utf16())
             });
             for (index, key) in keys.iter().enumerate() {
-                if key.is_empty() && matches!(path, Path::Kernel { .. }) || matches!(key.as_str(), "__proto__" | "prototype" | "constructor") {
+                if key.is_empty() && matches!(path, Path::Kernel { .. })
+                    || matches!(key.as_str(), "__proto__" | "prototype" | "constructor")
+                {
                     return Err(CanonicalError::InvalidValue);
                 }
-                if index != 0 { out.push(','); }
-                out.push_str(&serde_json::to_string(key).map_err(|_| CanonicalError::InvalidValue)?);
+                if index != 0 {
+                    out.push(',');
+                }
+                out.push_str(
+                    &serde_json::to_string(key).map_err(|_| CanonicalError::InvalidValue)?,
+                );
                 out.push(':');
                 write_value(&map[*key], path, depth + 1, nodes, out)?;
             }
@@ -98,6 +129,8 @@ fn write_value(value: &Value, path: Path, depth: usize, nodes: &mut usize, out: 
 
 fn array_index(key: &str) -> Option<u32> {
     let index = key.parse::<u32>().ok()?;
-    if index == u32::MAX || index.to_string() != key { return None; }
+    if index == u32::MAX || index.to_string() != key {
+        return None;
+    }
     Some(index)
 }
