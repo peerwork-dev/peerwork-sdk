@@ -18,6 +18,8 @@ pub enum KernelClientError {
     Transport(#[from] TransportError),
     #[error(transparent)]
     Store(#[from] JournalError),
+    #[error(transparent)]
+    Migration(#[from] crate::ts_migration::TsMigrationError),
     #[error("discovery HTTP status is not successful")]
     DiscoveryStatus,
     #[error("discovery schema or required features are unsupported")]
@@ -33,6 +35,12 @@ pub enum KernelOperationStatus {
     Accepted(VerifiedCommandResponse),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TsMigrationReport {
+    pub pending_count: usize,
+    pub accepted_count: usize,
+}
+
 pub struct KernelClient {
     transport: HttpTransport,
     journal: KernelIntentJournal,
@@ -40,6 +48,27 @@ pub struct KernelClient {
 }
 
 impl KernelClient {
+    /// Import a quiesced TypeScript WorkspaceClient v1 SQLite store using
+    /// this client's already fetched and origin-pinned discovery. The source
+    /// remains untouched; the caller must retain the checked online backup.
+    pub fn migrate_ts_store(
+        &mut self,
+        source_path: &Path,
+        backup_path: &Path,
+        trusted_local_key_ids: &[String],
+    ) -> Result<TsMigrationReport, KernelClientError> {
+        let (pending_count, accepted_count) = self.journal.import_ts_backup(
+            source_path,
+            backup_path,
+            trusted_local_key_ids,
+            &self.discovery,
+        )?;
+        Ok(TsMigrationReport {
+            pending_count,
+            accepted_count,
+        })
+    }
+
     pub async fn open(
         transport_config: TransportConfig,
         journal_path: &Path,
@@ -78,7 +107,10 @@ impl KernelClient {
         local_key_id: &str,
     ) -> Result<Vec<PendingKernelIntent>, KernelClientError> {
         let mut pending = Vec::new();
-        for row in self.journal.all_prepared()? {
+        for row in self
+            .journal
+            .all_prepared_for_key(local_key_id, self.discovery.audience_utf16())?
+        {
             match self.status(&row.command_id, local_key_id)? {
                 Some(KernelOperationStatus::Pending) => pending.push(row),
                 Some(KernelOperationStatus::Accepted(_)) => {}

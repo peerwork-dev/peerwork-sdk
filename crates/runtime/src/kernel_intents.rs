@@ -141,6 +141,17 @@ impl KernelIntentJournal {
         signed_jws: &str,
         http_body: &[u8],
     ) -> Result<PendingKernelIntent, JournalError> {
+        self.prepare_at_time(command_id, path, signed_jws, http_body, unix_millis()?)
+    }
+
+    fn prepare_at_time(
+        &mut self,
+        command_id: &str,
+        path: KernelPath,
+        signed_jws: &str,
+        http_body: &[u8],
+        now: i64,
+    ) -> Result<PendingKernelIntent, JournalError> {
         if !valid_token(command_id)
             || signed_jws.is_empty()
             || signed_jws.len() > MAX_JWS_BYTES
@@ -150,7 +161,6 @@ impl KernelIntentJournal {
             return Err(JournalError::InvalidIntent);
         }
         let digest = sha256_hex(signed_jws.as_bytes());
-        let now = unix_millis()?;
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -189,6 +199,93 @@ impl KernelIntentJournal {
         Ok(record)
     }
 
+    /// Import a quiesced TypeScript v1 SQLite store after the owning client
+    /// has fetched discovery over its configured origin and pinned it here.
+    /// The old store is never modified; a checked online backup remains at
+    /// `backup_path`. A retry after interrupted native import is idempotent.
+    pub(crate) fn import_ts_backup(
+        &mut self,
+        source_path: &Path,
+        backup_path: &Path,
+        trusted_local_key_ids: &[String],
+        discovery: &ParsedDiscovery,
+    ) -> Result<(usize, usize), crate::ts_migration::TsMigrationError> {
+        use crate::ts_migration::TsMigrationError;
+        if source_path == self._path
+            || backup_path == self._path
+            || std::fs::canonicalize(source_path)
+                .ok()
+                .zip(std::fs::canonicalize(&self._path).ok())
+                .is_some_and(|(source, native)| source == native)
+            || std::fs::canonicalize(backup_path)
+                .ok()
+                .zip(std::fs::canonicalize(&self._path).ok())
+                .is_some_and(|(backup, native)| backup == native)
+        {
+            return Err(TsMigrationError::BackupConflict);
+        }
+        let rows = crate::ts_migration::backed_up_rows(
+            source_path,
+            backup_path,
+            discovery,
+            trusted_local_key_ids,
+        )?;
+        let source_ids: std::collections::HashSet<&str> =
+            rows.iter().map(|row| row.command_id.as_str()).collect();
+        for existing in self.all_prepared()? {
+            if !source_ids.contains(existing.command_id.as_str()) {
+                return Err(TsMigrationError::DestinationConflict);
+            }
+        }
+        let mut pending = 0;
+        let mut accepted = 0;
+        for row in rows {
+            let prepared =
+                self.prepare_at_time(&row.command_id, row.path, &row.jws, &row.body, row.created)?;
+            if prepared.created_at_ms != row.created {
+                return Err(TsMigrationError::DestinationConflict);
+            }
+            let saved = self
+                .verified_pending(
+                    &row.command_id,
+                    &row.local_key_id,
+                    discovery.audience_utf16(),
+                )?
+                .ok_or(TsMigrationError::DestinationConflict)?;
+            match row.response {
+                Some(response) => {
+                    let existing: Option<Vec<u8>> = self
+                        .db
+                        .query_row(
+                            "SELECT response_wire FROM accepted_responses WHERE command_id=?1",
+                            [&row.command_id],
+                            |record| record.get(0),
+                        )
+                        .optional()?;
+                    if existing.as_ref().is_some_and(|old| old != &response) {
+                        return Err(TsMigrationError::DestinationConflict);
+                    }
+                    self.record_verified_response(
+                        &saved,
+                        &response,
+                        discovery.receipt_public_key(),
+                    )?;
+                    accepted += 1;
+                }
+                None => {
+                    if self
+                        .accepted_response(&saved, discovery.receipt_public_key())?
+                        .is_some()
+                    {
+                        return Err(TsMigrationError::DestinationConflict);
+                    }
+                    pending += 1;
+                }
+            }
+        }
+        Ok((pending, accepted))
+    }
+
     /// The higher client re-verifies every accepted row before classifying
     /// operations; this raw prepared-row scan never declares acceptance.
     pub(crate) fn all_prepared(&self) -> Result<Vec<PendingKernelIntent>, JournalError> {
@@ -204,6 +301,32 @@ impl KernelIntentJournal {
         })?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(JournalError::Storage)
+    }
+
+    /// Verify every saved row under its own signed public key before
+    /// selecting operations for one locally configured identity. This keeps
+    /// mixed-actor migrated stores usable without exposing other actors'
+    /// operation IDs through an actor-specific listing.
+    pub(crate) fn all_prepared_for_key(
+        &self,
+        local_key_id: &str,
+        audience_utf16: &[u16],
+    ) -> Result<Vec<PendingKernelIntent>, JournalError> {
+        let mut selected = Vec::new();
+        for row in self.all_prepared()? {
+            let jws: String = self.db.query_row(
+                "SELECT signed_jws FROM kernel_intents WHERE command_id=?1",
+                [&row.command_id],
+                |record| record.get(0),
+            )?;
+            let signer = signer_key_id(&jws).ok_or(JournalError::IncompatibleStore)?;
+            self.verified_pending(&row.command_id, &signer, audience_utf16)?
+                .ok_or(JournalError::IncompatibleStore)?;
+            if signer == local_key_id {
+                selected.push(row);
+            }
+        }
+        Ok(selected)
     }
 
     /// Pin the schema-validated response returned by this runtime's configured
@@ -353,7 +476,7 @@ impl KernelIntentJournal {
     }
 
     #[cfg(test)]
-    fn exact_request_for_test(
+    pub(crate) fn exact_request_for_test(
         &self,
         command_id: &str,
     ) -> Result<Option<(String, Vec<u8>)>, JournalError> {
@@ -512,6 +635,24 @@ fn valid_token(value: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
+fn signer_key_id(jws: &str) -> Option<String> {
+    use peerwork_core::{crypto::decode_base64url, wire_json::parse_wire_json_bounded};
+    if jws.len() > MAX_JWS_BYTES {
+        return None;
+    }
+    let mut parts = jws.split('.');
+    let header = parts.next()?;
+    parts.next()?;
+    parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    let bytes = decode_base64url(header).ok()?;
+    let value = parse_wire_json_bounded(&bytes, 3, 256).ok()?;
+    let kid = value.get("kid")?.as_string()?;
+    valid_token(&kid).then_some(kid)
+}
+
 fn unix_millis() -> Result<i64, JournalError> {
     let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -616,12 +757,23 @@ mod tests {
         let id = "W".repeat(43);
         {
             let mut journal = KernelIntentJournal::open(&path).unwrap();
-            journal.prepare(&id, KernelPath::Command, "signed.header.payload",
-                b"{\"jws\":\"\\ud800\"}").unwrap();
+            journal
+                .prepare(
+                    &id,
+                    KernelPath::Command,
+                    "signed.header.payload",
+                    b"{\"jws\":\"\\ud800\"}",
+                )
+                .unwrap();
         }
         let reopened = KernelIntentJournal::open(&path).unwrap();
-        assert_eq!(reopened.exact_request_for_test(&id).unwrap(),
-            Some(("signed.header.payload".into(), b"{\"jws\":\"\\ud800\"}".to_vec())));
+        assert_eq!(
+            reopened.exact_request_for_test(&id).unwrap(),
+            Some((
+                "signed.header.payload".into(),
+                b"{\"jws\":\"\\ud800\"}".to_vec()
+            ))
+        );
     }
 
     #[cfg(unix)]
