@@ -9,6 +9,8 @@ pub mod receipt;
 pub mod receipt_wire;
 #[allow(dead_code)]
 mod secure_chain;
+#[allow(dead_code)]
+mod secure_replay;
 pub mod strict_json;
 pub mod wire_json;
 
