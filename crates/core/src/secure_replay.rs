@@ -7,6 +7,10 @@ use crate::{
     crypto::{actor_id, base64url, decode_base64url, sha256, sha256_hex},
     e2ee::{open_content_wire, SealedContent},
     interpreter::{evaluate_action, InterpreterAuth, ResolvedInput},
+    protocol_object_source::{
+        object_part_id, read_protocol_object_source, validate_object_part,
+        validate_object_source_proof,
+    },
     protocol_package_source::{
         package_part_id, validate_package_checkpoint, validate_package_part,
         verify_protocol_package_source,
@@ -43,6 +47,280 @@ fn same_wire(left: &WireValue, right: &WireValue) -> Result<bool, ReplayError> {
 
 fn exact_fields(value: &WireValue, names: &[&str]) -> bool {
     value.object_len() == Some(names.len()) && names.iter().all(|name| value.get(name).is_some())
+}
+
+fn validate_signed_object_stage(
+    operation: &WireValue,
+    context: &WireValue,
+    policy: &WireValue,
+    prior: &[WireValue],
+    commit_wires: &[&[u8]],
+    chain: &HeaderChainFacts,
+) -> Result<(), ReplayError> {
+    let p = policy.get("payload").ok_or(ReplayError::Invalid)?;
+    let input = operation.get("input").ok_or(ReplayError::Invalid)?;
+    let stage = input
+        .get("protocol_object_stage")
+        .ok_or(ReplayError::Invalid)?;
+    let proof = stage.get("proof").ok_or(ReplayError::Invalid)?;
+    validate_object_source_proof(proof).map_err(|_| ReplayError::Invalid)?;
+    let source = proof.get("source").ok_or(ReplayError::Invalid)?;
+    let WireValue::Array(descriptors) = proof.get("parts").ok_or(ReplayError::Invalid)? else {
+        return Err(ReplayError::Invalid);
+    };
+    let index = integer(stage, "part_index")? as usize;
+    let WireValue::Array(objects) = operation.get("objects").ok_or(ReplayError::Invalid)? else {
+        return Err(ReplayError::Invalid);
+    };
+    if !exact_fields(operation, &["v", "kind", "input", "objects"])
+        || !exact_fields(input, &["protocol_object_stage"])
+        || !exact_fields(stage, &["proof", "part_index"])
+        || integer(context, "v")? != 3
+        || integer(p, "v")? != 3
+        || string(p, "visibility")? != "PRIVATE"
+        || string(context, "workspace_id")? != string(p, "workspace_id")?
+        || string(context, "actor_id")? != string(p, "owner_id")?
+        || string(context, "signing_key")? != string(p, "signing_key")?
+        || !matches!(context.get("delegation"), Some(WireValue::Null))
+        || !matches!(context.get("instance_id"), Some(WireValue::Null))
+        || context.get("recovery").is_some()
+        || context.get("migration").is_some()
+        || context.get("conversion_excluded_members").is_some()
+        || objects.len() != 1
+        || index >= descriptors.len()
+    {
+        return Err(ReplayError::Invalid);
+    }
+    match string(p, "structure_mode")?.as_str() {
+        "STRUCTURED" => {
+            let structure = context.get("structure").ok_or(ReplayError::Invalid)?;
+            if p.get("structure").is_none()
+                || !exact_fields(structure, &["v", "mode", "records", "heads"])
+                || integer(structure, "v")? != 1
+                || string(structure, "mode")? != "DELTA"
+                || !matches!(structure.get("records"), Some(WireValue::Array(items)) if items.is_empty())
+                || !matches!(structure.get("heads"), Some(WireValue::Array(items)) if items.is_empty())
+            {
+                return Err(ReplayError::Invalid);
+            }
+        }
+        "NONE" if context.get("structure").is_none() && p.get("structure").is_none() => {}
+        _ => return Err(ReplayError::Invalid),
+    }
+    let base = integer(source, "sequence")?;
+    let id = string(proof, "source_id")?;
+    let descriptor = &descriptors[index];
+    let part = &objects[0];
+    validate_object_part(part).map_err(|_| ReplayError::Invalid)?;
+    let value = part.get("value").ok_or(ReplayError::Invalid)?;
+    if !same_wire(source, &signed_checkpoint_at(base, chain, commit_wires)?)?
+        || string(source, "workspace_id")? != string(context, "workspace_id")?
+        || string(source, "owner_id")? != string(context, "actor_id")?
+        || string(source, "owner_key")? != string(context, "signing_key")?
+        || string(source, "policy_hash")? != string(context, "policy_hash")?
+        || integer(p, "effective_sequence")? > base
+        || integer(context, "sequence")? != base + index as u64 + 1
+        || string(part, "id")? != string(descriptor, "id")?
+        || string(value, "workspace_id")? != string(source, "workspace_id")?
+        || string(value, "source_id")? != id
+        || integer(value, "index")? != index as u64
+        || integer(value, "bytes")? != integer(descriptor, "bytes")?
+        || string(value, "sha256")? != string(descriptor, "sha256")?
+        || prior.iter().any(|object| {
+            object.get("kind").and_then(WireValue::as_string).as_deref()
+                == Some("protocol_object_part")
+                && object.get("id").and_then(WireValue::as_string).as_deref()
+                    == Some(&string(part, "id").unwrap_or_default())
+        })
+    {
+        return Err(ReplayError::Invalid);
+    }
+    if index == 0 {
+        if string(context, "previous")? != string(source, "head")? {
+            return Err(ReplayError::Invalid);
+        }
+    } else {
+        let previous_id =
+            object_part_id(source, &id, index - 1).map_err(|_| ReplayError::Invalid)?;
+        let previous = prior
+            .iter()
+            .filter(|object| {
+                object.get("kind").and_then(WireValue::as_string).as_deref()
+                    == Some("protocol_object_part")
+                    && object.get("id").and_then(WireValue::as_string).as_deref()
+                        == Some(&previous_id)
+            })
+            .collect::<Vec<_>>();
+        if previous.len() != 1 {
+            return Err(ReplayError::Invalid);
+        }
+        validate_object_part(previous[0]).map_err(|_| ReplayError::Invalid)?;
+        let row = previous[0].get("value").ok_or(ReplayError::Invalid)?;
+        let expected = &descriptors[index - 1];
+        if string(row, "source_id")? != id
+            || string(row, "workspace_id")? != string(source, "workspace_id")?
+            || integer(row, "index")? != (index - 1) as u64
+            || integer(row, "bytes")? != integer(expected, "bytes")?
+            || string(row, "sha256")? != string(expected, "sha256")?
+        {
+            return Err(ReplayError::Invalid);
+        }
+    }
+    Ok(())
+}
+
+fn hydrate_signed_protocol_install(
+    operation: WireValue,
+    context: &WireValue,
+    prior_objects: &[WireValue],
+    prior_operations: &[WireValue],
+    chain: &HeaderChainFacts,
+    commit_wires: &[&[u8]],
+) -> Result<(WireValue, Option<WireValue>), ReplayError> {
+    let WireValue::Array(objects) = operation.get("objects").ok_or(ReplayError::Invalid)? else {
+        return Err(ReplayError::Invalid);
+    };
+    let references = objects
+        .iter()
+        .enumerate()
+        .filter(|(_, object)| {
+            object.get("kind").and_then(WireValue::as_string).as_deref() == Some("protocols")
+                && object
+                    .get("value")
+                    .and_then(|value| value.get("object_source"))
+                    .is_some()
+        })
+        .collect::<Vec<_>>();
+    if references.is_empty() {
+        return Ok((operation, None));
+    }
+    if references.len() != 1
+        || objects.len() != 2
+        || integer(context, "v")? != 3
+        || string(context, "action_id")? != "secure.structure.begin"
+        || !matches!(context.get("instance_id"), Some(WireValue::Null))
+        || !matches!(context.get("delegation"), Some(WireValue::Null))
+        || context.get("recovery").is_some()
+        || context.get("migration").is_some()
+        || string(
+            context.get("structure").ok_or(ReplayError::Invalid)?,
+            "mode",
+        )? != "SNAPSHOT_BEGIN"
+        || string(&operation, "kind")? != "ADMIN"
+    {
+        return Err(ReplayError::Invalid);
+    }
+    let (reference_index, reference) = references[0];
+    let reference_value = reference.get("value").ok_or(ReplayError::Invalid)?;
+    if !exact_fields(
+        reference_value,
+        &["workspace_id", "digest", "object_source"],
+    ) || integer(reference, "revision")? != 1
+        || string(reference, "provenance")? != "AUTHOR_SIGNED"
+        || canonical_wire_value(reference, Path::SecureArtifact)
+            .map_err(|_| ReplayError::Invalid)?
+            .len()
+            > MAX_OBJECT_BYTES
+    {
+        return Err(ReplayError::Invalid);
+    }
+    let proof = reference_value
+        .get("object_source")
+        .ok_or(ReplayError::Invalid)?;
+    validate_object_source_proof(proof).map_err(|_| ReplayError::Invalid)?;
+    let source = proof.get("source").ok_or(ReplayError::Invalid)?;
+    let snapshot_source = context
+        .get("structure")
+        .and_then(|s| s.get("snapshot"))
+        .and_then(|s| s.get("source"))
+        .ok_or(ReplayError::Invalid)?;
+    let input_digest = operation
+        .get("input")
+        .and_then(|input| input.get("install"))
+        .and_then(|install| install.get("protocol_digest"))
+        .ok_or(ReplayError::Invalid)?;
+    let WireValue::Array(descriptors) = proof.get("parts").ok_or(ReplayError::Invalid)? else {
+        return Err(ReplayError::Invalid);
+    };
+    let base = integer(source, "sequence")?;
+    let end = base + descriptors.len() as u64;
+    let digest = string(reference, "id")?;
+    if string(reference_value, "workspace_id")? != string(context, "workspace_id")?
+        || string(reference_value, "digest")? != digest
+        || string(proof, "protocol_digest")? != digest
+        || string(proof, "workspace_id")? != string(context, "workspace_id")?
+        || !same_wire(source, &signed_checkpoint_at(base, chain, commit_wires)?)?
+        || !same_wire(
+            snapshot_source,
+            &signed_checkpoint_at(end, chain, commit_wires)?,
+        )?
+        || string(source, "owner_id")? != string(context, "actor_id")?
+        || string(source, "owner_key")? != string(context, "signing_key")?
+        || string(source, "policy_hash")? != string(snapshot_source, "policy_hash")?
+        || integer(context, "sequence")? != end + 1
+        || string(context, "previous")? != string(snapshot_source, "head")?
+        || input_digest != reference.get("id").ok_or(ReplayError::Invalid)?
+        || prior_objects.iter().any(|object| {
+            object.get("kind").and_then(WireValue::as_string).as_deref() == Some("protocols")
+                && object.get("id") == reference.get("id")
+        })
+        || prior_operations.len() < descriptors.len()
+    {
+        return Err(ReplayError::Invalid);
+    }
+    for (index, (earlier, descriptor)) in prior_operations
+        .iter()
+        .rev()
+        .take(descriptors.len())
+        .rev()
+        .zip(descriptors)
+        .enumerate()
+    {
+        let stage = earlier
+            .get("input")
+            .and_then(|input| input.get("protocol_object_stage"))
+            .ok_or(ReplayError::Invalid)?;
+        let WireValue::Array(parts) = earlier.get("objects").ok_or(ReplayError::Invalid)? else {
+            return Err(ReplayError::Invalid);
+        };
+        if !exact_fields(earlier, &["v", "kind", "input", "objects"])
+            || string(earlier, "kind")? != "ADMIN"
+            || !exact_fields(
+                earlier.get("input").ok_or(ReplayError::Invalid)?,
+                &["protocol_object_stage"],
+            )
+            || !exact_fields(stage, &["proof", "part_index"])
+            || !same_wire(stage.get("proof").ok_or(ReplayError::Invalid)?, proof)?
+            || integer(stage, "part_index")? != index as u64
+            || parts.len() != 1
+            || string(&parts[0], "id")? != string(descriptor, "id")?
+        {
+            return Err(ReplayError::Invalid);
+        }
+    }
+    let logical_value =
+        read_protocol_object_source(proof, prior_objects).map_err(|_| ReplayError::Invalid)?;
+    let saved_proof = proof.clone();
+    let mut hydrated = operation;
+    let WireValue::Object(fields) = &mut hydrated else {
+        return Err(ReplayError::Invalid);
+    };
+    let (_, WireValue::Array(objects)) = fields
+        .iter_mut()
+        .find(|(name, _)| name.iter().copied().eq("objects".encode_utf16()))
+        .ok_or(ReplayError::Invalid)?
+    else {
+        return Err(ReplayError::Invalid);
+    };
+    let WireValue::Object(reference_fields) = &mut objects[reference_index] else {
+        return Err(ReplayError::Invalid);
+    };
+    let (_, value) = reference_fields
+        .iter_mut()
+        .find(|(name, _)| name.iter().copied().eq("value".encode_utf16()))
+        .ok_or(ReplayError::Invalid)?;
+    *value = logical_value;
+    Ok((hydrated, Some(saved_proof)))
 }
 
 fn signed_checkpoint_at(
@@ -183,6 +461,7 @@ fn validate_signed_package_install(
     chain: &HeaderChainFacts,
     commit_wires: &[&[u8]],
     workspace_id: &str,
+    object_source: Option<&WireValue>,
 ) -> Result<(), ReplayError> {
     let input = operation.get("input").ok_or(ReplayError::Invalid)?;
     let install = input.get("install").ok_or(ReplayError::Invalid)?;
@@ -269,17 +548,32 @@ fn validate_signed_package_install(
     let end = base
         .checked_add(verified.part_count as u64)
         .ok_or(ReplayError::Invalid)?;
+    let package_stage_head = object_source
+        .and_then(|proof| proof.get("source"))
+        .unwrap_or(snapshot_source);
+    let object_parts = object_source
+        .and_then(|proof| proof.get("parts"))
+        .and_then(|parts| match parts {
+            WireValue::Array(parts) => Some(parts.len()),
+            _ => None,
+        })
+        .unwrap_or(0);
     if string(proof, "workspace_id")? != workspace_id
         || string(source, "owner_id")? != string(context, "actor_id")?
         || string(source, "owner_key")? != string(context, "signing_key")?
         || string(source, "policy_hash")? != string(snapshot_source, "policy_hash")?
-        || end != integer(snapshot_source, "sequence")?
+        || end != integer(package_stage_head, "sequence")?
         || !same_wire(
-            snapshot_source,
+            package_stage_head,
             &signed_checkpoint_at(end, chain, commit_wires)?,
         )?
+        || integer(snapshot_source, "sequence")? != end + object_parts as u64
+        || !same_wire(
+            snapshot_source,
+            &signed_checkpoint_at(end + object_parts as u64, chain, commit_wires)?,
+        )?
         || !same_wire(source, &signed_checkpoint_at(base, chain, commit_wires)?)?
-        || integer(context, "sequence")? != end + 1
+        || integer(context, "sequence")? != end + object_parts as u64 + 1
         || string(context, "previous")? != string(snapshot_source, "head")?
         || verified.protocol_digest != digest
         || string(protocol, "id")? != digest
@@ -485,6 +779,15 @@ pub(crate) fn replay_basic_content(
         if !matches!(kind.as_str(), "BOOTSTRAP" | "MIGRATE" | "ACTION" | "ADMIN") {
             return Err(ReplayError::Invalid);
         }
+        let signed_operation = operation.clone();
+        let (operation, object_source) = hydrate_signed_protocol_install(
+            operation,
+            payload,
+            &prior_objects,
+            &operations,
+            &chain,
+            commit_wires,
+        )?;
         if migration_pending && kind != "MIGRATE" {
             // finishMigration must authenticate the entire batch before any
             // later operation can observe or act on imported objects.
@@ -516,9 +819,22 @@ pub(crate) fn replay_basic_content(
         if objects.len() > 128 {
             return Err(ReplayError::Invalid);
         }
+        let object_stage =
+            kind == "ADMIN" && string(payload, "action_id")? == "secure.protocol-object.stage";
         let package_stage =
             kind == "ADMIN" && string(payload, "action_id")? == "secure.protocol-package.stage";
-        if package_stage {
+        if object_stage {
+            validate_signed_object_stage(
+                &operation,
+                payload,
+                policies
+                    .get(string(payload, "policy_hash")?.as_str())
+                    .ok_or(ReplayError::Invalid)?,
+                &prior_objects,
+                commit_wires,
+                &chain,
+            )?;
+        } else if package_stage {
             validate_signed_package_stage(
                 &operation,
                 payload,
@@ -633,6 +949,7 @@ pub(crate) fn replay_basic_content(
             if kind != "MIGRATE"
                 && object_kind.iter().copied().eq("protocols".encode_utf16())
                 && !package_stage
+                && !object_stage
             {
                 let format_ceiling = if integer(payload, "v")? == 3 {
                     integer(payload, "protocol_format_ceiling")?
@@ -649,6 +966,7 @@ pub(crate) fn replay_basic_content(
             }
         }
         if !package_stage
+            && !object_stage
             && objects.iter().any(|object| {
                 object
                     .get("value")
@@ -664,6 +982,7 @@ pub(crate) fn replay_basic_content(
                 &chain,
                 commit_wires,
                 workspace_id,
+                object_source.as_ref(),
             )?;
         }
         for (key, revision) in staged_revisions {
@@ -693,7 +1012,7 @@ pub(crate) fn replay_basic_content(
             )
             .map_err(|_| ReplayError::Invalid)?;
         }
-        operations.push(operation);
+        operations.push(signed_operation);
     }
     if migration_pending {
         // This private helper has no fragment inflation/root/finalization yet.
@@ -2927,6 +3246,171 @@ mod tests {
             )
         };
         assert_eq!(check(&bootstrap, &stage, &install).unwrap().object_count, 3);
+        // In v3 the complete logical protocol value can be staged after the
+        // package and the install commit signs only its source reference.
+        let mut policy3_payload: Value =
+            serde_json::from_slice::<Value>(&policy).unwrap()["payload"].clone();
+        policy3_payload["v"] = json!(3);
+        policy3_payload["structure_mode"] = json!("STRUCTURED");
+        policy3_payload["protocol_format_ceiling"] = json!(1);
+        let policy3 = signed(policy3_payload, "peerwork.secure.policy.v3", &signer);
+        let policy3_hash = hash(&policy3);
+        let make_v3 = |sequence: u64,
+                       previous: Option<&str>,
+                       action: &str,
+                       structure: Value,
+                       operation: Value| {
+            let context = json!({"v":3,"workspace_id":workspace,"sequence":sequence,
+                "previous":previous,"policy_hash":policy3_hash,"epoch":1,"actor_id":owner_id,
+                "signing_key":owner_key,"command_id":base64url(&[sequence as u8 + 50;32]),
+                "action_id":action,"instance_id":null,"issued_at":sequence,"delegation":null,
+                "protocol_format_ceiling":1,"structure":structure});
+            let plaintext = canonical(&operation, Path::SecureArtifact).unwrap();
+            let sealed = seal_content_wire(
+                &epoch_key,
+                plaintext.as_bytes(),
+                &serde_json::to_vec(&context).unwrap(),
+            )
+            .unwrap();
+            let mut payload = context;
+            payload["mode"] = json!("PRIVATE");
+            payload["body"] = serde_json::to_value(sealed).unwrap();
+            signed(payload, "peerwork.secure.commit.v3", &signer)
+        };
+        let delta3 = json!({"v":1,"mode":"DELTA","records":[],"heads":[]});
+        let bootstrap3 = make_v3(
+            1,
+            None,
+            "secure.bootstrap",
+            delta3.clone(),
+            json!({"v":1,"kind":"BOOTSTRAP","input":{},"objects":[]}),
+        );
+        let source3 = json!({"v":1,"workspace_id":workspace,"owner_id":owner_id,
+            "owner_key":owner_key,"sequence":1,"head":hash(&bootstrap3),"policy_hash":policy3_hash});
+        let mut proof3 = case["proof"].clone();
+        proof3["workspace_id"] = json!(workspace);
+        proof3["source"] = source3.clone();
+        let package_id3 = sha256_hex(
+            format!(
+                "peerwork.protocol-package-source.v1\0{}",
+                canonical(
+                    &json!({"source":source3,"source_sha256":proof3["source_sha256"]}),
+                    Path::SecureArtifact
+                )
+                .unwrap()
+            )
+            .as_bytes(),
+        );
+        proof3["source_id"] = json!(package_id3);
+        let package_part_id3 = sha256_hex(
+            format!(
+                "peerwork.protocol-package-part.v1\0{}",
+                canonical(
+                    &json!({"source":source3,"source_id":package_id3,"index":0}),
+                    Path::SecureArtifact
+                )
+                .unwrap()
+            )
+            .as_bytes(),
+        );
+        proof3["parts"][0]["id"] = json!(package_part_id3);
+        let mut package_part3 = case["parts"][0].clone();
+        package_part3["id"] = json!(package_part_id3);
+        package_part3["value"]["workspace_id"] = json!(workspace);
+        package_part3["value"]["source_id"] = json!(package_id3);
+        let stage3 = make_v3(
+            2,
+            Some(&hash(&bootstrap3)),
+            "secure.protocol-package.stage",
+            delta3.clone(),
+            json!({"v":1,"kind":"ADMIN","input":{"package_stage":{
+                "source":source3,"source_id":package_id3,"part_index":0}},"objects":[package_part3]}),
+        );
+        let object_source = json!({"v":1,"workspace_id":workspace,"owner_id":owner_id,
+            "owner_key":owner_key,"sequence":2,"head":hash(&stage3),"policy_hash":policy3_hash});
+        let mut logical_value = install_operation["objects"][0]["value"].clone();
+        logical_value["package_source"] = proof3.clone();
+        let value_text = canonical(&logical_value, Path::SecureArtifact).unwrap();
+        let value_sha = sha256_hex(value_text.as_bytes());
+        let object_source_id = sha256_hex(format!("peerwork.protocol-object-source.v1\0{}",
+            canonical(&json!({"source":object_source,"protocol_digest":digest,"value_sha256":value_sha}),
+                Path::SecureArtifact).unwrap()).as_bytes());
+        let object_part_id = sha256_hex(
+            format!(
+                "peerwork.protocol-object-part.v1\0{}",
+                canonical(
+                    &json!({"source":object_source,"source_id":object_source_id,"index":0}),
+                    Path::SecureArtifact
+                )
+                .unwrap()
+            )
+            .as_bytes(),
+        );
+        let object_proof = json!({"v":1,"workspace_id":workspace,"source":object_source,
+            "source_id":object_source_id,"protocol_digest":digest,"value_sha256":value_sha,
+            "bytes":value_text.len(),"parts":[{"id":object_part_id,"index":0,"sha256":value_sha,"bytes":value_text.len()}]});
+        let object_part = json!({"kind":"protocol_object_part","id":object_part_id,"revision":1,
+            "provenance":"AUTHOR_SIGNED","value":{"v":1,"workspace_id":workspace,
+                "source_id":object_source_id,"index":0,"bytes":value_text.len(),
+                "sha256":value_sha,"text":value_text}});
+        let object_stage_operation = json!({"v":1,"kind":"ADMIN","input":{
+            "protocol_object_stage":{"proof":object_proof,"part_index":0}},"objects":[object_part]});
+        let object_stage = make_v3(
+            3,
+            Some(&hash(&stage3)),
+            "secure.protocol-object.stage",
+            delta3,
+            object_stage_operation,
+        );
+        let object_checkpoint = json!({"v":1,"workspace_id":workspace,"owner_id":owner_id,
+            "owner_key":owner_key,"sequence":3,"head":hash(&object_stage),"policy_hash":policy3_hash});
+        let mut instance3 = install_operation["objects"][1].clone();
+        instance3["value"]["package_source"] = proof3;
+        instance3["value"]["created"] = json!(4);
+        let reference = json!({"kind":"protocols","id":digest,"revision":1,
+            "provenance":"AUTHOR_SIGNED","value":{"workspace_id":workspace,"digest":digest,
+                "object_source":object_proof}});
+        let reference_install = json!({"v":1,"kind":"ADMIN","input":{"install":{
+            "instance_id":instance_id,"protocol_digest":digest,"entrypoint":"proposal"}},
+            "objects":[reference,instance3]});
+        let snapshot3 = json!({"v":1,"mode":"SNAPSHOT_BEGIN","records":[],"heads":[],
+            "snapshot":{"source":object_checkpoint,
+                "root":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "records":0,"heads":0,"offset":0}});
+        let install3 = make_v3(
+            4,
+            Some(&hash(&object_stage)),
+            "secure.structure.begin",
+            snapshot3.clone(),
+            reference_install.clone(),
+        );
+        let check_v3 = |object_stage: &[u8], install: &[u8]| {
+            let checkpoint = serde_json::to_vec(&json!({"v":1,"workspace_id":workspace,
+                "owner_id":owner_id,"owner_key":owner_key,"sequence":4,"head":hash(install),
+                "policy_hash":policy3_hash}))
+            .unwrap();
+            replay_basic_content(
+                &[&policy3],
+                &[&bootstrap3, &stage3, object_stage, install],
+                &checkpoint,
+                &workspace,
+                Some(&owner_pin),
+                None,
+                Some(&keyring),
+            )
+        };
+        assert_eq!(check_v3(&object_stage, &install3).unwrap().object_count, 4);
+        let mut wrong_reference = reference_install;
+        wrong_reference["objects"][0]["value"]["object_source"]["value_sha256"] =
+            json!("0".repeat(64));
+        let wrong_install = make_v3(
+            4,
+            Some(&hash(&object_stage)),
+            "secure.structure.begin",
+            snapshot3,
+            wrong_reference,
+        );
+        assert!(check_v3(&object_stage, &wrong_install).is_err());
         let mut changed = install_operation.clone();
         changed["objects"][1]["value"]["package_source"]["protocol_digest"] = json!("0".repeat(64));
         let changed_install = make_commit(

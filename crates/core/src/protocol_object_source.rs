@@ -136,7 +136,11 @@ fn source_id(
         .as_bytes(),
     ))
 }
-fn part_id(source: &WireValue, source_id: &str, index: usize) -> Result<String, ObjectSourceError> {
+pub(crate) fn object_part_id(
+    source: &WireValue,
+    source_id: &str,
+    index: usize,
+) -> Result<String, ObjectSourceError> {
     let envelope = object(vec![
         ("source", source.clone()),
         ("source_id", string(source_id)),
@@ -150,7 +154,7 @@ fn part_id(source: &WireValue, source_id: &str, index: usize) -> Result<String, 
         .as_bytes(),
     ))
 }
-fn validate_part(part: &WireValue) -> Result<(), ObjectSourceError> {
+pub(crate) fn validate_object_part(part: &WireValue) -> Result<(), ObjectSourceError> {
     if !exact(part, &["kind", "id", "revision", "provenance", "value"])
         || scalar(field(part, "kind")?)? != "protocol_object_part"
         || !digest(&scalar(field(part, "id")?)?)
@@ -192,10 +196,72 @@ fn validate_part(part: &WireValue) -> Result<(), ObjectSourceError> {
     Ok(())
 }
 
+pub(crate) fn validate_object_source_proof(proof: &WireValue) -> Result<(), ObjectSourceError> {
+    if !exact(
+        proof,
+        &[
+            "v",
+            "workspace_id",
+            "source",
+            "source_id",
+            "protocol_digest",
+            "value_sha256",
+            "bytes",
+            "parts",
+        ],
+    ) || integer(field(proof, "v")?)? != 1
+    {
+        return Err(ObjectSourceError::Invalid);
+    }
+    let source = field(proof, "source")?;
+    checkpoint(source)?;
+    let workspace = scalar(field(proof, "workspace_id")?)?;
+    let protocol = scalar(field(proof, "protocol_digest")?)?;
+    let value_hash = scalar(field(proof, "value_sha256")?)?;
+    let source_hash = scalar(field(proof, "source_id")?)?;
+    let total = integer(field(proof, "bytes")?)? as usize;
+    if workspace != scalar(field(source, "workspace_id")?)?
+        || !digest(&protocol)
+        || !digest(&value_hash)
+        || !digest(&source_hash)
+        || source_hash != source_id(source, &protocol, &value_hash)?
+        || !(1..=VALUE_BYTES).contains(&total)
+    {
+        return Err(ObjectSourceError::Invalid);
+    }
+    let WireValue::Array(descriptors) = field(proof, "parts")? else {
+        return Err(ObjectSourceError::Invalid);
+    };
+    if descriptors.is_empty() || descriptors.len() > PARTS {
+        return Err(ObjectSourceError::Resource);
+    }
+    let mut sum = 0usize;
+    for (index, descriptor) in descriptors.iter().enumerate() {
+        let length = integer(field(descriptor, "bytes")?)? as usize;
+        if !exact(descriptor, &["id", "index", "sha256", "bytes"])
+            || integer(field(descriptor, "index")?)? != index as u64
+            || scalar(field(descriptor, "id")?)? != object_part_id(source, &source_hash, index)?
+            || !digest(&scalar(field(descriptor, "sha256")?)?)
+            || !(1..=PART_BYTES).contains(&length)
+        {
+            return Err(ObjectSourceError::Invalid);
+        }
+        sum = sum
+            .checked_add(length)
+            .filter(|n| *n <= VALUE_BYTES)
+            .ok_or(ObjectSourceError::Resource)?;
+    }
+    if sum != total {
+        return Err(ObjectSourceError::Invalid);
+    }
+    Ok(())
+}
+
 pub(crate) fn read_protocol_object_source(
     proof: &WireValue,
     objects: &[WireValue],
 ) -> Result<WireValue, ObjectSourceError> {
+    validate_object_source_proof(proof)?;
     if !exact(
         proof,
         &[
@@ -262,7 +328,7 @@ pub(crate) fn read_protocol_object_source(
         let id = scalar(field(descriptor, "id")?)?;
         let hash = scalar(field(descriptor, "sha256")?)?;
         let length = integer(field(descriptor, "bytes")?)? as usize;
-        if id != part_id(source, &source_hash, index)?
+        if id != object_part_id(source, &source_hash, index)?
             || !digest(&hash)
             || length == 0
             || length > PART_BYTES
@@ -283,7 +349,7 @@ pub(crate) fn read_protocol_object_source(
             return Err(ObjectSourceError::Missing);
         }
         let part = matching[0];
-        validate_part(part)?;
+        validate_object_part(part)?;
         let row = field(part, "value")?;
         if scalar(field(row, "workspace_id")?)? != workspace
             || scalar(field(row, "source_id")?)? != source_hash
