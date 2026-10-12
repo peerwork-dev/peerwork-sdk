@@ -457,7 +457,14 @@ transport `cd3dbeeeca5a657224cc0f6dc85016d6090c1d14771cce1118e9796c99835bfd`,
 reference bridge `61350432c95de2b1eb7181a710961022a594f29069d552b6e90acb6d107cdec7`).
 The opt-in Rust test was run from a clean detached checkout at that exact
 commit with Rust 1.89 locked-offline, Node 24.20.0, the pinned built
-TypeScript service checkout `f828b6c`, and `PEERWORK_REFERENCE_ROOT` set.
+TypeScript service checkout `f828b6c`, with
+`PEERWORK_REFERENCE_ROOT=/root/workdir/message/.worktrees/e2ee-main-integration-20261006`
+and `PEERWORK_NODE_BIN=/root/workdir/message/.tools/node-v24.20.0-linux-x64/bin/node`.
+The test filter was
+`cargo test -p peerwork-runtime --lib
+secure_native_prepare::tests::actual_service_native_owner_bootstrap_lost_reply_exact_retry
+--offline --locked -- --exact` using the task-local Cargo cache/target and
+Rust 1.89 compiler.
 The bridge itself verifies its pinned source and compiled-closure hashes.
 TypeScript only generates/registers the synthetic Ed25519 Owner identity;
 Rust imports its protected PEM, creates a P-256 recipient, authors the six
