@@ -320,6 +320,9 @@ mod tests {
             first.read_exact().unwrap(),
             Some(b"{\"wire\":\"\\ud800\"}".to_vec())
         );
+        let lock_path = path.with_extension("state.lock");
+        assert!(std::fs::rename(&lock_path, lock_path.with_extension("moved")).is_err());
+        assert!(std::fs::remove_file(&lock_path).is_err());
         let probe = || {
             Command::new(std::env::current_exe().unwrap())
                 .args([

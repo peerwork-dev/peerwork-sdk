@@ -8,7 +8,7 @@ use std::io::{self, Write};
 use std::mem::{size_of, zeroed};
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle};
-use std::path::Path;
+use std::path::{Component, Path, Prefix};
 use std::ptr::{null, null_mut};
 use windows_sys::Win32::Foundation::{
     CloseHandle, LocalFree, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, ERROR_SUCCESS,
@@ -21,8 +21,9 @@ use windows_sys::Win32::Security::Authorization::{
 use windows_sys::Win32::Security::{
     AclSizeInformation, EqualSid, GetAce, GetAclInformation, GetLengthSid,
     GetSecurityDescriptorControl, GetTokenInformation, TokenUser, ACCESS_ALLOWED_ACE, ACL,
-    ACL_SIZE_INFORMATION, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PSID,
-    SECURITY_ATTRIBUTES, SE_DACL_PROTECTED, TOKEN_QUERY, TOKEN_USER,
+    ACL_SIZE_INFORMATION, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, INHERITED_ACE,
+    INHERIT_ONLY_ACE, OBJECT_INHERIT_ACE, OWNER_SECURITY_INFORMATION, PSID, SECURITY_ATTRIBUTES,
+    SE_DACL_PROTECTED, TOKEN_QUERY, TOKEN_USER,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateDirectoryW, CreateFileW, GetFileInformationByHandle, MoveFileExW,
@@ -159,6 +160,10 @@ fn inspect(file: &File, directory: bool) -> io::Result<()> {
     // ACCESS_ALLOWED_ACE_TYPE = 0. The private directory grants only the
     // current user full access; no administrator or Everyone ACE is accepted.
     if allowed.Header.AceType != 0
+        || allowed.Header.AceFlags & INHERIT_ONLY_ACE as u8 != 0
+        || allowed.Header.AceFlags
+            & !((OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE | INHERITED_ACE) as u8)
+            != 0
         || allowed.Mask & FILE_ALL_ACCESS != FILE_ALL_ACCESS
         || unsafe {
             EqualSid(
@@ -172,7 +177,12 @@ fn inspect(file: &File, directory: bool) -> io::Result<()> {
     Ok(())
 }
 
-fn open_nofollow(path: &Path, directory: bool, data_access: u32) -> io::Result<File> {
+fn open_nofollow(
+    path: &Path,
+    directory: bool,
+    data_access: u32,
+    share_delete: bool,
+) -> io::Result<File> {
     let flags = FILE_FLAG_OPEN_REPARSE_POINT
         | if directory {
             FILE_FLAG_BACKUP_SEMANTICS
@@ -183,7 +193,7 @@ fn open_nofollow(path: &Path, directory: bool, data_access: u32) -> io::Result<F
         CreateFileW(
             wide(path).as_ptr(),
             READ_CONTROL | FILE_READ_ATTRIBUTES | data_access,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | if share_delete { FILE_SHARE_DELETE } else { 0 },
             null(),
             OPEN_EXISTING,
             flags,
@@ -196,6 +206,42 @@ fn open_nofollow(path: &Path, directory: bool, data_access: u32) -> io::Result<F
     let file = unsafe { File::from_raw_handle(handle) };
     inspect(&file, directory)?;
     Ok(file)
+}
+
+fn reject_reparse_ancestors(path: &Path) -> io::Result<()> {
+    let mut parts = path.components();
+    if !matches!(parts.next(), Some(Component::Prefix(p)) if matches!(p.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)))
+        || parts.any(|part| matches!(part, Component::ParentDir | Component::CurDir))
+    {
+        return Err(denied());
+    }
+    for ancestor in path.ancestors().skip(1) {
+        let handle = unsafe {
+            CreateFileW(
+                wide(ancestor).as_ptr(),
+                FILE_READ_ATTRIBUTES,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                null(),
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(io::Error::last_os_error());
+        }
+        let file = unsafe { File::from_raw_handle(handle) };
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { zeroed() };
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0
+            || info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+        {
+            return Err(denied());
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn private_parent(path: &Path) -> io::Result<()> {
@@ -212,7 +258,8 @@ pub fn create_private_directory(path: &Path) -> io::Result<()> {
     if !path.is_absolute() {
         return Err(denied());
     }
-    match open_nofollow(path, true, 0) {
+    reject_reparse_ancestors(path)?;
+    match open_nofollow(path, true, 0, true) {
         Ok(_) => return Ok(()),
         Err(error) if matches!(error.raw_os_error(), Some(code) if code == ERROR_FILE_NOT_FOUND as i32 || code == ERROR_PATH_NOT_FOUND as i32) =>
             {}
@@ -260,15 +307,15 @@ pub fn create_private_directory(path: &Path) -> io::Result<()> {
             return Err(error);
         }
     }
-    open_nofollow(path, true, 0).map(|_| ())
+    open_nofollow(path, true, 0, true).map(|_| ())
 }
 
 pub(crate) fn private_file(path: &Path) -> io::Result<()> {
-    open_nofollow(path, false, 0).map(|_| ())
+    open_nofollow(path, false, 0, true).map(|_| ())
 }
 
 pub(crate) fn private_file_if_exists(path: &Path) -> io::Result<bool> {
-    match open_nofollow(path, false, 0) {
+    match open_nofollow(path, false, 0, true) {
         Ok(_) => Ok(true),
         Err(error) if matches!(error.raw_os_error(), Some(code) if code == ERROR_FILE_NOT_FOUND as i32 || code == ERROR_PATH_NOT_FOUND as i32) => {
             Ok(false)
@@ -297,12 +344,14 @@ pub(crate) fn create_or_check_file(path: &Path) -> io::Result<()> {
 }
 
 pub(crate) fn open_private_read(path: &Path) -> io::Result<File> {
-    open_nofollow(path, false, FILE_READ_DATA)
+    open_nofollow(path, false, FILE_READ_DATA, true)
 }
 
 pub(crate) fn open_private_lock(path: &Path) -> io::Result<File> {
     create_or_check_file(path)?;
-    open_nofollow(path, false, FILE_READ_DATA | FILE_WRITE_DATA)
+    // The lock pathname must not be moved or replaced while this handle
+    // lives; otherwise a second process could lock a different file there.
+    open_nofollow(path, false, FILE_READ_DATA | FILE_WRITE_DATA, false)
 }
 
 pub(crate) fn atomic_replace(path: &Path, magic: &[u8], bytes: &[u8]) -> io::Result<()> {
@@ -337,6 +386,54 @@ mod tests {
     use super::*;
 
     #[test]
+    fn inherit_only_ace_is_not_an_effective_private_directory_grant() {
+        let outer = tempfile::tempdir().unwrap();
+        let path = outer.path().join("inherit-only");
+        let sid = current_user_sid().unwrap();
+        let mut sid_ptr = null_mut();
+        assert_ne!(
+            unsafe { ConvertSidToStringSidW(sid.as_ptr().cast_mut().cast(), &mut sid_ptr) },
+            0
+        );
+        let sid_text = unsafe {
+            let mut len = 0;
+            while *sid_ptr.add(len) != 0 {
+                len += 1;
+            }
+            let text = String::from_utf16_lossy(std::slice::from_raw_parts(sid_ptr, len));
+            LocalFree(sid_ptr.cast());
+            text
+        };
+        let sddl: Vec<u16> = format!("D:P(A;OICIIO;FA;;;{sid_text})")
+            .encode_utf16()
+            .chain(Some(0))
+            .collect();
+        let mut descriptor = null_mut();
+        assert_ne!(
+            unsafe {
+                ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    sddl.as_ptr(),
+                    SDDL_REVISION_1,
+                    &mut descriptor,
+                    null_mut(),
+                )
+            },
+            0
+        );
+        let _guard = Descriptor(descriptor);
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: descriptor,
+            bInheritHandle: 0,
+        };
+        assert_ne!(
+            unsafe { CreateDirectoryW(wide(&path).as_ptr(), &attributes) },
+            0
+        );
+        assert!(create_private_directory(&path).is_err());
+    }
+
+    #[test]
     fn protected_directory_and_files_reject_broad_and_reparse_paths() {
         let outer = tempfile::tempdir().unwrap();
         let state_dir = outer.path().join("protected");
@@ -355,6 +452,12 @@ mod tests {
         let reparse = state_dir.join("reparse.bin");
         if std::os::windows::fs::symlink_file(&file, &reparse).is_ok() {
             assert!(private_file(&reparse).is_err());
+        }
+        let nested = state_dir.join("nested");
+        create_private_directory(&nested).unwrap();
+        let alias = outer.path().join("alias");
+        if std::os::windows::fs::symlink_dir(&state_dir, &alias).is_ok() {
+            assert!(private_parent(&alias.join("nested").join("state.bin")).is_err());
         }
     }
 
