@@ -935,5 +935,627 @@
       "issued_at": 10
     },
     "error": "DELEGATION_INVALID"
+  },
+  {
+    "name": "global_principal_scope",
+    "context": {
+      "v": 1,
+      "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+      "sequence": 2,
+      "previous": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "policy_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "epoch": 0,
+      "actor_id": "uIucrb0D6Dzw-BuSvR_PaGqGcIMK5fgAuzhkhBJv30g",
+      "signing_key": "Zr5-Myx6RTMyvZ0Kf32wVfXF7xoGraZtmLOftoEMRzo",
+      "command_id": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+      "action_id": "alpha",
+      "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+      "issued_at": 30,
+      "delegation": {
+        "payload": {
+          "v": 1,
+          "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+          "actor_id": "hmFENGRe7tPWif08qSBX9vbTwi_5_TwyWCbZ_YEsyVA",
+          "signing_key": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw",
+          "device": {
+            "payload": {
+              "v": 1,
+              "actor_id": "uIucrb0D6Dzw-BuSvR_PaGqGcIMK5fgAuzhkhBJv30g",
+              "signing_key": "Zr5-Myx6RTMyvZ0Kf32wVfXF7xoGraZtmLOftoEMRzo",
+              "encryption_key": {
+                "kty": "EC",
+                "crv": "P-256",
+                "x": "9_hX9RYgIdTpH2WENm5pt326eQEGBaxcUHtROJUfwkI",
+                "y": "qteG6LjwX9fcTS9c3hO4jY5u_RQkxM3XpmUsI4CVUIs"
+              },
+              "encryption_key_id": "y6fiM-wp30TPQmazKqlzbw8GNgLMnsBCYZWMnWrMn2o",
+              "issued_at": 10,
+              "expires_at": 31622400010
+            },
+            "signature": "jC70z6Oj16uUhLJIeVvm72GuWWhndj8f93YV6kTxkXEBwk_AJ-C7N8ZIlr33kDyIgZPL41O4JHGDdWQM22ceCQ"
+          },
+          "request_id": "RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR",
+          "scope": [
+            {
+              "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+              "actions": [
+                "alpha",
+                "beta"
+              ],
+              "protocol_roles": [
+                "author",
+                "reviewer"
+              ],
+              "capabilities": [
+                "edit",
+                "approve"
+              ],
+              "expires_at": null
+            }
+          ],
+          "read": true,
+          "origin": "https://example.test",
+          "audience": "https://example.test",
+          "issued_at": 20,
+          "expires_at": 1000
+        },
+        "signature": "jCIR-F6SzALG_N3MYJ6aHMTgHvuVzmkCALCgv3v7qEgYQBYZ759KG4sJft80oxbumPT9rqqTWvxSkFnKo4mhCw"
+      }
+    },
+    "policy_payload": {
+      "v": 1,
+      "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+      "owner_id": "hmFENGRe7tPWif08qSBX9vbTwi_5_TwyWCbZ_YEsyVA",
+      "signing_key": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw",
+      "version": 1,
+      "previous_policy": null,
+      "effective_sequence": 1,
+      "visibility": "PUBLIC",
+      "epoch": 0,
+      "members": [
+        {
+          "actor_id": "hmFENGRe7tPWif08qSBX9vbTwi_5_TwyWCbZ_YEsyVA",
+          "certificate": {
+            "payload": {
+              "v": 1,
+              "actor_id": "hmFENGRe7tPWif08qSBX9vbTwi_5_TwyWCbZ_YEsyVA",
+              "signing_key": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw",
+              "encryption_key": {
+                "kty": "EC",
+                "crv": "P-256",
+                "x": "9_hX9RYgIdTpH2WENm5pt326eQEGBaxcUHtROJUfwkI",
+                "y": "qteG6LjwX9fcTS9c3hO4jY5u_RQkxM3XpmUsI4CVUIs"
+              },
+              "encryption_key_id": "y6fiM-wp30TPQmazKqlzbw8GNgLMnsBCYZWMnWrMn2o",
+              "issued_at": 10,
+              "expires_at": 31622400010
+            },
+            "signature": "oguK__zdRW2WrIHTSanrhdh8NoF_Po3RTLkK9PDoP0VZmqttN8nt_f-sIW4Nn9oN4bJMoWIY2KibLR7spLzSCQ"
+          },
+          "role": "OWNER",
+          "scopes": [
+            {
+              "instance_id": null,
+              "actions": [
+                "alpha"
+              ],
+              "protocol_roles": [
+                "author"
+              ],
+              "capabilities": [
+                "edit"
+              ],
+              "expires_at": null
+            }
+          ]
+        }
+      ],
+      "issued_at": 10
+    },
+    "result": {
+      "actor_id": "hmFENGRe7tPWif08qSBX9vbTwi_5_TwyWCbZ_YEsyVA",
+      "role": "MEMBER",
+      "scopes": [
+        {
+          "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+          "actions": [
+            "alpha",
+            "beta"
+          ],
+          "protocol_roles": [
+            "author"
+          ],
+          "capabilities": [
+            "edit"
+          ],
+          "expires_at": null
+        }
+      ]
+    }
+  },
+  {
+    "name": "global_device_scope",
+    "context": {
+      "v": 1,
+      "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+      "sequence": 2,
+      "previous": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "policy_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "epoch": 0,
+      "actor_id": "uIucrb0D6Dzw-BuSvR_PaGqGcIMK5fgAuzhkhBJv30g",
+      "signing_key": "Zr5-Myx6RTMyvZ0Kf32wVfXF7xoGraZtmLOftoEMRzo",
+      "command_id": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+      "action_id": "alpha",
+      "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+      "issued_at": 30,
+      "delegation": {
+        "payload": {
+          "v": 1,
+          "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+          "actor_id": "hmFENGRe7tPWif08qSBX9vbTwi_5_TwyWCbZ_YEsyVA",
+          "signing_key": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw",
+          "device": {
+            "payload": {
+              "v": 1,
+              "actor_id": "uIucrb0D6Dzw-BuSvR_PaGqGcIMK5fgAuzhkhBJv30g",
+              "signing_key": "Zr5-Myx6RTMyvZ0Kf32wVfXF7xoGraZtmLOftoEMRzo",
+              "encryption_key": {
+                "kty": "EC",
+                "crv": "P-256",
+                "x": "9_hX9RYgIdTpH2WENm5pt326eQEGBaxcUHtROJUfwkI",
+                "y": "qteG6LjwX9fcTS9c3hO4jY5u_RQkxM3XpmUsI4CVUIs"
+              },
+              "encryption_key_id": "y6fiM-wp30TPQmazKqlzbw8GNgLMnsBCYZWMnWrMn2o",
+              "issued_at": 10,
+              "expires_at": 31622400010
+            },
+            "signature": "jC70z6Oj16uUhLJIeVvm72GuWWhndj8f93YV6kTxkXEBwk_AJ-C7N8ZIlr33kDyIgZPL41O4JHGDdWQM22ceCQ"
+          },
+          "request_id": "RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR",
+          "scope": [
+            {
+              "instance_id": null,
+              "actions": [
+                "alpha"
+              ],
+              "protocol_roles": [
+                "author"
+              ],
+              "capabilities": [
+                "edit"
+              ],
+              "expires_at": null
+            }
+          ],
+          "read": true,
+          "origin": "https://example.test",
+          "audience": "https://example.test",
+          "issued_at": 20,
+          "expires_at": 1000
+        },
+        "signature": "tjyB84IDrK50OT-c-m6rCdu11QXYZT3iWf1lFWG9yFesvqeO9UTnCr4ocNkJZHm3nYcsQfXlceJ8y_WRetGXDQ"
+      }
+    },
+    "policy_payload": {
+      "v": 1,
+      "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+      "owner_id": "hmFENGRe7tPWif08qSBX9vbTwi_5_TwyWCbZ_YEsyVA",
+      "signing_key": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw",
+      "version": 1,
+      "previous_policy": null,
+      "effective_sequence": 1,
+      "visibility": "PUBLIC",
+      "epoch": 0,
+      "members": [
+        {
+          "actor_id": "hmFENGRe7tPWif08qSBX9vbTwi_5_TwyWCbZ_YEsyVA",
+          "certificate": {
+            "payload": {
+              "v": 1,
+              "actor_id": "hmFENGRe7tPWif08qSBX9vbTwi_5_TwyWCbZ_YEsyVA",
+              "signing_key": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw",
+              "encryption_key": {
+                "kty": "EC",
+                "crv": "P-256",
+                "x": "9_hX9RYgIdTpH2WENm5pt326eQEGBaxcUHtROJUfwkI",
+                "y": "qteG6LjwX9fcTS9c3hO4jY5u_RQkxM3XpmUsI4CVUIs"
+              },
+              "encryption_key_id": "y6fiM-wp30TPQmazKqlzbw8GNgLMnsBCYZWMnWrMn2o",
+              "issued_at": 10,
+              "expires_at": 31622400010
+            },
+            "signature": "oguK__zdRW2WrIHTSanrhdh8NoF_Po3RTLkK9PDoP0VZmqttN8nt_f-sIW4Nn9oN4bJMoWIY2KibLR7spLzSCQ"
+          },
+          "role": "OWNER",
+          "scopes": [
+            {
+              "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+              "actions": [
+                "alpha",
+                "beta"
+              ],
+              "protocol_roles": [
+                "author"
+              ],
+              "capabilities": [
+                "edit"
+              ],
+              "expires_at": null
+            }
+          ]
+        }
+      ],
+      "issued_at": 10
+    },
+    "result": {
+      "actor_id": "hmFENGRe7tPWif08qSBX9vbTwi_5_TwyWCbZ_YEsyVA",
+      "role": "MEMBER",
+      "scopes": [
+        {
+          "instance_id": null,
+          "actions": [
+            "alpha"
+          ],
+          "protocol_roles": [
+            "author"
+          ],
+          "capabilities": [
+            "edit"
+          ],
+          "expires_at": null
+        }
+      ]
+    }
+  },
+  {
+    "name": "delegation_scope_expires_at_issue",
+    "context": {
+      "v": 1,
+      "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+      "sequence": 2,
+      "previous": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "policy_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "epoch": 0,
+      "actor_id": "uIucrb0D6Dzw-BuSvR_PaGqGcIMK5fgAuzhkhBJv30g",
+      "signing_key": "Zr5-Myx6RTMyvZ0Kf32wVfXF7xoGraZtmLOftoEMRzo",
+      "command_id": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+      "action_id": "alpha",
+      "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+      "issued_at": 30,
+      "delegation": {
+        "payload": {
+          "v": 1,
+          "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+          "actor_id": "hmFENGRe7tPWif08qSBX9vbTwi_5_TwyWCbZ_YEsyVA",
+          "signing_key": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw",
+          "device": {
+            "payload": {
+              "v": 1,
+              "actor_id": "uIucrb0D6Dzw-BuSvR_PaGqGcIMK5fgAuzhkhBJv30g",
+              "signing_key": "Zr5-Myx6RTMyvZ0Kf32wVfXF7xoGraZtmLOftoEMRzo",
+              "encryption_key": {
+                "kty": "EC",
+                "crv": "P-256",
+                "x": "9_hX9RYgIdTpH2WENm5pt326eQEGBaxcUHtROJUfwkI",
+                "y": "qteG6LjwX9fcTS9c3hO4jY5u_RQkxM3XpmUsI4CVUIs"
+              },
+              "encryption_key_id": "y6fiM-wp30TPQmazKqlzbw8GNgLMnsBCYZWMnWrMn2o",
+              "issued_at": 10,
+              "expires_at": 31622400010
+            },
+            "signature": "jC70z6Oj16uUhLJIeVvm72GuWWhndj8f93YV6kTxkXEBwk_AJ-C7N8ZIlr33kDyIgZPL41O4JHGDdWQM22ceCQ"
+          },
+          "request_id": "RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR",
+          "scope": [
+            {
+              "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+              "actions": [
+                "alpha"
+              ],
+              "protocol_roles": [
+                "author"
+              ],
+              "capabilities": [
+                "edit"
+              ],
+              "expires_at": 30
+            }
+          ],
+          "read": true,
+          "origin": "https://example.test",
+          "audience": "https://example.test",
+          "issued_at": 20,
+          "expires_at": 1000
+        },
+        "signature": "DVVDiEFFJpHVji_BQTvu7CoCfxQv4KIa-o3kICXyW4PngkxB1Nhq2Ee2pAMrRxtlhjlTALYmMPIKSgaI3U7SCA"
+      }
+    },
+    "policy_payload": {
+      "v": 1,
+      "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+      "owner_id": "hmFENGRe7tPWif08qSBX9vbTwi_5_TwyWCbZ_YEsyVA",
+      "signing_key": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw",
+      "version": 1,
+      "previous_policy": null,
+      "effective_sequence": 1,
+      "visibility": "PUBLIC",
+      "epoch": 0,
+      "members": [
+        {
+          "actor_id": "hmFENGRe7tPWif08qSBX9vbTwi_5_TwyWCbZ_YEsyVA",
+          "certificate": {
+            "payload": {
+              "v": 1,
+              "actor_id": "hmFENGRe7tPWif08qSBX9vbTwi_5_TwyWCbZ_YEsyVA",
+              "signing_key": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw",
+              "encryption_key": {
+                "kty": "EC",
+                "crv": "P-256",
+                "x": "9_hX9RYgIdTpH2WENm5pt326eQEGBaxcUHtROJUfwkI",
+                "y": "qteG6LjwX9fcTS9c3hO4jY5u_RQkxM3XpmUsI4CVUIs"
+              },
+              "encryption_key_id": "y6fiM-wp30TPQmazKqlzbw8GNgLMnsBCYZWMnWrMn2o",
+              "issued_at": 10,
+              "expires_at": 31622400010
+            },
+            "signature": "oguK__zdRW2WrIHTSanrhdh8NoF_Po3RTLkK9PDoP0VZmqttN8nt_f-sIW4Nn9oN4bJMoWIY2KibLR7spLzSCQ"
+          },
+          "role": "OWNER",
+          "scopes": [
+            {
+              "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+              "actions": [
+                "alpha",
+                "beta"
+              ],
+              "protocol_roles": [
+                "author"
+              ],
+              "capabilities": [
+                "edit"
+              ],
+              "expires_at": null
+            }
+          ]
+        }
+      ],
+      "issued_at": 10
+    },
+    "error": "DELEGATION_SCOPE_DENIED"
+  },
+  {
+    "name": "principal_scope_expires_at_issue",
+    "context": {
+      "v": 1,
+      "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+      "sequence": 2,
+      "previous": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "policy_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "epoch": 0,
+      "actor_id": "uIucrb0D6Dzw-BuSvR_PaGqGcIMK5fgAuzhkhBJv30g",
+      "signing_key": "Zr5-Myx6RTMyvZ0Kf32wVfXF7xoGraZtmLOftoEMRzo",
+      "command_id": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+      "action_id": "alpha",
+      "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+      "issued_at": 30,
+      "delegation": {
+        "payload": {
+          "v": 1,
+          "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+          "actor_id": "hmFENGRe7tPWif08qSBX9vbTwi_5_TwyWCbZ_YEsyVA",
+          "signing_key": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw",
+          "device": {
+            "payload": {
+              "v": 1,
+              "actor_id": "uIucrb0D6Dzw-BuSvR_PaGqGcIMK5fgAuzhkhBJv30g",
+              "signing_key": "Zr5-Myx6RTMyvZ0Kf32wVfXF7xoGraZtmLOftoEMRzo",
+              "encryption_key": {
+                "kty": "EC",
+                "crv": "P-256",
+                "x": "9_hX9RYgIdTpH2WENm5pt326eQEGBaxcUHtROJUfwkI",
+                "y": "qteG6LjwX9fcTS9c3hO4jY5u_RQkxM3XpmUsI4CVUIs"
+              },
+              "encryption_key_id": "y6fiM-wp30TPQmazKqlzbw8GNgLMnsBCYZWMnWrMn2o",
+              "issued_at": 10,
+              "expires_at": 31622400010
+            },
+            "signature": "jC70z6Oj16uUhLJIeVvm72GuWWhndj8f93YV6kTxkXEBwk_AJ-C7N8ZIlr33kDyIgZPL41O4JHGDdWQM22ceCQ"
+          },
+          "request_id": "RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR",
+          "scope": [
+            {
+              "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+              "actions": [
+                "alpha",
+                "beta"
+              ],
+              "protocol_roles": [
+                "author",
+                "reviewer"
+              ],
+              "capabilities": [
+                "edit",
+                "approve"
+              ],
+              "expires_at": null
+            }
+          ],
+          "read": true,
+          "origin": "https://example.test",
+          "audience": "https://example.test",
+          "issued_at": 20,
+          "expires_at": 1000
+        },
+        "signature": "jCIR-F6SzALG_N3MYJ6aHMTgHvuVzmkCALCgv3v7qEgYQBYZ759KG4sJft80oxbumPT9rqqTWvxSkFnKo4mhCw"
+      }
+    },
+    "policy_payload": {
+      "v": 1,
+      "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+      "owner_id": "hmFENGRe7tPWif08qSBX9vbTwi_5_TwyWCbZ_YEsyVA",
+      "signing_key": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw",
+      "version": 1,
+      "previous_policy": null,
+      "effective_sequence": 1,
+      "visibility": "PUBLIC",
+      "epoch": 0,
+      "members": [
+        {
+          "actor_id": "hmFENGRe7tPWif08qSBX9vbTwi_5_TwyWCbZ_YEsyVA",
+          "certificate": {
+            "payload": {
+              "v": 1,
+              "actor_id": "hmFENGRe7tPWif08qSBX9vbTwi_5_TwyWCbZ_YEsyVA",
+              "signing_key": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw",
+              "encryption_key": {
+                "kty": "EC",
+                "crv": "P-256",
+                "x": "9_hX9RYgIdTpH2WENm5pt326eQEGBaxcUHtROJUfwkI",
+                "y": "qteG6LjwX9fcTS9c3hO4jY5u_RQkxM3XpmUsI4CVUIs"
+              },
+              "encryption_key_id": "y6fiM-wp30TPQmazKqlzbw8GNgLMnsBCYZWMnWrMn2o",
+              "issued_at": 10,
+              "expires_at": 31622400010
+            },
+            "signature": "oguK__zdRW2WrIHTSanrhdh8NoF_Po3RTLkK9PDoP0VZmqttN8nt_f-sIW4Nn9oN4bJMoWIY2KibLR7spLzSCQ"
+          },
+          "role": "OWNER",
+          "scopes": [
+            {
+              "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+              "actions": [
+                "alpha"
+              ],
+              "protocol_roles": [
+                "author"
+              ],
+              "capabilities": [
+                "edit"
+              ],
+              "expires_at": 30
+            }
+          ]
+        }
+      ],
+      "issued_at": 10
+    },
+    "error": "DELEGATION_SCOPE_DENIED"
+  },
+  {
+    "name": "duplicate_signed_scope_actions",
+    "context": {
+      "v": 1,
+      "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+      "sequence": 2,
+      "previous": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "policy_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "epoch": 0,
+      "actor_id": "uIucrb0D6Dzw-BuSvR_PaGqGcIMK5fgAuzhkhBJv30g",
+      "signing_key": "Zr5-Myx6RTMyvZ0Kf32wVfXF7xoGraZtmLOftoEMRzo",
+      "command_id": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+      "action_id": "alpha",
+      "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+      "issued_at": 30,
+      "delegation": {
+        "payload": {
+          "v": 1,
+          "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+          "actor_id": "hmFENGRe7tPWif08qSBX9vbTwi_5_TwyWCbZ_YEsyVA",
+          "signing_key": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw",
+          "device": {
+            "payload": {
+              "v": 1,
+              "actor_id": "uIucrb0D6Dzw-BuSvR_PaGqGcIMK5fgAuzhkhBJv30g",
+              "signing_key": "Zr5-Myx6RTMyvZ0Kf32wVfXF7xoGraZtmLOftoEMRzo",
+              "encryption_key": {
+                "kty": "EC",
+                "crv": "P-256",
+                "x": "9_hX9RYgIdTpH2WENm5pt326eQEGBaxcUHtROJUfwkI",
+                "y": "qteG6LjwX9fcTS9c3hO4jY5u_RQkxM3XpmUsI4CVUIs"
+              },
+              "encryption_key_id": "y6fiM-wp30TPQmazKqlzbw8GNgLMnsBCYZWMnWrMn2o",
+              "issued_at": 10,
+              "expires_at": 31622400010
+            },
+            "signature": "jC70z6Oj16uUhLJIeVvm72GuWWhndj8f93YV6kTxkXEBwk_AJ-C7N8ZIlr33kDyIgZPL41O4JHGDdWQM22ceCQ"
+          },
+          "request_id": "RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR",
+          "scope": [
+            {
+              "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+              "actions": [
+                "alpha",
+                "alpha"
+              ],
+              "protocol_roles": [
+                "author"
+              ],
+              "capabilities": [
+                "edit"
+              ],
+              "expires_at": null
+            }
+          ],
+          "read": true,
+          "origin": "https://example.test",
+          "audience": "https://example.test",
+          "issued_at": 20,
+          "expires_at": 1000
+        },
+        "signature": "ThxB2ul57tlmX2BUqxb_t4lfNJ-XzHLENdW-FRZRvX0T7IBizFE27pgBmYRZksEyrZQOEvAzft8-o03wn68KCg"
+      }
+    },
+    "policy_payload": {
+      "v": 1,
+      "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+      "owner_id": "hmFENGRe7tPWif08qSBX9vbTwi_5_TwyWCbZ_YEsyVA",
+      "signing_key": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw",
+      "version": 1,
+      "previous_policy": null,
+      "effective_sequence": 1,
+      "visibility": "PUBLIC",
+      "epoch": 0,
+      "members": [
+        {
+          "actor_id": "hmFENGRe7tPWif08qSBX9vbTwi_5_TwyWCbZ_YEsyVA",
+          "certificate": {
+            "payload": {
+              "v": 1,
+              "actor_id": "hmFENGRe7tPWif08qSBX9vbTwi_5_TwyWCbZ_YEsyVA",
+              "signing_key": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw",
+              "encryption_key": {
+                "kty": "EC",
+                "crv": "P-256",
+                "x": "9_hX9RYgIdTpH2WENm5pt326eQEGBaxcUHtROJUfwkI",
+                "y": "qteG6LjwX9fcTS9c3hO4jY5u_RQkxM3XpmUsI4CVUIs"
+              },
+              "encryption_key_id": "y6fiM-wp30TPQmazKqlzbw8GNgLMnsBCYZWMnWrMn2o",
+              "issued_at": 10,
+              "expires_at": 31622400010
+            },
+            "signature": "oguK__zdRW2WrIHTSanrhdh8NoF_Po3RTLkK9PDoP0VZmqttN8nt_f-sIW4Nn9oN4bJMoWIY2KibLR7spLzSCQ"
+          },
+          "role": "OWNER",
+          "scopes": [
+            {
+              "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+              "actions": [
+                "alpha",
+                "beta"
+              ],
+              "protocol_roles": [
+                "author"
+              ],
+              "capabilities": [
+                "edit"
+              ],
+              "expires_at": null
+            }
+          ]
+        }
+      ],
+      "issued_at": 10
+    },
+    "error": "SCOPE_INVALID"
   }
 ]

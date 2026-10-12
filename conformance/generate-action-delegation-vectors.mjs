@@ -53,6 +53,13 @@ try {
   const delegation=await signSecure(principal,'peerwork.secure.device-delegation.v1',payload);
   const longDelegation=await signSecure(principal,'peerwork.secure.device-delegation.v1',
     {...payload,expires_at:certificate.payload.expires_at+1000});
+  const globalPrincipal={...policy,members:[{...policy.members[0],scopes:[{...scope(['alpha']),instance_id:null}]}]};
+  const globalDelegate=await signSecure(principal,'peerwork.secure.device-delegation.v1',
+    {...payload,scope:[{...scope(['alpha']),instance_id:null}]});
+  const expiredScope=await signSecure(principal,'peerwork.secure.device-delegation.v1',
+    {...payload,scope:[scope(['alpha'],['author'],['edit'],30)]});
+  const duplicateActions=await signSecure(principal,'peerwork.secure.device-delegation.v1',
+    {...payload,scope:[scope(['alpha','alpha'])]});
   const context={v:1,workspace_id:workspace,sequence:2,previous:'a'.repeat(64),
     policy_hash:'b'.repeat(64),epoch:0,actor_id:device.actorId,signing_key:device.keyId,
     command_id:'C'.repeat(43),action_id:'alpha',instance_id:instance,
@@ -67,6 +74,11 @@ try {
     ['tampered_signed_scope',{...context,delegation:{...delegation,payload:{...delegation.payload,
       scope:[scope(['gamma'])]}}},policy],
     ['wrong_device_actor',{...context,actor_id:principal.actorId,signing_key:principal.keyId},policy],
+    ['global_principal_scope',context,globalPrincipal],
+    ['global_device_scope',{...context,delegation:globalDelegate},policy],
+    ['delegation_scope_expires_at_issue',{...context,delegation:expiredScope},policy],
+    ['principal_scope_expires_at_issue',context,{...policy,members:[{...policy.members[0],scopes:[scope(['alpha'],['author'],['edit'],30)]}]}],
+    ['duplicate_signed_scope_actions',{...context,delegation:duplicateActions},policy],
   ];
   const vectors=[];
   for(const [name,ctx,pol] of input){
