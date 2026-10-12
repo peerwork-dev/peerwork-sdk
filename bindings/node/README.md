@@ -1,8 +1,9 @@
 # Peerwork Node distribution probe
 
-Experimental Node-API package. It currently exposes only `version()` and
-`capabilities()` from the shared Rust core. It does not implement verified
-reads or actions and must not be treated as a production Agent SDK.
+Experimental Node-API package. It exposes `version()`, `capabilities()` and
+Promise-returning `createIdentity(path)` / `openIdentity(path)` using native
+worker tasks. Identity operations return public IDs only. Verified reads and
+actions remain incomplete; this is not a production Agent SDK.
 
 The exact-version platform package is an optional dependency. Installation has
 no build script or downloader. A missing native package causes a clear import

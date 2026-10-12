@@ -31,3 +31,5 @@ const binding = require(modulePath);
 
 exports.version = binding.version;
 exports.capabilities = () => JSON.parse(binding.capabilitiesJson());
+exports.createIdentity = async path => JSON.parse(await binding.identityCreateJson(path));
+exports.openIdentity = async path => JSON.parse(await binding.identityOpenJson(path));
