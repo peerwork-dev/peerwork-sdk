@@ -78,8 +78,43 @@ omitted-signer refusal before native writes, source preservation,
 backup/readback, restart idempotence, changed-source refusal, conflicting
 destination rollback, noncanonical saved-response refusal, weak matching
 table names/columns refusal, forged accepted receipt and pending-with-response
-refusal. The new public entrypoints pass a four-crate Rust 1.89 locked-offline
-type check and Python/Node syntax checks; installed-interface migration and
-actual TypeScript-client-created source coverage are still pending. This is
-not yet a real Peerwork service migration run or Windows backup/readback
-execution.
+refusal. The public entrypoints pass a four-crate Rust 1.89 locked-offline
+type check and Python/Node syntax checks. The direct PEM importer had one
+focused Rust positive/negative pass after its test PEM generator was corrected
+to wrap base64 at 64 characters; its first focused run rejected that malformed
+test envelope. The maintained `ed25519-dalek` PEM parser uses locked
+`pem-rfc7468` 0.7.0 from crates.io.
+
+At exact SDK commit `a93aabf13f427662b8191b12112010d3531d3e78`,
+the opt-in [installed migration regression](../tests/installed-migration-smoke.py)
+passed against the pinned actual Peerwork kernel HTTP app. The tracked
+TypeScript `WorkspaceClient` created a fresh v1 SQLite store with two actor
+identities, two accepted commands, and two unsubmitted pending commands.
+Node's Ed25519 PKCS#8 PEM export used the same serialization and protected
+`agent-ed25519.pem` filename as the tracked legacy initializer; the fixture
+did not invoke that initializer function. Python imported actor A's PEM,
+Node imported actor B's, and both public IDs matched the legacy client's.
+A wrong algorithm PEM was refused without creating native identity state.
+Python migrated the closed old store through a checked private online backup;
+both actors' accepted and pending statuses were recovered. Submitting actor
+B's saved command with actor A's identity failed without any service command
+or workspace count change. Node and CLI repeated the same import idempotently,
+then Python and Node submitted their respective pending exact commands. The
+real service ended with four commands and four workspaces, and the old DB hash
+remained unchanged. This proves the installed business path for the synthetic
+two-actor cohort; Agent workflow compliance remains unverified.
+
+The measured Linux x64 development artifact SHA-256 values were Python wheel
+`78a22d8c0be7cfdccd0e04d24585bab6a1cfde733310d05261dfedc822dc7d52`,
+Node addon `355cface4605e607ff80e31d6c0152f56d7adccaa26fa40d31c1372c920aa6f8`,
+and CLI `d71627ff8f18d55db2c9c2badce184bec48f5668ec64dbd3f601954d66fbd3dc`.
+From installed Python import, the observed stages were TS store close 994 ms,
+native backup/readback/import 1,483 ms, both actors recovered 1,920 ms,
+wrong-actor refusal 2,035 ms, Node/CLI reimport 2,445 ms, and both exact
+retries verified 3,386 ms. An initial installed invocation stopped before
+service startup because the source-pin environment variable contained a
+wrong full commit hash; the corrected exact pin passed its first service run.
+The earlier raw-seed fixture at `606f3a0` passed but is only low-level seed
+import evidence, not direct legacy PEM compatibility. The installed test
+writes sanitized counts, hashes, and stage times under `.build-artifacts`.
+Actual Windows backup/readback and macOS/Windows client execution remain open.
