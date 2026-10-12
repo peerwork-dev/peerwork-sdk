@@ -21,6 +21,8 @@ mod secure_lifecycle;
 #[allow(dead_code)]
 mod secure_native_prepare;
 #[allow(dead_code)]
+mod secure_package_pending;
+#[allow(dead_code)]
 mod secure_recipient_state;
 pub mod secure_state;
 pub mod transport;
