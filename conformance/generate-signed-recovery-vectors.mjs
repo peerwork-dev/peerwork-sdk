@@ -11,13 +11,13 @@ try {
   const source = resolve(fileURLToPath(new URL('reference/src/', import.meta.url)));
   const output = join(directory, 'oracle.mjs');
   await build({stdin: {contents: `export {createSigningIdentity,createEncryptionIdentity,certifyEncryptionKey,encodeCanonicalJson,sealContent} from '${source}/workspace-secure-crypto.ts';
-    export {createPolicy,createCommit,createCommitContext,secureHash,verifyJournal,prepareJournalRecovery,signSecure} from '${source}/workspace-secure-client.ts';
+    export {createPolicy,createCommit,createCommitContext,secureHash,verifyJournal,verifiedJournalAction,prepareJournalRecovery,signSecure} from '${source}/workspace-secure-client.ts';
     export {structurePolicyFromObjects,projectStructureRecords,projectStructureHeads} from '${source}/workspace-structure.ts';
     export {prepareSecureAction} from '${source}/workspace-secure-engine.ts';`,
     resolveDir: source, sourcefile: 'oracle.ts'}, outfile: output, bundle: true,
     platform: 'node', format: 'esm', logLevel: 'silent'});
   const {createSigningIdentity,createEncryptionIdentity,certifyEncryptionKey,encodeCanonicalJson,sealContent,signSecure,createPolicy,
-    createCommit,createCommitContext,secureHash,verifyJournal,prepareJournalRecovery,
+    createCommit,createCommitContext,secureHash,verifyJournal,verifiedJournalAction,prepareJournalRecovery,
     structurePolicyFromObjects,projectStructureRecords,projectStructureHeads,prepareSecureAction} = await import(pathToFileURL(output));
   const identity = await createSigningIdentity();
   const recipient = await createEncryptionIdentity();
@@ -355,6 +355,32 @@ try {
   const wikiActionCommit = await createCommit({identity,policy:wikiPolicy,checkpoint:wikiCp1,
     operation:wikiAction,actionId:'wiki.create',instanceId:wikiInstance,
     commandId:'q'.repeat(43),issuedAt:4,keyring});
+  for (const [name, mutated] of [
+    ['signed_action_extra_operation_field', {...wikiAction, extra: true}],
+    ['signed_action_extra_input_field', {...wikiAction,
+      input: {...wikiAction.input, extra: true}}],
+  ]) {
+    const changed = await createCommit({identity,policy:wikiPolicy,checkpoint:wikiCp1,
+      operation:mutated,actionId:'wiki.create',instanceId:wikiInstance,
+      commandId:'X'.repeat(43),issuedAt:4,keyring});
+    const changedCheckpoint = {...wikiCp0,sequence:2,head:await secureHash(changed)};
+    try {
+      const journal = await verifyJournal({workspaceId,policies:[wikiPolicy],
+        commits:[wikiBoot,changed],checkpoint:changedCheckpoint,keyring,
+        trustedOwner:{actorId:identity.actorId,key:identity.keyId}});
+      cases.push({name,policy:wikiPolicy,commits:[wikiBoot,changed],
+        checkpoint:changedCheckpoint,keyring,workspace_id:workspaceId,
+        owner:{actor_id:identity.actorId,key:identity.keyId},ok:true,
+        operations:journal.operations,objects:journal.objects,
+        recoveries:journal.recoveries,legacy:journal.legacy,
+        structure_state:journal.structure?.state??null});
+    } catch (error) {
+      cases.push({name,policy:wikiPolicy,commits:[wikiBoot,changed],
+        checkpoint:changedCheckpoint,keyring,workspace_id:workspaceId,
+        owner:{actor_id:identity.actorId,key:identity.keyId},ok:false,
+        error:String(error.message)});
+    }
+  }
   const wikiCp2 = {...wikiCp0,sequence:2,head:await secureHash(wikiActionCommit)};
   const wikiBad = await createCommit({identity,policy:wikiPolicy,checkpoint:wikiCp2,
     operation:{v:1,kind:'ADMIN',input:{},objects:[{kind:'forbidden',id:'u'.repeat(43),
@@ -398,6 +424,7 @@ try {
       owner:{actor_id:identity.actorId,key:identity.keyId},ok:true,
       operations:journal.operations,objects:journal.objects,recoveries:journal.recoveries,
       legacy:journal.legacy,structure_state:journal.structure?.state??null,
+      action_receipts:[verifiedJournalAction(journal,wikiActionCommit.payload.command_id)],
       structure_records:journal.structure?.records??null,
       structure_heads:journal.structure?.heads??null});
   } catch (error) {

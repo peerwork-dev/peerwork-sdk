@@ -1181,6 +1181,7 @@ pub(crate) struct ReplayFacts {
     pub object_count: usize,
     pub legacy: bool,
     pub recoveries: Vec<WireValue>,
+    pub action_receipts: Vec<WireValue>,
     pub structure_state: Option<&'static str>,
 }
 
@@ -1462,6 +1463,7 @@ fn replay_basic_content_depth(
     let mut previous_policy_hash: Option<String> = None;
     let mut operations = Vec::with_capacity(commit_wires.len());
     let mut recoveries = Vec::new();
+    let mut action_receipts = Vec::new();
     let mut legacy = false;
     let mut migration_batch: Option<MigrationBatch> = None;
     let mut migration_base: Option<Vec<WireValue>> = None;
@@ -2026,6 +2028,82 @@ fn replay_basic_content_depth(
                 )
                 .map_err(|_| ReplayError::Invalid)?;
             }
+            if kind == "ACTION" {
+                let mut effects = Vec::new();
+                for object in objects {
+                    if string(object, "kind")? != "records" {
+                        continue;
+                    }
+                    let value = object.get("value").ok_or(ReplayError::Invalid)?;
+                    if value.get("id") != object.get("id")
+                        || !integer(value, "revision").is_ok_and(|revision| revision >= 1)
+                        || value
+                            .get("schema_ref")
+                            .and_then(WireValue::as_utf16)
+                            .is_none()
+                        || value.get("actor_id") != payload.get("actor_id")
+                        || value.get("instance_id") != payload.get("instance_id")
+                    {
+                        return Err(ReplayError::Invalid);
+                    }
+                    effects.push(fields_object(vec![
+                        (
+                            "record_id",
+                            object.get("id").ok_or(ReplayError::Invalid)?.clone(),
+                        ),
+                        (
+                            "revision",
+                            value.get("revision").ok_or(ReplayError::Invalid)?.clone(),
+                        ),
+                        (
+                            "schema_ref",
+                            value.get("schema_ref").ok_or(ReplayError::Invalid)?.clone(),
+                        ),
+                        (
+                            "entity_id",
+                            value
+                                .get("entity_id")
+                                .filter(|v| v.as_utf16().is_some())
+                                .cloned()
+                                .unwrap_or(WireValue::Null),
+                        ),
+                    ]));
+                }
+                let hash = chain
+                    .commit_hashes
+                    .get(usize::try_from(sequence - 1).map_err(|_| ReplayError::Invalid)?)
+                    .ok_or(ReplayError::Invalid)?;
+                action_receipts.push(fields_object(vec![
+                    (
+                        "command_id",
+                        payload
+                            .get("command_id")
+                            .ok_or(ReplayError::Invalid)?
+                            .clone(),
+                    ),
+                    ("commit_hash", string_value(hash)),
+                    ("sequence", WireValue::Number(sequence as f64)),
+                    (
+                        "actor_id",
+                        payload.get("actor_id").ok_or(ReplayError::Invalid)?.clone(),
+                    ),
+                    (
+                        "instance_id",
+                        payload
+                            .get("instance_id")
+                            .ok_or(ReplayError::Invalid)?
+                            .clone(),
+                    ),
+                    (
+                        "action_id",
+                        payload
+                            .get("action_id")
+                            .ok_or(ReplayError::Invalid)?
+                            .clone(),
+                    ),
+                    ("effects", WireValue::Array(effects)),
+                ]));
+            }
             operations.push(signed_operation);
             previous_policy_hash = Some(policy_hash);
             prior_mode = Some(mode);
@@ -2081,6 +2159,7 @@ fn replay_basic_content_depth(
         object_count: seen_objects.len(),
         legacy,
         recoveries,
+        action_receipts,
         structure_state: if structured {
             Some(if structure_progress.is_some() {
                 "SEEDING"
@@ -2330,7 +2409,23 @@ fn validate_action_state_slice(
     policy: &WireValue,
     prior: &[WireValue],
 ) -> Result<(), &'static str> {
+    if !exact_fields(operation, &["v", "kind", "input", "objects"]) {
+        return Err("PROTOCOL_OUTPUT_MISMATCH");
+    }
     let input = operation.get("input").ok_or("ACTION_CONTEXT_MISMATCH")?;
+    if !exact_fields(
+        input,
+        &[
+            "instance_id",
+            "expected_instance_revision",
+            "action_id",
+            "body",
+            "exact_input_refs",
+            "allocations",
+        ],
+    ) {
+        return Err("PROTOCOL_OUTPUT_MISMATCH");
+    }
     let action_id = context
         .get("action_id")
         .and_then(WireValue::as_utf16)
@@ -4340,6 +4435,24 @@ mod tests {
                             .unwrap(),
                         canonical_wire_value(&expected, Path::SecureArtifact).unwrap(),
                         "{}: {field}",
+                        case["name"]
+                    );
+                }
+                if case["action_receipts"].is_array() {
+                    let expected = parse_wire_json_js_bounded(
+                        &serde_json::to_vec(&case["action_receipts"]).unwrap(),
+                        64,
+                        32 * 1024 * 1024,
+                    )
+                    .unwrap();
+                    assert_eq!(
+                        canonical_wire_value(
+                            &WireValue::Array(facts.action_receipts),
+                            Path::SecureArtifact,
+                        )
+                        .unwrap(),
+                        canonical_wire_value(&expected, Path::SecureArtifact).unwrap(),
+                        "{}: action receipts",
                         case["name"]
                     );
                 }
