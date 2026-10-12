@@ -1,0 +1,923 @@
+[
+  {
+    "name": "minimal_valid",
+    "manifest": {
+      "name": "demo",
+      "display_version": "1",
+      "semantics": "peerwork.kernel.v1",
+      "dependencies": [],
+      "protocol_roles": [],
+      "capabilities": [],
+      "role_conflicts": [],
+      "historical_role_conflicts": [],
+      "constraints": {},
+      "record_schemas": {},
+      "initial_state": {
+        "count": 0
+      },
+      "actions": []
+    },
+    "result": "{\"manifest\":{\"actions\":[],\"capabilities\":[],\"constraints\":{},\"dependencies\":[],\"display_version\":\"1\",\"historical_role_conflicts\":[],\"initial_state\":{\"count\":0},\"name\":\"demo\",\"protocol_roles\":[],\"record_schemas\":{},\"role_conflicts\":[],\"semantics\":\"peerwork.kernel.v1\"},\"semantics\":\"peerwork.kernel.v1\"}"
+  },
+  {
+    "name": "unknown_top_field",
+    "manifest": {
+      "name": "demo",
+      "display_version": "1",
+      "semantics": "peerwork.kernel.v1",
+      "dependencies": [],
+      "protocol_roles": [],
+      "capabilities": [],
+      "role_conflicts": [],
+      "historical_role_conflicts": [],
+      "constraints": {},
+      "record_schemas": {},
+      "initial_state": {
+        "count": 0
+      },
+      "actions": [],
+      "unknown": true
+    },
+    "error": "ZodError"
+  },
+  {
+    "name": "duplicate_dependency",
+    "manifest": {
+      "name": "demo",
+      "display_version": "1",
+      "semantics": "peerwork.kernel.v1",
+      "dependencies": [
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      "protocol_roles": [],
+      "capabilities": [],
+      "role_conflicts": [],
+      "historical_role_conflicts": [],
+      "constraints": {},
+      "record_schemas": {},
+      "initial_state": {
+        "count": 0
+      },
+      "actions": []
+    },
+    "error": "ZodError"
+  },
+  {
+    "name": "invalid_role_conflict",
+    "manifest": {
+      "name": "demo",
+      "display_version": "1",
+      "semantics": "peerwork.kernel.v1",
+      "dependencies": [],
+      "protocol_roles": [
+        "editor"
+      ],
+      "capabilities": [],
+      "role_conflicts": [
+        [
+          "editor",
+          "editor"
+        ]
+      ],
+      "historical_role_conflicts": [],
+      "constraints": {},
+      "record_schemas": {},
+      "initial_state": {
+        "count": 0
+      },
+      "actions": []
+    },
+    "error": "ZodError"
+  },
+  {
+    "name": "unknown_append_schema",
+    "manifest": {
+      "name": "demo",
+      "display_version": "1",
+      "semantics": "peerwork.kernel.v1",
+      "dependencies": [],
+      "protocol_roles": [],
+      "capabilities": [],
+      "role_conflicts": [],
+      "historical_role_conflicts": [],
+      "constraints": {},
+      "record_schemas": {},
+      "initial_state": {
+        "count": 0
+      },
+      "actions": [
+        {
+          "id": "add",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": [
+                {
+                  "op": "append",
+                  "schema": "missing",
+                  "value": {
+                    "from": "literal",
+                    "value": {}
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "error": "ZodError"
+  },
+  {
+    "name": "state_array_missing_version",
+    "manifest": {
+      "name": "demo",
+      "display_version": "1",
+      "semantics": "peerwork.kernel.v1",
+      "dependencies": [],
+      "protocol_roles": [],
+      "capabilities": [],
+      "role_conflicts": [],
+      "historical_role_conflicts": [],
+      "constraints": {},
+      "record_schemas": {},
+      "initial_state": {
+        "refs": []
+      },
+      "actions": [],
+      "state_array_types": [
+        {
+          "path": [
+            "refs"
+          ],
+          "kind": "exact_ref_list"
+        }
+      ]
+    },
+    "error": "ZodError"
+  },
+  {
+    "name": "state_array_valid",
+    "manifest": {
+      "name": "demo",
+      "display_version": "1",
+      "semantics": "peerwork.kernel.v1",
+      "dependencies": [],
+      "protocol_roles": [],
+      "capabilities": [],
+      "role_conflicts": [],
+      "historical_role_conflicts": [],
+      "constraints": {},
+      "record_schemas": {},
+      "initial_state": {
+        "refs": []
+      },
+      "actions": [],
+      "format_version": 2,
+      "state_array_types": [
+        {
+          "path": [
+            "refs"
+          ],
+          "kind": "exact_ref_list"
+        }
+      ]
+    },
+    "result": "{\"manifest\":{\"actions\":[],\"capabilities\":[],\"constraints\":{},\"dependencies\":[],\"display_version\":\"1\",\"format_version\":2,\"historical_role_conflicts\":[],\"initial_state\":{\"refs\":[]},\"name\":\"demo\",\"protocol_roles\":[],\"record_schemas\":{},\"role_conflicts\":[],\"semantics\":\"peerwork.kernel.v1\",\"state_array_types\":[{\"kind\":\"exact_ref_list\",\"path\":[\"refs\"]}]},\"semantics\":\"peerwork.kernel.v1\"}"
+  },
+  {
+    "name": "state_array_wrong_kind",
+    "manifest": {
+      "name": "demo",
+      "display_version": "1",
+      "semantics": "peerwork.kernel.v1",
+      "dependencies": [],
+      "protocol_roles": [],
+      "capabilities": [],
+      "role_conflicts": [],
+      "historical_role_conflicts": [],
+      "constraints": {},
+      "record_schemas": {},
+      "initial_state": {
+        "refs": [
+          1
+        ]
+      },
+      "actions": [],
+      "format_version": 2,
+      "state_array_types": [
+        {
+          "path": [
+            "refs"
+          ],
+          "kind": "exact_ref_list"
+        }
+      ]
+    },
+    "error": "ZodError"
+  },
+  {
+    "name": "state_export_missing",
+    "manifest": {
+      "name": "demo",
+      "display_version": "1",
+      "semantics": "peerwork.kernel.v1",
+      "dependencies": [],
+      "protocol_roles": [],
+      "capabilities": [],
+      "role_conflicts": [],
+      "historical_role_conflicts": [],
+      "constraints": {},
+      "record_schemas": {},
+      "initial_state": {
+        "count": 0
+      },
+      "actions": [],
+      "state_exports": [
+        {
+          "path": [
+            "absent"
+          ],
+          "read": true,
+          "write": false
+        }
+      ]
+    },
+    "error": "ZodError"
+  },
+  {
+    "name": "record_required_unknown",
+    "manifest": {
+      "name": "demo",
+      "display_version": "1",
+      "semantics": "peerwork.kernel.v1",
+      "dependencies": [],
+      "protocol_roles": [],
+      "capabilities": [],
+      "role_conflicts": [],
+      "historical_role_conflicts": [],
+      "constraints": {},
+      "record_schemas": {
+        "entry": {
+          "type": "object",
+          "fields": {
+            "text": "string"
+          },
+          "required": [
+            "absent"
+          ],
+          "max_bytes": 1024
+        }
+      },
+      "initial_state": {
+        "count": 0
+      },
+      "actions": []
+    },
+    "error": "ZodError"
+  },
+  {
+    "name": "record_schema_valid",
+    "manifest": {
+      "name": "demo",
+      "display_version": "1",
+      "semantics": "peerwork.kernel.v1",
+      "dependencies": [],
+      "protocol_roles": [],
+      "capabilities": [],
+      "role_conflicts": [],
+      "historical_role_conflicts": [],
+      "constraints": {},
+      "record_schemas": {
+        "entry": {
+          "type": "object",
+          "fields": {
+            "text": "string"
+          },
+          "required": [
+            "text"
+          ],
+          "max_bytes": 1024
+        }
+      },
+      "initial_state": {
+        "count": 0
+      },
+      "actions": []
+    },
+    "result": "{\"manifest\":{\"actions\":[],\"capabilities\":[],\"constraints\":{},\"dependencies\":[],\"display_version\":\"1\",\"historical_role_conflicts\":[],\"initial_state\":{\"count\":0},\"name\":\"demo\",\"protocol_roles\":[],\"record_schemas\":{\"entry\":{\"fields\":{\"text\":\"string\"},\"max_bytes\":1024,\"required\":[\"text\"],\"type\":\"object\"}},\"role_conflicts\":[],\"semantics\":\"peerwork.kernel.v1\"},\"semantics\":\"peerwork.kernel.v1\"}"
+  },
+  {
+    "name": "workflow_protected_valid",
+    "manifest": {
+      "name": "demo",
+      "display_version": "1",
+      "semantics": "peerwork.kernel.v1",
+      "dependencies": [],
+      "protocol_roles": [],
+      "capabilities": [],
+      "role_conflicts": [],
+      "historical_role_conflicts": [],
+      "constraints": {},
+      "record_schemas": {
+        "task": {
+          "type": "object",
+          "fields": {
+            "status": "string",
+            "parent": "json"
+          },
+          "required": [
+            "status",
+            "parent"
+          ],
+          "max_bytes": 1024,
+          "protection": {
+            "v": 1,
+            "fields": {
+              "status": {
+                "protection": "e2ee",
+                "type": "string"
+              },
+              "parent": {
+                "protection": "e2ee",
+                "type": "json"
+              }
+            }
+          },
+          "workflow": {
+            "v": 1,
+            "status_field": "status",
+            "parent_field": "parent",
+            "states": [
+              "OPEN",
+              "DONE"
+            ],
+            "transitions": [
+              {
+                "action": "task.create",
+                "from": null,
+                "to": "OPEN"
+              },
+              {
+                "action": "task.complete",
+                "from": "OPEN",
+                "to": "DONE"
+              }
+            ]
+          }
+        }
+      },
+      "initial_state": {
+        "count": 0
+      },
+      "actions": []
+    },
+    "result": "{\"manifest\":{\"actions\":[],\"capabilities\":[],\"constraints\":{},\"dependencies\":[],\"display_version\":\"1\",\"historical_role_conflicts\":[],\"initial_state\":{\"count\":0},\"name\":\"demo\",\"protocol_roles\":[],\"record_schemas\":{\"task\":{\"fields\":{\"parent\":\"json\",\"status\":\"string\"},\"max_bytes\":1024,\"protection\":{\"fields\":{\"parent\":{\"protection\":\"e2ee\",\"type\":\"json\"},\"status\":{\"protection\":\"e2ee\",\"type\":\"string\"}},\"v\":1},\"required\":[\"status\",\"parent\"],\"type\":\"object\",\"workflow\":{\"parent_field\":\"parent\",\"states\":[\"OPEN\",\"DONE\"],\"status_field\":\"status\",\"transitions\":[{\"action\":\"task.create\",\"from\":null,\"to\":\"OPEN\"},{\"action\":\"task.complete\",\"from\":\"OPEN\",\"to\":\"DONE\"}],\"v\":1}}},\"role_conflicts\":[],\"semantics\":\"peerwork.kernel.v1\"},\"semantics\":\"peerwork.kernel.v1\"}"
+  },
+  {
+    "name": "workflow_protection_type_mismatch",
+    "manifest": {
+      "name": "demo",
+      "display_version": "1",
+      "semantics": "peerwork.kernel.v1",
+      "dependencies": [],
+      "protocol_roles": [],
+      "capabilities": [],
+      "role_conflicts": [],
+      "historical_role_conflicts": [],
+      "constraints": {},
+      "record_schemas": {
+        "task": {
+          "type": "object",
+          "fields": {
+            "status": "string",
+            "parent": "json"
+          },
+          "required": [
+            "status",
+            "parent"
+          ],
+          "max_bytes": 1024,
+          "protection": {
+            "v": 1,
+            "fields": {
+              "status": {
+                "protection": "e2ee",
+                "type": "integer"
+              },
+              "parent": {
+                "protection": "e2ee",
+                "type": "json"
+              }
+            }
+          },
+          "workflow": {
+            "v": 1,
+            "status_field": "status",
+            "parent_field": "parent",
+            "states": [
+              "OPEN",
+              "DONE"
+            ],
+            "transitions": [
+              {
+                "action": "task.create",
+                "from": null,
+                "to": "OPEN"
+              },
+              {
+                "action": "task.complete",
+                "from": "OPEN",
+                "to": "DONE"
+              }
+            ]
+          }
+        }
+      },
+      "initial_state": {
+        "count": 0
+      },
+      "actions": []
+    },
+    "error": "ZodError"
+  },
+  {
+    "name": "workflow_required_parent_missing",
+    "manifest": {
+      "name": "demo",
+      "display_version": "1",
+      "semantics": "peerwork.kernel.v1",
+      "dependencies": [],
+      "protocol_roles": [],
+      "capabilities": [],
+      "role_conflicts": [],
+      "historical_role_conflicts": [],
+      "constraints": {},
+      "record_schemas": {
+        "task": {
+          "type": "object",
+          "fields": {
+            "status": "string",
+            "parent": "json"
+          },
+          "required": [
+            "status"
+          ],
+          "max_bytes": 1024,
+          "protection": {
+            "v": 1,
+            "fields": {
+              "status": {
+                "protection": "e2ee",
+                "type": "string"
+              },
+              "parent": {
+                "protection": "e2ee",
+                "type": "json"
+              }
+            }
+          },
+          "workflow": {
+            "v": 1,
+            "status_field": "status",
+            "parent_field": "parent",
+            "states": [
+              "OPEN",
+              "DONE"
+            ],
+            "transitions": [
+              {
+                "action": "task.create",
+                "from": null,
+                "to": "OPEN"
+              },
+              {
+                "action": "task.complete",
+                "from": "OPEN",
+                "to": "DONE"
+              }
+            ]
+          }
+        }
+      },
+      "initial_state": {
+        "count": 0
+      },
+      "actions": []
+    },
+    "error": "ZodError"
+  },
+  {
+    "name": "workflow_readable_valid",
+    "manifest": {
+      "name": "demo",
+      "display_version": "1",
+      "semantics": "peerwork.kernel.v1",
+      "dependencies": [],
+      "protocol_roles": [],
+      "capabilities": [],
+      "role_conflicts": [],
+      "historical_role_conflicts": [],
+      "constraints": {},
+      "record_schemas": {
+        "task": {
+          "type": "object",
+          "fields": {
+            "status": "string",
+            "parent": "json"
+          },
+          "required": [
+            "status",
+            "parent"
+          ],
+          "max_bytes": 1024,
+          "protection": {
+            "v": 1,
+            "fields": {
+              "status": {
+                "protection": "server_readable",
+                "type": "enum",
+                "values": [
+                  "OPEN",
+                  "DONE"
+                ]
+              },
+              "parent": {
+                "protection": "server_readable",
+                "type": "optional_reference"
+              }
+            }
+          },
+          "workflow": {
+            "v": 1,
+            "status_field": "status",
+            "parent_field": "parent",
+            "states": [
+              "OPEN",
+              "DONE"
+            ],
+            "transitions": [
+              {
+                "action": "task.create",
+                "from": null,
+                "to": "OPEN"
+              },
+              {
+                "action": "task.complete",
+                "from": "OPEN",
+                "to": "DONE"
+              }
+            ]
+          }
+        }
+      },
+      "initial_state": {
+        "count": 0
+      },
+      "actions": []
+    },
+    "result": "{\"manifest\":{\"actions\":[],\"capabilities\":[],\"constraints\":{},\"dependencies\":[],\"display_version\":\"1\",\"historical_role_conflicts\":[],\"initial_state\":{\"count\":0},\"name\":\"demo\",\"protocol_roles\":[],\"record_schemas\":{\"task\":{\"fields\":{\"parent\":\"json\",\"status\":\"string\"},\"max_bytes\":1024,\"protection\":{\"fields\":{\"parent\":{\"protection\":\"server_readable\",\"type\":\"optional_reference\"},\"status\":{\"protection\":\"server_readable\",\"type\":\"enum\",\"values\":[\"OPEN\",\"DONE\"]}},\"v\":1},\"required\":[\"status\",\"parent\"],\"type\":\"object\",\"workflow\":{\"parent_field\":\"parent\",\"states\":[\"OPEN\",\"DONE\"],\"status_field\":\"status\",\"transitions\":[{\"action\":\"task.create\",\"from\":null,\"to\":\"OPEN\"},{\"action\":\"task.complete\",\"from\":\"OPEN\",\"to\":\"DONE\"}],\"v\":1}}},\"role_conflicts\":[],\"semantics\":\"peerwork.kernel.v1\"},\"semantics\":\"peerwork.kernel.v1\"}"
+  },
+  {
+    "name": "workflow_partial_disclosure",
+    "manifest": {
+      "name": "demo",
+      "display_version": "1",
+      "semantics": "peerwork.kernel.v1",
+      "dependencies": [],
+      "protocol_roles": [],
+      "capabilities": [],
+      "role_conflicts": [],
+      "historical_role_conflicts": [],
+      "constraints": {},
+      "record_schemas": {
+        "task": {
+          "type": "object",
+          "fields": {
+            "status": "string",
+            "parent": "json"
+          },
+          "required": [
+            "status",
+            "parent"
+          ],
+          "max_bytes": 1024,
+          "protection": {
+            "v": 1,
+            "fields": {
+              "status": {
+                "protection": "server_readable",
+                "type": "enum",
+                "values": [
+                  "OPEN",
+                  "DONE"
+                ]
+              },
+              "parent": {
+                "protection": "e2ee",
+                "type": "json"
+              }
+            }
+          },
+          "workflow": {
+            "v": 1,
+            "status_field": "status",
+            "parent_field": "parent",
+            "states": [
+              "OPEN",
+              "DONE"
+            ],
+            "transitions": [
+              {
+                "action": "task.create",
+                "from": null,
+                "to": "OPEN"
+              },
+              {
+                "action": "task.complete",
+                "from": "OPEN",
+                "to": "DONE"
+              }
+            ]
+          }
+        }
+      },
+      "initial_state": {
+        "count": 0
+      },
+      "actions": []
+    },
+    "error": "ZodError"
+  },
+  {
+    "name": "workflow_duplicate_transition",
+    "manifest": {
+      "name": "demo",
+      "display_version": "1",
+      "semantics": "peerwork.kernel.v1",
+      "dependencies": [],
+      "protocol_roles": [],
+      "capabilities": [],
+      "role_conflicts": [],
+      "historical_role_conflicts": [],
+      "constraints": {},
+      "record_schemas": {
+        "task": {
+          "type": "object",
+          "fields": {
+            "status": "string",
+            "parent": "json"
+          },
+          "required": [
+            "status",
+            "parent"
+          ],
+          "max_bytes": 1024,
+          "protection": {
+            "v": 1,
+            "fields": {
+              "status": {
+                "protection": "e2ee",
+                "type": "string"
+              },
+              "parent": {
+                "protection": "e2ee",
+                "type": "json"
+              }
+            }
+          },
+          "workflow": {
+            "v": 1,
+            "status_field": "status",
+            "parent_field": "parent",
+            "states": [
+              "OPEN",
+              "DONE"
+            ],
+            "transitions": [
+              {
+                "action": "task.create",
+                "from": null,
+                "to": "OPEN"
+              },
+              {
+                "action": "task.complete",
+                "from": "OPEN",
+                "to": "DONE"
+              },
+              {
+                "action": "task.create",
+                "from": null,
+                "to": "OPEN"
+              }
+            ]
+          }
+        }
+      },
+      "initial_state": {
+        "count": 0
+      },
+      "actions": []
+    },
+    "error": "ZodError"
+  },
+  {
+    "name": "requirements_valid",
+    "manifest": {
+      "name": "demo",
+      "display_version": "1",
+      "semantics": "peerwork.kernel.v1",
+      "dependencies": [],
+      "protocol_roles": [],
+      "capabilities": [],
+      "role_conflicts": [],
+      "historical_role_conflicts": [],
+      "constraints": {},
+      "record_schemas": {},
+      "initial_state": {
+        "count": 0
+      },
+      "actions": [],
+      "execution_requirements": {
+        "format": "peerwork.protocol-execution-requirements.v1",
+        "closure_complete": false,
+        "ports": [
+          {
+            "import_path": [
+              "library"
+            ],
+            "action_id": "task.create",
+            "variant": 0,
+            "input_name": "parent",
+            "type": "exact_ref",
+            "required": true,
+            "bound": false
+          }
+        ]
+      }
+    },
+    "result": "{\"manifest\":{\"actions\":[],\"capabilities\":[],\"constraints\":{},\"dependencies\":[],\"display_version\":\"1\",\"execution_requirements\":{\"closure_complete\":false,\"format\":\"peerwork.protocol-execution-requirements.v1\",\"ports\":[{\"action_id\":\"task.create\",\"bound\":false,\"import_path\":[\"library\"],\"input_name\":\"parent\",\"required\":true,\"type\":\"exact_ref\",\"variant\":0}]},\"historical_role_conflicts\":[],\"initial_state\":{\"count\":0},\"name\":\"demo\",\"protocol_roles\":[],\"record_schemas\":{},\"role_conflicts\":[],\"semantics\":\"peerwork.kernel.v1\"},\"semantics\":\"peerwork.kernel.v1\"}"
+  },
+  {
+    "name": "requirements_unsafe_variant",
+    "manifest": {
+      "name": "demo",
+      "display_version": "1",
+      "semantics": "peerwork.kernel.v1",
+      "dependencies": [],
+      "protocol_roles": [],
+      "capabilities": [],
+      "role_conflicts": [],
+      "historical_role_conflicts": [],
+      "constraints": {},
+      "record_schemas": {},
+      "initial_state": {
+        "count": 0
+      },
+      "actions": [],
+      "execution_requirements": {
+        "format": "peerwork.protocol-execution-requirements.v1",
+        "closure_complete": false,
+        "ports": [
+          {
+            "import_path": [
+              "library"
+            ],
+            "action_id": "task.create",
+            "variant": 32,
+            "input_name": "parent",
+            "type": "exact_ref",
+            "required": true,
+            "bound": false
+          }
+        ]
+      }
+    },
+    "error": "ZodError"
+  },
+  {
+    "name": "json_array_exact_ref_guard",
+    "manifest": {
+      "name": "demo",
+      "display_version": "1",
+      "semantics": "peerwork.kernel.v1",
+      "dependencies": [],
+      "protocol_roles": [],
+      "capabilities": [],
+      "role_conflicts": [],
+      "historical_role_conflicts": [],
+      "constraints": {},
+      "record_schemas": {},
+      "initial_state": {
+        "refs": []
+      },
+      "actions": [
+        {
+          "id": "inspect",
+          "reads": [
+            [
+              "refs"
+            ]
+          ],
+          "writes": [],
+          "revisionEffects": {
+            "control": false,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [
+                {
+                  "op": "exact_ref_list",
+                  "source": "state",
+                  "path": [
+                    "refs"
+                  ],
+                  "scope": "INSTANCE",
+                  "max": 32
+                }
+              ],
+              "effects": []
+            }
+          ]
+        }
+      ],
+      "format_version": 2,
+      "state_array_types": [
+        {
+          "path": [
+            "refs"
+          ],
+          "kind": "json"
+        }
+      ]
+    },
+    "error": "ZodError"
+  },
+  {
+    "name": "ref_array_exact_ref_guard",
+    "manifest": {
+      "name": "demo",
+      "display_version": "1",
+      "semantics": "peerwork.kernel.v1",
+      "dependencies": [],
+      "protocol_roles": [],
+      "capabilities": [],
+      "role_conflicts": [],
+      "historical_role_conflicts": [],
+      "constraints": {},
+      "record_schemas": {},
+      "initial_state": {
+        "refs": []
+      },
+      "actions": [
+        {
+          "id": "inspect",
+          "reads": [
+            [
+              "refs"
+            ]
+          ],
+          "writes": [],
+          "revisionEffects": {
+            "control": false,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [
+                {
+                  "op": "exact_ref_list",
+                  "source": "state",
+                  "path": [
+                    "refs"
+                  ],
+                  "scope": "INSTANCE",
+                  "max": 32
+                }
+              ],
+              "effects": []
+            }
+          ]
+        }
+      ],
+      "format_version": 2,
+      "state_array_types": [
+        {
+          "path": [
+            "refs"
+          ],
+          "kind": "exact_ref_list"
+        }
+      ]
+    },
+    "result": "{\"manifest\":{\"actions\":[{\"id\":\"inspect\",\"reads\":[[\"refs\"]],\"revisionEffects\":{\"contentEntities\":[],\"control\":false},\"variants\":[{\"effects\":[],\"when\":[{\"max\":32,\"op\":\"exact_ref_list\",\"path\":[\"refs\"],\"scope\":\"INSTANCE\",\"source\":\"state\"}]}],\"writes\":[]}],\"capabilities\":[],\"constraints\":{},\"dependencies\":[],\"display_version\":\"1\",\"format_version\":2,\"historical_role_conflicts\":[],\"initial_state\":{\"refs\":[]},\"name\":\"demo\",\"protocol_roles\":[],\"record_schemas\":{},\"role_conflicts\":[],\"semantics\":\"peerwork.kernel.v1\",\"state_array_types\":[{\"kind\":\"exact_ref_list\",\"path\":[\"refs\"]}]},\"semantics\":\"peerwork.kernel.v1\"}"
+  }
+]

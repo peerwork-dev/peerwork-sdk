@@ -72,6 +72,7 @@ node conformance/generate-ts-vectors.mjs
 node conformance/cross-open-ts-rust.mjs
 node conformance/generate-interpreter-vectors.mjs
 node conformance/generate-secure-engine-vectors.mjs
+node conformance/generate-manifest-vectors.mjs
 ```
 
 The cross-open script's default bridge path is relative to the repository root

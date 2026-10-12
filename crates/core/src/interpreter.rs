@@ -69,7 +69,7 @@ fn shape(value: &WireValue, required: &[&str], optional: &[&str]) -> Result<(), 
     Ok(())
 }
 
-fn validate_manifest(manifest: &WireValue) -> Result<(), EvalError> {
+pub(crate) fn validate_manifest(manifest: &WireValue) -> Result<(), EvalError> {
     walk_manifest(manifest, 0, &mut 0)?;
     shape(manifest, &["actions"], &[])?;
     let actions = array(field(manifest, "actions")?)?;
@@ -320,7 +320,7 @@ fn validate_ref_selector(value: &WireValue) -> Result<(), EvalError> {
     Ok(())
 }
 
-fn validate_guard(
+pub(crate) fn validate_guard(
     guard: &WireValue,
     depth: usize,
     reads: &[Vec<Vec<u16>>],
