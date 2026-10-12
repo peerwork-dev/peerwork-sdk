@@ -842,3 +842,58 @@ The custom package case proves policy derivation only; native owner-create
 has not yet authored and submitted that custom package. `keep_encrypted`,
 coordination options, PRIVATE structured creation, complete replay and
 activation, language façades and OS matrix remain required work.
+
+Optional native PUBLIC owner-create checkpoint at exact SDK source
+`ab5591ad74c057808026ac826b3bf429567837fc` adds the pinned coordination
+v1/v2 preset and object-derived `keep_encrypted` choices. The owner-create
+source contract is the tracked `SecureAgentClient.create` at reference HEAD
+`f828b6c50a0a58d1e718af90f653b214adcc3328`: six default presets,
+optional coordination v1/v2, and optional structured field protection.
+Custom manifests are not a genesis input in that path; custom package
+onboarding still requires native stage/install and verified use. The native
+option methods remain private, and signed genesis proof is pre-submit only.
+
+The fixed detached checkout used Rust 1.89, `--offline --locked`, task-local
+Cargo cache/target, `PEERWORK_REFERENCE_ROOT` set to the exact reference
+worktree above, and `PEERWORK_NODE_BIN` set to Node 24.20.0. The direct
+TypeScript/Rust structure-policy oracle passed 3 cases: six defaults,
+six plus official proposal package, and one encrypted `discussion.message`
+`author` field. The explicit localhost tests
+`actual_service_native_coordinated_public_owner_bootstrap_lost_reply_exact_retry`
+and `actual_service_native_keep_encrypted_owner_bootstrap_lost_reply_exact_retry`
+passed 1/1 each (the former runs both coordination versions). Each fresh
+run used `cargo test -p peerwork-runtime --offline --locked <exact-test-name>
+-- --nocapture` with the two reference environment variables set above;
+the oracle used `cargo test -p peerwork-core --offline --locked
+genesis_structure_policy::tests::exact_tracked_typescript_default_and_custom_declarations`.
+Each fresh
+service begins at zero commits; preparation does not POST; the first POST
+applies then loses its reply; protected-journal reopen and exact-byte retry
+leave one commit/head sequence 1. The encrypted-field test checks the signed
+policy marks `author` as `e2ee` and removes it from disclosure. The native
+intent remains PENDING without complete secure replay. The opt-in tests
+return early if the reference root is absent; an ordinary suite result does
+not prove service execution.
+
+The first committed `2cfbc35` encrypted-field service run failed before POST:
+the test selected `operation.objects[0]` (workspace) as a protocol digest.
+A single diagnostic confirmed the requested choice was invalid; `ab5591a`
+corrects the fixture to `objects[1]` (first protocol). This is a test-input
+correction, not a service acceptance defect. The exact corrected pin passed
+both service tests. Business correctness here is bounded to service admission
+and idempotent retry; Agent workflow-entry compliance was not exercised or
+inferred from these tests.
+
+SHA-256 at `ab5591a`: coordination fixture
+`9b32cb924a913425e06c82a8e3d3188560fe46af5bdded21f428bcc05f315158`,
+its generator `3eb741f3c1790a4f3ad86081b43b80ec565dcd636bf65ce0eec5c760ae5980e4`,
+genesis vectors `d1066fc5398a1dd769fc85dc13b1aba1f2dd948f217ac69faaff1bfe812a959e`,
+genesis generator `ce3a9654233c678532121abd1c96655b2769aa55dfa4ef358595519c7c99b14a`,
+`bootstrap_objects.rs` `c0bf7c662b84b76157490522e454b593137eb5de504566eebfb0ccd766f492e3`,
+`genesis_structure_policy.rs` `c89103285c0340829d30593dc2b24042e0819b9b20c528297fc9fb4b37a51414`,
+`secure_native_prepare.rs` `1b92e7413e336af67007b72d2baaa0746f5bc20bc4f2bd52c0dbf9d7eb5d0aa6`,
+and unchanged `Cargo.lock`
+`48775117e96fe4cba67314559398d3d08c75fc211952e22473ceacc389003f17`.
+PRIVATE structured/coordination creation, custom package stage/install,
+complete replay and activation, public three-language surfaces, and actual
+OS release matrix remain open.
