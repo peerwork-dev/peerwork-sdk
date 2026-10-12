@@ -1019,10 +1019,12 @@ checks exact embedded-versus-supplied delegation, delegation signature,
 device certificate, principal membership, issue-time validity, requested
 action and instance intersection, then returns only principal and effective
 scope facts. It does not authenticate policy selection, authorize a POST,
-prove a journal or emit final action effects. Eight direct pinned TypeScript
+prove a journal or emit final action effects. Thirteen direct pinned TypeScript
 `resolveSecureAuthor` cases cover valid direct/delegated resolution, expired
 delegation/certificate, principal or delegated action denial, a tampered
-signed scope and wrong device actor. The focused Rust1.89 locked-offline test
+signed scope and wrong device actor. Follow-up `e8c9e43` adds global
+principal/device scopes, both expires-at-issue boundaries and duplicate signed
+actions. The focused Rust1.89 locked-offline test
 `cargo test -p peerwork-core --lib secure_action_delegation --offline --locked`
 passed 1/1 at the stable source window, including effective role/capability
 intersection. The first compile failed because the new module referenced a
@@ -1030,9 +1032,12 @@ non-direct `p256` dependency; it now uses the existing HPKE P-256 decoder.
 A later compile was interrupted by unrelated in-progress `secure_replay.rs`
 `E0063` until its owner completed `ReplayFacts`; the stable focused rerun
 passed. Source SHA-256 `5a678c2611ed658fdad4f7b08ab3feec2c1fd0479339b4ea9c4e149965e1c558`,
-generator SHA-256 `110e94258ec72c26263ad0c2284da346a73eb279fbe464240f9f96268b6a4d76`,
-vector SHA-256 `7c32285b68e7f6f875e3eb96d4330a6ea8e5f4a67f55e2cc4d37a23f121a578b`,
+generator SHA-256 `3ff4337acfd918a4f34e570a4e49235f94e0082795dea8777739562f2577213d`,
+vector SHA-256 `624d8c354b4aaa6103e66aaf78b8f0e8fbea273bf11b7b4a24533b9a936c8863`,
 and lock SHA-256 `9dc2d3f2ad77be15366633af890168611e8d62a7f38de646970dfc4cedc8d4d5`.
-Core's registration and replay consumer are separate checkpoints. No Agent
+Core's private registration is `ca30b36`; its bounded peer source review found
+no concrete mismatch in the initial eight-case resolver slice, then requested
+the five boundary vectors above. Its replay consumer remains a separate
+checkpoint. No Agent
 entry workflow ran, so workflow compliance is unverified here; business
 acceptance and final effects are likewise unverified.
