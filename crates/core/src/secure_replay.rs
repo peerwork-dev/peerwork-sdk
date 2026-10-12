@@ -4,7 +4,7 @@
 
 use crate::{
     canonical::Path,
-    crypto::{actor_id, decode_base64url},
+    crypto::{actor_id, base64url, decode_base64url, sha256},
     e2ee::{open_content_wire, SealedContent},
     interpreter::{evaluate_action, InterpreterAuth, ResolvedInput},
     secure_chain::{scan_signed_chain_headers, ChainError, CheckpointPin, OwnerPin},
@@ -562,7 +562,7 @@ fn validate_action_state_slice(
         None,
     )
     .map_err(|_| "INVALID_PAYLOAD")?;
-    if !interpreted.head_selections.is_empty() || !interpreted.content_entities.is_empty() {
+    if !interpreted.head_selections.is_empty() {
         return Err("UNSUPPORTED");
     }
     if allocations.len() != interpreted.records.len() {
@@ -571,10 +571,18 @@ fn validate_action_state_slice(
     let mut expected_objects = Vec::new();
     let mut allocated_ids = HashSet::new();
     let mut allocated_entities = HashSet::new();
+    let mut entity_max = HashMap::<Vec<u16>, u64>::new();
+    let mut head_changes = Vec::new();
+    let mut head_ids = HashSet::new();
     for (record, allocation) in interpreted.records.iter().zip(allocations) {
-        if record.get("entity").is_some()
-            || record.get("entitySlot").is_some()
-            || record
+        let entity = record.get("entity");
+        if entity.is_some_and(|entity| {
+            !matches!(
+                entity.get("mode").and_then(WireValue::as_string).as_deref(),
+                Some("new" | "revise")
+            )
+        }) || entity.is_none()
+            && record
                 .get("selectHead")
                 .is_some_and(|value| matches!(value, WireValue::Bool(true)))
             || !matches!(record.get("relations"),Some(WireValue::Array(values)) if values.is_empty())
@@ -601,14 +609,138 @@ fn validate_action_state_slice(
         }) {
             return Err("RECORD_ALREADY_EXISTS");
         }
-        if !allocated_entities.insert(entity_id.to_vec())
+        let mut assigned_entity = entity_id.to_vec();
+        let mut assigned_revision = 1_u64;
+        if let Some(slot) = record.get("entitySlot").and_then(WireValue::as_string) {
+            let instance = String::from_utf16(instance_id).map_err(|_| "INVALID_PAYLOAD")?;
+            assigned_entity = base64url(&sha256(format!("{instance}\0{slot}").as_bytes()))
+                .encode_utf16()
+                .collect();
+            let existing = prior
+                .iter()
+                .filter(|object| {
+                    object.get("kind").and_then(WireValue::as_string).as_deref() == Some("records")
+                        && object
+                            .get("value")
+                            .and_then(|value| value.get("entity_id"))
+                            .and_then(WireValue::as_utf16)
+                            == Some(&assigned_entity)
+                })
+                .max_by_key(|object| {
+                    object
+                        .get("value")
+                        .and_then(|value| integer(value, "revision").ok())
+                        .unwrap_or(0)
+                });
+            if let Some(existing) = existing {
+                let row = existing.get("value").ok_or("STALE_REVISION")?;
+                let old_revision = integer(row, "revision").map_err(|_| "STALE_REVISION")?;
+                let old_id = existing
+                    .get("id")
+                    .and_then(WireValue::as_utf16)
+                    .ok_or("STALE_REVISION")?;
+                if !seen_refs.contains(&(old_id.to_vec(), old_revision)) {
+                    return Err("STALE_REVISION");
+                }
+                assigned_revision = safe_add(
+                    entity_max
+                        .get(&assigned_entity)
+                        .copied()
+                        .unwrap_or(old_revision),
+                    1,
+                )?;
+            }
+            entity_max.insert(assigned_entity.clone(), assigned_revision);
+        } else if entity.is_some_and(|entity| {
+            entity.get("mode").and_then(WireValue::as_string).as_deref() == Some("revise")
+        }) {
+            let parent = entity
+                .and_then(|value| value.get("parent"))
+                .ok_or("ENTITY_PARENT_INVALID")?;
+            let parent_id = parent
+                .get("recordId")
+                .and_then(WireValue::as_utf16)
+                .ok_or("ENTITY_PARENT_INVALID")?;
+            let parent_revision =
+                integer(parent, "revision").map_err(|_| "ENTITY_PARENT_INVALID")?;
+            let old = prior
+                .iter()
+                .find(|object| {
+                    object.get("kind").and_then(WireValue::as_string).as_deref() == Some("records")
+                        && object.get("id").and_then(WireValue::as_utf16) == Some(parent_id)
+                        && object
+                            .get("value")
+                            .and_then(|value| integer(value, "revision").ok())
+                            == Some(parent_revision)
+                })
+                .ok_or("ENTITY_PARENT_INVALID")?;
+            let old_row = old.get("value").ok_or("ENTITY_PARENT_INVALID")?;
+            if old_row.get("workspace_id") != context.get("workspace_id")
+                || old_row.get("instance_id").and_then(WireValue::as_utf16) != Some(instance_id)
+                || old_row.get("protocol_digest").and_then(WireValue::as_utf16) != Some(digest)
+            {
+                return Err("ENTITY_PARENT_INVALID");
+            }
+            assigned_entity = old_row
+                .get("entity_id")
+                .and_then(WireValue::as_utf16)
+                .ok_or("ENTITY_PARENT_INVALID")?
+                .to_vec();
+            let max_revision = prior
+                .iter()
+                .filter(|object| {
+                    object.get("kind").and_then(WireValue::as_string).as_deref() == Some("records")
+                        && object
+                            .get("value")
+                            .and_then(|value| value.get("entity_id"))
+                            .and_then(WireValue::as_utf16)
+                            == Some(&assigned_entity)
+                })
+                .filter_map(|object| {
+                    object
+                        .get("value")
+                        .and_then(|value| integer(value, "revision").ok())
+                })
+                .max()
+                .ok_or("ENTITY_PARENT_INVALID")?;
+            assigned_revision = safe_add(
+                entity_max
+                    .get(&assigned_entity)
+                    .copied()
+                    .unwrap_or(max_revision),
+                1,
+            )?;
+            entity_max.insert(assigned_entity.clone(), assigned_revision);
+            if record
+                .get("selectHead")
+                .is_some_and(|value| matches!(value, WireValue::Bool(true)))
+            {
+                let current_head = prior
+                    .iter()
+                    .filter(|object| {
+                        object.get("kind").and_then(WireValue::as_string).as_deref()
+                            == Some("entity_heads")
+                            && object.get("id").and_then(WireValue::as_utf16)
+                                == Some(&assigned_entity)
+                    })
+                    .max_by_key(|object| integer(object, "revision").unwrap_or(0))
+                    .ok_or("STALE_REVISION")?;
+                let current = current_head.get("value").ok_or("STALE_REVISION")?;
+                if current.get("record_id").and_then(WireValue::as_utf16) != Some(parent_id)
+                    || integer(current, "revision").map_err(|_| "STALE_REVISION")?
+                        != parent_revision
+                {
+                    return Err("STALE_REVISION");
+                }
+            }
+        } else if !allocated_entities.insert(assigned_entity.clone())
             || prior.iter().any(|object| {
                 object.get("kind").and_then(WireValue::as_string).as_deref() == Some("records")
                     && object
                         .get("value")
                         .and_then(|value| value.get("entity_id"))
                         .and_then(WireValue::as_utf16)
-                        == Some(entity_id)
+                        == Some(&assigned_entity)
             })
         {
             return Err("ENTITY_ALREADY_EXISTS");
@@ -638,11 +770,11 @@ fn validate_action_state_slice(
             ),
             ("instance_id", WireValue::String(instance_id.to_vec())),
             ("protocol_digest", WireValue::String(digest.to_vec())),
-            ("entity_id", WireValue::String(entity_id.to_vec())),
+            ("entity_id", WireValue::String(assigned_entity.clone())),
             ("schema_ref", WireValue::String(schema.to_vec())),
             ("payload", payload.clone()),
             ("actor_id", WireValue::String(actor.to_vec())),
-            ("revision", WireValue::Number(1.0)),
+            ("revision", WireValue::Number(assigned_revision as f64)),
             ("created", WireValue::Number(issued as f64)),
         ]);
         expected_objects.push(fields_object(vec![
@@ -652,7 +784,52 @@ fn validate_action_state_slice(
             ("value", value),
             ("provenance", string_value("AUTHOR_SIGNED")),
         ]));
+        if entity.is_some()
+            && record
+                .get("selectHead")
+                .is_some_and(|value| matches!(value, WireValue::Bool(true)))
+        {
+            if !head_ids.insert(assigned_entity.clone()) {
+                return Err("HEAD_CONFLICT");
+            }
+            let head_value = fields_object(vec![
+                ("entity_id", WireValue::String(assigned_entity.clone())),
+                (
+                    "workspace_id",
+                    context
+                        .get("workspace_id")
+                        .ok_or("PROTOCOL_OUTPUT_MISMATCH")?
+                        .clone(),
+                ),
+                ("instance_id", WireValue::String(instance_id.to_vec())),
+                ("record_id", WireValue::String(record_id.to_vec())),
+                ("revision", WireValue::Number(assigned_revision as f64)),
+                ("updated", WireValue::Number(issued as f64)),
+            ]);
+            let head_revision = safe_add(
+                prior
+                    .iter()
+                    .filter(|object| {
+                        object.get("kind").and_then(WireValue::as_string).as_deref()
+                            == Some("entity_heads")
+                            && object.get("id").and_then(WireValue::as_utf16)
+                                == head_value.get("entity_id").and_then(WireValue::as_utf16)
+                    })
+                    .filter_map(|object| integer(object, "revision").ok())
+                    .max()
+                    .unwrap_or(0),
+                1,
+            )?;
+            head_changes.push(fields_object(vec![
+                ("kind", string_value("entity_heads")),
+                ("id", WireValue::String(assigned_entity)),
+                ("revision", WireValue::Number(head_revision as f64)),
+                ("value", head_value),
+                ("provenance", string_value("AUTHOR_SIGNED")),
+            ]));
+        }
     }
+    expected_objects.extend(head_changes);
     let mut next = instance_value.clone();
     crate::full_manifest::validate_state_array_state(&manifest, &interpreted.next_state)
         .map_err(|_| "STATE_ARRAY_TYPE_INVALID")?;
