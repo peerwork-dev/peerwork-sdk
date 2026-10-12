@@ -7,6 +7,7 @@ use peerwork_runtime::kernel_access::KernelAccess;
 use peerwork_runtime::kernel_client::{KernelAcceptedResult, KernelOperationStatus};
 use peerwork_runtime::kernel_identity::KernelIdentity;
 use peerwork_runtime::secure_read_access::{SecureReadAccess, SecureReadConfig};
+use peerwork_runtime::secure_read_profile::{SecureReadProfile, SecureReadProfileConfig};
 use peerwork_runtime::KernelCancellationToken;
 use std::path::Path;
 
@@ -240,6 +241,7 @@ pub fn kernel_json(
 
 pub struct SecureReadTask {
     config_json: String,
+    profile: bool,
     cancel: KernelCancellationToken,
 }
 
@@ -248,19 +250,26 @@ impl Task for SecureReadTask {
     type JsValue = String;
 
     fn compute(&mut self) -> Result<Self::Output> {
-        let config: SecureReadConfig = serde_json::from_str(&self.config_json)
-            .map_err(|_| napi::Error::from_reason("invalid secure read configuration"))?;
-        Ok(
-            match SecureReadAccess::new(config).read_json_with_cancel(&self.cancel) {
-                Ok(value) => format!("{{\"ok\":true,\"value\":{value}}}"),
-                Err(error) => serde_json::json!({
-                    "ok": false,
-                    "code": error.code(),
-                    "message": error.to_string(),
-                })
-                .to_string(),
-            },
-        )
+        let read = if self.profile {
+            let config: SecureReadProfileConfig =
+                serde_json::from_str(&self.config_json).map_err(|_| {
+                    napi::Error::from_reason("invalid secure read profile configuration")
+                })?;
+            SecureReadProfile::new(config).read_latest_json_with_cancel(&self.cancel)
+        } else {
+            let config: SecureReadConfig = serde_json::from_str(&self.config_json)
+                .map_err(|_| napi::Error::from_reason("invalid secure read configuration"))?;
+            SecureReadAccess::new(config).read_json_with_cancel(&self.cancel)
+        };
+        Ok(match read {
+            Ok(value) => format!("{{\"ok\":true,\"value\":{value}}}"),
+            Err(error) => serde_json::json!({
+                "ok": false,
+                "code": error.code(),
+                "message": error.to_string(),
+            })
+            .to_string(),
+        })
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
@@ -275,6 +284,21 @@ pub fn secure_read_json(
 ) -> AsyncTask<SecureReadTask> {
     AsyncTask::new(SecureReadTask {
         config_json,
+        profile: false,
+        cancel: cancel_handle
+            .map(|handle| handle.token.clone())
+            .unwrap_or_default(),
+    })
+}
+
+#[napi]
+pub fn secure_read_profile_json(
+    config_json: String,
+    cancel_handle: Option<ClassInstance<KernelCancelHandle>>,
+) -> AsyncTask<SecureReadTask> {
+    AsyncTask::new(SecureReadTask {
+        config_json,
+        profile: true,
         cancel: cancel_handle
             .map(|handle| handle.token.clone())
             .unwrap_or_default(),

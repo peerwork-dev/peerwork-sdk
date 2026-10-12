@@ -220,6 +220,13 @@ const proxy = createServer(async (request, response) => {
       response.end(JSON.stringify({enabled:true}));
       return;
     }
+    if (request.url === '/__test/restore-current-public' && request.method === 'POST') {
+      if (!publicReadAppended || !publicReadFirstPage) throw new Error('public page fixture unavailable');
+      serveStalePublicPage = false;
+      response.writeHead(200, {'content-type':'application/json'});
+      response.end(JSON.stringify({enabled:true}));
+      return;
+    }
     if (request.url === '/__test/delay-next-journal' && request.method === 'POST') {
       if (!publicReadFixture || firstJournalDelayMs !== 0) throw new Error('journal delay fixture unavailable');
       firstJournalDelayMs = 2000;

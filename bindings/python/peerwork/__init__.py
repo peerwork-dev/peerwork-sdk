@@ -12,6 +12,7 @@ from ._peerwork_native import (
     identity_import_pkcs8_pem_json,
     kernel_json,
     secure_read_json,
+    secure_read_profile_json,
     version,
 )
 
@@ -295,8 +296,8 @@ class KernelClient:
                                                                trusted_signer_key_ids=trusted_signer_key_ids))
 
 
-class SecureReadClient:
-    """Verify supported active secure histories against explicit owner pins.
+class SecureSnapshotClient:
+    """Read an explicitly pinned protected snapshot with advanced path control.
 
     The paths hold protected discovery, exact pages, and key lifecycle state.
     The replay artifact budget is for retained signed wires; it is not a cap on
@@ -367,3 +368,68 @@ __all__ = ["version", "capabilities", "create_identity", "open_identity",
            "TsMigrationReport"]
 __all__ += ["import_legacy_identity_pem", "import_legacy_identity_pem_async"]
 __all__ += ["SecureReadClient", "SecureReadError", "VerifiedSecureWorkspace"]
+
+
+class SecureReadClient:
+    """Read the latest verified PUBLIC workspace using a protected state directory.
+
+    Owner actor/key pins are required on first contact. Reopens may omit them;
+    the stored pins remain mandatory. A failed refresh keeps the last good
+    checkpoint, and the call raises instead of returning stale data as latest.
+    """
+
+    def __init__(self, origin: str, state_dir: str, identity_path: str,
+                 workspace_id: str, *, owner_actor_id: str | None = None,
+                 owner_key_id: str | None = None, authority: str | None = None,
+                 required_features: tuple[str, ...] = (),
+                 allow_loopback_http: bool = False,
+                 max_replay_artifact_bytes: int = 64 * 1024 * 1024):
+        if isinstance(max_replay_artifact_bytes, bool) or not isinstance(max_replay_artifact_bytes, int) or max_replay_artifact_bytes <= 0 or max_replay_artifact_bytes > 2**64 - 1:
+            raise ValueError("max_replay_artifact_bytes must be a positive u64")
+        if (owner_actor_id is None) != (owner_key_id is None):
+            raise ValueError("owner actor and key pins must be provided together")
+        self._config = {
+            "origin": origin,
+            "state_dir": state_dir,
+            "identity_path": identity_path,
+            "workspace_id": workspace_id,
+            "owner_actor_id": owner_actor_id,
+            "owner_key_id": owner_key_id,
+            "authority": authority,
+            "required_features": list(required_features),
+            "allow_loopback_http": allow_loopback_http,
+            "max_replay_artifact_bytes": max_replay_artifact_bytes,
+        }
+
+    def _read(self, cancel_handle: KernelCancelHandle | None = None) -> VerifiedSecureWorkspace:
+        config_json = json.dumps(self._config, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
+        result = json.loads(secure_read_profile_json(config_json, cancel_handle))
+        if result["ok"] is not True:
+            raise SecureReadError(result["code"], result["message"])
+        return cast(VerifiedSecureWorkspace, result["value"])
+
+    def read(self) -> VerifiedSecureWorkspace:
+        return self._read()
+
+    async def read_async(self) -> VerifiedSecureWorkspace:
+        cancel_handle = KernelCancelHandle()
+        worker = asyncio.create_task(asyncio.to_thread(self._read, cancel_handle))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            cancel_handle.cancel()
+            while not worker.done():
+                try:
+                    await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    cancel_handle.cancel()
+                except Exception:
+                    break
+            try:
+                worker.result()
+            except Exception:
+                pass
+            raise
+
+
+__all__ += ["SecureSnapshotClient"]

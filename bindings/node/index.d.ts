@@ -50,7 +50,7 @@ export interface KernelSession extends IdentityInfo {
 }
 export declare function openKernel(options: KernelAccessOptions): Promise<KernelSession>;
 
-export interface SecureReadOptions {
+export interface SecureSnapshotOptions {
   origin: string;
   kernelJournalPath: string;
   readStatePath: string;
@@ -78,5 +78,23 @@ export interface VerifiedSecureWorkspace {
   operations: unknown[];
   recoveries: unknown[];
 }
-/** Reads a verified supported active history; pending and seeding histories refuse. */
+/** Advanced pinned-snapshot read. A completed snapshot does not refresh. */
+export declare function readSecureSnapshot(options: SecureSnapshotOptions): Promise<VerifiedSecureWorkspace>;
+export interface SecureReadOptions {
+  origin: string;
+  stateDir: string;
+  identityPath: string;
+  workspaceId: string;
+  /** Required together at first contact; saved pins are used on later reads. */
+  ownerActorId?: string;
+  ownerKeyId?: string;
+  /** Defaults to SHA-256 of the local actor ID. */
+  authority?: string;
+  requiredFeatures?: string[];
+  allowLoopbackHttp?: boolean;
+  /** Retained canonical signed artifacts; default 64 MiB. */
+  maxReplayArtifactBytes?: number;
+  signal?: AbortSignal;
+}
+/** Fetches the latest verified supported active history; failed refresh rejects. */
 export declare function readSecureWorkspace(options: SecureReadOptions): Promise<VerifiedSecureWorkspace>;

@@ -192,7 +192,19 @@ impl SecureReadProfile {
                 write_profile(&store, &profile)?;
             }
             let (json, floor) =
-                access.read_checked_generation(cancel, profile.floor.as_ref(), false)?;
+                match access.read_checked_generation(cancel, profile.floor.as_ref(), false) {
+                    Ok(checked) => checked,
+                    Err(error @ SecureReadAccessError::VerificationFailed) => {
+                        // A complete but invalid candidate must not be resumed forever.
+                        // Keep the last verified slot and floor; the next read starts a
+                        // new signed snapshot after the remote source recovers.
+                        profile.staged = None;
+                        profile.staged_ready = false;
+                        write_profile(&store, &profile)?;
+                        return Err(error);
+                    }
+                    Err(error) => return Err(error),
+                };
             profile.current = Some(slot);
             profile.floor = Some(floor);
             profile.staged = None;
@@ -457,7 +469,24 @@ mod tests {
             serde_json::from_slice(&store.read_exact().unwrap().unwrap()).unwrap();
         assert_eq!(saved.floor.unwrap().sequence, 2);
         assert_eq!(saved.current, Some(1));
-        assert_eq!(saved.staged, Some(0));
+        assert_eq!(saved.staged, None);
+        drop(store);
+        let restore = reqwest::Client::new()
+            .post(format!("{origin}__test/restore-current-public"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(restore.status(), reqwest::StatusCode::OK);
+        let recovered_config = reopened.clone();
+        let recovered = tokio::task::spawn_blocking(move || {
+            SecureReadProfile::new(recovered_config).read_latest_json()
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        let recovered: serde_json::Value = serde_json::from_str(&recovered).unwrap();
+        assert_eq!(recovered["sequence"], 2);
+        assert_eq!(recovered["head"], second["head"]);
         let counts = reqwest::get(format!("{origin}__test/secure-counts"))
             .await
             .unwrap()

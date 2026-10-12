@@ -62,7 +62,7 @@ with tempfile.TemporaryDirectory(prefix="peerwork-public-read-") as directory:
         common = (origin, str(state / "kernel.sqlite"), str(state / "read.state"),
                   str(state / "lifecycle.state"), str(identity), fixture["workspace_id"],
                   fixture["authority"], fixture["actor_id"], fixture["signing_key"])
-        client = peerwork.SecureReadClient(*common, allow_loopback_http=True)
+        client = peerwork.SecureSnapshotClient(*common, allow_loopback_http=True)
         result = client.read()
         require_result(result, fixture)
         mark("installed_python_first_verified_read")
@@ -70,7 +70,7 @@ with tempfile.TemporaryDirectory(prefix="peerwork-public-read-") as directory:
         mark("installed_python_reopen_read")
 
         try:
-            peerwork.SecureReadClient(*common, allow_loopback_http=True,
+            peerwork.SecureSnapshotClient(*common, allow_loopback_http=True,
                                       max_replay_artifact_bytes=1).read()
         except peerwork.SecureReadError as error:
             assert error.code == "RESOURCE_LIMIT"
@@ -79,7 +79,7 @@ with tempfile.TemporaryDirectory(prefix="peerwork-public-read-") as directory:
         wrong = list(common)
         wrong[-1] = "A" * len(wrong[-1])
         try:
-            peerwork.SecureReadClient(*wrong, allow_loopback_http=True).read()
+            peerwork.SecureSnapshotClient(*wrong, allow_loopback_http=True).read()
         except peerwork.SecureReadError as error:
             assert error.code == "LIFECYCLE_PIN_CHANGED"
         else:
@@ -104,14 +104,14 @@ void (async () => {
 const sdk = require(process.env.PEERWORK_TEST_NODE_PACKAGE);
 const options = JSON.parse(process.env.PEERWORK_TEST_READ_OPTIONS);
 const expected = JSON.parse(process.env.PEERWORK_TEST_PUBLIC_FIXTURE);
-const value = await sdk.readSecureWorkspace(options);
+const value = await sdk.readSecureSnapshot(options);
 if (value.workspace_id !== expected.workspace_id || value.head !== expected.head ||
     value.sequence !== 1 || value.objects.length < 1 || value.operations.length !== 1 ||
     ['keyring','jws','private_key','receipt'].some(key => key in value)) throw Error('Node read result mismatch');
-try { await sdk.readSecureWorkspace({...options,maxReplayArtifactBytes:1}); throw Error('budget accepted'); }
+try { await sdk.readSecureSnapshot({...options,maxReplayArtifactBytes:1}); throw Error('budget accepted'); }
 catch (error) { if (error.code !== 'RESOURCE_LIMIT') throw error; }
 const signal = AbortSignal.abort();
-try { await sdk.readSecureWorkspace({...options,signal}); throw Error('cancelled read accepted'); }
+try { await sdk.readSecureSnapshot({...options,signal}); throw Error('cancelled read accepted'); }
 catch (error) { if (error.code !== 'CANCELLED') throw error; }
 console.log(JSON.stringify({workspace_id:value.workspace_id,sequence:value.sequence,objects:value.objects.length,operations:value.operations.length}));
 })().catch(error => { console.error(error); process.exitCode = 1; });
@@ -129,7 +129,7 @@ console.log(JSON.stringify({workspace_id:value.workspace_id,sequence:value.seque
         assert json.loads(node_result.stdout)["workspace_id"] == fixture["workspace_id"]
         mark("installed_node_verified_budget_cancel")
 
-        cli = [CLI, "secure", "read", *common, "--allow-loopback-http"]
+        cli = [CLI, "secure", "snapshot", *common, "--allow-loopback-http"]
         cli_result = subprocess.run(cli, capture_output=True, text=True, timeout=45, check=True)
         require_result(json.loads(cli_result.stdout), fixture)
         limited = subprocess.run(cli + ["--max-replay-artifact-bytes=1"],

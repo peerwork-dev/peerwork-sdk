@@ -3,6 +3,7 @@ use peerwork_runtime::kernel_access::KernelAccess;
 use peerwork_runtime::kernel_client::{KernelAcceptedResult, KernelOperationStatus};
 use peerwork_runtime::kernel_identity::KernelIdentity;
 use peerwork_runtime::secure_read_access::{SecureReadAccess, SecureReadConfig};
+use peerwork_runtime::secure_read_profile::{SecureReadProfile, SecureReadProfileConfig};
 use peerwork_runtime::KernelCancellationToken;
 use std::fs;
 use std::io::Read;
@@ -110,8 +111,13 @@ fn main() -> ExitCode {
                 }
             }
         },
-        [noun, verb, rest @ ..] if noun == "secure" && verb == "read" => {
-            match secure_read_command(rest) {
+        [noun, verb, rest @ ..] if noun == "secure" && (verb == "read" || verb == "snapshot") => {
+            let result = if verb == "read" {
+                secure_read_profile_command(rest)
+            } else {
+                secure_read_command(rest)
+            };
+            match result {
                 Ok(value) => {
                     println!("{value}");
                     ExitCode::SUCCESS
@@ -130,10 +136,90 @@ fn main() -> ExitCode {
             }
         }
         _ => {
-            eprintln!("{{\"code\":\"USAGE\",\"message\":\"peerwork version|capabilities|identity create PATH|identity info PATH|identity import-legacy-pem PATH PROTECTED_PEM_FILE|identity import-seed-file PATH PROTECTED_SEED_FILE|kernel open|prepare|pending|status|submit ORIGIN JOURNAL IDENTITY [COMMAND_FILE|COMMAND_ID] [--allow-loopback-http] [--authority=HEX] [--chunk-file=PATH|--chunk-stdin for prepare]; kernel migrate ORIGIN JOURNAL IDENTITY SOURCE BACKUP --trusted-signer=KEY_ID [--trusted-signer=KEY_ID ...]; secure read ORIGIN KERNEL_JOURNAL READ_STATE LIFECYCLE IDENTITY WORKSPACE AUTHORITY OWNER_ACTOR OWNER_KEY [--allow-loopback-http] [--max-replay-artifact-bytes=N]\"}}");
+            eprintln!("{{\"code\":\"USAGE\",\"message\":\"peerwork version|capabilities|identity create PATH|identity info PATH|identity import-legacy-pem PATH PROTECTED_PEM_FILE|identity import-seed-file PATH PROTECTED_SEED_FILE|kernel open|prepare|pending|status|submit ORIGIN JOURNAL IDENTITY [COMMAND_FILE|COMMAND_ID] [--allow-loopback-http] [--authority=HEX] [--chunk-file=PATH|--chunk-stdin for prepare]; kernel migrate ORIGIN JOURNAL IDENTITY SOURCE BACKUP --trusted-signer=KEY_ID [--trusted-signer=KEY_ID ...]; secure read --origin=URL --state-dir=DIR --identity=PATH --workspace=ID [--owner-actor=ID --owner-key=ID] [--authority=HEX]; secure snapshot ORIGIN KERNEL_JOURNAL READ_STATE LIFECYCLE IDENTITY WORKSPACE AUTHORITY OWNER_ACTOR OWNER_KEY [--allow-loopback-http] [--max-replay-artifact-bytes=N]\"}}");
             ExitCode::FAILURE
         }
     }
+}
+
+fn secure_read_profile_command(args: &[String]) -> Result<String, (&'static str, String)> {
+    let mut origin = None;
+    let mut state_dir = None;
+    let mut identity_path = None;
+    let mut workspace_id = None;
+    let mut owner_actor_id = None;
+    let mut owner_key_id = None;
+    let mut authority = None;
+    let mut required_features = Vec::new();
+    let mut allow_loopback_http = false;
+    let mut max_replay_artifact_bytes = 64 * 1024 * 1024;
+    for arg in args {
+        if arg == "--allow-loopback-http" {
+            allow_loopback_http = true;
+        } else if let Some(value) = arg.strip_prefix("--max-replay-artifact-bytes=") {
+            max_replay_artifact_bytes =
+                value
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|n| *n > 0)
+                    .ok_or_else(|| {
+                        (
+                            "USAGE",
+                            "max replay artifact bytes must be a positive u64".to_owned(),
+                        )
+                    })?;
+        } else if let Some(value) = arg.strip_prefix("--required-feature=") {
+            required_features.push(value.to_owned());
+        } else if let Some(value) = arg.strip_prefix("--origin=") {
+            origin = Some(value.to_owned());
+        } else if let Some(value) = arg.strip_prefix("--state-dir=") {
+            state_dir = Some(value.into());
+        } else if let Some(value) = arg.strip_prefix("--identity=") {
+            identity_path = Some(value.into());
+        } else if let Some(value) = arg.strip_prefix("--workspace=") {
+            workspace_id = Some(value.to_owned());
+        } else if let Some(value) = arg.strip_prefix("--owner-actor=") {
+            owner_actor_id = Some(value.to_owned());
+        } else if let Some(value) = arg.strip_prefix("--owner-key=") {
+            owner_key_id = Some(value.to_owned());
+        } else if let Some(value) = arg.strip_prefix("--authority=") {
+            authority = Some(value.to_owned());
+        } else {
+            return Err(("USAGE", "unknown secure read option".to_owned()));
+        }
+    }
+    let config = SecureReadProfileConfig {
+        origin: origin
+            .filter(|v: &String| !v.is_empty())
+            .ok_or(("USAGE", "--origin is required".to_owned()))?,
+        state_dir: state_dir.ok_or(("USAGE", "--state-dir is required".to_owned()))?,
+        identity_path: identity_path.ok_or(("USAGE", "--identity is required".to_owned()))?,
+        workspace_id: workspace_id
+            .filter(|v: &String| !v.is_empty())
+            .ok_or(("USAGE", "--workspace is required".to_owned()))?,
+        owner_actor_id,
+        owner_key_id,
+        authority,
+        required_features,
+        allow_loopback_http,
+        max_replay_artifact_bytes,
+    };
+    if config.owner_actor_id.is_some() != config.owner_key_id.is_some() {
+        return Err((
+            "USAGE",
+            "owner actor and key pins must be supplied together".to_owned(),
+        ));
+    }
+    let cancel = KernelCancellationToken::new();
+    let _interrupts = InterruptMonitor::start(cancel.clone()).map_err(|_| {
+        (
+            "INTERRUPT_HANDLER",
+            "unable to install interrupt handler".to_owned(),
+        )
+    })?;
+    SecureReadProfile::new(config)
+        .read_latest_json_with_cancel(&cancel)
+        .map_err(|error| (error.code(), error.to_string()))
 }
 
 fn secure_read_command(args: &[String]) -> Result<String, (&'static str, String)> {
