@@ -194,3 +194,51 @@ ignored, and
 passed 1/1. The initial full-suite sandbox `EPERM` remains a recorded
 environment failure; these focused runs complete its missing test coverage
 at this source pin, not a replacement full-suite run.
+
+Native protected-state-to-authoring checkpoint is SDK source
+`3aab83510f27ca2bce0b6f757c466cdaa538eaa2` (`ebe87e5` bridge and fixture, followed by the core low-level
+module registration). The author source SHA-256 is
+`828377d6eb42f421857744e34d05241886c9eb55332762f900af0b36ed4e218f`,
+runtime private bridge
+`6d809c72762144a62cd446cba6094736b35da5508ae6e2de535a3335abfedc38`,
+and tracked-service bridge
+`f3835783bd94a782f7ead32830be550b3960955a6b2be2fb10e855fd7666f9e8`.
+The low-level Rust author API is now cross-crate visible, with explicit
+caller-supplied context and no policy/action authority. The runtime bridge
+requires a matching protected identity, origin, actor, workspace, owner pin
+and **active** epoch key; it derives the exact route, signs and seals one
+new request, persists proof-derived ID/action/digest and exact packet before
+any transport, and refuses an already-saved ID before re-encryption.
+Pending epoch keys cannot authorize it. The bridge is private to runtime;
+no Python, Node, or CLI secure action entrypoint was enabled.
+
+At detached exact `3aab83510f27ca2bce0b6f757c466cdaa538eaa2`, Rust 1.89 locked-offline focused local test
+passed 1/1: pending-only key refused, test-only active key staged one exact
+packet, duplicate prepare did not re-author, and close/reopen preserved the
+same bytes. The opt-in actual-service focused test passed 1/1 in 1.33s with
+Node 24.20.0 against pinned TypeScript service
+`f828b6c50a0a58d1e718af90f653b214adcc3328`.
+The exact test filter was
+`secure_native_prepare::tests::actual_service_accepts_native_authored_packet_then_exact_retry`
+with `cargo test -p peerwork-runtime --lib --offline --locked ... -- --nocapture`,
+`PEERWORK_REFERENCE_ROOT=/root/workdir/message/.worktrees/e2ee-main-integration-20261006`
+and `PEERWORK_NODE_BIN=/root/workdir/message/.tools/node-v24.20.0-linux-x64/bin/node`
+set through the approved loopback-socket execution route. The reference
+bridge checked the configured checkout and built service provenance before
+launch; the environment variable was present, so the test entered the
+actual server branch rather than its unset-variable early return. TypeScript created a
+fresh PRIVATE v3 workspace, policy, identity, action context, operation, and
+epoch key in protected temporary fixture files. The Rust private test
+imported that key through a **cfg(test) grant stand-in**, authored a new
+ciphertext/signature distinct from the unused TypeScript prepared packet,
+and saved it without an HTTP POST; service commit/head counts stayed 1/1.
+The first native-authored POST was applied by the real kernel before the
+proxy discarded its reply (counts 2/2). A reopened journal retried the
+identical saved packet and received an observation; service counts remained
+2/2 and the native row remained PENDING. Synthetic fixture files and
+private keys were removed with the temporary directory. This proves
+native packet admission and same-ID retry through actual HTTP, not a
+complete native client action: signed policy/grant authority, native
+production key activation, full replay/effect proof, and final-result
+promotion remain open. Agent entry-instruction/space-protocol compliance
+was not exercised and remains unverified independently.
