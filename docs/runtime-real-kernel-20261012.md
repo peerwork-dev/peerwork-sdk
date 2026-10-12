@@ -43,6 +43,18 @@ packets, arbitrary result JSON and private state are kept internal. This is
 an audited summary, not yet the complete typed proposal/adoption/task result
 surface or Python/Node/CLI binding behavior.
 
+The next local identity checkpoint creates an Ed25519 seed only on explicit
+`KernelIdentity::create`, using the OS random source and a protected native
+state path. `open` rejects missing, malformed or old-format state without
+rewriting it; public methods expose only key and actor IDs. Temporary seed,
+decoded seed, encoded seed and saved wire buffers use zeroizing wrappers.
+The core's `prepare_signed_command_wire` validates the tracked command
+schema, signs and self-verifies exact bytes; runtime `prepare_command`
+persists its JWS/body before transport. The real-service recovery test now
+uses this identity and signing path for the first command. Linux focused
+identity and real-service tests passed; Windows file protection and runtime
+behavior still require the actual Windows runner.
+
 The first opt-in attempt failed before the service started because the test
 bridge passed an Ed25519 private-key object where `WorkspaceKernel` requires
 a receipt seed `Buffer`; the bridge was corrected. The real HTTP test then

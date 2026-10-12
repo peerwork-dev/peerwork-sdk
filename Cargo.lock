@@ -1344,6 +1344,7 @@ dependencies = [
  "ed25519-dalek",
  "libc",
  "peerwork-core",
+ "rand_core 0.6.4",
  "reqwest",
  "rusqlite",
  "serde_json",
@@ -1352,6 +1353,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "windows-sys 0.61.2",
+ "zeroize",
 ]
 
 [[package]]

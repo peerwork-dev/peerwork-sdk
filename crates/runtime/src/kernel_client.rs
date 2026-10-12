@@ -3,10 +3,12 @@
 //! is persisted; this type currently supports discovery and pending listing.
 
 use crate::{
-    kernel_intents::{JournalError, KernelIntentJournal, PendingKernelIntent},
+    kernel_identity::KernelIdentity,
+    kernel_intents::{JournalError, KernelIntentJournal, KernelPath, PendingKernelIntent},
     transport::{HttpTransport, TransportConfig, TransportError, MAX_DISCOVERY_BYTES},
 };
 use peerwork_core::discovery::{parse_discovery_wire, ParsedDiscovery};
+use peerwork_core::prepared_command::prepare_signed_command_wire;
 use peerwork_core::receipt_wire::VerifiedCommandResponse;
 use peerwork_core::wire_json::{parse_wire_json_bounded, WireValue};
 use std::path::Path;
@@ -31,6 +33,8 @@ pub enum KernelClientError {
     ServerRejected(u16),
     #[error("verified result has an unsupported public summary shape")]
     InvalidResult,
+    #[error("command does not match pinned discovery, local identity, or supported signed shape")]
+    InvalidCommand,
 }
 
 pub enum KernelOperationStatus {
@@ -132,6 +136,39 @@ pub struct KernelClient {
 }
 
 impl KernelClient {
+    /// Sign one fully specified kernel command inside the shared core, then
+    /// persist its exact JWS and HTTP body before any network submission.
+    /// The identity's private key and signed packet never enter a public DTO.
+    pub fn prepare_command(
+        &mut self,
+        identity: &KernelIdentity,
+        command_wire: &[u8],
+        upload_chunk: Option<&[u8]>,
+    ) -> Result<PendingKernelIntent, KernelClientError> {
+        let command = parse_wire_json_bounded(command_wire, 40, 180_000)
+            .map_err(|_| KernelClientError::InvalidCommand)?;
+        let signed = prepare_signed_command_wire(
+            &command,
+            identity.signing_key(),
+            &self.discovery,
+            upload_chunk,
+        )
+        .map_err(|_| KernelClientError::InvalidCommand)?;
+        let path = match signed.proof().path() {
+            "/api/workspace/v1/commands" => KernelPath::Command,
+            "/api/workspace/v1/catalog/upload" => KernelPath::CatalogUpload,
+            _ => return Err(KernelClientError::InvalidCommand),
+        };
+        self.journal
+            .prepare(
+                signed.proof().command_id(),
+                path,
+                signed.jws(),
+                signed.http_body(),
+            )
+            .map_err(KernelClientError::Store)
+    }
+
     /// Import a quiesced TypeScript WorkspaceClient v1 SQLite store using
     /// this client's already fetched and origin-pinned discovery. The source
     /// remains untouched; the caller must retain the checked online backup.
@@ -571,20 +608,19 @@ mod tests {
             config.allow_loopback_http = true;
             config
         };
-        let signing = SigningKey::from_bytes(&[31; 32]);
-        let public = signing.verifying_key().to_bytes();
-        let kid = key_id(&public);
-        let actor = actor_id(&public);
+        let identity = KernelIdentity::create(&state.path().join("owner.state")).unwrap();
+        let kid = identity.key_id().to_owned();
+        let actor = identity.actor_id().to_owned();
         let command_id = base64url(&[71; 32]);
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
-        let make_signed = |id: &str,
-                           action: &str,
-                           body: serde_json::Value,
-                           workspace: Option<&str>,
-                           expected_revision: Option<u64>| {
+        let command_wire = |id: &str,
+                            action: &str,
+                            body: serde_json::Value,
+                            workspace: Option<&str>,
+                            expected_revision: Option<u64>| {
             let command = json!({
                 "v":1,"audience":"reference-kernel","command_id":id,
                 "actor_id":actor,"authority":sha256_hex(actor.as_bytes()),
@@ -595,31 +631,15 @@ mod tests {
                 "body":body,
                 "issued_at":now,"expires_at":now+60_000
             });
-            let payload = canonical(&command, CanonicalPath::COMMAND).unwrap();
-            let header = canonical(
-                &json!({"alg":"EdDSA","typ":"peerwork.kernel-command.v1+jws","kid":kid}),
-                CanonicalPath::SecureArtifact,
-            )
-            .unwrap();
-            let input = format!(
-                "{}.{}",
-                base64url(header.as_bytes()),
-                base64url(payload.as_bytes())
-            );
-            format!(
-                "{}.{}",
-                input,
-                base64url(&signing.sign(input.as_bytes()).to_bytes())
-            )
+            canonical(&command, CanonicalPath::COMMAND).unwrap()
         };
-        let jws = make_signed(
+        let first_command = command_wire(
             &command_id,
             "workspace.create",
             json!({"name":"Recovery","visibility":"PUBLIC"}),
             None,
             None,
         );
-        let body = canonical(&json!({"jws":jws}), CanonicalPath::COMMAND).unwrap();
         let mut first = KernelClient::open(
             config(),
             &state.path().join("first.sqlite"),
@@ -629,8 +649,12 @@ mod tests {
         .await
         .unwrap();
         first
+            .prepare_command(&identity, first_command.as_bytes(), None)
+            .unwrap();
+        let (jws, body) = first
             .journal
-            .prepare(&command_id, KernelPath::Command, &jws, body.as_bytes())
+            .exact_request_for_test(&command_id)
+            .unwrap()
             .unwrap();
         assert!(matches!(
             first
@@ -675,6 +699,13 @@ mod tests {
             first.status(&command_id, &kid).unwrap(),
             Some(KernelOperationStatus::Accepted(_))
         ));
+        let signed_body = |command: String| {
+            let parsed = parse_wire_json_bounded(command.as_bytes(), 40, 180_000).unwrap();
+            prepare_signed_command_wire(&parsed, identity.signing_key(), first.discovery(), None)
+                .unwrap()
+                .http_body()
+                .to_vec()
+        };
 
         let mut second = KernelClient::open(
             config(),
@@ -686,7 +717,7 @@ mod tests {
         .unwrap();
         second
             .journal
-            .prepare(&command_id, KernelPath::Command, &jws, body.as_bytes())
+            .prepare(&command_id, KernelPath::Command, &jws, &body)
             .unwrap();
         assert_eq!(
             second
@@ -695,7 +726,7 @@ mod tests {
                 .unwrap(),
             accepted
         );
-        let changed = make_signed(
+        let changed = command_wire(
             &command_id,
             "workspace.create",
             json!({"name":"Different","visibility":"PUBLIC"}),
@@ -705,7 +736,7 @@ mod tests {
         let conflict = reqwest::Client::new()
             .post(format!("{origin}api/workspace/v1/commands"))
             .header("content-type", "application/json")
-            .body(canonical(&json!({"jws":changed}), CanonicalPath::COMMAND).unwrap())
+            .body(signed_body(changed))
             .send()
             .await
             .unwrap();
@@ -727,14 +758,14 @@ mod tests {
             "dependencies":[],"record_schemas":{},"initial_state":{},"actions":[]
         });
         let submit_publish = |id: String| {
-            let signed = make_signed(
+            let command = command_wire(
                 &id,
                 "protocol.publish",
                 json!({"manifest":manifest}),
                 Some(workspace),
                 Some(1),
             );
-            canonical(&json!({"jws":signed}), CanonicalPath::COMMAND).unwrap()
+            signed_body(command)
         };
         let first_publish = reqwest::Client::new()
             .post(format!("{origin}api/workspace/v1/commands"))
