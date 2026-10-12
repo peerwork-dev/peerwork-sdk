@@ -639,3 +639,44 @@ SHA-256 at the exact detached pin: `secure_journal_read.rs`
 `Cargo.lock` `48775117e96fe4cba67314559398d3d08c75fc211952e22473ceacc389003f17`.
 This scripted test establishes transport behavior only; Agent workflow
 compliance remains separately unverified.
+
+Constant-size chain head and adaptive read checkpoint at exact SDK source
+`165a07219ebb127df33214f38de6030c4528eebb` supersedes the v3 growing
+index above. Version 4 stores only page count and a domain-separated SHA-256
+chain head in the protected root; each exact response remains in a protected
+per-page file. Append writes the new page before atomically advancing that
+small root. An interrupted append leaves an ignored, overwritable orphan;
+reopen scans saved pages once, checks cursor/checkpoint continuity and the
+full chain before returning. The callback path checks those conditions again
+over the bytes it passes to a future core verifier, and a caller must use its
+successful completion before any proof decision. Version 2 or 3 indexes are
+fully checked then migrated to v4. Focused tests cover v2→v3→v4, an orphan,
+page mutation, callback refusal, and the persisted additive discovery pin.
+The v4 root no longer grows with page count; append metadata work is bounded
+per page, while reopen and explicit progress validation scan the history.
+
+For a response over its configured budget, the private reader signs a fresh
+canonical target at successively smaller limits (50→25→…→1). Once the first
+page succeeds, later requests retain its exact checkpoint. A single page
+over the maximum 32 MiB response budget still fails; full valid-input
+compatibility for that case, policy-prefix pagination, and final replay proof
+remain open. No >64 MiB or >2048-page stress run is claimed.
+
+From a clean detached checkout at `165a072`, Rust 1.89 with task-local Cargo
+cache/target and `--offline --locked` passed
+`cargo test -p peerwork-runtime secure_journal_read::tests` 5/5. With
+`PEERWORK_REFERENCE_ROOT=/root/workdir/message/.worktrees/e2ee-main-integration-20261006`
+and `PEERWORK_NODE_BIN=/root/workdir/message/.tools/node-v24.20.0-linux-x64/bin/node`,
+the authorized localhost opt-in
+`cargo test -p peerwork-runtime actual_service_native_owner_bootstrap_lost_reply_exact_retry --offline --locked -- --nocapture`
+passed 1/1 in 9.40 seconds. Its fresh actual service fixture still checks
+native create/reply loss and 51-commit 50+1-page reopening; an additional
+read sets its budget one byte below the known 50-commit response, observes a
+smaller first page, then completes all 51 commits at sequence 51 and reopens
+with identical progress. It does not prove secure action effects or Agent
+workflow compliance. SHA-256 at the detached pin: `secure_journal_read.rs`
+`ae94c112b381811b98dd14d5f51ad7d18a26ead2ae21126f7c9d5d70821421ad`,
+`secure_native_prepare.rs`
+`30ba6efbf1040032674d3e827c63277e167787ddfc3b8d7e9a9d4b8db045a63e`,
+`transport.rs` `0ee771eda865ab63e977e9a2c43e4f3e18cac5896dd594f43d7b744fe782f437`,
+and `Cargo.lock` `48775117e96fe4cba67314559398d3d08c75fc211952e22473ceacc389003f17`.
