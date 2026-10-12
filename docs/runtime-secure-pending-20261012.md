@@ -87,6 +87,33 @@ Native production callers still need authenticated persisted policy context
 and native signed request authoring; this fixture used tracked TS writer
 helpers only to establish the signed-input interoperability boundary.
 
+An internal native authoring slice is now committed at SDK source
+`074554c24c6e3375086f6df713f942052df7af52` (author module/test
+`94a46aac1c1fcf9af0f50820f8f5b305bf918688`, direct `zeroize` lock
+`20118488adc4ebc88d808d965da1e5cd604deb40`). The author module source
+SHA-256 is `3212287f317dfb7a51891be17e3317e4d4bed01fef3733eec63fbd66fd151e86`;
+the independent cross-open script SHA-256 is
+`fca58601c7c52c6fedad8889c68a67f53f3af40d8b7cb530a52dc564504d0bcd`.
+From a clean detached checkout at that exact SDK pin, Node 24.20.0 ran
+`tests/secure-author-cross-open.mjs` with Rust 1.89 and task-local Cargo
+cache/target, `--offline --locked`; it exited 0 in 6.7 seconds. Its focused
+Rust test passed 1/1, and the pinned tracked TypeScript crypto verified the
+native v3 PRIVATE signature, decrypted its AES-GCM content to the original
+synthetic operation, and rejected altered context. The disposable vector was
+deleted by the script. Earlier TS-to-Rust AES cross-open is recorded in the
+core conformance report; this check is the native-to-TS direction.
+
+This author is `pub(crate)` inside core and accepts caller-supplied context
+and operation. It uses fresh OS nonce bytes with an explicit entropy error,
+zeroizes selected plaintext/key/signing temporaries, and self-verifies the
+signed HTTP packet before returning exact bytes for durable persistence.
+Core peer source review found no scoped nonce/AAD/chunk/signature mismatch.
+Dependency-managed key schedule and canonicalizer allocations have no full
+memory-erasure proof. No authenticated policy/checkpoint/operation evaluator
+proof exists yet, so this is cryptographic interop only, not an exposed
+secure action capability or final-effect proof. Runtime production retry
+must reuse the one persisted signed packet and never re-encrypt or re-sign it.
+
 The first combined runtime test attempt stopped before compiling this source:
 concurrent package compiler WIP changed `namespace_manifest` to three
 arguments while a caller still supplied two (E0061). The package owner is
