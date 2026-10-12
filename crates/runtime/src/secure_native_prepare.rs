@@ -691,7 +691,7 @@ mod tests {
                 "PUBLIC",
             )
             .unwrap();
-            let digest = built.operation()["objects"][0]["id"].as_str().unwrap();
+            let digest = built.operation()["objects"][1]["id"].as_str().unwrap();
             let choices = serde_json::to_vec(&json!([{
                 "schema":"discussion.message", "fields":["author"],
                 "protocol_digest":digest,
