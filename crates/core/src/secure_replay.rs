@@ -9,7 +9,7 @@ use crate::{
     },
     e2ee::{open_content_wire, SealedContent},
     interpreter::{evaluate_action, InterpreterAuth, ResolvedInput},
-    migration_fragments::{inflate_fragments, MigrationBatch},
+    migration_fragments::{assert_protocol_format_ceiling, inflate_fragments, MigrationBatch},
     protocol_object_source::{
         object_part_id, read_protocol_object_source, validate_object_part,
         validate_object_source_proof,
@@ -1473,11 +1473,14 @@ pub(crate) fn replay_basic_content(
             &mut structure_progress,
         )?;
         if kind != "MIGRATE" && migration_batch.is_some() {
-            let _candidate = migration_batch
-                .take()
-                .ok_or(ReplayError::Invalid)?
+            let batch = migration_batch.take().ok_or(ReplayError::Invalid)?;
+            let format = batch.format();
+            let candidate = batch
                 .finish(migration_base.as_deref().ok_or(ReplayError::Invalid)?)
                 .map_err(|_| ReplayError::Invalid)?;
+            if format == 3 {
+                assert_protocol_format_ceiling(&candidate, 1).map_err(|_| ReplayError::Invalid)?;
+            }
             // Historical protocol bindings, roles, and format ceiling still
             // gate installation before a later operation can see the batch.
             return Err(ReplayError::Invalid);
@@ -1774,9 +1777,13 @@ pub(crate) fn replay_basic_content(
         prior_mode = Some(mode);
     }
     if let Some(batch) = migration_batch {
-        let _candidate = batch
+        let format = batch.format();
+        let candidate = batch
             .finish(migration_base.as_deref().ok_or(ReplayError::Invalid)?)
             .map_err(|_| ReplayError::Invalid)?;
+        if format == 3 {
+            assert_protocol_format_ceiling(&candidate, 1).map_err(|_| ReplayError::Invalid)?;
+        }
         // The complete descriptor root and fragments are checked, but legacy
         // binding and role finalization still gate release of migrated state.
         return Err(ReplayError::Invalid);

@@ -4,7 +4,9 @@
 use crate::{
     canonical::Path,
     crypto::{decode_base64url, sha256_hex},
-    wire_json::{canonical_wire_value, parse_wire_json_js_bounded, WireValue},
+    wire_json::{
+        canonical_wire_value, parse_js_json_string_bounded, parse_wire_json_js_bounded, WireValue,
+    },
 };
 use std::collections::HashMap;
 use thiserror::Error;
@@ -39,6 +41,13 @@ fn text<'a>(value: &'a WireValue, name: &str) -> Result<&'a [u16], FragmentError
         .get(name)
         .and_then(WireValue::as_utf16)
         .ok_or(FragmentError::Invalid)
+}
+
+fn is_kind(value: &WireValue, expected: &str) -> bool {
+    value
+        .get("kind")
+        .and_then(WireValue::as_utf16)
+        .is_some_and(|units| units.iter().copied().eq(expected.encode_utf16()))
 }
 
 fn canonical(value: &WireValue) -> Result<String, FragmentError> {
@@ -227,17 +236,14 @@ fn row(
 pub(crate) fn inflate_fragments(objects: &[WireValue]) -> Result<Vec<WireValue>, FragmentError> {
     let mut normal: Vec<WireValue> = objects
         .iter()
-        .filter(|object| {
-            text(object, "kind").ok()
-                != Some(&"secure_fragment".encode_utf16().collect::<Vec<_>>()[..])
-        })
+        .filter(|object| !is_kind(object, "secure_fragment"))
         .cloned()
         .collect();
     let mut groups = Vec::<Group>::new();
     let mut by_key = HashMap::<String, usize>::new();
     let mut total = 0_usize;
     for object in objects {
-        if text(object, "kind")? != "secure_fragment".encode_utf16().collect::<Vec<_>>() {
+        if !is_kind(object, "secure_fragment") {
             continue;
         }
         let value = object.get("value").ok_or(FragmentError::Invalid)?;
@@ -338,6 +344,165 @@ pub(crate) fn inflate_fragments(objects: &[WireValue]) -> Result<Vec<WireValue>,
 
 fn text_field_equal(value: &WireValue, name: &str, expected: &[u16]) -> bool {
     value.get(name).and_then(WireValue::as_utf16) == Some(expected)
+}
+
+fn decoded_object(value: &WireValue) -> Result<WireValue, FragmentError> {
+    let parsed = if let Some(units) = value.as_utf16() {
+        parse_js_json_string_bounded(units, 2048, TOTAL_BYTES)
+            .map_err(|_| FragmentError::Invalid)?
+    } else {
+        value.clone()
+    };
+    parsed.object_len().ok_or(FragmentError::Invalid)?;
+    Ok(parsed)
+}
+
+fn collect_archived(
+    objects: &[WireValue],
+    budget: &mut usize,
+    depth: usize,
+) -> Result<Vec<WireValue>, FragmentError> {
+    if depth > 8 {
+        return Err(FragmentError::Invalid);
+    }
+    let mut result = Vec::new();
+    for object in objects {
+        *budget = budget.checked_add(1).ok_or(FragmentError::Invalid)?;
+        if *budget > 65_536 || object.object_len().is_none() {
+            return Err(FragmentError::Invalid);
+        }
+        if is_kind(object, "secure_commits") {
+            let value = object.get("value").ok_or(FragmentError::Invalid)?;
+            value.object_len().ok_or(FragmentError::Invalid)?;
+            let artifact = if let Some(units) = value.get("artifact").and_then(WireValue::as_utf16)
+            {
+                parse_js_json_string_bounded(units, 2048, TOTAL_BYTES)
+                    .map_err(|_| FragmentError::Invalid)?
+            } else {
+                value.clone()
+            };
+            let payload = artifact.get("payload").ok_or(FragmentError::Invalid)?;
+            if text(payload, "mode")? != "PUBLIC".encode_utf16().collect::<Vec<_>>() {
+                return Err(FragmentError::Invalid);
+            }
+            let WireValue::Array(nested) = payload
+                .get("body")
+                .and_then(|body| body.get("objects"))
+                .ok_or(FragmentError::Invalid)?
+            else {
+                return Err(FragmentError::Invalid);
+            };
+            result.extend(collect_archived(nested, budget, depth + 1)?);
+        } else {
+            result.push(object.clone());
+        }
+    }
+    Ok(result)
+}
+
+fn format_within(value: &WireValue, ceiling: u64) -> Result<(), FragmentError> {
+    let decoded = decoded_object(value)?;
+    if let Some(version) = decoded.get("format_version") {
+        if ceiling != 2 || integer(version) != Some(2) {
+            return Err(FragmentError::Invalid);
+        }
+    }
+    Ok(())
+}
+
+fn check_protocol_format(object: &WireValue, ceiling: u64) -> Result<(), FragmentError> {
+    let value = object.get("value").ok_or(FragmentError::Invalid)?;
+    let provenance = text(object, "provenance")?;
+    if provenance == "AUTHOR_SIGNED".encode_utf16().collect::<Vec<_>>() {
+        format_within(
+            value.get("manifest").ok_or(FragmentError::Invalid)?,
+            ceiling,
+        )?;
+        format_within(
+            value
+                .get("resolved_manifest")
+                .ok_or(FragmentError::Invalid)?,
+            ceiling,
+        )?;
+        if let Some(composition) = value.get("composition") {
+            format_within(
+                composition
+                    .get("source_manifest")
+                    .ok_or(FragmentError::Invalid)?,
+                ceiling,
+            )?;
+            let WireValue::Array(nodes) = composition
+                .get("dependencies")
+                .ok_or(FragmentError::Invalid)?
+            else {
+                return Err(FragmentError::Invalid);
+            };
+            for node in nodes {
+                format_within(node.get("manifest").ok_or(FragmentError::Invalid)?, ceiling)?;
+            }
+        }
+    } else if provenance == "LEGACY_OWNER_ATTESTED".encode_utf16().collect::<Vec<_>>() {
+        let envelope = decoded_object(value.get("manifest").ok_or(FragmentError::Invalid)?)?;
+        format_within(
+            envelope.get("manifest").ok_or(FragmentError::Invalid)?,
+            ceiling,
+        )?;
+        format_within(
+            value
+                .get("resolved_manifest")
+                .ok_or(FragmentError::Invalid)?,
+            ceiling,
+        )?;
+    } else {
+        return Err(FragmentError::Invalid);
+    }
+    Ok(())
+}
+
+/// Match the nested v3 decrypted-content format gate. This is a private
+/// prerequisite; it does not validate a protocol manifest or authorize reads.
+pub(crate) fn assert_protocol_format_ceiling(
+    objects: &[WireValue],
+    ceiling: u64,
+) -> Result<(), FragmentError> {
+    if !matches!(ceiling, 1 | 2) {
+        return Err(FragmentError::Invalid);
+    }
+    let mut budget = 0;
+    let mut candidate = collect_archived(objects, &mut budget, 0)?;
+    let mut fragment_bytes = 0_usize;
+    for _ in 0..8 {
+        if !candidate
+            .iter()
+            .any(|object| is_kind(object, "secure_fragment"))
+        {
+            break;
+        }
+        for object in &candidate {
+            if is_kind(object, "secure_fragment") {
+                let data = text(object.get("value").ok_or(FragmentError::Invalid)?, "data")?;
+                fragment_bytes = fragment_bytes
+                    .checked_add((data.len() * 3).div_ceil(4))
+                    .ok_or(FragmentError::Invalid)?;
+                if fragment_bytes > TOTAL_BYTES {
+                    return Err(FragmentError::Invalid);
+                }
+            }
+        }
+        candidate = collect_archived(&inflate_fragments(&candidate)?, &mut budget, 0)?;
+    }
+    if candidate
+        .iter()
+        .any(|object| is_kind(object, "secure_fragment"))
+    {
+        return Err(FragmentError::Invalid);
+    }
+    for object in candidate {
+        if is_kind(&object, "protocols") {
+            check_protocol_format(&object, ceiling)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -489,5 +654,31 @@ mod tests {
         assert!(missing
             .add_page(&[wrong_descriptor], &[fragment(0, 1, b"{}")])
             .is_err());
+    }
+
+    #[test]
+    fn direct_pinned_typescript_nested_format_ceiling() {
+        let vectors = parse_wire_json_js_bounded(
+            include_str!("../../../conformance/migration-format-vectors.json").as_bytes(),
+            64,
+            1024 * 1024,
+        )
+        .unwrap();
+        let WireValue::Array(cases) = vectors else {
+            panic!("vector array")
+        };
+        for case in cases {
+            let name = case.get("name").and_then(WireValue::as_string).unwrap();
+            let WireValue::Array(objects) = case.get("objects").unwrap() else {
+                panic!("objects")
+            };
+            let ceiling = integer(case.get("ceiling").unwrap()).unwrap();
+            let expected = case.get("ok") == Some(&WireValue::Bool(true));
+            assert_eq!(
+                assert_protocol_format_ceiling(objects, ceiling).is_ok(),
+                expected,
+                "{name}"
+            );
+        }
     }
 }
