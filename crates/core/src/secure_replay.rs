@@ -43,7 +43,7 @@ pub(crate) fn replay_basic_content(
     pinned: Option<&CheckpointPin<'_>>,
     keyring_wire: Option<&[u8]>,
 ) -> Result<ReplayFacts, ReplayError> {
-    scan_signed_chain_headers(
+    let chain = scan_signed_chain_headers(
         policy_wires,
         commit_wires,
         checkpoint_wire,
@@ -51,8 +51,15 @@ pub(crate) fn replay_basic_content(
         trusted_owner,
         pinned,
     )?;
+    let mut policies = HashMap::new();
+    for (hash, wire) in chain.policy_hashes.iter().zip(policy_wires) {
+        let policy = parse_wire_json_js_bounded(wire, 64, 32 * 1024 * 1024)
+            .map_err(|_| ReplayError::Invalid)?;
+        policies.insert(hash.as_str(), policy);
+    }
     let mut seen_objects = HashSet::new();
     let mut latest_revisions: HashMap<String, u64> = HashMap::new();
+    let mut prior_objects = Vec::new();
     let mut operations = Vec::with_capacity(commit_wires.len());
     let mut legacy = false;
     for wire in commit_wires {
@@ -125,6 +132,12 @@ pub(crate) fn replay_basic_content(
         if kind == "ADMIN" {
             validate_admin_preflight(&operation, payload, &latest_revisions)
                 .map_err(|_| ReplayError::Invalid)?;
+        } else if kind == "ACTION" {
+            let hash = string(payload, "policy_hash")?;
+            let policy = policies.get(hash.as_str()).ok_or(ReplayError::Invalid)?;
+            let context = commit_context(payload)?;
+            validate_action_state_slice(&operation, &context, policy, &prior_objects)
+                .map_err(|_| ReplayError::Invalid)?;
         }
         let mut batch = HashSet::new();
         for object in objects {
@@ -181,6 +194,7 @@ pub(crate) fn replay_basic_content(
                 .and_modify(|prior| *prior = (*prior).max(revision))
                 .or_insert(revision);
         }
+        prior_objects.extend(objects.iter().cloned());
         operations.push(operation);
     }
     Ok(ReplayFacts {
@@ -272,9 +286,9 @@ fn validate_admin_preflight(
     Ok(())
 }
 
-/// First ACTION replay slice: direct-member, no-record state transition.
-/// Other ACTION shapes return `UNSUPPORTED` while the full validator is ported;
-/// this function is private and never yields a verified journal or receipt.
+/// Private ACTION evaluator covering state, record, head, relation, protected
+/// field, and workflow effects. Other histories still return `UNSUPPORTED`;
+/// this never yields a verified journal or receipt.
 fn validate_action_state_slice(
     operation: &WireValue,
     context: &WireValue,
@@ -2164,6 +2178,134 @@ mod tests {
                 assert_eq!(result, Ok(()), "{name}");
             }
         }
+    }
+
+    #[test]
+    fn signed_encrypted_action_replay_binds_policy_source_and_effects() {
+        let vectors = parse_wire_json_js_bounded(
+            include_str!("../../../conformance/secure-engine-vectors.json").as_bytes(),
+            64,
+            2_000_000,
+        )
+        .unwrap();
+        let WireValue::Array(cases) = vectors else {
+            panic!("vector array")
+        };
+        let case = cases
+            .iter()
+            .find(|case| {
+                case.get("name").and_then(WireValue::as_string).as_deref()
+                    == Some("action_control_revision")
+            })
+            .unwrap();
+        let to_json = |value: &WireValue| -> Value {
+            serde_json::from_str(&canonical_wire_value(value, Path::SecureArtifact).unwrap())
+                .unwrap()
+        };
+        let base_prior = to_json(case.get("prior").unwrap());
+        let base_action = to_json(case.get("operation").unwrap());
+        let owner_keypair = SigningKey::from_bytes(&[92; 32]);
+        let owner_key = key_id(&owner_keypair.verifying_key().to_bytes());
+        let owner = actor_id(&owner_keypair.verifying_key().to_bytes());
+        let workspace = base_prior[1]["value"]["workspace_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let instance = base_prior[1]["id"].as_str().unwrap().to_owned();
+        let (_, encryption_public) = DhP256HkdfSha256::gen_keypair();
+        let point = encryption_public.to_bytes();
+        let encryption = json!({"kty":"EC","crv":"P-256","x":base64url(&point[1..33]),"y":base64url(&point[33..65])});
+        let encryption_id = base64url(&sha256(
+            canonical(&encryption, Path::SecureArtifact)
+                .unwrap()
+                .as_bytes(),
+        ));
+        let certificate: Value = serde_json::from_slice(&signed(
+            json!({"v":1,"actor_id":owner,"signing_key":owner_key,"encryption_key":encryption,"encryption_key_id":encryption_id,"issued_at":0,"expires_at":1000}),
+            "peerwork.secure.key-certificate.v1", &owner_keypair,
+        )).unwrap();
+        let epoch_key = [19u8; 32];
+        let keyring = serde_json::to_vec(&json!({"v":1,"workspace_id":workspace,"keys":[{"epoch":1,"key":base64url(&epoch_key)}]})).unwrap();
+        let run = |label: &str,
+                   prior: Value,
+                   action: Value,
+                   allowed: bool|
+         -> Result<ReplayFacts, ReplayError> {
+            let scopes = if allowed {
+                json!([{"instance_id":null,"actions":["test.set"],"protocol_roles":[],"capabilities":[]}])
+            } else {
+                json!([{"instance_id":null,"actions":["other.action"],"protocol_roles":[],"capabilities":[]}])
+            };
+            let policy = signed(
+                json!({"v":1,"workspace_id":workspace,"owner_id":owner,"signing_key":owner_key,"version":1,"previous_policy":null,"effective_sequence":1,"visibility":"PRIVATE","epoch":1,"members":[{"actor_id":owner,"certificate":certificate,"role":"OWNER","scopes":scopes}],"issued_at":1}),
+                "peerwork.secure.policy.v1",
+                &owner_keypair,
+            );
+            let context1 = json!({"v":1,"workspace_id":workspace,"sequence":1,"previous":null,"policy_hash":hash(&policy),"epoch":1,"actor_id":owner,"signing_key":owner_key,"command_id":base64url(&[21;32]),"action_id":"test.admin","instance_id":null,"issued_at":1,"delegation":null});
+            let admin = json!({"v":1,"kind":"ADMIN","input":{},"objects":prior});
+            let plaintext1 = canonical(&admin, Path::SecureArtifact).unwrap();
+            let sealed1 = seal_content_wire(
+                &epoch_key,
+                plaintext1.as_bytes(),
+                &serde_json::to_vec(&context1).unwrap(),
+            )
+            .unwrap();
+            let mut payload1 = context1;
+            payload1["mode"] = json!("PRIVATE");
+            payload1["body"] = serde_json::to_value(sealed1).unwrap();
+            let commit1 = signed(payload1, "peerwork.secure.commit.v1", &owner_keypair);
+            let context2 = json!({"v":1,"workspace_id":workspace,"sequence":2,"previous":hash(&commit1),"policy_hash":hash(&policy),"epoch":1,"actor_id":owner,"signing_key":owner_key,"command_id":base64url(&[22;32]),"action_id":"test.set","instance_id":instance,"issued_at":2,"delegation":null});
+            let plaintext2 = canonical(&action, Path::SecureArtifact).unwrap();
+            let sealed2 = seal_content_wire(
+                &epoch_key,
+                plaintext2.as_bytes(),
+                &serde_json::to_vec(&context2).unwrap(),
+            )
+            .unwrap();
+            let mut payload2 = context2;
+            payload2["mode"] = json!("PRIVATE");
+            payload2["body"] = serde_json::to_value(sealed2).unwrap();
+            let commit2 = signed(payload2, "peerwork.secure.commit.v1", &owner_keypair);
+            let checkpoint = serde_json::to_vec(&json!({"v":1,"workspace_id":workspace,"owner_id":owner,"owner_key":owner_key,"sequence":2,"head":hash(&commit2),"policy_hash":hash(&policy)})).unwrap();
+            let headers = scan_signed_chain_headers(
+                &[&policy],
+                &[&commit1, &commit2],
+                &checkpoint,
+                &workspace,
+                Some(&OwnerPin {
+                    actor_id: &owner,
+                    signing_key: &owner_key,
+                }),
+                None,
+            );
+            assert_eq!(headers.is_ok(), label != "policy", "{label} header result");
+            replay_basic_content(
+                &[&policy],
+                &[&commit1, &commit2],
+                &checkpoint,
+                &workspace,
+                Some(&OwnerPin {
+                    actor_id: &owner,
+                    signing_key: &owner_key,
+                }),
+                None,
+                Some(&keyring),
+            )
+        };
+        assert_eq!(
+            run("valid", base_prior.clone(), base_action.clone(), true)
+                .unwrap()
+                .operations
+                .len(),
+            2
+        );
+        let mut tampered = base_action.clone();
+        tampered["objects"][0]["value"]["state"]["count"] = json!(99);
+        assert!(run("output", base_prior.clone(), tampered, true).is_err());
+        assert!(run("policy", base_prior.clone(), base_action.clone(), false).is_err());
+        let mut changed_source = base_prior;
+        changed_source[1]["value"]["state"]["count"] = json!(1);
+        assert!(run("source", changed_source, base_action, true).is_err());
     }
 
     #[test]
