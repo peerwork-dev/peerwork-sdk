@@ -1346,6 +1346,43 @@ fn restore_archived_public_history(
     Ok(restored)
 }
 
+fn index_candidate_objects(
+    candidate: &[WireValue],
+) -> Result<(HashSet<String>, HashMap<String, u64>), ReplayError> {
+    let mut seen = HashSet::new();
+    let mut latest = HashMap::<String, u64>::new();
+    for object in candidate {
+        let kind = utf16(object, "kind")?;
+        let id = utf16(object, "id")?;
+        let revision = integer(object, "revision")?;
+        let key = canonical_wire_value(
+            &WireValue::Array(vec![
+                WireValue::String(kind.to_vec()),
+                WireValue::String(id.to_vec()),
+                WireValue::Number(revision as f64),
+            ]),
+            Path::SecureArtifact,
+        )
+        .map_err(|_| ReplayError::Invalid)?;
+        if !seen.insert(key) {
+            return Err(ReplayError::Invalid);
+        }
+        let pair = canonical_wire_value(
+            &WireValue::Array(vec![
+                WireValue::String(kind.to_vec()),
+                WireValue::String(id.to_vec()),
+            ]),
+            Path::SecureArtifact,
+        )
+        .map_err(|_| ReplayError::Invalid)?;
+        latest
+            .entry(pair)
+            .and_modify(|prior| *prior = (*prior).max(revision))
+            .or_insert(revision);
+    }
+    Ok((seen, latest))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn replay_basic_content(
     policy_wires: &[&[u8]],
@@ -1485,9 +1522,16 @@ pub(crate) fn replay_basic_content(
             validate_historical_authored_protocols(&candidate, workspace_id, format)?;
             validate_legacy_protocol_bindings(&candidate, workspace_id)
                 .map_err(|_| ReplayError::Invalid)?;
-            // Historical protocol bindings, roles, and format ceiling still
-            // gate installation before a later operation can see the batch.
-            return Err(ReplayError::Invalid);
+            (seen_objects, latest_revisions) = index_candidate_objects(&candidate)?;
+            legacy |= candidate.iter().any(|object| {
+                object
+                    .get("provenance")
+                    .and_then(WireValue::as_string)
+                    .as_deref()
+                    == Some("LEGACY_OWNER_ATTESTED")
+            });
+            prior_objects = candidate;
+            migration_base = None;
         }
         // These are only local preconditions. Full operation evaluation still
         // happens before any trusted journal result may be constructed.
@@ -1791,10 +1835,30 @@ pub(crate) fn replay_basic_content(
         validate_historical_authored_protocols(&candidate, workspace_id, format)?;
         validate_legacy_protocol_bindings(&candidate, workspace_id)
             .map_err(|_| ReplayError::Invalid)?;
-        // The complete descriptor root and fragments are checked, but legacy
-        // binding and role finalization still gate release of migrated state.
-        return Err(ReplayError::Invalid);
+        seen_objects = index_candidate_objects(&candidate)?.0;
+        legacy |= candidate.iter().any(|object| {
+            object
+                .get("provenance")
+                .and_then(WireValue::as_string)
+                .as_deref()
+                == Some("LEGACY_OWNER_ATTESTED")
+        });
+        prior_objects = candidate;
     }
+    let final_policy = policies
+        .get(chain.policy_hash.as_str())
+        .ok_or(ReplayError::Invalid)?;
+    validate_role_policies_with_history(
+        final_policy.get("payload").ok_or(ReplayError::Invalid)?,
+        &prior_objects,
+        integer(
+            final_policy.get("payload").ok_or(ReplayError::Invalid)?,
+            "issued_at",
+        )?,
+        None,
+        &mut role_history,
+    )
+    .map_err(|_| ReplayError::Invalid)?;
     Ok(ReplayFacts {
         operations,
         object_count: seen_objects.len(),
@@ -3873,6 +3937,45 @@ mod tests {
     }
 
     #[test]
+    fn signed_typescript_migration_journals_match_private_replay() {
+        let vectors: Value = serde_json::from_slice(include_bytes!(
+            "../../../conformance/signed-migration-vectors.json"
+        ))
+        .unwrap();
+        for case in vectors.as_array().unwrap() {
+            let policy = serde_json::to_vec(&case["policy"]).unwrap();
+            let commits = case["commits"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|commit| serde_json::to_vec(commit).unwrap())
+                .collect::<Vec<_>>();
+            let commit_refs = commits.iter().map(Vec::as_slice).collect::<Vec<_>>();
+            let checkpoint = serde_json::to_vec(&case["checkpoint"]).unwrap();
+            let workspace = case["workspace_id"].as_str().unwrap();
+            let owner = OwnerPin {
+                actor_id: case["owner"]["actor_id"].as_str().unwrap(),
+                signing_key: case["owner"]["key"].as_str().unwrap(),
+            };
+            let actual = replay_basic_content(
+                &[&policy],
+                &commit_refs,
+                &checkpoint,
+                workspace,
+                Some(&owner),
+                None,
+                None,
+            );
+            assert_eq!(
+                actual.is_ok(),
+                case["ok"].as_bool().unwrap(),
+                "{}: {actual:?}",
+                case["name"]
+            );
+        }
+    }
+
+    #[test]
     fn archived_public_prefix_is_restored_before_signed_header_scan() {
         let key = SigningKey::from_bytes(&[116; 32]);
         let owner_key = key_id(&key.verifying_key().to_bytes());
@@ -3980,22 +4083,21 @@ mod tests {
             None
         )
         .is_ok());
-        assert!(
-            replay_basic_content(
-                &[&policy1, &policy2],
-                &[&migration],
-                &checkpoint,
-                &workspace,
-                Some(&OwnerPin {
-                    actor_id: &owner,
-                    signing_key: &owner_key
-                }),
-                None,
-                Some(&keyring),
-            )
-            .is_err(),
-            "migration must not become an authority proof before historical validation"
-        );
+        let replayed = replay_basic_content(
+            &[&policy1, &policy2],
+            &[&migration],
+            &checkpoint,
+            &workspace,
+            Some(&OwnerPin {
+                actor_id: &owner,
+                signing_key: &owner_key,
+            }),
+            None,
+            Some(&keyring),
+        )
+        .unwrap();
+        assert_eq!(replayed.object_count, 1);
+        assert!(replayed.legacy);
         assert!(restore_archived_public_history(
             &[&policy1, &policy2],
             &[&migration],
