@@ -1,0 +1,226 @@
+[
+  {
+    "name": "standalone_legacy",
+    "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+    "objects": [
+      {
+        "kind": "protocols",
+        "id": "5249a063132b95c5587dd1db895a408fefe6a3552222f08301da1588fdab5d6c",
+        "revision": 1,
+        "provenance": "LEGACY_OWNER_ATTESTED",
+        "value": {
+          "digest": "5249a063132b95c5587dd1db895a408fefe6a3552222f08301da1588fdab5d6c",
+          "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+          "source_digest": "5249a063132b95c5587dd1db895a408fefe6a3552222f08301da1588fdab5d6c",
+          "resolved_manifest": "{\"actions\":[],\"capabilities\":[],\"constraints\":{},\"dependencies\":[],\"display_version\":\"1\",\"historical_role_conflicts\":[],\"initial_state\":{\"count\":0},\"name\":\"demo\",\"protocol_roles\":[],\"record_schemas\":{},\"role_conflicts\":[],\"semantics\":\"peerwork.kernel.v1\"}",
+          "manifest": "{\"manifest\":{\"actions\":[],\"capabilities\":[],\"constraints\":{},\"dependencies\":[],\"display_version\":\"1\",\"historical_role_conflicts\":[],\"initial_state\":{\"count\":0},\"name\":\"demo\",\"protocol_roles\":[],\"record_schemas\":{},\"role_conflicts\":[],\"semantics\":\"peerwork.kernel.v1\"},\"semantics\":\"peerwork.kernel.v1\"}",
+          "dependency_closure": "[]",
+          "created_by": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "created": 1
+        }
+      }
+    ],
+    "valid": true,
+    "result": "ok"
+  },
+  {
+    "name": "root_omitted_defaults_normalize",
+    "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+    "objects": [
+      {
+        "kind": "protocols",
+        "id": "5249a063132b95c5587dd1db895a408fefe6a3552222f08301da1588fdab5d6c",
+        "revision": 1,
+        "provenance": "LEGACY_OWNER_ATTESTED",
+        "value": {
+          "digest": "5249a063132b95c5587dd1db895a408fefe6a3552222f08301da1588fdab5d6c",
+          "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+          "source_digest": "061f19a0d11665c1d7ba58df53459aae555d4af727e89018bcf63021a2c05fc4",
+          "resolved_manifest": "{\"actions\":[],\"capabilities\":[],\"constraints\":{},\"dependencies\":[],\"display_version\":\"1\",\"historical_role_conflicts\":[],\"initial_state\":{\"count\":0},\"name\":\"demo\",\"protocol_roles\":[],\"record_schemas\":{},\"role_conflicts\":[],\"semantics\":\"peerwork.kernel.v1\"}",
+          "manifest": "{\"manifest\":{\"actions\":[],\"dependencies\":[],\"display_version\":\"1\",\"initial_state\":{\"count\":0},\"name\":\"demo\",\"record_schemas\":{},\"semantics\":\"peerwork.kernel.v1\"},\"semantics\":\"peerwork.kernel.v1\"}",
+          "dependency_closure": "[]",
+          "created_by": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "created": 1
+        }
+      }
+    ],
+    "valid": true,
+    "result": "ok"
+  },
+  {
+    "name": "dependency_closure_postorder",
+    "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+    "objects": [
+      {
+        "kind": "protocols",
+        "id": "06382e8eb92faeb649cded4ef0552fb0c685289d7696cccf8cdd813f6c257a7b",
+        "revision": 1,
+        "provenance": "LEGACY_OWNER_ATTESTED",
+        "value": {
+          "digest": "06382e8eb92faeb649cded4ef0552fb0c685289d7696cccf8cdd813f6c257a7b",
+          "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+          "source_digest": "06382e8eb92faeb649cded4ef0552fb0c685289d7696cccf8cdd813f6c257a7b",
+          "resolved_manifest": "{\"actions\":[],\"capabilities\":[],\"constraints\":{},\"dependencies\":[],\"display_version\":\"1\",\"historical_role_conflicts\":[],\"initial_state\":{\"count\":0},\"name\":\"child\",\"protocol_roles\":[],\"record_schemas\":{},\"role_conflicts\":[],\"semantics\":\"peerwork.kernel.v1\"}",
+          "manifest": "{\"manifest\":{\"actions\":[],\"capabilities\":[],\"constraints\":{},\"dependencies\":[],\"display_version\":\"1\",\"historical_role_conflicts\":[],\"initial_state\":{\"count\":0},\"name\":\"child\",\"protocol_roles\":[],\"record_schemas\":{},\"role_conflicts\":[],\"semantics\":\"peerwork.kernel.v1\"},\"semantics\":\"peerwork.kernel.v1\"}",
+          "dependency_closure": "[]",
+          "created_by": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "created": 1
+        }
+      },
+      {
+        "kind": "protocols",
+        "id": "950eaaf5a94caa6f841ebb5df5a8f51cb068cdd45d54b0f370e625d4ed1d9f41",
+        "revision": 1,
+        "provenance": "LEGACY_OWNER_ATTESTED",
+        "value": {
+          "digest": "950eaaf5a94caa6f841ebb5df5a8f51cb068cdd45d54b0f370e625d4ed1d9f41",
+          "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+          "source_digest": "950eaaf5a94caa6f841ebb5df5a8f51cb068cdd45d54b0f370e625d4ed1d9f41",
+          "resolved_manifest": "{\"actions\":[],\"capabilities\":[],\"constraints\":{},\"dependencies\":[\"06382e8eb92faeb649cded4ef0552fb0c685289d7696cccf8cdd813f6c257a7b\"],\"display_version\":\"1\",\"historical_role_conflicts\":[],\"initial_state\":{\"count\":0},\"name\":\"parent\",\"protocol_roles\":[],\"record_schemas\":{},\"role_conflicts\":[],\"semantics\":\"peerwork.kernel.v1\"}",
+          "manifest": "{\"manifest\":{\"actions\":[],\"capabilities\":[],\"constraints\":{},\"dependencies\":[\"06382e8eb92faeb649cded4ef0552fb0c685289d7696cccf8cdd813f6c257a7b\"],\"display_version\":\"1\",\"historical_role_conflicts\":[],\"initial_state\":{\"count\":0},\"name\":\"parent\",\"protocol_roles\":[],\"record_schemas\":{},\"role_conflicts\":[],\"semantics\":\"peerwork.kernel.v1\"},\"semantics\":\"peerwork.kernel.v1\"}",
+          "dependency_closure": "[\"06382e8eb92faeb649cded4ef0552fb0c685289d7696cccf8cdd813f6c257a7b\"]",
+          "created_by": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "created": 1
+        }
+      }
+    ],
+    "valid": true,
+    "result": "ok"
+  },
+  {
+    "name": "dependency_missing",
+    "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+    "objects": [
+      {
+        "kind": "protocols",
+        "id": "950eaaf5a94caa6f841ebb5df5a8f51cb068cdd45d54b0f370e625d4ed1d9f41",
+        "revision": 1,
+        "provenance": "LEGACY_OWNER_ATTESTED",
+        "value": {
+          "digest": "950eaaf5a94caa6f841ebb5df5a8f51cb068cdd45d54b0f370e625d4ed1d9f41",
+          "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+          "source_digest": "950eaaf5a94caa6f841ebb5df5a8f51cb068cdd45d54b0f370e625d4ed1d9f41",
+          "resolved_manifest": "{\"actions\":[],\"capabilities\":[],\"constraints\":{},\"dependencies\":[\"06382e8eb92faeb649cded4ef0552fb0c685289d7696cccf8cdd813f6c257a7b\"],\"display_version\":\"1\",\"historical_role_conflicts\":[],\"initial_state\":{\"count\":0},\"name\":\"parent\",\"protocol_roles\":[],\"record_schemas\":{},\"role_conflicts\":[],\"semantics\":\"peerwork.kernel.v1\"}",
+          "manifest": "{\"manifest\":{\"actions\":[],\"capabilities\":[],\"constraints\":{},\"dependencies\":[\"06382e8eb92faeb649cded4ef0552fb0c685289d7696cccf8cdd813f6c257a7b\"],\"display_version\":\"1\",\"historical_role_conflicts\":[],\"initial_state\":{\"count\":0},\"name\":\"parent\",\"protocol_roles\":[],\"record_schemas\":{},\"role_conflicts\":[],\"semantics\":\"peerwork.kernel.v1\"},\"semantics\":\"peerwork.kernel.v1\"}",
+          "dependency_closure": "[\"06382e8eb92faeb649cded4ef0552fb0c685289d7696cccf8cdd813f6c257a7b\"]",
+          "created_by": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "created": 1
+        }
+      }
+    ],
+    "valid": false,
+    "result": "reject"
+  },
+  {
+    "name": "dependency_closure_mismatch",
+    "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+    "objects": [
+      {
+        "kind": "protocols",
+        "id": "06382e8eb92faeb649cded4ef0552fb0c685289d7696cccf8cdd813f6c257a7b",
+        "revision": 1,
+        "provenance": "LEGACY_OWNER_ATTESTED",
+        "value": {
+          "digest": "06382e8eb92faeb649cded4ef0552fb0c685289d7696cccf8cdd813f6c257a7b",
+          "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+          "source_digest": "06382e8eb92faeb649cded4ef0552fb0c685289d7696cccf8cdd813f6c257a7b",
+          "resolved_manifest": "{\"actions\":[],\"capabilities\":[],\"constraints\":{},\"dependencies\":[],\"display_version\":\"1\",\"historical_role_conflicts\":[],\"initial_state\":{\"count\":0},\"name\":\"child\",\"protocol_roles\":[],\"record_schemas\":{},\"role_conflicts\":[],\"semantics\":\"peerwork.kernel.v1\"}",
+          "manifest": "{\"manifest\":{\"actions\":[],\"capabilities\":[],\"constraints\":{},\"dependencies\":[],\"display_version\":\"1\",\"historical_role_conflicts\":[],\"initial_state\":{\"count\":0},\"name\":\"child\",\"protocol_roles\":[],\"record_schemas\":{},\"role_conflicts\":[],\"semantics\":\"peerwork.kernel.v1\"},\"semantics\":\"peerwork.kernel.v1\"}",
+          "dependency_closure": "[]",
+          "created_by": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "created": 1
+        }
+      },
+      {
+        "kind": "protocols",
+        "id": "950eaaf5a94caa6f841ebb5df5a8f51cb068cdd45d54b0f370e625d4ed1d9f41",
+        "revision": 1,
+        "provenance": "LEGACY_OWNER_ATTESTED",
+        "value": {
+          "digest": "950eaaf5a94caa6f841ebb5df5a8f51cb068cdd45d54b0f370e625d4ed1d9f41",
+          "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+          "source_digest": "950eaaf5a94caa6f841ebb5df5a8f51cb068cdd45d54b0f370e625d4ed1d9f41",
+          "resolved_manifest": "{\"actions\":[],\"capabilities\":[],\"constraints\":{},\"dependencies\":[\"06382e8eb92faeb649cded4ef0552fb0c685289d7696cccf8cdd813f6c257a7b\"],\"display_version\":\"1\",\"historical_role_conflicts\":[],\"initial_state\":{\"count\":0},\"name\":\"parent\",\"protocol_roles\":[],\"record_schemas\":{},\"role_conflicts\":[],\"semantics\":\"peerwork.kernel.v1\"}",
+          "manifest": "{\"manifest\":{\"actions\":[],\"capabilities\":[],\"constraints\":{},\"dependencies\":[\"06382e8eb92faeb649cded4ef0552fb0c685289d7696cccf8cdd813f6c257a7b\"],\"display_version\":\"1\",\"historical_role_conflicts\":[],\"initial_state\":{\"count\":0},\"name\":\"parent\",\"protocol_roles\":[],\"record_schemas\":{},\"role_conflicts\":[],\"semantics\":\"peerwork.kernel.v1\"},\"semantics\":\"peerwork.kernel.v1\"}",
+          "dependency_closure": "[]",
+          "created_by": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "created": 1
+        }
+      }
+    ],
+    "valid": false,
+    "result": "reject"
+  },
+  {
+    "name": "raw_source_digest_mismatch",
+    "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+    "objects": [
+      {
+        "kind": "protocols",
+        "id": "5249a063132b95c5587dd1db895a408fefe6a3552222f08301da1588fdab5d6c",
+        "revision": 1,
+        "provenance": "LEGACY_OWNER_ATTESTED",
+        "value": {
+          "digest": "5249a063132b95c5587dd1db895a408fefe6a3552222f08301da1588fdab5d6c",
+          "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+          "source_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+          "resolved_manifest": "{\"actions\":[],\"capabilities\":[],\"constraints\":{},\"dependencies\":[],\"display_version\":\"1\",\"historical_role_conflicts\":[],\"initial_state\":{\"count\":0},\"name\":\"demo\",\"protocol_roles\":[],\"record_schemas\":{},\"role_conflicts\":[],\"semantics\":\"peerwork.kernel.v1\"}",
+          "manifest": "{\"manifest\":{\"actions\":[],\"capabilities\":[],\"constraints\":{},\"dependencies\":[],\"display_version\":\"1\",\"historical_role_conflicts\":[],\"initial_state\":{\"count\":0},\"name\":\"demo\",\"protocol_roles\":[],\"record_schemas\":{},\"role_conflicts\":[],\"semantics\":\"peerwork.kernel.v1\"},\"semantics\":\"peerwork.kernel.v1\"}",
+          "dependency_closure": "[]",
+          "created_by": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "created": 1
+        }
+      }
+    ],
+    "valid": false,
+    "result": "reject"
+  },
+  {
+    "name": "noncanonical_source_envelope",
+    "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+    "objects": [
+      {
+        "kind": "protocols",
+        "id": "5249a063132b95c5587dd1db895a408fefe6a3552222f08301da1588fdab5d6c",
+        "revision": 1,
+        "provenance": "LEGACY_OWNER_ATTESTED",
+        "value": {
+          "digest": "5249a063132b95c5587dd1db895a408fefe6a3552222f08301da1588fdab5d6c",
+          "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+          "source_digest": "5249a063132b95c5587dd1db895a408fefe6a3552222f08301da1588fdab5d6c",
+          "resolved_manifest": "{\"actions\":[],\"capabilities\":[],\"constraints\":{},\"dependencies\":[],\"display_version\":\"1\",\"historical_role_conflicts\":[],\"initial_state\":{\"count\":0},\"name\":\"demo\",\"protocol_roles\":[],\"record_schemas\":{},\"role_conflicts\":[],\"semantics\":\"peerwork.kernel.v1\"}",
+          "manifest": "{\n  \"manifest\": {\n    \"actions\": [],\n    \"capabilities\": [],\n    \"constraints\": {},\n    \"dependencies\": [],\n    \"display_version\": \"1\",\n    \"historical_role_conflicts\": [],\n    \"initial_state\": {\n      \"count\": 0\n    },\n    \"name\": \"demo\",\n    \"protocol_roles\": [],\n    \"record_schemas\": {},\n    \"role_conflicts\": [],\n    \"semantics\": \"peerwork.kernel.v1\"\n  },\n  \"semantics\": \"peerwork.kernel.v1\"\n}",
+          "dependency_closure": "[]",
+          "created_by": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "created": 1
+        }
+      }
+    ],
+    "valid": false,
+    "result": "reject"
+  },
+  {
+    "name": "workspace_mismatch",
+    "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+    "objects": [
+      {
+        "kind": "protocols",
+        "id": "5249a063132b95c5587dd1db895a408fefe6a3552222f08301da1588fdab5d6c",
+        "revision": 1,
+        "provenance": "LEGACY_OWNER_ATTESTED",
+        "value": {
+          "digest": "5249a063132b95c5587dd1db895a408fefe6a3552222f08301da1588fdab5d6c",
+          "workspace_id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "source_digest": "5249a063132b95c5587dd1db895a408fefe6a3552222f08301da1588fdab5d6c",
+          "resolved_manifest": "{\"actions\":[],\"capabilities\":[],\"constraints\":{},\"dependencies\":[],\"display_version\":\"1\",\"historical_role_conflicts\":[],\"initial_state\":{\"count\":0},\"name\":\"demo\",\"protocol_roles\":[],\"record_schemas\":{},\"role_conflicts\":[],\"semantics\":\"peerwork.kernel.v1\"}",
+          "manifest": "{\"manifest\":{\"actions\":[],\"capabilities\":[],\"constraints\":{},\"dependencies\":[],\"display_version\":\"1\",\"historical_role_conflicts\":[],\"initial_state\":{\"count\":0},\"name\":\"demo\",\"protocol_roles\":[],\"record_schemas\":{},\"role_conflicts\":[],\"semantics\":\"peerwork.kernel.v1\"},\"semantics\":\"peerwork.kernel.v1\"}",
+          "dependency_closure": "[]",
+          "created_by": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "created": 1
+        }
+      }
+    ],
+    "valid": false,
+    "result": "reject"
+  }
+]
