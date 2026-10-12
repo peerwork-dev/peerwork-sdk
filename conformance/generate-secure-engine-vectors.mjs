@@ -176,6 +176,49 @@ try {
     catch(error){item.error=error.code??error.message;}
     cases.push(item);
   }
+  const selectionManifest=structuredClone(manifest);
+  const selectionRef=path=>({from:'ref',source:'body',path:[path],schema:'entry',scope:'INSTANCE'});
+  selectionManifest.actions[0].variants[0].effects=[{op:'select_head',expected:selectionRef('expected'),target:selectionRef('target')}];
+  const selectionPrior=structuredClone(actionObjects);
+  selectionPrior[0].value.resolved_manifest=selectionManifest;
+  selectionPrior.push(structuredClone(headResult.objects[0]),structuredClone(reviseResult.objects[0]),structuredClone(headResult.objects[1]));
+  const selectionBody={expected:{record_id:allocations[0].record_id,revision:1},
+    target:{record_id:reviseAllocations[0].record_id,revision:2}};
+  const selectionRefs=[selectionBody.expected,selectionBody.target];
+  const selectionResult=await prepareSecureAction({objects:selectionPrior,context:actionContext,
+    policy:actionPolicy,body:selectionBody,exactRefs:selectionRefs,allocations:[]});
+  for(const item of [
+    {name:'action_explicit_head_selection',operation:selectionResult},
+    {name:'action_explicit_head_wrong_entity',operation:structuredClone(selectionResult),wrongEntity:true},
+    {name:'action_explicit_head_stale',operation:structuredClone(selectionResult),stale:true},
+  ]){
+    item.context=actionContext;item.policy=actionPolicy;item.prior=structuredClone(selectionPrior);
+    if(item.wrongEntity)item.prior[3].value.entity_id='F'.repeat(43);
+    if(item.stale)item.prior[4].value.record_id='X'.repeat(43);
+    try{await validateSecureOperation(item.operation,item.context,item.policy,item.prior);item.result='ok';}
+    catch(error){item.error=error.code??error.message;}
+    cases.push(item);
+  }
+  const relationManifest=structuredClone(recordManifest);
+  relationManifest.actions[0].variants[0].effects[0].relations=[{kind:'links',
+    target:{from:'ref',source:'body',path:['target'],schema:'entry',scope:'INSTANCE'}}];
+  const relationPrior=structuredClone(recordPrior);relationPrior[0].value.resolved_manifest=relationManifest;
+  relationPrior.push(object('records','Q'.repeat(43),1,{id:'Q'.repeat(43),workspace_id:workspaceId,
+    instance_id:instanceId,protocol_digest:digest,entity_id:'Y'.repeat(43),schema_ref:'entry',
+    payload:{text:'target'},revision:1}));
+  const relationBody={target:{record_id:'Q'.repeat(43),revision:1}};
+  const relationResult=await prepareSecureAction({objects:relationPrior,context:actionContext,
+    policy:actionPolicy,body:relationBody,exactRefs:[relationBody.target],allocations});
+  for(const item of [
+    {name:'action_existing_record_relation',operation:relationResult},
+    {name:'action_existing_record_relation_tamper',operation:structuredClone(relationResult),mutate:true},
+  ]){
+    item.context=actionContext;item.policy=actionPolicy;item.prior=structuredClone(relationPrior);
+    if(item.mutate)item.operation.objects[1].value.target_record='X'.repeat(43);
+    try{await validateSecureOperation(item.operation,item.context,item.policy,item.prior);item.result='ok';}
+    catch(error){item.error=error.code??error.message;}
+    cases.push(item);
+  }
   const referenceId='Q'.repeat(43);
   const referenceManifest=structuredClone(manifest);
   const selector={from:'ref',source:'body',path:['ref'],schema:'entry',scope:'INSTANCE'};

@@ -562,9 +562,6 @@ fn validate_action_state_slice(
         None,
     )
     .map_err(|_| "INVALID_PAYLOAD")?;
-    if !interpreted.head_selections.is_empty() {
-        return Err("UNSUPPORTED");
-    }
     if allocations.len() != interpreted.records.len() {
         return Err("ALLOCATION_INVALID");
     }
@@ -585,7 +582,6 @@ fn validate_action_state_slice(
             && record
                 .get("selectHead")
                 .is_some_and(|value| matches!(value, WireValue::Bool(true)))
-            || !matches!(record.get("relations"),Some(WireValue::Array(values)) if values.is_empty())
         {
             return Err("UNSUPPORTED");
         }
@@ -784,6 +780,78 @@ fn validate_action_state_slice(
             ("value", value),
             ("provenance", string_value("AUTHOR_SIGNED")),
         ]));
+        let Some(WireValue::Array(relations)) = record.get("relations") else {
+            return Err("UNSUPPORTED");
+        };
+        for relation in relations {
+            let kind = relation
+                .get("kind")
+                .and_then(WireValue::as_utf16)
+                .ok_or("RELATION_TARGET_INVALID")?;
+            let target = relation.get("target").ok_or("RELATION_TARGET_INVALID")?;
+            if target.get("$produced").is_some() {
+                return Err("UNSUPPORTED");
+            }
+            let target_id = target
+                .get("recordId")
+                .and_then(WireValue::as_utf16)
+                .ok_or("RELATION_TARGET_INVALID")?;
+            let target_revision =
+                integer(target, "revision").map_err(|_| "RELATION_TARGET_INVALID")?;
+            let exists = prior.iter().any(|object| {
+                object.get("kind").and_then(WireValue::as_string).as_deref() == Some("records")
+                    && object.get("id").and_then(WireValue::as_utf16) == Some(target_id)
+                    && object
+                        .get("value")
+                        .and_then(|value| integer(value, "revision").ok())
+                        == Some(target_revision)
+            });
+            if !exists {
+                if allocations.iter().any(|allocation| {
+                    allocation.get("record_id").and_then(WireValue::as_utf16) == Some(target_id)
+                }) {
+                    return Err("UNSUPPORTED");
+                }
+                return Err("RELATION_TARGET_INVALID");
+            }
+            let id = canonical_wire_value(
+                &WireValue::Array(vec![
+                    WireValue::String(record_id.to_vec()),
+                    WireValue::String(kind.to_vec()),
+                    WireValue::String(target_id.to_vec()),
+                    WireValue::Number(target_revision as f64),
+                ]),
+                Path::SecureArtifact,
+            )
+            .map_err(|_| "RELATION_TARGET_INVALID")?;
+            let relation_value = fields_object(vec![
+                ("record_id", WireValue::String(record_id.to_vec())),
+                ("kind", WireValue::String(kind.to_vec())),
+                ("target_record", WireValue::String(target_id.to_vec())),
+                ("target_revision", WireValue::Number(target_revision as f64)),
+            ]);
+            let outer_revision = safe_add(
+                prior
+                    .iter()
+                    .filter(|object| {
+                        object.get("kind").and_then(WireValue::as_string).as_deref()
+                            == Some("record_relations")
+                            && object.get("id").and_then(WireValue::as_string).as_deref()
+                                == Some(&id)
+                    })
+                    .filter_map(|object| integer(object, "revision").ok())
+                    .max()
+                    .unwrap_or(0),
+                1,
+            )?;
+            expected_objects.push(fields_object(vec![
+                ("kind", string_value("record_relations")),
+                ("id", string_value(&id)),
+                ("revision", WireValue::Number(outer_revision as f64)),
+                ("value", relation_value),
+                ("provenance", string_value("AUTHOR_SIGNED")),
+            ]));
+        }
         if entity.is_some()
             && record
                 .get("selectHead")
@@ -828,6 +896,89 @@ fn validate_action_state_slice(
                 ("provenance", string_value("AUTHOR_SIGNED")),
             ]));
         }
+    }
+    for selection in &interpreted.head_selections {
+        let expected = selection.get("expected").ok_or("HEAD_SELECTION_INVALID")?;
+        let target = selection.get("target").ok_or("HEAD_SELECTION_INVALID")?;
+        let expected_id = expected
+            .get("recordId")
+            .and_then(WireValue::as_utf16)
+            .ok_or("HEAD_SELECTION_INVALID")?;
+        let target_id = target
+            .get("recordId")
+            .and_then(WireValue::as_utf16)
+            .ok_or("HEAD_SELECTION_INVALID")?;
+        let expected_revision =
+            integer(expected, "revision").map_err(|_| "HEAD_SELECTION_INVALID")?;
+        let target_revision = integer(target, "revision").map_err(|_| "HEAD_SELECTION_INVALID")?;
+        let find_record = |id: &[u16], revision: u64| {
+            prior.iter().find(|object| {
+                object.get("kind").and_then(WireValue::as_string).as_deref() == Some("records")
+                    && object.get("id").and_then(WireValue::as_utf16) == Some(id)
+                    && object
+                        .get("value")
+                        .and_then(|value| integer(value, "revision").ok())
+                        == Some(revision)
+            })
+        };
+        let old = find_record(expected_id, expected_revision).ok_or("HEAD_SELECTION_INVALID")?;
+        let next = find_record(target_id, target_revision).ok_or("HEAD_SELECTION_INVALID")?;
+        let entity = old
+            .get("value")
+            .and_then(|value| value.get("entity_id"))
+            .and_then(WireValue::as_utf16)
+            .ok_or("HEAD_SELECTION_INVALID")?;
+        if next
+            .get("value")
+            .and_then(|value| value.get("entity_id"))
+            .and_then(WireValue::as_utf16)
+            != Some(entity)
+        {
+            return Err("HEAD_SELECTION_INVALID");
+        }
+        let head = prior
+            .iter()
+            .filter(|object| {
+                object.get("kind").and_then(WireValue::as_string).as_deref() == Some("entity_heads")
+                    && object.get("id").and_then(WireValue::as_utf16) == Some(entity)
+            })
+            .max_by_key(|object| integer(object, "revision").unwrap_or(0))
+            .ok_or("STALE_REVISION")?;
+        let head_value = head.get("value").ok_or("STALE_REVISION")?;
+        if head_value.get("record_id").and_then(WireValue::as_utf16) != Some(expected_id)
+            || integer(head_value, "revision").map_err(|_| "STALE_REVISION")? != expected_revision
+            || !head_ids.insert(entity.to_vec())
+        {
+            return Err("STALE_REVISION");
+        }
+        let mut head_value = head_value.clone();
+        replace_field(
+            &mut head_value,
+            "record_id",
+            WireValue::String(target_id.to_vec()),
+        )
+        .map_err(|_| "HEAD_SELECTION_INVALID")?;
+        replace_field(
+            &mut head_value,
+            "revision",
+            WireValue::Number(target_revision as f64),
+        )
+        .map_err(|_| "HEAD_SELECTION_INVALID")?;
+        replace_field(&mut head_value, "updated", WireValue::Number(issued as f64))
+            .map_err(|_| "HEAD_SELECTION_INVALID")?;
+        head_changes.push(fields_object(vec![
+            ("kind", string_value("entity_heads")),
+            ("id", WireValue::String(entity.to_vec())),
+            (
+                "revision",
+                WireValue::Number(safe_add(
+                    integer(head, "revision").map_err(|_| "STALE_REVISION")?,
+                    1,
+                )? as f64),
+            ),
+            ("value", head_value),
+            ("provenance", string_value("AUTHOR_SIGNED")),
+        ]));
     }
     expected_objects.extend(head_changes);
     let mut next = instance_value.clone();
