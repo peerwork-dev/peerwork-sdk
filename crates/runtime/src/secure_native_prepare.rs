@@ -15,6 +15,7 @@ use peerwork_core::{
     },
     canonical::{canonical, Path as CanonicalPath},
     crypto::{sha256_hex, sign_canonical},
+    genesis_structure_policy::derive_genesis_structure_policy,
     prepared_secure_author::{
         author_private_bootstrap, author_private_commit, author_public_bootstrap, SecureAuthorError,
     },
@@ -112,6 +113,30 @@ pub(crate) fn prepare_default_public_owner_workspace(
     created: u64,
     instance_ids: &[String; 6],
 ) -> Result<PendingSecureIntent, NativePrepareError> {
+    prepare_default_public_owner_workspace_with_structure(
+        journal,
+        identity,
+        recipient,
+        workspace_id,
+        intent_id,
+        name,
+        created,
+        instance_ids,
+        false,
+    )
+}
+
+pub(crate) fn prepare_default_public_owner_workspace_with_structure(
+    journal: &mut SecureIntentJournal,
+    identity: &KernelIdentity,
+    recipient: &crate::secure_recipient_state::RecipientState,
+    workspace_id: &str,
+    intent_id: &str,
+    name: &str,
+    created: u64,
+    instance_ids: &[String; 6],
+    structured: bool,
+) -> Result<PendingSecureIntent, NativePrepareError> {
     if journal.contains_id(intent_id) {
         return Err(NativePrepareError::Existing);
     }
@@ -135,11 +160,27 @@ pub(crate) fn prepare_default_public_owner_workspace(
         instance_ids,
         "PUBLIC",
     )?;
-    let payload = json!({"v":3,"protocol_format_ceiling":1,"structure_mode":"NONE",
+    let structure = if structured {
+        let objects = serde_json::to_vec(&built.operation()["objects"])
+            .map_err(|_| NativePrepareError::Context)?;
+        let canonical =
+            derive_genesis_structure_policy(&objects).map_err(|_| NativePrepareError::Context)?;
+        Some(
+            serde_json::from_str::<serde_json::Value>(&canonical)
+                .map_err(|_| NativePrepareError::Context)?,
+        )
+    } else {
+        None
+    };
+    let mut payload = json!({"v":3,"protocol_format_ceiling":1,
+        "structure_mode":if structured {"STRUCTURED"} else {"NONE"},
         "workspace_id":workspace_id,"owner_id":identity.actor_id(),"signing_key":identity.key_id(),
         "version":1,"previous_policy":null,"effective_sequence":1,"visibility":"PUBLIC",
         "epoch":0,"members":[{"actor_id":identity.actor_id(),"certificate":recipient.certificate(),
             "role":"OWNER","scopes":built.scopes()}],"issued_at":created});
+    if let Some(structure) = structure {
+        payload["structure"] = structure;
+    }
     let policy = json!({"signature":sign_canonical("peerwork.secure.policy.v3",&payload,
         identity.signing_key()).map_err(|_| NativePrepareError::Context)?,"payload":payload});
     let policy_hash = sha256_hex(
@@ -147,10 +188,13 @@ pub(crate) fn prepare_default_public_owner_workspace(
             .map_err(|_| NativePrepareError::Context)?
             .as_bytes(),
     );
-    let context = json!({"v":3,"workspace_id":workspace_id,"sequence":1,"previous":null,
+    let mut context = json!({"v":3,"workspace_id":workspace_id,"sequence":1,"previous":null,
         "policy_hash":policy_hash,"epoch":0,"actor_id":identity.actor_id(),
         "signing_key":identity.key_id(),"command_id":intent_id,"action_id":"secure.bootstrap",
         "instance_id":null,"issued_at":created,"delegation":null,"protocol_format_ceiling":1});
+    if structured {
+        context["structure"] = json!({"v":1,"mode":"DELTA","records":[],"heads":[]});
+    }
     let pins = SecureCommitRequestPins {
         actor_id: identity.actor_id(),
         signing_key: identity.key_id(),
@@ -411,6 +455,15 @@ mod tests {
 
     #[tokio::test]
     async fn actual_service_native_public_owner_bootstrap_lost_reply_exact_retry() {
+        actual_service_public_owner_bootstrap(false).await;
+    }
+
+    #[tokio::test]
+    async fn actual_service_native_structured_public_owner_bootstrap_lost_reply_exact_retry() {
+        actual_service_public_owner_bootstrap(true).await;
+    }
+
+    async fn actual_service_public_owner_bootstrap(structured: bool) {
         let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else {
             return;
         };
@@ -486,7 +539,7 @@ mod tests {
         };
         let before = counts().await;
         assert_eq!(before["commits"].as_u64(), Some(0));
-        prepare_default_public_owner_workspace(
+        prepare_default_public_owner_workspace_with_structure(
             &mut journal,
             &identity,
             &recipient,
@@ -495,6 +548,7 @@ mod tests {
             "Native public workspace",
             now,
             &ids,
+            structured,
         )
         .unwrap();
         let exact = journal.exact_request(&command).unwrap();
@@ -506,6 +560,23 @@ mod tests {
         let packet: serde_json::Value = serde_json::from_slice(&exact).unwrap();
         assert_eq!(packet["policy"]["payload"]["epoch"], 0);
         assert_eq!(packet["commit"]["payload"]["mode"], "PUBLIC");
+        assert_eq!(
+            packet["policy"]["payload"]["structure_mode"],
+            if structured { "STRUCTURED" } else { "NONE" }
+        );
+        if structured {
+            assert_eq!(
+                packet["policy"]["payload"]["structure"]["protocols"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                6
+            );
+            assert_eq!(packet["commit"]["payload"]["structure"]["mode"], "DELTA");
+        } else {
+            assert!(packet["policy"]["payload"].get("structure").is_none());
+            assert!(packet["commit"]["payload"].get("structure").is_none());
+        }
         assert_eq!(
             packet["commit"]["payload"]["body"]["objects"]
                 .as_array()

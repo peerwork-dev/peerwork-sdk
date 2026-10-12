@@ -33,5 +33,5 @@ try {
   for(const item of cases){item.objects_wire=JSON.stringify(item.objects);
     item.policy=structurePolicyFromObjects(item.objects);}
   await writeFile(new URL('genesis-structure-vectors.json',import.meta.url),
-    JSON.stringify(cases,null,2)+'\n');
+    JSON.stringify(cases.map(({name,objects_wire,policy})=>({name,objects_wire,policy})),null,2)+'\n');
 } finally {await rm(dir,{recursive:true,force:true});}
