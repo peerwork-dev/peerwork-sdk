@@ -84,23 +84,101 @@ pub(crate) fn prepare_private_owner_workspace_with_options(
     structured: bool,
     keep_encrypted_wire: &[u8],
 ) -> Result<PendingSecureIntent, NativePrepareError> {
+    let workspace = lifecycle.workspace_id().to_owned();
+    let built =
+        owner_bootstrap_objects(name, &workspace, identity.actor_id(), created, instance_ids)?;
+    prepare_private_owner_workspace_from_built(
+        journal,
+        identity,
+        recipient,
+        lifecycle,
+        intent_id,
+        created,
+        built,
+        structured,
+        None,
+        keep_encrypted_wire,
+    )
+}
+
+pub(crate) fn prepare_coordinated_private_owner_workspace(
+    journal: &mut SecureIntentJournal,
+    identity: &KernelIdentity,
+    recipient: &crate::secure_recipient_state::RecipientState,
+    lifecycle: &mut SecureLifecycle,
+    intent_id: &str,
+    name: &str,
+    created: u64,
+    instance_ids: &[String; 7],
+    coordination_version: u8,
+    keep_encrypted_wire: &[u8],
+) -> Result<PendingSecureIntent, NativePrepareError> {
+    let workspace = lifecycle.workspace_id().to_owned();
+    let built = owner_bootstrap_objects_with_coordination(
+        name,
+        &workspace,
+        identity.actor_id(),
+        created,
+        instance_ids,
+        "PRIVATE",
+        coordination_version,
+    )?;
+    let digest = built.operation()["objects"][13]["id"]
+        .as_str()
+        .ok_or(NativePrepareError::Context)?
+        .to_owned();
+    prepare_private_owner_workspace_from_built(
+        journal,
+        identity,
+        recipient,
+        lifecycle,
+        intent_id,
+        created,
+        built,
+        true,
+        Some((&instance_ids[6], &digest, coordination_version)),
+        keep_encrypted_wire,
+    )
+}
+
+fn prepare_private_owner_workspace_from_built(
+    journal: &mut SecureIntentJournal,
+    identity: &KernelIdentity,
+    recipient: &crate::secure_recipient_state::RecipientState,
+    lifecycle: &mut SecureLifecycle,
+    intent_id: &str,
+    created: u64,
+    built: OwnerBootstrapObjects,
+    structured: bool,
+    coordination: Option<(&str, &str, u8)>,
+    keep_encrypted_wire: &[u8],
+) -> Result<PendingSecureIntent, NativePrepareError> {
     if journal.contains_id(intent_id) {
         return Err(NativePrepareError::Existing);
     }
     let workspace = lifecycle.workspace_id().to_owned();
-    let built =
-        owner_bootstrap_objects(name, &workspace, identity.actor_id(), created, instance_ids)?;
     let structure = if structured {
         let objects = serde_json::to_vec(&built.operation()["objects"])
             .map_err(|_| NativePrepareError::Context)?;
-        let canonical =
+        let canonical = if let Some((instance, digest, version)) = coordination {
+            derive_genesis_structure_policy_with_coordination_and_keep_encrypted(
+                &objects,
+                keep_encrypted_wire,
+                instance,
+                digest,
+                identity.actor_id(),
+                version,
+            )
+            .map_err(|_| NativePrepareError::Context)?
+        } else {
             derive_genesis_structure_policy_with_keep_encrypted(&objects, keep_encrypted_wire)
-                .map_err(|_| NativePrepareError::Context)?;
+                .map_err(|_| NativePrepareError::Context)?
+        };
         Some(
             serde_json::from_str::<serde_json::Value>(&canonical)
                 .map_err(|_| NativePrepareError::Context)?,
         )
-    } else if keep_encrypted_wire == b"[]" {
+    } else if coordination.is_none() && keep_encrypted_wire == b"[]" {
         None
     } else {
         return Err(NativePrepareError::Context);
@@ -885,6 +963,16 @@ mod tests {
 
     #[tokio::test]
     async fn actual_service_native_private_structured_bootstrap_exact_retry() {
+        actual_service_private_structured_bootstrap(None).await;
+    }
+
+    #[tokio::test]
+    async fn actual_service_native_private_coordinated_bootstrap_exact_retry() {
+        actual_service_private_structured_bootstrap(Some(1)).await;
+        actual_service_private_structured_bootstrap(Some(2)).await;
+    }
+
+    async fn actual_service_private_structured_bootstrap(coordination: Option<u8>) {
         let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else {
             return;
         };
@@ -938,7 +1026,8 @@ mod tests {
         )
         .unwrap();
         let workspace = base64url(&[142; 32]);
-        let ids: [String; 6] = std::array::from_fn(|i| base64url(&[i as u8 + 143; 32]));
+        let ids: [String; 7] = std::array::from_fn(|i| base64url(&[i as u8 + 143; 32]));
+        let first_six = std::array::from_fn(|i| ids[i].clone());
         let command = base64url(&[151; 32]);
         let lifecycle_path = root.path().join("epochs.state");
         let journal_path = root.path().join("intents.state");
@@ -963,34 +1052,72 @@ mod tests {
         };
         let before = counts().await;
         assert_eq!(before["commits"].as_u64(), Some(0));
-        let built =
-            owner_bootstrap_objects("Native structured private", &workspace, actor, now, &ids)
-                .unwrap();
+        let built = owner_bootstrap_objects(
+            "Native structured private",
+            &workspace,
+            actor,
+            now,
+            &first_six,
+        )
+        .unwrap();
         let digest = built.operation()["objects"][1]["id"].as_str().unwrap();
         let choices = serde_json::to_vec(&json!([{
             "schema":"discussion.message", "fields":["author"],
             "protocol_digest":digest,
         }]))
         .unwrap();
-        prepare_private_owner_workspace_with_options(
-            &mut journal,
-            &identity,
-            &recipient,
-            &mut lifecycle,
-            &command,
-            "Native structured private",
-            now,
-            &ids,
-            true,
-            &choices,
-        )
-        .unwrap();
+        if let Some(version) = coordination {
+            prepare_coordinated_private_owner_workspace(
+                &mut journal,
+                &identity,
+                &recipient,
+                &mut lifecycle,
+                &command,
+                "Native structured private",
+                now,
+                &ids,
+                version,
+                &choices,
+            )
+            .unwrap();
+        } else {
+            prepare_private_owner_workspace_with_options(
+                &mut journal,
+                &identity,
+                &recipient,
+                &mut lifecycle,
+                &command,
+                "Native structured private",
+                now,
+                &first_six,
+                true,
+                &choices,
+            )
+            .unwrap();
+        }
         let exact = journal.exact_request(&command).unwrap();
         let packet: serde_json::Value = serde_json::from_slice(&exact).unwrap();
         assert_eq!(packet["policy"]["payload"]["structure_mode"], "STRUCTURED");
         assert_eq!(packet["policy"]["payload"]["visibility"], "PRIVATE");
         assert_eq!(packet["commit"]["payload"]["mode"], "PRIVATE");
         assert_eq!(packet["commit"]["payload"]["structure"]["mode"], "DELTA");
+        assert_eq!(
+            packet["policy"]["payload"]["structure"]["protocols"]
+                .as_array()
+                .unwrap()
+                .len(),
+            if coordination.is_some() { 7 } else { 6 }
+        );
+        if let Some(version) = coordination {
+            assert_eq!(
+                packet["policy"]["payload"]["structure"]["coordination"]["v"],
+                version
+            );
+            assert_eq!(
+                packet["policy"]["payload"]["structure"]["coordination"]["instance_id"],
+                ids[6]
+            );
+        }
         assert_eq!(
             packet["policy"]["payload"]["structure"]["protocols"][0]["schemas"]
                 ["discussion.message"]["fields"]["author"]["protection"],
