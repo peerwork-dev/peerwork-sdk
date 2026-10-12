@@ -15,6 +15,7 @@ recovery are marked false in the manifest.
 | Python import | venv with PATH containing only its `bin`; `shutil.which` confirmed `gcc`, `rustc`, `cargo`, `node` absent | Exit 0; `version()` and `capabilities()` loaded from wheel |
 | Node package | npm pack facade and Linux x64 GNU addon; `npm install --offline --ignore-scripts` from exact local tarballs | Exit 0; addon package 240 KiB |
 | Node import | Node 24.20 with PATH containing only its `bin`; shell `command -v` confirmed `gcc`, `rustc`, `cargo`, `python3` absent | Exit 0; version and manifest loaded from `.node` |
+| Missing Node platform package | Install facade tarball with `--omit=optional`; import it | Explicit `Missing @peerwork/agent-sdk-linux-x64-gnu native package` error |
 | Binary dependencies | `ldd` on CLI, Python extension, Node addon | libc, libgcc_s and ELF loader; no OpenSSL library |
 
 The first Node smoke used a file dependency that npm symlinked to source. The
@@ -29,8 +30,10 @@ attempt lacked a newly added crate in the local Cargo cache; approved-network
 ## Remaining distribution gates
 
 The GitHub Actions workflow defines representative real Linux, macOS and
-Windows runner builds. No remote run is claimed until the workflow is pushed,
-executed, and logs/artifacts are reviewed. Intended arm64/musl and Python/Node
+Windows runner builds. The first push attempt failed because HTTPS Git found
+no write credential; an SSH read probe returned `Permission denied (publickey)`.
+No remote run is claimed until a write connection is provided, the workflow is
+pushed, executed, and logs/artifacts are reviewed. Intended arm64/musl and Python/Node
 runtime variations need separate execution before support minima are frozen.
 The manylinux_2_34 tag is an observed Linux wheel result, not a declared
 minimum. Signing, reproducibility, SBOM, public registry download tests,
