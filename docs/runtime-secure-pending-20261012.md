@@ -958,3 +958,31 @@ checkpoint. Runtime will persist each exact authored stage packet before
 POST and reverify it on retry; a separate install plan must bind the completed
 staged sequence and resulting protocol/instance/structure state. Neither
 proof exists yet, so custom stage/install and final replay remain open.
+
+The local intake caps above cover tracked source-valid package input: pinned
+`protocol-package-closure.ts` sets `wireBytes=6*1024*1024`, and pinned
+`workspace-protocol-package-source.ts` sets `materialBytes=wireBytes+32*6*8192+64*1024`
+= 7,929,856 bytes, below the store's 8,388,608-byte material cap. The
+source checkpoint has exactly seven bounded fields (three 43-character IDs,
+two 64-character digests, one safe integer and `v`), well below the 8 KiB
+checkpoint cap. These are local resource checks; a complete compiler/source
+proof still has to reject malformed or noncanonical material.
+
+PRIVATE coordination owner-create checkpoint at exact SDK source
+`d2d0a49c97de74e014f61baa2d1606db594d1553` adds the tracked seventh
+coordination preset and v1/v2 policy choice to the private structured
+producer. It stages a protected epoch-1 key and one exact signed encrypted
+BOOTSTRAP before HTTP; no response promotes that key. With the explicit
+reference root/Node24 environment above, clean detached `d2d0a49`
+`cargo test -p peerwork-runtime --offline --locked
+actual_service_native_private_coordinated_bootstrap_exact_retry -- --nocapture`
+passed 1/1 (two fresh service runs, one for each version). For each version,
+service commits/head were 0 before and after prepare, 1 after the first
+applied POST whose reply was lost, and still 1 after protected keyring+journal
+reopen and exact retry. The signed policy contains seven protocols, the
+versioned coordination declaration and the selected encrypted author field;
+the saved intent remains PENDING. This establishes bounded admission/retry,
+not verified action effects, activation, or Agent workflow compliance.
+Source SHA-256: `secure_native_prepare.rs`
+`0e0c10bdaf97bf0b83711369c70c62305a8b0455bd3d9079f90fcc4a8fb562eb`,
+`Cargo.lock` `9dc2d3f2ad77be15366633af890168611e8d62a7f38de646970dfc4cedc8d4d5`.
