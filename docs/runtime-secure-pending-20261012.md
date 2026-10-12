@@ -383,3 +383,41 @@ test preserves a later direct reopen. This local self-grant is not proof
 that the tracked TypeScript owner bootstrap flow is natively reproduced.
 Production policy/grant provenance, complete replay/checkpoint activation,
 owner bootstrap, rotation/recovery and final effect verification remain open.
+
+Owner-bootstrap pre-submit checkpoint: `04798ce` added a signed genesis
+`{policy,commit}` proof for the exact `/api/workspace/v1/secure/workspaces`
+route; `03cbc7a` added native PRIVATE packet authoring with a fresh OS nonce.
+Core registration landed at `17b001b`. Peer review found that the v3
+bootstrap handler rejects the *presence* of `migration`, `recovery`, and
+`conversion_excluded_members` even though generic signed shape permits
+them. `39e39d4` corrected the proof (source SHA-256
+`87f3f4d71fef3838f1484a890fb601ed076afe702bed987f22d6d690d1d9c0eb`):
+a validly signed v3 baseline passes, while newly signed variants with each
+forbidden property set to null refuse. Rust 1.89 locked-offline focused core
+test passed 1/1. This is pre-submit integrity, not decrypted operation or
+service acceptance.
+
+Runtime checkpoint `197f1f9d0083757f468fdb87f913eb62f1eac7aa` (lifecycle,
+author bridge, journal SHA-256 respectively
+`858132af9b7115dc705a48f19647391602ce345d048a92d38cd3b123c9a4b43b`,
+`d2466670f3c99a6a3a9950888a6400c62b7d933e11740e8ddc80dd71965e28ff`,
+`42ea6b057ccc7561fab9f3a2c36cdb2bae302d3f40cb850a94cc382d0218fff8`)
+stages epoch 1 in protected pending state, signs once, then atomically saves
+the exact root-route packet before any HTTP. A repeated intent ID refuses
+before re-encryption; reopen and retry reprove saved signature, origin,
+workspace, local owner/key, pending key presence, action, digest and exact
+request SHA. Every HTTP response remains PENDING. If preparation fails after
+key staging, repeating it reuses the staged key. The detached exact-pin
+`cargo test -p peerwork-runtime --lib
+secure_native_prepare::tests::owner_bootstrap_stages_key_and_exact_packet_across_restart
+--offline --locked -- --exact` passed 1/1 on Rust 1.89 with task-local Cargo
+cache and target. The first check used the default Cargo cache and stopped
+before compilation because `pem-rfc7468` was absent; the documented
+task-local cache command then passed. This regression covers durable local
+preparation and refusal, not actual Peerwork bootstrap admission. It uses
+an empty synthetic BOOTSTRAP object set, whereas tracked owner creation
+installs the collaboration preset objects and scopes. Those native objects,
+actual service lost-reply retry, complete replay/activation, PUBLIC mode,
+structured mode and language surfaces remain required. Agent workflow
+compliance was not exercised by this synthetic Rust test and is unverified
+separately from local business correctness.
