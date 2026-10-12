@@ -38,6 +38,8 @@ pub mod receipt;
 pub mod receipt_wire;
 #[allow(dead_code)]
 mod secure_chain;
+#[allow(dead_code)]
+mod secure_action_delegation;
 pub mod secure_keyring;
 pub mod secure_recipient;
 #[allow(dead_code)]
