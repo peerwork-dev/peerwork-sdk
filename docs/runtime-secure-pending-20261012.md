@@ -56,7 +56,36 @@ authenticate the complete signed policy/commit chain, sealed content and
 recovery/migration restoration, protocol source/structure, ACTION evaluator,
 and exact response/head/effect binding. Runtime then compares that proof to
 the unchanged row and persists the terminal state atomically. These proofs,
-real Peerwork secure HTTP acceptance and cross-platform execution remain open.
+complete Peerwork secure outcome acceptance and cross-platform execution
+remain open.
+
+An opt-in actual service check now covers this narrow append route at SDK
+source `c49d95df345d685c62a3d761509374cc1e59ae3e` against pinned
+Peerwork TypeScript service checkout
+`f828b6c50a0a58d1e718af90f653b214adcc3328`. The existing reference
+bridge verifies that checkout's tracked build-input closure and compiled
+artifacts before starting a fresh `WorkspaceKernel` and actual HTTP app.
+`SecureAgentClient` generated a synthetic Ed25519 PKCS#8 identity, registered
+it and created a PRIVATE v3 unstructured workspace through the real service.
+Tracked TS writer helpers prepared one signed encrypted `discussion.post`
+request without sending it. Native Rust imported the synthetic protected
+PEM, persisted exact request bytes, verified its saved row, and submitted it
+through a proxy that waited for the real app to apply the first POST before
+dropping the reply. The test then closed/reopened the native journal and
+retried the exact packet. Service `secure_commits`/head counts were 1/1 after
+TS setup, unchanged 1/1 after native prepare, 2/2 after the applied lost
+reply, and unchanged 2/2 after exact retry. The native row stayed PENDING
+with one opaque response observation. The exact Rust 1.89 locked-offline
+focused command `cargo test -p peerwork-runtime
+actual_service_secure_append_retry_stays_pending --offline --locked` passed
+1/1 in 1.33 seconds at the detached SDK source pin. The previous fixture
+pin `a96c08416d3ba8875e54d6cd8098a193d0834b7c` also passed 1/1 but
+did not assert the pre-submit 1/1 baseline; the correction adds that evidence.
+This is scripted synthetic business-path evidence of actual server same-ID
+dedup, not a native secure outcome proof or Agent workflow-compliance test.
+Native production callers still need authenticated persisted policy context
+and native signed request authoring; this fixture used tracked TS writer
+helpers only to establish the signed-input interoperability boundary.
 
 The first combined runtime test attempt stopped before compiling this source:
 concurrent package compiler WIP changed `namespace_manifest` to three
