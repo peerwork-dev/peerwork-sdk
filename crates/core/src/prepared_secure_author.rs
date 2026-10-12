@@ -6,6 +6,9 @@
 use crate::{
     canonical::Path,
     crypto::{actor_id, base64url},
+    prepared_secure_bootstrap::{
+        verify_prepared_owner_bootstrap, BootstrapPins, VerifiedPreparedBootstrap,
+    },
     prepared_secure_request::{
         verify_prepared_secure_commit_request, SecureCommitRequestPins,
         VerifiedPreparedSecureRequest,
@@ -40,6 +43,18 @@ pub struct AuthoredSecureCommit {
     request_wire: Vec<u8>,
     proof: VerifiedPreparedSecureRequest,
 }
+pub struct AuthoredSecureBootstrap {
+    request_wire: Vec<u8>,
+    proof: VerifiedPreparedBootstrap,
+}
+impl AuthoredSecureBootstrap {
+    pub fn request_wire(&self) -> &[u8] {
+        &self.request_wire
+    }
+    pub fn proof(&self) -> &VerifiedPreparedBootstrap {
+        &self.proof
+    }
+}
 
 impl AuthoredSecureCommit {
     pub fn request_wire(&self) -> &[u8] {
@@ -73,19 +88,91 @@ pub fn author_private_commit(
         return Err(invalid());
     }
     let mut context = parse_wire_json_bounded(context_wire, 64, 196_608).map_err(|_| invalid())?;
-    let result = author_with_context(&context, operation_wire, epoch_key, signing_key, path, pins);
+    let result = sign_private_commit(&context, operation_wire, epoch_key, signing_key, pins)
+        .and_then(|commit| {
+            let request_wire = format!("{{\"commit\":{commit}}}").into_bytes();
+            let proof = verify_prepared_secure_commit_request(&request_wire, path, pins)
+                .map_err(|_| invalid())?;
+            Ok(AuthoredSecureCommit {
+                request_wire,
+                proof,
+            })
+        });
     wipe_wire(&mut context);
     result
 }
 
-fn author_with_context(
+/// Owner bootstrap uses the staged initial epoch key and the separate
+/// `{policy,commit}` route. The caller must save these exact bytes before
+/// transport and cannot activate the key from this pre-submit proof.
+pub fn author_private_bootstrap(
+    policy_wire: &[u8],
+    context_wire: &[u8],
+    operation_wire: &[u8],
+    epoch_key: &[u8; 32],
+    signing_key: &SigningKey,
+    pins: &SecureCommitRequestPins<'_>,
+) -> Result<AuthoredSecureBootstrap, SecureAuthorError> {
+    let invalid = || SecureAuthorError::Invalid;
+    if pins.mode != "PRIVATE"
+        || !matches!(pins.version, 1 | 3)
+        || pins.sequence != 1
+        || pins.previous.is_some()
+        || pins.epoch != 1
+        || pins.actor_id != actor_id(&signing_key.verifying_key().to_bytes())
+        || pins.signing_key != base64url(&signing_key.verifying_key().to_bytes())
+        || operation_wire.is_empty()
+        || operation_wire.len() > MAX_PLAINTEXT
+    {
+        return Err(invalid());
+    }
+    let mut operation =
+        parse_wire_json_bounded(operation_wire, 64, MAX_PLAINTEXT).map_err(|_| invalid())?;
+    let bootstrap_kind = operation.object_len() == Some(4)
+        && operation.get("v").and_then(WireValue::as_number) == Some(1.0)
+        && operation
+            .get("kind")
+            .and_then(WireValue::as_string)
+            .as_deref()
+            == Some("BOOTSTRAP")
+        && matches!(operation.get("input"), Some(WireValue::Object(_)))
+        && matches!(operation.get("objects"), Some(WireValue::Array(_)));
+    wipe_wire(&mut operation);
+    if !bootstrap_kind {
+        return Err(invalid());
+    }
+    let mut context = parse_wire_json_bounded(context_wire, 64, 196_608).map_err(|_| invalid())?;
+    let commit_result = sign_private_commit(&context, operation_wire, epoch_key, signing_key, pins);
+    wipe_wire(&mut context);
+    let commit = commit_result?;
+    let mut policy = parse_wire_json_bounded(policy_wire, 64, 196_608).map_err(|_| invalid())?;
+    let policy_result = canonical_wire_value(&policy, Path::SecureArtifact).map_err(|_| invalid());
+    wipe_wire(&mut policy);
+    let policy = policy_result?;
+    let request_wire = format!("{{\"commit\":{commit},\"policy\":{policy}}}").into_bytes();
+    let proof = verify_prepared_owner_bootstrap(
+        &request_wire,
+        "/api/workspace/v1/secure/workspaces",
+        &BootstrapPins {
+            workspace_id: pins.workspace_id,
+            owner_actor: pins.actor_id,
+            owner_key: pins.signing_key,
+        },
+    )
+    .map_err(|_| invalid())?;
+    Ok(AuthoredSecureBootstrap {
+        request_wire,
+        proof,
+    })
+}
+
+fn sign_private_commit(
     context: &WireValue,
     operation_wire: &[u8],
     epoch_key: &[u8; 32],
     signing_key: &SigningKey,
-    path: &str,
     pins: &SecureCommitRequestPins<'_>,
-) -> Result<AuthoredSecureCommit, SecureAuthorError> {
+) -> Result<String, SecureAuthorError> {
     let invalid = || SecureAuthorError::Invalid;
     let WireValue::Object(context_fields) = context else {
         return Err(invalid());
@@ -162,13 +249,7 @@ fn author_with_context(
     ]);
     let canonical_commit =
         canonical_wire_value(&commit, Path::SecureArtifact).map_err(|_| invalid())?;
-    let request_wire = format!("{{\"commit\":{canonical_commit}}}").into_bytes();
-    let proof =
-        verify_prepared_secure_commit_request(&request_wire, path, pins).map_err(|_| invalid())?;
-    Ok(AuthoredSecureCommit {
-        request_wire,
-        proof,
-    })
+    Ok(canonical_commit)
 }
 
 fn units(value: &str) -> Vec<u16> {
@@ -196,10 +277,69 @@ fn wipe_wire(value: &mut WireValue) {
 mod tests {
     use super::*;
     use crate::{
-        crypto::decode_base64url,
+        canonical::canonical,
+        crypto::{decode_base64url, sha256_hex, sign_canonical},
         e2ee::{open_content_wire, SealedContent},
+        secure_recipient::SecretRecipient,
     };
     use serde_json::{json, Value};
+
+    #[test]
+    fn native_owner_bootstrap_authors_policy_and_commit_once() {
+        let signing = SigningKey::from_bytes(&[7; 32]);
+        let actor = actor_id(&signing.verifying_key().to_bytes());
+        let key = base64url(&signing.verifying_key().to_bytes());
+        let workspace = base64url(&[8; 32]);
+        let certificate = SecretRecipient::generate()
+            .unwrap()
+            .certify(&signing, 100)
+            .unwrap();
+        let policy_payload = json!({"v":1,"workspace_id":workspace,"owner_id":actor,
+            "signing_key":key,"version":1,"previous_policy":null,"effective_sequence":1,
+            "visibility":"PRIVATE","epoch":1,"members":[{"actor_id":actor,
+                "certificate":certificate,"role":"OWNER","scopes":[]}],"issued_at":100});
+        let policy = json!({"payload":policy_payload,"signature":sign_canonical(
+            "peerwork.secure.policy.v1",&policy_payload,&signing).unwrap()});
+        let policy_hash = sha256_hex(canonical(&policy, Path::SecureArtifact).unwrap().as_bytes());
+        let context = json!({"v":1,"workspace_id":workspace,"sequence":1,"previous":null,
+            "policy_hash":policy_hash,"epoch":1,"actor_id":actor,"signing_key":key,
+            "command_id":base64url(&[9;32]),"action_id":"secure.bootstrap",
+            "instance_id":null,"issued_at":100,"delegation":null});
+        let operation = json!({"v":1,"kind":"BOOTSTRAP","input":{},"objects":[]});
+        let pins = SecureCommitRequestPins {
+            actor_id: &actor,
+            signing_key: &key,
+            workspace_id: &workspace,
+            policy_hash: &policy_hash,
+            sequence: 1,
+            previous: None,
+            epoch: 1,
+            mode: "PRIVATE",
+            version: 1,
+            protocol_format_ceiling: None,
+        };
+        let authored = author_private_bootstrap(
+            &serde_json::to_vec(&policy).unwrap(),
+            &serde_json::to_vec(&context).unwrap(),
+            &serde_json::to_vec(&operation).unwrap(),
+            &[23; 32],
+            &signing,
+            &pins,
+        )
+        .unwrap();
+        assert_eq!(authored.proof().command_id(), base64url(&[9; 32]));
+        assert_eq!(authored.proof().workspace_id(), workspace);
+        let saved: Value = serde_json::from_slice(authored.request_wire()).unwrap();
+        assert_eq!(saved["policy"], policy);
+        let sealed: SealedContent =
+            serde_json::from_value(saved["commit"]["payload"]["body"].clone()).unwrap();
+        let plaintext =
+            open_content_wire(&[23; 32], &sealed, &serde_json::to_vec(&context).unwrap()).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&plaintext).unwrap(),
+            operation
+        );
+    }
 
     #[test]
     fn native_private_author_signs_and_seals_exact_saved_request() {
