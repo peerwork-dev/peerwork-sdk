@@ -593,6 +593,8 @@ fn validate_signed_structure_slice(
     if integer(envelope, "v")? != 1 || records.len() > 128 || heads.len() > 128 {
         return Err(ReplayError::Invalid);
     }
+    crate::structure_delta::validate_projection_page(records, heads, contract)
+        .map_err(|_| ReplayError::Invalid)?;
     if mode == "DELTA" {
         if !exact_fields(envelope, &["v", "mode", "records", "heads"]) {
             return Err(ReplayError::Invalid);
@@ -621,6 +623,19 @@ fn validate_signed_structure_slice(
             &WireValue::Array(heads.clone()),
             &WireValue::Array(expected_heads),
         )? {
+            if progress.is_none() {
+                let (prior_records, prior_heads) = project_structure_data(prior_objects, contract)?;
+                crate::structure_delta::apply_delta(
+                    records,
+                    heads,
+                    contract,
+                    &prior_records,
+                    &prior_heads,
+                    context,
+                    policy,
+                )
+                .map_err(|_| ReplayError::Invalid)?;
+            }
             Ok(())
         } else {
             Err(ReplayError::Invalid)
@@ -686,6 +701,12 @@ fn validate_signed_structure_slice(
             if !records.is_empty() || !heads.is_empty() || offset != total {
                 return Err(ReplayError::Invalid);
             }
+            crate::structure_delta::validate_snapshot_graph(
+                contract,
+                &state.expected_records,
+                &state.expected_heads,
+            )
+            .map_err(|_| ReplayError::Invalid)?;
             *progress = None;
             return Ok(());
         }
@@ -1173,6 +1194,7 @@ pub(crate) fn replay_basic_content(
     let mut prior_objects = Vec::new();
     let mut role_history = RoleHistory::new();
     let mut structure_progress = None;
+    let mut previous_policy_hash: Option<String> = None;
     let mut operations = Vec::with_capacity(commit_wires.len());
     let mut legacy = false;
     let mut migration_pending = false;
@@ -1231,6 +1253,30 @@ pub(crate) fn replay_basic_content(
         let policy = policies
             .get(policy_hash.as_str())
             .ok_or(ReplayError::Invalid)?;
+        if let Some(old_hash) = previous_policy_hash.as_deref() {
+            let old_policy = policies.get(old_hash).ok_or(ReplayError::Invalid)?;
+            let old_structure = old_policy.get("payload").and_then(|p| p.get("structure"));
+            let new_structure = policy.get("payload").and_then(|p| p.get("structure"));
+            if old_structure.is_some() && new_structure.is_none() {
+                return Err(ReplayError::Invalid);
+            }
+            let changed = match (old_structure, new_structure) {
+                (Some(old), Some(new)) => !same_wire(old, new)?,
+                (None, Some(_)) | (Some(_), None) => true,
+                (None, None) => false,
+            };
+            if changed {
+                let envelope = payload.get("structure").ok_or(ReplayError::Invalid)?;
+                if string(envelope, "mode")? != "SNAPSHOT_BEGIN"
+                    || !matches!(
+                        string(payload, "action_id")?.as_str(),
+                        "secure.structure.begin" | "secure.fields.begin"
+                    )
+                {
+                    return Err(ReplayError::Invalid);
+                }
+            }
+        }
         validate_signed_structure_slice(
             &operation,
             payload,
@@ -1478,6 +1524,7 @@ pub(crate) fn replay_basic_content(
             .map_err(|_| ReplayError::Invalid)?;
         }
         operations.push(signed_operation);
+        previous_policy_hash = Some(policy_hash);
     }
     if migration_pending {
         // This private helper has no fragment inflation/root/finalization yet.
@@ -3270,7 +3317,10 @@ fn validate_readable_reference(value: &WireValue, optional: bool) -> Result<(), 
     Ok(())
 }
 
-fn validate_readable_field(rule: &WireValue, value: &WireValue) -> Result<(), &'static str> {
+pub(crate) fn validate_readable_field(
+    rule: &WireValue,
+    value: &WireValue,
+) -> Result<(), &'static str> {
     let kind = rule
         .get("type")
         .and_then(WireValue::as_string)
@@ -3653,7 +3703,10 @@ mod tests {
             .unwrap();
         }
         let end = make_context(4, "secure.structure.end", "SNAPSHOT_END", 2, json!([]));
-        validate_signed_structure_slice(
+        // The ordering oracle deliberately has synthetic heads with no
+        // corresponding records. PAGE matching succeeds, but a completed
+        // structure snapshot must reject those dangling targets.
+        assert!(validate_signed_structure_slice(
             &operation,
             &end,
             &policy,
@@ -3662,8 +3715,8 @@ mod tests {
             &[],
             &mut progress,
         )
-        .unwrap();
-        assert!(progress.is_none());
+        .is_err());
+        assert!(progress.is_some());
     }
 
     #[test]
@@ -3924,6 +3977,15 @@ mod tests {
             check_with_policy(&policy2, bootstrap, stage, install)
         };
         assert_eq!(check(&bootstrap, &stage, &install).unwrap().object_count, 3);
+        let missing_upgrade_snapshot = make_commit(
+            3,
+            Some(&hash(&stage)),
+            "secure.structure.begin",
+            json!({"v":1,"mode":"DELTA","records":[],"heads":[]}),
+            install_operation.clone(),
+            &policy2_hash,
+        );
+        assert!(check(&bootstrap, &stage, &missing_upgrade_snapshot).is_err());
         let mut wrong_policy_payload: Value =
             serde_json::from_slice::<Value>(&policy2).unwrap()["payload"].clone();
         wrong_policy_payload["structure"]["instances"] = json!([]);

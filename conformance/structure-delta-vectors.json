@@ -1,0 +1,2394 @@
+[
+  {
+    "name": "append_head",
+    "contract": {
+      "v": 1,
+      "protocols": [
+        {
+          "v": 1,
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "schemas": {
+            "discussion.message": {
+              "fields": {
+                "author": {
+                  "protection": "server_readable",
+                  "type": "actor"
+                },
+                "parent": {
+                  "protection": "server_readable",
+                  "type": "optional_reference"
+                }
+              },
+              "required": [
+                "author"
+              ]
+            }
+          },
+          "actions": {
+            "discussion.post": {
+              "schemas": [
+                "discussion.message"
+              ],
+              "roles": [
+                "AUTHOR"
+              ],
+              "capabilities": [],
+              "heads": "APPEND"
+            }
+          }
+        }
+      ],
+      "disclosure": [
+        {
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "schema": "discussion.message",
+          "fields": [
+            "author",
+            "parent"
+          ]
+        }
+      ],
+      "instances": [
+        {
+          "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        }
+      ]
+    },
+    "policy": {
+      "payload": {
+        "members": [
+          {
+            "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "scopes": [
+              {
+                "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+                "actions": [
+                  "discussion.post"
+                ],
+                "protocol_roles": [
+                  "AUTHOR"
+                ],
+                "capabilities": [],
+                "expires_at": 10
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "context": {
+      "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "action_id": "discussion.post",
+      "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+      "issued_at": 5,
+      "delegation": null
+    },
+    "records": [
+      {
+        "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "revision": 1,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+        "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema_ref": "discussion.message",
+        "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "created": 5,
+        "fields": {
+          "author": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "parent": null
+        }
+      }
+    ],
+    "heads": [
+      {
+        "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "revision": 1,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii"
+      }
+    ],
+    "priorRecords": [],
+    "priorHeads": [],
+    "ok": true
+  },
+  {
+    "name": "missing_role",
+    "contract": {
+      "v": 1,
+      "protocols": [
+        {
+          "v": 1,
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "schemas": {
+            "discussion.message": {
+              "fields": {
+                "author": {
+                  "protection": "server_readable",
+                  "type": "actor"
+                },
+                "parent": {
+                  "protection": "server_readable",
+                  "type": "optional_reference"
+                }
+              },
+              "required": [
+                "author"
+              ]
+            }
+          },
+          "actions": {
+            "discussion.post": {
+              "schemas": [
+                "discussion.message"
+              ],
+              "roles": [
+                "AUTHOR"
+              ],
+              "capabilities": [],
+              "heads": "APPEND"
+            }
+          }
+        }
+      ],
+      "disclosure": [
+        {
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "schema": "discussion.message",
+          "fields": [
+            "author",
+            "parent"
+          ]
+        }
+      ],
+      "instances": [
+        {
+          "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        }
+      ]
+    },
+    "policy": {
+      "payload": {
+        "members": [
+          {
+            "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "scopes": [
+              {
+                "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+                "actions": [
+                  "discussion.post"
+                ],
+                "protocol_roles": [],
+                "capabilities": [],
+                "expires_at": 10
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "context": {
+      "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "action_id": "discussion.post",
+      "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+      "issued_at": 5,
+      "delegation": null
+    },
+    "records": [
+      {
+        "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "revision": 1,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+        "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema_ref": "discussion.message",
+        "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "created": 5,
+        "fields": {
+          "author": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "parent": null
+        }
+      }
+    ],
+    "heads": [
+      {
+        "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "revision": 1,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii"
+      }
+    ],
+    "priorRecords": [],
+    "priorHeads": [],
+    "ok": false,
+    "error": "STRUCTURE_ACTION_DENIED"
+  },
+  {
+    "name": "expired_role",
+    "contract": {
+      "v": 1,
+      "protocols": [
+        {
+          "v": 1,
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "schemas": {
+            "discussion.message": {
+              "fields": {
+                "author": {
+                  "protection": "server_readable",
+                  "type": "actor"
+                },
+                "parent": {
+                  "protection": "server_readable",
+                  "type": "optional_reference"
+                }
+              },
+              "required": [
+                "author"
+              ]
+            }
+          },
+          "actions": {
+            "discussion.post": {
+              "schemas": [
+                "discussion.message"
+              ],
+              "roles": [
+                "AUTHOR"
+              ],
+              "capabilities": [],
+              "heads": "APPEND"
+            }
+          }
+        }
+      ],
+      "disclosure": [
+        {
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "schema": "discussion.message",
+          "fields": [
+            "author",
+            "parent"
+          ]
+        }
+      ],
+      "instances": [
+        {
+          "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        }
+      ]
+    },
+    "policy": {
+      "payload": {
+        "members": [
+          {
+            "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "scopes": [
+              {
+                "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+                "actions": [
+                  "discussion.post"
+                ],
+                "protocol_roles": [
+                  "AUTHOR"
+                ],
+                "capabilities": [],
+                "expires_at": 5
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "context": {
+      "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "action_id": "discussion.post",
+      "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+      "issued_at": 5,
+      "delegation": null
+    },
+    "records": [
+      {
+        "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "revision": 1,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+        "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema_ref": "discussion.message",
+        "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "created": 5,
+        "fields": {
+          "author": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "parent": null
+        }
+      }
+    ],
+    "heads": [
+      {
+        "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "revision": 1,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii"
+      }
+    ],
+    "priorRecords": [],
+    "priorHeads": [],
+    "ok": false,
+    "error": "STRUCTURE_ACTION_DENIED"
+  },
+  {
+    "name": "forward_reference",
+    "contract": {
+      "v": 1,
+      "protocols": [
+        {
+          "v": 1,
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "schemas": {
+            "discussion.message": {
+              "fields": {
+                "author": {
+                  "protection": "server_readable",
+                  "type": "actor"
+                },
+                "parent": {
+                  "protection": "server_readable",
+                  "type": "optional_reference"
+                }
+              },
+              "required": [
+                "author"
+              ]
+            }
+          },
+          "actions": {
+            "discussion.post": {
+              "schemas": [
+                "discussion.message"
+              ],
+              "roles": [
+                "AUTHOR"
+              ],
+              "capabilities": [],
+              "heads": "APPEND"
+            }
+          }
+        }
+      ],
+      "disclosure": [
+        {
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "schema": "discussion.message",
+          "fields": [
+            "author",
+            "parent"
+          ]
+        }
+      ],
+      "instances": [
+        {
+          "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        }
+      ]
+    },
+    "policy": {
+      "payload": {
+        "members": [
+          {
+            "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "scopes": [
+              {
+                "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+                "actions": [
+                  "discussion.post"
+                ],
+                "protocol_roles": [
+                  "AUTHOR"
+                ],
+                "capabilities": [],
+                "expires_at": 10
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "context": {
+      "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "action_id": "discussion.post",
+      "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+      "issued_at": 5,
+      "delegation": null
+    },
+    "records": [
+      {
+        "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "revision": 1,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+        "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema_ref": "discussion.message",
+        "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "created": 5,
+        "fields": {
+          "author": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "parent": {
+            "record_id": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+            "revision": 1
+          }
+        }
+      }
+    ],
+    "heads": [
+      {
+        "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "revision": 1,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii"
+      }
+    ],
+    "priorRecords": [],
+    "priorHeads": [],
+    "ok": false,
+    "error": "STRUCTURE_REFERENCE_NOT_FOUND"
+  },
+  {
+    "name": "wrong_actor",
+    "contract": {
+      "v": 1,
+      "protocols": [
+        {
+          "v": 1,
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "schemas": {
+            "discussion.message": {
+              "fields": {
+                "author": {
+                  "protection": "server_readable",
+                  "type": "actor"
+                },
+                "parent": {
+                  "protection": "server_readable",
+                  "type": "optional_reference"
+                }
+              },
+              "required": [
+                "author"
+              ]
+            }
+          },
+          "actions": {
+            "discussion.post": {
+              "schemas": [
+                "discussion.message"
+              ],
+              "roles": [
+                "AUTHOR"
+              ],
+              "capabilities": [],
+              "heads": "APPEND"
+            }
+          }
+        }
+      ],
+      "disclosure": [
+        {
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "schema": "discussion.message",
+          "fields": [
+            "author",
+            "parent"
+          ]
+        }
+      ],
+      "instances": [
+        {
+          "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        }
+      ]
+    },
+    "policy": {
+      "payload": {
+        "members": [
+          {
+            "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "scopes": [
+              {
+                "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+                "actions": [
+                  "discussion.post"
+                ],
+                "protocol_roles": [
+                  "AUTHOR"
+                ],
+                "capabilities": [],
+                "expires_at": 10
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "context": {
+      "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "action_id": "discussion.post",
+      "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+      "issued_at": 5,
+      "delegation": null
+    },
+    "records": [
+      {
+        "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "revision": 1,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+        "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema_ref": "discussion.message",
+        "actor_id": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+        "created": 5,
+        "fields": {
+          "author": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "parent": null
+        }
+      }
+    ],
+    "heads": [
+      {
+        "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "revision": 1,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii"
+      }
+    ],
+    "priorRecords": [],
+    "priorHeads": [],
+    "ok": false,
+    "error": "STRUCTURE_RECORD_CONTEXT_INVALID"
+  },
+  {
+    "name": "head_without_append",
+    "contract": {
+      "v": 1,
+      "protocols": [
+        {
+          "v": 1,
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "schemas": {
+            "discussion.message": {
+              "fields": {
+                "author": {
+                  "protection": "server_readable",
+                  "type": "actor"
+                },
+                "parent": {
+                  "protection": "server_readable",
+                  "type": "optional_reference"
+                }
+              },
+              "required": [
+                "author"
+              ]
+            }
+          },
+          "actions": {
+            "discussion.post": {
+              "schemas": [
+                "discussion.message"
+              ],
+              "roles": [
+                "AUTHOR"
+              ],
+              "capabilities": [],
+              "heads": "APPEND"
+            }
+          }
+        }
+      ],
+      "disclosure": [
+        {
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "schema": "discussion.message",
+          "fields": [
+            "author",
+            "parent"
+          ]
+        }
+      ],
+      "instances": [
+        {
+          "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        }
+      ]
+    },
+    "policy": {
+      "payload": {
+        "members": [
+          {
+            "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "scopes": [
+              {
+                "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+                "actions": [
+                  "discussion.post"
+                ],
+                "protocol_roles": [
+                  "AUTHOR"
+                ],
+                "capabilities": [],
+                "expires_at": 10
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "context": {
+      "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "action_id": "discussion.post",
+      "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+      "issued_at": 5,
+      "delegation": null
+    },
+    "records": [],
+    "heads": [
+      {
+        "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "revision": 1,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii"
+      }
+    ],
+    "priorRecords": [],
+    "priorHeads": [],
+    "ok": false,
+    "error": "STRUCTURE_HEAD_TARGET_INVALID"
+  },
+  {
+    "name": "delegated_scope_missing",
+    "contract": {
+      "v": 1,
+      "protocols": [
+        {
+          "v": 1,
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "schemas": {
+            "discussion.message": {
+              "fields": {
+                "author": {
+                  "protection": "server_readable",
+                  "type": "actor"
+                },
+                "parent": {
+                  "protection": "server_readable",
+                  "type": "optional_reference"
+                }
+              },
+              "required": [
+                "author"
+              ]
+            }
+          },
+          "actions": {
+            "discussion.post": {
+              "schemas": [
+                "discussion.message"
+              ],
+              "roles": [
+                "AUTHOR"
+              ],
+              "capabilities": [],
+              "heads": "APPEND"
+            }
+          }
+        }
+      ],
+      "disclosure": [
+        {
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "schema": "discussion.message",
+          "fields": [
+            "author",
+            "parent"
+          ]
+        }
+      ],
+      "instances": [
+        {
+          "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        }
+      ]
+    },
+    "policy": {
+      "payload": {
+        "members": [
+          {
+            "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "scopes": [
+              {
+                "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+                "actions": [
+                  "discussion.post"
+                ],
+                "protocol_roles": [
+                  "AUTHOR"
+                ],
+                "capabilities": [],
+                "expires_at": 10
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "context": {
+      "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "action_id": "discussion.post",
+      "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+      "issued_at": 5,
+      "delegation": {
+        "payload": {
+          "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "scope": [
+            {
+              "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+              "actions": [
+                "discussion.post"
+              ],
+              "protocol_roles": [],
+              "capabilities": [],
+              "expires_at": 10
+            }
+          ]
+        }
+      }
+    },
+    "records": [
+      {
+        "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "revision": 1,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+        "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema_ref": "discussion.message",
+        "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "created": 5,
+        "fields": {
+          "author": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "parent": null
+        }
+      }
+    ],
+    "heads": [
+      {
+        "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "revision": 1,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii"
+      }
+    ],
+    "priorRecords": [],
+    "priorHeads": [],
+    "ok": false,
+    "error": "STRUCTURE_ACTION_DENIED"
+  },
+  {
+    "name": "delegated_scope_matching",
+    "contract": {
+      "v": 1,
+      "protocols": [
+        {
+          "v": 1,
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "schemas": {
+            "discussion.message": {
+              "fields": {
+                "author": {
+                  "protection": "server_readable",
+                  "type": "actor"
+                },
+                "parent": {
+                  "protection": "server_readable",
+                  "type": "optional_reference"
+                }
+              },
+              "required": [
+                "author"
+              ]
+            }
+          },
+          "actions": {
+            "discussion.post": {
+              "schemas": [
+                "discussion.message"
+              ],
+              "roles": [
+                "AUTHOR"
+              ],
+              "capabilities": [],
+              "heads": "APPEND"
+            }
+          }
+        }
+      ],
+      "disclosure": [
+        {
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "schema": "discussion.message",
+          "fields": [
+            "author",
+            "parent"
+          ]
+        }
+      ],
+      "instances": [
+        {
+          "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        }
+      ]
+    },
+    "policy": {
+      "payload": {
+        "members": [
+          {
+            "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "scopes": [
+              {
+                "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+                "actions": [
+                  "discussion.post"
+                ],
+                "protocol_roles": [
+                  "AUTHOR"
+                ],
+                "capabilities": [],
+                "expires_at": 10
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "context": {
+      "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "action_id": "discussion.post",
+      "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+      "issued_at": 5,
+      "delegation": {
+        "payload": {
+          "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "scope": [
+            {
+              "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+              "actions": [
+                "discussion.post"
+              ],
+              "protocol_roles": [
+                "AUTHOR"
+              ],
+              "capabilities": [],
+              "expires_at": 10
+            }
+          ]
+        }
+      }
+    },
+    "records": [
+      {
+        "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "revision": 1,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+        "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema_ref": "discussion.message",
+        "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "created": 5,
+        "fields": {
+          "author": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "parent": null
+        }
+      }
+    ],
+    "heads": [
+      {
+        "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "revision": 1,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii"
+      }
+    ],
+    "priorRecords": [],
+    "priorHeads": [],
+    "ok": true
+  },
+  {
+    "name": "workflow_create",
+    "contract": {
+      "v": 1,
+      "protocols": [
+        {
+          "v": 1,
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "schemas": {
+            "task.item": {
+              "fields": {
+                "status": {
+                  "protection": "server_readable",
+                  "type": "enum",
+                  "values": [
+                    "OPEN",
+                    "DONE"
+                  ]
+                },
+                "parent": {
+                  "protection": "server_readable",
+                  "type": "optional_reference"
+                },
+                "author": {
+                  "protection": "server_readable",
+                  "type": "actor"
+                }
+              },
+              "required": [
+                "status",
+                "parent",
+                "author"
+              ],
+              "workflow": {
+                "v": 1,
+                "status_field": "status",
+                "parent_field": "parent",
+                "states": [
+                  "OPEN",
+                  "DONE"
+                ],
+                "transitions": [
+                  {
+                    "action": "task.create",
+                    "from": null,
+                    "to": "OPEN"
+                  },
+                  {
+                    "action": "task.finish",
+                    "from": "OPEN",
+                    "to": "DONE"
+                  }
+                ]
+              }
+            }
+          },
+          "actions": {
+            "task.create": {
+              "schemas": [
+                "task.item"
+              ],
+              "roles": [],
+              "capabilities": [],
+              "heads": "APPEND"
+            },
+            "task.finish": {
+              "schemas": [
+                "task.item"
+              ],
+              "roles": [],
+              "capabilities": [],
+              "heads": "APPEND"
+            }
+          }
+        }
+      ],
+      "disclosure": [
+        {
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "schema": "task.item",
+          "fields": [
+            "status",
+            "parent",
+            "author"
+          ]
+        }
+      ],
+      "instances": [
+        {
+          "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        }
+      ]
+    },
+    "policy": {
+      "payload": {
+        "members": [
+          {
+            "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "scopes": [
+              {
+                "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+                "actions": [
+                  "discussion.post"
+                ],
+                "protocol_roles": [
+                  "AUTHOR"
+                ],
+                "capabilities": [],
+                "expires_at": 10
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "context": {
+      "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "action_id": "task.create",
+      "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+      "issued_at": 5,
+      "delegation": null
+    },
+    "records": [
+      {
+        "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "revision": 1,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+        "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema_ref": "task.item",
+        "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "created": 5,
+        "fields": {
+          "status": "OPEN",
+          "parent": null,
+          "author": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      }
+    ],
+    "heads": [
+      {
+        "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "revision": 1,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii"
+      }
+    ],
+    "priorRecords": [],
+    "priorHeads": [],
+    "ok": true
+  },
+  {
+    "name": "workflow_finish",
+    "contract": {
+      "v": 1,
+      "protocols": [
+        {
+          "v": 1,
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "schemas": {
+            "task.item": {
+              "fields": {
+                "status": {
+                  "protection": "server_readable",
+                  "type": "enum",
+                  "values": [
+                    "OPEN",
+                    "DONE"
+                  ]
+                },
+                "parent": {
+                  "protection": "server_readable",
+                  "type": "optional_reference"
+                },
+                "author": {
+                  "protection": "server_readable",
+                  "type": "actor"
+                }
+              },
+              "required": [
+                "status",
+                "parent",
+                "author"
+              ],
+              "workflow": {
+                "v": 1,
+                "status_field": "status",
+                "parent_field": "parent",
+                "states": [
+                  "OPEN",
+                  "DONE"
+                ],
+                "transitions": [
+                  {
+                    "action": "task.create",
+                    "from": null,
+                    "to": "OPEN"
+                  },
+                  {
+                    "action": "task.finish",
+                    "from": "OPEN",
+                    "to": "DONE"
+                  }
+                ]
+              }
+            }
+          },
+          "actions": {
+            "task.create": {
+              "schemas": [
+                "task.item"
+              ],
+              "roles": [],
+              "capabilities": [],
+              "heads": "APPEND"
+            },
+            "task.finish": {
+              "schemas": [
+                "task.item"
+              ],
+              "roles": [],
+              "capabilities": [],
+              "heads": "APPEND"
+            }
+          }
+        }
+      ],
+      "disclosure": [
+        {
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "schema": "task.item",
+          "fields": [
+            "status",
+            "parent",
+            "author"
+          ]
+        }
+      ],
+      "instances": [
+        {
+          "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        }
+      ]
+    },
+    "policy": {
+      "payload": {
+        "members": [
+          {
+            "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "scopes": [
+              {
+                "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+                "actions": [
+                  "discussion.post"
+                ],
+                "protocol_roles": [
+                  "AUTHOR"
+                ],
+                "capabilities": [],
+                "expires_at": 10
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "context": {
+      "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "action_id": "task.finish",
+      "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+      "issued_at": 6,
+      "delegation": null
+    },
+    "records": [
+      {
+        "record_id": "sssssssssssssssssssssssssssssssssssssssssss",
+        "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "revision": 2,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+        "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema_ref": "task.item",
+        "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "created": 6,
+        "fields": {
+          "status": "DONE",
+          "parent": {
+            "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+            "revision": 1
+          },
+          "author": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      }
+    ],
+    "heads": [
+      {
+        "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "record_id": "sssssssssssssssssssssssssssssssssssssssssss",
+        "revision": 2,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii"
+      }
+    ],
+    "priorRecords": [
+      {
+        "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "revision": 1,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+        "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema_ref": "task.item",
+        "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "created": 5,
+        "fields": {
+          "status": "OPEN",
+          "parent": null,
+          "author": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      }
+    ],
+    "priorHeads": [
+      {
+        "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "revision": 1,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii"
+      }
+    ],
+    "ok": true
+  },
+  {
+    "name": "workflow_missing_new_head",
+    "contract": {
+      "v": 1,
+      "protocols": [
+        {
+          "v": 1,
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "schemas": {
+            "task.item": {
+              "fields": {
+                "status": {
+                  "protection": "server_readable",
+                  "type": "enum",
+                  "values": [
+                    "OPEN",
+                    "DONE"
+                  ]
+                },
+                "parent": {
+                  "protection": "server_readable",
+                  "type": "optional_reference"
+                },
+                "author": {
+                  "protection": "server_readable",
+                  "type": "actor"
+                }
+              },
+              "required": [
+                "status",
+                "parent",
+                "author"
+              ],
+              "workflow": {
+                "v": 1,
+                "status_field": "status",
+                "parent_field": "parent",
+                "states": [
+                  "OPEN",
+                  "DONE"
+                ],
+                "transitions": [
+                  {
+                    "action": "task.create",
+                    "from": null,
+                    "to": "OPEN"
+                  },
+                  {
+                    "action": "task.finish",
+                    "from": "OPEN",
+                    "to": "DONE"
+                  }
+                ]
+              }
+            }
+          },
+          "actions": {
+            "task.create": {
+              "schemas": [
+                "task.item"
+              ],
+              "roles": [],
+              "capabilities": [],
+              "heads": "APPEND"
+            },
+            "task.finish": {
+              "schemas": [
+                "task.item"
+              ],
+              "roles": [],
+              "capabilities": [],
+              "heads": "APPEND"
+            }
+          }
+        }
+      ],
+      "disclosure": [
+        {
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "schema": "task.item",
+          "fields": [
+            "status",
+            "parent",
+            "author"
+          ]
+        }
+      ],
+      "instances": [
+        {
+          "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        }
+      ]
+    },
+    "policy": {
+      "payload": {
+        "members": [
+          {
+            "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "scopes": [
+              {
+                "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+                "actions": [
+                  "discussion.post"
+                ],
+                "protocol_roles": [
+                  "AUTHOR"
+                ],
+                "capabilities": [],
+                "expires_at": 10
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "context": {
+      "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "action_id": "task.finish",
+      "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+      "issued_at": 6,
+      "delegation": null
+    },
+    "records": [
+      {
+        "record_id": "sssssssssssssssssssssssssssssssssssssssssss",
+        "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "revision": 2,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+        "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema_ref": "task.item",
+        "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "created": 6,
+        "fields": {
+          "status": "DONE",
+          "parent": {
+            "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+            "revision": 1
+          },
+          "author": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      }
+    ],
+    "heads": [],
+    "priorRecords": [
+      {
+        "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "revision": 1,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+        "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema_ref": "task.item",
+        "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "created": 5,
+        "fields": {
+          "status": "OPEN",
+          "parent": null,
+          "author": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      }
+    ],
+    "priorHeads": [
+      {
+        "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "revision": 1,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii"
+      }
+    ],
+    "ok": false,
+    "error": "WORKFLOW_REVISION_MUST_BE_HEAD"
+  },
+  {
+    "name": "workflow_wrong_transition",
+    "contract": {
+      "v": 1,
+      "protocols": [
+        {
+          "v": 1,
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "schemas": {
+            "task.item": {
+              "fields": {
+                "status": {
+                  "protection": "server_readable",
+                  "type": "enum",
+                  "values": [
+                    "OPEN",
+                    "DONE"
+                  ]
+                },
+                "parent": {
+                  "protection": "server_readable",
+                  "type": "optional_reference"
+                },
+                "author": {
+                  "protection": "server_readable",
+                  "type": "actor"
+                }
+              },
+              "required": [
+                "status",
+                "parent",
+                "author"
+              ],
+              "workflow": {
+                "v": 1,
+                "status_field": "status",
+                "parent_field": "parent",
+                "states": [
+                  "OPEN",
+                  "DONE"
+                ],
+                "transitions": [
+                  {
+                    "action": "task.create",
+                    "from": null,
+                    "to": "OPEN"
+                  },
+                  {
+                    "action": "task.finish",
+                    "from": "OPEN",
+                    "to": "DONE"
+                  }
+                ]
+              }
+            }
+          },
+          "actions": {
+            "task.create": {
+              "schemas": [
+                "task.item"
+              ],
+              "roles": [],
+              "capabilities": [],
+              "heads": "APPEND"
+            },
+            "task.finish": {
+              "schemas": [
+                "task.item"
+              ],
+              "roles": [],
+              "capabilities": [],
+              "heads": "APPEND"
+            }
+          }
+        }
+      ],
+      "disclosure": [
+        {
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "schema": "task.item",
+          "fields": [
+            "status",
+            "parent",
+            "author"
+          ]
+        }
+      ],
+      "instances": [
+        {
+          "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        }
+      ]
+    },
+    "policy": {
+      "payload": {
+        "members": [
+          {
+            "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "scopes": [
+              {
+                "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+                "actions": [
+                  "discussion.post"
+                ],
+                "protocol_roles": [
+                  "AUTHOR"
+                ],
+                "capabilities": [],
+                "expires_at": 10
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "context": {
+      "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "action_id": "task.finish",
+      "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+      "issued_at": 6,
+      "delegation": null
+    },
+    "records": [
+      {
+        "record_id": "sssssssssssssssssssssssssssssssssssssssssss",
+        "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "revision": 2,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+        "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema_ref": "task.item",
+        "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "created": 6,
+        "fields": {
+          "status": "OPEN",
+          "parent": {
+            "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+            "revision": 1
+          },
+          "author": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      }
+    ],
+    "heads": [
+      {
+        "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "record_id": "sssssssssssssssssssssssssssssssssssssssssss",
+        "revision": 2,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii"
+      }
+    ],
+    "priorRecords": [
+      {
+        "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "revision": 1,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+        "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema_ref": "task.item",
+        "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "created": 5,
+        "fields": {
+          "status": "OPEN",
+          "parent": null,
+          "author": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      }
+    ],
+    "priorHeads": [
+      {
+        "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "revision": 1,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii"
+      }
+    ],
+    "ok": false,
+    "error": "WORKFLOW_TRANSITION_INVALID"
+  },
+  {
+    "name": "task_initial_parent_omitted",
+    "contract": {
+      "v": 1,
+      "protocols": [
+        {
+          "v": 1,
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "schemas": {
+            "task.revision": {
+              "fields": {
+                "status": {
+                  "protection": "server_readable",
+                  "type": "task_status"
+                },
+                "parent": {
+                  "protection": "server_readable",
+                  "type": "optional_reference"
+                }
+              },
+              "required": [
+                "status"
+              ]
+            }
+          },
+          "actions": {
+            "task.create": {
+              "schemas": [
+                "task.revision"
+              ],
+              "roles": [],
+              "capabilities": [],
+              "heads": "APPEND",
+              "task_transition": [
+                {
+                  "from": null,
+                  "to": "OPEN"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "disclosure": [
+        {
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "schema": "task.revision",
+          "fields": [
+            "status",
+            "parent"
+          ]
+        }
+      ],
+      "instances": [
+        {
+          "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        }
+      ]
+    },
+    "policy": {
+      "payload": {
+        "members": [
+          {
+            "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "scopes": [
+              {
+                "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+                "actions": [
+                  "discussion.post"
+                ],
+                "protocol_roles": [
+                  "AUTHOR"
+                ],
+                "capabilities": [],
+                "expires_at": 10
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "context": {
+      "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "action_id": "task.create",
+      "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+      "issued_at": 5,
+      "delegation": null
+    },
+    "records": [
+      {
+        "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "revision": 1,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+        "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema_ref": "task.revision",
+        "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "created": 5,
+        "fields": {
+          "status": "OPEN"
+        }
+      }
+    ],
+    "heads": [
+      {
+        "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "revision": 1,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii"
+      }
+    ],
+    "priorRecords": [],
+    "priorHeads": [],
+    "ok": true
+  },
+  {
+    "name": "workflow_dependency_satisfied",
+    "contract": {
+      "v": 1,
+      "protocols": [
+        {
+          "v": 1,
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "schemas": {
+            "task.dep": {
+              "fields": {
+                "status": {
+                  "protection": "server_readable",
+                  "type": "enum",
+                  "values": [
+                    "OPEN",
+                    "DONE"
+                  ]
+                },
+                "parent": {
+                  "protection": "server_readable",
+                  "type": "optional_reference"
+                },
+                "depends": {
+                  "protection": "server_readable",
+                  "type": "references"
+                }
+              },
+              "required": [
+                "status",
+                "parent",
+                "depends"
+              ],
+              "workflow": {
+                "v": 1,
+                "status_field": "status",
+                "parent_field": "parent",
+                "states": [
+                  "OPEN",
+                  "DONE"
+                ],
+                "transitions": [
+                  {
+                    "action": "task.create",
+                    "from": null,
+                    "to": "OPEN"
+                  },
+                  {
+                    "action": "task.create",
+                    "from": null,
+                    "to": "DONE"
+                  }
+                ],
+                "dependencies": {
+                  "field": "depends",
+                  "satisfied_states": [
+                    "DONE"
+                  ],
+                  "gated_states": [
+                    "OPEN"
+                  ]
+                }
+              }
+            }
+          },
+          "actions": {
+            "task.create": {
+              "schemas": [
+                "task.dep"
+              ],
+              "roles": [],
+              "capabilities": [],
+              "heads": "APPEND"
+            }
+          }
+        }
+      ],
+      "disclosure": [
+        {
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "schema": "task.dep",
+          "fields": [
+            "status",
+            "parent",
+            "depends"
+          ]
+        }
+      ],
+      "instances": [
+        {
+          "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        }
+      ]
+    },
+    "policy": {
+      "payload": {
+        "members": [
+          {
+            "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "scopes": [
+              {
+                "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+                "actions": [
+                  "discussion.post"
+                ],
+                "protocol_roles": [
+                  "AUTHOR"
+                ],
+                "capabilities": [],
+                "expires_at": 10
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "context": {
+      "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "action_id": "task.create",
+      "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+      "issued_at": 5,
+      "delegation": null
+    },
+    "records": [
+      {
+        "record_id": "sssssssssssssssssssssssssssssssssssssssssss",
+        "entity_id": "fffffffffffffffffffffffffffffffffffffffffff",
+        "revision": 1,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+        "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema_ref": "task.dep",
+        "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "created": 5,
+        "fields": {
+          "status": "OPEN",
+          "parent": null,
+          "depends": [
+            {
+              "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+              "revision": 1
+            }
+          ]
+        }
+      }
+    ],
+    "heads": [
+      {
+        "entity_id": "fffffffffffffffffffffffffffffffffffffffffff",
+        "record_id": "sssssssssssssssssssssssssssssssssssssssssss",
+        "revision": 1,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii"
+      }
+    ],
+    "priorRecords": [
+      {
+        "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "revision": 1,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+        "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema_ref": "task.dep",
+        "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "created": 5,
+        "fields": {
+          "status": "DONE",
+          "parent": null,
+          "depends": []
+        }
+      }
+    ],
+    "priorHeads": [
+      {
+        "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "revision": 1,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii"
+      }
+    ],
+    "ok": true
+  },
+  {
+    "name": "workflow_dependency_unsatisfied",
+    "contract": {
+      "v": 1,
+      "protocols": [
+        {
+          "v": 1,
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "schemas": {
+            "task.dep": {
+              "fields": {
+                "status": {
+                  "protection": "server_readable",
+                  "type": "enum",
+                  "values": [
+                    "OPEN",
+                    "DONE"
+                  ]
+                },
+                "parent": {
+                  "protection": "server_readable",
+                  "type": "optional_reference"
+                },
+                "depends": {
+                  "protection": "server_readable",
+                  "type": "references"
+                }
+              },
+              "required": [
+                "status",
+                "parent",
+                "depends"
+              ],
+              "workflow": {
+                "v": 1,
+                "status_field": "status",
+                "parent_field": "parent",
+                "states": [
+                  "OPEN",
+                  "DONE"
+                ],
+                "transitions": [
+                  {
+                    "action": "task.create",
+                    "from": null,
+                    "to": "OPEN"
+                  },
+                  {
+                    "action": "task.create",
+                    "from": null,
+                    "to": "DONE"
+                  }
+                ],
+                "dependencies": {
+                  "field": "depends",
+                  "satisfied_states": [
+                    "DONE"
+                  ],
+                  "gated_states": [
+                    "OPEN"
+                  ]
+                }
+              }
+            }
+          },
+          "actions": {
+            "task.create": {
+              "schemas": [
+                "task.dep"
+              ],
+              "roles": [],
+              "capabilities": [],
+              "heads": "APPEND"
+            }
+          }
+        }
+      ],
+      "disclosure": [
+        {
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "schema": "task.dep",
+          "fields": [
+            "status",
+            "parent",
+            "depends"
+          ]
+        }
+      ],
+      "instances": [
+        {
+          "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        }
+      ]
+    },
+    "policy": {
+      "payload": {
+        "members": [
+          {
+            "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "scopes": [
+              {
+                "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+                "actions": [
+                  "discussion.post"
+                ],
+                "protocol_roles": [
+                  "AUTHOR"
+                ],
+                "capabilities": [],
+                "expires_at": 10
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "context": {
+      "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "action_id": "task.create",
+      "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+      "issued_at": 5,
+      "delegation": null
+    },
+    "records": [
+      {
+        "record_id": "sssssssssssssssssssssssssssssssssssssssssss",
+        "entity_id": "fffffffffffffffffffffffffffffffffffffffffff",
+        "revision": 1,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+        "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema_ref": "task.dep",
+        "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "created": 5,
+        "fields": {
+          "status": "OPEN",
+          "parent": null,
+          "depends": [
+            {
+              "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+              "revision": 1
+            }
+          ]
+        }
+      }
+    ],
+    "heads": [
+      {
+        "entity_id": "fffffffffffffffffffffffffffffffffffffffffff",
+        "record_id": "sssssssssssssssssssssssssssssssssssssssssss",
+        "revision": 1,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii"
+      }
+    ],
+    "priorRecords": [
+      {
+        "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "revision": 1,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+        "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema_ref": "task.dep",
+        "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "created": 5,
+        "fields": {
+          "status": "OPEN",
+          "parent": null,
+          "depends": []
+        }
+      }
+    ],
+    "priorHeads": [
+      {
+        "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "revision": 1,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii"
+      }
+    ],
+    "ok": false,
+    "error": "WORKFLOW_DEPENDENCY_NOT_SATISFIED"
+  },
+  {
+    "name": "snapshot_workflow_dag",
+    "contract": {
+      "v": 1,
+      "protocols": [
+        {
+          "v": 1,
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "schemas": {
+            "task.dep": {
+              "fields": {
+                "status": {
+                  "protection": "server_readable",
+                  "type": "enum",
+                  "values": [
+                    "OPEN",
+                    "DONE"
+                  ]
+                },
+                "parent": {
+                  "protection": "server_readable",
+                  "type": "optional_reference"
+                },
+                "depends": {
+                  "protection": "server_readable",
+                  "type": "references"
+                }
+              },
+              "required": [
+                "status",
+                "parent",
+                "depends"
+              ],
+              "workflow": {
+                "v": 1,
+                "status_field": "status",
+                "parent_field": "parent",
+                "states": [
+                  "OPEN",
+                  "DONE"
+                ],
+                "transitions": [
+                  {
+                    "action": "task.create",
+                    "from": null,
+                    "to": "OPEN"
+                  },
+                  {
+                    "action": "task.create",
+                    "from": null,
+                    "to": "DONE"
+                  }
+                ],
+                "dependencies": {
+                  "field": "depends",
+                  "satisfied_states": [
+                    "DONE"
+                  ],
+                  "gated_states": [
+                    "OPEN"
+                  ]
+                }
+              }
+            }
+          },
+          "actions": {
+            "task.create": {
+              "schemas": [
+                "task.dep"
+              ],
+              "roles": [],
+              "capabilities": [],
+              "heads": "APPEND"
+            }
+          }
+        }
+      ],
+      "disclosure": [
+        {
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "schema": "task.dep",
+          "fields": [
+            "status",
+            "parent",
+            "depends"
+          ]
+        }
+      ],
+      "instances": [
+        {
+          "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        }
+      ]
+    },
+    "records": [
+      {
+        "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "revision": 1,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+        "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema_ref": "task.dep",
+        "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "created": 5,
+        "fields": {
+          "status": "DONE",
+          "parent": null,
+          "depends": []
+        }
+      },
+      {
+        "record_id": "sssssssssssssssssssssssssssssssssssssssssss",
+        "entity_id": "fffffffffffffffffffffffffffffffffffffffffff",
+        "revision": 1,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+        "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema_ref": "task.dep",
+        "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "created": 5,
+        "fields": {
+          "status": "OPEN",
+          "parent": null,
+          "depends": [
+            {
+              "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+              "revision": 1
+            }
+          ]
+        }
+      }
+    ],
+    "heads": [
+      {
+        "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "revision": 1,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii"
+      },
+      {
+        "entity_id": "fffffffffffffffffffffffffffffffffffffffffff",
+        "record_id": "sssssssssssssssssssssssssssssssssssssssssss",
+        "revision": 1,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii"
+      }
+    ],
+    "kind": "snapshot_graph",
+    "ok": true
+  },
+  {
+    "name": "snapshot_workflow_cycle",
+    "contract": {
+      "v": 1,
+      "protocols": [
+        {
+          "v": 1,
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "schemas": {
+            "task.dep": {
+              "fields": {
+                "status": {
+                  "protection": "server_readable",
+                  "type": "enum",
+                  "values": [
+                    "OPEN",
+                    "DONE"
+                  ]
+                },
+                "parent": {
+                  "protection": "server_readable",
+                  "type": "optional_reference"
+                },
+                "depends": {
+                  "protection": "server_readable",
+                  "type": "references"
+                }
+              },
+              "required": [
+                "status",
+                "parent",
+                "depends"
+              ],
+              "workflow": {
+                "v": 1,
+                "status_field": "status",
+                "parent_field": "parent",
+                "states": [
+                  "OPEN",
+                  "DONE"
+                ],
+                "transitions": [
+                  {
+                    "action": "task.create",
+                    "from": null,
+                    "to": "OPEN"
+                  },
+                  {
+                    "action": "task.create",
+                    "from": null,
+                    "to": "DONE"
+                  }
+                ],
+                "dependencies": {
+                  "field": "depends",
+                  "satisfied_states": [
+                    "DONE"
+                  ],
+                  "gated_states": [
+                    "OPEN"
+                  ]
+                }
+              }
+            }
+          },
+          "actions": {
+            "task.create": {
+              "schemas": [
+                "task.dep"
+              ],
+              "roles": [],
+              "capabilities": [],
+              "heads": "APPEND"
+            }
+          }
+        }
+      ],
+      "disclosure": [
+        {
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "schema": "task.dep",
+          "fields": [
+            "status",
+            "parent",
+            "depends"
+          ]
+        }
+      ],
+      "instances": [
+        {
+          "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        }
+      ]
+    },
+    "records": [
+      {
+        "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "revision": 1,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+        "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema_ref": "task.dep",
+        "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "created": 5,
+        "fields": {
+          "status": "DONE",
+          "parent": null,
+          "depends": [
+            {
+              "record_id": "sssssssssssssssssssssssssssssssssssssssssss",
+              "revision": 1
+            }
+          ]
+        }
+      },
+      {
+        "record_id": "sssssssssssssssssssssssssssssssssssssssssss",
+        "entity_id": "fffffffffffffffffffffffffffffffffffffffffff",
+        "revision": 1,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+        "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema_ref": "task.dep",
+        "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "created": 5,
+        "fields": {
+          "status": "DONE",
+          "parent": null,
+          "depends": [
+            {
+              "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+              "revision": 1
+            }
+          ]
+        }
+      }
+    ],
+    "heads": [
+      {
+        "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "revision": 1,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii"
+      },
+      {
+        "entity_id": "fffffffffffffffffffffffffffffffffffffffffff",
+        "record_id": "sssssssssssssssssssssssssssssssssssssssssss",
+        "revision": 1,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii"
+      }
+    ],
+    "kind": "snapshot_graph",
+    "ok": false,
+    "error": "WORKFLOW_DEPENDENCY_CYCLE"
+  }
+]

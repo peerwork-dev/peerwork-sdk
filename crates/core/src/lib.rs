@@ -36,6 +36,7 @@ pub mod secure_recipient;
 mod secure_replay;
 pub mod strict_json;
 mod structure_bindings;
+mod structure_delta;
 #[allow(dead_code)]
 mod structure_policy;
 pub mod verified_secure_grant;
