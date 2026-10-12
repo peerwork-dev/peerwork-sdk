@@ -348,3 +348,38 @@ exactly four fields. Structured v2/v3 policy certificates retain their
 separate exact-field shape rule in `secure_chain.rs`, matching the pinned
 structured-policy validator; that rule was not changed. The lockfile-matched
 temporary dependency link and private vectors were removed after the run.
+
+Protected pending grant-evidence checkpoint is SDK source
+`e906e973c8f2e4d6f3a60832e2d771128de18f46`, corrected at
+`d18eae324b7106762645ab0c49065787f1342786` (module SHA-256
+`371fbec2826c7d4b1649c8b1a883ea159ba5b2df4a43838bd63ab04bf1ddb41c`).
+This private runtime module saves one exact signed policy/commit/checkpoint,
+grant, recipient certificate and optional invitation/delegation bundle in
+one atomically replaced protected state file, after core grant proof.
+Configured origin, audience, workspace, owner and local signer pins are
+immutable. Reopen re-verifies with the protected recipient and caller's
+**current** observation time; no saved timestamp stands in for the current
+time. Exact repeat is idempotent and changed bytes refuse replacement. No
+plaintext keyring is serialized: HPKE material is opened by a fresh proof.
+The returned material does not activate `SecureLifecycle` or authorize an
+action. The caller must obtain policy/commit bytes through the configured
+origin's TLS transport; this local store cannot prove that provenance.
+Its current native evidence cap is 64 MiB and each chain is capped at 1024;
+valid larger histories need paged/streamed storage before broad support.
+
+At a detached exact `d18eae3` checkout, Rust 1.89 locked-offline
+`cargo test -p peerwork-runtime --lib secure_grant_pending::tests` passed
+1/1. The synthetic self-grant test uses protected identity and recipient
+files, saves exact evidence, reopens the same pending epoch, refuses a
+whitespace-different replacement, wrong origin/recipient and tampered saved
+signature. A separate delegated grant in that test reopens while valid and
+fails exactly at its signed expiry. An over-1024-policy input refuses before
+core signature/HPKE verification and leaves the store empty. These are
+synthetic Rust storage tests; no real service or language wrapper was
+exercised. The first focused test failed on an incorrect assertion that a
+direct grant expires when its certificate later expires. Pinned
+`openKeyGrant` checks that certificate at grant issuance; the corrected
+test preserves a later direct reopen. This local self-grant is not proof
+that the tracked TypeScript owner bootstrap flow is natively reproduced.
+Production policy/grant provenance, complete replay/checkpoint activation,
+owner bootstrap, rotation/recovery and final effect verification remain open.
