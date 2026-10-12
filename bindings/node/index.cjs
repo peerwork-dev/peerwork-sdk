@@ -34,6 +34,7 @@ exports.version = binding.version;
 exports.capabilities = () => JSON.parse(binding.capabilitiesJson());
 exports.createIdentity = async path => JSON.parse(await binding.identityCreateJson(path));
 exports.openIdentity = async path => JSON.parse(await binding.identityOpenJson(path));
+exports.importIdentitySeedFile = async (path, seedFile) => JSON.parse(await binding.identityImportSeedJson(path, seedFile));
 
 function strictCommandJson(input) {
   const seen = new WeakSet();

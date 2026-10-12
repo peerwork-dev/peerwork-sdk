@@ -7,6 +7,7 @@ from ._peerwork_native import (
     capabilities_json,
     identity_create_json,
     identity_open_json,
+    identity_import_seed_json,
     kernel_json,
     version,
 )
@@ -27,12 +28,24 @@ def open_identity(path: str) -> dict[str, str]:
     return json.loads(identity_open_json(path))
 
 
+def import_identity_seed_file(path: str, seed_file: str) -> dict[str, str]:
+    """Import a protected local 32-byte Ed25519 seed for legacy recovery.
+
+    The source file remains intact; keep it private and manage its lifecycle.
+    """
+    return json.loads(identity_import_seed_json(path, seed_file))
+
+
 async def create_identity_async(path: str) -> dict[str, str]:
     return await asyncio.to_thread(create_identity, path)
 
 
 async def open_identity_async(path: str) -> dict[str, str]:
     return await asyncio.to_thread(open_identity, path)
+
+
+async def import_identity_seed_file_async(path: str, seed_file: str) -> dict[str, str]:
+    return await asyncio.to_thread(import_identity_seed_file, path, seed_file)
 
 
 class KernelClient:
@@ -159,4 +172,5 @@ class KernelClient:
 
 
 __all__ = ["version", "capabilities", "create_identity", "open_identity",
-           "create_identity_async", "open_identity_async", "KernelClient"]
+           "create_identity_async", "open_identity_async",
+           "import_identity_seed_file", "import_identity_seed_file_async", "KernelClient"]

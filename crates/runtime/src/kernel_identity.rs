@@ -1,7 +1,7 @@
 //! Explicit native signing identity lifecycle. The 32-byte seed is held only
 //! in protected local state and runtime memory, never a public DTO or CLI arg.
 
-use crate::secure_state::{SecureStateError, SecureStateStore};
+use crate::secure_state::{read_private_seed_file, SecureStateError, SecureStateStore};
 use ed25519_dalek::SigningKey;
 use peerwork_core::crypto::{actor_id, base64url, decode_base64url, key_id};
 use rand_core::{OsRng, RngCore};
@@ -25,6 +25,8 @@ pub enum KernelIdentityError {
     Invalid,
     #[error("OS random source failed")]
     Entropy,
+    #[error("identity seed source must contain exactly 32 protected bytes")]
+    InvalidSeedSource,
 }
 
 pub struct KernelIdentity {
@@ -34,6 +36,33 @@ pub struct KernelIdentity {
 }
 
 impl KernelIdentity {
+    /// Import a local raw Ed25519 seed from a protected file. This is an
+    /// explicit migration operation: the seed never appears in an argument,
+    /// result DTO, or log, and the source file remains the caller's property.
+    pub fn import_seed_file(path: &Path, source_path: &Path) -> Result<Self, KernelIdentityError> {
+        if path == source_path
+            || std::fs::canonicalize(path)
+                .ok()
+                .zip(std::fs::canonicalize(source_path).ok())
+                .is_some_and(|(target, source)| target == source)
+        {
+            return Err(KernelIdentityError::InvalidSeedSource);
+        }
+        let seed =
+            read_private_seed_file(source_path)?.ok_or(KernelIdentityError::InvalidSeedSource)?;
+        let store = SecureStateStore::open(path)?;
+        if store.read_exact()?.is_some() {
+            return Err(KernelIdentityError::AlreadyExists);
+        }
+        let encoded = Zeroizing::new(base64url(&*seed));
+        let wire = Zeroizing::new(format!(
+            "{{\"kind\":\"{IDENTITY_KIND}\",\"seed\":\"{}\"}}",
+            encoded.as_str()
+        ));
+        store.write_exact(wire.as_bytes())?;
+        Ok(Self::from_signing_key(SigningKey::from_bytes(&seed)))
+    }
+
     /// Generate a new Ed25519 identity from the OS CSPRNG. This is a local
     /// operation; enrollment with a service remains a separate signed action.
     pub fn create(path: &Path) -> Result<Self, KernelIdentityError> {
@@ -144,5 +173,35 @@ mod tests {
             Err(KernelIdentityError::Invalid)
         ));
         assert!(fs::metadata(path).unwrap().len() > 32);
+    }
+
+    #[test]
+    fn protected_seed_import_preserves_source_and_refuses_overwrite() {
+        let dir = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let source_path = dir.path().join("legacy-seed.bin");
+        let target_path = dir.path().join("identity.state");
+        let seed = [7u8; 32];
+        fs::write(&source_path, seed).unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(&source_path, fs::Permissions::from_mode(0o600)).unwrap();
+        let imported = KernelIdentity::import_seed_file(&target_path, &source_path).unwrap();
+        let expected = KernelIdentity::from_signing_key(SigningKey::from_bytes(&seed));
+        assert_eq!(imported.key_id(), expected.key_id());
+        assert_eq!(imported.actor_id(), expected.actor_id());
+        assert_eq!(
+            KernelIdentity::open(&target_path).unwrap().key_id(),
+            imported.key_id()
+        );
+        assert_eq!(fs::read(&source_path).unwrap(), seed);
+        assert!(matches!(
+            KernelIdentity::import_seed_file(&target_path, &source_path),
+            Err(KernelIdentityError::AlreadyExists)
+        ));
+        assert!(matches!(
+            KernelIdentity::import_seed_file(&source_path, &source_path),
+            Err(KernelIdentityError::InvalidSeedSource)
+        ));
     }
 }

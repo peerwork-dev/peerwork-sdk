@@ -23,6 +23,7 @@ pub fn capabilities_json() -> Result<String> {
 pub struct IdentityTask {
     path: String,
     create: bool,
+    seed_file: Option<String>,
 }
 
 impl Task for IdentityTask {
@@ -30,7 +31,9 @@ impl Task for IdentityTask {
     type JsValue = String;
 
     fn compute(&mut self) -> Result<Self::Output> {
-        let identity = if self.create {
+        let identity = if let Some(seed_file) = self.seed_file.as_deref() {
+            KernelIdentity::import_seed_file(Path::new(&self.path), Path::new(seed_file))
+        } else if self.create {
             KernelIdentity::create(Path::new(&self.path))
         } else {
             KernelIdentity::open(Path::new(&self.path))
@@ -50,7 +53,11 @@ impl Task for IdentityTask {
 
 #[napi]
 pub fn identity_create_json(path: String) -> AsyncTask<IdentityTask> {
-    AsyncTask::new(IdentityTask { path, create: true })
+    AsyncTask::new(IdentityTask {
+        path,
+        create: true,
+        seed_file: None,
+    })
 }
 
 #[napi]
@@ -58,6 +65,16 @@ pub fn identity_open_json(path: String) -> AsyncTask<IdentityTask> {
     AsyncTask::new(IdentityTask {
         path,
         create: false,
+        seed_file: None,
+    })
+}
+
+#[napi]
+pub fn identity_import_seed_json(path: String, seed_file: String) -> AsyncTask<IdentityTask> {
+    AsyncTask::new(IdentityTask {
+        path,
+        create: false,
+        seed_file: Some(seed_file),
     })
 }
 

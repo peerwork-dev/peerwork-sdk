@@ -10,9 +10,35 @@ use std::io::Read;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
+use zeroize::Zeroizing;
 
 const MAGIC: &[u8] = b"PEERWORK-NATIVE-SECURE-STATE\n1\n";
 const MAX_STATE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Read only a separately protected raw 32-byte identity seed. Unlike native
+/// state, this source has no magic prefix; it is never created or rewritten.
+pub(crate) fn read_private_seed_file(
+    path: &Path,
+) -> Result<Option<Zeroizing<[u8; 32]>>, SecureStateError> {
+    check_private_parent(path)?;
+    check_private_file(path)?;
+    let mut file = open_state_read(path)?;
+    let opened = file.metadata()?;
+    if opened.len() != 32 {
+        return Ok(None);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let named = std::fs::symlink_metadata(path)?;
+        if opened.dev() != named.dev() || opened.ino() != named.ino() {
+            return Err(SecureStateError::Protection);
+        }
+    }
+    let mut seed = Zeroizing::new([0u8; 32]);
+    file.read_exact(&mut *seed)?;
+    Ok(Some(seed))
+}
 
 #[derive(Debug, Error)]
 pub enum SecureStateError {

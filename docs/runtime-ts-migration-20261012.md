@@ -57,8 +57,14 @@ local SQLite transaction has begun, its atomic commit/rollback determines the
 outcome. Callers must retain the backup. Importing verifies historical public
 signatures but does not authorize the current identity to submit a different
 actor's saved command; exact retry requires that actor's matching protected
-local signing identity. No public wrapper sends the old DB or backup to the
-service.
+local signing identity. For a local legacy-key migration, the explicit
+`import_identity_seed_file(target, protected_seed_file)` API in Python,
+`importIdentitySeedFile` in Node, and `peerwork identity import-seed-file` in
+the CLI accept a path to a 32-byte Ed25519 seed file. The seed is never a
+command-line value or result field. The native layer requires a private,
+owner-controlled regular source and parent, rejects links, never overwrites
+an existing native identity, and keeps the source unchanged for the caller to
+manage. No public wrapper sends the old DB, backup, or seed to the service.
 
 Three focused synthetic Linux tests passed under Rust 1.89 with the locked
 offline workspace. They cover exact JWS/body reconstruction for ordinary and

@@ -38,6 +38,17 @@ fn identity_open_json(path: &str) -> PyResult<String> {
     ))
 }
 
+#[pyfunction]
+fn identity_import_seed_json(path: &str, seed_file: &str) -> PyResult<String> {
+    let identity = KernelIdentity::import_seed_file(Path::new(path), Path::new(seed_file))
+        .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))?;
+    Ok(format!(
+        "{{\"actor_id\":\"{}\",\"key_id\":\"{}\"}}",
+        identity.actor_id(),
+        identity.key_id()
+    ))
+}
+
 fn accepted_json(result: KernelAcceptedResult) -> serde_json::Value {
     serde_json::json!({
         "command_id": result.command_id,
@@ -150,6 +161,7 @@ fn _peerwork_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(capabilities_json, module)?)?;
     module.add_function(wrap_pyfunction!(identity_create_json, module)?)?;
     module.add_function(wrap_pyfunction!(identity_open_json, module)?)?;
+    module.add_function(wrap_pyfunction!(identity_import_seed_json, module)?)?;
     module.add_function(wrap_pyfunction!(kernel_json, module)?)?;
     module.add_class::<KernelCancelHandle>()?;
     Ok(())
