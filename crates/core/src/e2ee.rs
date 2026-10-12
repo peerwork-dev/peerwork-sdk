@@ -17,6 +17,7 @@ use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use thiserror::Error;
+use zeroize::{Zeroize, Zeroizing};
 
 const MAX_CIPHERTEXT_BYTES: usize = 16 * 1024 * 1024;
 const CHUNK_BYTES: usize = 6144;
@@ -30,6 +31,8 @@ pub enum E2eeError {
     TooLarge,
     #[error("authentication failed")]
     Authentication,
+    #[error("OS random source failed")]
+    Entropy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,12 +111,14 @@ pub fn seal_content_wire(
     plaintext_wire: &[u8],
     context_wire: &[u8],
 ) -> Result<SealedContent, E2eeError> {
-    let plaintext = parse_wire_json_js_bounded(plaintext_wire, 64, MAX_CIPHERTEXT_BYTES)
+    let mut plaintext = parse_wire_json_js_bounded(plaintext_wire, 64, MAX_CIPHERTEXT_BYTES)
         .map_err(|_| E2eeError::Format)?;
     let context =
         parse_wire_json_js_bounded(context_wire, 64, 196_608).map_err(|_| E2eeError::Format)?;
-    let plaintext =
-        canonical_wire_value(&plaintext, Path::SecureArtifact).map_err(|_| E2eeError::Format)?;
+    let canonical =
+        canonical_wire_value(&plaintext, Path::SecureArtifact).map_err(|_| E2eeError::Format);
+    wipe_wire(&mut plaintext);
+    let plaintext = Zeroizing::new(canonical?);
     let aad = content_aad_wire(&context)?;
     seal_content_with_aad(key, plaintext.as_bytes(), aad.as_bytes())
 }
@@ -138,7 +143,9 @@ fn seal_content_with_aad(
         return Err(E2eeError::TooLarge);
     }
     let mut nonce = [0u8; 12];
-    OsRng.fill_bytes(&mut nonce);
+    OsRng
+        .try_fill_bytes(&mut nonce)
+        .map_err(|_| E2eeError::Entropy)?;
     let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| E2eeError::Format)?;
     let ciphertext = cipher
         .encrypt(
@@ -226,7 +233,8 @@ pub fn hpke_seal(
         Path::SecureArtifact,
     )
     .map_err(|_| E2eeError::Format)?;
-    let plaintext = canonical(plaintext, Path::SecureArtifact).map_err(|_| E2eeError::Format)?;
+    let plaintext =
+        Zeroizing::new(canonical(plaintext, Path::SecureArtifact).map_err(|_| E2eeError::Format)?);
     hpke_seal_with_aad(recipient, plaintext.as_bytes(), aad.as_bytes())
 }
 
@@ -235,12 +243,14 @@ pub fn hpke_seal_wire(
     plaintext_wire: &[u8],
     context_wire: &[u8],
 ) -> Result<KeyBox, E2eeError> {
-    let plaintext = parse_wire_json_js_bounded(plaintext_wire, 64, MAX_CIPHERTEXT_BYTES)
+    let mut plaintext = parse_wire_json_js_bounded(plaintext_wire, 64, MAX_CIPHERTEXT_BYTES)
         .map_err(|_| E2eeError::Format)?;
     let context =
         parse_wire_json_js_bounded(context_wire, 64, 196_608).map_err(|_| E2eeError::Format)?;
-    let plaintext =
-        canonical_wire_value(&plaintext, Path::SecureArtifact).map_err(|_| E2eeError::Format)?;
+    let canonical =
+        canonical_wire_value(&plaintext, Path::SecureArtifact).map_err(|_| E2eeError::Format);
+    wipe_wire(&mut plaintext);
+    let plaintext = Zeroizing::new(canonical?);
     let aad = keybox_aad_wire(&context)?;
     hpke_seal_with_aad(recipient, plaintext.as_bytes(), aad.as_bytes())
 }
@@ -254,6 +264,24 @@ fn keybox_aad_wire(context: &WireValue) -> Result<String, E2eeError> {
         ("context".encode_utf16().collect(), context.clone()),
     ]);
     canonical_wire_value(&wrapper, Path::SecureArtifact).map_err(|_| E2eeError::Format)
+}
+
+fn wipe_wire(value: &mut WireValue) {
+    match value {
+        WireValue::String(units) => units.zeroize(),
+        WireValue::Array(items) => {
+            for item in items {
+                wipe_wire(item);
+            }
+        }
+        WireValue::Object(fields) => {
+            for (name, item) in fields {
+                name.zeroize();
+                wipe_wire(item);
+            }
+        }
+        WireValue::Null | WireValue::Bool(_) | WireValue::Number(_) => {}
+    }
 }
 
 fn hpke_seal_with_aad(
@@ -295,7 +323,11 @@ pub fn hpke_open(
         Path::SecureArtifact,
     )
     .map_err(|_| E2eeError::Format)?;
-    let plaintext = hpke_open_with_aad(recipient_private_key, box_value, aad.as_bytes())?;
+    let plaintext = Zeroizing::new(hpke_open_with_aad(
+        recipient_private_key,
+        box_value,
+        aad.as_bytes(),
+    )?);
     // TS decodeJson uses JSON.parse here: decoded duplicate names take the last
     // value. The lossless wire API remains necessary for lone UTF-16 surrogates.
     serde_json::from_slice(&plaintext).map_err(|_| E2eeError::Format)
@@ -309,7 +341,11 @@ pub fn hpke_open_wire(
     let context =
         parse_wire_json_js_bounded(context_wire, 64, 196_608).map_err(|_| E2eeError::Format)?;
     let aad = keybox_aad_wire(&context)?;
-    let plaintext = hpke_open_with_aad(recipient_private_key, box_value, aad.as_bytes())?;
+    let plaintext = Zeroizing::new(hpke_open_with_aad(
+        recipient_private_key,
+        box_value,
+        aad.as_bytes(),
+    )?);
     parse_wire_json_js_bounded(&plaintext, 64, MAX_CIPHERTEXT_BYTES).map_err(|_| E2eeError::Format)
 }
 
