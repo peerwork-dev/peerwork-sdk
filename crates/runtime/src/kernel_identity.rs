@@ -3,16 +3,15 @@
 
 use crate::secure_state::{SecureStateError, SecureStateStore};
 use ed25519_dalek::SigningKey;
-use peerwork_core::{
-    crypto::{actor_id, base64url, decode_base64url, key_id},
-    wire_json::{canonical_wire_json, parse_wire_json_bounded, WireValue},
-};
+use peerwork_core::crypto::{actor_id, base64url, decode_base64url, key_id};
 use rand_core::{OsRng, RngCore};
 use std::path::Path;
 use thiserror::Error;
 use zeroize::Zeroizing;
 
 const IDENTITY_KIND: &str = "peerwork.native-identity.v1";
+const IDENTITY_PREFIX: &[u8] = b"{\"kind\":\"peerwork.native-identity.v1\",\"seed\":\"";
+const IDENTITY_SUFFIX: &[u8] = b"\"}";
 
 #[derive(Debug, Error)]
 pub enum KernelIdentityError {
@@ -24,6 +23,8 @@ pub enum KernelIdentityError {
     NotFound,
     #[error("native identity state is invalid")]
     Invalid,
+    #[error("OS random source failed")]
+    Entropy,
 }
 
 pub struct KernelIdentity {
@@ -41,7 +42,9 @@ impl KernelIdentity {
             return Err(KernelIdentityError::AlreadyExists);
         }
         let mut seed = Zeroizing::new([0u8; 32]);
-        OsRng.fill_bytes(&mut *seed);
+        OsRng
+            .try_fill_bytes(&mut *seed)
+            .map_err(|_| KernelIdentityError::Entropy)?;
         let encoded = Zeroizing::new(base64url(&*seed));
         let wire = Zeroizing::new(format!(
             "{{\"kind\":\"{IDENTITY_KIND}\",\"seed\":\"{}\"}}",
@@ -57,32 +60,22 @@ impl KernelIdentity {
     pub fn open(path: &Path) -> Result<Self, KernelIdentityError> {
         let store = SecureStateStore::open(path)?;
         let wire = Zeroizing::new(store.read_exact()?.ok_or(KernelIdentityError::NotFound)?);
-        let parsed =
-            parse_wire_json_bounded(&wire, 3, 256).map_err(|_| KernelIdentityError::Invalid)?;
-        if parsed.object_len() != Some(2)
-            || parsed.get("kind").and_then(WireValue::as_string).as_deref() != Some(IDENTITY_KIND)
-        {
-            return Err(KernelIdentityError::Invalid);
-        }
-        let encoded = Zeroizing::new(
-            parsed
-                .get("seed")
-                .and_then(WireValue::as_string)
-                .ok_or(KernelIdentityError::Invalid)?,
-        );
+        let encoded_bytes = wire
+            .strip_prefix(IDENTITY_PREFIX)
+            .and_then(|value| value.strip_suffix(IDENTITY_SUFFIX))
+            .filter(|value| value.len() == 43)
+            .ok_or(KernelIdentityError::Invalid)?;
+        let encoded =
+            std::str::from_utf8(encoded_bytes).map_err(|_| KernelIdentityError::Invalid)?;
         let decoded =
-            Zeroizing::new(decode_base64url(&encoded).map_err(|_| KernelIdentityError::Invalid)?);
+            Zeroizing::new(decode_base64url(encoded).map_err(|_| KernelIdentityError::Invalid)?);
         let seed: [u8; 32] = decoded
             .as_slice()
             .try_into()
             .map_err(|_| KernelIdentityError::Invalid)?;
         let seed = Zeroizing::new(seed);
-        if base64url(&*seed) != encoded.as_str()
-            || canonical_wire_json(&wire, peerwork_core::canonical::Path::SecureArtifact)
-                .map_err(|_| KernelIdentityError::Invalid)?
-                .as_bytes()
-                != wire.as_slice()
-        {
+        let reencoded = Zeroizing::new(base64url(&*seed));
+        if reencoded.as_str() != encoded {
             return Err(KernelIdentityError::Invalid);
         }
         let key = SigningKey::from_bytes(&seed);

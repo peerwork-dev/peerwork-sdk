@@ -48,6 +48,8 @@ The next local identity checkpoint creates an Ed25519 seed only on explicit
 state path. `open` rejects missing, malformed or old-format state without
 rewriting it; public methods expose only key and actor IDs. Temporary seed,
 decoded seed, encoded seed and saved wire buffers use zeroizing wrappers.
+The identity parser checks its fixed canonical byte layout without creating
+another decoded JSON copy of the seed; OS entropy failure is a typed error.
 The core's `prepare_signed_command_wire` validates the tracked command
 schema, signs and self-verifies exact bytes; runtime `prepare_command`
 persists its JWS/body before transport. The real-service recovery test now
