@@ -4283,6 +4283,23 @@ mod tests {
         .unwrap();
         assert_eq!(replayed.object_count, 1);
         assert!(replayed.legacy);
+        let sealed = crate::replayed_secure_journal::replay_secure_journal_exact(
+            crate::replayed_secure_journal::JournalReplayInput {
+                policy_wires: &[&policy1, &policy2],
+                commit_wires: &[&migration],
+                checkpoint_wire: &checkpoint,
+                workspace_id: &workspace,
+                owner_actor_id: &owner,
+                owner_signing_key: &owner_key,
+                final_sequence: 2,
+                final_head: Some(&hash(&migration)),
+                final_policy_hash: &hash(&policy2),
+                keyring_wire: Some(&keyring),
+            },
+        )
+        .unwrap();
+        assert_eq!(sealed.sequence(), 2);
+        assert_eq!(sealed.operations().len(), 2);
         assert!(restore_archived_public_history(
             &[&policy1, &policy2],
             &[&migration],
