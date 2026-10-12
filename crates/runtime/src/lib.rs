@@ -24,6 +24,8 @@ mod secure_native_prepare;
 mod secure_package_pending;
 #[allow(dead_code)]
 mod secure_recipient_state;
+#[allow(dead_code)]
+mod secure_verified_read;
 pub mod secure_state;
 pub mod transport;
 mod ts_migration;
