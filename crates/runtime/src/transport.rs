@@ -164,6 +164,15 @@ fn valid_command_path(path: &str) -> bool {
                     .bytes()
                     .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
         })
+        || path
+            .strip_prefix("/api/workspace/v1/secure/workspaces/")
+            .and_then(|tail| tail.strip_suffix("/commits"))
+            .is_some_and(|id| {
+                id.len() == 43
+                    && id
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+            })
 }
 
 fn map_network_error(error: reqwest::Error) -> TransportError {

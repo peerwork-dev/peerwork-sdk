@@ -23,13 +23,36 @@ packet same ID conflicted, and changed origin/actor refused. This is storage
 evidence only. No secure packet is currently submitted from the public SDK;
 the HTTP status and stored response cannot authorize `ACCEPTED`.
 
-Before a production secure submit or retry, core must provide a private
-constructor proof over the exact saved packet signature, schema, actor,
-workspace, route, owner/discovery context, and local intent digest. Runtime
-must compare every proof field with this immutable row before transport.
+The bounded `prepared_secure_request` verifier now checks a PRIVATE,
+unstructured, direct-author `{commit}` append packet against the exact HTTP
+route, signed v1/v3 domain and signer, full supported payload key set,
+ciphertext admission bounds, actor/workspace/policy/head context, and SHA-256
+of the exact request bytes. Runtime source now rechecks that proof against
+the immutable row, protected local identity, configured origin, owner key,
+action, commit intent digest and saved request SHA before any POST/retry. The
+source also keeps a received HTTP response as an untrusted observation and
+leaves the row PENDING. This combined runtime source is an unverified local
+checkpoint until its focused socket test and locked-offline check pass.
+
+This is only pre-submit integrity. The caller-supplied workspace policy pins
+must come from authenticated persisted history; a proof from arbitrary pins
+does not grant scope. Bootstrap, public/structured/v2, delegation, policy
+updates, grants and other secure routes need separate prepared proofs. The
+tracked local decoder accepts empty ciphertext components when the total is
+valid, while `workspace-secure-store.ts::validateCommit` rejects empty chunks
+at HTTP admission. This verifier follows the latter and also requires at
+least 16 aggregate ciphertext bytes.
+
 Before any terminal result, a separate core `VerifiedSecureOutcome` must
 authenticate the complete signed policy/commit chain, sealed content and
 recovery/migration restoration, protocol source/structure, ACTION evaluator,
 and exact response/head/effect binding. Runtime then compares that proof to
 the unchanged row and persists the terminal state atomically. These proofs,
-actual secure HTTP loss/restart and cross-platform execution remain open.
+real Peerwork secure HTTP acceptance and cross-platform execution remain open.
+
+The first combined runtime test attempt stopped before compiling this source:
+concurrent package compiler WIP changed `namespace_manifest` to three
+arguments while a caller still supplied two (E0061). The package owner is
+correcting that source. This interruption is distinct from the earlier
+successful core proof 4/4 and pending-store 1/1 focused tests; the combined
+runtime/socket checkpoint is not yet accepted.

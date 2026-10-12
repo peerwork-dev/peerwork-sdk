@@ -2,15 +2,24 @@
 //! never an authenticated secure action result. Complete signed history replay
 //! from peerwork-core is required before any future terminal transition.
 
-use crate::secure_state::{SecureStateError, SecureStateStore};
+use crate::{
+    kernel_identity::KernelIdentity,
+    secure_state::{SecureStateError, SecureStateStore},
+    transport::{HttpTransport, TransportError},
+};
 use peerwork_core::{
     crypto::{base64url, decode_base64url, sha256_hex},
+    prepared_secure_request::{
+        verify_prepared_secure_commit_request, PreparedSecureRequestError, SecureCommitRequestPins,
+        VerifiedPreparedSecureRequest,
+    },
     wire_json::parse_wire_json_bounded,
 };
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::Path};
 use thiserror::Error;
+use tokio_util::sync::CancellationToken;
 
 const MAX_PACKET: usize = 2 * 1024 * 1024;
 const MAX_RESPONSE: usize = 32 * 1024 * 1024;
@@ -32,6 +41,12 @@ pub enum SecureIntentError {
     NotFound,
     #[error("secure intent journal or observation limit exceeded")]
     TooLarge,
+    #[error(transparent)]
+    Proof(#[from] PreparedSecureRequestError),
+    #[error(transparent)]
+    Transport(#[from] TransportError),
+    #[error("server rejected the saved secure request with HTTP {0}")]
+    ServerRejected(u16),
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -213,6 +228,73 @@ impl SecureIntentJournal {
             .collect()
     }
 
+    /// Authenticate the exact saved packet and bind every row pin before an
+    /// append send or retry. The trusted policy context is caller-supplied and
+    /// must have been established from verified history by a higher layer.
+    pub(crate) fn verified_saved_commit(
+        &self,
+        intent_id: &str,
+        identity: &KernelIdentity,
+        transport: &HttpTransport,
+        trusted_owner_key: &str,
+        pins: &SecureCommitRequestPins<'_>,
+    ) -> Result<(VerifiedPreparedSecureRequest, Vec<u8>), SecureIntentError> {
+        if transport.trusted_origin() != self.document.trusted_origin
+            || identity.actor_id() != self.document.actor_id
+            || pins.actor_id != identity.actor_id()
+            || pins.signing_key != identity.key_id()
+        {
+            return Err(SecureIntentError::Incompatible);
+        }
+        let row = self
+            .document
+            .rows
+            .get(intent_id)
+            .ok_or(SecureIntentError::NotFound)?;
+        let request = self.exact_request(intent_id)?;
+        let proof = verify_prepared_secure_commit_request(&request, &row.path, pins)?;
+        if proof.command_id() != intent_id
+            || proof.action_id() != row.action_id
+            || Some(proof.workspace_id()) != row.workspace_id.as_deref()
+            || row.trusted_owner_key.as_deref() != Some(trusted_owner_key)
+            || proof.actor_id() != self.document.actor_id
+            || proof.signing_key() != identity.key_id()
+            || proof.path() != row.path
+            || proof.request_sha256() != row.request_sha256
+            || proof.commit_digest() != row.intent_digest
+        {
+            return Err(SecureIntentError::Incompatible);
+        }
+        Ok((proof, request))
+    }
+
+    /// Preserve PENDING across every HTTP result. An observed 2xx response is
+    /// still untrusted until complete signed journal replay establishes effect.
+    pub(crate) async fn submit_saved_commit(
+        &mut self,
+        intent_id: &str,
+        identity: &KernelIdentity,
+        transport: &HttpTransport,
+        trusted_owner_key: &str,
+        pins: &SecureCommitRequestPins<'_>,
+        cancel: &CancellationToken,
+    ) -> Result<PendingSecureIntent, SecureIntentError> {
+        let (proof, request) =
+            self.verified_saved_commit(intent_id, identity, transport, trusted_owner_key, pins)?;
+        let response = transport.post_exact(proof.path(), request, cancel).await?;
+        if !response.wire.is_empty() {
+            self.observe_response(intent_id, &response.wire)?;
+        }
+        if !(200..300).contains(&response.status) {
+            return Err(SecureIntentError::ServerRejected(response.status));
+        }
+        self.document
+            .rows
+            .get(intent_id)
+            .map(|row| summary(intent_id, row))
+            .ok_or(SecureIntentError::Incompatible)
+    }
+
     pub(crate) fn path(&self, intent_id: &str) -> Result<&str, SecureIntentError> {
         Ok(&self
             .document
@@ -332,9 +414,273 @@ fn valid_row(id: &str, row: &Entry) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use peerwork_core::{
+        canonical::{canonical, Path as CanonicalPath},
+        crypto::sign_canonical,
+    };
+    use serde_json::json;
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    fn signed_append(
+        identity: &KernelIdentity,
+        workspace: &str,
+        policy: &str,
+        previous: &str,
+    ) -> (String, String, Vec<u8>, String) {
+        let command = "c".repeat(43);
+        let action = "discussion.post".to_string();
+        let payload = json!({
+            "v":3,"workspace_id":workspace,"sequence":2,"previous":previous,
+            "policy_hash":policy,"epoch":1,"actor_id":identity.actor_id(),
+            "signing_key":identity.key_id(),"command_id":command,"action_id":action,
+            "instance_id":"i".repeat(43),"issued_at":1_700_000_000_000_u64,
+            "delegation":null,"mode":"PRIVATE","protocol_format_ceiling":1,
+            "body":{"v":1,"alg":"A256GCM","nonce":base64url(&[1;12]),"chunks":[base64url(&[2;16])]}
+        });
+        let signature = sign_canonical(
+            "peerwork.secure.commit.v3",
+            &payload,
+            identity.signing_key(),
+        )
+        .unwrap();
+        let commit = json!({"payload":payload,"signature":signature});
+        let digest = sha256_hex(
+            canonical(&commit, CanonicalPath::SecureArtifact)
+                .unwrap()
+                .as_bytes(),
+        );
+        let request = serde_json::to_vec(&json!({"commit":commit})).unwrap();
+        (command, action, request, digest)
+    }
+
+    #[test]
+    fn saved_signed_commit_requires_every_immutable_row_pin_before_transport() {
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let identity = KernelIdentity::create(&root.path().join("identity.state")).unwrap();
+        let workspace = "w".repeat(43);
+        let policy = "a".repeat(64);
+        let previous = "b".repeat(64);
+        let (id, action, request, digest) =
+            signed_append(&identity, &workspace, &policy, &previous);
+        let mut config = crate::transport::TransportConfig::new("http://127.0.0.1:12345/");
+        config.allow_loopback_http = true;
+        let transport = HttpTransport::new(config).unwrap();
+        let path = format!("/api/workspace/v1/secure/workspaces/{workspace}/commits");
+        let pins = SecureCommitRequestPins {
+            actor_id: identity.actor_id(),
+            signing_key: identity.key_id(),
+            workspace_id: &workspace,
+            policy_hash: &policy,
+            sequence: 2,
+            previous: Some(&previous),
+            epoch: 1,
+            mode: "PRIVATE",
+            version: 3,
+            protocol_format_ceiling: Some(1),
+        };
+        let mut journal = SecureIntentJournal::open(
+            &root.path().join("intent.state"),
+            transport.trusted_origin(),
+            identity.actor_id(),
+        )
+        .unwrap();
+        journal
+            .prepare(SecurePacketInput {
+                intent_id: &id,
+                path: &path,
+                action_id: &action,
+                workspace_id: Some(&workspace),
+                trusted_owner_key: Some(identity.key_id()),
+                intent_digest: &digest,
+                exact_request: &request,
+            })
+            .unwrap();
+        assert!(journal
+            .verified_saved_commit(&id, &identity, &transport, identity.key_id(), &pins)
+            .is_ok());
+        assert!(journal
+            .verified_saved_commit(&id, &identity, &transport, &"x".repeat(43), &pins)
+            .is_err());
+        let bad_pins = SecureCommitRequestPins {
+            policy_hash: &"0".repeat(64),
+            ..pins
+        };
+        assert!(journal
+            .verified_saved_commit(&id, &identity, &transport, identity.key_id(), &bad_pins)
+            .is_err());
+        let mut wrong = SecureIntentJournal::open(
+            &root.path().join("wrong.state"),
+            transport.trusted_origin(),
+            identity.actor_id(),
+        )
+        .unwrap();
+        wrong
+            .prepare(SecurePacketInput {
+                intent_id: &id,
+                path: &path,
+                action_id: "wiki.revise",
+                workspace_id: Some(&workspace),
+                trusted_owner_key: Some(identity.key_id()),
+                intent_digest: &digest,
+                exact_request: &request,
+            })
+            .unwrap();
+        assert!(wrong
+            .verified_saved_commit(&id, &identity, &transport, identity.key_id(), &pins)
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn lost_http_reply_then_restart_retries_identical_verified_packet() {
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let identity = KernelIdentity::create(&root.path().join("identity.state")).unwrap();
+        let workspace = "w".repeat(43);
+        let policy = "a".repeat(64);
+        let previous = "b".repeat(64);
+        let (id, action, request, digest) =
+            signed_append(&identity, &workspace, &policy, &previous);
+        let path = format!("/api/workspace/v1/secure/workspaces/{workspace}/commits");
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}/", listener.local_addr().unwrap());
+        let expected = request.clone();
+        let expected_path = path.clone();
+        let server = tokio::spawn(async move {
+            for attempt in 0..2 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut received = Vec::new();
+                let body_start = loop {
+                    let mut chunk = [0u8; 2048];
+                    let count = socket.read(&mut chunk).await.unwrap();
+                    assert!(count > 0);
+                    received.extend_from_slice(&chunk[..count]);
+                    if let Some(pos) = received.windows(4).position(|w| w == b"\r\n\r\n") {
+                        break pos + 4;
+                    }
+                };
+                let header = std::str::from_utf8(&received[..body_start]).unwrap();
+                assert!(header.starts_with(&format!("POST {expected_path} HTTP/1.1")));
+                let content_length = header
+                    .lines()
+                    .find_map(|line| {
+                        line.to_ascii_lowercase()
+                            .strip_prefix("content-length: ")
+                            .and_then(|value| value.trim().parse::<usize>().ok())
+                    })
+                    .unwrap();
+                assert_eq!(content_length, expected.len());
+                while received.len() - body_start < content_length {
+                    let mut chunk = [0u8; 2048];
+                    let count = socket.read(&mut chunk).await.unwrap();
+                    assert!(count > 0);
+                    received.extend_from_slice(&chunk[..count]);
+                }
+                assert_eq!(
+                    &received[body_start..body_start + content_length],
+                    expected.as_slice()
+                );
+                if attempt == 1 {
+                    socket
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\n{\"ok\":1}")
+                        .await
+                        .unwrap();
+                    socket.shutdown().await.unwrap();
+                }
+                // First request was fully applied at the socket, then its reply
+                // disappeared. No claim about a Peerwork service effect follows.
+            }
+        });
+        let mut config = crate::transport::TransportConfig::new(origin);
+        config.allow_loopback_http = true;
+        let transport = HttpTransport::new(config).unwrap();
+        let pins = SecureCommitRequestPins {
+            actor_id: identity.actor_id(),
+            signing_key: identity.key_id(),
+            workspace_id: &workspace,
+            policy_hash: &policy,
+            sequence: 2,
+            previous: Some(&previous),
+            epoch: 1,
+            mode: "PRIVATE",
+            version: 3,
+            protocol_format_ceiling: Some(1),
+        };
+        let journal_path = root.path().join("intent.state");
+        let mut journal = SecureIntentJournal::open(
+            &journal_path,
+            transport.trusted_origin(),
+            identity.actor_id(),
+        )
+        .unwrap();
+        journal
+            .prepare(SecurePacketInput {
+                intent_id: &id,
+                path: &path,
+                action_id: &action,
+                workspace_id: Some(&workspace),
+                trusted_owner_key: Some(identity.key_id()),
+                intent_digest: &digest,
+                exact_request: &request,
+            })
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        let first = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            journal.submit_saved_commit(
+                &id,
+                &identity,
+                &transport,
+                identity.key_id(),
+                &pins,
+                &cancellation,
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            first,
+            Err(SecureIntentError::Transport(
+                TransportError::SubmittedUncertain
+            ))
+        ));
+        assert_eq!(journal.pending()[0].observed_responses, 0);
+        drop(journal);
+        let mut reopened = SecureIntentJournal::open(
+            &journal_path,
+            transport.trusted_origin(),
+            identity.actor_id(),
+        )
+        .unwrap();
+        let second = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            reopened.submit_saved_commit(
+                &id,
+                &identity,
+                &transport,
+                identity.key_id(),
+                &pins,
+                &cancellation,
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(second.intent_id, id);
+        assert_eq!(second.observed_responses, 1);
+        assert_eq!(
+            reopened.exact_observations(&id).unwrap(),
+            vec![b"{\"ok\":1}".to_vec()]
+        );
+        assert_eq!(reopened.pending().len(), 1);
+        server.await.unwrap();
+    }
 
     #[test]
     fn exact_packet_and_untrusted_response_survive_restart_without_acceptance() {
