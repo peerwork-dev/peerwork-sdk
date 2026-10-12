@@ -112,6 +112,19 @@ impl SecureLifecycle {
         &self.owner_key_id
     }
 
+    pub(crate) fn owner_actor_id(&self) -> &str {
+        &self.owner_actor_id
+    }
+
+    /// A staged genesis key may author only the first BOOTSTRAP request. It
+    /// remains pending until complete signed replay proves activation.
+    pub(crate) fn pending_bootstrap_key(&self) -> Option<&[u8; 32]> {
+        if self.active.is_some() || self.pending.as_ref()?.epochs().collect::<Vec<_>>() != [1] {
+            return None;
+        }
+        self.pending.as_ref()?.key_at(1)
+    }
+
     /// Only an authenticated active ring may author a new PRIVATE commit.
     /// Pending keys are reserved for a future signed transition proof.
     pub(crate) fn active_key(&self, epoch: u64) -> Option<&[u8; 32]> {

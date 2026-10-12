@@ -10,7 +10,7 @@ use crate::{
     secure_lifecycle::SecureLifecycle,
 };
 use peerwork_core::{
-    prepared_secure_author::{author_private_commit, SecureAuthorError},
+    prepared_secure_author::{author_private_bootstrap, author_private_commit, SecureAuthorError},
     prepared_secure_request::SecureCommitRequestPins,
 };
 use thiserror::Error;
@@ -27,6 +27,70 @@ pub(crate) enum NativePrepareError {
     Author(#[from] SecureAuthorError),
     #[error(transparent)]
     Journal(#[from] SecureIntentError),
+}
+
+/// Stages the initial private key and exact signed `{policy,commit}` request.
+/// A crash after key staging but before request persistence leaves only a
+/// pending key; repeating preparation reuses it. A saved ID is never re-signed.
+/// Policy/object authority and key activation require complete replay later.
+pub(crate) fn prepare_new_owner_bootstrap(
+    journal: &mut SecureIntentJournal,
+    identity: &KernelIdentity,
+    lifecycle: &mut SecureLifecycle,
+    intent_id: &str,
+    policy_wire: &[u8],
+    context_wire: &[u8],
+    operation_wire: &[u8],
+    pins: &SecureCommitRequestPins<'_>,
+) -> Result<PendingSecureIntent, NativePrepareError> {
+    if identity.actor_id() != lifecycle.actor_id()
+        || identity.actor_id() != lifecycle.owner_actor_id()
+        || identity.actor_id() != journal.actor_id()
+        || identity.key_id() != lifecycle.owner_key_id()
+        || pins.actor_id != identity.actor_id()
+        || pins.signing_key != identity.key_id()
+        || pins.workspace_id != lifecycle.workspace_id()
+        || lifecycle.origin() != journal.trusted_origin()
+        || pins.sequence != 1
+        || pins.previous.is_some()
+        || pins.epoch != 1
+        || pins.mode != "PRIVATE"
+    {
+        return Err(NativePrepareError::Context);
+    }
+    if journal.contains_id(intent_id) {
+        return Err(NativePrepareError::Existing);
+    }
+    lifecycle
+        .stage_initial(1)
+        .map_err(|_| NativePrepareError::Context)?;
+    let key = lifecycle
+        .pending_bootstrap_key()
+        .ok_or(NativePrepareError::NoActiveKey)?;
+    let authored = author_private_bootstrap(
+        policy_wire,
+        context_wire,
+        operation_wire,
+        key,
+        identity.signing_key(),
+        pins,
+    )?;
+    let proof = authored.proof();
+    if proof.command_id() != intent_id
+        || proof.workspace_id() != lifecycle.workspace_id()
+        || proof.policy_hash() != pins.policy_hash
+    {
+        return Err(NativePrepareError::Context);
+    }
+    Ok(journal.prepare(SecurePacketInput {
+        intent_id: proof.command_id(),
+        path: proof.path(),
+        action_id: "secure.bootstrap",
+        workspace_id: Some(proof.workspace_id()),
+        trusted_owner_key: Some(identity.key_id()),
+        intent_digest: proof.commit_digest(),
+        exact_request: authored.request_wire(),
+    })?)
 }
 
 /// This only signs and durably stages a new packet. It never sends one. A
@@ -107,6 +171,123 @@ mod tests {
         process::{Child, Command, Stdio},
     };
     use tokio_util::sync::CancellationToken;
+
+    #[test]
+    fn owner_bootstrap_stages_key_and_exact_packet_across_restart() {
+        use peerwork_core::{
+            canonical::{canonical, Path},
+            crypto::{sha256_hex, sign_canonical},
+            secure_recipient::SecretRecipient,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let identity = KernelIdentity::create(&dir.path().join("owner.state")).unwrap();
+        let workspace = base64url(&[41; 32]);
+        let command_id = base64url(&[42; 32]);
+        let origin = "https://example.invalid/";
+        let lifecycle_path = dir.path().join("epoch.state");
+        let journal_path = dir.path().join("intents.state");
+        let mut lifecycle = SecureLifecycle::open(
+            &lifecycle_path,
+            origin,
+            identity.actor_id(),
+            &workspace,
+            identity.actor_id(),
+            identity.key_id(),
+        )
+        .unwrap();
+        let mut journal =
+            SecureIntentJournal::open(&journal_path, origin, identity.actor_id()).unwrap();
+        let cert = SecretRecipient::generate()
+            .unwrap()
+            .certify(identity.signing_key(), 100)
+            .unwrap();
+        let payload = json!({"v":1,"workspace_id":workspace,"owner_id":identity.actor_id(),
+            "signing_key":identity.key_id(),"version":1,"previous_policy":null,
+            "effective_sequence":1,"visibility":"PRIVATE","epoch":1,
+            "members":[{"actor_id":identity.actor_id(),"certificate":cert,"role":"OWNER","scopes":[]}],
+            "issued_at":100});
+        let policy = json!({"signature":sign_canonical("peerwork.secure.policy.v1",&payload,identity.signing_key()).unwrap(),"payload":payload});
+        let policy_hash = sha256_hex(canonical(&policy, Path::SecureArtifact).unwrap().as_bytes());
+        let context = json!({"v":1,"workspace_id":workspace,"sequence":1,"previous":null,
+            "policy_hash":policy_hash,"epoch":1,"actor_id":identity.actor_id(),
+            "signing_key":identity.key_id(),"command_id":command_id,"action_id":"secure.bootstrap",
+            "instance_id":null,"issued_at":100,"delegation":null});
+        let operation = json!({"v":1,"kind":"BOOTSTRAP","input":{},"objects":[]});
+        let pins = SecureCommitRequestPins {
+            actor_id: identity.actor_id(),
+            signing_key: identity.key_id(),
+            workspace_id: &workspace,
+            policy_hash: &policy_hash,
+            sequence: 1,
+            previous: None,
+            epoch: 1,
+            mode: "PRIVATE",
+            version: 1,
+            protocol_format_ceiling: None,
+        };
+        prepare_new_owner_bootstrap(
+            &mut journal,
+            &identity,
+            &mut lifecycle,
+            &command_id,
+            &serde_json::to_vec(&policy).unwrap(),
+            &serde_json::to_vec(&context).unwrap(),
+            &serde_json::to_vec(&operation).unwrap(),
+            &pins,
+        )
+        .unwrap();
+        let exact = journal.exact_request(&command_id).unwrap();
+        assert_eq!(journal.pending()[0].observed_responses, 0);
+        assert_eq!(lifecycle.status().active_epochs, Vec::<u64>::new());
+        assert_eq!(lifecycle.status().pending_epochs, vec![1]);
+        assert!(matches!(
+            prepare_new_owner_bootstrap(
+                &mut journal,
+                &identity,
+                &mut lifecycle,
+                &command_id,
+                &serde_json::to_vec(&policy).unwrap(),
+                &serde_json::to_vec(&context).unwrap(),
+                &serde_json::to_vec(&operation).unwrap(),
+                &pins
+            ),
+            Err(NativePrepareError::Existing)
+        ));
+        drop(journal);
+        drop(lifecycle);
+        let reopened =
+            SecureIntentJournal::open(&journal_path, origin, identity.actor_id()).unwrap();
+        let lifecycle = SecureLifecycle::open(
+            &lifecycle_path,
+            origin,
+            identity.actor_id(),
+            &workspace,
+            identity.actor_id(),
+            identity.key_id(),
+        )
+        .unwrap();
+        assert_eq!(lifecycle.status().pending_epochs, vec![1]);
+        assert!(lifecycle.status().active_epochs.is_empty());
+        assert_eq!(reopened.exact_request(&command_id).unwrap(), exact);
+        let transport = HttpTransport::new(TransportConfig::new(origin)).unwrap();
+        reopened
+            .verified_saved_bootstrap(&command_id, &identity, &transport, &lifecycle)
+            .unwrap();
+        let wrong = SecureLifecycle::open(
+            &dir.path().join("wrong-epoch.state"),
+            origin,
+            identity.actor_id(),
+            &base64url(&[43; 32]),
+            identity.actor_id(),
+            identity.key_id(),
+        )
+        .unwrap();
+        assert!(reopened
+            .verified_saved_bootstrap(&command_id, &identity, &transport, &wrong)
+            .is_err());
+    }
 
     #[test]
     fn native_protected_keys_stage_one_exact_pending_packet_without_reauthoring() {

@@ -4,11 +4,16 @@
 
 use crate::{
     kernel_identity::KernelIdentity,
+    secure_lifecycle::SecureLifecycle,
     secure_state::{SecureStateError, SecureStateStore},
     transport::{HttpTransport, TransportError},
 };
 use peerwork_core::{
     crypto::{base64url, decode_base64url, sha256_hex},
+    prepared_secure_bootstrap::{
+        verify_prepared_owner_bootstrap, BootstrapPins, BootstrapRequestError,
+        VerifiedPreparedBootstrap,
+    },
     prepared_secure_request::{
         verify_prepared_secure_commit_request, PreparedSecureRequestError, SecureCommitRequestPins,
         VerifiedPreparedSecureRequest,
@@ -43,6 +48,8 @@ pub enum SecureIntentError {
     TooLarge,
     #[error(transparent)]
     Proof(#[from] PreparedSecureRequestError),
+    #[error(transparent)]
+    BootstrapProof(#[from] BootstrapRequestError),
     #[error(transparent)]
     Transport(#[from] TransportError),
     #[error("server rejected the saved secure request with HTTP {0}")]
@@ -293,6 +300,77 @@ impl SecureIntentJournal {
     ) -> Result<PendingSecureIntent, SecureIntentError> {
         let (proof, request) =
             self.verified_saved_commit(intent_id, identity, transport, trusted_owner_key, pins)?;
+        let response = transport.post_exact(proof.path(), request, cancel).await?;
+        if !response.wire.is_empty() {
+            self.observe_response(intent_id, &response.wire)?;
+        }
+        if !(200..300).contains(&response.status) {
+            return Err(SecureIntentError::ServerRejected(response.status));
+        }
+        self.document
+            .rows
+            .get(intent_id)
+            .map(|row| summary(intent_id, row))
+            .ok_or(SecureIntentError::Incompatible)
+    }
+
+    /// Reprove every immutable saved bootstrap field before the initial POST
+    /// or an uncertain exact-byte retry. This never authorizes key activation.
+    pub(crate) fn verified_saved_bootstrap(
+        &self,
+        intent_id: &str,
+        identity: &KernelIdentity,
+        transport: &HttpTransport,
+        lifecycle: &SecureLifecycle,
+    ) -> Result<(VerifiedPreparedBootstrap, Vec<u8>), SecureIntentError> {
+        if transport.trusted_origin() != self.document.trusted_origin
+            || identity.actor_id() != self.document.actor_id
+            || lifecycle.origin() != self.document.trusted_origin
+            || lifecycle.actor_id() != identity.actor_id()
+            || lifecycle.owner_actor_id() != identity.actor_id()
+            || lifecycle.owner_key_id() != identity.key_id()
+            || lifecycle.pending_bootstrap_key().is_none()
+        {
+            return Err(SecureIntentError::Incompatible);
+        }
+        let row = self
+            .document
+            .rows
+            .get(intent_id)
+            .ok_or(SecureIntentError::NotFound)?;
+        let request = self.exact_request(intent_id)?;
+        let proof = verify_prepared_owner_bootstrap(
+            &request,
+            &row.path,
+            &BootstrapPins {
+                workspace_id: lifecycle.workspace_id(),
+                owner_actor: identity.actor_id(),
+                owner_key: identity.key_id(),
+            },
+        )?;
+        if proof.command_id() != intent_id
+            || proof.path() != row.path
+            || row.action_id != "secure.bootstrap"
+            || row.workspace_id.as_deref() != Some(proof.workspace_id())
+            || row.trusted_owner_key.as_deref() != Some(identity.key_id())
+            || row.intent_digest != proof.commit_digest()
+            || row.request_sha256 != proof.request_sha256()
+        {
+            return Err(SecureIntentError::Incompatible);
+        }
+        Ok((proof, request))
+    }
+
+    pub(crate) async fn submit_saved_bootstrap(
+        &mut self,
+        intent_id: &str,
+        identity: &KernelIdentity,
+        transport: &HttpTransport,
+        lifecycle: &SecureLifecycle,
+        cancel: &CancellationToken,
+    ) -> Result<PendingSecureIntent, SecureIntentError> {
+        let (proof, request) =
+            self.verified_saved_bootstrap(intent_id, identity, transport, lifecycle)?;
         let response = transport.post_exact(proof.path(), request, cancel).await?;
         if !response.wire.is_empty() {
             self.observe_response(intent_id, &response.wire)?;
