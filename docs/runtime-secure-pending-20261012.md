@@ -1128,3 +1128,28 @@ The assignment helper does not authenticate those inputs or validate final
 schema, head, effect, policy, or journal state; core's signed replay consumer
 is a separate checkpoint. No Agent entry workflow or final business effect
 ran, so both remain unverified for this helper.
+
+The private secure-journal transport handoff is source-committed at
+`cc3a2ae`. `SecureJournalRead::authenticated_pages` accepts only the
+configured-origin `KernelClient` and protected local identity, checks their
+discovery/actor/key continuity, requires a nonempty completed page sequence,
+and scans the persisted exact-byte chain before it privately constructs an
+`AuthenticatedJournalPages` handle. The handle exposes pinned origin,
+identity, authority, workspace, discovery wire and canonical checkpoint to
+the sealed verifier; its callback reopens every exact page and rechecks the
+captured completed chain after the callback returns. Callback bytes remain
+provisional until that return. The older raw page iterator is now private to
+the reader, so the separate core-owned consumer must use this provenance
+gate. Source SHA-256
+`c2050d22f24ce8666b1e730205fdcd0679adb5780d628bbbaf7255b4c8b5d5c4`,
+lock SHA-256 `9dc2d3f2ad77be15366633af890168611e8d62a7f38de646970dfc4cedc8d4d5`.
+Rust 1.89 locked-offline `cargo test -p peerwork-runtime --lib
+chain_head_ignores_uncommitted_orphan_and_detects_page_mutation --offline
+--locked` passed 1/1 on the committed source. The unit fixture rejects an
+incomplete first page, accepts a complete two-page stream, then rejects page
+mutation after handle construction. Its first run failed only an obsolete
+`<1024` index-size assertion after adding a real discovery payload; the
+corrected `<2048` bound passed. This is a protected transport snapshot, not
+signed policy/commit replay, final action effect, or Agent workflow
+compliance. The core sealed consumer and actual-service handoff are separate
+verification checkpoints.
