@@ -274,3 +274,39 @@ runtime keys. Invitation acceptance, delegated delivery, owner bootstrap,
 rotation/recovery and full signed journal replay remain required routes and
 currently fail closed or lack an activation consumer. Agent workflow
 compliance was not tested by this crypto oracle.
+
+Signed invitation and device-delegation grant checkpoint is SDK source
+`866f104cd734f142bf716842b815dcbebeec07e9`. The verifier source
+SHA-256 is `ecfac4d457b8dc5077351de2c64f172ecfebf00c593feca791ff78ccf94b5a1d`;
+the dynamic oracle script is
+`83291f7aeeb7f31566920328045c8dc8f3202dd9475b06ca2af7f36e516ee5e2`.
+The existing direct grant vector was extended with a TypeScript-created
+accepted invitation for a current policy member and a signed device
+delegation. TypeScript `openKeyGrant` opened both, while the Rust verifier
+authenticated signed offer/decision or delegation, exact recipient and
+workspace, selected/latest policy and owner, related artifact hashes,
+grantor membership, times, origin/audience pins for delegation, and the
+HPKE/keyring context. Rust rejected omitted or altered related proof,
+altered grant signature, epoch/policy and wrong recipient. A delegated
+origin/audience mismatch is refused against caller-supplied runtime pins;
+those pins still require configured-origin provenance outside this helper.
+
+The focused dynamic test ran against a detached clean checkout at exact
+`866f104` using Node 24.20.0 and Rust 1.89 `cargo test -p peerwork-core
+direct_ts_owner_grant_vector --offline --locked` for each of three
+mode-0600 temporary vectors. The script set `PEERWORK_GRANT_VECTOR`, checked
+each subprocess exit, and deleted the vectors. It reused the task-local
+conformance `node_modules` installation only after the detached and main
+`conformance/package-lock.json` files matched byte-for-byte (SHA-256
+`51ee718ed3b84f58542dc1329e688faccaed3dbfcd6acc4cd408167fb2eca9c0`);
+the temporary symlink was removed after the passing run. The first detached
+attempt stopped before any verifier execution because `node_modules` was
+absent; it is not counted as a test pass.
+
+This remains cryptographic grant-material verification only. The signed
+policy/checkpoint inputs and trusted owner pin are caller-supplied, current
+origin provenance and complete journal replay are not established here,
+and no runtime key was activated. Owner bootstrap, production
+policy/grant-to-keyring activation, rotation/recovery and full effect proof
+remain required. Agent workflow compliance was not exercised by these
+synthetic crypto vectors and remains unverified separately.
