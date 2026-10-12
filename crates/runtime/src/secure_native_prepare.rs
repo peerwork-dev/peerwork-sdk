@@ -58,17 +58,62 @@ pub(crate) fn prepare_default_owner_workspace(
     created: u64,
     instance_ids: &[String; 6],
 ) -> Result<PendingSecureIntent, NativePrepareError> {
+    prepare_private_owner_workspace_with_options(
+        journal,
+        identity,
+        recipient,
+        lifecycle,
+        intent_id,
+        name,
+        created,
+        instance_ids,
+        false,
+        b"[]",
+    )
+}
+
+pub(crate) fn prepare_private_owner_workspace_with_options(
+    journal: &mut SecureIntentJournal,
+    identity: &KernelIdentity,
+    recipient: &crate::secure_recipient_state::RecipientState,
+    lifecycle: &mut SecureLifecycle,
+    intent_id: &str,
+    name: &str,
+    created: u64,
+    instance_ids: &[String; 6],
+    structured: bool,
+    keep_encrypted_wire: &[u8],
+) -> Result<PendingSecureIntent, NativePrepareError> {
     if journal.contains_id(intent_id) {
         return Err(NativePrepareError::Existing);
     }
     let workspace = lifecycle.workspace_id().to_owned();
     let built =
         owner_bootstrap_objects(name, &workspace, identity.actor_id(), created, instance_ids)?;
-    let payload = json!({"v":3,"protocol_format_ceiling":1,"structure_mode":"NONE",
+    let structure = if structured {
+        let objects = serde_json::to_vec(&built.operation()["objects"])
+            .map_err(|_| NativePrepareError::Context)?;
+        let canonical =
+            derive_genesis_structure_policy_with_keep_encrypted(&objects, keep_encrypted_wire)
+                .map_err(|_| NativePrepareError::Context)?;
+        Some(
+            serde_json::from_str::<serde_json::Value>(&canonical)
+                .map_err(|_| NativePrepareError::Context)?,
+        )
+    } else if keep_encrypted_wire == b"[]" {
+        None
+    } else {
+        return Err(NativePrepareError::Context);
+    };
+    let mut payload = json!({"v":3,"protocol_format_ceiling":1,
+        "structure_mode":if structured {"STRUCTURED"} else {"NONE"},
         "workspace_id":workspace,"owner_id":identity.actor_id(),"signing_key":identity.key_id(),
         "version":1,"previous_policy":null,"effective_sequence":1,"visibility":"PRIVATE",
         "epoch":1,"members":[{"actor_id":identity.actor_id(),"certificate":recipient.certificate(),
             "role":"OWNER","scopes":built.scopes()}],"issued_at":created});
+    if let Some(structure) = structure {
+        payload["structure"] = structure;
+    }
     let policy = json!({"signature":sign_canonical("peerwork.secure.policy.v3",&payload,
         identity.signing_key()).map_err(|_| NativePrepareError::Context)?,"payload":payload});
     let policy_hash = sha256_hex(
@@ -76,10 +121,13 @@ pub(crate) fn prepare_default_owner_workspace(
             .map_err(|_| NativePrepareError::Context)?
             .as_bytes(),
     );
-    let context = json!({"v":3,"workspace_id":workspace,"sequence":1,"previous":null,
+    let mut context = json!({"v":3,"workspace_id":workspace,"sequence":1,"previous":null,
         "policy_hash":policy_hash,"epoch":1,"actor_id":identity.actor_id(),
         "signing_key":identity.key_id(),"command_id":intent_id,"action_id":"secure.bootstrap",
         "instance_id":null,"issued_at":created,"delegation":null,"protocol_format_ceiling":1});
+    if structured {
+        context["structure"] = json!({"v":1,"mode":"DELTA","records":[],"heads":[]});
+    }
     let pins = SecureCommitRequestPins {
         actor_id: identity.actor_id(),
         signing_key: identity.key_id(),
@@ -833,6 +881,171 @@ mod tests {
                 .unwrap()
             )
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn actual_service_native_private_structured_bootstrap_exact_retry() {
+        let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else {
+            return;
+        };
+        let node = std::env::var("PEERWORK_NODE_BIN").unwrap_or_else(|_| "node".into());
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let bridge = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/reference-kernel-server.mjs");
+        let child = Command::new(node)
+            .arg(bridge)
+            .env("PEERWORK_REFERENCE_ROOT", reference_root)
+            .env("PEERWORK_TEST_STATE", root.path())
+            .env("PEERWORK_TEST_BOOTSTRAP", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        struct Stop(Child);
+        impl Drop for Stop {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut child = Stop(child);
+        let mut line = String::new();
+        std::io::BufReader::new(child.0.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        assert!(!line.is_empty(), "reference bridge exited before ready");
+        let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let origin = ready["origin"].as_str().unwrap();
+        let actor = ready["bootstrap"]["actor_id"].as_str().unwrap();
+        let signer = ready["bootstrap"]["signing_key"].as_str().unwrap();
+        let identity = KernelIdentity::import_pkcs8_pem_file(
+            &root.path().join("owner.state"),
+            &root.path().join("synthetic-bootstrap-owner.pem"),
+        )
+        .unwrap();
+        assert_eq!(identity.actor_id(), actor);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let recipient = crate::secure_recipient_state::RecipientState::create(
+            &root.path().join("recipient.state"),
+            &identity,
+            now,
+        )
+        .unwrap();
+        let workspace = base64url(&[142; 32]);
+        let ids: [String; 6] = std::array::from_fn(|i| base64url(&[i as u8 + 143; 32]));
+        let command = base64url(&[151; 32]);
+        let lifecycle_path = root.path().join("epochs.state");
+        let journal_path = root.path().join("intents.state");
+        let mut lifecycle =
+            SecureLifecycle::open(&lifecycle_path, origin, actor, &workspace, actor, signer)
+                .unwrap();
+        let mut journal = SecureIntentJournal::open(&journal_path, origin, actor).unwrap();
+        let mut config = TransportConfig::new(origin);
+        config.allow_loopback_http = true;
+        let transport = HttpTransport::new(config).unwrap();
+        let counts_url = format!("{origin}__test/secure-counts");
+        let counts = || async {
+            serde_json::from_slice::<serde_json::Value>(
+                &reqwest::get(&counts_url)
+                    .await
+                    .unwrap()
+                    .bytes()
+                    .await
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+        let before = counts().await;
+        assert_eq!(before["commits"].as_u64(), Some(0));
+        let built =
+            owner_bootstrap_objects("Native structured private", &workspace, actor, now, &ids)
+                .unwrap();
+        let digest = built.operation()["objects"][1]["id"].as_str().unwrap();
+        let choices = serde_json::to_vec(&json!([{
+            "schema":"discussion.message", "fields":["author"],
+            "protocol_digest":digest,
+        }]))
+        .unwrap();
+        prepare_private_owner_workspace_with_options(
+            &mut journal,
+            &identity,
+            &recipient,
+            &mut lifecycle,
+            &command,
+            "Native structured private",
+            now,
+            &ids,
+            true,
+            &choices,
+        )
+        .unwrap();
+        let exact = journal.exact_request(&command).unwrap();
+        let packet: serde_json::Value = serde_json::from_slice(&exact).unwrap();
+        assert_eq!(packet["policy"]["payload"]["structure_mode"], "STRUCTURED");
+        assert_eq!(packet["policy"]["payload"]["visibility"], "PRIVATE");
+        assert_eq!(packet["commit"]["payload"]["mode"], "PRIVATE");
+        assert_eq!(packet["commit"]["payload"]["structure"]["mode"], "DELTA");
+        assert_eq!(
+            packet["policy"]["payload"]["structure"]["protocols"][0]["schemas"]
+                ["discussion.message"]["fields"]["author"]["protection"],
+            "e2ee"
+        );
+        let (proof, _) = journal
+            .verified_saved_bootstrap(&command, &identity, &transport, &lifecycle)
+            .unwrap();
+        let expected_head = proof.commit_digest().to_owned();
+        assert_eq!(counts().await, before, "preparation must not submit");
+        let first = journal
+            .submit_saved_bootstrap(
+                &command,
+                &identity,
+                &transport,
+                &lifecycle,
+                &CancellationToken::new(),
+            )
+            .await;
+        assert!(
+            matches!(
+                first,
+                Err(SecureIntentError::Transport(
+                    TransportError::SubmittedUncertain
+                ))
+            ),
+            "first post outcome: {first:?}"
+        );
+        drop(journal);
+        drop(lifecycle);
+        let applied = counts().await;
+        assert_eq!(applied["commits"].as_u64(), Some(1));
+        assert_eq!(applied["head_sequence"].as_u64(), Some(1));
+        assert_eq!(applied["head_hash"].as_str(), Some(expected_head.as_str()));
+        let lifecycle =
+            SecureLifecycle::open(&lifecycle_path, origin, actor, &workspace, actor, signer)
+                .unwrap();
+        let mut journal = SecureIntentJournal::open(&journal_path, origin, actor).unwrap();
+        assert_eq!(journal.exact_request(&command).unwrap(), exact);
+        journal
+            .submit_saved_bootstrap(
+                &command,
+                &identity,
+                &transport,
+                &lifecycle,
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            counts().await,
+            applied,
+            "exact same-ID retry must not reapply"
+        );
+        assert_eq!(journal.pending()[0].observed_responses, 1);
     }
 
     #[tokio::test]
