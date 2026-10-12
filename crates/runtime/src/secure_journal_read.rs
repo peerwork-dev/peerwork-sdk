@@ -26,7 +26,6 @@ use tokio_util::sync::CancellationToken;
 
 const MAX_PAGE: usize = 32 * 1024 * 1024;
 const MAX_DOCUMENT: usize = 64 * 1024 * 1024;
-const MAX_SAVED_WIRE: usize = 512 * 1024 * 1024;
 const MAX_SAFE: u64 = 9_007_199_254_740_991;
 
 #[derive(Debug, Error)]
@@ -142,7 +141,6 @@ impl SecureJournalRead {
             || document.key_id != expected.key_id
             || document.authority != expected.authority
             || document.workspace_id != expected.workspace_id
-            || document.pages.len() > MAX_SAVED_WIRE / 128
         {
             return Err(JournalReadError::Incompatible);
         }
@@ -226,17 +224,8 @@ impl SecureJournalRead {
             return Err(JournalReadError::ServerRejected(response.status));
         }
         let facts = validate_page(&response.wire, &self.document.workspace_id, after, last)?;
-        let existing_bytes = self.document.pages.iter().try_fold(0usize, |total, page| {
-            total
-                .checked_add(page.length.ok_or(JournalReadError::Incompatible)?)
-                .ok_or(JournalReadError::TooLarge)
-        })?;
-        check_total_wire_limit(existing_bytes, response.wire.len(), MAX_SAVED_WIRE)?;
         let mut next = self.document.clone();
         let page_index = next.pages.len();
-        let page_store = SecureStateStore::open(&self.page_path(page_index))?;
-        page_store.write_exact(&response.wire)?;
-        drop(page_store);
         next.pages.push(SavedPage {
             after,
             exact_b64: None,
@@ -247,6 +236,9 @@ impl SecureJournalRead {
         if encoded.len() > MAX_DOCUMENT {
             return Err(JournalReadError::TooLarge);
         }
+        let page_store = SecureStateStore::open(&self.page_path(page_index))?;
+        page_store.write_exact(&response.wire)?;
+        drop(page_store);
         self.store.write_exact(&encoded)?;
         self.document = next;
         self.verified_count += facts.commits;
@@ -278,19 +270,12 @@ impl SecureJournalRead {
     fn inspect(&self) -> Result<(Option<PageFacts>, usize), JournalReadError> {
         let mut last: Option<PageFacts> = None;
         let mut count = 0;
-        let mut bytes = 0_usize;
         for (index, saved) in self.document.pages.iter().enumerate() {
             let after = last.as_ref().and_then(|p| p.next).unwrap_or(0);
             if last.as_ref().is_some_and(|p| p.next.is_none()) || saved.after != after {
                 return Err(JournalReadError::Incompatible);
             }
             let wire = self.read_page(index, saved)?;
-            bytes = bytes
-                .checked_add(wire.len())
-                .ok_or(JournalReadError::TooLarge)?;
-            if bytes > MAX_SAVED_WIRE {
-                return Err(JournalReadError::TooLarge);
-            }
             let facts = validate_page(&wire, &self.document.workspace_id, after, last.as_ref())?;
             count += facts.commits;
             last = Some(facts);
@@ -390,21 +375,6 @@ impl SecureJournalRead {
         self.document = next;
         Ok(())
     }
-}
-
-fn check_total_wire_limit(
-    existing: usize,
-    incoming: usize,
-    limit: usize,
-) -> Result<(), JournalReadError> {
-    if existing
-        .checked_add(incoming)
-        .ok_or(JournalReadError::TooLarge)?
-        > limit
-    {
-        return Err(JournalReadError::TooLarge);
-    }
-    Ok(())
 }
 
 fn journal_path(workspace: &str, after: u64, first: Option<&PageFacts>) -> String {
@@ -793,8 +763,6 @@ mod tests {
             reopened.inspect(),
             Err(JournalReadError::Incompatible)
         ));
-        assert!(check_total_wire_limit(7, 4, 10).is_err());
-        assert!(check_total_wire_limit(7, 3, 10).is_ok());
     }
 
     #[test]
