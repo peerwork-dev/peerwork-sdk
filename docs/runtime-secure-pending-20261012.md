@@ -1105,3 +1105,26 @@ generator SHA-256 `644bafabdfb51222382b822b235f31ddced45b5ffc86c6717e179a71b0e9f
 and vectors SHA-256 `176e3ca1180f6f4b70fedbc3df02e7e1eb1106e542f1e99a692120998bdce1df`.
 The separate replay consumer must propagate `code()` before this correction
 closes its signed regression; this helper remains non-authoritative alone.
+
+The private ACTION allocation phase is source-committed at `beb021b`; core
+registered it at `b0e1d55` after the focused test. It takes interpreted
+records, immutable allocation tokens, authenticated prior rows, exact refs,
+and signed context pins, then derives assigned entity IDs/revisions, parent
+links, record/entity slot maps and assigned-record lookup facts. Fifteen
+direct pinned TypeScript `prepareSecureAction` vectors cover plain/new/revise
+records, UTF-16 lone-surrogate `entitySlot` hashing, the asymmetric collision
+order between a new entity and deterministic slot, stale exact refs/head,
+invalid allocation tokens and a valid `selectHead:true` without an entity.
+Rust 1.89 locked-offline `cargo test -p peerwork-core --lib
+secure_action_allocations --offline --locked` passed 1/1 with the same private
+lib registration hunk on disk. Module SHA-256
+`c1faf6d5022226545b86df8b80c17e17f5c314188aaf7c839b9d002bdd968da0`,
+generator SHA-256 `aa48d9228ef2f685aa1bd2d53d8f1d309f3c3509ab252d08f600429088f4ddef`,
+vector SHA-256 `2da31a7bfe6b6c772d5a44ed5979fee5997dbcea3b086ba4bb633a152194d5b7`,
+vendored engine SHA-256
+`f418278a29734baf46627319a23219e12d4c12901fe94498c3113675273ca809`,
+and lock SHA-256 `9dc2d3f2ad77be15366633af890168611e8d62a7f38de646970dfc4cedc8d4d5`.
+The assignment helper does not authenticate those inputs or validate final
+schema, head, effect, policy, or journal state; core's signed replay consumer
+is a separate checkpoint. No Agent entry workflow or final business effect
+ran, so both remain unverified for this helper.
