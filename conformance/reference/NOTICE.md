@@ -50,6 +50,15 @@ requiring an operator's sibling checkout.
 | `workspace-structure.ts` | `ad4da8cb5503a0b16327e85da35d6d0bb733fa396b4681441fa7f6f6eb82c817` |
 | `workspace-workflow.ts` | `9516f182ba31cd3e2932e0384ad6b5596c361b7b4759c75743131961f778da6e` |
 
+`workspace-presets.ts` is an additional byte-for-byte Apache-2.0 source from
+the tracked integration commit `f828b6c50a0a58d1e718af90f653b214adcc3328`
+at `src/workspace-presets.ts` (SHA-256
+`2e85ed64b4ff63737cfe5fc2fd47f270dc8bb488533a5a287a0270d5702223bd`).
+It supplies the six collaboration manifests used by that commit's owner-create
+flow. `generate-bootstrap-presets.mjs` evaluates this pinned development-time
+source and writes `bootstrap-presets.json`; Rust embeds the resulting data and
+does not invoke Node when an SDK consumer creates a workspace.
+
 `conformance/package-lock.json` pins Node package tarball URLs and integrity
 digests for esbuild `0.28.2`, hpke `1.1.7`, zod `4.5.4`,
 `@noble/hashes` `2.3.0` (integrity
