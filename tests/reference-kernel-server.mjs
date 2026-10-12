@@ -62,15 +62,27 @@ if (compiledFiles.length !== 204 || compiledDigest.digest('hex') !== '6de57ae9bb
 const {serve} = await import(pathToFileURL(requireFromReference.resolve('@hono/node-server')).href);
 const {openKernel, WorkspaceKernel} = await import(pathToFileURL(join(root, 'dist-workspace/src/workspace-kernel.js')).href);
 const {createWorkspaceControlApp} = await import(pathToFileURL(join(root, 'dist-workspace/src/workspace-http.js')).href);
+let catalogAdapter;
+if (process.env.PEERWORK_TEST_CATALOG === '1') {
+  const packageModule = await import(pathToFileURL(join(root, 'dist-workspace/src/protocol-package.js')).href);
+  const compiler = await import(pathToFileURL(join(root, 'dist-workspace/src/protocol-compiler.js')).href);
+  catalogAdapter = {
+    parseBytes: packageModule.parseProtocolPackageBytes,
+    canonicalBytes: packageModule.canonicalProtocolPackageBytes,
+    digest: packageModule.digestProtocolPackage,
+    inspect: pkg => packageModule.inspectProtocolPackage(pkg.bundle),
+    compile: compiler.compileProtocolPackage,
+  };
+}
 const db = openKernel(join(state, 'control.sqlite'), 'reference-kernel');
-const kernel = new WorkspaceKernel(db, 'reference-kernel', Buffer.alloc(32, 71));
+const kernel = new WorkspaceKernel(db, 'reference-kernel', Buffer.alloc(32, 71), Date.now, {}, catalogAdapter);
 const real = serve({fetch: createWorkspaceControlApp(kernel).fetch, hostname: '127.0.0.1', port: 0});
 await new Promise(resolve => real.once('listening', resolve));
 const realOrigin = `http://127.0.0.1:${real.address().port}`;
 let dropFirstPost = true;
 const firstPostMode = process.env.PEERWORK_TEST_FIRST_POST_MODE || 'drop';
 const firstPostDelayMs = Number(process.env.PEERWORK_TEST_FIRST_POST_DELAY_MS || 0);
-if (!['drop', 'delay'].includes(firstPostMode) || !Number.isSafeInteger(firstPostDelayMs) || firstPostDelayMs < 0 || firstPostDelayMs > 10000)
+if (!['drop', 'delay', 'normal'].includes(firstPostMode) || !Number.isSafeInteger(firstPostDelayMs) || firstPostDelayMs < 0 || firstPostDelayMs > 10000)
   throw new Error('invalid first POST fixture mode or delay');
 const proxy = createServer(async (request, response) => {
   try {
@@ -83,6 +95,21 @@ const proxy = createServer(async (request, response) => {
       };
       response.writeHead(200, {'content-type': 'application/json'});
       response.end(JSON.stringify(counts));
+      return;
+    }
+    if (request.url === '/__test/catalog-counts') {
+      const totals = {
+        commands: db.prepare('SELECT count(*) n FROM commands').get().n,
+        namespaces: db.prepare('SELECT count(*) n FROM catalog_namespaces').get().n,
+        uploads: db.prepare('SELECT count(*) n FROM catalog_uploads').get().n,
+        ready_uploads: db.prepare("SELECT count(*) n FROM catalog_uploads WHERE state='READY'").get().n,
+        consumed_uploads: db.prepare("SELECT count(*) n FROM catalog_uploads WHERE state='CONSUMED'").get().n,
+        chunks: db.prepare('SELECT count(*) n FROM catalog_upload_chunks').get().n,
+        packages: db.prepare('SELECT count(*) n FROM catalog_packages').get().n,
+        outbox: db.prepare('SELECT count(*) n FROM catalog_outbox').get().n,
+      };
+      response.writeHead(200, {'content-type': 'application/json'});
+      response.end(JSON.stringify(totals));
       return;
     }
     const chunks = [];

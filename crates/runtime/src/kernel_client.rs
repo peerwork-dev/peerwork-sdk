@@ -9,8 +9,10 @@ use crate::{
 };
 use peerwork_core::discovery::{parse_discovery_wire, ParsedDiscovery};
 use peerwork_core::prepared_command::prepare_signed_command_wire;
-use peerwork_core::receipt_wire::VerifiedCommandResponse;
+use peerwork_core::prepared_command::VerifiedPreparedCommand;
+use peerwork_core::receipt_wire::{verify_http_response_for_prepared, VerifiedCommandResponse};
 use peerwork_core::wire_json::{parse_wire_json_bounded, WireValue};
+use serde::Serialize;
 use std::path::Path;
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -53,10 +55,40 @@ pub struct KernelAcceptedResult {
     pub event_sequence: Option<u64>,
     pub revision: Option<u64>,
     pub produced_record_ids: Vec<String>,
+    pub catalog: Option<CatalogAcceptedResult>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CatalogAcceptedResult {
+    NamespaceClaim {
+        namespace: String,
+    },
+    UploadBegin {
+        upload_id: String,
+        state: String,
+        expires_at: u64,
+    },
+    UploadChunk {
+        upload_id: String,
+        index: u64,
+        received_bytes: u64,
+        state: String,
+    },
+    PackagePublish {
+        namespace: String,
+        package_id: String,
+        version: String,
+        bundle_digest: String,
+        published: u64,
+    },
 }
 
 impl KernelAcceptedResult {
-    fn from_verified(proof: VerifiedCommandResponse) -> Result<Self, KernelClientError> {
+    fn from_verified(
+        proof: VerifiedCommandResponse,
+        prepared: &VerifiedPreparedCommand,
+    ) -> Result<Self, KernelClientError> {
         let result = parse_wire_json_bounded(
             proof.result_canonical_json().as_bytes(),
             12,
@@ -104,6 +136,79 @@ impl KernelAcceptedResult {
                 .collect::<Result<Vec<_>, _>>()?,
             _ => return Err(KernelClientError::InvalidResult),
         };
+        let command =
+            parse_wire_json_bounded(prepared.command_canonical_json().as_bytes(), 40, 180_000)
+                .map_err(|_| KernelClientError::InvalidResult)?;
+        let action = required_text(&command, "action_id")?;
+        let body = command
+            .get("body")
+            .ok_or(KernelClientError::InvalidResult)?;
+        let catalog = match action.as_str() {
+            "catalog.namespace.claim" => {
+                let namespace = required_text(&result, "namespace")?;
+                require_equal(&namespace, &required_text(body, "namespace")?)?;
+                require_equal(&namespace, prepared.actor_id())?;
+                require_equal(
+                    &required_text(&result, "owner_actor_id")?,
+                    prepared.actor_id(),
+                )?;
+                Some(CatalogAcceptedResult::NamespaceClaim { namespace })
+            }
+            "catalog.upload.begin" => {
+                let upload_id = required_text(&result, "upload_id")?;
+                require_equal(&upload_id, &required_text(body, "upload_id")?)?;
+                require_equal(&required_text(&result, "state")?, "STAGING")?;
+                Some(CatalogAcceptedResult::UploadBegin {
+                    upload_id,
+                    state: "STAGING".into(),
+                    expires_at: required_u64(&result, "expires_at")?,
+                })
+            }
+            "catalog.upload.chunk" => {
+                let upload_id = required_text(&result, "upload_id")?;
+                require_equal(&upload_id, &required_text(body, "upload_id")?)?;
+                let index = required_u64(&result, "index")?;
+                if index != required_u64(body, "index")? {
+                    return Err(KernelClientError::InvalidResult);
+                }
+                let received_bytes = required_u64(&result, "received_bytes")?;
+                if received_bytes
+                    != required_u64(body, "offset")?
+                        .checked_add(required_u64(body, "byte_length")?)
+                        .ok_or(KernelClientError::InvalidResult)?
+                {
+                    return Err(KernelClientError::InvalidResult);
+                }
+                let state = required_text(&result, "state")?;
+                if !matches!(state.as_str(), "STAGING" | "READY") {
+                    return Err(KernelClientError::InvalidResult);
+                }
+                Some(CatalogAcceptedResult::UploadChunk {
+                    upload_id,
+                    index,
+                    received_bytes,
+                    state,
+                })
+            }
+            "catalog.package.publish" => {
+                let namespace = required_text(&result, "namespace")?;
+                require_equal(&namespace, prepared.actor_id())?;
+                let package_id = required_text(&result, "package_id")?;
+                require_equal(&package_id, &required_text(body, "package_id")?)?;
+                let version = required_text(&result, "version")?;
+                require_equal(&version, &required_text(body, "version")?)?;
+                let bundle_digest = required_text(&result, "bundle_digest")?;
+                require_equal(&bundle_digest, &required_text(body, "bundle_digest")?)?;
+                Some(CatalogAcceptedResult::PackagePublish {
+                    namespace,
+                    package_id,
+                    version,
+                    bundle_digest,
+                    published: required_u64(&result, "published")?,
+                })
+            }
+            _ => None,
+        };
         Ok(Self {
             command_id: proof.command_id().to_owned(),
             workspace_id: proof.workspace_id().map(str::to_owned),
@@ -112,7 +217,34 @@ impl KernelAcceptedResult {
             event_sequence: proof.event_sequence(),
             revision,
             produced_record_ids,
+            catalog,
         })
+    }
+}
+
+fn required_text(value: &WireValue, field: &str) -> Result<String, KernelClientError> {
+    value
+        .get(field)
+        .and_then(WireValue::as_string)
+        .ok_or(KernelClientError::InvalidResult)
+}
+
+fn required_u64(value: &WireValue, field: &str) -> Result<u64, KernelClientError> {
+    match value.get(field) {
+        Some(WireValue::Number(n))
+            if n.is_finite() && *n >= 0.0 && *n <= 9_007_199_254_740_991.0 && n.fract() == 0.0 =>
+        {
+            Ok(*n as u64)
+        }
+        _ => Err(KernelClientError::InvalidResult),
+    }
+}
+
+fn require_equal(actual: &str, expected: &str) -> Result<(), KernelClientError> {
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(KernelClientError::InvalidResult)
     }
 }
 
@@ -261,7 +393,7 @@ impl KernelClient {
             .accepted_response(&saved, self.discovery.receipt_public_key())?
         {
             Some(verified) => Ok(Some(KernelOperationStatus::Accepted(
-                KernelAcceptedResult::from_verified(verified)?,
+                KernelAcceptedResult::from_verified(verified, &saved.proof)?,
             ))),
             None => Ok(Some(KernelOperationStatus::Pending)),
         }
@@ -283,7 +415,7 @@ impl KernelClient {
             .journal
             .accepted_response(&saved, self.discovery.receipt_public_key())?
         {
-            return KernelAcceptedResult::from_verified(verified);
+            return KernelAcceptedResult::from_verified(verified, &saved.proof);
         }
         let response = self
             .transport
@@ -292,11 +424,19 @@ impl KernelClient {
         if !(200..300).contains(&response.status) {
             return Err(KernelClientError::ServerRejected(response.status));
         }
-        KernelAcceptedResult::from_verified(self.journal.record_verified_response(
+        let proof = verify_http_response_for_prepared(
+            &response.wire,
+            &saved.proof,
+            self.discovery.receipt_public_key(),
+        )
+        .map_err(|_| KernelClientError::Store(JournalError::InvalidReceipt))?;
+        let public = KernelAcceptedResult::from_verified(proof, &saved.proof)?;
+        self.journal.record_verified_response(
             &saved,
             &response.wire,
             self.discovery.receipt_public_key(),
-        )?)
+        )?;
+        Ok(public)
     }
 }
 
@@ -444,7 +584,7 @@ mod tests {
             base64url(&signing.sign(input.as_bytes()).to_bytes())
         );
         let body = canonical(&json!({"jws":jws}), CanonicalPath::COMMAND).unwrap();
-        let result = json!({"workspace_id":null,"event_sequence":null,"revision":null});
+        let result = json!({"namespace":actor,"owner_actor_id":actor});
         let result_digest = sha256_hex(
             canonical(&result, CanonicalPath::KERNEL)
                 .unwrap()

@@ -47,6 +47,7 @@ fn accepted_json(result: KernelAcceptedResult) -> serde_json::Value {
         "event_sequence": result.event_sequence,
         "revision": result.revision,
         "produced_record_ids": result.produced_record_ids,
+        "catalog": result.catalog,
     })
 }
 
