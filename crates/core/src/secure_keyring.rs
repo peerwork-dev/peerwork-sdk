@@ -252,6 +252,7 @@ fn wipe_wire(value: &mut WireValue) {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::path::Path;
 
     #[test]
     fn strict_epoch_history_and_rotation() {
@@ -279,5 +280,41 @@ mod tests {
             SecretKeyring::parse_wire(br#"{"v":1,"workspace_id":"bad","keys":[]}"#),
             Err(KeyringError::Invalid)
         ));
+    }
+
+    /// Opt-in differential bridge. The Node driver supplies only fresh
+    /// synthetic fixture material in a disposable protected directory and
+    /// checks the emitted native box with the pinned TypeScript decryptor.
+    #[test]
+    fn tracked_ts_keyring_hpke_cross_open() {
+        let Ok(input_path) = std::env::var("PEERWORK_KEYRING_VECTOR_IN") else {
+            return;
+        };
+        let output_path = std::env::var("PEERWORK_KEYRING_VECTOR_OUT").unwrap();
+        let input: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(Path::new(&input_path)).unwrap()).unwrap();
+        let workspace = input["workspace_id"].as_str().unwrap();
+        let context_wire = serde_json::to_vec(&input["context"]).unwrap();
+        let keyring_wire = serde_json::to_vec(&input["keyring"]).unwrap();
+        let recipient: RecipientPublicJwk =
+            serde_json::from_value(input["recipient_public"].clone()).unwrap();
+        let private = Zeroizing::new(
+            URL_SAFE_NO_PAD
+                .decode(input["recipient_private"].as_str().unwrap())
+                .unwrap(),
+        );
+        let ts_box: KeyBox = serde_json::from_value(input["ts_box"].clone()).unwrap();
+        let imported = SecretKeyring::parse_wire(&keyring_wire).unwrap();
+        let opened = SecretKeyring::open_from(&private, &ts_box, &context_wire, workspace).unwrap();
+        assert_eq!(
+            opened.epochs().collect::<Vec<_>>(),
+            imported.epochs().collect::<Vec<_>>()
+        );
+        for epoch in imported.epochs() {
+            assert_eq!(opened.key_at(epoch), imported.key_at(epoch));
+        }
+        let native_box = imported.seal_to(&recipient, &context_wire).unwrap();
+        let output = serde_json::to_vec(&json!({"native_box":native_box})).unwrap();
+        std::fs::write(Path::new(&output_path), output).unwrap();
     }
 }
