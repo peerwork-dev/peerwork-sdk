@@ -4,7 +4,7 @@
 
 use crate::{
     canonical::Path,
-    crypto::{actor_id, base64url, decode_base64url, sha256},
+    crypto::{actor_id, base64url, decode_base64url, sha256, sha256_hex},
     e2ee::{open_content_wire, SealedContent},
     interpreter::{evaluate_action, InterpreterAuth, ResolvedInput},
     secure_chain::{scan_signed_chain_headers, ChainError, CheckpointPin, OwnerPin},
@@ -64,6 +64,7 @@ pub(crate) fn replay_basic_content(
     let mut role_history = RoleHistory::new();
     let mut operations = Vec::with_capacity(commit_wires.len());
     let mut legacy = false;
+    let mut migration_pending = false;
     for wire in commit_wires {
         let mut staged_revisions: HashMap<String, u64> = HashMap::new();
         let commit =
@@ -106,6 +107,12 @@ pub(crate) fn replay_basic_content(
         if !matches!(kind.as_str(), "BOOTSTRAP" | "MIGRATE" | "ACTION" | "ADMIN") {
             return Err(ReplayError::Invalid);
         }
+        if migration_pending && kind != "MIGRATE" {
+            // finishMigration must authenticate the entire batch before any
+            // later operation can observe or act on imported objects.
+            return Err(ReplayError::Invalid);
+        }
+        migration_pending |= kind == "MIGRATE";
         // These are only local preconditions. Full operation evaluation still
         // happens before any trusted journal result may be constructed.
         let input = operation.get("input").ok_or(ReplayError::Invalid)?;
@@ -232,6 +239,9 @@ pub(crate) fn replay_basic_content(
                 .entry(pair_key)
                 .and_modify(|prior| *prior = (*prior).max(revision))
                 .or_insert(revision);
+            if kind != "MIGRATE" && object_kind.iter().copied().eq("protocols".encode_utf16()) {
+                validate_authored_protocol_simple(object, workspace_id)?;
+            }
         }
         for (key, revision) in staged_revisions {
             latest_revisions
@@ -247,21 +257,86 @@ pub(crate) fn replay_basic_content(
         } else {
             None
         };
-        validate_role_policies_with_history(
-            policy.get("payload").ok_or(ReplayError::Invalid)?,
-            &prior_objects,
-            integer(payload, "issued_at")?,
-            instance,
-            &mut role_history,
-        )
-        .map_err(|_| ReplayError::Invalid)?;
+        // The TS replay validates roles only after finishMigration has
+        // inflated and authenticated the complete migration batch. A prefix
+        // can contain only part of an instance/protocol/grant history.
+        if kind != "MIGRATE" {
+            validate_role_policies_with_history(
+                policy.get("payload").ok_or(ReplayError::Invalid)?,
+                &prior_objects,
+                integer(payload, "issued_at")?,
+                instance,
+                &mut role_history,
+            )
+            .map_err(|_| ReplayError::Invalid)?;
+        }
         operations.push(operation);
+    }
+    if migration_pending {
+        // This private helper has no fragment inflation/root/finalization yet.
+        // A validated descriptor prefix cannot stand in for a completed read.
+        return Err(ReplayError::Invalid);
     }
     Ok(ReplayFacts {
         operations,
         object_count: seen_objects.len(),
         legacy,
     })
+}
+
+/// Historical authored protocol binding without composition/package-source
+/// dependencies. The other source formats need their own proof before release.
+fn validate_authored_protocol_simple(
+    object: &WireValue,
+    workspace_id: &str,
+) -> Result<(), ReplayError> {
+    if string(object, "provenance")? != "AUTHOR_SIGNED" || integer(object, "revision")? != 1 {
+        return Err(ReplayError::Invalid);
+    }
+    let id = string(object, "id")?;
+    let value = object.get("value").ok_or(ReplayError::Invalid)?;
+    if id.len() != 64
+        || !id
+            .bytes()
+            .all(|b| b.is_ascii_digit() || matches!(b, b'a'..=b'f'))
+        || string(value, "digest")? != id
+        || string(value, "workspace_id")? != workspace_id
+        || value.get("composition").is_some()
+        || value.get("package_source").is_some()
+    {
+        return Err(ReplayError::Invalid);
+    }
+    let source = decoded_value(value.get("manifest").ok_or(ReplayError::Invalid)?)
+        .map_err(|_| ReplayError::Invalid)?;
+    let resolved = decoded_value(value.get("resolved_manifest").ok_or(ReplayError::Invalid)?)
+        .map_err(|_| ReplayError::Invalid)?;
+    crate::full_manifest::validate_full_manifest(&source).map_err(|_| ReplayError::Invalid)?;
+    crate::full_manifest::validate_full_manifest(&resolved).map_err(|_| ReplayError::Invalid)?;
+    if source.get("format_version").is_some()
+        || resolved.get("format_version").is_some()
+        || source.get("dependencies") != Some(&WireValue::Array(vec![]))
+        || source
+            .get("constraints")
+            .is_some_and(|value| value.object_len() != Some(0))
+        || canonical_wire_value(&source, Path::SecureArtifact).map_err(|_| ReplayError::Invalid)?
+            != canonical_wire_value(&resolved, Path::SecureArtifact)
+                .map_err(|_| ReplayError::Invalid)?
+    {
+        return Err(ReplayError::Invalid);
+    }
+    let source_envelope = fields_object(vec![
+        ("semantics", string_value("peerwork.kernel.v1")),
+        ("manifest", source),
+    ]);
+    let digest = sha256_hex(
+        canonical_wire_value(&source_envelope, Path::SecureArtifact)
+            .map_err(|_| ReplayError::Invalid)?
+            .as_bytes(),
+    );
+    if digest != id {
+        return Err(ReplayError::Invalid);
+    }
+    Ok(())
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -1737,6 +1812,39 @@ fn validate_role_policies_with_history(
         let Some(instance_id) = object.get("id").and_then(WireValue::as_utf16) else {
             continue;
         };
+        // Legacy grants contribute history for their actors even when those
+        // actors are absent from this policy's current member list.
+        for grant in latest.iter().filter(|grant| {
+            grant.get("kind").and_then(WireValue::as_string).as_deref() == Some("grants")
+        }) {
+            let Some(row) = grant.get("value") else {
+                continue;
+            };
+            if row.get("instance_id").and_then(WireValue::as_utf16) != Some(instance_id)
+                || row.get("protocol_digest").and_then(WireValue::as_utf16) != Some(protocol_digest)
+            {
+                continue;
+            }
+            let actor = row
+                .get("actor_id")
+                .and_then(WireValue::as_utf16)
+                .ok_or("LEGACY_GRANT_INVALID")?;
+            let roles = decoded_value(row.get("protocol_roles").ok_or("LEGACY_GRANT_INVALID")?)
+                .map_err(|_| "LEGACY_GRANT_INVALID")?;
+            let WireValue::Array(roles) = roles else {
+                return Err("LEGACY_GRANT_INVALID");
+            };
+            let past = history
+                .entry((
+                    instance_id.to_vec(),
+                    protocol_digest.to_vec(),
+                    actor.to_vec(),
+                ))
+                .or_default();
+            for role in roles {
+                past.insert(role.as_utf16().ok_or("LEGACY_GRANT_INVALID")?.to_vec());
+            }
+        }
         for member in members {
             let Some(actor) = member.get("actor_id").and_then(WireValue::as_utf16) else {
                 continue;
@@ -1747,28 +1855,6 @@ fn validate_role_policies_with_history(
                 actor.to_vec(),
             );
             let mut past = history.get(&key).cloned().unwrap_or_default();
-            for grant in latest.iter().filter(|grant| {
-                grant.get("kind").and_then(WireValue::as_string).as_deref() == Some("grants")
-            }) {
-                let Some(row) = grant.get("value") else {
-                    continue;
-                };
-                if row.get("instance_id").and_then(WireValue::as_utf16) != Some(instance_id)
-                    || row.get("protocol_digest").and_then(WireValue::as_utf16)
-                        != Some(protocol_digest)
-                    || row.get("actor_id").and_then(WireValue::as_utf16) != Some(actor)
-                {
-                    continue;
-                }
-                let roles = decoded_value(row.get("protocol_roles").ok_or("LEGACY_GRANT_INVALID")?)
-                    .map_err(|_| "LEGACY_GRANT_INVALID")?;
-                let WireValue::Array(roles) = roles else {
-                    return Err("LEGACY_GRANT_INVALID");
-                };
-                for role in roles {
-                    past.insert(role.as_utf16().ok_or("LEGACY_GRANT_INVALID")?.to_vec());
-                }
-            }
             let mut roles = HashSet::<Vec<u16>>::new();
             if let Some(WireValue::Array(scopes)) = member.get("scopes") {
                 for scope in scopes {
@@ -2188,6 +2274,60 @@ mod tests {
     }
 
     #[test]
+    fn legacy_grant_history_survives_absent_member_and_superseded_grant() {
+        let wire = |value: Value| {
+            parse_wire_json_js_bounded(&serde_json::to_vec(&value).unwrap(), 32, 64_000).unwrap()
+        };
+        let protocol = wire(json!({
+            "kind":"protocols","id":"p","revision":1,
+            "value":{"digest":"p","manifest":{
+                "role_conflicts":[],"historical_role_conflicts":[["reviewer","approver"]]
+            }}
+        }));
+        let instance = wire(json!({
+            "kind":"instances","id":"i","revision":1,
+            "value":{"protocol_digest":"p"}
+        }));
+        let grant = wire(json!({
+            "kind":"grants","id":"g","revision":1,
+            "value":{"instance_id":"i","protocol_digest":"p",
+                "actor_id":"a","protocol_roles":["reviewer"]}
+        }));
+        let empty_members = wire(json!({"members":[]}));
+        let mut history = RoleHistory::new();
+        validate_role_policies_with_history(
+            &empty_members,
+            &[protocol.clone(), instance.clone(), grant],
+            1,
+            None,
+            &mut history,
+        )
+        .unwrap();
+        assert!(history
+            .get(&(vec![105], vec![112], vec![97]))
+            .is_some_and(|roles| roles.contains(&"reviewer".encode_utf16().collect::<Vec<_>>())));
+
+        let superseding_grant = wire(json!({
+            "kind":"grants","id":"g","revision":2,
+            "value":{"instance_id":"i","protocol_digest":"p",
+                "actor_id":"a","protocol_roles":[]}
+        }));
+        let readmitted = wire(json!({"members":[{
+            "actor_id":"a","scopes":[{"instance_id":"i","protocol_roles":["approver"]}]
+        }]}));
+        assert_eq!(
+            validate_role_policies_with_history(
+                &readmitted,
+                &[protocol, instance, superseding_grant],
+                2,
+                Some(&[105]),
+                &mut history,
+            ),
+            Err("HISTORICAL_ROLE_CONFLICT")
+        );
+    }
+
+    #[test]
     fn pinned_typescript_secure_engine_admin_preflight() {
         let cases = parse_wire_json_js_bounded(
             include_str!("../../../conformance/secure-engine-vectors.json").as_bytes(),
@@ -2292,8 +2432,8 @@ mod tests {
             serde_json::from_str(&canonical_wire_value(value, Path::SecureArtifact).unwrap())
                 .unwrap()
         };
-        let base_prior = to_json(case.get("prior").unwrap());
-        let base_action = to_json(case.get("operation").unwrap());
+        let mut base_prior = to_json(case.get("prior").unwrap());
+        let mut base_action = to_json(case.get("operation").unwrap());
         let owner_keypair = SigningKey::from_bytes(&[92; 32]);
         let owner_key = key_id(&owner_keypair.verifying_key().to_bytes());
         let owner = actor_id(&owner_keypair.verifying_key().to_bytes());
@@ -2302,6 +2442,27 @@ mod tests {
             .unwrap()
             .to_owned();
         let instance = base_prior[1]["id"].as_str().unwrap().to_owned();
+        let manifest = &mut base_prior[0]["value"]["resolved_manifest"];
+        manifest["name"] = json!("test");
+        manifest["display_version"] = json!("1");
+        manifest["semantics"] = json!("peerwork.kernel.v1");
+        manifest["dependencies"] = json!([]);
+        manifest["initial_state"] = json!({"count":0});
+        let raw_manifest = manifest.clone();
+        let protocol_digest = sha256_hex(
+            canonical(
+                &json!({"semantics":"peerwork.kernel.v1","manifest":raw_manifest}),
+                Path::SecureArtifact,
+            )
+            .unwrap()
+            .as_bytes(),
+        );
+        base_prior[0]["id"] = json!(protocol_digest);
+        base_prior[0]["value"]["digest"] = json!(protocol_digest);
+        base_prior[0]["value"]["workspace_id"] = json!(workspace);
+        base_prior[0]["value"]["manifest"] = raw_manifest;
+        base_prior[1]["value"]["protocol_digest"] = json!(protocol_digest);
+        base_action["objects"][0]["value"]["protocol_digest"] = json!(protocol_digest);
         let (_, encryption_public) = DhP256HkdfSha256::gen_keypair();
         let point = encryption_public.to_bytes();
         let encryption = json!({"kty":"EC","crv":"P-256","x":base64url(&point[1..33]),"y":base64url(&point[33..65])});
@@ -2454,6 +2615,16 @@ mod tests {
             base_action.clone(),
             true,
             false
+        )
+        .is_err());
+        let mut changed_raw_manifest = base_prior.clone();
+        changed_raw_manifest[0]["value"]["manifest"]["name"] = json!("changed");
+        assert!(run(
+            "manifest_digest",
+            changed_raw_manifest,
+            base_action.clone(),
+            true,
+            false,
         )
         .is_err());
         let mut historical = base_prior;
