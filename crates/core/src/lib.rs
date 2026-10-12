@@ -13,6 +13,8 @@ mod interpreter;
 mod package_closure;
 #[allow(dead_code)]
 mod package_namespace;
+#[allow(dead_code)]
+mod package_schema;
 pub mod prepared_command;
 #[allow(dead_code)]
 mod prepared_secure_author;
@@ -25,6 +27,8 @@ pub mod receipt;
 pub mod receipt_wire;
 #[allow(dead_code)]
 mod secure_chain;
+pub mod secure_keyring;
+pub mod secure_recipient;
 #[allow(dead_code)]
 mod secure_replay;
 pub mod strict_json;

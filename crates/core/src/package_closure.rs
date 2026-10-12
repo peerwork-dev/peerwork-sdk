@@ -98,6 +98,24 @@ fn json_file(files: &WireValue, path: &str) -> Result<WireValue, ClosureError> {
     safe(&value, 0, &mut nodes)?;
     Ok(value)
 }
+fn schema_error(error: crate::package_schema::PackageSchemaError) -> ClosureError {
+    match error {
+        crate::package_schema::PackageSchemaError::Invalid => ClosureError::Invalid,
+        crate::package_schema::PackageSchemaError::Resource => ClosureError::Resource,
+    }
+}
+fn source_file(files: &WireValue) -> Result<WireValue, ClosureError> {
+    crate::package_schema::normalize_and_validate_source(&json_file(files, "protocol.source.json")?)
+        .map_err(schema_error)
+}
+fn lock_file(files: &WireValue) -> Result<WireValue, ClosureError> {
+    crate::package_schema::normalize_and_validate_lock(&json_file(files, "release.lock.json")?)
+        .map_err(schema_error)
+}
+fn fixture_file(files: &WireValue, path: &str) -> Result<WireValue, ClosureError> {
+    crate::package_schema::normalize_and_validate_fixture(&json_file(files, path)?)
+        .map_err(schema_error)
+}
 fn validate_bundle_basics(bundle: &WireValue) -> Result<(), ClosureError> {
     let files = field(bundle, "files")?;
     let WireValue::Object(entries) = files else {
@@ -122,7 +140,8 @@ fn validate_bundle_basics(bundle: &WireValue) -> Result<(), ClosureError> {
     ] {
         file(files, required)?;
     }
-    let metadata = json_file(files, "package.json")?;
+    let metadata = crate::package_schema::validate_metadata(&json_file(files, "package.json")?)
+        .map_err(schema_error)?;
     if !exact(
         &metadata,
         &[
@@ -159,7 +178,7 @@ fn validate_bundle_basics(bundle: &WireValue) -> Result<(), ClosureError> {
     if !safe_path(&license_file) || files.get(&license_file).is_none() {
         return Err(ClosureError::Invalid);
     }
-    let source = json_file(files, "protocol.source.json")?;
+    let source = source_file(files)?;
     let WireValue::Object(source_fields) = &source else {
         return Err(ClosureError::Invalid);
     };
@@ -220,7 +239,7 @@ fn validate_bundle_basics(bundle: &WireValue) -> Result<(), ClosureError> {
             }
         }
     }
-    let lock = json_file(files, "release.lock.json")?;
+    let lock = lock_file(files)?;
     let source_format = field(&source, "format")?
         .as_string()
         .ok_or(ClosureError::Invalid)?;
@@ -287,7 +306,7 @@ fn validate_bundle_basics(bundle: &WireValue) -> Result<(), ClosureError> {
         let path = String::from_utf16(path).map_err(|_| ClosureError::Invalid)?;
         if path.starts_with("fixtures/") && path.ends_with(".json") {
             fixture_count += 1;
-            let fixture = json_file(files, &path)?;
+            let fixture = fixture_file(files, &path)?;
             let id = scalar(field(&fixture, "id")?)?;
             if !fixture_ids.insert(id) {
                 return Err(ClosureError::Invalid);
@@ -1791,8 +1810,8 @@ fn apply_connections(
             return Err(ClosureError::Invalid); // forwarded outputs need context traversal
         }
         let output_type = scalar(field(output, "type")?)?;
-        let output_scope = scalar(field(output, "scope")?)?;
-        let output_schema = scalar(field(output, "schema")?)?;
+        let output_scope = output.get("scope").map(scalar).transpose()?;
+        let output_schema = output.get("schema").map(scalar).transpose()?;
         let WireValue::Array(output_path) = field(selector, "path")? else {
             return Err(ClosureError::Invalid);
         };
@@ -1801,7 +1820,8 @@ fn apply_connections(
                 .chain(output_path.iter().cloned())
                 .collect(),
         );
-        let output_schema = format!("{}.{}", provider.namespace, output_schema);
+        let output_schema =
+            output_schema.map(|schema| format!("{}.{}", provider.namespace, schema));
         let available = crate::package_namespace::namespace_guard(
             field(output, "available_when")?,
             &provider.namespace,
@@ -1825,10 +1845,7 @@ fn apply_connections(
             })
             .ok_or(ClosureError::Invalid)?;
         let input_type = scalar(field(input, "type")?)?;
-        if input_type != output_type
-            || input_type != "exact_ref"
-            || field(input, "scope")?.as_string().as_deref() != Some(&output_scope)
-        {
+        if input_type != output_type {
             return Err(ClosureError::Mismatch);
         }
         let WireValue::Array(body_path) = field(input, "body_path")? else {
@@ -1846,30 +1863,83 @@ fn apply_connections(
             .iter_mut()
             .find(|row| row.get("id").and_then(WireValue::as_string).as_deref() == Some(&action_id))
             .ok_or(ClosureError::Invalid)?;
-        let runtime_field = field_mut(
-            field_mut(field_mut(action, "inputs")?, "fields")?,
-            &body_field,
-        )?;
-        if field(runtime_field, "type")?.as_string().as_deref() != Some("exact_ref")
-            || field(runtime_field, "schema")?.as_string().as_deref() != Some("*")
-        {
-            return Err(ClosureError::Mismatch);
+        let mut guards = Vec::new();
+        if input_type == "exact_ref" {
+            let scope = output_scope.ok_or(ClosureError::Invalid)?;
+            let schema = output_schema.ok_or(ClosureError::Invalid)?;
+            let runtime_field = field_mut(
+                field_mut(field_mut(action, "inputs")?, "fields")?,
+                &body_field,
+            )?;
+            if field(input, "scope")?.as_string().as_deref() != Some(&scope)
+                || field(runtime_field, "type")?.as_string().as_deref() != Some("exact_ref")
+                || field(runtime_field, "schema")?.as_string().as_deref() != Some("*")
+            {
+                return Err(ClosureError::Mismatch);
+            }
+            insert_field(runtime_field, "schema", text(&schema))?;
+            let body_ref = object(vec![
+                ("from", text("ref")),
+                ("source", text("body")),
+                ("path", WireValue::Array(body_path.clone())),
+                ("scope", text(&scope)),
+                ("schema", text(&schema)),
+            ]);
+            let state_ref = object(vec![
+                ("from", text("ref")),
+                ("source", text("state")),
+                ("path", output_path.clone()),
+                ("scope", text(&scope)),
+                ("schema", text(&schema)),
+            ]);
+            guards.push(object(vec![
+                ("op", text("exact_ref")),
+                ("ref", body_ref.clone()),
+            ]));
+            guards.push(object(vec![
+                ("op", text("eq")),
+                ("left", body_ref),
+                ("right", state_ref),
+            ]));
+        } else if input_type == "actor_id" {
+            let runtime_field = field_mut(
+                field_mut(field_mut(action, "inputs")?, "fields")?,
+                &body_field,
+            )?;
+            if field(runtime_field, "type")?.as_string().as_deref() != Some("actor_id") {
+                return Err(ClosureError::Mismatch);
+            }
+            let body_actor = object(vec![
+                ("from", text("body")),
+                ("path", WireValue::Array(body_path.clone())),
+            ]);
+            let state_actor = object(vec![("from", text("state")), ("path", output_path.clone())]);
+            let auth_actor = object(vec![("from", text("auth")), ("field", text("actorId"))]);
+            guards.push(object(vec![
+                ("op", text("eq")),
+                ("left", body_actor.clone()),
+                ("right", state_actor),
+            ]));
+            let relation = scalar(field(input, "relation")?)?;
+            let same = object(vec![
+                ("op", text("eq")),
+                ("left", body_actor),
+                ("right", auth_actor),
+            ]);
+            guards.push(if relation == "same_actor" {
+                same
+            } else if relation == "different_actor" {
+                object(vec![("op", text("not")), ("rule", same)])
+            } else {
+                return Err(ClosureError::Invalid);
+            });
+        } else {
+            return Err(ClosureError::Invalid);
         }
-        insert_field(runtime_field, "schema", text(&output_schema))?;
-        let body_ref = object(vec![
-            ("from", text("ref")),
-            ("source", text("body")),
-            ("path", WireValue::Array(body_path.clone())),
-            ("scope", text(&output_scope)),
-            ("schema", text(&output_schema)),
-        ]);
-        let state_ref = object(vec![
-            ("from", text("ref")),
-            ("source", text("state")),
-            ("path", output_path.clone()),
-            ("scope", text(&output_scope)),
-            ("schema", text(&output_schema)),
-        ]);
+        guards.push(object(vec![
+            ("op", text("and")),
+            ("rules", WireValue::Array(vec![available.clone()])),
+        ]));
         let WireValue::Array(variants) = field_mut(action, "variants")? else {
             return Err(ClosureError::Invalid);
         };
@@ -1879,19 +1949,7 @@ fn apply_connections(
         let WireValue::Array(when) = field_mut(variant, "when")? else {
             return Err(ClosureError::Invalid);
         };
-        when.push(object(vec![
-            ("op", text("exact_ref")),
-            ("ref", body_ref.clone()),
-        ]));
-        when.push(object(vec![
-            ("op", text("eq")),
-            ("left", body_ref),
-            ("right", state_ref),
-        ]));
-        when.push(object(vec![
-            ("op", text("and")),
-            ("rules", WireValue::Array(vec![available.clone()])),
-        ]));
+        when.extend(guards);
         let WireValue::Array(reads) = field_mut(action, "reads")? else {
             return Err(ClosureError::Invalid);
         };
@@ -1922,8 +1980,8 @@ fn compile_at(
         .get(package_digest)
         .ok_or(ClosureError::Missing)?;
     let files = field(bundle, "files")?;
-    let source = json_file(files, "protocol.source.json")?;
-    let release = json_file(files, "release.lock.json")?;
+    let source = source_file(files)?;
+    let release = lock_file(files)?;
     let source_format = scalar(field(&source, "format")?)?;
     let compiler_version = scalar(field(&release, "compiler_version")?)?;
     let v1 = source_format == "peerwork.protocol-source.v1"
@@ -1994,8 +2052,7 @@ fn compile_at(
         let alias = scalar(field(imported, "alias")?)?;
         let namespace = scalar(field(imported, "namespace")?)?;
         let dependency_bundle = closure.packages.get(&digest).ok_or(ClosureError::Missing)?;
-        let dependency_source =
-            json_file(field(dependency_bundle, "files")?, "protocol.source.json")?;
+        let dependency_source = source_file(field(dependency_bundle, "files")?)?;
         let baseline = compile_at(closure, &digest, None, true, depth + 1, steps)?;
         let mapped = mapped_import_values(&source, &values, &alias, &dependency_source)?;
         let compiled = if matches!(&mapped, WireValue::Object(fields) if fields.is_empty()) {
@@ -2136,7 +2193,7 @@ fn compile_at(
         if !(path.starts_with("fixtures/") && path.ends_with(".json")) {
             continue;
         }
-        let fixture = json_file(files, &path)?;
+        let fixture = fixture_file(files, &path)?;
         let id = scalar(field(&fixture, "id")?)?;
         scenarios.push(FixtureScenario {
             id,
@@ -2584,6 +2641,37 @@ mod tests {
     fn v2_exact_ref_connection_mutates_signed_dependency_and_binds_port() {
         let vector: serde_json::Value = serde_json::from_str(include_str!(
             "../../../conformance/public-package-connection-vectors.json"
+        ))
+        .unwrap();
+        assert_eq!(vector["passed"], true);
+        assert_eq!(vector["interfaces_complete"], true);
+        let closure = parse_wire_json_bounded(
+            &serde_json::to_vec(&vector["closure"]).unwrap(),
+            32,
+            6 * 1024 * 1024,
+        )
+        .unwrap();
+        let compiled = compile_simple_baseline(&scan_package_closure(&closure).unwrap()).unwrap();
+        assert_eq!(
+            compiled.protocol_digest,
+            vector["protocol_digest"].as_str().unwrap()
+        );
+        let expected = parse_wire_json_bounded(
+            &serde_json::to_vec(&vector["compiled_manifest"]).unwrap(),
+            32,
+            65_536,
+        )
+        .unwrap();
+        assert_eq!(
+            canonical(&compiled.manifest).unwrap(),
+            canonical(&expected).unwrap()
+        );
+    }
+
+    #[test]
+    fn v2_actor_connection_binds_state_and_authenticated_actor() {
+        let vector: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../conformance/public-package-actor-connection-vectors.json"
         ))
         .unwrap();
         assert_eq!(vector["passed"], true);
