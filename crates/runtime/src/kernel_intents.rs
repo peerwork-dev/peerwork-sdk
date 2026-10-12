@@ -5,13 +5,22 @@ use peerwork_core::crypto::sha256_hex;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 const APPLICATION_ID: i64 = 0x5057_5344; // PWSD; intentionally distinct from TS PWC1.
 const SCHEMA_VERSION: i64 = 1;
-const MAX_BODY_BYTES: usize = 1_048_576;
+const MAX_BODY_BYTES: usize = 262_144;
 const MAX_JWS_BYTES: usize = 250_000;
+const SCHEMA_SQL: &str = "CREATE TABLE kernel_intents(
+                 command_id TEXT PRIMARY KEY NOT NULL,
+                 path TEXT NOT NULL,
+                 signed_jws TEXT NOT NULL,
+                 intent_digest TEXT NOT NULL,
+                 http_body BLOB NOT NULL,
+                 state TEXT NOT NULL CHECK(state='PENDING'),
+                 created_at_ms INTEGER NOT NULL
+             )";
 
 #[derive(Debug, Error)]
 pub enum JournalError {
@@ -69,7 +78,7 @@ impl KernelIntentJournal {
         let mut db = Connection::open(path)?;
         db.busy_timeout(Duration::from_secs(5))?;
         initialize(&mut db)?;
-        db.pragma_update(None, "journal_mode", "WAL")?;
+        set_wal_with_retry(&db)?;
         db.pragma_update(None, "synchronous", "FULL")?;
         db.pragma_update(None, "foreign_keys", "ON")?;
         Ok(Self {
@@ -168,29 +177,47 @@ impl KernelIntentJournal {
     }
 }
 
+fn set_wal_with_retry(db: &Connection) -> Result<(), JournalError> {
+    // Two independent processes may initialize the same new DB and race at
+    // the journal-mode transition after their short schema transactions.
+    // SQLite's busy timeout does not cover every WAL mode-change conflict.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match db.pragma_update(None, "journal_mode", "WAL") {
+            Ok(()) => return Ok(()),
+            Err(rusqlite::Error::SqliteFailure(code, _))
+                if matches!(
+                    code.code,
+                    rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                ) && Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => return Err(JournalError::Storage(error)),
+        }
+    }
+}
+
 fn initialize(db: &mut Connection) -> Result<(), JournalError> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let app: i64 = tx.pragma_query_value(None, "application_id", |row| row.get(0))?;
     let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    let tables: Vec<String> = tx
-        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")?
-        .query_map([], |row| row.get(0))?
+    let objects: Vec<(String, String, String)> = tx
+        .prepare("SELECT type,name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name")?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
         .collect::<Result<_, _>>()?;
-    if app == 0 && version == 0 && tables.is_empty() {
-        tx.execute_batch(
-            "CREATE TABLE kernel_intents(
-                 command_id TEXT PRIMARY KEY NOT NULL,
-                 path TEXT NOT NULL,
-                 signed_jws TEXT NOT NULL,
-                 intent_digest TEXT NOT NULL,
-                 http_body BLOB NOT NULL,
-                 state TEXT NOT NULL CHECK(state='PENDING'),
-                 created_at_ms INTEGER NOT NULL
-             );
-             PRAGMA application_id=1347900228;
-             PRAGMA user_version=1;",
-        )?;
-    } else if app != APPLICATION_ID || version != SCHEMA_VERSION || tables != ["kernel_intents"] {
+    if app == 0 && version == 0 && objects.is_empty() {
+        tx.execute_batch(&format!(
+            "{SCHEMA_SQL}; PRAGMA application_id={APPLICATION_ID}; PRAGMA user_version={SCHEMA_VERSION};"
+        ))?;
+    } else if app != APPLICATION_ID || version != SCHEMA_VERSION {
+        return Err(JournalError::IncompatibleStore);
+    }
+    let objects: Vec<(String, String, String)> = tx
+        .prepare("SELECT type,name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name")?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        .collect::<Result<_, _>>()?;
+    if objects != [("table".into(), "kernel_intents".into(), SCHEMA_SQL.into())] {
         return Err(JournalError::IncompatibleStore);
     }
     let columns: Vec<String> = tx
@@ -376,6 +403,57 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn expected_ids_and_columns_do_not_authorize_weakened_schema() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = private_dir();
+        let path = dir.path().join("intents.sqlite");
+        {
+            let db = Connection::open(&path).unwrap();
+            db.execute_batch(
+                "CREATE TABLE kernel_intents(command_id TEXT NOT NULL,path TEXT NOT NULL,signed_jws TEXT NOT NULL,intent_digest TEXT NOT NULL,http_body BLOB NOT NULL,state TEXT NOT NULL,created_at_ms INTEGER NOT NULL);
+                 PRAGMA application_id=1347900228; PRAGMA user_version=1;",
+            )
+            .unwrap();
+        }
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(matches!(
+            KernelIntentJournal::open(&path),
+            Err(JournalError::IncompatibleStore)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wal_transition_waits_for_a_bounded_reader() {
+        use std::sync::mpsc;
+        let dir = private_dir();
+        let path = dir.path().join("wal-race.sqlite");
+        let db = Connection::open(&path).unwrap();
+        db.execute_batch("CREATE TABLE sample(value INTEGER);")
+            .unwrap();
+        db.busy_timeout(Duration::from_millis(20)).unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let worker_path = path.clone();
+        let worker = std::thread::spawn(move || {
+            let reader = Connection::open(worker_path).unwrap();
+            reader
+                .execute_batch("BEGIN; SELECT value FROM sample;")
+                .unwrap();
+            sender.send(()).unwrap();
+            std::thread::sleep(Duration::from_millis(150));
+            reader.execute_batch("COMMIT;").unwrap();
+        });
+        receiver.recv().unwrap();
+        set_wal_with_retry(&db).unwrap();
+        worker.join().unwrap();
+        let mode: String = db
+            .pragma_query_value(None, "journal_mode", |row| row.get(0))
+            .unwrap();
+        assert_eq!(mode.to_lowercase(), "wal");
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn child_prepare_worker() {
         let Ok(path) = std::env::var("PEERWORK_TEST_JOURNAL_PATH") else {
             return;
@@ -421,7 +499,13 @@ mod tests {
         ];
         let output = outputs
             .iter()
-            .map(|result| String::from_utf8_lossy(&result.stdout).to_string())
+            .map(|result| {
+                format!(
+                    "stdout: {}\nstderr: {}",
+                    String::from_utf8_lossy(&result.stdout),
+                    String::from_utf8_lossy(&result.stderr)
+                )
+            })
             .collect::<Vec<_>>();
         assert!(
             outputs.iter().all(|result| result.status.success()),

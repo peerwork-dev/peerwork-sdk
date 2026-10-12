@@ -27,6 +27,9 @@ opening an old TypeScript store fails closed with `IncompatibleStore`, pending
 an explicit backup/readback migration. The parent directory and database file
 must be private and owned by the current Unix user. SQLite uses an immediate
 transaction for initialization and preparation, WAL mode, and `synchronous=FULL`.
+The native store now requires its exact schema definition, including a
+command-ID primary key and the `PENDING` state constraint; unexpected schema
+objects are refused.
 
 ## Local verification
 
@@ -41,14 +44,25 @@ file-permission guard before the schema check. After setting that fixture to
 0600, the intended incompatible-schema check passed. This correction does not
 change production behavior.
 
+Independent review found that the first schema check compared IDs, names and
+columns but could admit a same-shaped table with no command-ID primary key.
+The follow-up rejects that malformed synthetic database before preparation.
+The first Rust 1.89.0 parallel runtime run also had one failed child in the
+two-process race; the test initially captured only stdout, so the precise
+SQLite error from that child is unverified. A held-reader regression
+demonstrates a WAL mode-change busy conflict and the bounded retry now used
+during initialization. Child stderr is retained on future failures. The
+affected regression and full 13-test runtime suite passed under Rust 1.89.0
+with `--offline --locked`; this does not establish a cross-OS result.
+
 ## Open gates
 
 Preparation accepts opaque signed bytes for local storage only; no transport
 API sends them. The core must supply a typed verified command/result receipt
 before a future transition to `ACCEPTED`. HTTP status alone is insufficient.
 Raw wire bytes remain intact so the core's lossless UTF-16 parser can verify
-valid escaped surrogate input. Secure-agent signed packet intents and their
-separate protected state, acceptance from exact journal/control evidence,
+valid escaped surrogate input. Secure-agent signed packet intent semantics in
+the separate protected state, acceptance from exact journal/control evidence,
 restart/retry orchestration, and old-store migration remain open. Windows
 protected state opening currently fails closed until ACL handling is
 implemented and tested on a real Windows runner. No full SDK capability is
