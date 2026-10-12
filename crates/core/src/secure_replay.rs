@@ -754,7 +754,7 @@ fn validate_action_state_slice(
             .get("record_schemas")
             .and_then(|schemas| schemas.get(&schema_key))
             .ok_or("RECORD_SCHEMA_INVALID")?;
-        if definition.get("protection").is_some() || definition.get("workflow").is_some() {
+        if definition.get("workflow").is_some() {
             return Err("UNSUPPORTED");
         }
         let payload = record.get("payload").ok_or("RECORD_SCHEMA_INVALID")?;
@@ -1362,6 +1362,28 @@ fn validate_simple_record_schema(
         if !valid {
             return Err("RECORD_SCHEMA_INVALID");
         }
+        if let Some(declaration) = definition
+            .get("protection")
+            .and_then(|protection| protection.get("fields"))
+            .and_then(|declarations| {
+                let WireValue::Object(declarations) = declarations else {
+                    return None;
+                };
+                declarations
+                    .iter()
+                    .find(|(key, _)| key == name)
+                    .map(|(_, value)| value)
+            })
+        {
+            if declaration
+                .get("protection")
+                .and_then(WireValue::as_string)
+                .as_deref()
+                == Some("server_readable")
+            {
+                validate_readable_field(declaration, value)?;
+            }
+        }
     }
     let max = integer(definition, "max_bytes").map_err(|_| "RECORD_SCHEMA_INVALID")? as usize;
     if canonical_wire_value(payload, Path::SecureArtifact)
@@ -1370,6 +1392,150 @@ fn validate_simple_record_schema(
         > max
     {
         return Err("RECORD_TOO_LARGE");
+    }
+    Ok(())
+}
+
+fn validate_readable_reference(value: &WireValue, optional: bool) -> Result<(), &'static str> {
+    if optional && matches!(value, WireValue::Null) {
+        return Ok(());
+    }
+    let WireValue::Object(fields) = value else {
+        return Err("STRUCTURE_REFERENCE_INVALID");
+    };
+    let id = if value.get("recordId").is_some() {
+        "recordId"
+    } else {
+        "record_id"
+    };
+    if fields.len() != 2
+        || !value
+            .get(id)
+            .and_then(WireValue::as_utf16)
+            .is_some_and(token_utf16)
+        || integer(value, "revision").unwrap_or(0) == 0
+        || fields.iter().any(|(key, _)| {
+            key.as_slice() != id.encode_utf16().collect::<Vec<_>>().as_slice()
+                && key.as_slice() != "revision".encode_utf16().collect::<Vec<_>>().as_slice()
+        })
+    {
+        return Err("STRUCTURE_REFERENCE_INVALID");
+    }
+    Ok(())
+}
+
+fn validate_readable_field(rule: &WireValue, value: &WireValue) -> Result<(), &'static str> {
+    let kind = rule
+        .get("type")
+        .and_then(WireValue::as_string)
+        .ok_or("RECORD_SCHEMA_INVALID")?;
+    let token = value.as_utf16().is_some_and(token_utf16);
+    match kind.as_str() {
+        "opaque" | "actor" => {
+            if !token {
+                return Err("STRUCTURE_ACTOR_INVALID");
+            }
+        }
+        "optional_actor" => {
+            if !matches!(value, WireValue::Null) && !token {
+                return Err("STRUCTURE_ACTOR_INVALID");
+            }
+        }
+        "workspace_reference" | "reference" => validate_readable_reference(value, false)?,
+        "optional_workspace_reference" | "optional_reference" => {
+            validate_readable_reference(value, true)?
+        }
+        "item_key" => {
+            let Some(s) = value.as_string() else {
+                return Err("STRUCTURE_ITEM_KEY_INVALID");
+            };
+            let parts: Vec<_> = s.split('.').collect();
+            if !(parts.len() == 3 || parts.len() == 4 && parts[3] == "deadline")
+                || parts[..3].iter().any(|part| {
+                    part.len() != 43
+                        || !part
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+                })
+            {
+                return Err("STRUCTURE_ITEM_KEY_INVALID");
+            }
+        }
+        "digest" => {
+            if !value.as_string().is_some_and(|s| {
+                s.len() == 64
+                    && s.bytes()
+                        .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+            }) {
+                return Err("STRUCTURE_DIGEST_INVALID");
+            }
+        }
+        "enum" => {
+            let Some(WireValue::Array(allowed)) = rule.get("values") else {
+                return Err("STRUCTURE_ENUM_INVALID");
+            };
+            if !allowed.contains(value) {
+                return Err("STRUCTURE_ENUM_INVALID");
+            }
+        }
+        "counter" => {
+            if !value.as_number().is_some_and(|n| {
+                n.is_finite() && n >= 0.0 && n.fract() == 0.0 && n <= 9_007_199_254_740_991.0
+            }) {
+                return Err("STRUCTURE_COUNTER_INVALID");
+            }
+        }
+        "work_status" => {
+            if !matches!(
+                value.as_string().as_deref(),
+                Some("IN_PROGRESS" | "WAITING_FOR_INPUT" | "DEFERRED" | "HANDLED" | "DECLINED")
+            ) {
+                return Err("STRUCTURE_WORK_STATUS_INVALID");
+            }
+        }
+        "references" => {
+            let WireValue::Array(items) = value else {
+                return Err("STRUCTURE_REFERENCE_INVALID");
+            };
+            if items.len() > 32 {
+                return Err("STRUCTURE_REFERENCE_INVALID");
+            }
+            for item in items {
+                validate_readable_reference(item, false)?;
+            }
+        }
+        "task_status" => {
+            if !matches!(
+                value.as_string().as_deref(),
+                Some("OPEN" | "IN_PROGRESS" | "DONE" | "CANCELED")
+            ) {
+                return Err("STRUCTURE_TASK_STATUS_INVALID");
+            }
+        }
+        "timestamp" => {
+            if !matches!(value, WireValue::Null)
+                && !value.as_number().is_some_and(|n| {
+                    n.is_finite() && n >= 0.0 && n.fract() == 0.0 && n <= 9_007_199_254_740_991.0
+                })
+            {
+                return Err("STRUCTURE_TIMESTAMP_INVALID");
+            }
+        }
+        "tokens" => {
+            let WireValue::Array(items) = value else {
+                return Err("STRUCTURE_LIST_INVALID");
+            };
+            let mut seen = HashSet::new();
+            if items.len() > 32
+                || items.iter().any(|item| {
+                    !item.as_utf16().is_some_and(token_utf16)
+                        || !seen.insert(item.as_utf16().unwrap().to_vec())
+                })
+            {
+                return Err("STRUCTURE_LIST_INVALID");
+            }
+        }
+        _ => return Err("RECORD_SCHEMA_INVALID"),
     }
     Ok(())
 }

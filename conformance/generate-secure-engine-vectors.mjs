@@ -111,6 +111,40 @@ try {
     catch(error){item.error=error.code??error.message;}
     cases.push(item);
   }
+  const protectedManifest=structuredClone(recordManifest);
+  protectedManifest.record_schemas.entry={type:'object',fields:{text:'string',parent:'json',
+    assignee:'string',status:'string',count:'integer',tokens:'json'},
+    required:['text','parent','assignee','status','count','tokens'],max_bytes:16384,protection:{v:1,fields:{
+      text:{protection:'e2ee',type:'string'},
+      parent:{protection:'server_readable',type:'optional_reference'},
+      assignee:{protection:'server_readable',type:'actor'},
+      status:{protection:'server_readable',type:'enum',values:['OPEN','DONE']},
+      count:{protection:'server_readable',type:'counter'},
+      tokens:{protection:'server_readable',type:'tokens'}}}};
+  protectedManifest.actions[0].variants[0].effects[0].value={from:'literal',
+    value:{text:'hello',parent:null,assignee:actorId,status:'OPEN',count:1,tokens:[actorId]}};
+  const protectedPrior=structuredClone(recordPrior);
+  protectedPrior[0].value.resolved_manifest=protectedManifest;
+  const protectedResult=await prepareSecureAction({objects:protectedPrior,context:actionContext,
+    policy:actionPolicy,body:actionBody,exactRefs:[],allocations});
+  for(const item of [
+    {name:'action_protected_readable_optional_reference',operation:structuredClone(protectedResult)},
+    {name:'action_protected_readable_bad_reference',operation:structuredClone(protectedResult),bad:true},
+    {name:'action_protected_readable_bad_actor',operation:structuredClone(protectedResult),badActor:true},
+    {name:'action_protected_readable_bad_enum',operation:structuredClone(protectedResult),badEnum:true},
+    {name:'action_protected_readable_bad_counter',operation:structuredClone(protectedResult),badCounter:true},
+    {name:'action_protected_readable_duplicate_tokens',operation:structuredClone(protectedResult),duplicateTokens:true},
+  ]){
+    item.context=actionContext;item.policy=actionPolicy;item.prior=structuredClone(protectedPrior);
+    if(item.bad)item.operation.objects[0].value.payload.parent={record_id:'X'.repeat(43),revision:0};
+    if(item.badActor)item.operation.objects[0].value.payload.assignee='bad';
+    if(item.badEnum)item.operation.objects[0].value.payload.status='UNKNOWN';
+    if(item.badCounter)item.operation.objects[0].value.payload.count=-1;
+    if(item.duplicateTokens)item.operation.objects[0].value.payload.tokens=[actorId,actorId];
+    try{await validateSecureOperation(item.operation,item.context,item.policy,item.prior);item.result='ok';}
+    catch(error){item.error=error.code??error.message;}
+    cases.push(item);
+  }
   const slotManifest=structuredClone(recordManifest);
   slotManifest.actions[0].variants[0].effects[0].entitySlot='shared';
   slotManifest.actions[0].revisionEffects.contentEntities=['shared'];
