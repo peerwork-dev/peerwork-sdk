@@ -1041,3 +1041,27 @@ the five boundary vectors above. Its replay consumer remains a separate
 checkpoint. No Agent
 entry workflow ran, so workflow compliance is unverified here; business
 acceptance and final effects are likewise unverified.
+
+Exact ACTION input-reference resolution is source-committed at `c1cb4ba`
+with a malformed-reference parity correction at `560e01d`
+as another private replay input. It takes caller-supplied authenticated prior
+objects plus workspace/instance/protocol pins and resolves up to 32 immutable
+references into interpreter inputs, including the protected JSON payload and
+INSTANCE versus WORKSPACE scope. It rejects duplicate, missing, wrong-revision,
+cross-workspace and `participation.request` references. Eleven direct pinned
+TypeScript `prepareSecureAction` cases passed the focused Rust1.89 locked-offline
+`cargo test -p peerwork-core --lib secure_action_inputs --offline --locked`
+test 1/1 at the stable registered source window. The test includes a valid
+workspace-scope reference and a raw UTF-16 JSON payload. The first nine-case
+run did not exercise malformed ID/revision inputs; direct TypeScript checks
+then showed these fail at lookup with `REFERENCE_NOT_FOUND`, and the corrected
+eleven-case focused rerun passed 1/1. Source SHA-256
+`61457928b5aea4eb41f2d8b8569b2241ded52f3ebb4a0893f6ce4928bbceef7b`,
+generator SHA-256 `5577292ff94bf78b5c36360510003e1d4aecdb59417b9fa075f1098b18ef574c`,
+vector SHA-256 `1c1f390eec30c25a6dc465462880fa4a748dfbfa4c4817c40d3a6570f8bfd680`,
+vendored TypeScript engine SHA-256
+`f418278a29734baf46627319a23219e12d4c12901fe94498c3113675273ca809`,
+and lock SHA-256 `9dc2d3f2ad77be15366633af890168611e8d62a7f38de646970dfc4cedc8d4d5`.
+Core owns the separate private registration and signed replay consumer. No
+Agent entry flow or final effect was exercised; workflow compliance and
+business acceptance remain unverified for this module.
