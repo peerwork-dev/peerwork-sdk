@@ -490,3 +490,56 @@ create, not a signed journal read, complete operation replay, active-key
 promotion, PUBLIC/structured create, or a public language create surface.
 Agent workflow compliance was not exercised by this scripted client test;
 business-path behavior and workflow compliance remain separate judgments.
+
+## Exact secure journal read and restartable pagination
+
+SDK source `83f35f55cc25a7c9d003ee614fcd589644619424` adds a private,
+protected secure-journal read store. It signs a fresh single-use Ed25519 GET
+proof over the exact sorted path, configured discovery audience, local actor
+and default actor authority. It stores exact bounded HTTP page bytes with
+configured origin, discovery context, actor/key and workspace pins. Each
+reopen rechecks those pins, the exact saved pages, checkpoint equality,
+policy-prefix equality, increasing commit sequence and cursor continuity.
+The store exposes only **unverified transport progress** internally; signed
+policy/commit replay, key activation, action effects and final outcomes still
+require the complete core proof. The native 32 MiB page, 64 MiB store and
+2048-page caps are interim storage limits, not full protocol parity; a
+configured nondefault authority and additive discovery upgrade also need
+supported read-context handling before the public secure read surface.
+
+Exact source SHA-256: `secure_journal_read.rs`
+`4f20d19b81c655b97ea4372dc2cf7e9151d02e4d65fab3357ed692d7eef20359`,
+`secure_native_prepare.rs`
+`52c66e6121e400e2599a155029d19bff87bd9037b6ce9d5050694053876958f7`,
+`transport.rs`
+`8e98ab939f07dc2a2d06c9f4dcebc566b2667da715c0d5655374bf5a4600924f`,
+and reference bridge `dac55c9174cd2990c9d60bf238b7f2923b3660553b90e22dfafab60f61c92ab0`.
+From a clean detached checkout at that SDK pin, Rust 1.89 with task-local
+Cargo cache/target and `--offline --locked` passed focused
+`cargo test -p peerwork-runtime secure_journal_read::tests` 1/1. The
+opt-in real-service filter
+`cargo test -p peerwork-runtime actual_service_native_owner_bootstrap_lost_reply_exact_retry --offline --locked -- --nocapture`
+passed 1/1 in 10.39 seconds with
+`PEERWORK_REFERENCE_ROOT=/root/workdir/message/.worktrees/e2ee-main-integration-20261006`
+and `PEERWORK_NODE_BIN=/root/workdir/message/.tools/node-v24.20.0-linux-x64/bin/node`;
+the bridge pins the tracked `f828b6c` service build inputs. The test used
+fresh synthetic state and the already recorded native owner-create/lost-reply
+flow. After its exact retry, a **test-only** pending-key activation and 50
+additional native-signed, service-admitted pagination packets raised the
+service count/head sequence from 1/1 to 51/51. Those extra packets exercise
+HTTP journal pagination only; their ACTION effects were not independently
+replayed or accepted as business-correct. The first signed GET saved exactly
+50 commits at checkpoint sequence 51 and cursor 50. After protected-store
+close/reopen, the second fresh signed GET saved commit 51 against that same
+checkpoint. A second reopen retained both exact pages; service counts stayed
+51/51 during reads. The protected key/intent remain without final proof.
+
+The first signed GET attempt failed HTTP 401 `SIGNATURE_INVALID` because the
+local reference proxy forwarded only Content-Type and dropped the
+`X-Peerwork-Read` header. The fixture now forwards only that additional
+read-proof header. Independent review also found the initial page-two target
+ordered `at_head,at_sequence,after,limit`, which the tracked verifier rejects
+as noncanonical; it now uses `after,at_head,at_sequence,limit`. Both failures
+are preserved as first-attempt evidence, and the corrected exact-pin two-page
+run passed. This scripted test exercises business transport behavior, not
+Agent instruction or space-protocol compliance; those remain unverified.
