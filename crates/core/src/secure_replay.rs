@@ -564,6 +564,11 @@ fn validate_signed_structure_slice(
     commit_wires: &[&[u8]],
     progress: &mut Option<StructureSnapshotProgress>,
 ) -> Result<(), ReplayError> {
+    // Recovery needs excluded-range failure probes and base-state replay;
+    // accepting its snapshot envelope alone would overstate this scanner.
+    if context.get("recovery").is_some() {
+        return Err(ReplayError::Invalid);
+    }
     let p = policy.get("payload").ok_or(ReplayError::Invalid)?;
     let structured = integer(p, "v")? == 2
         || integer(p, "v")? == 3 && string(p, "structure_mode")? == "STRUCTURED";
@@ -639,11 +644,7 @@ fn validate_signed_structure_slice(
         "SNAPSHOT_END" => "secure.structure.end",
         _ => unreachable!(),
     };
-    if action != expected_action
-        && !(mode == "SNAPSHOT_BEGIN" && action == "secure.fields.begin")
-        && !(mode == "SNAPSHOT_BEGIN"
-            && action == "secure.recover"
-            && context.get("recovery").is_some())
+    if action != expected_action && !(mode == "SNAPSHOT_BEGIN" && action == "secure.fields.begin")
         || !exact_fields(snapshot, &["source", "root", "records", "heads", "offset"])
     {
         return Err(ReplayError::Invalid);
@@ -3571,6 +3572,24 @@ mod tests {
         };
         let mut progress = None;
         let begin = make_context(1, "secure.structure.begin", "SNAPSHOT_BEGIN", 0, json!([]));
+        let mut recovery_begin = begin.clone();
+        let WireValue::Object(fields) = &mut recovery_begin else {
+            panic!("context")
+        };
+        fields.push((
+            "recovery".encode_utf16().collect(),
+            WireValue::Object(Vec::new()),
+        ));
+        assert!(validate_signed_structure_slice(
+            &operation,
+            &recovery_begin,
+            &policy,
+            &prior,
+            &chain,
+            &[],
+            &mut progress
+        )
+        .is_err());
         validate_signed_structure_slice(
             &operation,
             &begin,
