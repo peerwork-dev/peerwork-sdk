@@ -41,6 +41,8 @@ mod secure_chain;
 #[allow(dead_code)]
 mod secure_action_delegation;
 #[allow(dead_code)]
+mod secure_action_allocations;
+#[allow(dead_code)]
 mod secure_action_inputs;
 #[allow(dead_code)]
 mod secure_action_relations;
