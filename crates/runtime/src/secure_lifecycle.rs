@@ -47,6 +47,17 @@ pub struct SecureLifecycle {
     pending: Option<SecretKeyring>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReplayKeyringState {
+    Active,
+    Pending,
+}
+
+pub(crate) struct ReplayKeyringCandidate<'a> {
+    pub ring: &'a SecretKeyring,
+    pub state: ReplayKeyringState,
+}
+
 impl SecureLifecycle {
     pub fn open(
         path: &Path,
@@ -129,6 +140,22 @@ impl SecureLifecycle {
     /// Pending keys are reserved for a future signed transition proof.
     pub(crate) fn active_key(&self, epoch: u64) -> Option<&[u8; 32]> {
         self.active.as_ref()?.key_at(epoch)
+    }
+
+    /// The pending ring may decrypt a candidate journal during verification,
+    /// but its presence does not authorize key promotion, reads, or actions.
+    /// A staged rotation contains the active prefix and its pending epoch.
+    pub(crate) fn replay_keyring_candidate(&self) -> Option<ReplayKeyringCandidate<'_>> {
+        if let Some(ring) = self.pending.as_ref() {
+            return Some(ReplayKeyringCandidate {
+                ring,
+                state: ReplayKeyringState::Pending,
+            });
+        }
+        self.active.as_ref().map(|ring| ReplayKeyringCandidate {
+            ring,
+            state: ReplayKeyringState::Active,
+        })
     }
 
     /// Stage a new private epoch key before a signed workspace bootstrap. An
