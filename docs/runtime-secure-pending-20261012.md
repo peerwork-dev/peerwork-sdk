@@ -696,5 +696,15 @@ Exact source: `src/workspace-secure-contract.ts` lines 124–126,
 `src/workspace-secure-store.ts` `storedArtifactBytes`/`assertWorkspaceCapacity`,
 and `src/workspace-journal-snapshot.ts` `readJournalSnapshot` at reference
 `f828b6c50a0a58d1e718af90f653b214adcc3328`. Rust 1.89 locked-offline
-focused read tests pass 5/5 after the cap change; the actual 51-commit run
-above was at `165a072` and was not repeated for this size-only edit.
+focused read tests pass 5/5 at a clean detached `c674424` checkout; the
+actual 51-commit run above was at `165a072` and was not repeated for this
+size-only edit. Source accounting gives a tighter pinned-service rationale:
+the 32 MiB quota includes every stored secure commit and policy artifact for
+the workspace, while the journal response selects at most 50 commits and
+1,024 policies from those artifacts. The endpoint adds a fixed-size
+checkpoint/envelope and at most 1,073 array separators. The store writes
+those artifacts with `secureCanonical` (JSON string escaping and safe-integer
+text), then the endpoint parses and emits the same JSON objects. This makes
+the 64 MiB response budget conservatively larger than a valid response from
+this pinned service, by source inference; it is not a promise for later
+server versions or other read routes.
