@@ -1,0 +1,123 @@
+name: Experimental native distribution
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Test shared core and build native artifacts
+        run: |
+          cargo test --workspace --locked
+          cargo build --release --locked -p peerwork-cli -p peerwork-node-native
+          python -m pip install 'maturin>=1.7,<2'
+          cd bindings/python
+          maturin build --release --locked --out ../../dist/wheels
+      - name: Package Node binary and test local offline installs
+        run: |
+          node bindings/node/scripts/package-platform.mjs linux-x64-gnu target/release/libpeerwork_node_native.so dist
+          npm pack ./bindings/node --pack-destination dist --offline
+          npm pack ./dist/agent-sdk-linux-x64-gnu --pack-destination dist --offline
+          npm install --prefix dist/node-consumer --offline --ignore-scripts --no-audit --no-fund ./dist/peerwork-agent-sdk-0.0.1.tgz ./dist/peerwork-agent-sdk-linux-x64-gnu-0.0.1.tgz
+          node bindings/node/scripts/offline-smoke.mjs dist/node-consumer
+          python -m venv /tmp/peerwork-wheel-consumer
+          /tmp/peerwork-wheel-consumer/bin/pip install --no-index --no-deps dist/wheels/*.whl
+          /tmp/peerwork-wheel-consumer/bin/python -c 'import peerwork; assert peerwork.version() == "0.0.1"; assert peerwork.capabilities()["version"] == "0.0.1"'
+          env -i PATH=/usr/bin:/bin ./target/release/peerwork version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: experimental-linux-x64
+          path: |
+            target/release/peerwork
+            dist/wheels/*.whl
+            dist/agent-sdk-linux-x64-gnu/
+
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Compile and exercise native interfaces
+        shell: bash
+        run: |
+          cargo test --workspace --locked
+          cargo build --release --locked -p peerwork-cli -p peerwork-node-native
+          python -m pip install 'maturin>=1.7,<2'
+          cd bindings/python
+          maturin build --release --locked --out ../../dist/wheels
+          cd ../..
+          target=$(node -p 'process.arch === "arm64" ? "darwin-arm64" : "darwin-x64"')
+          node bindings/node/scripts/package-platform.mjs "$target" target/release/libpeerwork_node_native.dylib dist
+          npm pack ./bindings/node --pack-destination dist --offline
+          npm pack "./dist/agent-sdk-$target" --pack-destination dist --offline
+          npm install --prefix dist/node-consumer --offline --ignore-scripts --no-audit --no-fund ./dist/peerwork-agent-sdk-0.0.1.tgz "./dist/peerwork-agent-sdk-$target-0.0.1.tgz"
+          node bindings/node/scripts/offline-smoke.mjs dist/node-consumer
+          python -m venv /tmp/peerwork-wheel-consumer
+          /tmp/peerwork-wheel-consumer/bin/pip install --no-index --no-deps dist/wheels/*.whl
+          /tmp/peerwork-wheel-consumer/bin/python -c 'import peerwork; assert peerwork.version() == "0.0.1"; assert peerwork.capabilities()["version"] == "0.0.1"'
+          ./target/release/peerwork version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: experimental-macos
+          path: |
+            target/release/peerwork
+            dist/wheels/*.whl
+            dist/agent-sdk-*/
+
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Compile and exercise native interfaces
+        shell: pwsh
+        run: |
+          cargo test --workspace --locked
+          cargo build --release --locked -p peerwork-cli -p peerwork-node-native
+          python -m pip install 'maturin>=1.7,<2'
+          Push-Location bindings/python
+          maturin build --release --locked --out ../../dist/wheels
+          Pop-Location
+          node bindings/node/scripts/package-platform.mjs win32-x64-msvc target/release/peerwork_node_native.dll dist
+          npm pack ./bindings/node --pack-destination dist --offline
+          npm pack ./dist/agent-sdk-win32-x64-msvc --pack-destination dist --offline
+          npm install --prefix dist/node-consumer --offline --ignore-scripts --no-audit --no-fund ./dist/peerwork-agent-sdk-0.0.1.tgz ./dist/peerwork-agent-sdk-win32-x64-msvc-0.0.1.tgz
+          node bindings/node/scripts/offline-smoke.mjs dist/node-consumer
+          python -m venv "$env:RUNNER_TEMP\peerwork-wheel-consumer"
+          $wheel = (Get-ChildItem dist/wheels/*.whl | Select-Object -First 1).FullName
+          & "$env:RUNNER_TEMP\peerwork-wheel-consumer\Scripts\pip.exe" install --no-index --no-deps $wheel
+          & "$env:RUNNER_TEMP\peerwork-wheel-consumer\Scripts\python.exe" -c 'import peerwork; assert peerwork.version() == "0.0.1"; assert peerwork.capabilities()["version"] == "0.0.1"'
+          ./target/release/peerwork.exe version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: experimental-windows-x64
+          path: |
+            target/release/peerwork.exe
+            dist/wheels/*.whl
+            dist/agent-sdk-win32-x64-msvc/

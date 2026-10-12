@@ -1,0 +1,9 @@
+[workspace]
+resolver = "2"
+members = ["crates/core", "crates/runtime", "crates/cli", "bindings/python/native", "bindings/node/native"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/peerwork-dev/peerwork-sdk"

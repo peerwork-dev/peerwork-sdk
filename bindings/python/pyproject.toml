@@ -1,0 +1,17 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "peerwork-sdk"
+version = "0.0.1"
+description = "Experimental native Peerwork SDK distribution probe; no verified operations yet"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+readme = "README.md"
+classifiers = ["Programming Language :: Python :: 3", "Programming Language :: Python :: 3 :: Only"]
+
+[tool.maturin]
+manifest-path = "native/Cargo.toml"
+module-name = "peerwork._peerwork_native"
+python-source = "."

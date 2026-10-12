@@ -1,0 +1,15 @@
+[package]
+name = "peerwork-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Experimental native Peerwork SDK distribution probe"
+
+[[bin]]
+name = "peerwork"
+path = "src/main.rs"
+
+[dependencies]
+peerwork-core = { path = "../core" }
+serde_json = "1"
