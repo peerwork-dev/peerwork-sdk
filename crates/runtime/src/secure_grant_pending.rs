@@ -104,6 +104,7 @@ impl SecureGrantPending {
         recipient: &RecipientState,
         now: u64,
     ) -> Result<VerifiedGrantMaterial, PendingGrantError> {
+        self.preflight(&evidence)?;
         let proof = self.verify(&evidence, recipient, now)?;
         let bytes = self.encode(&evidence)?;
         if let Some(saved) = &self.saved {
@@ -259,6 +260,61 @@ impl SecureGrantPending {
             return Err(PendingGrantError::Invalid);
         }
         Ok(out)
+    }
+
+    /// Bound caller-owned aggregate bytes before the core parser, signature
+    /// scan or HPKE work. Encoding performs the same bound defensively.
+    fn preflight(&self, evidence: &GrantEvidence<'_>) -> Result<(), PendingGrantError> {
+        if evidence.policies.is_empty()
+            || evidence.policies.len() > MAX_CHAIN
+            || evidence.commits.len() > MAX_CHAIN
+        {
+            return Err(PendingGrantError::Invalid);
+        }
+        let mut total = MAGIC.len() + 2 + 2 + 2;
+        for part in [
+            &self.origin,
+            &self.audience,
+            &self.workspace,
+            &self.owner_actor,
+            &self.owner_key,
+            &self.local_actor,
+            &self.local_key,
+        ] {
+            total = total
+                .checked_add(4)
+                .and_then(|n| n.checked_add(part.len()))
+                .ok_or(PendingGrantError::Invalid)?;
+        }
+        for part in evidence
+            .policies
+            .iter()
+            .copied()
+            .chain(evidence.commits.iter().copied())
+            .chain([evidence.checkpoint, evidence.grant, evidence.certificate])
+            .chain(
+                evidence
+                    .invitation
+                    .into_iter()
+                    .flat_map(|(offer, decision)| [offer, decision]),
+            )
+            .chain(evidence.delegation)
+        {
+            if part.is_empty() || part.len() > MAX_EVIDENCE {
+                return Err(PendingGrantError::Invalid);
+            }
+            total = total
+                .checked_add(4)
+                .and_then(|n| n.checked_add(part.len()))
+                .ok_or(PendingGrantError::Invalid)?;
+            if total > MAX_EVIDENCE {
+                return Err(PendingGrantError::Invalid);
+            }
+        }
+        if total > MAX_EVIDENCE {
+            return Err(PendingGrantError::Invalid);
+        }
+        Ok(())
     }
 }
 
@@ -468,6 +524,21 @@ mod tests {
         )
         .unwrap();
         assert!(pending.verified_pending(&recipient, now).unwrap().is_none());
+        let too_many = vec![b"x".as_slice(); MAX_CHAIN + 1];
+        let oversized = GrantEvidence {
+            policies: &too_many,
+            commits: &[],
+            checkpoint: &checkpoint_wire,
+            grant: &grant_wire,
+            certificate: &certificate_wire,
+            invitation: None,
+            delegation: None,
+        };
+        assert!(matches!(
+            pending.stage(oversized, &recipient, now),
+            Err(PendingGrantError::Invalid)
+        ));
+        assert!(pending.verified_pending(&recipient, now).unwrap().is_none());
         let proof = pending.stage(evidence, &recipient, now).unwrap();
         assert_eq!(proof.epoch(), 1);
         assert!(proof.keyring().key_at(1).is_some());
@@ -543,6 +614,86 @@ mod tests {
             now + 367 * 86_400_000
         )
         .is_ok());
+        let delegation = signed(
+            json!({"v":1,"workspace_id":workspace,
+            "actor_id":identity.actor_id(),"signing_key":identity.key_id(),
+            "device":certificate,"request_id":base64url(&[44u8;32]),
+            "scope":[],"read":true,"origin":origin,"audience":"synthetic",
+            "issued_at":now,"expires_at":now+10}),
+            "peerwork.secure.device-delegation.v1",
+            &identity,
+        );
+        let delegated_context = json!({"v":1,"grant_id":base64url(&[45u8;32]),
+            "workspace_id":workspace,"actor_id":identity.actor_id(),
+            "signing_key":identity.key_id(),"recipient":certificate,
+            "policy_hash":policy_hash,"epoch":1,"invite_id":null,
+            "acceptance_hash":null,"delegation":delegation,"issued_at":now+1});
+        let delegated_context_wire =
+            canonical(&delegated_context, CanonicalPath::SecureArtifact).unwrap();
+        let delegated_box = ring
+            .seal_to(
+                recipient.recipient().public_jwk(),
+                delegated_context_wire.as_bytes(),
+            )
+            .unwrap();
+        let mut delegated_payload = delegated_context;
+        delegated_payload["box"] = serde_json::to_value(delegated_box).unwrap();
+        let delegated_grant = signed(delegated_payload, "peerwork.secure.key-grant.v1", &identity);
+        let delegated_grant_wire = wire(&delegated_grant);
+        let delegation_wire = wire(&delegation);
+        let delegated_path = dir.path().join("delegated-grant.state");
+        let mut delegated = SecureGrantPending::open(
+            &delegated_path,
+            origin,
+            "synthetic",
+            &workspace,
+            identity.actor_id(),
+            identity.key_id(),
+            &identity,
+            &recipient,
+            now + 2,
+        )
+        .unwrap();
+        delegated
+            .stage(
+                GrantEvidence {
+                    policies: &policies,
+                    commits: &[],
+                    checkpoint: &checkpoint_wire,
+                    grant: &delegated_grant_wire,
+                    certificate: &certificate_wire,
+                    invitation: None,
+                    delegation: Some(&delegation_wire),
+                },
+                &recipient,
+                now + 2,
+            )
+            .unwrap();
+        drop(delegated);
+        assert!(SecureGrantPending::open(
+            &delegated_path,
+            origin,
+            "synthetic",
+            &workspace,
+            identity.actor_id(),
+            identity.key_id(),
+            &identity,
+            &recipient,
+            now + 9
+        )
+        .is_ok());
+        assert!(SecureGrantPending::open(
+            &delegated_path,
+            origin,
+            "synthetic",
+            &workspace,
+            identity.actor_id(),
+            identity.key_id(),
+            &identity,
+            &recipient,
+            now + 10
+        )
+        .is_err());
         let other_recipient = RecipientState::create(
             &dir.path().join("other-recipient.state"),
             &identity,
