@@ -18,6 +18,8 @@ pub enum SecureStateError {
     UnsupportedPlatform,
     #[error("another process owns the secure-agent state")]
     Busy,
+    #[error("secure-agent state handle belongs to another process")]
+    ForeignProcess,
     #[error("incompatible secure-agent state; migration required")]
     MigrationRequired,
     #[error("secure-agent state exceeds size limit")]
@@ -35,7 +37,10 @@ pub struct SecureStateStore {
     _lock: ExclusiveLock,
 }
 
-struct ExclusiveLock(File);
+struct ExclusiveLock {
+    file: File,
+    owner_pid: u32,
+}
 
 impl Drop for ExclusiveLock {
     fn drop(&mut self) {
@@ -44,7 +49,9 @@ impl Drop for ExclusiveLock {
             use std::os::fd::AsRawFd;
             // Unlock before close so an unrelated child briefly inheriting
             // this descriptor during process creation cannot keep our lock.
-            unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
+            if self.owner_pid == process_id() {
+                unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN) };
+            }
         }
     }
 }
@@ -66,7 +73,10 @@ impl SecureStateStore {
         let lock = lock_options.open(&lock_path)?;
         check_private_file(&lock_path)?;
         lock_exclusive(&lock)?;
-        let lock = ExclusiveLock(lock);
+        let lock = ExclusiveLock {
+            file: lock,
+            owner_pid: process_id(),
+        };
         if state_exists(path)? {
             check_private_file(path)?;
             let mut file = open_state_read(path)?;
@@ -87,6 +97,7 @@ impl SecureStateStore {
     /// Returns exact saved JSON wire bytes for internal replay. This is not a
     /// public DTO and must never be surfaced through a language binding.
     pub fn read_exact(&self) -> Result<Option<Vec<u8>>, SecureStateError> {
+        self.ensure_owner()?;
         if !state_exists(&self.path)? {
             return Ok(None);
         }
@@ -110,6 +121,7 @@ impl SecureStateStore {
     /// Atomically replaces native state with exact bytes after the caller has
     /// completed semantic validation. Empty/oversize state fails closed.
     pub fn write_exact(&self, bytes: &[u8]) -> Result<(), SecureStateError> {
+        self.ensure_owner()?;
         if bytes.is_empty() || bytes.len() as u64 > MAX_STATE_BYTES {
             return Err(SecureStateError::TooLarge);
         }
@@ -137,6 +149,24 @@ impl SecureStateStore {
         File::open(parent)?.sync_all()?;
         Ok(())
     }
+
+    fn ensure_owner(&self) -> Result<(), SecureStateError> {
+        if self._lock.owner_pid != process_id() {
+            Err(SecureStateError::ForeignProcess)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[cfg(unix)]
+fn process_id() -> u32 {
+    unsafe { libc::getpid() as u32 }
+}
+
+#[cfg(not(unix))]
+fn process_id() -> u32 {
+    std::process::id()
 }
 
 fn state_exists(path: &Path) -> Result<bool, SecureStateError> {
@@ -306,13 +336,53 @@ mod tests {
         let store = SecureStateStore::open(&path).unwrap();
         // A forked process temporarily shares this open file description.
         // `dup` makes that lifetime deterministic without a scheduling race.
-        let inherited_fd = unsafe { libc::dup(store._lock.0.as_raw_fd()) };
+        let inherited_fd = unsafe { libc::dup(store._lock.file.as_raw_fd()) };
         assert!(inherited_fd >= 0);
         let inherited = unsafe { File::from_raw_fd(inherited_fd) };
         drop(store);
         let reopened = SecureStateStore::open(&path).unwrap();
         drop(reopened);
         drop(inherited);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn forked_child_drop_cannot_release_parent_lock() {
+        use std::process::Command;
+        let dir = private_dir();
+        let path = dir.path().join("agent.state");
+        let store = SecureStateStore::open(&path).unwrap();
+
+        // The child inherits the same open file description. Its destructor
+        // must close that descriptor without unlocking the parent's guard.
+        let child = unsafe { libc::fork() };
+        assert!(child >= 0);
+        if child == 0 {
+            drop(store);
+            unsafe { libc::_exit(0) };
+        }
+        let mut status = 0;
+        assert_eq!(unsafe { libc::waitpid(child, &mut status, 0) }, child);
+        assert_eq!(status, 0);
+
+        let probe = || {
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "secure_state::tests::child_lock_probe",
+                    "--nocapture",
+                ])
+                .env("PEERWORK_TEST_SECURE_STATE_PATH", &path)
+                .output()
+                .unwrap()
+        };
+        let blocked = probe();
+        assert!(blocked.status.success());
+        assert!(String::from_utf8_lossy(&blocked.stdout).contains("PEERWORK_SECURE_BUSY"));
+        drop(store);
+        let acquired = probe();
+        assert!(acquired.status.success());
+        assert!(String::from_utf8_lossy(&acquired.stdout).contains("PEERWORK_SECURE_ACQUIRED"));
     }
 
     #[cfg(unix)]

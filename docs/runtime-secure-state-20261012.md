@@ -22,11 +22,14 @@ expose this raw state API.
 The source tests exact-byte restart and replacement, legacy-file refusal
 without overwrite, symlink refusal, same-process and separate-process lock
 exclusion, and a duplicated descriptor retaining the lock file after the
-guard drops. The first Rust 1.89.0 parallel suite failed once when a restarted
+guard drops. A separate fork regression proves that a child dropping an
+inherited store cannot unlock its parent's live guard; inherited handles also
+refuse state reads and writes by checking their creator PID. The first Rust
+1.89.0 parallel suite failed once when a restarted
 state unexpectedly found its own lock busy. Isolated and serial tests passed,
 but those later passes were not treated as a fix. Explicit `LOCK_UN` before
 closing the guard fixes the deterministic duplicated-descriptor mechanism;
-the affected regression and full 13-test runtime suite now pass under the
+the affected regressions and full 14-test runtime suite now pass under the
 task-local Rust 1.89.0 compiler with `--offline --locked`. The exact timing
 of the first parallel failure was not captured, so its process-scheduling
 cause remains an inference, not a proven trace.
