@@ -29,7 +29,11 @@ must be private and owned by the current Unix user. SQLite uses an immediate
 transaction for initialization and preparation, WAL mode, and `synchronous=FULL`.
 The native store now requires its exact schema definition, including a
 command-ID primary key and the `PENDING` state constraint; unexpected schema
-objects are refused.
+objects are refused. Native schema version 2 adds an empty `pinned_discovery`
+table for future origin and authority continuity. An exact native v1 store is
+migrated in one SQLite transaction without changing pending signed bytes; a
+weakened or old TypeScript schema is rejected. No discovery is treated as
+pinned until the strict parser and TLS-origin binding are integrated.
 
 ## Local verification
 
@@ -54,11 +58,17 @@ demonstrates a WAL mode-change busy conflict and the bounded retry now used
 during initialization. Child stderr is retained on future failures. The
 affected regression and full 13-test runtime suite passed under Rust 1.89.0
 with `--offline --locked`; this does not establish a cross-OS result.
+The separate v1-to-v2 migration regression passed with all seven journal tests
+under the same compiler and locked offline dependencies; it retained a pending
+request containing an escaped lone surrogate exactly across migration and
+restart. The 18-test runtime suite from the transport checkpoint preceded the
+schema migration, so the new combined source has not yet had a full suite run.
 
 ## Open gates
 
-Preparation accepts opaque signed bytes for local storage only; no transport
-API sends them. The core must supply a typed verified command/result receipt
+Preparation accepts opaque signed bytes for local storage only; the HTTP POST
+primitive remains crate-private until the journal and trusted discovery bind
+to core proofs. The core must supply a typed verified command/result receipt
 before a future transition to `ACCEPTED`. HTTP status alone is insufficient.
 Raw wire bytes remain intact so the core's lossless UTF-16 parser can verify
 valid escaped surrogate input. Secure-agent signed packet intent semantics in

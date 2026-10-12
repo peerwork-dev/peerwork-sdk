@@ -9,7 +9,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 const APPLICATION_ID: i64 = 0x5057_5344; // PWSD; intentionally distinct from TS PWC1.
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 const MAX_BODY_BYTES: usize = 262_144;
 const MAX_JWS_BYTES: usize = 250_000;
 const SCHEMA_SQL: &str = "CREATE TABLE kernel_intents(
@@ -20,6 +20,11 @@ const SCHEMA_SQL: &str = "CREATE TABLE kernel_intents(
                  http_body BLOB NOT NULL,
                  state TEXT NOT NULL CHECK(state='PENDING'),
                  created_at_ms INTEGER NOT NULL
+             )";
+const CONTEXT_SQL: &str = "CREATE TABLE pinned_discovery(
+                 id INTEGER PRIMARY KEY NOT NULL CHECK(id=1),
+                 origin TEXT NOT NULL,
+                 discovery_wire BLOB NOT NULL
              )";
 
 #[derive(Debug, Error)]
@@ -208,16 +213,40 @@ fn initialize(db: &mut Connection) -> Result<(), JournalError> {
         .collect::<Result<_, _>>()?;
     if app == 0 && version == 0 && objects.is_empty() {
         tx.execute_batch(&format!(
-            "{SCHEMA_SQL}; PRAGMA application_id={APPLICATION_ID}; PRAGMA user_version={SCHEMA_VERSION};"
+            "{SCHEMA_SQL}; {CONTEXT_SQL}; PRAGMA application_id={APPLICATION_ID}; PRAGMA user_version={SCHEMA_VERSION};"
         ))?;
-    } else if app != APPLICATION_ID || version != SCHEMA_VERSION {
+    } else if app != APPLICATION_ID {
+        return Err(JournalError::IncompatibleStore);
+    } else if version == 1 {
+        // A native v1 store holds only immutable PENDING commands. Refuse any
+        // weakened schema before adding the new discovery-continuity table.
+        if objects != [("table".into(), "kernel_intents".into(), SCHEMA_SQL.into())] {
+            return Err(JournalError::IncompatibleStore);
+        }
+        let check: String = tx.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
+        if check != "ok" {
+            return Err(JournalError::IncompatibleStore);
+        }
+        tx.execute_batch(&format!(
+            "{CONTEXT_SQL}; PRAGMA user_version={SCHEMA_VERSION};"
+        ))?;
+    } else if version != SCHEMA_VERSION {
         return Err(JournalError::IncompatibleStore);
     }
     let objects: Vec<(String, String, String)> = tx
         .prepare("SELECT type,name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name")?
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
         .collect::<Result<_, _>>()?;
-    if objects != [("table".into(), "kernel_intents".into(), SCHEMA_SQL.into())] {
+    if objects
+        != [
+            ("table".into(), "kernel_intents".into(), SCHEMA_SQL.into()),
+            (
+                "table".into(),
+                "pinned_discovery".into(),
+                CONTEXT_SQL.into(),
+            ),
+        ]
+    {
         return Err(JournalError::IncompatibleStore);
     }
     let columns: Vec<String> = tx
@@ -235,6 +264,13 @@ fn initialize(db: &mut Connection) -> Result<(), JournalError> {
             "created_at_ms",
         ]
     {
+        return Err(JournalError::IncompatibleStore);
+    }
+    let context_columns: Vec<String> = tx
+        .prepare("PRAGMA table_info(pinned_discovery)")?
+        .query_map([], |row| row.get(1))?
+        .collect::<Result<_, _>>()?;
+    if context_columns != ["id", "origin", "discovery_wire"] {
         return Err(JournalError::IncompatibleStore);
     }
     let check: String = tx.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
@@ -375,6 +411,52 @@ mod tests {
             Err(JournalError::IntentConflict)
         ));
         assert_eq!(reopened.pending().unwrap(), vec![first]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exact_native_v1_pending_row_migrates_atomically_to_context_schema() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = private_dir();
+        let path = dir.path().join("intents.sqlite");
+        let id = "M".repeat(43);
+        let body = b"{\"jws\":\"\\ud800\"}";
+        {
+            let db = Connection::open(&path).unwrap();
+            db.execute_batch(&format!(
+                "{SCHEMA_SQL}; PRAGMA application_id={APPLICATION_ID}; PRAGMA user_version=1;"
+            ))
+            .unwrap();
+            db.execute(
+                "INSERT INTO kernel_intents(command_id,path,signed_jws,intent_digest,http_body,state,created_at_ms) VALUES (?1,?2,?3,?4,?5,'PENDING',123)",
+                params![id, KernelPath::Command.as_str(), "signed.header.payload", sha256_hex(b"signed.header.payload"), body],
+            ).unwrap();
+        }
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let journal = KernelIntentJournal::open(&path).unwrap();
+        assert_eq!(journal.pending().unwrap().len(), 1);
+        assert_eq!(
+            journal.exact_request_for_test(&id).unwrap(),
+            Some(("signed.header.payload".into(), body.to_vec()))
+        );
+        let version: i64 = journal
+            .db
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 2);
+        let context_rows: i64 = journal
+            .db
+            .query_row("SELECT count(*) FROM pinned_discovery", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(context_rows, 0);
+        drop(journal);
+        let reopened = KernelIntentJournal::open(&path).unwrap();
+        assert_eq!(
+            reopened.exact_request_for_test(&id).unwrap().unwrap().1,
+            body
+        );
     }
 
     #[cfg(unix)]
