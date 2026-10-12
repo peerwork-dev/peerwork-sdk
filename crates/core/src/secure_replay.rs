@@ -9,7 +9,7 @@ use crate::{
     secure_chain::{scan_signed_chain_headers, ChainError, CheckpointPin, OwnerPin},
     wire_json::{canonical_wire_value, parse_wire_json_js_bounded, WireValue},
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
 const MAX_CONTENT_BYTES: usize = 16 * 1024 * 1024;
@@ -49,9 +49,11 @@ pub(crate) fn replay_basic_content(
         pinned,
     )?;
     let mut seen_objects = HashSet::new();
+    let mut latest_revisions: HashMap<String, u64> = HashMap::new();
     let mut operations = Vec::with_capacity(commit_wires.len());
     let mut legacy = false;
     for wire in commit_wires {
+        let mut staged_revisions: HashMap<String, u64> = HashMap::new();
         let commit =
             parse_wire_json_js_bounded(wire, 64, 196_608).map_err(|_| ReplayError::Invalid)?;
         let payload = commit.get("payload").ok_or(ReplayError::Invalid)?;
@@ -92,12 +94,34 @@ pub(crate) fn replay_basic_content(
         if !matches!(kind.as_str(), "BOOTSTRAP" | "MIGRATE" | "ACTION" | "ADMIN") {
             return Err(ReplayError::Invalid);
         }
+        // These are only local preconditions. Full operation evaluation still
+        // happens before any trusted journal result may be constructed.
+        let input = operation.get("input").ok_or(ReplayError::Invalid)?;
+        match kind.as_str() {
+            "BOOTSTRAP" if !operations.is_empty() => return Err(ReplayError::Invalid),
+            "MIGRATE" if payload.get("migration").is_none() => return Err(ReplayError::Invalid),
+            "ACTION" => {
+                if string(input, "action_id")? != string(payload, "action_id")?
+                    || input.get("instance_id") != payload.get("instance_id")
+                    || integer(input, "expected_instance_revision").is_err()
+                    || !matches!(input.get("exact_input_refs"), Some(WireValue::Array(_)))
+                    || !matches!(input.get("allocations"), Some(WireValue::Array(_)))
+                {
+                    return Err(ReplayError::Invalid);
+                }
+            }
+            _ => {}
+        }
         let WireValue::Array(objects) = operation.get("objects").ok_or(ReplayError::Invalid)?
         else {
             return Err(ReplayError::Invalid);
         };
         if objects.len() > 128 {
             return Err(ReplayError::Invalid);
+        }
+        if kind == "ADMIN" {
+            validate_admin_preflight(&operation, payload, &latest_revisions)
+                .map_err(|_| ReplayError::Invalid)?;
         }
         let mut batch = HashSet::new();
         for object in objects {
@@ -135,6 +159,24 @@ pub(crate) fn replay_basic_content(
             if !batch.insert(object_key.clone()) || !seen_objects.insert(object_key) {
                 return Err(ReplayError::Invalid);
             }
+            let pair_key = canonical_wire_value(
+                &WireValue::Array(vec![
+                    WireValue::String(object_kind.to_vec()),
+                    WireValue::String(id.to_vec()),
+                ]),
+                Path::SecureArtifact,
+            )
+            .map_err(|_| ReplayError::Invalid)?;
+            staged_revisions
+                .entry(pair_key)
+                .and_modify(|prior| *prior = (*prior).max(revision))
+                .or_insert(revision);
+        }
+        for (key, revision) in staged_revisions {
+            latest_revisions
+                .entry(key)
+                .and_modify(|prior| *prior = (*prior).max(revision))
+                .or_insert(revision);
         }
         operations.push(operation);
     }
@@ -143,6 +185,88 @@ pub(crate) fn replay_basic_content(
         object_count: seen_objects.len(),
         legacy,
     })
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+enum AdminPreflightError {
+    #[error("ADMIN_CONTENT_KIND_DENIED")]
+    Kind,
+    #[error("INVALID_PROTOCOL_TRANSITION")]
+    Value,
+    #[error("OBJECT_WORKSPACE_MISMATCH")]
+    Workspace,
+    #[error("OBJECT_REVISION_INVALID")]
+    Revision,
+}
+
+/// Source-matched generic ADMIN preflight. Protocol object manifest, role,
+/// structure, and workflow checks are deliberately handled by later layers.
+fn validate_admin_preflight(
+    operation: &WireValue,
+    context: &WireValue,
+    prior: &HashMap<String, u64>,
+) -> Result<(), AdminPreflightError> {
+    let workspace = context
+        .get("workspace_id")
+        .and_then(WireValue::as_utf16)
+        .ok_or(AdminPreflightError::Value)?;
+    let objects = operation.get("objects").ok_or(AdminPreflightError::Value)?;
+    let WireValue::Array(objects) = objects else {
+        return Err(AdminPreflightError::Value);
+    };
+    for object in objects {
+        let kind = object
+            .get("kind")
+            .and_then(WireValue::as_string)
+            .ok_or(AdminPreflightError::Kind)?;
+        if !matches!(
+            kind.as_str(),
+            "workspaces"
+                | "protocols"
+                | "instances"
+                | "workspace_config"
+                | "entrypoints"
+                | "protocol_status"
+                | "protocol_drafts"
+                | "protocol_draft_revisions"
+                | "protocol_validations"
+                | "instance_links"
+        ) {
+            return Err(AdminPreflightError::Kind);
+        }
+        let value = object.get("value").ok_or(AdminPreflightError::Value)?;
+        if !matches!(value, WireValue::Object(_)) {
+            return Err(AdminPreflightError::Value);
+        }
+        if value
+            .get("workspace_id")
+            .is_some_and(|id| id.as_utf16() != Some(workspace))
+        {
+            return Err(AdminPreflightError::Workspace);
+        }
+        let id = object
+            .get("id")
+            .and_then(WireValue::as_utf16)
+            .ok_or(AdminPreflightError::Value)?;
+        if kind == "workspaces"
+            && (id != workspace || value.get("id").and_then(WireValue::as_utf16) != Some(workspace))
+        {
+            return Err(AdminPreflightError::Workspace);
+        }
+        let revision = integer(object, "revision").map_err(|_| AdminPreflightError::Revision)?;
+        let pair = canonical_wire_value(
+            &WireValue::Array(vec![
+                WireValue::String(kind.encode_utf16().collect()),
+                WireValue::String(id.to_vec()),
+            ]),
+            Path::SecureArtifact,
+        )
+        .map_err(|_| AdminPreflightError::Value)?;
+        if revision != prior.get(&pair).copied().unwrap_or(0) + 1 {
+            return Err(AdminPreflightError::Revision);
+        }
+    }
+    Ok(())
 }
 
 fn sealed_content(value: &WireValue) -> Result<SealedContent, ReplayError> {
@@ -250,6 +374,52 @@ mod tests {
                 .unwrap()
                 .as_bytes(),
         )
+    }
+
+    #[test]
+    fn pinned_typescript_secure_engine_admin_preflight() {
+        let cases = parse_wire_json_js_bounded(
+            include_str!("../../../conformance/secure-engine-vectors.json").as_bytes(),
+            64,
+            1_000_000,
+        )
+        .unwrap();
+        let WireValue::Array(cases) = cases else {
+            panic!("vector array")
+        };
+        for case in cases {
+            let name = string(&case, "name").unwrap();
+            let mut prior = HashMap::new();
+            if let Some(WireValue::Array(objects)) = case.get("prior") {
+                for object in objects {
+                    let kind = utf16(object, "kind").unwrap();
+                    let id = utf16(object, "id").unwrap();
+                    let pair = canonical_wire_value(
+                        &WireValue::Array(vec![
+                            WireValue::String(kind.to_vec()),
+                            WireValue::String(id.to_vec()),
+                        ]),
+                        Path::SecureArtifact,
+                    )
+                    .unwrap();
+                    prior.insert(pair, integer(object, "revision").unwrap());
+                }
+            }
+            let result = validate_admin_preflight(
+                case.get("operation").unwrap(),
+                case.get("context").unwrap(),
+                &prior,
+            );
+            if let Some(error) = case.get("error") {
+                assert_eq!(
+                    result.unwrap_err().to_string(),
+                    error.as_string().unwrap(),
+                    "{name}"
+                );
+            } else {
+                assert_eq!(result, Ok(()), "{name}");
+            }
+        }
     }
 
     #[test]
@@ -396,5 +566,41 @@ mod tests {
             Some(&keyring),
         )
         .is_err());
+
+        // Authenticated, canonical plaintext can still be semantically invalid.
+        // The private scanner rejects these local context/content mismatches;
+        // a later full validator must still evaluate policy and protocol effects.
+        let invalid_operations = [
+            json!({"v":1,"kind":"ADMIN","input":{},"objects":[{"kind":"records","id":"x","revision":1,"value":{},"provenance":"AUTHOR_SIGNED"}]}),
+            json!({"v":1,"kind":"ACTION","input":{"action_id":"other","instance_id":null,"expected_instance_revision":1,"exact_input_refs":[],"allocations":[]},"objects":[]}),
+        ];
+        for operation in invalid_operations {
+            let plaintext = canonical(&operation, Path::SecureArtifact).unwrap();
+            let sealed = seal_content_wire(
+                &epoch_key,
+                plaintext.as_bytes(),
+                &serde_json::to_vec(&context).unwrap(),
+            )
+            .unwrap();
+            let mut payload = context.clone();
+            payload["mode"] = json!("PRIVATE");
+            payload["body"] = serde_json::to_value(sealed).unwrap();
+            let candidate = signed(payload, "peerwork.secure.commit.v1", &owner_keypair);
+            let checkpoint = serde_json::to_vec(&json!({
+                "v":1,"workspace_id":workspace,"owner_id":owner,"owner_key":owner_key,
+                "sequence":1,"head":hash(&candidate),"policy_hash":hash(&policy)
+            }))
+            .unwrap();
+            assert!(replay_basic_content(
+                &[&policy],
+                &[&candidate],
+                &checkpoint,
+                &workspace,
+                Some(&owner_pin),
+                None,
+                Some(&keyring)
+            )
+            .is_err());
+        }
     }
 }

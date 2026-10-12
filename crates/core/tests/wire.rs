@@ -256,16 +256,14 @@ fn lossless_receipt_and_result_accept_utf16_surrogates_without_coercion() {
     let proof = verify_command_response_wire(&jws, result, &expected).unwrap();
     assert_eq!(proof.command_id(), command);
     assert_eq!(proof.result_digest(), digest);
+    assert_eq!(proof.result_canonical_json(), canonical);
     let outer = format!(
         "{{\"command_id\":\"{command}\",\"receipt\":\"{jws}\",\"result\":{}}}",
         std::str::from_utf8(result).unwrap()
     );
-    assert_eq!(
-        verify_http_response_wire(outer.as_bytes(), &expected)
-            .unwrap()
-            .result_digest(),
-        digest
-    );
+    let outer_proof = verify_http_response_wire(outer.as_bytes(), &expected).unwrap();
+    assert_eq!(outer_proof.result_digest(), digest);
+    assert_eq!(outer_proof.result_canonical_json(), canonical);
     assert!(verify_command_response_wire(
         &jws,
         br#"{"text":"\udffe","event_sequence":null,"revision":null}"#,

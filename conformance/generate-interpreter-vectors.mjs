@@ -49,6 +49,10 @@ try {
     {name:'input_nullable_accept',manifest:base('test.set',[{when:[],effects:[]}],{inputs:{fields:{label:{type:'string',nullable:true}},required:['label'],additionalProperties:false}}),state:{},body:{label:null}},
     {name:'produced_guard_rejected',manifest:base('test.set',[{when:[eq({from:'produced_ref',slot:'made'},literal(1))],effects:[{op:'append',schema:'entry',recordSlot:'made',value:literal({})}]}]),state:{},body:{}},
     {name:'missing_exact_ref_list',manifest:base('test.set',[{when:[{op:'exact_ref_list',source:'body',path:['refs'],scope:'INSTANCE',max:1}],effects:[]}]),state:{},body:{refs:[ref]}},
+    {name:'action_limit_64_rejected',manifest:{actions:Array.from({length:64},(_,i)=>base(i===0?'test.set':`other.${i}`,[{when:[],effects:[]}]).actions[0])},state:{},body:{}},
+    {name:'effect_limit_17_rejected',manifest:base('test.set',[{when:[],effects:Array.from({length:17},()=>({op:'set',path:['out'],value:literal(1)}))}],{writes:[['out']]}),state:{out:0},body:{}},
+    {name:'utf8_max_bytes_rejected',manifest:base('test.set',[{when:[],effects:[]}],{inputs:{fields:{label:{type:'string',maxBytes:3}},required:['label'],additionalProperties:false}}),state:{},body:{label:'éé'}},
+    {name:'utf8_max_bytes_accepted',manifest:base('test.set',[{when:[],effects:[]}],{inputs:{fields:{label:{type:'string',maxBytes:4}},required:['label'],additionalProperties:false}}),state:{},body:{label:'éé'}},
   ];
   for (const item of cases) {
     const args = {manifest:item.manifest,actionId:'test.set',state:item.state,body:item.body,

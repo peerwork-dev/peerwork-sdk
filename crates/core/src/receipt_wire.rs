@@ -32,6 +32,7 @@ pub struct VerifiedCommandResponse {
     workspace_id: Option<String>,
     protocol_digest: Option<String>,
     result_digest: String,
+    result_canonical_json: String,
     event_sequence: Option<u64>,
     instance_revision: Option<u64>,
 }
@@ -60,6 +61,12 @@ impl VerifiedCommandResponse {
     }
     pub fn result_digest(&self) -> &str {
         &self.result_digest
+    }
+    /// Lossless, kernel-canonical JSON for the digest-bound result. This may
+    /// contain escaped lone UTF-16 surrogates; consumers must keep it as wire
+    /// JSON until mapping an audited response DTO.
+    pub fn result_canonical_json(&self) -> &str {
+        &self.result_canonical_json
     }
     pub fn event_sequence(&self) -> Option<u64> {
         self.event_sequence
@@ -177,6 +184,7 @@ pub fn verify_command_response_wire(
         workspace_id: expected.workspace_id.map(str::to_owned),
         protocol_digest: expected.protocol_digest.map(str::to_owned),
         result_digest: digest,
+        result_canonical_json: canonical,
         event_sequence: sequence,
         instance_revision: revision,
     })

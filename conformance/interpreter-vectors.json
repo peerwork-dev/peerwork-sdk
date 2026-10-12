@@ -1702,5 +1702,1263 @@
       ]
     },
     "error": "INVALID_PAYLOAD"
+  },
+  {
+    "name": "action_limit_64_rejected",
+    "manifest": {
+      "actions": [
+        {
+          "id": "test.set",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.1",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.2",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.3",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.4",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.5",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.6",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.7",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.8",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.9",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.10",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.11",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.12",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.13",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.14",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.15",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.16",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.17",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.18",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.19",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.20",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.21",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.22",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.23",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.24",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.25",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.26",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.27",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.28",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.29",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.30",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.31",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.32",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.33",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.34",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.35",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.36",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.37",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.38",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.39",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.40",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.41",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.42",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.43",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.44",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.45",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.46",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.47",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.48",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.49",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.50",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.51",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.52",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.53",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.54",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.55",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.56",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.57",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.58",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.59",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.60",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.61",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.62",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        },
+        {
+          "id": "other.63",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ]
+        }
+      ]
+    },
+    "state": {},
+    "body": {},
+    "error": "INVALID_PAYLOAD"
+  },
+  {
+    "name": "effect_limit_17_rejected",
+    "manifest": {
+      "actions": [
+        {
+          "id": "test.set",
+          "reads": [],
+          "writes": [
+            [
+              "out"
+            ]
+          ],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": [
+                {
+                  "op": "set",
+                  "path": [
+                    "out"
+                  ],
+                  "value": {
+                    "from": "literal",
+                    "value": 1
+                  }
+                },
+                {
+                  "op": "set",
+                  "path": [
+                    "out"
+                  ],
+                  "value": {
+                    "from": "literal",
+                    "value": 1
+                  }
+                },
+                {
+                  "op": "set",
+                  "path": [
+                    "out"
+                  ],
+                  "value": {
+                    "from": "literal",
+                    "value": 1
+                  }
+                },
+                {
+                  "op": "set",
+                  "path": [
+                    "out"
+                  ],
+                  "value": {
+                    "from": "literal",
+                    "value": 1
+                  }
+                },
+                {
+                  "op": "set",
+                  "path": [
+                    "out"
+                  ],
+                  "value": {
+                    "from": "literal",
+                    "value": 1
+                  }
+                },
+                {
+                  "op": "set",
+                  "path": [
+                    "out"
+                  ],
+                  "value": {
+                    "from": "literal",
+                    "value": 1
+                  }
+                },
+                {
+                  "op": "set",
+                  "path": [
+                    "out"
+                  ],
+                  "value": {
+                    "from": "literal",
+                    "value": 1
+                  }
+                },
+                {
+                  "op": "set",
+                  "path": [
+                    "out"
+                  ],
+                  "value": {
+                    "from": "literal",
+                    "value": 1
+                  }
+                },
+                {
+                  "op": "set",
+                  "path": [
+                    "out"
+                  ],
+                  "value": {
+                    "from": "literal",
+                    "value": 1
+                  }
+                },
+                {
+                  "op": "set",
+                  "path": [
+                    "out"
+                  ],
+                  "value": {
+                    "from": "literal",
+                    "value": 1
+                  }
+                },
+                {
+                  "op": "set",
+                  "path": [
+                    "out"
+                  ],
+                  "value": {
+                    "from": "literal",
+                    "value": 1
+                  }
+                },
+                {
+                  "op": "set",
+                  "path": [
+                    "out"
+                  ],
+                  "value": {
+                    "from": "literal",
+                    "value": 1
+                  }
+                },
+                {
+                  "op": "set",
+                  "path": [
+                    "out"
+                  ],
+                  "value": {
+                    "from": "literal",
+                    "value": 1
+                  }
+                },
+                {
+                  "op": "set",
+                  "path": [
+                    "out"
+                  ],
+                  "value": {
+                    "from": "literal",
+                    "value": 1
+                  }
+                },
+                {
+                  "op": "set",
+                  "path": [
+                    "out"
+                  ],
+                  "value": {
+                    "from": "literal",
+                    "value": 1
+                  }
+                },
+                {
+                  "op": "set",
+                  "path": [
+                    "out"
+                  ],
+                  "value": {
+                    "from": "literal",
+                    "value": 1
+                  }
+                },
+                {
+                  "op": "set",
+                  "path": [
+                    "out"
+                  ],
+                  "value": {
+                    "from": "literal",
+                    "value": 1
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "state": {
+      "out": 0
+    },
+    "body": {},
+    "error": "INVALID_PAYLOAD"
+  },
+  {
+    "name": "utf8_max_bytes_rejected",
+    "manifest": {
+      "actions": [
+        {
+          "id": "test.set",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ],
+          "inputs": {
+            "fields": {
+              "label": {
+                "type": "string",
+                "maxBytes": 3
+              }
+            },
+            "required": [
+              "label"
+            ],
+            "additionalProperties": false
+          }
+        }
+      ]
+    },
+    "state": {},
+    "body": {
+      "label": "éé"
+    },
+    "error": "INVALID_PAYLOAD"
+  },
+  {
+    "name": "utf8_max_bytes_accepted",
+    "manifest": {
+      "actions": [
+        {
+          "id": "test.set",
+          "reads": [],
+          "writes": [],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [],
+              "effects": []
+            }
+          ],
+          "inputs": {
+            "fields": {
+              "label": {
+                "type": "string",
+                "maxBytes": 4
+              }
+            },
+            "required": [
+              "label"
+            ],
+            "additionalProperties": false
+          }
+        }
+      ]
+    },
+    "state": {},
+    "body": {
+      "label": "éé"
+    },
+    "result": {
+      "nextState": {},
+      "records": [],
+      "headSelections": [],
+      "revisionEffects": {
+        "control": true,
+        "contentEntities": []
+      }
+    }
   }
 ]

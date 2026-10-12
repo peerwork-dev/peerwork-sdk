@@ -1,0 +1,227 @@
+[
+  {
+    "name": "admin_empty",
+    "operation": {
+      "v": 1,
+      "kind": "ADMIN",
+      "input": {},
+      "objects": []
+    },
+    "context": {
+      "v": 1,
+      "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+      "sequence": 1,
+      "action_id": "test.admin",
+      "instance_id": null,
+      "actor_id": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "signing_key": "KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK"
+    },
+    "policy": {
+      "payload": {
+        "v": 1,
+        "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+        "visibility": "PRIVATE",
+        "epoch": 1
+      }
+    },
+    "result": "ok"
+  },
+  {
+    "name": "admin_workspace_create",
+    "operation": {
+      "v": 1,
+      "kind": "ADMIN",
+      "input": {},
+      "objects": [
+        {
+          "kind": "workspaces",
+          "id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+          "revision": 1,
+          "value": {
+            "id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+            "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW"
+          },
+          "provenance": "AUTHOR_SIGNED"
+        }
+      ]
+    },
+    "context": {
+      "v": 1,
+      "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+      "sequence": 1,
+      "action_id": "test.admin",
+      "instance_id": null,
+      "actor_id": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "signing_key": "KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK"
+    },
+    "policy": {
+      "payload": {
+        "v": 1,
+        "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+        "visibility": "PRIVATE",
+        "epoch": 1
+      }
+    },
+    "result": "ok"
+  },
+  {
+    "name": "admin_workspace_revision_two",
+    "operation": {
+      "v": 1,
+      "kind": "ADMIN",
+      "input": {},
+      "objects": [
+        {
+          "kind": "workspaces",
+          "id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+          "revision": 2,
+          "value": {
+            "id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+            "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW"
+          },
+          "provenance": "AUTHOR_SIGNED"
+        }
+      ]
+    },
+    "context": {
+      "v": 1,
+      "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+      "sequence": 1,
+      "action_id": "test.admin",
+      "instance_id": null,
+      "actor_id": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "signing_key": "KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK"
+    },
+    "policy": {
+      "payload": {
+        "v": 1,
+        "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+        "visibility": "PRIVATE",
+        "epoch": 1
+      }
+    },
+    "error": "OBJECT_REVISION_INVALID"
+  },
+  {
+    "name": "admin_content_denied",
+    "operation": {
+      "v": 1,
+      "kind": "ADMIN",
+      "input": {},
+      "objects": [
+        {
+          "kind": "records",
+          "id": "r",
+          "revision": 1,
+          "value": {
+            "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW"
+          },
+          "provenance": "AUTHOR_SIGNED"
+        }
+      ]
+    },
+    "context": {
+      "v": 1,
+      "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+      "sequence": 1,
+      "action_id": "test.admin",
+      "instance_id": null,
+      "actor_id": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "signing_key": "KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK"
+    },
+    "policy": {
+      "payload": {
+        "v": 1,
+        "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+        "visibility": "PRIVATE",
+        "epoch": 1
+      }
+    },
+    "error": "ADMIN_CONTENT_KIND_DENIED"
+  },
+  {
+    "name": "admin_cross_workspace",
+    "operation": {
+      "v": 1,
+      "kind": "ADMIN",
+      "input": {},
+      "objects": [
+        {
+          "kind": "instances",
+          "id": "i",
+          "revision": 1,
+          "value": {
+            "workspace_id": "other"
+          },
+          "provenance": "AUTHOR_SIGNED"
+        }
+      ]
+    },
+    "context": {
+      "v": 1,
+      "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+      "sequence": 1,
+      "action_id": "test.admin",
+      "instance_id": null,
+      "actor_id": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "signing_key": "KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK"
+    },
+    "policy": {
+      "payload": {
+        "v": 1,
+        "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+        "visibility": "PRIVATE",
+        "epoch": 1
+      }
+    },
+    "error": "OBJECT_WORKSPACE_MISMATCH"
+  },
+  {
+    "name": "admin_prior_revision",
+    "prior": [
+      {
+        "kind": "instances",
+        "id": "i",
+        "revision": 1,
+        "value": {
+          "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW"
+        },
+        "provenance": "AUTHOR_SIGNED"
+      }
+    ],
+    "operation": {
+      "v": 1,
+      "kind": "ADMIN",
+      "input": {},
+      "objects": [
+        {
+          "kind": "instances",
+          "id": "i",
+          "revision": 2,
+          "value": {
+            "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW"
+          },
+          "provenance": "AUTHOR_SIGNED"
+        }
+      ]
+    },
+    "context": {
+      "v": 1,
+      "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+      "sequence": 1,
+      "action_id": "test.admin",
+      "instance_id": null,
+      "actor_id": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "signing_key": "KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK"
+    },
+    "policy": {
+      "payload": {
+        "v": 1,
+        "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+        "visibility": "PRIVATE",
+        "epoch": 1
+      }
+    },
+    "result": "ok"
+  }
+]
