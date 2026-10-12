@@ -144,3 +144,26 @@ The Node wrapper also rejects Proxy values and serializes a snapshot built
 from inspected own data-property descriptors, with null prototypes. That
 prevents a Proxy getter or inherited `toJSON` from changing values between
 inspection and serialization.
+
+An isolated, locked offline rebuild at exact correction commit `94c547f`
+produced Linux wheel SHA-256
+`4fea4a8c9e09d95121f39dc05c774e278ea5077073c4a69eac6e4b0e634c5d19`,
+Node addon SHA-256
+`45a7df29702a8f459564f4e8f647f440090c013904bd01ee4a5c5b98147ce30a`,
+and CLI SHA-256
+`f9b326ae2478a02b81dbd085994d1625cce6ba1dc74e717186df50a1f97524b6`.
+The wheel was installed from its binary with `--no-index --no-deps` into a
+fresh target. A fresh synthetic actual-service run passed the same Python
+post-commit lost reply and exact retry, Node same-journal accepted reuse and
+second submitted workspace, and CLI accepted status. It additionally
+prepared catalog chunk commands through Python async `bytes`, Node `Buffer`
+and `Uint8Array`, and CLI file and stdin. A mismatched chunk digest was
+refused before saving a row. Node rejected `NaN`, an undefined extra member
+and a Proxy getter, and an inherited `toJSON` could not alter the signed
+command. Catalog preparation did no POST; actual service counts remained two
+commands and two workspaces. This proves binary entrypoint preparation, not
+catalog service acceptance. Observed stages from installed import in this
+single scripted run: discovery pin 368 ms, first command saved 465 ms,
+post-commit lost reply 628 ms, first verified result 759 ms, Python chunk
+saved 1064 ms, Node cross-language result 1830 ms, CLI status 1898 ms, CLI
+chunk saved 2017 ms. Agent workflow compliance remains unverified.
