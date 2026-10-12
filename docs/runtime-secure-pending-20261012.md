@@ -123,3 +123,63 @@ source integration interruption. The corrected core proof's four focused
 tests also passed, including a newly re-signed one-byte ciphertext refusal,
 normal split ciphertext acceptance, and empty-component HTTP admission
 refusal.
+
+Native recipient and private key lifecycle checkpoint: exact SDK source
+`7463133ad35381c11e6acd8c02e2b3817dcb9c24` includes the new core
+`SecretKeyring` and `SecretRecipient` primitives and private runtime
+`SecureLifecycle`/`RecipientState` stores. The keyring source SHA-256 is
+`42d6c6a177f54002df2c1480eb10708811b00d47734b6a3d93263df25c7c83b4`,
+recipient source `2ba11fcd46241d4ebdf7a6414ec11495ba843c4fca65c49a864faae81619aeab`,
+and recipient cross-open script
+`95493be0432366cf417c01afc41b94d6a40b6d92d55feac6946f43852bc9e6e2`.
+Synthetic TS-to-native and native-to-TS keyring HPKE open checks passed at
+the earlier `5deb980` checkout; the recipient script passed at detached exact
+`7463133` using Node 24.20.0 and Rust 1.89 locked-offline Cargo. It had
+tracked TypeScript verify the native Ed25519 self-certificate, import the
+native P-256 private serialization, open a native-recipient HPKE box, and
+refuse an altered certificate. Generated private bytes were task-local and
+removed by the script. This proves bounded crypto/serialization
+interoperability, not a signed directory grant or action authority.
+
+The first recipient-state handle returned by create/open released its
+protected file lock while the recipient object was still live. Commit
+`5deb980aea54aae73ded51484010a86c542a856a` retains the store guard
+inside that handle; the focused regression observes `Busy` for a second
+open until the first handle drops, then reopens the same certificate and
+private scalar. At `7463133`, the recipient verifier also enforces the
+tracked 366-day maximum signed certificate lifetime; a newly signed
+367-day certificate is refused. Core peer review found the corrected bound
+matches `workspace-secure-client.ts::verifySecureCertificate` and did not
+identify another scoped certificate mismatch.
+
+The private lifecycle represents an unestablished workspace as absent
+active and pending rings. Every present PRIVATE ring denotes at least one
+usable epoch key. This maps to tracked `newSecureKeyring` (one initial key)
+and `openKeyGrant` (PRIVATE nonempty and containing the current epoch);
+the valid empty PUBLIC keyring and low-level parser remain separate and
+accepted there. Commit `7463133` rejects corrupt persisted empty present
+PRIVATE histories on reopen. This is a native PRIVATE state invariant, not
+a claim that the general TypeScript keyring parser rejects empty rings.
+Pending key material persists exactly over reopen; production promotion
+still waits for complete authenticated policy and journal proof.
+
+The same commit corrected a secret-read lifetime issue: the protected
+store now reads only the metadata-snapshotted length into a zeroizing
+buffer, probes one zeroizing byte for growth, and rejects changed length;
+identity create/import existence probes and open use the secret-bearing
+read path. A deterministic appended-byte regression and over-cap
+regression passed. This bounds allocation despite a noncooperating
+same-user append between metadata and read. It does not prove complete
+memory erasure in dependency internals or rule out concurrent same-length
+mutation by a same-user writer.
+
+Focused Rust 1.89 locked-offline results at `7463133`: core recipient 2/2,
+runtime protected-state 9/9, lifecycle 2/2, identity 3/3. A detached
+exact-checkout full runtime command compiled and passed 33 tests, including
+those affected tests and recipient-state lock regression; six unrelated
+localhost socket tests failed to bind with sandbox `EPERM`, and one
+opt-in actual-service test was ignored. Those environment failures do not
+convert this command into a full-suite pass. No Agent entry workflow or
+space-protocol acceptance was exercised by these scripted crypto tests;
+workflow compliance remains unverified separately from their business
+correctness.
