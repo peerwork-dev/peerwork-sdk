@@ -911,7 +911,11 @@ passed 1/1 with the explicit reference/Node environment above. The fresh
 tracked service had zero commits before and after preparation; the signed
 policy marks `discussion.message.author` `e2ee`; the first applied POST lost
 its reply; protected keyring and journal reopened and exact-byte retry left
-one commit/head sequence 1. The saved intent remains PENDING. Source SHA-256:
+one commit/head sequence 1. The saved intent remains PENDING. Bounded
+independent source review found no mode/context/key mismatch, but reopened
+pre-submit verification does not independently rederive the signed structure
+policy from decrypted BOOTSTRAP objects; complete core replay must close that
+semantic binding before public success. Source SHA-256:
 `secure_native_prepare.rs`
 `98b2a28be73eeb010fbf4f2cda953409b98f14efe546f651fedaba4b079d41ce`,
 unchanged lock `48775117e96fe4cba67314559398d3d08c75fc211952e22473ceacc389003f17`.
@@ -919,3 +923,38 @@ No Agent workflow entry test ran; workflow compliance is unverified despite
 the business-path service result. Coordination combined with PRIVATE mode,
 custom package stage/install, complete replay/activation and public bindings
 remain open.
+
+Exact custom-package material custody checkpoint `d61efa4e029db98e12a05989698a19e7faab1ac6`
+adds a private protected store for the caller's exact package material bytes
+and proposed source-checkpoint bytes, pinned to configured origin, workspace,
+owner actor and owner key. It writes once, permits only exact-byte repeat,
+rejects changed pins/material and damaged framed bytes on reopen, and exposes
+the saved bytes only through an internal callback under the state lock. Its
+8 MiB material/8 KiB checkpoint caps are local intake bounds; the tracked
+compiler's exact package material and part limits still need to verify those
+bytes before staging. The store neither compiles/splits parts nor signs,
+posts, marks accepted, or proves a checkpoint. An unkeyed checksum detects
+accidental/local corruption but supplies no signed authority.
+
+From the clean detached `d61efa4` checkout with Rust 1.89, task-local Cargo
+cache/target, and source-built ICU4C from the pinned dependency, `cargo test
+-p peerwork-runtime --offline --locked secure_package_pending::tests --lib`
+passed 3/3 in 2m01s (first clean ICU build). Tests cover exact restart,
+same-input idempotence, changed origin/material refusal, pre-write resource
+refusal, and corrupted-file refusal. This is a local-state test; no service,
+Agent entry workflow, or installation test ran, so their compliance and
+business-effect evidence are unverified at this checkpoint. Source SHA-256:
+`secure_package_pending.rs`
+`d5cb9834c2bfdb449486d68accad26284936e73862d2a4ec976232de2d2c8336`,
+runtime `lib.rs`
+`7851281ad69a210585d2284a829583b38408892ebbf4bf598d056d150196ff37`,
+and `Cargo.lock`
+`9dc2d3f2ad77be15366633af890168611e8d62a7f38de646970dfc4cedc8d4d5`.
+
+Core's intended production handoff is a private-constructor package-stage
+plan that binds the compiled closure, exact source/part IDs and hashes,
+signed action intent and expected head to a complete authenticated
+checkpoint. Runtime will persist each exact authored stage packet before
+POST and reverify it on retry; a separate install plan must bind the completed
+staged sequence and resulting protocol/instance/structure state. Neither
+proof exists yet, so custom stage/install and final replay remain open.
