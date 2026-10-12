@@ -24,7 +24,7 @@ jobs:
         run: |
           cargo test --workspace --locked
           cargo build --release --locked -p peerwork-cli -p peerwork-node-native
-          python -m pip install 'maturin>=1.7,<2'
+          python -m pip install 'maturin==1.15.0'
           cd bindings/python
           maturin build --release --locked --out ../../dist/wheels
       - name: Package Node binary and test local offline installs
@@ -62,7 +62,7 @@ jobs:
         run: |
           cargo test --workspace --locked
           cargo build --release --locked -p peerwork-cli -p peerwork-node-native
-          python -m pip install 'maturin>=1.7,<2'
+          python -m pip install 'maturin==1.15.0'
           cd bindings/python
           maturin build --release --locked --out ../../dist/wheels
           cd ../..
@@ -100,7 +100,7 @@ jobs:
         run: |
           cargo test --workspace --locked
           cargo build --release --locked -p peerwork-cli -p peerwork-node-native
-          python -m pip install 'maturin>=1.7,<2'
+          python -m pip install 'maturin==1.15.0'
           Push-Location bindings/python
           maturin build --release --locked --out ../../dist/wheels
           Pop-Location

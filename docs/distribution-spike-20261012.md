@@ -17,6 +17,7 @@ recovery are marked false in the manifest.
 | Node import | Node 24.20 with PATH containing only its `bin`; shell `command -v` confirmed `gcc`, `rustc`, `cargo`, `python3` absent | Exit 0; version and manifest loaded from `.node` |
 | Missing Node platform package | Install facade tarball with `--omit=optional`; import it | Explicit `Missing @peerwork/agent-sdk-linux-x64-gnu native package` error |
 | Binary dependencies | `ldd` on CLI, Python extension, Node addon | libc, libgcc_s and ELF loader; no OpenSSL library |
+| Path handling | Offline Python and npm installs plus CLI run under `/tmp/Peerwork Install α/` | Exit 0 for all three version/manifest probes |
 
 The first Node smoke used a file dependency that npm symlinked to source. The
 facade then resolved from the source directory and could not find the installed
