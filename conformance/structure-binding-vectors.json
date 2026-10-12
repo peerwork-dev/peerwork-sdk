@@ -1,0 +1,827 @@
+[
+  {
+    "name": "valid",
+    "policy": {
+      "v": 1,
+      "protocols": [
+        {
+          "v": 1,
+          "protocol_digest": "237618afce5f7988c53b706e0628c3ad102bf4268fd14e9f7840821102cfdf94",
+          "schemas": {
+            "discussion.message": {
+              "fields": {
+                "author": {
+                  "protection": "server_readable",
+                  "type": "actor"
+                },
+                "body": {
+                  "protection": "e2ee",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "author",
+                "body"
+              ]
+            }
+          },
+          "actions": {}
+        }
+      ],
+      "disclosure": [
+        {
+          "protocol_digest": "237618afce5f7988c53b706e0628c3ad102bf4268fd14e9f7840821102cfdf94",
+          "schema": "discussion.message",
+          "fields": [
+            "author"
+          ]
+        }
+      ],
+      "instances": [
+        {
+          "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+          "protocol_digest": "237618afce5f7988c53b706e0628c3ad102bf4268fd14e9f7840821102cfdf94"
+        }
+      ]
+    },
+    "objects": [
+      {
+        "kind": "protocols",
+        "id": "237618afce5f7988c53b706e0628c3ad102bf4268fd14e9f7840821102cfdf94",
+        "revision": 1,
+        "provenance": "AUTHOR_SIGNED",
+        "value": {
+          "digest": "237618afce5f7988c53b706e0628c3ad102bf4268fd14e9f7840821102cfdf94",
+          "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+          "manifest": {
+            "name": "binding",
+            "display_version": "1",
+            "semantics": "peerwork.kernel.v1",
+            "dependencies": [],
+            "record_schemas": {
+              "discussion.message": {
+                "type": "object",
+                "fields": {
+                  "author": "string",
+                  "body": "string"
+                },
+                "required": [
+                  "author",
+                  "body"
+                ],
+                "max_bytes": 4096
+              }
+            },
+            "initial_state": {},
+            "actions": []
+          },
+          "resolved_manifest": {
+            "name": "binding",
+            "display_version": "1",
+            "semantics": "peerwork.kernel.v1",
+            "dependencies": [],
+            "record_schemas": {
+              "discussion.message": {
+                "type": "object",
+                "fields": {
+                  "author": "string",
+                  "body": "string"
+                },
+                "required": [
+                  "author",
+                  "body"
+                ],
+                "max_bytes": 4096
+              }
+            },
+            "initial_state": {},
+            "actions": []
+          }
+        }
+      },
+      {
+        "kind": "instances",
+        "id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+        "revision": 1,
+        "provenance": "AUTHOR_SIGNED",
+        "value": {
+          "id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+          "protocol_digest": "237618afce5f7988c53b706e0628c3ad102bf4268fd14e9f7840821102cfdf94"
+        }
+      }
+    ],
+    "ok": true
+  },
+  {
+    "name": "missing_protocol",
+    "policy": {
+      "v": 1,
+      "protocols": [],
+      "disclosure": [
+        {
+          "protocol_digest": "237618afce5f7988c53b706e0628c3ad102bf4268fd14e9f7840821102cfdf94",
+          "schema": "discussion.message",
+          "fields": [
+            "author"
+          ]
+        }
+      ],
+      "instances": [
+        {
+          "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+          "protocol_digest": "237618afce5f7988c53b706e0628c3ad102bf4268fd14e9f7840821102cfdf94"
+        }
+      ]
+    },
+    "objects": [
+      {
+        "kind": "protocols",
+        "id": "237618afce5f7988c53b706e0628c3ad102bf4268fd14e9f7840821102cfdf94",
+        "revision": 1,
+        "provenance": "AUTHOR_SIGNED",
+        "value": {
+          "digest": "237618afce5f7988c53b706e0628c3ad102bf4268fd14e9f7840821102cfdf94",
+          "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+          "manifest": {
+            "name": "binding",
+            "display_version": "1",
+            "semantics": "peerwork.kernel.v1",
+            "dependencies": [],
+            "record_schemas": {
+              "discussion.message": {
+                "type": "object",
+                "fields": {
+                  "author": "string",
+                  "body": "string"
+                },
+                "required": [
+                  "author",
+                  "body"
+                ],
+                "max_bytes": 4096
+              }
+            },
+            "initial_state": {},
+            "actions": []
+          },
+          "resolved_manifest": {
+            "name": "binding",
+            "display_version": "1",
+            "semantics": "peerwork.kernel.v1",
+            "dependencies": [],
+            "record_schemas": {
+              "discussion.message": {
+                "type": "object",
+                "fields": {
+                  "author": "string",
+                  "body": "string"
+                },
+                "required": [
+                  "author",
+                  "body"
+                ],
+                "max_bytes": 4096
+              }
+            },
+            "initial_state": {},
+            "actions": []
+          }
+        }
+      },
+      {
+        "kind": "instances",
+        "id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+        "revision": 1,
+        "provenance": "AUTHOR_SIGNED",
+        "value": {
+          "id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+          "protocol_digest": "237618afce5f7988c53b706e0628c3ad102bf4268fd14e9f7840821102cfdf94"
+        }
+      }
+    ],
+    "ok": false,
+    "error": "STRUCTURE_DISCLOSURE_INVALID"
+  },
+  {
+    "name": "wrong_instance",
+    "policy": {
+      "v": 1,
+      "protocols": [
+        {
+          "v": 1,
+          "protocol_digest": "237618afce5f7988c53b706e0628c3ad102bf4268fd14e9f7840821102cfdf94",
+          "schemas": {
+            "discussion.message": {
+              "fields": {
+                "author": {
+                  "protection": "server_readable",
+                  "type": "actor"
+                },
+                "body": {
+                  "protection": "e2ee",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "author",
+                "body"
+              ]
+            }
+          },
+          "actions": {}
+        }
+      ],
+      "disclosure": [
+        {
+          "protocol_digest": "237618afce5f7988c53b706e0628c3ad102bf4268fd14e9f7840821102cfdf94",
+          "schema": "discussion.message",
+          "fields": [
+            "author"
+          ]
+        }
+      ],
+      "instances": []
+    },
+    "objects": [
+      {
+        "kind": "protocols",
+        "id": "237618afce5f7988c53b706e0628c3ad102bf4268fd14e9f7840821102cfdf94",
+        "revision": 1,
+        "provenance": "AUTHOR_SIGNED",
+        "value": {
+          "digest": "237618afce5f7988c53b706e0628c3ad102bf4268fd14e9f7840821102cfdf94",
+          "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+          "manifest": {
+            "name": "binding",
+            "display_version": "1",
+            "semantics": "peerwork.kernel.v1",
+            "dependencies": [],
+            "record_schemas": {
+              "discussion.message": {
+                "type": "object",
+                "fields": {
+                  "author": "string",
+                  "body": "string"
+                },
+                "required": [
+                  "author",
+                  "body"
+                ],
+                "max_bytes": 4096
+              }
+            },
+            "initial_state": {},
+            "actions": []
+          },
+          "resolved_manifest": {
+            "name": "binding",
+            "display_version": "1",
+            "semantics": "peerwork.kernel.v1",
+            "dependencies": [],
+            "record_schemas": {
+              "discussion.message": {
+                "type": "object",
+                "fields": {
+                  "author": "string",
+                  "body": "string"
+                },
+                "required": [
+                  "author",
+                  "body"
+                ],
+                "max_bytes": 4096
+              }
+            },
+            "initial_state": {},
+            "actions": []
+          }
+        }
+      },
+      {
+        "kind": "instances",
+        "id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+        "revision": 1,
+        "provenance": "AUTHOR_SIGNED",
+        "value": {
+          "id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+          "protocol_digest": "237618afce5f7988c53b706e0628c3ad102bf4268fd14e9f7840821102cfdf94"
+        }
+      }
+    ],
+    "ok": false,
+    "error": "STRUCTURE_BINDINGS_MISMATCH"
+  },
+  {
+    "name": "extra_action",
+    "policy": {
+      "v": 1,
+      "protocols": [
+        {
+          "v": 1,
+          "protocol_digest": "237618afce5f7988c53b706e0628c3ad102bf4268fd14e9f7840821102cfdf94",
+          "schemas": {
+            "discussion.message": {
+              "fields": {
+                "author": {
+                  "protection": "server_readable",
+                  "type": "actor"
+                },
+                "body": {
+                  "protection": "e2ee",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "author",
+                "body"
+              ]
+            }
+          },
+          "actions": {
+            "extra": {
+              "schemas": [],
+              "roles": [],
+              "capabilities": [],
+              "heads": "NONE"
+            }
+          }
+        }
+      ],
+      "disclosure": [
+        {
+          "protocol_digest": "237618afce5f7988c53b706e0628c3ad102bf4268fd14e9f7840821102cfdf94",
+          "schema": "discussion.message",
+          "fields": [
+            "author"
+          ]
+        }
+      ],
+      "instances": [
+        {
+          "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+          "protocol_digest": "237618afce5f7988c53b706e0628c3ad102bf4268fd14e9f7840821102cfdf94"
+        }
+      ]
+    },
+    "objects": [
+      {
+        "kind": "protocols",
+        "id": "237618afce5f7988c53b706e0628c3ad102bf4268fd14e9f7840821102cfdf94",
+        "revision": 1,
+        "provenance": "AUTHOR_SIGNED",
+        "value": {
+          "digest": "237618afce5f7988c53b706e0628c3ad102bf4268fd14e9f7840821102cfdf94",
+          "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+          "manifest": {
+            "name": "binding",
+            "display_version": "1",
+            "semantics": "peerwork.kernel.v1",
+            "dependencies": [],
+            "record_schemas": {
+              "discussion.message": {
+                "type": "object",
+                "fields": {
+                  "author": "string",
+                  "body": "string"
+                },
+                "required": [
+                  "author",
+                  "body"
+                ],
+                "max_bytes": 4096
+              }
+            },
+            "initial_state": {},
+            "actions": []
+          },
+          "resolved_manifest": {
+            "name": "binding",
+            "display_version": "1",
+            "semantics": "peerwork.kernel.v1",
+            "dependencies": [],
+            "record_schemas": {
+              "discussion.message": {
+                "type": "object",
+                "fields": {
+                  "author": "string",
+                  "body": "string"
+                },
+                "required": [
+                  "author",
+                  "body"
+                ],
+                "max_bytes": 4096
+              }
+            },
+            "initial_state": {},
+            "actions": []
+          }
+        }
+      },
+      {
+        "kind": "instances",
+        "id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+        "revision": 1,
+        "provenance": "AUTHOR_SIGNED",
+        "value": {
+          "id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+          "protocol_digest": "237618afce5f7988c53b706e0628c3ad102bf4268fd14e9f7840821102cfdf94"
+        }
+      }
+    ],
+    "ok": false,
+    "error": "STRUCTURE_PROTOCOL_MISMATCH"
+  },
+  {
+    "name": "readable_to_e2ee",
+    "policy": {
+      "v": 1,
+      "protocols": [
+        {
+          "v": 1,
+          "protocol_digest": "237618afce5f7988c53b706e0628c3ad102bf4268fd14e9f7840821102cfdf94",
+          "schemas": {
+            "discussion.message": {
+              "fields": {
+                "author": {
+                  "protection": "e2ee",
+                  "type": "string"
+                },
+                "body": {
+                  "protection": "e2ee",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "author",
+                "body"
+              ]
+            }
+          },
+          "actions": {}
+        }
+      ],
+      "disclosure": [
+        {
+          "protocol_digest": "237618afce5f7988c53b706e0628c3ad102bf4268fd14e9f7840821102cfdf94",
+          "schema": "discussion.message",
+          "fields": []
+        }
+      ],
+      "instances": [
+        {
+          "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+          "protocol_digest": "237618afce5f7988c53b706e0628c3ad102bf4268fd14e9f7840821102cfdf94"
+        }
+      ]
+    },
+    "objects": [
+      {
+        "kind": "protocols",
+        "id": "237618afce5f7988c53b706e0628c3ad102bf4268fd14e9f7840821102cfdf94",
+        "revision": 1,
+        "provenance": "AUTHOR_SIGNED",
+        "value": {
+          "digest": "237618afce5f7988c53b706e0628c3ad102bf4268fd14e9f7840821102cfdf94",
+          "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+          "manifest": {
+            "name": "binding",
+            "display_version": "1",
+            "semantics": "peerwork.kernel.v1",
+            "dependencies": [],
+            "record_schemas": {
+              "discussion.message": {
+                "type": "object",
+                "fields": {
+                  "author": "string",
+                  "body": "string"
+                },
+                "required": [
+                  "author",
+                  "body"
+                ],
+                "max_bytes": 4096
+              }
+            },
+            "initial_state": {},
+            "actions": []
+          },
+          "resolved_manifest": {
+            "name": "binding",
+            "display_version": "1",
+            "semantics": "peerwork.kernel.v1",
+            "dependencies": [],
+            "record_schemas": {
+              "discussion.message": {
+                "type": "object",
+                "fields": {
+                  "author": "string",
+                  "body": "string"
+                },
+                "required": [
+                  "author",
+                  "body"
+                ],
+                "max_bytes": 4096
+              }
+            },
+            "initial_state": {},
+            "actions": []
+          }
+        }
+      },
+      {
+        "kind": "instances",
+        "id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+        "revision": 1,
+        "provenance": "AUTHOR_SIGNED",
+        "value": {
+          "id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+          "protocol_digest": "237618afce5f7988c53b706e0628c3ad102bf4268fd14e9f7840821102cfdf94"
+        }
+      }
+    ],
+    "ok": true
+  },
+  {
+    "name": "official_proposal_declaration",
+    "manifest": {
+      "name": "peerwork.proposal-adoption.v1",
+      "display_version": "1",
+      "semantics": "peerwork.kernel.v1",
+      "dependencies": [],
+      "protocol_roles": [
+        "ADOPTER",
+        "AUTHOR",
+        "REVIEWER"
+      ],
+      "capabilities": [
+        "ADOPT",
+        "PROPOSE"
+      ],
+      "role_conflicts": [
+        [
+          "ADOPTER",
+          "AUTHOR"
+        ]
+      ],
+      "historical_role_conflicts": [
+        [
+          "ADOPTER",
+          "AUTHOR"
+        ]
+      ],
+      "constraints": {},
+      "record_schemas": {
+        "proposal.candidate": {
+          "type": "object",
+          "fields": {
+            "author": "string",
+            "title": "string",
+            "body": "string"
+          },
+          "required": [
+            "author",
+            "title",
+            "body"
+          ],
+          "max_bytes": 16384
+        }
+      },
+      "initial_state": {
+        "candidate_author": null,
+        "candidate_ref": null
+      },
+      "actions": [
+        {
+          "id": "proposal.adopt",
+          "reads": [
+            [
+              "candidate_author"
+            ],
+            [
+              "candidate_ref"
+            ]
+          ],
+          "writes": [
+            [
+              "adopted"
+            ]
+          ],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [
+                {
+                  "op": "has_protocol_role",
+                  "role": "ADOPTER"
+                },
+                {
+                  "op": "has_capability",
+                  "capability": "ADOPT"
+                },
+                {
+                  "op": "exact_ref",
+                  "ref": {
+                    "from": "ref",
+                    "source": "body",
+                    "path": [
+                      "candidate_ref"
+                    ],
+                    "scope": "INSTANCE"
+                  }
+                },
+                {
+                  "op": "eq",
+                  "left": {
+                    "from": "ref",
+                    "source": "body",
+                    "path": [
+                      "candidate_ref"
+                    ],
+                    "scope": "INSTANCE"
+                  },
+                  "right": {
+                    "from": "state",
+                    "path": [
+                      "candidate_ref"
+                    ]
+                  }
+                },
+                {
+                  "op": "not",
+                  "rule": {
+                    "op": "eq",
+                    "left": {
+                      "from": "state",
+                      "path": [
+                        "candidate_author"
+                      ]
+                    },
+                    "right": {
+                      "from": "auth",
+                      "field": "actorId"
+                    }
+                  }
+                }
+              ],
+              "effects": [
+                {
+                  "op": "set",
+                  "path": [
+                    "adopted"
+                  ],
+                  "value": {
+                    "from": "literal",
+                    "value": true
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "proposal.propose",
+          "reads": [],
+          "writes": [
+            [
+              "candidate_author"
+            ],
+            [
+              "candidate_ref"
+            ]
+          ],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": [
+              "candidate"
+            ]
+          },
+          "variants": [
+            {
+              "when": [
+                {
+                  "op": "has_protocol_role",
+                  "role": "AUTHOR"
+                },
+                {
+                  "op": "has_capability",
+                  "capability": "PROPOSE"
+                }
+              ],
+              "effects": [
+                {
+                  "op": "append",
+                  "schema": "proposal.candidate",
+                  "recordSlot": "candidate",
+                  "entity": {
+                    "mode": "new",
+                    "slot": "candidate"
+                  },
+                  "selectHead": true,
+                  "value": {
+                    "from": "object",
+                    "fields": {
+                      "author": {
+                        "from": "auth",
+                        "field": "actorId"
+                      },
+                      "title": {
+                        "from": "body",
+                        "path": [
+                          "title"
+                        ]
+                      },
+                      "body": {
+                        "from": "body",
+                        "path": [
+                          "body"
+                        ]
+                      }
+                    }
+                  },
+                  "relations": []
+                },
+                {
+                  "op": "set",
+                  "path": [
+                    "candidate_author"
+                  ],
+                  "value": {
+                    "from": "auth",
+                    "field": "actorId"
+                  }
+                },
+                {
+                  "op": "set",
+                  "path": [
+                    "candidate_ref"
+                  ],
+                  "value": {
+                    "from": "produced_ref",
+                    "slot": "candidate"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "digest": "a37c72d1f4ac5999e5da49559de5c7d171663d526f04d59c9bada53c58dd0b05",
+    "expected_protocol": {
+      "v": 1,
+      "protocol_digest": "a37c72d1f4ac5999e5da49559de5c7d171663d526f04d59c9bada53c58dd0b05",
+      "schemas": {
+        "proposal.candidate": {
+          "fields": {
+            "author": {
+              "protection": "e2ee",
+              "type": "string"
+            },
+            "title": {
+              "protection": "e2ee",
+              "type": "string"
+            },
+            "body": {
+              "protection": "e2ee",
+              "type": "string"
+            }
+          },
+          "required": [
+            "author",
+            "title",
+            "body"
+          ]
+        }
+      },
+      "actions": {
+        "proposal.adopt": {
+          "schemas": [],
+          "roles": [
+            "ADOPTER"
+          ],
+          "capabilities": [
+            "ADOPT"
+          ],
+          "heads": "NONE"
+        },
+        "proposal.propose": {
+          "schemas": [
+            "proposal.candidate"
+          ],
+          "roles": [
+            "AUTHOR"
+          ],
+          "capabilities": [
+            "PROPOSE"
+          ],
+          "heads": "APPEND"
+        }
+      }
+    }
+  }
+]

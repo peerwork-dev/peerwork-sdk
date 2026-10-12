@@ -1437,6 +1437,19 @@ pub(crate) fn replay_basic_content(
                 object_source.as_ref(),
             )?;
         }
+        let policy_payload = policy.get("payload").ok_or(ReplayError::Invalid)?;
+        let structured = integer(policy_payload, "v")? == 2
+            || integer(policy_payload, "v")? == 3
+                && string(policy_payload, "structure_mode")? == "STRUCTURED";
+        if structured {
+            let contract = policy_payload
+                .get("structure")
+                .ok_or(ReplayError::Invalid)?;
+            let mut candidate = prior_objects.clone();
+            candidate.extend(objects.iter().cloned());
+            crate::structure_bindings::validate_object_bindings(contract, &candidate)
+                .map_err(|_| ReplayError::Invalid)?;
+        }
         for (key, revision) in staged_revisions {
             latest_revisions
                 .entry(key)
@@ -3698,9 +3711,10 @@ mod tests {
                            previous: Option<&str>,
                            action: &str,
                            structure: Value,
-                           operation: Value| {
+                           operation: Value,
+                           selected_policy_hash: &str| {
             let context = json!({"v":2,"workspace_id":workspace,"sequence":sequence,
-                "previous":previous,"policy_hash":policy_hash,"epoch":1,"actor_id":owner_id,
+                "previous":previous,"policy_hash":selected_policy_hash,"epoch":1,"actor_id":owner_id,
                 "signing_key":owner_key,"command_id":base64url(&[sequence as u8;32]),
                 "action_id":action,"instance_id":null,"issued_at":sequence,"delegation":null,
                 "structure":structure});
@@ -3722,6 +3736,7 @@ mod tests {
             "secure.bootstrap",
             delta.clone(),
             json!({"v":1,"kind":"BOOTSTRAP","input":{},"objects":[]}),
+            &policy_hash,
         );
         let source = json!({"v":1,"workspace_id":workspace,"owner_id":owner_id,
             "owner_key":owner_key,"sequence":1,"head":hash(&bootstrap),"policy_hash":policy_hash});
@@ -3764,6 +3779,7 @@ mod tests {
             "secure.protocol-package.stage",
             delta,
             stage_operation.clone(),
+            &policy_hash,
         );
         let stage_checkpoint = json!({"v":1,"workspace_id":workspace,"owner_id":owner_id,
             "owner_key":owner_key,"sequence":2,"head":hash(&stage),"policy_hash":policy_hash});
@@ -3778,6 +3794,43 @@ mod tests {
             "protocol_digest":digest,"origin_entrypoint":"proposal","semantics":"peerwork.kernel.v1",
             "state":manifest["initial_state"],"revision":0,"event_revision":0,"created":3,
             "package_source":proof}});
+        let manifest_wire =
+            parse_wire_json_js_bounded(&serde_json::to_vec(&manifest).unwrap(), 32, 65_536)
+                .unwrap();
+        let declaration = crate::structure_bindings::protocol_with_default_choices_for_test(
+            &digest,
+            &manifest_wire,
+        );
+        let declaration: Value = serde_json::from_str(
+            &canonical_wire_value(&declaration, Path::SecureArtifact).unwrap(),
+        )
+        .unwrap();
+        let disclosure: Vec<Value> = declaration["schemas"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(schema, definition)| {
+                let fields: Vec<String> = definition["fields"]
+                    .as_object()
+                    .unwrap()
+                    .iter()
+                    .filter(|(_, rule)| rule["protection"] == "server_readable")
+                    .map(|(name, _)| name.clone())
+                    .collect();
+                json!({"protocol_digest":digest,"schema":schema,"fields":fields})
+            })
+            .collect();
+        let structure2 = json!({"v":1,"protocols":[declaration],"disclosure":disclosure,
+            "instances":[{"instance_id":instance_id,"protocol_digest":digest}]});
+        let mut policy2_payload: Value =
+            serde_json::from_slice::<Value>(&policy).unwrap()["payload"].clone();
+        policy2_payload["version"] = json!(2);
+        policy2_payload["previous_policy"] = json!(policy_hash);
+        policy2_payload["effective_sequence"] = json!(3);
+        policy2_payload["issued_at"] = json!(3);
+        policy2_payload["structure"] = structure2;
+        let policy2 = signed(policy2_payload, "peerwork.secure.policy.v2", &signer);
+        let policy2_hash = hash(&policy2);
         let install_operation = json!({"v":1,"kind":"ADMIN","input":{"install":{
             "instance_id":instance_id,"protocol_digest":digest,"entrypoint":"proposal"}},
             "objects":[protocol,instance]});
@@ -3795,6 +3848,7 @@ mod tests {
             "secure.structure.begin",
             snapshot.clone(),
             install_operation.clone(),
+            &policy2_hash,
         );
         let owner_pin = OwnerPin {
             actor_id: &owner_id,
@@ -3824,13 +3878,18 @@ mod tests {
         .into_iter()
         .enumerate()
         {
+            let policies: Vec<&[u8]> = if sequence == 2 {
+                vec![&policy, &policy2]
+            } else {
+                vec![&policy]
+            };
             let checkpoint = serde_json::to_vec(&json!({"v":1,"workspace_id":workspace,
                 "owner_id":owner_id,"owner_key":owner_key,"sequence":sequence+1,
-                "head":hash(commits[sequence]),"policy_hash":policy_hash}))
+                "head":hash(commits[sequence]),"policy_hash":if sequence == 2 { &policy2_hash } else { &policy_hash }}))
             .unwrap();
             assert!(
                 scan_signed_chain_headers(
-                    &[&policy],
+                    &policies,
                     &commits
                         .iter()
                         .map(|wire| wire.as_slice())
@@ -3845,22 +3904,42 @@ mod tests {
                 sequence + 1
             );
         }
-        let check = |bootstrap: &[u8], stage: &[u8], install: &[u8]| {
-            let checkpoint = serde_json::to_vec(&json!({"v":1,"workspace_id":workspace,
+        let check_with_policy =
+            |second_policy: &[u8], bootstrap: &[u8], stage: &[u8], install: &[u8]| {
+                let checkpoint = serde_json::to_vec(&json!({"v":1,"workspace_id":workspace,
                 "owner_id":owner_id,"owner_key":owner_key,"sequence":3,"head":hash(install),
-                "policy_hash":policy_hash}))
-            .unwrap();
-            replay_basic_content(
-                &[&policy],
-                &[bootstrap, stage, install],
-                &checkpoint,
-                &workspace,
-                Some(&owner_pin),
-                None,
-                Some(&keyring),
-            )
+                "policy_hash":hash(second_policy)}))
+                .unwrap();
+                replay_basic_content(
+                    &[&policy, second_policy],
+                    &[bootstrap, stage, install],
+                    &checkpoint,
+                    &workspace,
+                    Some(&owner_pin),
+                    None,
+                    Some(&keyring),
+                )
+            };
+        let check = |bootstrap: &[u8], stage: &[u8], install: &[u8]| {
+            check_with_policy(&policy2, bootstrap, stage, install)
         };
         assert_eq!(check(&bootstrap, &stage, &install).unwrap().object_count, 3);
+        let mut wrong_policy_payload: Value =
+            serde_json::from_slice::<Value>(&policy2).unwrap()["payload"].clone();
+        wrong_policy_payload["structure"]["instances"] = json!([]);
+        let wrong_policy = signed(wrong_policy_payload, "peerwork.secure.policy.v2", &signer);
+        let wrong_policy_hash = hash(&wrong_policy);
+        let wrong_policy_install = make_commit(
+            3,
+            Some(&hash(&stage)),
+            "secure.structure.begin",
+            snapshot.clone(),
+            install_operation.clone(),
+            &wrong_policy_hash,
+        );
+        assert!(
+            check_with_policy(&wrong_policy, &bootstrap, &stage, &wrong_policy_install).is_err()
+        );
         let mut end_envelope = snapshot.clone();
         end_envelope["mode"] = json!("SNAPSHOT_END");
         let end_operation = json!({"v":1,"kind":"ADMIN","input":{},"objects":[]});
@@ -3870,14 +3949,15 @@ mod tests {
             "secure.structure.end",
             end_envelope.clone(),
             end_operation.clone(),
+            &policy2_hash,
         );
         let end_checkpoint = serde_json::to_vec(&json!({"v":1,"workspace_id":workspace,
             "owner_id":owner_id,"owner_key":owner_key,"sequence":4,"head":hash(&end),
-            "policy_hash":policy_hash}))
+            "policy_hash":policy2_hash}))
         .unwrap();
         assert_eq!(
             replay_basic_content(
-                &[&policy],
+                &[&policy, &policy2],
                 &[&bootstrap, &stage, &install, &end],
                 &end_checkpoint,
                 &workspace,
@@ -3896,13 +3976,14 @@ mod tests {
             "secure.structure.end",
             end_envelope,
             end_operation,
+            &policy2_hash,
         );
         let wrong_end_checkpoint = serde_json::to_vec(&json!({"v":1,"workspace_id":workspace,
             "owner_id":owner_id,"owner_key":owner_key,"sequence":4,"head":hash(&wrong_end),
-            "policy_hash":policy_hash}))
+            "policy_hash":policy2_hash}))
         .unwrap();
         assert!(replay_basic_content(
-            &[&policy],
+            &[&policy, &policy2],
             &[&bootstrap, &stage, &install, &wrong_end],
             &wrong_end_checkpoint,
             &workspace,
@@ -3913,10 +3994,10 @@ mod tests {
         .is_err());
         let final_checkpoint = serde_json::to_vec(&json!({"v":1,"workspace_id":workspace,
             "owner_id":owner_id,"owner_key":owner_key,"sequence":3,"head":hash(&install),
-            "policy_hash":policy_hash}))
+            "policy_hash":policy2_hash}))
         .unwrap();
         let chain = scan_signed_chain_headers(
-            &[&policy],
+            &[&policy, &policy2],
             &[&bootstrap, &stage, &install],
             &final_checkpoint,
             &workspace,
@@ -3959,6 +4040,7 @@ mod tests {
             "secure.structure.begin",
             wrong_snapshot,
             install_operation.clone(),
+            &policy2_hash,
         );
         assert!(check(&bootstrap, &stage, &wrong_install).is_err());
         // In v3 the complete logical protocol value can be staged after the
@@ -3974,9 +4056,10 @@ mod tests {
                        previous: Option<&str>,
                        action: &str,
                        structure: Value,
-                       operation: Value| {
+                       operation: Value,
+                       selected_policy_hash: &str| {
             let context = json!({"v":3,"workspace_id":workspace,"sequence":sequence,
-                "previous":previous,"policy_hash":policy3_hash,"epoch":1,"actor_id":owner_id,
+                "previous":previous,"policy_hash":selected_policy_hash,"epoch":1,"actor_id":owner_id,
                 "signing_key":owner_key,"command_id":base64url(&[sequence as u8 + 50;32]),
                 "action_id":action,"instance_id":null,"issued_at":sequence,"delegation":null,
                 "protocol_format_ceiling":1,"structure":structure});
@@ -3999,6 +4082,7 @@ mod tests {
             "secure.bootstrap",
             delta3.clone(),
             json!({"v":1,"kind":"BOOTSTRAP","input":{},"objects":[]}),
+            &policy3_hash,
         );
         let source3 = json!({"v":1,"workspace_id":workspace,"owner_id":owner_id,
             "owner_key":owner_key,"sequence":1,"head":hash(&bootstrap3),"policy_hash":policy3_hash});
@@ -4040,6 +4124,7 @@ mod tests {
             delta3.clone(),
             json!({"v":1,"kind":"ADMIN","input":{"package_stage":{
                 "source":source3,"source_id":package_id3,"part_index":0}},"objects":[package_part3]}),
+            &policy3_hash,
         );
         let object_source = json!({"v":1,"workspace_id":workspace,"owner_id":owner_id,
             "owner_key":owner_key,"sequence":2,"head":hash(&stage3),"policy_hash":policy3_hash});
@@ -4076,6 +4161,7 @@ mod tests {
             "secure.protocol-object.stage",
             delta3,
             object_stage_operation,
+            &policy3_hash,
         );
         let object_checkpoint = json!({"v":1,"workspace_id":workspace,"owner_id":owner_id,
             "owner_key":owner_key,"sequence":3,"head":hash(&object_stage),"policy_hash":policy3_hash});
@@ -4088,6 +4174,16 @@ mod tests {
         let reference_install = json!({"v":1,"kind":"ADMIN","input":{"install":{
             "instance_id":instance_id,"protocol_digest":digest,"entrypoint":"proposal"}},
             "objects":[reference,instance3]});
+        let mut policy3b_payload: Value =
+            serde_json::from_slice::<Value>(&policy3).unwrap()["payload"].clone();
+        policy3b_payload["version"] = json!(2);
+        policy3b_payload["previous_policy"] = json!(policy3_hash);
+        policy3b_payload["effective_sequence"] = json!(4);
+        policy3b_payload["issued_at"] = json!(4);
+        policy3b_payload["structure"] =
+            serde_json::from_slice::<Value>(&policy2).unwrap()["payload"]["structure"].clone();
+        let policy3b = signed(policy3b_payload, "peerwork.secure.policy.v3", &signer);
+        let policy3b_hash = hash(&policy3b);
         let snapshot3 = json!({"v":1,"mode":"SNAPSHOT_BEGIN","records":[],"heads":[],
             "snapshot":{"source":object_checkpoint,
                 "root":empty_structure_root,
@@ -4098,14 +4194,15 @@ mod tests {
             "secure.structure.begin",
             snapshot3.clone(),
             reference_install.clone(),
+            &policy3b_hash,
         );
         let check_v3 = |object_stage: &[u8], install: &[u8]| {
             let checkpoint = serde_json::to_vec(&json!({"v":1,"workspace_id":workspace,
                 "owner_id":owner_id,"owner_key":owner_key,"sequence":4,"head":hash(install),
-                "policy_hash":policy3_hash}))
+                "policy_hash":policy3b_hash}))
             .unwrap();
             replay_basic_content(
-                &[&policy3],
+                &[&policy3, &policy3b],
                 &[&bootstrap3, &stage3, object_stage, install],
                 &checkpoint,
                 &workspace,
@@ -4124,6 +4221,7 @@ mod tests {
             "secure.structure.begin",
             snapshot3,
             wrong_reference,
+            &policy3b_hash,
         );
         assert!(check_v3(&object_stage, &wrong_install).is_err());
         let mut changed = install_operation.clone();
@@ -4134,6 +4232,7 @@ mod tests {
             "secure.structure.begin",
             snapshot.clone(),
             changed,
+            &policy2_hash,
         );
         assert!(check(&bootstrap, &stage, &changed_install).is_err());
         let mut missing_instance_proof = install_operation.clone();
@@ -4147,6 +4246,7 @@ mod tests {
             "secure.structure.begin",
             snapshot.clone(),
             missing_instance_proof,
+            &policy2_hash,
         );
         assert!(check(&bootstrap, &stage, &changed_install).is_err());
         let mut changed_part = stage_operation.clone();
@@ -4157,6 +4257,7 @@ mod tests {
             "secure.protocol-package.stage",
             json!({"v":1,"mode":"DELTA","records":[],"heads":[]}),
             changed_part,
+            &policy_hash,
         );
         let changed_install = make_commit(
             3,
@@ -4164,6 +4265,7 @@ mod tests {
             "secure.structure.begin",
             snapshot.clone(),
             install_operation.clone(),
+            &policy2_hash,
         );
         assert!(check(&bootstrap, &changed_stage, &changed_install).is_err());
         let mut changed_stage = stage_operation;
@@ -4174,6 +4276,7 @@ mod tests {
             "secure.protocol-package.stage",
             json!({"v":1,"mode":"DELTA","records":[],"heads":[]}),
             changed_stage,
+            &policy_hash,
         );
         let changed_install = make_commit(
             3,
@@ -4181,6 +4284,7 @@ mod tests {
             "secure.structure.begin",
             snapshot,
             install_operation,
+            &policy2_hash,
         );
         assert!(check(&bootstrap, &changed_stage, &changed_install).is_err());
     }

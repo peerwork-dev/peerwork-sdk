@@ -17,6 +17,7 @@ mod package_namespace;
 mod package_schema;
 pub mod prepared_command;
 pub mod prepared_secure_author;
+pub mod prepared_secure_bootstrap;
 pub mod prepared_secure_request;
 #[allow(dead_code)]
 mod protocol_composition;
@@ -33,6 +34,7 @@ pub mod secure_recipient;
 #[allow(dead_code)]
 mod secure_replay;
 pub mod strict_json;
+mod structure_bindings;
 #[allow(dead_code)]
 mod structure_policy;
 pub mod verified_secure_grant;
