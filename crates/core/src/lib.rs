@@ -36,6 +36,7 @@ mod protocol_object_source;
 mod protocol_package_source;
 pub mod receipt;
 pub mod receipt_wire;
+pub mod replayed_secure_journal;
 #[allow(dead_code)]
 mod secure_chain;
 #[allow(dead_code)]
