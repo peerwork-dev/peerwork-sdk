@@ -172,8 +172,8 @@ mod tests {
     };
     use tokio_util::sync::CancellationToken;
 
-    #[test]
-    fn owner_bootstrap_stages_key_and_exact_packet_across_restart() {
+    #[tokio::test]
+    async fn owner_bootstrap_stages_key_and_exact_packet_across_restart() {
         use peerwork_core::{
             canonical::{canonical, Path},
             crypto::{sha256_hex, sign_canonical},
@@ -287,6 +287,33 @@ mod tests {
         assert!(reopened
             .verified_saved_bootstrap(&command_id, &identity, &transport, &wrong)
             .is_err());
+        let mut mismatched = SecureLifecycle::open(
+            &dir.path().join("mismatched-epoch.state"),
+            origin,
+            identity.actor_id(),
+            &workspace,
+            identity.actor_id(),
+            identity.key_id(),
+        )
+        .unwrap();
+        mismatched.stage_initial(1).unwrap();
+        assert!(reopened
+            .verified_saved_bootstrap(&command_id, &identity, &transport, &mismatched)
+            .is_err());
+        let mut reopened = reopened;
+        assert!(matches!(
+            reopened
+                .submit_saved_bootstrap(
+                    &command_id,
+                    &identity,
+                    &transport,
+                    &mismatched,
+                    &CancellationToken::new()
+                )
+                .await,
+            Err(SecureIntentError::Incompatible)
+        ));
+        assert_eq!(reopened.exact_request(&command_id).unwrap(), exact);
     }
 
     #[test]

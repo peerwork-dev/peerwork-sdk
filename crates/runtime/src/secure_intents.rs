@@ -9,7 +9,9 @@ use crate::{
     transport::{HttpTransport, TransportError},
 };
 use peerwork_core::{
+    canonical::Path as CanonicalPath,
     crypto::{base64url, decode_base64url, sha256_hex},
+    e2ee::{open_content_wire, SealedContent},
     prepared_secure_bootstrap::{
         verify_prepared_owner_bootstrap, BootstrapPins, BootstrapRequestError,
         VerifiedPreparedBootstrap,
@@ -18,13 +20,14 @@ use peerwork_core::{
         verify_prepared_secure_commit_request, PreparedSecureRequestError, SecureCommitRequestPins,
         VerifiedPreparedSecureRequest,
     },
-    wire_json::parse_wire_json_bounded,
+    wire_json::{canonical_wire_value, parse_wire_json_bounded, WireValue},
 };
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::Path};
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
+use zeroize::{Zeroize, Zeroizing};
 
 const MAX_PACKET: usize = 2 * 1024 * 1024;
 const MAX_RESPONSE: usize = 32 * 1024 * 1024;
@@ -358,6 +361,57 @@ impl SecureIntentJournal {
         {
             return Err(SecureIntentError::Incompatible);
         }
+        // The signed packet alone does not bind the independently persisted
+        // pending key. Prove this protected key opens exactly the saved body
+        // before any initial submission or retry after restart.
+        let saved = parse_wire_json_bounded(&request, 64, MAX_PACKET)
+            .map_err(|_| SecureIntentError::Incompatible)?;
+        let payload = saved
+            .get("commit")
+            .and_then(|commit| commit.get("payload"))
+            .ok_or(SecureIntentError::Incompatible)?;
+        let WireValue::Object(fields) = payload else {
+            return Err(SecureIntentError::Incompatible);
+        };
+        let context = WireValue::Object(
+            fields
+                .iter()
+                .filter(|(name, _)| {
+                    !name.iter().copied().eq("mode".encode_utf16())
+                        && !name.iter().copied().eq("body".encode_utf16())
+                })
+                .cloned()
+                .collect(),
+        );
+        let context_wire = canonical_wire_value(&context, CanonicalPath::SecureArtifact)
+            .map_err(|_| SecureIntentError::Incompatible)?;
+        let body = payload.get("body").ok_or(SecureIntentError::Incompatible)?;
+        let body_wire = canonical_wire_value(body, CanonicalPath::SecureArtifact)
+            .map_err(|_| SecureIntentError::Incompatible)?;
+        let sealed: SealedContent =
+            serde_json::from_str(&body_wire).map_err(|_| SecureIntentError::Incompatible)?;
+        let key = lifecycle
+            .pending_bootstrap_key()
+            .ok_or(SecureIntentError::Incompatible)?;
+        let plaintext = Zeroizing::new(
+            open_content_wire(key, &sealed, context_wire.as_bytes())
+                .map_err(|_| SecureIntentError::Incompatible)?,
+        );
+        let mut operation = parse_wire_json_bounded(&plaintext, 64, 16 * 1024 * 1024)
+            .map_err(|_| SecureIntentError::Incompatible)?;
+        let valid_operation = operation.object_len() == Some(4)
+            && operation.get("v").and_then(WireValue::as_number) == Some(1.0)
+            && operation
+                .get("kind")
+                .and_then(WireValue::as_string)
+                .as_deref()
+                == Some("BOOTSTRAP")
+            && matches!(operation.get("input"), Some(WireValue::Object(_)))
+            && matches!(operation.get("objects"), Some(WireValue::Array(_)));
+        wipe_wire(&mut operation);
+        if !valid_operation {
+            return Err(SecureIntentError::Incompatible);
+        }
         Ok((proof, request))
     }
 
@@ -410,6 +464,20 @@ impl SecureIntentJournal {
         self.store.write_exact(&bytes)?;
         self.document = next;
         Ok(())
+    }
+}
+
+fn wipe_wire(value: &mut WireValue) {
+    match value {
+        WireValue::String(units) => units.zeroize(),
+        WireValue::Array(items) => items.iter_mut().for_each(wipe_wire),
+        WireValue::Object(fields) => {
+            for (name, item) in fields {
+                name.zeroize();
+                wipe_wire(item);
+            }
+        }
+        WireValue::Null | WireValue::Bool(_) | WireValue::Number(_) => {}
     }
 }
 
