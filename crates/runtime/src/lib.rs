@@ -15,6 +15,8 @@ mod secure_grant_pending;
 #[allow(dead_code)]
 mod secure_intents;
 #[allow(dead_code)]
+mod secure_journal_read;
+#[allow(dead_code)]
 mod secure_lifecycle;
 #[allow(dead_code)]
 mod secure_native_prepare;

@@ -142,6 +142,46 @@ impl HttpTransport {
             .map_err(|_| TransportError::SubmittedUncertain)
     }
 
+    /// Exact authenticated secure-journal GET. The caller supplies a fresh
+    /// signed read proof bound to this complete canonical path and configured
+    /// origin. The returned bytes are untrusted until full journal replay.
+    pub(crate) async fn get_secure_journal_exact(
+        &self,
+        path: &str,
+        read_proof: &str,
+        cancel: &CancellationToken,
+    ) -> Result<ExactHttpResponse, TransportError> {
+        let workspace = path
+            .strip_prefix("/api/workspace/v1/secure/workspaces/")
+            .and_then(|tail| tail.split_once("/journal?"));
+        if !workspace.is_some_and(|(id, query)| {
+            id.len() == 43
+                && id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+                && !query.is_empty()
+                && !query.contains('#')
+                && !query.contains('?')
+                && !query.contains('/')
+        }) || path.len() > 2048
+            || read_proof.is_empty()
+            || read_proof.len() > 12000
+        {
+            return Err(TransportError::InvalidOrigin);
+        }
+        let url = self.endpoint(path)?;
+        let send = self
+            .client
+            .get(url)
+            .header("X-Peerwork-Read", read_proof)
+            .send();
+        let response = tokio::select! {
+            _ = cancel.cancelled() => return Err(TransportError::Cancelled),
+            result = send => result.map_err(map_network_error)?,
+        };
+        read_bounded(response, MAX_COMMAND_RESPONSE_BYTES, cancel).await
+    }
+
     fn endpoint(&self, path: &str) -> Result<Url, TransportError> {
         self.origin
             .join(path)
