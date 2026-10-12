@@ -10,10 +10,12 @@ mod full_manifest;
 #[allow(dead_code)]
 mod interpreter;
 #[allow(dead_code)]
+mod package_closure;
+pub mod prepared_command;
+#[allow(dead_code)]
 mod protocol_composition;
 #[allow(dead_code)]
 mod protocol_object_source;
-pub mod prepared_command;
 pub mod receipt;
 pub mod receipt_wire;
 #[allow(dead_code)]

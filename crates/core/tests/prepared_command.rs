@@ -51,6 +51,7 @@ fn signed_prepared_command_binds_identity_discovery_body_and_digest() {
     assert_eq!(proof.actor_id(), actor);
     assert_eq!(proof.path(), "/api/workspace/v1/commands");
     assert_eq!(proof.intent_digest(), sha256_hex(jws.as_bytes()));
+    assert_eq!(proof.command_canonical_json(), payload);
     let result = json!({"workspace_id":null,"event_sequence":null,"revision":null});
     let result_digest = sha256_hex(canonical(&result, Path::KERNEL).unwrap().as_bytes());
     let receipt_header = json!({"alg":"EdDSA","typ":"peerwork.kernel-receipt.v1+jws","kid":kid});
@@ -125,6 +126,7 @@ fn signed_prepared_command_binds_identity_discovery_body_and_digest() {
     assert_eq!(signed.jws(), jws);
     assert_eq!(signed.http_body(), body.as_bytes());
     assert_eq!(signed.proof().intent_digest(), proof.intent_digest());
+    assert_eq!(signed.proof().command_canonical_json(), payload);
     assert_eq!(signed.command_canonical(), payload);
     let mut wrong_actor = command.clone();
     wrong_actor["actor_id"] = json!(key_id(&[31; 32]));

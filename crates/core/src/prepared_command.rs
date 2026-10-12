@@ -358,6 +358,7 @@ pub struct CommandPins<'a> {
 /// Private-constructor evidence bound to a verified signature and exact HTTP body.
 #[derive(Debug, Clone)]
 pub struct VerifiedPreparedCommand {
+    command_canonical_json: String,
     command_id: String,
     actor_id: String,
     intent_digest: String,
@@ -368,6 +369,11 @@ pub struct VerifiedPreparedCommand {
 }
 
 impl VerifiedPreparedCommand {
+    /// Canonical payload from the authenticated, schema-validated JWS.
+    /// Keep this within trusted runtime code; do not expose it in bindings.
+    pub fn command_canonical_json(&self) -> &str {
+        &self.command_canonical_json
+    }
     pub fn command_id(&self) -> &str {
         &self.command_id
     }
@@ -477,6 +483,7 @@ pub fn verify_prepared_command_wire(
         return Err(invalid());
     }
     Ok(VerifiedPreparedCommand {
+        command_canonical_json: String::from_utf8(payload_bytes).map_err(|_| invalid())?,
         command_id,
         actor_id: expected_actor,
         intent_digest: sha256_hex(jws.as_bytes()),
