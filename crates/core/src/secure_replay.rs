@@ -3983,6 +3983,14 @@ mod tests {
                 "{}: {actual:?}",
                 case["name"]
             );
+            if let Ok(facts) = actual {
+                assert_eq!(
+                    facts.object_count,
+                    case["objects"].as_array().unwrap().len(),
+                    "{}: migrated object projection",
+                    case["name"]
+                );
+            }
         }
     }
 
