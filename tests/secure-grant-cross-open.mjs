@@ -51,19 +51,77 @@ try {
   const privateBytes = Buffer.from(await crypto.exportRecipientPrivateKey(recipient.privateKey));
   const vector = {
     policy,grant,certificate,wrong_recipient:wrongRecipient,workspace,owner_actor:owner.actorId,owner_key:owner.keyId,
+    recipient_actor:owner.actorId,recipient_key:owner.keyId,
     checkpoint:{v:1,workspace_id:workspace,owner_id:owner.actorId,owner_key:owner.keyId,
       sequence:0,head:null,policy_hash:await client.secureHash(policy)},
     recipient_private:privateBytes.toString('base64url'),now:now+2,
   };
   privateBytes.fill(0);
-  const vectorPath = join(directory,'synthetic-grant.json');
-  await writeFile(vectorPath,JSON.stringify(vector),{mode:0o600,flag:'wx'});
+  const member = await crypto.createSigningIdentity();
+  const memberEncryption = await crypto.createEncryptionIdentity(true);
+  const memberCertificate = await crypto.certifyEncryptionKey(member,memberEncryption,now);
+  const invitedWorkspace = client.secureToken();
+  const invitedPolicy = await client.createPolicy(owner,{
+    v:1,workspace_id:invitedWorkspace,owner_id:owner.actorId,signing_key:owner.keyId,
+    version:1,previous_policy:null,effective_sequence:1,visibility:'PRIVATE',epoch:1,
+    members:[{actor_id:owner.actorId,certificate,role:'OWNER',scopes:[]},
+      {actor_id:member.actorId,certificate:memberCertificate,role:'MEMBER',scopes:[]}],issued_at:now,
+  });
+  const offer = await client.createInvitation({identity:owner,policy:invitedPolicy,
+    recipient:memberCertificate,scopes:[],message:'synthetic',issuedAt:now,expiresAt:now+86_400_000});
+  const decision = await client.createInviteDecision(member,offer,'ACCEPT',
+    {actorId:owner.actorId,key:owner.keyId},now+1);
+  const invitedRing = client.newSecureKeyring(invitedWorkspace);
+  const invitedGrant = await client.createKeyGrant({identity:owner,recipient:memberCertificate,
+    policy:invitedPolicy,keyring:invitedRing,invite:{offer,decision},issuedAt:now+2});
+  assert.deepEqual(await client.openKeyGrant({grant:invitedGrant,recipient:memberCertificate,
+    privateKey:memberEncryption.privateKey,policy:invitedPolicy,policies:[invitedPolicy],
+    owner:{actorId:owner.actorId,key:owner.keyId},expectedInvite:{offer,decision},now:now+3}),invitedRing);
+  await assert.rejects(client.openKeyGrant({grant:invitedGrant,recipient:memberCertificate,
+    privateKey:memberEncryption.privateKey,policy:invitedPolicy,policies:[invitedPolicy],
+    owner:{actorId:owner.actorId,key:owner.keyId},now:now+3}));
+  const device = await crypto.createSigningIdentity();
+  const deviceEncryption = await crypto.createEncryptionIdentity(true);
+  const deviceCertificate = await crypto.certifyEncryptionKey(device,deviceEncryption,now);
+  const delegation = await client.signSecure(owner,'peerwork.secure.device-delegation.v1',{
+    v:1,workspace_id:workspace,actor_id:owner.actorId,signing_key:owner.keyId,
+    device:deviceCertificate,request_id:client.secureToken(),scope:[],read:true,
+    origin:'https://synthetic.invalid',audience:'synthetic',issued_at:now,expires_at:now+86_400_000,
+  });
+  const delegatedGrant = await client.createKeyGrant({identity:owner,recipient:deviceCertificate,
+    policy,keyring,delegation,issuedAt:now+2});
+  assert.deepEqual(await client.openKeyGrant({grant:delegatedGrant,recipient:deviceCertificate,
+    privateKey:deviceEncryption.privateKey,policy,policies:[policy],
+    owner:{actorId:owner.actorId,key:owner.keyId},expectedDelegation:delegation,now:now+3}),keyring);
+  await assert.rejects(client.openKeyGrant({grant:delegatedGrant,recipient:deviceCertificate,
+    privateKey:deviceEncryption.privateKey,policy,policies:[policy],
+    owner:{actorId:owner.actorId,key:owner.keyId},now:now+3}));
+  const invitePrivate = Buffer.from(await crypto.exportRecipientPrivateKey(memberEncryption.privateKey));
+  const devicePrivate = Buffer.from(await crypto.exportRecipientPrivateKey(deviceEncryption.privateKey));
+  const vectors = [vector,{
+    policy:invitedPolicy,grant:invitedGrant,certificate:memberCertificate,wrong_recipient:wrongRecipient,
+    workspace:invitedWorkspace,owner_actor:owner.actorId,owner_key:owner.keyId,
+    recipient_actor:member.actorId,recipient_key:member.keyId,
+    checkpoint:{v:1,workspace_id:invitedWorkspace,owner_id:owner.actorId,owner_key:owner.keyId,
+      sequence:0,head:null,policy_hash:await client.secureHash(invitedPolicy)},
+    recipient_private:invitePrivate.toString('base64url'),offer,decision,now:now+3,
+  },{
+    policy,grant:delegatedGrant,certificate:deviceCertificate,wrong_recipient:wrongRecipient,
+    workspace,owner_actor:owner.actorId,owner_key:owner.keyId,
+    recipient_actor:device.actorId,recipient_key:device.keyId,
+    checkpoint:vector.checkpoint,recipient_private:devicePrivate.toString('base64url'),delegation,now:now+3,
+  }];
+  invitePrivate.fill(0);devicePrivate.fill(0);
   const cargo = process.env.PEERWORK_CARGO_BIN ?? 'cargo';
-  const result = spawnSync(cargo,['test','-p','peerwork-core','direct_ts_owner_grant_vector',
-    '--offline','--locked'],{cwd:root,env:{...process.env,PEERWORK_GRANT_VECTOR:vectorPath},encoding:'utf8'});
-  if(result.status!==0)throw new Error(`native grant vector failed: ${result.stderr.slice(-3000)}`);
-  assert.equal((await readFile(vectorPath,'utf8')).length>0,true);
-  console.log('direct TypeScript owner grant and native signed-policy/HPKE/keyring proof agree; tamper, wrong recipient, epoch and policy rejected');
+  for (const [index,item] of vectors.entries()) {
+    const vectorPath = join(directory,`synthetic-grant-${index}.json`);
+    await writeFile(vectorPath,JSON.stringify(item),{mode:0o600,flag:'wx'});
+    const result = spawnSync(cargo,['test','-p','peerwork-core','direct_ts_owner_grant_vector',
+      '--offline','--locked'],{cwd:root,env:{...process.env,PEERWORK_GRANT_VECTOR:vectorPath},encoding:'utf8'});
+    if(result.status!==0)throw new Error(`native grant vector ${index} failed: ${result.stderr.slice(-3000)}`);
+    assert.equal((await readFile(vectorPath,'utf8')).length>0,true);
+  }
+  console.log('direct, accepted-invitation and delegated TypeScript grants cross-open in native proof; missing related proofs and altered grants refused');
 } finally {
   await rm(directory,{recursive:true,force:true});
 }

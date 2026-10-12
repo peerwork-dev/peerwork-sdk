@@ -4,18 +4,20 @@
 
 use crate::{
     canonical::Path,
-    crypto::{decode_base64url, verify_secure_signed_wire},
+    crypto::{decode_base64url, sha256_hex, verify_secure_signed_wire},
     e2ee::{hpke_open_wire, KeyBox},
     secure_chain::{scan_signed_chain_headers, OwnerPin},
     secure_keyring::SecretKeyring,
     secure_recipient::{RecipientCertificate, SecretRecipient},
     wire_json::{canonical_wire_value, parse_wire_json_js_bounded, WireValue},
 };
+use std::collections::HashSet;
 use thiserror::Error;
 use zeroize::{Zeroize, Zeroizing};
 
 const MAX_ARTIFACT: usize = 2 * 1024 * 1024;
 const MAX_SAFE: u64 = 9_007_199_254_740_991;
+const INVITATION_LIFETIME: u64 = 7 * 86_400_000;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum GrantError {
@@ -40,6 +42,16 @@ pub struct GrantProofInput<'a> {
     pub trusted_owner_actor: &'a str,
     pub trusted_owner_key: &'a str,
     pub now: u64,
+    pub expected_invitation: Option<InvitationProofInput<'a>>,
+    pub expected_delegation_wire: Option<&'a [u8]>,
+    /// Configured runtime provenance, not inferred from the signed grant.
+    pub expected_delegation_origin: Option<&'a str>,
+    pub expected_delegation_audience: Option<&'a str>,
+}
+
+pub struct InvitationProofInput<'a> {
+    pub offer_wire: &'a [u8],
+    pub decision_wire: &'a [u8],
 }
 
 /// Private-constructor proof of signed grant material, not an activation or
@@ -76,9 +88,9 @@ impl VerifiedGrantMaterial {
     }
 }
 
-/// Verify the direct member/owner delivery path. Invitation and delegation
-/// artifacts require additional signed related-proof checks and currently
-/// fail closed. This is one bounded route, not the whole grant contract.
+/// Verify signed direct, accepted-invitation, or delegated key delivery.
+/// A matching full signed replay/checkpoint proof is still required before
+/// any key material may be activated for content or action authoring.
 pub fn verify_direct_key_grant(
     input: GrantProofInput<'_>,
 ) -> Result<VerifiedGrantMaterial, GrantError> {
@@ -147,16 +159,13 @@ pub fn verify_direct_key_grant(
         || string(selected_payload, "visibility")? != "PRIVATE"
         || issued > input.now
         || !same(payload.get("recipient").ok_or_else(bad)?, &recipient)?
-        || !matches!(payload.get("invite_id"), Some(WireValue::Null))
-        || !matches!(payload.get("acceptance_hash"), Some(WireValue::Null))
-        || !matches!(payload.get("delegation"), Some(WireValue::Null))
-        || !has_member(latest_payload, &recipient_actor, &recipient_key, &recipient)?
     {
         return Err(bad());
     }
     let grantor_actor = string(payload, "actor_id")?;
     let grantor_key = string(payload, "signing_key")?;
-    if !has_owner_member(selected_payload, &grantor_actor, &grantor_key)?
+    let grantor_role = member_role(selected_payload, &grantor_actor, &grantor_key)?;
+    if grantor_role.is_none()
         || !verify_secure_signed_wire(
             input.grant_wire,
             "peerwork.secure.key-grant.v1",
@@ -164,6 +173,47 @@ pub fn verify_direct_key_grant(
         )
         .map_err(|_| bad())?
     {
+        return Err(bad());
+    }
+    match input.expected_invitation {
+        Some(related) => verify_invitation(
+            payload,
+            related,
+            &recipient,
+            &recipient_actor,
+            &recipient_key,
+            input.workspace_id,
+            input.trusted_owner_actor,
+            input.trusted_owner_key,
+            &policy_hash,
+            issued,
+            grantor_role.as_deref() == Some("OWNER"),
+        )?,
+        None if matches!(payload.get("invite_id"), Some(WireValue::Null))
+            && matches!(payload.get("acceptance_hash"), Some(WireValue::Null)) => {}
+        None => return Err(GrantError::RelatedProofRequired),
+    }
+    match input.expected_delegation_wire {
+        Some(related) => verify_delegation(
+            payload,
+            related,
+            &recipient,
+            &grantor_actor,
+            &grantor_key,
+            latest_payload,
+            input.workspace_id,
+            issued,
+            input.expected_delegation_origin.ok_or_else(bad)?,
+            input.expected_delegation_audience.ok_or_else(bad)?,
+        )?,
+        None if matches!(payload.get("delegation"), Some(WireValue::Null))
+            && input.expected_delegation_origin.is_none()
+            && input.expected_delegation_audience.is_none()
+            && has_member(latest_payload, &recipient_actor, &recipient_key, &recipient)? => {}
+        None if matches!(payload.get("delegation"), Some(WireValue::Null)) => return Err(bad()),
+        None => return Err(GrantError::RelatedProofRequired),
+    }
+    if grantor_role.as_deref() != Some("OWNER") && input.expected_delegation_wire.is_none() {
         return Err(bad());
     }
     let box_value = payload.get("box").ok_or_else(bad)?;
@@ -251,18 +301,15 @@ fn members(policy: &WireValue) -> Result<&[WireValue], GrantError> {
         _ => Err(GrantError::Invalid),
     }
 }
-fn has_owner_member(policy: &WireValue, actor: &str, key: &str) -> Result<bool, GrantError> {
+fn member_role(policy: &WireValue, actor: &str, key: &str) -> Result<Option<String>, GrantError> {
     for member in members(policy)? {
         let cert = member.get("certificate").ok_or(GrantError::Invalid)?;
         let cert_payload = envelope_payload(cert)?;
-        if string(member, "actor_id")? == actor
-            && string(member, "role")? == "OWNER"
-            && string(cert_payload, "signing_key")? == key
-        {
-            return Ok(true);
+        if string(member, "actor_id")? == actor && string(cert_payload, "signing_key")? == key {
+            return Ok(Some(string(member, "role")?));
         }
     }
-    Ok(false)
+    Ok(None)
 }
 fn has_member(
     policy: &WireValue,
@@ -280,6 +327,189 @@ fn has_member(
         }
     }
     Ok(false)
+}
+fn artifact_hash(value: &WireValue) -> Result<String, GrantError> {
+    let wire =
+        canonical_wire_value(value, Path::SecureArtifact).map_err(|_| GrantError::Invalid)?;
+    Ok(sha256_hex(wire.as_bytes()))
+}
+fn signed_artifact(value: &WireValue, domain: &str, key: &str) -> Result<(), GrantError> {
+    let wire =
+        canonical_wire_value(value, Path::SecureArtifact).map_err(|_| GrantError::Invalid)?;
+    if verify_secure_signed_wire(wire.as_bytes(), domain, key).map_err(|_| GrantError::Invalid)? {
+        Ok(())
+    } else {
+        Err(GrantError::Invalid)
+    }
+}
+fn related_artifact(wire: &[u8]) -> Result<WireValue, GrantError> {
+    if wire.len() > MAX_ARTIFACT {
+        return Err(GrantError::Invalid);
+    }
+    parse_wire_json_js_bounded(wire, 64, MAX_ARTIFACT).map_err(|_| GrantError::Invalid)
+}
+fn verify_invitation(
+    grant: &WireValue,
+    related: InvitationProofInput<'_>,
+    recipient: &WireValue,
+    recipient_actor: &str,
+    recipient_key: &str,
+    workspace: &str,
+    owner_actor: &str,
+    owner_key: &str,
+    selected_policy_hash: &str,
+    issued: u64,
+    grantor_is_owner: bool,
+) -> Result<(), GrantError> {
+    if !grantor_is_owner {
+        return Err(GrantError::Invalid);
+    }
+    let offer = related_artifact(related.offer_wire)?;
+    let decision = related_artifact(related.decision_wire)?;
+    let op = envelope_payload(&offer)?;
+    let dp = envelope_payload(&decision)?;
+    let start = unsigned(op, "issued_at")?;
+    let end = unsigned(op, "expires_at")?;
+    let decided = unsigned(dp, "issued_at")?;
+    let invite = string(op, "invite_id")?;
+    if unsigned(op, "v")? != 1
+        || unsigned(dp, "v")? != 1
+        || !token(&invite)
+        || !token(&string(op, "workspace_id")?)
+        || string(op, "workspace_id")? != workspace
+        || string(op, "actor_id")? != owner_actor
+        || string(op, "signing_key")? != owner_key
+        || string(op, "policy_hash")? != selected_policy_hash
+        || !valid_scopes(op.get("scopes").ok_or(GrantError::Invalid)?)?
+        || end <= issued
+        || start > issued
+        || end
+            .checked_sub(start)
+            .is_none_or(|span| span > INVITATION_LIFETIME)
+        || !same(op.get("recipient").ok_or(GrantError::Invalid)?, recipient)?
+        || string(dp, "decision")? != "ACCEPT"
+        || string(dp, "invite_id")? != invite
+        || string(dp, "workspace_id")? != workspace
+        || string(dp, "actor_id")? != recipient_actor
+        || string(dp, "signing_key")? != recipient_key
+        || string(dp, "offer_hash")? != artifact_hash(&offer)?
+        || decided < start
+        || decided >= end
+        || decided > issued
+        || string(grant, "invite_id")? != invite
+        || string(grant, "acceptance_hash")? != artifact_hash(&decision)?
+    {
+        return Err(GrantError::Invalid);
+    }
+    signed_artifact(&offer, "peerwork.secure.invitation.v1", owner_key)?;
+    signed_artifact(
+        &decision,
+        "peerwork.secure.invite-decision.v1",
+        recipient_key,
+    )?;
+    Ok(())
+}
+fn verify_delegation(
+    grant: &WireValue,
+    related_wire: &[u8],
+    recipient: &WireValue,
+    grantor_actor: &str,
+    grantor_key: &str,
+    latest: &WireValue,
+    workspace: &str,
+    issued: u64,
+    expected_origin: &str,
+    expected_audience: &str,
+) -> Result<(), GrantError> {
+    let related = related_artifact(related_wire)?;
+    let saved = grant.get("delegation").ok_or(GrantError::Invalid)?;
+    let dp = envelope_payload(&related)?;
+    let start = unsigned(dp, "issued_at")?;
+    let end = unsigned(dp, "expires_at")?;
+    if !same(saved, &related)?
+        || unsigned(dp, "v")? != 1
+        || string(dp, "actor_id")? != grantor_actor
+        || string(dp, "signing_key")? != grantor_key
+        || string(dp, "workspace_id")? != workspace
+        || string(dp, "origin")? != expected_origin
+        || string(dp, "audience")? != expected_audience
+        || !token(&string(dp, "request_id")?)
+        || !valid_scopes(dp.get("scope").ok_or(GrantError::Invalid)?)?
+        || !same(dp.get("device").ok_or(GrantError::Invalid)?, recipient)?
+        || !matches!(dp.get("read"), Some(WireValue::Bool(true)))
+        || start > issued
+        || end <= issued
+        || !has_member_actor_key(latest, grantor_actor, grantor_key)?
+    {
+        return Err(GrantError::Invalid);
+    }
+    signed_artifact(
+        &related,
+        "peerwork.secure.device-delegation.v1",
+        grantor_key,
+    )
+}
+fn has_member_actor_key(policy: &WireValue, actor: &str, key: &str) -> Result<bool, GrantError> {
+    Ok(member_role(policy, actor, key)?.is_some())
+}
+fn valid_scopes(scopes: &WireValue) -> Result<bool, GrantError> {
+    let WireValue::Array(items) = scopes else {
+        return Ok(false);
+    };
+    if items.len() > 128 {
+        return Ok(false);
+    }
+    for scope in items {
+        let WireValue::Object(fields) = scope else {
+            return Ok(false);
+        };
+        if fields.iter().any(|(name, _)| {
+            ![
+                "instance_id",
+                "actions",
+                "protocol_roles",
+                "capabilities",
+                "expires_at",
+            ]
+            .iter()
+            .any(|allowed| name == &allowed.encode_utf16().collect::<Vec<_>>())
+        }) {
+            return Ok(false);
+        }
+        if !matches!(scope.get("instance_id"), Some(WireValue::Null))
+            && !scope
+                .get("instance_id")
+                .and_then(WireValue::as_string)
+                .is_some_and(|id| token(&id))
+        {
+            return Ok(false);
+        }
+        if scope
+            .get("expires_at")
+            .is_some_and(|value| !matches!(value, WireValue::Null))
+            && unsigned(scope, "expires_at").map_or(true, |time| time < 1)
+        {
+            return Ok(false);
+        }
+        for field in ["actions", "protocol_roles", "capabilities"] {
+            let Some(WireValue::Array(values)) = scope.get(field) else {
+                return Ok(false);
+            };
+            if values.len() > 64 {
+                return Ok(false);
+            }
+            let mut seen = HashSet::new();
+            for value in values {
+                let Some(units) = value.as_utf16() else {
+                    return Ok(false);
+                };
+                if units.is_empty() || units.len() > 120 || !seen.insert(units.to_vec()) {
+                    return Ok(false);
+                }
+            }
+        }
+    }
+    Ok(true)
 }
 fn wipe_wire(value: &mut WireValue) {
     match value {
@@ -323,6 +553,17 @@ mod tests {
         let owner_actor = vector["owner_actor"].as_str().unwrap();
         let owner_key = vector["owner_key"].as_str().unwrap();
         let now = vector["now"].as_u64().unwrap();
+        let offer_wire = vector.get("offer").map(|v| serde_json::to_vec(v).unwrap());
+        let decision_wire = vector
+            .get("decision")
+            .map(|v| serde_json::to_vec(v).unwrap());
+        let delegation_wire = vector
+            .get("delegation")
+            .map(|v| serde_json::to_vec(v).unwrap());
+        let delegation_origin = delegation_wire
+            .as_ref()
+            .map(|_| "https://synthetic.invalid");
+        let delegation_audience = delegation_wire.as_ref().map(|_| "synthetic");
         let verify = |grant: &[u8], certificate: &[u8], policies: &[&[u8]]| {
             verify_direct_key_grant(GrantProofInput {
                 policy_wires: policies,
@@ -335,14 +576,141 @@ mod tests {
                 trusted_owner_actor: owner_actor,
                 trusted_owner_key: owner_key,
                 now,
+                expected_invitation: offer_wire.as_ref().zip(decision_wire.as_ref()).map(
+                    |(offer, decision)| InvitationProofInput {
+                        offer_wire: offer,
+                        decision_wire: decision,
+                    },
+                ),
+                expected_delegation_wire: delegation_wire.as_deref(),
+                expected_delegation_origin: delegation_origin,
+                expected_delegation_audience: delegation_audience,
             })
         };
         let verified = verify(&grant_wire, &certificate_wire, &policy_refs).unwrap();
         assert_eq!(verified.workspace_id(), workspace);
         assert_eq!(verified.epoch(), 1);
-        assert_eq!(verified.recipient_actor(), owner_actor);
-        assert_eq!(verified.recipient_key(), owner_key);
+        assert_eq!(
+            verified.recipient_actor(),
+            vector["recipient_actor"].as_str().unwrap()
+        );
+        assert_eq!(
+            verified.recipient_key(),
+            vector["recipient_key"].as_str().unwrap()
+        );
         assert!(verified.keyring().key_at(1).is_some());
+        if offer_wire.is_some() {
+            let omitted = verify_direct_key_grant(GrantProofInput {
+                policy_wires: &policy_refs,
+                commit_wires: &[],
+                checkpoint_wire: &checkpoint_wire,
+                grant_wire: &grant_wire,
+                recipient_certificate_wire: &certificate_wire,
+                recipient: &recipient,
+                workspace_id: workspace,
+                trusted_owner_actor: owner_actor,
+                trusted_owner_key: owner_key,
+                now,
+                expected_invitation: None,
+                expected_delegation_wire: delegation_wire.as_deref(),
+                expected_delegation_origin: delegation_origin,
+                expected_delegation_audience: delegation_audience,
+            });
+            assert!(matches!(omitted, Err(GrantError::RelatedProofRequired)));
+            let mut bad_offer = vector["offer"].clone();
+            bad_offer["signature"] = serde_json::json!("a".repeat(86));
+            let bad_offer_wire = serde_json::to_vec(&bad_offer).unwrap();
+            let altered = verify_direct_key_grant(GrantProofInput {
+                policy_wires: &policy_refs,
+                commit_wires: &[],
+                checkpoint_wire: &checkpoint_wire,
+                grant_wire: &grant_wire,
+                recipient_certificate_wire: &certificate_wire,
+                recipient: &recipient,
+                workspace_id: workspace,
+                trusted_owner_actor: owner_actor,
+                trusted_owner_key: owner_key,
+                now,
+                expected_invitation: Some(InvitationProofInput {
+                    offer_wire: &bad_offer_wire,
+                    decision_wire: decision_wire.as_ref().unwrap(),
+                }),
+                expected_delegation_wire: None,
+                expected_delegation_origin: None,
+                expected_delegation_audience: None,
+            });
+            assert!(altered.is_err());
+            let mut bad_decision = vector["decision"].clone();
+            bad_decision["signature"] = serde_json::json!("a".repeat(86));
+            let bad_decision_wire = serde_json::to_vec(&bad_decision).unwrap();
+            let altered = verify_direct_key_grant(GrantProofInput {
+                policy_wires: &policy_refs,
+                commit_wires: &[],
+                checkpoint_wire: &checkpoint_wire,
+                grant_wire: &grant_wire,
+                recipient_certificate_wire: &certificate_wire,
+                recipient: &recipient,
+                workspace_id: workspace,
+                trusted_owner_actor: owner_actor,
+                trusted_owner_key: owner_key,
+                now,
+                expected_invitation: Some(InvitationProofInput {
+                    offer_wire: offer_wire.as_ref().unwrap(),
+                    decision_wire: &bad_decision_wire,
+                }),
+                expected_delegation_wire: None,
+                expected_delegation_origin: None,
+                expected_delegation_audience: None,
+            });
+            assert!(altered.is_err());
+        }
+        if delegation_wire.is_some() {
+            let omitted = verify_direct_key_grant(GrantProofInput {
+                policy_wires: &policy_refs,
+                commit_wires: &[],
+                checkpoint_wire: &checkpoint_wire,
+                grant_wire: &grant_wire,
+                recipient_certificate_wire: &certificate_wire,
+                recipient: &recipient,
+                workspace_id: workspace,
+                trusted_owner_actor: owner_actor,
+                trusted_owner_key: owner_key,
+                now,
+                expected_invitation: offer_wire.as_ref().zip(decision_wire.as_ref()).map(
+                    |(offer, decision)| InvitationProofInput {
+                        offer_wire: offer,
+                        decision_wire: decision,
+                    },
+                ),
+                expected_delegation_wire: None,
+                expected_delegation_origin: None,
+                expected_delegation_audience: None,
+            });
+            assert!(matches!(
+                omitted,
+                Err(GrantError::RelatedProofRequired) | Err(GrantError::Invalid)
+            ));
+            let mut bad_delegation = vector["delegation"].clone();
+            bad_delegation["signature"] = serde_json::json!("a".repeat(86));
+            let bad_delegation_wire = serde_json::to_vec(&bad_delegation).unwrap();
+            let altered = verify_direct_key_grant(GrantProofInput {
+                policy_wires: &policy_refs,
+                commit_wires: &[],
+                checkpoint_wire: &checkpoint_wire,
+                grant_wire: &grant_wire,
+                recipient_certificate_wire: &certificate_wire,
+                recipient: &recipient,
+                workspace_id: workspace,
+                trusted_owner_actor: owner_actor,
+                trusted_owner_key: owner_key,
+                now,
+                expected_invitation: None,
+                expected_delegation_wire: Some(&bad_delegation_wire),
+                expected_delegation_origin: delegation_origin,
+                expected_delegation_audience: delegation_audience,
+            });
+            assert!(altered.is_err());
+        }
 
         let mut bad_grant = vector["grant"].clone();
         bad_grant["payload"]["epoch"] = serde_json::json!(2);
