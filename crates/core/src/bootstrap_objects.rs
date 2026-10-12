@@ -49,8 +49,27 @@ pub fn owner_bootstrap_objects(
     created: u64,
     instance_ids: &[String; 6],
 ) -> Result<OwnerBootstrapObjects, BootstrapObjectsError> {
+    owner_bootstrap_objects_with_visibility(
+        name,
+        workspace_id,
+        owner_actor,
+        created,
+        instance_ids,
+        "PRIVATE",
+    )
+}
+
+pub fn owner_bootstrap_objects_with_visibility(
+    name: &str,
+    workspace_id: &str,
+    owner_actor: &str,
+    created: u64,
+    instance_ids: &[String; 6],
+    visibility: &str,
+) -> Result<OwnerBootstrapObjects, BootstrapObjectsError> {
     let bad = || BootstrapObjectsError::Invalid;
-    if name.is_empty()
+    if !matches!(visibility, "PRIVATE" | "PUBLIC")
+        || name.is_empty()
         || name.len() > 240
         || !token(workspace_id)
         || !token(owner_actor)
@@ -75,7 +94,7 @@ pub fn owner_bootstrap_objects(
     }
     let mut objects = vec![json!({"kind":"workspaces","id":workspace_id,"revision":1,
         "provenance":"AUTHOR_SIGNED","value":{"id":workspace_id,"name":name,
-            "visibility":"PRIVATE","owner":owner_actor,"created":created}})];
+            "visibility":visibility,"owner":owner_actor,"created":created}})];
     let mut scopes = Vec::with_capacity(6);
     for (index, entry) in entries.iter().enumerate() {
         if entry["entrypoint"] != ENTRIES[index] {
@@ -151,6 +170,28 @@ mod tests {
             owner_bootstrap_objects("Test workspace", &workspace, &owner, 100, &ids).unwrap();
         assert_eq!(result.operation()["objects"].as_array().unwrap().len(), 13);
         assert_eq!(result.scopes().len(), 6);
+        let public = owner_bootstrap_objects_with_visibility(
+            "Test workspace",
+            &workspace,
+            &owner,
+            100,
+            &ids,
+            "PUBLIC",
+        )
+        .unwrap();
+        assert_eq!(
+            public.operation()["objects"][0]["value"]["visibility"],
+            "PUBLIC"
+        );
+        assert!(owner_bootstrap_objects_with_visibility(
+            "Test workspace",
+            &workspace,
+            &owner,
+            100,
+            &ids,
+            "public"
+        )
+        .is_err());
         assert_eq!(
             result.operation()["objects"][1]["id"],
             "e31188a871138c8065682517931fba8c3fbd288516cda6c7aad88ff70c135c17"

@@ -351,7 +351,8 @@ impl SecureIntentJournal {
                 owner_key: identity.key_id(),
             },
         )?;
-        if proof.command_id() != intent_id
+        if proof.visibility() != "PRIVATE"
+            || proof.command_id() != intent_id
             || proof.path() != row.path
             || row.action_id != "secure.bootstrap"
             || row.workspace_id.as_deref() != Some(proof.workspace_id())
@@ -425,6 +426,73 @@ impl SecureIntentJournal {
     ) -> Result<PendingSecureIntent, SecureIntentError> {
         let (proof, request) =
             self.verified_saved_bootstrap(intent_id, identity, transport, lifecycle)?;
+        let response = transport.post_exact(proof.path(), request, cancel).await?;
+        if !response.wire.is_empty() {
+            self.observe_response(intent_id, &response.wire)?;
+        }
+        if !(200..300).contains(&response.status) {
+            return Err(SecureIntentError::ServerRejected(response.status));
+        }
+        self.document
+            .rows
+            .get(intent_id)
+            .map(|row| summary(intent_id, row))
+            .ok_or(SecureIntentError::Incompatible)
+    }
+
+    /// PUBLIC bootstrap has no epoch key. Identity, configured origin, signed
+    /// policy/commit and every immutable row field are rechecked before POST.
+    pub(crate) fn verified_saved_public_bootstrap(
+        &self,
+        intent_id: &str,
+        workspace_id: &str,
+        identity: &KernelIdentity,
+        transport: &HttpTransport,
+    ) -> Result<(VerifiedPreparedBootstrap, Vec<u8>), SecureIntentError> {
+        if transport.trusted_origin() != self.document.trusted_origin
+            || identity.actor_id() != self.document.actor_id
+        {
+            return Err(SecureIntentError::Incompatible);
+        }
+        let row = self
+            .document
+            .rows
+            .get(intent_id)
+            .ok_or(SecureIntentError::NotFound)?;
+        let request = self.exact_request(intent_id)?;
+        let proof = verify_prepared_owner_bootstrap(
+            &request,
+            &row.path,
+            &BootstrapPins {
+                workspace_id,
+                owner_actor: identity.actor_id(),
+                owner_key: identity.key_id(),
+            },
+        )?;
+        if proof.visibility() != "PUBLIC"
+            || proof.command_id() != intent_id
+            || proof.path() != row.path
+            || row.action_id != "secure.bootstrap"
+            || row.workspace_id.as_deref() != Some(workspace_id)
+            || row.trusted_owner_key.as_deref() != Some(identity.key_id())
+            || row.intent_digest != proof.commit_digest()
+            || row.request_sha256 != proof.request_sha256()
+        {
+            return Err(SecureIntentError::Incompatible);
+        }
+        Ok((proof, request))
+    }
+
+    pub(crate) async fn submit_saved_public_bootstrap(
+        &mut self,
+        intent_id: &str,
+        workspace_id: &str,
+        identity: &KernelIdentity,
+        transport: &HttpTransport,
+        cancel: &CancellationToken,
+    ) -> Result<PendingSecureIntent, SecureIntentError> {
+        let (proof, request) =
+            self.verified_saved_public_bootstrap(intent_id, workspace_id, identity, transport)?;
         let response = transport.post_exact(proof.path(), request, cancel).await?;
         if !response.wire.is_empty() {
             self.observe_response(intent_id, &response.wire)?;

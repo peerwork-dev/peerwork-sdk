@@ -166,6 +166,110 @@ pub fn author_private_bootstrap(
     })
 }
 
+/// Low-level PUBLIC owner bootstrap. No epoch secret is created or required;
+/// the signed operation is plaintext and the resulting proof is pre-submit only.
+pub fn author_public_bootstrap(
+    policy_wire: &[u8],
+    context_wire: &[u8],
+    operation_wire: &[u8],
+    signing_key: &SigningKey,
+    pins: &SecureCommitRequestPins<'_>,
+) -> Result<AuthoredSecureBootstrap, SecureAuthorError> {
+    let invalid = || SecureAuthorError::Invalid;
+    if pins.mode != "PUBLIC"
+        || !matches!(pins.version, 1 | 3)
+        || pins.sequence != 1
+        || pins.previous.is_some()
+        || pins.epoch != 0
+        || pins.actor_id != actor_id(&signing_key.verifying_key().to_bytes())
+        || pins.signing_key != base64url(&signing_key.verifying_key().to_bytes())
+        || operation_wire.is_empty()
+        || operation_wire.len() > MAX_PLAINTEXT
+    {
+        return Err(invalid());
+    }
+    let mut operation =
+        parse_wire_json_bounded(operation_wire, 64, MAX_PLAINTEXT).map_err(|_| invalid())?;
+    let valid = operation.object_len() == Some(4)
+        && operation.get("v").and_then(WireValue::as_number) == Some(1.0)
+        && operation
+            .get("kind")
+            .and_then(WireValue::as_string)
+            .as_deref()
+            == Some("BOOTSTRAP")
+        && operation.get("input").and_then(WireValue::object_len) == Some(0)
+        && matches!(operation.get("objects"), Some(WireValue::Array(items)) if items.len() <= 128);
+    if !valid {
+        wipe_wire(&mut operation);
+        return Err(invalid());
+    }
+    let operation_result =
+        canonical_wire_value(&operation, Path::SecureArtifact).map_err(|_| invalid());
+    wipe_wire(&mut operation);
+    let operation_canonical = operation_result?;
+    let mut context = parse_wire_json_bounded(context_wire, 64, 196_608).map_err(|_| invalid())?;
+    let commit_result = (|| {
+        let WireValue::Object(context_fields) = &context else {
+            return Err(invalid());
+        };
+        if context.get("mode").is_some() || context.get("body").is_some() {
+            return Err(invalid());
+        }
+        let body = parse_wire_json_bounded(operation_canonical.as_bytes(), 64, MAX_PLAINTEXT)
+            .map_err(|_| invalid())?;
+        let mut fields = context_fields.clone();
+        fields.push((units("mode"), WireValue::String(units("PUBLIC"))));
+        fields.push((units("body"), body));
+        let payload = WireValue::Object(fields);
+        let canonical_payload =
+            canonical_wire_value(&payload, Path::SecureArtifact).map_err(|_| invalid())?;
+        let domain = if pins.version == 3 {
+            "peerwork.secure.commit.v3"
+        } else {
+            "peerwork.secure.commit.v1"
+        };
+        let mut message = Zeroizing::new(Vec::with_capacity(
+            domain.len() + 1 + canonical_payload.len(),
+        ));
+        message.extend_from_slice(domain.as_bytes());
+        message.push(0);
+        message.extend_from_slice(canonical_payload.as_bytes());
+        let signature = base64url(&signing_key.sign(&message).to_bytes());
+        canonical_wire_value(
+            &WireValue::Object(vec![
+                (units("payload"), payload),
+                (units("signature"), WireValue::String(units(&signature))),
+            ]),
+            Path::SecureArtifact,
+        )
+        .map_err(|_| invalid())
+    })();
+    wipe_wire(&mut context);
+    let commit = commit_result?;
+    let mut policy = parse_wire_json_bounded(policy_wire, 64, 196_608).map_err(|_| invalid())?;
+    let policy_result = canonical_wire_value(&policy, Path::SecureArtifact).map_err(|_| invalid());
+    wipe_wire(&mut policy);
+    let request_wire =
+        format!("{{\"commit\":{commit},\"policy\":{}}}", policy_result?).into_bytes();
+    let proof = verify_prepared_owner_bootstrap(
+        &request_wire,
+        "/api/workspace/v1/secure/workspaces",
+        &BootstrapPins {
+            workspace_id: pins.workspace_id,
+            owner_actor: pins.actor_id,
+            owner_key: pins.signing_key,
+        },
+    )
+    .map_err(|_| invalid())?;
+    if proof.visibility() != "PUBLIC" {
+        return Err(invalid());
+    }
+    Ok(AuthoredSecureBootstrap {
+        request_wire,
+        proof,
+    })
+}
+
 fn sign_private_commit(
     context: &WireValue,
     operation_wire: &[u8],

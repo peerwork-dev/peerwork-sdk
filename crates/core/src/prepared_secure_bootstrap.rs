@@ -37,6 +37,7 @@ pub struct VerifiedPreparedBootstrap {
     policy_hash: String,
     commit_digest: String,
     request_sha256: String,
+    visibility: &'static str,
 }
 impl VerifiedPreparedBootstrap {
     pub fn workspace_id(&self) -> &str {
@@ -56,6 +57,9 @@ impl VerifiedPreparedBootstrap {
     }
     pub fn path(&self) -> &'static str {
         ROUTE
+    }
+    pub fn visibility(&self) -> &'static str {
+        self.visibility
     }
 }
 
@@ -92,14 +96,21 @@ pub fn verify_prepared_owner_bootstrap(
     exact_keys(commit, &["payload", "signature"])?;
     let pp = policy.get("payload").ok_or_else(bad)?;
     let cp = commit.get("payload").ok_or_else(bad)?;
+    let visibility = string(pp, "visibility")?;
+    let epoch = if visibility == "PRIVATE" {
+        1
+    } else if visibility == "PUBLIC" {
+        0
+    } else {
+        return Err(bad());
+    };
     if number(pp, "version")? != 1
         || number(pp, "effective_sequence")? != 1
         || !matches!(pp.get("previous_policy"), Some(WireValue::Null))
         || string(pp, "workspace_id")? != pins.workspace_id
         || string(pp, "owner_id")? != pins.owner_actor
         || string(pp, "signing_key")? != pins.owner_key
-        || string(pp, "visibility")? != "PRIVATE"
-        || number(pp, "epoch")? != 1
+        || number(pp, "epoch")? != epoch
         || number(cp, "sequence")? != 1
         || !matches!(cp.get("previous"), Some(WireValue::Null))
         || string(cp, "workspace_id")? != pins.workspace_id
@@ -108,8 +119,8 @@ pub fn verify_prepared_owner_bootstrap(
         || string(cp, "action_id")? != "secure.bootstrap"
         || !matches!(cp.get("instance_id"), Some(WireValue::Null))
         || !matches!(cp.get("delegation"), Some(WireValue::Null))
-        || string(cp, "mode")? != "PRIVATE"
-        || number(cp, "epoch")? != 1
+        || string(cp, "mode")? != visibility
+        || number(cp, "epoch")? != epoch
         || number(cp, "v")? == 3
             && ["migration", "recovery", "conversion_excluded_members"]
                 .iter()
@@ -117,7 +128,12 @@ pub fn verify_prepared_owner_bootstrap(
     {
         return Err(bad());
     }
-    validate_ciphertext(cp.get("body").ok_or_else(bad)?)?;
+    let body = cp.get("body").ok_or_else(bad)?;
+    if visibility == "PRIVATE" {
+        validate_ciphertext(body)?;
+    } else {
+        validate_public_bootstrap(body)?;
+    }
     let command_id = string(cp, "command_id")?;
     if !token(&command_id) {
         return Err(bad());
@@ -160,6 +176,11 @@ pub fn verify_prepared_owner_bootstrap(
         policy_hash,
         commit_digest,
         request_sha256: sha256_hex(exact_request),
+        visibility: if visibility == "PUBLIC" {
+            "PUBLIC"
+        } else {
+            "PRIVATE"
+        },
     })
 }
 
@@ -218,6 +239,24 @@ fn validate_ciphertext(value: &WireValue) -> Result<(), BootstrapRequestError> {
         length = length.checked_add(decoded.len()).ok_or_else(bad)?;
     }
     if !(16..=16 * 1024 * 1024 + 16).contains(&length) {
+        return Err(bad());
+    }
+    Ok(())
+}
+
+fn validate_public_bootstrap(value: &WireValue) -> Result<(), BootstrapRequestError> {
+    let bad = || BootstrapRequestError::Invalid;
+    exact_keys(value, &["v", "kind", "input", "objects"])?;
+    if number(value, "v")? != 1
+        || string(value, "kind")? != "BOOTSTRAP"
+        || value.get("input").and_then(WireValue::object_len) != Some(0)
+    {
+        return Err(bad());
+    }
+    let Some(WireValue::Array(objects)) = value.get("objects") else {
+        return Err(bad());
+    };
+    if objects.len() > 128 {
         return Err(bad());
     }
     Ok(())
@@ -338,6 +377,62 @@ mod tests {
             verify_prepared_owner_bootstrap(&serde_json::to_vec(&v3).unwrap(), ROUTE, &pins)
                 .is_ok()
         );
+        let mut public = v3.clone();
+        public["policy"]["payload"]["visibility"] = json!("PUBLIC");
+        public["policy"]["payload"]["epoch"] = json!(0);
+        public["policy"]["signature"] = json!(sign_canonical(
+            "peerwork.secure.policy.v3",
+            &public["policy"]["payload"],
+            &key
+        )
+        .unwrap());
+        public["commit"]["payload"]["policy_hash"] = json!(sha256_hex(
+            canonical(&public["policy"], Path::SecureArtifact)
+                .unwrap()
+                .as_bytes()
+        ));
+        public["commit"]["payload"]["epoch"] = json!(0);
+        public["commit"]["payload"]["mode"] = json!("PUBLIC");
+        public["commit"]["payload"]["body"] =
+            json!({"v":1,"kind":"BOOTSTRAP","input":{},"objects":[]});
+        public["commit"]["signature"] = json!(sign_canonical(
+            "peerwork.secure.commit.v3",
+            &public["commit"]["payload"],
+            &key
+        )
+        .unwrap());
+        let public_proof =
+            verify_prepared_owner_bootstrap(&serde_json::to_vec(&public).unwrap(), ROUTE, &pins)
+                .unwrap();
+        assert_eq!(public_proof.visibility(), "PUBLIC");
+        let mut wrong_mode = public.clone();
+        wrong_mode["commit"]["payload"]["mode"] = json!("PRIVATE");
+        wrong_mode["commit"]["signature"] = json!(sign_canonical(
+            "peerwork.secure.commit.v3",
+            &wrong_mode["commit"]["payload"],
+            &key
+        )
+        .unwrap());
+        assert!(verify_prepared_owner_bootstrap(
+            &serde_json::to_vec(&wrong_mode).unwrap(),
+            ROUTE,
+            &pins
+        )
+        .is_err());
+        let mut malformed = public.clone();
+        malformed["commit"]["payload"]["body"]["objects"] = json!("not an array");
+        malformed["commit"]["signature"] = json!(sign_canonical(
+            "peerwork.secure.commit.v3",
+            &malformed["commit"]["payload"],
+            &key
+        )
+        .unwrap());
+        assert!(verify_prepared_owner_bootstrap(
+            &serde_json::to_vec(&malformed).unwrap(),
+            ROUTE,
+            &pins
+        )
+        .is_err());
         for name in ["migration", "recovery", "conversion_excluded_members"] {
             let mut forbidden = v3.clone();
             forbidden["commit"]["payload"][name] = Value::Null;
