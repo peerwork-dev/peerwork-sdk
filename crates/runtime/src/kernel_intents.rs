@@ -6,6 +6,7 @@ use peerwork_core::discovery::{parse_discovery_wire, ParsedDiscovery};
 use peerwork_core::prepared_command::{
     verify_prepared_command_wire, CommandPins, VerifiedPreparedCommand,
 };
+use peerwork_core::receipt_wire::{verify_http_response_for_prepared, VerifiedCommandResponse};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
@@ -13,7 +14,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 const APPLICATION_ID: i64 = 0x5057_5344; // PWSD; intentionally distinct from TS PWC1.
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 const MAX_BODY_BYTES: usize = 262_144;
 const MAX_JWS_BYTES: usize = 250_000;
 const SCHEMA_SQL: &str = "CREATE TABLE kernel_intents(
@@ -30,6 +31,10 @@ const CONTEXT_SQL: &str = "CREATE TABLE pinned_discovery(
                  origin TEXT NOT NULL,
                  discovery_wire BLOB NOT NULL
              )";
+const ACCEPTED_SQL: &str = "CREATE TABLE accepted_responses(
+                 command_id TEXT PRIMARY KEY NOT NULL REFERENCES kernel_intents(command_id),
+                 response_wire BLOB NOT NULL CHECK(length(response_wire)>0)
+             )";
 
 #[derive(Debug, Error)]
 pub enum JournalError {
@@ -45,6 +50,8 @@ pub enum JournalError {
     IncompatibleStore,
     #[error("discovery origin or pinned semantics changed")]
     DiscoveryChanged,
+    #[error("signed receipt does not bind the saved command and result")]
+    InvalidReceipt,
     #[error("local intent store failed")]
     Storage(#[from] rusqlite::Error),
     #[error("local file operation failed")]
@@ -63,6 +70,7 @@ pub struct PendingKernelIntent {
 /// request this value; neither the signed packet nor body is a public DTO.
 pub(crate) struct VerifiedPendingCommand {
     pub(crate) proof: VerifiedPreparedCommand,
+    pub(crate) jws: String,
     pub(crate) body: Vec<u8>,
 }
 
@@ -177,10 +185,11 @@ impl KernelIntentJournal {
         Ok(record)
     }
 
-    /// Redacted view. No private signed request or raw packet leaves the store.
-    pub fn pending(&self) -> Result<Vec<PendingKernelIntent>, JournalError> {
+    /// The higher client re-verifies every accepted row before classifying
+    /// operations; this raw prepared-row scan never declares acceptance.
+    pub(crate) fn all_prepared(&self) -> Result<Vec<PendingKernelIntent>, JournalError> {
         let mut statement = self.db.prepare(
-            "SELECT command_id,intent_digest,created_at_ms FROM kernel_intents WHERE state='PENDING' ORDER BY created_at_ms,command_id",
+            "SELECT command_id,intent_digest,created_at_ms FROM kernel_intents ORDER BY created_at_ms,command_id",
         )?;
         let rows = statement.query_map([], |row| {
             Ok(PendingKernelIntent {
@@ -270,7 +279,73 @@ impl KernelIntentJournal {
         {
             return Err(JournalError::IncompatibleStore);
         }
-        Ok(Some(VerifiedPendingCommand { proof, body }))
+        Ok(Some(VerifiedPendingCommand { proof, jws, body }))
+    }
+
+    pub(crate) fn accepted_response(
+        &self,
+        saved: &VerifiedPendingCommand,
+        receipt_key: &str,
+    ) -> Result<Option<VerifiedCommandResponse>, JournalError> {
+        let wire: Option<Vec<u8>> = self
+            .db
+            .query_row(
+                "SELECT response_wire FROM accepted_responses WHERE command_id=?1",
+                [saved.proof.command_id()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        wire.map(|wire| {
+            verify_http_response_for_prepared(&wire, &saved.proof, receipt_key)
+                .map_err(|_| JournalError::IncompatibleStore)
+        })
+        .transpose()
+    }
+
+    pub(crate) fn record_verified_response(
+        &mut self,
+        saved: &VerifiedPendingCommand,
+        response_wire: &[u8],
+        receipt_key: &str,
+    ) -> Result<VerifiedCommandResponse, JournalError> {
+        let verified = verify_http_response_for_prepared(response_wire, &saved.proof, receipt_key)
+            .map_err(|_| JournalError::InvalidReceipt)?;
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let row: Option<(String, String, String, Vec<u8>, String)> = tx
+            .query_row(
+                "SELECT path,signed_jws,intent_digest,http_body,state FROM kernel_intents WHERE command_id=?1",
+                [saved.proof.command_id()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            )
+            .optional()?;
+        if !row.is_some_and(|(path, jws, digest, body, state)| {
+            state == "PENDING"
+                && path == saved.proof.path()
+                && jws == saved.jws
+                && digest == saved.proof.intent_digest()
+                && body == saved.body
+        }) {
+            return Err(JournalError::IncompatibleStore);
+        }
+        let existing: Option<Vec<u8>> = tx
+            .query_row(
+                "SELECT response_wire FROM accepted_responses WHERE command_id=?1",
+                [saved.proof.command_id()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(existing) = existing {
+            return verify_http_response_for_prepared(&existing, &saved.proof, receipt_key)
+                .map_err(|_| JournalError::IncompatibleStore);
+        }
+        tx.execute(
+            "INSERT INTO accepted_responses(command_id,response_wire) VALUES (?1,?2)",
+            params![saved.proof.command_id(), response_wire],
+        )?;
+        tx.commit()?;
+        Ok(verified)
     }
 
     #[cfg(test)]
@@ -320,7 +395,7 @@ fn initialize(db: &mut Connection) -> Result<(), JournalError> {
         .collect::<Result<_, _>>()?;
     if app == 0 && version == 0 && objects.is_empty() {
         tx.execute_batch(&format!(
-            "{SCHEMA_SQL}; {CONTEXT_SQL}; PRAGMA application_id={APPLICATION_ID}; PRAGMA user_version={SCHEMA_VERSION};"
+            "{SCHEMA_SQL}; {CONTEXT_SQL}; {ACCEPTED_SQL}; PRAGMA application_id={APPLICATION_ID}; PRAGMA user_version={SCHEMA_VERSION};"
         ))?;
     } else if app != APPLICATION_ID {
         return Err(JournalError::IncompatibleStore);
@@ -335,7 +410,27 @@ fn initialize(db: &mut Connection) -> Result<(), JournalError> {
             return Err(JournalError::IncompatibleStore);
         }
         tx.execute_batch(&format!(
-            "{CONTEXT_SQL}; PRAGMA user_version={SCHEMA_VERSION};"
+            "{CONTEXT_SQL}; {ACCEPTED_SQL}; PRAGMA user_version={SCHEMA_VERSION};"
+        ))?;
+    } else if version == 2 {
+        if objects
+            != [
+                ("table".into(), "kernel_intents".into(), SCHEMA_SQL.into()),
+                (
+                    "table".into(),
+                    "pinned_discovery".into(),
+                    CONTEXT_SQL.into(),
+                ),
+            ]
+        {
+            return Err(JournalError::IncompatibleStore);
+        }
+        let check: String = tx.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
+        if check != "ok" {
+            return Err(JournalError::IncompatibleStore);
+        }
+        tx.execute_batch(&format!(
+            "{ACCEPTED_SQL}; PRAGMA user_version={SCHEMA_VERSION};"
         ))?;
     } else if version != SCHEMA_VERSION {
         return Err(JournalError::IncompatibleStore);
@@ -346,6 +441,11 @@ fn initialize(db: &mut Connection) -> Result<(), JournalError> {
         .collect::<Result<_, _>>()?;
     if objects
         != [
+            (
+                "table".into(),
+                "accepted_responses".into(),
+                ACCEPTED_SQL.into(),
+            ),
             ("table".into(), "kernel_intents".into(), SCHEMA_SQL.into()),
             (
                 "table".into(),
@@ -380,8 +480,21 @@ fn initialize(db: &mut Connection) -> Result<(), JournalError> {
     if context_columns != ["id", "origin", "discovery_wire"] {
         return Err(JournalError::IncompatibleStore);
     }
+    let accepted_columns: Vec<String> = tx
+        .prepare("PRAGMA table_info(accepted_responses)")?
+        .query_map([], |row| row.get(1))?
+        .collect::<Result<_, _>>()?;
+    if accepted_columns != ["command_id", "response_wire"] {
+        return Err(JournalError::IncompatibleStore);
+    }
     let check: String = tx.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
     if check != "ok" {
+        return Err(JournalError::IncompatibleStore);
+    }
+    let foreign_key_error: Option<String> = tx
+        .query_row("PRAGMA foreign_key_check", [], |row| row.get(0))
+        .optional()?;
+    if foreign_key_error.is_some() {
         return Err(JournalError::IncompatibleStore);
     }
     tx.commit()?;
@@ -491,11 +604,11 @@ mod tests {
                     b"{\"jws\":\"one\"}",
                 )
                 .unwrap();
-            assert_eq!(journal.pending().unwrap(), vec![first.clone()]);
+            assert_eq!(journal.all_prepared().unwrap(), vec![first.clone()]);
             first
         };
         let mut reopened = KernelIntentJournal::open(&path).unwrap();
-        assert_eq!(reopened.pending().unwrap(), vec![first.clone()]);
+        assert_eq!(reopened.all_prepared().unwrap(), vec![first.clone()]);
         assert_eq!(
             reopened.exact_request_for_test(&id).unwrap(),
             Some((
@@ -523,12 +636,12 @@ mod tests {
             ),
             Err(JournalError::IntentConflict)
         ));
-        assert_eq!(reopened.pending().unwrap(), vec![first]);
+        assert_eq!(reopened.all_prepared().unwrap(), vec![first]);
     }
 
     #[cfg(unix)]
     #[test]
-    fn exact_native_v1_pending_row_migrates_atomically_to_context_schema() {
+    fn exact_native_v1_pending_row_migrates_atomically_to_response_schema() {
         use std::os::unix::fs::PermissionsExt;
         let dir = private_dir();
         let path = dir.path().join("intents.sqlite");
@@ -547,7 +660,7 @@ mod tests {
         }
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
         let journal = KernelIntentJournal::open(&path).unwrap();
-        assert_eq!(journal.pending().unwrap().len(), 1);
+        assert_eq!(journal.all_prepared().unwrap().len(), 1);
         assert_eq!(
             journal.exact_request_for_test(&id).unwrap(),
             Some(("signed.header.payload".into(), body.to_vec()))
@@ -556,7 +669,7 @@ mod tests {
             .db
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
         let context_rows: i64 = journal
             .db
             .query_row("SELECT count(*) FROM pinned_discovery", [], |row| {
@@ -564,12 +677,81 @@ mod tests {
             })
             .unwrap();
         assert_eq!(context_rows, 0);
+        let accepted_rows: i64 = journal
+            .db
+            .query_row("SELECT count(*) FROM accepted_responses", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(accepted_rows, 0);
         drop(journal);
         let reopened = KernelIntentJournal::open(&path).unwrap();
         assert_eq!(
             reopened.exact_request_for_test(&id).unwrap().unwrap().1,
             body
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exact_native_v2_discovery_pin_survives_response_schema_migration() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = private_dir();
+        let path = dir.path().join("intents.sqlite");
+        let discovery = b"{\"audience\":\"\\ud800\"}";
+        {
+            let db = Connection::open(&path).unwrap();
+            db.execute_batch(&format!(
+                "{SCHEMA_SQL}; {CONTEXT_SQL}; PRAGMA application_id={APPLICATION_ID}; PRAGMA user_version=2;"
+            ))
+            .unwrap();
+            db.execute(
+                "INSERT INTO pinned_discovery(id,origin,discovery_wire) VALUES (1,?1,?2)",
+                params!["https://workspace.example/", discovery],
+            )
+            .unwrap();
+        }
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let journal = KernelIntentJournal::open(&path).unwrap();
+        let stored: Vec<u8> = journal
+            .db
+            .query_row(
+                "SELECT discovery_wire FROM pinned_discovery WHERE id=1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, discovery);
+        let version: i64 = journal
+            .db
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 3);
+        drop(journal);
+        KernelIntentJournal::open(&path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn orphan_accepted_response_is_refused_before_listing() {
+        let dir = private_dir();
+        let path = dir.path().join("intents.sqlite");
+        drop(KernelIntentJournal::open(&path).unwrap());
+        {
+            // A separate SQLite writer with foreign-key enforcement disabled
+            // can leave a structurally valid but orphaned acceptance record.
+            let db = Connection::open(&path).unwrap();
+            db.pragma_update(None, "foreign_keys", "OFF").unwrap();
+            db.execute(
+                "INSERT INTO accepted_responses(command_id,response_wire) VALUES (?1,?2)",
+                params!["O".repeat(43), b"{}"],
+            )
+            .unwrap();
+        }
+        assert!(matches!(
+            KernelIntentJournal::open(&path),
+            Err(JournalError::IncompatibleStore)
+        ));
     }
 
     #[cfg(unix)]
@@ -788,7 +970,7 @@ mod tests {
         );
         let journal = KernelIntentJournal::open(&path).unwrap();
         let id = "B".repeat(43);
-        assert_eq!(journal.pending().unwrap().len(), 1);
+        assert_eq!(journal.all_prepared().unwrap().len(), 1);
         let (jws, body) = journal.exact_request_for_test(&id).unwrap().unwrap();
         assert!(matches!(
             jws.as_str(),

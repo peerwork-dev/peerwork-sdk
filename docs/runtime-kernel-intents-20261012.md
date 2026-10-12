@@ -19,8 +19,10 @@ with protected state and local locks in `workspace-secure-local-state.ts`
 SHA-256 `b5795d7fd3730c1c2deb2d00576c1715e1b838397b6ed8de05112f6ee99f8316`.
 
 The Rust `KernelIntentJournal` currently stores exact signed JWS and exact
-HTTP request bytes in a bundled SQLite database. Its only state is `PENDING`.
-The public listing contains a command ID, digest, and creation time; it does
+HTTP request bytes in a bundled SQLite database. The command row remains
+immutable and `PENDING`; a later v3 side table stores core-verified accepted
+responses, as described in [runtime-kernel-recovery-20261012.md](runtime-kernel-recovery-20261012.md).
+The redacted listing contains a command ID, digest, and creation time; it does
 not return the saved JWS or request body. An existing ID with different bytes
 returns `IntentConflict`. The native schema has a distinct application ID;
 opening an old TypeScript store fails closed with `IncompatibleStore`, pending
@@ -75,14 +77,14 @@ failure, not a runtime regression.
 
 ## Open gates
 
-Preparation accepts opaque signed bytes for local storage only; the HTTP POST
-primitive remains crate-private until the journal and trusted discovery bind
-to core proofs. The core must supply a typed verified command/result receipt
-before a future transition to `ACCEPTED`. HTTP status alone is insufficient.
+Preparation accepts opaque signed bytes for local storage only. The higher
+`KernelClient` now binds the journal and trusted discovery to core proofs
+before POST and stores verified accepted responses. This low-level preparation
+API alone does not authorize transmission; HTTP status is insufficient.
 Raw wire bytes remain intact so the core's lossless UTF-16 parser can verify
 valid escaped surrogate input. Secure-agent signed packet intent semantics in
 the separate protected state, acceptance from exact journal/control evidence,
-restart/retry orchestration, and old-store migration remain open. Windows
+the secure-agent restart/retry path, and old TypeScript store migration remain open. Windows
 protected state opening currently fails closed until ACL handling is
 implemented and tested on a real Windows runner. No full SDK capability is
 claimed from this local store checkpoint.

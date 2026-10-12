@@ -5,13 +5,23 @@ This repository began as an empty GitHub repository at
 baseline is the tracked Peerwork protocols TypeScript SDK at source commit
 `dd8a9d2` with accepted evidence commit
 `4065739efff3e45cdea3bc7be2e0309682a475a2`.
+The full baseline commit SHA is not currently resolvable from the public
+Peerwork protocols origin. The local tracked checkout supplies these pins;
+the minimal attributable TypeScript reference closure is now vendored under
+`conformance/reference/` so a fresh clone can run differential vectors without
+the sibling checkout. Its exact source/package hashes, source paths, and MIT
+third-party license texts are recorded in
+[`conformance/reference/NOTICE.md`](../conformance/reference/NOTICE.md).
+This does not imply that a fresh public clone can retrieve `dd8a9d2` from the
+old origin.
 
 The root Apache-2.0 `LICENSE` is copied byte-for-byte from that tracked
 baseline; its SHA-256 is
 `c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4`.
-The Node and Python packages carry the same license. Rust/Python/Node source in this
-repository is newly authored for the native port. The baseline is consulted
-for behavior and differential vectors; the old SDK bundle, operator key
+The Node and Python packages carry the same license. Rust/Python/Node native
+source in this repository is newly authored for the port; the vendored
+TypeScript reference files retain their original attribution and license.
+The baseline is consulted for behavior and differential vectors; the old SDK bundle, operator key
 material, state databases, and private fixture data are excluded.
 
 Selected tracked baseline source hashes captured before the port:
