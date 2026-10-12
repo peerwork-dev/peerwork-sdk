@@ -2,6 +2,7 @@
 //! Complete v2 interfaces, symbol mappings and fixture propagation are still
 //! compiler prerequisites before this can participate in authority decisions.
 use crate::wire_json::WireValue;
+use std::collections::HashMap;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum NamespaceError {
@@ -276,6 +277,97 @@ pub(crate) fn namespace_manifest(
             mapped.push((name, rules));
         }
         set(&mut value, "constraints", WireValue::Object(mapped))?;
+    }
+    crate::full_manifest::validate_full_manifest(&value).map_err(|_| NamespaceError::Invalid)?;
+    Ok(value)
+}
+
+fn replace_symbol(value: &mut WireValue, symbols: &HashMap<Vec<u16>, Vec<u16>>) {
+    if let WireValue::String(name) = value {
+        if let Some(mapped) = symbols.get(name) {
+            *name = mapped.clone();
+        }
+    }
+}
+fn map_guard_symbols(
+    value: &mut WireValue,
+    roles: &HashMap<Vec<u16>, Vec<u16>>,
+    capabilities: &HashMap<Vec<u16>, Vec<u16>>,
+) {
+    match value {
+        WireValue::Array(rows) => {
+            for row in rows {
+                map_guard_symbols(row, roles, capabilities);
+            }
+        }
+        WireValue::Object(fields) => {
+            let op = fields
+                .iter()
+                .find(|(key, _)| key.iter().copied().eq("op".encode_utf16()))
+                .and_then(|(_, value)| value.as_string());
+            for (key, child) in fields {
+                if op.as_deref() == Some("has_protocol_role")
+                    && key.iter().copied().eq("role".encode_utf16())
+                {
+                    replace_symbol(child, roles);
+                } else if op.as_deref() == Some("has_capability")
+                    && key.iter().copied().eq("capability".encode_utf16())
+                {
+                    replace_symbol(child, capabilities);
+                } else {
+                    map_guard_symbols(child, roles, capabilities);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+/// Apply v2 parent symbol mappings to an already namespaced dependency.
+pub(crate) fn map_namespaced_symbols(
+    mut value: WireValue,
+    roles: &HashMap<Vec<u16>, Vec<u16>>,
+    capabilities: &HashMap<Vec<u16>, Vec<u16>>,
+) -> Result<WireValue, NamespaceError> {
+    for (key, mappings) in [("protocol_roles", roles), ("capabilities", capabilities)] {
+        let WireValue::Array(items) = field_mut(&mut value, key)? else {
+            return Err(NamespaceError::Invalid);
+        };
+        for item in items {
+            replace_symbol(item, mappings);
+        }
+    }
+    for key in ["role_conflicts", "historical_role_conflicts"] {
+        let WireValue::Array(pairs) = field_mut(&mut value, key)? else {
+            return Err(NamespaceError::Invalid);
+        };
+        for pair in pairs {
+            let WireValue::Array(items) = pair else {
+                return Err(NamespaceError::Invalid);
+            };
+            for role in items.iter_mut() {
+                replace_symbol(role, roles);
+            }
+            if items.len() == 2 && items[0] == items[1] {
+                return Err(NamespaceError::Invalid);
+            }
+        }
+    }
+    if let Some(constraints) = value.get("constraints") {
+        let mut constraints = constraints.clone();
+        map_guard_symbols(&mut constraints, roles, capabilities);
+        set(&mut value, "constraints", constraints)?;
+    }
+    let WireValue::Array(actions) = field_mut(&mut value, "actions")? else {
+        return Err(NamespaceError::Invalid);
+    };
+    for action in actions {
+        let WireValue::Array(variants) = field_mut(action, "variants")? else {
+            return Err(NamespaceError::Invalid);
+        };
+        for variant in variants {
+            map_guard_symbols(field_mut(variant, "when")?, roles, capabilities);
+            map_guard_symbols(field_mut(variant, "effects")?, roles, capabilities);
+        }
     }
     crate::full_manifest::validate_full_manifest(&value).map_err(|_| NamespaceError::Invalid)?;
     Ok(value)

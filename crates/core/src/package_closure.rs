@@ -2,7 +2,7 @@
 //! validation must run before these bytes can authorize protocol installation.
 use crate::{
     canonical::Path,
-    crypto::{decode_base64url, sha256_hex},
+    crypto::{base64url, decode_base64url, sha256, sha256_hex},
     wire_json::{canonical_wire_value, parse_wire_json_bounded, WireValue},
 };
 use std::collections::{HashMap, HashSet};
@@ -355,6 +355,23 @@ pub(crate) struct SimpleCompilation {
     pub source_digest: String,
     pub protocol_digest: String,
     pub compilation_lock: WireValue,
+    scenarios: Vec<FixtureScenario>,
+    dispositions: Vec<FixtureDisposition>,
+}
+#[derive(Clone)]
+struct FixtureScenario {
+    id: String,
+    fixture: WireValue,
+    origin_package_digest: String,
+    import_path: Vec<String>,
+}
+#[derive(Clone)]
+struct FixtureDisposition {
+    origin_package_digest: String,
+    import_path: Vec<String>,
+    fixture_id: String,
+    expected_rejection: String,
+    replacement_id: String,
 }
 fn safe_integer(value: &WireValue) -> Result<u64, ClosureError> {
     let number = value.as_number().ok_or(ClosureError::Invalid)?;
@@ -381,9 +398,82 @@ fn merged_state(initial: &WireValue, provided: &WireValue) -> WireValue {
     }
     WireValue::Object(result)
 }
-fn fixture_matches(manifest: &WireValue, fixture: &WireValue) -> Result<bool, ClosureError> {
-    if fixture.get("kind").is_some() {
+fn accepted_result_matches(
+    expected: &WireValue,
+    observed: crate::interpreter::EvalResult,
+    state: WireValue,
+) -> Result<bool, ClosureError> {
+    let WireValue::Object(fields) = expected else {
         return Err(ClosureError::Invalid);
+    };
+    let mut actual = WireValue::Object(vec![
+        ("accepted".encode_utf16().collect(), WireValue::Bool(true)),
+        ("state".encode_utf16().collect(), state),
+        (
+            "records".encode_utf16().collect(),
+            WireValue::Array(observed.records),
+        ),
+        (
+            "headSelections".encode_utf16().collect(),
+            WireValue::Array(observed.head_selections),
+        ),
+        (
+            "revisionEffects".encode_utf16().collect(),
+            WireValue::Object(vec![
+                (
+                    "control".encode_utf16().collect(),
+                    WireValue::Bool(observed.control_revision),
+                ),
+                (
+                    "contentEntities".encode_utf16().collect(),
+                    WireValue::Array(
+                        observed
+                            .content_entities
+                            .into_iter()
+                            .map(WireValue::String)
+                            .collect(),
+                    ),
+                ),
+            ]),
+        ),
+    ]);
+    if let Some(time) = observed.evaluated_at {
+        insert_field(&mut actual, "evaluated_at", WireValue::Number(time as f64))?;
+    }
+    for (name, wanted) in fields {
+        let name = String::from_utf16(name).map_err(|_| ClosureError::Invalid)?;
+        if ![
+            "accepted",
+            "state",
+            "records",
+            "headSelections",
+            "revisionEffects",
+            "evaluated_at",
+        ]
+        .contains(&name.as_str())
+        {
+            return Err(ClosureError::Invalid);
+        }
+        let Some(value) = actual.get(&name) else {
+            return Ok(false);
+        };
+        if canonical(value)? != canonical(wanted)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+struct FixtureCheck {
+    passed: bool,
+    rejections: Vec<String>,
+}
+fn fixture_matches(
+    manifest: &WireValue,
+    fixture: &WireValue,
+    id: &str,
+) -> Result<FixtureCheck, ClosureError> {
+    if fixture.get("kind").is_some() {
+        return sequence_fixture_matches(manifest, fixture, id);
     }
     let auth = field(fixture, "auth")?;
     let roles = |key| -> Result<Vec<Vec<u16>>, ClosureError> {
@@ -445,30 +535,307 @@ fn fixture_matches(manifest: &WireValue, fixture: &WireValue) -> Result<bool, Cl
         fixture.get("time_ms").map(safe_integer).transpose()?,
     );
     let expected = field(fixture, "expected")?;
+    let rejections = observed
+        .as_ref()
+        .err()
+        .map(|error| vec![error.to_string()])
+        .unwrap_or_default();
     match expected.get("accepted") {
         Some(WireValue::Bool(false)) => {
             if !exact(expected, &["accepted", "code"]) {
                 return Err(ClosureError::Invalid);
             }
-            Ok(observed.err().map(|error| error.to_string())
-                == expected.get("code").and_then(WireValue::as_string))
+            Ok(FixtureCheck {
+                passed: rejections.first().map(String::as_str)
+                    == expected
+                        .get("code")
+                        .and_then(WireValue::as_string)
+                        .as_deref(),
+                rejections,
+            })
         }
         Some(WireValue::Bool(true)) => {
-            let WireValue::Object(fields) = expected else {
-                return Err(ClosureError::Invalid);
+            let Ok(observed) = observed else {
+                return Ok(FixtureCheck {
+                    passed: false,
+                    rejections,
+                });
             };
-            if fields
-                .iter()
-                .any(|(name, _)| !name.iter().copied().eq("accepted".encode_utf16()))
-            {
-                // Additional expected result fields will be supported by the
-                // complete fixture runner, not silently ignored here.
-                return Err(ClosureError::Invalid);
-            }
-            Ok(observed.is_ok())
+            let state = observed.next_state.clone();
+            Ok(FixtureCheck {
+                passed: accepted_result_matches(expected, observed, state)?,
+                rejections,
+            })
         }
         _ => Err(ClosureError::Invalid),
     }
+}
+fn replace_fixture_refs(
+    value: &WireValue,
+    refs: &HashMap<String, crate::interpreter::ResolvedInput>,
+    expected: bool,
+) -> Result<WireValue, ClosureError> {
+    match value {
+        WireValue::Array(values) => Ok(WireValue::Array(
+            values
+                .iter()
+                .map(|value| replace_fixture_refs(value, refs, expected))
+                .collect::<Result<_, _>>()?,
+        )),
+        WireValue::Object(fields) if fields.len() == 1 && value.get("$fixture_ref").is_some() => {
+            let name = scalar(field(value, "$fixture_ref")?)?;
+            let reference = refs.get(&name).ok_or(ClosureError::Invalid)?;
+            Ok(WireValue::Object(vec![
+                (
+                    (if expected { "recordId" } else { "record_id" })
+                        .encode_utf16()
+                        .collect(),
+                    WireValue::String(reference.record_id.encode_utf16().collect()),
+                ),
+                (
+                    "revision".encode_utf16().collect(),
+                    WireValue::Number(reference.revision as f64),
+                ),
+            ]))
+        }
+        WireValue::Object(fields) => Ok(WireValue::Object(
+            fields
+                .iter()
+                .map(|(name, value)| {
+                    Ok((name.clone(), replace_fixture_refs(value, refs, expected)?))
+                })
+                .collect::<Result<_, ClosureError>>()?,
+        )),
+        _ => Ok(value.clone()),
+    }
+}
+fn replace_produced_record(
+    value: &WireValue,
+    slot: &str,
+    record_id: &str,
+    revision: u64,
+) -> WireValue {
+    match value {
+        WireValue::Array(values) => WireValue::Array(
+            values
+                .iter()
+                .map(|value| replace_produced_record(value, slot, record_id, revision))
+                .collect(),
+        ),
+        WireValue::Object(_)
+            if value
+                .get("$produced")
+                .and_then(WireValue::as_string)
+                .as_deref()
+                == Some("record")
+                && value.get("slot").and_then(WireValue::as_string).as_deref() == Some(slot) =>
+        {
+            WireValue::Object(vec![
+                (
+                    "record_id".encode_utf16().collect(),
+                    WireValue::String(record_id.encode_utf16().collect()),
+                ),
+                (
+                    "revision".encode_utf16().collect(),
+                    WireValue::Number(revision as f64),
+                ),
+            ])
+        }
+        WireValue::Object(fields) => WireValue::Object(
+            fields
+                .iter()
+                .map(|(name, value)| {
+                    (
+                        name.clone(),
+                        replace_produced_record(value, slot, record_id, revision),
+                    )
+                })
+                .collect(),
+        ),
+        _ => value.clone(),
+    }
+}
+fn fixture_auth(value: &WireValue) -> Result<crate::interpreter::InterpreterAuth, ClosureError> {
+    let roles = |name| -> Result<Vec<Vec<u16>>, ClosureError> {
+        let WireValue::Array(values) = field(value, name)? else {
+            return Err(ClosureError::Invalid);
+        };
+        values
+            .iter()
+            .map(|value| {
+                value
+                    .as_utf16()
+                    .map(<[u16]>::to_vec)
+                    .ok_or(ClosureError::Invalid)
+            })
+            .collect()
+    };
+    Ok(crate::interpreter::InterpreterAuth {
+        actor_id: scalar(field(value, "actorId")?)?,
+        workspace_roles: roles("workspaceRoles")?,
+        protocol_roles: roles("protocolRoles")?,
+        capabilities: roles("capabilities")?,
+    })
+}
+fn sequence_fixture_matches(
+    manifest: &WireValue,
+    fixture: &WireValue,
+    id: &str,
+) -> Result<FixtureCheck, ClosureError> {
+    if field(fixture, "kind")?.as_string().as_deref() != Some("sequence") {
+        return Err(ClosureError::Invalid);
+    }
+    let WireValue::Array(steps) = field(fixture, "steps")? else {
+        return Err(ClosureError::Invalid);
+    };
+    if steps.is_empty() || steps.len() > 32 {
+        return Err(ClosureError::Invalid);
+    }
+    let mut state = merged_state(field(manifest, "initial_state")?, field(fixture, "state")?);
+    let mut refs: HashMap<String, crate::interpreter::ResolvedInput> = HashMap::new();
+    let mut rejections = Vec::new();
+    let action_manifest = WireValue::Object(vec![(
+        "actions".encode_utf16().collect(),
+        field(manifest, "actions")?.clone(),
+    )]);
+    for (index, step) in steps.iter().enumerate() {
+        let body = replace_fixture_refs(field(step, "body")?, &refs, false)?;
+        let WireValue::Array(input_names) = field(step, "exact_inputs")? else {
+            return Err(ClosureError::Invalid);
+        };
+        let exact_inputs = input_names
+            .iter()
+            .map(|name| {
+                refs.get(&scalar(name)?)
+                    .cloned()
+                    .ok_or(ClosureError::Invalid)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let auth = fixture_auth(field(step, "auth")?)?;
+        crate::full_manifest::validate_state_array_state(manifest, &state)
+            .map_err(|_| ClosureError::Invalid)?;
+        let result = crate::interpreter::evaluate_action(
+            &action_manifest,
+            field(step, "action_id")?
+                .as_utf16()
+                .ok_or(ClosureError::Invalid)?,
+            &state,
+            &body,
+            &auth,
+            &exact_inputs,
+            step.get("time_ms").map(safe_integer).transpose()?,
+        );
+        let expected = field(step, "expected")?;
+        match result {
+            Err(error) => {
+                rejections.push(error.to_string());
+                if !exact(expected, &["accepted", "code"])
+                    || !matches!(expected.get("accepted"), Some(WireValue::Bool(false)))
+                    || expected
+                        .get("code")
+                        .and_then(WireValue::as_string)
+                        .as_deref()
+                        != Some(&error.to_string())
+                {
+                    return Ok(FixtureCheck {
+                        passed: false,
+                        rejections,
+                    });
+                }
+            }
+            Ok(observed) => {
+                let mut next_refs = refs.clone();
+                let mut next_state = observed.next_state.clone();
+                let WireValue::Array(bindings) = field(step, "bind_refs")? else {
+                    return Err(ClosureError::Invalid);
+                };
+                for binding in bindings {
+                    let name = scalar(field(binding, "name")?)?;
+                    if next_refs.contains_key(&name) {
+                        return Err(ClosureError::Invalid);
+                    }
+                    let slot = scalar(field(binding, "record_slot")?)?;
+                    let record = observed
+                        .records
+                        .iter()
+                        .find(|record| {
+                            record
+                                .get("recordSlot")
+                                .and_then(WireValue::as_string)
+                                .as_deref()
+                                == Some(&slot)
+                        })
+                        .ok_or(ClosureError::Invalid)?;
+                    let record_id = base64url(&sha256(format!("{id}:{index}:{name}").as_bytes()));
+                    let mut revision = 1;
+                    let mut entity_id = None;
+                    if let Some(entity) = record.get("entity") {
+                        match field(entity, "mode")?.as_string().as_deref() {
+                            Some("new") => {
+                                let entity_slot = scalar(field(entity, "slot")?)?;
+                                entity_id = Some(base64url(&sha256(
+                                    format!("{id}:{index}:{entity_slot}").as_bytes(),
+                                )));
+                            }
+                            Some("revise") => {
+                                let parent = field(entity, "parent")?;
+                                let parent_id = scalar(field(parent, "recordId")?)?;
+                                let parent_rev = safe_integer(field(parent, "revision")?)?;
+                                let parent_input = next_refs
+                                    .values()
+                                    .find(|reference| {
+                                        reference.record_id == parent_id
+                                            && reference.revision == parent_rev
+                                    })
+                                    .ok_or(ClosureError::Invalid)?;
+                                entity_id = Some(
+                                    parent_input
+                                        .entity_id
+                                        .clone()
+                                        .ok_or(ClosureError::Invalid)?,
+                                );
+                                revision = parent_rev
+                                    .checked_add(1)
+                                    .filter(|value| *value <= 9_007_199_254_740_991)
+                                    .ok_or(ClosureError::Invalid)?;
+                            }
+                            _ => return Err(ClosureError::Invalid),
+                        }
+                    }
+                    next_refs.insert(
+                        name.clone(),
+                        crate::interpreter::ResolvedInput {
+                            record_id: record_id.clone(),
+                            revision,
+                            schema: field(record, "schema")?
+                                .as_utf16()
+                                .ok_or(ClosureError::Invalid)?
+                                .to_vec(),
+                            payload: field(record, "payload")?.clone(),
+                            scope: "INSTANCE".to_owned(),
+                            entity_id,
+                        },
+                    );
+                    next_state = replace_produced_record(&next_state, &slot, &record_id, revision);
+                }
+                crate::full_manifest::validate_state_array_state(manifest, &next_state)
+                    .map_err(|_| ClosureError::Invalid)?;
+                refs = next_refs;
+                state = next_state.clone();
+                let expected = replace_fixture_refs(expected, &refs, true)?;
+                if !accepted_result_matches(&expected, observed, next_state)? {
+                    return Ok(FixtureCheck {
+                        passed: false,
+                        rejections,
+                    });
+                }
+            }
+        }
+    }
+    Ok(FixtureCheck {
+        passed: true,
+        rejections,
+    })
 }
 fn field_mut<'a>(value: &'a mut WireValue, key: &str) -> Result<&'a mut WireValue, ClosureError> {
     let WireValue::Object(fields) = value else {
@@ -946,6 +1313,267 @@ fn mapped_import_values(
     }
     Ok(WireValue::Object(mapped))
 }
+fn import_symbol_mappings(
+    source: &WireValue,
+    alias: &str,
+    namespace: &str,
+    dependency: &WireValue,
+) -> Result<(HashMap<Vec<u16>, Vec<u16>>, HashMap<Vec<u16>, Vec<u16>>), ClosureError> {
+    let mut roles = HashMap::new();
+    let mut capabilities = HashMap::new();
+    for (source_key, manifest_key, member_key, output) in [
+        ("role_mappings", "protocol_roles", "role", &mut roles),
+        (
+            "capability_mappings",
+            "capabilities",
+            "capability",
+            &mut capabilities,
+        ),
+    ] {
+        let Some(WireValue::Array(rows)) = source.get(source_key) else {
+            continue;
+        };
+        let WireValue::Array(declared) = field(dependency, manifest_key)? else {
+            return Err(ClosureError::Invalid);
+        };
+        let WireValue::Array(parent_declared) = field(field(source, "manifest")?, manifest_key)?
+        else {
+            return Err(ClosureError::Invalid);
+        };
+        for row in rows {
+            if field(field(row, "from")?, "import")?.as_string().as_deref() != Some(alias) {
+                continue;
+            }
+            let original = field(field(row, "from")?, member_key)?
+                .as_utf16()
+                .ok_or(ClosureError::Invalid)?;
+            let target = field(row, "to")?.as_utf16().ok_or(ClosureError::Invalid)?;
+            if !declared
+                .iter()
+                .any(|candidate| candidate.as_utf16() == Some(original))
+                || !parent_declared
+                    .iter()
+                    .any(|candidate| candidate.as_utf16() == Some(target))
+            {
+                return Err(ClosureError::Invalid);
+            }
+            let mut qualified = namespace.encode_utf16().collect::<Vec<_>>();
+            qualified.push('.' as u16);
+            qualified.extend_from_slice(original);
+            if output.insert(qualified, target.to_vec()).is_some() {
+                return Err(ClosureError::Invalid);
+            }
+        }
+    }
+    Ok((roles, capabilities))
+}
+fn qualified_fixture_text(
+    value: &WireValue,
+    namespace: &str,
+    max: usize,
+) -> Result<WireValue, ClosureError> {
+    let original = value.as_utf16().ok_or(ClosureError::Invalid)?;
+    let mut joined = namespace.encode_utf16().collect::<Vec<_>>();
+    joined.push('.' as u16);
+    joined.extend_from_slice(original);
+    if joined.len() > max {
+        return Err(ClosureError::Resource);
+    }
+    Ok(WireValue::String(joined))
+}
+fn mapped_fixture_symbol(
+    value: &WireValue,
+    namespace: &str,
+    mappings: &HashMap<Vec<u16>, Vec<u16>>,
+) -> Result<WireValue, ClosureError> {
+    let qualified = qualified_fixture_text(value, namespace, 120)?;
+    if let WireValue::String(units) = &qualified {
+        if let Some(mapped) = mappings.get(units) {
+            return Ok(WireValue::String(mapped.clone()));
+        }
+    }
+    Ok(qualified)
+}
+fn transform_fixture_auth(
+    auth: &mut WireValue,
+    namespace: &str,
+    roles: &HashMap<Vec<u16>, Vec<u16>>,
+    capabilities: &HashMap<Vec<u16>, Vec<u16>>,
+) -> Result<(), ClosureError> {
+    for (key, mappings) in [("protocolRoles", roles), ("capabilities", capabilities)] {
+        let WireValue::Array(values) = field_mut(auth, key)? else {
+            return Err(ClosureError::Invalid);
+        };
+        for value in values {
+            *value = mapped_fixture_symbol(value, namespace, mappings)?;
+        }
+    }
+    Ok(())
+}
+fn transform_fixture_expected(
+    expected: &mut WireValue,
+    namespace: &str,
+) -> Result<(), ClosureError> {
+    if let Some(WireValue::Object(_)) = expected.get("state") {
+        let state = field(expected, "state")?.clone();
+        insert_field(
+            expected,
+            "state",
+            WireValue::Object(vec![(namespace.encode_utf16().collect(), state)]),
+        )?;
+    }
+    if let Some(WireValue::Array(records)) = expected.get("records") {
+        let mut records = records.clone();
+        for record in &mut records {
+            let schema = qualified_fixture_text(field(record, "schema")?, namespace, 80)?;
+            insert_field(record, "schema", schema)?;
+            if let Some(WireValue::Array(relations)) = record.get("relations") {
+                let mut relations = relations.clone();
+                for relation in &mut relations {
+                    let kind = qualified_fixture_text(field(relation, "kind")?, namespace, 80)?;
+                    insert_field(relation, "kind", kind)?;
+                }
+                insert_field(record, "relations", WireValue::Array(relations))?;
+            }
+        }
+        insert_field(expected, "records", WireValue::Array(records))?;
+    }
+    if let Some(effects) = expected.get("revisionEffects") {
+        let mut effects = effects.clone();
+        let WireValue::Array(entities) = field_mut(&mut effects, "contentEntities")? else {
+            return Err(ClosureError::Invalid);
+        };
+        for entity in entities {
+            *entity = qualified_fixture_text(entity, namespace, 120)?;
+        }
+        insert_field(expected, "revisionEffects", effects)?;
+    }
+    Ok(())
+}
+fn transform_inherited_fixture(
+    mut scenario: FixtureScenario,
+    alias: &str,
+    namespace: &str,
+    roles: &HashMap<Vec<u16>, Vec<u16>>,
+    capabilities: &HashMap<Vec<u16>, Vec<u16>>,
+) -> Result<FixtureScenario, ClosureError> {
+    scenario.id = format!("{alias}/{}", scenario.id);
+    scenario.import_path.insert(0, alias.to_owned());
+    let fixture = &mut scenario.fixture;
+    if let Some(WireValue::Object(_)) = fixture.get("state") {
+        let state = field(fixture, "state")?.clone();
+        insert_field(
+            fixture,
+            "state",
+            WireValue::Object(vec![(namespace.encode_utf16().collect(), state)]),
+        )?;
+    }
+    if fixture.get("kind").is_some() {
+        let WireValue::Array(steps) = field_mut(fixture, "steps")? else {
+            return Err(ClosureError::Invalid);
+        };
+        for step in steps {
+            let action = qualified_fixture_text(field(step, "action_id")?, namespace, 120)?;
+            insert_field(step, "action_id", action)?;
+            transform_fixture_auth(field_mut(step, "auth")?, namespace, roles, capabilities)?;
+            transform_fixture_expected(field_mut(step, "expected")?, namespace)?;
+        }
+    } else {
+        let action = qualified_fixture_text(field(fixture, "action_id")?, namespace, 120)?;
+        insert_field(fixture, "action_id", action)?;
+        transform_fixture_auth(field_mut(fixture, "auth")?, namespace, roles, capabilities)?;
+        let WireValue::Array(inputs) = field_mut(fixture, "exact_inputs")? else {
+            return Err(ClosureError::Invalid);
+        };
+        for input in inputs {
+            let schema = qualified_fixture_text(field(input, "schema")?, namespace, 80)?;
+            insert_field(input, "schema", schema)?;
+        }
+        transform_fixture_expected(field_mut(fixture, "expected")?, namespace)?;
+    }
+    Ok(scenario)
+}
+fn parse_local_dispositions(source: &WireValue) -> Result<Vec<FixtureDisposition>, ClosureError> {
+    let Some(WireValue::Array(rows)) = source.get("fixture_dispositions") else {
+        return Ok(vec![]);
+    };
+    let mut parsed = Vec::new();
+    let mut origins = HashSet::new();
+    for row in rows {
+        let origin = field(row, "origin")?;
+        let origin_package_digest = scalar(field(origin, "package_digest")?)?;
+        let WireValue::Array(path) = field(origin, "import_path")? else {
+            return Err(ClosureError::Invalid);
+        };
+        let import_path = path.iter().map(scalar).collect::<Result<Vec<_>, _>>()?;
+        let fixture_id = scalar(field(origin, "fixture_id")?)?;
+        if !origins.insert((
+            origin_package_digest.clone(),
+            import_path.clone(),
+            fixture_id.clone(),
+        )) {
+            return Err(ClosureError::Invalid);
+        }
+        parsed.push(FixtureDisposition {
+            origin_package_digest,
+            import_path,
+            fixture_id,
+            expected_rejection: scalar(field(row, "expected_rejection")?)?,
+            replacement_id: scalar(field(row, "replacement_scenario_id")?)?,
+        });
+    }
+    Ok(parsed)
+}
+fn check_fixture_dispositions(
+    scenarios: &[FixtureScenario],
+    checks: &mut [FixtureCheck],
+    dispositions: &[FixtureDisposition],
+) -> Result<(), ClosureError> {
+    let mut used = HashSet::new();
+    for disposition in dispositions {
+        let matches = scenarios
+            .iter()
+            .enumerate()
+            .filter(|(_, scenario)| {
+                scenario.origin_package_digest == disposition.origin_package_digest
+                    && scenario.import_path == disposition.import_path
+                    && scenario
+                        .fixture
+                        .get("id")
+                        .and_then(WireValue::as_string)
+                        .as_deref()
+                        == Some(&disposition.fixture_id)
+            })
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        if matches.len() != 1 {
+            return Err(ClosureError::Invalid);
+        }
+        let index = matches[0];
+        if !used.insert(index)
+            || checks[index].passed
+            || !checks[index]
+                .rejections
+                .contains(&disposition.expected_rejection)
+        {
+            return Err(ClosureError::Mismatch);
+        }
+        let replacement = scenarios
+            .iter()
+            .enumerate()
+            .find(|(_, scenario)| scenario.id == disposition.replacement_id)
+            .map(|(index, _)| index)
+            .ok_or(ClosureError::Mismatch)?;
+        if replacement == index || !checks[replacement].passed {
+            return Err(ClosureError::Mismatch);
+        }
+        checks[index].passed = true;
+    }
+    if checks.iter().any(|check| !check.passed) {
+        return Err(ClosureError::Mismatch);
+    }
+    Ok(())
+}
 fn compile_at(
     closure: &ScannedPackageClosure,
     package_digest: &str,
@@ -990,14 +1618,7 @@ fn compile_at(
             && (!matches!(source.get("interfaces"), Some(interfaces)
                 if exact(interfaces, &["outputs", "inputs", "action_bodies"])
                     && ["outputs", "inputs", "action_bodies"].iter().all(|key| matches!(interfaces.get(key), Some(WireValue::Array(_)))))
-                || [
-                    "connections",
-                    "role_mappings",
-                    "capability_mappings",
-                    "fixture_dispositions",
-                ]
-                .iter()
-                .any(|key| {
+                || ["connections"].iter().any(|key| {
                     source.get(key).is_some_and(
                         |value| !matches!(value, WireValue::Array(rows) if rows.is_empty()),
                     )
@@ -1038,6 +1659,8 @@ fn compile_at(
     };
     let mut nodes = HashMap::new();
     let mut dependency_ids = Vec::new();
+    let mut scenarios = Vec::new();
+    let mut inherited_dispositions = Vec::new();
     for imported in imports {
         let digest = scalar(field(imported, "package_digest")?)?;
         let alias = scalar(field(imported, "alias")?)?;
@@ -1055,6 +1678,25 @@ fn compile_at(
         let namespaced =
             crate::package_namespace::namespace_manifest(&compiled.manifest, &namespace)
                 .map_err(|_| ClosureError::Invalid)?;
+        let (roles, capabilities) =
+            import_symbol_mappings(&source, &alias, &namespace, &compiled.manifest)?;
+        let namespaced =
+            crate::package_namespace::map_namespaced_symbols(namespaced, &roles, &capabilities)
+                .map_err(|_| ClosureError::Invalid)?;
+        for scenario in compiled.scenarios.iter().cloned() {
+            scenarios.push(transform_inherited_fixture(
+                scenario,
+                &alias,
+                &namespace,
+                &roles,
+                &capabilities,
+            )?);
+        }
+        for mut disposition in compiled.dispositions.iter().cloned() {
+            disposition.import_path.insert(0, alias.clone());
+            disposition.replacement_id = format!("{alias}/{}", disposition.replacement_id);
+            inherited_dispositions.push(disposition);
+        }
         let checked = crate::full_manifest::validate_full_manifest(&namespaced)
             .map_err(|_| ClosureError::Invalid)?;
         let digest = sha256_hex(checked.as_bytes());
@@ -1116,10 +1758,21 @@ fn compile_at(
             continue;
         }
         let fixture = json_file(files, &path)?;
-        if !fixture_matches(&manifest, &fixture)? {
-            return Err(ClosureError::Mismatch);
-        }
+        let id = scalar(field(&fixture, "id")?)?;
+        scenarios.push(FixtureScenario {
+            id,
+            fixture,
+            origin_package_digest: package_digest.to_owned(),
+            import_path: vec![],
+        });
     }
+    let mut checks = scenarios
+        .iter()
+        .map(|scenario| fixture_matches(&manifest, &scenario.fixture, &scenario.id))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut dispositions = parse_local_dispositions(&source)?;
+    dispositions.extend(inherited_dispositions);
+    check_fixture_dispositions(&scenarios, &mut checks, &dispositions)?;
     let compilation_lock = WireValue::Object(vec![
         (
             "format".encode_utf16().collect(),
@@ -1156,6 +1809,8 @@ fn compile_at(
         source_digest,
         protocol_digest,
         compilation_lock,
+        scenarios,
+        dispositions,
     })
 }
 fn package_imports(bundle: &WireValue) -> Result<Vec<String>, ClosureError> {
@@ -1510,5 +2165,162 @@ mod tests {
             canonical(&compiled.compilation_lock).unwrap(),
             canonical(&lock).unwrap()
         );
+    }
+
+    #[test]
+    fn tracked_v2_parent_symbol_mapping_compilation() {
+        let vector: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../conformance/public-package-mapping-vectors.json"
+        ))
+        .unwrap();
+        assert_eq!(vector["passed"], true);
+        let closure_wire = serde_json::to_vec(&vector["closure"]).unwrap();
+        let closure = parse_wire_json_bounded(&closure_wire, 32, 6 * 1024 * 1024).unwrap();
+        let scanned = scan_package_closure(&closure).unwrap();
+        let compiled = compile_simple_baseline(&scanned).unwrap();
+        assert_eq!(
+            compiled.source_digest,
+            vector["source_digest"].as_str().unwrap()
+        );
+        assert_eq!(
+            compiled.protocol_digest,
+            vector["protocol_digest"].as_str().unwrap()
+        );
+        let expected_wire = serde_json::to_vec(&vector["compiled_manifest"]).unwrap();
+        let expected = parse_wire_json_bounded(&expected_wire, 32, 65_536).unwrap();
+        assert_eq!(
+            canonical(&compiled.manifest).unwrap(),
+            canonical(&expected).unwrap()
+        );
+        let lock_wire = serde_json::to_vec(&vector["compilation_lock"]).unwrap();
+        let lock = parse_wire_json_bounded(&lock_wire, 16, 2048).unwrap();
+        assert_eq!(
+            canonical(&compiled.compilation_lock).unwrap(),
+            canonical(&lock).unwrap()
+        );
+    }
+
+    #[test]
+    fn tracked_single_fixture_exact_outputs_and_wrong_state() {
+        let vector: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../conformance/public-package-exact-fixture-vectors.json"
+        ))
+        .unwrap();
+        for (name, should_pass) in [("valid", true), ("wrong", false)] {
+            let wire = serde_json::to_vec(&vector[name]["closure"]).unwrap();
+            let closure = parse_wire_json_bounded(&wire, 32, 6 * 1024 * 1024).unwrap();
+            let scanned = scan_package_closure(&closure).unwrap();
+            assert_eq!(
+                scanned.root,
+                vector[name]["package_digest"].as_str().unwrap()
+            );
+            let compiled = compile_simple_baseline(&scanned);
+            if should_pass {
+                assert_eq!(
+                    compiled.unwrap().protocol_digest,
+                    vector[name]["protocol_digest"].as_str().unwrap()
+                );
+            } else {
+                assert_eq!(vector[name]["result"], "EXAMPLE_FAILED");
+                assert_eq!(compiled.err(), Some(ClosureError::Mismatch));
+            }
+        }
+    }
+
+    #[test]
+    fn tracked_sequence_fixture_binds_exact_ref_and_rejects_missing_slot() {
+        let vector: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../conformance/public-package-sequence-vectors.json"
+        ))
+        .unwrap();
+        assert_eq!(vector["valid"]["fixture"]["passed"], true);
+        assert_eq!(vector["valid"]["fixture"]["executedSteps"], 3);
+        for (name, should_pass) in [("valid", true), ("wrong", false)] {
+            let wire = serde_json::to_vec(&vector[name]["closure"]).unwrap();
+            let closure = parse_wire_json_bounded(&wire, 32, 6 * 1024 * 1024).unwrap();
+            let scanned = scan_package_closure(&closure).unwrap();
+            assert_eq!(
+                scanned.root,
+                vector[name]["package_digest"].as_str().unwrap()
+            );
+            let compiled = compile_simple_baseline(&scanned);
+            if should_pass {
+                assert_eq!(
+                    compiled.unwrap().protocol_digest,
+                    vector[name]["protocol_digest"].as_str().unwrap()
+                );
+            } else {
+                assert_eq!(vector[name]["result"], "INVALID_PAYLOAD");
+                assert_eq!(compiled.err(), Some(ClosureError::Invalid));
+            }
+        }
+    }
+
+    #[test]
+    fn tracked_inherited_sequence_replays_in_parent_namespace() {
+        let vector: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../conformance/public-package-inherited-sequence-vectors.json"
+        ))
+        .unwrap();
+        assert_eq!(vector["valid"]["fixture"]["passed"], true);
+        assert_eq!(vector["valid"]["fixture"]["id"], "dep/adoption-sequence");
+        for (name, should_pass) in [("valid", true), ("blocked", false)] {
+            let wire = serde_json::to_vec(&vector[name]["closure"]).unwrap();
+            let closure = parse_wire_json_bounded(&wire, 32, 6 * 1024 * 1024).unwrap();
+            let scanned = scan_package_closure(&closure).unwrap();
+            assert_eq!(
+                scanned.root,
+                vector[name]["package_digest"].as_str().unwrap()
+            );
+            let compiled = compile_simple_baseline(&scanned);
+            if should_pass {
+                assert_eq!(
+                    compiled.unwrap().protocol_digest,
+                    vector[name]["protocol_digest"].as_str().unwrap()
+                );
+            } else {
+                assert_eq!(vector[name]["result"], "EXAMPLE_FAILED");
+                assert_eq!(compiled.err(), Some(ClosureError::Mismatch));
+            }
+        }
+    }
+
+    #[test]
+    fn tracked_inherited_fixture_disposition_binds_origin_code_and_replacement() {
+        let vector: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../conformance/public-package-disposition-vectors.json"
+        ))
+        .unwrap();
+        assert_eq!(vector["valid"]["fixture"]["passed"], true);
+        assert_eq!(
+            vector["valid"]["fixture"]["disposition"]["expectedRejection"],
+            "CONSTRAINT_FAILED"
+        );
+        assert_eq!(
+            vector["nested"]["fixture"]["disposition"]["origin"]["import_path"],
+            serde_json::json!(["outer", "dep"])
+        );
+        for (name, expected) in [
+            ("valid", None),
+            ("nested", None),
+            ("wrong_code", Some(ClosureError::Mismatch)),
+            ("wrong_origin", Some(ClosureError::Invalid)),
+            ("wrong_replacement", Some(ClosureError::Mismatch)),
+        ] {
+            let wire = serde_json::to_vec(&vector[name]["closure"]).unwrap();
+            let closure = parse_wire_json_bounded(&wire, 32, 6 * 1024 * 1024).unwrap();
+            let scanned = scan_package_closure(&closure).unwrap();
+            let compiled = compile_simple_baseline(&scanned);
+            match expected {
+                None => assert_eq!(
+                    compiled.unwrap().protocol_digest,
+                    vector[name]["protocol_digest"].as_str().unwrap()
+                ),
+                Some(error) => assert_eq!(compiled.err(), Some(error)),
+            }
+        }
+        assert_eq!(vector["wrong_code"]["result"], "EXAMPLE_FAILED");
+        assert_eq!(vector["wrong_origin"]["result"], "INVALID_PAYLOAD");
+        assert_eq!(vector["wrong_replacement"]["result"], "EXAMPLE_FAILED");
     }
 }
