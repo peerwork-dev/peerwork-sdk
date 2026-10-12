@@ -22,6 +22,8 @@ mod package_closure;
 mod package_namespace;
 #[allow(dead_code)]
 mod package_schema;
+#[allow(dead_code)]
+mod prepared_package_source;
 pub mod prepared_command;
 pub mod prepared_secure_author;
 pub mod prepared_secure_bootstrap;
