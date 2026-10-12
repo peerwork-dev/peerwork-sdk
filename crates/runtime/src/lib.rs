@@ -12,6 +12,8 @@ pub mod kernel_intents;
 // staged internally until the complete core verifier can authorize submits.
 #[allow(dead_code)]
 mod secure_intents;
+#[allow(dead_code)]
+mod secure_lifecycle;
 pub mod secure_state;
 pub mod transport;
 mod ts_migration;

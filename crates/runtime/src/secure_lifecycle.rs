@@ -1,0 +1,385 @@
+//! Protected per-workspace epoch-key lifecycle. Key creation and rotation are
+//! local pending state only; no pending key becomes active without a future
+//! complete signed journal/policy or key-grant proof.
+
+use crate::secure_state::{SecureStateError, SecureStateStore};
+use peerwork_core::crypto::decode_base64url;
+use peerwork_core::secure_keyring::{KeyringError, SecretKeyring};
+use reqwest::Url;
+use std::path::Path;
+use thiserror::Error;
+use zeroize::Zeroizing;
+
+const MAGIC: &[u8] = b"PEERWORK-SECURE-KEYRING\n1\n";
+const MAX_WIRE: usize = 300_000;
+
+#[derive(Debug, Error)]
+pub enum SecureLifecycleError {
+    #[error(transparent)]
+    Store(#[from] SecureStateError),
+    #[error(transparent)]
+    Keyring(#[from] KeyringError),
+    #[error("secure lifecycle context or state is invalid")]
+    Invalid,
+    #[error("secure lifecycle identity, origin or owner pin changed")]
+    PinChanged,
+    #[error("a different pending keyring transition already exists")]
+    PendingConflict,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeyringStatus {
+    pub workspace_id: String,
+    pub active_epochs: Vec<u64>,
+    pub pending_epochs: Vec<u64>,
+}
+
+/// One protected file per workspace. Origin/actor/workspace/trusted owner are
+/// immutable. This is local key custody, not a policy or grant verifier.
+pub struct SecureLifecycle {
+    store: SecureStateStore,
+    origin: String,
+    actor_id: String,
+    workspace_id: String,
+    owner_actor_id: String,
+    owner_key_id: String,
+    active: Option<SecretKeyring>,
+    pending: Option<SecretKeyring>,
+}
+
+impl SecureLifecycle {
+    pub fn open(
+        path: &Path,
+        origin: &str,
+        actor_id: &str,
+        workspace_id: &str,
+        owner_actor_id: &str,
+        owner_key_id: &str,
+    ) -> Result<Self, SecureLifecycleError> {
+        if !valid_origin(origin)
+            || ![actor_id, workspace_id, owner_actor_id, owner_key_id]
+                .iter()
+                .all(|value| valid_token(value))
+        {
+            return Err(SecureLifecycleError::Invalid);
+        }
+        let store = SecureStateStore::open(path)?;
+        let mut state = Self {
+            store,
+            origin: origin.to_owned(),
+            actor_id: actor_id.to_owned(),
+            workspace_id: workspace_id.to_owned(),
+            owner_actor_id: owner_actor_id.to_owned(),
+            owner_key_id: owner_key_id.to_owned(),
+            active: None,
+            pending: None,
+        };
+        if let Some(bytes) = state.store.read_exact_secret()? {
+            state.decode(&bytes)?;
+        }
+        Ok(state)
+    }
+
+    pub fn status(&self) -> KeyringStatus {
+        KeyringStatus {
+            workspace_id: self.workspace_id.clone(),
+            active_epochs: self
+                .active
+                .as_ref()
+                .map(|ring| ring.epochs().collect())
+                .unwrap_or_default(),
+            pending_epochs: self
+                .pending
+                .as_ref()
+                .map(|ring| ring.epochs().collect())
+                .unwrap_or_default(),
+        }
+    }
+
+    /// Stage a new private epoch key before a signed workspace bootstrap. An
+    /// exact repeated stage reuses existing pending bytes, never fresh entropy.
+    pub fn stage_initial(&mut self, epoch: u64) -> Result<KeyringStatus, SecureLifecycleError> {
+        if self.active.is_some() {
+            return Err(SecureLifecycleError::PendingConflict);
+        }
+        if let Some(pending) = &self.pending {
+            return if pending.epochs().eq([epoch]) {
+                Ok(self.status())
+            } else {
+                Err(SecureLifecycleError::PendingConflict)
+            };
+        }
+        let pending = SecretKeyring::new_private(&self.workspace_id, epoch)?;
+        self.save_with(self.active.as_ref(), Some(&pending))?;
+        self.pending = Some(pending);
+        Ok(self.status())
+    }
+
+    /// Stage a key rotation from an already verified active history. This
+    /// store cannot activate it; a later journal proof must establish that.
+    pub fn stage_rotation(&mut self, epoch: u64) -> Result<KeyringStatus, SecureLifecycleError> {
+        let active = self.active.as_ref().ok_or(SecureLifecycleError::Invalid)?;
+        if let Some(pending) = &self.pending {
+            return if pending.epochs().last() == Some(epoch) {
+                Ok(self.status())
+            } else {
+                Err(SecureLifecycleError::PendingConflict)
+            };
+        }
+        let wire = active.canonical_wire()?;
+        let mut pending = SecretKeyring::parse_wire(&wire)?;
+        pending.rotate(epoch)?;
+        self.save_with(Some(active), Some(&pending))?;
+        self.pending = Some(pending);
+        Ok(self.status())
+    }
+
+    fn save_with(
+        &self,
+        active: Option<&SecretKeyring>,
+        pending: Option<&SecretKeyring>,
+    ) -> Result<(), SecureLifecycleError> {
+        let mut bytes = Zeroizing::new(Vec::with_capacity(1024));
+        bytes.extend_from_slice(MAGIC);
+        for value in [
+            self.origin.as_str(),
+            self.actor_id.as_str(),
+            self.workspace_id.as_str(),
+            self.owner_actor_id.as_str(),
+            self.owner_key_id.as_str(),
+        ] {
+            put_public(&mut bytes, value)?;
+        }
+        put_ring(&mut bytes, active)?;
+        put_ring(&mut bytes, pending)?;
+        if bytes.len() > MAX_WIRE {
+            return Err(SecureLifecycleError::Invalid);
+        }
+        self.store.write_exact(&bytes)?;
+        Ok(())
+    }
+
+    fn decode(&mut self, bytes: &[u8]) -> Result<(), SecureLifecycleError> {
+        if bytes.len() > MAX_WIRE {
+            return Err(SecureLifecycleError::Invalid);
+        }
+        let mut reader = Reader::new(
+            bytes
+                .strip_prefix(MAGIC)
+                .ok_or(SecureLifecycleError::Invalid)?,
+        );
+        for expected in [
+            self.origin.as_str(),
+            self.actor_id.as_str(),
+            self.workspace_id.as_str(),
+            self.owner_actor_id.as_str(),
+            self.owner_key_id.as_str(),
+        ] {
+            if reader.public()? != expected {
+                return Err(SecureLifecycleError::PinChanged);
+            }
+        }
+        let active = reader.ring(&self.workspace_id)?;
+        let pending = reader.ring(&self.workspace_id)?;
+        if !reader.remaining.is_empty() || active.is_none() && pending.is_none() {
+            return Err(SecureLifecycleError::Invalid);
+        }
+        if let (Some(active), Some(pending)) = (&active, &pending) {
+            let active_epochs: Vec<_> = active.epochs().collect();
+            let pending_epochs: Vec<_> = pending.epochs().collect();
+            if pending_epochs.len() != active_epochs.len() + 1
+                || !pending_epochs.starts_with(&active_epochs)
+                || pending_epochs.last() <= active_epochs.last()
+                || active_epochs
+                    .iter()
+                    .any(|epoch| active.key_at(*epoch) != pending.key_at(*epoch))
+            {
+                return Err(SecureLifecycleError::Invalid);
+            }
+        }
+        self.active = active;
+        self.pending = pending;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn confirm_pending_for_test(&mut self) -> Result<(), SecureLifecycleError> {
+        let pending = self.pending.as_ref().ok_or(SecureLifecycleError::Invalid)?;
+        self.save_with(Some(pending), None)?;
+        self.active = self.pending.take();
+        Ok(())
+    }
+}
+
+fn put_public(out: &mut Vec<u8>, value: &str) -> Result<(), SecureLifecycleError> {
+    let len: u16 = value
+        .len()
+        .try_into()
+        .map_err(|_| SecureLifecycleError::Invalid)?;
+    out.extend_from_slice(&len.to_be_bytes());
+    out.extend_from_slice(value.as_bytes());
+    Ok(())
+}
+fn put_ring(out: &mut Vec<u8>, value: Option<&SecretKeyring>) -> Result<(), SecureLifecycleError> {
+    if let Some(value) = value {
+        let wire = value.canonical_wire()?;
+        let len: u32 = wire
+            .len()
+            .try_into()
+            .map_err(|_| SecureLifecycleError::Invalid)?;
+        out.push(1);
+        out.extend_from_slice(&len.to_be_bytes());
+        out.extend_from_slice(&wire);
+    } else {
+        out.push(0);
+    }
+    Ok(())
+}
+
+struct Reader<'a> {
+    remaining: &'a [u8],
+}
+impl<'a> Reader<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { remaining: bytes }
+    }
+    fn take(&mut self, len: usize) -> Result<&'a [u8], SecureLifecycleError> {
+        if len > self.remaining.len() {
+            return Err(SecureLifecycleError::Invalid);
+        }
+        let (taken, rest) = self.remaining.split_at(len);
+        self.remaining = rest;
+        Ok(taken)
+    }
+    fn public(&mut self) -> Result<&'a str, SecureLifecycleError> {
+        let len = u16::from_be_bytes(self.take(2)?.try_into().unwrap()) as usize;
+        std::str::from_utf8(self.take(len)?).map_err(|_| SecureLifecycleError::Invalid)
+    }
+    fn ring(&mut self, workspace_id: &str) -> Result<Option<SecretKeyring>, SecureLifecycleError> {
+        match self.take(1)?[0] {
+            0 => Ok(None),
+            1 => {
+                let len = u32::from_be_bytes(self.take(4)?.try_into().unwrap()) as usize;
+                if len == 0 || len > MAX_WIRE {
+                    return Err(SecureLifecycleError::Invalid);
+                }
+                let ring = SecretKeyring::parse_wire(self.take(len)?)?;
+                if ring.workspace_id() != workspace_id {
+                    return Err(SecureLifecycleError::PinChanged);
+                }
+                Ok(Some(ring))
+            }
+            _ => Err(SecureLifecycleError::Invalid),
+        }
+    }
+}
+
+fn valid_token(value: &str) -> bool {
+    value.len() == 43
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        && decode_base64url(value).is_ok_and(|decoded| decoded.len() == 32)
+}
+fn valid_origin(value: &str) -> bool {
+    let Ok(url) = Url::parse(value) else {
+        return false;
+    };
+    let loopback = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "::1"));
+    (url.scheme() == "https" || url.scheme() == "http" && loopback)
+        && url.as_str() == value
+        && url.path() == "/"
+        && url.host_str().is_some()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use peerwork_core::crypto::base64url;
+    use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn pending_keys_survive_reopen_without_regeneration_or_promotion() {
+        let dir = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let file = dir.path().join("keys.state");
+        let id = base64url(&[1u8; 32]);
+        let workspace = base64url(&[2u8; 32]);
+        let owner = base64url(&[3u8; 32]);
+        let owner_key = base64url(&[4u8; 32]);
+        let open = || {
+            SecureLifecycle::open(
+                &file,
+                "https://example.invalid/",
+                &id,
+                &workspace,
+                &owner,
+                &owner_key,
+            )
+        };
+        let mut store = open().unwrap();
+        assert_eq!(store.stage_initial(1).unwrap().pending_epochs, vec![1]);
+        let first_bytes = fs::read(&file).unwrap();
+        assert_eq!(store.stage_initial(1).unwrap().pending_epochs, vec![1]);
+        assert_eq!(fs::read(&file).unwrap(), first_bytes);
+        assert!(matches!(
+            store.stage_initial(2),
+            Err(SecureLifecycleError::PendingConflict)
+        ));
+        drop(store);
+        let mut reopened = open().unwrap();
+        assert_eq!(reopened.status().active_epochs, Vec::<u64>::new());
+        assert_eq!(reopened.status().pending_epochs, vec![1]);
+        assert_eq!(reopened.stage_initial(1).unwrap().pending_epochs, vec![1]);
+        assert_eq!(fs::read(&file).unwrap(), first_bytes);
+        reopened.confirm_pending_for_test().unwrap();
+        assert_eq!(
+            reopened.stage_rotation(3).unwrap().pending_epochs,
+            vec![1, 3]
+        );
+        let pending_bytes = fs::read(&file).unwrap();
+        assert_eq!(
+            reopened.stage_rotation(3).unwrap().pending_epochs,
+            vec![1, 3]
+        );
+        assert_eq!(fs::read(&file).unwrap(), pending_bytes);
+        assert!(matches!(
+            reopened.stage_rotation(4),
+            Err(SecureLifecycleError::PendingConflict)
+        ));
+        drop(reopened);
+        let recovered = open().unwrap();
+        assert_eq!(recovered.status().active_epochs, vec![1]);
+        assert_eq!(recovered.status().pending_epochs, vec![1, 3]);
+        drop(recovered);
+        assert!(matches!(
+            SecureLifecycle::open(
+                &file,
+                "https://other.invalid/",
+                &id,
+                &workspace,
+                &owner,
+                &owner_key
+            ),
+            Err(SecureLifecycleError::PinChanged)
+        ));
+        assert!(matches!(
+            SecureLifecycle::open(
+                &file,
+                "https://example.invalid/",
+                &id,
+                &workspace,
+                &owner,
+                &id
+            ),
+            Err(SecureLifecycleError::PinChanged)
+        ));
+    }
+}

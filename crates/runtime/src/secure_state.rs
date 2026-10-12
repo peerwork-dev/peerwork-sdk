@@ -151,6 +151,15 @@ impl SecureStateStore {
     /// Returns exact saved JSON wire bytes for internal replay. This is not a
     /// public DTO and must never be surfaced through a language binding.
     pub fn read_exact(&self) -> Result<Option<Vec<u8>>, SecureStateError> {
+        Ok(self
+            .read_exact_secret()?
+            .map(|bytes| bytes.as_slice().to_vec()))
+    }
+
+    /// Keep secret-bearing local state in a zeroizing allocation, including
+    /// malformed reads and incompatible-prefix error paths. Callers that
+    /// decode epoch keys or identities must use this entrypoint.
+    pub(crate) fn read_exact_secret(&self) -> Result<Option<Zeroizing<Vec<u8>>>, SecureStateError> {
         self.ensure_owner()?;
         if !state_exists(&self.path)? {
             return Ok(None);
@@ -164,12 +173,18 @@ impl SecureStateStore {
         if len > MAX_STATE_BYTES + MAGIC.len() as u64 {
             return Err(SecureStateError::TooLarge);
         }
-        let mut bytes = Vec::with_capacity(len as usize);
+        let mut bytes = Zeroizing::new(Vec::with_capacity(len as usize));
         file.read_to_end(&mut bytes)?;
         if !bytes.starts_with(MAGIC) {
             return Err(SecureStateError::MigrationRequired);
         }
-        Ok(Some(bytes[MAGIC.len()..].to_vec()))
+        let old_len = bytes.len();
+        bytes.copy_within(MAGIC.len().., 0);
+        let new_len = old_len - MAGIC.len();
+        use zeroize::Zeroize;
+        bytes[new_len..].zeroize();
+        bytes.truncate(new_len);
+        Ok(Some(bytes))
     }
 
     /// Atomically replaces native state with exact bytes after the caller has
