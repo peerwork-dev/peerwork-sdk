@@ -6,7 +6,7 @@ import {pathToFileURL} from 'node:url';
 import {join} from 'node:path';
 import {createServer} from 'node:http';
 import {createHash} from 'node:crypto';
-import {readFileSync, readdirSync, statSync} from 'node:fs';
+import {readFileSync, readdirSync, statSync, writeFileSync} from 'node:fs';
 import {execFileSync} from 'node:child_process';
 
 const root = process.env.PEERWORK_REFERENCE_ROOT;
@@ -81,6 +81,59 @@ const kernel = new WorkspaceKernel(db, 'reference-kernel', Buffer.alloc(32, 71),
 const real = serve({fetch: createWorkspaceControlApp(kernel).fetch, hostname: '127.0.0.1', port: 0});
 await new Promise(resolve => real.once('listening', resolve));
 const realOrigin = `http://127.0.0.1:${real.address().port}`;
+let secureFixture;
+if (process.env.PEERWORK_TEST_SECURE === '1') {
+  const {generateKeyPairSync} = await import('node:crypto');
+  const {SecureAgentClient} = await import(pathToFileURL(join(root, 'dist-workspace/src/workspace-secure-agent.js')).href);
+  const {createActionContext, createCommit, secureHash, secureToken} = await import(pathToFileURL(join(root, 'dist-workspace/src/workspace-secure-client.js')).href);
+  const {prepareSecureAction} = await import(pathToFileURL(join(root, 'dist-workspace/src/workspace-secure-engine.js')).href);
+  const privateKey = generateKeyPairSync('ed25519').privateKey;
+  writeFileSync(join(state, 'synthetic-agent-ed25519.pem'), privateKey.export({format:'pem',type:'pkcs8'}), {mode:0o600,flag:'wx'});
+  const agent = await SecureAgentClient.open({
+    baseUrl: realOrigin,
+    privateKey,
+    statePath: join(state, 'synthetic-secure-agent.json'),
+    intentDbPath: join(state, 'synthetic-secure-agent-intents.sqlite'),
+  });
+  try {
+    const created = await agent.create('Synthetic private workspace', 'PRIVATE');
+    const journal = await agent.journal(created.workspaceId);
+    const discussion = journal.objects.find(object => object.kind === 'instances' && object.value?.origin_entrypoint === 'discussion');
+    if (!discussion || journal.policy.payload.v !== 3 || journal.policy.payload.structure_mode !== 'NONE')
+      throw new Error('secure test fixture is not an unstructured v3 private workspace');
+    const input = {
+      identity: agent.identity, policy: journal.policy, checkpoint: journal.checkpoint,
+      actionId: 'discussion.post', instanceId: discussion.id,
+      commandId: secureToken(), issuedAt: Date.now(),
+    };
+    const context = await createActionContext(input);
+    const operation = await prepareSecureAction({
+      objects: journal.objects, context, policy: journal.policy,
+      body: {message:'synthetic native secure exact retry'}, exactRefs: [],
+    });
+    const commit = await createCommit({...input, operation, keyring:agent.state.workspaces[created.workspaceId].keyring});
+    const request = Buffer.from(JSON.stringify({commit}));
+    writeFileSync(join(state, 'synthetic-secure-request.json'), request, {mode:0o600,flag:'wx'});
+    secureFixture = {
+      workspace_id: created.workspaceId,
+      actor_id: agent.identity.actorId,
+      signing_key: agent.identity.keyId,
+      owner_key: journal.policy.payload.signing_key,
+      policy_hash: await secureHash(journal.policy),
+      sequence: commit.payload.sequence,
+      previous: commit.payload.previous,
+      epoch: commit.payload.epoch,
+      version: commit.payload.v,
+      mode: commit.payload.mode,
+      protocol_format_ceiling: commit.payload.protocol_format_ceiling,
+      command_id: commit.payload.command_id,
+      action_id: commit.payload.action_id,
+      commit_digest: await secureHash(commit),
+    };
+  } finally {
+    agent.close();
+  }
+}
 let dropFirstPost = true;
 let alterFirstChunk = process.env.PEERWORK_TEST_WRONG_CHUNK_STATE === '1';
 const firstPostMode = process.env.PEERWORK_TEST_FIRST_POST_MODE || 'drop';
@@ -110,6 +163,15 @@ const proxy = createServer(async (request, response) => {
         chunks: db.prepare('SELECT count(*) n FROM catalog_upload_chunks').get().n,
         packages: db.prepare('SELECT count(*) n FROM catalog_packages').get().n,
         outbox: db.prepare('SELECT count(*) n FROM catalog_outbox').get().n,
+      };
+      response.writeHead(200, {'content-type': 'application/json'});
+      response.end(JSON.stringify(totals));
+      return;
+    }
+    if (request.url === '/__test/secure-counts') {
+      const totals = {
+        commits: db.prepare('SELECT count(*) n FROM secure_commits').get().n,
+        head_sequence: db.prepare('SELECT head_sequence FROM secure_workspaces LIMIT 1').get()?.head_sequence ?? null,
       };
       response.writeHead(200, {'content-type': 'application/json'});
       response.end(JSON.stringify(totals));
@@ -150,7 +212,7 @@ const proxy = createServer(async (request, response) => {
   }
 });
 await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
-process.stdout.write(JSON.stringify({origin: `http://127.0.0.1:${proxy.address().port}/`}) + '\n');
+process.stdout.write(JSON.stringify({origin: `http://127.0.0.1:${proxy.address().port}/`, ...(secureFixture ? {secure:secureFixture} : {})}) + '\n');
 const shutdown = () => {
   proxy.closeAllConnections();
   proxy.close();

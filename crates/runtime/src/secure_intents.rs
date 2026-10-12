@@ -419,9 +419,13 @@ mod tests {
         crypto::sign_canonical,
     };
     use serde_json::json;
-    use std::fs;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+    use std::{
+        fs,
+        io::BufRead,
+        process::{Child, Command, Stdio},
+    };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
@@ -680,6 +684,137 @@ mod tests {
         );
         assert_eq!(reopened.pending().len(), 1);
         server.await.unwrap();
+    }
+
+    /// Opt-in actual tracked Peerwork service, with fresh synthetic state.
+    /// The proxy forwards/applies the first append then drops its response.
+    #[tokio::test]
+    async fn actual_service_secure_append_retry_stays_pending() {
+        let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else {
+            return;
+        };
+        let node = std::env::var("PEERWORK_NODE_BIN").unwrap_or_else(|_| "node".into());
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let bridge = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/reference-kernel-server.mjs");
+        let child = Command::new(node)
+            .arg(bridge)
+            .env("PEERWORK_REFERENCE_ROOT", reference_root)
+            .env("PEERWORK_TEST_STATE", root.path())
+            .env("PEERWORK_TEST_SECURE", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        struct Stop(Child);
+        impl Drop for Stop {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut child = Stop(child);
+        let mut line = String::new();
+        std::io::BufReader::new(child.0.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        assert!(!line.is_empty(), "reference bridge exited before ready");
+        let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let text = |key: &str| ready["secure"][key].as_str().unwrap().to_owned();
+        let origin = ready["origin"].as_str().unwrap().to_owned();
+        let workspace = text("workspace_id");
+        let actor = text("actor_id");
+        let signing_key = text("signing_key");
+        let owner = text("owner_key");
+        let policy = text("policy_hash");
+        let previous = text("previous");
+        let id = text("command_id");
+        let action = text("action_id");
+        let digest = text("commit_digest");
+        let identity = KernelIdentity::import_pkcs8_pem_file(
+            &root.path().join("native-identity.state"),
+            &root.path().join("synthetic-agent-ed25519.pem"),
+        )
+        .unwrap();
+        assert_eq!(identity.actor_id(), actor);
+        assert_eq!(identity.key_id(), signing_key);
+        let request = fs::read(root.path().join("synthetic-secure-request.json")).unwrap();
+        let path = format!("/api/workspace/v1/secure/workspaces/{workspace}/commits");
+        let mut config = crate::transport::TransportConfig::new(origin.clone());
+        config.allow_loopback_http = true;
+        let transport = HttpTransport::new(config).unwrap();
+        let pins = SecureCommitRequestPins {
+            actor_id: &actor,
+            signing_key: &signing_key,
+            workspace_id: &workspace,
+            policy_hash: &policy,
+            sequence: ready["secure"]["sequence"].as_u64().unwrap(),
+            previous: Some(&previous),
+            epoch: ready["secure"]["epoch"].as_u64().unwrap(),
+            mode: "PRIVATE",
+            version: 3,
+            protocol_format_ceiling: Some(1),
+        };
+        let state = root.path().join("native-secure-intents.state");
+        let mut journal =
+            SecureIntentJournal::open(&state, transport.trusted_origin(), &actor).unwrap();
+        journal
+            .prepare(SecurePacketInput {
+                intent_id: &id,
+                path: &path,
+                action_id: &action,
+                workspace_id: Some(&workspace),
+                trusted_owner_key: Some(&owner),
+                intent_digest: &digest,
+                exact_request: &request,
+            })
+            .unwrap();
+        let cancel = CancellationToken::new();
+        assert!(matches!(
+            journal
+                .submit_saved_commit(&id, &identity, &transport, &owner, &pins, &cancel)
+                .await,
+            Err(SecureIntentError::Transport(
+                TransportError::SubmittedUncertain
+            ))
+        ));
+        assert_eq!(journal.pending()[0].observed_responses, 0);
+        drop(journal);
+        let counts_url = format!("{origin}__test/secure-counts");
+        let first_counts: serde_json::Value = serde_json::from_str(
+            &reqwest::get(&counts_url)
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(first_counts["commits"].as_u64(), Some(2));
+        assert_eq!(first_counts["head_sequence"].as_u64(), Some(2));
+        let mut reopened =
+            SecureIntentJournal::open(&state, transport.trusted_origin(), &actor).unwrap();
+        let status = reopened
+            .submit_saved_commit(&id, &identity, &transport, &owner, &pins, &cancel)
+            .await
+            .unwrap();
+        assert_eq!(status.intent_id, id);
+        assert_eq!(status.observed_responses, 1);
+        assert_eq!(reopened.pending().len(), 1);
+        let second_counts: serde_json::Value = serde_json::from_str(
+            &reqwest::get(&counts_url)
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(second_counts, first_counts);
+        drop(child);
     }
 
     #[test]
