@@ -6,4 +6,12 @@ license = "Apache-2.0"
 
 [dependencies]
 peerwork-core = { path = "../core" }
+rusqlite = { version = "0.32", features = ["bundled"] }
+thiserror = "2"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
 

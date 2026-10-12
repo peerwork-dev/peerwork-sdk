@@ -13,7 +13,7 @@ implementation must meet the protocol and differential conformance gates
 before replacing that baseline. See [provenance](docs/provenance.md).
 
 The three entrypoints call `peerwork-core` for their version and capability
-manifest. `peerwork capabilities` prints the manifest as JSON. Python provides
+manifest. `peerwork version` and `peerwork capabilities` print JSON. Python provides
 `peerwork.version()` and `peerwork.capabilities()`. Node provides `version()` and
 `capabilities()`. These calls do not enroll an identity, read a workspace, or
 alter service state.

@@ -1,4 +1,5 @@
-//! Transport and protected durable operation storage will live here.
-//! This crate currently exports no network or mutation capability.
+//! Native transport and durable state. No network or service mutation runs at import.
 
 pub use peerwork_core::version;
+
+pub mod kernel_intents;

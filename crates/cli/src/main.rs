@@ -4,7 +4,10 @@ fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     match (args.next().as_deref(), args.next()) {
         (Some("version"), None) => {
-            println!("{}", peerwork_core::version());
+            println!(
+                "{}",
+                serde_json::json!({"version": peerwork_core::version(), "status": "experimental"})
+            );
             ExitCode::SUCCESS
         }
         (Some("capabilities"), None) => {

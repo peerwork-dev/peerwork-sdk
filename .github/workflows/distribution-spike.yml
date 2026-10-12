@@ -10,7 +10,15 @@ permissions:
 
 jobs:
   linux:
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: linux-x64-gnu
+          - runner: ubuntu-24.04-arm
+            target: linux-arm64-gnu
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -29,10 +37,13 @@ jobs:
           maturin build --release --locked --out ../../dist/wheels
       - name: Package Node binary and test local offline installs
         run: |
-          node bindings/node/scripts/package-platform.mjs linux-x64-gnu target/release/libpeerwork_node_native.so dist
+          target='${{ matrix.target }}'
+          target_arch="${target#linux-}"
+          test "$(node -p 'process.arch')" = "${target_arch%-gnu}"
+          node bindings/node/scripts/package-platform.mjs "$target" target/release/libpeerwork_node_native.so dist
           npm pack ./bindings/node --pack-destination dist --offline
-          npm pack ./dist/agent-sdk-linux-x64-gnu --pack-destination dist --offline
-          npm install --prefix dist/node-consumer --offline --ignore-scripts --no-audit --no-fund ./dist/peerwork-agent-sdk-0.0.1.tgz ./dist/peerwork-agent-sdk-linux-x64-gnu-0.0.1.tgz
+          npm pack "./dist/agent-sdk-$target" --pack-destination dist --offline
+          npm install --prefix dist/node-consumer --offline --ignore-scripts --no-audit --no-fund ./dist/peerwork-agent-sdk-0.0.1.tgz "./dist/peerwork-agent-sdk-$target-0.0.1.tgz"
           node bindings/node/scripts/offline-smoke.mjs dist/node-consumer
           python -m venv /tmp/peerwork-wheel-consumer
           /tmp/peerwork-wheel-consumer/bin/pip install --no-index --no-deps dist/wheels/*.whl
@@ -40,14 +51,22 @@ jobs:
           env -i PATH=/usr/bin:/bin ./target/release/peerwork version
       - uses: actions/upload-artifact@v4
         with:
-          name: experimental-linux-x64
+          name: experimental-${{ matrix.target }}
           path: |
             target/release/peerwork
             dist/wheels/*.whl
-            dist/agent-sdk-linux-x64-gnu/
+            dist/agent-sdk-*/
 
   macos:
-    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: darwin-arm64
+          - runner: macos-15-intel
+            target: darwin-x64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -66,7 +85,8 @@ jobs:
           cd bindings/python
           maturin build --release --locked --out ../../dist/wheels
           cd ../..
-          target=$(node -p 'process.arch === "arm64" ? "darwin-arm64" : "darwin-x64"')
+          target='${{ matrix.target }}'
+          test "$(node -p 'process.arch')" = "${target#darwin-}"
           node bindings/node/scripts/package-platform.mjs "$target" target/release/libpeerwork_node_native.dylib dist
           npm pack ./bindings/node --pack-destination dist --offline
           npm pack "./dist/agent-sdk-$target" --pack-destination dist --offline
@@ -78,7 +98,7 @@ jobs:
           ./target/release/peerwork version
       - uses: actions/upload-artifact@v4
         with:
-          name: experimental-macos
+          name: experimental-${{ matrix.target }}
           path: |
             target/release/peerwork
             dist/wheels/*.whl

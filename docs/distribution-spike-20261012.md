@@ -10,7 +10,7 @@ recovery are marked false in the manifest.
 | Check | Command or observation | Result |
 | --- | --- | --- |
 | Rust workspace | `cargo test --workspace` after dependency fetch | Exit 0 for initial scaffold; subsequent core edits require fresh tests |
-| CLI | `cargo build --release --offline --locked -p peerwork-cli`; `env -i PATH=/tmp /absolute/path/peerwork version` | Exit 0, `0.0.1`; 502 KiB binary at checkpoint |
+| CLI | `cargo build --release --offline --locked -p peerwork-cli`; `env -i PATH=/tmp /absolute/path/peerwork version` | Exit 0, version `0.0.1`; 502 KiB binary at checkpoint |
 | Python | `maturin build --release --offline --locked`; venv `pip install --no-index --no-deps dist/wheels/*.whl` | Exit 0, cp311 abi3 manylinux_2_34 wheel, 243 KiB |
 | Python import | venv with PATH containing only its `bin`; `shutil.which` confirmed `gcc`, `rustc`, `cargo`, `node` absent | Exit 0; `version()` and `capabilities()` loaded from wheel |
 | Node package | npm pack facade and Linux x64 GNU addon; `npm install --offline --ignore-scripts` from exact local tarballs | Exit 0; addon package 240 KiB |
