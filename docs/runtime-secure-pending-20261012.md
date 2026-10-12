@@ -680,3 +680,21 @@ workflow compliance. SHA-256 at the detached pin: `secure_journal_read.rs`
 `30ba6efbf1040032674d3e827c63277e167787ddfc3b8d7e9a9d4b8db045a63e`,
 `transport.rs` `0ee771eda865ab63e977e9a2c43e4f3e18cac5896dd594f43d7b744fe782f437`,
 and `Cargo.lock` `48775117e96fe4cba67314559398d3d08c75fc211952e22473ceacc389003f17`.
+
+At follow-up source `c674424d8ad0600e921fb1808ded3c42fa6c1329`, the
+selectable journal response/parser/page-file maximum increases from 32 MiB
+to 64 MiB; command-response transport retains its separate 32 MiB bound.
+This matches the protected page file's existing 64 MiB maximum. The pinned
+service's `SECURE_LIMITS` has a 196,608-byte commit ceiling, at most 50
+commits per page and a 32 MiB stored-artifact quota per workspace;
+`readJournalSnapshot` includes effective policies plus those commits in the
+response. Because response JSON framing adds bytes, the prior 32 MiB cap
+could reject a near-quota valid response. The 64 MiB choice is a native
+resource budget, not a proven protocol maximum; a single valid response over
+it still fails with an explicit size error and needs further streaming design.
+Exact source: `src/workspace-secure-contract.ts` lines 124–126,
+`src/workspace-secure-store.ts` `storedArtifactBytes`/`assertWorkspaceCapacity`,
+and `src/workspace-journal-snapshot.ts` `readJournalSnapshot` at reference
+`f828b6c50a0a58d1e718af90f653b214adcc3328`. Rust 1.89 locked-offline
+focused read tests pass 5/5 after the cap change; the actual 51-commit run
+above was at `165a072` and was not repeated for this size-only edit.
