@@ -551,6 +551,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(read.progress().unwrap().pages, 0);
+        assert!(
+            read_path.exists(),
+            "empty reader must persist its discovery pin"
+        );
         let cancelled = CancellationToken::new();
         let trigger = cancelled.clone();
         tokio::spawn(async move {

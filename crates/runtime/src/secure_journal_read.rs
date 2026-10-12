@@ -129,7 +129,9 @@ impl SecureJournalRead {
             page_count: Some(0),
             chain_hash: Some("0".repeat(64)),
         };
-        let document = if let Some(bytes) = store.read_exact()? {
+        let saved = store.read_exact()?;
+        let was_missing = saved.is_none();
+        let document = if let Some(bytes) = saved {
             if bytes.len() > MAX_DOCUMENT {
                 return Err(JournalReadError::TooLarge);
             }
@@ -167,6 +169,11 @@ impl SecureJournalRead {
             opened.migrate_index_to_chain()?;
         }
         opened.advance_discovery(discovery)?;
+        if was_missing {
+            let encoded =
+                serde_json::to_vec(&opened.document).map_err(|_| JournalReadError::Incompatible)?;
+            opened.store.write_exact(&encoded)?;
+        }
         Ok(opened)
     }
 
