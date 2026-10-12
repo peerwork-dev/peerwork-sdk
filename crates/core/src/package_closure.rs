@@ -1436,6 +1436,27 @@ pub(crate) fn compile_simple_baseline(
 ) -> Result<SimpleCompilation, ClosureError> {
     compile_at(closure, &closure.root, None, true, 0, &mut 0)
 }
+pub(crate) fn compile_package_material(
+    closure: &ScannedPackageClosure,
+    bindings: &WireValue,
+) -> Result<SimpleCompilation, ClosureError> {
+    // The exact release lock is independently checked at its baseline before
+    // any caller-supplied binding is allowed to produce a retained protocol.
+    compile_simple_baseline(closure)?;
+    let compiled = compile_at(closure, &closure.root, Some(bindings), false, 0, &mut 0)?;
+    if let Some(requirements) = compiled.manifest.get("execution_requirements") {
+        let WireValue::Array(ports) = field(requirements, "ports")? else {
+            return Err(ClosureError::Invalid);
+        };
+        if ports.iter().any(|port| {
+            port.get("required") == Some(&WireValue::Bool(true))
+                && port.get("bound") != Some(&WireValue::Bool(true))
+        }) {
+            return Err(ClosureError::Mismatch);
+        }
+    }
+    Ok(compiled)
+}
 fn mapped_import_values(
     source: &WireValue,
     values: &WireValue,

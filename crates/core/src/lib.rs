@@ -22,6 +22,8 @@ pub mod prepared_secure_request;
 mod protocol_composition;
 #[allow(dead_code)]
 mod protocol_object_source;
+#[allow(dead_code)]
+mod protocol_package_source;
 pub mod receipt;
 pub mod receipt_wire;
 #[allow(dead_code)]
