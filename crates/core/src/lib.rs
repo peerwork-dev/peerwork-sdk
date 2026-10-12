@@ -11,6 +11,9 @@ mod full_manifest;
 #[allow(dead_code)]
 mod interpreter;
 #[allow(dead_code)]
+mod legacy_protocol_bindings;
+mod migration_fragments;
+#[allow(dead_code)]
 mod package_closure;
 #[allow(dead_code)]
 mod package_namespace;
@@ -37,7 +40,6 @@ mod secure_replay;
 pub mod strict_json;
 mod structure_bindings;
 mod structure_delta;
-mod migration_fragments;
 #[allow(dead_code)]
 mod structure_policy;
 pub mod verified_secure_grant;

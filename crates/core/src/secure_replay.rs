@@ -9,6 +9,7 @@ use crate::{
     },
     e2ee::{open_content_wire, SealedContent},
     interpreter::{evaluate_action, InterpreterAuth, ResolvedInput},
+    legacy_protocol_bindings::validate_legacy_protocol_bindings,
     migration_fragments::{assert_protocol_format_ceiling, inflate_fragments, MigrationBatch},
     protocol_object_source::{
         object_part_id, read_protocol_object_source, validate_object_part,
@@ -1481,6 +1482,9 @@ pub(crate) fn replay_basic_content(
             if format == 3 {
                 assert_protocol_format_ceiling(&candidate, 1).map_err(|_| ReplayError::Invalid)?;
             }
+            validate_historical_authored_protocols(&candidate, workspace_id, format)?;
+            validate_legacy_protocol_bindings(&candidate, workspace_id)
+                .map_err(|_| ReplayError::Invalid)?;
             // Historical protocol bindings, roles, and format ceiling still
             // gate installation before a later operation can see the batch.
             return Err(ReplayError::Invalid);
@@ -1784,6 +1788,9 @@ pub(crate) fn replay_basic_content(
         if format == 3 {
             assert_protocol_format_ceiling(&candidate, 1).map_err(|_| ReplayError::Invalid)?;
         }
+        validate_historical_authored_protocols(&candidate, workspace_id, format)?;
+        validate_legacy_protocol_bindings(&candidate, workspace_id)
+            .map_err(|_| ReplayError::Invalid)?;
         // The complete descriptor root and fragments are checked, but legacy
         // binding and role finalization still gate release of migrated state.
         return Err(ReplayError::Invalid);
@@ -1802,6 +1809,15 @@ fn validate_authored_protocol_simple(
     workspace_id: &str,
     format_ceiling: u64,
 ) -> Result<(), ReplayError> {
+    validate_authored_protocol_in_history(object, workspace_id, format_ceiling, &[])
+}
+
+fn validate_authored_protocol_in_history(
+    object: &WireValue,
+    workspace_id: &str,
+    format_ceiling: u64,
+    history: &[WireValue],
+) -> Result<(), ReplayError> {
     if string(object, "provenance")? != "AUTHOR_SIGNED" || integer(object, "revision")? != 1 {
         return Err(ReplayError::Invalid);
     }
@@ -1813,7 +1829,6 @@ fn validate_authored_protocol_simple(
             .all(|b| b.is_ascii_digit() || matches!(b, b'a'..=b'f'))
         || string(value, "digest")? != id
         || string(value, "workspace_id")? != workspace_id
-        || value.get("package_source").is_some()
     {
         return Err(ReplayError::Invalid);
     }
@@ -1856,7 +1871,19 @@ fn validate_authored_protocol_simple(
     if digest != id {
         return Err(ReplayError::Invalid);
     }
-    if let Some(proof) = value.get("composition") {
+    if let Some(proof) = value.get("package_source") {
+        if value.get("composition").is_some() {
+            return Err(ReplayError::Invalid);
+        }
+        let material =
+            verify_protocol_package_source(proof, history).map_err(|_| ReplayError::Invalid)?;
+        if material.protocol_digest != id
+            || !same_wire(&material.manifest, &source)?
+            || !same_wire(&source, &resolved)?
+        {
+            return Err(ReplayError::Invalid);
+        }
+    } else if let Some(proof) = value.get("composition") {
         crate::protocol_composition::verify_composition(
             proof,
             &source,
@@ -1874,6 +1901,36 @@ fn validate_authored_protocol_simple(
                 .map_err(|_| ReplayError::Invalid)?
     {
         return Err(ReplayError::Invalid);
+    }
+    Ok(())
+}
+
+fn validate_historical_authored_protocols(
+    candidate: &[WireValue],
+    workspace_id: &str,
+    format: u64,
+) -> Result<(), ReplayError> {
+    let ceiling = if format == 3 { 1 } else { format };
+    let mut latest = HashMap::<Vec<u16>, &WireValue>::new();
+    for object in candidate {
+        if object.get("kind").and_then(WireValue::as_utf16)
+            != Some(&"protocols".encode_utf16().collect::<Vec<_>>()[..])
+        {
+            continue;
+        }
+        let id = utf16(object, "id")?.to_vec();
+        let revision = integer(object, "revision")?;
+        if latest
+            .get(&id)
+            .is_none_or(|prior| integer(prior, "revision").is_ok_and(|old| old < revision))
+        {
+            latest.insert(id, object);
+        }
+    }
+    for object in latest.values() {
+        if string(object, "provenance")? == "AUTHOR_SIGNED" {
+            validate_authored_protocol_in_history(object, workspace_id, ceiling, candidate)?;
+        }
     }
     Ok(())
 }
