@@ -15,6 +15,13 @@ if (!root || !state) throw new Error('reference root and fresh state are require
 const expectedHead = 'f828b6c50a0a58d1e718af90f653b214adcc3328';
 const actualHead = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], {encoding: 'utf8'}).trim();
 if (actualHead !== expectedHead) throw new Error('reference checkout commit differs from tested pin');
+try {
+  execFileSync('git', ['-C', root, 'diff', '--quiet', 'HEAD', '--', 'src', 'package-lock.json']);
+} catch {
+  throw new Error('tracked reference source or lockfile differs from tested commit');
+}
+if (execFileSync('git', ['-C', root, 'ls-files', '--others', '--exclude-standard', '--', 'src'], {encoding: 'utf8'}).trim())
+  throw new Error('untracked reference source is present');
 for (const [relative, expected] of Object.entries({
   'src/workspace-kernel.ts': '586ac5b6a689abd2782d5d3e093bdf2ebc3eaaa688b526908b0402fb7783b4e2',
   'src/workspace-http.ts': '4e8ab5d5484120395f28e39d2a703804328563efacfe90dfe9b761f923236355',
