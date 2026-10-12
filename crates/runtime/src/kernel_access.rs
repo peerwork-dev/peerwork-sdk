@@ -3,7 +3,7 @@
 //! the same continuity and exact saved-command checks as an in-process retry.
 
 use crate::kernel_client::{
-    KernelAcceptedResult, KernelClient, KernelClientError, KernelOperationStatus,
+    KernelAcceptedResult, KernelClient, KernelClientError, KernelOperationStatus, TsMigrationReport,
 };
 use crate::kernel_identity::{KernelIdentity, KernelIdentityError};
 use crate::kernel_intents::PendingKernelIntent;
@@ -167,6 +167,27 @@ impl KernelAccess {
 
     pub fn pending(&self) -> Result<Vec<PendingKernelIntent>, KernelAccessError> {
         self.pending_with_cancel(&CancellationToken::new())
+    }
+
+    /// Take and read back a protected SQLite backup of a quiesced legacy
+    /// TypeScript store, then import only fully verified rows. Discovery is
+    /// fetched from the explicitly configured origin before local writes.
+    /// The signer IDs are public verification-key pins for every historical
+    /// actor, not private keys or permission to execute their commands.
+    pub fn migrate_ts_store(
+        &self,
+        source_path: &Path,
+        backup_path: &Path,
+        trusted_signer_key_ids: &[String],
+        cancel: &CancellationToken,
+    ) -> Result<TsMigrationReport, KernelAccessError> {
+        let _identity = self.identity()?;
+        let runtime = self.runtime()?;
+        let mut client = self.open_client(&runtime, cancel)?;
+        if cancel.is_cancelled() {
+            return Err(KernelAccessError::Cancelled);
+        }
+        Ok(client.migrate_ts_store(source_path, backup_path, trusted_signer_key_ids)?)
     }
 
     pub fn pending_with_cancel(

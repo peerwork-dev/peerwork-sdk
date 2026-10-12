@@ -71,7 +71,7 @@ impl KernelCancelHandle {
 }
 
 #[pyfunction]
-#[pyo3(signature = (operation, origin, journal_path, identity_path, required_features, allow_loopback_http, authority=None, command_json=None, command_id=None, upload_chunk=None, cancel_handle=None))]
+#[pyo3(signature = (operation, origin, journal_path, identity_path, required_features, allow_loopback_http, authority=None, command_json=None, command_id=None, upload_chunk=None, cancel_handle=None, migration_source=None, migration_backup=None, trusted_signer_key_ids=None))]
 fn kernel_json(
     py: Python<'_>,
     operation: &str,
@@ -85,6 +85,9 @@ fn kernel_json(
     command_id: Option<&str>,
     upload_chunk: Option<Vec<u8>>,
     cancel_handle: Option<PyRef<'_, KernelCancelHandle>>,
+    migration_source: Option<String>,
+    migration_backup: Option<String>,
+    trusted_signer_key_ids: Option<Vec<String>>,
 ) -> PyResult<String> {
     let cancel = cancel_handle
         .map(|handle| handle.token.clone())
@@ -126,6 +129,13 @@ fn kernel_json(
             "submit_saved" => {
                 let id = command_id.as_deref().ok_or_else(|| "command ID is required".to_owned())?;
                 accepted_json(access.submit_saved_with_cancel(id, &cancel).map_err(|error| error.to_string())?)
+            }
+            "migrate_ts_store" => {
+                let source = migration_source.as_deref().ok_or_else(|| "legacy source path is required".to_owned())?;
+                let backup = migration_backup.as_deref().ok_or_else(|| "backup path is required".to_owned())?;
+                let signers = trusted_signer_key_ids.as_deref().ok_or_else(|| "trusted signer IDs are required".to_owned())?;
+                let report = access.migrate_ts_store(Path::new(source), Path::new(backup), signers, &cancel).map_err(|error| error.to_string())?;
+                serde_json::json!({"pending_count": report.pending_count, "accepted_count": report.accepted_count})
             }
             _ => return Err("unsupported kernel operation".to_owned()),
         };

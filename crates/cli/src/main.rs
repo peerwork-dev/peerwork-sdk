@@ -72,7 +72,7 @@ fn main() -> ExitCode {
             }
         },
         _ => {
-            eprintln!("{{\"code\":\"USAGE\",\"message\":\"peerwork version|capabilities|identity create PATH|identity info PATH|kernel open|prepare|pending|status|submit ORIGIN JOURNAL IDENTITY [COMMAND_FILE|COMMAND_ID] [--allow-loopback-http] [--authority=HEX] [--chunk-file=PATH|--chunk-stdin for prepare]\"}}");
+            eprintln!("{{\"code\":\"USAGE\",\"message\":\"peerwork version|capabilities|identity create PATH|identity info PATH|kernel open|prepare|pending|status|submit ORIGIN JOURNAL IDENTITY [COMMAND_FILE|COMMAND_ID] [--allow-loopback-http] [--authority=HEX] [--chunk-file=PATH|--chunk-stdin for prepare]; kernel migrate ORIGIN JOURNAL IDENTITY SOURCE BACKUP --trusted-signer=KEY_ID [--trusted-signer=KEY_ID ...]\"}}");
             ExitCode::FAILURE
         }
     }
@@ -97,6 +97,7 @@ fn kernel_command(verb: &str, args: &[String]) -> Result<serde_json::Value, Stri
     let mut authority = None;
     let mut chunk_file = None;
     let mut chunk_stdin = false;
+    let mut trusted_signer_key_ids = Vec::new();
     args.retain(|argument| {
         if argument == "--allow-loopback-http" {
             allow_loopback = true;
@@ -110,12 +111,23 @@ fn kernel_command(verb: &str, args: &[String]) -> Result<serde_json::Value, Stri
         } else if argument == "--chunk-stdin" {
             chunk_stdin = true;
             false
+        } else if let Some(value) = argument.strip_prefix("--trusted-signer=") {
+            trusted_signer_key_ids.push(value.to_owned());
+            false
         } else {
             true
         }
     });
-    if args.len() != 3 + usize::from(matches!(verb, "prepare" | "status" | "submit")) {
+    let expected = if verb == "migrate" {
+        5
+    } else {
+        3 + usize::from(matches!(verb, "prepare" | "status" | "submit"))
+    };
+    if args.len() != expected {
         return Err("kernel command requires ORIGIN JOURNAL IDENTITY and optional target".into());
+    }
+    if (verb == "migrate") != !trusted_signer_key_ids.is_empty() {
+        return Err("trusted public signer IDs are required only for kernel migrate".into());
     }
     if chunk_file.is_some() && chunk_stdin {
         return Err("choose one upload chunk source".into());
@@ -192,6 +204,19 @@ fn kernel_command(verb: &str, args: &[String]) -> Result<serde_json::Value, Stri
                 .submit_saved_with_cancel(&args[3], &cancel)
                 .map_err(|error| error.to_string())?,
         )),
+        "migrate" => {
+            let report = access
+                .migrate_ts_store(
+                    Path::new(&args[3]),
+                    Path::new(&args[4]),
+                    &trusted_signer_key_ids,
+                    &cancel,
+                )
+                .map_err(|error| error.to_string())?;
+            Ok(
+                serde_json::json!({"pending_count":report.pending_count,"accepted_count":report.accepted_count}),
+            )
+        }
         _ => Err("unsupported kernel operation".into()),
     }
 }

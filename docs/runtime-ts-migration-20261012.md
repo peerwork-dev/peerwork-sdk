@@ -46,6 +46,20 @@ saved canonical bytes only. An import crash before commit leaves the native
 transaction rolled back; retry with the same unchanged source and backup is
 the recovery path. The old client remains usable from its unmodified source.
 
+The experimental public entrypoints are `KernelClient.migrate_ts_store(source,
+backup, trusted_signer_key_ids)` in Python, `client.migrateTsStore(source,
+backup, trustedSignerKeyIds)` in Node, and `peerwork kernel migrate ORIGIN
+JOURNAL IDENTITY SOURCE BACKUP --trusted-signer=KEY_ID` in the CLI (repeat the
+last option for each historical actor). They use the same native importer and
+return only pending and accepted row counts. Required source and backup paths
+must be absolute and private. A cancellation before import refuses; once the
+local SQLite transaction has begun, its atomic commit/rollback determines the
+outcome. Callers must retain the backup. Importing verifies historical public
+signatures but does not authorize the current identity to submit a different
+actor's saved command; exact retry requires that actor's matching protected
+local signing identity. No public wrapper sends the old DB or backup to the
+service.
+
 Three focused synthetic Linux tests passed under Rust 1.89 with the locked
 offline workspace. They cover exact JWS/body reconstruction for ordinary and
 catalog upload paths, pending and signed accepted import, two actors,
@@ -53,5 +67,8 @@ omitted-signer refusal before native writes, source preservation,
 backup/readback, restart idempotence, changed-source refusal, conflicting
 destination rollback, noncanonical saved-response refusal, weak matching
 table names/columns refusal, forged accepted receipt and pending-with-response
-refusal. This is not yet a real Peerwork service migration run, a Windows
-backup/readback execution, or full Python/Node/CLI migration coverage.
+refusal. The new public entrypoints pass a four-crate Rust 1.89 locked-offline
+type check and Python/Node syntax checks; installed-interface migration and
+actual TypeScript-client-created source coverage are still pending. This is
+not yet a real Peerwork service migration run or Windows backup/readback
+execution.

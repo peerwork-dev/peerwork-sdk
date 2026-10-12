@@ -105,6 +105,9 @@ pub struct KernelTask {
     command_json: Option<String>,
     command_id: Option<String>,
     upload_chunk: Option<Vec<u8>>,
+    migration_source: Option<String>,
+    migration_backup: Option<String>,
+    trusted_signer_key_ids: Option<Vec<String>>,
     cancel: KernelCancellationToken,
 }
 
@@ -146,6 +149,13 @@ impl Task for KernelTask {
                 let id = self.command_id.as_deref().ok_or_else(|| napi::Error::from_reason("command ID is required"))?;
                 accepted_json(access.submit_saved_with_cancel(id, &self.cancel).map_err(|error| napi::Error::from_reason(error.to_string()))?)
             }
+            "migrate_ts_store" => {
+                let source = self.migration_source.as_deref().ok_or_else(|| napi::Error::from_reason("legacy source path is required"))?;
+                let backup = self.migration_backup.as_deref().ok_or_else(|| napi::Error::from_reason("backup path is required"))?;
+                let signers = self.trusted_signer_key_ids.as_deref().ok_or_else(|| napi::Error::from_reason("trusted signer IDs are required"))?;
+                let report = access.migrate_ts_store(Path::new(source), Path::new(backup), signers, &self.cancel).map_err(|error| napi::Error::from_reason(error.to_string()))?;
+                serde_json::json!({"pending_count": report.pending_count, "accepted_count": report.accepted_count})
+            }
             _ => return Err(napi::Error::from_reason("unsupported kernel operation")),
         };
         serde_json::to_string(&value)
@@ -170,6 +180,9 @@ pub fn kernel_json(
     command_id: Option<String>,
     upload_chunk: Option<Buffer>,
     cancel_handle: Option<ClassInstance<KernelCancelHandle>>,
+    migration_source: Option<String>,
+    migration_backup: Option<String>,
+    trusted_signer_key_ids: Option<Vec<String>>,
 ) -> AsyncTask<KernelTask> {
     AsyncTask::new(KernelTask {
         operation,
@@ -182,6 +195,9 @@ pub fn kernel_json(
         command_json,
         command_id,
         upload_chunk: upload_chunk.map(|chunk| chunk.to_vec()),
+        migration_source,
+        migration_backup,
+        trusted_signer_key_ids,
         cancel: cancel_handle
             .map(|handle| handle.token.clone())
             .unwrap_or_default(),

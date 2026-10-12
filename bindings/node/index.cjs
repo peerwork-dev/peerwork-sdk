@@ -80,7 +80,8 @@ function strictCommandJson(input) {
 /** An explicit origin and protected local paths anchor every operation. */
 exports.openKernel = async options => {
   const { origin, journalPath, identityPath, requiredFeatures = [], allowLoopbackHttp = false, authority, signal } = options;
-  const call = async (operation, commandJson, commandId, uploadChunk, abortSignal) => {
+  const call = async (operation, commandJson, commandId, uploadChunk, abortSignal,
+                      migrationSource, migrationBackup, trustedSignerKeyIds) => {
     const handle = new binding.KernelCancelHandle();
     const onAbort = () => handle.cancel();
     if (abortSignal?.aborted) onAbort();
@@ -89,6 +90,7 @@ exports.openKernel = async options => {
       return JSON.parse(await binding.kernelJson(
         operation, origin, journalPath, identityPath, requiredFeatures,
         allowLoopbackHttp, authority, commandJson, commandId, uploadChunk, handle,
+        migrationSource, migrationBackup, trustedSignerKeyIds,
       ));
     } finally {
       abortSignal?.removeEventListener('abort', onAbort);
@@ -105,5 +107,14 @@ exports.openKernel = async options => {
     pending: (options = {}) => call('pending', undefined, undefined, undefined, options.signal),
     status: (commandId, options = {}) => call('status', undefined, commandId, undefined, options.signal),
     submitSaved: (commandId, options = {}) => call('submit_saved', undefined, commandId, undefined, options.signal),
+    migrateTsStore: (sourcePath, backupPath, trustedSignerKeyIds, options = {}) => {
+      if (typeof sourcePath !== 'string' || typeof backupPath !== 'string' ||
+          !Array.isArray(trustedSignerKeyIds) || trustedSignerKeyIds.length === 0 ||
+          !trustedSignerKeyIds.every(id => typeof id === 'string')) {
+        throw new TypeError('migrateTsStore requires source, backup, and public signer key IDs');
+      }
+      return call('migrate_ts_store', undefined, undefined, undefined, options.signal,
+                  sourcePath, backupPath, trustedSignerKeyIds);
+    },
   });
 };

@@ -56,7 +56,10 @@ class KernelClient:
     def _call(self, operation: str, *, command: dict | None = None,
               command_id: str | None = None,
               upload_chunk: bytes | None = None,
-              cancel_handle: KernelCancelHandle | None = None) -> dict | list:
+              cancel_handle: KernelCancelHandle | None = None,
+              migration_source: str | None = None,
+              migration_backup: str | None = None,
+              trusted_signer_key_ids: list[str] | None = None) -> dict | list:
         command_json = None if command is None else json.dumps(
             command, ensure_ascii=True, allow_nan=False, separators=(",", ":")
         )
@@ -64,15 +67,21 @@ class KernelClient:
             operation, self.origin, self.journal_path, self.identity_path,
             list(self.required_features), self.allow_loopback_http,
             self.authority, command_json, command_id, upload_chunk, cancel_handle,
+            migration_source, migration_backup, trusted_signer_key_ids,
         ))
 
     async def _call_async(self, operation: str, *, command: dict | None = None,
                           command_id: str | None = None,
-                          upload_chunk: bytes | None = None) -> dict | list:
+                          upload_chunk: bytes | None = None,
+                          migration_source: str | None = None,
+                          migration_backup: str | None = None,
+                          trusted_signer_key_ids: list[str] | None = None) -> dict | list:
         cancel_handle = KernelCancelHandle()
         worker = asyncio.create_task(asyncio.to_thread(
             self._call, operation, command=command, command_id=command_id,
             upload_chunk=upload_chunk, cancel_handle=cancel_handle,
+            migration_source=migration_source, migration_backup=migration_backup,
+            trusted_signer_key_ids=trusted_signer_key_ids,
         ))
         try:
             return await asyncio.shield(worker)
@@ -112,6 +121,19 @@ class KernelClient:
         """POST saved bytes and require a verified, command-bound receipt."""
         return self._call("submit_saved", command_id=command_id)
 
+    def migrate_ts_store(self, source_path: str, backup_path: str,
+                         trusted_signer_key_ids: list[str]) -> dict:
+        """Import a quiesced TS v1 store after checked backup and receipt proof.
+
+        Signer IDs are public verification-key pins for every historical actor.
+        The source stays untouched. Keep the backup for readback and recovery.
+        """
+        if not trusted_signer_key_ids or not all(isinstance(k, str) for k in trusted_signer_key_ids):
+            raise ValueError("trusted_signer_key_ids must contain public key IDs")
+        return self._call("migrate_ts_store", migration_source=source_path,
+                          migration_backup=backup_path,
+                          trusted_signer_key_ids=trusted_signer_key_ids)
+
     async def open_async(self) -> dict:
         return await self._call_async("open")
 
@@ -126,6 +148,14 @@ class KernelClient:
 
     async def submit_saved_async(self, command_id: str) -> dict:
         return await self._call_async("submit_saved", command_id=command_id)
+
+    async def migrate_ts_store_async(self, source_path: str, backup_path: str,
+                                     trusted_signer_key_ids: list[str]) -> dict:
+        if not trusted_signer_key_ids or not all(isinstance(k, str) for k in trusted_signer_key_ids):
+            raise ValueError("trusted_signer_key_ids must contain public key IDs")
+        return await self._call_async("migrate_ts_store", migration_source=source_path,
+                                      migration_backup=backup_path,
+                                      trusted_signer_key_ids=trusted_signer_key_ids)
 
 
 __all__ = ["version", "capabilities", "create_identity", "open_identity",
