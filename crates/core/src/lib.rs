@@ -26,6 +26,7 @@ mod protocol_object_source;
 mod protocol_package_source;
 pub mod receipt;
 pub mod receipt_wire;
+pub mod verified_secure_grant;
 #[allow(dead_code)]
 mod secure_chain;
 pub mod secure_keyring;
