@@ -16,11 +16,32 @@ use peerwork_core::{
 use thiserror::Error;
 
 const MAX_PAGE: usize = 64 * 1024 * 1024;
-// The pinned service limits stored workspace artifacts to 32 MiB. Allow
-// canonical re-encoding room while core still consumes borrowed slices.
-// A streaming replay API is needed before lifting this supported-source cap.
-const MAX_REPLAY_ARTIFACTS: usize = 64 * 1024 * 1024;
+const DEFAULT_REPLAY_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_POLICIES: usize = 1024;
+
+/// Client memory budget for canonical policy and commit wires retained during
+/// signed replay. Larger valid conversion histories may require a larger
+/// caller-selected value. This does not bound the decoded replay graph.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SecureJournalReadBudget {
+    pub max_total_wire_bytes: u64,
+}
+
+impl SecureJournalReadBudget {
+    pub fn new(max_total_wire_bytes: u64) -> Option<Self> {
+        (max_total_wire_bytes > 0).then_some(Self {
+            max_total_wire_bytes,
+        })
+    }
+}
+
+impl Default for SecureJournalReadBudget {
+    fn default() -> Self {
+        Self {
+            max_total_wire_bytes: DEFAULT_REPLAY_ARTIFACT_BYTES,
+        }
+    }
+}
 
 #[derive(Debug, Error)]
 pub(crate) enum VerifiedReadError {
@@ -32,6 +53,8 @@ pub(crate) enum VerifiedReadError {
     Content,
     #[error("signed journal replay failed: {0}")]
     Replay(#[from] JournalReplayError),
+    #[error("secure journal exceeds the configured replay resource budget")]
+    ResourceLimit,
 }
 
 /// Private-constructor, origin-bound replay candidate. Supported signed
@@ -100,6 +123,18 @@ pub(crate) fn replay_authenticated_pages(
     pages: &AuthenticatedJournalPages<'_>,
     lifecycle: &SecureLifecycle,
 ) -> Result<TransportReplayedJournal, VerifiedReadError> {
+    replay_authenticated_pages_with_budget(pages, lifecycle, SecureJournalReadBudget::default())
+}
+
+pub(crate) fn replay_authenticated_pages_with_budget(
+    pages: &AuthenticatedJournalPages<'_>,
+    lifecycle: &SecureLifecycle,
+    budget: SecureJournalReadBudget,
+) -> Result<TransportReplayedJournal, VerifiedReadError> {
+    let max_artifact_bytes = usize::try_from(budget.max_total_wire_bytes)
+        .ok()
+        .filter(|limit| *limit > 0)
+        .ok_or(VerifiedReadError::ResourceLimit)?;
     if pages.origin() != lifecycle.origin()
         || pages.workspace_id() != lifecycle.workspace_id()
         || pages.actor_id() != lifecycle.actor_id()
@@ -110,48 +145,53 @@ pub(crate) fn replay_authenticated_pages(
     let mut commit_wires = Vec::<Vec<u8>>::new();
     let mut total_bytes = 0usize;
     let mut first = true;
-    pages.for_each_exact_page(|wire| {
-        let page = parse_wire_json_bounded(wire, 64, MAX_PAGE)
-            .map_err(|_| JournalReadError::Incompatible)?;
-        if first {
-            let WireValue::Array(policies) =
-                page.get("policies").ok_or(JournalReadError::Incompatible)?
+    pages
+        .for_each_exact_page(|wire| {
+            let page = parse_wire_json_bounded(wire, 64, MAX_PAGE)
+                .map_err(|_| JournalReadError::Incompatible)?;
+            if first {
+                let WireValue::Array(policies) =
+                    page.get("policies").ok_or(JournalReadError::Incompatible)?
+                else {
+                    return Err(JournalReadError::Incompatible);
+                };
+                for policy in policies {
+                    let encoded = canonical_wire_value(policy, Path::SecureArtifact)
+                        .map_err(|_| JournalReadError::Incompatible)?
+                        .into_bytes();
+                    push_bounded(
+                        &mut policy_wires,
+                        encoded,
+                        &mut total_bytes,
+                        MAX_POLICIES,
+                        max_artifact_bytes,
+                    )?;
+                }
+                first = false;
+            }
+            let WireValue::Array(commits) =
+                page.get("commits").ok_or(JournalReadError::Incompatible)?
             else {
                 return Err(JournalReadError::Incompatible);
             };
-            for policy in policies {
-                let encoded = canonical_wire_value(policy, Path::SecureArtifact)
+            for commit in commits {
+                let encoded = canonical_wire_value(commit, Path::SecureArtifact)
                     .map_err(|_| JournalReadError::Incompatible)?
                     .into_bytes();
                 push_bounded(
-                    &mut policy_wires,
+                    &mut commit_wires,
                     encoded,
                     &mut total_bytes,
-                    MAX_POLICIES,
-                    MAX_REPLAY_ARTIFACTS,
+                    usize::MAX,
+                    max_artifact_bytes,
                 )?;
             }
-            first = false;
-        }
-        let WireValue::Array(commits) =
-            page.get("commits").ok_or(JournalReadError::Incompatible)?
-        else {
-            return Err(JournalReadError::Incompatible);
-        };
-        for commit in commits {
-            let encoded = canonical_wire_value(commit, Path::SecureArtifact)
-                .map_err(|_| JournalReadError::Incompatible)?
-                .into_bytes();
-            push_bounded(
-                &mut commit_wires,
-                encoded,
-                &mut total_bytes,
-                usize::MAX,
-                MAX_REPLAY_ARTIFACTS,
-            )?;
-        }
-        Ok(())
-    })?;
+            Ok(())
+        })
+        .map_err(|error| match error {
+            JournalReadError::TooLarge => VerifiedReadError::ResourceLimit,
+            other => VerifiedReadError::Page(other),
+        })?;
     let checkpoint_wire = pages.checkpoint_canonical_json().as_bytes();
     let checkpoint = parse_wire_json_bounded(checkpoint_wire, 8, 4096)
         .map_err(|_| VerifiedReadError::Content)?;
@@ -215,6 +255,17 @@ mod tests {
 
     #[test]
     fn replay_artifact_buffer_checks_total_bytes_and_count_before_insertion() {
+        assert_eq!(
+            SecureJournalReadBudget::default().max_total_wire_bytes,
+            64 * 1024 * 1024
+        );
+        assert!(SecureJournalReadBudget::new(0).is_none());
+        assert_eq!(
+            SecureJournalReadBudget::new(5)
+                .unwrap()
+                .max_total_wire_bytes,
+            5
+        );
         let mut rows = Vec::new();
         let mut total = 0;
         push_bounded(&mut rows, vec![1, 2, 3], &mut total, 1, 4).unwrap();

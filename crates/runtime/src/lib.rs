@@ -26,6 +26,7 @@ mod secure_package_pending;
 mod secure_recipient_state;
 #[allow(dead_code)]
 mod secure_verified_read;
+pub use secure_verified_read::SecureJournalReadBudget;
 pub mod secure_state;
 pub mod transport;
 mod ts_migration;

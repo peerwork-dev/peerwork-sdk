@@ -1206,6 +1206,14 @@ mod tests {
             let proof_pages = proof_reader
                 .authenticated_pages(&proof_client, &identity)
                 .unwrap();
+            assert!(matches!(
+                crate::secure_verified_read::replay_authenticated_pages_with_budget(
+                    &proof_pages,
+                    &lifecycle,
+                    crate::SecureJournalReadBudget::new(1).unwrap(),
+                ),
+                Err(crate::secure_verified_read::VerifiedReadError::ResourceLimit)
+            ));
             let verified =
                 crate::secure_verified_read::replay_authenticated_pages(&proof_pages, &lifecycle)
                     .unwrap();
