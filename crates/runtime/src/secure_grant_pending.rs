@@ -5,10 +5,18 @@ use crate::{
     kernel_identity::KernelIdentity,
     secure_recipient_state::RecipientState,
     secure_state::{SecureStateError, SecureStateStore},
+    secure_verified_read::TransportReplayedJournal,
 };
-use peerwork_core::verified_secure_grant::{
-    verify_direct_key_grant, GrantError, GrantProofInput, InvitationProofInput,
-    VerifiedGrantMaterial,
+use peerwork_core::{
+    canonical::Path as CanonicalPath,
+    crypto::sha256_hex,
+    replayed_secure_journal::StructureStatus,
+    secure_keyring::SecretKeyring,
+    verified_secure_grant::{
+        verify_direct_key_grant, GrantError, GrantProofInput, InvitationProofInput,
+        VerifiedGrantMaterial,
+    },
+    wire_json::{canonical_wire_value, parse_wire_json_bounded},
 };
 use std::path::Path;
 use thiserror::Error;
@@ -30,6 +38,41 @@ pub(crate) enum PendingGrantError {
     PinChanged,
     #[error("a different pending grant is already saved")]
     Conflict,
+    #[error("signed grant does not bind to the completed source journal")]
+    ReplayMismatch,
+}
+
+/// Private-constructor result of reverified signed grant material bound to
+/// the same configured-origin, exact-checkpoint full replay that decrypted
+/// with this keyring. Only this token may enter lifecycle promotion.
+pub(crate) struct GrantActivationProof {
+    material: VerifiedGrantMaterial,
+    origin: String,
+    workspace: String,
+    owner_actor: String,
+    owner_key: String,
+    local_actor: String,
+}
+
+impl GrantActivationProof {
+    pub(crate) fn keyring(&self) -> &SecretKeyring {
+        self.material.keyring()
+    }
+    pub(crate) fn origin(&self) -> &str {
+        &self.origin
+    }
+    pub(crate) fn workspace(&self) -> &str {
+        &self.workspace
+    }
+    pub(crate) fn owner_actor(&self) -> &str {
+        &self.owner_actor
+    }
+    pub(crate) fn owner_key(&self) -> &str {
+        &self.owner_key
+    }
+    pub(crate) fn local_actor(&self) -> &str {
+        &self.local_actor
+    }
 }
 
 pub(crate) struct GrantEvidence<'a> {
@@ -130,6 +173,56 @@ impl SecureGrantPending {
             .as_ref()
             .map(|bytes| self.verify_saved(bytes, recipient, now))
             .transpose()
+    }
+
+    /// A saved grant's own signed chain must end at precisely the same
+    /// checkpoint as the origin-bound, fully replayed transport history. The
+    /// replay must have used exactly the reverified grant keyring and must be
+    /// active rather than a structured snapshot prefix.
+    pub(crate) fn bind_to_replay(
+        &self,
+        recipient: &RecipientState,
+        now: u64,
+        replay: &TransportReplayedJournal,
+    ) -> Result<Option<GrantActivationProof>, PendingGrantError> {
+        let Some(saved) = &self.saved else {
+            return Ok(None);
+        };
+        if replay.origin() != self.origin
+            || replay.source_actor_id() != self.local_actor
+            || replay.source_key_id() != self.local_key
+            || replay.replay().workspace_id() != self.workspace
+            || replay.replay().owner_actor_id() != self.owner_actor
+            || replay.replay().owner_signing_key() != self.owner_key
+            || replay.replay().structure_status() == StructureStatus::Seeding
+        {
+            return Err(PendingGrantError::ReplayMismatch);
+        }
+        let (.., checkpoint, _, _, _, _, _) = decode(saved)?;
+        let checkpoint_value =
+            parse_wire_json_bounded(checkpoint, 8, 4096).map_err(|_| PendingGrantError::Invalid)?;
+        let canonical_checkpoint =
+            canonical_wire_value(&checkpoint_value, CanonicalPath::SecureArtifact)
+                .map_err(|_| PendingGrantError::Invalid)?;
+        if canonical_checkpoint != replay.checkpoint_canonical_json() {
+            return Err(PendingGrantError::ReplayMismatch);
+        }
+        let material = self.verify_saved(saved, recipient, now)?;
+        let ring_wire = material
+            .keyring()
+            .canonical_wire()
+            .map_err(|_| PendingGrantError::Invalid)?;
+        if replay.grant_keyring_sha256() != Some(sha256_hex(&ring_wire).as_str()) {
+            return Err(PendingGrantError::ReplayMismatch);
+        }
+        Ok(Some(GrantActivationProof {
+            material,
+            origin: self.origin.clone(),
+            workspace: self.workspace.clone(),
+            owner_actor: self.owner_actor.clone(),
+            owner_key: self.owner_key.clone(),
+            local_actor: self.local_actor.clone(),
+        }))
     }
 
     fn verify_saved(

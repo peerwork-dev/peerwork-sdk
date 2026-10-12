@@ -2,6 +2,7 @@
 //! local pending state only; no pending key becomes active without a future
 //! complete signed journal/policy or key-grant proof.
 
+use crate::secure_grant_pending::GrantActivationProof;
 use crate::secure_state::{SecureStateError, SecureStateStore};
 use peerwork_core::crypto::decode_base64url;
 use peerwork_core::secure_keyring::{KeyringError, SecretKeyring};
@@ -161,6 +162,41 @@ impl SecureLifecycle {
             ring,
             state: ReplayKeyringState::Active,
         })
+    }
+
+    /// Promote only a signed grant reverified against the exact completed
+    /// origin-bound journal replay. A staged local transition, if present,
+    /// must contain precisely the same protected key material. Persistence
+    /// completes before in-memory active state changes.
+    pub(crate) fn activate_verified_grant(
+        &mut self,
+        proof: GrantActivationProof,
+    ) -> Result<KeyringStatus, SecureLifecycleError> {
+        if proof.origin() != self.origin
+            || proof.workspace() != self.workspace_id
+            || proof.owner_actor() != self.owner_actor_id
+            || proof.owner_key() != self.owner_key_id
+            || proof.local_actor() != self.actor_id
+        {
+            return Err(SecureLifecycleError::PinChanged);
+        }
+        let wire = proof.keyring().canonical_wire()?;
+        if let Some(pending) = &self.pending {
+            if pending.canonical_wire()?.as_slice() != wire.as_slice() {
+                return Err(SecureLifecycleError::PendingConflict);
+            }
+        } else if let Some(active) = &self.active {
+            return if active.canonical_wire()?.as_slice() == wire.as_slice() {
+                Ok(self.status())
+            } else {
+                Err(SecureLifecycleError::PendingConflict)
+            };
+        }
+        let active = SecretKeyring::parse_wire(&wire)?;
+        self.save_with(Some(&active), None)?;
+        self.active = Some(active);
+        self.pending = None;
+        Ok(self.status())
     }
 
     /// Stage a new private epoch key before a signed workspace bootstrap. An

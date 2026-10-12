@@ -1239,7 +1239,7 @@ mod tests {
         assert_eq!(applied["commits"].as_u64(), Some(1));
         assert_eq!(applied["head_sequence"].as_u64(), Some(1));
         assert_eq!(applied["head_hash"].as_str(), Some(expected_head.as_str()));
-        let lifecycle =
+        let mut lifecycle =
             SecureLifecycle::open(&lifecycle_path, origin, actor, &workspace, actor, signer)
                 .unwrap();
         let mut journal = SecureIntentJournal::open(&journal_path, origin, actor).unwrap();
@@ -1318,6 +1318,148 @@ mod tests {
                 Err(crate::secure_verified_read::VerifiedReadError::NotActive)
             ));
             assert!(verified.action_receipt(&command).unwrap().is_none());
+            // The service supplied the signed journal; this owner-signed
+            // direct grant is synthetic local evidence for the activation
+            // composition, not a grant fetched from the service.
+            let policy_wire = serde_json::to_vec(&packet["policy"]).unwrap();
+            let commit_wire = serde_json::to_vec(&packet["commit"]).unwrap();
+            let checkpoint_wire = proof_pages.checkpoint_canonical_json().as_bytes();
+            let checkpoint: serde_json::Value = serde_json::from_slice(checkpoint_wire).unwrap();
+            let certificate = serde_json::to_value(recipient.certificate()).unwrap();
+            let ring = lifecycle.replay_keyring_candidate().unwrap();
+            let grant_context = json!({
+                "v":1,"grant_id":base64url(&[152;32]),"workspace_id":workspace,
+                "actor_id":actor,"signing_key":signer,"recipient":certificate,
+                "policy_hash":checkpoint["policy_hash"],"epoch":1,
+                "invite_id":null,"acceptance_hash":null,"delegation":null,
+                "issued_at":now+1
+            });
+            let grant_context_wire = peerwork_core::canonical::canonical(
+                &grant_context,
+                peerwork_core::canonical::Path::SecureArtifact,
+            )
+            .unwrap();
+            let mut grant_payload = grant_context;
+            grant_payload["box"] = serde_json::to_value(
+                ring.ring
+                    .seal_to(
+                        recipient.recipient().public_jwk(),
+                        grant_context_wire.as_bytes(),
+                    )
+                    .unwrap(),
+            )
+            .unwrap();
+            let signature = peerwork_core::crypto::sign_canonical(
+                "peerwork.secure.key-grant.v1",
+                &grant_payload,
+                identity.signing_key(),
+            )
+            .unwrap();
+            let grant_wire =
+                serde_json::to_vec(&json!({"payload":grant_payload,"signature":signature}))
+                    .unwrap();
+            let certificate_wire = serde_json::to_vec(&certificate).unwrap();
+            let policies = [&policy_wire[..]];
+            let commits = [&commit_wire[..]];
+            let mut pending_grant = crate::secure_grant_pending::SecureGrantPending::open(
+                &root.path().join("native-proof-grant.state"),
+                origin,
+                ready["bootstrap"]["authority"].as_str().unwrap(),
+                &workspace,
+                actor,
+                signer,
+                &identity,
+                &recipient,
+                now + 1,
+            )
+            .unwrap();
+            let grant_material = pending_grant
+                .stage(
+                    crate::secure_grant_pending::GrantEvidence {
+                        policies: &policies,
+                        commits: &commits,
+                        checkpoint: checkpoint_wire,
+                        grant: &grant_wire,
+                        certificate: &certificate_wire,
+                        invitation: None,
+                        delegation: None,
+                    },
+                    &recipient,
+                    now + 1,
+                )
+                .unwrap();
+            let candidate = crate::secure_verified_read::replay_authenticated_pages_with_grant(
+                &proof_pages,
+                &lifecycle,
+                &grant_material,
+                crate::SecureJournalReadBudget::default(),
+            )
+            .unwrap();
+            assert!(candidate.verified_read().is_err());
+            assert!(matches!(
+                pending_grant.bind_to_replay(&recipient, now + 1, &verified),
+                Err(crate::secure_grant_pending::PendingGrantError::ReplayMismatch)
+            ));
+            let checkpoint_before_commit = serde_json::to_vec(&json!({
+                "v":1,"workspace_id":workspace,"owner_id":actor,"owner_key":signer,
+                "sequence":0,"head":null,"policy_hash":checkpoint["policy_hash"]
+            }))
+            .unwrap();
+            let mut earlier_grant = crate::secure_grant_pending::SecureGrantPending::open(
+                &root.path().join("native-earlier-grant.state"),
+                origin,
+                ready["bootstrap"]["authority"].as_str().unwrap(),
+                &workspace,
+                actor,
+                signer,
+                &identity,
+                &recipient,
+                now + 1,
+            )
+            .unwrap();
+            earlier_grant
+                .stage(
+                    crate::secure_grant_pending::GrantEvidence {
+                        policies: &policies,
+                        commits: &[],
+                        checkpoint: &checkpoint_before_commit,
+                        grant: &grant_wire,
+                        certificate: &certificate_wire,
+                        invitation: None,
+                        delegation: None,
+                    },
+                    &recipient,
+                    now + 1,
+                )
+                .unwrap();
+            assert!(matches!(
+                earlier_grant.bind_to_replay(&recipient, now + 1, &candidate),
+                Err(crate::secure_grant_pending::PendingGrantError::ReplayMismatch)
+            ));
+            let activation = pending_grant
+                .bind_to_replay(&recipient, now + 1, &candidate)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                lifecycle
+                    .activate_verified_grant(activation)
+                    .unwrap()
+                    .active_epochs,
+                vec![1]
+            );
+            let active =
+                crate::secure_verified_read::replay_authenticated_pages(&proof_pages, &lifecycle)
+                    .unwrap();
+            assert_eq!(active.verified_read().unwrap().objects().len(), 13);
+            drop(lifecycle);
+            let reopened =
+                SecureLifecycle::open(&lifecycle_path, origin, actor, &workspace, actor, signer)
+                    .unwrap();
+            assert_eq!(reopened.status().active_epochs, vec![1]);
+            let reopened_read =
+                crate::secure_verified_read::replay_authenticated_pages(&proof_pages, &reopened)
+                    .unwrap();
+            assert_eq!(reopened_read.verified_read().unwrap().operations().len(), 1);
         }
     }
 
