@@ -114,7 +114,6 @@ impl SecureJournalRead {
         if !valid_id(workspace_id) || !valid_hex(authority) {
             return Err(JournalReadError::Incompatible);
         }
-        let store = SecureStateStore::open(path)?;
         let discovery = client.discovery();
         let expected = Document {
             version: 4,
@@ -129,6 +128,17 @@ impl SecureJournalRead {
             page_count: Some(0),
             chain_hash: Some("0".repeat(64)),
         };
+        Self::open_pinned(path, discovery, expected)
+    }
+
+    // `open` above is the production provenance gate: it supplies only
+    // configured-origin TLS discovery and local protected identity pins.
+    fn open_pinned(
+        path: &Path,
+        discovery: &ParsedDiscovery,
+        expected: Document,
+    ) -> Result<Self, JournalReadError> {
+        let store = SecureStateStore::open(path)?;
         let saved = store.read_exact()?;
         let was_missing = saved.is_none();
         let document = if let Some(bytes) = saved {
@@ -942,33 +952,30 @@ mod tests {
             std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         }
         let path = root.path().join("read.state");
-        let store = SecureStateStore::open(&path).unwrap();
-        let document = Document {
-            version: 3,
+        let expected = |discovery: &ParsedDiscovery| Document {
+            version: 4,
             origin: "https://control.example/".into(),
-            discovery_context: d0.canonical_context().into(),
-            discovery_b64: base64url(d0.raw_wire()),
+            discovery_context: discovery.canonical_context().into(),
+            discovery_b64: base64url(discovery.raw_wire()),
             actor_id: "a".repeat(43),
             key_id: "b".repeat(43),
             authority: "c".repeat(64),
             workspace_id: "d".repeat(43),
             pages: Vec::new(),
-            page_count: None,
-            chain_hash: None,
+            page_count: Some(0),
+            chain_hash: Some("0".repeat(64)),
         };
-        store
-            .write_exact(&serde_json::to_vec(&document).unwrap())
-            .unwrap();
-        let mut reader = SecureJournalRead {
-            store,
-            index_path: path.clone(),
-            document,
-            last_verified: None,
-            verified_count: 0,
-        };
-        reader.advance_discovery(&d1).unwrap();
-        assert!(!permits_discovery(&reader.document, &d0));
-        drop(reader);
+        let first = SecureJournalRead::open_pinned(&path, &d0, expected(&d0)).unwrap();
+        assert!(path.exists());
+        assert_eq!(first.progress().unwrap().pages, 0);
+        drop(first);
+        let advanced = SecureJournalRead::open_pinned(&path, &d1, expected(&d1)).unwrap();
+        assert_eq!(advanced.progress().unwrap().pages, 0);
+        drop(advanced);
+        assert!(matches!(
+            SecureJournalRead::open_pinned(&path, &d0, expected(&d0)),
+            Err(JournalReadError::Incompatible)
+        ));
         let store = SecureStateStore::open(&path).unwrap();
         let saved: Document =
             serde_json::from_slice(&store.read_exact().unwrap().unwrap()).unwrap();
