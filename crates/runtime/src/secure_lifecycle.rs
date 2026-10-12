@@ -87,6 +87,11 @@ impl SecureLifecycle {
         };
         if let Some(bytes) = state.store.read_exact_secret()? {
             state.decode(&bytes)?;
+        } else {
+            // PUBLIC reads may have no local epoch key. Persist the explicit
+            // trust-on-first-open origin/owner pins before accepting a read,
+            // so a later caller cannot silently repin an empty lifecycle.
+            state.save_with(None, None)?;
         }
         Ok(state)
     }
@@ -243,12 +248,11 @@ impl SecureLifecycle {
         }
         let active = reader.ring(&self.workspace_id)?;
         let pending = reader.ring(&self.workspace_id)?;
-        if !reader.remaining.is_empty() || active.is_none() && pending.is_none() {
+        if !reader.remaining.is_empty() {
             return Err(SecureLifecycleError::Invalid);
         }
-        // This store is PRIVATE-only: None means not yet established; every
-        // present private ring needs an epoch key. The tracked PUBLIC grant's
-        // valid empty keyring belongs to a separate path.
+        // Both rings absent is an explicit persisted PUBLIC/first-open owner
+        // pin. Every ring that is present still needs a private epoch key.
         if active
             .as_ref()
             .is_some_and(|ring| ring.epochs().next().is_none())
@@ -398,6 +402,52 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
+    fn empty_lifecycle_persists_first_owner_pin() {
+        let dir = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let file = dir.path().join("public.state");
+        let actor = base64url(&[1u8; 32]);
+        let workspace = base64url(&[2u8; 32]);
+        let owner = base64url(&[3u8; 32]);
+        let owner_key = base64url(&[4u8; 32]);
+        let state = SecureLifecycle::open(
+            &file,
+            "https://example.invalid/",
+            &actor,
+            &workspace,
+            &owner,
+            &owner_key,
+        )
+        .unwrap();
+        assert!(file.exists());
+        assert!(state.status().active_epochs.is_empty());
+        drop(state);
+        let reopened = SecureLifecycle::open(
+            &file,
+            "https://example.invalid/",
+            &actor,
+            &workspace,
+            &owner,
+            &owner_key,
+        )
+        .unwrap();
+        assert!(reopened.status().active_epochs.is_empty());
+        drop(reopened);
+        assert!(matches!(
+            SecureLifecycle::open(
+                &file,
+                "https://example.invalid/",
+                &actor,
+                &workspace,
+                &base64url(&[5u8; 32]),
+                &owner_key,
+            ),
+            Err(SecureLifecycleError::PinChanged)
+        ));
+    }
+
+    #[test]
     fn pending_keys_survive_reopen_without_regeneration_or_promotion() {
         let dir = tempfile::tempdir().unwrap();
         #[cfg(unix)]
@@ -418,6 +468,7 @@ mod tests {
             )
         };
         let mut store = open().unwrap();
+        assert!(file.exists(), "empty lifecycle must persist owner pins");
         assert_eq!(store.stage_initial(1).unwrap().pending_epochs, vec![1]);
         let first_bytes = fs::read(&file).unwrap();
         assert_eq!(store.stage_initial(1).unwrap().pending_epochs, vec![1]);

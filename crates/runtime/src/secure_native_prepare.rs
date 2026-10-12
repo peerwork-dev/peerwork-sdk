@@ -1014,6 +1014,38 @@ mod tests {
                 .unwrap()
             )
             .is_err());
+        if !structured && coordination.is_none() && !keep_encrypted {
+            drop(identity);
+            let config = crate::secure_read_access::SecureReadConfig {
+                origin: origin.to_owned(),
+                kernel_journal_path: root.path().join("native-public-proof-discovery.sqlite"),
+                read_state_path: root.path().join("native-public-proof-journal.state"),
+                lifecycle_path: root.path().join("native-public-proof-lifecycle.state"),
+                identity_path: root.path().join("native-public-owner.state"),
+                workspace_id: workspace.clone(),
+                authority: ready["bootstrap"]["authority"].as_str().unwrap().to_owned(),
+                owner_actor_id: actor.to_owned(),
+                owner_key_id: signer.to_owned(),
+                required_features: Vec::new(),
+                allow_loopback_http: true,
+                max_replay_artifact_bytes: crate::SecureJournalReadBudget::default()
+                    .max_replay_artifact_bytes,
+            };
+            let result = std::thread::spawn(move || {
+                let access = crate::secure_read_access::SecureReadAccess::new(config);
+                let first = access.read_json().unwrap();
+                let reopened = access.read_json().unwrap();
+                assert_eq!(first, reopened, "protected read reopen must be stable");
+                first
+            })
+            .join()
+            .unwrap();
+            let result: serde_json::Value = serde_json::from_str(&result).unwrap();
+            assert_eq!(result["sequence"], 1);
+            assert_eq!(result["head"], expected_head);
+            assert_eq!(result["objects"].as_array().unwrap().len(), 13);
+            assert_eq!(result["operations"].as_array().unwrap().len(), 1);
+        }
     }
 
     #[tokio::test]

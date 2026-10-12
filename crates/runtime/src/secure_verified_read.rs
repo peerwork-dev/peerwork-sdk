@@ -7,10 +7,13 @@ use crate::{
 };
 use peerwork_core::{
     canonical::Path,
+    crypto::sha256_hex,
     replayed_secure_journal::{
         replay_secure_journal_exact, JournalReplayError, JournalReplayInput, ReplayedSecureJournal,
         StructureStatus,
     },
+    secure_keyring::SecretKeyring,
+    verified_secure_grant::VerifiedGrantMaterial,
     wire_json::{canonical_wire_value, parse_wire_json_bounded, WireValue},
 };
 use thiserror::Error;
@@ -67,6 +70,8 @@ pub(crate) struct TransportReplayedJournal {
     source_actor_id: String,
     source_key_id: String,
     keyring_state: Option<ReplayKeyringState>,
+    checkpoint_canonical_json: String,
+    grant_keyring_sha256: Option<String>,
     replay: ReplayedSecureJournal,
 }
 
@@ -150,6 +155,12 @@ impl TransportReplayedJournal {
     pub(crate) fn keyring_state(&self) -> Option<ReplayKeyringState> {
         self.keyring_state
     }
+    pub(crate) fn checkpoint_canonical_json(&self) -> &str {
+        &self.checkpoint_canonical_json
+    }
+    pub(crate) fn grant_keyring_sha256(&self) -> Option<&str> {
+        self.grant_keyring_sha256.as_deref()
+    }
     pub(crate) fn source_actor_id(&self) -> &str {
         &self.source_actor_id
     }
@@ -182,6 +193,55 @@ pub(crate) fn replay_authenticated_pages(
 pub(crate) fn replay_authenticated_pages_with_budget(
     pages: &AuthenticatedJournalPages<'_>,
     lifecycle: &SecureLifecycle,
+    budget: SecureJournalReadBudget,
+) -> Result<TransportReplayedJournal, VerifiedReadError> {
+    let keyring = lifecycle.replay_keyring_candidate();
+    replay_authenticated_pages_with_material(
+        pages,
+        lifecycle,
+        keyring.as_ref().map(|material| material.ring),
+        keyring.map(|material| material.state),
+        None,
+        budget,
+    )
+}
+
+/// Grant material is allowed to decrypt a candidate replay before it becomes
+/// active. The returned proof remains Pending; a separate exact-checkpoint
+/// grant binding must succeed before lifecycle promotion.
+pub(crate) fn replay_authenticated_pages_with_grant(
+    pages: &AuthenticatedJournalPages<'_>,
+    lifecycle: &SecureLifecycle,
+    grant: &VerifiedGrantMaterial,
+    budget: SecureJournalReadBudget,
+) -> Result<TransportReplayedJournal, VerifiedReadError> {
+    if grant.workspace_id() != pages.workspace_id()
+        || grant.recipient_actor() != pages.actor_id()
+        || grant.recipient_key() != pages.key_id()
+    {
+        return Err(VerifiedReadError::Identity);
+    }
+    let ring_wire = grant
+        .keyring()
+        .canonical_wire()
+        .map_err(|_| VerifiedReadError::Content)?;
+    let ring_hash = sha256_hex(&ring_wire);
+    replay_authenticated_pages_with_material(
+        pages,
+        lifecycle,
+        Some(grant.keyring()),
+        Some(ReplayKeyringState::Pending),
+        Some(ring_hash),
+        budget,
+    )
+}
+
+fn replay_authenticated_pages_with_material(
+    pages: &AuthenticatedJournalPages<'_>,
+    lifecycle: &SecureLifecycle,
+    keyring: Option<&SecretKeyring>,
+    keyring_state: Option<ReplayKeyringState>,
+    grant_keyring_sha256: Option<String>,
     budget: SecureJournalReadBudget,
 ) -> Result<TransportReplayedJournal, VerifiedReadError> {
     let max_artifact_bytes = usize::try_from(budget.max_replay_artifact_bytes)
@@ -273,10 +333,8 @@ pub(crate) fn replay_authenticated_pages_with_budget(
     {
         return Err(VerifiedReadError::Identity);
     }
-    let keyring = lifecycle.replay_keyring_candidate();
     let keyring_wire = keyring
-        .as_ref()
-        .map(|material| material.ring.canonical_wire())
+        .map(SecretKeyring::canonical_wire)
         .transpose()
         .map_err(|_| VerifiedReadError::Content)?;
     let policy_refs = policy_wires.iter().map(Vec::as_slice).collect::<Vec<_>>();
@@ -297,7 +355,9 @@ pub(crate) fn replay_authenticated_pages_with_budget(
         origin: pages.origin().to_owned(),
         source_actor_id: pages.actor_id().to_owned(),
         source_key_id: pages.key_id().to_owned(),
-        keyring_state: keyring.map(|material| material.state),
+        keyring_state,
+        checkpoint_canonical_json: pages.checkpoint_canonical_json().to_owned(),
+        grant_keyring_sha256,
         replay,
     })
 }
