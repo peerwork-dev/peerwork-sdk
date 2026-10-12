@@ -137,12 +137,76 @@ console.log(JSON.stringify({workspace_id:value.workspace_id,sequence:value.seque
         assert limited.returncode != 0 and json.loads(limited.stderr)["code"] == "RESOURCE_LIMIT"
         mark("installed_cli_verified_and_budget_refusal")
 
+        profile_dir = state / "shared-read-profile"
+        latest = peerwork.SecureReadClient(origin, str(profile_dir), str(identity),
+                                           fixture["workspace_id"],
+                                           owner_actor_id=fixture["actor_id"],
+                                           owner_key_id=fixture["signing_key"],
+                                           allow_loopback_http=True)
+        assert latest.read()["sequence"] == 1
+        with urllib.request.urlopen(urllib.request.Request(
+                origin + "__test/append-public", data=b"", method="POST"), timeout=5) as response:
+            appended = json.load(response)
+        assert appended["sequence"] == 2
+        reopened_latest = peerwork.SecureReadClient(origin, str(profile_dir), str(identity),
+                                                   fixture["workspace_id"],
+                                                   allow_loopback_http=True)
+        latest_two = reopened_latest.read()
+        assert latest_two["sequence"] == 2 and latest_two["head"] == appended["head"]
+        mark("installed_python_latest_append_and_reopen")
+
+        latest_node_options = dict(origin=origin, stateDir=str(profile_dir),
+                                   identityPath=str(identity), workspaceId=fixture["workspace_id"],
+                                   allowLoopbackHttp=True)
+        latest_node_source = r'''
+void (async () => {
+  const sdk = require(process.env.PEERWORK_TEST_NODE_PACKAGE);
+  const options = JSON.parse(process.env.PEERWORK_TEST_READ_OPTIONS);
+  const result = await sdk.readSecureWorkspace(options);
+  if (result.sequence !== 2 || result.head !== process.env.PEERWORK_TEST_LATEST_HEAD ||
+      'jws' in result || 'keyring' in result) throw Error('latest Node read mismatch');
+  console.log(JSON.stringify({sequence:result.sequence,head:result.head}));
+})().catch(error => { console.error(error); process.exitCode = 1; });
+'''
+        latest_node_env = dict(env, PEERWORK_TEST_NODE_PACKAGE=NODE_PACKAGE,
+                               PEERWORK_TEST_READ_OPTIONS=json.dumps(latest_node_options),
+                               PEERWORK_TEST_LATEST_HEAD=appended["head"])
+        latest_node = subprocess.run([NODE, "-e", latest_node_source], env=latest_node_env,
+                                     capture_output=True, text=True, timeout=45)
+        assert latest_node.returncode == 0, latest_node.stderr[-1000:]
+        assert json.loads(latest_node.stdout)["sequence"] == 2
+        mark("installed_node_latest_shared_profile")
+
+        latest_cli = [CLI, "secure", "read", f"--origin={origin}",
+                      f"--state-dir={profile_dir}", f"--identity={identity}",
+                      f"--workspace={fixture['workspace_id']}", "--allow-loopback-http"]
+        latest_cli_result = subprocess.run(latest_cli, capture_output=True,
+                                           text=True, timeout=45, check=True)
+        assert json.loads(latest_cli_result.stdout)["head"] == appended["head"]
+        mark("installed_cli_latest_shared_profile")
+
+        with urllib.request.urlopen(urllib.request.Request(
+                origin + "__test/serve-stale-public", data=b"", method="POST"), timeout=5):
+            pass
+        try:
+            reopened_latest.read()
+        except peerwork.SecureReadError as error:
+            assert error.code == "VERIFICATION_FAILED"
+        else:
+            raise AssertionError("stale signed checkpoint was accepted as latest")
+        with urllib.request.urlopen(urllib.request.Request(
+                origin + "__test/restore-current-public", data=b"", method="POST"), timeout=5):
+            pass
+        assert reopened_latest.read()["head"] == appended["head"]
+        mark("installed_python_rollback_refusal_and_recovery")
+
         with urllib.request.urlopen(origin + "__test/secure-counts", timeout=3) as response:
             counts = json.load(response)
-        assert counts["commits"] == 1 and counts["head_sequence"] == 1
+        assert counts["commits"] == 2 and counts["head_sequence"] == 2
         print(json.dumps({"source_commit": SOURCE_COMMIT,
                           "reference_commit": "f828b6c50a0a58d1e718af90f653b214adcc3328",
-                          "result": {"sequence": result["sequence"], "object_count": len(result["objects"]),
+                          "result": {"snapshot_sequence": result["sequence"], "latest_sequence": latest_two["sequence"],
+                                     "object_count": len(result["objects"]),
                                      "operation_count": len(result["operations"]),
                                      "commit_count": counts["commits"]},
                           "stages": stages}))
