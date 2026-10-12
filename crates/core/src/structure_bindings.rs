@@ -355,6 +355,17 @@ fn protocol_from_manifest(
     Ok(obj(protocol))
 }
 
+/// Derive a genesis declaration with the same normalization and choice rules
+/// used when replay checks stored protocol objects. The caller still must
+/// validate the complete structure policy and signed BOOTSTRAP operation.
+pub(crate) fn derive_genesis_protocol(
+    id: &str,
+    raw_manifest: &WireValue,
+    declared: &WireValue,
+) -> Result<WireValue> {
+    protocol_from_manifest(id, &normalized_manifest(raw_manifest)?, declared)
+}
+
 #[cfg(test)]
 pub(crate) fn protocol_with_default_choices_for_test(id: &str, raw: &WireValue) -> WireValue {
     protocol_from_manifest(
