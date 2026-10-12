@@ -6,6 +6,10 @@ export interface IdentityInfo { actor_id: string; key_id: string }
 export declare function createIdentity(path: string): Promise<IdentityInfo>;
 /** Opens local identity state and returns public IDs only. */
 export declare function openIdentity(path: string): Promise<IdentityInfo>;
+/** Imports a raw 32-byte seed file into new protected identity state. */
+export declare function importIdentitySeedFile(path: string, seedFile: string): Promise<IdentityInfo>;
+/** Imports a PKCS#8 Ed25519 PEM file into new protected identity state. */
+export declare function importLegacyIdentityPem(path: string, pemFile: string): Promise<IdentityInfo>;
 export interface KernelAccessOptions {
   origin: string;
   journalPath: string;
@@ -26,7 +30,14 @@ export interface AcceptedResult {
   event_sequence: number | null;
   revision: number | null;
   produced_record_ids: string[];
+  catalog: CatalogAcceptedResult | null;
 }
+export type CatalogAcceptedResult =
+  | { kind: 'namespace_claim'; namespace: string }
+  | { kind: 'upload_begin'; upload_id: string; state: 'STAGING'; expires_at: number }
+  | { kind: 'upload_chunk'; upload_id: string; index: number; received_bytes: number; state: 'STAGING' | 'READY' }
+  | { kind: 'package_publish'; namespace: string; package_id: string; version: string; bundle_digest: string; published: number };
+export interface TsMigrationReport { pending_count: number; accepted_count: number }
 export interface KernelSession extends IdentityInfo {
   origin: string;
   /** Saves an exact signed request but performs no POST. */
@@ -34,5 +45,7 @@ export interface KernelSession extends IdentityInfo {
   pending(options?: {signal?: AbortSignal}): Promise<PendingIntent[]>;
   status(commandId: string, options?: {signal?: AbortSignal}): Promise<{state: 'NOT_FOUND' | 'PENDING'} | {state: 'ACCEPTED'; result: AcceptedResult}>;
   submitSaved(commandId: string, options?: {signal?: AbortSignal}): Promise<AcceptedResult>;
+  /** Imports a quiesced TypeScript client store and retains a verified online backup. */
+  migrateTsStore(sourcePath: string, backupPath: string, trustedSignerKeyIds: string[], options?: {signal?: AbortSignal}): Promise<TsMigrationReport>;
 }
 export declare function openKernel(options: KernelAccessOptions): Promise<KernelSession>;
