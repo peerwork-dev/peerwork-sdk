@@ -242,3 +242,35 @@ complete native client action: signed policy/grant authority, native
 production key activation, full replay/effect proof, and final-result
 promotion remain open. Agent entry-instruction/space-protocol compliance
 was not exercised and remains unverified independently.
+
+Signed direct key-grant material checkpoint is SDK source
+`27fe519d2013befdafddb65309471abed0e0b065` (module `46f1524`, core
+registration `27fe519`). The grant verifier source SHA-256 is
+`3702de8aaea82cd2960978f5ec7e09900aa0af84509418da7863b17cfaa54129`,
+and the dynamic direct TypeScript oracle script is
+`41a99969646ce3dff93ef8fef0aa748c7456d9c7d266b9f1edea71af8cea70b8`.
+At a detached exact checkout, Node 24.20.0 ran
+`tests/secure-grant-cross-open.mjs` with Rust 1.89 offline locked Cargo,
+task-local dependency cache/target, and no service or operator state. The
+script used vendored pinned TypeScript `createPolicy`, `verifyPolicyChain`,
+`createKeyGrant`, and `openKeyGrant` to create and open a fresh synthetic
+PRIVATE owner grant. It supplied a mode-0600 temporary vector to the Rust
+`direct_ts_owner_grant_vector` filter with `PEERWORK_GRANT_VECTOR` set; the
+native positive and altered signature, wrong recipient, epoch, and policy
+negatives passed. The vector and synthetic recipient private scalar were
+removed on exit. The test's unset-vector early return is not counted as
+evidence; the script set the variable and checked the Rust subprocess exit.
+
+The bounded verifier checks caller-pinned owner against the signed policy
+header chain and exact checkpoint, selects the grant's signed policy hash,
+requires the latest policy to keep its owner and epoch, checks the recipient
+self-certificate and current membership, authenticates the direct owner
+grant signature, then opens HPKE with the signed grant payload minus `box`
+as exact context and parses a workspace/current-epoch keyring. The returned
+private-constructor `VerifiedGrantMaterial` proves those cryptographic
+facts only. Caller-supplied origin/owner inputs and header-chain checks do
+not establish complete replay or freshness; it is not consumed to promote
+runtime keys. Invitation acceptance, delegated delivery, owner bootstrap,
+rotation/recovery and full signed journal replay remain required routes and
+currently fail closed or lack an activation consumer. Agent workflow
+compliance was not tested by this crypto oracle.
