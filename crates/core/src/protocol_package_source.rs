@@ -104,7 +104,10 @@ pub(crate) fn validate_package_checkpoint(value: &WireValue) -> Result<(), Packa
     }
     Ok(())
 }
-fn source_id(source: &WireValue, hash: &str) -> Result<String, PackageSourceError> {
+pub(crate) fn package_source_id(
+    source: &WireValue,
+    hash: &str,
+) -> Result<String, PackageSourceError> {
     let value = object(vec![
         ("source", source.clone()),
         ("source_sha256", string(hash)),
@@ -204,7 +207,7 @@ pub(crate) fn verify_protocol_package_source(
     if workspace != scalar(field(source, "workspace_id")?)?
         || !digest(&source_hash)
         || !digest(&id)
-        || id != source_id(source, &source_hash)?
+        || id != package_source_id(source, &source_hash)?
         || !(1..=MATERIAL_BYTES).contains(&total)
     {
         return Err(Invalid);
