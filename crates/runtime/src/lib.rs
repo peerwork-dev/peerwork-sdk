@@ -14,6 +14,8 @@ pub mod kernel_intents;
 mod secure_intents;
 #[allow(dead_code)]
 mod secure_lifecycle;
+#[allow(dead_code)]
+mod secure_recipient_state;
 pub mod secure_state;
 pub mod transport;
 mod ts_migration;
