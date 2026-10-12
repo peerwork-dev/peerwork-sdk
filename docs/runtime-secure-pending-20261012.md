@@ -734,3 +734,53 @@ refuses a fresh D0 while retaining exact D1 discovery bytes. Rust 1.89
 locked-offline focused reader tests passed 5/5. This is the smallest affected
 regression for the rollback edge; the earlier actual-service pin proves the
 separate HTTP/persistence path and was not repeated for this refactor.
+
+Native PUBLIC owner-create checkpoint at exact SDK source
+`cd75684ed58ebd5ceafdcb90128e7c8f6b3b8c4b`: the existing six pinned
+collaboration presets now produce `visibility=PUBLIC` workspace objects, a
+signed v3 genesis policy with epoch 0, and a signed plaintext BOOTSTRAP
+commit. The low-level bootstrap proof checks mode/epoch/policy/owner/route,
+the exact request hash and signed commit; it refuses a signed wrong mode or
+malformed public operation. The runtime verifies its protected recipient
+certificate against the local signer, saves the exact `{policy,commit}` bytes
+before any POST, and re-verifies every saved row pin before each PUBLIC send.
+There is no fabricated epoch key or keyring for this mode. Both PUBLIC and
+PRIVATE packets remain PENDING after HTTP; no secure effect, activation or
+Agent workflow-compliance decision follows from a 2xx response.
+
+Tracked behavior source is reference HEAD
+`f828b6c50a0a58d1e718af90f653b214adcc3328`,
+`src/workspace-secure-agent.ts::create` (blob `4d0237d`),
+`src/workspace-secure-client.ts::createCommit` (blob `e7acae2`), and
+`src/workspace-secure-store.ts::bootstrap` (blob `0d0f0d1`). The opt-in test
+uses fresh temporary state and the pinned real service bridge; TypeScript
+fixture setup registers the owner identity, while Rust authors policy,
+objects and commit. With explicit
+`PEERWORK_REFERENCE_ROOT=/root/workdir/message/.worktrees/e2ee-main-integration-20261006`
+and `PEERWORK_NODE_BIN=/root/workdir/message/.tools/node-v24.20.0-linux-x64/bin/node`,
+the authorized localhost command
+`cargo test --offline --locked -p peerwork-runtime secure_native_prepare::tests::actual_service_native_public_owner_bootstrap_lost_reply_exact_retry -- --exact --nocapture`
+passed 1/1 from a clean detached checkout at `cd75684` in 1.63 seconds
+after an 8.17-second Rust 1.89 build. It asserts service secure-commit
+count 0 before and after native prepare, 1/head sequence 1 after the first
+applied POST whose reply is dropped, and still 1/head sequence 1 after
+reopening the protected journal and retrying the identical request. The
+response is retained as an unverified observation; the row remains PENDING.
+The exact-pin focused core bootstrap proof test also passed 1/1. The test
+returns early without the reference environment, so ordinary runtime suite
+results are not counted as actual-service evidence.
+
+SHA-256 at this source: `bootstrap_objects.rs`
+`340699813ed213fa8a3a4550acd7b50035b644f26408302ca6bccb8633899efa`,
+`prepared_secure_bootstrap.rs`
+`cfac7142ab619427628431bd41d1d93215fc02383a5fb8d13ae08c43079e5c2d`,
+`prepared_secure_author.rs`
+`d3d8c6a2a73a5c7463baf66d3609a11a3287fa7f3c713e4a56ef050946636b2b`,
+`secure_intents.rs`
+`f7e8bd731bae79ccc6c479e7bb2f3cd4dbecbccce2c085a7f8850d1ae9068f2f`,
+`secure_native_prepare.rs`
+`d47c6a1e45dccb1ef3d1f96603e6ae6026a288188941e7c1cf89ccfd3763900a`,
+and `Cargo.lock`
+`48775117e96fe4cba67314559398d3d08c75fc211952e22473ceacc389003f17`.
+Structured/custom protocol owner-create, complete signed replay and
+activation, public language bindings and all-platform execution remain open.
