@@ -17,8 +17,19 @@ const CERT_LIFETIME_MS: f64 = 366.0 * 86_400_000.0;
 pub(crate) enum ActionScopeError {
     Invalid,
     Denied,
+    Source(&'static str),
 }
 
+impl ActionScopeError {
+    pub(crate) fn code(&self) -> &'static str {
+        match self {
+            Self::Invalid | Self::Denied => "AUTHOR_SCOPE_DENIED",
+            Self::Source(code) => code,
+        }
+    }
+}
+
+#[derive(Debug)]
 pub(crate) struct CheckedActionScope {
     pub actor_id: String,
     pub role: String,
@@ -167,57 +178,62 @@ fn scope_valid(scopes: &WireValue) -> Result<(), ActionScopeError> {
 fn verify_certificate(cert: &WireValue, at: f64) -> Result<(), ActionScopeError> {
     let payload = field(cert, "payload")?;
     if number(field(payload, "v")?)? != 1.0 {
-        return Err(ActionScopeError::Invalid);
+        return Err(ActionScopeError::Source("CERTIFICATE_INVALID"));
     }
     let actor = string(field(payload, "actor_id")?)?;
     let key = string(field(payload, "signing_key")?)?;
     if !token(&actor) || !token(&key) {
-        return Err(ActionScopeError::Invalid);
+        return Err(ActionScopeError::Source("CERTIFICATE_INVALID"));
     }
     if !actor_key_matches(&actor, &key)? {
-        return Err(ActionScopeError::Invalid);
+        return Err(ActionScopeError::Source("CERTIFICATE_IDENTITY_MISMATCH"));
     }
     let issued = number(field(payload, "issued_at")?)?;
     let expires = number(field(payload, "expires_at")?)?;
-    if expires <= issued || expires - issued > CERT_LIFETIME_MS || at < issued || at >= expires {
-        return Err(ActionScopeError::Invalid);
+    if expires <= issued || expires - issued > CERT_LIFETIME_MS {
+        return Err(ActionScopeError::Source("CERTIFICATE_INVALID"));
+    }
+    if at < issued || at >= expires {
+        return Err(ActionScopeError::Source("CERTIFICATE_EXPIRED"));
     }
     let jwk = field(payload, "encryption_key")?;
     if jwk.object_len() != Some(4)
         || string(field(jwk, "kty")?)? != "EC"
         || string(field(jwk, "crv")?)? != "P-256"
     {
-        return Err(ActionScopeError::Invalid);
+        return Err(ActionScopeError::Source("CERTIFICATE_KEY_INVALID"));
     }
     let x = string(field(jwk, "x")?)?;
     let y = string(field(jwk, "y")?)?;
     if !token(&x) || !token(&y) {
-        return Err(ActionScopeError::Invalid);
+        return Err(ActionScopeError::Source("CERTIFICATE_KEY_INVALID"));
     }
-    let xb = decode_base64url(&x).map_err(|_| ActionScopeError::Invalid)?;
-    let yb = decode_base64url(&y).map_err(|_| ActionScopeError::Invalid)?;
+    let xb =
+        decode_base64url(&x).map_err(|_| ActionScopeError::Source("CERTIFICATE_KEY_INVALID"))?;
+    let yb =
+        decode_base64url(&y).map_err(|_| ActionScopeError::Source("CERTIFICATE_KEY_INVALID"))?;
     if xb.len() != 32 || yb.len() != 32 {
-        return Err(ActionScopeError::Invalid);
+        return Err(ActionScopeError::Source("CERTIFICATE_KEY_INVALID"));
     }
     let mut point = [0u8; 65];
     point[0] = 4;
     point[1..33].copy_from_slice(&xb);
     point[33..65].copy_from_slice(&yb);
     <DhP256HkdfSha256 as KemTrait>::PublicKey::from_bytes(&point)
-        .map_err(|_| ActionScopeError::Invalid)?;
+        .map_err(|_| ActionScopeError::Source("CERTIFICATE_KEY_INVALID"))?;
     if string(field(payload, "encryption_key_id")?)?
         != base64url(&sha256(canonical(jwk)?.as_bytes()))
     {
-        return Err(ActionScopeError::Invalid);
+        return Err(ActionScopeError::Source("CERTIFICATE_KEY_MISMATCH"));
     }
     if !verify_secure_signed_wire(
         canonical(cert)?.as_bytes(),
         "peerwork.secure.key-certificate.v1",
         &key,
     )
-    .map_err(|_| ActionScopeError::Invalid)?
+    .map_err(|_| ActionScopeError::Source("SIGNATURE_INVALID"))?
     {
-        return Err(ActionScopeError::Invalid);
+        return Err(ActionScopeError::Source("SIGNATURE_INVALID"));
     }
     Ok(())
 }
@@ -235,7 +251,7 @@ pub(crate) fn resolve_action_scope(
     let key = string(field(context, "signing_key")?)?;
     let workspace = string(field(context, "workspace_id")?)?;
     if !actor_key_matches(&actor, &key)? {
-        return Err(ActionScopeError::Invalid);
+        return Err(ActionScopeError::Source("AUTHOR_KEY_MISMATCH"));
     }
     let action = field(context, "action_id")?;
     let instance = field(context, "instance_id")?;
@@ -244,13 +260,14 @@ pub(crate) fn resolve_action_scope(
         if exact_delegation_wire.is_some() {
             return Err(ActionScopeError::Invalid);
         }
-        let row = member(authenticated_policy_payload, &actor)?;
+        let row = member(authenticated_policy_payload, &actor)
+            .map_err(|_| ActionScopeError::Source("AUTHOR_NOT_MEMBER"))?;
         if string(field(
             field(field(row, "certificate")?, "payload")?,
             "signing_key",
         )?)? != key
         {
-            return Err(ActionScopeError::Denied);
+            return Err(ActionScopeError::Source("AUTHOR_NOT_MEMBER"));
         }
         row
     } else {
@@ -277,31 +294,32 @@ pub(crate) fn resolve_action_scope(
                 .as_deref()
                 != Some(key.as_str())
         {
-            return Err(ActionScopeError::Invalid);
+            return Err(ActionScopeError::Source("DELEGATION_INVALID"));
         }
         let start = number(field(d, "issued_at")?)?;
         let end = number(field(d, "expires_at")?)?;
         if at < start || at >= end {
-            return Err(ActionScopeError::Invalid);
+            return Err(ActionScopeError::Source("DELEGATION_INVALID"));
         }
         let principal_actor = string(field(d, "actor_id")?)?;
         let principal_key = string(field(d, "signing_key")?)?;
-        let row = member(authenticated_policy_payload, &principal_actor)?;
+        let row = member(authenticated_policy_payload, &principal_actor)
+            .map_err(|_| ActionScopeError::Source("DELEGATOR_NOT_MEMBER"))?;
         if string(field(
             field(field(row, "certificate")?, "payload")?,
             "signing_key",
         )?)? != principal_key
         {
-            return Err(ActionScopeError::Denied);
+            return Err(ActionScopeError::Source("DELEGATOR_NOT_MEMBER"));
         }
         if !verify_secure_signed_wire(wire, "peerwork.secure.device-delegation.v1", &principal_key)
             .map_err(|_| ActionScopeError::Invalid)?
         {
-            return Err(ActionScopeError::Invalid);
+            return Err(ActionScopeError::Source("SIGNATURE_INVALID"));
         }
         verify_certificate(field(d, "device")?, at)?;
         let device_scopes = field(d, "scope")?;
-        scope_valid(device_scopes)?;
+        scope_valid(device_scopes).map_err(|_| ActionScopeError::Source("SCOPE_INVALID"))?;
         let delegated_action = list(device_scopes)?.iter().any(|scope| {
             active(scope, at).unwrap_or(false)
                 && matches_instance(scope, instance)
@@ -313,7 +331,7 @@ pub(crate) fn resolve_action_scope(
                 && includes(scope, "actions", action)
         });
         if !delegated_action || !principal_action {
-            return Err(ActionScopeError::Denied);
+            return Err(ActionScopeError::Source("DELEGATION_SCOPE_DENIED"));
         }
         row
     };
@@ -428,7 +446,11 @@ mod tests {
                     )));
                 }
             } else {
-                assert!(result.is_err(), "{name}");
+                assert_eq!(
+                    result.unwrap_err().code(),
+                    string(field(&row, "error").unwrap()).unwrap(),
+                    "{name}"
+                );
             }
         }
     }

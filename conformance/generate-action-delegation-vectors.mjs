@@ -67,6 +67,8 @@ try {
   const input=[
     ['valid_delegated',context,policy],
     ['valid_direct',{...context,actor_id:principal.actorId,signing_key:principal.keyId,delegation:null},policy],
+    ['actor_key_mismatch',{...context,signing_key:principal.keyId},policy],
+    ['direct_not_member',{...context,delegation:null},policy],
     ['delegated_action_denied',{...context,action_id:'gamma'},policy],
     ['delegation_expired',{...context,issued_at:1000},policy],
     ['certificate_expired',{...context,delegation:longDelegation,issued_at:certificate.payload.expires_at},policy],
