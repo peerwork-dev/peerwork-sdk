@@ -723,3 +723,14 @@ clean-detached opt-in actual-service regression at this exact source passed
 above. It now asserts the root exists while progress is zero pages, before
 the delayed/cancelled GET. This is transport pin custody, not final journal
 authority or an Agent workflow-compliance pass.
+
+The first `957e987` actual-service assertion proved initial root persistence,
+but did not itself exercise a D0→D1→D0 sequence with zero pages. At follow-up
+source `d22da469206aa856581f59419ee7ba3ba78789c2`, the product open path
+uses a private `open_pinned` implementation after deriving origin, discovery,
+and identity from `KernelClient`/protected identity. Its focused zero-page
+regression opens D0, confirms the root is written, opens additive D1, and
+refuses a fresh D0 while retaining exact D1 discovery bytes. Rust 1.89
+locked-offline focused reader tests passed 5/5. This is the smallest affected
+regression for the rollback edge; the earlier actual-service pin proves the
+separate HTTP/persistence path and was not repeated for this refactor.
