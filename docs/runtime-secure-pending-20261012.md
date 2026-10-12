@@ -1011,3 +1011,28 @@ SHA-256 `18ad9a8529302c48148a73b8d1c2126fa74a9be94e3c84bd69dc1360e613d459`.
 This is a source/byte-parity test only; no service action, installed language
 client, or Agent entry workflow ran, so business admission and workflow
 compliance are unverified for this checkpoint.
+
+A separate private ACTION device-delegation scope resolver is source-committed
+at `cb21dff`. Its input contract requires the signed commit context and
+selected policy payload to come from future complete replay; the resolver
+checks exact embedded-versus-supplied delegation, delegation signature,
+device certificate, principal membership, issue-time validity, requested
+action and instance intersection, then returns only principal and effective
+scope facts. It does not authenticate policy selection, authorize a POST,
+prove a journal or emit final action effects. Eight direct pinned TypeScript
+`resolveSecureAuthor` cases cover valid direct/delegated resolution, expired
+delegation/certificate, principal or delegated action denial, a tampered
+signed scope and wrong device actor. The focused Rust1.89 locked-offline test
+`cargo test -p peerwork-core --lib secure_action_delegation --offline --locked`
+passed 1/1 at the stable source window, including effective role/capability
+intersection. The first compile failed because the new module referenced a
+non-direct `p256` dependency; it now uses the existing HPKE P-256 decoder.
+A later compile was interrupted by unrelated in-progress `secure_replay.rs`
+`E0063` until its owner completed `ReplayFacts`; the stable focused rerun
+passed. Source SHA-256 `5a678c2611ed658fdad4f7b08ab3feec2c1fd0479339b4ea9c4e149965e1c558`,
+generator SHA-256 `110e94258ec72c26263ad0c2284da346a73eb279fbe464240f9f96268b6a4d76`,
+vector SHA-256 `7c32285b68e7f6f875e3eb96d4330a6ea8e5f4a67f55e2cc4d37a23f121a578b`,
+and lock SHA-256 `9dc2d3f2ad77be15366633af890168611e8d62a7f38de646970dfc4cedc8d4d5`.
+Core's registration and replay consumer are separate checkpoints. No Agent
+entry workflow ran, so workflow compliance is unverified here; business
+acceptance and final effects are likewise unverified.
