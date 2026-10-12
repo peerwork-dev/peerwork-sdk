@@ -46,6 +46,9 @@ try{
   cases.push({name:'workflow_partial_disclosure',manifest:{...clone(),record_schemas:{task:partialWorkflow}}});
   const duplicateTransition=structuredClone(workflowSchema);duplicateTransition.workflow.transitions.push(duplicateTransition.workflow.transitions[0]);
   cases.push({name:'workflow_duplicate_transition',manifest:{...clone(),record_schemas:{task:duplicateTransition}}});
+  const reorderedTransition=structuredClone(workflowSchema);
+  reorderedTransition.workflow.transitions.push({to:'OPEN',from:null,action:'task.create'});
+  cases.push({name:'workflow_semantic_duplicate_different_key_order',manifest:{...clone(),record_schemas:{task:reorderedTransition}}});
   const requirements={format:'peerwork.protocol-execution-requirements.v1',closure_complete:false,
     ports:[{import_path:['library'],action_id:'task.create',variant:0,input_name:'parent',type:'exact_ref',required:true,bound:false}]};
   cases.push({name:'requirements_valid',manifest:{...clone(),execution_requirements:requirements}});
@@ -54,6 +57,11 @@ try{
   const guardedAction={id:'inspect',reads:[['refs']],writes:[],revisionEffects:{control:false,contentEntities:[]},variants:[{when:[refGuard],effects:[]}]};
   cases.push({name:'json_array_exact_ref_guard',manifest:{...clone(),format_version:2,state_array_types:[{path:['refs'],kind:'json'}],initial_state:{refs:[]},actions:[guardedAction]}});
   cases.push({name:'ref_array_exact_ref_guard',manifest:{...clone(),format_version:2,state_array_types:[{path:['refs'],kind:'exact_ref_list'}],initial_state:{refs:[]},actions:[guardedAction]}});
+  const astral='\u{10000}',bmp='\uE000';
+  const arrayOrder={...clone(),format_version:2,initial_state:{[astral]:[],[bmp]:[]},
+    state_array_types:[{path:[astral],kind:'json'},{path:[bmp],kind:'json'}]};
+  cases.push({name:'state_array_utf16_sort_valid',manifest:arrayOrder});
+  cases.push({name:'state_array_utf16_sort_reversed',manifest:{...arrayOrder,state_array_types:arrayOrder.state_array_types.toReversed()}});
   for(const item of cases){
     try{const result=manifestCanonical(item.manifest);item.result=result.canonical;}
     catch(error){item.error=error.code??error.name??error.message;}

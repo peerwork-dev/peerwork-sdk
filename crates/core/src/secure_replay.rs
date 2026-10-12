@@ -8,7 +8,9 @@ use crate::{
     e2ee::{open_content_wire, SealedContent},
     interpreter::{evaluate_action, InterpreterAuth, ResolvedInput},
     secure_chain::{scan_signed_chain_headers, ChainError, CheckpointPin, OwnerPin},
-    wire_json::{canonical_wire_value, parse_wire_json_js_bounded, WireValue},
+    wire_json::{
+        canonical_wire_value, parse_js_json_string_bounded, parse_wire_json_js_bounded, WireValue,
+    },
 };
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
@@ -326,6 +328,28 @@ fn validate_action_state_slice(
         .get("protocol_digest")
         .and_then(WireValue::as_utf16)
         .ok_or("PROTOCOL_NOT_FOUND")?;
+    if let Some(status) = prior
+        .iter()
+        .filter(|object| {
+            object.get("kind").and_then(WireValue::as_string).as_deref() == Some("protocol_status")
+                && object
+                    .get("value")
+                    .and_then(|value| value.get("digest"))
+                    .and_then(WireValue::as_utf16)
+                    == Some(digest)
+        })
+        .max_by_key(|object| integer(object, "revision").unwrap_or(0))
+    {
+        if status
+            .get("value")
+            .and_then(|value| value.get("state"))
+            .and_then(WireValue::as_string)
+            .as_deref()
+            != Some("ACTIVE")
+        {
+            return Err("PROTOCOL_SUSPENDED");
+        }
+    }
     let protocol = prior
         .iter()
         .filter(|object| {
@@ -338,7 +362,7 @@ fn validate_action_state_slice(
         })
         .max_by_key(|object| integer(object, "revision").unwrap_or(0))
         .ok_or("PROTOCOL_NOT_FOUND")?;
-    let manifest = protocol
+    let manifest_raw = protocol
         .get("value")
         .and_then(|value| {
             value
@@ -346,6 +370,7 @@ fn validate_action_state_slice(
                 .or_else(|| value.get("manifest"))
         })
         .ok_or("PROTOCOL_NOT_FOUND")?;
+    let manifest = decoded_value(manifest_raw).map_err(|_| "INVALID_PAYLOAD")?;
     if refs.len() > 32 {
         return Err("REFERENCE_INVALID");
     }
@@ -384,17 +409,8 @@ fn validate_action_state_slice(
             .get("schema_ref")
             .and_then(WireValue::as_utf16)
             .ok_or("REFERENCE_SCOPE_MISMATCH")?;
-        let payload = match row.get("payload").ok_or("REFERENCE_INVALID")? {
-            WireValue::String(value) => parse_wire_json_js_bounded(
-                String::from_utf16(value)
-                    .map_err(|_| "UNSUPPORTED")?
-                    .as_bytes(),
-                2048,
-                MAX_CONTENT_BYTES,
-            )
-            .map_err(|_| "REFERENCE_INVALID")?,
-            value => value.clone(),
-        };
+        let payload = decoded_value(row.get("payload").ok_or("REFERENCE_INVALID")?)
+            .map_err(|_| "REFERENCE_INVALID")?;
         let scope = if row.get("instance_id").and_then(WireValue::as_utf16) == Some(instance_id)
             && row.get("protocol_digest").and_then(WireValue::as_utf16) == Some(digest)
         {
@@ -478,6 +494,7 @@ fn validate_action_state_slice(
     }) {
         return Err("AUTHOR_SCOPE_DENIED");
     }
+    validate_role_policies(policy_payload, prior, issued, instance_id)?;
     let mut roles = applicable
         .iter()
         .flat_map(|scope| {
@@ -528,16 +545,17 @@ fn validate_action_state_slice(
         protocol_roles: roles,
         capabilities,
     };
-    if manifest.get("state_array_types").is_some() {
-        return Err("UNSUPPORTED");
-    }
+    let source_state = decoded_value(instance_value.get("state").ok_or("INVALID_PAYLOAD")?)
+        .map_err(|_| "INVALID_PAYLOAD")?;
+    crate::full_manifest::validate_state_array_state(&manifest, &source_state)
+        .map_err(|_| "STATE_ARRAY_TYPE_INVALID")?;
     let interpreted = evaluate_action(
         &WireValue::Object(vec![(
             "actions".encode_utf16().collect(),
             manifest.get("actions").ok_or("INVALID_PAYLOAD")?.clone(),
         )]),
         action_id,
-        instance_value.get("state").ok_or("INVALID_PAYLOAD")?,
+        &source_state,
         input.get("body").ok_or("INVALID_PAYLOAD")?,
         &auth,
         &exact_inputs,
@@ -636,6 +654,8 @@ fn validate_action_state_slice(
         ]));
     }
     let mut next = instance_value.clone();
+    crate::full_manifest::validate_state_array_state(&manifest, &interpreted.next_state)
+        .map_err(|_| "STATE_ARRAY_TYPE_INVALID")?;
     replace_field(&mut next, "state", interpreted.next_state)
         .map_err(|_| "PROTOCOL_OUTPUT_MISMATCH")?;
     replace_field(
@@ -690,6 +710,158 @@ fn safe_add(value: u64, delta: u64) -> Result<u64, &'static str> {
         .checked_add(delta)
         .filter(|result| *result <= 9_007_199_254_740_991)
         .ok_or("PROTOCOL_OUTPUT_MISMATCH")
+}
+fn decoded_value(value: &WireValue) -> Result<WireValue, &'static str> {
+    match value {
+        WireValue::String(units) => parse_js_json_string_bounded(units, 2048, MAX_CONTENT_BYTES)
+            .map_err(|_| "INVALID_PAYLOAD"),
+        value => Ok(value.clone()),
+    }
+}
+
+fn validate_role_policies(
+    policy: &WireValue,
+    prior: &[WireValue],
+    at: u64,
+    validate_instance: &[u16],
+) -> Result<(), &'static str> {
+    let mut latest = Vec::new();
+    let mut positions = HashMap::new();
+    for object in prior {
+        let (Some(kind), Some(id)) = (
+            object.get("kind").and_then(WireValue::as_utf16),
+            object.get("id").and_then(WireValue::as_utf16),
+        ) else {
+            continue;
+        };
+        let key = (kind.to_vec(), id.to_vec());
+        if let Some(&index) = positions.get(&key) {
+            if integer(latest[index], "revision").unwrap_or(0)
+                < integer(object, "revision").unwrap_or(0)
+            {
+                latest[index] = object;
+            }
+        } else {
+            positions.insert(key, latest.len());
+            latest.push(object);
+        }
+    }
+    let members = match policy.get("members") {
+        Some(WireValue::Array(members)) => members,
+        _ => return Err("PROTOCOL_ROLE_POLICY_INVALID"),
+    };
+    for object in latest.iter().filter(|object| {
+        object.get("kind").and_then(WireValue::as_string).as_deref() == Some("instances")
+    }) {
+        let Some(instance) = object.get("value") else {
+            continue;
+        };
+        let Some(protocol_digest) = instance
+            .get("protocol_digest")
+            .and_then(WireValue::as_utf16)
+        else {
+            continue;
+        };
+        let Some(protocol) = latest.iter().find(|object| {
+            object.get("kind").and_then(WireValue::as_string).as_deref() == Some("protocols")
+                && object
+                    .get("value")
+                    .and_then(|value| value.get("digest"))
+                    .and_then(WireValue::as_utf16)
+                    == Some(protocol_digest)
+        }) else {
+            continue;
+        };
+        let Some(manifest_raw) = protocol.get("value").and_then(|value| {
+            value
+                .get("resolved_manifest")
+                .or_else(|| value.get("manifest"))
+        }) else {
+            continue;
+        };
+        let manifest = decoded_value(manifest_raw).map_err(|_| "PROTOCOL_ROLE_POLICY_INVALID")?;
+        let (Some(WireValue::Array(active)), Some(WireValue::Array(historical))) = (
+            manifest.get("role_conflicts"),
+            manifest.get("historical_role_conflicts"),
+        ) else {
+            return Err("PROTOCOL_ROLE_POLICY_INVALID");
+        };
+        let Some(instance_id) = object.get("id").and_then(WireValue::as_utf16) else {
+            continue;
+        };
+        for member in members {
+            let Some(actor) = member.get("actor_id").and_then(WireValue::as_utf16) else {
+                continue;
+            };
+            let mut past = HashSet::<Vec<u16>>::new();
+            for grant in latest.iter().filter(|grant| {
+                grant.get("kind").and_then(WireValue::as_string).as_deref() == Some("grants")
+            }) {
+                let Some(row) = grant.get("value") else {
+                    continue;
+                };
+                if row.get("instance_id").and_then(WireValue::as_utf16) != Some(instance_id)
+                    || row.get("protocol_digest").and_then(WireValue::as_utf16)
+                        != Some(protocol_digest)
+                    || row.get("actor_id").and_then(WireValue::as_utf16) != Some(actor)
+                {
+                    continue;
+                }
+                let roles = decoded_value(row.get("protocol_roles").ok_or("LEGACY_GRANT_INVALID")?)
+                    .map_err(|_| "LEGACY_GRANT_INVALID")?;
+                let WireValue::Array(roles) = roles else {
+                    return Err("LEGACY_GRANT_INVALID");
+                };
+                for role in roles {
+                    past.insert(role.as_utf16().ok_or("LEGACY_GRANT_INVALID")?.to_vec());
+                }
+            }
+            let mut roles = HashSet::<Vec<u16>>::new();
+            if let Some(WireValue::Array(scopes)) = member.get("scopes") {
+                for scope in scopes {
+                    let active_at = scope.get("expires_at").is_none_or(|expiry| {
+                        matches!(expiry, WireValue::Null)
+                            || expiry.as_number().is_some_and(|value| value > at as f64)
+                    });
+                    let targets = matches!(scope.get("instance_id"), Some(WireValue::Null))
+                        || scope.get("instance_id").and_then(WireValue::as_utf16)
+                            == Some(instance_id);
+                    if active_at && targets {
+                        if let Some(WireValue::Array(entries)) = scope.get("protocol_roles") {
+                            for role in entries {
+                                if let Some(role) = role.as_utf16() {
+                                    roles.insert(role.to_vec());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            past.extend(roles.iter().cloned());
+            if instance_id == validate_instance {
+                for pair in active {
+                    if conflict_pair(pair, &roles) {
+                        return Err("ACTIVE_ROLE_CONFLICT");
+                    }
+                }
+                for pair in historical {
+                    if conflict_pair(pair, &past) {
+                        return Err("HISTORICAL_ROLE_CONFLICT");
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn conflict_pair(pair: &WireValue, roles: &HashSet<Vec<u16>>) -> bool {
+    let WireValue::Array(pair) = pair else {
+        return false;
+    };
+    pair.len() == 2
+        && pair[0].as_utf16().is_some_and(|role| roles.contains(role))
+        && pair[1].as_utf16().is_some_and(|role| roles.contains(role))
 }
 fn token_utf16(value: &[u16]) -> bool {
     value.len() == 43

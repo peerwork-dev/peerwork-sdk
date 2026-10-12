@@ -91,6 +91,94 @@ pub fn parse_wire_json_js_bounded(
     parse_wire_json_with_mode(input, max_depth, max_bytes, true)
 }
 
+/// Parse JSON text already held in a JavaScript UTF-16 string. A raw lone
+/// surrogate inside a JSON string is accepted by `JSON.parse`; transport
+/// through Rust UTF-8 would otherwise reject or replace it.
+pub fn parse_js_json_string_bounded(
+    input: &[u16],
+    max_depth: usize,
+    max_bytes: usize,
+) -> Result<WireValue, WireError> {
+    if input.first() == Some(&0xfeff) {
+        return Err(WireError::Invalid);
+    }
+    let mut utf8 = Vec::new();
+    let mut index = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+    while index < input.len() {
+        let unit = input[index];
+        if (0xd800..=0xdbff).contains(&unit)
+            && input
+                .get(index + 1)
+                .is_some_and(|next| (0xdc00..=0xdfff).contains(next))
+        {
+            let high = u32::from(unit) - 0xd800;
+            let low = u32::from(input[index + 1]) - 0xdc00;
+            let scalar = char::from_u32(0x10000 + high * 0x400 + low).ok_or(WireError::Invalid)?;
+            let mut bytes = [0; 4];
+            utf8.extend_from_slice(scalar.encode_utf8(&mut bytes).as_bytes());
+            index += 2;
+        } else if (0xd800..=0xdfff).contains(&unit) {
+            if !in_string || escaped {
+                return Err(WireError::Invalid);
+            }
+            utf8.extend_from_slice(format!("\\u{unit:04x}").as_bytes());
+            index += 1;
+        } else {
+            let scalar = char::from_u32(u32::from(unit)).ok_or(WireError::Invalid)?;
+            let mut bytes = [0; 4];
+            utf8.extend_from_slice(scalar.encode_utf8(&mut bytes).as_bytes());
+            if unit == u16::from(b'"') && !escaped {
+                in_string = !in_string;
+            }
+            if in_string && unit == u16::from(b'\\') && !escaped {
+                escaped = true;
+            } else {
+                escaped = false;
+            }
+            index += 1;
+        }
+        if utf8.len() > max_bytes {
+            return Err(WireError::BoundExceeded);
+        }
+    }
+    parse_wire_json_js_bounded(&utf8, max_depth, max_bytes)
+}
+
+#[cfg(test)]
+mod js_string_tests {
+    use super::*;
+
+    #[test]
+    fn decoded_json_string_keeps_raw_lone_surrogate_and_last_duplicate() {
+        let mut units: Vec<u16> = "{\"key\":\"".encode_utf16().collect();
+        units.push(0xd800);
+        let mut only_surrogate = units.clone();
+        only_surrogate.extend("\"}".encode_utf16());
+        let value = parse_js_json_string_bounded(&only_surrogate, 12, 1024).unwrap();
+        assert_eq!(
+            canonical_wire_value(&value, Path::SecureArtifact).unwrap(),
+            "{\"key\":\"\\ud800\"}"
+        );
+        units.extend("\",\"\\u006bey\":\"last\"}".encode_utf16());
+        let value = parse_js_json_string_bounded(&units, 12, 1024).unwrap();
+        assert_eq!(
+            canonical_wire_value(&value, Path::SecureArtifact).unwrap(),
+            "{\"key\":\"last\"}"
+        );
+        let invalid: Vec<u16> = "{\"key\":\"\\"
+            .encode_utf16()
+            .chain([0xd800])
+            .chain("\"}".encode_utf16())
+            .collect();
+        assert_eq!(
+            parse_js_json_string_bounded(&invalid, 12, 1024),
+            Err(WireError::Invalid)
+        );
+    }
+}
+
 fn parse_wire_json_with_mode(
     input: &[u8],
     max_depth: usize,

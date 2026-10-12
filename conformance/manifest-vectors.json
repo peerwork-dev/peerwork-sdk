@@ -729,6 +729,78 @@
     "error": "ZodError"
   },
   {
+    "name": "workflow_semantic_duplicate_different_key_order",
+    "manifest": {
+      "name": "demo",
+      "display_version": "1",
+      "semantics": "peerwork.kernel.v1",
+      "dependencies": [],
+      "protocol_roles": [],
+      "capabilities": [],
+      "role_conflicts": [],
+      "historical_role_conflicts": [],
+      "constraints": {},
+      "record_schemas": {
+        "task": {
+          "type": "object",
+          "fields": {
+            "status": "string",
+            "parent": "json"
+          },
+          "required": [
+            "status",
+            "parent"
+          ],
+          "max_bytes": 1024,
+          "protection": {
+            "v": 1,
+            "fields": {
+              "status": {
+                "protection": "e2ee",
+                "type": "string"
+              },
+              "parent": {
+                "protection": "e2ee",
+                "type": "json"
+              }
+            }
+          },
+          "workflow": {
+            "v": 1,
+            "status_field": "status",
+            "parent_field": "parent",
+            "states": [
+              "OPEN",
+              "DONE"
+            ],
+            "transitions": [
+              {
+                "action": "task.create",
+                "from": null,
+                "to": "OPEN"
+              },
+              {
+                "action": "task.complete",
+                "from": "OPEN",
+                "to": "DONE"
+              },
+              {
+                "to": "OPEN",
+                "from": null,
+                "action": "task.create"
+              }
+            ]
+          }
+        }
+      },
+      "initial_state": {
+        "count": 0
+      },
+      "actions": []
+    },
+    "error": "ZodError"
+  },
+  {
     "name": "requirements_valid",
     "manifest": {
       "name": "demo",
@@ -919,5 +991,77 @@
       ]
     },
     "result": "{\"manifest\":{\"actions\":[{\"id\":\"inspect\",\"reads\":[[\"refs\"]],\"revisionEffects\":{\"contentEntities\":[],\"control\":false},\"variants\":[{\"effects\":[],\"when\":[{\"max\":32,\"op\":\"exact_ref_list\",\"path\":[\"refs\"],\"scope\":\"INSTANCE\",\"source\":\"state\"}]}],\"writes\":[]}],\"capabilities\":[],\"constraints\":{},\"dependencies\":[],\"display_version\":\"1\",\"format_version\":2,\"historical_role_conflicts\":[],\"initial_state\":{\"refs\":[]},\"name\":\"demo\",\"protocol_roles\":[],\"record_schemas\":{},\"role_conflicts\":[],\"semantics\":\"peerwork.kernel.v1\",\"state_array_types\":[{\"kind\":\"exact_ref_list\",\"path\":[\"refs\"]}]},\"semantics\":\"peerwork.kernel.v1\"}"
+  },
+  {
+    "name": "state_array_utf16_sort_valid",
+    "manifest": {
+      "name": "demo",
+      "display_version": "1",
+      "semantics": "peerwork.kernel.v1",
+      "dependencies": [],
+      "protocol_roles": [],
+      "capabilities": [],
+      "role_conflicts": [],
+      "historical_role_conflicts": [],
+      "constraints": {},
+      "record_schemas": {},
+      "initial_state": {
+        "𐀀": [],
+        "": []
+      },
+      "actions": [],
+      "format_version": 2,
+      "state_array_types": [
+        {
+          "path": [
+            "𐀀"
+          ],
+          "kind": "json"
+        },
+        {
+          "path": [
+            ""
+          ],
+          "kind": "json"
+        }
+      ]
+    },
+    "result": "{\"manifest\":{\"actions\":[],\"capabilities\":[],\"constraints\":{},\"dependencies\":[],\"display_version\":\"1\",\"format_version\":2,\"historical_role_conflicts\":[],\"initial_state\":{\"𐀀\":[],\"\":[]},\"name\":\"demo\",\"protocol_roles\":[],\"record_schemas\":{},\"role_conflicts\":[],\"semantics\":\"peerwork.kernel.v1\",\"state_array_types\":[{\"kind\":\"json\",\"path\":[\"𐀀\"]},{\"kind\":\"json\",\"path\":[\"\"]}]},\"semantics\":\"peerwork.kernel.v1\"}"
+  },
+  {
+    "name": "state_array_utf16_sort_reversed",
+    "manifest": {
+      "name": "demo",
+      "display_version": "1",
+      "semantics": "peerwork.kernel.v1",
+      "dependencies": [],
+      "protocol_roles": [],
+      "capabilities": [],
+      "role_conflicts": [],
+      "historical_role_conflicts": [],
+      "constraints": {},
+      "record_schemas": {},
+      "initial_state": {
+        "𐀀": [],
+        "": []
+      },
+      "actions": [],
+      "format_version": 2,
+      "state_array_types": [
+        {
+          "path": [
+            ""
+          ],
+          "kind": "json"
+        },
+        {
+          "path": [
+            "𐀀"
+          ],
+          "kind": "json"
+        }
+      ]
+    },
+    "error": "ZodError"
   }
 ]

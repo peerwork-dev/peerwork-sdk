@@ -59,6 +59,7 @@ try {
     {name:'action_actor_key_mismatch',operation:structuredClone(actionResult),badActor:true},
     {name:'action_scope_denied',operation:structuredClone(actionResult),denyScope:true},
     {name:'action_instance_scope_mismatch',operation:structuredClone(actionResult),wrongWorkspace:true},
+    {name:'action_protocol_suspended',operation:structuredClone(actionResult),suspended:true},
   ]) {
     if(item.mutate)item.operation.objects[0].value.state.count=99;
     if(item.stale)item.operation.input.expected_instance_revision=0;
@@ -66,7 +67,20 @@ try {
     if(item.badActor)item.context.actor_id='Z'.repeat(43);
     if(item.denyScope)item.policy.payload.members[0].scopes=[];
     if(item.wrongWorkspace)item.prior[1].value.workspace_id='other';
+    if(item.suspended)item.prior.push(object('protocol_status','status',1,{digest,state:'SUSPENDED'}));
     try {await validateSecureOperation(item.operation,item.context,item.policy,item.prior);item.result='ok';}
+    catch(error){item.error=error.code??error.message;}
+    cases.push(item);
+  }
+  for(const type of ['active','historical']){
+    const item={name:`action_${type}_role_conflict`,operation:structuredClone(actionResult),
+      context:actionContext,policy:structuredClone(actionPolicy),prior:structuredClone(actionObjects)};
+    item.prior[0].value.resolved_manifest.role_conflicts=type==='active'?[['reviewer','approver']]:[];
+    item.prior[0].value.resolved_manifest.historical_role_conflicts=type==='historical'?[['reviewer','approver']]:[];
+    item.policy.payload.members[0].scopes[0].protocol_roles=type==='active'?['reviewer','approver']:['approver'];
+    if(type==='historical')item.prior.push(object('grants','legacy',1,{instance_id:instanceId,protocol_digest:digest,
+      actor_id:actorId,protocol_roles:['reviewer']}));
+    try{await validateSecureOperation(item.operation,item.context,item.policy,item.prior);item.result='ok';}
     catch(error){item.error=error.code??error.message;}
     cases.push(item);
   }
@@ -119,6 +133,31 @@ try {
     item.context=actionContext;item.policy=actionPolicy;item.prior=structuredClone(referencePrior);
     if(item.wrongScope)item.prior[2].value.instance_id=null;
     if(item.missingRef)item.operation.input.exact_input_refs=[];
+    try{await validateSecureOperation(item.operation,item.context,item.policy,item.prior);item.result='ok';}
+    catch(error){item.error=error.code??error.message;}
+    cases.push(item);
+  }
+  const surrogatePrior=structuredClone(referencePrior);
+  surrogatePrior[2].value.payload='{"value":"'+String.fromCharCode(0xd800)+'"}';
+  const surrogateResult=await prepareSecureAction({objects:surrogatePrior,context:actionContext,
+    policy:actionPolicy,body:referenceBody,exactRefs:referenceRefs,allocations:[]});
+  const surrogateCase={name:'action_raw_utf16_json_string_payload',operation:surrogateResult,
+    context:actionContext,policy:actionPolicy,prior:surrogatePrior};
+  try{await validateSecureOperation(surrogateResult,actionContext,actionPolicy,surrogatePrior);surrogateCase.result='ok';}
+  catch(error){surrogateCase.error=error.code??error.message;}
+  cases.push(surrogateCase);
+  const arrayPrior=structuredClone(actionObjects);
+  arrayPrior[0].value.resolved_manifest={...structuredClone(manifest),format_version:2,
+    state_array_types:[{path:['refs'],kind:'exact_ref_list'}]};
+  arrayPrior[1].value.state={count:0,refs:[]};
+  const arrayResult=await prepareSecureAction({objects:arrayPrior,context:actionContext,
+    policy:actionPolicy,body:actionBody,exactRefs:[],allocations:[]});
+  for(const item of [
+    {name:'action_state_array_valid',prior:structuredClone(arrayPrior)},
+    {name:'action_state_array_invalid_source',prior:structuredClone(arrayPrior),invalid:true},
+  ]){
+    item.operation=structuredClone(arrayResult);item.context=actionContext;item.policy=actionPolicy;
+    if(item.invalid)item.prior[1].value.state.refs=[{record_id:'*',revision:1}];
     try{await validateSecureOperation(item.operation,item.context,item.policy,item.prior);item.result='ok';}
     catch(error){item.error=error.code??error.message;}
     cases.push(item);

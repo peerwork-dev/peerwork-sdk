@@ -1175,6 +1175,523 @@
     "error": "INSTANCE_SCOPE_MISMATCH"
   },
   {
+    "name": "action_protocol_suspended",
+    "operation": {
+      "v": 1,
+      "kind": "ACTION",
+      "input": {
+        "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+        "expected_instance_revision": 1,
+        "action_id": "test.set",
+        "body": {},
+        "exact_input_refs": [],
+        "allocations": []
+      },
+      "objects": [
+        {
+          "kind": "instances",
+          "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+          "revision": 2,
+          "value": {
+            "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+            "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+            "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "state": {
+              "count": 1
+            },
+            "revision": 2,
+            "event_revision": 1
+          },
+          "provenance": "AUTHOR_SIGNED"
+        }
+      ]
+    },
+    "suspended": true,
+    "context": {
+      "v": 1,
+      "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+      "sequence": 1,
+      "action_id": "test.set",
+      "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+      "actor_id": "4g1gu0YWhDLX3Mc-KnwMe_19_GRUn2722Gki77eVWAs",
+      "signing_key": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "issued_at": 2,
+      "delegation": null
+    },
+    "policy": {
+      "payload": {
+        "v": 1,
+        "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+        "visibility": "PRIVATE",
+        "epoch": 1,
+        "owner_id": "4g1gu0YWhDLX3Mc-KnwMe_19_GRUn2722Gki77eVWAs",
+        "signing_key": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+        "issued_at": 1,
+        "members": [
+          {
+            "actor_id": "4g1gu0YWhDLX3Mc-KnwMe_19_GRUn2722Gki77eVWAs",
+            "certificate": {
+              "payload": {
+                "signing_key": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+              }
+            },
+            "role": "OWNER",
+            "scopes": [
+              {
+                "instance_id": null,
+                "actions": [
+                  "test.set"
+                ],
+                "protocol_roles": [],
+                "capabilities": []
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "prior": [
+      {
+        "kind": "protocols",
+        "id": "protocol",
+        "revision": 1,
+        "value": {
+          "digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "resolved_manifest": {
+            "record_schemas": {},
+            "role_conflicts": [],
+            "historical_role_conflicts": [],
+            "actions": [
+              {
+                "id": "test.set",
+                "reads": [
+                  [
+                    "count"
+                  ]
+                ],
+                "writes": [
+                  [
+                    "count"
+                  ]
+                ],
+                "revisionEffects": {
+                  "control": true,
+                  "contentEntities": []
+                },
+                "variants": [
+                  {
+                    "when": [
+                      {
+                        "op": "eq",
+                        "left": {
+                          "from": "state",
+                          "path": [
+                            "count"
+                          ]
+                        },
+                        "right": {
+                          "from": "literal",
+                          "value": 0
+                        }
+                      }
+                    ],
+                    "effects": [
+                      {
+                        "op": "set",
+                        "path": [
+                          "count"
+                        ],
+                        "value": {
+                          "from": "literal",
+                          "value": 1
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "provenance": "AUTHOR_SIGNED"
+      },
+      {
+        "kind": "instances",
+        "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+        "revision": 1,
+        "value": {
+          "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+          "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "state": {
+            "count": 0
+          },
+          "revision": 1,
+          "event_revision": 0
+        },
+        "provenance": "AUTHOR_SIGNED"
+      },
+      {
+        "kind": "protocol_status",
+        "id": "status",
+        "revision": 1,
+        "value": {
+          "digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "state": "SUSPENDED"
+        },
+        "provenance": "AUTHOR_SIGNED"
+      }
+    ],
+    "error": "PROTOCOL_SUSPENDED"
+  },
+  {
+    "name": "action_active_role_conflict",
+    "operation": {
+      "v": 1,
+      "kind": "ACTION",
+      "input": {
+        "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+        "expected_instance_revision": 1,
+        "action_id": "test.set",
+        "body": {},
+        "exact_input_refs": [],
+        "allocations": []
+      },
+      "objects": [
+        {
+          "kind": "instances",
+          "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+          "revision": 2,
+          "value": {
+            "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+            "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+            "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "state": {
+              "count": 1
+            },
+            "revision": 2,
+            "event_revision": 1
+          },
+          "provenance": "AUTHOR_SIGNED"
+        }
+      ]
+    },
+    "context": {
+      "v": 1,
+      "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+      "sequence": 1,
+      "action_id": "test.set",
+      "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+      "actor_id": "4g1gu0YWhDLX3Mc-KnwMe_19_GRUn2722Gki77eVWAs",
+      "signing_key": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "issued_at": 2,
+      "delegation": null
+    },
+    "policy": {
+      "payload": {
+        "v": 1,
+        "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+        "visibility": "PRIVATE",
+        "epoch": 1,
+        "owner_id": "4g1gu0YWhDLX3Mc-KnwMe_19_GRUn2722Gki77eVWAs",
+        "signing_key": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+        "issued_at": 1,
+        "members": [
+          {
+            "actor_id": "4g1gu0YWhDLX3Mc-KnwMe_19_GRUn2722Gki77eVWAs",
+            "certificate": {
+              "payload": {
+                "signing_key": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+              }
+            },
+            "role": "OWNER",
+            "scopes": [
+              {
+                "instance_id": null,
+                "actions": [
+                  "test.set"
+                ],
+                "protocol_roles": [
+                  "reviewer",
+                  "approver"
+                ],
+                "capabilities": []
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "prior": [
+      {
+        "kind": "protocols",
+        "id": "protocol",
+        "revision": 1,
+        "value": {
+          "digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "resolved_manifest": {
+            "record_schemas": {},
+            "role_conflicts": [
+              [
+                "reviewer",
+                "approver"
+              ]
+            ],
+            "historical_role_conflicts": [],
+            "actions": [
+              {
+                "id": "test.set",
+                "reads": [
+                  [
+                    "count"
+                  ]
+                ],
+                "writes": [
+                  [
+                    "count"
+                  ]
+                ],
+                "revisionEffects": {
+                  "control": true,
+                  "contentEntities": []
+                },
+                "variants": [
+                  {
+                    "when": [
+                      {
+                        "op": "eq",
+                        "left": {
+                          "from": "state",
+                          "path": [
+                            "count"
+                          ]
+                        },
+                        "right": {
+                          "from": "literal",
+                          "value": 0
+                        }
+                      }
+                    ],
+                    "effects": [
+                      {
+                        "op": "set",
+                        "path": [
+                          "count"
+                        ],
+                        "value": {
+                          "from": "literal",
+                          "value": 1
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "provenance": "AUTHOR_SIGNED"
+      },
+      {
+        "kind": "instances",
+        "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+        "revision": 1,
+        "value": {
+          "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+          "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "state": {
+            "count": 0
+          },
+          "revision": 1,
+          "event_revision": 0
+        },
+        "provenance": "AUTHOR_SIGNED"
+      }
+    ],
+    "error": "ACTIVE_ROLE_CONFLICT"
+  },
+  {
+    "name": "action_historical_role_conflict",
+    "operation": {
+      "v": 1,
+      "kind": "ACTION",
+      "input": {
+        "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+        "expected_instance_revision": 1,
+        "action_id": "test.set",
+        "body": {},
+        "exact_input_refs": [],
+        "allocations": []
+      },
+      "objects": [
+        {
+          "kind": "instances",
+          "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+          "revision": 2,
+          "value": {
+            "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+            "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+            "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "state": {
+              "count": 1
+            },
+            "revision": 2,
+            "event_revision": 1
+          },
+          "provenance": "AUTHOR_SIGNED"
+        }
+      ]
+    },
+    "context": {
+      "v": 1,
+      "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+      "sequence": 1,
+      "action_id": "test.set",
+      "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+      "actor_id": "4g1gu0YWhDLX3Mc-KnwMe_19_GRUn2722Gki77eVWAs",
+      "signing_key": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "issued_at": 2,
+      "delegation": null
+    },
+    "policy": {
+      "payload": {
+        "v": 1,
+        "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+        "visibility": "PRIVATE",
+        "epoch": 1,
+        "owner_id": "4g1gu0YWhDLX3Mc-KnwMe_19_GRUn2722Gki77eVWAs",
+        "signing_key": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+        "issued_at": 1,
+        "members": [
+          {
+            "actor_id": "4g1gu0YWhDLX3Mc-KnwMe_19_GRUn2722Gki77eVWAs",
+            "certificate": {
+              "payload": {
+                "signing_key": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+              }
+            },
+            "role": "OWNER",
+            "scopes": [
+              {
+                "instance_id": null,
+                "actions": [
+                  "test.set"
+                ],
+                "protocol_roles": [
+                  "approver"
+                ],
+                "capabilities": []
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "prior": [
+      {
+        "kind": "protocols",
+        "id": "protocol",
+        "revision": 1,
+        "value": {
+          "digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "resolved_manifest": {
+            "record_schemas": {},
+            "role_conflicts": [],
+            "historical_role_conflicts": [
+              [
+                "reviewer",
+                "approver"
+              ]
+            ],
+            "actions": [
+              {
+                "id": "test.set",
+                "reads": [
+                  [
+                    "count"
+                  ]
+                ],
+                "writes": [
+                  [
+                    "count"
+                  ]
+                ],
+                "revisionEffects": {
+                  "control": true,
+                  "contentEntities": []
+                },
+                "variants": [
+                  {
+                    "when": [
+                      {
+                        "op": "eq",
+                        "left": {
+                          "from": "state",
+                          "path": [
+                            "count"
+                          ]
+                        },
+                        "right": {
+                          "from": "literal",
+                          "value": 0
+                        }
+                      }
+                    ],
+                    "effects": [
+                      {
+                        "op": "set",
+                        "path": [
+                          "count"
+                        ],
+                        "value": {
+                          "from": "literal",
+                          "value": 1
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "provenance": "AUTHOR_SIGNED"
+      },
+      {
+        "kind": "instances",
+        "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+        "revision": 1,
+        "value": {
+          "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+          "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "state": {
+            "count": 0
+          },
+          "revision": 1,
+          "event_revision": 0
+        },
+        "provenance": "AUTHOR_SIGNED"
+      },
+      {
+        "kind": "grants",
+        "id": "legacy",
+        "revision": 1,
+        "value": {
+          "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "actor_id": "4g1gu0YWhDLX3Mc-KnwMe_19_GRUn2722Gki77eVWAs",
+          "protocol_roles": [
+            "reviewer"
+          ]
+        },
+        "provenance": "AUTHOR_SIGNED"
+      }
+    ],
+    "error": "HISTORICAL_ROLE_CONFLICT"
+  },
+  {
     "name": "action_append_record",
     "operation": {
       "v": 1,
@@ -2955,5 +3472,546 @@
       }
     ],
     "error": "INVALID_PAYLOAD"
+  },
+  {
+    "name": "action_raw_utf16_json_string_payload",
+    "operation": {
+      "v": 1,
+      "kind": "ACTION",
+      "input": {
+        "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+        "expected_instance_revision": 1,
+        "action_id": "test.set",
+        "body": {
+          "ref": {
+            "record_id": "QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ",
+            "revision": 1
+          }
+        },
+        "exact_input_refs": [
+          {
+            "record_id": "QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ",
+            "revision": 1
+          }
+        ],
+        "allocations": []
+      },
+      "objects": [
+        {
+          "kind": "instances",
+          "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+          "revision": 2,
+          "value": {
+            "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+            "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+            "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "state": {
+              "count": "\ud800"
+            },
+            "revision": 2,
+            "event_revision": 1
+          },
+          "provenance": "AUTHOR_SIGNED"
+        }
+      ]
+    },
+    "context": {
+      "v": 1,
+      "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+      "sequence": 1,
+      "action_id": "test.set",
+      "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+      "actor_id": "4g1gu0YWhDLX3Mc-KnwMe_19_GRUn2722Gki77eVWAs",
+      "signing_key": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "issued_at": 2,
+      "delegation": null
+    },
+    "policy": {
+      "payload": {
+        "v": 1,
+        "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+        "visibility": "PRIVATE",
+        "epoch": 1,
+        "owner_id": "4g1gu0YWhDLX3Mc-KnwMe_19_GRUn2722Gki77eVWAs",
+        "signing_key": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+        "issued_at": 1,
+        "members": [
+          {
+            "actor_id": "4g1gu0YWhDLX3Mc-KnwMe_19_GRUn2722Gki77eVWAs",
+            "certificate": {
+              "payload": {
+                "signing_key": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+              }
+            },
+            "role": "OWNER",
+            "scopes": [
+              {
+                "instance_id": null,
+                "actions": [
+                  "test.set"
+                ],
+                "protocol_roles": [],
+                "capabilities": []
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "prior": [
+      {
+        "kind": "protocols",
+        "id": "protocol",
+        "revision": 1,
+        "value": {
+          "digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "resolved_manifest": {
+            "record_schemas": {},
+            "role_conflicts": [],
+            "historical_role_conflicts": [],
+            "actions": [
+              {
+                "id": "test.set",
+                "reads": [
+                  [
+                    "count"
+                  ]
+                ],
+                "writes": [
+                  [
+                    "count"
+                  ]
+                ],
+                "revisionEffects": {
+                  "control": true,
+                  "contentEntities": []
+                },
+                "variants": [
+                  {
+                    "when": [
+                      {
+                        "op": "exact_ref",
+                        "ref": {
+                          "from": "ref",
+                          "source": "body",
+                          "path": [
+                            "ref"
+                          ],
+                          "schema": "entry",
+                          "scope": "INSTANCE"
+                        }
+                      }
+                    ],
+                    "effects": [
+                      {
+                        "op": "set",
+                        "path": [
+                          "count"
+                        ],
+                        "value": {
+                          "from": "resolved_payload",
+                          "ref": {
+                            "from": "ref",
+                            "source": "body",
+                            "path": [
+                              "ref"
+                            ],
+                            "schema": "entry",
+                            "scope": "INSTANCE"
+                          },
+                          "path": [
+                            "value"
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "provenance": "AUTHOR_SIGNED"
+      },
+      {
+        "kind": "instances",
+        "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+        "revision": 1,
+        "value": {
+          "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+          "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "state": {
+            "count": 0
+          },
+          "revision": 1,
+          "event_revision": 0
+        },
+        "provenance": "AUTHOR_SIGNED"
+      },
+      {
+        "kind": "records",
+        "id": "QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ",
+        "revision": 1,
+        "value": {
+          "id": "QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ",
+          "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+          "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "entity_id": "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE",
+          "schema_ref": "entry",
+          "payload": "{\"value\":\"\ud800\"}",
+          "revision": 1
+        },
+        "provenance": "AUTHOR_SIGNED"
+      }
+    ],
+    "result": "ok"
+  },
+  {
+    "name": "action_state_array_valid",
+    "prior": [
+      {
+        "kind": "protocols",
+        "id": "protocol",
+        "revision": 1,
+        "value": {
+          "digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "resolved_manifest": {
+            "record_schemas": {},
+            "role_conflicts": [],
+            "historical_role_conflicts": [],
+            "actions": [
+              {
+                "id": "test.set",
+                "reads": [
+                  [
+                    "count"
+                  ]
+                ],
+                "writes": [
+                  [
+                    "count"
+                  ]
+                ],
+                "revisionEffects": {
+                  "control": true,
+                  "contentEntities": []
+                },
+                "variants": [
+                  {
+                    "when": [
+                      {
+                        "op": "eq",
+                        "left": {
+                          "from": "state",
+                          "path": [
+                            "count"
+                          ]
+                        },
+                        "right": {
+                          "from": "literal",
+                          "value": 0
+                        }
+                      }
+                    ],
+                    "effects": [
+                      {
+                        "op": "set",
+                        "path": [
+                          "count"
+                        ],
+                        "value": {
+                          "from": "literal",
+                          "value": 1
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ],
+            "format_version": 2,
+            "state_array_types": [
+              {
+                "path": [
+                  "refs"
+                ],
+                "kind": "exact_ref_list"
+              }
+            ]
+          }
+        },
+        "provenance": "AUTHOR_SIGNED"
+      },
+      {
+        "kind": "instances",
+        "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+        "revision": 1,
+        "value": {
+          "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+          "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "state": {
+            "count": 0,
+            "refs": []
+          },
+          "revision": 1,
+          "event_revision": 0
+        },
+        "provenance": "AUTHOR_SIGNED"
+      }
+    ],
+    "operation": {
+      "v": 1,
+      "kind": "ACTION",
+      "input": {
+        "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+        "expected_instance_revision": 1,
+        "action_id": "test.set",
+        "body": {},
+        "exact_input_refs": [],
+        "allocations": []
+      },
+      "objects": [
+        {
+          "kind": "instances",
+          "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+          "revision": 2,
+          "value": {
+            "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+            "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+            "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "state": {
+              "count": 1,
+              "refs": []
+            },
+            "revision": 2,
+            "event_revision": 1
+          },
+          "provenance": "AUTHOR_SIGNED"
+        }
+      ]
+    },
+    "context": {
+      "v": 1,
+      "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+      "sequence": 1,
+      "action_id": "test.set",
+      "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+      "actor_id": "4g1gu0YWhDLX3Mc-KnwMe_19_GRUn2722Gki77eVWAs",
+      "signing_key": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "issued_at": 2,
+      "delegation": null
+    },
+    "policy": {
+      "payload": {
+        "v": 1,
+        "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+        "visibility": "PRIVATE",
+        "epoch": 1,
+        "owner_id": "4g1gu0YWhDLX3Mc-KnwMe_19_GRUn2722Gki77eVWAs",
+        "signing_key": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+        "issued_at": 1,
+        "members": [
+          {
+            "actor_id": "4g1gu0YWhDLX3Mc-KnwMe_19_GRUn2722Gki77eVWAs",
+            "certificate": {
+              "payload": {
+                "signing_key": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+              }
+            },
+            "role": "OWNER",
+            "scopes": [
+              {
+                "instance_id": null,
+                "actions": [
+                  "test.set"
+                ],
+                "protocol_roles": [],
+                "capabilities": []
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "result": "ok"
+  },
+  {
+    "name": "action_state_array_invalid_source",
+    "prior": [
+      {
+        "kind": "protocols",
+        "id": "protocol",
+        "revision": 1,
+        "value": {
+          "digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "resolved_manifest": {
+            "record_schemas": {},
+            "role_conflicts": [],
+            "historical_role_conflicts": [],
+            "actions": [
+              {
+                "id": "test.set",
+                "reads": [
+                  [
+                    "count"
+                  ]
+                ],
+                "writes": [
+                  [
+                    "count"
+                  ]
+                ],
+                "revisionEffects": {
+                  "control": true,
+                  "contentEntities": []
+                },
+                "variants": [
+                  {
+                    "when": [
+                      {
+                        "op": "eq",
+                        "left": {
+                          "from": "state",
+                          "path": [
+                            "count"
+                          ]
+                        },
+                        "right": {
+                          "from": "literal",
+                          "value": 0
+                        }
+                      }
+                    ],
+                    "effects": [
+                      {
+                        "op": "set",
+                        "path": [
+                          "count"
+                        ],
+                        "value": {
+                          "from": "literal",
+                          "value": 1
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ],
+            "format_version": 2,
+            "state_array_types": [
+              {
+                "path": [
+                  "refs"
+                ],
+                "kind": "exact_ref_list"
+              }
+            ]
+          }
+        },
+        "provenance": "AUTHOR_SIGNED"
+      },
+      {
+        "kind": "instances",
+        "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+        "revision": 1,
+        "value": {
+          "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+          "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "state": {
+            "count": 0,
+            "refs": [
+              {
+                "record_id": "*",
+                "revision": 1
+              }
+            ]
+          },
+          "revision": 1,
+          "event_revision": 0
+        },
+        "provenance": "AUTHOR_SIGNED"
+      }
+    ],
+    "invalid": true,
+    "operation": {
+      "v": 1,
+      "kind": "ACTION",
+      "input": {
+        "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+        "expected_instance_revision": 1,
+        "action_id": "test.set",
+        "body": {},
+        "exact_input_refs": [],
+        "allocations": []
+      },
+      "objects": [
+        {
+          "kind": "instances",
+          "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+          "revision": 2,
+          "value": {
+            "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+            "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+            "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "state": {
+              "count": 1,
+              "refs": []
+            },
+            "revision": 2,
+            "event_revision": 1
+          },
+          "provenance": "AUTHOR_SIGNED"
+        }
+      ]
+    },
+    "context": {
+      "v": 1,
+      "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+      "sequence": 1,
+      "action_id": "test.set",
+      "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+      "actor_id": "4g1gu0YWhDLX3Mc-KnwMe_19_GRUn2722Gki77eVWAs",
+      "signing_key": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "issued_at": 2,
+      "delegation": null
+    },
+    "policy": {
+      "payload": {
+        "v": 1,
+        "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+        "visibility": "PRIVATE",
+        "epoch": 1,
+        "owner_id": "4g1gu0YWhDLX3Mc-KnwMe_19_GRUn2722Gki77eVWAs",
+        "signing_key": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+        "issued_at": 1,
+        "members": [
+          {
+            "actor_id": "4g1gu0YWhDLX3Mc-KnwMe_19_GRUn2722Gki77eVWAs",
+            "certificate": {
+              "payload": {
+                "signing_key": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+              }
+            },
+            "role": "OWNER",
+            "scopes": [
+              {
+                "instance_id": null,
+                "actions": [
+                  "test.set"
+                ],
+                "protocol_roles": [],
+                "capabilities": []
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "error": "STATE_ARRAY_TYPE_INVALID"
   }
 ]

@@ -369,6 +369,8 @@ fn validate_workflow(
         if !state_name(to) || !state_set.contains(to) {
             return Err(ManifestError::Invalid);
         }
+        // Zod parses strict transition objects into schema field order before its
+        // JSON.stringify duplicate check.
         if !seen.insert((action.to_vec(), from.map(|v| v.to_vec()), to.to_vec())) {
             return Err(ManifestError::Invalid);
         }
@@ -615,17 +617,18 @@ fn validate_state_array_types(
     if !matches!(initial, WireValue::Object(_)) {
         return Err(ManifestError::Invalid);
     }
-    let mut previous = String::new();
+    let mut previous: Vec<u16> = Vec::new();
     let mut json_paths = HashSet::new();
     for entry in arrays {
         shape(entry, &["path", "kind"], &[])?;
         let path = segments(field(entry, "path")?, 1, 12)?;
         let encoded = canonical_wire_value(field(entry, "path")?, Path::KERNEL)
             .map_err(|_| ManifestError::Invalid)?;
-        if !previous.is_empty() && encoded <= previous {
+        let js_order: Vec<u16> = encoded.encode_utf16().collect();
+        if !previous.is_empty() && js_order <= previous {
             return Err(ManifestError::Invalid);
         }
-        previous = encoded;
+        previous = js_order;
         let kind = field(entry, "kind")?
             .as_string()
             .ok_or(ManifestError::Invalid)?;
@@ -633,7 +636,7 @@ fn validate_state_array_types(
             return Err(ManifestError::Invalid);
         }
         if kind == "json" {
-            json_paths.insert(previous.clone());
+            json_paths.insert(encoded);
         }
         let target = at(initial, &path).ok_or(ManifestError::Invalid)?;
         let WireValue::Array(items) = target else {
@@ -666,6 +669,35 @@ fn validate_state_array_types(
                     guard_array_kind(rule, &json_paths)?;
                 }
             }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_state_array_state(
+    manifest: &WireValue,
+    state: &WireValue,
+) -> Result<(), ManifestError> {
+    let Some(declarations) = manifest.get("state_array_types") else {
+        return Ok(());
+    };
+    canonical_wire_value(state, Path::KERNEL).map_err(|_| ManifestError::Invalid)?;
+    if !matches!(state, WireValue::Object(_)) {
+        return Err(ManifestError::Invalid);
+    }
+    for entry in list(declarations, 64)? {
+        let path = segments(field(entry, "path")?, 1, 12)?;
+        let kind = field(entry, "kind")?
+            .as_string()
+            .ok_or(ManifestError::Invalid)?;
+        let Some(WireValue::Array(items)) = at(state, &path) else {
+            return Err(ManifestError::Invalid);
+        };
+        if kind == "exact_ref_list" && items.iter().any(|item| !exact_ref(item))
+            || kind == "json" && nested_ref_or_produced(&WireValue::Array(items.to_vec()))
+            || !matches!(kind.as_str(), "exact_ref_list" | "json")
+        {
+            return Err(ManifestError::Invalid);
         }
     }
     Ok(())
