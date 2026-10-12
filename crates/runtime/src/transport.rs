@@ -6,7 +6,7 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
-const MAX_DISCOVERY_BYTES: usize = 256 * 1024;
+pub(crate) const MAX_DISCOVERY_BYTES: usize = 256 * 1024;
 const MAX_COMMAND_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Debug, Error)]
@@ -96,6 +96,10 @@ impl HttpTransport {
         }
         let client = builder.build().map_err(|_| TransportError::Setup)?;
         Ok(Self { origin, client })
+    }
+
+    pub(crate) fn trusted_origin(&self) -> &str {
+        self.origin.as_str()
     }
 
     pub async fn discovery(

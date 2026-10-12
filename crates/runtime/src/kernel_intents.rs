@@ -2,6 +2,7 @@
 //! inferred accepted from an HTTP status or a missing response.
 
 use peerwork_core::crypto::sha256_hex;
+use peerwork_core::discovery::{parse_discovery_wire, ParsedDiscovery};
 use peerwork_core::prepared_command::{
     verify_prepared_command_wire, CommandPins, VerifiedPreparedCommand,
 };
@@ -42,6 +43,8 @@ pub enum JournalError {
     IntentConflict,
     #[error("incompatible or corrupt intent database; migration required")]
     IncompatibleStore,
+    #[error("discovery origin or pinned semantics changed")]
+    DiscoveryChanged,
     #[error("local intent store failed")]
     Storage(#[from] rusqlite::Error),
     #[error("local file operation failed")]
@@ -188,6 +191,46 @@ impl KernelIntentJournal {
         })?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(JournalError::Storage)
+    }
+
+    /// Pin the schema-validated response returned by this runtime's configured
+    /// HTTPS origin. Only the owning client calls this with its transport's
+    /// actual origin; arbitrary public callers cannot authorize a pin.
+    pub(crate) fn bind_discovery(
+        &mut self,
+        origin: &str,
+        discovered: &ParsedDiscovery,
+    ) -> Result<(), JournalError> {
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let previous: Option<(String, Vec<u8>)> = tx
+            .query_row(
+                "SELECT origin,discovery_wire FROM pinned_discovery WHERE id=1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        if let Some((previous_origin, previous_wire)) = previous {
+            let parsed = parse_discovery_wire(&previous_wire, 256 * 1024)
+                .map_err(|_| JournalError::IncompatibleStore)?;
+            if previous_origin != origin || !discovered.permits_update_from(&parsed) {
+                return Err(JournalError::DiscoveryChanged);
+            }
+            if previous_wire != discovered.raw_wire() {
+                tx.execute(
+                    "UPDATE pinned_discovery SET discovery_wire=?1 WHERE id=1",
+                    [discovered.raw_wire()],
+                )?;
+            }
+        } else {
+            tx.execute(
+                "INSERT INTO pinned_discovery(id,origin,discovery_wire) VALUES (1,?1,?2)",
+                params![origin, discovered.raw_wire()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     pub(crate) fn verified_pending(
