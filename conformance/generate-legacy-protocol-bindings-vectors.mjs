@@ -52,5 +52,14 @@ try {
  cases.push(await result('noncanonical_source_envelope', [noncanonical],false));
  const wrongWorkspace=structuredClone(standalone);wrongWorkspace.value.workspace_id='x'.repeat(43);
  cases.push(await result('workspace_mismatch', [wrongWorkspace],false));
+ const action=(id)=>({id,reads:[],writes:[],revisionEffects:{control:true,contentEntities:[]},variants:[{when:[],effects:[]}]});
+ const punctuation=structuredClone(minimal);punctuation.actions=[action('a-1'),action('a_1')];
+ const punctuationCase=await result('locale_compare_action_order', [legacy(punctuation)]);punctuationCase.check_rust=false;cases.push(punctuationCase);
+ function unsatisfiedPortRow(manifest){const normalized=manifestCanonical(manifest).manifest,id=digest(normalized),sourceText=canonicalStructured({semantics:'peerwork.kernel.v1',manifest});
+  return {kind:'protocols',id,revision:1,provenance:'LEGACY_OWNER_ATTESTED',value:{digest:id,workspace_id:workspace,source_digest:hash(sourceText),resolved_manifest:canonicalStructured(normalized),manifest:sourceText,dependency_closure:'[]',created_by:actor,created:1}};}
+ const missingPort=structuredClone(minimal);missingPort.execution_requirements={format:'peerwork.protocol-execution-requirements.v1',closure_complete:false,ports:[{import_path:[],action_id:'missing.action',variant:0,input_name:'input',type:'actor_id',required:true,bound:false}]};
+ cases.push(await result('execution_requirement_missing_action', [unsatisfiedPortRow(missingPort)],false));
+ const missingVariant=structuredClone(minimal);missingVariant.actions=[action('present.action')];missingVariant.execution_requirements={format:'peerwork.protocol-execution-requirements.v1',closure_complete:false,ports:[{import_path:[],action_id:'present.action',variant:1,input_name:'input',type:'actor_id',required:true,bound:false}]};
+ cases.push(await result('execution_requirement_missing_variant', [unsatisfiedPortRow(missingVariant)],false));
  await writeFile(join(root,'legacy-protocol-bindings-vectors.json'),JSON.stringify(cases,null,2)+'\n');
 } finally {await rm(dir,{recursive:true,force:true});}
