@@ -897,3 +897,25 @@ and unchanged `Cargo.lock`
 PRIVATE structured/coordination creation, custom package stage/install,
 complete replay and activation, public three-language surfaces, and actual
 OS release matrix remain open.
+
+PRIVATE structured owner-create checkpoint at exact SDK source
+`64dc1f72e99c6e532189e91341473d36c0756991` extends the native
+six-preset producer with a signed v3 `STRUCTURED` policy and empty genesis
+DELTA, plus validated `keep_encrypted` choices. PRIVATE mode stages one
+protected epoch-1 key before signing and persists the exact encrypted
+request before HTTP. Its caller remains private and its pending key is not
+promoted by a service response. From a clean detached `64dc1f7` checkout,
+Rust 1.89 `cargo test -p peerwork-runtime --offline --locked
+actual_service_native_private_structured_bootstrap_exact_retry -- --nocapture`
+passed 1/1 with the explicit reference/Node environment above. The fresh
+tracked service had zero commits before and after preparation; the signed
+policy marks `discussion.message.author` `e2ee`; the first applied POST lost
+its reply; protected keyring and journal reopened and exact-byte retry left
+one commit/head sequence 1. The saved intent remains PENDING. Source SHA-256:
+`secure_native_prepare.rs`
+`98b2a28be73eeb010fbf4f2cda953409b98f14efe546f651fedaba4b079d41ce`,
+unchanged lock `48775117e96fe4cba67314559398d3d08c75fc211952e22473ceacc389003f17`.
+No Agent workflow entry test ran; workflow compliance is unverified despite
+the business-path service result. Coordination combined with PRIVATE mode,
+custom package stage/install, complete replay/activation and public bindings
+remain open.
