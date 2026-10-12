@@ -11,14 +11,14 @@ use crate::{
 use ed25519_dalek::Signer;
 use peerwork_core::{
     canonical::Path as CanonicalPath,
-    crypto::{base64url, decode_base64url},
+    crypto::{base64url, decode_base64url, sha256_hex},
     discovery::{parse_discovery_wire, ParsedDiscovery},
     wire_json::{canonical_wire_value, parse_wire_json_bounded, WireValue},
 };
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use std::{
-    path::Path,
+    path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 use thiserror::Error;
@@ -26,7 +26,7 @@ use tokio_util::sync::CancellationToken;
 
 const MAX_PAGE: usize = 32 * 1024 * 1024;
 const MAX_DOCUMENT: usize = 64 * 1024 * 1024;
-const MAX_PAGES: usize = 2048;
+const MAX_SAVED_WIRE: usize = 512 * 1024 * 1024;
 const MAX_SAFE: u64 = 9_007_199_254_740_991;
 
 #[derive(Debug, Error)]
@@ -51,7 +51,12 @@ pub(crate) enum JournalReadError {
 #[serde(deny_unknown_fields)]
 struct SavedPage {
     after: u64,
-    exact_b64: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    exact_b64: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    length: Option<usize>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -77,6 +82,7 @@ pub(crate) struct UnverifiedJournalProgress {
     pub complete_transport: bool,
 }
 
+#[derive(Clone)]
 struct PageFacts {
     checkpoint: String,
     policies: String,
@@ -88,7 +94,10 @@ struct PageFacts {
 
 pub(crate) struct SecureJournalRead {
     store: SecureStateStore,
+    index_path: PathBuf,
     document: Document,
+    last_verified: Option<PageFacts>,
+    verified_count: usize,
 }
 
 impl SecureJournalRead {
@@ -105,7 +114,7 @@ impl SecureJournalRead {
         let store = SecureStateStore::open(path)?;
         let discovery = client.discovery();
         let expected = Document {
-            version: 2,
+            version: 3,
             origin: client.origin().into(),
             discovery_context: discovery.canonical_context().to_owned(),
             discovery_b64: base64url(discovery.raw_wire()),
@@ -126,19 +135,31 @@ impl SecureJournalRead {
         } else {
             expected.clone()
         };
-        if document.version != 2
+        if !matches!(document.version, 2 | 3)
             || document.origin != expected.origin
             || !permits_discovery(&document, discovery)
             || document.actor_id != expected.actor_id
             || document.key_id != expected.key_id
             || document.authority != expected.authority
             || document.workspace_id != expected.workspace_id
-            || document.pages.len() > MAX_PAGES
+            || document.pages.len() > MAX_SAVED_WIRE / 128
         {
             return Err(JournalReadError::Incompatible);
         }
-        let opened = Self { store, document };
-        opened.inspect()?;
+        let mut opened = Self {
+            store,
+            index_path: path.to_owned(),
+            document,
+            last_verified: None,
+            verified_count: 0,
+        };
+        let (last, count) = opened.inspect()?;
+        opened.last_verified = last;
+        opened.verified_count = count;
+        if opened.document.version == 2 {
+            opened.migrate_inline_pages()?;
+        }
+        opened.advance_discovery(discovery)?;
         Ok(opened)
     }
 
@@ -153,14 +174,29 @@ impl SecureJournalRead {
         })
     }
 
-    /// Exact pages are an internal replay input, never a public result DTO.
-    pub(crate) fn exact_pages(&self) -> Result<Vec<Vec<u8>>, JournalReadError> {
+    /// Bounded, one-page-at-a-time input for a future complete core verifier.
+    /// No page or callback result is an authenticated business outcome here.
+    pub(crate) fn for_each_exact_page(
+        &self,
+        mut consume: impl FnMut(&[u8]) -> Result<(), JournalReadError>,
+    ) -> Result<(), JournalReadError> {
         self.inspect()?;
-        self.document
-            .pages
-            .iter()
-            .map(|p| decode_base64url(&p.exact_b64).map_err(|_| JournalReadError::Incompatible))
-            .collect()
+        for (index, saved) in self.document.pages.iter().enumerate() {
+            let wire = self.read_page(index, saved)?;
+            consume(&wire)?;
+        }
+        Ok(())
+    }
+
+    /// Test convenience only; product replay uses the streaming callback.
+    #[cfg(test)]
+    pub(crate) fn exact_pages(&self) -> Result<Vec<Vec<u8>>, JournalReadError> {
+        let mut pages = Vec::new();
+        self.for_each_exact_page(|wire| {
+            pages.push(wire.to_vec());
+            Ok(())
+        })?;
+        Ok(pages)
     }
 
     pub(crate) async fn fetch_next(
@@ -170,15 +206,12 @@ impl SecureJournalRead {
         cancel: &CancellationToken,
     ) -> Result<UnverifiedJournalProgress, JournalReadError> {
         self.check_pins(client, identity)?;
-        let (last, _) = self.inspect()?;
-        if last.as_ref().is_some_and(|p| p.next.is_none()) {
+        let last = self.last_verified.as_ref();
+        if last.is_some_and(|p| p.next.is_none()) {
             return self.progress();
         }
-        if self.document.pages.len() == MAX_PAGES {
-            return Err(JournalReadError::TooLarge);
-        }
-        let after = last.as_ref().and_then(|p| p.next).unwrap_or(0);
-        let path = journal_path(&self.document.workspace_id, after, last.as_ref());
+        let after = last.and_then(|p| p.next).unwrap_or(0);
+        let path = journal_path(&self.document.workspace_id, after, last);
         let proof = sign_read_proof(
             &path,
             client.discovery(),
@@ -192,16 +225,23 @@ impl SecureJournalRead {
         if !(200..300).contains(&response.status) {
             return Err(JournalReadError::ServerRejected(response.status));
         }
-        let facts = validate_page(
-            &response.wire,
-            &self.document.workspace_id,
-            after,
-            last.as_ref(),
-        )?;
+        let facts = validate_page(&response.wire, &self.document.workspace_id, after, last)?;
+        let existing_bytes = self.document.pages.iter().try_fold(0usize, |total, page| {
+            total
+                .checked_add(page.length.ok_or(JournalReadError::Incompatible)?)
+                .ok_or(JournalReadError::TooLarge)
+        })?;
+        check_total_wire_limit(existing_bytes, response.wire.len(), MAX_SAVED_WIRE)?;
         let mut next = self.document.clone();
+        let page_index = next.pages.len();
+        let page_store = SecureStateStore::open(&self.page_path(page_index))?;
+        page_store.write_exact(&response.wire)?;
+        drop(page_store);
         next.pages.push(SavedPage {
             after,
-            exact_b64: base64url(&response.wire),
+            exact_b64: None,
+            sha256: Some(sha256_hex(&response.wire)),
+            length: Some(response.wire.len()),
         });
         let encoded = serde_json::to_vec(&next).map_err(|_| JournalReadError::Incompatible)?;
         if encoded.len() > MAX_DOCUMENT {
@@ -209,10 +249,11 @@ impl SecureJournalRead {
         }
         self.store.write_exact(&encoded)?;
         self.document = next;
-        let (_, count) = self.inspect()?;
+        self.verified_count += facts.commits;
+        self.last_verified = Some(facts.clone());
         Ok(UnverifiedJournalProgress {
             pages: self.document.pages.len(),
-            saved_commits: count,
+            saved_commits: self.verified_count,
             checkpoint_sequence: Some(facts.sequence),
             next_after: facts.next,
             complete_transport: facts.next.is_none(),
@@ -237,19 +278,133 @@ impl SecureJournalRead {
     fn inspect(&self) -> Result<(Option<PageFacts>, usize), JournalReadError> {
         let mut last: Option<PageFacts> = None;
         let mut count = 0;
-        for saved in &self.document.pages {
+        let mut bytes = 0_usize;
+        for (index, saved) in self.document.pages.iter().enumerate() {
             let after = last.as_ref().and_then(|p| p.next).unwrap_or(0);
             if last.as_ref().is_some_and(|p| p.next.is_none()) || saved.after != after {
                 return Err(JournalReadError::Incompatible);
             }
-            let wire =
-                decode_base64url(&saved.exact_b64).map_err(|_| JournalReadError::Incompatible)?;
+            let wire = self.read_page(index, saved)?;
+            bytes = bytes
+                .checked_add(wire.len())
+                .ok_or(JournalReadError::TooLarge)?;
+            if bytes > MAX_SAVED_WIRE {
+                return Err(JournalReadError::TooLarge);
+            }
             let facts = validate_page(&wire, &self.document.workspace_id, after, last.as_ref())?;
             count += facts.commits;
             last = Some(facts);
         }
         Ok((last, count))
     }
+
+    fn page_path(&self, index: usize) -> PathBuf {
+        let mut name = self
+            .index_path
+            .file_name()
+            .unwrap_or_default()
+            .to_os_string();
+        name.push(format!(".page.{index:04}.state"));
+        self.index_path.with_file_name(name)
+    }
+
+    fn read_page(&self, index: usize, saved: &SavedPage) -> Result<Vec<u8>, JournalReadError> {
+        if self.document.version == 2 {
+            let encoded = saved
+                .exact_b64
+                .as_deref()
+                .ok_or(JournalReadError::Incompatible)?;
+            if encoded.len() > MAX_PAGE * 4 / 3 + 8
+                || saved.sha256.is_some()
+                || saved.length.is_some()
+            {
+                return Err(JournalReadError::Incompatible);
+            }
+            return decode_base64url(encoded).map_err(|_| JournalReadError::Incompatible);
+        }
+        if saved.exact_b64.is_some() {
+            return Err(JournalReadError::Incompatible);
+        }
+        let digest = saved
+            .sha256
+            .as_deref()
+            .filter(|d| valid_hex(d))
+            .ok_or(JournalReadError::Incompatible)?;
+        let length = saved
+            .length
+            .filter(|n| *n > 0 && *n <= MAX_PAGE)
+            .ok_or(JournalReadError::Incompatible)?;
+        let page_store = SecureStateStore::open(&self.page_path(index))?;
+        let wire = page_store
+            .read_exact()?
+            .ok_or(JournalReadError::Incompatible)?;
+        if wire.len() != length || sha256_hex(&wire) != digest {
+            return Err(JournalReadError::Incompatible);
+        }
+        Ok(wire)
+    }
+
+    fn migrate_inline_pages(&mut self) -> Result<(), JournalReadError> {
+        if self.document.version != 2 {
+            return Ok(());
+        }
+        let mut next = self.document.clone();
+        for (index, page) in next.pages.iter_mut().enumerate() {
+            let encoded = page
+                .exact_b64
+                .as_deref()
+                .ok_or(JournalReadError::Incompatible)?;
+            let wire = decode_base64url(encoded).map_err(|_| JournalReadError::Incompatible)?;
+            let page_store = SecureStateStore::open(&self.page_path(index))?;
+            page_store.write_exact(&wire)?;
+            page.exact_b64 = None;
+            page.sha256 = Some(sha256_hex(&wire));
+            page.length = Some(wire.len());
+        }
+        next.version = 3;
+        let encoded = serde_json::to_vec(&next).map_err(|_| JournalReadError::Incompatible)?;
+        if encoded.len() > MAX_DOCUMENT {
+            return Err(JournalReadError::TooLarge);
+        }
+        self.store.write_exact(&encoded)?;
+        self.document = next;
+        self.inspect()?;
+        Ok(())
+    }
+
+    fn advance_discovery(&mut self, current: &ParsedDiscovery) -> Result<(), JournalReadError> {
+        if !permits_discovery(&self.document, current) {
+            return Err(JournalReadError::Incompatible);
+        }
+        if self.document.discovery_b64 == base64url(current.raw_wire()) {
+            return Ok(());
+        }
+        let mut next = self.document.clone();
+        next.discovery_context = current.canonical_context().to_owned();
+        next.discovery_b64 = base64url(current.raw_wire());
+        let encoded = serde_json::to_vec(&next).map_err(|_| JournalReadError::Incompatible)?;
+        if encoded.len() > MAX_DOCUMENT {
+            return Err(JournalReadError::TooLarge);
+        }
+        self.store.write_exact(&encoded)?;
+        self.document = next;
+        Ok(())
+    }
+}
+
+fn check_total_wire_limit(
+    existing: usize,
+    incoming: usize,
+    limit: usize,
+) -> Result<(), JournalReadError> {
+    if existing
+        .checked_add(incoming)
+        .ok_or(JournalReadError::TooLarge)?
+        > limit
+    {
+        return Err(JournalReadError::TooLarge);
+    }
+    Ok(())
 }
 
 fn journal_path(workspace: &str, after: u64, first: Option<&PageFacts>) -> String {
@@ -557,5 +712,145 @@ mod tests {
         assert!(!permits_discovery(&document, &parse(&added)));
         document.discovery_b64 = base64url(b"{}");
         assert!(!permits_discovery(&document, &original));
+    }
+
+    #[test]
+    fn inline_pages_migrate_atomically_and_reopen_from_separate_files() {
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let path = root.path().join("journal.state");
+        let workspace = "a".repeat(43);
+        let head = "b".repeat(64);
+        let first = page(&workspace, &head, &[1], Some(1));
+        let second = page(&workspace, &head, &[2], None);
+        let document = Document {
+            version: 2,
+            origin: "https://control.example/".into(),
+            discovery_context: "context".into(),
+            discovery_b64: "wire".into(),
+            actor_id: "c".repeat(43),
+            key_id: "d".repeat(43),
+            authority: "e".repeat(64),
+            workspace_id: workspace,
+            pages: vec![
+                SavedPage {
+                    after: 0,
+                    exact_b64: Some(base64url(&first)),
+                    sha256: None,
+                    length: None,
+                },
+                SavedPage {
+                    after: 1,
+                    exact_b64: Some(base64url(&second)),
+                    sha256: None,
+                    length: None,
+                },
+            ],
+        };
+        let store = SecureStateStore::open(&path).unwrap();
+        store
+            .write_exact(&serde_json::to_vec(&document).unwrap())
+            .unwrap();
+        let mut reader = SecureJournalRead {
+            store,
+            index_path: path.clone(),
+            document,
+            last_verified: None,
+            verified_count: 0,
+        };
+        assert_eq!(reader.progress().unwrap().saved_commits, 2);
+        // A crash after writing a page but before replacing the index leaves an
+        // orphan. Migration must reconstruct that page from the authoritative v2 index.
+        let orphan = SecureStateStore::open(&reader.page_path(0)).unwrap();
+        orphan.write_exact(b"orphan").unwrap();
+        drop(orphan);
+        reader.migrate_inline_pages().unwrap();
+        assert_eq!(reader.document.version, 3);
+        assert_eq!(
+            reader.exact_pages().unwrap(),
+            vec![first.clone(), second.clone()]
+        );
+        drop(reader);
+        let reopened_store = SecureStateStore::open(&path).unwrap();
+        let reopened_document: Document =
+            serde_json::from_slice(&reopened_store.read_exact().unwrap().unwrap()).unwrap();
+        let reopened = SecureJournalRead {
+            store: reopened_store,
+            index_path: path,
+            document: reopened_document,
+            last_verified: None,
+            verified_count: 0,
+        };
+        assert_eq!(reopened.exact_pages().unwrap(), vec![first, second]);
+        let page_store = SecureStateStore::open(&reopened.page_path(1)).unwrap();
+        page_store.write_exact(b"tampered").unwrap();
+        drop(page_store);
+        assert!(matches!(
+            reopened.inspect(),
+            Err(JournalReadError::Incompatible)
+        ));
+        assert!(check_total_wire_limit(7, 4, 10).is_err());
+        assert!(check_total_wire_limit(7, 3, 10).is_ok());
+    }
+
+    #[test]
+    fn additive_discovery_advances_protected_pin_and_refuses_rollback() {
+        let key = peerwork_core::crypto::key_id(&[27; 32]);
+        let base = serde_json::json!({"semantics":"peerwork.kernel.v1",
+            "audience":"https://control.example",
+            "command_type":"peerwork.kernel-command.v1+jws",
+            "receipt_type":"peerwork.kernel-receipt.v1+jws",
+            "receipt_public_key":key,"limits":{"old":1},
+            "protocol_features":["old"],"manifest_language":"v1"});
+        let parse = |v: &serde_json::Value| {
+            let wire = serde_json::to_vec(v).unwrap();
+            parse_discovery_wire(&wire, wire.len()).unwrap()
+        };
+        let d0 = parse(&base);
+        let mut added = base.clone();
+        added["protocol_features"] = serde_json::json!(["old", "new"]);
+        let d1 = parse(&added);
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let path = root.path().join("read.state");
+        let store = SecureStateStore::open(&path).unwrap();
+        let document = Document {
+            version: 3,
+            origin: "https://control.example/".into(),
+            discovery_context: d0.canonical_context().into(),
+            discovery_b64: base64url(d0.raw_wire()),
+            actor_id: "a".repeat(43),
+            key_id: "b".repeat(43),
+            authority: "c".repeat(64),
+            workspace_id: "d".repeat(43),
+            pages: Vec::new(),
+        };
+        store
+            .write_exact(&serde_json::to_vec(&document).unwrap())
+            .unwrap();
+        let mut reader = SecureJournalRead {
+            store,
+            index_path: path.clone(),
+            document,
+            last_verified: None,
+            verified_count: 0,
+        };
+        reader.advance_discovery(&d1).unwrap();
+        assert!(!permits_discovery(&reader.document, &d0));
+        drop(reader);
+        let store = SecureStateStore::open(&path).unwrap();
+        let saved: Document =
+            serde_json::from_slice(&store.read_exact().unwrap().unwrap()).unwrap();
+        assert_eq!(saved.discovery_b64, base64url(d1.raw_wire()));
+        assert!(!permits_discovery(&saved, &d0));
+        assert!(permits_discovery(&saved, &d1));
     }
 }
