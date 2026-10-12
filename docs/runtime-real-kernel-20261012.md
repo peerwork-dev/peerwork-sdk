@@ -219,3 +219,27 @@ This covers an already submitted HTTP request. Local identity creation can
 finish after its caller abandons the await; its documented reopen behavior
 still needs a bounded executable lifecycle regression. Windows console
 interruption and actual Windows/macOS runner execution remain open.
+
+Reviewer follow-up found that a second Python task cancellation could escape
+the worker-drain await, and two simultaneous Unix CLI monitors could replace
+each other's process-global handlers. Commit `18499546d4daa09d219d979ae6f9a8e48d0a781d`
+keeps draining across repeated cancellation and permits one signal-handler
+owner at a time. The focused runtime singleton test passed 1/1 under Rust
+1.89. The installed regression adds a deterministic twice-cancelled slow
+Python worker and asserts that cancellation is reported only after it exits.
+Its first pinned run stopped before service startup because the harness was
+given an incorrect commit hash; using the exact checked-out hash, the
+installed wheel/addon/CLI and real-service regression passed on its first
+service run. SHA-256 values for that corrected source pin were wheel
+`501685f495700bedc45b2e85617f2c44a59c56cd8506185ea79dc5dba0f929ba`,
+Node addon
+`51dba76c59c8e77f44da57664db248108ae1a8e755105b0e7313dcd9ddc2a64e`,
+and CLI
+`06000f9946414963c87c2ac5eb788ad44749d7fb349fa10164cb6ee76fe70bca`.
+Observed stages from installed import: repeated-cancel worker drain 2 ms,
+Python in-flight cancel 515 ms, Python exact retry 826 ms, Node abort/retry
+1695 ms, CLI interrupt/retry 2482 ms. Each service had one command and one
+workspace after recovery. Cancellation during local preparation can still
+race with durable insertion of a new `PENDING` row; callers inspect
+`pending()`/`status(command_id)` before attempting another prepare. This
+scripted run does not establish Agent workflow compliance.
