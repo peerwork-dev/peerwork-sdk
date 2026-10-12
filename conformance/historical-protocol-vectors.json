@@ -1,0 +1,302 @@
+[
+  {
+    "name": "format1_object",
+    "format": 1,
+    "workspace_id": "workspace",
+    "object": {
+      "kind": "protocols",
+      "id": "34ea9421fb94614af7dd81c5d948d085e6e9f9d76ad89276fbd2fa09f9947e0d",
+      "revision": 1,
+      "provenance": "AUTHOR_SIGNED",
+      "value": {
+        "digest": "34ea9421fb94614af7dd81c5d948d085e6e9f9d76ad89276fbd2fa09f9947e0d",
+        "workspace_id": "workspace",
+        "manifest": {
+          "name": "demo",
+          "display_version": "1",
+          "semantics": "peerwork.kernel.v1",
+          "dependencies": [],
+          "protocol_roles": [],
+          "capabilities": [],
+          "role_conflicts": [],
+          "historical_role_conflicts": [],
+          "constraints": {},
+          "record_schemas": {},
+          "initial_state": {},
+          "actions": []
+        },
+        "resolved_manifest": {
+          "name": "demo",
+          "display_version": "1",
+          "semantics": "peerwork.kernel.v1",
+          "dependencies": [],
+          "protocol_roles": [],
+          "capabilities": [],
+          "role_conflicts": [],
+          "historical_role_conflicts": [],
+          "constraints": {},
+          "record_schemas": {},
+          "initial_state": {},
+          "actions": []
+        }
+      }
+    },
+    "result": "ok"
+  },
+  {
+    "name": "format2_object",
+    "format": 2,
+    "workspace_id": "workspace",
+    "object": {
+      "kind": "protocols",
+      "id": "db66a7879a60e305aa1a713088c62bbf59815a9e04813d9459e2f580953de22e",
+      "revision": 1,
+      "provenance": "AUTHOR_SIGNED",
+      "value": {
+        "digest": "db66a7879a60e305aa1a713088c62bbf59815a9e04813d9459e2f580953de22e",
+        "workspace_id": "workspace",
+        "manifest": {
+          "name": "demo",
+          "display_version": "1",
+          "semantics": "peerwork.kernel.v1",
+          "dependencies": [],
+          "protocol_roles": [],
+          "capabilities": [],
+          "role_conflicts": [],
+          "historical_role_conflicts": [],
+          "constraints": {},
+          "record_schemas": {},
+          "initial_state": {
+            "𐀀": [],
+            "": []
+          },
+          "actions": [],
+          "format_version": 2,
+          "state_array_types": [
+            {
+              "path": [
+                "𐀀"
+              ],
+              "kind": "json"
+            },
+            {
+              "path": [
+                ""
+              ],
+              "kind": "json"
+            }
+          ]
+        },
+        "resolved_manifest": {
+          "name": "demo",
+          "display_version": "1",
+          "semantics": "peerwork.kernel.v1",
+          "dependencies": [],
+          "protocol_roles": [],
+          "capabilities": [],
+          "role_conflicts": [],
+          "historical_role_conflicts": [],
+          "constraints": {},
+          "record_schemas": {},
+          "initial_state": {
+            "𐀀": [],
+            "": []
+          },
+          "actions": [],
+          "format_version": 2,
+          "state_array_types": [
+            {
+              "path": [
+                "𐀀"
+              ],
+              "kind": "json"
+            },
+            {
+              "path": [
+                ""
+              ],
+              "kind": "json"
+            }
+          ]
+        }
+      }
+    },
+    "result": "ok"
+  },
+  {
+    "name": "format2_string",
+    "format": 2,
+    "workspace_id": "workspace",
+    "object": {
+      "kind": "protocols",
+      "id": "db66a7879a60e305aa1a713088c62bbf59815a9e04813d9459e2f580953de22e",
+      "revision": 1,
+      "provenance": "AUTHOR_SIGNED",
+      "value": {
+        "digest": "db66a7879a60e305aa1a713088c62bbf59815a9e04813d9459e2f580953de22e",
+        "workspace_id": "workspace",
+        "manifest": "{\"name\":\"demo\",\"display_version\":\"1\",\"semantics\":\"peerwork.kernel.v1\",\"dependencies\":[],\"protocol_roles\":[],\"capabilities\":[],\"role_conflicts\":[],\"historical_role_conflicts\":[],\"constraints\":{},\"record_schemas\":{},\"initial_state\":{\"𐀀\":[],\"\":[]},\"actions\":[],\"format_version\":2,\"state_array_types\":[{\"path\":[\"𐀀\"],\"kind\":\"json\"},{\"path\":[\"\"],\"kind\":\"json\"}]}",
+        "resolved_manifest": "{\"name\":\"demo\",\"display_version\":\"1\",\"semantics\":\"peerwork.kernel.v1\",\"dependencies\":[],\"protocol_roles\":[],\"capabilities\":[],\"role_conflicts\":[],\"historical_role_conflicts\":[],\"constraints\":{},\"record_schemas\":{},\"initial_state\":{\"𐀀\":[],\"\":[]},\"actions\":[],\"format_version\":2,\"state_array_types\":[{\"path\":[\"𐀀\"],\"kind\":\"json\"},{\"path\":[\"\"],\"kind\":\"json\"}]}"
+      }
+    },
+    "result": "ok"
+  },
+  {
+    "name": "format2_ceiling_one",
+    "format": 1,
+    "workspace_id": "workspace",
+    "object": {
+      "kind": "protocols",
+      "id": "db66a7879a60e305aa1a713088c62bbf59815a9e04813d9459e2f580953de22e",
+      "revision": 1,
+      "provenance": "AUTHOR_SIGNED",
+      "value": {
+        "digest": "db66a7879a60e305aa1a713088c62bbf59815a9e04813d9459e2f580953de22e",
+        "workspace_id": "workspace",
+        "manifest": {
+          "name": "demo",
+          "display_version": "1",
+          "semantics": "peerwork.kernel.v1",
+          "dependencies": [],
+          "protocol_roles": [],
+          "capabilities": [],
+          "role_conflicts": [],
+          "historical_role_conflicts": [],
+          "constraints": {},
+          "record_schemas": {},
+          "initial_state": {
+            "𐀀": [],
+            "": []
+          },
+          "actions": [],
+          "format_version": 2,
+          "state_array_types": [
+            {
+              "path": [
+                "𐀀"
+              ],
+              "kind": "json"
+            },
+            {
+              "path": [
+                ""
+              ],
+              "kind": "json"
+            }
+          ]
+        },
+        "resolved_manifest": {
+          "name": "demo",
+          "display_version": "1",
+          "semantics": "peerwork.kernel.v1",
+          "dependencies": [],
+          "protocol_roles": [],
+          "capabilities": [],
+          "role_conflicts": [],
+          "historical_role_conflicts": [],
+          "constraints": {},
+          "record_schemas": {},
+          "initial_state": {
+            "𐀀": [],
+            "": []
+          },
+          "actions": [],
+          "format_version": 2,
+          "state_array_types": [
+            {
+              "path": [
+                "𐀀"
+              ],
+              "kind": "json"
+            },
+            {
+              "path": [
+                ""
+              ],
+              "kind": "json"
+            }
+          ]
+        }
+      }
+    },
+    "error": "STRUCTURE_HISTORICAL_FORMAT_UNSUPPORTED"
+  },
+  {
+    "name": "format2_omitted_default",
+    "format": 2,
+    "workspace_id": "workspace",
+    "object": {
+      "kind": "protocols",
+      "id": "d6bc15c1b15135940a4eef41e03c1889d1218220078f7fafaa9243109e2dbb73",
+      "revision": 1,
+      "provenance": "AUTHOR_SIGNED",
+      "value": {
+        "digest": "d6bc15c1b15135940a4eef41e03c1889d1218220078f7fafaa9243109e2dbb73",
+        "workspace_id": "workspace",
+        "manifest": {
+          "name": "demo",
+          "display_version": "1",
+          "semantics": "peerwork.kernel.v1",
+          "dependencies": [],
+          "protocol_roles": [],
+          "role_conflicts": [],
+          "historical_role_conflicts": [],
+          "constraints": {},
+          "record_schemas": {},
+          "initial_state": {
+            "𐀀": [],
+            "": []
+          },
+          "actions": [],
+          "format_version": 2,
+          "state_array_types": [
+            {
+              "path": [
+                "𐀀"
+              ],
+              "kind": "json"
+            },
+            {
+              "path": [
+                ""
+              ],
+              "kind": "json"
+            }
+          ]
+        },
+        "resolved_manifest": {
+          "name": "demo",
+          "display_version": "1",
+          "semantics": "peerwork.kernel.v1",
+          "dependencies": [],
+          "protocol_roles": [],
+          "role_conflicts": [],
+          "historical_role_conflicts": [],
+          "constraints": {},
+          "record_schemas": {},
+          "initial_state": {
+            "𐀀": [],
+            "": []
+          },
+          "actions": [],
+          "format_version": 2,
+          "state_array_types": [
+            {
+              "path": [
+                "𐀀"
+              ],
+              "kind": "json"
+            },
+            {
+              "path": [
+                ""
+              ],
+              "kind": "json"
+            }
+          ]
+        }
+      }
+    },
+    "error": "STRUCTURE_MANIFEST_INVALID"
+  }
+]

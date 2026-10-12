@@ -240,7 +240,12 @@ pub(crate) fn replay_basic_content(
                 .and_modify(|prior| *prior = (*prior).max(revision))
                 .or_insert(revision);
             if kind != "MIGRATE" && object_kind.iter().copied().eq("protocols".encode_utf16()) {
-                validate_authored_protocol_simple(object, workspace_id)?;
+                let format_ceiling = if integer(payload, "v")? == 3 {
+                    integer(payload, "protocol_format_ceiling")?
+                } else {
+                    1
+                };
+                validate_authored_protocol_simple(object, workspace_id, format_ceiling)?;
             }
         }
         for (key, revision) in staged_revisions {
@@ -289,6 +294,7 @@ pub(crate) fn replay_basic_content(
 fn validate_authored_protocol_simple(
     object: &WireValue,
     workspace_id: &str,
+    format_ceiling: u64,
 ) -> Result<(), ReplayError> {
     if string(object, "provenance")? != "AUTHOR_SIGNED" || integer(object, "revision")? != 1 {
         return Err(ReplayError::Invalid);
@@ -310,10 +316,13 @@ fn validate_authored_protocol_simple(
         .map_err(|_| ReplayError::Invalid)?;
     let resolved = decoded_value(value.get("resolved_manifest").ok_or(ReplayError::Invalid)?)
         .map_err(|_| ReplayError::Invalid)?;
-    crate::full_manifest::validate_full_manifest(&source).map_err(|_| ReplayError::Invalid)?;
-    crate::full_manifest::validate_full_manifest(&resolved).map_err(|_| ReplayError::Invalid)?;
-    if source.get("format_version").is_some()
-        || resolved.get("format_version").is_some()
+    let checked_source =
+        crate::full_manifest::validate_full_manifest(&source).map_err(|_| ReplayError::Invalid)?;
+    let checked_resolved = crate::full_manifest::validate_full_manifest(&resolved)
+        .map_err(|_| ReplayError::Invalid)?;
+    let format_two =
+        source.get("format_version").is_some() || resolved.get("format_version").is_some();
+    if format_two && format_ceiling != 2
         || source.get("dependencies") != Some(&WireValue::Array(vec![]))
         || source
             .get("constraints")
@@ -323,6 +332,20 @@ fn validate_authored_protocol_simple(
                 .map_err(|_| ReplayError::Invalid)?
     {
         return Err(ReplayError::Invalid);
+    }
+    if format_two {
+        // Format two's signed value must already be schema-normalized.
+        for (raw, normalized) in [(&source, &checked_source), (&resolved, &checked_resolved)] {
+            let wrapped = parse_wire_json_js_bounded(normalized.as_bytes(), 32, 65_536)
+                .map_err(|_| ReplayError::Invalid)?;
+            let parsed = wrapped.get("manifest").ok_or(ReplayError::Invalid)?;
+            if canonical_wire_value(raw, Path::SecureArtifact).map_err(|_| ReplayError::Invalid)?
+                != canonical_wire_value(parsed, Path::SecureArtifact)
+                    .map_err(|_| ReplayError::Invalid)?
+            {
+                return Err(ReplayError::Invalid);
+            }
+        }
     }
     let source_envelope = fields_object(vec![
         ("semantics", string_value("peerwork.kernel.v1")),
@@ -2325,6 +2348,71 @@ mod tests {
             ),
             Err("HISTORICAL_ROLE_CONFLICT")
         );
+    }
+
+    #[test]
+    fn historical_format_two_source_requires_ceiling_and_normalized_signed_value() {
+        let vectors: Value =
+            serde_json::from_str(include_str!("../../../conformance/manifest-vectors.json"))
+                .unwrap();
+        let source = vectors
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|case| case["name"] == "state_array_utf16_sort_valid")
+            .unwrap()["manifest"]
+            .clone();
+        let digest = sha256_hex(
+            canonical(
+                &json!({"semantics":"peerwork.kernel.v1","manifest":source}),
+                Path::SecureArtifact,
+            )
+            .unwrap()
+            .as_bytes(),
+        );
+        let make_object = |manifest: Value| {
+            let value = json!({
+                "kind":"protocols","id":digest,"revision":1,
+                "provenance":"AUTHOR_SIGNED",
+                "value":{"digest":digest,"workspace_id":"workspace",
+                    "manifest":manifest,"resolved_manifest":manifest}
+            });
+            parse_wire_json_js_bounded(&serde_json::to_vec(&value).unwrap(), 32, 128_000).unwrap()
+        };
+        let valid = make_object(source.clone());
+        assert!(validate_authored_protocol_simple(&valid, "workspace", 2).is_ok());
+        assert!(validate_authored_protocol_simple(&valid, "workspace", 1).is_err());
+        let mut omitted_default = source;
+        omitted_default
+            .as_object_mut()
+            .unwrap()
+            .remove("capabilities");
+        assert!(
+            validate_authored_protocol_simple(&make_object(omitted_default), "workspace", 2,)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn pinned_typescript_historical_protocol_source_encodings() {
+        let cases = parse_wire_json_js_bounded(
+            include_str!("../../../conformance/historical-protocol-vectors.json").as_bytes(),
+            64,
+            1_000_000,
+        )
+        .unwrap();
+        let WireValue::Array(cases) = cases else {
+            panic!("vector array")
+        };
+        for case in cases {
+            let name = string(&case, "name").unwrap();
+            let result = validate_authored_protocol_simple(
+                case.get("object").unwrap(),
+                &string(&case, "workspace_id").unwrap(),
+                integer(&case, "format").unwrap(),
+            );
+            assert_eq!(result.is_ok(), case.get("result").is_some(), "{name}");
+        }
     }
 
     #[test]
