@@ -571,6 +571,10 @@ fn validate_action_state_slice(
     let mut entity_max = HashMap::<Vec<u16>, u64>::new();
     let mut head_changes = Vec::new();
     let mut head_ids = HashSet::new();
+    let mut record_slots = HashMap::<Vec<u16>, WireValue>::new();
+    let mut entity_slots = HashMap::<Vec<u16>, WireValue>::new();
+    let mut assigned_records = HashMap::<Vec<u16>, u64>::new();
+    let mut pending_relations = Vec::<(usize, Vec<u16>, WireValue)>::new();
     for (record, allocation) in interpreted.records.iter().zip(allocations) {
         let entity = record.get("entity");
         if entity.is_some_and(|entity| {
@@ -754,7 +758,28 @@ fn validate_action_state_slice(
             return Err("UNSUPPORTED");
         }
         let payload = record.get("payload").ok_or("RECORD_SCHEMA_INVALID")?;
-        validate_simple_record_schema(payload, definition)?;
+        if let Some(slot) = record.get("recordSlot").and_then(WireValue::as_utf16) {
+            if record_slots
+                .insert(
+                    slot.to_vec(),
+                    fields_object(vec![
+                        ("record_id", WireValue::String(record_id.to_vec())),
+                        ("revision", WireValue::Number(assigned_revision as f64)),
+                    ]),
+                )
+                .is_some()
+            {
+                return Err("INVALID_PROTOCOL_TRANSITION");
+            }
+        }
+        if let Some(slot) = record
+            .get("entitySlot")
+            .or_else(|| entity.and_then(|value| value.get("slot")))
+            .and_then(WireValue::as_utf16)
+        {
+            entity_slots.insert(slot.to_vec(), WireValue::String(assigned_entity.clone()));
+        }
+        assigned_records.insert(record_id.to_vec(), assigned_revision);
         let value = fields_object(vec![
             ("id", WireValue::String(record_id.to_vec())),
             (
@@ -784,73 +809,8 @@ fn validate_action_state_slice(
             return Err("UNSUPPORTED");
         };
         for relation in relations {
-            let kind = relation
-                .get("kind")
-                .and_then(WireValue::as_utf16)
-                .ok_or("RELATION_TARGET_INVALID")?;
-            let target = relation.get("target").ok_or("RELATION_TARGET_INVALID")?;
-            if target.get("$produced").is_some() {
-                return Err("UNSUPPORTED");
-            }
-            let target_id = target
-                .get("recordId")
-                .and_then(WireValue::as_utf16)
-                .ok_or("RELATION_TARGET_INVALID")?;
-            let target_revision =
-                integer(target, "revision").map_err(|_| "RELATION_TARGET_INVALID")?;
-            let exists = prior.iter().any(|object| {
-                object.get("kind").and_then(WireValue::as_string).as_deref() == Some("records")
-                    && object.get("id").and_then(WireValue::as_utf16) == Some(target_id)
-                    && object
-                        .get("value")
-                        .and_then(|value| integer(value, "revision").ok())
-                        == Some(target_revision)
-            });
-            if !exists {
-                if allocations.iter().any(|allocation| {
-                    allocation.get("record_id").and_then(WireValue::as_utf16) == Some(target_id)
-                }) {
-                    return Err("UNSUPPORTED");
-                }
-                return Err("RELATION_TARGET_INVALID");
-            }
-            let id = canonical_wire_value(
-                &WireValue::Array(vec![
-                    WireValue::String(record_id.to_vec()),
-                    WireValue::String(kind.to_vec()),
-                    WireValue::String(target_id.to_vec()),
-                    WireValue::Number(target_revision as f64),
-                ]),
-                Path::SecureArtifact,
-            )
-            .map_err(|_| "RELATION_TARGET_INVALID")?;
-            let relation_value = fields_object(vec![
-                ("record_id", WireValue::String(record_id.to_vec())),
-                ("kind", WireValue::String(kind.to_vec())),
-                ("target_record", WireValue::String(target_id.to_vec())),
-                ("target_revision", WireValue::Number(target_revision as f64)),
-            ]);
-            let outer_revision = safe_add(
-                prior
-                    .iter()
-                    .filter(|object| {
-                        object.get("kind").and_then(WireValue::as_string).as_deref()
-                            == Some("record_relations")
-                            && object.get("id").and_then(WireValue::as_string).as_deref()
-                                == Some(&id)
-                    })
-                    .filter_map(|object| integer(object, "revision").ok())
-                    .max()
-                    .unwrap_or(0),
-                1,
-            )?;
-            expected_objects.push(fields_object(vec![
-                ("kind", string_value("record_relations")),
-                ("id", string_value(&id)),
-                ("revision", WireValue::Number(outer_revision as f64)),
-                ("value", relation_value),
-                ("provenance", string_value("AUTHOR_SIGNED")),
-            ]));
+            pending_relations.push((expected_objects.len(), record_id.to_vec(), relation.clone()));
+            expected_objects.push(WireValue::Null);
         }
         if entity.is_some()
             && record
@@ -896,6 +856,96 @@ fn validate_action_state_slice(
                 ("provenance", string_value("AUTHOR_SIGNED")),
             ]));
         }
+    }
+    for object in &mut expected_objects {
+        if object.get("kind").and_then(WireValue::as_string).as_deref() != Some("records") {
+            continue;
+        }
+        let row = object.get("value").ok_or("RECORD_SCHEMA_INVALID")?;
+        let schema = row
+            .get("schema_ref")
+            .and_then(WireValue::as_string)
+            .ok_or("RECORD_SCHEMA_INVALID")?;
+        let definition = manifest
+            .get("record_schemas")
+            .and_then(|schemas| schemas.get(&schema))
+            .ok_or("RECORD_SCHEMA_INVALID")?;
+        let payload = substitute_produced(
+            row.get("payload").ok_or("RECORD_SCHEMA_INVALID")?,
+            &record_slots,
+            &entity_slots,
+            0,
+        )?;
+        validate_simple_record_schema(&payload, definition)?;
+        let mut value = row.clone();
+        replace_field(&mut value, "payload", payload).map_err(|_| "RECORD_SCHEMA_INVALID")?;
+        replace_field(object, "value", value).map_err(|_| "RECORD_SCHEMA_INVALID")?;
+    }
+    for (index, source_id, relation) in pending_relations {
+        let kind = relation
+            .get("kind")
+            .and_then(WireValue::as_utf16)
+            .ok_or("RELATION_TARGET_INVALID")?;
+        let target = substitute_produced(
+            relation.get("target").ok_or("RELATION_TARGET_INVALID")?,
+            &record_slots,
+            &entity_slots,
+            0,
+        )?;
+        let target_id = target
+            .get("recordId")
+            .or_else(|| target.get("record_id"))
+            .and_then(WireValue::as_utf16)
+            .ok_or("RELATION_TARGET_INVALID")?;
+        let target_revision =
+            integer(&target, "revision").map_err(|_| "RELATION_TARGET_INVALID")?;
+        let exists = prior.iter().any(|object| {
+            object.get("kind").and_then(WireValue::as_string).as_deref() == Some("records")
+                && object.get("id").and_then(WireValue::as_utf16) == Some(target_id)
+                && object
+                    .get("value")
+                    .and_then(|value| integer(value, "revision").ok())
+                    == Some(target_revision)
+        }) || assigned_records.get(target_id) == Some(&target_revision);
+        if !exists {
+            return Err("RELATION_TARGET_INVALID");
+        }
+        let id = canonical_wire_value(
+            &WireValue::Array(vec![
+                WireValue::String(source_id.clone()),
+                WireValue::String(kind.to_vec()),
+                WireValue::String(target_id.to_vec()),
+                WireValue::Number(target_revision as f64),
+            ]),
+            Path::SecureArtifact,
+        )
+        .map_err(|_| "RELATION_TARGET_INVALID")?;
+        let relation_value = fields_object(vec![
+            ("record_id", WireValue::String(source_id)),
+            ("kind", WireValue::String(kind.to_vec())),
+            ("target_record", WireValue::String(target_id.to_vec())),
+            ("target_revision", WireValue::Number(target_revision as f64)),
+        ]);
+        let outer_revision = safe_add(
+            prior
+                .iter()
+                .filter(|object| {
+                    object.get("kind").and_then(WireValue::as_string).as_deref()
+                        == Some("record_relations")
+                        && object.get("id").and_then(WireValue::as_string).as_deref() == Some(&id)
+                })
+                .filter_map(|object| integer(object, "revision").ok())
+                .max()
+                .unwrap_or(0),
+            1,
+        )?;
+        expected_objects[index] = fields_object(vec![
+            ("kind", string_value("record_relations")),
+            ("id", string_value(&id)),
+            ("revision", WireValue::Number(outer_revision as f64)),
+            ("value", relation_value),
+            ("provenance", string_value("AUTHOR_SIGNED")),
+        ]);
     }
     for selection in &interpreted.head_selections {
         let expected = selection.get("expected").ok_or("HEAD_SELECTION_INVALID")?;
@@ -982,10 +1032,10 @@ fn validate_action_state_slice(
     }
     expected_objects.extend(head_changes);
     let mut next = instance_value.clone();
-    crate::full_manifest::validate_state_array_state(&manifest, &interpreted.next_state)
+    let next_state = substitute_produced(&interpreted.next_state, &record_slots, &entity_slots, 0)?;
+    crate::full_manifest::validate_state_array_state(&manifest, &next_state)
         .map_err(|_| "STATE_ARRAY_TYPE_INVALID")?;
-    replace_field(&mut next, "state", interpreted.next_state)
-        .map_err(|_| "PROTOCOL_OUTPUT_MISMATCH")?;
+    replace_field(&mut next, "state", next_state).map_err(|_| "PROTOCOL_OUTPUT_MISMATCH")?;
     replace_field(
         &mut next,
         "revision",
@@ -1033,6 +1083,57 @@ fn validate_action_state_slice(
     }
     Ok(())
 }
+fn substitute_produced(
+    value: &WireValue,
+    record_slots: &HashMap<Vec<u16>, WireValue>,
+    entity_slots: &HashMap<Vec<u16>, WireValue>,
+    depth: usize,
+) -> Result<WireValue, &'static str> {
+    if depth > 12 {
+        return Err("INVALID_PROTOCOL_TRANSITION");
+    }
+    match value {
+        WireValue::Array(items) => Ok(WireValue::Array(
+            items
+                .iter()
+                .map(|item| substitute_produced(item, record_slots, entity_slots, depth + 1))
+                .collect::<Result<_, _>>()?,
+        )),
+        WireValue::Object(fields) => {
+            if let Some(kind) = value.get("$produced").and_then(WireValue::as_string) {
+                let slot = value
+                    .get("slot")
+                    .and_then(WireValue::as_utf16)
+                    .ok_or("INVALID_PROTOCOL_TRANSITION")?;
+                if kind == "record" {
+                    return record_slots
+                        .get(slot)
+                        .cloned()
+                        .ok_or("INVALID_PROTOCOL_TRANSITION");
+                }
+                if kind == "entity" {
+                    return entity_slots
+                        .get(slot)
+                        .cloned()
+                        .ok_or("INVALID_PROTOCOL_TRANSITION");
+                }
+            }
+            Ok(WireValue::Object(
+                fields
+                    .iter()
+                    .map(|(key, item)| {
+                        Ok((
+                            key.clone(),
+                            substitute_produced(item, record_slots, entity_slots, depth + 1)?,
+                        ))
+                    })
+                    .collect::<Result<_, &'static str>>()?,
+            ))
+        }
+        _ => Ok(value.clone()),
+    }
+}
+
 fn safe_add(value: u64, delta: u64) -> Result<u64, &'static str> {
     value
         .checked_add(delta)

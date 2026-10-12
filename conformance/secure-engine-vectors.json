@@ -6043,6 +6043,1121 @@
     "error": "PROTOCOL_OUTPUT_MISMATCH"
   },
   {
+    "name": "action_forward_produced_ref_relation_entity",
+    "operation": {
+      "v": 1,
+      "kind": "ACTION",
+      "input": {
+        "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+        "expected_instance_revision": 1,
+        "action_id": "test.set",
+        "body": {},
+        "exact_input_refs": [],
+        "allocations": [
+          {
+            "record_id": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+            "entity_id": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+          },
+          {
+            "record_id": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+            "entity_id": "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"
+          }
+        ]
+      },
+      "objects": [
+        {
+          "kind": "records",
+          "id": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+          "revision": 1,
+          "value": {
+            "id": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+            "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+            "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+            "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "entity_id": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+            "schema_ref": "entry",
+            "payload": {
+              "peer": {
+                "record_id": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+                "revision": 1
+              },
+              "text": "first"
+            },
+            "actor_id": "4g1gu0YWhDLX3Mc-KnwMe_19_GRUn2722Gki77eVWAs",
+            "revision": 1,
+            "created": 2
+          },
+          "provenance": "AUTHOR_SIGNED"
+        },
+        {
+          "kind": "record_relations",
+          "id": "[\"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\",\"links\",\"DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD\",1]",
+          "revision": 1,
+          "value": {
+            "record_id": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+            "kind": "links",
+            "target_record": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+            "target_revision": 1
+          },
+          "provenance": "AUTHOR_SIGNED"
+        },
+        {
+          "kind": "records",
+          "id": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+          "revision": 1,
+          "value": {
+            "id": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+            "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+            "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+            "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "entity_id": "_SUbE3gE5gCWwEjJ_P2o1YuJC29EjSaGCIugJX8Wa1U",
+            "schema_ref": "entry",
+            "payload": {
+              "text": "later"
+            },
+            "actor_id": "4g1gu0YWhDLX3Mc-KnwMe_19_GRUn2722Gki77eVWAs",
+            "revision": 1,
+            "created": 2
+          },
+          "provenance": "AUTHOR_SIGNED"
+        },
+        {
+          "kind": "instances",
+          "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+          "revision": 2,
+          "value": {
+            "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+            "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+            "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "state": {
+              "count": 0,
+              "linked": "_SUbE3gE5gCWwEjJ_P2o1YuJC29EjSaGCIugJX8Wa1U"
+            },
+            "revision": 2,
+            "event_revision": 1
+          },
+          "provenance": "AUTHOR_SIGNED"
+        }
+      ]
+    },
+    "context": {
+      "v": 1,
+      "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+      "sequence": 1,
+      "action_id": "test.set",
+      "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+      "actor_id": "4g1gu0YWhDLX3Mc-KnwMe_19_GRUn2722Gki77eVWAs",
+      "signing_key": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "issued_at": 2,
+      "delegation": null
+    },
+    "policy": {
+      "payload": {
+        "v": 1,
+        "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+        "visibility": "PRIVATE",
+        "epoch": 1,
+        "owner_id": "4g1gu0YWhDLX3Mc-KnwMe_19_GRUn2722Gki77eVWAs",
+        "signing_key": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+        "issued_at": 1,
+        "members": [
+          {
+            "actor_id": "4g1gu0YWhDLX3Mc-KnwMe_19_GRUn2722Gki77eVWAs",
+            "certificate": {
+              "payload": {
+                "signing_key": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+              }
+            },
+            "role": "OWNER",
+            "scopes": [
+              {
+                "instance_id": null,
+                "actions": [
+                  "test.set"
+                ],
+                "protocol_roles": [],
+                "capabilities": []
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "prior": [
+      {
+        "kind": "protocols",
+        "id": "protocol",
+        "revision": 1,
+        "value": {
+          "digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "resolved_manifest": {
+            "record_schemas": {
+              "entry": {
+                "type": "object",
+                "fields": {
+                  "text": "string",
+                  "peer": "json"
+                },
+                "required": [
+                  "text"
+                ],
+                "max_bytes": 16384
+              }
+            },
+            "role_conflicts": [],
+            "historical_role_conflicts": [],
+            "actions": [
+              {
+                "id": "test.set",
+                "reads": [
+                  [
+                    "count"
+                  ]
+                ],
+                "writes": [
+                  [
+                    "linked"
+                  ]
+                ],
+                "revisionEffects": {
+                  "control": true,
+                  "contentEntities": [
+                    "buddy"
+                  ]
+                },
+                "variants": [
+                  {
+                    "when": [
+                      {
+                        "op": "eq",
+                        "left": {
+                          "from": "state",
+                          "path": [
+                            "count"
+                          ]
+                        },
+                        "right": {
+                          "from": "literal",
+                          "value": 0
+                        }
+                      }
+                    ],
+                    "effects": [
+                      {
+                        "op": "set",
+                        "path": [
+                          "linked"
+                        ],
+                        "value": {
+                          "from": "produced_entity",
+                          "slot": "buddy"
+                        }
+                      },
+                      {
+                        "op": "append",
+                        "schema": "entry",
+                        "recordSlot": "first",
+                        "value": {
+                          "from": "object",
+                          "fields": {
+                            "text": {
+                              "from": "literal",
+                              "value": "first"
+                            },
+                            "peer": {
+                              "from": "produced_ref",
+                              "slot": "later"
+                            }
+                          }
+                        },
+                        "relations": [
+                          {
+                            "kind": "links",
+                            "target": {
+                              "from": "produced_ref",
+                              "slot": "later"
+                            }
+                          }
+                        ]
+                      },
+                      {
+                        "op": "append",
+                        "schema": "entry",
+                        "recordSlot": "later",
+                        "entitySlot": "buddy",
+                        "value": {
+                          "from": "literal",
+                          "value": {
+                            "text": "later"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "provenance": "AUTHOR_SIGNED"
+      },
+      {
+        "kind": "instances",
+        "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+        "revision": 1,
+        "value": {
+          "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+          "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "state": {
+            "count": 0
+          },
+          "revision": 1,
+          "event_revision": 0
+        },
+        "provenance": "AUTHOR_SIGNED"
+      }
+    ],
+    "result": "ok"
+  },
+  {
+    "name": "action_forward_produced_ref_payload_tamper",
+    "operation": {
+      "v": 1,
+      "kind": "ACTION",
+      "input": {
+        "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+        "expected_instance_revision": 1,
+        "action_id": "test.set",
+        "body": {},
+        "exact_input_refs": [],
+        "allocations": [
+          {
+            "record_id": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+            "entity_id": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+          },
+          {
+            "record_id": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+            "entity_id": "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"
+          }
+        ]
+      },
+      "objects": [
+        {
+          "kind": "records",
+          "id": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+          "revision": 1,
+          "value": {
+            "id": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+            "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+            "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+            "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "entity_id": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+            "schema_ref": "entry",
+            "payload": {
+              "peer": {
+                "record_id": "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+                "revision": 1
+              },
+              "text": "first"
+            },
+            "actor_id": "4g1gu0YWhDLX3Mc-KnwMe_19_GRUn2722Gki77eVWAs",
+            "revision": 1,
+            "created": 2
+          },
+          "provenance": "AUTHOR_SIGNED"
+        },
+        {
+          "kind": "record_relations",
+          "id": "[\"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\",\"links\",\"DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD\",1]",
+          "revision": 1,
+          "value": {
+            "record_id": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+            "kind": "links",
+            "target_record": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+            "target_revision": 1
+          },
+          "provenance": "AUTHOR_SIGNED"
+        },
+        {
+          "kind": "records",
+          "id": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+          "revision": 1,
+          "value": {
+            "id": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+            "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+            "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+            "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "entity_id": "_SUbE3gE5gCWwEjJ_P2o1YuJC29EjSaGCIugJX8Wa1U",
+            "schema_ref": "entry",
+            "payload": {
+              "text": "later"
+            },
+            "actor_id": "4g1gu0YWhDLX3Mc-KnwMe_19_GRUn2722Gki77eVWAs",
+            "revision": 1,
+            "created": 2
+          },
+          "provenance": "AUTHOR_SIGNED"
+        },
+        {
+          "kind": "instances",
+          "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+          "revision": 2,
+          "value": {
+            "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+            "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+            "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "state": {
+              "count": 0,
+              "linked": "_SUbE3gE5gCWwEjJ_P2o1YuJC29EjSaGCIugJX8Wa1U"
+            },
+            "revision": 2,
+            "event_revision": 1
+          },
+          "provenance": "AUTHOR_SIGNED"
+        }
+      ]
+    },
+    "mutatePayload": true,
+    "context": {
+      "v": 1,
+      "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+      "sequence": 1,
+      "action_id": "test.set",
+      "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+      "actor_id": "4g1gu0YWhDLX3Mc-KnwMe_19_GRUn2722Gki77eVWAs",
+      "signing_key": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "issued_at": 2,
+      "delegation": null
+    },
+    "policy": {
+      "payload": {
+        "v": 1,
+        "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+        "visibility": "PRIVATE",
+        "epoch": 1,
+        "owner_id": "4g1gu0YWhDLX3Mc-KnwMe_19_GRUn2722Gki77eVWAs",
+        "signing_key": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+        "issued_at": 1,
+        "members": [
+          {
+            "actor_id": "4g1gu0YWhDLX3Mc-KnwMe_19_GRUn2722Gki77eVWAs",
+            "certificate": {
+              "payload": {
+                "signing_key": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+              }
+            },
+            "role": "OWNER",
+            "scopes": [
+              {
+                "instance_id": null,
+                "actions": [
+                  "test.set"
+                ],
+                "protocol_roles": [],
+                "capabilities": []
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "prior": [
+      {
+        "kind": "protocols",
+        "id": "protocol",
+        "revision": 1,
+        "value": {
+          "digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "resolved_manifest": {
+            "record_schemas": {
+              "entry": {
+                "type": "object",
+                "fields": {
+                  "text": "string",
+                  "peer": "json"
+                },
+                "required": [
+                  "text"
+                ],
+                "max_bytes": 16384
+              }
+            },
+            "role_conflicts": [],
+            "historical_role_conflicts": [],
+            "actions": [
+              {
+                "id": "test.set",
+                "reads": [
+                  [
+                    "count"
+                  ]
+                ],
+                "writes": [
+                  [
+                    "linked"
+                  ]
+                ],
+                "revisionEffects": {
+                  "control": true,
+                  "contentEntities": [
+                    "buddy"
+                  ]
+                },
+                "variants": [
+                  {
+                    "when": [
+                      {
+                        "op": "eq",
+                        "left": {
+                          "from": "state",
+                          "path": [
+                            "count"
+                          ]
+                        },
+                        "right": {
+                          "from": "literal",
+                          "value": 0
+                        }
+                      }
+                    ],
+                    "effects": [
+                      {
+                        "op": "set",
+                        "path": [
+                          "linked"
+                        ],
+                        "value": {
+                          "from": "produced_entity",
+                          "slot": "buddy"
+                        }
+                      },
+                      {
+                        "op": "append",
+                        "schema": "entry",
+                        "recordSlot": "first",
+                        "value": {
+                          "from": "object",
+                          "fields": {
+                            "text": {
+                              "from": "literal",
+                              "value": "first"
+                            },
+                            "peer": {
+                              "from": "produced_ref",
+                              "slot": "later"
+                            }
+                          }
+                        },
+                        "relations": [
+                          {
+                            "kind": "links",
+                            "target": {
+                              "from": "produced_ref",
+                              "slot": "later"
+                            }
+                          }
+                        ]
+                      },
+                      {
+                        "op": "append",
+                        "schema": "entry",
+                        "recordSlot": "later",
+                        "entitySlot": "buddy",
+                        "value": {
+                          "from": "literal",
+                          "value": {
+                            "text": "later"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "provenance": "AUTHOR_SIGNED"
+      },
+      {
+        "kind": "instances",
+        "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+        "revision": 1,
+        "value": {
+          "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+          "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "state": {
+            "count": 0
+          },
+          "revision": 1,
+          "event_revision": 0
+        },
+        "provenance": "AUTHOR_SIGNED"
+      }
+    ],
+    "error": "PROTOCOL_OUTPUT_MISMATCH"
+  },
+  {
+    "name": "action_forward_produced_ref_relation_tamper",
+    "operation": {
+      "v": 1,
+      "kind": "ACTION",
+      "input": {
+        "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+        "expected_instance_revision": 1,
+        "action_id": "test.set",
+        "body": {},
+        "exact_input_refs": [],
+        "allocations": [
+          {
+            "record_id": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+            "entity_id": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+          },
+          {
+            "record_id": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+            "entity_id": "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"
+          }
+        ]
+      },
+      "objects": [
+        {
+          "kind": "records",
+          "id": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+          "revision": 1,
+          "value": {
+            "id": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+            "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+            "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+            "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "entity_id": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+            "schema_ref": "entry",
+            "payload": {
+              "peer": {
+                "record_id": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+                "revision": 1
+              },
+              "text": "first"
+            },
+            "actor_id": "4g1gu0YWhDLX3Mc-KnwMe_19_GRUn2722Gki77eVWAs",
+            "revision": 1,
+            "created": 2
+          },
+          "provenance": "AUTHOR_SIGNED"
+        },
+        {
+          "kind": "record_relations",
+          "id": "[\"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\",\"links\",\"DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD\",1]",
+          "revision": 1,
+          "value": {
+            "record_id": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+            "kind": "links",
+            "target_record": "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+            "target_revision": 1
+          },
+          "provenance": "AUTHOR_SIGNED"
+        },
+        {
+          "kind": "records",
+          "id": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+          "revision": 1,
+          "value": {
+            "id": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+            "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+            "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+            "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "entity_id": "_SUbE3gE5gCWwEjJ_P2o1YuJC29EjSaGCIugJX8Wa1U",
+            "schema_ref": "entry",
+            "payload": {
+              "text": "later"
+            },
+            "actor_id": "4g1gu0YWhDLX3Mc-KnwMe_19_GRUn2722Gki77eVWAs",
+            "revision": 1,
+            "created": 2
+          },
+          "provenance": "AUTHOR_SIGNED"
+        },
+        {
+          "kind": "instances",
+          "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+          "revision": 2,
+          "value": {
+            "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+            "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+            "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "state": {
+              "count": 0,
+              "linked": "_SUbE3gE5gCWwEjJ_P2o1YuJC29EjSaGCIugJX8Wa1U"
+            },
+            "revision": 2,
+            "event_revision": 1
+          },
+          "provenance": "AUTHOR_SIGNED"
+        }
+      ]
+    },
+    "mutateRelation": true,
+    "context": {
+      "v": 1,
+      "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+      "sequence": 1,
+      "action_id": "test.set",
+      "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+      "actor_id": "4g1gu0YWhDLX3Mc-KnwMe_19_GRUn2722Gki77eVWAs",
+      "signing_key": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "issued_at": 2,
+      "delegation": null
+    },
+    "policy": {
+      "payload": {
+        "v": 1,
+        "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+        "visibility": "PRIVATE",
+        "epoch": 1,
+        "owner_id": "4g1gu0YWhDLX3Mc-KnwMe_19_GRUn2722Gki77eVWAs",
+        "signing_key": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+        "issued_at": 1,
+        "members": [
+          {
+            "actor_id": "4g1gu0YWhDLX3Mc-KnwMe_19_GRUn2722Gki77eVWAs",
+            "certificate": {
+              "payload": {
+                "signing_key": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+              }
+            },
+            "role": "OWNER",
+            "scopes": [
+              {
+                "instance_id": null,
+                "actions": [
+                  "test.set"
+                ],
+                "protocol_roles": [],
+                "capabilities": []
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "prior": [
+      {
+        "kind": "protocols",
+        "id": "protocol",
+        "revision": 1,
+        "value": {
+          "digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "resolved_manifest": {
+            "record_schemas": {
+              "entry": {
+                "type": "object",
+                "fields": {
+                  "text": "string",
+                  "peer": "json"
+                },
+                "required": [
+                  "text"
+                ],
+                "max_bytes": 16384
+              }
+            },
+            "role_conflicts": [],
+            "historical_role_conflicts": [],
+            "actions": [
+              {
+                "id": "test.set",
+                "reads": [
+                  [
+                    "count"
+                  ]
+                ],
+                "writes": [
+                  [
+                    "linked"
+                  ]
+                ],
+                "revisionEffects": {
+                  "control": true,
+                  "contentEntities": [
+                    "buddy"
+                  ]
+                },
+                "variants": [
+                  {
+                    "when": [
+                      {
+                        "op": "eq",
+                        "left": {
+                          "from": "state",
+                          "path": [
+                            "count"
+                          ]
+                        },
+                        "right": {
+                          "from": "literal",
+                          "value": 0
+                        }
+                      }
+                    ],
+                    "effects": [
+                      {
+                        "op": "set",
+                        "path": [
+                          "linked"
+                        ],
+                        "value": {
+                          "from": "produced_entity",
+                          "slot": "buddy"
+                        }
+                      },
+                      {
+                        "op": "append",
+                        "schema": "entry",
+                        "recordSlot": "first",
+                        "value": {
+                          "from": "object",
+                          "fields": {
+                            "text": {
+                              "from": "literal",
+                              "value": "first"
+                            },
+                            "peer": {
+                              "from": "produced_ref",
+                              "slot": "later"
+                            }
+                          }
+                        },
+                        "relations": [
+                          {
+                            "kind": "links",
+                            "target": {
+                              "from": "produced_ref",
+                              "slot": "later"
+                            }
+                          }
+                        ]
+                      },
+                      {
+                        "op": "append",
+                        "schema": "entry",
+                        "recordSlot": "later",
+                        "entitySlot": "buddy",
+                        "value": {
+                          "from": "literal",
+                          "value": {
+                            "text": "later"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "provenance": "AUTHOR_SIGNED"
+      },
+      {
+        "kind": "instances",
+        "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+        "revision": 1,
+        "value": {
+          "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+          "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "state": {
+            "count": 0
+          },
+          "revision": 1,
+          "event_revision": 0
+        },
+        "provenance": "AUTHOR_SIGNED"
+      }
+    ],
+    "error": "PROTOCOL_OUTPUT_MISMATCH"
+  },
+  {
+    "name": "action_forward_produced_entity_state_tamper",
+    "operation": {
+      "v": 1,
+      "kind": "ACTION",
+      "input": {
+        "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+        "expected_instance_revision": 1,
+        "action_id": "test.set",
+        "body": {},
+        "exact_input_refs": [],
+        "allocations": [
+          {
+            "record_id": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+            "entity_id": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+          },
+          {
+            "record_id": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+            "entity_id": "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"
+          }
+        ]
+      },
+      "objects": [
+        {
+          "kind": "records",
+          "id": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+          "revision": 1,
+          "value": {
+            "id": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+            "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+            "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+            "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "entity_id": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+            "schema_ref": "entry",
+            "payload": {
+              "peer": {
+                "record_id": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+                "revision": 1
+              },
+              "text": "first"
+            },
+            "actor_id": "4g1gu0YWhDLX3Mc-KnwMe_19_GRUn2722Gki77eVWAs",
+            "revision": 1,
+            "created": 2
+          },
+          "provenance": "AUTHOR_SIGNED"
+        },
+        {
+          "kind": "record_relations",
+          "id": "[\"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\",\"links\",\"DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD\",1]",
+          "revision": 1,
+          "value": {
+            "record_id": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+            "kind": "links",
+            "target_record": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+            "target_revision": 1
+          },
+          "provenance": "AUTHOR_SIGNED"
+        },
+        {
+          "kind": "records",
+          "id": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+          "revision": 1,
+          "value": {
+            "id": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+            "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+            "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+            "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "entity_id": "_SUbE3gE5gCWwEjJ_P2o1YuJC29EjSaGCIugJX8Wa1U",
+            "schema_ref": "entry",
+            "payload": {
+              "text": "later"
+            },
+            "actor_id": "4g1gu0YWhDLX3Mc-KnwMe_19_GRUn2722Gki77eVWAs",
+            "revision": 1,
+            "created": 2
+          },
+          "provenance": "AUTHOR_SIGNED"
+        },
+        {
+          "kind": "instances",
+          "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+          "revision": 2,
+          "value": {
+            "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+            "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+            "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "state": {
+              "count": 0,
+              "linked": "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+            },
+            "revision": 2,
+            "event_revision": 1
+          },
+          "provenance": "AUTHOR_SIGNED"
+        }
+      ]
+    },
+    "mutateState": true,
+    "context": {
+      "v": 1,
+      "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+      "sequence": 1,
+      "action_id": "test.set",
+      "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+      "actor_id": "4g1gu0YWhDLX3Mc-KnwMe_19_GRUn2722Gki77eVWAs",
+      "signing_key": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "issued_at": 2,
+      "delegation": null
+    },
+    "policy": {
+      "payload": {
+        "v": 1,
+        "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+        "visibility": "PRIVATE",
+        "epoch": 1,
+        "owner_id": "4g1gu0YWhDLX3Mc-KnwMe_19_GRUn2722Gki77eVWAs",
+        "signing_key": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+        "issued_at": 1,
+        "members": [
+          {
+            "actor_id": "4g1gu0YWhDLX3Mc-KnwMe_19_GRUn2722Gki77eVWAs",
+            "certificate": {
+              "payload": {
+                "signing_key": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+              }
+            },
+            "role": "OWNER",
+            "scopes": [
+              {
+                "instance_id": null,
+                "actions": [
+                  "test.set"
+                ],
+                "protocol_roles": [],
+                "capabilities": []
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "prior": [
+      {
+        "kind": "protocols",
+        "id": "protocol",
+        "revision": 1,
+        "value": {
+          "digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "resolved_manifest": {
+            "record_schemas": {
+              "entry": {
+                "type": "object",
+                "fields": {
+                  "text": "string",
+                  "peer": "json"
+                },
+                "required": [
+                  "text"
+                ],
+                "max_bytes": 16384
+              }
+            },
+            "role_conflicts": [],
+            "historical_role_conflicts": [],
+            "actions": [
+              {
+                "id": "test.set",
+                "reads": [
+                  [
+                    "count"
+                  ]
+                ],
+                "writes": [
+                  [
+                    "linked"
+                  ]
+                ],
+                "revisionEffects": {
+                  "control": true,
+                  "contentEntities": [
+                    "buddy"
+                  ]
+                },
+                "variants": [
+                  {
+                    "when": [
+                      {
+                        "op": "eq",
+                        "left": {
+                          "from": "state",
+                          "path": [
+                            "count"
+                          ]
+                        },
+                        "right": {
+                          "from": "literal",
+                          "value": 0
+                        }
+                      }
+                    ],
+                    "effects": [
+                      {
+                        "op": "set",
+                        "path": [
+                          "linked"
+                        ],
+                        "value": {
+                          "from": "produced_entity",
+                          "slot": "buddy"
+                        }
+                      },
+                      {
+                        "op": "append",
+                        "schema": "entry",
+                        "recordSlot": "first",
+                        "value": {
+                          "from": "object",
+                          "fields": {
+                            "text": {
+                              "from": "literal",
+                              "value": "first"
+                            },
+                            "peer": {
+                              "from": "produced_ref",
+                              "slot": "later"
+                            }
+                          }
+                        },
+                        "relations": [
+                          {
+                            "kind": "links",
+                            "target": {
+                              "from": "produced_ref",
+                              "slot": "later"
+                            }
+                          }
+                        ]
+                      },
+                      {
+                        "op": "append",
+                        "schema": "entry",
+                        "recordSlot": "later",
+                        "entitySlot": "buddy",
+                        "value": {
+                          "from": "literal",
+                          "value": {
+                            "text": "later"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "provenance": "AUTHOR_SIGNED"
+      },
+      {
+        "kind": "instances",
+        "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+        "revision": 1,
+        "value": {
+          "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+          "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "state": {
+            "count": 0
+          },
+          "revision": 1,
+          "event_revision": 0
+        },
+        "provenance": "AUTHOR_SIGNED"
+      }
+    ],
+    "error": "PROTOCOL_OUTPUT_MISMATCH"
+  },
+  {
     "name": "action_exact_ref_payload",
     "operation": {
       "v": 1,

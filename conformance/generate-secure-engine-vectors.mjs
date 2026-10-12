@@ -219,6 +219,40 @@ try {
     catch(error){item.error=error.code??error.message;}
     cases.push(item);
   }
+  const producedManifest=structuredClone(recordManifest);
+  producedManifest.record_schemas.entry.fields.peer='json';
+  producedManifest.actions[0].writes=[['linked']];
+  producedManifest.actions[0].revisionEffects.contentEntities=['buddy'];
+  producedManifest.actions[0].variants[0].effects=[
+    {op:'set',path:['linked'],value:{from:'produced_entity',slot:'buddy'}},
+    {op:'append',schema:'entry',recordSlot:'first',value:{from:'object',fields:{
+      text:{from:'literal',value:'first'},peer:{from:'produced_ref',slot:'later'}}},
+      relations:[{kind:'links',target:{from:'produced_ref',slot:'later'}}]},
+    {op:'append',schema:'entry',recordSlot:'later',entitySlot:'buddy',
+      value:{from:'literal',value:{text:'later'}}},
+  ];
+  const producedPrior=structuredClone(recordPrior);
+  producedPrior[0].value.resolved_manifest=producedManifest;
+  const producedAllocations=[
+    {record_id:'B'.repeat(43),entity_id:'C'.repeat(43)},
+    {record_id:'D'.repeat(43),entity_id:'F'.repeat(43)},
+  ];
+  const producedResult=await prepareSecureAction({objects:producedPrior,context:actionContext,
+    policy:actionPolicy,body:actionBody,exactRefs:[],allocations:producedAllocations});
+  for(const item of [
+    {name:'action_forward_produced_ref_relation_entity',operation:structuredClone(producedResult)},
+    {name:'action_forward_produced_ref_payload_tamper',operation:structuredClone(producedResult),mutatePayload:true},
+    {name:'action_forward_produced_ref_relation_tamper',operation:structuredClone(producedResult),mutateRelation:true},
+    {name:'action_forward_produced_entity_state_tamper',operation:structuredClone(producedResult),mutateState:true},
+  ]){
+    item.context=actionContext;item.policy=actionPolicy;item.prior=structuredClone(producedPrior);
+    if(item.mutatePayload)item.operation.objects.find(o=>o.kind==='records').value.payload.peer.record_id='X'.repeat(43);
+    if(item.mutateRelation)item.operation.objects.find(o=>o.kind==='record_relations').value.target_record='X'.repeat(43);
+    if(item.mutateState)item.operation.objects.at(-1).value.state.linked='X'.repeat(43);
+    try{await validateSecureOperation(item.operation,item.context,item.policy,item.prior);item.result='ok';}
+    catch(error){item.error=error.code??error.message;}
+    cases.push(item);
+  }
   const referenceId='Q'.repeat(43);
   const referenceManifest=structuredClone(manifest);
   const selector={from:'ref',source:'body',path:['ref'],schema:'entry',scope:'INSTANCE'};
