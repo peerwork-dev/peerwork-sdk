@@ -437,3 +437,56 @@ lower sequence. Same-sequence wrong-head refusal is covered by the signed
 core checkpoint ancestry regression and by the profile passing its exact
 saved sequence/head/policy floor into that helper; no separate HTTP fork
 fixture was run. Scripted tests do not establish Agent workflow compliance.
+
+## Installed latest PUBLIC read and shared profile
+
+The high-level entry points at `07c7e2c8a55017f2e759a7381c139213cc232b67`
+take one protected `state_dir`: Python `SecureReadClient.read/read_async`, Node
+`readSecureWorkspace`, and CLI `secure read --origin=... --state-dir=...
+--identity=... --workspace=...`. Owner actor/key pins are supplied together
+on first contact and retained for later opens; authority defaults to the
+tracked SHA-256(local actor ID) rule or can be explicitly pinned. The older
+four-path, completed-snapshot interfaces are named Python
+`SecureSnapshotClient`, Node `readSecureSnapshot`, and CLI `secure snapshot`.
+`read` fetches a fresh checkpoint and refuses a failed refresh rather than
+silently returning its last good snapshot.
+
+Exact detached SDK source `21aa3038184eb6c963edb329510b46295f907c09`
+passed `tests/installed-secure-read-smoke.py` against pinned actual service
+`f828b6c50a0a58d1e718af90f653b214adcc3328` using a fresh temp store.
+The installed Python wheel read sequence 1, the tracked TypeScript service
+client appended sequence 2, and installed Python, Node and CLI reopened the
+same protected profile and read signed sequence 2. A genuine old signed
+sequence-1 page was refused as rollback; after restoring the honest server,
+Python fetched sequence 2 again. Service counts were two secure commits and
+head sequence 2. The path-rich snapshot checks still passed, including one-
+byte budget/owner-pin refusals and pre-cancelled calls. The focused source
+test also held an in-flight GET before cancellation and verified reopen.
+
+SHA-256 of the exact installed artifacts: Python wheel
+`a292ef78272eebb2a5ced73f4a98baabe672cbe32ba7e1382e974b405ec78efd`
+(`cp311-abi3-manylinux_2_38_x86_64`), Node facade tarball
+`d9f8791b72d72dd61a43e789f4a5dae257286942abe4e952517b5980e2888f69`,
+Linux x64 GNU addon tarball
+`22c1c545488abdc2df542db5a93f95b7a9ef4684939e979beabcc7ecb90ff86c`,
+addon library
+`9213f5a6728597c6b938bce6be6bd79241d334eda141fc2f0c81c2224129dff0`,
+and CLI
+`fdce4f42fe526d7e6bb590deb3411ffcbb8869e4dbf4ab9ce937c18a9485201d`.
+Builds used Rust 1.89 locked offline; installs used offline pip and npm
+with ignored lifecycle scripts. Observed synthetic stages from installed
+Python import were fixture ready 499 ms, first snapshot 932 ms, Node snapshot
+2,857 ms, CLI snapshot 3,561 ms, Python latest after append 4,988 ms, Node
+latest 5,994 ms, CLI latest 6,960 ms, and rollback refusal/recovery 9,015 ms.
+These are one scripted run, not an installation-time or external conversion
+measure. The first smoke command stopped before service launch because the
+harness required a full commit hash but was given its abbreviation; the full
+pin above passed. No existing operator state was read or uploaded.
+
+The PUBLIC read flag may describe this scoped capability after its manifest
+and bindings are updated. Broad verified workspace reads remain false until
+PRIVATE activation/read and remaining valid-history replay families are
+accepted. This Linux wheel establishes a `manylinux_2_38` floor only; native
+musl, older intended glibc, macOS, and Windows installed execution remain
+open. The scripted SDK test establishes business-path behavior, not Agent
+instruction/workflow compliance.
