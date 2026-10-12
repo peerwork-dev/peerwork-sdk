@@ -393,11 +393,20 @@ struct FixtureDisposition {
     replacement_id: String,
 }
 struct ImportedUnit {
+    package_digest: String,
     namespace: String,
     source: WireValue,
+    values: WireValue,
     manifest: WireValue,
     roles: HashMap<Vec<u16>, Vec<u16>>,
     capabilities: HashMap<Vec<u16>, Vec<u16>>,
+}
+struct ResolvedOutput {
+    kind: String,
+    path: Vec<WireValue>,
+    schema: Option<String>,
+    scope: Option<String>,
+    available: WireValue,
 }
 fn safe_integer(value: &WireValue) -> Result<u64, ClosureError> {
     let number = value.as_number().ok_or(ClosureError::Invalid)?;
@@ -1723,7 +1732,130 @@ fn check_fixture_dispositions(
     }
     Ok(())
 }
+fn resolve_source_output(
+    closure: &ScannedPackageClosure,
+    package_digest: &str,
+    source: &WireValue,
+    values: &WireValue,
+    name: &str,
+    seen: &mut HashSet<(String, String)>,
+    depth: usize,
+) -> Result<ResolvedOutput, ClosureError> {
+    if depth > 16 || !seen.insert((package_digest.to_owned(), name.to_owned())) {
+        return Err(ClosureError::Cycle);
+    }
+    let WireValue::Array(outputs) = field(field(source, "interfaces")?, "outputs")? else {
+        return Err(ClosureError::Invalid);
+    };
+    let output = outputs
+        .iter()
+        .find(|row| row.get("name").and_then(WireValue::as_string).as_deref() == Some(name))
+        .ok_or(ClosureError::Invalid)?;
+    let kind = scalar(field(output, "type")?)?;
+    let selector = field(output, "selector")?;
+    match field(selector, "from")?.as_string().as_deref() {
+        Some("state") => {
+            let WireValue::Array(path) = field(selector, "path")? else {
+                return Err(ClosureError::Invalid);
+            };
+            Ok(ResolvedOutput {
+                kind,
+                path: path.clone(),
+                schema: output.get("schema").map(scalar).transpose()?,
+                scope: output.get("scope").map(scalar).transpose()?,
+                available: field(output, "available_when")?.clone(),
+            })
+        }
+        Some("import") => {
+            let alias = scalar(field(selector, "alias")?)?;
+            let forwarded_name = scalar(field(selector, "output")?)?;
+            let WireValue::Array(imports) = field(source, "imports")? else {
+                return Err(ClosureError::Invalid);
+            };
+            let imported = imports
+                .iter()
+                .find(|row| {
+                    row.get("alias").and_then(WireValue::as_string).as_deref() == Some(&alias)
+                })
+                .ok_or(ClosureError::Missing)?;
+            let digest = scalar(field(imported, "package_digest")?)?;
+            let namespace = scalar(field(imported, "namespace")?)?;
+            let bundle = closure.packages.get(&digest).ok_or(ClosureError::Missing)?;
+            let files = field(bundle, "files")?;
+            let child_source = source_file(files)?;
+            let child_lock = lock_file(files)?;
+            let supplied = mapped_import_values(source, values, &alias, &child_source)?;
+            let baseline = matches!(&supplied, WireValue::Object(fields) if fields.is_empty());
+            let chosen = if baseline {
+                field(&child_lock, "baseline_bindings")?
+            } else {
+                &supplied
+            };
+            let child_values = parameter_values(&child_source, chosen)?;
+            let mut compile_steps = 0usize;
+            let compiled = compile_at(
+                closure,
+                &digest,
+                if baseline { None } else { Some(&supplied) },
+                baseline,
+                depth + 1,
+                &mut compile_steps,
+            )?;
+            let inner = resolve_source_output(
+                closure,
+                &digest,
+                &child_source,
+                &child_values,
+                &forwarded_name,
+                seen,
+                depth + 1,
+            )?;
+            if inner.kind != kind {
+                return Err(ClosureError::Mismatch);
+            }
+            let schema = inner.schema.map(|schema| format!("{namespace}.{schema}"));
+            if kind == "exact_ref"
+                && (output.get("scope").map(scalar).transpose()? != inner.scope
+                    || output.get("schema").map(scalar).transpose()? != schema)
+            {
+                return Err(ClosureError::Mismatch);
+            }
+            let (roles, capabilities) =
+                import_symbol_mappings(source, &alias, &namespace, &compiled.manifest)?;
+            let nested_available = crate::package_namespace::namespace_guard(
+                &inner.available,
+                &namespace,
+                &roles,
+                &capabilities,
+            )
+            .map_err(|_| ClosureError::Invalid)?;
+            Ok(ResolvedOutput {
+                kind,
+                path: std::iter::once(WireValue::String(namespace.encode_utf16().collect()))
+                    .chain(inner.path)
+                    .collect(),
+                schema,
+                scope: inner.scope,
+                available: WireValue::Object(vec![
+                    (
+                        "op".encode_utf16().collect(),
+                        WireValue::String("and".encode_utf16().collect()),
+                    ),
+                    (
+                        "rules".encode_utf16().collect(),
+                        WireValue::Array(vec![
+                            field(output, "available_when")?.clone(),
+                            nested_available,
+                        ]),
+                    ),
+                ]),
+            })
+        }
+        _ => Err(ClosureError::Invalid),
+    }
+}
 fn apply_connections(
+    closure: &ScannedPackageClosure,
     source: &WireValue,
     units: &mut HashMap<String, ImportedUnit>,
 ) -> Result<(), ClosureError> {
@@ -1805,25 +1937,31 @@ fn apply_connections(
                 row.get("name").and_then(WireValue::as_string).as_deref() == Some(&output_name)
             })
             .ok_or(ClosureError::Invalid)?;
-        let selector = field(output, "selector")?;
-        if field(selector, "from")?.as_string().as_deref() != Some("state") {
-            return Err(ClosureError::Invalid); // forwarded outputs need context traversal
+        let declared_type = scalar(field(output, "type")?)?;
+        let resolved = resolve_source_output(
+            closure,
+            &provider.package_digest,
+            &provider.source,
+            &provider.values,
+            &output_name,
+            &mut HashSet::new(),
+            0,
+        )?;
+        if declared_type != resolved.kind {
+            return Err(ClosureError::Mismatch);
         }
-        let output_type = scalar(field(output, "type")?)?;
-        let output_scope = output.get("scope").map(scalar).transpose()?;
-        let output_schema = output.get("schema").map(scalar).transpose()?;
-        let WireValue::Array(output_path) = field(selector, "path")? else {
-            return Err(ClosureError::Invalid);
-        };
+        let output_type = resolved.kind;
+        let output_scope = resolved.scope;
+        let output_schema = resolved.schema;
         let output_path = WireValue::Array(
             std::iter::once(text(&provider.namespace))
-                .chain(output_path.iter().cloned())
+                .chain(resolved.path)
                 .collect(),
         );
         let output_schema =
             output_schema.map(|schema| format!("{}.{}", provider.namespace, schema));
         let available = crate::package_namespace::namespace_guard(
-            field(output, "available_when")?,
+            &resolved.available,
             &provider.namespace,
             &provider.roles,
             &provider.capabilities,
@@ -2127,6 +2265,13 @@ fn compile_at(
         let dependency_source = source_file(field(dependency_bundle, "files")?)?;
         let baseline = compile_at(closure, &digest, None, true, depth + 1, steps)?;
         let mapped = mapped_import_values(&source, &values, &alias, &dependency_source)?;
+        let dependency_lock = lock_file(field(dependency_bundle, "files")?)?;
+        let baseline_values = if matches!(&mapped, WireValue::Object(fields) if fields.is_empty()) {
+            field(&dependency_lock, "baseline_bindings")?
+        } else {
+            &mapped
+        };
+        let dependency_values = parameter_values(&dependency_source, baseline_values)?;
         let compiled = if matches!(&mapped, WireValue::Object(fields) if fields.is_empty()) {
             baseline
         } else {
@@ -2158,8 +2303,10 @@ fn compile_at(
             .insert(
                 alias,
                 ImportedUnit {
+                    package_digest: digest,
                     namespace,
                     source: dependency_source,
+                    values: dependency_values,
                     manifest: namespaced,
                     roles,
                     capabilities,
@@ -2170,7 +2317,7 @@ fn compile_at(
             return Err(ClosureError::Mismatch);
         }
     }
-    apply_connections(&source, &mut imported_units)?;
+    apply_connections(closure, &source, &mut imported_units)?;
     for imported in imports {
         let alias = scalar(field(imported, "alias")?)?;
         let unit = imported_units.get(&alias).ok_or(ClosureError::Invalid)?;
@@ -2799,6 +2946,39 @@ mod tests {
             canonical(&compiled.manifest).unwrap(),
             canonical(&expected).unwrap()
         );
+    }
+
+    #[test]
+    fn v2_forwarded_output_traverses_nested_package_context() {
+        for raw in [
+            include_str!("../../../conformance/public-package-forwarded-output-vectors.json"),
+            include_str!("../../../conformance/public-package-forwarded-actor-vectors.json"),
+        ] {
+            let vector: serde_json::Value = serde_json::from_str(raw).unwrap();
+            assert_eq!(vector["passed"], true);
+            let closure = parse_wire_json_bounded(
+                &serde_json::to_vec(&vector["closure"]).unwrap(),
+                32,
+                6 * 1024 * 1024,
+            )
+            .unwrap();
+            let compiled =
+                compile_simple_baseline(&scan_package_closure(&closure).unwrap()).unwrap();
+            assert_eq!(
+                compiled.protocol_digest,
+                vector["protocol_digest"].as_str().unwrap()
+            );
+            let expected = parse_wire_json_bounded(
+                &serde_json::to_vec(&vector["compiled_manifest"]).unwrap(),
+                32,
+                65_536,
+            )
+            .unwrap();
+            assert_eq!(
+                canonical(&compiled.manifest).unwrap(),
+                canonical(&expected).unwrap()
+            );
+        }
     }
 
     #[test]
