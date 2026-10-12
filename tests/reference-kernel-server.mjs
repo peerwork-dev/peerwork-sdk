@@ -6,7 +6,7 @@ import {pathToFileURL} from 'node:url';
 import {join} from 'node:path';
 import {createServer} from 'node:http';
 import {createHash} from 'node:crypto';
-import {readFileSync, statSync} from 'node:fs';
+import {readFileSync, readdirSync, statSync} from 'node:fs';
 import {execFileSync} from 'node:child_process';
 
 const root = process.env.PEERWORK_REFERENCE_ROOT;
@@ -16,12 +16,12 @@ const expectedHead = 'f828b6c50a0a58d1e718af90f653b214adcc3328';
 const actualHead = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], {encoding: 'utf8'}).trim();
 if (actualHead !== expectedHead) throw new Error('reference checkout commit differs from tested pin');
 try {
-  execFileSync('git', ['-C', root, 'diff', '--quiet', 'HEAD', '--', 'src', 'package-lock.json']);
+  execFileSync('git', ['-C', root, 'diff', '--quiet', 'HEAD', '--', 'src', 'tests', 'scripts', 'tsconfig.json', 'tsconfig.workspace.json', 'package.json', 'package-lock.json']);
 } catch {
-  throw new Error('tracked reference source or lockfile differs from tested commit');
+  throw new Error('tracked reference build input differs from tested commit');
 }
-if (execFileSync('git', ['-C', root, 'ls-files', '--others', '--exclude-standard', '--', 'src'], {encoding: 'utf8'}).trim())
-  throw new Error('untracked reference source is present');
+const untrackedInputs = execFileSync('git', ['-C', root, 'ls-files', '--others', '--exclude-standard', '--', 'src', 'tests', 'scripts'], {encoding: 'utf8'}).trim().split('\n').filter(path => /\.(?:ts|tsx|mts|cts|js|mjs|cjs|json)$/.test(path));
+if (untrackedInputs.length) throw new Error('untracked reference build input is present');
 for (const [relative, expected] of Object.entries({
   'src/workspace-kernel.ts': '586ac5b6a689abd2782d5d3e093bdf2ebc3eaaa688b526908b0402fb7783b4e2',
   'src/workspace-http.ts': '4e8ab5d5484120395f28e39d2a703804328563efacfe90dfe9b761f923236355',
@@ -37,6 +37,28 @@ for (const [relative, expected] of Object.entries({
   }
 }
 const requireFromReference = createRequire(join(root, 'package.json'));
+if (JSON.parse(readFileSync(join(root, 'node_modules/typescript/package.json'), 'utf8')).version !== '7.0.2')
+  throw new Error('reference TypeScript compiler version differs from lock');
+const compiledRoot = join(root, 'dist-workspace/src');
+const compiledFiles = [];
+function scanCompiled(directory) {
+  for (const entry of readdirSync(directory, {withFileTypes: true})) {
+    const full = join(directory, entry.name);
+    if (entry.isDirectory()) scanCompiled(full);
+    else if (entry.isFile() && full.endsWith('.js')) compiledFiles.push(full);
+  }
+}
+scanCompiled(compiledRoot);
+compiledFiles.sort();
+const compiledDigest = createHash('sha256');
+for (const file of compiledFiles) {
+  compiledDigest.update(file.slice(compiledRoot.length + 1));
+  compiledDigest.update('\0');
+  compiledDigest.update(createHash('sha256').update(readFileSync(file)).digest('hex'));
+  compiledDigest.update('\n');
+}
+if (compiledFiles.length !== 204 || compiledDigest.digest('hex') !== '6de57ae9bbaae615c0d7f87e744e5422dfc25959bf92a659c28c924961ddf1dc')
+  throw new Error('compiled reference source closure differs from tested build');
 const {serve} = await import(pathToFileURL(requireFromReference.resolve('@hono/node-server')).href);
 const {openKernel, WorkspaceKernel} = await import(pathToFileURL(join(root, 'dist-workspace/src/workspace-kernel.js')).href);
 const {createWorkspaceControlApp} = await import(pathToFileURL(join(root, 'dist-workspace/src/workspace-http.js')).href);

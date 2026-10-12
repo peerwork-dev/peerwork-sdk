@@ -11,10 +11,15 @@ files: `src/workspace-kernel.ts`
 `package-lock.json`
 `80d6ed0f40c4dbfa180289aad67054a35b25843754291ae7a34780c81f77a51f`.
 The reference checkout was rebuilt with `npm run build:workspace` before the
-test. The test bridge checks the exact checkout commit, clean tracked `src`
-and lockfile content, no untracked `src` files, the three source/lock hashes
-above and that the compiled entrypoints are newer than their tracked
-TypeScript sources before launching. This is a real service handler over HTTP,
+test. The test bridge checks the exact checkout commit; clean tracked `src`,
+`tests`, `scripts`, TypeScript configs, package manifest and lockfile; no
+untracked code/JSON under those source directories; the three source/lock
+hashes above; compiler version 7.0.2; and that the compiled entrypoints are
+newer than their tracked TypeScript sources. It also hashes all 204 compiled
+`dist-workspace/src/*.js` files by relative name and bytes; the tested build
+closure digest is
+`6de57ae9bbaae615c0d7f87e744e5422dfc25959bf92a659c28c924961ddf1dc`.
+This is a real service handler over HTTP,
 not a synthetic receipt server.
 
 The development proxy awaits the real handler's first signed `workspace.create`
