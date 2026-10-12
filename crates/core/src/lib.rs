@@ -11,6 +11,8 @@ mod full_manifest;
 #[allow(dead_code)]
 mod interpreter;
 #[allow(dead_code)]
+mod js_locale;
+#[allow(dead_code)]
 mod legacy_protocol_bindings;
 mod migration_fragments;
 #[allow(dead_code)]

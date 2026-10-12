@@ -1,0 +1,92 @@
+{
+  "node": "24.20.0",
+  "icu": "78.3",
+  "locale": "en-US",
+  "cases": [
+    {
+      "left": "a-1",
+      "right": "a_1",
+      "sign": 1
+    },
+    {
+      "left": "a1",
+      "right": "a_1",
+      "sign": 1
+    },
+    {
+      "left": "aA",
+      "right": "aa",
+      "sign": 1
+    },
+    {
+      "left": "a2",
+      "right": "a10",
+      "sign": 1
+    },
+    {
+      "left": "é",
+      "right": "e",
+      "sign": 1
+    },
+    {
+      "left": "é",
+      "right": "é",
+      "sign": 0
+    },
+    {
+      "left": "ß",
+      "right": "ss",
+      "sign": 1
+    },
+    {
+      "left": "中",
+      "right": "あ",
+      "sign": 1
+    },
+    {
+      "left": "😀",
+      "right": "",
+      "sign": -1
+    },
+    {
+      "left": "a.",
+      "right": "a-",
+      "sign": 1
+    },
+    {
+      "left": "\ud800",
+      "right": "�",
+      "sign": -1
+    },
+    {
+      "left": "\ud800",
+      "right": "\ud801",
+      "sign": -1
+    },
+    {
+      "left": "\udc00",
+      "right": "�",
+      "sign": -1
+    },
+    {
+      "left": "Å",
+      "right": "A",
+      "sign": 1
+    },
+    {
+      "left": "ñ",
+      "right": "n",
+      "sign": 1
+    },
+    {
+      "left": "Ω",
+      "right": "O",
+      "sign": 1
+    },
+    {
+      "left": "é",
+      "right": "é",
+      "sign": 0
+    }
+  ]
+}

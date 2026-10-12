@@ -54,7 +54,7 @@ try {
  cases.push(await result('workspace_mismatch', [wrongWorkspace],false));
  const action=(id)=>({id,reads:[],writes:[],revisionEffects:{control:true,contentEntities:[]},variants:[{when:[],effects:[]}]});
  const punctuation=structuredClone(minimal);punctuation.actions=[action('a-1'),action('a_1')];
- const punctuationCase=await result('locale_compare_action_order', [legacy(punctuation)]);punctuationCase.check_rust=false;cases.push(punctuationCase);
+ cases.push(await result('locale_compare_action_order', [legacy(punctuation)]));
  function unsatisfiedPortRow(manifest){const normalized=manifestCanonical(manifest).manifest,id=digest(normalized),sourceText=canonicalStructured({semantics:'peerwork.kernel.v1',manifest});
   return {kind:'protocols',id,revision:1,provenance:'LEGACY_OWNER_ATTESTED',value:{digest:id,workspace_id:workspace,source_digest:hash(sourceText),resolved_manifest:canonicalStructured(normalized),manifest:sourceText,dependency_closure:'[]',created_by:actor,created:1}};}
  const missingPort=structuredClone(minimal);missingPort.execution_requirements={format:'peerwork.protocol-execution-requirements.v1',closure_complete:false,ports:[{import_path:[],action_id:'missing.action',variant:0,input_name:'input',type:'actor_id',required:true,bound:false}]};
