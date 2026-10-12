@@ -103,6 +103,69 @@ pub(crate) struct SecureJournalRead {
     verified_count: usize,
 }
 
+/// Complete, configured-origin transport evidence for the sealed verifier.
+/// Its constructor is private to this reader; signed policy/commit validation
+/// and final effect authority still belong to the complete core replay.
+pub(crate) struct AuthenticatedJournalPages<'a> {
+    reader: &'a SecureJournalRead,
+    discovery_wire: Vec<u8>,
+    checkpoint: String,
+    sequence: u64,
+    page_count: usize,
+    chain_hash: String,
+}
+
+impl AuthenticatedJournalPages<'_> {
+    pub(crate) fn origin(&self) -> &str {
+        &self.reader.document.origin
+    }
+    pub(crate) fn actor_id(&self) -> &str {
+        &self.reader.document.actor_id
+    }
+    pub(crate) fn key_id(&self) -> &str {
+        &self.reader.document.key_id
+    }
+    pub(crate) fn authority(&self) -> &str {
+        &self.reader.document.authority
+    }
+    pub(crate) fn workspace_id(&self) -> &str {
+        &self.reader.document.workspace_id
+    }
+    pub(crate) fn discovery_wire(&self) -> &[u8] {
+        &self.discovery_wire
+    }
+    pub(crate) fn checkpoint_canonical_json(&self) -> &str {
+        &self.checkpoint
+    }
+    pub(crate) fn sequence(&self) -> u64 {
+        self.sequence
+    }
+    pub(crate) fn page_count(&self) -> usize {
+        self.page_count
+    }
+
+    /// The callback sees provisional page bytes until this method returns.
+    /// Reopen/reparse every exact page and require the original complete
+    /// snapshot, including its persisted byte chain, after the callback.
+    pub(crate) fn for_each_exact_page(
+        &self,
+        consume: impl FnMut(&[u8]) -> Result<(), JournalReadError>,
+    ) -> Result<(), JournalReadError> {
+        self.reader.for_each_exact_page(consume)?;
+        let (last, _) = self.reader.inspect()?;
+        let last = last.ok_or(JournalReadError::Incompatible)?;
+        if last.next.is_some()
+            || last.checkpoint != self.checkpoint
+            || last.sequence != self.sequence
+            || self.reader.page_count() != self.page_count
+            || self.reader.document.chain_hash.as_deref() != Some(self.chain_hash.as_str())
+        {
+            return Err(JournalReadError::Incompatible);
+        }
+        Ok(())
+    }
+}
+
 impl SecureJournalRead {
     pub(crate) fn open(
         path: &Path,
@@ -198,9 +261,53 @@ impl SecureJournalRead {
         })
     }
 
+    /// This is the only production entry to a completed exact-page stream.
+    /// The client supplies configured-origin TLS discovery; the identity is
+    /// the protected local signer. Neither this handle nor its pages prove
+    /// the signed sealed journal or authorize final action effects.
+    pub(crate) fn authenticated_pages(
+        &self,
+        client: &KernelClient,
+        identity: &KernelIdentity,
+    ) -> Result<AuthenticatedJournalPages<'_>, JournalReadError> {
+        self.check_pins(client, identity)?;
+        self.complete_pages()
+    }
+
+    fn complete_pages(&self) -> Result<AuthenticatedJournalPages<'_>, JournalReadError> {
+        if self.document.version != 4 || self.page_count() == 0 {
+            return Err(JournalReadError::Incompatible);
+        }
+        let (last, _) = self.inspect()?;
+        let last = last.ok_or(JournalReadError::Incompatible)?;
+        if last.next.is_some() {
+            return Err(JournalReadError::Incompatible);
+        }
+        self.for_each_exact_page(|_| Ok(()))?;
+        let discovery_wire = decode_base64url(&self.document.discovery_b64)
+            .map_err(|_| JournalReadError::Incompatible)?;
+        let discovery = parse_discovery_wire(&discovery_wire, MAX_DISCOVERY_BYTES)
+            .map_err(|_| JournalReadError::Incompatible)?;
+        if discovery.canonical_context() != self.document.discovery_context {
+            return Err(JournalReadError::Incompatible);
+        }
+        Ok(AuthenticatedJournalPages {
+            reader: self,
+            discovery_wire,
+            checkpoint: last.checkpoint,
+            sequence: last.sequence,
+            page_count: self.page_count(),
+            chain_hash: self
+                .document
+                .chain_hash
+                .clone()
+                .ok_or(JournalReadError::Incompatible)?,
+        })
+    }
+
     /// Bounded, one-page-at-a-time input for a future complete core verifier.
     /// No page or callback result is an authenticated business outcome here.
-    pub(crate) fn for_each_exact_page(
+    fn for_each_exact_page(
         &self,
         mut consume: impl FnMut(&[u8]) -> Result<(), JournalReadError>,
     ) -> Result<(), JournalReadError> {
@@ -864,7 +971,7 @@ mod tests {
             actor_id: "c".repeat(43),
             key_id: "d".repeat(43),
             authority: "e".repeat(64),
-            workspace_id: workspace,
+            workspace_id: workspace.clone(),
             pages: vec![
                 SavedPage {
                     after: 0,
@@ -999,21 +1106,30 @@ mod tests {
         let second = page(&workspace, &head, &[2], None);
         let chain1 = advance_chain_hash(&"0".repeat(64), 0, &first);
         let chain2 = advance_chain_hash(&chain1, 1, &second);
+        let discovery_wire = serde_json::to_vec(&json!({
+            "semantics":"peerwork.kernel.v1", "audience":"https://control.example",
+            "command_type":"peerwork.kernel-command.v1+jws",
+            "receipt_type":"peerwork.kernel-receipt.v1+jws",
+            "receipt_public_key":peerwork_core::crypto::key_id(&[27;32]),
+            "limits":{}, "protocol_features":["old"], "manifest_language":"v1"
+        }))
+        .unwrap();
+        let discovery = parse_discovery_wire(&discovery_wire, discovery_wire.len()).unwrap();
         let document = Document {
             version: 4,
             origin: "https://control.example/".into(),
-            discovery_context: "context".into(),
-            discovery_b64: "wire".into(),
+            discovery_context: discovery.canonical_context().into(),
+            discovery_b64: base64url(&discovery_wire),
             actor_id: "c".repeat(43),
             key_id: "d".repeat(43),
             authority: "e".repeat(64),
-            workspace_id: workspace,
+            workspace_id: workspace.clone(),
             pages: Vec::new(),
             page_count: Some(2),
-            chain_hash: Some(chain2),
+            chain_hash: Some(chain2.clone()),
         };
         let store = SecureStateStore::open(&path).unwrap();
-        let reader = SecureJournalRead {
+        let mut reader = SecureJournalRead {
             store,
             index_path: path,
             document,
@@ -1028,6 +1144,32 @@ mod tests {
             .store
             .write_exact(&serde_json::to_vec(&reader.document).unwrap())
             .unwrap();
+        reader.document.page_count = Some(1);
+        reader.document.chain_hash = Some(chain1);
+        assert!(matches!(
+            reader.complete_pages(),
+            Err(JournalReadError::Incompatible)
+        ));
+        reader.document.page_count = Some(2);
+        reader.document.chain_hash = Some(chain2);
+        let complete = reader.complete_pages().unwrap();
+        assert_eq!(complete.origin(), "https://control.example/");
+        assert_eq!(complete.actor_id(), "c".repeat(43));
+        assert_eq!(complete.key_id(), "d".repeat(43));
+        assert_eq!(complete.authority(), "e".repeat(64));
+        assert_eq!(complete.workspace_id(), workspace);
+        assert_eq!(complete.discovery_wire(), discovery_wire);
+        assert_eq!(complete.sequence(), 2);
+        assert_eq!(complete.page_count(), 2);
+        let mut seen = 0;
+        complete
+            .for_each_exact_page(|wire| {
+                assert!(!wire.is_empty());
+                seen += 1;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(seen, 2);
         assert_eq!(reader.exact_pages().unwrap(), vec![first.clone(), second]);
         let orphan = SecureStateStore::open(&reader.page_path(2)).unwrap();
         orphan.write_exact(b"uncommitted").unwrap();
@@ -1046,6 +1188,10 @@ mod tests {
             reader.for_each_exact_page(|_| Ok(())),
             Err(JournalReadError::Incompatible)
         ));
-        assert!(serde_json::to_vec(&reader.document).unwrap().len() < 1024);
+        assert!(matches!(
+            complete.for_each_exact_page(|_| Ok(())),
+            Err(JournalReadError::Incompatible)
+        ));
+        assert!(serde_json::to_vec(&reader.document).unwrap().len() < 2048);
     }
 }
