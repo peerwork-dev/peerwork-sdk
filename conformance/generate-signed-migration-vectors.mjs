@@ -51,7 +51,7 @@ try {
     try {
       const journal = await verifyJournal({workspaceId, policies: [policy], commits, checkpoint,
         trustedOwner: {actorId: identity.actorId, key: identity.keyId}});
-      cases.push({name, policy, commits, checkpoint, workspace_id: workspaceId, owner: {actor_id: identity.actorId, key: identity.keyId}, ok: true, objects: journal.objects});
+      cases.push({name, policy, commits, checkpoint, workspace_id: workspaceId, owner: {actor_id: identity.actorId, key: identity.keyId}, ok: true, objects: journal.objects, operations: journal.operations, legacy: journal.legacy});
     } catch (error) {
       cases.push({name, policy, commits, checkpoint, workspace_id: workspaceId, owner: {actor_id: identity.actorId, key: identity.keyId}, ok: false, error: String(error.message)});
     }
@@ -85,7 +85,7 @@ try {
       const journal = await verifyJournal({workspaceId, policies: [policy], commits, checkpoint,
         trustedOwner: {actorId: identity.actorId, key: identity.keyId}});
       cases.push({name, policy, commits, checkpoint, workspace_id: workspaceId,
-        owner: {actor_id: identity.actorId, key: identity.keyId}, ok: true, objects: journal.objects});
+        owner: {actor_id: identity.actorId, key: identity.keyId}, ok: true, objects: journal.objects, operations: journal.operations, legacy: journal.legacy});
     } catch (error) {
       cases.push({name, policy, commits, checkpoint, workspace_id: workspaceId,
         owner: {actor_id: identity.actorId, key: identity.keyId}, ok: false, error: String(error.message)});
@@ -120,7 +120,7 @@ try {
         trustedOwner: {actorId: identity.actorId, key: identity.keyId}});
       cases.push({name, policy, commits: [commit], checkpoint, workspace_id: workspaceId,
         owner: {actor_id: identity.actorId, key: identity.keyId}, ok: true,
-        objects: journal.objects});
+        objects: journal.objects, operations: journal.operations, legacy: journal.legacy});
     } catch (error) {
       cases.push({name, policy, commits: [commit], checkpoint, workspace_id: workspaceId,
         owner: {actor_id: identity.actorId, key: identity.keyId}, ok: false,
@@ -147,7 +147,7 @@ try {
     cases.push({name: 'structured_v2_migration', policy: structuredPolicy,
       commits: [structuredPage], checkpoint: structuredCheckpoint1,
       workspace_id: workspaceId, owner: {actor_id: identity.actorId, key: identity.keyId},
-      ok: true, objects: journal.objects});
+      ok: true, objects: journal.objects, operations: journal.operations, legacy: journal.legacy});
   } catch (error) {
     cases.push({name: 'structured_v2_migration', policy: structuredPolicy,
       commits: [structuredPage], checkpoint: structuredCheckpoint1,
@@ -178,7 +178,7 @@ try {
     cases.push({name: 'historical_v3_format_one_migration', policy: policy3,
       commits: [v3Page], checkpoint: v3Checkpoint, workspace_id: workspaceId,
       owner: {actor_id: identity.actorId, key: identity.keyId}, ok: true,
-      objects: journal.objects});
+      objects: journal.objects, operations: journal.operations, legacy: journal.legacy});
   } catch (error) {
     cases.push({name: 'historical_v3_format_one_migration', policy: policy3,
       commits: [v3Page], checkpoint: v3Checkpoint, workspace_id: workspaceId,
@@ -212,7 +212,7 @@ try {
     cases.push({name: 'historical_private_v3_migration', policy: privatePolicy3,
       commits: [privateV3Page], checkpoint: privateV3Checkpoint, keyring: privateV3Keyring,
       workspace_id: workspaceId, owner: {actor_id: identity.actorId, key: identity.keyId},
-      ok: true, objects: journal.objects});
+      ok: true, objects: journal.objects, operations: journal.operations, legacy: journal.legacy});
   } catch (error) {
     cases.push({name: 'historical_private_v3_migration', policy: privatePolicy3,
       commits: [privateV3Page], checkpoint: privateV3Checkpoint, keyring: privateV3Keyring,
@@ -242,7 +242,7 @@ try {
     cases.push({name: 'public_to_private_conversion', policies: [policy, privatePolicy],
       commits: [bootstrap, conversion], checkpoint: privateCheckpoint, keyring,
       workspace_id: workspaceId, owner: {actor_id: identity.actorId, key: identity.keyId},
-      ok: true, objects: journal.objects});
+      ok: true, objects: journal.objects, operations: journal.operations, legacy: journal.legacy});
   } catch (error) {
     cases.push({name: 'public_to_private_conversion', policies: [policy, privatePolicy],
       commits: [bootstrap, conversion], checkpoint: privateCheckpoint, keyring,

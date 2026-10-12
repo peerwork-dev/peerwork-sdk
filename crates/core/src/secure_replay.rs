@@ -1165,6 +1165,7 @@ fn validate_signed_package_install(
 #[derive(Debug, Clone)]
 pub(crate) struct ReplayFacts {
     pub operations: Vec<WireValue>,
+    pub objects: Vec<WireValue>,
     pub object_count: usize,
     pub legacy: bool,
 }
@@ -1861,6 +1862,7 @@ pub(crate) fn replay_basic_content(
     .map_err(|_| ReplayError::Invalid)?;
     Ok(ReplayFacts {
         operations,
+        objects: prior_objects,
         object_count: seen_objects.len(),
         legacy,
     })
@@ -3985,9 +3987,41 @@ mod tests {
             );
             if let Ok(facts) = actual {
                 assert_eq!(
+                    facts.legacy,
+                    case["legacy"].as_bool().unwrap(),
+                    "{}: legacy provenance",
+                    case["name"]
+                );
+                let expected_operations = parse_wire_json_js_bounded(
+                    &serde_json::to_vec(&case["operations"]).unwrap(),
+                    48,
+                    32 * 1024 * 1024,
+                )
+                .unwrap();
+                assert_eq!(
+                    canonical_wire_value(&WireValue::Array(facts.operations), Path::SecureArtifact)
+                        .unwrap(),
+                    canonical_wire_value(&expected_operations, Path::SecureArtifact).unwrap(),
+                    "{}: replayed operation content/order",
+                    case["name"]
+                );
+                assert_eq!(
                     facts.object_count,
                     case["objects"].as_array().unwrap().len(),
                     "{}: migrated object projection",
+                    case["name"]
+                );
+                let expected = parse_wire_json_js_bounded(
+                    &serde_json::to_vec(&case["objects"]).unwrap(),
+                    48,
+                    32 * 1024 * 1024,
+                )
+                .unwrap();
+                assert_eq!(
+                    canonical_wire_value(&WireValue::Array(facts.objects), Path::SecureArtifact)
+                        .unwrap(),
+                    canonical_wire_value(&expected, Path::SecureArtifact).unwrap(),
+                    "{}: migrated exact object content/order",
                     case["name"]
                 );
             }
