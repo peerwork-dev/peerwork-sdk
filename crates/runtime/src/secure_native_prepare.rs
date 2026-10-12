@@ -1173,6 +1173,53 @@ mod tests {
             "exact same-ID retry must not reapply"
         );
         assert_eq!(journal.pending()[0].observed_responses, 1);
+        if coordination.is_none() {
+            // The real one-commit service journal crosses configured-origin page
+            // custody, protected pending key material, and signed core replay.
+            // Pending material still cannot authorize an ACTION outcome.
+            let mut proof_config = TransportConfig::new(origin);
+            proof_config.allow_loopback_http = true;
+            let proof_client = crate::kernel_client::KernelClient::open(
+                proof_config,
+                &root.path().join("native-proof-discovery.sqlite"),
+                &[],
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+            let mut proof_reader = crate::secure_journal_read::SecureJournalRead::open(
+                &root.path().join("native-proof-journal.state"),
+                &proof_client,
+                &identity,
+                &workspace,
+                ready["bootstrap"]["authority"].as_str().unwrap(),
+            )
+            .unwrap();
+            assert!(proof_reader
+                .authenticated_pages(&proof_client, &identity)
+                .is_err());
+            let proof_progress = proof_reader
+                .fetch_next(&proof_client, &identity, &CancellationToken::new())
+                .await
+                .unwrap();
+            assert!(proof_progress.complete_transport);
+            let proof_pages = proof_reader
+                .authenticated_pages(&proof_client, &identity)
+                .unwrap();
+            let verified =
+                crate::secure_verified_read::replay_authenticated_pages(&proof_pages, &lifecycle)
+                    .unwrap();
+            assert_eq!(verified.origin(), origin);
+            assert_eq!(verified.replay().sequence(), 1);
+            assert_eq!(verified.replay().head(), Some(expected_head.as_str()));
+            assert_eq!(verified.source_actor_id(), identity.actor_id());
+            assert_eq!(verified.source_key_id(), identity.key_id());
+            assert_eq!(
+                verified.keyring_state(),
+                Some(crate::secure_lifecycle::ReplayKeyringState::Pending)
+            );
+            assert!(verified.action_receipt(&command).unwrap().is_none());
+        }
     }
 
     #[tokio::test]

@@ -16,6 +16,11 @@ use peerwork_core::{
 use thiserror::Error;
 
 const MAX_PAGE: usize = 64 * 1024 * 1024;
+// The pinned service limits stored workspace artifacts to 32 MiB. Allow
+// canonical re-encoding room while core still consumes borrowed slices.
+// A streaming replay API is needed before lifting this supported-source cap.
+const MAX_REPLAY_ARTIFACTS: usize = 64 * 1024 * 1024;
+const MAX_POLICIES: usize = 1024;
 
 #[derive(Debug, Error)]
 pub(crate) enum VerifiedReadError {
@@ -38,6 +43,25 @@ pub(crate) struct TransportReplayedJournal {
     source_key_id: String,
     keyring_state: Option<ReplayKeyringState>,
     replay: ReplayedSecureJournal,
+}
+
+fn push_bounded(
+    rows: &mut Vec<Vec<u8>>,
+    encoded: Vec<u8>,
+    total_bytes: &mut usize,
+    max_rows: usize,
+    max_bytes: usize,
+) -> Result<(), JournalReadError> {
+    let next = total_bytes
+        .checked_add(encoded.len())
+        .filter(|total| *total <= max_bytes)
+        .ok_or(JournalReadError::TooLarge)?;
+    if rows.len() >= max_rows {
+        return Err(JournalReadError::TooLarge);
+    }
+    rows.push(encoded);
+    *total_bytes = next;
+    Ok(())
 }
 
 impl TransportReplayedJournal {
@@ -84,6 +108,7 @@ pub(crate) fn replay_authenticated_pages(
     }
     let mut policy_wires = Vec::<Vec<u8>>::new();
     let mut commit_wires = Vec::<Vec<u8>>::new();
+    let mut total_bytes = 0usize;
     let mut first = true;
     pages.for_each_exact_page(|wire| {
         let page = parse_wire_json_bounded(wire, 64, MAX_PAGE)
@@ -95,11 +120,16 @@ pub(crate) fn replay_authenticated_pages(
                 return Err(JournalReadError::Incompatible);
             };
             for policy in policies {
-                policy_wires.push(
-                    canonical_wire_value(policy, Path::SecureArtifact)
-                        .map_err(|_| JournalReadError::Incompatible)?
-                        .into_bytes(),
-                );
+                let encoded = canonical_wire_value(policy, Path::SecureArtifact)
+                    .map_err(|_| JournalReadError::Incompatible)?
+                    .into_bytes();
+                push_bounded(
+                    &mut policy_wires,
+                    encoded,
+                    &mut total_bytes,
+                    MAX_POLICIES,
+                    MAX_REPLAY_ARTIFACTS,
+                )?;
             }
             first = false;
         }
@@ -109,11 +139,16 @@ pub(crate) fn replay_authenticated_pages(
             return Err(JournalReadError::Incompatible);
         };
         for commit in commits {
-            commit_wires.push(
-                canonical_wire_value(commit, Path::SecureArtifact)
-                    .map_err(|_| JournalReadError::Incompatible)?
-                    .into_bytes(),
-            );
+            let encoded = canonical_wire_value(commit, Path::SecureArtifact)
+                .map_err(|_| JournalReadError::Incompatible)?
+                .into_bytes();
+            push_bounded(
+                &mut commit_wires,
+                encoded,
+                &mut total_bytes,
+                usize::MAX,
+                MAX_REPLAY_ARTIFACTS,
+            )?;
         }
         Ok(())
     })?;
@@ -172,4 +207,27 @@ pub(crate) fn replay_authenticated_pages(
         keyring_state: keyring.map(|material| material.state),
         replay,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replay_artifact_buffer_checks_total_bytes_and_count_before_insertion() {
+        let mut rows = Vec::new();
+        let mut total = 0;
+        push_bounded(&mut rows, vec![1, 2, 3], &mut total, 1, 4).unwrap();
+        assert_eq!(total, 3);
+        assert!(matches!(
+            push_bounded(&mut rows, vec![4], &mut total, 1, 4),
+            Err(JournalReadError::TooLarge)
+        ));
+        assert!(matches!(
+            push_bounded(&mut rows, vec![4, 5], &mut total, 2, 4),
+            Err(JournalReadError::TooLarge)
+        ));
+        assert_eq!(total, 3);
+        assert_eq!(rows.len(), 1);
+    }
 }
