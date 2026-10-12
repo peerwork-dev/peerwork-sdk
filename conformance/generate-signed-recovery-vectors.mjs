@@ -78,12 +78,34 @@ try {
   delete nullableContext.body;
   const epochKey = await crypto.subtle.importKey('raw', Buffer.alloc(32, 123),
     {name: 'AES-GCM'}, false, ['encrypt']);
+  const nullRecoveryContext = {...valid.payload, recovery: null};
+  delete nullRecoveryContext.mode;
+  delete nullRecoveryContext.body;
+  const nullRecoveryBody = await sealContent(epochKey,
+    encodeCanonicalJson({v: 1, kind: 'ADMIN', input: {}, objects: []}), nullRecoveryContext);
+  const nullRecoveryCommit = await signSecure(identity, 'peerwork.secure.commit.v1',
+    {...nullRecoveryContext, mode: 'PRIVATE', body: nullRecoveryBody});
+  const nullRecoveryCheckpoint2 = {...checkpoint0, sequence: 2,
+    head: await secureHash(nullRecoveryCommit)};
   const nullableBody = await sealContent(epochKey,
     encodeCanonicalJson({v: 1, kind: 'ADMIN', input: {}, objects: []}), nullableContext);
   const nullableMarker = await signSecure(identity, 'peerwork.secure.commit.v1',
     {...nullableContext, mode: 'PRIVATE', body: nullableBody});
   const nullableCheckpoint3 = {...checkpoint0, sequence: 3,
     head: await secureHash(nullableMarker)};
+  // The later signed disposition covers the first marker as well as the
+  // original failing commit. Only the later marker remains active.
+  const supersedingRecovery = {...prepared.recovery, through: checkpoint3,
+    excluded_root: await secureHash([
+      {sequence: 2, hash: checkpoint2.head},
+      {sequence: 3, hash: checkpoint3.head},
+    ])};
+  const supersedingMarker = await createCommit({identity, policy, checkpoint: checkpoint3,
+    operation: {v: 1, kind: 'ADMIN', input: {}, objects: []},
+    actionId: 'secure.recover', instanceId: null, commandId: 's'.repeat(43),
+    issuedAt: 6, keyring, recovery: supersedingRecovery});
+  const supersedingCheckpoint4 = {...checkpoint0, sequence: 4,
+    head: await secureHash(supersedingMarker)};
   const cases = [];
   for (const [name, commits, checkpoint] of [
     ['unrecovered_invalid_encrypted_commit', [bootstrap, bad], checkpoint2],
@@ -91,6 +113,8 @@ try {
     ['signed_wrong_excluded_root', [bootstrap, bad, wrongRoot], wrongRootCheckpoint],
     ['invented_failure_over_valid_content', [bootstrap, valid, inventedMarker], inventedCheckpoint3],
     ['v1_null_migration_and_conversion_marker', [bootstrap, bad, nullableMarker], nullableCheckpoint3],
+    ['v1_later_recovery_supersedes_marker', [bootstrap, bad, marker, supersedingMarker], supersedingCheckpoint4],
+    ['v1_null_recovery_on_ordinary_commit', [bootstrap, nullRecoveryCommit], nullRecoveryCheckpoint2],
   ]) {
     try {
       const journal = await verifyJournal({...baseInput, commits, checkpoint});

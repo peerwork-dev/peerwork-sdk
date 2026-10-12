@@ -1659,7 +1659,9 @@ fn replay_basic_content_depth(
                     WireValue::Number((segment.through - segment.base) as f64),
                 ));
                 recoveries.push(WireValue::Object(notice));
-            } else if payload.get("recovery").is_some()
+            } else if payload
+                .get("recovery")
+                .is_some_and(crate::secure_recovery::js_truthy)
                 || string(payload, "action_id")? == "secure.recover"
             {
                 return Err(ReplayError::Invalid);

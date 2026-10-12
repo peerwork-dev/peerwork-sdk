@@ -52,7 +52,7 @@ fn digest(value: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
-fn js_truthy(value: &WireValue) -> bool {
+pub(crate) fn js_truthy(value: &WireValue) -> bool {
     match value {
         WireValue::Null | WireValue::Bool(false) => false,
         WireValue::Number(n) => *n != 0.0 && !n.is_nan(),
@@ -242,7 +242,7 @@ pub(crate) fn preflight_recovery(
         }) {
             continue;
         }
-        if p.get("recovery").is_some() {
+        if p.get("recovery").is_some_and(js_truthy) {
             selected.push(index);
         }
     }
@@ -379,6 +379,15 @@ mod tests {
             let preflight = preflight_recovery(&policy_refs, &commit_refs, &chain);
             if case["name"] == "signed_wrong_excluded_root" {
                 assert!(preflight.is_err());
+            } else if case["name"] == "v1_later_recovery_supersedes_marker" {
+                assert_eq!(
+                    preflight.unwrap(),
+                    vec![RecoverySegment {
+                        base: 1,
+                        through: 3,
+                        marker: 4,
+                    }]
+                );
             } else if case["name"] == "recovered_invalid_encrypted_commit"
                 || case["name"] == "invented_failure_over_valid_content"
                 || case["name"] == "v1_null_migration_and_conversion_marker"
