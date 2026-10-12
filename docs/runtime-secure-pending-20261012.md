@@ -31,8 +31,16 @@ of the exact request bytes. Runtime source now rechecks that proof against
 the immutable row, protected local identity, configured origin, owner key,
 action, commit intent digest and saved request SHA before any POST/retry. The
 source also keeps a received HTTP response as an untrusted observation and
-leaves the row PENDING. This combined runtime source is an unverified local
-checkpoint until its focused socket test and locked-offline check pass.
+leaves the row PENDING. The exact committed source pin is
+`a45ea0de4c9a01c2b232b0c16a9498cce90996fd` (proof correction
+`2c46d7ded895fb6a8c0d5553f600c1d290b30585`). A detached worktree at
+that pin passed Rust 1.89 `cargo check -p peerwork-runtime --offline --locked`
+and the focused `cargo test -p peerwork-runtime secure_intents::tests
+--offline --locked` suite, 3/3. The socket regression receives the complete
+signed first POST, drops its reply, then proves the same exact bytes are sent
+after journal close/reopen. It records the subsequent 200-looking reply as
+opaque untrusted bytes and still lists the row as PENDING. This is a
+synthetic local HTTP server, not actual Peerwork secure effect acceptance.
 
 This is only pre-submit integrity. The caller-supplied workspace policy pins
 must come from authenticated persisted history; a proof from arbitrary pins
@@ -53,6 +61,9 @@ real Peerwork secure HTTP acceptance and cross-platform execution remain open.
 The first combined runtime test attempt stopped before compiling this source:
 concurrent package compiler WIP changed `namespace_manifest` to three
 arguments while a caller still supplied two (E0061). The package owner is
-correcting that source. This interruption is distinct from the earlier
-successful core proof 4/4 and pending-store 1/1 focused tests; the combined
-runtime/socket checkpoint is not yet accepted.
+correcting that source. This interruption is distinct from the later passing
+detached-checkout result; the original failed build is preserved as a shared
+source integration interruption. The corrected core proof's four focused
+tests also passed, including a newly re-signed one-byte ciphertext refusal,
+normal split ciphertext acceptance, and empty-component HTTP admission
+refusal.
