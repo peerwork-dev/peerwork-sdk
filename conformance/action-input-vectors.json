@@ -1014,6 +1014,252 @@
     "error": "REFERENCE_NOT_FOUND"
   },
   {
+    "name": "malformed_record_id",
+    "refs": [
+      {
+        "record_id": null,
+        "revision": 1
+      }
+    ],
+    "prior_objects": [
+      {
+        "kind": "protocols",
+        "id": "protocol",
+        "revision": 1,
+        "value": {
+          "digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "resolved_manifest": {
+            "record_schemas": {},
+            "role_conflicts": [],
+            "historical_role_conflicts": [],
+            "actions": [
+              {
+                "id": "test.set",
+                "reads": [
+                  [
+                    "count"
+                  ]
+                ],
+                "writes": [
+                  [
+                    "count"
+                  ]
+                ],
+                "revisionEffects": {
+                  "control": true,
+                  "contentEntities": []
+                },
+                "variants": [
+                  {
+                    "when": [
+                      {
+                        "op": "exact_ref",
+                        "ref": {
+                          "from": "ref",
+                          "source": "body",
+                          "path": [
+                            "ref"
+                          ],
+                          "schema": "entry",
+                          "scope": "INSTANCE"
+                        }
+                      }
+                    ],
+                    "effects": [
+                      {
+                        "op": "set",
+                        "path": [
+                          "count"
+                        ],
+                        "value": {
+                          "from": "resolved_payload",
+                          "ref": {
+                            "from": "ref",
+                            "source": "body",
+                            "path": [
+                              "ref"
+                            ],
+                            "schema": "entry",
+                            "scope": "INSTANCE"
+                          },
+                          "path": [
+                            "value"
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "provenance": "AUTHOR_SIGNED"
+      },
+      {
+        "kind": "instances",
+        "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+        "revision": 1,
+        "value": {
+          "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+          "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "state": {
+            "count": 0
+          },
+          "revision": 1,
+          "event_revision": 0
+        },
+        "provenance": "AUTHOR_SIGNED"
+      },
+      {
+        "kind": "records",
+        "id": "QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ",
+        "revision": 1,
+        "value": {
+          "id": "QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ",
+          "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+          "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "entity_id": "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE",
+          "schema_ref": "entry",
+          "payload": {
+            "value": 42
+          },
+          "revision": 1
+        },
+        "provenance": "AUTHOR_SIGNED"
+      }
+    ],
+    "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+    "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+    "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "error": "REFERENCE_NOT_FOUND"
+  },
+  {
+    "name": "malformed_revision",
+    "refs": [
+      {
+        "record_id": "QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ",
+        "revision": "1"
+      }
+    ],
+    "prior_objects": [
+      {
+        "kind": "protocols",
+        "id": "protocol",
+        "revision": 1,
+        "value": {
+          "digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "resolved_manifest": {
+            "record_schemas": {},
+            "role_conflicts": [],
+            "historical_role_conflicts": [],
+            "actions": [
+              {
+                "id": "test.set",
+                "reads": [
+                  [
+                    "count"
+                  ]
+                ],
+                "writes": [
+                  [
+                    "count"
+                  ]
+                ],
+                "revisionEffects": {
+                  "control": true,
+                  "contentEntities": []
+                },
+                "variants": [
+                  {
+                    "when": [
+                      {
+                        "op": "exact_ref",
+                        "ref": {
+                          "from": "ref",
+                          "source": "body",
+                          "path": [
+                            "ref"
+                          ],
+                          "schema": "entry",
+                          "scope": "INSTANCE"
+                        }
+                      }
+                    ],
+                    "effects": [
+                      {
+                        "op": "set",
+                        "path": [
+                          "count"
+                        ],
+                        "value": {
+                          "from": "resolved_payload",
+                          "ref": {
+                            "from": "ref",
+                            "source": "body",
+                            "path": [
+                              "ref"
+                            ],
+                            "schema": "entry",
+                            "scope": "INSTANCE"
+                          },
+                          "path": [
+                            "value"
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "provenance": "AUTHOR_SIGNED"
+      },
+      {
+        "kind": "instances",
+        "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+        "revision": 1,
+        "value": {
+          "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+          "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "state": {
+            "count": 0
+          },
+          "revision": 1,
+          "event_revision": 0
+        },
+        "provenance": "AUTHOR_SIGNED"
+      },
+      {
+        "kind": "records",
+        "id": "QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ",
+        "revision": 1,
+        "value": {
+          "id": "QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ",
+          "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+          "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "entity_id": "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE",
+          "schema_ref": "entry",
+          "payload": {
+            "value": 42
+          },
+          "revision": 1
+        },
+        "provenance": "AUTHOR_SIGNED"
+      }
+    ],
+    "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+    "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+    "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "error": "REFERENCE_NOT_FOUND"
+  },
+  {
     "name": "cross_workspace",
     "refs": [
       {

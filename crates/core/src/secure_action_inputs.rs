@@ -33,17 +33,24 @@ pub(crate) fn resolve_exact_inputs(
     let mut seen = HashSet::new();
     let mut output = Vec::with_capacity(refs.len());
     for reference in refs {
+        // The TypeScript writer checks duplicate `id:revision` pairs before
+        // lookup. A malformed single reference simply cannot match a row.
+        let duplicate_key = format!(
+            "{:?}:{:?}",
+            reference.get("record_id"),
+            reference.get("revision")
+        );
+        if !seen.insert(duplicate_key) {
+            return Err("REFERENCE_INVALID");
+        }
         let id = reference
             .get("record_id")
             .and_then(WireValue::as_utf16)
-            .ok_or("REFERENCE_INVALID")?;
+            .ok_or("REFERENCE_NOT_FOUND")?;
         let revision = reference
             .get("revision")
             .and_then(safe_number)
-            .ok_or("REFERENCE_INVALID")?;
-        if !seen.insert((id.to_vec(), revision)) {
-            return Err("REFERENCE_INVALID");
-        }
+            .ok_or("REFERENCE_NOT_FOUND")?;
         let record = authenticated_prior_objects
             .iter()
             .find(|object| {

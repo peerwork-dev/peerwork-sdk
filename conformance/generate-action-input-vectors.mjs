@@ -33,6 +33,8 @@ try {
       ({record_id:String(index).padStart(43,'M'),revision:1}))],
     ['missing_reference',base,[missing]],
     ['wrong_revision',base,[{...refs[0],revision:2}]],
+    ['malformed_record_id',base,[{record_id:null,revision:1}]],
+    ['malformed_revision',base,[{...refs[0],revision:'1'}]],
     ['cross_workspace',(()=>{const c=structuredClone(base);c.prior.find(o=>o.kind==='records').value.workspace_id='X'.repeat(43);return c;})(),refs],
     ['participation_request',(()=>{const c=structuredClone(base);c.prior.find(o=>o.kind==='records').value.schema_ref='participation.request';return c;})(),refs],
   ];
