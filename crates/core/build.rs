@@ -28,11 +28,156 @@ fn verify_sha256(path: &Path, expected: &str) {
 fn run(mut command: Command, label: &str) {
     let output = command.output().unwrap_or_else(|e| panic!("{label}: {e}"));
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let tail = stderr.chars().rev().take(4000).collect::<String>();
+        let diagnostics = format!(
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let tail = diagnostics.chars().rev().take(4000).collect::<String>();
         let tail = tail.chars().rev().collect::<String>();
         panic!("{label} failed ({}):\n{tail}", output.status);
     }
+}
+
+fn replace_once(source: String, old: &str, new: &str, label: &str) -> String {
+    assert_eq!(
+        source.matches(old).count(),
+        1,
+        "unexpected pinned ICU {label} shape"
+    );
+    source.replacen(old, new, 1)
+}
+
+fn prepare_msvc_project(source: &Path, project: &str, library: &str) {
+    let path = source.join(format!("icu/source/{project}/{project}.vcxproj"));
+    let input = fs::read_to_string(&path).expect("read pinned ICU MSVC project");
+    let patched = replace_once(
+        input,
+        "<ConfigurationType>DynamicLibrary</ConfigurationType>",
+        "<ConfigurationType>StaticLibrary</ConfigurationType>",
+        "MSVC library configuration",
+    );
+    let patched = replace_once(
+        patched,
+        "<_ProjectFileVersion>10.0.30319.1</_ProjectFileVersion>",
+        &format!(
+            "<_ProjectFileVersion>10.0.30319.1</_ProjectFileVersion><TargetName>{library}</TargetName>"
+        ),
+        "MSVC library name",
+    );
+    let (original_defines, patched_defines) = match project {
+        "common" => (
+            "<PreprocessorDefinitions>U_ATTRIBUTE_DEPRECATED=;U_COMMON_IMPLEMENTATION;U_PLATFORM_USES_ONLY_WIN32_API=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>",
+            "<PreprocessorDefinitions>U_STATIC_IMPLEMENTATION;U_HAVE_LIB_SUFFIX=1;U_LIB_SUFFIX_C_NAME=_peerwork;U_ATTRIBUTE_DEPRECATED=;U_COMMON_IMPLEMENTATION;U_PLATFORM_USES_ONLY_WIN32_API=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>",
+        ),
+        "i18n" => (
+            "<PreprocessorDefinitions>U_ATTRIBUTE_DEPRECATED=;U_I18N_IMPLEMENTATION;%(PreprocessorDefinitions)</PreprocessorDefinitions>",
+            "<PreprocessorDefinitions>U_STATIC_IMPLEMENTATION;U_HAVE_LIB_SUFFIX=1;U_LIB_SUFFIX_C_NAME=_peerwork;U_ATTRIBUTE_DEPRECATED=;U_I18N_IMPLEMENTATION;%(PreprocessorDefinitions)</PreprocessorDefinitions>",
+        ),
+        "stubdata" => (
+            "<AdditionalIncludeDirectories>..\\common;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>\n      <PreprocessorDefinitions>STUBDATA_BUILD;%(PreprocessorDefinitions)</PreprocessorDefinitions>",
+            "<AdditionalIncludeDirectories>..\\common;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>\n      <PreprocessorDefinitions>U_STATIC_IMPLEMENTATION;U_HAVE_LIB_SUFFIX=1;U_LIB_SUFFIX_C_NAME=_peerwork;STUBDATA_BUILD;%(PreprocessorDefinitions)</PreprocessorDefinitions>",
+        ),
+        _ => panic!("unexpected ICU MSVC project"),
+    };
+    let patched = replace_once(
+        patched,
+        original_defines,
+        patched_defines,
+        "MSVC static/suffixed symbols",
+    );
+    // The solution target copies public headers for the dynamic distribution.
+    // All three projects compile against the source tree directly instead.
+    let patched = if project == "stubdata" {
+        assert!(!patched.contains("Windows.CopyUnicodeHeaderFiles.targets"));
+        patched
+    } else {
+        replace_once(
+            patched,
+            "  <Import Project=\"$(SolutionDir)\\Windows.CopyUnicodeHeaderFiles.targets\" />",
+            "",
+            "MSVC solution header-copy target",
+        )
+    };
+    fs::write(&path, patched).expect("write patched ICU MSVC project");
+}
+
+fn find_msbuild() -> PathBuf {
+    println!("cargo:rerun-if-env-changed=PEERWORK_MSBUILD");
+    if let Some(path) = env::var_os("PEERWORK_MSBUILD") {
+        return PathBuf::from(path);
+    }
+    if let Some(program_files) = env::var_os("ProgramFiles(x86)") {
+        let vswhere =
+            PathBuf::from(program_files).join("Microsoft Visual Studio/Installer/vswhere.exe");
+        if vswhere.is_file() {
+            let output = Command::new(vswhere)
+                .args([
+                    "-latest",
+                    "-products",
+                    "*",
+                    "-requires",
+                    "Microsoft.Component.MSBuild",
+                    "-property",
+                    "installationPath",
+                ])
+                .output()
+                .expect("query Visual Studio MSBuild installation");
+            assert!(
+                output.status.success(),
+                "Visual Studio MSBuild query failed"
+            );
+            let root = String::from_utf8(output.stdout).expect("MSBuild installation path UTF-8");
+            let path = PathBuf::from(root.trim()).join("MSBuild/Current/Bin/MSBuild.exe");
+            if path.is_file() {
+                return path;
+            }
+        }
+    }
+    PathBuf::from("MSBuild.exe")
+}
+
+fn build_msvc(source: &Path, target_triple: &str) {
+    assert_eq!(
+        target_triple, "x86_64-pc-windows-msvc",
+        "bundled ICU4C MSVC build currently supports only Windows x64"
+    );
+    let msbuild = find_msbuild();
+    for (project, library) in [
+        ("stubdata", "icudatapeerwork"),
+        ("common", "icuucpeerwork"),
+        ("i18n", "icui18npeerwork"),
+    ] {
+        prepare_msvc_project(source, project, library);
+        let path = source.join(format!("icu/source/{project}/{project}.vcxproj"));
+        run(
+            {
+                let mut command = Command::new(&msbuild);
+                command.arg(path).args([
+                    "/nologo",
+                    "/m",
+                    "/p:Configuration=Release",
+                    "/p:Platform=x64",
+                ]);
+                command
+            },
+            &format!("build pinned ICU4C {project} static library"),
+        );
+        let output = source.join(format!("icu/source/{project}/x64/Release/{library}.lib"));
+        assert!(
+            output.is_file(),
+            "missing ICU4C static library: {}",
+            output.display()
+        );
+        println!(
+            "cargo:rustc-link-search=native={}",
+            output.parent().unwrap().display()
+        );
+    }
+    // MSVC's linker resolves static-library references in repeated passes.
+    println!("cargo:rustc-link-lib=static=icui18npeerwork");
+    println!("cargo:rustc-link-lib=static=icuucpeerwork");
+    println!("cargo:rustc-link-lib=static=icudatapeerwork");
 }
 
 fn main() {
@@ -56,7 +201,7 @@ fn main() {
         host_triple, target_triple,
         "ICU4C must be built on a target-native builder; cross-toolchain selection is not implemented"
     );
-    if target != "linux" && target != "macos" {
+    if target != "linux" && target != "macos" && target != "windows" {
         panic!("bundled ICU4C build is not yet implemented for target OS {target}");
     }
     let out = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
@@ -64,19 +209,16 @@ fn main() {
     let build = out.join("build");
     fs::create_dir_all(&source).expect("ICU source directory");
     fs::create_dir_all(&build).expect("ICU build directory");
-    run(
-        {
-            let mut command = Command::new("tar");
-            command
-                .arg("--no-same-owner")
-                .arg("-xzf")
-                .arg(source_asset)
-                .arg("-C")
-                .arg(&source);
-            command
-        },
-        "extract pinned ICU4C source",
-    );
+    let mut extract = Command::new("tar");
+    if target != "windows" {
+        extract.arg("--no-same-owner");
+    }
+    extract.arg("-xzf").arg(source_asset).arg("-C").arg(&source);
+    run(extract, "extract pinned ICU4C source");
+    if target == "windows" {
+        build_msvc(&source, &target_triple);
+        return;
+    }
     run(
         {
             let mut command = Command::new(source.join("icu/source/runConfigureICU"));

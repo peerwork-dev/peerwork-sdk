@@ -122,9 +122,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+      - name: Test Windows native ICU collation without ICU_DATA
+        shell: pwsh
+        run: |
+          Remove-Item Env:\ICU_DATA -ErrorAction SilentlyContinue
+          cargo test -p peerwork-core --locked js_locale::tests::pinned_node_locale_compare_vectors -- --exact
       - name: Compile and exercise native interfaces
         shell: pwsh
         run: |
+          Remove-Item Env:\ICU_DATA -ErrorAction SilentlyContinue
           cargo test --workspace --locked
           cargo build --release --locked -p peerwork-cli -p peerwork-node-native
           python -m pip install 'maturin==1.15.0'
@@ -141,6 +147,28 @@ jobs:
           & "$env:RUNNER_TEMP\peerwork-wheel-consumer\Scripts\pip.exe" install --no-index --no-deps $wheel
           & "$env:RUNNER_TEMP\peerwork-wheel-consumer\Scripts\python.exe" -c 'import peerwork; assert peerwork.version() == "0.0.1"; assert peerwork.capabilities()["version"] == "0.0.1"'
           ./target/release/peerwork.exe version
+      - name: Inspect Windows artifact dependencies and Node Intl import isolation
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsroot = (& $vswhere -latest -products '*' -requires Microsoft.Component.MSBuild -property installationPath).Trim()
+          $dumpbin = (Get-ChildItem "$vsroot\VC\Tools\MSVC" -Recurse -Filter dumpbin.exe |
+            Where-Object { $_.FullName -match 'Hostx64\\x64\\dumpbin\.exe$' } |
+            Select-Object -First 1).FullName
+          if (-not $dumpbin) { throw 'MSVC dumpbin.exe not found' }
+          $wheel = (Get-ChildItem dist/wheels/*.whl | Select-Object -First 1).FullName
+          python -c 'import sys,zipfile; zipfile.ZipFile(sys.argv[1]).extractall("dist/wheel-inspect")' $wheel
+          $binaries = @('target/release/peerwork.exe', 'dist/agent-sdk-win32-x64-msvc/index.node')
+          $binaries += (Get-ChildItem dist/wheel-inspect -Recurse -Filter *.pyd).FullName
+          if ($binaries.Count -ne 3) { throw "expected exe, addon, and pyd; found $($binaries.Count)" }
+          foreach ($binary in $binaries) {
+            $imports = & $dumpbin /dependents $binary
+            if ($LASTEXITCODE -ne 0) { throw "dumpbin failed: $binary" }
+            if ($imports -match '(?i)\bicu(?:uc|in|dt|i18n|data)[^\s]*\.dll\b') {
+              throw "dynamic ICU dependency: $binary"
+            }
+          }
+          node -e 'const before = new Intl.Collator("en-US").compare("a-1", "a_1"); require("./dist/node-consumer/node_modules/@peerwork/agent-sdk"); const after = new Intl.Collator("en-US").compare("a-1", "a_1"); if (before !== after) process.exit(1)'
       - uses: actions/upload-artifact@v4
         with:
           name: experimental-windows-x64
