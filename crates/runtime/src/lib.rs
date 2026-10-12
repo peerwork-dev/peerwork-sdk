@@ -23,6 +23,7 @@ mod secure_native_prepare;
 #[allow(dead_code)]
 mod secure_package_pending;
 pub mod secure_read_access;
+pub mod secure_read_profile;
 #[allow(dead_code)]
 mod secure_recipient_state;
 #[allow(dead_code)]

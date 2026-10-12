@@ -142,6 +142,10 @@ if (process.env.PEERWORK_TEST_SECURE === '1') {
 }
 let bootstrapFixture;
 let publicReadFixture;
+let publicReadInstance;
+let publicReadAppended = false;
+let publicReadFirstPage;
+let serveStalePublicPage = false;
 if (process.env.PEERWORK_TEST_PUBLIC_READ === '1') {
   const {generateKeyPairSync} = await import('node:crypto');
   const {SecureAgentClient} = await import(pathToFileURL(join(root, 'dist-workspace/src/workspace-secure-agent.js')).href);
@@ -154,6 +158,9 @@ if (process.env.PEERWORK_TEST_PUBLIC_READ === '1') {
     const created = await agent.create('Synthetic public read workspace', 'PUBLIC');
     const journal = await agent.journal(created.workspaceId);
     if (journal.checkpoint.sequence !== 1) throw new Error('public read fixture did not create a one-commit journal');
+    const discussion = journal.objects.find(object => object.kind === 'instances' && object.value?.origin_entrypoint === 'discussion');
+    if (!discussion) throw new Error('public read fixture lacks discussion instance');
+    publicReadInstance = discussion.id;
     publicReadFixture = {workspace_id:created.workspaceId, actor_id:agent.identity.actorId,
       signing_key:agent.identity.keyId, authority:agent.transport.authority,
       head:journal.checkpoint.head};
@@ -186,6 +193,31 @@ if (!Number.isSafeInteger(firstJournalDelayMs) || firstJournalDelayMs < 0 || fir
 let delayFirstJournal = firstJournalDelayMs > 0;
 const proxy = createServer(async (request, response) => {
   try {
+    if (request.url === '/__test/append-public' && request.method === 'POST') {
+      if (!publicReadFixture || publicReadAppended) throw new Error('public append fixture unavailable');
+      const {createPrivateKey} = await import('node:crypto');
+      const {SecureAgentClient} = await import(pathToFileURL(join(root, 'dist-workspace/src/workspace-secure-agent.js')).href);
+      const privateKey = createPrivateKey(readFileSync(join(state, 'synthetic-public-read-owner.pem')));
+      const agent = await SecureAgentClient.open({baseUrl:realOrigin,privateKey,
+        statePath:join(state,'synthetic-public-read-agent.json'),
+        intentDbPath:join(state,'synthetic-public-read-agent-intents.sqlite')});
+      try {
+        const journal = await agent.action(publicReadFixture.workspace_id, publicReadInstance,
+          'discussion.post', {message:'synthetic public refresh'});
+        if (journal.checkpoint.sequence !== 2) throw new Error('public append did not advance checkpoint');
+        publicReadAppended = true;
+        response.writeHead(200, {'content-type':'application/json'});
+        response.end(JSON.stringify({sequence:journal.checkpoint.sequence,head:journal.checkpoint.head}));
+      } finally { agent.close(); }
+      return;
+    }
+    if (request.url === '/__test/serve-stale-public' && request.method === 'POST') {
+      if (!publicReadAppended || !publicReadFirstPage) throw new Error('stale public page fixture unavailable');
+      serveStalePublicPage = true;
+      response.writeHead(200, {'content-type':'application/json'});
+      response.end(JSON.stringify({enabled:true}));
+      return;
+    }
     if (request.url === '/__test/counts') {
       const counts = {
         commands: db.prepare('SELECT count(*) n FROM commands').get().n,
@@ -232,6 +264,10 @@ const proxy = createServer(async (request, response) => {
       body: request.method === 'GET' ? undefined : Buffer.concat(chunks),
     });
     let bytes = Buffer.from(await original.arrayBuffer());
+    if (publicReadFixture && request.method === 'GET' && request.url?.includes('/journal?') && original.status === 200) {
+      if (!publicReadFirstPage) publicReadFirstPage = Buffer.from(bytes);
+      if (serveStalePublicPage) bytes = Buffer.from(publicReadFirstPage);
+    }
     if (alterFirstChunk && request.method === 'POST' && request.url === '/api/workspace/v1/catalog/upload' && original.status === 201) {
       alterFirstChunk = false;
       const value = JSON.parse(bytes.toString('utf8'));

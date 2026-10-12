@@ -17,7 +17,7 @@ use peerwork_core::{
     replayed_secure_journal::StructureStatus,
     wire_json::{canonical_wire_value, WireValue},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::PathBuf;
 use thiserror::Error;
@@ -58,6 +58,8 @@ pub enum SecureReadAccessError {
     Identity,
     #[error("protected lifecycle identity or owner pin changed")]
     Lifecycle,
+    #[error("protected secure read profile is missing or incompatible")]
+    Profile,
     #[error("secure journal read or saved page check failed")]
     ReadFailed,
     #[error("secure journal exceeded the selected resource budget")]
@@ -80,6 +82,7 @@ impl SecureReadAccessError {
             Self::Discovery => "DISCOVERY_FAILED",
             Self::Identity => "IDENTITY_STATE",
             Self::Lifecycle => "LIFECYCLE_PIN_CHANGED",
+            Self::Profile => "PROFILE_STATE",
             Self::ReadFailed => "READ_FAILED",
             Self::ResourceLimit => "RESOURCE_LIMIT",
             Self::VerificationFailed => "VERIFICATION_FAILED",
@@ -93,6 +96,16 @@ impl SecureReadAccessError {
 
 pub struct SecureReadAccess {
     config: SecureReadConfig,
+}
+
+/// Persisted only after the corresponding complete signed replay succeeded.
+/// The profile binds its source and owner separately; this floor prevents a
+/// later generation from replacing it with a rollback or fork.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub(crate) struct VerifiedReadFloor {
+    pub sequence: u64,
+    pub head: Option<String>,
+    pub policy_hash: String,
 }
 
 impl SecureReadAccess {
@@ -114,10 +127,66 @@ impl SecureReadAccess {
         self.read_json_with_cancel(&CancellationToken::new())
     }
 
+    /// Reset only the inactive profile generation before marking it
+    /// resumable. A crash after this returns but before the profile marker is
+    /// written simply repeats this reset; no HTTP page was fetched yet.
+    pub(crate) fn reset_inactive_generation(
+        &self,
+        cancel: &CancellationToken,
+    ) -> Result<(), SecureReadAccessError> {
+        if cancel.is_cancelled() {
+            return Err(SecureReadAccessError::Cancelled);
+        }
+        let identity = KernelIdentity::open(&self.config.identity_path)
+            .map_err(|_| SecureReadAccessError::Identity)?;
+        let runtime = Self::runtime()?;
+        let mut transport = TransportConfig::new(self.config.origin.clone());
+        transport.allow_loopback_http = self.config.allow_loopback_http;
+        let features = self
+            .config
+            .required_features
+            .iter()
+            .map(|feature| feature.encode_utf16().collect::<Vec<_>>())
+            .collect::<Vec<_>>();
+        let client = runtime
+            .block_on(KernelClient::open(
+                transport,
+                &self.config.kernel_journal_path,
+                &features,
+                cancel,
+            ))
+            .map_err(|_| {
+                if cancel.is_cancelled() {
+                    SecureReadAccessError::Cancelled
+                } else {
+                    SecureReadAccessError::Discovery
+                }
+            })?;
+        let mut reader = SecureJournalRead::open(
+            &self.config.read_state_path,
+            &client,
+            &identity,
+            &self.config.workspace_id,
+            &self.config.authority,
+        )
+        .map_err(map_read_error)?;
+        reader.reset_inactive_generation().map_err(map_read_error)
+    }
+
     pub fn read_json_with_cancel(
         &self,
         cancel: &CancellationToken,
     ) -> Result<String, SecureReadAccessError> {
+        self.read_checked_generation(cancel, None, false)
+            .map(|(value, _)| value)
+    }
+
+    pub(crate) fn read_checked_generation(
+        &self,
+        cancel: &CancellationToken,
+        floor: Option<&VerifiedReadFloor>,
+        reset_inactive: bool,
+    ) -> Result<(String, VerifiedReadFloor), SecureReadAccessError> {
         if cancel.is_cancelled() {
             return Err(SecureReadAccessError::Cancelled);
         }
@@ -157,6 +226,9 @@ impl SecureReadAccess {
             &self.config.authority,
         )
         .map_err(map_read_error)?;
+        if reset_inactive {
+            reader.reset_inactive_generation().map_err(map_read_error)?;
+        }
         while !reader
             .progress()
             .map_err(map_read_error)?
@@ -186,7 +258,21 @@ impl SecureReadAccess {
             .map_err(map_read_error)?;
         let replayed = replay_authenticated_pages_with_budget(&pages, &lifecycle, budget)
             .map_err(map_verify_error)?;
+        if floor.is_some_and(|saved| {
+            !replayed.replay().contains_checkpoint(
+                saved.sequence,
+                saved.head.as_deref(),
+                &saved.policy_hash,
+            )
+        }) {
+            return Err(SecureReadAccessError::VerificationFailed);
+        }
         let verified = replayed.verified_read().map_err(map_verify_error)?;
+        let new_floor = VerifiedReadFloor {
+            sequence: verified.sequence(),
+            head: verified.head().map(str::to_owned),
+            policy_hash: verified.policy_hash().to_owned(),
+        };
         let objects = canonical_array(verified.objects())?;
         let operations = canonical_array(verified.operations())?;
         let recoveries = canonical_array(verified.recoveries())?;
@@ -216,7 +302,7 @@ impl SecureReadAccess {
         result.push_str(",\"recoveries\":");
         result.push_str(&recoveries);
         result.push('}');
-        Ok(result)
+        Ok((result, new_floor))
     }
 }
 

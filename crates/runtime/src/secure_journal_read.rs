@@ -167,6 +167,25 @@ impl AuthenticatedJournalPages<'_> {
 }
 
 impl SecureJournalRead {
+    /// Reuse only an inactive generation slot. The caller must hold its
+    /// protected profile pointer lock and keep the currently verified slot
+    /// separate. The index is reset atomically before any new page is fetched;
+    /// old page files are then unreferenced and overwritten as needed.
+    pub(crate) fn reset_inactive_generation(&mut self) -> Result<(), JournalReadError> {
+        self.inspect()?;
+        let mut next = self.document.clone();
+        next.version = 4;
+        next.pages.clear();
+        next.page_count = Some(0);
+        next.chain_hash = Some("0".repeat(64));
+        let encoded = serde_json::to_vec(&next).map_err(|_| JournalReadError::Incompatible)?;
+        self.store.write_exact(&encoded)?;
+        self.document = next;
+        self.last_verified = None;
+        self.verified_count = 0;
+        Ok(())
+    }
+
     pub(crate) fn open(
         path: &Path,
         client: &KernelClient,
