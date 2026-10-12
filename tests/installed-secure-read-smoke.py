@@ -100,6 +100,7 @@ with tempfile.TemporaryDirectory(prefix="peerwork-public-read-") as directory:
         mark("installed_python_cancel_reopen")
 
         node_source = r'''
+void (async () => {
 const sdk = require(process.env.PEERWORK_TEST_NODE_PACKAGE);
 const options = JSON.parse(process.env.PEERWORK_TEST_READ_OPTIONS);
 const expected = JSON.parse(process.env.PEERWORK_TEST_PUBLIC_FIXTURE);
@@ -113,6 +114,7 @@ const signal = AbortSignal.abort();
 try { await sdk.readSecureWorkspace({...options,signal}); throw Error('cancelled read accepted'); }
 catch (error) { if (error.code !== 'CANCELLED') throw error; }
 console.log(JSON.stringify({workspace_id:value.workspace_id,sequence:value.sequence,objects:value.objects.length,operations:value.operations.length}));
+})().catch(error => { console.error(error); process.exitCode = 1; });
 '''
         node_options = dict(origin=origin, kernelJournalPath=common[1], readStatePath=common[2],
                             lifecyclePath=common[3], identityPath=common[4],
@@ -122,7 +124,8 @@ console.log(JSON.stringify({workspace_id:value.workspace_id,sequence:value.seque
                         PEERWORK_TEST_READ_OPTIONS=json.dumps(node_options),
                         PEERWORK_TEST_PUBLIC_FIXTURE=json.dumps(fixture))
         node_result = subprocess.run([NODE, "-e", node_source], env=node_env,
-                                     capture_output=True, text=True, timeout=45, check=True)
+                                     capture_output=True, text=True, timeout=45)
+        assert node_result.returncode == 0, node_result.stderr[-1000:]
         assert json.loads(node_result.stdout)["workspace_id"] == fixture["workspace_id"]
         mark("installed_node_verified_budget_cancel")
 
