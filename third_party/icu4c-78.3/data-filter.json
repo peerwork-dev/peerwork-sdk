@@ -1,0 +1,16 @@
+{
+  "strategy": "additive",
+  "localeFilter": {
+    "filterType": "locale",
+    "includeChildren": false,
+    "includelist": ["en_US"]
+  },
+  "featureFilters": {
+    "cnvalias": "include",
+    "coll_ucadata": "include",
+    "coll_tree": "include",
+    "locales_tree": "include",
+    "misc": "include",
+    "normalization": "include"
+  }
+}

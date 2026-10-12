@@ -87,6 +87,61 @@
       "left": "é",
       "right": "é",
       "sign": 0
+    },
+    {
+      "left": "\ud800é",
+      "right": "\ud800é",
+      "sign": 0
+    },
+    {
+      "left": "x\ud800é",
+      "right": "x\ud800é",
+      "sign": 0
+    },
+    {
+      "left": "\udc00é",
+      "right": "\udc00é",
+      "sign": 0
+    },
+    {
+      "left": "\udc00é",
+      "right": "\udc00é",
+      "sign": 0
+    },
+    {
+      "left": "\ud800a",
+      "right": "\ud800­a",
+      "sign": 0
+    },
+    {
+      "left": "\ud800a",
+      "right": "\ud800​a",
+      "sign": 0
+    },
+    {
+      "left": "\ud800",
+      "right": "�",
+      "sign": -1
+    },
+    {
+      "left": "�",
+      "right": "\ud800",
+      "sign": 1
+    },
+    {
+      "left": "\udc00",
+      "right": "�",
+      "sign": -1
+    },
+    {
+      "left": "\ud800A",
+      "right": "\ud800a",
+      "sign": 1
+    },
+    {
+      "left": "\ud800a",
+      "right": "�z",
+      "sign": -1
     }
   ]
 }
