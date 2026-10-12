@@ -370,7 +370,8 @@ pub struct VerifiedPreparedCommand {
 
 impl VerifiedPreparedCommand {
     /// Canonical payload from the authenticated, schema-validated JWS.
-    /// Keep this within trusted runtime code; do not expose it in bindings.
+    /// This is a public low-level Rust getter; language bindings must project
+    /// only their audited redacted result fields.
     pub fn command_canonical_json(&self) -> &str {
         &self.command_canonical_json
     }

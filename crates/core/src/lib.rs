@@ -11,6 +11,8 @@ mod full_manifest;
 mod interpreter;
 #[allow(dead_code)]
 mod package_closure;
+#[allow(dead_code)]
+mod package_namespace;
 pub mod prepared_command;
 #[allow(dead_code)]
 mod protocol_composition;

@@ -1,0 +1,26 @@
+{
+  "id": "author-proposes",
+  "action_id": "proposal.propose",
+  "state": {
+    "candidate_author": null,
+    "candidate_ref": null
+  },
+  "body": {
+    "title": "Draft",
+    "body": "Candidate text."
+  },
+  "auth": {
+    "actorId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "workspaceRoles": [],
+    "protocolRoles": [
+      "AUTHOR"
+    ],
+    "capabilities": [
+      "PROPOSE"
+    ]
+  },
+  "exact_inputs": [],
+  "expected": {
+    "accepted": true
+  }
+}
