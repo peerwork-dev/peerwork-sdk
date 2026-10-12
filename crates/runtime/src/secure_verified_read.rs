@@ -72,6 +72,7 @@ pub(crate) struct TransportReplayedJournal {
     keyring_state: Option<ReplayKeyringState>,
     checkpoint_canonical_json: String,
     grant_keyring_sha256: Option<String>,
+    signed_policy_wires: Vec<Vec<u8>>,
     replay: ReplayedSecureJournal,
 }
 
@@ -166,6 +167,12 @@ impl TransportReplayedJournal {
     }
     pub(crate) fn source_key_id(&self) -> &str {
         &self.source_key_id
+    }
+    pub(crate) fn signed_policy_by_hash(&self, policy_hash: &str) -> Option<&[u8]> {
+        self.signed_policy_wires
+            .iter()
+            .find(|wire| sha256_hex(wire) == policy_hash)
+            .map(Vec::as_slice)
     }
     pub(crate) fn action_receipt(
         &self,
@@ -358,6 +365,7 @@ fn replay_authenticated_pages_with_material(
         keyring_state,
         checkpoint_canonical_json: pages.checkpoint_canonical_json().to_owned(),
         grant_keyring_sha256,
+        signed_policy_wires: policy_wires,
         replay,
     })
 }

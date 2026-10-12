@@ -4,6 +4,9 @@
 use crate::{
     canonical::Path,
     crypto::{actor_id, decode_base64url, sha256_hex, verify_secure_signed_wire},
+    secure_action_delegation::resolve_action_scope,
+    structure_delta::validate_projection_page,
+    structure_policy::validate_structure_policy,
     wire_json::{canonical_wire_value, parse_wire_json_bounded, WireValue},
 };
 use thiserror::Error;
@@ -79,13 +82,96 @@ impl VerifiedPreparedSecureRequest {
     }
 }
 
-/// Validate a saved commit-only append request. The service readJson parser
-/// rejects duplicate decoded member names before admitting a request. No
-/// request with policy_update, key_grants, delegation, or bootstrap is accepted.
+/// Validate the original direct, unstructured saved commit-only append shape.
+/// The service readJson parser rejects duplicate decoded member names. New
+/// structured/delegated submissions use the policy-bound variant below.
 pub fn verify_prepared_secure_commit_request(
     exact_request: &[u8],
     path: &str,
     pins: &SecureCommitRequestPins<'_>,
+) -> Result<VerifiedPreparedSecureRequest, PreparedSecureRequestError> {
+    verify_prepared_secure_commit_request_inner(exact_request, path, pins, None)
+}
+
+/// Pre-submit integrity for a commit under the exact signed selected policy.
+/// The runtime must obtain this policy from a complete, origin-bound replay;
+/// arbitrary caller-supplied policy bytes cannot establish action authority.
+/// Server admission, delegation session state and final effects remain separate.
+pub fn verify_prepared_secure_commit_request_with_policy(
+    exact_request: &[u8],
+    path: &str,
+    pins: &SecureCommitRequestPins<'_>,
+    signed_policy_wire: &[u8],
+    trusted_owner_key: &str,
+) -> Result<VerifiedPreparedSecureRequest, PreparedSecureRequestError> {
+    let invalid = || PreparedSecureRequestError::Invalid;
+    if signed_policy_wire.is_empty() || signed_policy_wire.len() > COMMIT_LIMIT {
+        return Err(invalid());
+    }
+    let policy =
+        parse_wire_json_bounded(signed_policy_wire, 64, COMMIT_LIMIT).map_err(|_| invalid())?;
+    exact_keys(&policy, &["payload", "signature"])?;
+    let policy_payload = policy.get("payload").ok_or_else(invalid)?;
+    let canonical = canonical_wire_value(&policy, Path::SecureArtifact).map_err(|_| invalid())?;
+    if sha256_hex(canonical.as_bytes()) != pins.policy_hash
+        || string(policy_payload, "signing_key")? != trusted_owner_key
+        || string(policy_payload, "owner_id")?
+            != actor_id(
+                &decode_base64url(trusted_owner_key)
+                    .map_err(|_| invalid())?
+                    .try_into()
+                    .map_err(|_| invalid())?,
+            )
+        || string(policy_payload, "workspace_id")? != pins.workspace_id
+        || number(policy_payload, "v")? != pins.version
+        || number(policy_payload, "epoch")? != pins.epoch
+        || number(policy_payload, "effective_sequence")? > pins.sequence
+        || string(policy_payload, "visibility")? != pins.mode
+        || !verify_secure_signed_wire(
+            canonical.as_bytes(),
+            "peerwork.secure.policy.v1",
+            trusted_owner_key,
+        )
+        .map_err(|_| invalid())?
+    {
+        return Err(invalid());
+    }
+    let structured = match pins.version {
+        1 => false,
+        2 => true,
+        3 => {
+            if number(policy_payload, "protocol_format_ceiling")?
+                != pins.protocol_format_ceiling.ok_or_else(invalid)?
+            {
+                return Err(invalid());
+            }
+            match string(policy_payload, "structure_mode")?.as_str() {
+                "NONE" => false,
+                "STRUCTURED" => true,
+                _ => return Err(invalid()),
+            }
+        }
+        _ => return Err(invalid()),
+    };
+    if structured {
+        validate_structure_policy(policy_payload.get("structure").ok_or_else(invalid)?)
+            .map_err(|_| invalid())?;
+    } else if policy_payload.get("structure").is_some() {
+        return Err(invalid());
+    }
+    verify_prepared_secure_commit_request_inner(
+        exact_request,
+        path,
+        pins,
+        Some((policy_payload, structured)),
+    )
+}
+
+fn verify_prepared_secure_commit_request_inner(
+    exact_request: &[u8],
+    path: &str,
+    pins: &SecureCommitRequestPins<'_>,
+    authenticated_policy: Option<(&WireValue, bool)>,
 ) -> Result<VerifiedPreparedSecureRequest, PreparedSecureRequestError> {
     let invalid = || PreparedSecureRequestError::Invalid;
     if exact_request.is_empty()
@@ -98,7 +184,8 @@ pub fn verify_prepared_secure_commit_request(
         || pins.sequence == 0
         || pins.sequence as f64 > MAX_SAFE
         || pins.epoch as f64 > MAX_SAFE
-        || !matches!(pins.version, 1 | 3)
+        || !matches!(pins.version, 1 | 3) && authenticated_policy.is_none()
+        || !matches!(pins.version, 1 | 2 | 3)
         || pins.mode != "PRIVATE"
         || pins.version == 3 && !matches!(pins.protocol_format_ceiling, Some(1 | 2))
         || pins.version != 3 && pins.protocol_format_ceiling.is_some()
@@ -120,8 +207,7 @@ pub fn verify_prepared_secure_commit_request(
     let commit = request.get("commit").ok_or_else(invalid)?;
     exact_keys(commit, &["payload", "signature"])?;
     let payload = commit.get("payload").ok_or_else(invalid)?;
-    // Only unstructured, direct-author commits are admitted by this proof.
-    // Structured and delegated variants need independent full-context proof.
+    let structured = authenticated_policy.is_some_and(|(_, structured)| structured);
     let mut required = vec![
         "v",
         "workspace_id",
@@ -142,6 +228,9 @@ pub fn verify_prepared_secure_commit_request(
     if pins.version == 3 {
         required.push("protocol_format_ceiling");
     }
+    if structured {
+        required.push("structure");
+    }
     exact_keys(payload, &required)?;
     if number(payload, "v")? != pins.version
         || number(payload, "sequence")? != pins.sequence
@@ -153,7 +242,8 @@ pub fn verify_prepared_secure_commit_request(
         || string(payload, "policy_hash")? != pins.policy_hash
         || string(payload, "mode")? != pins.mode
         || nullable_string(payload, "previous")?.as_deref() != pins.previous
-        || !matches!(payload.get("delegation"), Some(WireValue::Null))
+        || authenticated_policy.is_none()
+            && !matches!(payload.get("delegation"), Some(WireValue::Null))
         || payload.get("instance_id").is_none()
         || nullable_token(payload, "instance_id").is_err()
         || pins.version == 3
@@ -161,6 +251,46 @@ pub fn verify_prepared_secure_commit_request(
                 != pins.protocol_format_ceiling.unwrap_or(0)
     {
         return Err(invalid());
+    }
+    if structured {
+        let envelope = payload.get("structure").ok_or_else(invalid)?;
+        // ACTION preparation emits a DELTA. Snapshot-family authoring remains
+        // a separate signed migration/recovery path.
+        exact_keys(envelope, &["v", "mode", "records", "heads"])?;
+        if number(envelope, "v")? != 1 || string(envelope, "mode")? != "DELTA" {
+            return Err(invalid());
+        }
+        let Some(WireValue::Array(records)) = envelope.get("records") else {
+            return Err(invalid());
+        };
+        let Some(WireValue::Array(heads)) = envelope.get("heads") else {
+            return Err(invalid());
+        };
+        if records.len() > 128 || heads.len() > 128 {
+            return Err(invalid());
+        }
+        let contract = authenticated_policy
+            .and_then(|(policy, _)| policy.get("structure"))
+            .ok_or_else(invalid)?;
+        validate_projection_page(records, heads, contract).map_err(|_| invalid())?;
+    }
+    if let Some((policy_payload, _)) = authenticated_policy {
+        let delegation = match payload.get("delegation") {
+            Some(WireValue::Null) => None,
+            Some(value) => {
+                Some(canonical_wire_value(value, Path::SecureArtifact).map_err(|_| invalid())?)
+            }
+            None => return Err(invalid()),
+        };
+        let scope = resolve_action_scope(
+            payload,
+            policy_payload,
+            delegation.as_deref().map(str::as_bytes),
+        )
+        .map_err(|_| invalid())?;
+        if !scope.permits_action() {
+            return Err(invalid());
+        }
     }
     let key: [u8; 32] = decode_base64url(pins.signing_key)
         .map_err(|_| invalid())?
@@ -487,5 +617,74 @@ mod tests {
             &policy
         )
         .is_err());
+    }
+
+    #[test]
+    fn signed_structured_delegated_source_packet_requires_exact_selected_policy() {
+        let vectors: Value = serde_json::from_slice(include_bytes!(
+            "../../../conformance/signed-recovery-vectors.json"
+        ))
+        .unwrap();
+        for name in [
+            "signed_delegated_wiki_action_corrected",
+            "signed_delegated_zero_record_action",
+        ] {
+            let case = vectors["cases"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|case| case["name"] == name)
+                .unwrap();
+            let policy = &case["policy"];
+            let commit = &case["commits"][1];
+            let payload = &commit["payload"];
+            let request = serde_json::to_vec(&json!({"commit":commit})).unwrap();
+            let policy_wire = serde_json::to_vec(policy).unwrap();
+            let workspace = payload["workspace_id"].as_str().unwrap();
+            let path = format!("{PREFIX}{workspace}{SUFFIX}");
+            let previous = payload["previous"].as_str();
+            let pins = SecureCommitRequestPins {
+                actor_id: payload["actor_id"].as_str().unwrap(),
+                signing_key: payload["signing_key"].as_str().unwrap(),
+                workspace_id: workspace,
+                policy_hash: payload["policy_hash"].as_str().unwrap(),
+                sequence: payload["sequence"].as_u64().unwrap(),
+                previous,
+                epoch: payload["epoch"].as_u64().unwrap(),
+                mode: payload["mode"].as_str().unwrap(),
+                version: payload["v"].as_u64().unwrap(),
+                protocol_format_ceiling: None,
+            };
+            assert!(verify_prepared_secure_commit_request(&request, &path, &pins).is_err());
+            let proof = verify_prepared_secure_commit_request_with_policy(
+                &request,
+                &path,
+                &pins,
+                &policy_wire,
+                policy["payload"]["signing_key"].as_str().unwrap(),
+            )
+            .unwrap();
+            assert_eq!(proof.command_id(), payload["command_id"].as_str().unwrap());
+            let mut wrong_policy = policy.clone();
+            wrong_policy["payload"]["epoch"] = json!(2);
+            assert!(verify_prepared_secure_commit_request_with_policy(
+                &request,
+                &path,
+                &pins,
+                &serde_json::to_vec(&wrong_policy).unwrap(),
+                policy["payload"]["signing_key"].as_str().unwrap(),
+            )
+            .is_err());
+            let mut wrong_delegation = commit.clone();
+            wrong_delegation["payload"]["delegation"] = Value::Null;
+            assert!(verify_prepared_secure_commit_request_with_policy(
+                &serde_json::to_vec(&json!({"commit":wrong_delegation})).unwrap(),
+                &path,
+                &pins,
+                &policy_wire,
+                policy["payload"]["signing_key"].as_str().unwrap(),
+            )
+            .is_err());
+        }
     }
 }

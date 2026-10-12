@@ -8,6 +8,7 @@ use crate::{
         PendingSecureIntent, SecureIntentError, SecureIntentJournal, SecurePacketInput,
     },
     secure_lifecycle::SecureLifecycle,
+    secure_verified_read::TransportReplayedJournal,
 };
 use peerwork_core::{
     bootstrap_objects::{
@@ -21,7 +22,8 @@ use peerwork_core::{
         derive_genesis_structure_policy_with_keep_encrypted,
     },
     prepared_secure_author::{
-        author_private_bootstrap, author_private_commit, author_public_bootstrap, SecureAuthorError,
+        author_private_bootstrap, author_private_commit, author_private_commit_with_policy,
+        author_public_bootstrap, SecureAuthorError,
     },
     prepared_secure_request::SecureCommitRequestPins,
 };
@@ -548,6 +550,76 @@ pub(crate) fn prepare_new_private_commit(
     operation_wire: &[u8],
     pins: &SecureCommitRequestPins<'_>,
 ) -> Result<PendingSecureIntent, NativePrepareError> {
+    prepare_new_private_commit_inner(
+        journal,
+        identity,
+        lifecycle,
+        intent_id,
+        context_wire,
+        operation_wire,
+        pins,
+        None,
+    )
+}
+
+/// Prepare the next PRIVATE packet against a complete authenticated replay.
+/// Only the selected signed policy and exact checkpoint from that replay may
+/// authorize the low-level structured/delegated signing path.
+pub(crate) fn prepare_new_private_commit_from_replay(
+    journal: &mut SecureIntentJournal,
+    identity: &KernelIdentity,
+    lifecycle: &SecureLifecycle,
+    source: &TransportReplayedJournal,
+    intent_id: &str,
+    context_wire: &[u8],
+    operation_wire: &[u8],
+    pins: &SecureCommitRequestPins<'_>,
+) -> Result<PendingSecureIntent, NativePrepareError> {
+    source
+        .verified_read()
+        .map_err(|_| NativePrepareError::Context)?;
+    if source.origin() != lifecycle.origin()
+        || source.source_actor_id() != identity.actor_id()
+        || source.source_key_id() != identity.key_id()
+        || source.replay().workspace_id() != lifecycle.workspace_id()
+        || source.replay().owner_actor_id() != lifecycle.owner_actor_id()
+        || source.replay().owner_signing_key() != lifecycle.owner_key_id()
+        || pins.sequence
+            != source
+                .replay()
+                .sequence()
+                .checked_add(1)
+                .ok_or(NativePrepareError::Context)?
+        || pins.previous != source.replay().head()
+        || pins.policy_hash != source.replay().policy_hash()
+    {
+        return Err(NativePrepareError::Context);
+    }
+    let policy_wire = source
+        .signed_policy_by_hash(pins.policy_hash)
+        .ok_or(NativePrepareError::Context)?;
+    prepare_new_private_commit_inner(
+        journal,
+        identity,
+        lifecycle,
+        intent_id,
+        context_wire,
+        operation_wire,
+        pins,
+        Some((policy_wire, lifecycle.owner_key_id())),
+    )
+}
+
+fn prepare_new_private_commit_inner(
+    journal: &mut SecureIntentJournal,
+    identity: &KernelIdentity,
+    lifecycle: &SecureLifecycle,
+    intent_id: &str,
+    context_wire: &[u8],
+    operation_wire: &[u8],
+    pins: &SecureCommitRequestPins<'_>,
+    policy: Option<(&[u8], &str)>,
+) -> Result<PendingSecureIntent, NativePrepareError> {
     if identity.actor_id() != lifecycle.actor_id()
         || identity.actor_id() != journal.actor_id()
         || pins.actor_id != identity.actor_id()
@@ -568,14 +640,27 @@ pub(crate) fn prepare_new_private_commit(
         "/api/workspace/v1/secure/workspaces/{}/commits",
         lifecycle.workspace_id()
     );
-    let authored = author_private_commit(
-        context_wire,
-        operation_wire,
-        key,
-        identity.signing_key(),
-        &path,
-        pins,
-    )?;
+    let authored = if let Some((policy_wire, owner_key)) = policy {
+        author_private_commit_with_policy(
+            context_wire,
+            operation_wire,
+            key,
+            identity.signing_key(),
+            &path,
+            pins,
+            policy_wire,
+            owner_key,
+        )
+    } else {
+        author_private_commit(
+            context_wire,
+            operation_wire,
+            key,
+            identity.signing_key(),
+            &path,
+            pins,
+        )
+    }?;
     let proof = authored.proof();
     if proof.command_id() != intent_id
         || proof.workspace_id() != lifecycle.workspace_id()

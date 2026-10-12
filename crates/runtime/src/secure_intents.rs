@@ -18,8 +18,8 @@ use peerwork_core::{
         VerifiedPreparedBootstrap,
     },
     prepared_secure_request::{
-        verify_prepared_secure_commit_request, PreparedSecureRequestError, SecureCommitRequestPins,
-        VerifiedPreparedSecureRequest,
+        verify_prepared_secure_commit_request, verify_prepared_secure_commit_request_with_policy,
+        PreparedSecureRequestError, SecureCommitRequestPins, VerifiedPreparedSecureRequest,
     },
     wire_json::{canonical_wire_value, parse_wire_json_bounded, WireValue},
 };
@@ -286,6 +286,59 @@ impl SecureIntentJournal {
         trusted_owner_key: &str,
         pins: &SecureCommitRequestPins<'_>,
     ) -> Result<(VerifiedPreparedSecureRequest, Vec<u8>), SecureIntentError> {
+        self.verified_saved_commit_inner(
+            intent_id,
+            identity,
+            transport,
+            trusted_owner_key,
+            pins,
+            None,
+        )
+    }
+
+    pub(crate) fn verified_saved_commit_from_replay(
+        &self,
+        intent_id: &str,
+        identity: &KernelIdentity,
+        transport: &HttpTransport,
+        source: &TransportReplayedJournal,
+        pins: &SecureCommitRequestPins<'_>,
+    ) -> Result<(VerifiedPreparedSecureRequest, Vec<u8>), SecureIntentError> {
+        source
+            .verified_read()
+            .map_err(|_| SecureIntentError::ReplayMismatch)?;
+        if source.origin() != transport.trusted_origin()
+            || source.source_actor_id() != identity.actor_id()
+            || source.source_key_id() != identity.key_id()
+            || source.replay().workspace_id() != pins.workspace_id
+            || source.replay().sequence().checked_add(1) != Some(pins.sequence)
+            || source.replay().head() != pins.previous
+            || source.replay().policy_hash() != pins.policy_hash
+        {
+            return Err(SecureIntentError::ReplayMismatch);
+        }
+        let policy_wire = source
+            .signed_policy_by_hash(pins.policy_hash)
+            .ok_or(SecureIntentError::ReplayMismatch)?;
+        self.verified_saved_commit_inner(
+            intent_id,
+            identity,
+            transport,
+            source.replay().owner_signing_key(),
+            pins,
+            Some(policy_wire),
+        )
+    }
+
+    fn verified_saved_commit_inner(
+        &self,
+        intent_id: &str,
+        identity: &KernelIdentity,
+        transport: &HttpTransport,
+        trusted_owner_key: &str,
+        pins: &SecureCommitRequestPins<'_>,
+        signed_policy_wire: Option<&[u8]>,
+    ) -> Result<(VerifiedPreparedSecureRequest, Vec<u8>), SecureIntentError> {
         if transport.trusted_origin() != self.document.trusted_origin
             || identity.actor_id() != self.document.actor_id
             || pins.actor_id != identity.actor_id()
@@ -302,7 +355,17 @@ impl SecureIntentJournal {
             return Err(SecureIntentError::Conflict);
         }
         let request = self.exact_request(intent_id)?;
-        let proof = verify_prepared_secure_commit_request(&request, &row.path, pins)?;
+        let proof = if let Some(policy_wire) = signed_policy_wire {
+            verify_prepared_secure_commit_request_with_policy(
+                &request,
+                &row.path,
+                pins,
+                policy_wire,
+                trusted_owner_key,
+            )
+        } else {
+            verify_prepared_secure_commit_request(&request, &row.path, pins)
+        }?;
         if proof.command_id() != intent_id
             || proof.action_id() != row.action_id
             || Some(proof.workspace_id()) != row.workspace_id.as_deref()
@@ -388,7 +451,16 @@ impl SecureIntentJournal {
             version,
             protocol_format_ceiling,
         };
-        let proof = verify_prepared_secure_commit_request(&request, &row.path, &pins)?;
+        let policy_wire = source
+            .signed_policy_by_hash(&policy_hash)
+            .ok_or(SecureIntentError::ReplayMismatch)?;
+        let proof = verify_prepared_secure_commit_request_with_policy(
+            &request,
+            &row.path,
+            &pins,
+            policy_wire,
+            source.replay().owner_signing_key(),
+        )?;
         let sequence = wire_unsigned(receipt, "sequence")?;
         let commit_hash = wire_string(receipt, "commit_hash")?;
         if proof.command_id() != intent_id
@@ -450,6 +522,34 @@ impl SecureIntentJournal {
     ) -> Result<PendingSecureIntent, SecureIntentError> {
         let (proof, request) =
             self.verified_saved_commit(intent_id, identity, transport, trusted_owner_key, pins)?;
+        let response = transport.post_exact(proof.path(), request, cancel).await?;
+        if !response.wire.is_empty() {
+            self.observe_response(intent_id, &response.wire)?;
+        }
+        if !(200..300).contains(&response.status) {
+            return Err(SecureIntentError::ServerRejected(response.status));
+        }
+        self.document
+            .rows
+            .get(intent_id)
+            .map(|row| summary(intent_id, row))
+            .ok_or(SecureIntentError::Incompatible)
+    }
+
+    /// Submit only the exact saved structured/delegated packet proved against
+    /// the authenticated pre-append checkpoint and selected signed policy.
+    /// The response remains an observation; a later replay supplies the receipt.
+    pub(crate) async fn submit_saved_commit_from_replay(
+        &mut self,
+        intent_id: &str,
+        identity: &KernelIdentity,
+        transport: &HttpTransport,
+        source: &TransportReplayedJournal,
+        pins: &SecureCommitRequestPins<'_>,
+        cancel: &CancellationToken,
+    ) -> Result<PendingSecureIntent, SecureIntentError> {
+        let (proof, request) =
+            self.verified_saved_commit_from_replay(intent_id, identity, transport, source, pins)?;
         let response = transport.post_exact(proof.path(), request, cancel).await?;
         if !response.wire.is_empty() {
             self.observe_response(intent_id, &response.wire)?;
@@ -1254,10 +1354,100 @@ mod tests {
         )
         .unwrap();
         assert_eq!(after_prepare, baseline_counts);
+        let mut pre_lifecycle = SecureLifecycle::open(
+            &root.path().join("native-pre-submit-lifecycle.state"),
+            transport.trusted_origin(),
+            identity.actor_id(),
+            &workspace,
+            &actor,
+            &owner,
+        )
+        .unwrap();
+        pre_lifecycle
+            .import_active_for_test(
+                &fs::read(root.path().join("synthetic-secure-keyring.json")).unwrap(),
+            )
+            .unwrap();
+        let mut pre_read_config = crate::transport::TransportConfig::new(origin.clone());
+        pre_read_config.allow_loopback_http = true;
+        let pre_client = crate::kernel_client::KernelClient::open(
+            pre_read_config,
+            &root.path().join("native-pre-submit-discovery.sqlite"),
+            &[],
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        let mut pre_reader = crate::secure_journal_read::SecureJournalRead::open(
+            &root.path().join("native-pre-submit-journal.state"),
+            &pre_client,
+            &identity,
+            &workspace,
+            text("authority").as_str(),
+        )
+        .unwrap();
+        assert!(
+            pre_reader
+                .fetch_next(&pre_client, &identity, &CancellationToken::new())
+                .await
+                .unwrap()
+                .complete_transport
+        );
+        let pre_pages = pre_reader
+            .authenticated_pages(&pre_client, &identity)
+            .unwrap();
+        let pre_source =
+            crate::secure_verified_read::replay_authenticated_pages(&pre_pages, &pre_lifecycle)
+                .unwrap();
+        journal
+            .verified_saved_commit_from_replay(&id, &identity, &transport, &pre_source, &pins)
+            .unwrap();
+        // Exercise native signing against the same authenticated pre-append
+        // policy/checkpoint without sending a second action to the service.
+        let mut native_context: serde_json::Value = serde_json::from_slice(&request).unwrap();
+        native_context = native_context["commit"]["payload"].clone();
+        native_context.as_object_mut().unwrap().remove("mode");
+        native_context.as_object_mut().unwrap().remove("body");
+        let native_id = base64url(&[91; 32]);
+        native_context["command_id"] = serde_json::json!(native_id);
+        let mut native_journal = SecureIntentJournal::open(
+            &root.path().join("native-policy-bound-authored.state"),
+            transport.trusted_origin(),
+            identity.actor_id(),
+        )
+        .unwrap();
+        crate::secure_native_prepare::prepare_new_private_commit_from_replay(
+            &mut native_journal,
+            &identity,
+            &pre_lifecycle,
+            &pre_source,
+            &native_id,
+            &serde_json::to_vec(&native_context).unwrap(),
+            br#"{"v":1,"kind":"ACTION","input":{},"objects":[]}"#,
+            &pins,
+        )
+        .unwrap();
+        native_journal
+            .verified_saved_commit_from_replay(
+                &native_id,
+                &identity,
+                &transport,
+                &pre_source,
+                &pins,
+            )
+            .unwrap();
+        assert_eq!(native_journal.pending().len(), 1);
         let cancel = CancellationToken::new();
         assert!(matches!(
             journal
-                .submit_saved_commit(&id, &identity, &transport, &owner, &pins, &cancel)
+                .submit_saved_commit_from_replay(
+                    &id,
+                    &identity,
+                    &transport,
+                    &pre_source,
+                    &pins,
+                    &cancel,
+                )
                 .await,
             Err(SecureIntentError::Transport(
                 TransportError::SubmittedUncertain

@@ -10,8 +10,8 @@ use crate::{
         verify_prepared_owner_bootstrap, BootstrapPins, VerifiedPreparedBootstrap,
     },
     prepared_secure_request::{
-        verify_prepared_secure_commit_request, SecureCommitRequestPins,
-        VerifiedPreparedSecureRequest,
+        verify_prepared_secure_commit_request, verify_prepared_secure_commit_request_with_policy,
+        SecureCommitRequestPins, VerifiedPreparedSecureRequest,
     },
     wire_json::{canonical_wire_value, parse_wire_json_bounded, WireValue},
 };
@@ -77,9 +77,54 @@ pub fn author_private_commit(
     path: &str,
     pins: &SecureCommitRequestPins<'_>,
 ) -> Result<AuthoredSecureCommit, SecureAuthorError> {
+    author_private_commit_inner(
+        context_wire,
+        operation_wire,
+        epoch_key,
+        signing_key,
+        path,
+        pins,
+        None,
+    )
+}
+
+/// Low-level signer for a signed selected policy. The caller must supply the
+/// exact policy from authenticated current replay; this function alone does
+/// not authorize the operation or prove the next journal checkpoint.
+pub fn author_private_commit_with_policy(
+    context_wire: &[u8],
+    operation_wire: &[u8],
+    epoch_key: &[u8; 32],
+    signing_key: &SigningKey,
+    path: &str,
+    pins: &SecureCommitRequestPins<'_>,
+    signed_policy_wire: &[u8],
+    trusted_owner_key: &str,
+) -> Result<AuthoredSecureCommit, SecureAuthorError> {
+    author_private_commit_inner(
+        context_wire,
+        operation_wire,
+        epoch_key,
+        signing_key,
+        path,
+        pins,
+        Some((signed_policy_wire, trusted_owner_key)),
+    )
+}
+
+fn author_private_commit_inner(
+    context_wire: &[u8],
+    operation_wire: &[u8],
+    epoch_key: &[u8; 32],
+    signing_key: &SigningKey,
+    path: &str,
+    pins: &SecureCommitRequestPins<'_>,
+    policy: Option<(&[u8], &str)>,
+) -> Result<AuthoredSecureCommit, SecureAuthorError> {
     let invalid = || SecureAuthorError::Invalid;
     if pins.mode != "PRIVATE"
-        || !matches!(pins.version, 1 | 3)
+        || !matches!(pins.version, 1 | 3) && policy.is_none()
+        || !matches!(pins.version, 1 | 2 | 3)
         || pins.actor_id != actor_id(&signing_key.verifying_key().to_bytes())
         || pins.signing_key != base64url(&signing_key.verifying_key().to_bytes())
         || operation_wire.is_empty()
@@ -91,8 +136,18 @@ pub fn author_private_commit(
     let result = sign_private_commit(&context, operation_wire, epoch_key, signing_key, pins)
         .and_then(|commit| {
             let request_wire = format!("{{\"commit\":{commit}}}").into_bytes();
-            let proof = verify_prepared_secure_commit_request(&request_wire, path, pins)
-                .map_err(|_| invalid())?;
+            let proof = if let Some((signed_policy_wire, trusted_owner_key)) = policy {
+                verify_prepared_secure_commit_request_with_policy(
+                    &request_wire,
+                    path,
+                    pins,
+                    signed_policy_wire,
+                    trusted_owner_key,
+                )
+            } else {
+                verify_prepared_secure_commit_request(&request_wire, path, pins)
+            }
+            .map_err(|_| invalid())?;
             Ok(AuthoredSecureCommit {
                 request_wire,
                 proof,
@@ -338,10 +393,11 @@ fn sign_private_commit(
     let canonical_payload =
         canonical_wire_value(&payload, Path::SecureArtifact).map_err(|_| invalid())?;
     let mut message = Zeroizing::new(Vec::with_capacity(canonical_payload.len() + 32));
-    let domain = if pins.version == 3 {
-        "peerwork.secure.commit.v3"
-    } else {
-        "peerwork.secure.commit.v1"
+    let domain = match pins.version {
+        1 => "peerwork.secure.commit.v1",
+        2 => "peerwork.secure.commit.v2",
+        3 => "peerwork.secure.commit.v3",
+        _ => return Err(invalid()),
     };
     message.extend_from_slice(domain.as_bytes());
     message.push(0);
@@ -387,6 +443,106 @@ mod tests {
         secure_recipient::SecretRecipient,
     };
     use serde_json::{json, Value};
+
+    #[test]
+    fn native_v2_structured_author_requires_signed_selected_policy() {
+        let signing = SigningKey::from_bytes(&[7; 32]);
+        let actor = actor_id(&signing.verifying_key().to_bytes());
+        let key = base64url(&signing.verifying_key().to_bytes());
+        let workspace = base64url(&[8; 32]);
+        let instance = base64url(&[9; 32]);
+        let policy_payload = json!({
+            "v":2,"workspace_id":workspace,"owner_id":actor,"signing_key":key,
+            "version":1,"previous_policy":null,"effective_sequence":1,
+            "visibility":"PRIVATE","epoch":1,"issued_at":100,
+            "members":[{"actor_id":actor,"certificate":{"payload":{"signing_key":key}},
+                "role":"OWNER","scopes":[{"instance_id":instance,"actions":["wiki.create"],
+                    "protocol_roles":[],"capabilities":[]}]}],
+            "structure":{"v":1,"protocols":[],"disclosure":[],"instances":[]}
+        });
+        let policy = json!({"payload":policy_payload,"signature":sign_canonical(
+            "peerwork.secure.policy.v2",&policy_payload,&signing).unwrap()});
+        let policy_wire = serde_json::to_vec(&policy).unwrap();
+        let policy_hash = sha256_hex(canonical(&policy, Path::SecureArtifact).unwrap().as_bytes());
+        let previous = "b".repeat(64);
+        let context = json!({"v":2,"workspace_id":workspace,"sequence":2,
+            "previous":previous,"policy_hash":policy_hash,"epoch":1,
+            "actor_id":actor,"signing_key":key,"command_id":base64url(&[12;32]),
+            "action_id":"wiki.create","instance_id":instance,"issued_at":101,
+            "delegation":null,"structure":{"v":1,"mode":"DELTA","records":[],"heads":[]}});
+        let operation = json!({"v":1,"kind":"ACTION","input":{},"objects":[]});
+        let path = format!("/api/workspace/v1/secure/workspaces/{workspace}/commits");
+        let pins = SecureCommitRequestPins {
+            actor_id: &actor,
+            signing_key: &key,
+            workspace_id: &workspace,
+            policy_hash: &policy_hash,
+            sequence: 2,
+            previous: Some(&previous),
+            epoch: 1,
+            mode: "PRIVATE",
+            version: 2,
+            protocol_format_ceiling: None,
+        };
+        let authored = author_private_commit_with_policy(
+            &serde_json::to_vec(&context).unwrap(),
+            &serde_json::to_vec(&operation).unwrap(),
+            &[23; 32],
+            &signing,
+            &path,
+            &pins,
+            &policy_wire,
+            &key,
+        )
+        .unwrap();
+        let saved: Value = serde_json::from_slice(authored.request_wire()).unwrap();
+        assert_eq!(saved["commit"]["payload"]["v"], 2);
+        let sealed: SealedContent =
+            serde_json::from_value(saved["commit"]["payload"]["body"].clone()).unwrap();
+        let plaintext =
+            open_content_wire(&[23; 32], &sealed, &serde_json::to_vec(&context).unwrap()).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&plaintext).unwrap(),
+            operation
+        );
+        assert!(author_private_commit(
+            &serde_json::to_vec(&context).unwrap(),
+            &serde_json::to_vec(&operation).unwrap(),
+            &[23; 32],
+            &signing,
+            &path,
+            &pins,
+        )
+        .is_err());
+        let mut denied = policy_payload.clone();
+        denied["members"][0]["scopes"][0]["actions"] = json!([]);
+        let denied_policy = json!({"payload":denied,"signature":sign_canonical(
+            "peerwork.secure.policy.v2",&denied,&signing).unwrap()});
+        assert!(author_private_commit_with_policy(
+            &serde_json::to_vec(&context).unwrap(),
+            &serde_json::to_vec(&operation).unwrap(),
+            &[23; 32],
+            &signing,
+            &path,
+            &pins,
+            &serde_json::to_vec(&denied_policy).unwrap(),
+            &key,
+        )
+        .is_err());
+        let mut bad_context = context.clone();
+        bad_context["structure"]["mode"] = json!("SNAPSHOT_PAGE");
+        assert!(author_private_commit_with_policy(
+            &serde_json::to_vec(&bad_context).unwrap(),
+            &serde_json::to_vec(&operation).unwrap(),
+            &[23; 32],
+            &signing,
+            &path,
+            &pins,
+            &policy_wire,
+            &key,
+        )
+        .is_err());
+    }
 
     #[test]
     fn native_owner_bootstrap_authors_policy_and_commit_once() {
