@@ -11,7 +11,10 @@ files: `src/workspace-kernel.ts`
 `package-lock.json`
 `80d6ed0f40c4dbfa180289aad67054a35b25843754291ae7a34780c81f77a51f`.
 The reference checkout was rebuilt with `npm run build:workspace` before the
-test. This is a real service handler over HTTP, not a synthetic receipt server.
+test. The test bridge checks the exact checkout commit, the three source/lock
+hashes above and that the compiled entrypoints are newer than their tracked
+TypeScript sources before launching. This is a real service handler over HTTP,
+not a synthetic receipt server.
 
 The development proxy awaits the real handler's first signed `workspace.create`
 response, then drops that client connection. The native client reports the
@@ -23,8 +26,10 @@ own journal submits the same signed ID and gets the same accepted summary;
 the service still contains one command and one workspace. A differently
 signed body with that command ID receives HTTP 409 from the real service.
 This confirms the pinned service's same-ID dedup and digest conflict path for
-this command. It does not establish every business action or two different
-IDs competing for one revision.
+this command. Two different signed `protocol.publish` IDs then target the
+same workspace at revision 1: the first returns HTTP 201, the second HTTP 409,
+and the service has exactly one protocol with workspace revision 2. This
+establishes one stale-revision conflict path, not every business action.
 
 `KernelAcceptedResult` now exposes only authenticated command, workspace,
 protocol, instance, event, revision and produced-record identifiers. Signed

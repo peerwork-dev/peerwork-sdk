@@ -580,15 +580,19 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
-        let make_signed = |name: &str| {
+        let make_signed = |id: &str,
+                           action: &str,
+                           body: serde_json::Value,
+                           workspace: Option<&str>,
+                           expected_revision: Option<u64>| {
             let command = json!({
-                "v":1,"audience":"reference-kernel","command_id":command_id,
+                "v":1,"audience":"reference-kernel","command_id":id,
                 "actor_id":actor,"authority":sha256_hex(actor.as_bytes()),
                 "method":"POST","path":"/api/workspace/v1/commands",
-                "workspace_id":null,"instance_id":null,"protocol_digest":null,
-                "action_id":"workspace.create","expected_workspace_revision":null,
+                "workspace_id":workspace,"instance_id":null,"protocol_digest":null,
+                "action_id":action,"expected_workspace_revision":expected_revision,
                 "expected_instance_revision":null,"exact_input_refs":[],
-                "body":{"name":name,"visibility":"PUBLIC"},
+                "body":body,
                 "issued_at":now,"expires_at":now+60_000
             });
             let payload = canonical(&command, CanonicalPath::COMMAND).unwrap();
@@ -608,7 +612,13 @@ mod tests {
                 base64url(&signing.sign(input.as_bytes()).to_bytes())
             )
         };
-        let jws = make_signed("Recovery");
+        let jws = make_signed(
+            &command_id,
+            "workspace.create",
+            json!({"name":"Recovery","visibility":"PUBLIC"}),
+            None,
+            None,
+        );
         let body = canonical(&json!({"jws":jws}), CanonicalPath::COMMAND).unwrap();
         let mut first = KernelClient::open(
             config(),
@@ -685,7 +695,13 @@ mod tests {
                 .unwrap(),
             accepted
         );
-        let changed = make_signed("Different");
+        let changed = make_signed(
+            &command_id,
+            "workspace.create",
+            json!({"name":"Different","visibility":"PUBLIC"}),
+            None,
+            None,
+        );
         let conflict = reqwest::Client::new()
             .post(format!("{origin}api/workspace/v1/commands"))
             .header("content-type", "application/json")
@@ -705,6 +721,50 @@ mod tests {
         .unwrap();
         assert_eq!(counts["commands"], 1);
         assert_eq!(counts["workspaces"], 1);
+        let workspace = accepted.workspace_id.as_deref().unwrap();
+        let manifest = json!({
+            "name":"revision-race","display_version":"1","semantics":"peerwork.kernel.v1",
+            "dependencies":[],"record_schemas":{},"initial_state":{},"actions":[]
+        });
+        let submit_publish = |id: String| {
+            let signed = make_signed(
+                &id,
+                "protocol.publish",
+                json!({"manifest":manifest}),
+                Some(workspace),
+                Some(1),
+            );
+            canonical(&json!({"jws":signed}), CanonicalPath::COMMAND).unwrap()
+        };
+        let first_publish = reqwest::Client::new()
+            .post(format!("{origin}api/workspace/v1/commands"))
+            .header("content-type", "application/json")
+            .body(submit_publish(base64url(&[72; 32])))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(first_publish.status(), reqwest::StatusCode::CREATED);
+        let stale_publish = reqwest::Client::new()
+            .post(format!("{origin}api/workspace/v1/commands"))
+            .header("content-type", "application/json")
+            .body(submit_publish(base64url(&[73; 32])))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(stale_publish.status(), reqwest::StatusCode::CONFLICT);
+        let after_revision_conflict = serde_json::from_slice::<serde_json::Value>(
+            &reqwest::get(format!("{origin}__test/counts"))
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(after_revision_conflict["commands"], 2);
+        assert_eq!(after_revision_conflict["workspaces"], 1);
+        assert_eq!(after_revision_conflict["protocols"], 1);
+        assert_eq!(after_revision_conflict["workspace_revision"], 2);
         drop(child);
     }
 

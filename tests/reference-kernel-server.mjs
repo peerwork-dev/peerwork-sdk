@@ -5,10 +5,30 @@ import {createRequire} from 'node:module';
 import {pathToFileURL} from 'node:url';
 import {join} from 'node:path';
 import {createServer} from 'node:http';
+import {createHash} from 'node:crypto';
+import {readFileSync, statSync} from 'node:fs';
+import {execFileSync} from 'node:child_process';
 
 const root = process.env.PEERWORK_REFERENCE_ROOT;
 const state = process.env.PEERWORK_TEST_STATE;
 if (!root || !state) throw new Error('reference root and fresh state are required');
+const expectedHead = 'f828b6c50a0a58d1e718af90f653b214adcc3328';
+const actualHead = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], {encoding: 'utf8'}).trim();
+if (actualHead !== expectedHead) throw new Error('reference checkout commit differs from tested pin');
+for (const [relative, expected] of Object.entries({
+  'src/workspace-kernel.ts': '586ac5b6a689abd2782d5d3e093bdf2ebc3eaaa688b526908b0402fb7783b4e2',
+  'src/workspace-http.ts': '4e8ab5d5484120395f28e39d2a703804328563efacfe90dfe9b761f923236355',
+  'package-lock.json': '80d6ed0f40c4dbfa180289aad67054a35b25843754291ae7a34780c81f77a51f',
+})) {
+  const sourcePath = join(root, relative);
+  const actual = createHash('sha256').update(readFileSync(sourcePath)).digest('hex');
+  if (actual !== expected) throw new Error(`reference source hash mismatch: ${relative}`);
+  if (relative.endsWith('.ts')) {
+    const builtPath = join(root, 'dist-workspace', relative.replace(/\.ts$/, '.js'));
+    if (statSync(builtPath).mtimeMs < statSync(sourcePath).mtimeMs)
+      throw new Error(`reference TypeScript source is newer than build: ${relative}`);
+  }
+}
 const requireFromReference = createRequire(join(root, 'package.json'));
 const {serve} = await import(pathToFileURL(requireFromReference.resolve('@hono/node-server')).href);
 const {openKernel, WorkspaceKernel} = await import(pathToFileURL(join(root, 'dist-workspace/src/workspace-kernel.js')).href);
@@ -25,6 +45,8 @@ const proxy = createServer(async (request, response) => {
       const counts = {
         commands: db.prepare('SELECT count(*) n FROM commands').get().n,
         workspaces: db.prepare('SELECT count(*) n FROM workspaces').get().n,
+        protocols: db.prepare('SELECT count(*) n FROM protocols').get().n,
+        workspace_revision: db.prepare('SELECT revision FROM workspaces LIMIT 1').get()?.revision ?? null,
       };
       response.writeHead(200, {'content-type': 'application/json'});
       response.end(JSON.stringify(counts));
