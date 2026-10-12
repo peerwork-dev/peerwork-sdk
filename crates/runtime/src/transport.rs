@@ -8,6 +8,7 @@ use tokio_util::sync::CancellationToken;
 
 pub(crate) const MAX_DISCOVERY_BYTES: usize = 256 * 1024;
 const MAX_COMMAND_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
+const MAX_SECURE_JOURNAL_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Error)]
 pub enum TransportError {
@@ -152,7 +153,7 @@ impl HttpTransport {
         max_response_bytes: usize,
         cancel: &CancellationToken,
     ) -> Result<ExactHttpResponse, TransportError> {
-        if max_response_bytes == 0 || max_response_bytes > MAX_COMMAND_RESPONSE_BYTES {
+        if max_response_bytes == 0 || max_response_bytes > MAX_SECURE_JOURNAL_RESPONSE_BYTES {
             return Err(TransportError::ResponseTooLarge);
         }
         let workspace = path

@@ -24,7 +24,7 @@ use std::{
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
-const MAX_PAGE: usize = 32 * 1024 * 1024;
+const MAX_PAGE: usize = 64 * 1024 * 1024;
 const MAX_DOCUMENT: usize = 64 * 1024 * 1024;
 const MAX_SAFE: u64 = 9_007_199_254_740_991;
 
