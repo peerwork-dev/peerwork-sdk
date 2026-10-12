@@ -149,8 +149,12 @@ impl HttpTransport {
         &self,
         path: &str,
         read_proof: &str,
+        max_response_bytes: usize,
         cancel: &CancellationToken,
     ) -> Result<ExactHttpResponse, TransportError> {
+        if max_response_bytes == 0 || max_response_bytes > MAX_COMMAND_RESPONSE_BYTES {
+            return Err(TransportError::ResponseTooLarge);
+        }
         let workspace = path
             .strip_prefix("/api/workspace/v1/secure/workspaces/")
             .and_then(|tail| tail.split_once("/journal?"));
@@ -179,7 +183,7 @@ impl HttpTransport {
             _ = cancel.cancelled() => return Err(TransportError::Cancelled),
             result = send => result.map_err(map_network_error)?,
         };
-        read_bounded(response, MAX_COMMAND_RESPONSE_BYTES, cancel).await
+        read_bounded(response, max_response_bytes, cancel).await
     }
 
     fn endpoint(&self, path: &str) -> Result<Url, TransportError> {

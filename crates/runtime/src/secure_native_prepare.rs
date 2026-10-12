@@ -580,6 +580,7 @@ mod tests {
         assert!(!progress.complete_transport);
         let exact_pages = read.exact_pages().unwrap();
         assert_eq!(exact_pages.len(), 1);
+        let smaller_budget = exact_pages[0].len() - 1;
         drop(read);
         let mut reopened = crate::secure_journal_read::SecureJournalRead::open(
             &read_path, &client, &identity, &workspace, &authority,
@@ -603,6 +604,52 @@ mod tests {
         assert_eq!(reopened.progress().unwrap(), finished);
         assert_eq!(reopened.exact_pages().unwrap().len(), 2);
         drop(reopened);
+        // A 50-commit response just over the configured budget must be
+        // retried with a new proof for a smaller canonical page limit, while
+        // all later pages remain bound to the first successful checkpoint.
+        let adaptive_path = root.path().join("adaptive-journal-pages.state");
+        let mut adaptive = crate::secure_journal_read::SecureJournalRead::open(
+            &adaptive_path,
+            &client,
+            &identity,
+            &workspace,
+            &authority,
+        )
+        .unwrap();
+        let mut adaptive_progress = adaptive
+            .fetch_next_with_budget(
+                &client,
+                &identity,
+                smaller_budget,
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(adaptive_progress.saved_commits > 0 && adaptive_progress.saved_commits < 50);
+        while !adaptive_progress.complete_transport {
+            adaptive_progress = adaptive
+                .fetch_next_with_budget(
+                    &client,
+                    &identity,
+                    smaller_budget,
+                    &CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+        }
+        assert_eq!(adaptive_progress.saved_commits, 51);
+        assert_eq!(adaptive_progress.checkpoint_sequence, Some(51));
+        drop(adaptive);
+        let adaptive = crate::secure_journal_read::SecureJournalRead::open(
+            &adaptive_path,
+            &client,
+            &identity,
+            &workspace,
+            &authority,
+        )
+        .unwrap();
+        assert_eq!(adaptive.progress().unwrap(), adaptive_progress);
+        drop(adaptive);
         let wrong_identity =
             KernelIdentity::create(&root.path().join("wrong-reader.state")).unwrap();
         assert!(matches!(
