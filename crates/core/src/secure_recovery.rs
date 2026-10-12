@@ -354,7 +354,15 @@ mod tests {
         ))
         .unwrap();
         for case in oracle["cases"].as_array().unwrap() {
-            let policies = vec![serde_json::to_vec(&case["policy"]).unwrap()];
+            let policies = case["policies"].as_array().map_or_else(
+                || vec![serde_json::to_vec(&case["policy"]).unwrap()],
+                |values| {
+                    values
+                        .iter()
+                        .map(|value| serde_json::to_vec(value).unwrap())
+                        .collect()
+                },
+            );
             let commits = case["commits"]
                 .as_array()
                 .unwrap()
@@ -393,6 +401,7 @@ mod tests {
                 || case["name"] == "v1_null_migration_and_conversion_marker"
                 || case["name"] == "v3_recovered_invalid_admin"
                 || case["name"] == "v3_hidden_decryptable_migration_denied"
+                || case["name"] == "v3_recovery_after_v1_wire_upgrade"
                 || case["name"] == "v2_structured_recovery_snapshot_base"
                 || case["name"] == "v2_structured_recovery_snapshot_end"
                 || case["name"] == "v2_structured_recovery_wrong_snapshot_root"
@@ -401,7 +410,8 @@ mod tests {
             {
                 let offset = u64::from(
                     case["name"] == "v2_recovery_nonempty_record_and_head_pages"
-                        || case["name"] == "v2_recovery_head_page_before_record_denied",
+                        || case["name"] == "v2_recovery_head_page_before_record_denied"
+                        || case["name"] == "v3_recovery_after_v1_wire_upgrade",
                 );
                 assert_eq!(
                     preflight.unwrap(),

@@ -189,6 +189,57 @@ try {
         ok: false, error: String(error.message)});
     }
   }
+  const upgradedPolicy = await createPolicy(identity, {v: 3, workspace_id: workspaceId,
+    owner_id: identity.actorId, signing_key: identity.keyId, version: 2,
+    previous_policy: policyHash, effective_sequence: 2, visibility: 'PRIVATE', epoch: 1,
+    members: policy.payload.members, issued_at: 4,
+    protocol_format_ceiling: 1, structure_mode: 'NONE'});
+  const upgradedHash = await secureHash(upgradedPolicy);
+  const upgrade = await createCommit({identity, policy: upgradedPolicy,
+    checkpoint: checkpoint1, operation: {v: 1, kind: 'ADMIN', input: {}, objects: []},
+    actionId: 'secure.protocol-format.upgrade', instanceId: null,
+    commandId: 'u'.repeat(43), issuedAt: 4, keyring});
+  const upgradeCheckpoint = {...checkpoint0, sequence: 2, head: await secureHash(upgrade),
+    policy_hash: upgradedHash};
+  const upgradedBad = await createCommit({identity, policy: upgradedPolicy,
+    checkpoint: upgradeCheckpoint, operation: {v: 1, kind: 'ADMIN', input: {},
+      objects: [{kind: 'forbidden', id: 'q'.repeat(43), revision: 1,
+        provenance: 'AUTHOR_SIGNED', value: {}}]},
+    actionId: 'secure.invalid', instanceId: null, commandId: 'd'.repeat(43),
+    issuedAt: 5, keyring});
+  const upgradedBadCheckpoint = {...upgradeCheckpoint, sequence: 3,
+    head: await secureHash(upgradedBad)};
+  const upgradedInput = {workspaceId, policies: [policy, upgradedPolicy],
+    commits: [bootstrap, upgrade, upgradedBad], checkpoint: upgradedBadCheckpoint,
+    keyring, trustedOwner: {actorId: identity.actorId, key: identity.keyId}};
+  const upgradedPrepared = await prepareJournalRecovery(upgradedInput);
+  const upgradedMarker = await createCommit({identity, policy: upgradedPolicy,
+    checkpoint: upgradedBadCheckpoint,
+    operation: {v: 1, kind: 'ADMIN', input: {}, objects: []},
+    actionId: 'secure.recover', instanceId: null, commandId: 'e'.repeat(43),
+    issuedAt: 6, keyring, recovery: upgradedPrepared.recovery});
+  const upgradedFinal = {...upgradedBadCheckpoint, sequence: 4,
+    head: await secureHash(upgradedMarker)};
+  try {
+    const journal = await verifyJournal({...upgradedInput,
+      commits: [bootstrap, upgrade, upgradedBad, upgradedMarker],
+      checkpoint: upgradedFinal});
+    cases.push({name: 'v3_recovery_after_v1_wire_upgrade',
+      policies: [policy, upgradedPolicy],
+      commits: [bootstrap, upgrade, upgradedBad, upgradedMarker],
+      checkpoint: upgradedFinal, keyring, workspace_id: workspaceId,
+      owner: {actor_id: identity.actorId, key: identity.keyId}, ok: true,
+      operations: journal.operations, objects: journal.objects,
+      recoveries: journal.recoveries, legacy: journal.legacy,
+      structure_state: journal.structure?.state ?? null});
+  } catch (error) {
+    cases.push({name: 'v3_recovery_after_v1_wire_upgrade',
+      policies: [policy, upgradedPolicy],
+      commits: [bootstrap, upgrade, upgradedBad, upgradedMarker],
+      checkpoint: upgradedFinal, keyring, workspace_id: workspaceId,
+      owner: {actor_id: identity.actorId, key: identity.keyId}, ok: false,
+      error: String(error.message)});
+  }
   const structure = {v: 1, protocols: [], disclosure: [], instances: []};
   const policy2 = await createPolicy(identity, {v: 2, workspace_id: workspaceId,
     owner_id: identity.actorId, signing_key: identity.keyId, version: 1,

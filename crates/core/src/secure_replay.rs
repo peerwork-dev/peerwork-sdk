@@ -4260,7 +4260,15 @@ mod tests {
         ))
         .unwrap();
         for case in fixture["cases"].as_array().unwrap() {
-            let policies = vec![serde_json::to_vec(&case["policy"]).unwrap()];
+            let policies = case["policies"].as_array().map_or_else(
+                || vec![serde_json::to_vec(&case["policy"]).unwrap()],
+                |values| {
+                    values
+                        .iter()
+                        .map(|value| serde_json::to_vec(value).unwrap())
+                        .collect()
+                },
+            );
             let policy_refs = policies.iter().map(Vec::as_slice).collect::<Vec<_>>();
             let commits = case["commits"]
                 .as_array()
