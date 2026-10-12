@@ -784,3 +784,61 @@ and `Cargo.lock`
 `48775117e96fe4cba67314559398d3d08c75fc211952e22473ceacc389003f17`.
 Structured/custom protocol owner-create, complete signed replay and
 activation, public language bindings and all-platform execution remain open.
+
+Structured PUBLIC owner-create checkpoint at exact SDK source
+`54a412fe9063efde13b63b27641f47974bc25601` builds a v3
+`structure_mode=STRUCTURED` genesis policy from the same signed six preset
+objects, with an empty BOOTSTRAP DELTA envelope (those objects contain no
+records or entity heads). The new core producer reuses the manifest-normalizing
+protocol derivation and full structure-policy/object-binding validators. It
+compares its output byte-equivalently, after canonicalization, to the vendored
+tracked TypeScript `structurePolicyFromObjects` for both six presets and a
+six-presets-plus-official-proposal-package custom object set. The signed
+PUBLIC bootstrap verifier also rechecks the policy/object binding on saved
+retry and rejects a re-signed extra protocol object absent from the policy.
+This is a bounded object/policy integrity check, not complete secure replay.
+
+The first direct oracle run failed because disclosure field array order was
+derived from canonicalized manifest keys rather than JavaScript's insertion
+order. A diagnostic rerun located the first difference at
+`/disclosure/0/fields/0`; the producer now walks raw manifest field order.
+A second diagnostic run still differed because the test canonicalized the
+input object wire before derivation; the fixture now retains exact
+`JSON.stringify` input bytes. These are preserved implementation/test
+corrections, not extra pass sampling. A separate initial focused run was
+interrupted before tests by concurrent core-owned `ReplayFacts.recoveries`
+source WIP (E0063), then core supplied a stable compile window.
+
+From a clean detached `54a412f` checkout with Rust 1.89 and task-local Cargo
+cache/target, `cargo test --offline --locked -p peerwork-core
+genesis_structure_policy::tests --lib` passed 2/2 and the affected signed
+bootstrap proof test passed 1/1. With the explicit reference root and Node24
+path above, the authorized localhost opt-in
+`cargo test --offline --locked -p peerwork-runtime
+secure_native_prepare::tests::actual_service_native_structured_public_owner_bootstrap_lost_reply_exact_retry
+-- --exact --nocapture` passed 1/1 in 1.98 seconds after a 9.15-second build.
+It asserts policy has six derived protocols and commit DELTA mode, zero
+service commits before and after prepare, one/head sequence 1 after the first
+applied POST with dropped reply, and still one after protected-journal reopen
+and exact-byte retry. The native secure intent remains PENDING. The opt-in
+test returns early without the reference environment; an ordinary suite pass
+is not actual-service evidence. No Agent workflow-compliance claim follows.
+
+The TypeScript structure source is reference HEAD `f828b6c` blob
+`ad73e947faf6f9edf230fca6e3862cd4be13c5e3`. SHA-256 at this SDK pin:
+`genesis_structure_policy.rs`
+`825482073aee9ff0a59e7c6b897550aaf4703dc2e65793451222a44a90fdde1b`,
+`prepared_secure_bootstrap.rs`
+`bfde07e8219618e12962672150c04835432db751b1a4b177f2382ef077975bb7`,
+`secure_native_prepare.rs`
+`5288a9afceaa177f2cb8e579befb8898738c7d32a6dcb6ad207a8f7fb123de10`,
+`generate-genesis-structure-vectors.mjs`
+`52d3f96123168577384708b3902430dcf8b8743b936e86a728a9f5051b5172ae`,
+`genesis-structure-vectors.json`
+`ba20230de7ac9526406894008a95fadbdf25c50b1900bf8e1e0f3dbb258318b3`,
+and unchanged `Cargo.lock`
+`48775117e96fe4cba67314559398d3d08c75fc211952e22473ceacc389003f17`.
+The custom package case proves policy derivation only; native owner-create
+has not yet authored and submitted that custom package. `keep_encrypted`,
+coordination options, PRIVATE structured creation, complete replay and
+activation, language façades and OS matrix remain required work.
