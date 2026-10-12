@@ -22,6 +22,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.89.0'
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -35,6 +37,7 @@ jobs:
           python -m pip install 'maturin==1.15.0'
           cd bindings/python
           maturin build --release --locked --out ../../dist/wheels
+          cd ../..
       - name: Package Node binary and test local offline installs
         run: |
           target='${{ matrix.target }}'
@@ -70,6 +73,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.89.0'
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -109,6 +114,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.89.0'
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
