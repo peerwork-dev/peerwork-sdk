@@ -62,6 +62,8 @@ if (compiledFiles.length !== 204 || compiledDigest.digest('hex') !== '6de57ae9bb
 const {serve} = await import(pathToFileURL(requireFromReference.resolve('@hono/node-server')).href);
 const {openKernel, WorkspaceKernel} = await import(pathToFileURL(join(root, 'dist-workspace/src/workspace-kernel.js')).href);
 const {createWorkspaceControlApp} = await import(pathToFileURL(join(root, 'dist-workspace/src/workspace-http.js')).href);
+const {canonical, hash, RECEIPT_TYPE} = await import(pathToFileURL(join(root, 'dist-workspace/src/workspace-contract.js')).href);
+const {signKernelJws} = await import(pathToFileURL(join(root, 'dist-workspace/src/workspace-jws.js')).href);
 let catalogAdapter;
 if (process.env.PEERWORK_TEST_CATALOG === '1') {
   const packageModule = await import(pathToFileURL(join(root, 'dist-workspace/src/protocol-package.js')).href);
@@ -80,6 +82,7 @@ const real = serve({fetch: createWorkspaceControlApp(kernel).fetch, hostname: '1
 await new Promise(resolve => real.once('listening', resolve));
 const realOrigin = `http://127.0.0.1:${real.address().port}`;
 let dropFirstPost = true;
+let alterFirstChunk = process.env.PEERWORK_TEST_WRONG_CHUNK_STATE === '1';
 const firstPostMode = process.env.PEERWORK_TEST_FIRST_POST_MODE || 'drop';
 const firstPostDelayMs = Number(process.env.PEERWORK_TEST_FIRST_POST_DELAY_MS || 0);
 if (!['drop', 'delay', 'normal'].includes(firstPostMode) || !Number.isSafeInteger(firstPostDelayMs) || firstPostDelayMs < 0 || firstPostDelayMs > 10000)
@@ -119,7 +122,16 @@ const proxy = createServer(async (request, response) => {
       headers: {'content-type': request.headers['content-type'] || 'application/json'},
       body: request.method === 'GET' ? undefined : Buffer.concat(chunks),
     });
-    const bytes = Buffer.from(await original.arrayBuffer());
+    let bytes = Buffer.from(await original.arrayBuffer());
+    if (alterFirstChunk && request.method === 'POST' && request.url === '/api/workspace/v1/catalog/upload' && original.status === 201) {
+      alterFirstChunk = false;
+      const value = JSON.parse(bytes.toString('utf8'));
+      const receiptPayload = JSON.parse(Buffer.from(value.receipt.split('.')[1], 'base64url').toString('utf8'));
+      value.result.state = value.result.state === 'READY' ? 'STAGING' : 'READY';
+      receiptPayload.result_digest = hash(canonical(value.result));
+      value.receipt = signKernelJws(receiptPayload, RECEIPT_TYPE, kernel.receiptKey);
+      bytes = Buffer.from(JSON.stringify(value));
+    }
     if (request.method === 'POST' && dropFirstPost) {
       dropFirstPost = false;
       if (firstPostMode === 'drop') {

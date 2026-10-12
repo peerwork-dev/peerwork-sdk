@@ -53,6 +53,9 @@ function walk(path){for(const item of readdirSync(path,{withFileTypes:true})){
   else files[relative(directory,full).split('\\').join('/')]=readFileSync(full,'utf8');
 }}
 walk(directory);
+const padding=Number(process.env.PEERWORK_TEST_PADDING_BYTES||0);
+if(!Number.isSafeInteger(padding)||padding<0||padding>100000) throw Error('invalid test padding size');
+if(padding) files['extras/upload-padding.txt']='x'.repeat(padding);
 const pkg=await import(pathToFileURL(join(root,'dist-workspace/src/protocol-package.js')).href);
 const bundle={format:'peerwork.protocol-package.v1',files:Object.fromEntries(Object.entries(files).sort(([a],[b])=>a.localeCompare(b)))};
 const bytes=Buffer.from(pkg.canonicalProtocolPackageBytes(bundle));
@@ -81,7 +84,9 @@ def command(info, action, body, *, path="/api/workspace/v1/commands"):
 def server_for(state):
     env = os.environ.copy()
     env.update(PEERWORK_REFERENCE_ROOT=REFERENCE, PEERWORK_TEST_STATE=str(state),
-               PEERWORK_TEST_CATALOG="1", PEERWORK_TEST_FIRST_POST_MODE="normal")
+               PEERWORK_TEST_CATALOG="1", PEERWORK_TEST_FIRST_POST_MODE="normal",
+               PEERWORK_TEST_WRONG_CHUNK_STATE=os.environ.get(
+                   "PEERWORK_TEST_WRONG_CHUNK_STATE", "0"))
     process = subprocess.Popen(
         [NODE, str(ROOT / "tests/reference-kernel-server.mjs")],
         cwd=ROOT, env=env, stdout=subprocess.PIPE, text=True,
@@ -152,11 +157,23 @@ try:
 
     received = 0
     for index, chunk in enumerate(chunks):
-        _, accepted = issue("catalog.upload.chunk", {
+        chunk_request = command(info, "catalog.upload.chunk", {
             "upload_id": upload_id, "bundle_digest": bundle_digest,
             "index": index, "offset": received, "byte_length": len(chunk),
             "chunk_digest": hashlib.sha256(chunk).hexdigest(),
-        }, path="/api/workspace/v1/catalog/upload", chunk=chunk)
+        }, path="/api/workspace/v1/catalog/upload")
+        client.prepare(chunk_request, upload_chunk=chunk)
+        if index == 0 and os.environ.get("PEERWORK_TEST_WRONG_CHUNK_STATE") == "1":
+            try:
+                client.submit_saved(chunk_request["command_id"])
+                raise AssertionError("signed wrong-state chunk was accepted")
+            except RuntimeError:
+                pass
+            assert client.status(chunk_request["command_id"])["state"] == "PENDING"
+            mark("signed_wrong_state_remained_pending")
+        accepted = client.submit_saved(chunk_request["command_id"])
+        assert accepted["command_id"] == chunk_request["command_id"]
+        assert client.status(chunk_request["command_id"])["state"] == "ACCEPTED"
         received += len(chunk)
         assert accepted["catalog"] == {
             "kind": "upload_chunk", "upload_id": upload_id,
@@ -228,10 +245,15 @@ evidence = {
     "official_bundle_sha256": bundle_digest,
     "official_bundle_bytes": len(bundle),
     "chunk_count": len(chunks),
+    "synthetic_padding_bytes": int(os.environ.get("PEERWORK_TEST_PADDING_BYTES", "0")),
+    "signed_wrong_state_probe": os.environ.get("PEERWORK_TEST_WRONG_CHUNK_STATE") == "1",
     "stages": stages,
     "service_counts": totals,
 }
-(ROOT / ".build-artifacts/catalog-service-evidence.json").write_text(
+(ROOT / (".build-artifacts/catalog-service-evidence-"
+         + str(len(chunks)) + "-chunks-"
+         + ("signed-negative" if evidence["signed_wrong_state_probe"] else "normal")
+         + ".json")).write_text(
     json.dumps(evidence, indent=2) + "\n"
 )
 print("Python/Node/CLI actual catalog publish and recovery passed")

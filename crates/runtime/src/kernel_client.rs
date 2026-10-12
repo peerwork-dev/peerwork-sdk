@@ -4,7 +4,9 @@
 
 use crate::{
     kernel_identity::KernelIdentity,
-    kernel_intents::{JournalError, KernelIntentJournal, KernelPath, PendingKernelIntent},
+    kernel_intents::{
+        JournalError, KernelIntentJournal, KernelPath, PendingKernelIntent, VerifiedPendingCommand,
+    },
     transport::{HttpTransport, TransportConfig, TransportError, MAX_DISCOVERY_BYTES},
 };
 use peerwork_core::discovery::{parse_discovery_wire, ParsedDiscovery};
@@ -88,6 +90,7 @@ impl KernelAcceptedResult {
     fn from_verified(
         proof: VerifiedCommandResponse,
         prepared: &VerifiedPreparedCommand,
+        catalog_begin: Option<(u64, u64)>,
     ) -> Result<Self, KernelClientError> {
         let result = parse_wire_json_bounded(
             proof.result_canonical_json().as_bytes(),
@@ -180,7 +183,19 @@ impl KernelAcceptedResult {
                     return Err(KernelClientError::InvalidResult);
                 }
                 let state = required_text(&result, "state")?;
-                if !matches!(state.as_str(), "STAGING" | "READY") {
+                let (total_bytes, chunk_count) =
+                    catalog_begin.ok_or(KernelClientError::InvalidResult)?;
+                let next_index = index
+                    .checked_add(1)
+                    .ok_or(KernelClientError::InvalidResult)?;
+                let expected_state = if next_index == chunk_count && received_bytes == total_bytes {
+                    "READY"
+                } else if next_index < chunk_count && received_bytes < total_bytes {
+                    "STAGING"
+                } else {
+                    return Err(KernelClientError::InvalidResult);
+                };
+                if state != expected_state {
                     return Err(KernelClientError::InvalidResult);
                 }
                 Some(CatalogAcceptedResult::UploadChunk {
@@ -373,6 +388,84 @@ impl KernelClient {
         Ok(pending)
     }
 
+    /// A chunk command does not carry the session's total or chunk count.
+    /// Bind its public state to the separately accepted, exact signed begin
+    /// command in this same durable journal before exposing or saving it.
+    fn catalog_begin_context(
+        &self,
+        saved: &VerifiedPendingCommand,
+        local_key_id: &str,
+    ) -> Result<Option<(u64, u64)>, KernelClientError> {
+        let command =
+            parse_wire_json_bounded(saved.proof.command_canonical_json().as_bytes(), 40, 180_000)
+                .map_err(|_| KernelClientError::InvalidResult)?;
+        if required_text(&command, "action_id")? != "catalog.upload.chunk" {
+            return Ok(None);
+        }
+        let body = command
+            .get("body")
+            .ok_or(KernelClientError::InvalidResult)?;
+        let upload_id = required_text(body, "upload_id")?;
+        let bundle_digest = required_text(body, "bundle_digest")?;
+        let mut found = None;
+        for row in self
+            .journal
+            .all_prepared_for_key(local_key_id, self.discovery.audience_utf16())?
+        {
+            let candidate = self
+                .journal
+                .verified_pending(
+                    &row.command_id,
+                    local_key_id,
+                    self.discovery.audience_utf16(),
+                )?
+                .ok_or(KernelClientError::InvalidResult)?;
+            let candidate_command = parse_wire_json_bounded(
+                candidate.proof.command_canonical_json().as_bytes(),
+                40,
+                180_000,
+            )
+            .map_err(|_| KernelClientError::InvalidResult)?;
+            if required_text(&candidate_command, "action_id")? != "catalog.upload.begin" {
+                continue;
+            }
+            let candidate_body = candidate_command
+                .get("body")
+                .ok_or(KernelClientError::InvalidResult)?;
+            if required_text(candidate_body, "upload_id")? != upload_id {
+                continue;
+            }
+            require_equal(
+                &required_text(candidate_body, "bundle_digest")?,
+                &bundle_digest,
+            )?;
+            let Some(verified) = self
+                .journal
+                .accepted_response(&candidate, self.discovery.receipt_public_key())?
+            else {
+                continue;
+            };
+            if !matches!(
+                KernelAcceptedResult::from_verified(verified, &candidate.proof, None)?.catalog,
+                Some(CatalogAcceptedResult::UploadBegin { .. })
+            ) {
+                return Err(KernelClientError::InvalidResult);
+            }
+            let total = required_u64(candidate_body, "total_bytes")?;
+            let count = required_u64(candidate_body, "chunk_count")?;
+            if total == 0
+                || total > 1024 * 1024
+                || count == 0
+                || count > 16
+                || (total + 65_535) / 65_536 != count
+                || found.replace((total, count)).is_some()
+            {
+                return Err(KernelClientError::InvalidResult);
+            }
+        }
+        found.map(Some).ok_or(KernelClientError::InvalidResult)
+    }
+
     /// Reads saved status after restart and re-verifies any accepted response
     /// against the exact signed request and this client's persisted authority.
     pub fn status(
@@ -393,7 +486,11 @@ impl KernelClient {
             .accepted_response(&saved, self.discovery.receipt_public_key())?
         {
             Some(verified) => Ok(Some(KernelOperationStatus::Accepted(
-                KernelAcceptedResult::from_verified(verified, &saved.proof)?,
+                KernelAcceptedResult::from_verified(
+                    verified,
+                    &saved.proof,
+                    self.catalog_begin_context(&saved, local_key_id)?,
+                )?,
             ))),
             None => Ok(Some(KernelOperationStatus::Pending)),
         }
@@ -411,11 +508,12 @@ impl KernelClient {
             .journal
             .verified_pending(command_id, local_key_id, self.discovery.audience_utf16())?
             .ok_or(KernelClientError::IntentNotFound)?;
+        let catalog_begin = self.catalog_begin_context(&saved, local_key_id)?;
         if let Some(verified) = self
             .journal
             .accepted_response(&saved, self.discovery.receipt_public_key())?
         {
-            return KernelAcceptedResult::from_verified(verified, &saved.proof);
+            return KernelAcceptedResult::from_verified(verified, &saved.proof, catalog_begin);
         }
         let response = self
             .transport
@@ -430,7 +528,7 @@ impl KernelClient {
             self.discovery.receipt_public_key(),
         )
         .map_err(|_| KernelClientError::Store(JournalError::InvalidReceipt))?;
-        let public = KernelAcceptedResult::from_verified(proof, &saved.proof)?;
+        let public = KernelAcceptedResult::from_verified(proof, &saved.proof, catalog_begin)?;
         self.journal.record_verified_response(
             &saved,
             &response.wire,
@@ -604,6 +702,20 @@ mod tests {
             CanonicalPath::RESPONSE,
         )
         .unwrap();
+        let mismatched_result = json!({"namespace":key_id(&[99;32]),"owner_actor_id":actor});
+        let mut mismatched_payload = receipt_payload.clone();
+        mismatched_payload["result_digest"] = json!(sha256_hex(
+            canonical(&mismatched_result, CanonicalPath::KERNEL)
+                .unwrap()
+                .as_bytes()
+        ));
+        let mismatched_receipt =
+            sign_compact(&receipt_header, &mismatched_payload, &signing).unwrap();
+        let mismatched = canonical(
+            &json!({"command_id":command_id,"receipt":mismatched_receipt,"result":mismatched_result}),
+            CanonicalPath::RESPONSE,
+        )
+        .unwrap();
         let invalid = b"{\"command_id\":\"wrong\",\"receipt\":\"invalid\",\"result\":{}}".to_vec();
         let discovery = discovery_wire(&kid, &[]);
 
@@ -611,10 +723,10 @@ mod tests {
         let origin = format!("http://{}/", listener.local_addr().unwrap());
         let saved_body = body.as_bytes().to_vec();
         let server = tokio::spawn(async move {
-            for step in 0..6 {
+            for step in 0..7 {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let request = read_request(&mut socket).await;
-                if matches!(step, 0 | 2 | 5) {
+                if matches!(step, 0 | 2 | 6) {
                     assert!(request.starts_with(b"GET /api/workspace/v1/discovery "));
                     respond(&mut socket, &discovery).await;
                 } else {
@@ -623,7 +735,8 @@ mod tests {
                     match step {
                         1 => {}
                         3 => respond(&mut socket, &invalid).await,
-                        4 => respond(&mut socket, accepted.as_bytes()).await,
+                        4 => respond(&mut socket, mismatched.as_bytes()).await,
+                        5 => respond(&mut socket, accepted.as_bytes()).await,
                         _ => unreachable!(),
                     }
                 }
@@ -666,6 +779,13 @@ mod tests {
                 .submit_saved(&command_id, &kid, &CancellationToken::new())
                 .await,
             Err(KernelClientError::Store(JournalError::InvalidReceipt))
+        ));
+        assert_eq!(client.pending(&kid).unwrap().len(), 1);
+        assert!(matches!(
+            client
+                .submit_saved(&command_id, &kid, &CancellationToken::new())
+                .await,
+            Err(KernelClientError::InvalidResult)
         ));
         assert_eq!(client.pending(&kid).unwrap().len(), 1);
         let verified = client
