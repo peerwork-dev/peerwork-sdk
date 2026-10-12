@@ -120,3 +120,69 @@ exports.openKernel = async options => {
     },
   });
 };
+
+/** Verify and read a supported active secure journal from protected state. */
+exports.readSecureWorkspace = async options => {
+  if (!options || isProxy(options) ||
+      (Object.getPrototypeOf(options) !== Object.prototype && Object.getPrototypeOf(options) !== null)) {
+    throw new TypeError('secure read options must be a plain object');
+  }
+  const allowed = new Set([
+    'origin', 'kernelJournalPath', 'readStatePath', 'lifecyclePath', 'identityPath',
+    'workspaceId', 'authority', 'ownerActorId', 'ownerKeyId', 'requiredFeatures',
+    'allowLoopbackHttp', 'maxReplayArtifactBytes', 'signal',
+  ]);
+  const input = Object.create(null);
+  for (const key of Reflect.ownKeys(options)) {
+    if (typeof key !== 'string' || !allowed.has(key)) throw new TypeError('unknown secure read option');
+    const descriptor = Object.getOwnPropertyDescriptor(options, key);
+    if (!descriptor?.enumerable || !('value' in descriptor)) throw new TypeError('secure read options contain an accessor or hidden member');
+    input[key] = descriptor.value;
+  }
+  for (const key of [
+    'origin', 'kernelJournalPath', 'readStatePath', 'lifecyclePath', 'identityPath',
+    'workspaceId', 'authority', 'ownerActorId', 'ownerKeyId',
+  ]) {
+    if (typeof input[key] !== 'string' || input[key].length === 0) throw new TypeError(`${key} is required`);
+  }
+  if (input.requiredFeatures !== undefined &&
+      (!Array.isArray(input.requiredFeatures) || isProxy(input.requiredFeatures) ||
+       !input.requiredFeatures.every(feature => typeof feature === 'string'))) {
+    throw new TypeError('requiredFeatures must be an array of strings');
+  }
+  if (input.allowLoopbackHttp !== undefined && typeof input.allowLoopbackHttp !== 'boolean') {
+    throw new TypeError('allowLoopbackHttp must be boolean');
+  }
+  const limit = input.maxReplayArtifactBytes ?? 64 * 1024 * 1024;
+  if (!Number.isSafeInteger(limit) || limit <= 0) throw new TypeError('maxReplayArtifactBytes must be a positive safe integer');
+  const config = {
+    origin: input.origin,
+    kernel_journal_path: input.kernelJournalPath,
+    read_state_path: input.readStatePath,
+    lifecycle_path: input.lifecyclePath,
+    identity_path: input.identityPath,
+    workspace_id: input.workspaceId,
+    authority: input.authority,
+    owner_actor_id: input.ownerActorId,
+    owner_key_id: input.ownerKeyId,
+    required_features: input.requiredFeatures ?? [],
+    allow_loopback_http: input.allowLoopbackHttp ?? false,
+    max_replay_artifact_bytes: limit,
+  };
+  const handle = new binding.KernelCancelHandle();
+  const signal = input.signal;
+  const onAbort = () => handle.cancel();
+  if (signal?.aborted) onAbort();
+  signal?.addEventListener?.('abort', onAbort, { once: true });
+  try {
+    const result = JSON.parse(await binding.secureReadJson(strictCommandJson(config), handle));
+    if (result.ok !== true) {
+      const error = new Error(result.message);
+      error.code = result.code;
+      throw error;
+    }
+    return result.value;
+  } finally {
+    signal?.removeEventListener?.('abort', onAbort);
+  }
+};

@@ -1,6 +1,7 @@
 use peerwork_runtime::kernel_access::KernelAccess;
 use peerwork_runtime::kernel_client::{KernelAcceptedResult, KernelOperationStatus};
 use peerwork_runtime::kernel_identity::KernelIdentity;
+use peerwork_runtime::secure_read_access::{SecureReadAccess, SecureReadConfig};
 use peerwork_runtime::KernelCancellationToken;
 use pyo3::prelude::*;
 use std::path::Path;
@@ -166,6 +167,32 @@ fn kernel_json(
     result.map_err(pyo3::exceptions::PyRuntimeError::new_err)
 }
 
+#[pyfunction]
+#[pyo3(signature = (config_json, cancel_handle=None))]
+fn secure_read_json(
+    py: Python<'_>,
+    config_json: &str,
+    cancel_handle: Option<PyRef<'_, KernelCancelHandle>>,
+) -> PyResult<String> {
+    let config: SecureReadConfig = serde_json::from_str(config_json).map_err(|_| {
+        pyo3::exceptions::PyValueError::new_err("invalid secure read configuration")
+    })?;
+    let cancel = cancel_handle
+        .map(|handle| handle.token.clone())
+        .unwrap_or_default();
+    Ok(py.allow_threads(move || {
+        match SecureReadAccess::new(config).read_json_with_cancel(&cancel) {
+            Ok(value) => format!("{{\"ok\":true,\"value\":{value}}}"),
+            Err(error) => serde_json::json!({
+                "ok": false,
+                "code": error.code(),
+                "message": error.to_string(),
+            })
+            .to_string(),
+        }
+    }))
+}
+
 #[pymodule]
 fn _peerwork_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(version, module)?)?;
@@ -175,6 +202,7 @@ fn _peerwork_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(identity_import_seed_json, module)?)?;
     module.add_function(wrap_pyfunction!(identity_import_pkcs8_pem_json, module)?)?;
     module.add_function(wrap_pyfunction!(kernel_json, module)?)?;
+    module.add_function(wrap_pyfunction!(secure_read_json, module)?)?;
     module.add_class::<KernelCancelHandle>()?;
     Ok(())
 }

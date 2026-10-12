@@ -11,6 +11,7 @@ from ._peerwork_native import (
     identity_import_seed_json,
     identity_import_pkcs8_pem_json,
     kernel_json,
+    secure_read_json,
     version,
 )
 
@@ -105,6 +106,26 @@ KernelStatus = StatusNotFound | StatusPending | StatusAccepted
 class TsMigrationReport(TypedDict):
     pending_count: int
     accepted_count: int
+
+
+class VerifiedSecureWorkspace(TypedDict):
+    origin: str
+    workspace_id: str
+    sequence: int
+    head: str | None
+    policy_hash: str
+    structure_status: Literal["UNSTRUCTURED", "ACTIVE"]
+    objects: list[object]
+    operations: list[object]
+    recoveries: list[object]
+
+
+class SecureReadError(RuntimeError):
+    """A typed refusal from verified secure journal reading."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
 
 
 def capabilities() -> CapabilityManifest:
@@ -274,6 +295,68 @@ class KernelClient:
                                                                trusted_signer_key_ids=trusted_signer_key_ids))
 
 
+class SecureReadClient:
+    """Verify supported active secure histories against explicit owner pins.
+
+    The paths hold protected discovery, exact pages, and key lifecycle state.
+    The replay artifact budget is for retained signed wires; it is not a cap on
+    the decoded result graph. Pending or seeding histories refuse verified read.
+    """
+
+    def __init__(self, origin: str, kernel_journal_path: str, read_state_path: str,
+                 lifecycle_path: str, identity_path: str, workspace_id: str,
+                 authority: str, owner_actor_id: str, owner_key_id: str, *,
+                 required_features: tuple[str, ...] = (),
+                 allow_loopback_http: bool = False,
+                 max_replay_artifact_bytes: int = 64 * 1024 * 1024):
+        if isinstance(max_replay_artifact_bytes, bool) or not isinstance(max_replay_artifact_bytes, int) or max_replay_artifact_bytes <= 0 or max_replay_artifact_bytes > 2**64 - 1:
+            raise ValueError("max_replay_artifact_bytes must be a positive u64")
+        self._config = {
+            "origin": origin,
+            "kernel_journal_path": kernel_journal_path,
+            "read_state_path": read_state_path,
+            "lifecycle_path": lifecycle_path,
+            "identity_path": identity_path,
+            "workspace_id": workspace_id,
+            "authority": authority,
+            "owner_actor_id": owner_actor_id,
+            "owner_key_id": owner_key_id,
+            "required_features": list(required_features),
+            "allow_loopback_http": allow_loopback_http,
+            "max_replay_artifact_bytes": max_replay_artifact_bytes,
+        }
+
+    def _read(self, cancel_handle: KernelCancelHandle | None = None) -> VerifiedSecureWorkspace:
+        config_json = json.dumps(self._config, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
+        result = json.loads(secure_read_json(config_json, cancel_handle))
+        if result["ok"] is not True:
+            raise SecureReadError(result["code"], result["message"])
+        return cast(VerifiedSecureWorkspace, result["value"])
+
+    def read(self) -> VerifiedSecureWorkspace:
+        return self._read()
+
+    async def read_async(self) -> VerifiedSecureWorkspace:
+        cancel_handle = KernelCancelHandle()
+        worker = asyncio.create_task(asyncio.to_thread(self._read, cancel_handle))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            cancel_handle.cancel()
+            while not worker.done():
+                try:
+                    await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    cancel_handle.cancel()
+                except Exception:
+                    break
+            try:
+                worker.result()
+            except Exception:
+                pass
+            raise
+
+
 __all__ = ["version", "capabilities", "create_identity", "open_identity",
            "create_identity_async", "open_identity_async",
            "import_identity_seed_file", "import_identity_seed_file_async", "KernelClient",
@@ -283,3 +366,4 @@ __all__ = ["version", "capabilities", "create_identity", "open_identity",
            "StatusNotFound", "StatusPending", "StatusAccepted", "KernelStatus",
            "TsMigrationReport"]
 __all__ += ["import_legacy_identity_pem", "import_legacy_identity_pem_async"]
+__all__ += ["SecureReadClient", "SecureReadError", "VerifiedSecureWorkspace"]

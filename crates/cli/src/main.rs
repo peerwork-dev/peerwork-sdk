@@ -2,6 +2,7 @@ use peerwork_runtime::interrupts::InterruptMonitor;
 use peerwork_runtime::kernel_access::KernelAccess;
 use peerwork_runtime::kernel_client::{KernelAcceptedResult, KernelOperationStatus};
 use peerwork_runtime::kernel_identity::KernelIdentity;
+use peerwork_runtime::secure_read_access::{SecureReadAccess, SecureReadConfig};
 use peerwork_runtime::KernelCancellationToken;
 use std::fs;
 use std::io::Read;
@@ -109,11 +110,86 @@ fn main() -> ExitCode {
                 }
             }
         },
+        [noun, verb, rest @ ..] if noun == "secure" && verb == "read" => {
+            match secure_read_command(rest) {
+                Ok(value) => {
+                    println!("{value}");
+                    ExitCode::SUCCESS
+                }
+                Err((code, message)) => {
+                    eprintln!(
+                        "{}",
+                        serde_json::json!({"code": if InterruptMonitor::interrupted() {"INTERRUPTED"} else {code}, "message":message})
+                    );
+                    if InterruptMonitor::interrupted() {
+                        ExitCode::from(130)
+                    } else {
+                        ExitCode::FAILURE
+                    }
+                }
+            }
+        }
         _ => {
-            eprintln!("{{\"code\":\"USAGE\",\"message\":\"peerwork version|capabilities|identity create PATH|identity info PATH|identity import-legacy-pem PATH PROTECTED_PEM_FILE|identity import-seed-file PATH PROTECTED_SEED_FILE|kernel open|prepare|pending|status|submit ORIGIN JOURNAL IDENTITY [COMMAND_FILE|COMMAND_ID] [--allow-loopback-http] [--authority=HEX] [--chunk-file=PATH|--chunk-stdin for prepare]; kernel migrate ORIGIN JOURNAL IDENTITY SOURCE BACKUP --trusted-signer=KEY_ID [--trusted-signer=KEY_ID ...]\"}}");
+            eprintln!("{{\"code\":\"USAGE\",\"message\":\"peerwork version|capabilities|identity create PATH|identity info PATH|identity import-legacy-pem PATH PROTECTED_PEM_FILE|identity import-seed-file PATH PROTECTED_SEED_FILE|kernel open|prepare|pending|status|submit ORIGIN JOURNAL IDENTITY [COMMAND_FILE|COMMAND_ID] [--allow-loopback-http] [--authority=HEX] [--chunk-file=PATH|--chunk-stdin for prepare]; kernel migrate ORIGIN JOURNAL IDENTITY SOURCE BACKUP --trusted-signer=KEY_ID [--trusted-signer=KEY_ID ...]; secure read ORIGIN KERNEL_JOURNAL READ_STATE LIFECYCLE IDENTITY WORKSPACE AUTHORITY OWNER_ACTOR OWNER_KEY [--allow-loopback-http] [--max-replay-artifact-bytes=N]\"}}");
             ExitCode::FAILURE
         }
     }
+}
+
+fn secure_read_command(args: &[String]) -> Result<String, (&'static str, String)> {
+    let mut values = Vec::new();
+    let mut allow_loopback_http = false;
+    let mut max_replay_artifact_bytes = 64 * 1024 * 1024;
+    let mut required_features = Vec::new();
+    for arg in args {
+        if arg == "--allow-loopback-http" {
+            allow_loopback_http = true;
+        } else if let Some(value) = arg.strip_prefix("--max-replay-artifact-bytes=") {
+            max_replay_artifact_bytes = value
+                .parse::<u64>()
+                .ok()
+                .filter(|value| *value > 0)
+                .ok_or_else(|| {
+                    (
+                        "USAGE",
+                        "max replay artifact bytes must be a positive u64".to_owned(),
+                    )
+                })?;
+        } else if let Some(value) = arg.strip_prefix("--required-feature=") {
+            required_features.push(value.to_owned());
+        } else if arg.starts_with("--") {
+            return Err(("USAGE", "unknown secure read option".into()));
+        } else {
+            values.push(arg.as_str());
+        }
+    }
+    if values.len() != 9 {
+        return Err(("USAGE", "secure read requires origin, four protected paths and explicit workspace/authority/owner pins".into()));
+    }
+    let access = SecureReadAccess::new(SecureReadConfig {
+        origin: values[0].to_owned(),
+        kernel_journal_path: values[1].into(),
+        read_state_path: values[2].into(),
+        lifecycle_path: values[3].into(),
+        identity_path: values[4].into(),
+        workspace_id: values[5].to_owned(),
+        authority: values[6].to_owned(),
+        owner_actor_id: values[7].to_owned(),
+        owner_key_id: values[8].to_owned(),
+        required_features,
+        allow_loopback_http,
+        max_replay_artifact_bytes,
+    });
+    let cancel = KernelCancellationToken::new();
+    let _interrupts = InterruptMonitor::start(cancel.clone()).map_err(|_| {
+        (
+            "INTERRUPT_HANDLER",
+            "unable to install interrupt handler".to_owned(),
+        )
+    })?;
+    access
+        .read_json_with_cancel(&cancel)
+        .map_err(|error| (error.code(), error.to_string()))
 }
 
 fn accepted_json(result: KernelAcceptedResult) -> serde_json::Value {

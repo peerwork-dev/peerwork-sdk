@@ -49,3 +49,34 @@ export interface KernelSession extends IdentityInfo {
   migrateTsStore(sourcePath: string, backupPath: string, trustedSignerKeyIds: string[], options?: {signal?: AbortSignal}): Promise<TsMigrationReport>;
 }
 export declare function openKernel(options: KernelAccessOptions): Promise<KernelSession>;
+
+export interface SecureReadOptions {
+  origin: string;
+  kernelJournalPath: string;
+  readStatePath: string;
+  lifecyclePath: string;
+  identityPath: string;
+  workspaceId: string;
+  authority: string;
+  /** Explicit trust pins; persisted locally on first lifecycle open. */
+  ownerActorId: string;
+  ownerKeyId: string;
+  requiredFeatures?: string[];
+  allowLoopbackHttp?: boolean;
+  /** Canonical signed artifact bytes retained for replay; default 64 MiB. */
+  maxReplayArtifactBytes?: number;
+  signal?: AbortSignal;
+}
+export interface VerifiedSecureWorkspace {
+  origin: string;
+  workspace_id: string;
+  sequence: number;
+  head: string | null;
+  policy_hash: string;
+  structure_status: 'UNSTRUCTURED' | 'ACTIVE';
+  objects: unknown[];
+  operations: unknown[];
+  recoveries: unknown[];
+}
+/** Reads a verified supported active history; pending and seeding histories refuse. */
+export declare function readSecureWorkspace(options: SecureReadOptions): Promise<VerifiedSecureWorkspace>;

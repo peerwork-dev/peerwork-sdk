@@ -6,6 +6,7 @@ use napi_derive::napi;
 use peerwork_runtime::kernel_access::KernelAccess;
 use peerwork_runtime::kernel_client::{KernelAcceptedResult, KernelOperationStatus};
 use peerwork_runtime::kernel_identity::KernelIdentity;
+use peerwork_runtime::secure_read_access::{SecureReadAccess, SecureReadConfig};
 use peerwork_runtime::KernelCancellationToken;
 use std::path::Path;
 
@@ -231,6 +232,49 @@ pub fn kernel_json(
         migration_source,
         migration_backup,
         trusted_signer_key_ids,
+        cancel: cancel_handle
+            .map(|handle| handle.token.clone())
+            .unwrap_or_default(),
+    })
+}
+
+pub struct SecureReadTask {
+    config_json: String,
+    cancel: KernelCancellationToken,
+}
+
+impl Task for SecureReadTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let config: SecureReadConfig = serde_json::from_str(&self.config_json)
+            .map_err(|_| napi::Error::from_reason("invalid secure read configuration"))?;
+        Ok(
+            match SecureReadAccess::new(config).read_json_with_cancel(&self.cancel) {
+                Ok(value) => format!("{{\"ok\":true,\"value\":{value}}}"),
+                Err(error) => serde_json::json!({
+                    "ok": false,
+                    "code": error.code(),
+                    "message": error.to_string(),
+                })
+                .to_string(),
+            },
+        )
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+#[napi]
+pub fn secure_read_json(
+    config_json: String,
+    cancel_handle: Option<ClassInstance<KernelCancelHandle>>,
+) -> AsyncTask<SecureReadTask> {
+    AsyncTask::new(SecureReadTask {
+        config_json,
         cancel: cancel_handle
             .map(|handle| handle.token.clone())
             .unwrap_or_default(),
