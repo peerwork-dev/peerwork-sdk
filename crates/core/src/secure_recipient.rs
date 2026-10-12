@@ -148,6 +148,7 @@ impl SecretRecipient {
             || issued > at
             || at >= expires
             || expires <= issued
+            || expires - issued > CERT_LIFETIME_MS
             || expires > MAX_SAFE_TIME
         {
             return Err(RecipientError::Invalid);
@@ -193,6 +194,17 @@ mod tests {
             .is_err());
         assert!(reopened
             .verify_local_certificate(&cert, &actor, &"a".repeat(43), at)
+            .is_err());
+        let mut overlong = cert.clone();
+        overlong.payload["expires_at"] = json!(at + 367 * 86_400_000);
+        overlong.signature = sign_canonical(
+            "peerwork.secure.key-certificate.v1",
+            &overlong.payload,
+            &signer,
+        )
+        .unwrap();
+        assert!(reopened
+            .verify_local_certificate(&overlong, &actor, &key, at)
             .is_err());
     }
 

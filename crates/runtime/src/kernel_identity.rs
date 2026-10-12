@@ -58,7 +58,7 @@ impl KernelIdentity {
         let mut seed = Zeroizing::new([0u8; 32]);
         seed.copy_from_slice(parsed.as_bytes());
         let store = SecureStateStore::open(path)?;
-        if store.read_exact()?.is_some() {
+        if store.read_exact_secret()?.is_some() {
             return Err(KernelIdentityError::AlreadyExists);
         }
         let encoded = Zeroizing::new(base64url(&*seed));
@@ -80,7 +80,7 @@ impl KernelIdentity {
         let seed =
             read_private_seed_file(source_path)?.ok_or(KernelIdentityError::InvalidSeedSource)?;
         let store = SecureStateStore::open(path)?;
-        if store.read_exact()?.is_some() {
+        if store.read_exact_secret()?.is_some() {
             return Err(KernelIdentityError::AlreadyExists);
         }
         let encoded = Zeroizing::new(base64url(&*seed));
@@ -96,7 +96,7 @@ impl KernelIdentity {
     /// operation; enrollment with a service remains a separate signed action.
     pub fn create(path: &Path) -> Result<Self, KernelIdentityError> {
         let store = SecureStateStore::open(path)?;
-        if store.read_exact()?.is_some() {
+        if store.read_exact_secret()?.is_some() {
             return Err(KernelIdentityError::AlreadyExists);
         }
         let mut seed = Zeroizing::new([0u8; 32]);
@@ -117,7 +117,9 @@ impl KernelIdentity {
     /// files and malformed/changed bytes fail closed without rewriting them.
     pub fn open(path: &Path) -> Result<Self, KernelIdentityError> {
         let store = SecureStateStore::open(path)?;
-        let wire = Zeroizing::new(store.read_exact()?.ok_or(KernelIdentityError::NotFound)?);
+        let wire = store
+            .read_exact_secret()?
+            .ok_or(KernelIdentityError::NotFound)?;
         let encoded_bytes = wire
             .strip_prefix(IDENTITY_PREFIX)
             .and_then(|value| value.strip_suffix(IDENTITY_SUFFIX))

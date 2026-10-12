@@ -170,11 +170,8 @@ impl SecureStateStore {
         if len <= MAGIC.len() as u64 {
             return Err(SecureStateError::Corrupt);
         }
-        if len > MAX_STATE_BYTES + MAGIC.len() as u64 {
-            return Err(SecureStateError::TooLarge);
-        }
-        let mut bytes = Zeroizing::new(Vec::with_capacity(len as usize));
-        file.read_to_end(&mut bytes)?;
+        let mut bytes =
+            read_bounded_snapshot(&mut file, len, MAX_STATE_BYTES + MAGIC.len() as u64)?;
         if !bytes.starts_with(MAGIC) {
             return Err(SecureStateError::MigrationRequired);
         }
@@ -235,6 +232,26 @@ impl SecureStateStore {
             Ok(())
         }
     }
+}
+
+fn read_bounded_snapshot(
+    file: &mut File,
+    len: u64,
+    max: u64,
+) -> Result<Zeroizing<Vec<u8>>, SecureStateError> {
+    if len > max {
+        return Err(SecureStateError::TooLarge);
+    }
+    let mut bytes = Zeroizing::new(vec![0u8; len as usize]);
+    file.read_exact(&mut bytes)?;
+    // A noncooperating same-user writer is not constrained by our lock.
+    // Refuse growth after the bounded metadata snapshot rather than reading
+    // an unbounded append into a secret-bearing Vec.
+    let mut extra = Zeroizing::new([0u8; 1]);
+    if file.read(&mut extra[..])? != 0 || file.metadata()?.len() != len {
+        return Err(SecureStateError::Corrupt);
+    }
+    Ok(bytes)
 }
 
 #[cfg(unix)]
@@ -356,6 +373,27 @@ fn lock_exclusive(_: &File) -> Result<(), SecureStateError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_secret_snapshot_rejects_growth_and_oversize() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("snapshot");
+        fs::write(&path, b"secret").unwrap();
+        let mut reader = File::open(&path).unwrap();
+        let len = reader.metadata().unwrap().len();
+        let mut writer = OpenOptions::new().append(true).open(&path).unwrap();
+        writer.write_all(b"x").unwrap();
+        assert!(matches!(
+            read_bounded_snapshot(&mut reader, len, MAX_STATE_BYTES),
+            Err(SecureStateError::Corrupt)
+        ));
+
+        let mut reader = File::open(&path).unwrap();
+        assert!(matches!(
+            read_bounded_snapshot(&mut reader, MAX_STATE_BYTES + 1, MAX_STATE_BYTES),
+            Err(SecureStateError::TooLarge)
+        ));
+    }
     #[cfg(windows)]
     fn private_dir() -> tempfile::TempDir {
         let outer = tempfile::tempdir().unwrap();

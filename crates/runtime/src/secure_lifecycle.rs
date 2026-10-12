@@ -184,6 +184,18 @@ impl SecureLifecycle {
         if !reader.remaining.is_empty() || active.is_none() && pending.is_none() {
             return Err(SecureLifecycleError::Invalid);
         }
+        // This store is PRIVATE-only: None means not yet established; every
+        // present private ring needs an epoch key. The tracked PUBLIC grant's
+        // valid empty keyring belongs to a separate path.
+        if active
+            .as_ref()
+            .is_some_and(|ring| ring.epochs().next().is_none())
+            || pending
+                .as_ref()
+                .is_some_and(|ring| ring.epochs().next().is_none())
+        {
+            return Err(SecureLifecycleError::Invalid);
+        }
         if let (Some(active), Some(pending)) = (&active, &pending) {
             let active_epochs: Vec<_> = active.epochs().collect();
             let pending_epochs: Vec<_> = pending.epochs().collect();
@@ -381,5 +393,35 @@ mod tests {
             ),
             Err(SecureLifecycleError::PinChanged)
         ));
+    }
+
+    #[test]
+    fn empty_pending_or_active_history_is_corrupt_on_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let origin = "https://example.invalid/";
+        let actor = base64url(&[1u8; 32]);
+        let workspace = base64url(&[2u8; 32]);
+        let owner = base64url(&[3u8; 32]);
+        let owner_key = base64url(&[4u8; 32]);
+        let empty_wire = serde_json::json!({"v":1,"workspace_id":workspace,"keys":[]}).to_string();
+        let empty = SecretKeyring::parse_wire(empty_wire.as_bytes()).unwrap();
+        let pending = SecretKeyring::new_private(&workspace, 1).unwrap();
+        for (name, active_ring, pending_ring) in [
+            ("empty-pending", None, Some(&empty)),
+            ("empty-active", Some(&empty), Some(&pending)),
+        ] {
+            let path = dir.path().join(name);
+            let store =
+                SecureLifecycle::open(&path, origin, &actor, &workspace, &owner, &owner_key)
+                    .unwrap();
+            store.save_with(active_ring, pending_ring).unwrap();
+            drop(store);
+            assert!(matches!(
+                SecureLifecycle::open(&path, origin, &actor, &workspace, &owner, &owner_key),
+                Err(SecureLifecycleError::Invalid)
+            ));
+        }
     }
 }
