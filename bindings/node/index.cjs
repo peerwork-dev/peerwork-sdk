@@ -34,17 +34,57 @@ exports.capabilities = () => JSON.parse(binding.capabilitiesJson());
 exports.createIdentity = async path => JSON.parse(await binding.identityCreateJson(path));
 exports.openIdentity = async path => JSON.parse(await binding.identityOpenJson(path));
 
+function strictCommandJson(input) {
+  const seen = new WeakSet();
+  const visit = (value, depth) => {
+    if (depth > 40) throw new TypeError('Command nesting exceeds limit');
+    if (value === null || typeof value === 'string' || typeof value === 'boolean') return;
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value)) throw new TypeError('Command contains a non-finite number');
+      return;
+    }
+    if (typeof value !== 'object' || seen.has(value)) throw new TypeError('Command contains unsupported or cyclic data');
+    seen.add(value);
+    if (Array.isArray(value)) {
+      if (Object.getPrototypeOf(value) !== Array.prototype) throw new TypeError('Command array has a custom prototype');
+      const keys = Reflect.ownKeys(value);
+      if (keys.length !== value.length + 1) throw new TypeError('Command array has extra or missing members');
+      for (let index = 0; index < value.length; index++) {
+        const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+        if (!descriptor || !('value' in descriptor)) throw new TypeError('Command array has a hole or accessor');
+        visit(descriptor.value, depth + 1);
+      }
+    } else {
+      const prototype = Object.getPrototypeOf(value);
+      if (prototype !== Object.prototype && prototype !== null) throw new TypeError('Command contains a non-plain object');
+      for (const key of Reflect.ownKeys(value)) {
+        if (typeof key !== 'string') throw new TypeError('Command contains a symbol key');
+        const descriptor = Object.getOwnPropertyDescriptor(value, key);
+        if (!descriptor?.enumerable || !('value' in descriptor)) throw new TypeError('Command contains an accessor or hidden member');
+        visit(descriptor.value, depth + 1);
+      }
+    }
+    seen.delete(value);
+  };
+  visit(input, 0);
+  return JSON.stringify(input);
+}
+
 /** An explicit origin and protected local paths anchor every operation. */
 exports.openKernel = async options => {
   const { origin, journalPath, identityPath, requiredFeatures = [], allowLoopbackHttp = false, authority } = options;
-  const call = async (operation, commandJson, commandId) => JSON.parse(await binding.kernelJson(
+  const call = async (operation, commandJson, commandId, uploadChunk) => JSON.parse(await binding.kernelJson(
     operation, origin, journalPath, identityPath, requiredFeatures,
-    allowLoopbackHttp, authority, commandJson, commandId,
+    allowLoopbackHttp, authority, commandJson, commandId, uploadChunk,
   ));
   const info = await call('open');
   return Object.freeze({
     ...info,
-    prepare: command => call('prepare', JSON.stringify(command)),
+    prepare: (command, options = {}) => {
+      const chunk = options.uploadChunk;
+      if (chunk !== undefined && !(chunk instanceof Uint8Array)) throw new TypeError('uploadChunk must be Buffer or Uint8Array');
+      return call('prepare', strictCommandJson(command), undefined, chunk === undefined ? undefined : Buffer.from(chunk));
+    },
     pending: () => call('pending'),
     status: commandId => call('status', undefined, commandId),
     submitSaved: commandId => call('submit_saved', undefined, commandId),

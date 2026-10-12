@@ -101,3 +101,42 @@ cancel handle yet. Submitted uncertainty leaves a saved pending row for
 status/retry, while a newly prepared row has not been submitted. Verified
 secure-agent reads/actions, complete typed result models, and the real
 macOS/Windows runner gates remain open.
+
+## Installed Python, Node and CLI service path
+
+An isolated detached checkout at exact commit `321ee1f` built the Python
+wheel, Node addon and CLI with Rust 1.89 and `--offline --locked`; the wheel
+was installed from its local binary with `pip --no-index --no-deps`. The
+Linux artifact SHA-256 values were `74ca708e4b1ec28d14f10c84525deaf3b635dfbd28adf6194a324fc2ed5a5b57`
+for `peerwork_sdk-0.0.1-cp311-abi3-manylinux_2_38_x86_64.whl`,
+`a3da157dd3beb3a51f83613ae362b4ed5552ebce5adfbfd276f566964acb7cab`
+for the optional Node `index.node`, and
+`9b0da2184d2aecd139e44b3d0dd85993914478b40846cbd64347fc532c6e8ea5`
+for the CLI `peerwork` binary. These are development artifacts, not release
+packages or declared minimum-platform binaries.
+
+With fresh synthetic state and the tracked actual Peerwork kernel bridge,
+the installed Python binding rejected a mismatched configured authority
+before preparing a row, saved a valid command as `PENDING`, then observed a
+POST that the server committed before its reply was dropped. It retained
+`PENDING` and an exact saved retry produced a verified `ACCEPTED` result.
+The installed Node binding reopened the same identity and journal, read that
+accepted result and retried it without another POST, then prepared and
+submitted a second valid command. CLI reopened the same journal and read
+`ACCEPTED`; service counts were exactly two commands and two workspaces.
+Observed monotonic stages from installed Python import were: discovery pin
+393 ms, first saved command 501 ms, post-commit lost reply 741 ms, first
+verified result 888 ms, Node cross-language result 1406 ms, and CLI status
+1475 ms. These are one run's observations, not performance commitments.
+This script demonstrates business-path behavior; it is not an Agent usability
+run, so Agent workflow compliance remains unverified.
+
+The first public facade checkpoint did not pass catalog chunk bytes through
+the Python, Node or CLI wrappers, although the core/runtime could validate
+them. The follow-up binding change adds Python `bytes`, Node `Buffer` or
+`Uint8Array`, and CLI `--chunk-file`/`--chunk-stdin` for `prepare`. The shared
+core retains the 1–65,536-byte bound and signed chunk digest check. Node
+command objects also undergo strict JSON-data inspection before stringify;
+this closes `NaN`→`null` and omitted `undefined` member coercions. These
+follow-up paths require an affected installed-interface regression before
+claiming end-to-end catalog upload support.

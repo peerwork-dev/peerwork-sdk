@@ -53,22 +53,25 @@ class KernelClient:
         self.authority = authority
 
     def _call(self, operation: str, *, command: dict | None = None,
-              command_id: str | None = None) -> dict | list:
+              command_id: str | None = None,
+              upload_chunk: bytes | None = None) -> dict | list:
         command_json = None if command is None else json.dumps(
             command, ensure_ascii=True, allow_nan=False, separators=(",", ":")
         )
         return json.loads(kernel_json(
             operation, self.origin, self.journal_path, self.identity_path,
             list(self.required_features), self.allow_loopback_http,
-            self.authority, command_json, command_id,
+            self.authority, command_json, command_id, upload_chunk,
         ))
 
     def open(self) -> dict:
         return self._call("open")
 
-    def prepare(self, command: dict) -> dict:
+    def prepare(self, command: dict, *, upload_chunk: bytes | None = None) -> dict:
         """Sign and save a fully specified kernel command; perform no POST."""
-        return self._call("prepare", command=command)
+        if upload_chunk is not None and not isinstance(upload_chunk, bytes):
+            raise TypeError("upload_chunk must be bytes")
+        return self._call("prepare", command=command, upload_chunk=upload_chunk)
 
     def pending(self) -> list[dict]:
         return self._call("pending")
@@ -83,8 +86,8 @@ class KernelClient:
     async def open_async(self) -> dict:
         return await asyncio.to_thread(self.open)
 
-    async def prepare_async(self, command: dict) -> dict:
-        return await asyncio.to_thread(self.prepare, command)
+    async def prepare_async(self, command: dict, *, upload_chunk: bytes | None = None) -> dict:
+        return await asyncio.to_thread(self.prepare, command, upload_chunk=upload_chunk)
 
     async def pending_async(self) -> list[dict]:
         return await asyncio.to_thread(self.pending)

@@ -10,6 +10,8 @@ the native core validates and signs it, and signed packets remain private.
 The command actor and audience must match the local key and pinned discovery;
 authority must match the client's configured digest. By default that digest is
 SHA-256 of the local actor ID, matching the TypeScript client's default.
+Catalog chunk commands use `prepare(command, upload_chunk=bytes)`; the shared
+core checks its byte length and signed digest before saving exact bytes.
 Verified secure-agent reads and actions remain incomplete.
 Cancelling an async wrapper stops waiting for its worker thread; a local
 identity creation already in progress can still finish. Reopen the requested

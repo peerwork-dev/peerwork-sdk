@@ -1,4 +1,7 @@
-use napi::{bindgen_prelude::AsyncTask, Env, Result, Task};
+use napi::{
+    bindgen_prelude::{AsyncTask, Buffer},
+    Env, Result, Task,
+};
 use napi_derive::napi;
 use peerwork_runtime::kernel_access::KernelAccess;
 use peerwork_runtime::kernel_client::{KernelAcceptedResult, KernelOperationStatus};
@@ -79,6 +82,7 @@ pub struct KernelTask {
     authority: Option<String>,
     command_json: Option<String>,
     command_id: Option<String>,
+    upload_chunk: Option<Vec<u8>>,
 }
 
 impl Task for KernelTask {
@@ -101,7 +105,7 @@ impl Task for KernelTask {
             }
             "prepare" => {
                 let command = self.command_json.as_deref().ok_or_else(|| napi::Error::from_reason("command is required"))?;
-                let pending = access.prepare(command.as_bytes(), None).map_err(|error| napi::Error::from_reason(error.to_string()))?;
+                let pending = access.prepare(command.as_bytes(), self.upload_chunk.as_deref()).map_err(|error| napi::Error::from_reason(error.to_string()))?;
                 serde_json::json!({"command_id": pending.command_id, "intent_digest": pending.intent_digest, "created_at_ms": pending.created_at_ms})
             }
             "pending" => serde_json::json!(access.pending().map_err(|error| napi::Error::from_reason(error.to_string()))?.into_iter().map(|row| {
@@ -141,6 +145,7 @@ pub fn kernel_json(
     authority: Option<String>,
     command_json: Option<String>,
     command_id: Option<String>,
+    upload_chunk: Option<Buffer>,
 ) -> AsyncTask<KernelTask> {
     AsyncTask::new(KernelTask {
         operation,
@@ -152,5 +157,6 @@ pub fn kernel_json(
         authority,
         command_json,
         command_id,
+        upload_chunk: upload_chunk.map(|chunk| chunk.to_vec()),
     })
 }

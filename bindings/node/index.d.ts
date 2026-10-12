@@ -29,7 +29,7 @@ export interface AcceptedResult {
 export interface KernelSession extends IdentityInfo {
   origin: string;
   /** Saves an exact signed request but performs no POST. */
-  prepare(command: Record<string, unknown>): Promise<PendingIntent>;
+  prepare(command: Record<string, unknown>, options?: {uploadChunk?: Buffer | Uint8Array}): Promise<PendingIntent>;
   pending(): Promise<PendingIntent[]>;
   status(commandId: string): Promise<{state: 'NOT_FOUND' | 'PENDING'} | {state: 'ACCEPTED'; result: AcceptedResult}>;
   submitSaved(commandId: string): Promise<AcceptedResult>;

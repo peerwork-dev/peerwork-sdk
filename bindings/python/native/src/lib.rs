@@ -50,7 +50,7 @@ fn accepted_json(result: KernelAcceptedResult) -> serde_json::Value {
 }
 
 #[pyfunction]
-#[pyo3(signature = (operation, origin, journal_path, identity_path, required_features, allow_loopback_http, authority=None, command_json=None, command_id=None))]
+#[pyo3(signature = (operation, origin, journal_path, identity_path, required_features, allow_loopback_http, authority=None, command_json=None, command_id=None, upload_chunk=None))]
 fn kernel_json(
     py: Python<'_>,
     operation: &str,
@@ -62,6 +62,7 @@ fn kernel_json(
     authority: Option<String>,
     command_json: Option<&str>,
     command_id: Option<&str>,
+    upload_chunk: Option<Vec<u8>>,
 ) -> PyResult<String> {
     let access = KernelAccess::new(
         origin,
@@ -83,7 +84,7 @@ fn kernel_json(
             }
             "prepare" => {
                 let command = command_json.as_deref().ok_or_else(|| "command is required".to_owned())?;
-                let pending = access.prepare(command.as_bytes(), None).map_err(|error| error.to_string())?;
+                let pending = access.prepare(command.as_bytes(), upload_chunk.as_deref()).map_err(|error| error.to_string())?;
                 serde_json::json!({"command_id": pending.command_id, "intent_digest": pending.intent_digest, "created_at_ms": pending.created_at_ms})
             }
             "pending" => serde_json::json!(access.pending().map_err(|error| error.to_string())?.into_iter().map(|row| {

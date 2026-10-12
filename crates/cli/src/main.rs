@@ -2,6 +2,7 @@ use peerwork_runtime::kernel_access::KernelAccess;
 use peerwork_runtime::kernel_client::{KernelAcceptedResult, KernelOperationStatus};
 use peerwork_runtime::kernel_identity::KernelIdentity;
 use std::fs;
+use std::io::Read;
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -65,7 +66,7 @@ fn main() -> ExitCode {
             }
         },
         _ => {
-            eprintln!("{{\"code\":\"USAGE\",\"message\":\"peerwork version|capabilities|identity create PATH|identity info PATH|kernel open|prepare|pending|status|submit ORIGIN JOURNAL IDENTITY [COMMAND_FILE|COMMAND_ID] [--allow-loopback-http]\"}}");
+            eprintln!("{{\"code\":\"USAGE\",\"message\":\"peerwork version|capabilities|identity create PATH|identity info PATH|kernel open|prepare|pending|status|submit ORIGIN JOURNAL IDENTITY [COMMAND_FILE|COMMAND_ID] [--allow-loopback-http] [--authority=HEX] [--chunk-file=PATH|--chunk-stdin for prepare]\"}}");
             ExitCode::FAILURE
         }
     }
@@ -87,6 +88,8 @@ fn kernel_command(verb: &str, args: &[String]) -> Result<serde_json::Value, Stri
     let mut args = args.to_vec();
     let mut allow_loopback = false;
     let mut authority = None;
+    let mut chunk_file = None;
+    let mut chunk_stdin = false;
     args.retain(|argument| {
         if argument == "--allow-loopback-http" {
             allow_loopback = true;
@@ -94,12 +97,24 @@ fn kernel_command(verb: &str, args: &[String]) -> Result<serde_json::Value, Stri
         } else if let Some(value) = argument.strip_prefix("--authority=") {
             authority = Some(value.to_owned());
             false
+        } else if let Some(value) = argument.strip_prefix("--chunk-file=") {
+            chunk_file = Some(value.to_owned());
+            false
+        } else if argument == "--chunk-stdin" {
+            chunk_stdin = true;
+            false
         } else {
             true
         }
     });
     if args.len() != 3 + usize::from(matches!(verb, "prepare" | "status" | "submit")) {
         return Err("kernel command requires ORIGIN JOURNAL IDENTITY and optional target".into());
+    }
+    if chunk_file.is_some() && chunk_stdin {
+        return Err("choose one upload chunk source".into());
+    }
+    if verb != "prepare" && (chunk_file.is_some() || chunk_stdin) {
+        return Err("upload chunk is only accepted by kernel prepare".into());
     }
     let access = KernelAccess::new(&args[0], &args[1], &args[2], &[], allow_loopback)
         .with_authority(authority);
@@ -116,8 +131,27 @@ fn kernel_command(verb: &str, args: &[String]) -> Result<serde_json::Value, Stri
                 return Err("command file exceeds limit".into());
             }
             let command = fs::read(&args[3]).map_err(|_| "command file cannot be read")?;
+            let chunk = if let Some(path) = chunk_file {
+                let metadata = fs::metadata(&path).map_err(|_| "chunk file cannot be read")?;
+                if metadata.len() > 65_536 {
+                    return Err("upload chunk exceeds limit".into());
+                }
+                Some(fs::read(path).map_err(|_| "chunk file cannot be read")?)
+            } else if chunk_stdin {
+                let mut bytes = Vec::new();
+                std::io::stdin()
+                    .take(65_537)
+                    .read_to_end(&mut bytes)
+                    .map_err(|_| "upload chunk cannot be read")?;
+                Some(bytes)
+            } else {
+                None
+            };
+            if chunk.as_ref().is_some_and(|bytes| bytes.len() > 65_536) {
+                return Err("upload chunk exceeds limit".into());
+            }
             let pending = access
-                .prepare(&command, None)
+                .prepare(&command, chunk.as_deref())
                 .map_err(|error| error.to_string())?;
             Ok(
                 serde_json::json!({"command_id":pending.command_id,"intent_digest":pending.intent_digest,"created_at_ms":pending.created_at_ms}),

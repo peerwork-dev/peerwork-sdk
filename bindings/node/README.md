@@ -9,6 +9,11 @@ packets remain private. Verified secure-agent reads and actions remain
 incomplete; this is not a production Agent SDK.
 The command actor/audience must match the key/discovery, and authority must
 match the configured digest (default SHA-256 of the local actor ID).
+For a catalog chunk command, pass `{uploadChunk: Buffer | Uint8Array}` to
+`prepare`; the shared core checks byte length and digest. The facade rejects
+non-finite numbers, undefined members, sparse arrays, accessors and non-plain
+objects before JSON serialization so JavaScript coercion cannot silently
+change the command that is signed.
 These identity worker tasks have no AbortSignal interface. An abandoned Promise
 does not undo a local create; call `openIdentity(path)` to inspect the state.
 Kernel worker Promises likewise have no AbortSignal interface yet. An abandoned
