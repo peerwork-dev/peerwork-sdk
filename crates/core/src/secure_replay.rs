@@ -352,6 +352,295 @@ fn signed_checkpoint_at(
     ]))
 }
 
+fn normalized_structure_field(
+    rule: &WireValue,
+    value: &WireValue,
+) -> Result<WireValue, ReplayError> {
+    validate_readable_field(rule, value).map_err(|_| ReplayError::Invalid)?;
+    let kind = string(rule, "type")?;
+    if matches!(
+        kind.as_str(),
+        "reference" | "workspace_reference" | "optional_reference" | "optional_workspace_reference"
+    ) {
+        if matches!(value, WireValue::Null) {
+            return Ok(WireValue::Null);
+        }
+        return normalized_structure_reference(value);
+    }
+    if kind == "references" {
+        let WireValue::Array(values) = value else {
+            return Err(ReplayError::Invalid);
+        };
+        return Ok(WireValue::Array(
+            values
+                .iter()
+                .map(normalized_structure_reference)
+                .collect::<Result<Vec<_>, _>>()?,
+        ));
+    }
+    Ok(value.clone())
+}
+
+fn normalized_structure_reference(value: &WireValue) -> Result<WireValue, ReplayError> {
+    let id = value
+        .get("recordId")
+        .or_else(|| value.get("record_id"))
+        .ok_or(ReplayError::Invalid)?;
+    Ok(fields_object(vec![
+        ("record_id", id.clone()),
+        (
+            "revision",
+            value.get("revision").ok_or(ReplayError::Invalid)?.clone(),
+        ),
+    ]))
+}
+
+fn project_structure_data(
+    objects: &[WireValue],
+    contract: &WireValue,
+) -> Result<(Vec<WireValue>, Vec<WireValue>), ReplayError> {
+    let WireValue::Array(protocols) = contract.get("protocols").ok_or(ReplayError::Invalid)? else {
+        return Err(ReplayError::Invalid);
+    };
+    let mut records = Vec::new();
+    let mut heads = HashMap::<Vec<u16>, (u64, WireValue)>::new();
+    for object in objects {
+        let kind = string(object, "kind")?;
+        if kind == "records" {
+            let value = object.get("value").ok_or(ReplayError::Invalid)?;
+            let protocol_digest = string(value, "protocol_digest")?;
+            let schema_name = string(value, "schema_ref")?;
+            let protocol = protocols
+                .iter()
+                .find(|p| {
+                    p.get("protocol_digest")
+                        .and_then(WireValue::as_string)
+                        .as_deref()
+                        == Some(&protocol_digest)
+                })
+                .ok_or(ReplayError::Invalid)?;
+            let schema = protocol
+                .get("schemas")
+                .and_then(|schemas| schemas.get(&schema_name))
+                .ok_or(ReplayError::Invalid)?;
+            let definitions = schema.get("fields").ok_or(ReplayError::Invalid)?;
+            let payload = decoded_value(value.get("payload").ok_or(ReplayError::Invalid)?)
+                .map_err(|_| ReplayError::Invalid)?;
+            let WireValue::Object(payload_fields) = &payload else {
+                return Err(ReplayError::Invalid);
+            };
+            let WireValue::Array(required) = schema.get("required").ok_or(ReplayError::Invalid)?
+            else {
+                return Err(ReplayError::Invalid);
+            };
+            if required.iter().any(|name| {
+                name.as_string()
+                    .is_none_or(|name| payload.get(&name).is_none())
+            }) {
+                return Err(ReplayError::Invalid);
+            }
+            let mut readable = Vec::new();
+            for (name, item) in payload_fields {
+                let key = String::from_utf16(name).map_err(|_| ReplayError::Invalid)?;
+                let rule = definitions.get(&key).ok_or(ReplayError::Invalid)?;
+                if string(rule, "protection")? == "server_readable" {
+                    readable.push((name.clone(), normalized_structure_field(rule, item)?));
+                }
+            }
+            records.push(fields_object(vec![
+                (
+                    "record_id",
+                    value.get("id").ok_or(ReplayError::Invalid)?.clone(),
+                ),
+                (
+                    "entity_id",
+                    value.get("entity_id").ok_or(ReplayError::Invalid)?.clone(),
+                ),
+                (
+                    "revision",
+                    value.get("revision").ok_or(ReplayError::Invalid)?.clone(),
+                ),
+                (
+                    "instance_id",
+                    value
+                        .get("instance_id")
+                        .ok_or(ReplayError::Invalid)?
+                        .clone(),
+                ),
+                (
+                    "protocol_digest",
+                    value
+                        .get("protocol_digest")
+                        .ok_or(ReplayError::Invalid)?
+                        .clone(),
+                ),
+                (
+                    "schema_ref",
+                    value.get("schema_ref").ok_or(ReplayError::Invalid)?.clone(),
+                ),
+                (
+                    "actor_id",
+                    value.get("actor_id").ok_or(ReplayError::Invalid)?.clone(),
+                ),
+                (
+                    "created",
+                    value.get("created").ok_or(ReplayError::Invalid)?.clone(),
+                ),
+                ("fields", WireValue::Object(readable)),
+            ]));
+        } else if kind == "entity_heads" {
+            let value = object.get("value").ok_or(ReplayError::Invalid)?;
+            let id = utf16(object, "id")?.to_vec();
+            let revision = integer(object, "revision")?;
+            let projected = fields_object(vec![
+                (
+                    "entity_id",
+                    value.get("entity_id").ok_or(ReplayError::Invalid)?.clone(),
+                ),
+                (
+                    "record_id",
+                    value.get("record_id").ok_or(ReplayError::Invalid)?.clone(),
+                ),
+                (
+                    "revision",
+                    value.get("revision").ok_or(ReplayError::Invalid)?.clone(),
+                ),
+                (
+                    "instance_id",
+                    value
+                        .get("instance_id")
+                        .ok_or(ReplayError::Invalid)?
+                        .clone(),
+                ),
+            ]);
+            if heads.get(&id).is_none_or(|(prior, _)| revision > *prior) {
+                heads.insert(id, (revision, projected));
+            }
+        }
+    }
+    records.sort_by(|left, right| {
+        left.get("record_id")
+            .and_then(WireValue::as_utf16)
+            .cmp(&right.get("record_id").and_then(WireValue::as_utf16))
+    });
+    let mut heads = heads
+        .into_values()
+        .map(|(_, head)| head)
+        .collect::<Vec<_>>();
+    heads.sort_by(|left, right| {
+        left.get("entity_id")
+            .and_then(WireValue::as_utf16)
+            .cmp(&right.get("entity_id").and_then(WireValue::as_utf16))
+    });
+    Ok((records, heads))
+}
+
+fn validate_signed_structure_slice(
+    operation: &WireValue,
+    context: &WireValue,
+    policy: &WireValue,
+    prior_objects: &[WireValue],
+    chain: &HeaderChainFacts,
+    commit_wires: &[&[u8]],
+) -> Result<(), ReplayError> {
+    let p = policy.get("payload").ok_or(ReplayError::Invalid)?;
+    let structured = integer(p, "v")? == 2
+        || integer(p, "v")? == 3 && string(p, "structure_mode")? == "STRUCTURED";
+    if !structured {
+        return if context.get("structure").is_none() {
+            Ok(())
+        } else {
+            Err(ReplayError::Invalid)
+        };
+    }
+    let contract = p.get("structure").ok_or(ReplayError::Invalid)?;
+    let envelope = context.get("structure").ok_or(ReplayError::Invalid)?;
+    let mode = string(envelope, "mode")?;
+    let WireValue::Array(records) = envelope.get("records").ok_or(ReplayError::Invalid)? else {
+        return Err(ReplayError::Invalid);
+    };
+    let WireValue::Array(heads) = envelope.get("heads").ok_or(ReplayError::Invalid)? else {
+        return Err(ReplayError::Invalid);
+    };
+    if integer(envelope, "v")? != 1 || records.len() > 128 || heads.len() > 128 {
+        return Err(ReplayError::Invalid);
+    }
+    if mode == "DELTA" {
+        if !exact_fields(envelope, &["v", "mode", "records", "heads"]) {
+            return Err(ReplayError::Invalid);
+        }
+        let WireValue::Array(objects) = operation.get("objects").ok_or(ReplayError::Invalid)?
+        else {
+            return Err(ReplayError::Invalid);
+        };
+        let (expected_records, expected_heads) = project_structure_data(objects, contract)?;
+        return if same_wire(
+            &WireValue::Array(records.clone()),
+            &WireValue::Array(expected_records),
+        )? && same_wire(
+            &WireValue::Array(heads.clone()),
+            &WireValue::Array(expected_heads),
+        )? {
+            Ok(())
+        } else {
+            Err(ReplayError::Invalid)
+        };
+    }
+    if mode != "SNAPSHOT_BEGIN"
+        || !exact_fields(envelope, &["v", "mode", "records", "heads", "snapshot"])
+        || !records.is_empty()
+        || !heads.is_empty()
+    {
+        return Err(ReplayError::Invalid);
+    }
+    let snapshot = envelope.get("snapshot").ok_or(ReplayError::Invalid)?;
+    let prior_sequence = integer(context, "sequence")?
+        .checked_sub(1)
+        .ok_or(ReplayError::Invalid)?;
+    let prior_checkpoint = if prior_sequence == 0 {
+        fields_object(vec![
+            ("v", WireValue::Number(1.0)),
+            ("workspace_id", string_value(&chain.workspace_id)),
+            ("owner_id", string_value(&chain.owner_id)),
+            ("owner_key", string_value(&chain.owner_key)),
+            ("sequence", WireValue::Number(0.0)),
+            ("head", WireValue::Null),
+            (
+                "policy_hash",
+                string_value(&string(context, "policy_hash")?),
+            ),
+        ])
+    } else {
+        signed_checkpoint_at(prior_sequence, chain, commit_wires)?
+    };
+    if !exact_fields(snapshot, &["source", "root", "records", "heads", "offset"])
+        || integer(snapshot, "offset")? != 0
+        || !same_wire(
+            snapshot.get("source").ok_or(ReplayError::Invalid)?,
+            &prior_checkpoint,
+        )?
+    {
+        return Err(ReplayError::Invalid);
+    }
+    let (expected_records, expected_heads) = project_structure_data(prior_objects, contract)?;
+    let projected = fields_object(vec![
+        ("records", WireValue::Array(expected_records.clone())),
+        ("heads", WireValue::Array(expected_heads.clone())),
+    ]);
+    let root = sha256_hex(
+        canonical_wire_value(&projected, Path::SecureArtifact)
+            .map_err(|_| ReplayError::Invalid)?
+            .as_bytes(),
+    );
+    if integer(snapshot, "records")? != expected_records.len() as u64
+        || integer(snapshot, "heads")? != expected_heads.len() as u64
+        || string(snapshot, "root")? != root
+    {
+        return Err(ReplayError::Invalid);
+    }
+    Ok(())
+}
+
 fn validate_signed_package_stage(
     operation: &WireValue,
     context: &WireValue,
@@ -785,6 +1074,18 @@ pub(crate) fn replay_basic_content(
             payload,
             &prior_objects,
             &operations,
+            &chain,
+            commit_wires,
+        )?;
+        let policy_hash = string(payload, "policy_hash")?;
+        let policy = policies
+            .get(policy_hash.as_str())
+            .ok_or(ReplayError::Invalid)?;
+        validate_signed_structure_slice(
+            &operation,
+            payload,
+            policy,
+            &prior_objects,
             &chain,
             commit_wires,
         )?;
@@ -3171,8 +3472,13 @@ mod tests {
         let install_operation = json!({"v":1,"kind":"ADMIN","input":{"install":{
             "instance_id":instance_id,"protocol_digest":digest,"entrypoint":"proposal"}},
             "objects":[protocol,instance]});
+        let empty_structure_root = sha256_hex(
+            canonical(&json!({"records":[],"heads":[]}), Path::SecureArtifact)
+                .unwrap()
+                .as_bytes(),
+        );
         let snapshot = json!({"v":1,"mode":"SNAPSHOT_BEGIN","records":[],"heads":[],
-            "snapshot":{"source":stage_checkpoint,"root":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "snapshot":{"source":stage_checkpoint,"root":empty_structure_root,
                 "records":0,"heads":0,"offset":0}});
         let install = make_commit(
             3,
@@ -3246,6 +3552,16 @@ mod tests {
             )
         };
         assert_eq!(check(&bootstrap, &stage, &install).unwrap().object_count, 3);
+        let mut wrong_snapshot = snapshot.clone();
+        wrong_snapshot["snapshot"]["root"] = json!("a".repeat(64));
+        let wrong_install = make_commit(
+            3,
+            Some(&hash(&stage)),
+            "secure.structure.begin",
+            wrong_snapshot,
+            install_operation.clone(),
+        );
+        assert!(check(&bootstrap, &stage, &wrong_install).is_err());
         // In v3 the complete logical protocol value can be staged after the
         // package and the install commit signs only its source reference.
         let mut policy3_payload: Value =
@@ -3375,7 +3691,7 @@ mod tests {
             "objects":[reference,instance3]});
         let snapshot3 = json!({"v":1,"mode":"SNAPSHOT_BEGIN","records":[],"heads":[],
             "snapshot":{"source":object_checkpoint,
-                "root":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "root":empty_structure_root,
                 "records":0,"heads":0,"offset":0}});
         let install3 = make_v3(
             4,
