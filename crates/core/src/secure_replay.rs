@@ -17,6 +17,7 @@ use thiserror::Error;
 
 const MAX_CONTENT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_OBJECT_BYTES: usize = 98_304;
+type RoleHistory = HashMap<(Vec<u16>, Vec<u16>, Vec<u16>), HashSet<Vec<u16>>>;
 
 #[derive(Debug, Error)]
 pub(crate) enum ReplayError {
@@ -60,6 +61,7 @@ pub(crate) fn replay_basic_content(
     let mut seen_objects = HashSet::new();
     let mut latest_revisions: HashMap<String, u64> = HashMap::new();
     let mut prior_objects = Vec::new();
+    let mut role_history = RoleHistory::new();
     let mut operations = Vec::with_capacity(commit_wires.len());
     let mut legacy = false;
     for wire in commit_wires {
@@ -138,6 +140,49 @@ pub(crate) fn replay_basic_content(
             let context = commit_context(payload)?;
             validate_action_state_slice(&operation, &context, policy, &prior_objects)
                 .map_err(|_| ReplayError::Invalid)?;
+        } else if kind == "BOOTSTRAP" {
+            if integer(payload, "sequence")? != 1 || !prior_objects.is_empty() {
+                return Err(ReplayError::Invalid);
+            }
+            validate_admin_preflight(&operation, payload, &latest_revisions)
+                .map_err(|_| ReplayError::Invalid)?;
+        } else if kind == "MIGRATE" {
+            let source_items = payload
+                .get("migration")
+                .and_then(|migration| migration.get("source_items"))
+                .ok_or(ReplayError::Invalid)?;
+            let WireValue::Array(items) = source_items else {
+                return Err(ReplayError::Invalid);
+            };
+            let WireValue::Array(objects) = operation.get("objects").ok_or(ReplayError::Invalid)?
+            else {
+                return Err(ReplayError::Invalid);
+            };
+            let descriptors = WireValue::Array(
+                objects
+                    .iter()
+                    .map(|object| {
+                        fields_object(vec![
+                            (
+                                "kind",
+                                object.get("kind").cloned().unwrap_or(WireValue::Null),
+                            ),
+                            ("id", object.get("id").cloned().unwrap_or(WireValue::Null)),
+                            (
+                                "revision",
+                                object.get("revision").cloned().unwrap_or(WireValue::Null),
+                            ),
+                        ])
+                    })
+                    .collect(),
+            );
+            if canonical_wire_value(&descriptors, Path::SecureArtifact)
+                .map_err(|_| ReplayError::Invalid)?
+                != canonical_wire_value(&WireValue::Array(items.clone()), Path::SecureArtifact)
+                    .map_err(|_| ReplayError::Invalid)?
+            {
+                return Err(ReplayError::Invalid);
+            }
         }
         let mut batch = HashSet::new();
         for object in objects {
@@ -195,6 +240,21 @@ pub(crate) fn replay_basic_content(
                 .or_insert(revision);
         }
         prior_objects.extend(objects.iter().cloned());
+        let hash = string(payload, "policy_hash")?;
+        let policy = policies.get(hash.as_str()).ok_or(ReplayError::Invalid)?;
+        let instance = if kind == "ACTION" {
+            payload.get("instance_id").and_then(WireValue::as_utf16)
+        } else {
+            None
+        };
+        validate_role_policies_with_history(
+            policy.get("payload").ok_or(ReplayError::Invalid)?,
+            &prior_objects,
+            integer(payload, "issued_at")?,
+            instance,
+            &mut role_history,
+        )
+        .map_err(|_| ReplayError::Invalid)?;
         operations.push(operation);
     }
     Ok(ReplayFacts {
@@ -281,6 +341,19 @@ fn validate_admin_preflight(
         .map_err(|_| AdminPreflightError::Value)?;
         if revision != prior.get(&pair).copied().unwrap_or(0) + 1 {
             return Err(AdminPreflightError::Revision);
+        }
+        if kind == "protocols" {
+            let raw = value
+                .get("resolved_manifest")
+                .or_else(|| value.get("manifest"))
+                .ok_or(AdminPreflightError::Value)?;
+            let manifest = decoded_value(raw).map_err(|_| AdminPreflightError::Value)?;
+            let actions = manifest.get("actions").ok_or(AdminPreflightError::Value)?;
+            crate::interpreter::validate_manifest(&fields_object(vec![(
+                "actions",
+                actions.clone(),
+            )]))
+            .map_err(|_| AdminPreflightError::Value)?;
         }
     }
     Ok(())
@@ -1589,6 +1662,17 @@ fn validate_role_policies(
     at: u64,
     validate_instance: &[u16],
 ) -> Result<(), &'static str> {
+    let mut history = RoleHistory::new();
+    validate_role_policies_with_history(policy, prior, at, Some(validate_instance), &mut history)
+}
+
+fn validate_role_policies_with_history(
+    policy: &WireValue,
+    prior: &[WireValue],
+    at: u64,
+    validate_instance: Option<&[u16]>,
+    history: &mut RoleHistory,
+) -> Result<(), &'static str> {
     let mut latest = Vec::new();
     let mut positions = HashMap::new();
     for object in prior {
@@ -1657,7 +1741,12 @@ fn validate_role_policies(
             let Some(actor) = member.get("actor_id").and_then(WireValue::as_utf16) else {
                 continue;
             };
-            let mut past = HashSet::<Vec<u16>>::new();
+            let key = (
+                instance_id.to_vec(),
+                protocol_digest.to_vec(),
+                actor.to_vec(),
+            );
+            let mut past = history.get(&key).cloned().unwrap_or_default();
             for grant in latest.iter().filter(|grant| {
                 grant.get("kind").and_then(WireValue::as_string).as_deref() == Some("grants")
             }) {
@@ -1702,7 +1791,7 @@ fn validate_role_policies(
                 }
             }
             past.extend(roles.iter().cloned());
-            if instance_id == validate_instance {
+            if validate_instance == Some(instance_id) {
                 for pair in active {
                     if conflict_pair(pair, &roles) {
                         return Err("ACTIVE_ROLE_CONFLICT");
@@ -1714,6 +1803,7 @@ fn validate_role_policies(
                     }
                 }
             }
+            history.insert(key, past);
         }
     }
     Ok(())
@@ -2229,10 +2319,11 @@ mod tests {
         let run = |label: &str,
                    prior: Value,
                    action: Value,
-                   allowed: bool|
+                   allowed: bool,
+                   role_change: bool|
          -> Result<ReplayFacts, ReplayError> {
             let scopes = if allowed {
-                json!([{"instance_id":null,"actions":["test.set"],"protocol_roles":[],"capabilities":[]}])
+                json!([{"instance_id":null,"actions":["test.set"],"protocol_roles":if role_change {vec!["reviewer"]} else {vec![]},"capabilities":[]}])
             } else {
                 json!([{"instance_id":null,"actions":["other.action"],"protocol_roles":[],"capabilities":[]}])
             };
@@ -2241,6 +2332,15 @@ mod tests {
                 "peerwork.secure.policy.v1",
                 &owner_keypair,
             );
+            let rotated = role_change.then(|| signed(
+                json!({"v":1,"workspace_id":workspace,"owner_id":owner,"signing_key":owner_key,"version":2,"previous_policy":hash(&policy),"effective_sequence":2,"visibility":"PRIVATE","epoch":1,"members":[{"actor_id":owner,"certificate":certificate,"role":"OWNER","scopes":[{"instance_id":null,"actions":["test.set"],"protocol_roles":["approver"],"capabilities":[]}]}],"issued_at":2}),
+                "peerwork.secure.policy.v1", &owner_keypair,
+            ));
+            let action_policy = rotated.as_ref().unwrap_or(&policy);
+            let mut policy_wires: Vec<&[u8]> = vec![&policy];
+            if let Some(rotated) = &rotated {
+                policy_wires.push(rotated);
+            }
             let context1 = json!({"v":1,"workspace_id":workspace,"sequence":1,"previous":null,"policy_hash":hash(&policy),"epoch":1,"actor_id":owner,"signing_key":owner_key,"command_id":base64url(&[21;32]),"action_id":"test.admin","instance_id":null,"issued_at":1,"delegation":null});
             let admin = json!({"v":1,"kind":"ADMIN","input":{},"objects":prior});
             let plaintext1 = canonical(&admin, Path::SecureArtifact).unwrap();
@@ -2254,7 +2354,8 @@ mod tests {
             payload1["mode"] = json!("PRIVATE");
             payload1["body"] = serde_json::to_value(sealed1).unwrap();
             let commit1 = signed(payload1, "peerwork.secure.commit.v1", &owner_keypair);
-            let context2 = json!({"v":1,"workspace_id":workspace,"sequence":2,"previous":hash(&commit1),"policy_hash":hash(&policy),"epoch":1,"actor_id":owner,"signing_key":owner_key,"command_id":base64url(&[22;32]),"action_id":"test.set","instance_id":instance,"issued_at":2,"delegation":null});
+            let context2 = json!({"v":1,"workspace_id":workspace,"sequence":2,"previous":hash(&commit1),"policy_hash":hash(action_policy),"epoch":1,"actor_id":owner,"signing_key":owner_key,"command_id":base64url(&[22;32]),"action_id":"test.set","instance_id":instance,"issued_at":2,"delegation":null});
+            let action_context = context2.clone();
             let plaintext2 = canonical(&action, Path::SecureArtifact).unwrap();
             let sealed2 = seal_content_wire(
                 &epoch_key,
@@ -2266,9 +2367,9 @@ mod tests {
             payload2["mode"] = json!("PRIVATE");
             payload2["body"] = serde_json::to_value(sealed2).unwrap();
             let commit2 = signed(payload2, "peerwork.secure.commit.v1", &owner_keypair);
-            let checkpoint = serde_json::to_vec(&json!({"v":1,"workspace_id":workspace,"owner_id":owner,"owner_key":owner_key,"sequence":2,"head":hash(&commit2),"policy_hash":hash(&policy)})).unwrap();
+            let checkpoint = serde_json::to_vec(&json!({"v":1,"workspace_id":workspace,"owner_id":owner,"owner_key":owner_key,"sequence":2,"head":hash(&commit2),"policy_hash":hash(action_policy)})).unwrap();
             let headers = scan_signed_chain_headers(
-                &[&policy],
+                &policy_wires,
                 &[&commit1, &commit2],
                 &checkpoint,
                 &workspace,
@@ -2279,8 +2380,34 @@ mod tests {
                 None,
             );
             assert_eq!(headers.is_ok(), label != "policy", "{label} header result");
+            if role_change {
+                let op = parse_wire_json_js_bounded(plaintext2.as_bytes(), 64, MAX_CONTENT_BYTES)
+                    .unwrap();
+                let context = parse_wire_json_js_bounded(
+                    &serde_json::to_vec(&action_context).unwrap(),
+                    64,
+                    196_608,
+                )
+                .unwrap();
+                let policy =
+                    parse_wire_json_js_bounded(action_policy, 64, 32 * 1024 * 1024).unwrap();
+                let prior = parse_wire_json_js_bounded(
+                    &serde_json::to_vec(&admin["objects"]).unwrap(),
+                    64,
+                    MAX_CONTENT_BYTES,
+                )
+                .unwrap();
+                let WireValue::Array(prior) = prior else {
+                    panic!("prior objects")
+                };
+                assert_eq!(
+                    validate_action_state_slice(&op, &context, &policy, &prior),
+                    Ok(()),
+                    "current policy alone must not explain the historical conflict"
+                );
+            }
             replay_basic_content(
-                &[&policy],
+                &policy_wires,
                 &[&commit1, &commit2],
                 &checkpoint,
                 &workspace,
@@ -2293,19 +2420,46 @@ mod tests {
             )
         };
         assert_eq!(
-            run("valid", base_prior.clone(), base_action.clone(), true)
-                .unwrap()
-                .operations
-                .len(),
+            run(
+                "valid",
+                base_prior.clone(),
+                base_action.clone(),
+                true,
+                false
+            )
+            .unwrap()
+            .operations
+            .len(),
             2
         );
         let mut tampered = base_action.clone();
         tampered["objects"][0]["value"]["state"]["count"] = json!(99);
-        assert!(run("output", base_prior.clone(), tampered, true).is_err());
-        assert!(run("policy", base_prior.clone(), base_action.clone(), false).is_err());
-        let mut changed_source = base_prior;
+        assert!(run("output", base_prior.clone(), tampered, true, false).is_err());
+        assert!(run(
+            "policy",
+            base_prior.clone(),
+            base_action.clone(),
+            false,
+            false
+        )
+        .is_err());
+        let mut changed_source = base_prior.clone();
         changed_source[1]["value"]["state"]["count"] = json!(1);
-        assert!(run("source", changed_source, base_action, true).is_err());
+        assert!(run("source", changed_source, base_action.clone(), true, false).is_err());
+        let mut invalid_manifest = base_prior.clone();
+        invalid_manifest[0]["value"]["resolved_manifest"]["actions"][0]["id"] = json!("!");
+        assert!(run(
+            "manifest",
+            invalid_manifest,
+            base_action.clone(),
+            true,
+            false
+        )
+        .is_err());
+        let mut historical = base_prior;
+        historical[0]["value"]["resolved_manifest"]["historical_role_conflicts"] =
+            json!([["reviewer", "approver"]]);
+        assert!(run("history", historical, base_action, true, true).is_err());
     }
 
     #[test]
