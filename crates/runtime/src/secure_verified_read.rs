@@ -24,13 +24,13 @@ const MAX_POLICIES: usize = 1024;
 /// caller-selected value. This does not bound the decoded replay graph.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SecureJournalReadBudget {
-    pub max_total_wire_bytes: u64,
+    pub max_replay_artifact_bytes: u64,
 }
 
 impl SecureJournalReadBudget {
-    pub fn new(max_total_wire_bytes: u64) -> Option<Self> {
-        (max_total_wire_bytes > 0).then_some(Self {
-            max_total_wire_bytes,
+    pub fn new(max_replay_artifact_bytes: u64) -> Option<Self> {
+        (max_replay_artifact_bytes > 0).then_some(Self {
+            max_replay_artifact_bytes,
         })
     }
 }
@@ -38,7 +38,7 @@ impl SecureJournalReadBudget {
 impl Default for SecureJournalReadBudget {
     fn default() -> Self {
         Self {
-            max_total_wire_bytes: DEFAULT_REPLAY_ARTIFACT_BYTES,
+            max_replay_artifact_bytes: DEFAULT_REPLAY_ARTIFACT_BYTES,
         }
     }
 }
@@ -55,6 +55,8 @@ pub(crate) enum VerifiedReadError {
     Replay(#[from] JournalReplayError),
     #[error("secure journal exceeds the configured replay resource budget")]
     ResourceLimit,
+    #[error("secure journal is not active for verified reads")]
+    NotActive,
 }
 
 /// Private-constructor, origin-bound replay candidate. Supported signed
@@ -66,6 +68,48 @@ pub(crate) struct TransportReplayedJournal {
     source_key_id: String,
     keyring_state: Option<ReplayKeyringState>,
     replay: ReplayedSecureJournal,
+}
+
+/// Read-only view of an origin-bound, fully replayed active history. A
+/// PRIVATE history can reach this only with an active protected keyring; the
+/// core verifier requires epoch keys for every PRIVATE commit. PUBLIC history
+/// can be read without one. Pending and SEEDING histories cannot enter.
+pub(crate) struct VerifiedSecureRead<'a> {
+    source: &'a TransportReplayedJournal,
+}
+
+impl VerifiedSecureRead<'_> {
+    pub(crate) fn workspace_id(&self) -> &str {
+        self.source.replay.workspace_id()
+    }
+
+    pub(crate) fn sequence(&self) -> u64 {
+        self.source.replay.sequence()
+    }
+
+    pub(crate) fn head(&self) -> Option<&str> {
+        self.source.replay.head()
+    }
+
+    pub(crate) fn policy_hash(&self) -> &str {
+        self.source.replay.policy_hash()
+    }
+
+    pub(crate) fn structure_status(&self) -> StructureStatus {
+        self.source.replay.structure_status()
+    }
+
+    pub(crate) fn objects(&self) -> &[WireValue] {
+        self.source.replay.objects()
+    }
+
+    pub(crate) fn operations(&self) -> &[WireValue] {
+        self.source.replay.operations()
+    }
+
+    pub(crate) fn recoveries(&self) -> &[WireValue] {
+        self.source.replay.recoveries()
+    }
 }
 
 fn push_bounded(
@@ -88,6 +132,15 @@ fn push_bounded(
 }
 
 impl TransportReplayedJournal {
+    pub(crate) fn verified_read(&self) -> Result<VerifiedSecureRead<'_>, VerifiedReadError> {
+        if self.keyring_state == Some(ReplayKeyringState::Pending)
+            || self.replay.structure_status() == StructureStatus::Seeding
+        {
+            return Err(VerifiedReadError::NotActive);
+        }
+        Ok(VerifiedSecureRead { source: self })
+    }
+
     pub(crate) fn origin(&self) -> &str {
         &self.origin
     }
@@ -131,7 +184,7 @@ pub(crate) fn replay_authenticated_pages_with_budget(
     lifecycle: &SecureLifecycle,
     budget: SecureJournalReadBudget,
 ) -> Result<TransportReplayedJournal, VerifiedReadError> {
-    let max_artifact_bytes = usize::try_from(budget.max_total_wire_bytes)
+    let max_artifact_bytes = usize::try_from(budget.max_replay_artifact_bytes)
         .ok()
         .filter(|limit| *limit > 0)
         .ok_or(VerifiedReadError::ResourceLimit)?;
@@ -256,14 +309,14 @@ mod tests {
     #[test]
     fn replay_artifact_buffer_checks_total_bytes_and_count_before_insertion() {
         assert_eq!(
-            SecureJournalReadBudget::default().max_total_wire_bytes,
+            SecureJournalReadBudget::default().max_replay_artifact_bytes,
             64 * 1024 * 1024
         );
         assert!(SecureJournalReadBudget::new(0).is_none());
         assert_eq!(
             SecureJournalReadBudget::new(5)
                 .unwrap()
-                .max_total_wire_bytes,
+                .max_replay_artifact_bytes,
             5
         );
         let mut rows = Vec::new();

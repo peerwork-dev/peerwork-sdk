@@ -943,6 +943,61 @@ mod tests {
             .unwrap();
         assert_eq!(journal.pending()[0].observed_responses, 1);
         assert_eq!(counts().await, applied, "same-ID retry must not reapply");
+        if !structured && coordination.is_none() && !keep_encrypted {
+            let mut proof_config = TransportConfig::new(origin);
+            proof_config.allow_loopback_http = true;
+            let proof_client = crate::kernel_client::KernelClient::open(
+                proof_config,
+                &root.path().join("native-public-proof-discovery.sqlite"),
+                &[],
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+            let public_lifecycle = SecureLifecycle::open(
+                &root.path().join("native-public-proof-lifecycle.state"),
+                origin,
+                actor,
+                &workspace,
+                actor,
+                signer,
+            )
+            .unwrap();
+            let mut proof_reader = crate::secure_journal_read::SecureJournalRead::open(
+                &root.path().join("native-public-proof-journal.state"),
+                &proof_client,
+                &identity,
+                &workspace,
+                ready["bootstrap"]["authority"].as_str().unwrap(),
+            )
+            .unwrap();
+            assert!(
+                proof_reader
+                    .fetch_next(&proof_client, &identity, &CancellationToken::new())
+                    .await
+                    .unwrap()
+                    .complete_transport
+            );
+            let proof_pages = proof_reader
+                .authenticated_pages(&proof_client, &identity)
+                .unwrap();
+            let proof = crate::secure_verified_read::replay_authenticated_pages(
+                &proof_pages,
+                &public_lifecycle,
+            )
+            .unwrap();
+            let read = proof.verified_read().unwrap();
+            assert_eq!(read.workspace_id(), workspace);
+            assert_eq!(read.sequence(), 1);
+            assert_eq!(read.head(), Some(expected_head.as_str()));
+            assert_eq!(read.objects().len(), 13);
+            assert_eq!(read.operations().len(), 1);
+            assert!(read.recoveries().is_empty());
+            assert_eq!(
+                read.structure_status(),
+                peerwork_core::replayed_secure_journal::StructureStatus::Unstructured
+            );
+        }
         assert!(journal
             .verified_saved_bootstrap(
                 &command,
@@ -1226,6 +1281,10 @@ mod tests {
                 verified.keyring_state(),
                 Some(crate::secure_lifecycle::ReplayKeyringState::Pending)
             );
+            assert!(matches!(
+                verified.verified_read(),
+                Err(crate::secure_verified_read::VerifiedReadError::NotActive)
+            ));
             assert!(verified.action_receipt(&command).unwrap().is_none());
         }
     }
