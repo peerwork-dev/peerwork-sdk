@@ -1223,6 +1223,27 @@ mod tests {
                 exact_request: &request,
             })
             .unwrap();
+        // Independent protected copy of the same pre-submit row lets this
+        // test prove signed reconciliation before any retry/HTTP response,
+        // while the primary row still exercises the exact service retry.
+        let shadow_state = root.path().join("native-lost-reply-intent.state");
+        let mut shadow = SecureIntentJournal::open(
+            &shadow_state,
+            transport.trusted_origin(),
+            identity.actor_id(),
+        )
+        .unwrap();
+        shadow
+            .prepare(SecurePacketInput {
+                intent_id: &id,
+                path: &path,
+                action_id: &action,
+                workspace_id: Some(&workspace),
+                trusted_owner_key: Some(&owner),
+                intent_digest: &digest,
+                exact_request: &request,
+            })
+            .unwrap();
         let after_prepare: serde_json::Value = serde_json::from_str(
             &reqwest::get(&counts_url)
                 .await
@@ -1255,25 +1276,6 @@ mod tests {
         .unwrap();
         assert_eq!(first_counts["commits"].as_u64(), Some(2));
         assert_eq!(first_counts["head_sequence"].as_u64(), Some(2));
-        let mut reopened =
-            SecureIntentJournal::open(&state, transport.trusted_origin(), &actor).unwrap();
-        let status = reopened
-            .submit_saved_commit(&id, &identity, &transport, &owner, &pins, &cancel)
-            .await
-            .unwrap();
-        assert_eq!(status.intent_id, id);
-        assert_eq!(status.observed_responses, 1);
-        assert_eq!(reopened.pending().len(), 1);
-        let second_counts: serde_json::Value = serde_json::from_str(
-            &reqwest::get(&counts_url)
-                .await
-                .unwrap()
-                .text()
-                .await
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(second_counts, first_counts);
         // The fixture supplies a TS-created, signed and encrypted ACTION.
         // Importing its synthetic keyring is test-only setup; the acceptance
         // transition itself still requires real configured-origin page custody
@@ -1322,6 +1324,43 @@ mod tests {
             crate::secure_verified_read::replay_authenticated_pages(&pages, &lifecycle).unwrap();
         assert_eq!(replay.replay().sequence(), 2);
         assert!(replay.action_receipt(&id).unwrap().is_some());
+        assert!(shadow.exact_observations(&id).unwrap().is_empty());
+        let lost_reply_accepted = shadow
+            .accept_replayed_action(&id, &identity, &transport, &replay)
+            .unwrap();
+        assert_eq!(lost_reply_accepted.commit_hash, digest);
+        assert_eq!(shadow.pending().len(), 0);
+        drop(shadow);
+        let shadow = SecureIntentJournal::open(
+            &shadow_state,
+            transport.trusted_origin(),
+            identity.actor_id(),
+        )
+        .unwrap();
+        assert_eq!(shadow.pending().len(), 0);
+        assert_eq!(
+            shadow.accepted_receipt(&id).unwrap(),
+            Some(lost_reply_accepted.receipt_canonical_json.as_str())
+        );
+        let mut reopened =
+            SecureIntentJournal::open(&state, transport.trusted_origin(), &actor).unwrap();
+        let status = reopened
+            .submit_saved_commit(&id, &identity, &transport, &owner, &pins, &cancel)
+            .await
+            .unwrap();
+        assert_eq!(status.intent_id, id);
+        assert_eq!(status.observed_responses, 1);
+        assert_eq!(reopened.pending().len(), 1);
+        let second_counts: serde_json::Value = serde_json::from_str(
+            &reqwest::get(&counts_url)
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(second_counts, first_counts);
         let mut wrong = SecureIntentJournal::open(
             &root.path().join("wrong-action.state"),
             transport.trusted_origin(),
