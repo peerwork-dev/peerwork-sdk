@@ -1,6 +1,8 @@
+use peerwork_runtime::interrupts::InterruptMonitor;
 use peerwork_runtime::kernel_access::KernelAccess;
 use peerwork_runtime::kernel_client::{KernelAcceptedResult, KernelOperationStatus};
 use peerwork_runtime::kernel_identity::KernelIdentity;
+use peerwork_runtime::KernelCancellationToken;
 use std::fs;
 use std::io::Read;
 use std::path::Path;
@@ -60,9 +62,13 @@ fn main() -> ExitCode {
             Err(message) => {
                 eprintln!(
                     "{}",
-                    serde_json::json!({"code":"KERNEL_OPERATION", "message":message})
+                    serde_json::json!({"code": if InterruptMonitor::interrupted() {"INTERRUPTED"} else {"KERNEL_OPERATION"}, "message":message})
                 );
-                ExitCode::FAILURE
+                if InterruptMonitor::interrupted() {
+                    ExitCode::from(130)
+                } else {
+                    ExitCode::FAILURE
+                }
             }
         },
         _ => {
@@ -118,9 +124,14 @@ fn kernel_command(verb: &str, args: &[String]) -> Result<serde_json::Value, Stri
     }
     let access = KernelAccess::new(&args[0], &args[1], &args[2], &[], allow_loopback)
         .with_authority(authority);
+    let cancel = KernelCancellationToken::new();
+    let _interrupts = InterruptMonitor::start(cancel.clone())
+        .map_err(|_| "unable to install interrupt handler")?;
     match verb {
         "open" => {
-            let info = access.open().map_err(|error| error.to_string())?;
+            let info = access
+                .open_with_cancel(&cancel)
+                .map_err(|error| error.to_string())?;
             Ok(
                 serde_json::json!({"actor_id":info.actor_id,"key_id":info.key_id,"origin":info.origin}),
             )
@@ -151,19 +162,24 @@ fn kernel_command(verb: &str, args: &[String]) -> Result<serde_json::Value, Stri
                 return Err("upload chunk exceeds limit".into());
             }
             let pending = access
-                .prepare(&command, chunk.as_deref())
+                .prepare_with_cancel(&command, chunk.as_deref(), &cancel)
                 .map_err(|error| error.to_string())?;
             Ok(
                 serde_json::json!({"command_id":pending.command_id,"intent_digest":pending.intent_digest,"created_at_ms":pending.created_at_ms}),
             )
         }
         "pending" => {
-            let pending = access.pending().map_err(|error| error.to_string())?;
+            let pending = access
+                .pending_with_cancel(&cancel)
+                .map_err(|error| error.to_string())?;
             Ok(serde_json::json!(pending.into_iter().map(|row| serde_json::json!({
                 "command_id":row.command_id,"intent_digest":row.intent_digest,"created_at_ms":row.created_at_ms
             })).collect::<Vec<_>>()))
         }
-        "status" => match access.status(&args[3]).map_err(|error| error.to_string())? {
+        "status" => match access
+            .status_with_cancel(&args[3], &cancel)
+            .map_err(|error| error.to_string())?
+        {
             None => Ok(serde_json::json!({"state":"NOT_FOUND"})),
             Some(KernelOperationStatus::Pending) => Ok(serde_json::json!({"state":"PENDING"})),
             Some(KernelOperationStatus::Accepted(result)) => {
@@ -172,7 +188,7 @@ fn kernel_command(verb: &str, args: &[String]) -> Result<serde_json::Value, Stri
         },
         "submit" => Ok(accepted_json(
             access
-                .submit_saved(&args[3])
+                .submit_saved_with_cancel(&args[3], &cancel)
                 .map_err(|error| error.to_string())?,
         )),
         _ => Err("unsupported kernel operation".into()),

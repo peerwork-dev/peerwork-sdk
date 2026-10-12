@@ -68,6 +68,10 @@ const real = serve({fetch: createWorkspaceControlApp(kernel).fetch, hostname: '1
 await new Promise(resolve => real.once('listening', resolve));
 const realOrigin = `http://127.0.0.1:${real.address().port}`;
 let dropFirstPost = true;
+const firstPostMode = process.env.PEERWORK_TEST_FIRST_POST_MODE || 'drop';
+const firstPostDelayMs = Number(process.env.PEERWORK_TEST_FIRST_POST_DELAY_MS || 0);
+if (!['drop', 'delay'].includes(firstPostMode) || !Number.isSafeInteger(firstPostDelayMs) || firstPostDelayMs < 0 || firstPostDelayMs > 10000)
+  throw new Error('invalid first POST fixture mode or delay');
 const proxy = createServer(async (request, response) => {
   try {
     if (request.url === '/__test/counts') {
@@ -91,8 +95,13 @@ const proxy = createServer(async (request, response) => {
     const bytes = Buffer.from(await original.arrayBuffer());
     if (request.method === 'POST' && dropFirstPost) {
       dropFirstPost = false;
-      response.destroy(); // Real kernel has already committed and replied.
-      return;
+      if (firstPostMode === 'drop') {
+        response.destroy(); // Real kernel has already committed and replied.
+        return;
+      }
+      // Hold the committed real response for an in-flight client abort test.
+      await new Promise(resolve => setTimeout(resolve, firstPostDelayMs));
+      if (response.destroyed) return;
     }
     response.writeHead(original.status, {'content-type': original.headers.get('content-type') || 'application/json'});
     response.end(bytes);

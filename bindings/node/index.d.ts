@@ -15,6 +15,7 @@ export interface KernelAccessOptions {
   allowLoopbackHttp?: boolean;
   /** Defaults to SHA-256 of the local actor ID, matching WorkspaceClient. */
   authority?: string;
+  signal?: AbortSignal;
 }
 export interface PendingIntent { command_id: string; intent_digest: string; created_at_ms: number }
 export interface AcceptedResult {
@@ -29,9 +30,9 @@ export interface AcceptedResult {
 export interface KernelSession extends IdentityInfo {
   origin: string;
   /** Saves an exact signed request but performs no POST. */
-  prepare(command: Record<string, unknown>, options?: {uploadChunk?: Buffer | Uint8Array}): Promise<PendingIntent>;
-  pending(): Promise<PendingIntent[]>;
-  status(commandId: string): Promise<{state: 'NOT_FOUND' | 'PENDING'} | {state: 'ACCEPTED'; result: AcceptedResult}>;
-  submitSaved(commandId: string): Promise<AcceptedResult>;
+  prepare(command: Record<string, unknown>, options?: {uploadChunk?: Buffer | Uint8Array; signal?: AbortSignal}): Promise<PendingIntent>;
+  pending(options?: {signal?: AbortSignal}): Promise<PendingIntent[]>;
+  status(commandId: string, options?: {signal?: AbortSignal}): Promise<{state: 'NOT_FOUND' | 'PENDING'} | {state: 'ACCEPTED'; result: AcceptedResult}>;
+  submitSaved(commandId: string, options?: {signal?: AbortSignal}): Promise<AcceptedResult>;
 }
 export declare function openKernel(options: KernelAccessOptions): Promise<KernelSession>;

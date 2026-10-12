@@ -1,11 +1,12 @@
 use napi::{
-    bindgen_prelude::{AsyncTask, Buffer},
+    bindgen_prelude::{AsyncTask, Buffer, ClassInstance},
     Env, Result, Task,
 };
 use napi_derive::napi;
 use peerwork_runtime::kernel_access::KernelAccess;
 use peerwork_runtime::kernel_client::{KernelAcceptedResult, KernelOperationStatus};
 use peerwork_runtime::kernel_identity::KernelIdentity;
+use peerwork_runtime::KernelCancellationToken;
 use std::path::Path;
 
 #[napi]
@@ -72,6 +73,26 @@ fn accepted_json(result: KernelAcceptedResult) -> serde_json::Value {
     })
 }
 
+#[napi]
+pub struct KernelCancelHandle {
+    token: KernelCancellationToken,
+}
+
+#[napi]
+impl KernelCancelHandle {
+    #[napi(constructor)]
+    pub fn new() -> Self {
+        Self {
+            token: KernelCancellationToken::new(),
+        }
+    }
+
+    #[napi]
+    pub fn cancel(&self) {
+        self.token.cancel();
+    }
+}
+
 pub struct KernelTask {
     operation: String,
     origin: String,
@@ -83,6 +104,7 @@ pub struct KernelTask {
     command_json: Option<String>,
     command_id: Option<String>,
     upload_chunk: Option<Vec<u8>>,
+    cancel: KernelCancellationToken,
 }
 
 impl Task for KernelTask {
@@ -100,20 +122,20 @@ impl Task for KernelTask {
         .with_authority(self.authority.clone());
         let value = match self.operation.as_str() {
             "open" => {
-                let info = access.open().map_err(|error| napi::Error::from_reason(error.to_string()))?;
+                let info = access.open_with_cancel(&self.cancel).map_err(|error| napi::Error::from_reason(error.to_string()))?;
                 serde_json::json!({"actor_id": info.actor_id, "key_id": info.key_id, "origin": info.origin})
             }
             "prepare" => {
                 let command = self.command_json.as_deref().ok_or_else(|| napi::Error::from_reason("command is required"))?;
-                let pending = access.prepare(command.as_bytes(), self.upload_chunk.as_deref()).map_err(|error| napi::Error::from_reason(error.to_string()))?;
+                let pending = access.prepare_with_cancel(command.as_bytes(), self.upload_chunk.as_deref(), &self.cancel).map_err(|error| napi::Error::from_reason(error.to_string()))?;
                 serde_json::json!({"command_id": pending.command_id, "intent_digest": pending.intent_digest, "created_at_ms": pending.created_at_ms})
             }
-            "pending" => serde_json::json!(access.pending().map_err(|error| napi::Error::from_reason(error.to_string()))?.into_iter().map(|row| {
+            "pending" => serde_json::json!(access.pending_with_cancel(&self.cancel).map_err(|error| napi::Error::from_reason(error.to_string()))?.into_iter().map(|row| {
                 serde_json::json!({"command_id": row.command_id, "intent_digest": row.intent_digest, "created_at_ms": row.created_at_ms})
             }).collect::<Vec<_>>()),
             "status" => {
                 let id = self.command_id.as_deref().ok_or_else(|| napi::Error::from_reason("command ID is required"))?;
-                match access.status(id).map_err(|error| napi::Error::from_reason(error.to_string()))? {
+                match access.status_with_cancel(id, &self.cancel).map_err(|error| napi::Error::from_reason(error.to_string()))? {
                     None => serde_json::json!({"state": "NOT_FOUND"}),
                     Some(KernelOperationStatus::Pending) => serde_json::json!({"state": "PENDING"}),
                     Some(KernelOperationStatus::Accepted(accepted)) => serde_json::json!({"state": "ACCEPTED", "result": accepted_json(accepted)}),
@@ -121,7 +143,7 @@ impl Task for KernelTask {
             }
             "submit_saved" => {
                 let id = self.command_id.as_deref().ok_or_else(|| napi::Error::from_reason("command ID is required"))?;
-                accepted_json(access.submit_saved(id).map_err(|error| napi::Error::from_reason(error.to_string()))?)
+                accepted_json(access.submit_saved_with_cancel(id, &self.cancel).map_err(|error| napi::Error::from_reason(error.to_string()))?)
             }
             _ => return Err(napi::Error::from_reason("unsupported kernel operation")),
         };
@@ -146,6 +168,7 @@ pub fn kernel_json(
     command_json: Option<String>,
     command_id: Option<String>,
     upload_chunk: Option<Buffer>,
+    cancel_handle: Option<ClassInstance<KernelCancelHandle>>,
 ) -> AsyncTask<KernelTask> {
     AsyncTask::new(KernelTask {
         operation,
@@ -158,5 +181,8 @@ pub fn kernel_json(
         command_json,
         command_id,
         upload_chunk: upload_chunk.map(|chunk| chunk.to_vec()),
+        cancel: cancel_handle
+            .map(|handle| handle.token.clone())
+            .unwrap_or_default(),
     })
 }

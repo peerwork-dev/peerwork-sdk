@@ -1,6 +1,7 @@
 use peerwork_runtime::kernel_access::KernelAccess;
 use peerwork_runtime::kernel_client::{KernelAcceptedResult, KernelOperationStatus};
 use peerwork_runtime::kernel_identity::KernelIdentity;
+use peerwork_runtime::KernelCancellationToken;
 use pyo3::prelude::*;
 use std::path::Path;
 
@@ -49,8 +50,27 @@ fn accepted_json(result: KernelAcceptedResult) -> serde_json::Value {
     })
 }
 
+#[pyclass]
+struct KernelCancelHandle {
+    token: KernelCancellationToken,
+}
+
+#[pymethods]
+impl KernelCancelHandle {
+    #[new]
+    fn new() -> Self {
+        Self {
+            token: KernelCancellationToken::new(),
+        }
+    }
+
+    fn cancel(&self) {
+        self.token.cancel();
+    }
+}
+
 #[pyfunction]
-#[pyo3(signature = (operation, origin, journal_path, identity_path, required_features, allow_loopback_http, authority=None, command_json=None, command_id=None, upload_chunk=None))]
+#[pyo3(signature = (operation, origin, journal_path, identity_path, required_features, allow_loopback_http, authority=None, command_json=None, command_id=None, upload_chunk=None, cancel_handle=None))]
 fn kernel_json(
     py: Python<'_>,
     operation: &str,
@@ -63,7 +83,11 @@ fn kernel_json(
     command_json: Option<&str>,
     command_id: Option<&str>,
     upload_chunk: Option<Vec<u8>>,
+    cancel_handle: Option<PyRef<'_, KernelCancelHandle>>,
 ) -> PyResult<String> {
+    let cancel = cancel_handle
+        .map(|handle| handle.token.clone())
+        .unwrap_or_default();
     let access = KernelAccess::new(
         origin,
         journal_path,
@@ -79,20 +103,20 @@ fn kernel_json(
     let result = py.allow_threads(move || {
         let value = match operation.as_str() {
             "open" => {
-                let info = access.open().map_err(|error| error.to_string())?;
+                let info = access.open_with_cancel(&cancel).map_err(|error| error.to_string())?;
                 serde_json::json!({"actor_id": info.actor_id, "key_id": info.key_id, "origin": info.origin})
             }
             "prepare" => {
                 let command = command_json.as_deref().ok_or_else(|| "command is required".to_owned())?;
-                let pending = access.prepare(command.as_bytes(), upload_chunk.as_deref()).map_err(|error| error.to_string())?;
+                let pending = access.prepare_with_cancel(command.as_bytes(), upload_chunk.as_deref(), &cancel).map_err(|error| error.to_string())?;
                 serde_json::json!({"command_id": pending.command_id, "intent_digest": pending.intent_digest, "created_at_ms": pending.created_at_ms})
             }
-            "pending" => serde_json::json!(access.pending().map_err(|error| error.to_string())?.into_iter().map(|row| {
+            "pending" => serde_json::json!(access.pending_with_cancel(&cancel).map_err(|error| error.to_string())?.into_iter().map(|row| {
                 serde_json::json!({"command_id": row.command_id, "intent_digest": row.intent_digest, "created_at_ms": row.created_at_ms})
             }).collect::<Vec<_>>()),
             "status" => {
                 let id = command_id.as_deref().ok_or_else(|| "command ID is required".to_owned())?;
-                match access.status(id).map_err(|error| error.to_string())? {
+                match access.status_with_cancel(id, &cancel).map_err(|error| error.to_string())? {
                     None => serde_json::json!({"state": "NOT_FOUND"}),
                     Some(KernelOperationStatus::Pending) => serde_json::json!({"state": "PENDING"}),
                     Some(KernelOperationStatus::Accepted(accepted)) => serde_json::json!({"state": "ACCEPTED", "result": accepted_json(accepted)}),
@@ -100,7 +124,7 @@ fn kernel_json(
             }
             "submit_saved" => {
                 let id = command_id.as_deref().ok_or_else(|| "command ID is required".to_owned())?;
-                accepted_json(access.submit_saved(id).map_err(|error| error.to_string())?)
+                accepted_json(access.submit_saved_with_cancel(id, &cancel).map_err(|error| error.to_string())?)
             }
             _ => return Err("unsupported kernel operation".to_owned()),
         };
@@ -116,5 +140,6 @@ fn _peerwork_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(identity_create_json, module)?)?;
     module.add_function(wrap_pyfunction!(identity_open_json, module)?)?;
     module.add_function(wrap_pyfunction!(kernel_json, module)?)?;
+    module.add_class::<KernelCancelHandle>()?;
     Ok(())
 }

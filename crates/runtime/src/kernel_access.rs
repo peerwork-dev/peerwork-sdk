@@ -25,6 +25,8 @@ pub enum KernelAccessError {
     Runtime,
     #[error("command authority differs from configured local authority")]
     Authority,
+    #[error("kernel operation was cancelled")]
+    Cancelled,
 }
 
 #[derive(Debug, Clone)]
@@ -87,13 +89,16 @@ impl KernelAccess {
         config
     }
 
-    fn open_client(&self, runtime: &Runtime) -> Result<KernelClient, KernelAccessError> {
-        let cancel = CancellationToken::new();
+    fn open_client(
+        &self,
+        runtime: &Runtime,
+        cancel: &CancellationToken,
+    ) -> Result<KernelClient, KernelAccessError> {
         Ok(runtime.block_on(KernelClient::open(
             self.transport_config(),
             &self.journal_path,
             &self.required_features,
-            &cancel,
+            cancel,
         ))?)
     }
 
@@ -104,9 +109,16 @@ impl KernelAccess {
     /// Fetch and continuity-pin discovery over the configured origin, then
     /// return only the local public identity IDs and normalized origin.
     pub fn open(&self) -> Result<KernelOpenInfo, KernelAccessError> {
+        self.open_with_cancel(&CancellationToken::new())
+    }
+
+    pub fn open_with_cancel(
+        &self,
+        cancel: &CancellationToken,
+    ) -> Result<KernelOpenInfo, KernelAccessError> {
         let identity = self.identity()?;
         let runtime = self.runtime()?;
-        let client = self.open_client(&runtime)?;
+        let client = self.open_client(&runtime, cancel)?;
         Ok(KernelOpenInfo {
             actor_id: identity.actor_id().to_owned(),
             key_id: identity.key_id().to_owned(),
@@ -120,6 +132,15 @@ impl KernelAccess {
         &self,
         command_wire: &[u8],
         upload_chunk: Option<&[u8]>,
+    ) -> Result<PendingKernelIntent, KernelAccessError> {
+        self.prepare_with_cancel(command_wire, upload_chunk, &CancellationToken::new())
+    }
+
+    pub fn prepare_with_cancel(
+        &self,
+        command_wire: &[u8],
+        upload_chunk: Option<&[u8]>,
+        cancel: &CancellationToken,
     ) -> Result<PendingKernelIntent, KernelAccessError> {
         let identity = self.identity()?;
         let expected_authority = self
@@ -137,14 +158,24 @@ impl KernelAccess {
             return Err(KernelAccessError::Authority);
         }
         let runtime = self.runtime()?;
-        let mut client = self.open_client(&runtime)?;
+        let mut client = self.open_client(&runtime, cancel)?;
+        if cancel.is_cancelled() {
+            return Err(KernelAccessError::Cancelled);
+        }
         Ok(client.prepare_command(&identity, command_wire, upload_chunk)?)
     }
 
     pub fn pending(&self) -> Result<Vec<PendingKernelIntent>, KernelAccessError> {
+        self.pending_with_cancel(&CancellationToken::new())
+    }
+
+    pub fn pending_with_cancel(
+        &self,
+        cancel: &CancellationToken,
+    ) -> Result<Vec<PendingKernelIntent>, KernelAccessError> {
         let identity = self.identity()?;
         let runtime = self.runtime()?;
-        let client = self.open_client(&runtime)?;
+        let client = self.open_client(&runtime, cancel)?;
         Ok(client.pending(identity.key_id())?)
     }
 
@@ -152,9 +183,17 @@ impl KernelAccess {
         &self,
         command_id: &str,
     ) -> Result<Option<KernelOperationStatus>, KernelAccessError> {
+        self.status_with_cancel(command_id, &CancellationToken::new())
+    }
+
+    pub fn status_with_cancel(
+        &self,
+        command_id: &str,
+        cancel: &CancellationToken,
+    ) -> Result<Option<KernelOperationStatus>, KernelAccessError> {
         let identity = self.identity()?;
         let runtime = self.runtime()?;
-        let client = self.open_client(&runtime)?;
+        let client = self.open_client(&runtime, cancel)?;
         Ok(client.status(command_id, identity.key_id())?)
     }
 
@@ -164,10 +203,17 @@ impl KernelAccess {
         &self,
         command_id: &str,
     ) -> Result<KernelAcceptedResult, KernelAccessError> {
+        self.submit_saved_with_cancel(command_id, &CancellationToken::new())
+    }
+
+    pub fn submit_saved_with_cancel(
+        &self,
+        command_id: &str,
+        cancel: &CancellationToken,
+    ) -> Result<KernelAcceptedResult, KernelAccessError> {
         let identity = self.identity()?;
         let runtime = self.runtime()?;
-        let mut client = self.open_client(&runtime)?;
-        let cancel = CancellationToken::new();
-        Ok(runtime.block_on(client.submit_saved(command_id, identity.key_id(), &cancel))?)
+        let mut client = self.open_client(&runtime, cancel)?;
+        Ok(runtime.block_on(client.submit_saved(command_id, identity.key_id(), cancel))?)
     }
 }

@@ -79,21 +79,31 @@ function strictCommandJson(input) {
 
 /** An explicit origin and protected local paths anchor every operation. */
 exports.openKernel = async options => {
-  const { origin, journalPath, identityPath, requiredFeatures = [], allowLoopbackHttp = false, authority } = options;
-  const call = async (operation, commandJson, commandId, uploadChunk) => JSON.parse(await binding.kernelJson(
-    operation, origin, journalPath, identityPath, requiredFeatures,
-    allowLoopbackHttp, authority, commandJson, commandId, uploadChunk,
-  ));
-  const info = await call('open');
+  const { origin, journalPath, identityPath, requiredFeatures = [], allowLoopbackHttp = false, authority, signal } = options;
+  const call = async (operation, commandJson, commandId, uploadChunk, abortSignal) => {
+    const handle = new binding.KernelCancelHandle();
+    const onAbort = () => handle.cancel();
+    if (abortSignal?.aborted) onAbort();
+    abortSignal?.addEventListener('abort', onAbort, { once: true });
+    try {
+      return JSON.parse(await binding.kernelJson(
+        operation, origin, journalPath, identityPath, requiredFeatures,
+        allowLoopbackHttp, authority, commandJson, commandId, uploadChunk, handle,
+      ));
+    } finally {
+      abortSignal?.removeEventListener('abort', onAbort);
+    }
+  };
+  const info = await call('open', undefined, undefined, undefined, signal);
   return Object.freeze({
     ...info,
     prepare: (command, options = {}) => {
       const chunk = options.uploadChunk;
       if (chunk !== undefined && !(chunk instanceof Uint8Array)) throw new TypeError('uploadChunk must be Buffer or Uint8Array');
-      return call('prepare', strictCommandJson(command), undefined, chunk === undefined ? undefined : Buffer.from(chunk));
+      return call('prepare', strictCommandJson(command), undefined, chunk === undefined ? undefined : Buffer.from(chunk), options.signal);
     },
-    pending: () => call('pending'),
-    status: commandId => call('status', undefined, commandId),
-    submitSaved: commandId => call('submit_saved', undefined, commandId),
+    pending: (options = {}) => call('pending', undefined, undefined, undefined, options.signal),
+    status: (commandId, options = {}) => call('status', undefined, commandId, undefined, options.signal),
+    submitSaved: (commandId, options = {}) => call('submit_saved', undefined, commandId, undefined, options.signal),
   });
 };

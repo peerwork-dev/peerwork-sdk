@@ -15,7 +15,9 @@ core checks its byte length and signed digest before saving exact bytes.
 Verified secure-agent reads and actions remain incomplete.
 Cancelling an async wrapper stops waiting for its worker thread; a local
 identity creation already in progress can still finish. Reopen the requested
-path to inspect the result before retrying creation. A cancelled command
-submission may also complete in the worker; reopen the journal and check
-`status(command_id)` before calling `submit_saved(command_id)` again.
+path to inspect the result before retrying creation. The kernel async methods
+pass cancellation into native discovery/HTTP and drain the worker before
+returning cancellation. A submitted command can already have committed at
+the service when cancellation arrives; reopen the journal, check
+`status(command_id)`, and exact-retry the saved ID if it remains pending.
 Do not use it as a production Agent SDK.

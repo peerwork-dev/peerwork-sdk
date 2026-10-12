@@ -18,9 +18,10 @@ snapshot of validated data properties, so getters or inherited `toJSON`
 cannot change the checked value during serialization.
 These identity worker tasks have no AbortSignal interface. An abandoned Promise
 does not undo a local create; call `openIdentity(path)` to inspect the state.
-Kernel worker Promises likewise have no AbortSignal interface yet. An abandoned
-submission can finish or remain pending; reopen and check status before exact
-retry of its saved command ID.
+Kernel methods accept an AbortSignal and propagate it into native discovery
+and HTTP. An aborted submitted command can already have committed remotely;
+reopen and check its saved status before exact retry. Dropping a Promise
+without aborting its signal does not cancel its native worker.
 
 The exact-version platform package is an optional dependency. Installation has
 no build script or downloader. A missing native package causes a clear import
