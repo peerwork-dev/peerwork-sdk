@@ -1,6 +1,7 @@
 //! Shared Peerwork wire primitives. All high-level capabilities remain experimental
 //! until journal replay, authority checks, and durable operation recovery are ported.
 
+pub mod bootstrap_objects;
 pub mod canonical;
 pub mod crypto;
 pub mod discovery;
