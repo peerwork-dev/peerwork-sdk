@@ -140,3 +140,7 @@ command objects also undergo strict JSON-data inspection before stringify;
 this closes `NaN`→`null` and omitted `undefined` member coercions. These
 follow-up paths require an affected installed-interface regression before
 claiming end-to-end catalog upload support.
+The Node wrapper also rejects Proxy values and serializes a snapshot built
+from inspected own data-property descriptors, with null prototypes. That
+prevents a Proxy getter or inherited `toJSON` from changing values between
+inspection and serialization.

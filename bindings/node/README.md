@@ -13,7 +13,9 @@ For a catalog chunk command, pass `{uploadChunk: Buffer | Uint8Array}` to
 `prepare`; the shared core checks byte length and digest. The facade rejects
 non-finite numbers, undefined members, sparse arrays, accessors and non-plain
 objects before JSON serialization so JavaScript coercion cannot silently
-change the command that is signed.
+change the command that is signed. It rejects proxies and serializes a fresh
+snapshot of validated data properties, so getters or inherited `toJSON`
+cannot change the checked value during serialization.
 These identity worker tasks have no AbortSignal interface. An abandoned Promise
 does not undo a local create; call `openIdentity(path)` to inspect the state.
 Kernel worker Promises likewise have no AbortSignal interface yet. An abandoned

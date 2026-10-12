@@ -1,6 +1,7 @@
 'use strict';
 
 const { platform, arch } = process;
+const { types: { isProxy } } = require('node:util');
 function libcFamily() {
   if (platform !== 'linux') return '';
   const report = process.report?.getReport?.();
@@ -38,36 +39,42 @@ function strictCommandJson(input) {
   const seen = new WeakSet();
   const visit = (value, depth) => {
     if (depth > 40) throw new TypeError('Command nesting exceeds limit');
-    if (value === null || typeof value === 'string' || typeof value === 'boolean') return;
+    if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
     if (typeof value === 'number') {
       if (!Number.isFinite(value)) throw new TypeError('Command contains a non-finite number');
-      return;
+      return value;
     }
-    if (typeof value !== 'object' || seen.has(value)) throw new TypeError('Command contains unsupported or cyclic data');
+    if (typeof value !== 'object' || isProxy(value) || seen.has(value)) throw new TypeError('Command contains unsupported, proxied or cyclic data');
     seen.add(value);
+    let snapshot;
     if (Array.isArray(value)) {
       if (Object.getPrototypeOf(value) !== Array.prototype) throw new TypeError('Command array has a custom prototype');
+      const length = Object.getOwnPropertyDescriptor(value, 'length')?.value;
+      if (!Number.isSafeInteger(length) || length < 0) throw new TypeError('Command array length is invalid');
       const keys = Reflect.ownKeys(value);
-      if (keys.length !== value.length + 1) throw new TypeError('Command array has extra or missing members');
-      for (let index = 0; index < value.length; index++) {
+      if (keys.length !== length + 1) throw new TypeError('Command array has extra or missing members');
+      snapshot = new Array(length);
+      Object.setPrototypeOf(snapshot, null);
+      for (let index = 0; index < length; index++) {
         const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
         if (!descriptor || !('value' in descriptor)) throw new TypeError('Command array has a hole or accessor');
-        visit(descriptor.value, depth + 1);
+        snapshot[index] = visit(descriptor.value, depth + 1);
       }
     } else {
       const prototype = Object.getPrototypeOf(value);
       if (prototype !== Object.prototype && prototype !== null) throw new TypeError('Command contains a non-plain object');
+      snapshot = Object.create(null);
       for (const key of Reflect.ownKeys(value)) {
         if (typeof key !== 'string') throw new TypeError('Command contains a symbol key');
         const descriptor = Object.getOwnPropertyDescriptor(value, key);
         if (!descriptor?.enumerable || !('value' in descriptor)) throw new TypeError('Command contains an accessor or hidden member');
-        visit(descriptor.value, depth + 1);
+        snapshot[key] = visit(descriptor.value, depth + 1);
       }
     }
     seen.delete(value);
+    return snapshot;
   };
-  visit(input, 0);
-  return JSON.stringify(input);
+  return JSON.stringify(visit(input, 0));
 }
 
 /** An explicit origin and protected local paths anchor every operation. */
