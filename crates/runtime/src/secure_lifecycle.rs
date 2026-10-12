@@ -96,6 +96,28 @@ impl SecureLifecycle {
         }
     }
 
+    pub(crate) fn origin(&self) -> &str {
+        &self.origin
+    }
+
+    pub(crate) fn actor_id(&self) -> &str {
+        &self.actor_id
+    }
+
+    pub(crate) fn workspace_id(&self) -> &str {
+        &self.workspace_id
+    }
+
+    pub(crate) fn owner_key_id(&self) -> &str {
+        &self.owner_key_id
+    }
+
+    /// Only an authenticated active ring may author a new PRIVATE commit.
+    /// Pending keys are reserved for a future signed transition proof.
+    pub(crate) fn active_key(&self, epoch: u64) -> Option<&[u8; 32]> {
+        self.active.as_ref()?.key_at(epoch)
+    }
+
     /// Stage a new private epoch key before a signed workspace bootstrap. An
     /// exact repeated stage reuses existing pending bytes, never fresh entropy.
     pub fn stage_initial(&mut self, epoch: u64) -> Result<KeyringStatus, SecureLifecycleError> {
@@ -215,10 +237,29 @@ impl SecureLifecycle {
     }
 
     #[cfg(test)]
-    fn confirm_pending_for_test(&mut self) -> Result<(), SecureLifecycleError> {
+    pub(crate) fn confirm_pending_for_test(&mut self) -> Result<(), SecureLifecycleError> {
         let pending = self.pending.as_ref().ok_or(SecureLifecycleError::Invalid)?;
         self.save_with(Some(pending), None)?;
         self.active = self.pending.take();
+        Ok(())
+    }
+
+    /// Fixture-only grant stand-in. Production import requires signed policy,
+    /// grant, recipient, and history proof before an active ring may be saved.
+    #[cfg(test)]
+    pub(crate) fn import_active_for_test(
+        &mut self,
+        wire: &[u8],
+    ) -> Result<(), SecureLifecycleError> {
+        if self.active.is_some() || self.pending.is_some() {
+            return Err(SecureLifecycleError::PendingConflict);
+        }
+        let ring = SecretKeyring::parse_wire(wire)?;
+        if ring.workspace_id() != self.workspace_id || ring.epochs().next().is_none() {
+            return Err(SecureLifecycleError::Invalid);
+        }
+        self.save_with(Some(&ring), None)?;
+        self.active = Some(ring);
         Ok(())
     }
 }

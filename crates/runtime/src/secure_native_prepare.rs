@@ -1,0 +1,356 @@
+//! Private native identity/keyring to durable secure packet bridge.
+//! Caller-supplied policy and operation pins are not authenticated here;
+//! no public action API or final outcome can use this without full replay.
+
+use crate::{
+    kernel_identity::KernelIdentity,
+    secure_intents::{
+        PendingSecureIntent, SecureIntentError, SecureIntentJournal, SecurePacketInput,
+    },
+    secure_lifecycle::SecureLifecycle,
+};
+use peerwork_core::{
+    prepared_secure_author::{author_private_commit, SecureAuthorError},
+    prepared_secure_request::SecureCommitRequestPins,
+};
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub(crate) enum NativePrepareError {
+    #[error("protected identity, keyring, journal, or caller policy context differs")]
+    Context,
+    #[error("intent ID is already saved; use the exact saved packet for retry")]
+    Existing,
+    #[error("active private epoch key is unavailable")]
+    NoActiveKey,
+    #[error(transparent)]
+    Author(#[from] SecureAuthorError),
+    #[error(transparent)]
+    Journal(#[from] SecureIntentError),
+}
+
+/// This only signs and durably stages a new packet. It never sends one. A
+/// repeated ID fails before encryption, preserving the first saved nonce and
+/// signature. The signed policy/checkpoint/operation proof is still absent.
+pub(crate) fn prepare_new_private_commit(
+    journal: &mut SecureIntentJournal,
+    identity: &KernelIdentity,
+    lifecycle: &SecureLifecycle,
+    intent_id: &str,
+    context_wire: &[u8],
+    operation_wire: &[u8],
+    pins: &SecureCommitRequestPins<'_>,
+) -> Result<PendingSecureIntent, NativePrepareError> {
+    if identity.actor_id() != lifecycle.actor_id()
+        || identity.actor_id() != journal.actor_id()
+        || pins.actor_id != identity.actor_id()
+        || pins.signing_key != identity.key_id()
+        || pins.workspace_id != lifecycle.workspace_id()
+        || lifecycle.origin() != journal.trusted_origin()
+        || pins.mode != "PRIVATE"
+    {
+        return Err(NativePrepareError::Context);
+    }
+    if journal.contains_id(intent_id) {
+        return Err(NativePrepareError::Existing);
+    }
+    let key = lifecycle
+        .active_key(pins.epoch)
+        .ok_or(NativePrepareError::NoActiveKey)?;
+    let path = format!(
+        "/api/workspace/v1/secure/workspaces/{}/commits",
+        lifecycle.workspace_id()
+    );
+    let authored = author_private_commit(
+        context_wire,
+        operation_wire,
+        key,
+        identity.signing_key(),
+        &path,
+        pins,
+    )?;
+    let proof = authored.proof();
+    if proof.command_id() != intent_id
+        || proof.workspace_id() != lifecycle.workspace_id()
+        || proof.actor_id() != identity.actor_id()
+        || proof.signing_key() != identity.key_id()
+        || proof.path() != path
+        || proof.policy_hash() != pins.policy_hash
+    {
+        return Err(NativePrepareError::Context);
+    }
+    Ok(journal.prepare(SecurePacketInput {
+        intent_id: proof.command_id(),
+        path: proof.path(),
+        action_id: proof.action_id(),
+        workspace_id: Some(proof.workspace_id()),
+        trusted_owner_key: Some(lifecycle.owner_key_id()),
+        intent_digest: proof.commit_digest(),
+        exact_request: authored.request_wire(),
+    })?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        secure_state::read_private_file_bounded,
+        transport::{HttpTransport, TransportConfig, TransportError},
+    };
+    use peerwork_core::crypto::base64url;
+    use serde_json::json;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    use std::{
+        fs,
+        io::BufRead,
+        process::{Child, Command, Stdio},
+    };
+    use tokio_util::sync::CancellationToken;
+
+    #[test]
+    fn native_protected_keys_stage_one_exact_pending_packet_without_reauthoring() {
+        let dir = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let identity = KernelIdentity::create(&dir.path().join("identity.state")).unwrap();
+        let workspace = base64url(&[17u8; 32]);
+        let owner = base64url(&[18u8; 32]);
+        let origin = "https://example.invalid/";
+        let lifecycle_path = dir.path().join("keys.state");
+        let mut lifecycle = SecureLifecycle::open(
+            &lifecycle_path,
+            origin,
+            identity.actor_id(),
+            &workspace,
+            &owner,
+            &owner,
+        )
+        .unwrap();
+        lifecycle.stage_initial(1).unwrap();
+        let journal_path = dir.path().join("intents.state");
+        let mut journal =
+            SecureIntentJournal::open(&journal_path, origin, identity.actor_id()).unwrap();
+        let command_id = base64url(&[19u8; 32]);
+        let policy = "a".repeat(64);
+        let previous = "b".repeat(64);
+        let pins = SecureCommitRequestPins {
+            actor_id: identity.actor_id(),
+            signing_key: identity.key_id(),
+            workspace_id: &workspace,
+            policy_hash: &policy,
+            sequence: 2,
+            previous: Some(&previous),
+            epoch: 1,
+            mode: "PRIVATE",
+            version: 3,
+            protocol_format_ceiling: Some(1),
+        };
+        let context = json!({
+            "v":3,"workspace_id":workspace,"sequence":2,"previous":previous,
+            "policy_hash":policy,"epoch":1,"actor_id":identity.actor_id(),
+            "signing_key":identity.key_id(),"command_id":command_id,
+            "action_id":"discussion.post","instance_id":base64url(&[20u8;32]),
+            "issued_at":1_700_000_000_000_u64,"delegation":null,
+            "protocol_format_ceiling":1
+        });
+        let context_wire = serde_json::to_vec(&context).unwrap();
+        let operation_wire = serde_json::to_vec(&json!({
+            "v":1,"kind":"ACTION","input":{"message":"native lifecycle"},"objects":[]
+        }))
+        .unwrap();
+        assert!(matches!(
+            prepare_new_private_commit(
+                &mut journal,
+                &identity,
+                &lifecycle,
+                &command_id,
+                &context_wire,
+                &operation_wire,
+                &pins,
+            ),
+            Err(NativePrepareError::NoActiveKey)
+        ));
+        assert!(journal.pending().is_empty());
+
+        // Test-only activation stands in for a future complete journal proof.
+        // Production cannot promote pending keys or call this private bridge.
+        lifecycle.confirm_pending_for_test().unwrap();
+        let pending = prepare_new_private_commit(
+            &mut journal,
+            &identity,
+            &lifecycle,
+            &command_id,
+            &context_wire,
+            &operation_wire,
+            &pins,
+        )
+        .unwrap();
+        assert_eq!(pending.intent_id, command_id);
+        assert_eq!(pending.observed_responses, 0);
+        let first = journal.exact_request(&command_id).unwrap();
+        assert!(matches!(
+            prepare_new_private_commit(
+                &mut journal,
+                &identity,
+                &lifecycle,
+                &command_id,
+                &context_wire,
+                &operation_wire,
+                &pins,
+            ),
+            Err(NativePrepareError::Existing)
+        ));
+        assert_eq!(journal.exact_request(&command_id).unwrap(), first);
+        drop(journal);
+        drop(lifecycle);
+        let reopened =
+            SecureIntentJournal::open(&journal_path, origin, identity.actor_id()).unwrap();
+        assert_eq!(reopened.exact_request(&command_id).unwrap(), first);
+        assert_eq!(reopened.pending().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn actual_service_accepts_native_authored_packet_then_exact_retry() {
+        let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else {
+            return;
+        };
+        let node = std::env::var("PEERWORK_NODE_BIN").unwrap_or_else(|_| "node".into());
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let bridge = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/reference-kernel-server.mjs");
+        let child = Command::new(node)
+            .arg(bridge)
+            .env("PEERWORK_REFERENCE_ROOT", reference_root)
+            .env("PEERWORK_TEST_STATE", root.path())
+            .env("PEERWORK_TEST_SECURE", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        struct Stop(Child);
+        impl Drop for Stop {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut child = Stop(child);
+        let mut line = String::new();
+        std::io::BufReader::new(child.0.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        assert!(!line.is_empty(), "reference bridge exited before ready");
+        let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let text = |key: &str| ready["secure"][key].as_str().unwrap().to_owned();
+        let origin = ready["origin"].as_str().unwrap().to_owned();
+        let workspace = text("workspace_id");
+        let actor = text("actor_id");
+        let signing_key = text("signing_key");
+        let owner = text("owner_key");
+        let policy = text("policy_hash");
+        let previous = text("previous");
+        let command_id = text("command_id");
+        let identity = KernelIdentity::import_pkcs8_pem_file(
+            &root.path().join("native-identity.state"),
+            &root.path().join("synthetic-agent-ed25519.pem"),
+        )
+        .unwrap();
+        assert_eq!(identity.actor_id(), actor);
+        assert_eq!(identity.key_id(), signing_key);
+        let keyring_wire =
+            read_private_file_bounded(&root.path().join("synthetic-secure-keyring.json"), 131_072)
+                .unwrap();
+        let context_wire =
+            read_private_file_bounded(&root.path().join("synthetic-secure-context.json"), 196_608)
+                .unwrap();
+        let operation_wire = read_private_file_bounded(
+            &root.path().join("synthetic-secure-operation.json"),
+            16 * 1024 * 1024,
+        )
+        .unwrap();
+        let lifecycle_path = root.path().join("native-keys.state");
+        let mut lifecycle =
+            SecureLifecycle::open(&lifecycle_path, &origin, &actor, &workspace, &actor, &owner)
+                .unwrap();
+        // Only this fixture bypasses the unavailable complete signed grant
+        // proof. Product code cannot call import_active_for_test.
+        lifecycle.import_active_for_test(&keyring_wire).unwrap();
+        let pins = SecureCommitRequestPins {
+            actor_id: &actor,
+            signing_key: &signing_key,
+            workspace_id: &workspace,
+            policy_hash: &policy,
+            sequence: ready["secure"]["sequence"].as_u64().unwrap(),
+            previous: Some(&previous),
+            epoch: ready["secure"]["epoch"].as_u64().unwrap(),
+            mode: "PRIVATE",
+            version: 3,
+            protocol_format_ceiling: Some(1),
+        };
+        let mut config = TransportConfig::new(origin.clone());
+        config.allow_loopback_http = true;
+        let transport = HttpTransport::new(config).unwrap();
+        let counts_url = format!("{origin}__test/secure-counts");
+        let count = || async {
+            serde_json::from_str::<serde_json::Value>(
+                &reqwest::get(&counts_url)
+                    .await
+                    .unwrap()
+                    .text()
+                    .await
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+        let baseline = count().await;
+        assert_eq!(baseline["commits"].as_u64(), Some(1));
+        assert_eq!(baseline["head_sequence"].as_u64(), Some(1));
+        let journal_path = root.path().join("native-secure-intents.state");
+        let mut journal = SecureIntentJournal::open(&journal_path, &origin, &actor).unwrap();
+        prepare_new_private_commit(
+            &mut journal,
+            &identity,
+            &lifecycle,
+            &command_id,
+            &context_wire,
+            &operation_wire,
+            &pins,
+        )
+        .unwrap();
+        let exact = journal.exact_request(&command_id).unwrap();
+        let old_ts_request = read_private_file_bounded(
+            &root.path().join("synthetic-secure-request.json"),
+            2 * 1024 * 1024,
+        )
+        .unwrap();
+        assert_ne!(exact, *old_ts_request, "fixture must use native ciphertext");
+        assert_eq!(count().await, baseline, "native prepare must not POST");
+        let cancel = CancellationToken::new();
+        assert!(matches!(
+            journal
+                .submit_saved_commit(&command_id, &identity, &transport, &owner, &pins, &cancel)
+                .await,
+            Err(SecureIntentError::Transport(
+                TransportError::SubmittedUncertain
+            ))
+        ));
+        assert_eq!(journal.pending()[0].observed_responses, 0);
+        drop(journal);
+        drop(lifecycle);
+        let applied = count().await;
+        assert_eq!(applied["commits"].as_u64(), Some(2));
+        assert_eq!(applied["head_sequence"].as_u64(), Some(2));
+        let mut reopened = SecureIntentJournal::open(&journal_path, &origin, &actor).unwrap();
+        assert_eq!(reopened.exact_request(&command_id).unwrap(), exact);
+        reopened
+            .submit_saved_commit(&command_id, &identity, &transport, &owner, &pins, &cancel)
+            .await
+            .unwrap();
+        assert_eq!(reopened.pending()[0].observed_responses, 1);
+        assert_eq!(count().await, applied, "exact retry must not reapply");
+    }
+}

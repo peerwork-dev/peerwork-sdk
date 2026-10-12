@@ -111,6 +111,12 @@ if (process.env.PEERWORK_TEST_SECURE === '1') {
       objects: journal.objects, context, policy: journal.policy,
       body: {message:'synthetic native secure exact retry'}, exactRefs: [],
     });
+    // Fresh synthetic fixture inputs for a native-authored packet. These
+    // private bytes remain in the temporary protected test directory and are
+    // never emitted on stdout or returned through an SDK language DTO.
+    writeFileSync(join(state, 'synthetic-secure-context.json'), JSON.stringify(context), {mode:0o600,flag:'wx'});
+    writeFileSync(join(state, 'synthetic-secure-operation.json'), JSON.stringify(operation), {mode:0o600,flag:'wx'});
+    writeFileSync(join(state, 'synthetic-secure-keyring.json'), JSON.stringify(agent.state.workspaces[created.workspaceId].keyring), {mode:0o600,flag:'wx'});
     const commit = await createCommit({...input, operation, keyring:agent.state.workspaces[created.workspaceId].keyring});
     const request = Buffer.from(JSON.stringify({commit}));
     writeFileSync(join(state, 'synthetic-secure-request.json'), request, {mode:0o600,flag:'wx'});

@@ -1,5 +1,7 @@
-//! Internal native secure commit authoring. Caller-supplied operation/context
+//! Low-level native secure commit authoring. Caller-supplied operation/context
 //! have no action authority until complete replay/evaluator proof exists.
+//! This Rust API is public only for trusted runtime composition; it must not
+//! be exposed as a language SDK action or final-outcome verifier.
 
 use crate::{
     canonical::Path,
@@ -23,7 +25,7 @@ const MAX_PLAINTEXT: usize = 16 * 1024 * 1024;
 const CHUNK: usize = 6144;
 
 #[derive(Debug, Error, PartialEq, Eq)]
-pub(crate) enum SecureAuthorError {
+pub enum SecureAuthorError {
     #[error("secure operation, context, or pinned identity is invalid")]
     Invalid,
     #[error("OS random source failed")]
@@ -34,16 +36,16 @@ pub(crate) enum SecureAuthorError {
 
 /// Internal result, never a language DTO. Persist `request_wire` exactly once
 /// before transport and reuse those same bytes for every uncertain retry.
-pub(crate) struct AuthoredSecureCommit {
+pub struct AuthoredSecureCommit {
     request_wire: Vec<u8>,
     proof: VerifiedPreparedSecureRequest,
 }
 
 impl AuthoredSecureCommit {
-    pub(crate) fn request_wire(&self) -> &[u8] {
+    pub fn request_wire(&self) -> &[u8] {
         &self.request_wire
     }
-    pub(crate) fn proof(&self) -> &VerifiedPreparedSecureRequest {
+    pub fn proof(&self) -> &VerifiedPreparedSecureRequest {
         &self.proof
     }
 }
@@ -52,7 +54,7 @@ impl AuthoredSecureCommit {
 /// complete verified policy/checkpoint/operation proof before this becomes a
 /// public action path. New authoring uses a fresh OS nonce; retries MUST NOT
 /// call this function again because that would create a different commit.
-pub(crate) fn author_private_commit(
+pub fn author_private_commit(
     context_wire: &[u8],
     operation_wire: &[u8],
     epoch_key: &[u8; 32],

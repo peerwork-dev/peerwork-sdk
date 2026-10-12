@@ -97,6 +97,18 @@ pub(crate) struct SecureIntentJournal {
 }
 
 impl SecureIntentJournal {
+    pub(crate) fn trusted_origin(&self) -> &str {
+        &self.document.trusted_origin
+    }
+
+    pub(crate) fn actor_id(&self) -> &str {
+        &self.document.actor_id
+    }
+
+    pub(crate) fn contains_id(&self, intent_id: &str) -> bool {
+        self.document.rows.contains_key(intent_id)
+    }
+
     pub(crate) fn open(
         path: &Path,
         trusted_origin: &str,
