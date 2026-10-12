@@ -140,6 +140,7 @@ fn transform(value: &mut WireValue, namespace: &str, depth: usize) -> Result<(),
 pub(crate) fn namespace_manifest(
     input: &WireValue,
     namespace: &str,
+    import_alias: &str,
 ) -> Result<WireValue, NamespaceError> {
     let mut value = input.clone();
     set(&mut value, "dependencies", WireValue::Array(vec![]))?;
@@ -184,7 +185,9 @@ pub(crate) fn namespace_manifest(
             let WireValue::Array(path) = field_mut(port, "import_path")? else {
                 return Err(NamespaceError::Invalid);
             };
-            path.insert(0, text(namespace));
+            // Execution paths identify package imports, whereas manifest symbols
+            // and state paths identify namespaces. They need not have the same name.
+            path.insert(0, text(import_alias));
         }
     }
     let WireValue::Array(actions) = field_mut(&mut value, "actions")? else {
@@ -321,6 +324,18 @@ fn map_guard_symbols(
         }
         _ => {}
     }
+}
+
+pub(crate) fn namespace_guard(
+    guard: &WireValue,
+    namespace: &str,
+    roles: &HashMap<Vec<u16>, Vec<u16>>,
+    capabilities: &HashMap<Vec<u16>, Vec<u16>>,
+) -> Result<WireValue, NamespaceError> {
+    let mut mapped = guard.clone();
+    transform(&mut mapped, namespace, 0)?;
+    map_guard_symbols(&mut mapped, roles, capabilities);
+    Ok(mapped)
 }
 /// Apply v2 parent symbol mappings to an already namespaced dependency.
 pub(crate) fn map_namespaced_symbols(

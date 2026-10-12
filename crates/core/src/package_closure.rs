@@ -373,6 +373,13 @@ struct FixtureDisposition {
     expected_rejection: String,
     replacement_id: String,
 }
+struct ImportedUnit {
+    namespace: String,
+    source: WireValue,
+    manifest: WireValue,
+    roles: HashMap<Vec<u16>, Vec<u16>>,
+    capabilities: HashMap<Vec<u16>, Vec<u16>>,
+}
 fn safe_integer(value: &WireValue) -> Result<u64, ClosureError> {
     let number = value.as_number().ok_or(ClosureError::Invalid)?;
     if !number.is_finite()
@@ -611,7 +618,7 @@ fn replace_fixture_refs(
 }
 fn replace_produced_record(
     value: &WireValue,
-    slot: &str,
+    slot: &[u16],
     record_id: &str,
     revision: u64,
 ) -> WireValue {
@@ -628,7 +635,7 @@ fn replace_produced_record(
                 .and_then(WireValue::as_string)
                 .as_deref()
                 == Some("record")
-                && value.get("slot").and_then(WireValue::as_string).as_deref() == Some(slot) =>
+                && value.get("slot").and_then(WireValue::as_utf16) == Some(slot) =>
         {
             WireValue::Object(vec![
                 (
@@ -654,6 +661,69 @@ fn replace_produced_record(
         ),
         _ => value.clone(),
     }
+}
+fn replace_produced_entity(value: &WireValue, slot: &[u16], entity_id: &str) -> WireValue {
+    match value {
+        WireValue::Array(values) => WireValue::Array(
+            values
+                .iter()
+                .map(|value| replace_produced_entity(value, slot, entity_id))
+                .collect(),
+        ),
+        WireValue::Object(_)
+            if value
+                .get("$produced")
+                .and_then(WireValue::as_string)
+                .as_deref()
+                == Some("entity")
+                && value.get("slot").and_then(WireValue::as_utf16) == Some(slot) =>
+        {
+            WireValue::String(entity_id.encode_utf16().collect())
+        }
+        WireValue::Object(fields) => WireValue::Object(
+            fields
+                .iter()
+                .map(|(name, child)| {
+                    (
+                        name.clone(),
+                        replace_produced_entity(child, slot, entity_id),
+                    )
+                })
+                .collect(),
+        ),
+        _ => value.clone(),
+    }
+}
+fn resolve_sequence_output_state(
+    manifest: &WireValue,
+    records: &[WireValue],
+    id: &str,
+    mut state: WireValue,
+) -> Result<WireValue, ClosureError> {
+    // The tracked fixture runner resolves all emitted markers when signed
+    // state-array declarations are present, whether or not bind_refs names a
+    // record for a later sequence step.
+    if manifest.get("state_array_types").is_none() {
+        return Ok(state);
+    }
+    for record in records {
+        if let Some(slot) = record.get("recordSlot").and_then(WireValue::as_utf16) {
+            let hash_input = format!("{id}:record:{}", String::from_utf16_lossy(slot));
+            let record_id = base64url(&sha256(hash_input.as_bytes()));
+            state = replace_produced_record(&state, slot, &record_id, 1);
+        }
+        let slot = record
+            .get("entity")
+            .and_then(|entity| entity.get("slot"))
+            .or_else(|| record.get("entitySlot"))
+            .and_then(WireValue::as_utf16);
+        if let Some(slot) = slot {
+            let hash_input = format!("{id}:entity:{}", String::from_utf16_lossy(slot));
+            let entity_id = base64url(&sha256(hash_input.as_bytes()));
+            state = replace_produced_entity(&state, slot, &entity_id);
+        }
+    }
+    Ok(state)
 }
 fn fixture_auth(value: &WireValue) -> Result<crate::interpreter::InterpreterAuth, ClosureError> {
     let roles = |name| -> Result<Vec<Vec<u16>>, ClosureError> {
@@ -816,8 +886,19 @@ fn sequence_fixture_matches(
                             entity_id,
                         },
                     );
-                    next_state = replace_produced_record(&next_state, &slot, &record_id, revision);
+                    next_state = replace_produced_record(
+                        &next_state,
+                        &slot.encode_utf16().collect::<Vec<_>>(),
+                        &record_id,
+                        revision,
+                    );
                 }
+                next_state = resolve_sequence_output_state(
+                    manifest,
+                    &observed.records,
+                    &format!("{id}:{index}"),
+                    next_state,
+                )?;
                 crate::full_manifest::validate_state_array_state(manifest, &next_state)
                     .map_err(|_| ClosureError::Invalid)?;
                 refs = next_refs;
@@ -879,10 +960,59 @@ fn apply_interface_inputs(
     let WireValue::Array(outputs) = field(interfaces, "outputs")? else {
         return Err(ClosureError::Invalid);
     };
-    // Output forwarding requires a checked import context and is handled by
-    // the later connected-interface compiler layer.
-    if !outputs.is_empty() {
-        return Err(ClosureError::Invalid);
+    let mut output_names = HashSet::new();
+    for output in outputs {
+        let name = scalar(field(output, "name")?)?;
+        if !output_names.insert(name) {
+            return Err(ClosureError::Invalid);
+        }
+        let output_type = scalar(field(output, "type")?)?;
+        if output_type != "exact_ref" && output_type != "actor_id" {
+            return Err(ClosureError::Invalid);
+        }
+        crate::interpreter::validate_guard(field(output, "available_when")?, 0, &[])
+            .map_err(|_| ClosureError::Invalid)?;
+        let selector = field(output, "selector")?;
+        match scalar(field(selector, "from")?)?.as_str() {
+            "state" => {
+                let WireValue::Array(path) = field(selector, "path")? else {
+                    return Err(ClosureError::Invalid);
+                };
+                if path.is_empty() || path.len() > 12 {
+                    return Err(ClosureError::Invalid);
+                }
+                let mut selected = field(&manifest, "initial_state")?;
+                for segment in path {
+                    selected = field(selected, &scalar(segment)?)?;
+                }
+                let _ = selected;
+                if output_type == "exact_ref" {
+                    let schema = scalar(field(output, "schema")?)?;
+                    field(field(&manifest, "record_schemas")?, &schema)?;
+                    let scope = scalar(field(output, "scope")?)?;
+                    if scope != "INSTANCE" && scope != "WORKSPACE" {
+                        return Err(ClosureError::Invalid);
+                    }
+                }
+            }
+            "import" => {
+                let alias = scalar(field(selector, "alias")?)?;
+                let WireValue::Array(imports) = field(source, "imports")? else {
+                    return Err(ClosureError::Invalid);
+                };
+                if !imports.iter().any(|import| {
+                    import
+                        .get("alias")
+                        .and_then(WireValue::as_string)
+                        .as_deref()
+                        == Some(&alias)
+                }) {
+                    return Err(ClosureError::Invalid);
+                }
+                scalar(field(selector, "output")?)?;
+            }
+            _ => return Err(ClosureError::Invalid),
+        }
     }
     let WireValue::Array(contracts) = field(interfaces, "action_bodies")? else {
         return Err(ClosureError::Invalid);
@@ -1574,6 +1704,207 @@ fn check_fixture_dispositions(
     }
     Ok(())
 }
+fn apply_connections(
+    source: &WireValue,
+    units: &mut HashMap<String, ImportedUnit>,
+) -> Result<(), ClosureError> {
+    let Some(WireValue::Array(rows)) = source.get("connections") else {
+        return Ok(());
+    };
+    fn text(value: &str) -> WireValue {
+        WireValue::String(value.encode_utf16().collect())
+    }
+    fn object(fields: Vec<(&str, WireValue)>) -> WireValue {
+        WireValue::Object(
+            fields
+                .into_iter()
+                .map(|(key, value)| (key.encode_utf16().collect(), value))
+                .collect(),
+        )
+    }
+    fn state_paths(value: &WireValue, paths: &mut Vec<WireValue>) {
+        match value {
+            WireValue::Array(rows) => {
+                for row in rows {
+                    state_paths(row, paths);
+                }
+            }
+            WireValue::Object(fields) => {
+                let is_state = value.get("from").and_then(WireValue::as_string).as_deref()
+                    == Some("state")
+                    || value.get("from").and_then(WireValue::as_string).as_deref() == Some("ref")
+                        && value
+                            .get("source")
+                            .and_then(WireValue::as_string)
+                            .as_deref()
+                            == Some("state")
+                    || value.get("op").and_then(WireValue::as_string).as_deref()
+                        == Some("exact_ref_list")
+                        && value
+                            .get("source")
+                            .and_then(WireValue::as_string)
+                            .as_deref()
+                            == Some("state");
+                if is_state {
+                    if let Some(path) = value.get("path") {
+                        paths.push(path.clone());
+                    }
+                }
+                for (_, child) in fields {
+                    state_paths(child, paths);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut target_ports = HashSet::new();
+    for connection in rows {
+        let from = field(connection, "from")?;
+        let to = field(connection, "to")?;
+        let from_alias = scalar(field(from, "import")?)?;
+        let to_alias = scalar(field(to, "import")?)?;
+        let output_name = scalar(field(from, "output")?)?;
+        let action_name = scalar(field(to, "action")?)?;
+        let variant_index = safe_integer(field(to, "variant")?)? as usize;
+        let input_name = scalar(field(to, "input")?)?;
+        if !target_ports.insert((
+            to_alias.clone(),
+            action_name.clone(),
+            variant_index,
+            input_name.clone(),
+        )) {
+            return Err(ClosureError::Invalid);
+        }
+        let provider = units.get(&from_alias).ok_or(ClosureError::Missing)?;
+        let WireValue::Array(outputs) = field(field(&provider.source, "interfaces")?, "outputs")?
+        else {
+            return Err(ClosureError::Invalid);
+        };
+        let output = outputs
+            .iter()
+            .find(|row| {
+                row.get("name").and_then(WireValue::as_string).as_deref() == Some(&output_name)
+            })
+            .ok_or(ClosureError::Invalid)?;
+        let selector = field(output, "selector")?;
+        if field(selector, "from")?.as_string().as_deref() != Some("state") {
+            return Err(ClosureError::Invalid); // forwarded outputs need context traversal
+        }
+        let output_type = scalar(field(output, "type")?)?;
+        let output_scope = scalar(field(output, "scope")?)?;
+        let output_schema = scalar(field(output, "schema")?)?;
+        let WireValue::Array(output_path) = field(selector, "path")? else {
+            return Err(ClosureError::Invalid);
+        };
+        let output_path = WireValue::Array(
+            std::iter::once(text(&provider.namespace))
+                .chain(output_path.iter().cloned())
+                .collect(),
+        );
+        let output_schema = format!("{}.{}", provider.namespace, output_schema);
+        let available = crate::package_namespace::namespace_guard(
+            field(output, "available_when")?,
+            &provider.namespace,
+            &provider.roles,
+            &provider.capabilities,
+        )
+        .map_err(|_| ClosureError::Invalid)?;
+        let consumer = units.get_mut(&to_alias).ok_or(ClosureError::Missing)?;
+        let WireValue::Array(inputs) = field(field(&consumer.source, "interfaces")?, "inputs")?
+        else {
+            return Err(ClosureError::Invalid);
+        };
+        let input = inputs
+            .iter()
+            .find(|row| {
+                row.get("action").and_then(WireValue::as_string).as_deref() == Some(&action_name)
+                    && row.get("name").and_then(WireValue::as_string).as_deref()
+                        == Some(&input_name)
+                    && row.get("variant").and_then(WireValue::as_number)
+                        == Some(variant_index as f64)
+            })
+            .ok_or(ClosureError::Invalid)?;
+        let input_type = scalar(field(input, "type")?)?;
+        if input_type != output_type
+            || input_type != "exact_ref"
+            || field(input, "scope")?.as_string().as_deref() != Some(&output_scope)
+        {
+            return Err(ClosureError::Mismatch);
+        }
+        let WireValue::Array(body_path) = field(input, "body_path")? else {
+            return Err(ClosureError::Invalid);
+        };
+        if body_path.len() != 1 {
+            return Err(ClosureError::Invalid);
+        }
+        let body_field = scalar(&body_path[0])?;
+        let action_id = format!("{}.{}", consumer.namespace, action_name);
+        let WireValue::Array(actions) = field_mut(&mut consumer.manifest, "actions")? else {
+            return Err(ClosureError::Invalid);
+        };
+        let action = actions
+            .iter_mut()
+            .find(|row| row.get("id").and_then(WireValue::as_string).as_deref() == Some(&action_id))
+            .ok_or(ClosureError::Invalid)?;
+        let runtime_field = field_mut(
+            field_mut(field_mut(action, "inputs")?, "fields")?,
+            &body_field,
+        )?;
+        if field(runtime_field, "type")?.as_string().as_deref() != Some("exact_ref")
+            || field(runtime_field, "schema")?.as_string().as_deref() != Some("*")
+        {
+            return Err(ClosureError::Mismatch);
+        }
+        insert_field(runtime_field, "schema", text(&output_schema))?;
+        let body_ref = object(vec![
+            ("from", text("ref")),
+            ("source", text("body")),
+            ("path", WireValue::Array(body_path.clone())),
+            ("scope", text(&output_scope)),
+            ("schema", text(&output_schema)),
+        ]);
+        let state_ref = object(vec![
+            ("from", text("ref")),
+            ("source", text("state")),
+            ("path", output_path.clone()),
+            ("scope", text(&output_scope)),
+            ("schema", text(&output_schema)),
+        ]);
+        let WireValue::Array(variants) = field_mut(action, "variants")? else {
+            return Err(ClosureError::Invalid);
+        };
+        let variant = variants
+            .get_mut(variant_index)
+            .ok_or(ClosureError::Invalid)?;
+        let WireValue::Array(when) = field_mut(variant, "when")? else {
+            return Err(ClosureError::Invalid);
+        };
+        when.push(object(vec![
+            ("op", text("exact_ref")),
+            ("ref", body_ref.clone()),
+        ]));
+        when.push(object(vec![
+            ("op", text("eq")),
+            ("left", body_ref),
+            ("right", state_ref),
+        ]));
+        when.push(object(vec![
+            ("op", text("and")),
+            ("rules", WireValue::Array(vec![available.clone()])),
+        ]));
+        let WireValue::Array(reads) = field_mut(action, "reads")? else {
+            return Err(ClosureError::Invalid);
+        };
+        let mut extra = vec![output_path];
+        state_paths(&available, &mut extra);
+        for path in extra {
+            if !reads.contains(&path) {
+                reads.push(path);
+            }
+        }
+    }
+    Ok(())
+}
 fn compile_at(
     closure: &ScannedPackageClosure,
     package_digest: &str,
@@ -1617,12 +1948,7 @@ fn compile_at(
         || v2
             && (!matches!(source.get("interfaces"), Some(interfaces)
                 if exact(interfaces, &["outputs", "inputs", "action_bodies"])
-                    && ["outputs", "inputs", "action_bodies"].iter().all(|key| matches!(interfaces.get(key), Some(WireValue::Array(_)))))
-                || ["connections"].iter().any(|key| {
-                    source.get(key).is_some_and(
-                        |value| !matches!(value, WireValue::Array(rows) if rows.is_empty()),
-                    )
-                }))
+                    && ["outputs", "inputs", "action_bodies"].iter().all(|key| matches!(interfaces.get(key), Some(WireValue::Array(_))))))
         || !matches!(source.get("bindings"), Some(WireValue::Array(_)))
         || !exact(
             &release,
@@ -1659,6 +1985,8 @@ fn compile_at(
     };
     let mut nodes = HashMap::new();
     let mut dependency_ids = Vec::new();
+    let mut inherited_ports = Vec::new();
+    let mut imported_units = HashMap::<String, ImportedUnit>::new();
     let mut scenarios = Vec::new();
     let mut inherited_dispositions = Vec::new();
     for imported in imports {
@@ -1676,7 +2004,7 @@ fn compile_at(
             compile_at(closure, &digest, Some(&mapped), false, depth + 1, steps)?
         };
         let namespaced =
-            crate::package_namespace::namespace_manifest(&compiled.manifest, &namespace)
+            crate::package_namespace::namespace_manifest(&compiled.manifest, &namespace, &alias)
                 .map_err(|_| ClosureError::Invalid)?;
         let (roles, capabilities) =
             import_symbol_mappings(&source, &alias, &namespace, &compiled.manifest)?;
@@ -1697,11 +2025,61 @@ fn compile_at(
             disposition.replacement_id = format!("{alias}/{}", disposition.replacement_id);
             inherited_dispositions.push(disposition);
         }
-        let checked = crate::full_manifest::validate_full_manifest(&namespaced)
+        if imported_units
+            .insert(
+                alias,
+                ImportedUnit {
+                    namespace,
+                    source: dependency_source,
+                    manifest: namespaced,
+                    roles,
+                    capabilities,
+                },
+            )
+            .is_some()
+        {
+            return Err(ClosureError::Mismatch);
+        }
+    }
+    apply_connections(&source, &mut imported_units)?;
+    for imported in imports {
+        let alias = scalar(field(imported, "alias")?)?;
+        let unit = imported_units.get(&alias).ok_or(ClosureError::Invalid)?;
+        if let Some(requirements) = unit.manifest.get("execution_requirements") {
+            let WireValue::Array(ports) = field(requirements, "ports")? else {
+                return Err(ClosureError::Invalid);
+            };
+            for port in ports {
+                let mut inherited = port.clone();
+                if let Some(WireValue::Array(connections)) = source.get("connections") {
+                    let direct = matches!(port.get("import_path"), Some(WireValue::Array(path)) if path.len()==1 && path[0].as_string().as_deref()==Some(&alias));
+                    if direct
+                        && connections.iter().any(|row| {
+                            let Some(to) = row.get("to") else {
+                                return false;
+                            };
+                            to.get("import").and_then(WireValue::as_string).as_deref()
+                                == Some(&alias)
+                                && to
+                                    .get("action")
+                                    .and_then(WireValue::as_string)
+                                    .map(|action| format!("{}.{}", unit.namespace, action))
+                                    == port.get("action_id").and_then(WireValue::as_string)
+                                && to.get("variant") == port.get("variant")
+                                && to.get("input") == port.get("input_name")
+                        })
+                    {
+                        insert_field(&mut inherited, "bound", WireValue::Bool(true))?;
+                    }
+                }
+                inherited_ports.push(inherited);
+            }
+        }
+        let checked = crate::full_manifest::validate_full_manifest(&unit.manifest)
             .map_err(|_| ClosureError::Invalid)?;
         let digest = sha256_hex(checked.as_bytes());
         if nodes
-            .insert(digest.encode_utf16().collect(), namespaced)
+            .insert(digest.encode_utf16().collect(), unit.manifest.clone())
             .is_some()
         {
             return Err(ClosureError::Mismatch);
@@ -1712,6 +2090,7 @@ fn compile_at(
     *field_mut(&mut root, "dependencies")? = WireValue::Array(dependency_ids);
     apply_derivations(&source, &mut root, &nodes)?;
     if v2 {
+        inherited_ports.extend(own_ports);
         insert_field(
             &mut root,
             "execution_requirements",
@@ -1730,7 +2109,7 @@ fn compile_at(
                 ),
                 (
                     "ports".encode_utf16().collect(),
-                    WireValue::Array(own_ports),
+                    WireValue::Array(inherited_ports),
                 ),
             ]),
         )?;
@@ -2098,6 +2477,137 @@ mod tests {
         assert_eq!(
             canonical(&compiled.compilation_lock).unwrap(),
             canonical(&lock).unwrap()
+        );
+    }
+
+    #[test]
+    fn inherited_v2_requirement_uses_import_alias_path() {
+        let vector: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../conformance/public-package-inherited-port-vectors.json"
+        ))
+        .unwrap();
+        assert_eq!(vector["passed"], true);
+        assert_eq!(vector["interfaces_complete"], false);
+        let closure = parse_wire_json_bounded(
+            &serde_json::to_vec(&vector["closure"]).unwrap(),
+            32,
+            6 * 1024 * 1024,
+        )
+        .unwrap();
+        let compiled = compile_simple_baseline(&scan_package_closure(&closure).unwrap()).unwrap();
+        assert_eq!(
+            compiled.protocol_digest,
+            vector["protocol_digest"].as_str().unwrap()
+        );
+        let expected = parse_wire_json_bounded(
+            &serde_json::to_vec(&vector["compiled_manifest"]).unwrap(),
+            32,
+            65_536,
+        )
+        .unwrap();
+        assert_eq!(
+            canonical(&compiled.manifest).unwrap(),
+            canonical(&expected).unwrap()
+        );
+        let ports = compiled
+            .manifest
+            .get("execution_requirements")
+            .unwrap()
+            .get("ports")
+            .unwrap();
+        let WireValue::Array(ports) = ports else {
+            panic!("expected ports")
+        };
+        assert_eq!(ports.len(), 1);
+        let WireValue::Array(path) = ports[0].get("import_path").unwrap() else {
+            panic!("expected import path")
+        };
+        assert_eq!(path[0].as_string().as_deref(), Some("dep"));
+    }
+
+    #[test]
+    fn v2_state_output_declaration_matches_reference_compiler() {
+        let vector: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../conformance/public-package-output-vectors.json"
+        ))
+        .unwrap();
+        assert_eq!(vector["passed"], true);
+        let closure = parse_wire_json_bounded(
+            &serde_json::to_vec(&vector["closure"]).unwrap(),
+            32,
+            6 * 1024 * 1024,
+        )
+        .unwrap();
+        let compiled = compile_simple_baseline(&scan_package_closure(&closure).unwrap()).unwrap();
+        assert_eq!(
+            compiled.source_digest,
+            vector["source_digest"].as_str().unwrap()
+        );
+        assert_eq!(
+            compiled.protocol_digest,
+            vector["protocol_digest"].as_str().unwrap()
+        );
+        let expected = parse_wire_json_bounded(
+            &serde_json::to_vec(&vector["compiled_manifest"]).unwrap(),
+            32,
+            65_536,
+        )
+        .unwrap();
+        assert_eq!(
+            canonical(&compiled.manifest).unwrap(),
+            canonical(&expected).unwrap()
+        );
+    }
+
+    #[test]
+    fn sequence_resolves_unbound_record_and_entity_state_outputs() {
+        let vector: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../conformance/public-package-unbound-output-vectors.json"
+        ))
+        .unwrap();
+        assert_eq!(vector["passed"], true);
+        assert_eq!(vector["fixture"]["passed"], true);
+        let closure = parse_wire_json_bounded(
+            &serde_json::to_vec(&vector["closure"]).unwrap(),
+            32,
+            6 * 1024 * 1024,
+        )
+        .unwrap();
+        let compiled = compile_simple_baseline(&scan_package_closure(&closure).unwrap()).unwrap();
+        assert_eq!(
+            compiled.protocol_digest,
+            vector["protocol_digest"].as_str().unwrap()
+        );
+    }
+
+    #[test]
+    fn v2_exact_ref_connection_mutates_signed_dependency_and_binds_port() {
+        let vector: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../conformance/public-package-connection-vectors.json"
+        ))
+        .unwrap();
+        assert_eq!(vector["passed"], true);
+        assert_eq!(vector["interfaces_complete"], true);
+        let closure = parse_wire_json_bounded(
+            &serde_json::to_vec(&vector["closure"]).unwrap(),
+            32,
+            6 * 1024 * 1024,
+        )
+        .unwrap();
+        let compiled = compile_simple_baseline(&scan_package_closure(&closure).unwrap()).unwrap();
+        assert_eq!(
+            compiled.protocol_digest,
+            vector["protocol_digest"].as_str().unwrap()
+        );
+        let expected = parse_wire_json_bounded(
+            &serde_json::to_vec(&vector["compiled_manifest"]).unwrap(),
+            32,
+            65_536,
+        )
+        .unwrap();
+        assert_eq!(
+            canonical(&compiled.manifest).unwrap(),
+            canonical(&expected).unwrap()
         );
     }
 
