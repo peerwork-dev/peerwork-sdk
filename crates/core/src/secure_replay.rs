@@ -7,6 +7,7 @@ use crate::{
     crypto::{actor_id, base64url, decode_base64url, sha256, sha256_hex},
     e2ee::{open_content_wire, SealedContent},
     interpreter::{evaluate_action, InterpreterAuth, ResolvedInput},
+    migration_fragments::{inflate_fragments, MigrationBatch},
     protocol_object_source::{
         object_part_id, read_protocol_object_source, validate_object_part,
         validate_object_source_proof,
@@ -1165,6 +1166,178 @@ pub(crate) struct ReplayFacts {
     pub legacy: bool,
 }
 
+/// Reconstruct a signed PUBLIC prefix exported into the first PRIVATE
+/// migration pages. The regular header scanner authenticates the complete
+/// concatenated history after this function returns; nothing here is a proof.
+fn restore_archived_public_history(
+    policy_wires: &[&[u8]],
+    commit_wires: &[&[u8]],
+    workspace_id: &str,
+    keyring_wire: Option<&[u8]>,
+) -> Result<Vec<Vec<u8>>, ReplayError> {
+    let Some(first_wire) = commit_wires.first() else {
+        return Ok(Vec::new());
+    };
+    let first =
+        parse_wire_json_js_bounded(first_wire, 64, 196_608).map_err(|_| ReplayError::Invalid)?;
+    let first_payload = first.get("payload").ok_or(ReplayError::Invalid)?;
+    if integer(first_payload, "sequence")? == 1 {
+        return Ok(commit_wires.iter().map(|wire| wire.to_vec()).collect());
+    }
+    let source = first_payload
+        .get("migration")
+        .and_then(|migration| migration.get("source_checkpoint"))
+        .ok_or(ReplayError::Invalid)?;
+    let source_sequence = integer(source, "sequence")?;
+    if source_sequence == 0
+        || string(source, "workspace_id")? != workspace_id
+        || source_sequence.checked_add(1) != Some(integer(first_payload, "sequence")?)
+        || source.get("head") != first_payload.get("previous")
+    {
+        return Err(ReplayError::Invalid);
+    }
+    let genesis_wire = policy_wires.first().ok_or(ReplayError::Invalid)?;
+    let genesis = parse_wire_json_js_bounded(genesis_wire, 64, 32 * 1024 * 1024)
+        .map_err(|_| ReplayError::Invalid)?;
+    let genesis_payload = genesis.get("payload").ok_or(ReplayError::Invalid)?;
+    let owner = string(genesis_payload, "owner_id")?;
+    let owner_key = string(genesis_payload, "signing_key")?;
+    if string(source, "owner_id")? != owner || string(source, "owner_key")? != owner_key {
+        return Err(ReplayError::Invalid);
+    }
+    let mut policies = HashMap::new();
+    let mut source_policy: Option<(u64, String)> = None;
+    for wire in policy_wires {
+        let policy = parse_wire_json_js_bounded(wire, 64, 32 * 1024 * 1024)
+            .map_err(|_| ReplayError::Invalid)?;
+        let hash = sha256_hex(
+            canonical_wire_value(&policy, Path::SecureArtifact)
+                .map_err(|_| ReplayError::Invalid)?
+                .as_bytes(),
+        );
+        let effective = integer(
+            policy.get("payload").ok_or(ReplayError::Invalid)?,
+            "effective_sequence",
+        )?;
+        if effective <= source_sequence
+            && source_policy
+                .as_ref()
+                .is_none_or(|(prior, _)| effective >= *prior)
+        {
+            source_policy = Some((effective, hash.clone()));
+        }
+        policies.insert(hash, policy);
+    }
+    if source_policy.as_ref().map(|(_, hash)| hash.as_str())
+        != Some(string(source, "policy_hash")?.as_str())
+    {
+        return Err(ReplayError::Invalid);
+    }
+    let mut prior = string(source, "head")?;
+    let mut sequence = source_sequence;
+    let mut archive_objects = Vec::new();
+    for wire in commit_wires {
+        let commit =
+            parse_wire_json_js_bounded(wire, 64, 196_608).map_err(|_| ReplayError::Invalid)?;
+        let payload = commit.get("payload").ok_or(ReplayError::Invalid)?;
+        let Some(migration) = payload.get("migration") else {
+            break;
+        };
+        let policy_hash = string(payload, "policy_hash")?;
+        let policy = policies.get(&policy_hash).ok_or(ReplayError::Invalid)?;
+        let policy_payload = policy.get("payload").ok_or(ReplayError::Invalid)?;
+        if string(payload, "workspace_id")? != workspace_id
+            || string(payload, "mode")? != "PRIVATE"
+            || integer(payload, "sequence")? != sequence + 1
+            || string(payload, "previous")? != prior
+            || string(payload, "actor_id")? != owner
+            || string(payload, "signing_key")? != owner_key
+            || payload.get("delegation") != Some(&WireValue::Null)
+            || integer(payload, "epoch")? != integer(policy_payload, "epoch")?
+            || !same_wire(
+                migration
+                    .get("source_checkpoint")
+                    .ok_or(ReplayError::Invalid)?,
+                source,
+            )?
+        {
+            return Err(ReplayError::Invalid);
+        }
+        let key = zeroize::Zeroizing::new(epoch_key(
+            keyring_wire.ok_or(ReplayError::Invalid)?,
+            workspace_id,
+            integer(payload, "epoch")?,
+        )?);
+        let sealed = sealed_content(payload.get("body").ok_or(ReplayError::Invalid)?)?;
+        let context = commit_context(payload)?;
+        let context_text = canonical_wire_value(&context, Path::SecureArtifact)
+            .map_err(|_| ReplayError::Invalid)?;
+        let plaintext = zeroize::Zeroizing::new(
+            open_content_wire(&key, &sealed, context_text.as_bytes())
+                .map_err(|_| ReplayError::Invalid)?,
+        );
+        let operation = parse_wire_json_js_bounded(&plaintext, 2048, MAX_CONTENT_BYTES)
+            .map_err(|_| ReplayError::Invalid)?;
+        if string(&operation, "kind")? != "MIGRATE"
+            || canonical_wire_value(&operation, Path::SecureArtifact)
+                .map_err(|_| ReplayError::Invalid)?
+                .as_bytes()
+                != plaintext.as_slice()
+        {
+            return Err(ReplayError::Invalid);
+        }
+        let WireValue::Array(objects) = operation.get("objects").ok_or(ReplayError::Invalid)?
+        else {
+            return Err(ReplayError::Invalid);
+        };
+        archive_objects.extend_from_slice(objects);
+        sequence += 1;
+        prior = sha256_hex(
+            canonical_wire_value(&commit, Path::SecureArtifact)
+                .map_err(|_| ReplayError::Invalid)?
+                .as_bytes(),
+        );
+    }
+    let inflated = inflate_fragments(&archive_objects).map_err(|_| ReplayError::Invalid)?;
+    let mut originals = HashMap::<u64, Vec<u8>>::new();
+    for object in inflated {
+        if string(&object, "kind")? != "secure_commits" {
+            continue;
+        }
+        let value = object.get("value").ok_or(ReplayError::Invalid)?;
+        let original = if let Some(units) = value.get("artifact").and_then(WireValue::as_utf16) {
+            parse_js_json_string_bounded(units, 64, 196_608).map_err(|_| ReplayError::Invalid)?
+        } else {
+            value.clone()
+        };
+        let payload = original.get("payload").ok_or(ReplayError::Invalid)?;
+        let n = integer(payload, "sequence")?;
+        if n == 0
+            || n > source_sequence
+            || string(payload, "workspace_id")? != workspace_id
+            || string(payload, "mode")? != "PUBLIC"
+            || originals.contains_key(&n)
+        {
+            return Err(ReplayError::Invalid);
+        }
+        originals.insert(
+            n,
+            canonical_wire_value(&original, Path::SecureArtifact)
+                .map_err(|_| ReplayError::Invalid)?
+                .into_bytes(),
+        );
+    }
+    if u64::try_from(originals.len()).map_err(|_| ReplayError::Invalid)? != source_sequence {
+        return Err(ReplayError::Invalid);
+    }
+    let mut restored = Vec::with_capacity(originals.len() + commit_wires.len());
+    for sequence in 1..=source_sequence {
+        restored.push(originals.remove(&sequence).ok_or(ReplayError::Invalid)?);
+    }
+    restored.extend(commit_wires.iter().map(|wire| wire.to_vec()));
+    Ok(restored)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn replay_basic_content(
     policy_wires: &[&[u8]],
@@ -1175,6 +1348,10 @@ pub(crate) fn replay_basic_content(
     pinned: Option<&CheckpointPin<'_>>,
     keyring_wire: Option<&[u8]>,
 ) -> Result<ReplayFacts, ReplayError> {
+    let restored =
+        restore_archived_public_history(policy_wires, commit_wires, workspace_id, keyring_wire)?;
+    let restored_refs = restored.iter().map(Vec::as_slice).collect::<Vec<_>>();
+    let commit_wires = restored_refs.as_slice();
     let chain = scan_signed_chain_headers(
         policy_wires,
         commit_wires,
@@ -1197,7 +1374,9 @@ pub(crate) fn replay_basic_content(
     let mut previous_policy_hash: Option<String> = None;
     let mut operations = Vec::with_capacity(commit_wires.len());
     let mut legacy = false;
-    let mut migration_pending = false;
+    let mut migration_batch: Option<MigrationBatch> = None;
+    let mut migration_base: Option<Vec<WireValue>> = None;
+    let mut prior_mode: Option<String> = None;
     for wire in commit_wires {
         let mut staged_revisions: HashMap<String, u64> = HashMap::new();
         let commit =
@@ -1286,12 +1465,16 @@ pub(crate) fn replay_basic_content(
             commit_wires,
             &mut structure_progress,
         )?;
-        if migration_pending && kind != "MIGRATE" {
-            // finishMigration must authenticate the entire batch before any
-            // later operation can observe or act on imported objects.
+        if kind != "MIGRATE" && migration_batch.is_some() {
+            let _candidate = migration_batch
+                .take()
+                .ok_or(ReplayError::Invalid)?
+                .finish(migration_base.as_deref().ok_or(ReplayError::Invalid)?)
+                .map_err(|_| ReplayError::Invalid)?;
+            // Historical protocol bindings, roles, and format ceiling still
+            // gate installation before a later operation can see the batch.
             return Err(ReplayError::Invalid);
         }
-        migration_pending |= kind == "MIGRATE";
         // These are only local preconditions. Full operation evaluation still
         // happens before any trusted journal result may be constructed.
         let input = operation.get("input").ok_or(ReplayError::Invalid)?;
@@ -1359,6 +1542,57 @@ pub(crate) fn replay_basic_content(
             validate_admin_preflight(&operation, payload, &latest_revisions)
                 .map_err(|_| ReplayError::Invalid)?;
         } else if kind == "MIGRATE" {
+            let migration = payload.get("migration").ok_or(ReplayError::Invalid)?;
+            let root = string(migration, "source_root")?;
+            let source = migration
+                .get("source_checkpoint")
+                .ok_or(ReplayError::Invalid)?;
+            let version = integer(payload, "v")?;
+            if let Some(batch) = &migration_batch {
+                if batch.root() != root
+                    || batch.format() != version
+                    || !same_wire(batch.source(), source)?
+                {
+                    return Err(ReplayError::Invalid);
+                }
+            } else {
+                let sequence = integer(payload, "sequence")?;
+                if sequence == 1 {
+                    if source != &WireValue::Null {
+                        return Err(ReplayError::Invalid);
+                    }
+                } else if prior_mode.as_deref() == Some("PUBLIC") && mode == "PRIVATE" {
+                    let expected = fields_object(vec![
+                        ("v", WireValue::Number(1.0)),
+                        ("workspace_id", string_value(workspace_id)),
+                        ("owner_id", string_value(&chain.owner_id)),
+                        ("owner_key", string_value(&chain.owner_key)),
+                        ("sequence", WireValue::Number((sequence - 1) as f64)),
+                        (
+                            "head",
+                            payload.get("previous").ok_or(ReplayError::Invalid)?.clone(),
+                        ),
+                        (
+                            "policy_hash",
+                            string_value(
+                                previous_policy_hash
+                                    .as_deref()
+                                    .ok_or(ReplayError::Invalid)?,
+                            ),
+                        ),
+                    ]);
+                    if !same_wire(source, &expected)? {
+                        return Err(ReplayError::Invalid);
+                    }
+                } else {
+                    return Err(ReplayError::Invalid);
+                }
+                migration_base = Some(prior_objects.clone());
+                migration_batch = Some(
+                    MigrationBatch::new(root, source.clone(), version)
+                        .map_err(|_| ReplayError::Invalid)?,
+                );
+            }
             let source_items = payload
                 .get("migration")
                 .and_then(|migration| migration.get("source_items"))
@@ -1395,6 +1629,11 @@ pub(crate) fn replay_basic_content(
             {
                 return Err(ReplayError::Invalid);
             }
+            migration_batch
+                .as_mut()
+                .ok_or(ReplayError::Invalid)?
+                .add_page(items, objects)
+                .map_err(|_| ReplayError::Invalid)?;
         }
         let mut batch = HashSet::new();
         for object in objects {
@@ -1525,10 +1764,14 @@ pub(crate) fn replay_basic_content(
         }
         operations.push(signed_operation);
         previous_policy_hash = Some(policy_hash);
+        prior_mode = Some(mode);
     }
-    if migration_pending {
-        // This private helper has no fragment inflation/root/finalization yet.
-        // A validated descriptor prefix cannot stand in for a completed read.
+    if let Some(batch) = migration_batch {
+        let _candidate = batch
+            .finish(migration_base.as_deref().ok_or(ReplayError::Invalid)?)
+            .map_err(|_| ReplayError::Invalid)?;
+        // The complete descriptor root and fragments are checked, but legacy
+        // binding and role finalization still gate release of migrated state.
         return Err(ReplayError::Invalid);
     }
     Ok(ReplayFacts {
@@ -3556,6 +3799,139 @@ mod tests {
                 .unwrap()
                 .as_bytes(),
         )
+    }
+
+    #[test]
+    fn archived_public_prefix_is_restored_before_signed_header_scan() {
+        let key = SigningKey::from_bytes(&[116; 32]);
+        let owner_key = key_id(&key.verifying_key().to_bytes());
+        let owner = actor_id(&key.verifying_key().to_bytes());
+        let workspace = base64url(&[117; 32]);
+        let (_, encryption_public) = DhP256HkdfSha256::gen_keypair();
+        let point = encryption_public.to_bytes();
+        let encryption = json!({"kty":"EC","crv":"P-256","x":base64url(&point[1..33]),"y":base64url(&point[33..65])});
+        let encryption_id = base64url(&sha256(
+            canonical(&encryption, Path::SecureArtifact)
+                .unwrap()
+                .as_bytes(),
+        ));
+        let certificate: Value = serde_json::from_slice(&signed(
+            json!({"v":1,"actor_id":owner,"signing_key":owner_key,"encryption_key":encryption,
+                "encryption_key_id":encryption_id,"issued_at":0,"expires_at":1000}),
+            "peerwork.secure.key-certificate.v1",
+            &key,
+        ))
+        .unwrap();
+        let members =
+            json!([{"actor_id":owner,"certificate":certificate,"role":"OWNER","scopes":[]}]);
+        let policy1 = signed(
+            json!({"v":1,"workspace_id":workspace,"owner_id":owner,"signing_key":owner_key,
+            "version":1,"previous_policy":null,"effective_sequence":1,"visibility":"PUBLIC","epoch":0,
+            "members":members,"issued_at":1}),
+            "peerwork.secure.policy.v1",
+            &key,
+        );
+        let policy2 = signed(
+            json!({"v":1,"workspace_id":workspace,"owner_id":owner,"signing_key":owner_key,
+            "version":2,"previous_policy":hash(&policy1),"effective_sequence":2,"visibility":"PRIVATE","epoch":1,
+            "members":members,"issued_at":2}),
+            "peerwork.secure.policy.v1",
+            &key,
+        );
+        let public = signed(
+            json!({"v":1,"workspace_id":workspace,"sequence":1,"previous":null,
+            "policy_hash":hash(&policy1),"epoch":0,"actor_id":owner,"signing_key":owner_key,
+            "command_id":base64url(&[118;32]),"action_id":"test.bootstrap","instance_id":null,
+            "issued_at":1,"delegation":null,"mode":"PUBLIC",
+            "body":{"v":1,"kind":"BOOTSTRAP","input":{},"objects":[]}}),
+            "peerwork.secure.commit.v1",
+            &key,
+        );
+        let source = json!({"v":1,"workspace_id":workspace,"owner_id":owner,"owner_key":owner_key,
+            "sequence":1,"head":hash(&public),"policy_hash":hash(&policy1)});
+        let artifact = canonical(
+            &serde_json::from_slice::<Value>(&public).unwrap(),
+            Path::SecureArtifact,
+        )
+        .unwrap();
+        let archived = json!({"kind":"secure_commits","id":base64url(&[119;32]),"revision":1,
+            "provenance":"LEGACY_OWNER_ATTESTED","value":{"artifact":artifact}});
+        let descriptors = json!([{"kind":"secure_commits","id":archived["id"],"revision":1}]);
+        let source_root = sha256_hex(
+            canonical(&descriptors, Path::SecureArtifact)
+                .unwrap()
+                .as_bytes(),
+        );
+        let context = json!({"v":1,"workspace_id":workspace,"sequence":2,"previous":hash(&public),
+            "policy_hash":hash(&policy2),"epoch":1,"actor_id":owner,"signing_key":owner_key,
+            "command_id":base64url(&[120;32]),"action_id":"secure.migrate","instance_id":null,
+            "issued_at":2,"delegation":null,
+            "migration":{"source_checkpoint":source,"source_root":source_root,"source_items":descriptors}});
+        let operation = json!({"v":1,"kind":"MIGRATE","input":{},"objects":[archived]});
+        let epoch_key = [121_u8; 32];
+        let plaintext = canonical(&operation, Path::SecureArtifact).unwrap();
+        let sealed = seal_content_wire(
+            &epoch_key,
+            plaintext.as_bytes(),
+            canonical(&context, Path::SecureArtifact)
+                .unwrap()
+                .as_bytes(),
+        )
+        .unwrap();
+        let mut payload = context;
+        payload["mode"] = json!("PRIVATE");
+        payload["body"] = serde_json::to_value(sealed).unwrap();
+        let migration = signed(payload, "peerwork.secure.commit.v1", &key);
+        let keyring = serde_json::to_vec(&json!({"v":1,"workspace_id":workspace,
+            "keys":[{"epoch":1,"key":base64url(&epoch_key)}]}))
+        .unwrap();
+        let restored = restore_archived_public_history(
+            &[&policy1, &policy2],
+            &[&migration],
+            &workspace,
+            Some(&keyring),
+        )
+        .unwrap();
+        assert_eq!(restored.len(), 2);
+        assert_eq!(hash(&restored[0]), hash(&public));
+        let checkpoint = serde_json::to_vec(&json!({"v":1,"workspace_id":workspace,"owner_id":owner,
+            "owner_key":owner_key,"sequence":2,"head":hash(&migration),"policy_hash":hash(&policy2)})).unwrap();
+        let refs = restored.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        assert!(scan_signed_chain_headers(
+            &[&policy1, &policy2],
+            &refs,
+            &checkpoint,
+            &workspace,
+            Some(&OwnerPin {
+                actor_id: &owner,
+                signing_key: &owner_key
+            }),
+            None
+        )
+        .is_ok());
+        assert!(
+            replay_basic_content(
+                &[&policy1, &policy2],
+                &[&migration],
+                &checkpoint,
+                &workspace,
+                Some(&OwnerPin {
+                    actor_id: &owner,
+                    signing_key: &owner_key
+                }),
+                None,
+                Some(&keyring),
+            )
+            .is_err(),
+            "migration must not become an authority proof before historical validation"
+        );
+        assert!(restore_archived_public_history(
+            &[&policy1, &policy2],
+            &[&migration],
+            &workspace,
+            None
+        )
+        .is_err());
     }
 
     #[test]

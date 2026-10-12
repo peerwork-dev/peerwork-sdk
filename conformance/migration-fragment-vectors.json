@@ -1,0 +1,230 @@
+[
+  {
+    "name": "one_fragment",
+    "objects": [
+      {
+        "kind": "secure_fragment",
+        "id": "d09c79a3c3e46318f55e370de84d8fa8a8b267cb140429a2a90e42f2fcbe557f-0",
+        "revision": 1,
+        "provenance": "AUTHOR_SIGNED",
+        "value": {
+          "fragment": {
+            "kind": "protocols",
+            "id": "proto",
+            "revision": 1,
+            "index": 0,
+            "count": 1,
+            "provenance": "AUTHOR_SIGNED"
+          },
+          "data": "eyJleGFtcGxlIjoxfQ"
+        }
+      }
+    ],
+    "ok": true,
+    "inflated": [
+      {
+        "kind": "protocols",
+        "id": "proto",
+        "revision": 1,
+        "provenance": "AUTHOR_SIGNED",
+        "value": {
+          "example": 1
+        }
+      }
+    ]
+  },
+  {
+    "name": "missing_part",
+    "objects": [
+      {
+        "kind": "secure_fragment",
+        "id": "d09c79a3c3e46318f55e370de84d8fa8a8b267cb140429a2a90e42f2fcbe557f-0",
+        "revision": 1,
+        "provenance": "AUTHOR_SIGNED",
+        "value": {
+          "fragment": {
+            "kind": "protocols",
+            "id": "proto",
+            "revision": 1,
+            "index": 0,
+            "count": 2,
+            "provenance": "AUTHOR_SIGNED"
+          },
+          "data": "eyJleGFtcGxlIjoxfQ"
+        }
+      }
+    ],
+    "ok": false,
+    "error": "MIGRATION_FRAGMENT_INVALID"
+  },
+  {
+    "name": "duplicate_part",
+    "objects": [
+      {
+        "kind": "secure_fragment",
+        "id": "d09c79a3c3e46318f55e370de84d8fa8a8b267cb140429a2a90e42f2fcbe557f-0",
+        "revision": 1,
+        "provenance": "AUTHOR_SIGNED",
+        "value": {
+          "fragment": {
+            "kind": "protocols",
+            "id": "proto",
+            "revision": 1,
+            "index": 0,
+            "count": 1,
+            "provenance": "AUTHOR_SIGNED"
+          },
+          "data": "eyJleGFtcGxlIjoxfQ"
+        }
+      },
+      {
+        "kind": "secure_fragment",
+        "id": "d09c79a3c3e46318f55e370de84d8fa8a8b267cb140429a2a90e42f2fcbe557f-0",
+        "revision": 1,
+        "provenance": "AUTHOR_SIGNED",
+        "value": {
+          "fragment": {
+            "kind": "protocols",
+            "id": "proto",
+            "revision": 1,
+            "index": 0,
+            "count": 1,
+            "provenance": "AUTHOR_SIGNED"
+          },
+          "data": "eyJleGFtcGxlIjoxfQ"
+        }
+      }
+    ],
+    "ok": false,
+    "error": "MIGRATION_FRAGMENT_INVALID"
+  },
+  {
+    "name": "noncanonical_json",
+    "objects": [
+      {
+        "kind": "secure_fragment",
+        "id": "d09c79a3c3e46318f55e370de84d8fa8a8b267cb140429a2a90e42f2fcbe557f-0",
+        "revision": 1,
+        "provenance": "AUTHOR_SIGNED",
+        "value": {
+          "fragment": {
+            "kind": "protocols",
+            "id": "proto",
+            "revision": 1,
+            "index": 0,
+            "count": 1,
+            "provenance": "AUTHOR_SIGNED"
+          },
+          "data": "eyAiZXhhbXBsZSI6MX0"
+        }
+      }
+    ],
+    "ok": false,
+    "error": "MIGRATION_FRAGMENT_INVALID"
+  },
+  {
+    "name": "invalid_utf8",
+    "objects": [
+      {
+        "kind": "secure_fragment",
+        "id": "d09c79a3c3e46318f55e370de84d8fa8a8b267cb140429a2a90e42f2fcbe557f-0",
+        "revision": 1,
+        "provenance": "AUTHOR_SIGNED",
+        "value": {
+          "fragment": {
+            "kind": "protocols",
+            "id": "proto",
+            "revision": 1,
+            "index": 0,
+            "count": 1,
+            "provenance": "AUTHOR_SIGNED"
+          },
+          "data": "_w"
+        }
+      }
+    ],
+    "ok": false,
+    "error": "The encoded data was not valid for encoding utf-8"
+  },
+  {
+    "name": "normal_collision",
+    "objects": [
+      {
+        "kind": "protocols",
+        "id": "proto",
+        "revision": 1,
+        "provenance": "AUTHOR_SIGNED",
+        "value": {
+          "example": 1
+        }
+      },
+      {
+        "kind": "secure_fragment",
+        "id": "d09c79a3c3e46318f55e370de84d8fa8a8b267cb140429a2a90e42f2fcbe557f-0",
+        "revision": 1,
+        "provenance": "AUTHOR_SIGNED",
+        "value": {
+          "fragment": {
+            "kind": "protocols",
+            "id": "proto",
+            "revision": 1,
+            "index": 0,
+            "count": 1,
+            "provenance": "AUTHOR_SIGNED"
+          },
+          "data": "eyJleGFtcGxlIjoxfQ"
+        }
+      }
+    ],
+    "ok": false,
+    "error": "MIGRATION_FRAGMENT_INVALID"
+  },
+  {
+    "name": "wrong_fragment_id",
+    "objects": [
+      {
+        "kind": "secure_fragment",
+        "id": "wrong-0",
+        "revision": 1,
+        "provenance": "AUTHOR_SIGNED",
+        "value": {
+          "fragment": {
+            "kind": "protocols",
+            "id": "proto",
+            "revision": 1,
+            "index": 0,
+            "count": 1,
+            "provenance": "AUTHOR_SIGNED"
+          },
+          "data": "eyJleGFtcGxlIjoxfQ"
+        }
+      }
+    ],
+    "ok": false,
+    "error": "MIGRATION_FRAGMENT_INVALID"
+  },
+  {
+    "name": "zero_part",
+    "objects": [
+      {
+        "kind": "secure_fragment",
+        "id": "d09c79a3c3e46318f55e370de84d8fa8a8b267cb140429a2a90e42f2fcbe557f-0",
+        "revision": 1,
+        "provenance": "AUTHOR_SIGNED",
+        "value": {
+          "fragment": {
+            "kind": "protocols",
+            "id": "proto",
+            "revision": 1,
+            "index": 0,
+            "count": 1,
+            "provenance": "AUTHOR_SIGNED"
+          },
+          "data": ""
+        }
+      }
+    ],
+    "ok": false,
+    "error": "MIGRATION_FRAGMENT_INVALID"
+  }
+]

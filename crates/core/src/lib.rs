@@ -37,6 +37,7 @@ mod secure_replay;
 pub mod strict_json;
 mod structure_bindings;
 mod structure_delta;
+mod migration_fragments;
 #[allow(dead_code)]
 mod structure_policy;
 pub mod verified_secure_grant;
