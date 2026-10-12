@@ -50,6 +50,12 @@ fn main() {
     );
 
     let target = env::var("CARGO_CFG_TARGET_OS").expect("target OS");
+    let host_triple = env::var("HOST").expect("build host triple");
+    let target_triple = env::var("TARGET").expect("target triple");
+    assert_eq!(
+        host_triple, target_triple,
+        "ICU4C must be built on a target-native builder; cross-toolchain selection is not implemented"
+    );
     if target != "linux" && target != "macos" {
         panic!("bundled ICU4C build is not yet implemented for target OS {target}");
     }

@@ -385,6 +385,8 @@ mod tests {
                 || case["name"] == "v3_recovered_invalid_admin"
                 || case["name"] == "v3_hidden_decryptable_migration_denied"
                 || case["name"] == "v2_structured_recovery_snapshot_base"
+                || case["name"] == "v2_structured_recovery_snapshot_end"
+                || case["name"] == "v2_structured_recovery_wrong_snapshot_root"
             {
                 assert_eq!(
                     preflight.unwrap(),

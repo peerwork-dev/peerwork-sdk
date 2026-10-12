@@ -207,6 +207,41 @@ try {
       workspace_id: workspaceId, owner: {actor_id: identity.actorId, key: identity.keyId},
       ok: false, error: String(error.message)});
   }
+  const end2 = await createCommit({identity, policy: policy2, checkpoint: cp23,
+    operation: {v: 1, kind: 'ADMIN', input: {}, objects: []},
+    actionId: 'secure.structure.end', instanceId: null, commandId: '9'.repeat(43),
+    issuedAt: 6, keyring,
+    structure: {v: 1, mode: 'SNAPSHOT_END', records: [], heads: [], snapshot}});
+  const cp24 = {...cp20, sequence: 4, head: await secureHash(end2)};
+  const wrongEnd2 = await createCommit({identity, policy: policy2, checkpoint: cp23,
+    operation: {v: 1, kind: 'ADMIN', input: {}, objects: []},
+    actionId: 'secure.structure.end', instanceId: null, commandId: 'w'.repeat(43),
+    issuedAt: 6, keyring,
+    structure: {v: 1, mode: 'SNAPSHOT_END', records: [], heads: [],
+      snapshot: {...snapshot, root: '0'.repeat(64)}}});
+  const wrongCp24 = {...cp20, sequence: 4, head: await secureHash(wrongEnd2)};
+  for (const [name, final, finalCheckpoint] of [
+    ['v2_structured_recovery_snapshot_end', end2, cp24],
+    ['v2_structured_recovery_wrong_snapshot_root', wrongEnd2, wrongCp24],
+  ]) {
+    try {
+      const commits = [boot2, bad2, marker2, final];
+      const journal = await verifyJournal({workspaceId, policies: [policy2],
+        commits, checkpoint: finalCheckpoint, keyring,
+        trustedOwner: {actorId: identity.actorId, key: identity.keyId}});
+      cases.push({name, policy: policy2, commits, checkpoint: finalCheckpoint,
+        keyring, workspace_id: workspaceId,
+        owner: {actor_id: identity.actorId, key: identity.keyId},
+        ok: true, operations: journal.operations, objects: journal.objects,
+        recoveries: journal.recoveries, legacy: journal.legacy,
+        structure_state: journal.structure?.state ?? null});
+    } catch (error) {
+      cases.push({name, policy: policy2, commits: [boot2, bad2, marker2, final],
+        checkpoint: finalCheckpoint, keyring, workspace_id: workspaceId,
+        owner: {actor_id: identity.actorId, key: identity.keyId},
+        ok: false, error: String(error.message)});
+    }
+  }
   await writeFile(new URL('./signed-recovery-vectors.json', import.meta.url),
     `${JSON.stringify({prepared: {recovery: prepared.recovery,
       failure_code: prepared.failure_code}, cases}, null, 2)}\n`);
