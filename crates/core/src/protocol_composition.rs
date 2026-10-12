@@ -496,6 +496,25 @@ pub(crate) fn resolve_protocol(
         )?;
     }
     let result = normalized(&merged)?.0;
+    if let Some(requirements) = result.get("execution_requirements") {
+        for port in array(field(requirements, "ports")?)? {
+            let action_id = utf16(field(port, "action_id")?)?;
+            let index = field(port, "variant")?
+                .as_number()
+                .ok_or(CompositionError::Invalid)? as usize;
+            let action = array(field(&result, "actions")?)?.iter().find(|action| {
+                action.get("id").and_then(WireValue::as_utf16) == Some(action_id.as_slice())
+            });
+            if !action.is_some_and(|action| {
+                action
+                    .get("variants")
+                    .and_then(|value| array(value).ok())
+                    .is_some_and(|variants| variants.get(index).is_some())
+            }) {
+                return Err(CompositionError::Conflict);
+            }
+        }
+    }
     Ok((result, closure))
 }
 
@@ -562,7 +581,48 @@ mod tests {
                         "{name}"
                     );
                 }
-                None => assert!(actual.is_err(), "{name}"),
+                None => {
+                    assert!(actual.is_err(), "{name}");
+                    if name.starts_with("merged_port_missing_") {
+                        let root = field(&case, "root").unwrap();
+                        let proof = object(vec![
+                            ("v", WireValue::Number(1.0)),
+                            ("source_digest", string(&digest(root).unwrap())),
+                            ("source_manifest", normalized(root).unwrap().0),
+                            (
+                                "dependencies",
+                                WireValue::Array(
+                                    array(field(&case, "nodes").unwrap())
+                                        .unwrap()
+                                        .iter()
+                                        .map(|node| {
+                                            object(vec![
+                                                ("digest", field(node, "digest").unwrap().clone()),
+                                                (
+                                                    "manifest",
+                                                    normalized(field(node, "manifest").unwrap())
+                                                        .unwrap()
+                                                        .0,
+                                                ),
+                                            ])
+                                        })
+                                        .collect(),
+                                ),
+                            ),
+                        ]);
+                        assert_eq!(
+                            verify_composition(
+                                &proof,
+                                &WireValue::Null,
+                                &WireValue::Null,
+                                "unused",
+                                1
+                            ),
+                            Err(CompositionError::Conflict),
+                            "{name} proof consumer",
+                        );
+                    }
+                }
             }
         }
     }

@@ -575,6 +575,542 @@
     }
   },
   {
+    "name": "merged_port_valid",
+    "root": {
+      "name": "action-composed",
+      "display_version": "1",
+      "semantics": "peerwork.kernel.v1",
+      "dependencies": [
+        "5716e1200275b0aa20c555966e34787185901cafb79443426ca66498c0042c1a"
+      ],
+      "protocol_roles": [],
+      "capabilities": [],
+      "role_conflicts": [],
+      "historical_role_conflicts": [],
+      "constraints": {},
+      "record_schemas": {},
+      "initial_state": {
+        "count": 0
+      },
+      "actions": [],
+      "execution_requirements": {
+        "format": "peerwork.protocol-execution-requirements.v1",
+        "closure_complete": false,
+        "ports": [
+          {
+            "import_path": [
+              "library"
+            ],
+            "action_id": "test.set",
+            "variant": 0,
+            "input_name": "parent",
+            "type": "exact_ref",
+            "required": true,
+            "bound": false
+          }
+        ]
+      }
+    },
+    "nodes": [
+      {
+        "digest": "5716e1200275b0aa20c555966e34787185901cafb79443426ca66498c0042c1a",
+        "manifest": {
+          "name": "action-dependency",
+          "display_version": "1",
+          "semantics": "peerwork.kernel.v1",
+          "dependencies": [],
+          "protocol_roles": [],
+          "capabilities": [],
+          "role_conflicts": [],
+          "historical_role_conflicts": [],
+          "constraints": {},
+          "record_schemas": {},
+          "initial_state": {
+            "count": 0
+          },
+          "actions": [
+            {
+              "id": "test.set",
+              "reads": [
+                [
+                  "count"
+                ]
+              ],
+              "writes": [
+                [
+                  "count"
+                ]
+              ],
+              "revisionEffects": {
+                "control": true,
+                "contentEntities": []
+              },
+              "variants": [
+                {
+                  "when": [
+                    {
+                      "op": "eq",
+                      "left": {
+                        "from": "state",
+                        "path": [
+                          "count"
+                        ]
+                      },
+                      "right": {
+                        "from": "literal",
+                        "value": 0
+                      }
+                    }
+                  ],
+                  "effects": [
+                    {
+                      "op": "set",
+                      "path": [
+                        "count"
+                      ],
+                      "value": {
+                        "from": "literal",
+                        "value": 1
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "result": {
+      "manifest": {
+        "name": "action-composed",
+        "display_version": "1",
+        "semantics": "peerwork.kernel.v1",
+        "dependencies": [
+          "5716e1200275b0aa20c555966e34787185901cafb79443426ca66498c0042c1a"
+        ],
+        "protocol_roles": [],
+        "capabilities": [],
+        "role_conflicts": [],
+        "historical_role_conflicts": [],
+        "constraints": {},
+        "record_schemas": {},
+        "initial_state": {
+          "count": 0
+        },
+        "actions": [
+          {
+            "id": "test.set",
+            "reads": [
+              [
+                "count"
+              ]
+            ],
+            "writes": [
+              [
+                "count"
+              ]
+            ],
+            "revisionEffects": {
+              "control": true,
+              "contentEntities": []
+            },
+            "variants": [
+              {
+                "when": [
+                  {
+                    "op": "eq",
+                    "left": {
+                      "from": "state",
+                      "path": [
+                        "count"
+                      ]
+                    },
+                    "right": {
+                      "from": "literal",
+                      "value": 0
+                    }
+                  }
+                ],
+                "effects": [
+                  {
+                    "op": "set",
+                    "path": [
+                      "count"
+                    ],
+                    "value": {
+                      "from": "literal",
+                      "value": 1
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "execution_requirements": {
+          "format": "peerwork.protocol-execution-requirements.v1",
+          "closure_complete": true,
+          "ports": [
+            {
+              "import_path": [
+                "library"
+              ],
+              "action_id": "test.set",
+              "variant": 0,
+              "input_name": "parent",
+              "type": "exact_ref",
+              "required": true,
+              "bound": false
+            },
+            {
+              "import_path": [
+                "library"
+              ],
+              "action_id": "test.set",
+              "variant": 0,
+              "input_name": "parent",
+              "type": "exact_ref",
+              "required": true,
+              "bound": false
+            }
+          ]
+        }
+      },
+      "composition": {
+        "v": 1,
+        "source_digest": "8466d64c57e83e623c37bf2c2019b8e32ef5630b9fe4c8e63a939a43438a66cd",
+        "source_manifest": {
+          "name": "action-composed",
+          "display_version": "1",
+          "semantics": "peerwork.kernel.v1",
+          "dependencies": [
+            "5716e1200275b0aa20c555966e34787185901cafb79443426ca66498c0042c1a"
+          ],
+          "protocol_roles": [],
+          "capabilities": [],
+          "role_conflicts": [],
+          "historical_role_conflicts": [],
+          "constraints": {},
+          "record_schemas": {},
+          "initial_state": {
+            "count": 0
+          },
+          "actions": [],
+          "execution_requirements": {
+            "format": "peerwork.protocol-execution-requirements.v1",
+            "closure_complete": false,
+            "ports": [
+              {
+                "import_path": [
+                  "library"
+                ],
+                "action_id": "test.set",
+                "variant": 0,
+                "input_name": "parent",
+                "type": "exact_ref",
+                "required": true,
+                "bound": false
+              }
+            ]
+          }
+        },
+        "dependencies": [
+          {
+            "digest": "5716e1200275b0aa20c555966e34787185901cafb79443426ca66498c0042c1a",
+            "manifest": {
+              "name": "action-dependency",
+              "display_version": "1",
+              "semantics": "peerwork.kernel.v1",
+              "dependencies": [],
+              "protocol_roles": [],
+              "capabilities": [],
+              "role_conflicts": [],
+              "historical_role_conflicts": [],
+              "constraints": {},
+              "record_schemas": {},
+              "initial_state": {
+                "count": 0
+              },
+              "actions": [
+                {
+                  "id": "test.set",
+                  "reads": [
+                    [
+                      "count"
+                    ]
+                  ],
+                  "writes": [
+                    [
+                      "count"
+                    ]
+                  ],
+                  "revisionEffects": {
+                    "control": true,
+                    "contentEntities": []
+                  },
+                  "variants": [
+                    {
+                      "when": [
+                        {
+                          "op": "eq",
+                          "left": {
+                            "from": "state",
+                            "path": [
+                              "count"
+                            ]
+                          },
+                          "right": {
+                            "from": "literal",
+                            "value": 0
+                          }
+                        }
+                      ],
+                      "effects": [
+                        {
+                          "op": "set",
+                          "path": [
+                            "count"
+                          ],
+                          "value": {
+                            "from": "literal",
+                            "value": 1
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "closure": [
+        "5716e1200275b0aa20c555966e34787185901cafb79443426ca66498c0042c1a"
+      ],
+      "digest": "2d6fa14114084463db5940c658a1c09485062c20167e82c0e02b7c6ea79c17fc"
+    }
+  },
+  {
+    "name": "merged_port_missing_action",
+    "root": {
+      "name": "action-composed",
+      "display_version": "1",
+      "semantics": "peerwork.kernel.v1",
+      "dependencies": [
+        "5716e1200275b0aa20c555966e34787185901cafb79443426ca66498c0042c1a"
+      ],
+      "protocol_roles": [],
+      "capabilities": [],
+      "role_conflicts": [],
+      "historical_role_conflicts": [],
+      "constraints": {},
+      "record_schemas": {},
+      "initial_state": {
+        "count": 0
+      },
+      "actions": [],
+      "execution_requirements": {
+        "format": "peerwork.protocol-execution-requirements.v1",
+        "closure_complete": false,
+        "ports": [
+          {
+            "import_path": [
+              "library"
+            ],
+            "action_id": "absent.action",
+            "variant": 0,
+            "input_name": "parent",
+            "type": "exact_ref",
+            "required": true,
+            "bound": false
+          }
+        ]
+      }
+    },
+    "nodes": [
+      {
+        "digest": "5716e1200275b0aa20c555966e34787185901cafb79443426ca66498c0042c1a",
+        "manifest": {
+          "name": "action-dependency",
+          "display_version": "1",
+          "semantics": "peerwork.kernel.v1",
+          "dependencies": [],
+          "protocol_roles": [],
+          "capabilities": [],
+          "role_conflicts": [],
+          "historical_role_conflicts": [],
+          "constraints": {},
+          "record_schemas": {},
+          "initial_state": {
+            "count": 0
+          },
+          "actions": [
+            {
+              "id": "test.set",
+              "reads": [
+                [
+                  "count"
+                ]
+              ],
+              "writes": [
+                [
+                  "count"
+                ]
+              ],
+              "revisionEffects": {
+                "control": true,
+                "contentEntities": []
+              },
+              "variants": [
+                {
+                  "when": [
+                    {
+                      "op": "eq",
+                      "left": {
+                        "from": "state",
+                        "path": [
+                          "count"
+                        ]
+                      },
+                      "right": {
+                        "from": "literal",
+                        "value": 0
+                      }
+                    }
+                  ],
+                  "effects": [
+                    {
+                      "op": "set",
+                      "path": [
+                        "count"
+                      ],
+                      "value": {
+                        "from": "literal",
+                        "value": 1
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "error": "COMPOSITION_CONFLICT"
+  },
+  {
+    "name": "merged_port_missing_variant",
+    "root": {
+      "name": "action-composed",
+      "display_version": "1",
+      "semantics": "peerwork.kernel.v1",
+      "dependencies": [
+        "5716e1200275b0aa20c555966e34787185901cafb79443426ca66498c0042c1a"
+      ],
+      "protocol_roles": [],
+      "capabilities": [],
+      "role_conflicts": [],
+      "historical_role_conflicts": [],
+      "constraints": {},
+      "record_schemas": {},
+      "initial_state": {
+        "count": 0
+      },
+      "actions": [],
+      "execution_requirements": {
+        "format": "peerwork.protocol-execution-requirements.v1",
+        "closure_complete": false,
+        "ports": [
+          {
+            "import_path": [
+              "library"
+            ],
+            "action_id": "test.set",
+            "variant": 1,
+            "input_name": "parent",
+            "type": "exact_ref",
+            "required": true,
+            "bound": false
+          }
+        ]
+      }
+    },
+    "nodes": [
+      {
+        "digest": "5716e1200275b0aa20c555966e34787185901cafb79443426ca66498c0042c1a",
+        "manifest": {
+          "name": "action-dependency",
+          "display_version": "1",
+          "semantics": "peerwork.kernel.v1",
+          "dependencies": [],
+          "protocol_roles": [],
+          "capabilities": [],
+          "role_conflicts": [],
+          "historical_role_conflicts": [],
+          "constraints": {},
+          "record_schemas": {},
+          "initial_state": {
+            "count": 0
+          },
+          "actions": [
+            {
+              "id": "test.set",
+              "reads": [
+                [
+                  "count"
+                ]
+              ],
+              "writes": [
+                [
+                  "count"
+                ]
+              ],
+              "revisionEffects": {
+                "control": true,
+                "contentEntities": []
+              },
+              "variants": [
+                {
+                  "when": [
+                    {
+                      "op": "eq",
+                      "left": {
+                        "from": "state",
+                        "path": [
+                          "count"
+                        ]
+                      },
+                      "right": {
+                        "from": "literal",
+                        "value": 0
+                      }
+                    }
+                  ],
+                  "effects": [
+                    {
+                      "op": "set",
+                      "path": [
+                        "count"
+                      ],
+                      "value": {
+                        "from": "literal",
+                        "value": 1
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "error": "COMPOSITION_CONFLICT"
+  },
+  {
     "name": "missing_dependency",
     "root": {
       "name": "composed",

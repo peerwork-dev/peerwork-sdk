@@ -11,6 +11,8 @@ mod full_manifest;
 mod interpreter;
 #[allow(dead_code)]
 mod protocol_composition;
+#[allow(dead_code)]
+mod protocol_object_source;
 pub mod prepared_command;
 pub mod receipt;
 pub mod receipt_wire;

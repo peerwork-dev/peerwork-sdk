@@ -31,11 +31,22 @@ try {
   const actionDigest=(await secureManifestDigest(actionDep)).digest;
   const actionRoot=structuredClone(base);
   actionRoot.name='action-composed';actionRoot.dependencies=[actionDigest];
+  const port=structuredClone(manifests.find(item=>item.name==='requirements_valid').manifest.execution_requirements.ports[0]);
+  port.action_id=controlAction.id;
+  const validPort=structuredClone(actionRoot);
+  validPort.execution_requirements={format:'peerwork.protocol-execution-requirements.v1',closure_complete:false,ports:[{...port,variant:0}]};
+  const missingActionPort=structuredClone(actionRoot);
+  missingActionPort.execution_requirements={format:'peerwork.protocol-execution-requirements.v1',closure_complete:false,ports:[{...port,action_id:'absent.action',variant:0}]};
+  const missingVariantPort=structuredClone(actionRoot);
+  missingVariantPort.execution_requirements={format:'peerwork.protocol-execution-requirements.v1',closure_complete:false,ports:[{...port,variant:1}]};
   const cases=[
     {name:'standalone',root:base,nodes:[]},
     {name:'single_dependency',root:member,nodes:[{digest:depDigest,manifest:dep}]},
     {name:'format2_array_dependency',root:arrayRoot,nodes:[{digest:arrayDigest,manifest:arrayDep}]},
     {name:'action_dependency',root:actionRoot,nodes:[{digest:actionDigest,manifest:actionDep}]},
+    {name:'merged_port_valid',root:validPort,nodes:[{digest:actionDigest,manifest:actionDep}]},
+    {name:'merged_port_missing_action',root:missingActionPort,nodes:[{digest:actionDigest,manifest:actionDep}]},
+    {name:'merged_port_missing_variant',root:missingVariantPort,nodes:[{digest:actionDigest,manifest:actionDep}]},
     {name:'missing_dependency',root:member,nodes:[]},
     {name:'dependency_digest_mismatch',root:member,nodes:[{digest:depDigest,manifest:{...dep,name:'mutated'}}]},
     {name:'state_conflict',root:{...member,initial_state:{left:2}},nodes:[{digest:depDigest,manifest:dep}]},
