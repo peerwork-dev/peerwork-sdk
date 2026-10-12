@@ -352,12 +352,21 @@ mod tests {
         let dir = private_dir();
         let path = dir.path().join("agent.state");
         let store = SecureStateStore::open(&path).unwrap();
+        store.write_exact(b"{\"parent\":true}").unwrap();
 
         // The child inherits the same open file description. Its destructor
         // must close that descriptor without unlocking the parent's guard.
         let child = unsafe { libc::fork() };
         assert!(child >= 0);
         if child == 0 {
+            if !matches!(store.read_exact(), Err(SecureStateError::ForeignProcess))
+                || !matches!(
+                    store.write_exact(b"{\"child\":true}"),
+                    Err(SecureStateError::ForeignProcess)
+                )
+            {
+                unsafe { libc::_exit(2) };
+            }
             drop(store);
             unsafe { libc::_exit(0) };
         }
@@ -379,6 +388,10 @@ mod tests {
         let blocked = probe();
         assert!(blocked.status.success());
         assert!(String::from_utf8_lossy(&blocked.stdout).contains("PEERWORK_SECURE_BUSY"));
+        assert_eq!(
+            store.read_exact().unwrap(),
+            Some(b"{\"parent\":true}".to_vec())
+        );
         drop(store);
         let acquired = probe();
         assert!(acquired.status.success());
