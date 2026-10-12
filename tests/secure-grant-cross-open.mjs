@@ -57,6 +57,23 @@ try {
     recipient_private:privateBytes.toString('base64url'),now:now+2,
   };
   privateBytes.fill(0);
+  // The tracked certificate verifier accepts additional signed payload
+  // fields; only the embedded P-256 JWK has an exact four-field shape.
+  const extendedCertificate = await client.signSecure(owner,
+    'peerwork.secure.key-certificate.v1',{...certificate.payload,extension:'benign'});
+  await client.verifySecureCertificate(extendedCertificate,now+1);
+  const extendedWorkspace = client.secureToken();
+  const extendedPolicy = await client.createPolicy(owner,{
+    v:1,workspace_id:extendedWorkspace,owner_id:owner.actorId,signing_key:owner.keyId,
+    version:1,previous_policy:null,effective_sequence:1,visibility:'PRIVATE',epoch:1,
+    members:[{actor_id:owner.actorId,certificate:extendedCertificate,role:'OWNER',scopes:[]}],issued_at:now,
+  });
+  const extendedRing = client.newSecureKeyring(extendedWorkspace);
+  const extendedGrant = await client.createKeyGrant({identity:owner,recipient:extendedCertificate,
+    policy:extendedPolicy,keyring:extendedRing,issuedAt:now+1});
+  assert.deepEqual(await client.openKeyGrant({grant:extendedGrant,recipient:extendedCertificate,
+    privateKey:recipient.privateKey,policy:extendedPolicy,policies:[extendedPolicy],
+    owner:{actorId:owner.actorId,key:owner.keyId},now:now+2}),extendedRing);
   const member = await crypto.createSigningIdentity();
   const memberEncryption = await crypto.createEncryptionIdentity(true);
   const memberCertificate = await crypto.certifyEncryptionKey(member,memberEncryption,now);
@@ -120,6 +137,13 @@ try {
   const invitePrivate = Buffer.from(await crypto.exportRecipientPrivateKey(memberEncryption.privateKey));
   const devicePrivate = Buffer.from(await crypto.exportRecipientPrivateKey(deviceEncryption.privateKey));
   const vectors = [vector,{
+    policy:extendedPolicy,grant:extendedGrant,certificate:extendedCertificate,
+    wrong_recipient:wrongRecipient,workspace:extendedWorkspace,owner_actor:owner.actorId,
+    owner_key:owner.keyId,recipient_actor:owner.actorId,recipient_key:owner.keyId,
+    checkpoint:{v:1,workspace_id:extendedWorkspace,owner_id:owner.actorId,owner_key:owner.keyId,
+      sequence:0,head:null,policy_hash:await client.secureHash(extendedPolicy)},
+    recipient_private:vector.recipient_private,now:now+2,
+  },{
     policy:invitedPolicy,policies:[invitationPolicy,invitedPolicy],commits:invitedCommits,
     grant:invitedGrant,certificate:memberCertificate,wrong_recipient:wrongRecipient,
     workspace:invitedWorkspace,owner_actor:owner.actorId,owner_key:owner.keyId,
@@ -144,7 +168,7 @@ try {
     if(result.status!==0)throw new Error(`native grant vector ${index} failed: ${result.stderr.slice(-3000)}`);
     assert.equal((await readFile(vectorPath,'utf8')).length>0,true);
   }
-  console.log('direct, accepted-invitation and delegated TypeScript grants cross-open in native proof; missing related proofs and altered grants refused');
+  console.log('direct, extended-certificate, rotated-invitation and delegated TypeScript grants cross-open in native proof; missing/altered/expired related proofs refused');
 } finally {
   await rm(directory,{recursive:true,force:true});
 }

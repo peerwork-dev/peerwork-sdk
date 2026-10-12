@@ -129,8 +129,7 @@ impl SecretRecipient {
         at: u64,
     ) -> Result<(), RecipientError> {
         let payload = &certificate.payload;
-        if payload.as_object().is_none_or(|fields| fields.len() != 7)
-            || payload["v"] != 1
+        if payload["v"] != 1
             || payload["actor_id"] != expected_actor
             || payload["signing_key"] != expected_signing_key
             || payload["encryption_key"] != serde_json::to_value(&self.public).unwrap()
