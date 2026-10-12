@@ -1,4 +1,5 @@
 /target/
+/conformance/node_modules/
 /.build-target/
 /.venv/
 **/__pycache__/

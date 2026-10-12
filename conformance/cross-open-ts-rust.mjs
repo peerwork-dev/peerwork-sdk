@@ -1,15 +1,14 @@
-// Run from repository root with the same PEERWORK_TS_SOURCE and
-// PEERWORK_REFERENCE_NODE_MODULES variables as generate-ts-vectors.mjs.
+// Run from repository root with the vendored reference closure.
+// PEERWORK_TS_SOURCE/PEERWORK_REFERENCE_NODE_MODULES remain audit overrides.
 // Ephemeral test keys move only over the bridge process's stdin.
 import { spawn } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import assert from 'node:assert/strict';
 
-const source = process.env.PEERWORK_TS_SOURCE;
-if (!source) throw new Error('PEERWORK_TS_SOURCE is required');
+const source = process.env.PEERWORK_TS_SOURCE ?? fileURLToPath(new URL('reference/src/', import.meta.url));
 const modules = process.env.PEERWORK_REFERENCE_NODE_MODULES;
 const { build: esbuild } = modules
   ? await import(pathToFileURL(resolve(modules, 'esbuild/lib/main.js')))
