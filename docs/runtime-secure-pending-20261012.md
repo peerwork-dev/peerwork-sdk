@@ -1086,3 +1086,22 @@ The test establishes this narrow object-construction parity; core's private
 registration and replay consumer are separate checkpoints. No complete
 ACTION proof, Agent entry workflow, or real service effect ran, so final
 business behavior and workflow compliance are unverified here.
+
+The signed ACTION replay integration exposed an error-code boundary in the
+private delegation resolver: its earlier generic error was mapped to
+`AUTHOR_SCOPE_DENIED` even when a signed context's actor and key disagreed.
+Correction `dcbbd9a` retains source-specific codes through
+`ActionScopeError::code()` for the actor/key, member, delegation,
+delegator, signature, certificate and scope checks. Two new direct TypeScript
+vectors cover actor/key mismatch and direct nonmembership. All 15 vectors now
+assert exact error codes as well as positive scope facts; focused Rust 1.89
+locked-offline `cargo test -p peerwork-core --lib secure_action_delegation
+--offline --locked` passed 1/1. The first stricter run failed on the
+certificate-expiry fallback (`AUTHOR_SCOPE_DENIED` versus TypeScript's
+`CERTIFICATE_EXPIRED`); that mapping was corrected before the passing run.
+Corrected source SHA-256
+`4c1fcfd57cd8894f245de5395c8c7634b909111deab829bc6fd787509da8b8d7`,
+generator SHA-256 `644bafabdfb51222382b822b235f31ddced45b5ffc86c6717e179a71b0e9f936`,
+and vectors SHA-256 `176e3ca1180f6f4b70fedbc3df02e7e1eb1106e542f1e99a692120998bdce1df`.
+The separate replay consumer must propagate `code()` before this correction
+closes its signed regression; this helper remains non-authoritative alone.
