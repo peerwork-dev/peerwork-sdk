@@ -1065,3 +1065,24 @@ and lock SHA-256 `9dc2d3f2ad77be15366633af890168611e8d62a7f38de646970dfc4cedc8d4
 Core owns the separate private registration and signed replay consumer. No
 Agent entry flow or final effect was exercised; workflow compliance and
 business acceptance remain unverified for this module.
+
+The disjoint ACTION relation resolver is source-committed at `7e78469`.
+It consumes previously interpreted relation specifications, authenticated
+prior objects, and independently assigned record/slot facts; it substitutes
+produced targets, requires an existing or assigned target revision, derives
+the source-matched relation ID, and increments a prior relation revision.
+Four direct pinned TypeScript `prepareSecureAction` vectors cover an existing
+target, a forward produced target, a prior relation at revision 2, and a
+Unicode relation kind/JSON-stringified ID. The focused Rust 1.89 locked-offline
+`cargo test -p peerwork-core --lib secure_action_relations --offline --locked`
+passed 1/1 with core's private registration on disk. Module SHA-256
+`e0c48aa2aa5e51a76c50516b8f6920fe2c38a73d58c181b209c5b43648375eff`,
+generator SHA-256 `959d575c06dee26dfc902ac9e587c14b45234e4388582e3b8c7aeec4cfa1caa2`,
+vector SHA-256 `b929ac57f65f261f97f6a8c6f6248fa0ce96d6fd8bcadce63c5cf2a041a60980`,
+vendored TypeScript engine SHA-256
+`f418278a29734baf46627319a23219e12d4c12901fe94498c3113675273ca809`,
+and lock SHA-256 `9dc2d3f2ad77be15366633af890168611e8d62a7f38de646970dfc4cedc8d4d5`.
+The test establishes this narrow object-construction parity; core's private
+registration and replay consumer are separate checkpoints. No complete
+ACTION proof, Agent entry workflow, or real service effect ran, so final
+business behavior and workflow compliance are unverified here.
