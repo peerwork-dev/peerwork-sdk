@@ -6,6 +6,7 @@ use crate::{
     kernel_identity::KernelIdentity,
     secure_lifecycle::SecureLifecycle,
     secure_state::{SecureStateError, SecureStateStore},
+    secure_verified_read::TransportReplayedJournal,
     transport::{HttpTransport, TransportError},
 };
 use peerwork_core::{
@@ -57,6 +58,8 @@ pub enum SecureIntentError {
     Transport(#[from] TransportError),
     #[error("server rejected the saved secure request with HTTP {0}")]
     ServerRejected(u16),
+    #[error("completed signed replay does not bind this saved action")]
+    ReplayMismatch,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -79,6 +82,8 @@ struct Entry {
     request_sha256: String,
     request_b64: String,
     response_b64: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    accepted_receipt: Option<String>,
 }
 
 /// Unauthenticated local preparation context. Only a future core verified
@@ -99,6 +104,19 @@ pub struct PendingSecureIntent {
     pub workspace_id: Option<String>,
     pub action_id: String,
     pub observed_responses: usize,
+}
+
+/// A protected result minted only after complete origin-bound signed replay
+/// binds the exact saved packet to an ACTION receipt. Effects remain canonical
+/// JSON so lossless UTF-16 wire values are preserved across restart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AcceptedSecureAction {
+    pub intent_id: String,
+    pub workspace_id: String,
+    pub action_id: String,
+    pub sequence: u64,
+    pub commit_hash: String,
+    pub receipt_canonical_json: String,
 }
 
 pub(crate) struct SecureIntentJournal {
@@ -145,7 +163,10 @@ impl SecureIntentJournal {
             || document.trusted_origin != trusted_origin
             || document.actor_id != actor_id
             || document.rows.len() > MAX_ENTRIES
-            || document.rows.iter().any(|(id, row)| !valid_row(id, row))
+            || document
+                .rows
+                .iter()
+                .any(|(id, row)| !valid_row(id, row, actor_id))
         {
             return Err(SecureIntentError::Incompatible);
         }
@@ -176,8 +197,12 @@ impl SecureIntentJournal {
             request_sha256: sha256_hex(input.exact_request),
             request_b64: base64url(input.exact_request),
             response_b64: Vec::new(),
+            accepted_receipt: None,
         };
         if let Some(existing) = self.document.rows.get(input.intent_id) {
+            if existing.accepted_receipt.is_some() {
+                return Err(SecureIntentError::Conflict);
+            }
             let mut comparable = entry;
             comparable.response_b64 = existing.response_b64.clone();
             if existing != &comparable {
@@ -273,6 +298,9 @@ impl SecureIntentJournal {
             .rows
             .get(intent_id)
             .ok_or(SecureIntentError::NotFound)?;
+        if row.accepted_receipt.is_some() {
+            return Err(SecureIntentError::Conflict);
+        }
         let request = self.exact_request(intent_id)?;
         let proof = verify_prepared_secure_commit_request(&request, &row.path, pins)?;
         if proof.command_id() != intent_id
@@ -288,6 +316,125 @@ impl SecureIntentJournal {
             return Err(SecureIntentError::Incompatible);
         }
         Ok((proof, request))
+    }
+
+    /// Complete an ACTION only from the same configured-origin signed history
+    /// that yields its exact command-bound receipt. The saved packet is
+    /// reverified independently of any HTTP response, including after a lost
+    /// reply. Recovered/skipped commands and pending-key histories have no
+    /// eligible receipt.
+    pub(crate) fn accept_replayed_action(
+        &mut self,
+        intent_id: &str,
+        identity: &KernelIdentity,
+        transport: &HttpTransport,
+        source: &TransportReplayedJournal,
+    ) -> Result<AcceptedSecureAction, SecureIntentError> {
+        source
+            .verified_read()
+            .map_err(|_| SecureIntentError::ReplayMismatch)?;
+        if self.document.trusted_origin != transport.trusted_origin()
+            || self.document.trusted_origin != source.origin()
+            || self.document.actor_id != identity.actor_id()
+            || source.source_actor_id() != identity.actor_id()
+            || source.source_key_id() != identity.key_id()
+        {
+            return Err(SecureIntentError::ReplayMismatch);
+        }
+        let row = self
+            .document
+            .rows
+            .get(intent_id)
+            .ok_or(SecureIntentError::NotFound)?;
+        if row.workspace_id.as_deref() != Some(source.replay().workspace_id())
+            || row.trusted_owner_key.as_deref() != Some(source.replay().owner_signing_key())
+        {
+            return Err(SecureIntentError::ReplayMismatch);
+        }
+        let receipt = source
+            .action_receipt(intent_id)
+            .map_err(|_| SecureIntentError::ReplayMismatch)?
+            .ok_or(SecureIntentError::ReplayMismatch)?;
+        let request = self.exact_request(intent_id)?;
+        let saved = parse_wire_json_bounded(&request, 64, MAX_PACKET)
+            .map_err(|_| SecureIntentError::Incompatible)?;
+        let payload = saved
+            .get("commit")
+            .and_then(|commit| commit.get("payload"))
+            .ok_or(SecureIntentError::Incompatible)?;
+        let workspace = wire_string(payload, "workspace_id")?;
+        let policy_hash = wire_string(payload, "policy_hash")?;
+        let previous = match payload.get("previous") {
+            Some(WireValue::Null) => None,
+            Some(WireValue::String(_)) => Some(wire_string(payload, "previous")?),
+            _ => return Err(SecureIntentError::Incompatible),
+        };
+        let mode = wire_string(payload, "mode")?;
+        let version = wire_unsigned(payload, "v")?;
+        let protocol_format_ceiling = if version == 3 {
+            Some(wire_unsigned(payload, "protocol_format_ceiling")?)
+        } else {
+            None
+        };
+        let pins = SecureCommitRequestPins {
+            actor_id: identity.actor_id(),
+            signing_key: identity.key_id(),
+            workspace_id: &workspace,
+            policy_hash: &policy_hash,
+            sequence: wire_unsigned(payload, "sequence")?,
+            previous: previous.as_deref(),
+            epoch: wire_unsigned(payload, "epoch")?,
+            mode: &mode,
+            version,
+            protocol_format_ceiling,
+        };
+        let proof = verify_prepared_secure_commit_request(&request, &row.path, &pins)?;
+        let sequence = wire_unsigned(receipt, "sequence")?;
+        let commit_hash = wire_string(receipt, "commit_hash")?;
+        if proof.command_id() != intent_id
+            || proof.action_id() != row.action_id
+            || proof.workspace_id() != source.replay().workspace_id()
+            || proof.actor_id() != identity.actor_id()
+            || proof.signing_key() != identity.key_id()
+            || proof.request_sha256() != row.request_sha256
+            || proof.commit_digest() != row.intent_digest
+            || proof.commit_digest() != commit_hash
+            || receipt.object_len() != Some(7)
+            || wire_string(receipt, "command_id")? != intent_id
+            || wire_string(receipt, "actor_id")? != identity.actor_id()
+            || wire_string(receipt, "action_id")? != row.action_id
+            || receipt.get("instance_id") != payload.get("instance_id")
+            || !matches!(receipt.get("effects"), Some(WireValue::Array(_)))
+            || sequence != pins.sequence
+            || !source
+                .replay()
+                .contains_checkpoint(sequence, Some(&commit_hash), &policy_hash)
+        {
+            return Err(SecureIntentError::ReplayMismatch);
+        }
+        let receipt_canonical_json = canonical_wire_value(receipt, CanonicalPath::SecureArtifact)
+            .map_err(|_| SecureIntentError::ReplayMismatch)?;
+        let action_id = row.action_id.clone();
+        if let Some(stored) = &row.accepted_receipt {
+            if stored != &receipt_canonical_json {
+                return Err(SecureIntentError::Conflict);
+            }
+        } else {
+            let mut next = self.document.clone();
+            next.rows
+                .get_mut(intent_id)
+                .ok_or(SecureIntentError::NotFound)?
+                .accepted_receipt = Some(receipt_canonical_json.clone());
+            self.persist(next)?;
+        }
+        Ok(AcceptedSecureAction {
+            intent_id: intent_id.to_owned(),
+            workspace_id: workspace,
+            action_id,
+            sequence,
+            commit_hash,
+            receipt_canonical_json,
+        })
     }
 
     /// Preserve PENDING across every HTTP result. An observed 2xx response is
@@ -520,8 +667,22 @@ impl SecureIntentJournal {
         self.document
             .rows
             .iter()
+            .filter(|(_, row)| row.accepted_receipt.is_none())
             .map(|(id, row)| summary(id, row))
             .collect()
+    }
+
+    pub(crate) fn accepted_receipt(
+        &self,
+        intent_id: &str,
+    ) -> Result<Option<&str>, SecureIntentError> {
+        Ok(self
+            .document
+            .rows
+            .get(intent_id)
+            .ok_or(SecureIntentError::NotFound)?
+            .accepted_receipt
+            .as_deref())
     }
 
     fn persist(&mut self, next: Document) -> Result<(), SecureIntentError> {
@@ -584,6 +745,26 @@ fn valid_digest(value: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
+fn wire_string(value: &WireValue, key: &str) -> Result<String, SecureIntentError> {
+    value
+        .get(key)
+        .and_then(WireValue::as_string)
+        .ok_or(SecureIntentError::Incompatible)
+}
+fn wire_unsigned(value: &WireValue, key: &str) -> Result<u64, SecureIntentError> {
+    let number = value
+        .get(key)
+        .and_then(WireValue::as_number)
+        .ok_or(SecureIntentError::Incompatible)?;
+    if !number.is_finite()
+        || number < 0.0
+        || number > 9_007_199_254_740_991.0
+        || number.fract() != 0.0
+    {
+        return Err(SecureIntentError::Incompatible);
+    }
+    Ok(number as u64)
+}
 fn valid_id(value: &str) -> bool {
     valid_token(value) || valid_digest(value)
 }
@@ -602,7 +783,7 @@ fn valid_secure_path(value: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_'))
         && !value.contains("//")
 }
-fn valid_row(id: &str, row: &Entry) -> bool {
+fn valid_row(id: &str, row: &Entry, actor_id: &str) -> bool {
     if !valid_id(id)
         || !valid_secure_path(&row.path)
         || !valid_action(&row.action_id)
@@ -630,11 +811,43 @@ fn valid_row(id: &str, row: &Entry) -> bool {
     {
         return false;
     }
-    row.response_b64.iter().all(|item| {
+    let responses_valid = row.response_b64.iter().all(|item| {
         decode_base64url(item).is_ok_and(|bytes| {
             !bytes.is_empty() && bytes.len() <= MAX_RESPONSE && base64url(&bytes) == *item
         })
-    })
+    });
+    let accepted_valid = row.accepted_receipt.as_ref().is_none_or(|encoded| {
+        let Ok(receipt) = parse_wire_json_bounded(encoded.as_bytes(), 16, MAX_DOCUMENT) else {
+            return false;
+        };
+        receipt.object_len() == Some(7)
+            && canonical_wire_value(&receipt, CanonicalPath::SecureArtifact)
+                .is_ok_and(|canonical| canonical == *encoded)
+            && receipt
+                .get("command_id")
+                .and_then(WireValue::as_string)
+                .as_deref()
+                == Some(id)
+            && receipt
+                .get("commit_hash")
+                .and_then(WireValue::as_string)
+                .as_deref()
+                == Some(&row.intent_digest)
+            && receipt
+                .get("actor_id")
+                .and_then(WireValue::as_string)
+                .as_deref()
+                == Some(actor_id)
+            && receipt
+                .get("action_id")
+                .and_then(WireValue::as_string)
+                .as_deref()
+                == Some(&row.action_id)
+            && wire_unsigned(&receipt, "sequence").is_ok()
+            && receipt.get("instance_id").is_some()
+            && matches!(receipt.get("effects"), Some(WireValue::Array(_)))
+    });
+    responses_valid && accepted_valid
 }
 
 #[cfg(test)]
@@ -915,7 +1128,7 @@ mod tests {
     /// Opt-in actual tracked Peerwork service, with fresh synthetic state.
     /// The proxy forwards/applies the first append then drops its response.
     #[tokio::test]
-    async fn actual_service_secure_append_retry_stays_pending() {
+    async fn actual_service_secure_append_retry_then_signed_receipt_acceptance() {
         let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else {
             return;
         };
@@ -1061,6 +1274,97 @@ mod tests {
         )
         .unwrap();
         assert_eq!(second_counts, first_counts);
+        // The fixture supplies a TS-created, signed and encrypted ACTION.
+        // Importing its synthetic keyring is test-only setup; the acceptance
+        // transition itself still requires real configured-origin page custody
+        // and a complete signed replay receipt.
+        let mut lifecycle = SecureLifecycle::open(
+            &root.path().join("native-action-lifecycle.state"),
+            transport.trusted_origin(),
+            identity.actor_id(),
+            &workspace,
+            &actor,
+            &owner,
+        )
+        .unwrap();
+        lifecycle
+            .import_active_for_test(
+                &fs::read(root.path().join("synthetic-secure-keyring.json")).unwrap(),
+            )
+            .unwrap();
+        let mut read_config = crate::transport::TransportConfig::new(origin.clone());
+        read_config.allow_loopback_http = true;
+        let client = crate::kernel_client::KernelClient::open(
+            read_config,
+            &root.path().join("native-action-discovery.sqlite"),
+            &[],
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        let mut reader = crate::secure_journal_read::SecureJournalRead::open(
+            &root.path().join("native-action-journal.state"),
+            &client,
+            &identity,
+            &workspace,
+            text("authority").as_str(),
+        )
+        .unwrap();
+        assert!(
+            reader
+                .fetch_next(&client, &identity, &CancellationToken::new())
+                .await
+                .unwrap()
+                .complete_transport
+        );
+        let pages = reader.authenticated_pages(&client, &identity).unwrap();
+        let replay =
+            crate::secure_verified_read::replay_authenticated_pages(&pages, &lifecycle).unwrap();
+        assert_eq!(replay.replay().sequence(), 2);
+        assert!(replay.action_receipt(&id).unwrap().is_some());
+        let mut wrong = SecureIntentJournal::open(
+            &root.path().join("wrong-action.state"),
+            transport.trusted_origin(),
+            identity.actor_id(),
+        )
+        .unwrap();
+        wrong
+            .prepare(SecurePacketInput {
+                intent_id: &id,
+                path: &path,
+                action_id: "discussion.other",
+                workspace_id: Some(&workspace),
+                trusted_owner_key: Some(&owner),
+                intent_digest: &digest,
+                exact_request: &request,
+            })
+            .unwrap();
+        assert!(wrong
+            .accept_replayed_action(&id, &identity, &transport, &replay)
+            .is_err());
+        assert_eq!(wrong.pending().len(), 1);
+        let accepted = reopened
+            .accept_replayed_action(&id, &identity, &transport, &replay)
+            .unwrap();
+        assert_eq!(accepted.sequence, 2);
+        assert_eq!(accepted.commit_hash, digest);
+        assert_eq!(accepted.action_id, action);
+        assert_eq!(accepted.workspace_id, workspace);
+        assert_eq!(reopened.pending().len(), 0);
+        assert!(matches!(
+            reopened
+                .submit_saved_commit(&id, &identity, &transport, &owner, &pins, &cancel)
+                .await,
+            Err(SecureIntentError::Conflict)
+        ));
+        drop(reopened);
+        let reopened =
+            SecureIntentJournal::open(&state, transport.trusted_origin(), &actor).unwrap();
+        assert_eq!(reopened.pending().len(), 0);
+        assert_eq!(
+            reopened.accepted_receipt(&id).unwrap(),
+            Some(accepted.receipt_canonical_json.as_str())
+        );
         drop(child);
     }
 
