@@ -1,0 +1,8 @@
+{
+  "baseline_commit": "dd8a9d2",
+  "source": "reference/src/workspace-secure-client.ts",
+  "source_sha256": "59ae3f841a5aeb1c1dabb5187dfc8443af0aa6c4a47a6fc3333b1d3eca3f4fbd",
+  "from": "value.actor_id===p.actor_id&&value.instance_id===p.instance_id",
+  "to": "value.actor_id===(p.delegation?.payload.actor_id??p.actor_id)&&value.instance_id===p.instance_id",
+  "reason": "The tracked ACTION writer and structure DELTA validator attribute delegated records to the authenticated principal; the receipt still attributes the signed commit to the device."
+}

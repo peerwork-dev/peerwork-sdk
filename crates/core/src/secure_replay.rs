@@ -4,11 +4,9 @@
 
 use crate::{
     canonical::Path,
-    crypto::{
-        actor_id, base64url, decode_base64url, sha256, sha256_hex, verify_secure_signed_wire,
-    },
+    crypto::{base64url, decode_base64url, sha256, sha256_hex, verify_secure_signed_wire},
     e2ee::{open_content_wire, SealedContent},
-    interpreter::{evaluate_action, InterpreterAuth, ResolvedInput},
+    interpreter::{evaluate_action, InterpreterAuth},
     legacy_protocol_bindings::validate_legacy_protocol_bindings,
     migration_fragments::{assert_protocol_format_ceiling, inflate_fragments, MigrationBatch},
     protocol_object_source::{
@@ -2029,6 +2027,17 @@ fn replay_basic_content_depth(
                 .map_err(|_| ReplayError::Invalid)?;
             }
             if kind == "ACTION" {
+                // The signed device is the receipt actor. The authenticated
+                // delegation principal is the actor in writer-produced record
+                // effects, as also required by structured DELTA application.
+                let effect_actor = match payload.get("delegation") {
+                    Some(WireValue::Null) => payload.get("actor_id"),
+                    Some(delegation) => delegation
+                        .get("payload")
+                        .and_then(|grant| grant.get("actor_id")),
+                    None => None,
+                }
+                .ok_or(ReplayError::Invalid)?;
                 let mut effects = Vec::new();
                 for object in objects {
                     if string(object, "kind")? != "records" {
@@ -2041,7 +2050,7 @@ fn replay_basic_content_depth(
                             .get("schema_ref")
                             .and_then(WireValue::as_utf16)
                             .is_none()
-                        || value.get("actor_id") != payload.get("actor_id")
+                        || value.get("actor_id") != Some(effect_actor)
                         || value.get("instance_id") != payload.get("instance_id")
                     {
                         return Err(ReplayError::Invalid);
@@ -2439,17 +2448,11 @@ fn validate_action_state_slice(
     {
         return Err("ACTION_CONTEXT_MISMATCH");
     }
-    let refs = match input.get("exact_input_refs") {
-        Some(WireValue::Array(values)) => values,
-        _ => return Err("ACTION_CONTEXT_MISMATCH"),
-    };
+    let refs_wire = input.get("exact_input_refs").ok_or("REFERENCE_INVALID")?;
     let allocations = match input.get("allocations") {
         Some(WireValue::Array(values)) => values,
         _ => return Err("ACTION_CONTEXT_MISMATCH"),
     };
-    if !matches!(context.get("delegation"), Some(WireValue::Null)) {
-        return Err("UNSUPPORTED");
-    }
     let instance = prior
         .iter()
         .filter(|object| {
@@ -2515,101 +2518,50 @@ fn validate_action_state_slice(
         })
         .ok_or("PROTOCOL_NOT_FOUND")?;
     let manifest = decoded_value(manifest_raw).map_err(|_| "INVALID_PAYLOAD")?;
-    if refs.len() > 32 {
-        return Err("REFERENCE_INVALID");
-    }
-    let mut seen_refs = HashSet::new();
-    let mut exact_inputs = Vec::with_capacity(refs.len());
-    for reference in refs {
-        let record_id = reference
-            .get("record_id")
-            .and_then(WireValue::as_utf16)
-            .ok_or("REFERENCE_INVALID")?;
-        let revision = integer(reference, "revision").map_err(|_| "REFERENCE_INVALID")?;
-        if !seen_refs.insert((record_id.to_vec(), revision)) {
-            return Err("REFERENCE_INVALID");
-        }
-        let found = prior
-            .iter()
-            .find(|object| {
-                object.get("kind").and_then(WireValue::as_string).as_deref() == Some("records")
-                    && object.get("id").and_then(WireValue::as_utf16) == Some(record_id)
-                    && object.get("value").is_some_and(|value| {
-                        integer(value, "revision").is_ok_and(|value| value == revision)
-                    })
-            })
-            .ok_or("REFERENCE_NOT_FOUND")?;
-        let row = found.get("value").ok_or("REFERENCE_NOT_FOUND")?;
-        if row.get("workspace_id") != context.get("workspace_id")
-            || row
-                .get("schema_ref")
-                .and_then(WireValue::as_string)
-                .as_deref()
-                == Some("participation.request")
-        {
-            return Err("REFERENCE_SCOPE_MISMATCH");
-        }
-        let schema = row
-            .get("schema_ref")
-            .and_then(WireValue::as_utf16)
-            .ok_or("REFERENCE_SCOPE_MISMATCH")?;
-        let payload = decoded_value(row.get("payload").ok_or("REFERENCE_INVALID")?)
-            .map_err(|_| "REFERENCE_INVALID")?;
-        let scope = if row.get("instance_id").and_then(WireValue::as_utf16) == Some(instance_id)
-            && row.get("protocol_digest").and_then(WireValue::as_utf16) == Some(digest)
-        {
-            "INSTANCE"
-        } else {
-            "WORKSPACE"
-        };
-        exact_inputs.push(ResolvedInput {
-            record_id: String::from_utf16(record_id).map_err(|_| "REFERENCE_INVALID")?,
-            revision,
-            schema: schema.to_vec(),
-            payload,
-            scope: scope.into(),
-            entity_id: row.get("entity_id").and_then(WireValue::as_string),
-        });
-    }
-    let policy_payload = policy.get("payload").ok_or("AUTHOR_NOT_MEMBER")?;
-    let actor = context
-        .get("actor_id")
-        .and_then(WireValue::as_utf16)
-        .ok_or("AUTHOR_NOT_MEMBER")?;
-    let key = context
-        .get("signing_key")
-        .and_then(WireValue::as_utf16)
-        .ok_or("AUTHOR_NOT_MEMBER")?;
-    let key_text = String::from_utf16(key).map_err(|_| "AUTHOR_KEY_MISMATCH")?;
-    let public_key: [u8; 32] = decode_base64url(&key_text)
-        .map_err(|_| "AUTHOR_KEY_MISMATCH")?
-        .try_into()
-        .map_err(|_| "AUTHOR_KEY_MISMATCH")?;
-    if actor_id(&public_key).encode_utf16().collect::<Vec<_>>() != actor {
-        return Err("AUTHOR_KEY_MISMATCH");
-    }
-    let members = match policy_payload.get("members") {
-        Some(WireValue::Array(values)) => values,
-        _ => return Err("AUTHOR_NOT_MEMBER"),
-    };
-    let member = members
+    let exact_inputs = crate::secure_action_inputs::resolve_exact_inputs(
+        refs_wire,
+        prior,
+        context
+            .get("workspace_id")
+            .ok_or("REFERENCE_SCOPE_MISMATCH")?,
+        context
+            .get("instance_id")
+            .ok_or("REFERENCE_SCOPE_MISMATCH")?,
+        instance_value
+            .get("protocol_digest")
+            .ok_or("REFERENCE_SCOPE_MISMATCH")?,
+    )?;
+    let seen_refs = exact_inputs
         .iter()
-        .find(|member| {
-            member.get("actor_id").and_then(WireValue::as_utf16) == Some(actor)
-                && member
-                    .get("certificate")
-                    .and_then(|certificate| certificate.get("payload"))
-                    .and_then(|payload| payload.get("signing_key"))
-                    .and_then(WireValue::as_utf16)
-                    == Some(key)
+        .map(|row| {
+            (
+                row.record_id.encode_utf16().collect::<Vec<_>>(),
+                row.revision,
+            )
         })
-        .ok_or("AUTHOR_NOT_MEMBER")?;
-    let scopes = match member.get("scopes") {
-        Some(WireValue::Array(values)) => values,
-        _ => return Err("AUTHOR_SCOPE_DENIED"),
+        .collect::<HashSet<_>>();
+    let policy_payload = policy.get("payload").ok_or("AUTHOR_NOT_MEMBER")?;
+    let delegation_wire = match context.get("delegation") {
+        Some(WireValue::Null) => None,
+        Some(delegation) => Some(
+            canonical_wire_value(delegation, Path::SecureArtifact)
+                .map_err(|_| "AUTHOR_SCOPE_DENIED")?,
+        ),
+        None => return Err("AUTHOR_SCOPE_DENIED"),
     };
+    let checked = crate::secure_action_delegation::resolve_action_scope(
+        context,
+        policy_payload,
+        delegation_wire.as_deref().map(str::as_bytes),
+    )
+    .map_err(|error| error.code())?;
+    if !checked.permits_action() {
+        return Err("AUTHOR_SCOPE_DENIED");
+    }
+    let actor = checked.actor_id.encode_utf16().collect::<Vec<_>>();
     let issued = integer(context, "issued_at").map_err(|_| "AUTHOR_SCOPE_DENIED")?;
-    let applicable: Vec<_> = scopes
+    let applicable: Vec<_> = checked
+        .scopes
         .iter()
         .filter(|scope| {
             (matches!(scope.get("instance_id"), Some(WireValue::Null))
@@ -2620,24 +2572,6 @@ fn validate_action_state_slice(
                 })
         })
         .collect();
-    if !applicable.iter().any(|scope| {
-        scope
-            .get("actions")
-            .and_then(|value| {
-                if let WireValue::Array(items) = value {
-                    Some(items)
-                } else {
-                    None
-                }
-            })
-            .is_some_and(|actions| {
-                actions
-                    .iter()
-                    .any(|value| value.as_utf16() == Some(action_id))
-            })
-    }) {
-        return Err("AUTHOR_SCOPE_DENIED");
-    }
     validate_role_policies(policy_payload, prior, issued, instance_id)?;
     let mut roles = applicable
         .iter()
@@ -2680,12 +2614,8 @@ fn validate_action_state_slice(
     let mut capability_seen = HashSet::new();
     capabilities.retain(|capability| capability_seen.insert(capability.clone()));
     let auth = InterpreterAuth {
-        actor_id: String::from_utf16(actor).map_err(|_| "AUTHOR_NOT_MEMBER")?,
-        workspace_roles: vec![member
-            .get("role")
-            .and_then(WireValue::as_utf16)
-            .ok_or("AUTHOR_NOT_MEMBER")?
-            .to_vec()],
+        actor_id: checked.actor_id.clone(),
+        workspace_roles: vec![checked.role.encode_utf16().collect()],
         protocol_roles: roles,
         capabilities,
     };
@@ -2718,7 +2648,7 @@ fn validate_action_state_slice(
     let mut record_slots = HashMap::<Vec<u16>, WireValue>::new();
     let mut entity_slots = HashMap::<Vec<u16>, WireValue>::new();
     let mut assigned_records = HashMap::<Vec<u16>, u64>::new();
-    let mut pending_relations = Vec::<(usize, Vec<u16>, WireValue)>::new();
+    let mut pending_relations = Vec::<crate::secure_action_relations::PendingRelation>::new();
     for (record, allocation) in interpreted.records.iter().zip(allocations) {
         let entity = record.get("entity");
         if entity.is_some_and(|entity| {
@@ -2953,7 +2883,11 @@ fn validate_action_state_slice(
             return Err("UNSUPPORTED");
         };
         for relation in relations {
-            pending_relations.push((expected_objects.len(), record_id.to_vec(), relation.clone()));
+            pending_relations.push(crate::secure_action_relations::PendingRelation {
+                position: expected_objects.len(),
+                source_id: record_id.to_vec(),
+                relation: relation.clone(),
+            });
             expected_objects.push(WireValue::Null);
         }
         if entity.is_some()
@@ -3025,71 +2959,14 @@ fn validate_action_state_slice(
         replace_field(&mut value, "payload", payload).map_err(|_| "RECORD_SCHEMA_INVALID")?;
         replace_field(object, "value", value).map_err(|_| "RECORD_SCHEMA_INVALID")?;
     }
-    for (index, source_id, relation) in pending_relations {
-        let kind = relation
-            .get("kind")
-            .and_then(WireValue::as_utf16)
-            .ok_or("RELATION_TARGET_INVALID")?;
-        let target = substitute_produced(
-            relation.get("target").ok_or("RELATION_TARGET_INVALID")?,
-            &record_slots,
-            &entity_slots,
-            0,
-        )?;
-        let target_id = target
-            .get("recordId")
-            .or_else(|| target.get("record_id"))
-            .and_then(WireValue::as_utf16)
-            .ok_or("RELATION_TARGET_INVALID")?;
-        let target_revision =
-            integer(&target, "revision").map_err(|_| "RELATION_TARGET_INVALID")?;
-        let exists = prior.iter().any(|object| {
-            object.get("kind").and_then(WireValue::as_string).as_deref() == Some("records")
-                && object.get("id").and_then(WireValue::as_utf16) == Some(target_id)
-                && object
-                    .get("value")
-                    .and_then(|value| integer(value, "revision").ok())
-                    == Some(target_revision)
-        }) || assigned_records.get(target_id) == Some(&target_revision);
-        if !exists {
-            return Err("RELATION_TARGET_INVALID");
-        }
-        let id = canonical_wire_value(
-            &WireValue::Array(vec![
-                WireValue::String(source_id.clone()),
-                WireValue::String(kind.to_vec()),
-                WireValue::String(target_id.to_vec()),
-                WireValue::Number(target_revision as f64),
-            ]),
-            Path::SecureArtifact,
-        )
-        .map_err(|_| "RELATION_TARGET_INVALID")?;
-        let relation_value = fields_object(vec![
-            ("record_id", WireValue::String(source_id)),
-            ("kind", WireValue::String(kind.to_vec())),
-            ("target_record", WireValue::String(target_id.to_vec())),
-            ("target_revision", WireValue::Number(target_revision as f64)),
-        ]);
-        let outer_revision = safe_add(
-            prior
-                .iter()
-                .filter(|object| {
-                    object.get("kind").and_then(WireValue::as_string).as_deref()
-                        == Some("record_relations")
-                        && object.get("id").and_then(WireValue::as_string).as_deref() == Some(&id)
-                })
-                .filter_map(|object| integer(object, "revision").ok())
-                .max()
-                .unwrap_or(0),
-            1,
-        )?;
-        expected_objects[index] = fields_object(vec![
-            ("kind", string_value("record_relations")),
-            ("id", string_value(&id)),
-            ("revision", WireValue::Number(outer_revision as f64)),
-            ("value", relation_value),
-            ("provenance", string_value("AUTHOR_SIGNED")),
-        ]);
+    for (position, relation) in crate::secure_action_relations::resolve_relation_objects(
+        &pending_relations,
+        prior,
+        &assigned_records,
+        &record_slots,
+        &entity_slots,
+    )? {
+        expected_objects[position] = relation;
     }
     for selection in &interpreted.head_selections {
         let expected = selection.get("expected").ok_or("HEAD_SELECTION_INVALID")?;

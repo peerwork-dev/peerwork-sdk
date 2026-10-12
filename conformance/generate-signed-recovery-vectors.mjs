@@ -1,6 +1,7 @@
 // Direct signed recovery outcomes from the pinned TypeScript journal verifier.
 // All keys are freshly generated test identities or fixed synthetic epoch bytes.
 import {mkdtemp, rm, writeFile, readFile} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
 import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
 import {fileURLToPath, pathToFileURL} from 'node:url';
@@ -13,12 +14,31 @@ try {
   await build({stdin: {contents: `export {createSigningIdentity,createEncryptionIdentity,certifyEncryptionKey,encodeCanonicalJson,sealContent} from '${source}/workspace-secure-crypto.ts';
     export {createPolicy,createCommit,createCommitContext,secureHash,verifyJournal,verifiedJournalAction,prepareJournalRecovery,signSecure} from '${source}/workspace-secure-client.ts';
     export {structurePolicyFromObjects,projectStructureRecords,projectStructureHeads} from '${source}/workspace-structure.ts';
+    export {secureManifestDigest} from '${source}/workspace-secure-composition.ts';
     export {prepareSecureAction} from '${source}/workspace-secure-engine.ts';`,
     resolveDir: source, sourcefile: 'oracle.ts'}, outfile: output, bundle: true,
     platform: 'node', format: 'esm', logLevel: 'silent'});
   const {createSigningIdentity,createEncryptionIdentity,certifyEncryptionKey,encodeCanonicalJson,sealContent,signSecure,createPolicy,
     createCommit,createCommitContext,secureHash,verifyJournal,verifiedJournalAction,prepareJournalRecovery,
-    structurePolicyFromObjects,projectStructureRecords,projectStructureHeads,prepareSecureAction} = await import(pathToFileURL(output));
+    structurePolicyFromObjects,projectStructureRecords,projectStructureHeads,secureManifestDigest,prepareSecureAction} = await import(pathToFileURL(output));
+  // Preserve the frozen dd8a9d2 verifier, and bundle a one-line, explicitly
+  // labeled correction for its delegated ACTION receipt attribution defect.
+  // The current f828b6c journal verifier accepts the same writer-produced wire.
+  const correctedOutput = join(directory, 'corrected-oracle.mjs');
+  const correction = JSON.parse(await readFile(new URL('./delegated-action-receipt-correction.json', import.meta.url),'utf8'));
+  await build({stdin: {contents: `export {verifyJournal,verifiedJournalAction} from '${source}/workspace-secure-client.ts';`,
+    resolveDir: source, sourcefile: 'corrected-oracle.ts'}, outfile: correctedOutput,
+    bundle: true, platform: 'node', format: 'esm', logLevel: 'silent',
+    plugins: [{name:'explicit-delegated-receipt-correction',setup(builder) {
+      builder.onLoad({filter:/workspace-secure-client\.ts$/},async args=>{
+        const original=await readFile(args.path,'utf8');
+        if(createHash('sha256').update(original).digest('hex')!==correction.source_sha256
+          ||original.split(correction.from).length!==2)throw Error('Frozen source attribution anchor changed');
+        return {contents:original.replace(correction.from,correction.to),loader:'ts'};
+      });
+    }}]});
+  const {verifyJournal:verifyJournalCorrected,
+    verifiedJournalAction:verifiedJournalActionCorrected} = await import(pathToFileURL(correctedOutput));
   const identity = await createSigningIdentity();
   const recipient = await createEncryptionIdentity();
   const certificate = await certifyEncryptionKey(identity, recipient, 1, 100000);
@@ -355,6 +375,128 @@ try {
   const wikiActionCommit = await createCommit({identity,policy:wikiPolicy,checkpoint:wikiCp1,
     operation:wikiAction,actionId:'wiki.create',instanceId:wikiInstance,
     commandId:'q'.repeat(43),issuedAt:4,keyring});
+  const deviceIdentity = await createSigningIdentity();
+  const deviceEncryption = await createEncryptionIdentity();
+  const deviceCertificate = await certifyEncryptionKey(deviceIdentity,deviceEncryption,1,100000);
+  const delegation = await signSecure(identity,'peerwork.secure.device-delegation.v1',{
+    v:1,workspace_id:workspaceId,actor_id:identity.actorId,signing_key:identity.keyId,
+    device:deviceCertificate,request_id:'D'.repeat(43),
+    scope:[{instance_id:wikiInstance,actions:['wiki.create'],
+      protocol_roles:['EDITOR'],capabilities:['EDIT'],expires_at:null}],
+    read:true,origin:'https://example.test',audience:'https://example.test',
+    issued_at:3,expires_at:1000});
+  const delegatedContext = await createCommitContext({identity:deviceIdentity,
+    policy:wikiPolicy,checkpoint:wikiCp1,operation:actionInput,
+    actionId:'wiki.create',instanceId:wikiInstance,commandId:'E'.repeat(43),
+    issuedAt:4,delegation});
+  const delegatedAction = await prepareSecureAction({objects:wikiObjects,
+    context:delegatedContext,policy:wikiPolicy,body:{title:'One',body:'Snapshot page'},
+    allocations:[{record_id:'s'.repeat(43),entity_id:'t'.repeat(43)}]});
+  const delegatedCommit = await createCommit({identity:deviceIdentity,policy:wikiPolicy,
+    checkpoint:wikiCp1,operation:delegatedAction,actionId:'wiki.create',
+    instanceId:wikiInstance,commandId:'E'.repeat(43),issuedAt:4,keyring,delegation});
+  const delegatedCheckpoint = {...wikiCp0,sequence:2,head:await secureHash(delegatedCommit)};
+  let frozenDelegatedError;
+  try {
+    await verifyJournal({workspaceId,policies:[wikiPolicy],
+      commits:[wikiBoot,delegatedCommit],checkpoint:delegatedCheckpoint,keyring,
+      trustedOwner:{actorId:identity.actorId,key:identity.keyId}});
+    throw Error('frozen verifier unexpectedly accepted delegated record ACTION');
+  } catch (error) {frozenDelegatedError=String(error.message);}
+  if(frozenDelegatedError!=='VERIFIED_ACTION_EFFECT_INVALID')throw Error(frozenDelegatedError);
+  const correctedDelegated = await verifyJournalCorrected({workspaceId,policies:[wikiPolicy],
+    commits:[wikiBoot,delegatedCommit],checkpoint:delegatedCheckpoint,keyring,
+    trustedOwner:{actorId:identity.actorId,key:identity.keyId}});
+  cases.push({name:'signed_delegated_wiki_action_corrected',policy:wikiPolicy,
+    commits:[wikiBoot,delegatedCommit],checkpoint:delegatedCheckpoint,keyring,
+    workspace_id:workspaceId,owner:{actor_id:identity.actorId,key:identity.keyId},
+    ok:true,oracle:'dd8a9d2+receipt-principal-correction',
+    frozen_baseline_error:frozenDelegatedError,
+    operations:correctedDelegated.operations,objects:correctedDelegated.objects,
+    recoveries:correctedDelegated.recoveries,legacy:correctedDelegated.legacy,
+    structure_state:correctedDelegated.structure?.state??null,
+    action_receipts:[verifiedJournalActionCorrected(correctedDelegated,delegatedCommit.payload.command_id)]});
+  const wrongPrincipalAction = structuredClone(delegatedAction);
+  wrongPrincipalAction.objects.find(object=>object.kind==='records').value.actor_id=deviceIdentity.actorId;
+  const wrongPrincipalCommit = await createCommit({identity:deviceIdentity,policy:wikiPolicy,
+    checkpoint:wikiCp1,operation:wrongPrincipalAction,actionId:'wiki.create',
+    instanceId:wikiInstance,commandId:'W'.repeat(43),issuedAt:4,keyring,delegation});
+  const wrongPrincipalCheckpoint = {...wikiCp0,sequence:2,head:await secureHash(wrongPrincipalCommit)};
+  let wrongPrincipalError;
+  try {await verifyJournalCorrected({workspaceId,policies:[wikiPolicy],
+    commits:[wikiBoot,wrongPrincipalCommit],checkpoint:wrongPrincipalCheckpoint,keyring,
+    trustedOwner:{actorId:identity.actorId,key:identity.keyId}});
+    throw Error('corrected verifier unexpectedly accepted wrong principal');
+  } catch (error) {wrongPrincipalError=String(error.message);}
+  if(wrongPrincipalError!=='PROTOCOL_OUTPUT_MISMATCH')throw Error(wrongPrincipalError);
+  cases.push({name:'signed_delegated_wrong_principal_record',policy:wikiPolicy,
+    commits:[wikiBoot,wrongPrincipalCommit],checkpoint:wrongPrincipalCheckpoint,keyring,
+    workspace_id:workspaceId,owner:{actor_id:identity.actorId,key:identity.keyId},
+    ok:false,oracle:'dd8a9d2+receipt-principal-correction',error:wrongPrincipalError});
+  const controlManifest = structuredClone(wiki.manifest);
+  controlManifest.name = 'peerwork.recovery-control.v1';
+  controlManifest.initial_state = {count:0};
+  controlManifest.actions = [{id:'demo.set',reads:[['count']],writes:[['count']],
+    revisionEffects:{control:true,contentEntities:[]},variants:[{when:[
+      {op:'has_protocol_role',role:'EDITOR'},
+      {op:'has_capability',capability:'EDIT'}],effects:[
+      {op:'set',path:['count'],value:{from:'literal',value:1}}]}]}];
+  const control = await secureManifestDigest(controlManifest);
+  const controlInstance = 'C'.repeat(43);
+  const controlObjects = [
+    {kind:'workspaces',id:workspaceId,revision:1,provenance:'AUTHOR_SIGNED',value:{
+      id:workspaceId,name:'Zero-effect ACTION',visibility:'PRIVATE',owner:identity.actorId,created:3}},
+    {kind:'protocols',id:control.digest,revision:1,provenance:'AUTHOR_SIGNED',value:{
+      workspace_id:workspaceId,digest:control.digest,manifest:control.manifest,
+      resolved_manifest:control.manifest}},
+    {kind:'instances',id:controlInstance,revision:1,provenance:'AUTHOR_SIGNED',value:{
+      id:controlInstance,workspace_id:workspaceId,protocol_digest:control.digest,
+      origin_entrypoint:'control',semantics:'peerwork.kernel.v1',state:{count:0},
+      revision:0,event_revision:0,created:3}},
+  ];
+  const controlPolicy = await createPolicy(identity,{v:2,workspace_id:workspaceId,
+    owner_id:identity.actorId,signing_key:identity.keyId,version:1,
+    previous_policy:null,effective_sequence:1,visibility:'PRIVATE',epoch:1,issued_at:2,
+    structure:structurePolicyFromObjects(controlObjects),members:[{
+      actor_id:identity.actorId,certificate,role:'OWNER',scopes:[{
+        instance_id:controlInstance,actions:['demo.set'],protocol_roles:['EDITOR'],
+        capabilities:['EDIT'],expires_at:null}]}]});
+  const controlCp0 = {...checkpoint0,policy_hash:await secureHash(controlPolicy)};
+  const controlBoot = await createCommit({identity,policy:controlPolicy,checkpoint:controlCp0,
+    operation:{v:1,kind:'BOOTSTRAP',input:{},objects:controlObjects},
+    actionId:'secure.bootstrap',instanceId:null,commandId:'f'.repeat(43),issuedAt:3,keyring});
+  const controlCp1 = {...controlCp0,sequence:1,head:await secureHash(controlBoot)};
+  const controlDelegation = await signSecure(identity,'peerwork.secure.device-delegation.v1',{
+    ...delegation.payload,scope:[{instance_id:controlInstance,actions:['demo.set'],
+      protocol_roles:['EDITOR'],capabilities:['EDIT'],expires_at:null}]});
+  const controlContext = await createCommitContext({identity:deviceIdentity,
+    policy:controlPolicy,checkpoint:controlCp1,operation:actionInput,
+    actionId:'demo.set',instanceId:controlInstance,commandId:'g'.repeat(43),
+    issuedAt:4,delegation:controlDelegation});
+  const controlAction = await prepareSecureAction({objects:controlObjects,
+    context:controlContext,policy:controlPolicy,body:{},allocations:[]});
+  const controlCommit = await createCommit({identity:deviceIdentity,policy:controlPolicy,
+    checkpoint:controlCp1,operation:controlAction,actionId:'demo.set',
+    instanceId:controlInstance,commandId:'g'.repeat(43),issuedAt:4,keyring,
+    delegation:controlDelegation});
+  const controlCp2 = {...controlCp0,sequence:2,head:await secureHash(controlCommit)};
+  try {
+    const journal = await verifyJournal({workspaceId,policies:[controlPolicy],
+      commits:[controlBoot,controlCommit],checkpoint:controlCp2,keyring,
+      trustedOwner:{actorId:identity.actorId,key:identity.keyId}});
+    cases.push({name:'signed_delegated_zero_record_action',policy:controlPolicy,
+      commits:[controlBoot,controlCommit],checkpoint:controlCp2,keyring,
+      workspace_id:workspaceId,owner:{actor_id:identity.actorId,key:identity.keyId},
+      ok:true,operations:journal.operations,objects:journal.objects,
+      recoveries:journal.recoveries,legacy:journal.legacy,
+      structure_state:journal.structure?.state??null,
+      action_receipts:[verifiedJournalAction(journal,controlCommit.payload.command_id)]});
+  } catch (error) {
+    cases.push({name:'signed_delegated_zero_record_action',policy:controlPolicy,
+      commits:[controlBoot,controlCommit],checkpoint:controlCp2,keyring,
+      workspace_id:workspaceId,owner:{actor_id:identity.actorId,key:identity.keyId},
+      ok:false,error:String(error.message)});
+  }
   for (const [name, mutated] of [
     ['signed_action_extra_operation_field', {...wikiAction, extra: true}],
     ['signed_action_extra_input_field', {...wikiAction,

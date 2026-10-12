@@ -752,7 +752,7 @@ fn resolve_author(
                 .map_err(|_| ChainError::Invalid)?;
             if !verify_secure_signed_wire(
                 grant_wire.as_bytes(),
-                "peerwork.secure.delegation.v1",
+                "peerwork.secure.device-delegation.v1",
                 &principal_key,
             )
             .map_err(|_| ChainError::Invalid)?
@@ -965,7 +965,7 @@ mod tests {
         .unwrap();
         let delegation: Value = serde_json::from_slice(&signed(
             json!({"v":1,"workspace_id":workspace,"actor_id":owner,"signing_key":owner_key,"device":device_certificate,"request_id":base64url(&[66; 32]),"scope":[member_scope],"read":false,"origin":"https://example.test","audience":"example","issued_at":0,"expires_at":1000}),
-            "peerwork.secure.delegation.v1",
+            "peerwork.secure.device-delegation.v1",
             &key,
         ))
         .unwrap();
@@ -997,6 +997,38 @@ mod tests {
             .sequence,
             1
         );
+        // The old synthetic test signed and verified this same wrong domain.
+        // Re-sign the whole commit so its only defect is the delegation domain.
+        let wrong_domain_delegation: Value = serde_json::from_slice(&signed(
+            delegation["payload"].clone(),
+            "peerwork.secure.delegation.v1",
+            &key,
+        ))
+        .unwrap();
+        delegated_payload["payload"]["delegation"] = wrong_domain_delegation;
+        let wrong_domain_commit = signed(
+            delegated_payload["payload"].clone(),
+            "peerwork.secure.commit.v1",
+            &device_key,
+        );
+        let wrong_domain_checkpoint = serde_json::to_vec(&json!({
+            "v":1,"workspace_id":workspace,"owner_id":owner,"owner_key":owner_key,
+            "sequence":1,"head":hash(&wrong_domain_commit),"policy_hash":hash(&policies[0])
+        }))
+        .unwrap();
+        assert_eq!(
+            scan_signed_chain_headers(
+                &[policies[0].as_slice()],
+                &[wrong_domain_commit.as_slice()],
+                &wrong_domain_checkpoint,
+                &workspace,
+                Some(&owner_pin),
+                None
+            )
+            .unwrap_err(),
+            ChainError::Invalid
+        );
+        delegated_payload["payload"]["delegation"] = delegation.clone();
         delegated_payload["payload"]["delegation"]["payload"]["workspace_id"] =
             json!(base64url(&[11; 32]));
         let invalid_delegation = signed(
