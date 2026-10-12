@@ -48,6 +48,7 @@ pub(crate) struct HeaderChainFacts {
     pub head: Option<String>,
     pub policy_hash: String,
     pub policy_hashes: Vec<String>,
+    pub policy_effective_sequences: Vec<u64>,
     pub commit_hashes: Vec<String>,
 }
 
@@ -319,6 +320,7 @@ pub(crate) fn scan_signed_chain_headers(
         sequence: commit_hashes.len() as u64,
         head,
         policy_hash: latest.hash.clone(),
+        policy_effective_sequences: policies.iter().map(|p| p.effective_sequence).collect(),
         policy_hashes: policies.into_iter().map(|p| p.hash).collect(),
         commit_hashes,
     })

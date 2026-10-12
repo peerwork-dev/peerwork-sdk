@@ -51,6 +51,7 @@ pub struct ReplayedSecureJournal {
     head: Option<String>,
     policy_hash: String,
     policy_hashes: Vec<String>,
+    policy_effective_sequences: Vec<u64>,
     commit_hashes: Vec<String>,
     objects: Vec<WireValue>,
     operations: Vec<WireValue>,
@@ -89,7 +90,14 @@ impl ReplayedSecureJournal {
         head: Option<&str>,
         policy_hash: &str,
     ) -> bool {
-        if sequence > self.sequence || !self.policy_hashes.iter().any(|hash| hash == policy_hash) {
+        let selected_policy = self
+            .policy_hashes
+            .iter()
+            .zip(&self.policy_effective_sequences)
+            .rev()
+            .find(|(_, effective_sequence)| **effective_sequence <= sequence.max(1))
+            .map(|(hash, _)| hash.as_str());
+        if sequence > self.sequence || selected_policy != Some(policy_hash) {
             return false;
         }
         match sequence {
@@ -186,6 +194,7 @@ pub fn replay_secure_journal_exact(
         head: chain.head,
         policy_hash: chain.policy_hash,
         policy_hashes: chain.policy_hashes,
+        policy_effective_sequences: chain.policy_effective_sequences,
         commit_hashes: chain.commit_hashes,
         objects: facts.objects,
         operations: facts.operations,
@@ -211,6 +220,7 @@ mod tests {
             "signed_delegated_wiki_action_corrected",
             "signed_delegated_zero_record_action",
             "recovered_invalid_encrypted_commit",
+            "v3_recovery_after_v1_wire_upgrade",
             "v2_structured_recovery_snapshot_base",
         ] {
             let case = fixture["cases"]
@@ -271,13 +281,25 @@ mod tests {
                     &replay.policy_hashes[0],
                 ));
             }
+            if replay.policy_hashes.len() > 1 {
+                assert!(
+                    !replay.contains_checkpoint(
+                        1,
+                        Some(&replay.commit_hashes[0]),
+                        &replay.policy_hashes[1],
+                    ),
+                    "{name}: future policy cannot satisfy an earlier checkpoint"
+                );
+            }
             if name == "v2_structured_recovery_snapshot_base" {
                 assert_eq!(replay.structure_status(), StructureStatus::Seeding);
                 assert!(matches!(
                     replay.action_receipt("any"),
                     Err(JournalReplayError::Seeding)
                 ));
-            } else if name == "recovered_invalid_encrypted_commit" {
+            } else if name == "recovered_invalid_encrypted_commit"
+                || name == "v3_recovery_after_v1_wire_upgrade"
+            {
                 assert!(replay
                     .action_receipt("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
                     .unwrap()

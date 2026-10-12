@@ -4385,6 +4385,7 @@ mod tests {
             head: None,
             policy_hash: policy_hash.clone(),
             policy_hashes: Vec::new(),
+            policy_effective_sequences: Vec::new(),
             commit_hashes: Vec::new(),
         };
         let make_context = |sequence: u64, action: &str, mode: &str, offset: u64, heads: Value| {
