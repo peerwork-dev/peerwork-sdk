@@ -421,3 +421,65 @@ actual service lost-reply retry, complete replay/activation, PUBLIC mode,
 structured mode and language surfaces remain required. Agent workflow
 compliance was not exercised by this synthetic Rust test and is unverified
 separately from local business correctness.
+
+Custody correction `89a7e0a`: reviewer found that saved signed bootstrap
+bytes and independently protected pending keyring could be mismatched on
+restart. Before `submit_saved_bootstrap` can POST, the runtime now derives
+the signed content context, authenticates the exact saved AES-GCM body with
+the reopened epoch-1 pending key, and checks the BOOTSTRAP operation shape.
+A second independently generated pending ring with otherwise identical
+origin/owner/workspace pins refuses before transport, leaving saved bytes
+unchanged. The focused Rust 1.89 locked-offline restart test passed 1/1.
+This supersedes the narrower `197f1f9` custody claim. The decrypted byte
+buffer is `Zeroizing` and a successfully parsed operation is wiped; parser
+allocations on a malformed plaintext error path are not proven erased.
+No complete memory-erasure claim is made.
+
+Native default owner-create source checkpoint is `7aa8272` plus core
+registration `7603df0`. It embeds the exact tracked
+`f828b6c50a0a58d1e718af90f653b214adcc3328` Apache-2.0
+`src/workspace-presets.ts` (SHA-256
+`2e85ed64b4ff63737cfe5fc2fd47f270dc8bb488533a5a287a0270d5702223bd`)
+as six validated collaboration manifests. The generated fixture SHA-256 is
+`0aa41e318cfb7b205a31d281d45d09c9d220af2b33e97df31975ba522af32786`;
+the native builder SHA-256 is
+`1c4931c179e9b0e6017da1219dec2c0a13e9f932643223473779fd2ab6172e7a`.
+Rust independently canonicalizes and hashes each embedded manifest, then
+constructs the workspace, protocol, instance and Owner scope objects in the
+tracked six-entry order. The exact detached-pin core test passed 1/1. This
+runtime path does not spawn Node. These six defaults are not the complete
+dynamic/custom protocol authoring API.
+
+Native owner-create transport checkpoint is exact SDK commit
+`f78b694fd5c41251d6fa90ea828c5c292fa4e5a7` (runtime producer SHA-256
+`238d4078d3b1cad94f4a8a1a9b23678cdeffa791e823b00740ad5b9f5d52cd70`,
+transport `cd3dbeeeca5a657224cc0f6dc85016d6090c1d14771cce1118e9796c99835bfd`,
+reference bridge `61350432c95de2b1eb7181a710961022a594f29069d552b6e90acb6d107cdec7`).
+The opt-in Rust test was run from a clean detached checkout at that exact
+commit with Rust 1.89 locked-offline, Node 24.20.0, the pinned built
+TypeScript service checkout `f828b6c`, and `PEERWORK_REFERENCE_ROOT` set.
+The bridge itself verifies its pinned source and compiled-closure hashes.
+TypeScript only generates/registers the synthetic Ed25519 Owner identity;
+Rust imports its protected PEM, creates a P-256 recipient, authors the six
+default objects/scopes, v3 PRIVATE policy and encrypted signed BOOTSTRAP,
+stages the epoch-1 key, and saves exact request bytes before HTTP. Fresh
+service secure counts were commits 0/head absent before and after native
+preparation; the first POST committed but its reply was dropped; service
+counts then were commits 1/head sequence 1, with DB head hash equal to the
+native signed commit digest. Reopen re-used the exact bytes and the real
+service returned workspace ID, sequence 1 and the same head; counts stayed
+1/1. The native row stayed PENDING with one observed response, and the key
+stayed pending. The exact detached opt-in test passed 1/1. Focused local
+owner preparation and root-route allowlist tests also passed; the ordinary
+test with `PEERWORK_REFERENCE_ROOT` unset exits early and is **not** actual
+service evidence.
+
+The first two opt-in attempts stopped at `Transport(InvalidOrigin)`: the
+root bootstrap route was missing from the transport's exact allowlist. The
+runtime allowlist was corrected, with a focused negative test rejecting
+nearby paths, then the exact-pin service test passed. This is actual service
+admission and same-ID dedup evidence for one native default PRIVATE owner
+create, not a signed journal read, complete operation replay, active-key
+promotion, PUBLIC/structured create, or a public language create surface.
+Agent workflow compliance was not exercised by this scripted client test;
+business-path behavior and workflow compliance remain separate judgments.
