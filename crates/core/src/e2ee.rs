@@ -111,10 +111,10 @@ pub fn seal_content_wire(
     plaintext_wire: &[u8],
     context_wire: &[u8],
 ) -> Result<SealedContent, E2eeError> {
-    let mut plaintext = parse_wire_json_js_bounded(plaintext_wire, 64, MAX_CIPHERTEXT_BYTES)
-        .map_err(|_| E2eeError::Format)?;
     let context =
         parse_wire_json_js_bounded(context_wire, 64, 196_608).map_err(|_| E2eeError::Format)?;
+    let mut plaintext = parse_wire_json_js_bounded(plaintext_wire, 64, MAX_CIPHERTEXT_BYTES)
+        .map_err(|_| E2eeError::Format)?;
     let canonical =
         canonical_wire_value(&plaintext, Path::SecureArtifact).map_err(|_| E2eeError::Format);
     wipe_wire(&mut plaintext);
@@ -243,10 +243,10 @@ pub fn hpke_seal_wire(
     plaintext_wire: &[u8],
     context_wire: &[u8],
 ) -> Result<KeyBox, E2eeError> {
-    let mut plaintext = parse_wire_json_js_bounded(plaintext_wire, 64, MAX_CIPHERTEXT_BYTES)
-        .map_err(|_| E2eeError::Format)?;
     let context =
         parse_wire_json_js_bounded(context_wire, 64, 196_608).map_err(|_| E2eeError::Format)?;
+    let mut plaintext = parse_wire_json_js_bounded(plaintext_wire, 64, MAX_CIPHERTEXT_BYTES)
+        .map_err(|_| E2eeError::Format)?;
     let canonical =
         canonical_wire_value(&plaintext, Path::SecureArtifact).map_err(|_| E2eeError::Format);
     wipe_wire(&mut plaintext);

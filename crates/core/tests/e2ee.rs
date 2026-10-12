@@ -118,6 +118,7 @@ fn aes_wire_context_and_plaintext_preserve_lone_utf16_surrogates() {
     let context = br#"{"workspace_id":"\ud800","epoch":1}"#;
     let plaintext = br#"{"body":"\udfff"}"#;
     let sealed = seal_content_wire(&key, plaintext, context).unwrap();
+    assert!(seal_content_wire(&key, plaintext, br#"{"workspace_id":}"#).is_err());
     assert_eq!(
         open_content_wire(&key, &sealed, context).unwrap(),
         plaintext
@@ -177,6 +178,7 @@ fn hpke_wire_context_and_plaintext_preserve_lone_utf16_surrogates() {
     let context = br#"{"workspace_id":"\ud800"}"#;
     let plaintext = br#"{"key":"\udfff"}"#;
     let box_value = hpke_seal_wire(&jwk, plaintext, context).unwrap();
+    assert!(hpke_seal_wire(&jwk, plaintext, br#"{"workspace_id":}"#).is_err());
     let opened = hpke_open_wire(&private.to_bytes(), &box_value, context).unwrap();
     assert_eq!(
         opened.get("key").unwrap().as_utf16(),
