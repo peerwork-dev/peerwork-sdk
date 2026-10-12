@@ -35,7 +35,7 @@ of the first parallel failure was not captured, so its process-scheduling
 cause remains an inference, not a proven trace.
 
 The store does not parse or authenticate secure-agent state, prove a signed
-journal outcome, classify an action intent, or migrate old state. Windows
-fails closed until protected ACLs and locks are implemented and tested on a
-real Windows runner. No secure-action capability is advertised from this
-checkpoint.
+journal outcome, classify an action intent, or migrate old state. A later
+Windows source implementation is recorded in `runtime-windows-storage-20261012.md`;
+real Windows execution and crash-durability evidence remain open. No
+secure-action capability is advertised from this checkpoint.

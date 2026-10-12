@@ -115,10 +115,14 @@ impl KernelIntentJournal {
     pub fn open(path: &Path) -> Result<Self, JournalError> {
         ensure_private_parent(path)?;
         create_or_check_private_file(path)?;
+        #[cfg(windows)]
+        check_private_sidecars(path)?;
         let mut db = Connection::open(path)?;
         db.busy_timeout(Duration::from_secs(5))?;
         initialize(&mut db)?;
         set_wal_with_retry(&db)?;
+        #[cfg(windows)]
+        check_private_sidecars(path)?;
         db.pragma_update(None, "synchronous", "FULL")?;
         db.pragma_update(None, "foreign_keys", "ON")?;
         Ok(Self {
@@ -559,12 +563,34 @@ fn create_or_check_private_file(path: &Path) -> Result<(), JournalError> {
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn ensure_private_parent(path: &Path) -> Result<(), JournalError> {
+    crate::windows_fs::private_parent(path).map_err(|_| JournalError::Protection)
+}
+
+#[cfg(windows)]
+fn create_or_check_private_file(path: &Path) -> Result<(), JournalError> {
+    crate::windows_fs::create_or_check_file(path).map_err(|_| JournalError::Protection)
+}
+
+#[cfg(windows)]
+fn check_private_sidecars(path: &Path) -> Result<(), JournalError> {
+    use std::ffi::OsString;
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let mut name = OsString::from(path.as_os_str());
+        name.push(suffix);
+        crate::windows_fs::private_file_if_exists(Path::new(&name))
+            .map_err(|_| JournalError::Protection)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
 fn ensure_private_parent(_: &Path) -> Result<(), JournalError> {
     Err(JournalError::UnsupportedPlatform)
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn create_or_check_private_file(_: &Path) -> Result<(), JournalError> {
     Err(JournalError::UnsupportedPlatform)
 }
@@ -579,6 +605,24 @@ mod tests {
     };
     use serde_json::json;
     use tempfile::TempDir;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_private_journal_reopens_exact_pending_row() {
+        let outer = tempfile::tempdir().unwrap();
+        let state_dir = outer.path().join("state");
+        crate::windows_fs::create_private_directory(&state_dir).unwrap();
+        let path = state_dir.join("intents.sqlite");
+        let id = "W".repeat(43);
+        {
+            let mut journal = KernelIntentJournal::open(&path).unwrap();
+            journal.prepare(&id, KernelPath::Command, "signed.header.payload",
+                b"{\"jws\":\"\\ud800\"}").unwrap();
+        }
+        let reopened = KernelIntentJournal::open(&path).unwrap();
+        assert_eq!(reopened.exact_request_for_test(&id).unwrap(),
+            Some(("signed.header.payload".into(), b"{\"jws\":\"\\ud800\"}".to_vec())));
+    }
 
     #[cfg(unix)]
     fn private_dir() -> TempDir {

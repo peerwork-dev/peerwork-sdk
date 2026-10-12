@@ -28,4 +28,4 @@ offline dependencies and authorized localhost socket access.
 This is a synthetic server test for the kernel command path. It does not prove
 actual Peerwork service behavior, verified workspace reads, the separate
 secure-agent action/journal replay path, backup/readback migration from old
-TypeScript state, Windows protected storage, or Python/Node/CLI parity.
+TypeScript state, executed Windows protected storage, or Python/Node/CLI parity.

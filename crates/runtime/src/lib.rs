@@ -6,3 +6,5 @@ pub mod kernel_client;
 pub mod kernel_intents;
 pub mod secure_state;
 pub mod transport;
+#[cfg(windows)]
+mod windows_fs;

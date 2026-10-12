@@ -2,8 +2,12 @@
 //! bytes; semantic transitions and verification belong to `peerwork-core`.
 //! An old TypeScript state file is never rewritten without explicit migration.
 
-use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::fs::File;
+#[cfg(not(windows))]
+use std::fs::{self, OpenOptions};
+use std::io::Read;
+#[cfg(not(windows))]
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -53,6 +57,10 @@ impl Drop for ExclusiveLock {
                 unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN) };
             }
         }
+        #[cfg(windows)]
+        if self.owner_pid == process_id() {
+            let _ = self.file.unlock();
+        }
     }
 }
 
@@ -63,14 +71,20 @@ impl SecureStateStore {
             "{}.lock",
             path.extension().and_then(|s| s.to_str()).unwrap_or("state")
         ));
-        let mut lock_options = OpenOptions::new();
-        lock_options.read(true).write(true).create(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            lock_options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-        }
-        let lock = lock_options.open(&lock_path)?;
+        #[cfg(windows)]
+        let lock = crate::windows_fs::open_private_lock(&lock_path)
+            .map_err(|_| SecureStateError::Protection)?;
+        #[cfg(not(windows))]
+        let lock = {
+            let mut lock_options = OpenOptions::new();
+            lock_options.read(true).write(true).create(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                lock_options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+            }
+            lock_options.open(&lock_path)?
+        };
         check_private_file(&lock_path)?;
         lock_exclusive(&lock)?;
         let lock = ExclusiveLock {
@@ -136,18 +150,27 @@ impl SecureStateStore {
                 return Err(SecureStateError::Corrupt);
             }
         }
+        #[cfg(not(windows))]
         let parent = self.path.parent().ok_or(SecureStateError::Protection)?;
-        let mut temporary = tempfile::Builder::new()
-            .prefix(".peerwork-state-")
-            .tempfile_in(parent)?;
-        temporary.as_file_mut().write_all(MAGIC)?;
-        temporary.as_file_mut().write_all(bytes)?;
-        temporary.as_file_mut().sync_all()?;
-        temporary
-            .persist(&self.path)
-            .map_err(|error| SecureStateError::Io(error.error))?;
-        File::open(parent)?.sync_all()?;
-        Ok(())
+        #[cfg(windows)]
+        {
+            crate::windows_fs::atomic_replace(&self.path, MAGIC, bytes)?;
+            return Ok(());
+        }
+        #[cfg(not(windows))]
+        {
+            let mut temporary = tempfile::Builder::new()
+                .prefix(".peerwork-state-")
+                .tempfile_in(parent)?;
+            temporary.as_file_mut().write_all(MAGIC)?;
+            temporary.as_file_mut().write_all(bytes)?;
+            temporary.as_file_mut().sync_all()?;
+            temporary
+                .persist(&self.path)
+                .map_err(|error| SecureStateError::Io(error.error))?;
+            File::open(parent)?.sync_all()?;
+            Ok(())
+        }
     }
 
     fn ensure_owner(&self) -> Result<(), SecureStateError> {
@@ -170,6 +193,10 @@ fn process_id() -> u32 {
 }
 
 fn state_exists(path: &Path) -> Result<bool, SecureStateError> {
+    #[cfg(windows)]
+    return crate::windows_fs::private_file_if_exists(path)
+        .map_err(|_| SecureStateError::Protection);
+    #[cfg(not(windows))]
     match fs::symlink_metadata(path) {
         Ok(_) => Ok(true),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
@@ -178,14 +205,19 @@ fn state_exists(path: &Path) -> Result<bool, SecureStateError> {
 }
 
 fn open_state_read(path: &Path) -> Result<File, SecureStateError> {
-    let mut options = OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
+    #[cfg(windows)]
+    return crate::windows_fs::open_private_read(path).map_err(|_| SecureStateError::Protection);
+    #[cfg(not(windows))]
     {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW);
+        }
+        Ok(options.open(path)?)
     }
-    Ok(options.open(path)?)
 }
 
 #[cfg(unix)]
@@ -238,15 +270,30 @@ fn lock_exclusive(file: &File) -> Result<(), SecureStateError> {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn check_private_parent(path: &Path) -> Result<(), SecureStateError> {
+    crate::windows_fs::private_parent(path).map_err(|_| SecureStateError::Protection)
+}
+#[cfg(windows)]
+fn check_private_file(path: &Path) -> Result<(), SecureStateError> {
+    crate::windows_fs::private_file(path).map_err(|_| SecureStateError::Protection)
+}
+#[cfg(windows)]
+fn lock_exclusive(file: &File) -> Result<(), SecureStateError> {
+    file.try_lock().map_err(|error| match error {
+        std::fs::TryLockError::WouldBlock => SecureStateError::Busy,
+        std::fs::TryLockError::Error(error) => SecureStateError::Io(error),
+    })
+}
+#[cfg(not(any(unix, windows)))]
 fn check_private_parent(_: &Path) -> Result<(), SecureStateError> {
     Err(SecureStateError::UnsupportedPlatform)
 }
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn check_private_file(_: &Path) -> Result<(), SecureStateError> {
     Err(SecureStateError::UnsupportedPlatform)
 }
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn lock_exclusive(_: &File) -> Result<(), SecureStateError> {
     Err(SecureStateError::UnsupportedPlatform)
 }
@@ -254,6 +301,61 @@ fn lock_exclusive(_: &File) -> Result<(), SecureStateError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    fn private_dir() -> tempfile::TempDir {
+        let outer = tempfile::tempdir().unwrap();
+        crate::windows_fs::create_private_directory(&outer.path().join("state")).unwrap();
+        outer
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_exact_state_and_lock_survive_reopen() {
+        use std::process::Command;
+        let outer = private_dir();
+        let path = outer.path().join("state").join("agent.state");
+        let first = SecureStateStore::open(&path).unwrap();
+        first.write_exact(b"{\"wire\":\"\\ud800\"}").unwrap();
+        assert_eq!(
+            first.read_exact().unwrap(),
+            Some(b"{\"wire\":\"\\ud800\"}".to_vec())
+        );
+        let probe = || {
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "secure_state::tests::windows_child_lock_probe",
+                    "--nocapture",
+                ])
+                .env("PEERWORK_TEST_SECURE_STATE_PATH", &path)
+                .output()
+                .unwrap()
+        };
+        let blocked = probe();
+        assert!(blocked.status.success());
+        assert!(String::from_utf8_lossy(&blocked.stdout).contains("PEERWORK_SECURE_BUSY"));
+        drop(first);
+        let acquired = probe();
+        assert!(acquired.status.success());
+        assert!(String::from_utf8_lossy(&acquired.stdout).contains("PEERWORK_SECURE_ACQUIRED"));
+        assert_eq!(
+            SecureStateStore::open(&path).unwrap().read_exact().unwrap(),
+            Some(b"{\"wire\":\"\\ud800\"}".to_vec())
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_child_lock_probe() {
+        let Ok(path) = std::env::var("PEERWORK_TEST_SECURE_STATE_PATH") else {
+            return;
+        };
+        match SecureStateStore::open(Path::new(&path)) {
+            Err(SecureStateError::Busy) => println!("PEERWORK_SECURE_BUSY"),
+            Ok(_) => println!("PEERWORK_SECURE_ACQUIRED"),
+            Err(error) => panic!("unexpected Windows lock error: {error}"),
+        }
+    }
     #[cfg(unix)]
     fn private_dir() -> tempfile::TempDir {
         use std::os::unix::fs::PermissionsExt;
