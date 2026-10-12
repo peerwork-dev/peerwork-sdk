@@ -310,3 +310,41 @@ and no runtime key was activated. Owner bootstrap, production
 policy/grant-to-keyring activation, rotation/recovery and full effect proof
 remain required. Agent workflow compliance was not exercised by these
 synthetic crypto vectors and remains unverified separately.
+
+Peer review found two valid-input/time errors in the first invitation and
+delegation verifier at `866f104`. It required an accepted invitation's offer
+policy hash to equal the later grant's selected policy hash, while the
+tracked TypeScript flow permits an earlier signed invitation followed by a
+new policy adding the recipient. It also checked delegation expiry at grant
+issuance but not at the later open time. Corrected source is
+`a2de9cda3118fdf32e336a5fc1a2f27e0a518f29` (verifier SHA-256
+`1a39de398a04d34fa97b8e3cf06c685e36e884204b5adec1aa48948ebcbc5e15`,
+oracle script SHA-256
+`466620f88b2ca3214569946ffb0365a163411951c7ed771361e5e5de66edab0d`).
+The corrected TypeScript positive issues the invitation under policy v1,
+adds the invited member under policy v2, creates the grant under v2, and
+opens it. The Rust header-chain fixture has two synthetic signed v1 commit
+headers to make policy v2 effective; those headers are not evidence of a
+replayed action. The delegated case opens while valid and refuses an open
+exactly at signed expiry in both TypeScript and Rust. The detached exact
+`a2de9cd` Node24/Rust1.89 locked-offline dynamic oracle passed all three
+cases and related negative assertions; the temporary lockfile-matched
+dependency symlink and mode-0600 vectors were removed. The original
+`866f104` bounded pass remains recorded as its narrower first attempt and
+is superseded for invitation/delegation parity by this corrected pin.
+
+Recipient-certificate peer review found a narrower v1 compatibility issue:
+the local recipient verifier rejected a correctly signed certificate with
+an extra benign payload field, while pinned TypeScript
+`verifySecureCertificate` accepts it. Corrected source is
+`06692007c2d1084bd4ac353a144728833942e4b3` (`secure_recipient.rs`
+SHA-256 `d09043e1c207f7af08e0dd92984e97f17b34b1771a7f9de233a0dfca0fdf431b`,
+oracle script SHA-256
+`f0cc158263f3db33d796f0cb43c700d44ef098b0b0caafff251c2c43ef934d31`).
+The detached exact-pin dynamic oracle passed four TypeScript-to-Rust vectors,
+including a v1 policy/grant with an extra signed certificate field and the
+prior rotated-invitation and delegated-expiry cases. The JWK itself remains
+exactly four fields. Structured v2/v3 policy certificates retain their
+separate exact-field shape rule in `secure_chain.rs`, matching the pinned
+structured-policy validator; that rule was not changed. The lockfile-matched
+temporary dependency link and private vectors were removed after the run.
