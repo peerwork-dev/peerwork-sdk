@@ -403,7 +403,7 @@ fn project_structure_data(
         return Err(ReplayError::Invalid);
     };
     let mut records = Vec::new();
-    let mut heads = HashMap::<Vec<u16>, (u64, WireValue)>::new();
+    let mut heads = Vec::<(Vec<u16>, u64, WireValue)>::new();
     for object in objects {
         let kind = string(object, "kind")?;
         if kind == "records" {
@@ -513,26 +513,36 @@ fn project_structure_data(
                         .clone(),
                 ),
             ]);
-            if heads.get(&id).is_none_or(|(prior, _)| revision > *prior) {
-                heads.insert(id, (revision, projected));
+            if let Some((_, prior_revision, prior_head)) =
+                heads.iter_mut().find(|(prior_id, _, _)| *prior_id == id)
+            {
+                if revision > *prior_revision {
+                    *prior_revision = revision;
+                    *prior_head = projected;
+                }
+            } else {
+                heads.push((id, revision, projected));
             }
         }
     }
+    let heads = heads
+        .into_iter()
+        .map(|(_, _, head)| head)
+        .collect::<Vec<_>>();
+    Ok((records, heads))
+}
+
+fn sort_structure_snapshot(records: &mut [WireValue], heads: &mut [WireValue]) {
     records.sort_by(|left, right| {
         left.get("record_id")
             .and_then(WireValue::as_utf16)
             .cmp(&right.get("record_id").and_then(WireValue::as_utf16))
     });
-    let mut heads = heads
-        .into_values()
-        .map(|(_, head)| head)
-        .collect::<Vec<_>>();
     heads.sort_by(|left, right| {
         left.get("entity_id")
             .and_then(WireValue::as_utf16)
             .cmp(&right.get("entity_id").and_then(WireValue::as_utf16))
     });
-    Ok((records, heads))
 }
 
 fn validate_signed_structure_slice(
@@ -622,7 +632,9 @@ fn validate_signed_structure_slice(
     {
         return Err(ReplayError::Invalid);
     }
-    let (expected_records, expected_heads) = project_structure_data(prior_objects, contract)?;
+    let (mut expected_records, mut expected_heads) =
+        project_structure_data(prior_objects, contract)?;
+    sort_structure_snapshot(&mut expected_records, &mut expected_heads);
     let projected = fields_object(vec![
         ("records", WireValue::Array(expected_records.clone())),
         ("heads", WireValue::Array(expected_heads.clone())),
@@ -3350,6 +3362,36 @@ mod tests {
                 .unwrap()
                 .as_bytes(),
         )
+    }
+
+    #[test]
+    fn pinned_typescript_structure_delta_and_snapshot_order_differ() {
+        let vector = parse_wire_json_js_bounded(
+            include_bytes!("../../../conformance/structure-order-vectors.json"),
+            32,
+            16_384,
+        )
+        .unwrap();
+        let WireValue::Array(objects) = vector.get("objects").unwrap() else {
+            panic!("objects array")
+        };
+        let contract = fields_object(vec![("protocols", WireValue::Array(Vec::new()))]);
+        let (mut records, mut heads) = project_structure_data(objects, &contract).unwrap();
+        let delta = vector.get("delta").unwrap();
+        assert!(same_wire(
+            &WireValue::Array(records.clone()),
+            delta.get("records").unwrap()
+        )
+        .unwrap());
+        assert!(same_wire(
+            &WireValue::Array(heads.clone()),
+            delta.get("heads").unwrap()
+        )
+        .unwrap());
+        sort_structure_snapshot(&mut records, &mut heads);
+        let snapshot = vector.get("snapshot").unwrap();
+        assert!(same_wire(&WireValue::Array(records), snapshot.get("records").unwrap()).unwrap());
+        assert!(same_wire(&WireValue::Array(heads), snapshot.get("heads").unwrap()).unwrap());
     }
 
     #[test]
