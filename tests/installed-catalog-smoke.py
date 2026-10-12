@@ -167,8 +167,8 @@ try:
             try:
                 client.submit_saved(chunk_request["command_id"])
                 raise AssertionError("signed wrong-state chunk was accepted")
-            except RuntimeError:
-                pass
+            except RuntimeError as error:
+                assert "unsupported public summary shape" in str(error), str(error)
             assert client.status(chunk_request["command_id"])["state"] == "PENDING"
             mark("signed_wrong_state_remained_pending")
         accepted = client.submit_saved(chunk_request["command_id"])
