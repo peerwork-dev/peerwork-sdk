@@ -183,3 +183,14 @@ convert this command into a full-suite pass. No Agent entry workflow or
 space-protocol acceptance was exercised by these scripted crypto tests;
 workflow compliance remains unverified separately from their business
 correctness.
+
+The six sandbox-blocked localhost cases were then run from the same
+detached `7463133` checkout through the approved socket execution route,
+without repeating the 33 already passing cases. Locked-offline filters
+`transport::tests` passed 4/4 (three of the six plus one non-socket test),
+`kernel_client::tests` passed 2/2 with its opt-in real-service case still
+ignored, and
+`secure_intents::tests::lost_http_reply_then_restart_retries_identical_verified_packet`
+passed 1/1. The initial full-suite sandbox `EPERM` remains a recorded
+environment failure; these focused runs complete its missing test coverage
+at this source pin, not a replacement full-suite run.
