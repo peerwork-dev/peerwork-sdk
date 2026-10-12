@@ -986,3 +986,28 @@ not verified action effects, activation, or Agent workflow compliance.
 Source SHA-256: `secure_native_prepare.rs`
 `0e0c10bdaf97bf0b83711369c70c62305a8b0455bd3d9079f90fcc4a8fb562eb`,
 `Cargo.lock` `9dc2d3f2ad77be15366633af890168611e8d62a7f38de646970dfc4cedc8d4d5`.
+
+Private package-source construction is registered at exact SDK
+`ed55f72e23bcef6a26d3df45a726da17dead1430`, following the builder
+`56ae173` and canonical source-ID helper `11f1257`. It validates a
+caller-supplied source checkpoint, normalizes and compiles the retained
+package material through the existing compiler, then produces canonical
+source proof and exact bounded part objects. It does not authenticate the
+checkpoint or authorize a stage POST, install, acceptance, or final effect.
+The direct pinned TypeScript official proposal-package vector and the existing
+Rust source verifier round-trip passed 1/1 with Rust 1.89 `cargo test -p
+peerwork-core --lib prepared_package_source --offline --locked`; the
+registration commit changes only `lib.rs` from the source tree used for that
+focused test. The fixture generator is
+`conformance/generate-protocol-package-source-vectors.mjs` SHA-256
+`32bee9bdcc2333420065168db46fc7e35e8b3ad4a226df05919bacb03d1411f8`,
+vectors SHA-256 `c85b48ec735e277349d0d1cbddb8b1157673943db211a0ec29e2bb4689d3dc7a`,
+builder source SHA-256 `adac880d0f0f61a6a6986b882bba34f851c683d7a1810de5b72736bf6b05de4c`,
+internal verifier/helper SHA-256 `5082d59c0a965b80fb56d3a9fec7a30dff759374ef2ef14f2c86309ee25bd66e`,
+registration `lib.rs` SHA-256 `653f7a7743c7f7c11b184e9812e8035ae2e4b283c5a9197039f2489bc292b7c0`,
+and lock SHA-256 `9dc2d3f2ad77be15366633af890168611e8d62a7f38de646970dfc4cedc8d4d5`.
+The vendored TypeScript oracle source is `conformance/reference/src/workspace-protocol-package-source.ts`
+SHA-256 `18ad9a8529302c48148a73b8d1c2126fa74a9be94e3c84bd69dc1360e613d459`.
+This is a source/byte-parity test only; no service action, installed language
+client, or Agent entry workflow ran, so business admission and workflow
+compliance are unverified for this checkpoint.
