@@ -1,4 +1,5 @@
-// Signed, public v1 MIGRATE→ADMIN journal oracle from the pinned TS verifier.
+// Signed v1 migration journal oracle from the pinned TS verifier. PRIVATE
+// conversion uses a fixed synthetic test key, never a production credential.
 import {mkdtemp, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
@@ -9,10 +10,10 @@ const directory = await mkdtemp(join(tmpdir(), 'peerwork-signed-migration-'));
 try {
   const source = resolve(fileURLToPath(new URL('reference/src/', import.meta.url)));
   const output = join(directory, 'oracle.mjs');
-  await build({stdin: {contents: `export {createSigningIdentity,createEncryptionIdentity,certifyEncryptionKey} from '${source}/workspace-secure-crypto.ts';
+  await build({stdin: {contents: `export {createSigningIdentity,createEncryptionIdentity,certifyEncryptionKey,encodeCanonicalJson} from '${source}/workspace-secure-crypto.ts';
     export {createPolicy,createCommit,secureHash,verifyJournal} from '${source}/workspace-secure-client.ts';`,
     resolveDir: source, sourcefile: 'oracle.ts'}, outfile: output, bundle: true, platform: 'node', format: 'esm', logLevel: 'silent'});
-  const {createSigningIdentity,createEncryptionIdentity,certifyEncryptionKey,createPolicy,createCommit,secureHash,verifyJournal} = await import(pathToFileURL(output));
+  const {createSigningIdentity,createEncryptionIdentity,certifyEncryptionKey,encodeCanonicalJson,createPolicy,createCommit,secureHash,verifyJournal} = await import(pathToFileURL(output));
   const identity = await createSigningIdentity();
   const encryption = await createEncryptionIdentity();
   const certificate = await certifyEncryptionKey(identity, encryption, 1, 100000);
@@ -54,6 +55,71 @@ try {
     } catch (error) {
       cases.push({name, policy, commits, checkpoint, workspace_id: workspaceId, owner: {actor_id: identity.actorId, key: identity.keyId}, ok: false, error: String(error.message)});
     }
+  }
+  const second = {kind: 'workspace_config', id: 'x'.repeat(43), revision: 1,
+    provenance: 'AUTHOR_SIGNED', value: {workspace_id: workspaceId}};
+  const secondDescriptor = {kind: second.kind, id: second.id, revision: second.revision};
+  const completeItems = [descriptor, secondDescriptor];
+  const sortedItems = [...completeItems].sort((left, right) => {
+    const a = new TextDecoder().decode(encodeCanonicalJson(left));
+    const b = new TextDecoder().decode(encodeCanonicalJson(right));
+    return a < b ? -1 : a > b ? 1 : 0;
+  });
+  const completeRoot = await secureHash(sortedItems);
+  const firstPage = await createCommit({identity, policy, checkpoint: checkpoint0,
+    operation: {v: 1, kind: 'MIGRATE', input: {}, objects: [imported]},
+    actionId: 'secure.migrate', instanceId: null, commandId: '1'.repeat(43), issuedAt: 3,
+    migration: {source_checkpoint: null, source_root: completeRoot, source_items: [descriptor]}});
+  const firstCheckpoint = {...checkpoint0, sequence: 1, head: await secureHash(firstPage)};
+  const secondPage = await createCommit({identity, policy, checkpoint: firstCheckpoint,
+    operation: {v: 1, kind: 'MIGRATE', input: {}, objects: [second]},
+    actionId: 'secure.migrate', instanceId: null, commandId: '2'.repeat(43), issuedAt: 4,
+    migration: {source_checkpoint: null, source_root: completeRoot, source_items: [secondDescriptor]}});
+  const secondCheckpoint = {...checkpoint0, sequence: 2, head: await secureHash(secondPage)};
+  const twoPageCases = [
+    ['two_page_migration', [firstPage, secondPage], secondCheckpoint],
+    ['missing_second_page', [firstPage], firstCheckpoint],
+  ];
+  for (const [name, commits, checkpoint] of twoPageCases) {
+    try {
+      const journal = await verifyJournal({workspaceId, policies: [policy], commits, checkpoint,
+        trustedOwner: {actorId: identity.actorId, key: identity.keyId}});
+      cases.push({name, policy, commits, checkpoint, workspace_id: workspaceId,
+        owner: {actor_id: identity.actorId, key: identity.keyId}, ok: true, objects: journal.objects});
+    } catch (error) {
+      cases.push({name, policy, commits, checkpoint, workspace_id: workspaceId,
+        owner: {actor_id: identity.actorId, key: identity.keyId}, ok: false, error: String(error.message)});
+    }
+  }
+  const bootstrap = await createCommit({identity, policy, checkpoint: checkpoint0,
+    operation: {v: 1, kind: 'BOOTSTRAP', input: {}, objects: []}, actionId: 'secure.bootstrap',
+    instanceId: null, commandId: 'b'.repeat(43), issuedAt: 3});
+  const publicCheckpoint = {...checkpoint0, sequence: 1, head: await secureHash(bootstrap)};
+  const privatePolicy = await createPolicy(identity, {v: 1, workspace_id: workspaceId,
+    owner_id: identity.actorId, signing_key: identity.keyId, version: 2,
+    previous_policy: policyHash, effective_sequence: 2, visibility: 'PRIVATE', epoch: 1,
+    members: [{actor_id: identity.actorId, certificate, role: 'OWNER', scopes: []}], issued_at: 4});
+  const privateHash = await secureHash(privatePolicy);
+  const keyring = {v: 1, workspace_id: workspaceId,
+    keys: [{epoch: 1, key: Buffer.alloc(32, 121).toString('base64url')}]};
+  const conversion = await createCommit({identity, policy: privatePolicy, checkpoint: publicCheckpoint,
+    operation: {v: 1, kind: 'MIGRATE', input: {}, objects: [imported]},
+    actionId: 'secure.migrate', instanceId: null, commandId: 'c'.repeat(43), issuedAt: 5,
+    keyring, migration: {...migration, source_checkpoint: publicCheckpoint}});
+  const privateCheckpoint = {...publicCheckpoint, sequence: 2, head: await secureHash(conversion), policy_hash: privateHash};
+  try {
+    const journal = await verifyJournal({workspaceId, policies: [policy, privatePolicy],
+      commits: [bootstrap, conversion], checkpoint: privateCheckpoint, keyring,
+      trustedOwner: {actorId: identity.actorId, key: identity.keyId}});
+    cases.push({name: 'public_to_private_conversion', policies: [policy, privatePolicy],
+      commits: [bootstrap, conversion], checkpoint: privateCheckpoint, keyring,
+      workspace_id: workspaceId, owner: {actor_id: identity.actorId, key: identity.keyId},
+      ok: true, objects: journal.objects});
+  } catch (error) {
+    cases.push({name: 'public_to_private_conversion', policies: [policy, privatePolicy],
+      commits: [bootstrap, conversion], checkpoint: privateCheckpoint, keyring,
+      workspace_id: workspaceId, owner: {actor_id: identity.actorId, key: identity.keyId},
+      ok: false, error: String(error.message)});
   }
   await writeFile(new URL('./signed-migration-vectors.json', import.meta.url), `${JSON.stringify(cases, null, 2)}\n`);
 } finally {

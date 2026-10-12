@@ -3943,7 +3943,15 @@ mod tests {
         ))
         .unwrap();
         for case in vectors.as_array().unwrap() {
-            let policy = serde_json::to_vec(&case["policy"]).unwrap();
+            let policy_values = case["policies"]
+                .as_array()
+                .cloned()
+                .unwrap_or_else(|| vec![case["policy"].clone()]);
+            let policies = policy_values
+                .iter()
+                .map(|policy| serde_json::to_vec(policy).unwrap())
+                .collect::<Vec<_>>();
+            let policy_refs = policies.iter().map(Vec::as_slice).collect::<Vec<_>>();
             let commits = case["commits"]
                 .as_array()
                 .unwrap()
@@ -3957,14 +3965,17 @@ mod tests {
                 actor_id: case["owner"]["actor_id"].as_str().unwrap(),
                 signing_key: case["owner"]["key"].as_str().unwrap(),
             };
+            let keyring = case
+                .get("keyring")
+                .map(|value| serde_json::to_vec(value).unwrap());
             let actual = replay_basic_content(
-                &[&policy],
+                &policy_refs,
                 &commit_refs,
                 &checkpoint,
                 workspace,
                 Some(&owner),
                 None,
-                None,
+                keyring.as_deref(),
             );
             assert_eq!(
                 actual.is_ok(),
