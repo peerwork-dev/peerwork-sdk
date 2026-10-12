@@ -8,6 +8,7 @@ pub mod discovery;
 pub mod e2ee;
 #[allow(dead_code)]
 mod full_manifest;
+pub mod genesis_structure_policy;
 #[allow(dead_code)]
 mod interpreter;
 #[allow(dead_code)]
