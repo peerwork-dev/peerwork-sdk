@@ -39,6 +39,8 @@ mod secure_chain;
 pub mod secure_keyring;
 pub mod secure_recipient;
 #[allow(dead_code)]
+mod secure_recovery;
+#[allow(dead_code)]
 mod secure_replay;
 pub mod strict_json;
 mod structure_bindings;
