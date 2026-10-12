@@ -26,7 +26,6 @@ mod protocol_object_source;
 mod protocol_package_source;
 pub mod receipt;
 pub mod receipt_wire;
-pub mod verified_secure_grant;
 #[allow(dead_code)]
 mod secure_chain;
 pub mod secure_keyring;
@@ -34,6 +33,9 @@ pub mod secure_recipient;
 #[allow(dead_code)]
 mod secure_replay;
 pub mod strict_json;
+#[allow(dead_code)]
+mod structure_policy;
+pub mod verified_secure_grant;
 pub mod wire_json;
 
 use serde::Serialize;

@@ -527,6 +527,14 @@ fn validate_workflow(
     Ok(())
 }
 
+pub(crate) fn validate_structure_workflow(
+    value: &WireValue,
+    fields: &WireValue,
+    required: &[WireValue],
+) -> Result<(), ManifestError> {
+    validate_workflow(value, Some(&fields), required)
+}
+
 fn state_name(value: &[u16]) -> bool {
     !value.is_empty()
         && value.len() <= 40

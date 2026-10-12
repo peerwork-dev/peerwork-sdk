@@ -580,6 +580,8 @@ fn validate_signed_structure_slice(
         };
     }
     let contract = p.get("structure").ok_or(ReplayError::Invalid)?;
+    crate::structure_policy::validate_structure_policy(contract)
+        .map_err(|_| ReplayError::Invalid)?;
     let envelope = context.get("structure").ok_or(ReplayError::Invalid)?;
     let mode = string(envelope, "mode")?;
     let WireValue::Array(records) = envelope.get("records").ok_or(ReplayError::Invalid)? else {
@@ -3550,7 +3552,7 @@ mod tests {
             "owner_key":key,"sequence":0,"head":null,"policy_hash":policy_hash});
         let snapshot = json!({"source":source,"root":root,"records":0,"heads":2,"offset":0});
         let policy = parse(json!({"payload":{"v":2,"owner_id":owner,"signing_key":key,
-            "structure":{"protocols":[]}}}));
+            "structure":{"v":1,"protocols":[],"disclosure":[],"instances":[]}}}));
         let operation = parse(json!({"v":1,"kind":"ADMIN","input":{},"objects":[]}));
         let chain = HeaderChainFacts {
             workspace_id: workspace.clone(),
