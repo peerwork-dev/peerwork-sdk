@@ -3,6 +3,7 @@
 
 pub mod canonical;
 pub mod crypto;
+pub mod discovery;
 pub mod e2ee;
 pub mod prepared_command;
 pub mod receipt;
