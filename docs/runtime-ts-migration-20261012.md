@@ -57,14 +57,19 @@ local SQLite transaction has begun, its atomic commit/rollback determines the
 outcome. Callers must retain the backup. Importing verifies historical public
 signatures but does not authorize the current identity to submit a different
 actor's saved command; exact retry requires that actor's matching protected
-local signing identity. For a local legacy-key migration, the explicit
-`import_identity_seed_file(target, protected_seed_file)` API in Python,
-`importIdentitySeedFile` in Node, and `peerwork identity import-seed-file` in
-the CLI accept a path to a 32-byte Ed25519 seed file. The seed is never a
-command-line value or result field. The native layer requires a private,
-owner-controlled regular source and parent, rejects links, never overwrites
-an existing native identity, and keeps the source unchanged for the caller to
-manage. No public wrapper sends the old DB, backup, or seed to the service.
+local signing identity. The tracked TypeScript agent initializer writes a
+protected Ed25519 PKCS#8 PEM file (`agent-ed25519.pem`). For that source,
+`import_legacy_identity_pem(target, source)` in Python,
+`importLegacyIdentityPem` in Node, and `peerwork identity import-legacy-pem`
+in the CLI import the file directly. The parser accepts one Ed25519 private
+PKCS#8 PEM object with no trailing data; wrong algorithms and malformed files
+are rejected. A separate low-level `import_identity_seed_file` /
+`importIdentitySeedFile` / `identity import-seed-file` path accepts a protected
+raw 32-byte seed when the caller has one. Both require a private,
+owner-controlled regular source and parent, reject links, never overwrite an
+existing native identity, and keep the source unchanged for the caller to
+manage. Neither PEM nor seed is a command-line value or result field. No
+public wrapper sends the old DB, backup, or key file to the service.
 
 Three focused synthetic Linux tests passed under Rust 1.89 with the locked
 offline workspace. They cover exact JWS/body reconstruction for ordinary and

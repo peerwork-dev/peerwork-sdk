@@ -17,15 +17,16 @@ const MAX_STATE_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Read only a separately protected raw 32-byte identity seed. Unlike native
 /// state, this source has no magic prefix; it is never created or rewritten.
-pub(crate) fn read_private_seed_file(
+pub(crate) fn read_private_file_bounded(
     path: &Path,
-) -> Result<Option<Zeroizing<[u8; 32]>>, SecureStateError> {
+    max_bytes: usize,
+) -> Result<Zeroizing<Vec<u8>>, SecureStateError> {
     check_private_parent(path)?;
     check_private_file(path)?;
     let mut file = open_state_read(path)?;
     let opened = file.metadata()?;
-    if opened.len() != 32 {
-        return Ok(None);
+    if opened.len() > max_bytes as u64 {
+        return Err(SecureStateError::TooLarge);
     }
     #[cfg(unix)]
     {
@@ -35,8 +36,21 @@ pub(crate) fn read_private_seed_file(
             return Err(SecureStateError::Protection);
         }
     }
+    let mut bytes = Zeroizing::new(vec![0u8; opened.len() as usize]);
+    file.read_exact(&mut bytes)?;
+    check_private_file(path)?;
+    Ok(bytes)
+}
+
+pub(crate) fn read_private_seed_file(
+    path: &Path,
+) -> Result<Option<Zeroizing<[u8; 32]>>, SecureStateError> {
+    let bytes = read_private_file_bounded(path, 32)?;
+    if bytes.len() != 32 {
+        return Ok(None);
+    }
     let mut seed = Zeroizing::new([0u8; 32]);
-    file.read_exact(&mut *seed)?;
+    seed.copy_from_slice(&bytes);
     Ok(Some(seed))
 }
 

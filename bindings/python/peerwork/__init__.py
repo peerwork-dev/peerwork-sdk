@@ -8,6 +8,7 @@ from ._peerwork_native import (
     identity_create_json,
     identity_open_json,
     identity_import_seed_json,
+    identity_import_pkcs8_pem_json,
     kernel_json,
     version,
 )
@@ -36,6 +37,11 @@ def import_identity_seed_file(path: str, seed_file: str) -> dict[str, str]:
     return json.loads(identity_import_seed_json(path, seed_file))
 
 
+def import_legacy_identity_pem(path: str, pem_file: str) -> dict[str, str]:
+    """Import a protected legacy Ed25519 PKCS#8 PEM identity file."""
+    return json.loads(identity_import_pkcs8_pem_json(path, pem_file))
+
+
 async def create_identity_async(path: str) -> dict[str, str]:
     return await asyncio.to_thread(create_identity, path)
 
@@ -46,6 +52,10 @@ async def open_identity_async(path: str) -> dict[str, str]:
 
 async def import_identity_seed_file_async(path: str, seed_file: str) -> dict[str, str]:
     return await asyncio.to_thread(import_identity_seed_file, path, seed_file)
+
+
+async def import_legacy_identity_pem_async(path: str, pem_file: str) -> dict[str, str]:
+    return await asyncio.to_thread(import_legacy_identity_pem, path, pem_file)
 
 
 class KernelClient:
@@ -174,3 +184,4 @@ class KernelClient:
 __all__ = ["version", "capabilities", "create_identity", "open_identity",
            "create_identity_async", "open_identity_async",
            "import_identity_seed_file", "import_identity_seed_file_async", "KernelClient"]
+__all__ += ["import_legacy_identity_pem", "import_legacy_identity_pem_async"]

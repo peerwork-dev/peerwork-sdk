@@ -73,6 +73,25 @@ fn main() -> ExitCode {
                 }
             }
         }
+        [noun, verb, path, pem_file] if noun == "identity" && verb == "import-legacy-pem" => {
+            match KernelIdentity::import_pkcs8_pem_file(Path::new(path), Path::new(pem_file)) {
+                Ok(identity) => {
+                    println!(
+                        "{{\"actor_id\":\"{}\",\"key_id\":\"{}\"}}",
+                        identity.actor_id(),
+                        identity.key_id()
+                    );
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!(
+                        "{}",
+                        serde_json::json!({"code":"IDENTITY_STATE", "message":error.to_string()})
+                    );
+                    ExitCode::FAILURE
+                }
+            }
+        }
         [noun, verb, rest @ ..] if noun == "kernel" => match kernel_command(verb, rest) {
             Ok(value) => {
                 println!("{value}");
@@ -91,7 +110,7 @@ fn main() -> ExitCode {
             }
         },
         _ => {
-            eprintln!("{{\"code\":\"USAGE\",\"message\":\"peerwork version|capabilities|identity create PATH|identity info PATH|identity import-seed-file PATH PROTECTED_SEED_FILE|kernel open|prepare|pending|status|submit ORIGIN JOURNAL IDENTITY [COMMAND_FILE|COMMAND_ID] [--allow-loopback-http] [--authority=HEX] [--chunk-file=PATH|--chunk-stdin for prepare]; kernel migrate ORIGIN JOURNAL IDENTITY SOURCE BACKUP --trusted-signer=KEY_ID [--trusted-signer=KEY_ID ...]\"}}");
+            eprintln!("{{\"code\":\"USAGE\",\"message\":\"peerwork version|capabilities|identity create PATH|identity info PATH|identity import-legacy-pem PATH PROTECTED_PEM_FILE|identity import-seed-file PATH PROTECTED_SEED_FILE|kernel open|prepare|pending|status|submit ORIGIN JOURNAL IDENTITY [COMMAND_FILE|COMMAND_ID] [--allow-loopback-http] [--authority=HEX] [--chunk-file=PATH|--chunk-stdin for prepare]; kernel migrate ORIGIN JOURNAL IDENTITY SOURCE BACKUP --trusted-signer=KEY_ID [--trusted-signer=KEY_ID ...]\"}}");
             ExitCode::FAILURE
         }
     }

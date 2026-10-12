@@ -66,11 +66,19 @@ try:
     mark("actual_ts_client_store_closed")
 
     identity_a, identity_b = state / "native-A.state", state / "native-B.state"
-    public_a = peerwork.import_identity_seed_file(str(identity_a), actors[0]["seed_file"])
+    public_a = peerwork.import_legacy_identity_pem(str(identity_a), actors[0]["pem_file"])
     assert public_a["key_id"] == actors[0]["key_id"]
+    wrong_target = state / "wrong-type.state"
+    try:
+        peerwork.import_legacy_identity_pem(str(wrong_target), source["wrong_type_pem_file"])
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("non-Ed25519 PKCS#8 key was accepted")
+    assert not wrong_target.exists()
     addon_entry = ADDON.parents[3] / "index.cjs"
-    import_b = node("const p=require(process.argv[1]);p.importIdentitySeedFile(process.argv[2],process.argv[3]).then(v=>console.log(JSON.stringify(v)))",
-                    addon_entry, identity_b, actors[1]["seed_file"])
+    import_b = node("const p=require(process.argv[1]);p.importLegacyIdentityPem(process.argv[2],process.argv[3]).then(v=>console.log(JSON.stringify(v)))",
+                    addon_entry, identity_b, actors[1]["pem_file"])
     assert import_b["key_id"] == actors[1]["key_id"]
     journal, backup = state / "native-journal.sqlite", state / "legacy-backup.sqlite"
     signers = [actor["key_id"] for actor in actors]
@@ -88,6 +96,17 @@ try:
     assert [row["command_id"] for row in client_a.pending()] == [actors[0]["pending_id"]]
     assert [row["command_id"] for row in client_b.pending()] == [actors[1]["pending_id"]]
     mark("both_actors_recovered")
+
+    before_wrong_actor = counts(origin)
+    try:
+        client_a.submit_saved(actors[1]["pending_id"])
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("wrong actor submitted a saved legacy command")
+    assert counts(origin) == before_wrong_actor
+    assert client_b.status(actors[1]["pending_id"])["state"] == "PENDING"
+    mark("wrong_actor_refused_without_post")
 
     node_client = "const p=require(process.argv[1]);p.openKernel({origin:process.argv[2],journalPath:process.argv[3],identityPath:process.argv[4],allowLoopbackHttp:true}).then(async c=>console.log(JSON.stringify(await c.migrateTsStore(process.argv[5],process.argv[6],JSON.parse(process.argv[7])))))"
     assert node(node_client, addon_entry, origin, journal, identity_b, legacy_db, backup,

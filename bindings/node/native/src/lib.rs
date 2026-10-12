@@ -24,6 +24,7 @@ pub struct IdentityTask {
     path: String,
     create: bool,
     seed_file: Option<String>,
+    pem_file: Option<String>,
 }
 
 impl Task for IdentityTask {
@@ -31,7 +32,9 @@ impl Task for IdentityTask {
     type JsValue = String;
 
     fn compute(&mut self) -> Result<Self::Output> {
-        let identity = if let Some(seed_file) = self.seed_file.as_deref() {
+        let identity = if let Some(pem_file) = self.pem_file.as_deref() {
+            KernelIdentity::import_pkcs8_pem_file(Path::new(&self.path), Path::new(pem_file))
+        } else if let Some(seed_file) = self.seed_file.as_deref() {
             KernelIdentity::import_seed_file(Path::new(&self.path), Path::new(seed_file))
         } else if self.create {
             KernelIdentity::create(Path::new(&self.path))
@@ -57,6 +60,7 @@ pub fn identity_create_json(path: String) -> AsyncTask<IdentityTask> {
         path,
         create: true,
         seed_file: None,
+        pem_file: None,
     })
 }
 
@@ -66,6 +70,7 @@ pub fn identity_open_json(path: String) -> AsyncTask<IdentityTask> {
         path,
         create: false,
         seed_file: None,
+        pem_file: None,
     })
 }
 
@@ -75,6 +80,17 @@ pub fn identity_import_seed_json(path: String, seed_file: String) -> AsyncTask<I
         path,
         create: false,
         seed_file: Some(seed_file),
+        pem_file: None,
+    })
+}
+
+#[napi]
+pub fn identity_import_pkcs8_pem_json(path: String, pem_file: String) -> AsyncTask<IdentityTask> {
+    AsyncTask::new(IdentityTask {
+        path,
+        create: false,
+        seed_file: None,
+        pem_file: Some(pem_file),
     })
 }
 

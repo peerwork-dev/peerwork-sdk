@@ -1,8 +1,10 @@
 //! Explicit native signing identity lifecycle. The 32-byte seed is held only
 //! in protected local state and runtime memory, never a public DTO or CLI arg.
 
-use crate::secure_state::{read_private_seed_file, SecureStateError, SecureStateStore};
-use ed25519_dalek::SigningKey;
+use crate::secure_state::{
+    read_private_file_bounded, read_private_seed_file, SecureStateError, SecureStateStore,
+};
+use ed25519_dalek::{pkcs8::DecodePrivateKey, SigningKey};
 use peerwork_core::crypto::{actor_id, base64url, decode_base64url, key_id};
 use rand_core::{OsRng, RngCore};
 use std::path::Path;
@@ -27,6 +29,8 @@ pub enum KernelIdentityError {
     Entropy,
     #[error("identity seed source must contain exactly 32 protected bytes")]
     InvalidSeedSource,
+    #[error("legacy Ed25519 PKCS#8 PEM identity source is invalid")]
+    InvalidPemSource,
 }
 
 pub struct KernelIdentity {
@@ -36,16 +40,41 @@ pub struct KernelIdentity {
 }
 
 impl KernelIdentity {
+    /// Import the exact protected PKCS#8 PEM format written by the legacy
+    /// TypeScript agent initializer. Other algorithms, extra PEM objects,
+    /// changed bytes, and trailing data fail closed. The source is untouched.
+    pub fn import_pkcs8_pem_file(
+        path: &Path,
+        source_path: &Path,
+    ) -> Result<Self, KernelIdentityError> {
+        if same_path(path, source_path) {
+            return Err(KernelIdentityError::InvalidPemSource);
+        }
+        let bytes = read_private_file_bounded(source_path, 2048)?;
+        let pem = std::str::from_utf8(&bytes).map_err(|_| KernelIdentityError::InvalidPemSource)?;
+        validate_single_private_pem(pem)?;
+        let parsed =
+            SigningKey::from_pkcs8_pem(pem).map_err(|_| KernelIdentityError::InvalidPemSource)?;
+        let mut seed = Zeroizing::new([0u8; 32]);
+        seed.copy_from_slice(parsed.as_bytes());
+        let store = SecureStateStore::open(path)?;
+        if store.read_exact()?.is_some() {
+            return Err(KernelIdentityError::AlreadyExists);
+        }
+        let encoded = Zeroizing::new(base64url(&*seed));
+        let wire = Zeroizing::new(format!(
+            "{{\"kind\":\"{IDENTITY_KIND}\",\"seed\":\"{}\"}}",
+            encoded.as_str()
+        ));
+        store.write_exact(wire.as_bytes())?;
+        Ok(Self::from_signing_key(parsed))
+    }
+
     /// Import a local raw Ed25519 seed from a protected file. This is an
     /// explicit migration operation: the seed never appears in an argument,
     /// result DTO, or log, and the source file remains the caller's property.
     pub fn import_seed_file(path: &Path, source_path: &Path) -> Result<Self, KernelIdentityError> {
-        if path == source_path
-            || std::fs::canonicalize(path)
-                .ok()
-                .zip(std::fs::canonicalize(source_path).ok())
-                .is_some_and(|(target, source)| target == source)
-        {
+        if same_path(path, source_path) {
             return Err(KernelIdentityError::InvalidSeedSource);
         }
         let seed =
@@ -131,9 +160,39 @@ impl KernelIdentity {
     }
 }
 
+fn same_path(path: &Path, source_path: &Path) -> bool {
+    path == source_path
+        || std::fs::canonicalize(path)
+            .ok()
+            .zip(std::fs::canonicalize(source_path).ok())
+            .is_some_and(|(target, source)| target == source)
+}
+
+fn validate_single_private_pem(pem: &str) -> Result<(), KernelIdentityError> {
+    let body = pem
+        .strip_prefix("-----BEGIN PRIVATE KEY-----\n")
+        .and_then(|value| value.strip_suffix("-----END PRIVATE KEY-----\n"))
+        .ok_or(KernelIdentityError::InvalidPemSource)?;
+    if body.is_empty() || body.len() > 1024 || !body.ends_with('\n') {
+        return Err(KernelIdentityError::InvalidPemSource);
+    }
+    for line in body.trim_end_matches('\n').split('\n') {
+        if line.is_empty()
+            || line.len() > 64
+            || !line
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'='))
+        {
+            return Err(KernelIdentityError::InvalidPemSource);
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ed25519_dalek::pkcs8::EncodePrivateKey;
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
@@ -203,5 +262,95 @@ mod tests {
             KernelIdentity::import_seed_file(&source_path, &source_path),
             Err(KernelIdentityError::InvalidSeedSource)
         ));
+    }
+
+    #[test]
+    fn protected_pkcs8_pem_import_preserves_source_and_refuses_bad_input() {
+        let dir = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let source_path = dir.path().join("legacy.pem");
+        let target_path = dir.path().join("identity.state");
+        let expected = SigningKey::from_bytes(&[9u8; 32]);
+        let der = expected.to_pkcs8_der().unwrap();
+        let mut base64 = base64url(der.as_bytes())
+            .replace('-', "+")
+            .replace('_', "/");
+        while base64.len() % 4 != 0 {
+            base64.push('=');
+        }
+        let wrapped = base64
+            .as_bytes()
+            .chunks(64)
+            .map(|line| std::str::from_utf8(line).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let pem = format!("-----BEGIN PRIVATE KEY-----\n{wrapped}\n-----END PRIVATE KEY-----\n");
+        assert!(
+            validate_single_private_pem(&pem).is_ok(),
+            "PEM envelope rejected"
+        );
+        assert!(
+            SigningKey::from_pkcs8_pem(&pem).is_ok(),
+            "maintained PEM parser rejected generated key"
+        );
+        fs::write(&source_path, pem.as_bytes()).unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(&source_path, fs::Permissions::from_mode(0o600)).unwrap();
+        let original = fs::read(&source_path).unwrap();
+        let imported = KernelIdentity::import_pkcs8_pem_file(&target_path, &source_path).unwrap();
+        assert_eq!(
+            imported.key_id(),
+            key_id(&expected.verifying_key().to_bytes())
+        );
+        assert_eq!(
+            KernelIdentity::open(&target_path).unwrap().key_id(),
+            imported.key_id()
+        );
+        assert_eq!(fs::read(&source_path).unwrap(), original);
+        assert!(matches!(
+            KernelIdentity::import_pkcs8_pem_file(&target_path, &source_path),
+            Err(KernelIdentityError::AlreadyExists)
+        ));
+
+        let bad_path = dir.path().join("bad.pem");
+        for bad in [
+            original[..original.len() - 1].to_vec(),
+            [original.as_slice(), original.as_slice()].concat(),
+            b"-----BEGIN RSA PRIVATE KEY-----\ninvalid\n-----END RSA PRIVATE KEY-----\n".to_vec(),
+        ] {
+            fs::write(&bad_path, bad).unwrap();
+            #[cfg(unix)]
+            fs::set_permissions(&bad_path, fs::Permissions::from_mode(0o600)).unwrap();
+            assert!(matches!(
+                KernelIdentity::import_pkcs8_pem_file(&dir.path().join("unused.state"), &bad_path),
+                Err(KernelIdentityError::InvalidPemSource)
+            ));
+        }
+        #[cfg(unix)]
+        {
+            let linked = dir.path().join("linked.pem");
+            fs::hard_link(&source_path, &linked).unwrap();
+            assert!(KernelIdentity::import_pkcs8_pem_file(
+                &dir.path().join("unused.state"),
+                &linked
+            )
+            .is_err());
+            fs::remove_file(linked).unwrap();
+            let symlink = dir.path().join("symlink.pem");
+            std::os::unix::fs::symlink(&source_path, &symlink).unwrap();
+            assert!(KernelIdentity::import_pkcs8_pem_file(
+                &dir.path().join("unused.state"),
+                &symlink
+            )
+            .is_err());
+            fs::set_permissions(&source_path, fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(KernelIdentity::import_pkcs8_pem_file(
+                &dir.path().join("unused.state"),
+                &source_path
+            )
+            .is_err());
+        }
+        assert_eq!(fs::read(&target_path).is_ok(), true);
     }
 }
