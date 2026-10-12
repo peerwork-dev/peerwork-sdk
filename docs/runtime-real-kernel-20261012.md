@@ -339,3 +339,65 @@ above and `PEERWORK_TEST_SOURCE_COMMIT=bb53fafebfa5d322868051bbeadbfa8acb204a25`
 `PEERWORK_TEST_WRONG_CHUNK_STATE=1` when running
 `tests/installed-catalog-smoke.py`. The script writes only sanitized stage,
 artifact-hash, and service-count evidence under `.build-artifacts`.
+
+## Installed PUBLIC secure read, pinned snapshot
+
+The new read facade at `ff4f58246e74abed3cccfebf6234a32565b2ade7`
+uses explicit configured origin, protected identity and local state paths,
+workspace/authority, and trusted owner actor/key pins. It returns only signed-
+replay-verified checkpoint, structure, objects, operations, and recoveries;
+raw JWS, keyring, and private key bytes stay out of the language DTOs. The
+replay budget is a selectable cap on retained canonical signed artifacts,
+not the decoded graph or a service-valid-history ceiling.
+
+An offline Python wheel, packed Node facade/platform addon, and CLI built from
+detached exact SDK source `e48b6f61d41f3f9952a35574ae50fabae784623b`
+passed `tests/installed-secure-read-smoke.py` at harness correction
+`ada44a6ac76ef751a21919fedf1fbcc4e7c24705` against the pinned actual
+service f828b6c. The bridge created a fresh synthetic PUBLIC workspace by
+the tracked TypeScript client, then installed native Python imported its
+protected PKCS#8 Ed25519 owner identity. The three installed interfaces read
+the same signed sequence-1/head snapshot with 13 objects and one operation;
+service counts remained one secure commit/head sequence 1. Python reopened
+the same protected state, refused a one-byte replay budget with
+`RESOURCE_LIMIT`, and refused a changed owner key with
+`LIFECYCLE_PIN_CHANGED`. Node refused a one-byte budget and a pre-aborted
+request; CLI emitted `RESOURCE_LIMIT` for the one-byte budget. Python's
+pre-cancelled async task was drained and a following read succeeded. These
+cancellation checks are pre-request/abandoned-call checks, not proof of a
+delayed in-flight GET cancellation.
+
+Artifact SHA-256: wheel
+`6ae92363fd6fc8347ae455720bb6344920f0c2db30a3558c188b5fe3caec3fc7`
+(`cp311-abi3-manylinux_2_38_x86_64`), Node facade tarball
+`729e54ff82e7324a2a02599acf15d9cd7fb922c8374efa3d3234871edf0da5ca`,
+Linux x64 GNU addon tarball
+`70e0be36c2ac869b7762984d1e556a0232658b826d6863d04b8b346dce33c91c`,
+addon library `d64e595be52ce8133ba3f36628daf95d2097a18731244944c7962f387ac13a45`,
+CLI `074f8bdfdf06a1267832d2a86f054d4eae9bebb8c70edea78a29bbef6db768d9`.
+All builds used Rust 1.89, locked offline Cargo and task-local caches;
+the wheel used `maturin build --release --offline --locked`, the addon/CLI
+used `cargo build --release --offline --locked`, and installs used offline
+`pip install --target` and `npm pack`/`npm install --ignore-scripts`.
+Observed elapsed stages for this one run were PUBLIC fixture ready 535 ms,
+first installed Python verified read 979 ms, Python reopen 1,384 ms, Node
+verified/budget/abort 2,818 ms, and CLI verified/budget 3,511 ms.
+
+The first fixture probe hit the known sandbox `spawnSync git EPERM`; the
+authorized socket route created the workspace, but that ad hoc probe timed
+out waiting for normal server shutdown. The installed smoke uses explicit
+bounded terminate/kill cleanup and passed. The first npm pack tried writing
+its log under the restricted global cache; task-local `npm_config_cache`
+fixed the packaging run. The first installed Node smoke failed because its
+test expression mixed CommonJS `require` with top-level `await`; harness
+commit `ada44a6` wrapped it in an async CommonJS function, then the same
+scope passed. No operator database or existing private state was opened.
+
+This is **pinned-snapshot** read evidence. A completed local journal has
+`next=None`, so current `read()` reopens that snapshot and does not fetch
+newer service commits. A protected latest-generation/profile refresh with
+an authenticated checkpoint ancestry floor and append→read regression is
+required before advertising latest-read behavior or enabling the scoped
+PUBLIC capability flag. PRIVATE active read and several valid-history replay
+families remain separate acceptance gates. No Agent entry-workflow compliance
+was exercised by this scripted SDK test.
