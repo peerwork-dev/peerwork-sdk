@@ -1,0 +1,9 @@
+{
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "hpke": "1.1.7",
+    "zod": "4.5.4"
+  }
+}

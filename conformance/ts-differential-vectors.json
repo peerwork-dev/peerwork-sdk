@@ -1,0 +1,123 @@
+{
+  "source_commit": "dd8a9d2",
+  "evidence_commit": "4065739",
+  "cases": [
+    {
+      "name": "plain",
+      "input": {
+        "z": null,
+        "a": [
+          true,
+          0,
+          9007199254740991
+        ]
+      },
+      "kernel": "{\"a\":[true,0,9007199254740991],\"z\":null}",
+      "secure": "{\"a\":[true,0,9007199254740991],\"z\":null}"
+    },
+    {
+      "name": "numeric_keys",
+      "input": {
+        "2": "two",
+        "10": "ten",
+        "01": "leading",
+        "a": 1
+      },
+      "kernel": "{\"2\":\"two\",\"10\":\"ten\",\"01\":\"leading\",\"a\":1}",
+      "secure": "{\"01\":\"leading\",\"10\":\"ten\",\"2\":\"two\",\"a\":1}"
+    },
+    {
+      "name": "utf16_keys",
+      "input": {
+        "": 1,
+        "𐀀": 2,
+        " ": 3
+      },
+      "kernel": "{\" \":3,\"𐀀\":2,\"\":1}",
+      "secure": "{\" \":3,\"𐀀\":2,\"\":1}"
+    },
+    {
+      "name": "escaping",
+      "input": {
+        "a": "\u0000\n\b  ",
+        "slash/quote\"": "x\\y"
+      },
+      "kernel": "{\"a\":\"\\u0000\\n\\b  \",\"slash/quote\\\"\":\"x\\\\y\"}",
+      "secure": "{\"a\":\"\\u0000\\n\\b  \",\"slash/quote\\\"\":\"x\\\\y\"}"
+    },
+    {
+      "name": "nested",
+      "input": {
+        "b": {
+          "z": 0,
+          "a": [
+            null,
+            {
+              "y": false,
+              "x": "λ"
+            }
+          ]
+        },
+        "a": 4
+      },
+      "kernel": "{\"a\":4,\"b\":{\"a\":[null,{\"x\":\"λ\",\"y\":false}],\"z\":0}}",
+      "secure": "{\"a\":4,\"b\":{\"a\":[null,{\"x\":\"λ\",\"y\":false}],\"z\":0}}"
+    },
+    {
+      "name": "integer_spellings",
+      "input": {
+        "decimal": 1,
+        "exponent": 1
+      },
+      "kernel": "{\"decimal\":1,\"exponent\":1}",
+      "secure": "{\"decimal\":1,\"exponent\":1}"
+    },
+    {
+      "name": "lone_surrogate",
+      "input_wire_base64": "eyJ2YWx1ZSI6Ilx1ZDgwMCJ9",
+      "kernel_base64": "eyJ2YWx1ZSI6Ilx1ZDgwMCJ9",
+      "secure_base64": "eyJ2YWx1ZSI6Ilx1ZDgwMCJ9"
+    },
+    {
+      "name": "unsafe_integer",
+      "kernel": {
+        "error": "INVALID_PAYLOAD"
+      },
+      "secure": {
+        "error": "CRYPTO_UNSAFE_NUMBER"
+      }
+    },
+    {
+      "name": "fraction",
+      "kernel": {
+        "error": "INVALID_PAYLOAD"
+      },
+      "secure": {
+        "error": "CRYPTO_UNSAFE_NUMBER"
+      }
+    },
+    {
+      "name": "prototype_key",
+      "kernel": {
+        "error": "INVALID_PAYLOAD"
+      },
+      "secure": {
+        "error": "CRYPTO_NON_JSON_VALUE"
+      }
+    },
+    {
+      "name": "empty_key",
+      "kernel": {
+        "error": "INVALID_PAYLOAD"
+      },
+      "secure": "{\"\":1}"
+    },
+    {
+      "name": "list_129",
+      "kernel": {
+        "error": "INVALID_PAYLOAD"
+      },
+      "secure": "[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121,122,123,124,125,126,127,128]"
+    }
+  ]
+}
