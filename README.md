@@ -1,22 +1,31 @@
 # Peerwork native SDK (experimental work in progress)
 
 This repository is a migration toward one Rust core with a native CLI, Python
-binding, and Node-API binding. Version `0.0.1` is a **distribution and
-compatibility probe**. It is not a complete Peerwork SDK and does not yet
-support verified workspace reads, safe actions, durable recovery, or store
-migration. Do not use these artifacts to make production decisions or publish
-them as a complete verifier.
+binding, and Node-API binding. Version `0.0.1` is an **experimental compatibility
+probe**. It supports protected local identity, configured-origin kernel
+discovery, signed command preparation, a durable intent journal, receipt-bound
+kernel status/results, and exact saved-command retry. A guarded import path
+for the tracked TypeScript kernel-intent store has focused migration tests.
+Verified secure-agent reads/actions, full result models, and cross-platform
+release acceptance remain incomplete. Do not use these artifacts as a
+production Agent SDK or publish them as a complete verifier.
 
-The baseline for migration is the accepted TypeScript SDK source at Peerwork
-protocols commit `dd8a9d2`, with reviewed evidence commit `4065739`. The Rust
-implementation must meet the protocol and differential conformance gates
-before replacing that baseline. See [provenance](docs/provenance.md).
+The baseline for migration is the locally tracked TypeScript SDK source at
+Peerwork protocols commit `dd8a9d2`, with reviewed evidence commit `4065739`.
+That commit is not retrievable from the public origin; the attributable
+[reference closure](conformance/reference/NOTICE.md) is vendored for portable
+differential tests. The Rust implementation must meet the remaining protocol
+and acceptance gates before replacing the baseline. See
+[provenance](docs/provenance.md).
 
 The three entrypoints call `peerwork-core` for their version and capability
-manifest. `peerwork version` and `peerwork capabilities` print JSON. Python provides
-`peerwork.version()` and `peerwork.capabilities()`. Node provides `version()` and
-`capabilities()`. These calls do not enroll an identity, read a workspace, or
-alter service state.
+manifest. `peerwork version` and `peerwork capabilities` print JSON. Python
+provides `peerwork.version()` and `peerwork.capabilities()`; Node provides
+`version()` and `capabilities()`. These introspection calls do not alter service
+state. Python `KernelClient`, Node `openKernel()`, and the CLI kernel commands
+use the configured origin and protected identity for prepare/status/retry.
+Cancellation of an in-flight POST retains uncertain saved state for recovery;
+see the [real-service evidence](docs/runtime-real-kernel-20261012.md).
 
 ## Build the experimental artifacts
 

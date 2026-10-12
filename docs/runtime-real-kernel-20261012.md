@@ -95,9 +95,9 @@ With Rust 1.89, `cargo check -p peerwork-runtime -p peerwork-cli
 -p peerwork-python-native -p peerwork-node-native --offline --locked` passed,
 and the opt-in real service test passed 1/1. Python, Node and CLI source
 wrappers now call this same boundary, but this checkpoint does not yet claim
-installed wrapper end-to-end service execution. Their async work can outlive
-an abandoned Python await or Node Promise; there is no exposed in-flight
-cancel handle yet. Submitted uncertainty leaves a saved pending row for
+installed wrapper end-to-end service execution. At this checkpoint their async
+work could outlive an abandoned Python await or Node Promise; the later
+cancellation checkpoint below adds native request tokens. Submitted uncertainty leaves a saved pending row for
 status/retry, while a newly prepared row has not been submitted. Verified
 secure-agent reads/actions, complete typed result models, and the real
 macOS/Windows runner gates remain open.
@@ -167,3 +167,55 @@ single scripted run: discovery pin 368 ms, first command saved 465 ms,
 post-commit lost reply 628 ms, first verified result 759 ms, Python chunk
 saved 1064 ms, Node cross-language result 1830 ms, CLI status 1898 ms, CLI
 chunk saved 2017 ms. Agent workflow compliance remains unverified.
+
+## Installed in-flight cancellation and recovery
+
+An isolated checkout at exact commit `d5e4aaf` rebuilt the Python wheel,
+Node addon and CLI using Rust 1.89 with the locked offline dependency graph.
+The wheel was installed as a prebuilt artifact using `pip --no-index
+--no-deps`. SHA-256 values: wheel
+`277bc02943203d2598b2cfdce435b3206ffc52767afa4b3c1ab0a8ca5ba245ed`,
+Node `index.node`
+`579cddbab1bf1afa6b87e383b199ae865ba4a1d867fc5f96f7847dd7447e9a80`,
+and CLI `peerwork`
+`31f0cf708687f21687cfa9f77a3a5431c3b44e8ea7bd81b1ea9adc07b085684b`.
+These development artifacts are Linux x64 only; the wheel's measured tag is
+`manylinux_2_38_x86_64`, not a frozen minimum compatibility target.
+
+The test used three fresh synthetic stores and the tracked actual Peerwork
+kernel HTTP app. For each installed entrypoint, the service committed the
+first POST, then delayed its reply for five seconds. Python cancelled its
+async task, Node aborted its signal, and the Unix CLI received SIGINT while
+that reply was outstanding. The Python worker drained before cancellation was
+reported; the CLI exited 130. Each journal still showed `PENDING`, and exact
+saved-command retry returned a receipt-verified `ACCEPTED` result with one
+server command. The first pass exited zero without retrying failed samples.
+The reusable source is
+[`tests/installed-cancellation-smoke.py`](../tests/installed-cancellation-smoke.py);
+it requires a previously built reference checkout and installed local
+artifacts, and writes only a sanitized task-local JSON evidence file.
+Observed stages from installed Python import were Python cancellation 527 ms,
+Python accepted retry 654 ms, Node abort/retry 1490 ms, and CLI interrupt/retry
+2303 ms. These are one synthetic run's elapsed times, not latency guarantees.
+It is business-path evidence; Agent workflow compliance remains unverified.
+
+To reproduce from an exact SDK checkout, build/install the wheel, Node addon
+and CLI, place `index.cjs` and its exact platform `index.node` under
+`.build-artifacts/node-consumer`, then run with a Python path pointing at the
+installed wheel target:
+
+```sh
+PEERWORK_REFERENCE_ROOT=/absolute/pinned/built-reference-checkout \
+PEERWORK_TEST_NODE=/absolute/node-v24.20.0/bin/node \
+PEERWORK_TEST_WHEEL=/absolute/peerwork-sdk-wheel.whl \
+PEERWORK_TEST_NODE_ADDON=/absolute/index.node \
+PEERWORK_TEST_CLI=/absolute/peerwork \
+PEERWORK_TEST_SOURCE_COMMIT=d5e4aaf \
+PYTHONPATH=/absolute/installed-wheel-target \
+python3 tests/installed-cancellation-smoke.py
+```
+
+This covers an already submitted HTTP request. Local identity creation can
+finish after its caller abandons the await; its documented reopen behavior
+still needs a bounded executable lifecycle regression. Windows console
+interruption and actual Windows/macOS runner execution remain open.

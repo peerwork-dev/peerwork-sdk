@@ -78,8 +78,17 @@ class KernelClient:
             return await asyncio.shield(worker)
         except asyncio.CancelledError:
             cancel_handle.cancel()
+            # A caller may cancel the same task again while the native worker
+            # drains. Keep ownership until it actually finishes.
+            while not worker.done():
+                try:
+                    await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    cancel_handle.cancel()
+                except Exception:
+                    break
             try:
-                await asyncio.shield(worker)
+                worker.result()
             except Exception:
                 pass
             raise

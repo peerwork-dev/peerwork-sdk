@@ -22,6 +22,8 @@ Kernel methods accept an AbortSignal and propagate it into native discovery
 and HTTP. An aborted submitted command can already have committed remotely;
 reopen and check its saved status before exact retry. Dropping a Promise
 without aborting its signal does not cancel its native worker.
+Abort during `prepare` can race with the local durable save; inspect
+`pending()` or `status(command_id)` before preparing the same command again.
 
 The exact-version platform package is an optional dependency. Installation has
 no build script or downloader. A missing native package causes a clear import

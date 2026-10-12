@@ -15,6 +15,7 @@ mod unix {
     use std::time::Duration;
 
     static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+    static ACTIVE: AtomicBool = AtomicBool::new(false);
 
     extern "C" fn on_interrupt(_: libc::c_int) {
         INTERRUPTED.store(true, Ordering::Relaxed);
@@ -29,9 +30,19 @@ mod unix {
 
     impl InterruptMonitor {
         pub fn start(cancel: KernelCancellationToken) -> io::Result<Self> {
+            if ACTIVE
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "interrupt monitor already active",
+                ));
+            }
             INTERRUPTED.store(false, Ordering::Relaxed);
             let old_int = unsafe { libc::signal(libc::SIGINT, on_interrupt as libc::sighandler_t) };
             if old_int == libc::SIG_ERR {
+                ACTIVE.store(false, Ordering::Release);
                 return Err(io::Error::last_os_error());
             }
             let old_term =
@@ -39,6 +50,7 @@ mod unix {
             if old_term == libc::SIG_ERR {
                 let error = io::Error::last_os_error();
                 unsafe { libc::signal(libc::SIGINT, old_int) };
+                ACTIVE.store(false, Ordering::Release);
                 return Err(error);
             }
             let done = Arc::new(AtomicBool::new(false));
@@ -75,12 +87,29 @@ mod unix {
                 libc::signal(libc::SIGINT, self.old_int);
                 libc::signal(libc::SIGTERM, self.old_term);
             }
+            ACTIVE.store(false, Ordering::Release);
         }
     }
 }
 
 #[cfg(unix)]
 pub use unix::InterruptMonitor;
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::InterruptMonitor;
+    use crate::KernelCancellationToken;
+
+    #[test]
+    fn monitor_has_one_signal_handler_owner() {
+        let first = InterruptMonitor::start(KernelCancellationToken::new()).unwrap();
+        let second = InterruptMonitor::start(KernelCancellationToken::new());
+        assert_eq!(second.err().unwrap().kind(), std::io::ErrorKind::AlreadyExists);
+        drop(first);
+        let third = InterruptMonitor::start(KernelCancellationToken::new()).unwrap();
+        drop(third);
+    }
+}
 
 #[cfg(not(unix))]
 pub struct InterruptMonitor;

@@ -20,4 +20,7 @@ pass cancellation into native discovery/HTTP and drain the worker before
 returning cancellation. A submitted command can already have committed at
 the service when cancellation arrives; reopen the journal, check
 `status(command_id)`, and exact-retry the saved ID if it remains pending.
+Cancellation during `prepare_async` can also race with the local durable save;
+inspect `pending()` or `status(command_id)` before preparing the same command
+again.
 Do not use it as a production Agent SDK.
