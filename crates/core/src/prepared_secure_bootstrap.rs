@@ -110,6 +110,10 @@ pub fn verify_prepared_owner_bootstrap(
         || !matches!(cp.get("delegation"), Some(WireValue::Null))
         || string(cp, "mode")? != "PRIVATE"
         || number(cp, "epoch")? != 1
+        || number(cp, "v")? == 3
+            && ["migration", "recovery", "conversion_excluded_members"]
+                .iter()
+                .any(|name| cp.get(name).is_some())
     {
         return Err(bad());
     }
@@ -306,6 +310,53 @@ mod tests {
             &pins
         )
         .is_err());
+
+        // v3's generic signed shape permits these optional properties, but
+        // WorkspaceSecureStore.bootstrap rejects their very presence.
+        let mut v3 = request.clone();
+        v3["policy"]["payload"]["v"] = json!(3);
+        v3["policy"]["payload"]["structure_mode"] = json!("NONE");
+        v3["policy"]["payload"]["protocol_format_ceiling"] = json!(1);
+        v3["policy"]["signature"] =
+            json!(
+                sign_canonical("peerwork.secure.policy.v3", &v3["policy"]["payload"], &key)
+                    .unwrap()
+            );
+        v3["commit"]["payload"]["v"] = json!(3);
+        v3["commit"]["payload"]["protocol_format_ceiling"] = json!(1);
+        v3["commit"]["payload"]["policy_hash"] = json!(sha256_hex(
+            canonical(&v3["policy"], Path::SecureArtifact)
+                .unwrap()
+                .as_bytes()
+        ));
+        v3["commit"]["signature"] =
+            json!(
+                sign_canonical("peerwork.secure.commit.v3", &v3["commit"]["payload"], &key)
+                    .unwrap()
+            );
+        assert!(
+            verify_prepared_owner_bootstrap(&serde_json::to_vec(&v3).unwrap(), ROUTE, &pins)
+                .is_ok()
+        );
+        for name in ["migration", "recovery", "conversion_excluded_members"] {
+            let mut forbidden = v3.clone();
+            forbidden["commit"]["payload"][name] = Value::Null;
+            forbidden["commit"]["signature"] = json!(sign_canonical(
+                "peerwork.secure.commit.v3",
+                &forbidden["commit"]["payload"],
+                &key
+            )
+            .unwrap());
+            assert!(
+                verify_prepared_owner_bootstrap(
+                    &serde_json::to_vec(&forbidden).unwrap(),
+                    ROUTE,
+                    &pins
+                )
+                .is_err(),
+                "{name}"
+            );
+        }
         changed = request;
         changed["commit"]["payload"]["body"]["chunks"] = json!([base64url(&[1u8; 1])]);
         changed["commit"]["signature"] = json!(sign_canonical(
