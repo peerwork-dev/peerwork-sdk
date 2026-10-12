@@ -278,18 +278,24 @@ fn validate_ciphertext(body: &WireValue) -> Result<(), PreparedSecureRequestErro
     if chunks.is_empty() || chunks.len() > 128 {
         return Err(PreparedSecureRequestError::Invalid);
     }
+    let mut ciphertext_len = 0usize;
     for chunk in chunks {
         let s = chunk
             .as_string()
             .ok_or(PreparedSecureRequestError::Invalid)?;
-        if s.is_empty()
-            || s.len() > 8192
-            || decode_base64url(&s)
-                .map_err(|_| PreparedSecureRequestError::Invalid)?
-                .is_empty()
-        {
+        if s.is_empty() || s.len() > 8192 {
             return Err(PreparedSecureRequestError::Invalid);
         }
+        let bytes = decode_base64url(&s).map_err(|_| PreparedSecureRequestError::Invalid)?;
+        if bytes.is_empty() {
+            return Err(PreparedSecureRequestError::Invalid);
+        }
+        ciphertext_len = ciphertext_len
+            .checked_add(bytes.len())
+            .ok_or(PreparedSecureRequestError::Invalid)?;
+    }
+    if !(16..=16 * 1024 * 1024 + 16).contains(&ciphertext_len) {
+        return Err(PreparedSecureRequestError::Invalid);
     }
     Ok(())
 }
@@ -435,6 +441,45 @@ mod tests {
         );
         assert!(verify(
             duplicate.as_bytes(),
+            &path,
+            &actor,
+            &key,
+            &workspace,
+            &policy
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn signed_ciphertext_meets_server_and_decoder_bounds() {
+        let (wire, path, actor, key, workspace, policy) = fixture();
+        let parsed: Value = serde_json::from_slice(&wire).unwrap();
+        let mut payload = parsed["commit"]["payload"].clone();
+        payload["body"]["chunks"] = json!([base64url(&[1])]);
+        assert!(verify(
+            &request_for(payload.clone()),
+            &path,
+            &actor,
+            &key,
+            &workspace,
+            &policy
+        )
+        .is_err());
+        payload["body"]["chunks"] = json!([base64url(&[1; 8]), base64url(&[2; 8])]);
+        assert!(verify(
+            &request_for(payload.clone()),
+            &path,
+            &actor,
+            &key,
+            &workspace,
+            &policy
+        )
+        .is_ok());
+        // The local decoder permits an empty component, but the HTTP server's
+        // validateCommit rejects it before appending a commit.
+        payload["body"]["chunks"] = json!(["", base64url(&[2; 16])]);
+        assert!(verify(
+            &request_for(payload),
             &path,
             &actor,
             &key,
