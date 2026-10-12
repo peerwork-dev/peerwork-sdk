@@ -1,0 +1,3033 @@
+{
+  "format": "peerwork.package-schema-vectors.v1",
+  "oracle": {
+    "commit": "dd8a9d2",
+    "protocol_package_blob": "9902100352cd6db99919b16580bbb513d6a57f7f",
+    "zod": "4.5.4"
+  },
+  "cases": [
+    {
+      "name": "source_defaults",
+      "kind": "source",
+      "valid": true,
+      "input": {
+        "format": "peerwork.protocol-source.v1",
+        "semantics": "peerwork.kernel.v1",
+        "manifest": {
+          "name": "peerwork.proposal-adoption.v1",
+          "display_version": "1",
+          "semantics": "peerwork.kernel.v1",
+          "dependencies": [],
+          "protocol_roles": [
+            "AUTHOR",
+            "ADOPTER",
+            "REVIEWER"
+          ],
+          "capabilities": [
+            "PROPOSE",
+            "ADOPT"
+          ],
+          "role_conflicts": [
+            [
+              "AUTHOR",
+              "ADOPTER"
+            ]
+          ],
+          "historical_role_conflicts": [
+            [
+              "AUTHOR",
+              "ADOPTER"
+            ]
+          ],
+          "constraints": {},
+          "record_schemas": {
+            "proposal.candidate": {
+              "type": "object",
+              "fields": {
+                "author": "string",
+                "title": "string",
+                "body": "string"
+              },
+              "required": [
+                "author",
+                "title",
+                "body"
+              ],
+              "max_bytes": 16384
+            }
+          },
+          "initial_state": {
+            "candidate_author": null,
+            "candidate_ref": null
+          },
+          "actions": [
+            {
+              "id": "proposal.propose",
+              "reads": [],
+              "writes": [
+                [
+                  "candidate_author"
+                ],
+                [
+                  "candidate_ref"
+                ]
+              ],
+              "revisionEffects": {
+                "control": true,
+                "contentEntities": [
+                  "candidate"
+                ]
+              },
+              "variants": [
+                {
+                  "when": [
+                    {
+                      "op": "has_protocol_role",
+                      "role": "AUTHOR"
+                    },
+                    {
+                      "op": "has_capability",
+                      "capability": "PROPOSE"
+                    }
+                  ],
+                  "effects": [
+                    {
+                      "op": "append",
+                      "schema": "proposal.candidate",
+                      "recordSlot": "candidate",
+                      "entity": {
+                        "mode": "new",
+                        "slot": "candidate"
+                      },
+                      "selectHead": true,
+                      "value": {
+                        "from": "object",
+                        "fields": {
+                          "author": {
+                            "from": "auth",
+                            "field": "actorId"
+                          },
+                          "title": {
+                            "from": "body",
+                            "path": [
+                              "title"
+                            ]
+                          },
+                          "body": {
+                            "from": "body",
+                            "path": [
+                              "body"
+                            ]
+                          }
+                        }
+                      },
+                      "relations": []
+                    },
+                    {
+                      "op": "set",
+                      "path": [
+                        "candidate_author"
+                      ],
+                      "value": {
+                        "from": "auth",
+                        "field": "actorId"
+                      }
+                    },
+                    {
+                      "op": "set",
+                      "path": [
+                        "candidate_ref"
+                      ],
+                      "value": {
+                        "from": "produced_ref",
+                        "slot": "candidate"
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "proposal.adopt",
+              "reads": [
+                [
+                  "candidate_author"
+                ],
+                [
+                  "candidate_ref"
+                ]
+              ],
+              "writes": [
+                [
+                  "adopted"
+                ]
+              ],
+              "revisionEffects": {
+                "control": true,
+                "contentEntities": []
+              },
+              "variants": [
+                {
+                  "when": [
+                    {
+                      "op": "has_protocol_role",
+                      "role": "ADOPTER"
+                    },
+                    {
+                      "op": "has_capability",
+                      "capability": "ADOPT"
+                    },
+                    {
+                      "op": "exact_ref",
+                      "ref": {
+                        "from": "ref",
+                        "source": "body",
+                        "path": [
+                          "candidate_ref"
+                        ],
+                        "scope": "INSTANCE"
+                      }
+                    },
+                    {
+                      "op": "eq",
+                      "left": {
+                        "from": "ref",
+                        "source": "body",
+                        "path": [
+                          "candidate_ref"
+                        ],
+                        "scope": "INSTANCE"
+                      },
+                      "right": {
+                        "from": "state",
+                        "path": [
+                          "candidate_ref"
+                        ]
+                      }
+                    },
+                    {
+                      "op": "not",
+                      "rule": {
+                        "op": "eq",
+                        "left": {
+                          "from": "state",
+                          "path": [
+                            "candidate_author"
+                          ]
+                        },
+                        "right": {
+                          "from": "auth",
+                          "field": "actorId"
+                        }
+                      }
+                    }
+                  ],
+                  "effects": [
+                    {
+                      "op": "set",
+                      "path": [
+                        "adopted"
+                      ],
+                      "value": {
+                        "from": "literal",
+                        "value": true
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "normalized": {
+        "format": "peerwork.protocol-source.v1",
+        "semantics": "peerwork.kernel.v1",
+        "manifest": {
+          "name": "peerwork.proposal-adoption.v1",
+          "display_version": "1",
+          "semantics": "peerwork.kernel.v1",
+          "dependencies": [],
+          "protocol_roles": [
+            "AUTHOR",
+            "ADOPTER",
+            "REVIEWER"
+          ],
+          "capabilities": [
+            "PROPOSE",
+            "ADOPT"
+          ],
+          "role_conflicts": [
+            [
+              "AUTHOR",
+              "ADOPTER"
+            ]
+          ],
+          "historical_role_conflicts": [
+            [
+              "AUTHOR",
+              "ADOPTER"
+            ]
+          ],
+          "constraints": {},
+          "record_schemas": {
+            "proposal.candidate": {
+              "type": "object",
+              "fields": {
+                "author": "string",
+                "title": "string",
+                "body": "string"
+              },
+              "required": [
+                "author",
+                "title",
+                "body"
+              ],
+              "max_bytes": 16384
+            }
+          },
+          "initial_state": {
+            "candidate_author": null,
+            "candidate_ref": null
+          },
+          "actions": [
+            {
+              "id": "proposal.propose",
+              "reads": [],
+              "writes": [
+                [
+                  "candidate_author"
+                ],
+                [
+                  "candidate_ref"
+                ]
+              ],
+              "revisionEffects": {
+                "control": true,
+                "contentEntities": [
+                  "candidate"
+                ]
+              },
+              "variants": [
+                {
+                  "when": [
+                    {
+                      "op": "has_protocol_role",
+                      "role": "AUTHOR"
+                    },
+                    {
+                      "op": "has_capability",
+                      "capability": "PROPOSE"
+                    }
+                  ],
+                  "effects": [
+                    {
+                      "op": "append",
+                      "schema": "proposal.candidate",
+                      "recordSlot": "candidate",
+                      "entity": {
+                        "mode": "new",
+                        "slot": "candidate"
+                      },
+                      "selectHead": true,
+                      "value": {
+                        "from": "object",
+                        "fields": {
+                          "author": {
+                            "from": "auth",
+                            "field": "actorId"
+                          },
+                          "title": {
+                            "from": "body",
+                            "path": [
+                              "title"
+                            ]
+                          },
+                          "body": {
+                            "from": "body",
+                            "path": [
+                              "body"
+                            ]
+                          }
+                        }
+                      },
+                      "relations": []
+                    },
+                    {
+                      "op": "set",
+                      "path": [
+                        "candidate_author"
+                      ],
+                      "value": {
+                        "from": "auth",
+                        "field": "actorId"
+                      }
+                    },
+                    {
+                      "op": "set",
+                      "path": [
+                        "candidate_ref"
+                      ],
+                      "value": {
+                        "from": "produced_ref",
+                        "slot": "candidate"
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "proposal.adopt",
+              "reads": [
+                [
+                  "candidate_author"
+                ],
+                [
+                  "candidate_ref"
+                ]
+              ],
+              "writes": [
+                [
+                  "adopted"
+                ]
+              ],
+              "revisionEffects": {
+                "control": true,
+                "contentEntities": []
+              },
+              "variants": [
+                {
+                  "when": [
+                    {
+                      "op": "has_protocol_role",
+                      "role": "ADOPTER"
+                    },
+                    {
+                      "op": "has_capability",
+                      "capability": "ADOPT"
+                    },
+                    {
+                      "op": "exact_ref",
+                      "ref": {
+                        "from": "ref",
+                        "source": "body",
+                        "path": [
+                          "candidate_ref"
+                        ],
+                        "scope": "INSTANCE"
+                      }
+                    },
+                    {
+                      "op": "eq",
+                      "left": {
+                        "from": "ref",
+                        "source": "body",
+                        "path": [
+                          "candidate_ref"
+                        ],
+                        "scope": "INSTANCE"
+                      },
+                      "right": {
+                        "from": "state",
+                        "path": [
+                          "candidate_ref"
+                        ]
+                      }
+                    },
+                    {
+                      "op": "not",
+                      "rule": {
+                        "op": "eq",
+                        "left": {
+                          "from": "state",
+                          "path": [
+                            "candidate_author"
+                          ]
+                        },
+                        "right": {
+                          "from": "auth",
+                          "field": "actorId"
+                        }
+                      }
+                    }
+                  ],
+                  "effects": [
+                    {
+                      "op": "set",
+                      "path": [
+                        "adopted"
+                      ],
+                      "value": {
+                        "from": "literal",
+                        "value": true
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        "imports": [],
+        "parameters": [],
+        "exports": [],
+        "bindings": [],
+        "derive": []
+      }
+    },
+    {
+      "name": "source_parameter_required_default",
+      "kind": "source",
+      "valid": true,
+      "input": {
+        "format": "peerwork.protocol-source.v1",
+        "semantics": "peerwork.kernel.v1",
+        "manifest": {
+          "name": "peerwork.proposal-adoption.v1",
+          "display_version": "1",
+          "semantics": "peerwork.kernel.v1",
+          "dependencies": [],
+          "protocol_roles": [
+            "AUTHOR",
+            "ADOPTER",
+            "REVIEWER"
+          ],
+          "capabilities": [
+            "PROPOSE",
+            "ADOPT"
+          ],
+          "role_conflicts": [
+            [
+              "AUTHOR",
+              "ADOPTER"
+            ]
+          ],
+          "historical_role_conflicts": [
+            [
+              "AUTHOR",
+              "ADOPTER"
+            ]
+          ],
+          "constraints": {},
+          "record_schemas": {
+            "proposal.candidate": {
+              "type": "object",
+              "fields": {
+                "author": "string",
+                "title": "string",
+                "body": "string"
+              },
+              "required": [
+                "author",
+                "title",
+                "body"
+              ],
+              "max_bytes": 16384
+            }
+          },
+          "initial_state": {
+            "candidate_author": null,
+            "candidate_ref": null
+          },
+          "actions": [
+            {
+              "id": "proposal.propose",
+              "reads": [],
+              "writes": [
+                [
+                  "candidate_author"
+                ],
+                [
+                  "candidate_ref"
+                ]
+              ],
+              "revisionEffects": {
+                "control": true,
+                "contentEntities": [
+                  "candidate"
+                ]
+              },
+              "variants": [
+                {
+                  "when": [
+                    {
+                      "op": "has_protocol_role",
+                      "role": "AUTHOR"
+                    },
+                    {
+                      "op": "has_capability",
+                      "capability": "PROPOSE"
+                    }
+                  ],
+                  "effects": [
+                    {
+                      "op": "append",
+                      "schema": "proposal.candidate",
+                      "recordSlot": "candidate",
+                      "entity": {
+                        "mode": "new",
+                        "slot": "candidate"
+                      },
+                      "selectHead": true,
+                      "value": {
+                        "from": "object",
+                        "fields": {
+                          "author": {
+                            "from": "auth",
+                            "field": "actorId"
+                          },
+                          "title": {
+                            "from": "body",
+                            "path": [
+                              "title"
+                            ]
+                          },
+                          "body": {
+                            "from": "body",
+                            "path": [
+                              "body"
+                            ]
+                          }
+                        }
+                      },
+                      "relations": []
+                    },
+                    {
+                      "op": "set",
+                      "path": [
+                        "candidate_author"
+                      ],
+                      "value": {
+                        "from": "auth",
+                        "field": "actorId"
+                      }
+                    },
+                    {
+                      "op": "set",
+                      "path": [
+                        "candidate_ref"
+                      ],
+                      "value": {
+                        "from": "produced_ref",
+                        "slot": "candidate"
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "proposal.adopt",
+              "reads": [
+                [
+                  "candidate_author"
+                ],
+                [
+                  "candidate_ref"
+                ]
+              ],
+              "writes": [
+                [
+                  "adopted"
+                ]
+              ],
+              "revisionEffects": {
+                "control": true,
+                "contentEntities": []
+              },
+              "variants": [
+                {
+                  "when": [
+                    {
+                      "op": "has_protocol_role",
+                      "role": "ADOPTER"
+                    },
+                    {
+                      "op": "has_capability",
+                      "capability": "ADOPT"
+                    },
+                    {
+                      "op": "exact_ref",
+                      "ref": {
+                        "from": "ref",
+                        "source": "body",
+                        "path": [
+                          "candidate_ref"
+                        ],
+                        "scope": "INSTANCE"
+                      }
+                    },
+                    {
+                      "op": "eq",
+                      "left": {
+                        "from": "ref",
+                        "source": "body",
+                        "path": [
+                          "candidate_ref"
+                        ],
+                        "scope": "INSTANCE"
+                      },
+                      "right": {
+                        "from": "state",
+                        "path": [
+                          "candidate_ref"
+                        ]
+                      }
+                    },
+                    {
+                      "op": "not",
+                      "rule": {
+                        "op": "eq",
+                        "left": {
+                          "from": "state",
+                          "path": [
+                            "candidate_author"
+                          ]
+                        },
+                        "right": {
+                          "from": "auth",
+                          "field": "actorId"
+                        }
+                      }
+                    }
+                  ],
+                  "effects": [
+                    {
+                      "op": "set",
+                      "path": [
+                        "adopted"
+                      ],
+                      "value": {
+                        "from": "literal",
+                        "value": true
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        "imports": [],
+        "parameters": [
+          {
+            "name": "mode",
+            "type": "enum",
+            "values": [
+              "A",
+              "B"
+            ]
+          }
+        ],
+        "exports": [
+          {
+            "slot": "selectedMode",
+            "parameter": "mode"
+          }
+        ],
+        "bindings": [],
+        "derive": []
+      },
+      "normalized": {
+        "format": "peerwork.protocol-source.v1",
+        "semantics": "peerwork.kernel.v1",
+        "manifest": {
+          "name": "peerwork.proposal-adoption.v1",
+          "display_version": "1",
+          "semantics": "peerwork.kernel.v1",
+          "dependencies": [],
+          "protocol_roles": [
+            "AUTHOR",
+            "ADOPTER",
+            "REVIEWER"
+          ],
+          "capabilities": [
+            "PROPOSE",
+            "ADOPT"
+          ],
+          "role_conflicts": [
+            [
+              "AUTHOR",
+              "ADOPTER"
+            ]
+          ],
+          "historical_role_conflicts": [
+            [
+              "AUTHOR",
+              "ADOPTER"
+            ]
+          ],
+          "constraints": {},
+          "record_schemas": {
+            "proposal.candidate": {
+              "type": "object",
+              "fields": {
+                "author": "string",
+                "title": "string",
+                "body": "string"
+              },
+              "required": [
+                "author",
+                "title",
+                "body"
+              ],
+              "max_bytes": 16384
+            }
+          },
+          "initial_state": {
+            "candidate_author": null,
+            "candidate_ref": null
+          },
+          "actions": [
+            {
+              "id": "proposal.propose",
+              "reads": [],
+              "writes": [
+                [
+                  "candidate_author"
+                ],
+                [
+                  "candidate_ref"
+                ]
+              ],
+              "revisionEffects": {
+                "control": true,
+                "contentEntities": [
+                  "candidate"
+                ]
+              },
+              "variants": [
+                {
+                  "when": [
+                    {
+                      "op": "has_protocol_role",
+                      "role": "AUTHOR"
+                    },
+                    {
+                      "op": "has_capability",
+                      "capability": "PROPOSE"
+                    }
+                  ],
+                  "effects": [
+                    {
+                      "op": "append",
+                      "schema": "proposal.candidate",
+                      "recordSlot": "candidate",
+                      "entity": {
+                        "mode": "new",
+                        "slot": "candidate"
+                      },
+                      "selectHead": true,
+                      "value": {
+                        "from": "object",
+                        "fields": {
+                          "author": {
+                            "from": "auth",
+                            "field": "actorId"
+                          },
+                          "title": {
+                            "from": "body",
+                            "path": [
+                              "title"
+                            ]
+                          },
+                          "body": {
+                            "from": "body",
+                            "path": [
+                              "body"
+                            ]
+                          }
+                        }
+                      },
+                      "relations": []
+                    },
+                    {
+                      "op": "set",
+                      "path": [
+                        "candidate_author"
+                      ],
+                      "value": {
+                        "from": "auth",
+                        "field": "actorId"
+                      }
+                    },
+                    {
+                      "op": "set",
+                      "path": [
+                        "candidate_ref"
+                      ],
+                      "value": {
+                        "from": "produced_ref",
+                        "slot": "candidate"
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "proposal.adopt",
+              "reads": [
+                [
+                  "candidate_author"
+                ],
+                [
+                  "candidate_ref"
+                ]
+              ],
+              "writes": [
+                [
+                  "adopted"
+                ]
+              ],
+              "revisionEffects": {
+                "control": true,
+                "contentEntities": []
+              },
+              "variants": [
+                {
+                  "when": [
+                    {
+                      "op": "has_protocol_role",
+                      "role": "ADOPTER"
+                    },
+                    {
+                      "op": "has_capability",
+                      "capability": "ADOPT"
+                    },
+                    {
+                      "op": "exact_ref",
+                      "ref": {
+                        "from": "ref",
+                        "source": "body",
+                        "path": [
+                          "candidate_ref"
+                        ],
+                        "scope": "INSTANCE"
+                      }
+                    },
+                    {
+                      "op": "eq",
+                      "left": {
+                        "from": "ref",
+                        "source": "body",
+                        "path": [
+                          "candidate_ref"
+                        ],
+                        "scope": "INSTANCE"
+                      },
+                      "right": {
+                        "from": "state",
+                        "path": [
+                          "candidate_ref"
+                        ]
+                      }
+                    },
+                    {
+                      "op": "not",
+                      "rule": {
+                        "op": "eq",
+                        "left": {
+                          "from": "state",
+                          "path": [
+                            "candidate_author"
+                          ]
+                        },
+                        "right": {
+                          "from": "auth",
+                          "field": "actorId"
+                        }
+                      }
+                    }
+                  ],
+                  "effects": [
+                    {
+                      "op": "set",
+                      "path": [
+                        "adopted"
+                      ],
+                      "value": {
+                        "from": "literal",
+                        "value": true
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        "imports": [],
+        "parameters": [
+          {
+            "name": "mode",
+            "type": "enum",
+            "values": [
+              "A",
+              "B"
+            ],
+            "required": false
+          }
+        ],
+        "exports": [
+          {
+            "slot": "selectedMode",
+            "parameter": "mode"
+          }
+        ],
+        "bindings": [],
+        "derive": []
+      }
+    },
+    {
+      "name": "source_interfaces_defaults",
+      "kind": "source",
+      "valid": true,
+      "input": {
+        "format": "peerwork.protocol-source.v2",
+        "semantics": "peerwork.kernel.v1",
+        "manifest": {
+          "name": "peerwork.proposal-adoption.v1",
+          "display_version": "1",
+          "semantics": "peerwork.kernel.v1",
+          "dependencies": [],
+          "protocol_roles": [
+            "AUTHOR",
+            "ADOPTER",
+            "REVIEWER"
+          ],
+          "capabilities": [
+            "PROPOSE",
+            "ADOPT"
+          ],
+          "role_conflicts": [
+            [
+              "AUTHOR",
+              "ADOPTER"
+            ]
+          ],
+          "historical_role_conflicts": [
+            [
+              "AUTHOR",
+              "ADOPTER"
+            ]
+          ],
+          "constraints": {},
+          "record_schemas": {
+            "proposal.candidate": {
+              "type": "object",
+              "fields": {
+                "author": "string",
+                "title": "string",
+                "body": "string"
+              },
+              "required": [
+                "author",
+                "title",
+                "body"
+              ],
+              "max_bytes": 16384
+            }
+          },
+          "initial_state": {
+            "candidate_author": null,
+            "candidate_ref": null
+          },
+          "actions": [
+            {
+              "id": "proposal.propose",
+              "reads": [],
+              "writes": [
+                [
+                  "candidate_author"
+                ],
+                [
+                  "candidate_ref"
+                ]
+              ],
+              "revisionEffects": {
+                "control": true,
+                "contentEntities": [
+                  "candidate"
+                ]
+              },
+              "variants": [
+                {
+                  "when": [
+                    {
+                      "op": "has_protocol_role",
+                      "role": "AUTHOR"
+                    },
+                    {
+                      "op": "has_capability",
+                      "capability": "PROPOSE"
+                    }
+                  ],
+                  "effects": [
+                    {
+                      "op": "append",
+                      "schema": "proposal.candidate",
+                      "recordSlot": "candidate",
+                      "entity": {
+                        "mode": "new",
+                        "slot": "candidate"
+                      },
+                      "selectHead": true,
+                      "value": {
+                        "from": "object",
+                        "fields": {
+                          "author": {
+                            "from": "auth",
+                            "field": "actorId"
+                          },
+                          "title": {
+                            "from": "body",
+                            "path": [
+                              "title"
+                            ]
+                          },
+                          "body": {
+                            "from": "body",
+                            "path": [
+                              "body"
+                            ]
+                          }
+                        }
+                      },
+                      "relations": []
+                    },
+                    {
+                      "op": "set",
+                      "path": [
+                        "candidate_author"
+                      ],
+                      "value": {
+                        "from": "auth",
+                        "field": "actorId"
+                      }
+                    },
+                    {
+                      "op": "set",
+                      "path": [
+                        "candidate_ref"
+                      ],
+                      "value": {
+                        "from": "produced_ref",
+                        "slot": "candidate"
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "proposal.adopt",
+              "reads": [
+                [
+                  "candidate_author"
+                ],
+                [
+                  "candidate_ref"
+                ]
+              ],
+              "writes": [
+                [
+                  "adopted"
+                ]
+              ],
+              "revisionEffects": {
+                "control": true,
+                "contentEntities": []
+              },
+              "variants": [
+                {
+                  "when": [
+                    {
+                      "op": "has_protocol_role",
+                      "role": "ADOPTER"
+                    },
+                    {
+                      "op": "has_capability",
+                      "capability": "ADOPT"
+                    },
+                    {
+                      "op": "exact_ref",
+                      "ref": {
+                        "from": "ref",
+                        "source": "body",
+                        "path": [
+                          "candidate_ref"
+                        ],
+                        "scope": "INSTANCE"
+                      }
+                    },
+                    {
+                      "op": "eq",
+                      "left": {
+                        "from": "ref",
+                        "source": "body",
+                        "path": [
+                          "candidate_ref"
+                        ],
+                        "scope": "INSTANCE"
+                      },
+                      "right": {
+                        "from": "state",
+                        "path": [
+                          "candidate_ref"
+                        ]
+                      }
+                    },
+                    {
+                      "op": "not",
+                      "rule": {
+                        "op": "eq",
+                        "left": {
+                          "from": "state",
+                          "path": [
+                            "candidate_author"
+                          ]
+                        },
+                        "right": {
+                          "from": "auth",
+                          "field": "actorId"
+                        }
+                      }
+                    }
+                  ],
+                  "effects": [
+                    {
+                      "op": "set",
+                      "path": [
+                        "adopted"
+                      ],
+                      "value": {
+                        "from": "literal",
+                        "value": true
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        "imports": [],
+        "parameters": [
+          {
+            "name": "adoptionRole",
+            "type": "enum",
+            "values": [
+              "ADOPTER",
+              "REVIEWER"
+            ],
+            "default": "ADOPTER",
+            "binding": {
+              "kind": "protocol_role_guard",
+              "action_id": "proposal.adopt",
+              "variant_index": 0,
+              "guard_index": 0,
+              "conflict_role": "ADOPTER"
+            }
+          }
+        ],
+        "exports": [
+          {
+            "slot": "adoptionRole",
+            "parameter": "adoptionRole"
+          }
+        ],
+        "bindings": [],
+        "derive": [],
+        "interfaces": {}
+      },
+      "normalized": {
+        "format": "peerwork.protocol-source.v2",
+        "semantics": "peerwork.kernel.v1",
+        "manifest": {
+          "name": "peerwork.proposal-adoption.v1",
+          "display_version": "1",
+          "semantics": "peerwork.kernel.v1",
+          "dependencies": [],
+          "protocol_roles": [
+            "AUTHOR",
+            "ADOPTER",
+            "REVIEWER"
+          ],
+          "capabilities": [
+            "PROPOSE",
+            "ADOPT"
+          ],
+          "role_conflicts": [
+            [
+              "AUTHOR",
+              "ADOPTER"
+            ]
+          ],
+          "historical_role_conflicts": [
+            [
+              "AUTHOR",
+              "ADOPTER"
+            ]
+          ],
+          "constraints": {},
+          "record_schemas": {
+            "proposal.candidate": {
+              "type": "object",
+              "fields": {
+                "author": "string",
+                "title": "string",
+                "body": "string"
+              },
+              "required": [
+                "author",
+                "title",
+                "body"
+              ],
+              "max_bytes": 16384
+            }
+          },
+          "initial_state": {
+            "candidate_author": null,
+            "candidate_ref": null
+          },
+          "actions": [
+            {
+              "id": "proposal.propose",
+              "reads": [],
+              "writes": [
+                [
+                  "candidate_author"
+                ],
+                [
+                  "candidate_ref"
+                ]
+              ],
+              "revisionEffects": {
+                "control": true,
+                "contentEntities": [
+                  "candidate"
+                ]
+              },
+              "variants": [
+                {
+                  "when": [
+                    {
+                      "op": "has_protocol_role",
+                      "role": "AUTHOR"
+                    },
+                    {
+                      "op": "has_capability",
+                      "capability": "PROPOSE"
+                    }
+                  ],
+                  "effects": [
+                    {
+                      "op": "append",
+                      "schema": "proposal.candidate",
+                      "recordSlot": "candidate",
+                      "entity": {
+                        "mode": "new",
+                        "slot": "candidate"
+                      },
+                      "selectHead": true,
+                      "value": {
+                        "from": "object",
+                        "fields": {
+                          "author": {
+                            "from": "auth",
+                            "field": "actorId"
+                          },
+                          "title": {
+                            "from": "body",
+                            "path": [
+                              "title"
+                            ]
+                          },
+                          "body": {
+                            "from": "body",
+                            "path": [
+                              "body"
+                            ]
+                          }
+                        }
+                      },
+                      "relations": []
+                    },
+                    {
+                      "op": "set",
+                      "path": [
+                        "candidate_author"
+                      ],
+                      "value": {
+                        "from": "auth",
+                        "field": "actorId"
+                      }
+                    },
+                    {
+                      "op": "set",
+                      "path": [
+                        "candidate_ref"
+                      ],
+                      "value": {
+                        "from": "produced_ref",
+                        "slot": "candidate"
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "proposal.adopt",
+              "reads": [
+                [
+                  "candidate_author"
+                ],
+                [
+                  "candidate_ref"
+                ]
+              ],
+              "writes": [
+                [
+                  "adopted"
+                ]
+              ],
+              "revisionEffects": {
+                "control": true,
+                "contentEntities": []
+              },
+              "variants": [
+                {
+                  "when": [
+                    {
+                      "op": "has_protocol_role",
+                      "role": "ADOPTER"
+                    },
+                    {
+                      "op": "has_capability",
+                      "capability": "ADOPT"
+                    },
+                    {
+                      "op": "exact_ref",
+                      "ref": {
+                        "from": "ref",
+                        "source": "body",
+                        "path": [
+                          "candidate_ref"
+                        ],
+                        "scope": "INSTANCE"
+                      }
+                    },
+                    {
+                      "op": "eq",
+                      "left": {
+                        "from": "ref",
+                        "source": "body",
+                        "path": [
+                          "candidate_ref"
+                        ],
+                        "scope": "INSTANCE"
+                      },
+                      "right": {
+                        "from": "state",
+                        "path": [
+                          "candidate_ref"
+                        ]
+                      }
+                    },
+                    {
+                      "op": "not",
+                      "rule": {
+                        "op": "eq",
+                        "left": {
+                          "from": "state",
+                          "path": [
+                            "candidate_author"
+                          ]
+                        },
+                        "right": {
+                          "from": "auth",
+                          "field": "actorId"
+                        }
+                      }
+                    }
+                  ],
+                  "effects": [
+                    {
+                      "op": "set",
+                      "path": [
+                        "adopted"
+                      ],
+                      "value": {
+                        "from": "literal",
+                        "value": true
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        "imports": [],
+        "parameters": [
+          {
+            "name": "adoptionRole",
+            "type": "enum",
+            "values": [
+              "ADOPTER",
+              "REVIEWER"
+            ],
+            "default": "ADOPTER",
+            "required": false,
+            "binding": {
+              "kind": "protocol_role_guard",
+              "action_id": "proposal.adopt",
+              "variant_index": 0,
+              "guard_index": 0,
+              "conflict_role": "ADOPTER"
+            }
+          }
+        ],
+        "exports": [
+          {
+            "slot": "adoptionRole",
+            "parameter": "adoptionRole"
+          }
+        ],
+        "bindings": [],
+        "derive": [],
+        "interfaces": {
+          "outputs": [],
+          "inputs": [],
+          "action_bodies": []
+        }
+      }
+    },
+    {
+      "name": "metadata_valid",
+      "kind": "metadata",
+      "valid": true,
+      "input": {
+        "format": "peerwork.protocol-package-metadata.v1",
+        "package_id": "peerwork-proposal-adoption",
+        "version": "1.0.0",
+        "name": "Peerwork Proposal and Adoption",
+        "description": "Reusable proposal and independent-adoption component. Adoption requires an authenticated actor different from the author recorded from auth.actorId and an exact candidate reference equal to the pinned state reference. Role conflict declarations additionally constrain role grants but do not implement the authorship predicate.",
+        "license": "Apache-2.0",
+        "license_file": "LICENSE",
+        "source_maintainers": [
+          {
+            "name": "Peerwork project maintainers",
+            "origin": "src/workspace-presets.ts#proposal-adoption"
+          }
+        ]
+      },
+      "normalized": {
+        "format": "peerwork.protocol-package-metadata.v1",
+        "package_id": "peerwork-proposal-adoption",
+        "version": "1.0.0",
+        "name": "Peerwork Proposal and Adoption",
+        "description": "Reusable proposal and independent-adoption component. Adoption requires an authenticated actor different from the author recorded from auth.actorId and an exact candidate reference equal to the pinned state reference. Role conflict declarations additionally constrain role grants but do not implement the authorship predicate.",
+        "license": "Apache-2.0",
+        "license_file": "LICENSE",
+        "source_maintainers": [
+          {
+            "name": "Peerwork project maintainers",
+            "origin": "src/workspace-presets.ts#proposal-adoption"
+          }
+        ]
+      }
+    },
+    {
+      "name": "metadata_lone_surrogate_string",
+      "kind": "metadata",
+      "valid": true,
+      "input": {
+        "format": "peerwork.protocol-package-metadata.v1",
+        "package_id": "peerwork-proposal-adoption",
+        "version": "1.0.0",
+        "name": "Peerwork Proposal and Adoption",
+        "description": "valid lone surrogate \ud800",
+        "license": "Apache-2.0",
+        "license_file": "LICENSE",
+        "source_maintainers": [
+          {
+            "name": "Peerwork project maintainers",
+            "origin": "src/workspace-presets.ts#proposal-adoption"
+          }
+        ]
+      },
+      "normalized": {
+        "format": "peerwork.protocol-package-metadata.v1",
+        "package_id": "peerwork-proposal-adoption",
+        "version": "1.0.0",
+        "name": "Peerwork Proposal and Adoption",
+        "description": "valid lone surrogate \ud800",
+        "license": "Apache-2.0",
+        "license_file": "LICENSE",
+        "source_maintainers": [
+          {
+            "name": "Peerwork project maintainers",
+            "origin": "src/workspace-presets.ts#proposal-adoption"
+          }
+        ]
+      }
+    },
+    {
+      "name": "lock_valid",
+      "kind": "lock",
+      "valid": true,
+      "input": {
+        "format": "peerwork.protocol-lock.v1",
+        "compiler_version": "peerwork.protocol-compiler.v1",
+        "semantics": "peerwork.kernel.v1",
+        "dependencies": [],
+        "baseline_bindings": {},
+        "output_protocol_digest": "a37c72d1f4ac5999e5da49559de5c7d171663d526f04d59c9bada53c58dd0b05"
+      },
+      "normalized": {
+        "format": "peerwork.protocol-lock.v1",
+        "compiler_version": "peerwork.protocol-compiler.v1",
+        "semantics": "peerwork.kernel.v1",
+        "dependencies": [],
+        "baseline_bindings": {},
+        "output_protocol_digest": "a37c72d1f4ac5999e5da49559de5c7d171663d526f04d59c9bada53c58dd0b05"
+      }
+    },
+    {
+      "name": "lock_compiler_version_allows_surrogate",
+      "kind": "lock",
+      "valid": true,
+      "input": {
+        "format": "peerwork.protocol-lock.v1",
+        "compiler_version": "compiler\ud800",
+        "semantics": "peerwork.kernel.v1",
+        "dependencies": [],
+        "baseline_bindings": {},
+        "output_protocol_digest": "a37c72d1f4ac5999e5da49559de5c7d171663d526f04d59c9bada53c58dd0b05"
+      },
+      "normalized": {
+        "format": "peerwork.protocol-lock.v1",
+        "compiler_version": "compiler\ud800",
+        "semantics": "peerwork.kernel.v1",
+        "dependencies": [],
+        "baseline_bindings": {},
+        "output_protocol_digest": "a37c72d1f4ac5999e5da49559de5c7d171663d526f04d59c9bada53c58dd0b05"
+      }
+    },
+    {
+      "name": "fixture_defaults",
+      "kind": "fixture",
+      "valid": true,
+      "input": {
+        "id": "author-cannot-adopt-own-candidate",
+        "action_id": "proposal.adopt",
+        "state": {
+          "candidate_author": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "candidate_ref": {
+            "record_id": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+            "revision": 1
+          }
+        },
+        "body": {
+          "candidate_ref": {
+            "record_id": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+            "revision": 1
+          }
+        },
+        "auth": {
+          "actorId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        },
+        "expected": {
+          "accepted": false,
+          "code": "CONSTRAINT_FAILED"
+        }
+      },
+      "normalized": {
+        "id": "author-cannot-adopt-own-candidate",
+        "action_id": "proposal.adopt",
+        "state": {
+          "candidate_author": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "candidate_ref": {
+            "record_id": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+            "revision": 1
+          }
+        },
+        "body": {
+          "candidate_ref": {
+            "record_id": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+            "revision": 1
+          }
+        },
+        "auth": {
+          "actorId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "workspaceRoles": [],
+          "protocolRoles": [],
+          "capabilities": []
+        },
+        "exact_inputs": [],
+        "expected": {
+          "accepted": false,
+          "code": "CONSTRAINT_FAILED"
+        }
+      }
+    },
+    {
+      "name": "fixture_plain_action_id_allows_surrogate",
+      "kind": "fixture",
+      "valid": true,
+      "input": {
+        "id": "author-cannot-adopt-own-candidate",
+        "action_id": "action\ud800",
+        "state": {
+          "candidate_author": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "candidate_ref": {
+            "record_id": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+            "revision": 1
+          }
+        },
+        "body": {
+          "candidate_ref": {
+            "record_id": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+            "revision": 1
+          }
+        },
+        "auth": {
+          "actorId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "workspaceRoles": [],
+          "protocolRoles": [
+            "ADOPTER",
+            "REVIEWER"
+          ],
+          "capabilities": [
+            "ADOPT"
+          ]
+        },
+        "exact_inputs": [
+          {
+            "recordId": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+            "revision": 1,
+            "schema": "proposal.candidate",
+            "payload": {
+              "author": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+              "title": "Draft",
+              "body": "Candidate text."
+            },
+            "scope": "INSTANCE"
+          }
+        ],
+        "expected": {
+          "accepted": false,
+          "code": "CONSTRAINT_FAILED"
+        }
+      },
+      "normalized": {
+        "id": "author-cannot-adopt-own-candidate",
+        "action_id": "action\ud800",
+        "state": {
+          "candidate_author": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "candidate_ref": {
+            "record_id": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+            "revision": 1
+          }
+        },
+        "body": {
+          "candidate_ref": {
+            "record_id": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+            "revision": 1
+          }
+        },
+        "auth": {
+          "actorId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "workspaceRoles": [],
+          "protocolRoles": [
+            "ADOPTER",
+            "REVIEWER"
+          ],
+          "capabilities": [
+            "ADOPT"
+          ]
+        },
+        "exact_inputs": [
+          {
+            "recordId": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+            "revision": 1,
+            "schema": "proposal.candidate",
+            "payload": {
+              "author": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+              "title": "Draft",
+              "body": "Candidate text."
+            },
+            "scope": "INSTANCE"
+          }
+        ],
+        "expected": {
+          "accepted": false,
+          "code": "CONSTRAINT_FAILED"
+        }
+      }
+    },
+    {
+      "name": "fixture_duplicate_auth_strings",
+      "kind": "fixture",
+      "valid": true,
+      "input": {
+        "id": "author-cannot-adopt-own-candidate",
+        "action_id": "proposal.adopt",
+        "state": {
+          "candidate_author": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "candidate_ref": {
+            "record_id": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+            "revision": 1
+          }
+        },
+        "body": {
+          "candidate_ref": {
+            "record_id": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+            "revision": 1
+          }
+        },
+        "auth": {
+          "actorId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "workspaceRoles": [],
+          "protocolRoles": [
+            "R",
+            "R"
+          ],
+          "capabilities": [
+            "ADOPT"
+          ]
+        },
+        "exact_inputs": [
+          {
+            "recordId": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+            "revision": 1,
+            "schema": "proposal.candidate",
+            "payload": {
+              "author": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+              "title": "Draft",
+              "body": "Candidate text."
+            },
+            "scope": "INSTANCE"
+          }
+        ],
+        "expected": {
+          "accepted": false,
+          "code": "CONSTRAINT_FAILED"
+        }
+      },
+      "normalized": {
+        "id": "author-cannot-adopt-own-candidate",
+        "action_id": "proposal.adopt",
+        "state": {
+          "candidate_author": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "candidate_ref": {
+            "record_id": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+            "revision": 1
+          }
+        },
+        "body": {
+          "candidate_ref": {
+            "record_id": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+            "revision": 1
+          }
+        },
+        "auth": {
+          "actorId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "workspaceRoles": [],
+          "protocolRoles": [
+            "R",
+            "R"
+          ],
+          "capabilities": [
+            "ADOPT"
+          ]
+        },
+        "exact_inputs": [
+          {
+            "recordId": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+            "revision": 1,
+            "schema": "proposal.candidate",
+            "payload": {
+              "author": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+              "title": "Draft",
+              "body": "Candidate text."
+            },
+            "scope": "INSTANCE"
+          }
+        ],
+        "expected": {
+          "accepted": false,
+          "code": "CONSTRAINT_FAILED"
+        }
+      }
+    },
+    {
+      "name": "source_unknown_member",
+      "kind": "source",
+      "valid": false,
+      "input": {
+        "format": "peerwork.protocol-source.v1",
+        "semantics": "peerwork.kernel.v1",
+        "manifest": {
+          "name": "peerwork.proposal-adoption.v1",
+          "display_version": "1",
+          "semantics": "peerwork.kernel.v1",
+          "dependencies": [],
+          "protocol_roles": [
+            "AUTHOR",
+            "ADOPTER",
+            "REVIEWER"
+          ],
+          "capabilities": [
+            "PROPOSE",
+            "ADOPT"
+          ],
+          "role_conflicts": [
+            [
+              "AUTHOR",
+              "ADOPTER"
+            ]
+          ],
+          "historical_role_conflicts": [
+            [
+              "AUTHOR",
+              "ADOPTER"
+            ]
+          ],
+          "constraints": {},
+          "record_schemas": {
+            "proposal.candidate": {
+              "type": "object",
+              "fields": {
+                "author": "string",
+                "title": "string",
+                "body": "string"
+              },
+              "required": [
+                "author",
+                "title",
+                "body"
+              ],
+              "max_bytes": 16384
+            }
+          },
+          "initial_state": {
+            "candidate_author": null,
+            "candidate_ref": null
+          },
+          "actions": [
+            {
+              "id": "proposal.propose",
+              "reads": [],
+              "writes": [
+                [
+                  "candidate_author"
+                ],
+                [
+                  "candidate_ref"
+                ]
+              ],
+              "revisionEffects": {
+                "control": true,
+                "contentEntities": [
+                  "candidate"
+                ]
+              },
+              "variants": [
+                {
+                  "when": [
+                    {
+                      "op": "has_protocol_role",
+                      "role": "AUTHOR"
+                    },
+                    {
+                      "op": "has_capability",
+                      "capability": "PROPOSE"
+                    }
+                  ],
+                  "effects": [
+                    {
+                      "op": "append",
+                      "schema": "proposal.candidate",
+                      "recordSlot": "candidate",
+                      "entity": {
+                        "mode": "new",
+                        "slot": "candidate"
+                      },
+                      "selectHead": true,
+                      "value": {
+                        "from": "object",
+                        "fields": {
+                          "author": {
+                            "from": "auth",
+                            "field": "actorId"
+                          },
+                          "title": {
+                            "from": "body",
+                            "path": [
+                              "title"
+                            ]
+                          },
+                          "body": {
+                            "from": "body",
+                            "path": [
+                              "body"
+                            ]
+                          }
+                        }
+                      },
+                      "relations": []
+                    },
+                    {
+                      "op": "set",
+                      "path": [
+                        "candidate_author"
+                      ],
+                      "value": {
+                        "from": "auth",
+                        "field": "actorId"
+                      }
+                    },
+                    {
+                      "op": "set",
+                      "path": [
+                        "candidate_ref"
+                      ],
+                      "value": {
+                        "from": "produced_ref",
+                        "slot": "candidate"
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "proposal.adopt",
+              "reads": [
+                [
+                  "candidate_author"
+                ],
+                [
+                  "candidate_ref"
+                ]
+              ],
+              "writes": [
+                [
+                  "adopted"
+                ]
+              ],
+              "revisionEffects": {
+                "control": true,
+                "contentEntities": []
+              },
+              "variants": [
+                {
+                  "when": [
+                    {
+                      "op": "has_protocol_role",
+                      "role": "ADOPTER"
+                    },
+                    {
+                      "op": "has_capability",
+                      "capability": "ADOPT"
+                    },
+                    {
+                      "op": "exact_ref",
+                      "ref": {
+                        "from": "ref",
+                        "source": "body",
+                        "path": [
+                          "candidate_ref"
+                        ],
+                        "scope": "INSTANCE"
+                      }
+                    },
+                    {
+                      "op": "eq",
+                      "left": {
+                        "from": "ref",
+                        "source": "body",
+                        "path": [
+                          "candidate_ref"
+                        ],
+                        "scope": "INSTANCE"
+                      },
+                      "right": {
+                        "from": "state",
+                        "path": [
+                          "candidate_ref"
+                        ]
+                      }
+                    },
+                    {
+                      "op": "not",
+                      "rule": {
+                        "op": "eq",
+                        "left": {
+                          "from": "state",
+                          "path": [
+                            "candidate_author"
+                          ]
+                        },
+                        "right": {
+                          "from": "auth",
+                          "field": "actorId"
+                        }
+                      }
+                    }
+                  ],
+                  "effects": [
+                    {
+                      "op": "set",
+                      "path": [
+                        "adopted"
+                      ],
+                      "value": {
+                        "from": "literal",
+                        "value": true
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        "imports": [],
+        "parameters": [
+          {
+            "name": "adoptionRole",
+            "type": "enum",
+            "values": [
+              "ADOPTER",
+              "REVIEWER"
+            ],
+            "default": "ADOPTER",
+            "binding": {
+              "kind": "protocol_role_guard",
+              "action_id": "proposal.adopt",
+              "variant_index": 0,
+              "guard_index": 0,
+              "conflict_role": "ADOPTER"
+            }
+          }
+        ],
+        "exports": [
+          {
+            "slot": "adoptionRole",
+            "parameter": "adoptionRole"
+          }
+        ],
+        "bindings": [],
+        "derive": [],
+        "unknown": true
+      }
+    },
+    {
+      "name": "source_enum_requires_values",
+      "kind": "source",
+      "valid": false,
+      "input": {
+        "format": "peerwork.protocol-source.v1",
+        "semantics": "peerwork.kernel.v1",
+        "manifest": {
+          "name": "peerwork.proposal-adoption.v1",
+          "display_version": "1",
+          "semantics": "peerwork.kernel.v1",
+          "dependencies": [],
+          "protocol_roles": [
+            "AUTHOR",
+            "ADOPTER",
+            "REVIEWER"
+          ],
+          "capabilities": [
+            "PROPOSE",
+            "ADOPT"
+          ],
+          "role_conflicts": [
+            [
+              "AUTHOR",
+              "ADOPTER"
+            ]
+          ],
+          "historical_role_conflicts": [
+            [
+              "AUTHOR",
+              "ADOPTER"
+            ]
+          ],
+          "constraints": {},
+          "record_schemas": {
+            "proposal.candidate": {
+              "type": "object",
+              "fields": {
+                "author": "string",
+                "title": "string",
+                "body": "string"
+              },
+              "required": [
+                "author",
+                "title",
+                "body"
+              ],
+              "max_bytes": 16384
+            }
+          },
+          "initial_state": {
+            "candidate_author": null,
+            "candidate_ref": null
+          },
+          "actions": [
+            {
+              "id": "proposal.propose",
+              "reads": [],
+              "writes": [
+                [
+                  "candidate_author"
+                ],
+                [
+                  "candidate_ref"
+                ]
+              ],
+              "revisionEffects": {
+                "control": true,
+                "contentEntities": [
+                  "candidate"
+                ]
+              },
+              "variants": [
+                {
+                  "when": [
+                    {
+                      "op": "has_protocol_role",
+                      "role": "AUTHOR"
+                    },
+                    {
+                      "op": "has_capability",
+                      "capability": "PROPOSE"
+                    }
+                  ],
+                  "effects": [
+                    {
+                      "op": "append",
+                      "schema": "proposal.candidate",
+                      "recordSlot": "candidate",
+                      "entity": {
+                        "mode": "new",
+                        "slot": "candidate"
+                      },
+                      "selectHead": true,
+                      "value": {
+                        "from": "object",
+                        "fields": {
+                          "author": {
+                            "from": "auth",
+                            "field": "actorId"
+                          },
+                          "title": {
+                            "from": "body",
+                            "path": [
+                              "title"
+                            ]
+                          },
+                          "body": {
+                            "from": "body",
+                            "path": [
+                              "body"
+                            ]
+                          }
+                        }
+                      },
+                      "relations": []
+                    },
+                    {
+                      "op": "set",
+                      "path": [
+                        "candidate_author"
+                      ],
+                      "value": {
+                        "from": "auth",
+                        "field": "actorId"
+                      }
+                    },
+                    {
+                      "op": "set",
+                      "path": [
+                        "candidate_ref"
+                      ],
+                      "value": {
+                        "from": "produced_ref",
+                        "slot": "candidate"
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "proposal.adopt",
+              "reads": [
+                [
+                  "candidate_author"
+                ],
+                [
+                  "candidate_ref"
+                ]
+              ],
+              "writes": [
+                [
+                  "adopted"
+                ]
+              ],
+              "revisionEffects": {
+                "control": true,
+                "contentEntities": []
+              },
+              "variants": [
+                {
+                  "when": [
+                    {
+                      "op": "has_protocol_role",
+                      "role": "ADOPTER"
+                    },
+                    {
+                      "op": "has_capability",
+                      "capability": "ADOPT"
+                    },
+                    {
+                      "op": "exact_ref",
+                      "ref": {
+                        "from": "ref",
+                        "source": "body",
+                        "path": [
+                          "candidate_ref"
+                        ],
+                        "scope": "INSTANCE"
+                      }
+                    },
+                    {
+                      "op": "eq",
+                      "left": {
+                        "from": "ref",
+                        "source": "body",
+                        "path": [
+                          "candidate_ref"
+                        ],
+                        "scope": "INSTANCE"
+                      },
+                      "right": {
+                        "from": "state",
+                        "path": [
+                          "candidate_ref"
+                        ]
+                      }
+                    },
+                    {
+                      "op": "not",
+                      "rule": {
+                        "op": "eq",
+                        "left": {
+                          "from": "state",
+                          "path": [
+                            "candidate_author"
+                          ]
+                        },
+                        "right": {
+                          "from": "auth",
+                          "field": "actorId"
+                        }
+                      }
+                    }
+                  ],
+                  "effects": [
+                    {
+                      "op": "set",
+                      "path": [
+                        "adopted"
+                      ],
+                      "value": {
+                        "from": "literal",
+                        "value": true
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        "imports": [],
+        "parameters": [
+          {
+            "name": "mode",
+            "type": "enum",
+            "required": false
+          }
+        ],
+        "exports": [
+          {
+            "slot": "modeValue",
+            "parameter": "mode"
+          }
+        ],
+        "bindings": [],
+        "derive": []
+      }
+    },
+    {
+      "name": "source_unsafe_integer",
+      "kind": "source",
+      "valid": false,
+      "input": {
+        "format": "peerwork.protocol-source.v1",
+        "semantics": "peerwork.kernel.v1",
+        "manifest": {
+          "name": "peerwork.proposal-adoption.v1",
+          "display_version": "1",
+          "semantics": "peerwork.kernel.v1",
+          "dependencies": [],
+          "protocol_roles": [
+            "AUTHOR",
+            "ADOPTER",
+            "REVIEWER"
+          ],
+          "capabilities": [
+            "PROPOSE",
+            "ADOPT"
+          ],
+          "role_conflicts": [
+            [
+              "AUTHOR",
+              "ADOPTER"
+            ]
+          ],
+          "historical_role_conflicts": [
+            [
+              "AUTHOR",
+              "ADOPTER"
+            ]
+          ],
+          "constraints": {},
+          "record_schemas": {
+            "proposal.candidate": {
+              "type": "object",
+              "fields": {
+                "author": "string",
+                "title": "string",
+                "body": "string"
+              },
+              "required": [
+                "author",
+                "title",
+                "body"
+              ],
+              "max_bytes": 16384
+            }
+          },
+          "initial_state": {
+            "candidate_author": null,
+            "candidate_ref": null
+          },
+          "actions": [
+            {
+              "id": "proposal.propose",
+              "reads": [],
+              "writes": [
+                [
+                  "candidate_author"
+                ],
+                [
+                  "candidate_ref"
+                ]
+              ],
+              "revisionEffects": {
+                "control": true,
+                "contentEntities": [
+                  "candidate"
+                ]
+              },
+              "variants": [
+                {
+                  "when": [
+                    {
+                      "op": "has_protocol_role",
+                      "role": "AUTHOR"
+                    },
+                    {
+                      "op": "has_capability",
+                      "capability": "PROPOSE"
+                    }
+                  ],
+                  "effects": [
+                    {
+                      "op": "append",
+                      "schema": "proposal.candidate",
+                      "recordSlot": "candidate",
+                      "entity": {
+                        "mode": "new",
+                        "slot": "candidate"
+                      },
+                      "selectHead": true,
+                      "value": {
+                        "from": "object",
+                        "fields": {
+                          "author": {
+                            "from": "auth",
+                            "field": "actorId"
+                          },
+                          "title": {
+                            "from": "body",
+                            "path": [
+                              "title"
+                            ]
+                          },
+                          "body": {
+                            "from": "body",
+                            "path": [
+                              "body"
+                            ]
+                          }
+                        }
+                      },
+                      "relations": []
+                    },
+                    {
+                      "op": "set",
+                      "path": [
+                        "candidate_author"
+                      ],
+                      "value": {
+                        "from": "auth",
+                        "field": "actorId"
+                      }
+                    },
+                    {
+                      "op": "set",
+                      "path": [
+                        "candidate_ref"
+                      ],
+                      "value": {
+                        "from": "produced_ref",
+                        "slot": "candidate"
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "proposal.adopt",
+              "reads": [
+                [
+                  "candidate_author"
+                ],
+                [
+                  "candidate_ref"
+                ]
+              ],
+              "writes": [
+                [
+                  "adopted"
+                ]
+              ],
+              "revisionEffects": {
+                "control": true,
+                "contentEntities": []
+              },
+              "variants": [
+                {
+                  "when": [
+                    {
+                      "op": "has_protocol_role",
+                      "role": "ADOPTER"
+                    },
+                    {
+                      "op": "has_capability",
+                      "capability": "ADOPT"
+                    },
+                    {
+                      "op": "exact_ref",
+                      "ref": {
+                        "from": "ref",
+                        "source": "body",
+                        "path": [
+                          "candidate_ref"
+                        ],
+                        "scope": "INSTANCE"
+                      }
+                    },
+                    {
+                      "op": "eq",
+                      "left": {
+                        "from": "ref",
+                        "source": "body",
+                        "path": [
+                          "candidate_ref"
+                        ],
+                        "scope": "INSTANCE"
+                      },
+                      "right": {
+                        "from": "state",
+                        "path": [
+                          "candidate_ref"
+                        ]
+                      }
+                    },
+                    {
+                      "op": "not",
+                      "rule": {
+                        "op": "eq",
+                        "left": {
+                          "from": "state",
+                          "path": [
+                            "candidate_author"
+                          ]
+                        },
+                        "right": {
+                          "from": "auth",
+                          "field": "actorId"
+                        }
+                      }
+                    }
+                  ],
+                  "effects": [
+                    {
+                      "op": "set",
+                      "path": [
+                        "adopted"
+                      ],
+                      "value": {
+                        "from": "literal",
+                        "value": true
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        "imports": [],
+        "parameters": [
+          {
+            "name": "count",
+            "type": "integer",
+            "minimum": 9007199254740992,
+            "required": false
+          }
+        ],
+        "exports": [
+          {
+            "slot": "countValue",
+            "parameter": "count"
+          }
+        ],
+        "bindings": [],
+        "derive": []
+      }
+    },
+    {
+      "name": "source_v2_requires_interfaces",
+      "kind": "source",
+      "valid": false,
+      "input": {
+        "format": "peerwork.protocol-source.v2",
+        "semantics": "peerwork.kernel.v1",
+        "manifest": {
+          "name": "peerwork.proposal-adoption.v1",
+          "display_version": "1",
+          "semantics": "peerwork.kernel.v1",
+          "dependencies": [],
+          "protocol_roles": [
+            "AUTHOR",
+            "ADOPTER",
+            "REVIEWER"
+          ],
+          "capabilities": [
+            "PROPOSE",
+            "ADOPT"
+          ],
+          "role_conflicts": [
+            [
+              "AUTHOR",
+              "ADOPTER"
+            ]
+          ],
+          "historical_role_conflicts": [
+            [
+              "AUTHOR",
+              "ADOPTER"
+            ]
+          ],
+          "constraints": {},
+          "record_schemas": {
+            "proposal.candidate": {
+              "type": "object",
+              "fields": {
+                "author": "string",
+                "title": "string",
+                "body": "string"
+              },
+              "required": [
+                "author",
+                "title",
+                "body"
+              ],
+              "max_bytes": 16384
+            }
+          },
+          "initial_state": {
+            "candidate_author": null,
+            "candidate_ref": null
+          },
+          "actions": [
+            {
+              "id": "proposal.propose",
+              "reads": [],
+              "writes": [
+                [
+                  "candidate_author"
+                ],
+                [
+                  "candidate_ref"
+                ]
+              ],
+              "revisionEffects": {
+                "control": true,
+                "contentEntities": [
+                  "candidate"
+                ]
+              },
+              "variants": [
+                {
+                  "when": [
+                    {
+                      "op": "has_protocol_role",
+                      "role": "AUTHOR"
+                    },
+                    {
+                      "op": "has_capability",
+                      "capability": "PROPOSE"
+                    }
+                  ],
+                  "effects": [
+                    {
+                      "op": "append",
+                      "schema": "proposal.candidate",
+                      "recordSlot": "candidate",
+                      "entity": {
+                        "mode": "new",
+                        "slot": "candidate"
+                      },
+                      "selectHead": true,
+                      "value": {
+                        "from": "object",
+                        "fields": {
+                          "author": {
+                            "from": "auth",
+                            "field": "actorId"
+                          },
+                          "title": {
+                            "from": "body",
+                            "path": [
+                              "title"
+                            ]
+                          },
+                          "body": {
+                            "from": "body",
+                            "path": [
+                              "body"
+                            ]
+                          }
+                        }
+                      },
+                      "relations": []
+                    },
+                    {
+                      "op": "set",
+                      "path": [
+                        "candidate_author"
+                      ],
+                      "value": {
+                        "from": "auth",
+                        "field": "actorId"
+                      }
+                    },
+                    {
+                      "op": "set",
+                      "path": [
+                        "candidate_ref"
+                      ],
+                      "value": {
+                        "from": "produced_ref",
+                        "slot": "candidate"
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "proposal.adopt",
+              "reads": [
+                [
+                  "candidate_author"
+                ],
+                [
+                  "candidate_ref"
+                ]
+              ],
+              "writes": [
+                [
+                  "adopted"
+                ]
+              ],
+              "revisionEffects": {
+                "control": true,
+                "contentEntities": []
+              },
+              "variants": [
+                {
+                  "when": [
+                    {
+                      "op": "has_protocol_role",
+                      "role": "ADOPTER"
+                    },
+                    {
+                      "op": "has_capability",
+                      "capability": "ADOPT"
+                    },
+                    {
+                      "op": "exact_ref",
+                      "ref": {
+                        "from": "ref",
+                        "source": "body",
+                        "path": [
+                          "candidate_ref"
+                        ],
+                        "scope": "INSTANCE"
+                      }
+                    },
+                    {
+                      "op": "eq",
+                      "left": {
+                        "from": "ref",
+                        "source": "body",
+                        "path": [
+                          "candidate_ref"
+                        ],
+                        "scope": "INSTANCE"
+                      },
+                      "right": {
+                        "from": "state",
+                        "path": [
+                          "candidate_ref"
+                        ]
+                      }
+                    },
+                    {
+                      "op": "not",
+                      "rule": {
+                        "op": "eq",
+                        "left": {
+                          "from": "state",
+                          "path": [
+                            "candidate_author"
+                          ]
+                        },
+                        "right": {
+                          "from": "auth",
+                          "field": "actorId"
+                        }
+                      }
+                    }
+                  ],
+                  "effects": [
+                    {
+                      "op": "set",
+                      "path": [
+                        "adopted"
+                      ],
+                      "value": {
+                        "from": "literal",
+                        "value": true
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        "imports": [],
+        "parameters": [
+          {
+            "name": "adoptionRole",
+            "type": "enum",
+            "values": [
+              "ADOPTER",
+              "REVIEWER"
+            ],
+            "default": "ADOPTER",
+            "binding": {
+              "kind": "protocol_role_guard",
+              "action_id": "proposal.adopt",
+              "variant_index": 0,
+              "guard_index": 0,
+              "conflict_role": "ADOPTER"
+            }
+          }
+        ],
+        "exports": [
+          {
+            "slot": "adoptionRole",
+            "parameter": "adoptionRole"
+          }
+        ],
+        "bindings": [],
+        "derive": []
+      }
+    },
+    {
+      "name": "metadata_unknown_member",
+      "kind": "metadata",
+      "valid": false,
+      "input": {
+        "format": "peerwork.protocol-package-metadata.v1",
+        "package_id": "peerwork-proposal-adoption",
+        "version": "1.0.0",
+        "name": "Peerwork Proposal and Adoption",
+        "description": "Reusable proposal and independent-adoption component. Adoption requires an authenticated actor different from the author recorded from auth.actorId and an exact candidate reference equal to the pinned state reference. Role conflict declarations additionally constrain role grants but do not implement the authorship predicate.",
+        "license": "Apache-2.0",
+        "license_file": "LICENSE",
+        "source_maintainers": [
+          {
+            "name": "Peerwork project maintainers",
+            "origin": "src/workspace-presets.ts#proposal-adoption"
+          }
+        ],
+        "extra": "reject"
+      }
+    },
+    {
+      "name": "lock_bad_digest",
+      "kind": "lock",
+      "valid": false,
+      "input": {
+        "format": "peerwork.protocol-lock.v1",
+        "compiler_version": "peerwork.protocol-compiler.v1",
+        "semantics": "peerwork.kernel.v1",
+        "dependencies": [],
+        "baseline_bindings": {},
+        "output_protocol_digest": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      }
+    },
+    {
+      "name": "fixture_unknown_member",
+      "kind": "fixture",
+      "valid": false,
+      "input": {
+        "id": "author-cannot-adopt-own-candidate",
+        "action_id": "proposal.adopt",
+        "state": {
+          "candidate_author": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "candidate_ref": {
+            "record_id": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+            "revision": 1
+          }
+        },
+        "body": {
+          "candidate_ref": {
+            "record_id": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+            "revision": 1
+          }
+        },
+        "auth": {
+          "actorId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "workspaceRoles": [],
+          "protocolRoles": [
+            "ADOPTER",
+            "REVIEWER"
+          ],
+          "capabilities": [
+            "ADOPT"
+          ]
+        },
+        "exact_inputs": [
+          {
+            "recordId": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+            "revision": 1,
+            "schema": "proposal.candidate",
+            "payload": {
+              "author": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+              "title": "Draft",
+              "body": "Candidate text."
+            },
+            "scope": "INSTANCE"
+          }
+        ],
+        "expected": {
+          "accepted": false,
+          "code": "CONSTRAINT_FAILED"
+        },
+        "unknown": true
+      }
+    },
+    {
+      "name": "fixture_unsafe_time",
+      "kind": "fixture",
+      "valid": false,
+      "input": {
+        "id": "author-cannot-adopt-own-candidate",
+        "action_id": "proposal.adopt",
+        "state": {
+          "candidate_author": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "candidate_ref": {
+            "record_id": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+            "revision": 1
+          }
+        },
+        "body": {
+          "candidate_ref": {
+            "record_id": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+            "revision": 1
+          }
+        },
+        "auth": {
+          "actorId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "workspaceRoles": [],
+          "protocolRoles": [
+            "ADOPTER",
+            "REVIEWER"
+          ],
+          "capabilities": [
+            "ADOPT"
+          ]
+        },
+        "exact_inputs": [
+          {
+            "recordId": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+            "revision": 1,
+            "schema": "proposal.candidate",
+            "payload": {
+              "author": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+              "title": "Draft",
+              "body": "Candidate text."
+            },
+            "scope": "INSTANCE"
+          }
+        ],
+        "expected": {
+          "accepted": false,
+          "code": "CONSTRAINT_FAILED"
+        },
+        "time_ms": 9007199254740992
+      }
+    }
+  ]
+}
