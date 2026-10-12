@@ -401,3 +401,39 @@ required before advertising latest-read behavior or enabling the scoped
 PUBLIC capability flag. PRIVATE active read and several valid-history replay
 families remain separate acceptance gates. No Agent entry-workflow compliance
 was exercised by this scripted SDK test.
+
+## Protected latest-read profile, runtime source checkpoint
+
+`fe3d4685ff22f99edfaabd4208340a3980f7cd80` adds a two-slot protected
+read profile. First contact requires explicit owner actor/key pins; later
+opens reuse those saved pins, including across language clients. Each read
+fetches a fresh signed snapshot into the inactive slot, fully replays it,
+and requires its exact prior sequence/head/effective-policy checkpoint to be
+an ancestor before atomically moving the profile pointer. A failed candidate
+keeps the previous verified slot and floor. The source uses the corrected
+core ancestry helper `c46fad2`, which rejects a policy effective only after
+the saved sequence.
+
+The focused actual-service test at detached exact source `3a9525b` passed
+1/1 with Rust 1.89 locked offline, Node 24.20.0, and
+`PEERWORK_REFERENCE_ROOT=/root/workdir/message/.worktrees/e2ee-main-integration-20261006`
+(tracked service `f828b6c`). The test creates a fresh PUBLIC workspace,
+reads signed sequence 1, appends a second commit through the tracked
+TypeScript client, and refreshes to sequence 2 after protected reopen. A
+genuine saved sequence-1 page served as the current remote snapshot is
+refused as rollback while the profile remains at sequence 2. A separate
+fixture holds a GET after receipt; cancellation of that in-flight request
+returns `CANCELLED`, and reopening still verifies sequence 2. The service
+ends with two secure commits. The first detached command stopped before
+compilation because Cargo selected host rustc 1.85.1; setting `RUSTC` and
+`RUSTDOC` explicitly to the pinned Rust 1.89 toolchain passed. The earlier
+profile invariant test initially rejected an empty protected profile and
+the initial test compile used unavailable `reqwest::json`; both were fixed
+before `fe3d468`/`3a9525b`.
+
+This is runtime source and actual-service evidence, not installed Python,
+Node, or CLI latest-read evidence. The HTTP test exercises rollback to a
+lower sequence. Same-sequence wrong-head refusal is covered by the signed
+core checkpoint ancestry regression and by the profile passing its exact
+saved sequence/head/policy floor into that helper; no separate HTTP fork
+fixture was run. Scripted tests do not establish Agent workflow compliance.
