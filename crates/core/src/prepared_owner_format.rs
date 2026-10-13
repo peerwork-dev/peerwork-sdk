@@ -6,6 +6,7 @@ use crate::{
     canonical::Path,
     crypto::{actor_id, base64url, sha256_hex, verify_secure_signed_wire},
     e2ee::{open_content_wire, SealedContent},
+    migration_fragments::assert_protocol_format_ceiling,
     prepared_secure_author::sign_private_commit,
     prepared_secure_request::SecureCommitRequestPins,
     wire_json::{canonical_wire_value, parse_wire_json_bounded, WireValue},
@@ -105,12 +106,14 @@ pub fn prepare_owner_private_format_transition(
     kind: OwnerFormatTransitionKind,
     signed_policy_wire: &[u8],
     checkpoint_wire: &[u8],
+    prior_objects: &[WireValue],
     epoch_key: &[u8; 32],
     signer: &SigningKey,
     command_id: &str,
     issued_at_ms: u64,
 ) -> Result<PreparedOwnerFormatTransition, OwnerFormatPrepareError> {
     let bad = || OwnerFormatPrepareError::Invalid;
+    assert_protocol_format_ceiling(prior_objects, 1).map_err(|_| bad())?;
     if !token(command_id) || issued_at_ms > 9_007_199_254_740_991 {
         return Err(bad());
     }
@@ -318,6 +321,7 @@ pub fn verify_saved_owner_private_format_transition(
     kind: OwnerFormatTransitionKind,
     signed_policy_wire: &[u8],
     checkpoint_wire: &[u8],
+    prior_objects: &[WireValue],
     epoch_key: &[u8; 32],
     signer: &SigningKey,
     command_id: &str,
@@ -331,6 +335,7 @@ pub fn verify_saved_owner_private_format_transition(
         kind,
         signed_policy_wire,
         checkpoint_wire,
+        prior_objects,
         epoch_key,
         signer,
         command_id,
@@ -437,6 +442,7 @@ mod tests {
             OwnerFormatTransitionKind::UpgradeWireV3,
             policy_wire.as_bytes(),
             checkpoint_wire.as_bytes(),
+            &[],
             &[7; 32],
             &signer,
             &command,
@@ -448,6 +454,7 @@ mod tests {
             OwnerFormatTransitionKind::UpgradeWireV3,
             policy_wire.as_bytes(),
             checkpoint_wire.as_bytes(),
+            &[],
             &[7; 32],
             &signer,
             &command,
@@ -472,6 +479,7 @@ mod tests {
             OwnerFormatTransitionKind::RaisePrivateCeilingTwo,
             policy_wire.as_bytes(),
             checkpoint_wire.as_bytes(),
+            &[],
             &[7; 32],
             &signer,
             &command,
@@ -486,6 +494,7 @@ mod tests {
             OwnerFormatTransitionKind::UpgradeWireV3,
             policy_wire.as_bytes(),
             checkpoint_wire.as_bytes(),
+            &[],
             &[7; 32],
             &signer,
             &command,

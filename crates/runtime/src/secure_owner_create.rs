@@ -17,6 +17,7 @@ use crate::{
         prepare_public_owner_workspace_with_options, NativePrepareError,
     },
     secure_owner_attach::{HistoricalOwnerAttachError, SecureHistoricalOwnerAttach},
+    secure_owner_format_transition::SecureOwnerFormatTransition,
     secure_public_admission::{SecurePrivateAdmission, SecurePublicAdmission},
     secure_public_install::SecurePublicPackageInstall,
     secure_read_access::SecureReadAccessError,
@@ -246,6 +247,18 @@ impl SecureOwnerWorkspaceCreate {
         workspace_id: &str,
     ) -> Result<crate::secure_private_install::SecurePrivatePackageInstall, SecureOwnerCreateError> {
         Ok(crate::secure_private_install::SecurePrivatePackageInstall::new(
+            self.created_profile_config(workspace_id, "PRIVATE")?,
+        ))
+    }
+
+    /// Select a protected PRIVATE Owner workspace for an explicit signed
+    /// format transition. The transition itself replays the latest journal
+    /// and refuses pending local key or saved-command state.
+    pub fn private_format_transition_access(
+        &self,
+        workspace_id: &str,
+    ) -> Result<SecureOwnerFormatTransition, SecureOwnerCreateError> {
+        Ok(SecureOwnerFormatTransition::new(
             self.created_profile_config(workspace_id, "PRIVATE")?,
         ))
     }

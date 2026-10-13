@@ -316,6 +316,15 @@ let journalDelayStarted = false;
 let journalGetCount = 0;
 const proxy = createServer(async (request, response) => {
   try {
+    if (request.url === '/__test/activate-protocol-cutover' && request.method === 'POST') {
+      if (process.env.PEERWORK_TEST_OWNER_FORMAT !== '1') throw new Error('Owner format fixture unavailable');
+      const {secureProtocolCutoverPreflightDigest} = await import(pathToFileURL(join(root, 'dist-workspace/src/workspace-secure-store.js')).href);
+      const activationId = Buffer.alloc(32, 83).toString('base64url');
+      const result = kernel.secureStore.activateProtocolCutover(activationId, secureProtocolCutoverPreflightDigest(db));
+      response.writeHead(200, {'content-type':'application/json'});
+      response.end(JSON.stringify({phase:result.phase}));
+      return;
+    }
     if (request.url?.startsWith('/__test/private-owner-') && request.method === 'POST') {
       if (!privateNativeAdmissionFixture) throw new Error('private native admission fixture unavailable');
       const chunks = [];
