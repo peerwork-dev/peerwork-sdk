@@ -114,14 +114,28 @@ impl SecureIdentityDirectory {
             .enable_all()
             .build()
             .map_err(|_| IdentityDirectoryError::Transport)?;
-        runtime.block_on(self.lookup_async(target_actor_id, target_signing_key_id, cancel))
+        runtime.block_on(self.lookup_async(target_actor_id, target_signing_key_id, cancel, true))
     }
 
-    async fn lookup_async(
+    pub(crate) fn lookup_for_update(
         &self,
         target_actor_id: &str,
         target_signing_key_id: &str,
         cancel: &CancellationToken,
+    ) -> Result<VerifiedIdentityCertificate, IdentityDirectoryError> {
+        let runtime = Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| IdentityDirectoryError::Transport)?;
+        runtime.block_on(self.lookup_async(target_actor_id, target_signing_key_id, cancel, false))
+    }
+
+    pub(crate) async fn lookup_async(
+        &self,
+        target_actor_id: &str,
+        target_signing_key_id: &str,
+        cancel: &CancellationToken,
+        require_current: bool,
     ) -> Result<VerifiedIdentityCertificate, IdentityDirectoryError> {
         let key: [u8; 32] = decode_base64url(target_signing_key_id)
             .map_err(|_| IdentityDirectoryError::Invalid)?
@@ -228,6 +242,7 @@ impl SecureIdentityDirectory {
                 issued,
                 at,
                 index + 1 == entries.len(),
+                require_current,
             )?;
             let wire = canonical_wire_value(entry, CanonicalPath::SecureArtifact)
                 .map_err(|_| IdentityDirectoryError::Invalid)?;
@@ -278,6 +293,7 @@ fn verify_entry(
     min_issued: u64,
     now: u64,
     current: bool,
+    require_current: bool,
 ) -> Result<(u64, String), IdentityDirectoryError> {
     if entry.object_len() != Some(2) {
         return Err(IdentityDirectoryError::Invalid);
@@ -329,7 +345,16 @@ fn verify_entry(
     let cert = payload
         .get("certificate")
         .ok_or(IdentityDirectoryError::Invalid)?;
-    verify_certificate(cert, actor, key, if current { now } else { entry_issued })?;
+    verify_certificate(
+        cert,
+        actor,
+        key,
+        if current && require_current {
+            now
+        } else {
+            entry_issued
+        },
+    )?;
     let cert_json = canonical_wire_value(cert, CanonicalPath::SecureArtifact)
         .map_err(|_| IdentityDirectoryError::Invalid)?;
     Ok((entry_issued, cert_json))

@@ -22,6 +22,7 @@ use peerwork_core::{
         prepare_public_decision, prepare_public_receipt, verify_saved_public_decision,
         verify_saved_public_receipt, PublicAdmissionError,
     },
+    secure_recipient::RecipientCertificate,
     wire_json::{canonical_wire_value, parse_wire_json_js_bounded, WireValue},
 };
 use serde::{Deserialize, Serialize};
@@ -878,24 +879,15 @@ impl SecurePublicDecision {
         {
             return Err(PublicDecisionError::Invalid);
         }
-        let cert_json = serde_json::to_vec(recipient.certificate())
-            .map_err(|_| PublicDecisionError::Invalid)?;
-        let cert = parse_wire_json_js_bounded(&cert_json, 32, 16_384)
-            .map_err(|_| PublicDecisionError::Invalid)?;
         let offered_cert = payload
             .get("recipient")
             .ok_or(PublicDecisionError::Invalid)?;
-        let local_cert = canonical_wire_value(&cert, CanonicalPath::SecureArtifact)
-            .map_err(|_| PublicDecisionError::Invalid)?;
         let signed_cert = canonical_wire_value(offered_cert, CanonicalPath::SecureArtifact)
             .map_err(|_| PublicDecisionError::Invalid)?;
-        if local_cert != signed_cert
-            || cert
-                .get("payload")
-                .and_then(|v| v.get("actor_id"))
-                .and_then(WireValue::as_string)
-                .as_deref()
-                != Some(identity.actor_id())
+        let certificate: RecipientCertificate =
+            serde_json::from_str(&signed_cert).map_err(|_| PublicDecisionError::Invalid)?;
+        if recipient.recipient_for_certificate(&certificate).is_err()
+            || certificate.payload["actor_id"].as_str() != Some(identity.actor_id())
         {
             return Err(PublicDecisionError::Identity);
         }

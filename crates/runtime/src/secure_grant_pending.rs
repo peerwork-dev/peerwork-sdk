@@ -12,6 +12,7 @@ use peerwork_core::{
     crypto::sha256_hex,
     replayed_secure_journal::StructureStatus,
     secure_keyring::SecretKeyring,
+    secure_recipient::RecipientCertificate,
     verified_secure_grant::{
         verify_direct_key_grant, GrantError, GrantProofInput, InvitationProofInput,
         VerifiedGrantMaterial,
@@ -289,13 +290,18 @@ impl SecureGrantPending {
         recipient: &RecipientState,
         now: u64,
     ) -> Result<VerifiedGrantMaterial, PendingGrantError> {
+        let certificate: RecipientCertificate =
+            serde_json::from_slice(evidence.certificate).map_err(|_| PendingGrantError::Invalid)?;
+        let exact_recipient = recipient
+            .recipient_for_certificate(&certificate)
+            .map_err(|_| PendingGrantError::Invalid)?;
         let result = verify_direct_key_grant(GrantProofInput {
             policy_wires: evidence.policies,
             commit_wires: evidence.commits,
             checkpoint_wire: evidence.checkpoint,
             grant_wire: evidence.grant,
             recipient_certificate_wire: evidence.certificate,
-            recipient: recipient.recipient(),
+            recipient: exact_recipient,
             workspace_id: &self.workspace,
             trusted_owner_actor: &self.owner_actor,
             trusted_owner_key: &self.owner_key,
@@ -570,7 +576,7 @@ mod tests {
         #[cfg(unix)]
         fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let identity = KernelIdentity::create(&dir.path().join("identity.state")).unwrap();
-        let recipient = RecipientState::create(
+        let mut recipient = RecipientState::create(
             &dir.path().join("recipient.state"),
             &identity,
             1_700_000_000_000,
@@ -806,6 +812,44 @@ mod tests {
             now + 10
         )
         .is_err());
+        // A saved grant stays bound to its original signed certificate after
+        // a verified recipient-key rotation; reopening must decrypt with the
+        // archived private key, never the new current key.
+        let old_certificate_hash = sha256_hex(
+            canonical(&certificate, CanonicalPath::SecureArtifact)
+                .unwrap()
+                .as_bytes(),
+        );
+        let next_private = peerwork_core::secure_recipient::SecretRecipient::generate().unwrap();
+        let next_certificate = next_private
+            .certify(identity.signing_key(), now + 11)
+            .unwrap();
+        recipient
+            .promote_published(
+                &identity,
+                &old_certificate_hash,
+                next_private,
+                next_certificate,
+                now + 11,
+            )
+            .unwrap();
+        let old_grant = SecureGrantPending::open(
+            &path,
+            origin,
+            "synthetic",
+            &workspace,
+            identity.actor_id(),
+            identity.key_id(),
+            &identity,
+            &recipient,
+            now + 12,
+        )
+        .unwrap();
+        assert!(old_grant
+            .verified_pending(&recipient, now + 12)
+            .unwrap()
+            .is_some());
+        drop(old_grant);
         let other_recipient = RecipientState::create(
             &dir.path().join("other-recipient.state"),
             &identity,

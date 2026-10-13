@@ -5,6 +5,7 @@
 use crate::{
     kernel_client::{KernelClient, KernelClientError, KernelOperationStatus},
     kernel_identity::{KernelIdentity, KernelIdentityError},
+    secure_identity_directory::{IdentityDirectoryConfig, SecureIdentityDirectory},
     secure_journal_read::sign_read_proof,
     secure_recipient_state::{RecipientState, RecipientStateError},
     secure_state::SecureStateStore,
@@ -12,7 +13,7 @@ use crate::{
 };
 use peerwork_core::{
     canonical::{canonical, Path as CanonicalPath},
-    crypto::{base64url, sha256_hex, sign_canonical, verify_secure_signed_wire},
+    crypto::{base64url, decode_base64url, sha256_hex, sign_canonical, verify_secure_signed_wire},
     secure_recipient::RecipientCertificate,
     wire_json::{canonical_wire_value, parse_wire_json_js_bounded},
 };
@@ -26,6 +27,7 @@ use std::{
 use thiserror::Error;
 use tokio::runtime::Builder;
 use tokio_util::sync::CancellationToken;
+use zeroize::{Zeroize, Zeroizing};
 
 const DIRECTORY_PATH: &str = "/api/workspace/v1/secure/identity-keys";
 const DIRECTORY_DOMAIN: &str = "peerwork.secure.identity-directory.v1";
@@ -66,6 +68,17 @@ pub struct RecipientEnrollmentResult {
     pub directory_entry_hash: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecipientKeyUpdateResult {
+    pub status: String,
+    pub update_id: String,
+    pub mode: String,
+    pub previous_certificate_hash: String,
+    pub certificate_digest: String,
+    pub directory_version: usize,
+    pub directory_head: String,
+}
+
 #[derive(Debug, Error)]
 pub enum RecipientEnrollmentError {
     #[error("protected recipient enrollment state is invalid")]
@@ -98,7 +111,7 @@ impl RecipientEnrollmentError {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EnrollmentDocument {
     v: u8,
@@ -112,6 +125,28 @@ struct EnrollmentDocument {
     directory_request_wire: Option<String>,
     directory_entry_hash: Option<String>,
     published_head: Option<String>,
+    #[serde(default)]
+    updates: Vec<PendingKeyUpdate>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PendingKeyUpdate {
+    update_id: String,
+    mode: String,
+    previous_certificate_hash: String,
+    entry_wire: String,
+    request_wire: String,
+    entry_hash: String,
+    certificate_digest: String,
+    private_key_b64: String,
+    published: bool,
+}
+
+impl Drop for PendingKeyUpdate {
+    fn drop(&mut self) {
+        self.private_key_b64.zeroize();
+    }
 }
 
 pub struct SecureRecipientEnrollment {
@@ -158,7 +193,7 @@ impl SecureRecipientEnrollment {
         let store = SecureStateStore::open(&self.config.enrollment_state_path)
             .map_err(|_| RecipientEnrollmentError::Local)?;
         let Some(bytes) = store
-            .read_exact()
+            .read_exact_secret()
             .map_err(|_| RecipientEnrollmentError::Local)?
         else {
             return Ok(None);
@@ -196,6 +231,290 @@ impl SecureRecipientEnrollment {
             document.registration_command_id.as_deref(),
             document.directory_entry_hash.as_deref(),
         )))
+    }
+
+    /// Prepare and submit a signed successor directory entry. The update ID,
+    /// exact request, and replacement private key are protected before POST.
+    /// A missing ID is generated and remains discoverable through
+    /// `pending_key_updates` even if the caller loses the result.
+    pub fn update_key(
+        &self,
+        mode: &str,
+        expected_certificate_hash: &str,
+        update_id: Option<&str>,
+    ) -> Result<RecipientKeyUpdateResult, RecipientEnrollmentError> {
+        if !matches!(mode, "RENEW" | "ROTATE")
+            || !valid_token_or_hash(expected_certificate_hash, false)
+        {
+            return Err(RecipientEnrollmentError::Invalid);
+        }
+        self.run_key_update(update_id, Some((mode, expected_certificate_hash)))
+    }
+
+    pub fn retry_key_update(
+        &self,
+        update_id: &str,
+    ) -> Result<RecipientKeyUpdateResult, RecipientEnrollmentError> {
+        self.run_key_update(Some(update_id), None)
+    }
+
+    pub fn pending_key_updates(
+        &self,
+    ) -> Result<Vec<RecipientKeyUpdateResult>, RecipientEnrollmentError> {
+        let identity = KernelIdentity::open(&self.config.identity_path)
+            .map_err(|_| RecipientEnrollmentError::Local)?;
+        let store = SecureStateStore::open(&self.config.enrollment_state_path)
+            .map_err(|_| RecipientEnrollmentError::Local)?;
+        let bytes = store
+            .read_exact_secret()
+            .map_err(|_| RecipientEnrollmentError::Local)?
+            .ok_or(RecipientEnrollmentError::Invalid)?;
+        let doc: EnrollmentDocument =
+            serde_json::from_slice(&bytes).map_err(|_| RecipientEnrollmentError::Invalid)?;
+        if doc.origin != self.config.origin
+            || doc.actor_id != identity.actor_id()
+            || doc.signing_key_id != identity.key_id()
+        {
+            return Err(RecipientEnrollmentError::Identity);
+        }
+        Ok(doc
+            .updates
+            .iter()
+            .filter(|update| !update.published)
+            .map(|update| update_result(update, "PENDING"))
+            .collect())
+    }
+
+    fn run_key_update(
+        &self,
+        requested_id: Option<&str>,
+        requested: Option<(&str, &str)>,
+    ) -> Result<RecipientKeyUpdateResult, RecipientEnrollmentError> {
+        if requested_id.is_some_and(|id| !valid_token_or_hash(id, true)) {
+            return Err(RecipientEnrollmentError::Invalid);
+        }
+        let identity = KernelIdentity::open(&self.config.identity_path)
+            .map_err(|_| RecipientEnrollmentError::Local)?;
+        let mut recipient = RecipientState::open(&self.config.recipient_path, &identity)
+            .map_err(|_| RecipientEnrollmentError::Local)?;
+        let store = SecureStateStore::open(&self.config.enrollment_state_path)
+            .map_err(|_| RecipientEnrollmentError::Local)?;
+        let bytes = store
+            .read_exact_secret()
+            .map_err(|_| RecipientEnrollmentError::Local)?
+            .ok_or(RecipientEnrollmentError::Invalid)?;
+        let mut doc: EnrollmentDocument =
+            serde_json::from_slice(&bytes).map_err(|_| RecipientEnrollmentError::Invalid)?;
+        if doc.v != 1
+            || doc.origin != self.config.origin
+            || doc.actor_id != identity.actor_id()
+            || doc.signing_key_id != identity.key_id()
+            || doc.published_head.is_none()
+        {
+            return Err(RecipientEnrollmentError::Identity);
+        }
+        let current_hash = certificate_digest(recipient.certificate())?;
+        let selected = if let Some(id) = requested_id {
+            doc.updates.iter().position(|u| u.update_id == id)
+        } else {
+            None
+        };
+        if let Some(index) = selected {
+            let existing = &doc.updates[index];
+            if requested.is_some_and(|(mode, hash)| {
+                mode != existing.mode || hash != existing.previous_certificate_hash
+            }) {
+                return Err(RecipientEnrollmentError::Invalid);
+            }
+            if existing.published {
+                return Ok(update_result(existing, "PUBLISHED"));
+            }
+        } else {
+            if requested.is_none()
+                || doc.updates.iter().any(|u| !u.published)
+                || doc.certificate_digest != current_hash
+                || doc.updates.len() >= 128
+                || requested.is_some_and(|(_, hash)| hash != current_hash)
+            {
+                return Err(RecipientEnrollmentError::Invalid);
+            }
+            let directory = self.own_directory();
+            let prior = directory
+                .lookup_for_update(
+                    identity.actor_id(),
+                    identity.key_id(),
+                    &CancellationToken::new(),
+                )
+                .map_err(|_| RecipientEnrollmentError::DirectoryContinuity)?;
+            if Some(prior.directory_head.as_str()) != doc.published_head.as_deref()
+                || prior.certificate_json != canonical_certificate(recipient.certificate())?
+                || prior.directory_version >= 128
+            {
+                return Err(RecipientEnrollmentError::DirectoryContinuity);
+            }
+            let id = match requested_id {
+                Some(id) => id.to_owned(),
+                None => {
+                    let mut bytes = [0u8; 32];
+                    OsRng
+                        .try_fill_bytes(&mut bytes)
+                        .map_err(|_| RecipientEnrollmentError::ClockOrEntropy)?;
+                    base64url(&bytes)
+                }
+            };
+            let (mode, previous_hash) = requested.unwrap();
+            let at = now_ms()?;
+            let next = if mode == "ROTATE" {
+                peerwork_core::secure_recipient::SecretRecipient::generate()
+                    .map_err(|_| RecipientEnrollmentError::ClockOrEntropy)?
+            } else {
+                peerwork_core::secure_recipient::SecretRecipient::from_private(Zeroizing::new(
+                    *recipient.recipient().private_bytes(),
+                ))
+                .map_err(|_| RecipientEnrollmentError::Invalid)?
+            };
+            let cert = next
+                .certify(identity.signing_key(), at)
+                .map_err(|_| RecipientEnrollmentError::Invalid)?;
+            if mode == "RENEW"
+                && cert.payload["expires_at"].as_u64()
+                    <= recipient.certificate().payload["expires_at"].as_u64()
+            {
+                return Err(RecipientEnrollmentError::Invalid);
+            }
+            let payload = json!({"v":1,"actor_id":identity.actor_id(),"signing_key":identity.key_id(),
+                "version":prior.directory_version+1,"previous":prior.directory_head,"certificate":cert,"issued_at":at});
+            let signature = sign_canonical(DIRECTORY_DOMAIN, &payload, identity.signing_key())
+                .map_err(|_| RecipientEnrollmentError::Invalid)?;
+            let entry = json!({"payload":payload,"signature":signature});
+            let entry_wire = canonical(&entry, CanonicalPath::SecureArtifact)
+                .map_err(|_| RecipientEnrollmentError::Invalid)?;
+            let request_wire = canonical(&json!({"entry":entry}), CanonicalPath::SecureArtifact)
+                .map_err(|_| RecipientEnrollmentError::Invalid)?;
+            if request_wire.len() > 8192 {
+                return Err(RecipientEnrollmentError::Invalid);
+            }
+            let cert_digest = certificate_digest(
+                &serde_json::from_value(entry["payload"]["certificate"].clone())
+                    .map_err(|_| RecipientEnrollmentError::Invalid)?,
+            )?;
+            doc.updates.push(PendingKeyUpdate {
+                update_id: id,
+                mode: mode.into(),
+                previous_certificate_hash: previous_hash.into(),
+                entry_hash: sha256_hex(entry_wire.as_bytes()),
+                entry_wire,
+                request_wire,
+                certificate_digest: cert_digest,
+                private_key_b64: base64url(next.private_bytes()),
+                published: false,
+            });
+            save(&store, &doc)?;
+        }
+        let index = selected.unwrap_or(doc.updates.len() - 1);
+        let pending = &doc.updates[index];
+        let (next, cert, version, previous) = validate_saved_update(pending, &identity)?;
+        if pending.previous_certificate_hash != doc.certificate_digest
+            || Some(previous.as_str()) != doc.published_head.as_deref()
+        {
+            return Err(RecipientEnrollmentError::DirectoryContinuity);
+        }
+        let directory = self.own_directory();
+        let observed = directory
+            .lookup_for_update(
+                identity.actor_id(),
+                identity.key_id(),
+                &CancellationToken::new(),
+            )
+            .map_err(|_| RecipientEnrollmentError::DirectoryContinuity)?;
+        if observed.directory_head != pending.entry_hash {
+            if observed.directory_head != previous || observed.directory_version + 1 != version {
+                return Err(RecipientEnrollmentError::DirectoryContinuity);
+            }
+            let runtime = Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|_| RecipientEnrollmentError::Transport)?;
+            let mut transport = TransportConfig::new(self.config.origin.clone());
+            transport.allow_loopback_http = self.config.allow_loopback_http;
+            let client = runtime
+                .block_on(KernelClient::open(
+                    transport,
+                    &self.config.kernel_journal_path,
+                    &[],
+                    &CancellationToken::new(),
+                ))
+                .map_err(map_kernel)?;
+            let authority = sha256_hex(identity.actor_id().as_bytes());
+            let proof = sign_read_proof(DIRECTORY_PATH, client.discovery(), &identity, &authority)
+                .map_err(|_| RecipientEnrollmentError::Transport)?;
+            let sent = runtime.block_on(client.transport().post_secure_identity_key_exact(
+                pending.request_wire.as_bytes().to_vec(),
+                &proof,
+                &CancellationToken::new(),
+            ));
+            match sent {
+                Ok(response) if (200..300).contains(&response.status) => (),
+                Ok(response) => {
+                    return Err(RecipientEnrollmentError::ServerRejected(response.status))
+                }
+                Err(TransportError::SubmittedUncertain) => {
+                    return Ok(update_result(pending, "PENDING"))
+                }
+                Err(_) => return Err(RecipientEnrollmentError::Transport),
+            }
+            drop(client);
+            drop(runtime);
+        }
+        let verified = directory
+            .lookup_for_update(
+                identity.actor_id(),
+                identity.key_id(),
+                &CancellationToken::new(),
+            )
+            .map_err(|_| RecipientEnrollmentError::DirectoryContinuity)?;
+        if verified.directory_head != pending.entry_hash
+            || verified.directory_version != version
+            || verified.certificate_json != canonical_certificate(&cert)?
+        {
+            return Err(RecipientEnrollmentError::DirectoryContinuity);
+        }
+        if current_hash == pending.previous_certificate_hash {
+            recipient
+                .promote_published(
+                    &identity,
+                    &pending.previous_certificate_hash,
+                    next,
+                    cert,
+                    now_ms()?,
+                )
+                .map_err(|_| RecipientEnrollmentError::Local)?;
+        } else if current_hash != pending.certificate_digest {
+            return Err(RecipientEnrollmentError::DirectoryContinuity);
+        }
+        let pending = &mut doc.updates[index];
+        pending.published = true;
+        pending.private_key_b64.zeroize();
+        pending.private_key_b64.clear();
+        doc.certificate_digest = pending.certificate_digest.clone();
+        doc.published_head = Some(pending.entry_hash.clone());
+        save(&store, &doc)?;
+        Ok(update_result(&doc.updates[index], "PUBLISHED"))
+    }
+
+    fn own_directory(&self) -> SecureIdentityDirectory {
+        let parent = self
+            .config
+            .enrollment_state_path
+            .parent()
+            .unwrap_or(std::path::Path::new("/"));
+        SecureIdentityDirectory::new(IdentityDirectoryConfig {
+            origin: self.config.origin.clone(),
+            identity_path: self.config.identity_path.clone(),
+            kernel_journal_path: self.config.kernel_journal_path.clone(),
+            pins_path: parent.join("identity-directory.state"),
+            allow_loopback_http: self.config.allow_loopback_http,
+        })
     }
 
     /// Offline creation is explicit. A crash after identity creation may be
@@ -263,7 +582,7 @@ impl SecureRecipientEnrollment {
         let store = SecureStateStore::open(&self.config.enrollment_state_path)
             .map_err(|_| RecipientEnrollmentError::Local)?;
         let mut document = match store
-            .read_exact()
+            .read_exact_secret()
             .map_err(|_| RecipientEnrollmentError::Local)?
         {
             Some(bytes) => serde_json::from_slice::<EnrollmentDocument>(&bytes)
@@ -280,6 +599,7 @@ impl SecureRecipientEnrollment {
                 directory_request_wire: None,
                 directory_entry_hash: None,
                 published_head: None,
+                updates: Vec::new(),
             },
         };
         if document.v != 1
@@ -289,6 +609,35 @@ impl SecureRecipientEnrollment {
             || document.certificate_digest != digest
         {
             return Err(RecipientEnrollmentError::Identity);
+        }
+        if !document.updates.is_empty() {
+            if document.updates.iter().any(|update| !update.published)
+                || document
+                    .updates
+                    .last()
+                    .map(|update| update.entry_hash.as_str())
+                    != document.published_head.as_deref()
+            {
+                return Err(RecipientEnrollmentError::DirectoryContinuity);
+            }
+            let verified = self
+                .own_directory()
+                .lookup_async(identity.actor_id(), identity.key_id(), cancel, true)
+                .await
+                .map_err(|_| RecipientEnrollmentError::DirectoryContinuity)?;
+            if Some(verified.directory_head.as_str()) != document.published_head.as_deref()
+                || verified.certificate_json != canonical_certificate(recipient.certificate())?
+            {
+                return Err(RecipientEnrollmentError::DirectoryContinuity);
+            }
+            return Ok(result(
+                "PUBLISHED",
+                &identity,
+                recipient.certificate(),
+                &digest,
+                document.registration_command_id.as_deref(),
+                document.published_head.as_deref(),
+            ));
         }
         let mut transport = TransportConfig::new(self.config.origin.clone());
         transport.allow_loopback_http = self.config.allow_loopback_http;
@@ -498,8 +847,10 @@ fn save(
     store: &SecureStateStore,
     document: &EnrollmentDocument,
 ) -> Result<(), RecipientEnrollmentError> {
-    let bytes = serde_json::to_vec(document).map_err(|_| RecipientEnrollmentError::Invalid)?;
-    if bytes.len() > 32 * 1024 {
+    let bytes = Zeroizing::new(
+        serde_json::to_vec(document).map_err(|_| RecipientEnrollmentError::Invalid)?,
+    );
+    if bytes.len() > 512 * 1024 {
         return Err(RecipientEnrollmentError::Invalid);
     }
     store
@@ -525,6 +876,117 @@ fn certificate_digest(cert: &RecipientCertificate) -> Result<String, RecipientEn
     )
     .map_err(|_| RecipientEnrollmentError::Invalid)?;
     Ok(sha256_hex(wire.as_bytes()))
+}
+
+fn canonical_certificate(cert: &RecipientCertificate) -> Result<String, RecipientEnrollmentError> {
+    canonical(
+        &serde_json::to_value(cert).map_err(|_| RecipientEnrollmentError::Invalid)?,
+        CanonicalPath::SecureArtifact,
+    )
+    .map_err(|_| RecipientEnrollmentError::Invalid)
+}
+
+fn valid_token_or_hash(value: &str, token: bool) -> bool {
+    if token {
+        value.len() == 43
+            && value
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    } else {
+        value.len() == 64
+            && value
+                .bytes()
+                .all(|b| b.is_ascii_digit() || matches!(b, b'a'..=b'f'))
+    }
+}
+
+fn update_result(update: &PendingKeyUpdate, status: &str) -> RecipientKeyUpdateResult {
+    let entry: Value = serde_json::from_str(&update.entry_wire).unwrap_or(Value::Null);
+    RecipientKeyUpdateResult {
+        status: status.into(),
+        update_id: update.update_id.clone(),
+        mode: update.mode.clone(),
+        previous_certificate_hash: update.previous_certificate_hash.clone(),
+        certificate_digest: update.certificate_digest.clone(),
+        directory_version: entry["payload"]["version"].as_u64().unwrap_or(0) as usize,
+        directory_head: update.entry_hash.clone(),
+    }
+}
+
+fn validate_saved_update(
+    update: &PendingKeyUpdate,
+    identity: &KernelIdentity,
+) -> Result<
+    (
+        peerwork_core::secure_recipient::SecretRecipient,
+        RecipientCertificate,
+        usize,
+        String,
+    ),
+    RecipientEnrollmentError,
+> {
+    if !valid_token_or_hash(&update.update_id, true)
+        || !valid_token_or_hash(&update.previous_certificate_hash, false)
+        || !valid_token_or_hash(&update.entry_hash, false)
+        || !matches!(update.mode.as_str(), "RENEW" | "ROTATE")
+        || update.request_wire.len() > 8192
+        || update.private_key_b64.is_empty()
+    {
+        return Err(RecipientEnrollmentError::Invalid);
+    }
+    let decoded = Zeroizing::new(
+        decode_base64url(&update.private_key_b64).map_err(|_| RecipientEnrollmentError::Invalid)?,
+    );
+    if decoded.len() != 32 {
+        return Err(RecipientEnrollmentError::Invalid);
+    }
+    let mut private = Zeroizing::new([0u8; 32]);
+    private.copy_from_slice(&decoded);
+    let recipient = peerwork_core::secure_recipient::SecretRecipient::from_private(private)
+        .map_err(|_| RecipientEnrollmentError::Invalid)?;
+    if sha256_hex(update.entry_wire.as_bytes()) != update.entry_hash
+        || !verify_secure_signed_wire(
+            update.entry_wire.as_bytes(),
+            DIRECTORY_DOMAIN,
+            identity.key_id(),
+        )
+        .map_err(|_| RecipientEnrollmentError::Invalid)?
+    {
+        return Err(RecipientEnrollmentError::Invalid);
+    }
+    let entry: Value =
+        serde_json::from_str(&update.entry_wire).map_err(|_| RecipientEnrollmentError::Invalid)?;
+    let payload = &entry["payload"];
+    let version = payload["version"]
+        .as_u64()
+        .ok_or(RecipientEnrollmentError::Invalid)? as usize;
+    let previous = payload["previous"]
+        .as_str()
+        .ok_or(RecipientEnrollmentError::Invalid)?
+        .to_owned();
+    let cert: RecipientCertificate = serde_json::from_value(payload["certificate"].clone())
+        .map_err(|_| RecipientEnrollmentError::Invalid)?;
+    let at = payload["issued_at"]
+        .as_u64()
+        .ok_or(RecipientEnrollmentError::Invalid)?;
+    if version < 2
+        || version > 128
+        || payload["v"].as_u64() != Some(1)
+        || payload["actor_id"].as_str() != Some(identity.actor_id())
+        || payload["signing_key"].as_str() != Some(identity.key_id())
+        || certificate_digest(&cert)? != update.certificate_digest
+        || recipient
+            .verify_local_certificate(&cert, identity.actor_id(), identity.key_id(), at)
+            .is_err()
+    {
+        return Err(RecipientEnrollmentError::Invalid);
+    }
+    let expected = canonical(&json!({"entry":entry}), CanonicalPath::SecureArtifact)
+        .map_err(|_| RecipientEnrollmentError::Invalid)?;
+    if expected != update.request_wire {
+        return Err(RecipientEnrollmentError::Invalid);
+    }
+    Ok((recipient, cert, version, previous))
 }
 
 fn result(
@@ -703,11 +1165,14 @@ fn verify_entry(
     }
     let cert: RecipientCertificate = serde_json::from_value(p["certificate"].clone())
         .map_err(|_| RecipientEnrollmentError::Invalid)?;
-    if certificate_digest(&cert)? != certificate_digest(recipient.certificate())?
-        || recipient
-            .recipient()
-            .verify_local_certificate(&cert, identity.actor_id(), identity.key_id(), now)
-            .is_err()
+    let issued = cert.payload["issued_at"]
+        .as_u64()
+        .ok_or(RecipientEnrollmentError::Invalid)?;
+    if recipient
+        .recipient_for_certificate(&cert)
+        .map_err(|_| RecipientEnrollmentError::Invalid)?
+        .verify_local_certificate(&cert, identity.actor_id(), identity.key_id(), issued)
+        .is_err()
     {
         return Err(RecipientEnrollmentError::Invalid);
     }
@@ -829,7 +1294,9 @@ mod tests {
         let new: EnrollmentDocument = serde_json::from_slice(&after).unwrap();
         assert_eq!(old.registration_command_wire, new.registration_command_wire);
         assert_eq!(old.directory_request_wire, new.directory_request_wire);
-        let repeated = SecureRecipientEnrollment::new(config).publish().unwrap();
+        let repeated = SecureRecipientEnrollment::new(config.clone())
+            .publish()
+            .unwrap();
         assert_eq!(repeated, final_result);
         // The tracked TS fixture creates only the owner workspace. Native
         // Ed/P-256 recipient creation and directory publication now feed the
@@ -920,7 +1387,62 @@ mod tests {
             )
             .unwrap();
         assert_eq!(ready_receipt.status, "READY");
+        let original_certificate =
+            RecipientState::open(&config.recipient_path, &recipient_identity)
+                .unwrap()
+                .certificate()
+                .clone();
+        runtime.block_on(async {
+            let response = reqwest::Client::new()
+                .post(format!("{origin}__test/drop-next-identity-directory"))
+                .send()
+                .await
+                .unwrap();
+            assert!(response.status().is_success());
+        });
+        let pending_rotation = enrollment
+            .update_key("ROTATE", &local.certificate_digest, None)
+            .unwrap();
+        assert_eq!(pending_rotation.status, "PENDING");
+        assert_eq!(pending_rotation.directory_version, 2);
+        let recovered_rotation = SecureRecipientEnrollment::new(config.clone())
+            .retry_key_update(&pending_rotation.update_id)
+            .unwrap();
+        assert_eq!(recovered_rotation.status, "PUBLISHED");
+        assert_eq!(
+            recovered_rotation.directory_head,
+            pending_rotation.directory_head
+        );
+        let reopened = RecipientState::open(&config.recipient_path, &recipient_identity).unwrap();
+        assert_eq!(
+            certificate_digest(reopened.certificate()).unwrap(),
+            recovered_rotation.certificate_digest
+        );
+        reopened
+            .recipient_for_certificate(&original_certificate)
+            .unwrap();
+        drop(reopened);
+        let renewed = enrollment
+            .update_key("RENEW", &recovered_rotation.certificate_digest, None)
+            .unwrap();
+        let renewed = if renewed.status == "PENDING" {
+            enrollment.retry_key_update(&renewed.update_id).unwrap()
+        } else {
+            renewed
+        };
+        assert_eq!(renewed.status, "PUBLISHED");
+        assert_eq!(renewed.directory_version, 3);
+        assert_ne!(
+            renewed.certificate_digest,
+            recovered_rotation.certificate_digest
+        );
+        assert_eq!(enrollment.publish().unwrap().status, "PUBLISHED");
+        let reopened = RecipientState::open(&config.recipient_path, &recipient_identity).unwrap();
+        reopened
+            .recipient_for_certificate(&original_certificate)
+            .unwrap();
         let _ = child.0.kill();
+        drop(reopened);
         assert_eq!(
             enrollment.pending().unwrap().unwrap().status,
             "PUBLISHED_LOCAL"
