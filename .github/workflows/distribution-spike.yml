@@ -46,6 +46,8 @@ jobs:
           node bindings/node/scripts/package-platform.mjs "$target" target/release/libpeerwork_node_native.so dist
           npm pack ./bindings/node --pack-destination dist --offline
           npm pack "./dist/agent-sdk-$target" --pack-destination dist --offline
+          mkdir -p dist/node-consumer
+          printf '%s\n' '{"name":"peerwork-offline-consumer","version":"0.0.0","private":true}' > dist/node-consumer/package.json
           npm install --prefix dist/node-consumer --offline --ignore-scripts --no-audit --no-fund ./dist/peerwork-agent-sdk-0.0.1.tgz "./dist/peerwork-agent-sdk-$target-0.0.1.tgz"
           node bindings/node/scripts/offline-smoke.mjs dist/node-consumer
           python -m venv /tmp/peerwork-wheel-consumer
@@ -96,6 +98,7 @@ jobs:
             npm pack ./bindings/node --pack-destination dist --offline
             npm pack ./dist/agent-sdk-linux-x64-gnu --pack-destination dist --offline
             mkdir -p dist/node-consumer
+            printf '%s\n' '{"name":"peerwork-offline-consumer","version":"0.0.0","private":true}' > dist/node-consumer/package.json
             npm install --prefix dist/node-consumer --offline --ignore-scripts --no-audit --no-fund --no-save ./dist/peerwork-agent-sdk-0.0.1.tgz ./dist/peerwork-agent-sdk-linux-x64-gnu-0.0.1.tgz
             python -m pip install --no-index --no-deps --target dist/wheel-consumer dist/wheels/*.whl
             unset LD_LIBRARY_PATH
@@ -156,6 +159,7 @@ jobs:
             npm pack ./bindings/node --pack-destination dist --offline
             npm pack ./dist/agent-sdk-linux-x64-musl --pack-destination dist --offline
             mkdir -p dist/node-consumer
+            printf '%s\n' '{"name":"peerwork-offline-consumer","version":"0.0.0","private":true}' > dist/node-consumer/package.json
             npm install --prefix dist/node-consumer --offline --ignore-scripts --no-audit --no-fund --omit=optional ./dist/peerwork-agent-sdk-0.0.1.tgz ./dist/peerwork-agent-sdk-linux-x64-musl-0.0.1.tgz
             node bindings/node/scripts/offline-smoke.mjs dist/node-consumer
             python3 -m pip install --no-deps --target dist/wheel-consumer dist/wheels/*.whl
@@ -214,6 +218,8 @@ jobs:
           node bindings/node/scripts/package-platform.mjs "$target" target/release/libpeerwork_node_native.dylib dist
           npm pack ./bindings/node --pack-destination dist --offline
           npm pack "./dist/agent-sdk-$target" --pack-destination dist --offline
+          mkdir -p dist/node-consumer
+          printf '%s\n' '{"name":"peerwork-offline-consumer","version":"0.0.0","private":true}' > dist/node-consumer/package.json
           npm install --prefix dist/node-consumer --offline --ignore-scripts --no-audit --no-fund ./dist/peerwork-agent-sdk-0.0.1.tgz "./dist/peerwork-agent-sdk-$target-0.0.1.tgz"
           node bindings/node/scripts/offline-smoke.mjs dist/node-consumer
           python -m venv /tmp/peerwork-wheel-consumer
@@ -260,6 +266,8 @@ jobs:
           node bindings/node/scripts/package-platform.mjs win32-x64-msvc target/release/peerwork_node_native.dll dist
           npm pack ./bindings/node --pack-destination dist --offline
           npm pack ./dist/agent-sdk-win32-x64-msvc --pack-destination dist --offline
+          New-Item -ItemType Directory -Force -Path dist/node-consumer | Out-Null
+          Set-Content -Path dist/node-consumer/package.json -Value '{"name":"peerwork-offline-consumer","version":"0.0.0","private":true}'
           npm install --prefix dist/node-consumer --offline --ignore-scripts --no-audit --no-fund ./dist/peerwork-agent-sdk-0.0.1.tgz ./dist/peerwork-agent-sdk-win32-x64-msvc-0.0.1.tgz
           node bindings/node/scripts/offline-smoke.mjs dist/node-consumer
           python -m venv "$env:RUNNER_TEMP\peerwork-wheel-consumer"
