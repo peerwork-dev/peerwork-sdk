@@ -944,13 +944,15 @@ class HistoricalOwnerAttachmentResult(TypedDict):
     attach_id: str
     workspace_id: str
     provenance: Literal["HISTORICAL_TS_OWNER"]
-    status: Literal["PREPARED", "ATTACHED"]
+    status: Literal["PREPARED", "ATTACHED_RESTRICTED", "ATTACHED"]
     owner_actor_id: str
     owner_key_id: str
     sequence: int | None
     head: str | None
     selected_kernel_count: int
     retained_other_kernel_count: int
+    pending_action_command_id: str | None
+    pending_action_status: Literal["RETAINED_UNRESOLVED", "ACCEPTED"] | None
 
 
 class HistoricalKernelCommandStatus(TypedDict):
@@ -1013,10 +1015,16 @@ class SecureOwnerWorkspaceClient:
                           protected_owner_pkcs8_path: str,
                           expected_owner_actor_id: str, expected_owner_key_id: str,
                           recover_pending_action: bool = False,
+                          retain_pending_action_command_id: str | None = None,
                           kernel_pending_command_ids: list[str] | None = None,
                           expected_kernel_intent_db_digest: str | None = None) -> dict:
         if type(recover_pending_action) is not bool:
             raise TypeError("recover_pending_action must be a bool")
+        if retain_pending_action_command_id is not None:
+            if not isinstance(retain_pending_action_command_id, str) or not retain_pending_action_command_id:
+                raise TypeError("retain_pending_action_command_id must be a nonempty string")
+            if not recover_pending_action:
+                raise ValueError("retaining a pending Owner action requires recover_pending_action")
         ids = [] if kernel_pending_command_ids is None else kernel_pending_command_ids
         if not isinstance(ids, list) or any(not isinstance(item, str) or not item for item in ids):
             raise TypeError("kernel_pending_command_ids must be a list of nonempty strings")
@@ -1029,6 +1037,7 @@ class SecureOwnerWorkspaceClient:
             expected_owner_actor_id=expected_owner_actor_id,
             expected_owner_key_id=expected_owner_key_id,
             recover_pending_action=recover_pending_action,
+            retain_pending_action_command_id=retain_pending_action_command_id,
             kernel_pending_command_ids=ids,
             expected_kernel_intent_db_digest=expected_kernel_intent_db_digest)
 
@@ -1085,13 +1094,15 @@ class SecureOwnerWorkspaceClient:
                expected_owner_actor_id: str,
                expected_owner_key_id: str, *,
                recover_pending_action: bool = False,
+               retain_pending_action_command_id: str | None = None,
                kernel_pending_command_ids: list[str] | None = None,
                expected_kernel_intent_db_digest: str | None = None) -> HistoricalOwnerAttachmentResult:
         """Attach a stopped Owner; selected kernel packets stay local until explicit recovery."""
         value = self._attachment_input(workspace_id, protected_ts_state_path,
             protected_ts_intent_db_path, protected_owner_pkcs8_path,
             expected_owner_actor_id, expected_owner_key_id, recover_pending_action,
-            kernel_pending_command_ids, expected_kernel_intent_db_digest)
+            retain_pending_action_command_id, kernel_pending_command_ids,
+            expected_kernel_intent_db_digest)
         return cast(HistoricalOwnerAttachmentResult, self._owner("attach", input_value=value))
 
     def inspect_kernel_pending(self, workspace_id: str, protected_ts_state_path: str,
@@ -1120,6 +1131,12 @@ class SecureOwnerWorkspaceClient:
     def resume_attachment(self, attach_id: str) -> HistoricalOwnerAttachmentResult:
         return cast(HistoricalOwnerAttachmentResult,
             self._owner("resume_attachment", command_id=attach_id))
+
+    def retain_pending_action(self, attach_id: str, expected_command_id: str) -> HistoricalOwnerAttachmentResult:
+        """Keep one original signed ACTION unresolved without submitting it."""
+        return cast(HistoricalOwnerAttachmentResult,
+            self._owner("retain_pending_action", command_id=expected_command_id,
+                        workspace_id=attach_id))
 
     def attachments(self) -> list[HistoricalOwnerAttachmentResult]:
         """Protected local attachment history; PREPARED is not remote acceptance."""
@@ -1195,12 +1212,14 @@ class SecureOwnerWorkspaceClient:
                            protected_owner_pkcs8_path: str, expected_owner_actor_id: str,
                            expected_owner_key_id: str, *,
                            recover_pending_action: bool = False,
+                           retain_pending_action_command_id: str | None = None,
                            kernel_pending_command_ids: list[str] | None = None,
                            expected_kernel_intent_db_digest: str | None = None) -> HistoricalOwnerAttachmentResult:
         value = self._attachment_input(workspace_id, protected_ts_state_path,
             protected_ts_intent_db_path, protected_owner_pkcs8_path,
             expected_owner_actor_id, expected_owner_key_id, recover_pending_action,
-            kernel_pending_command_ids, expected_kernel_intent_db_digest)
+            retain_pending_action_command_id, kernel_pending_command_ids,
+            expected_kernel_intent_db_digest)
         return cast(HistoricalOwnerAttachmentResult, await _run_cancelled_async(
             self._owner, "attach", input_value=value))
 
@@ -1228,6 +1247,12 @@ class SecureOwnerWorkspaceClient:
     async def resume_attachment_async(self, attach_id: str) -> HistoricalOwnerAttachmentResult:
         return cast(HistoricalOwnerAttachmentResult, await _run_cancelled_async(
             self._owner, "resume_attachment", command_id=attach_id))
+
+    async def retain_pending_action_async(self, attach_id: str,
+                                          expected_command_id: str) -> HistoricalOwnerAttachmentResult:
+        return cast(HistoricalOwnerAttachmentResult, await _run_cancelled_async(
+            self._owner, "retain_pending_action", command_id=expected_command_id,
+            workspace_id=attach_id))
 
     async def attachments_async(self) -> list[HistoricalOwnerAttachmentResult]:
         return cast(list[HistoricalOwnerAttachmentResult], await _run_cancelled_async(

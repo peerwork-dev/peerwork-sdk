@@ -142,6 +142,8 @@ export interface HistoricalOwnerAttachmentInput {
   expectedOwnerKeyId: string;
   /** Opt in to exact recovery of one saved legacy Owner ACTION; stop the old client first. */
   recoverPendingAction?: boolean;
+  /** Explicitly retain this exact legacy ACTION unresolved; requires recoverPendingAction. */
+  retainPendingActionCommandId?: string;
   /** Exact inspected workspace command IDs to retain without submitting. */
   kernelPendingCommandIds?: string[];
   /** Required for selected IDs; obtain from inspectKernelPending. */
@@ -151,13 +153,15 @@ export interface HistoricalOwnerAttachmentResult {
   attach_id: string;
   workspace_id: string;
   provenance: 'HISTORICAL_TS_OWNER';
-  status: 'PREPARED' | 'ATTACHED';
+  status: 'PREPARED' | 'ATTACHED_RESTRICTED' | 'ATTACHED';
   owner_actor_id: string;
   owner_key_id: string;
   sequence: number | null;
   head: string | null;
   selected_kernel_count: number;
   retained_other_kernel_count: number;
+  pending_action_command_id: string | null;
+  pending_action_status: 'RETAINED_UNRESOLVED' | 'ACCEPTED' | null;
 }
 export interface HistoricalKernelCommandStatus {
   command_id: string;
@@ -200,6 +204,8 @@ export interface SecureOwnerWorkspaceSession {
   kernelCommandStatus(attachId: string, options?: {signal?: AbortSignal}): Promise<HistoricalKernelCommandStatus[]>;
   /** Explicit retry of one retained original signed JWS. */
   recoverKernelCommand(attachId: string, commandId: string, options?: {signal?: AbortSignal}): Promise<HistoricalKernelCommandStatus>;
+  /** Retain one exact signed legacy Owner ACTION without submitting or resolving it. */
+  retainPendingAction(attachId: string, expectedCommandId: string, options?: {signal?: AbortSignal}): Promise<HistoricalOwnerAttachmentResult>;
   resumeAttachment(attachId: string, options?: {signal?: AbortSignal}): Promise<HistoricalOwnerAttachmentResult>;
   /** Protected local PREPARED/ATTACHED history; PREPARED is not accepted. */
   attachments(options?: {signal?: AbortSignal}): Promise<HistoricalOwnerAttachmentResult[]>;

@@ -376,7 +376,7 @@ fn secure_owner_create_json(
             Ok(value) => value,
             Err(_) => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid Owner configuration"}).to_string(),
         };
-        if matches!(operation.as_str(), "attach" | "resume_attachment" | "attachments" | "kernel_inspect" | "kernel_status" | "kernel_recover") {
+        if matches!(operation.as_str(), "attach" | "resume_attachment" | "retain_pending_action" | "attachments" | "kernel_inspect" | "kernel_status" | "kernel_recover") {
             let access = SecureHistoricalOwnerAttach::new(config);
             let result = match operation.as_str() {
                 "attach" => {
@@ -389,6 +389,10 @@ fn secure_owner_create_json(
                 "resume_attachment" => match command_id.as_deref() {
                     Some(id) => access.resume_attachment(id, &cancel).map(|value| serde_json::to_string(&value).expect("attachment result serializes")),
                     None => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"attachment ID is required"}).to_string(),
+                },
+                "retain_pending_action" => match (workspace_id.as_deref(), command_id.as_deref()) {
+                    (Some(attach_id), Some(id)) => access.retain_pending_action(attach_id, id, &cancel).map(|value| serde_json::to_string(&value).expect("attachment result serializes")),
+                    _ => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"attachment and pending action command IDs are required"}).to_string(),
                 },
                 "attachments" => access.attachments().map(|value| serde_json::to_string(&value).expect("attachment history serializes")),
                 "kernel_inspect" => {

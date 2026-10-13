@@ -403,6 +403,13 @@ exports.openSecureOwnerWorkspaces = options => {
     if (input.recoverPendingAction !== undefined && typeof input.recoverPendingAction !== 'boolean') {
       throw new TypeError('recoverPendingAction must be a boolean');
     }
+    if (input.retainPendingActionCommandId !== undefined && input.retainPendingActionCommandId !== null &&
+        (typeof input.retainPendingActionCommandId !== 'string' || !input.retainPendingActionCommandId)) {
+      throw new TypeError('retainPendingActionCommandId must be a nonempty string');
+    }
+    if (input.retainPendingActionCommandId && input.recoverPendingAction !== true) {
+      throw new TypeError('retaining a pending Owner action requires recoverPendingAction');
+    }
     const kernelIds = input.kernelPendingCommandIds ?? [];
     if (!Array.isArray(kernelIds) || kernelIds.some(id => typeof id !== 'string' || !id)) {
       throw new TypeError('kernelPendingCommandIds must be an array of nonempty strings');
@@ -423,6 +430,7 @@ exports.openSecureOwnerWorkspaces = options => {
       expected_owner_actor_id: input.expectedOwnerActorId,
       expected_owner_key_id: input.expectedOwnerKeyId,
       recover_pending_action: input.recoverPendingAction ?? false,
+      retain_pending_action_command_id: input.retainPendingActionCommandId ?? null,
       kernel_pending_command_ids: kernelIds,
       expected_kernel_intent_db_digest: input.expectedKernelIntentDbDigest ?? null,
     };
@@ -594,6 +602,7 @@ exports.openSecureOwnerWorkspaces = options => {
     kernelCommandStatus: (attachId, { signal } = {}) => invoke('kernel_status', undefined, attachId, undefined, signal),
     recoverKernelCommand: (attachId, commandId, { signal } = {}) => invoke('kernel_recover', undefined, commandId, attachId, signal),
     resumeAttachment: (attachId, { signal } = {}) => invoke('resume_attachment', undefined, attachId, undefined, signal),
+    retainPendingAction: (attachId, expectedCommandId, { signal } = {}) => invoke('retain_pending_action', undefined, expectedCommandId, attachId, signal),
     attachments: ({ signal } = {}) => invoke('attachments', undefined, undefined, undefined, signal),
     submitFormatTransition: (input, { signal } = {}) => invoke('format_submit', formatTransitionInput(input), undefined, undefined, signal),
     resumeFormatTransition: (workspaceId, commandId, { signal } = {}) => invoke('format_resume', undefined, commandId, workspaceId, signal),
