@@ -1182,6 +1182,7 @@ pub(crate) struct ReplayFacts {
     pub recoveries: Vec<WireValue>,
     pub action_receipts: Vec<WireValue>,
     pub structure_state: Option<&'static str>,
+    pub structure_snapshot: Option<WireValue>,
 }
 
 /// Reconstruct a signed PUBLIC prefix exported into the first PRIVATE
@@ -2180,6 +2181,15 @@ fn replay_basic_content_depth(
         } else {
             None
         },
+        structure_snapshot: structure_progress.as_ref().map(|snapshot| {
+            fields_object(vec![
+                ("source", snapshot.source.clone()),
+                ("root", string_value(&snapshot.root)),
+                ("records", WireValue::Number(snapshot.record_count as f64)),
+                ("heads", WireValue::Number(snapshot.head_count as f64)),
+                ("offset", WireValue::Number(snapshot.offset as f64)),
+            ])
+        }),
     })
 }
 

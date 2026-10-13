@@ -20,8 +20,9 @@ use peerwork_core::{
     canonical::Path as CanonicalPath,
     crypto::{base64url, sha256, sha256_hex},
     public_direct_install::{
-        compile_public_package_closure, prepare_public_package_install_begin,
-        sign_public_empty_install_end, DirectInstallError,
+        compile_public_package_closure, plan_public_install_snapshot,
+        prepare_public_package_install_begin, sign_public_install_step, DirectInstallError,
+        PublicInstallSnapshotPlan,
     },
     replayed_secure_journal::StructureStatus,
     wire_json::{canonical_wire_value, parse_wire_json_bounded, WireValue},
@@ -434,6 +435,9 @@ impl SecurePublicPackageInstall {
                 prior.origin(),
                 identity.actor_id(),
             )?;
+            if let Some(accepted) = journal.accepted_public_install(begin_command_id)?.cloned() {
+                return reprove_completed_install(&journal, begin_command_id, &accepted, fresh);
+            }
             let saved_begin = prove_saved_begin(&journal, begin_command_id, prior, &identity)?;
             let begin = parse_wire_json_bounded(&saved_begin, 64, 262_144)
                 .map_err(|_| PublicPackageInstallError::Input)?;
@@ -484,7 +488,7 @@ impl SecurePublicPackageInstall {
                 });
             }
             if fresh.replay().structure_status() == StructureStatus::Active {
-                return accept_completed_empty_install(
+                return accept_completed_install(
                     &mut journal,
                     begin_command_id,
                     &selection,
@@ -499,20 +503,31 @@ impl SecurePublicPackageInstall {
             if fresh.replay().structure_status() != StructureStatus::Seeding {
                 return Err(PublicPackageInstallError::Input);
             }
-            if fresh.replay().sequence() != prior.replay().sequence() + 1
-                || fresh.replay().head() != Some(&begin_hash)
-                || fresh.replay().policy_hash() != begin_policy_hash
+            let begin_sequence = prior.replay().sequence() + 1;
+            if !fresh.replay().contains_checkpoint(
+                begin_sequence,
+                Some(&begin_hash),
+                &begin_policy_hash,
+            ) || fresh.replay().policy_hash() != begin_policy_hash
             {
                 return Err(PublicPackageInstallError::Input);
             }
             let signed_policy = fresh
                 .signed_policy_by_hash(&begin_policy_hash)
                 .ok_or(PublicPackageInstallError::Input)?;
-            let end_command_id = base64url(&sha256(
-                format!("peerwork.public.install.end.v1:{begin_command_id}").as_bytes(),
-            ));
-            let issued_at = if journal.contains_id(&end_command_id) {
-                let saved = journal.exact_request(&end_command_id)?;
+            let plan = prove_snapshot_plan(prior, signed_policy, snapshot)?;
+            let signed_snapshot = fresh
+                .replay()
+                .structure_snapshot()
+                .ok_or(PublicPackageInstallError::Input)?;
+            let offset = snapshot_offset(signed_snapshot)?;
+            if !same_snapshot_state(signed_snapshot, snapshot) || offset > snapshot_total(&plan) {
+                return Err(PublicPackageInstallError::Input);
+            }
+            let done = offset == snapshot_total(&plan);
+            let step_command_id = install_step_id(begin_command_id, offset, done);
+            let issued_at = if journal.contains_id(&step_command_id) {
+                let saved = journal.exact_request(&step_command_id)?;
                 let parsed = parse_wire_json_bounded(&saved, 64, 262_144)
                     .map_err(|_| PublicPackageInstallError::Input)?;
                 parsed
@@ -526,11 +541,12 @@ impl SecurePublicPackageInstall {
             } else {
                 current_time_ms()?
             };
-            let signed = sign_public_empty_install_end(
+            let signed = sign_public_install_step(
                 signed_policy,
                 fresh.checkpoint_canonical_json().as_bytes(),
-                snapshot,
-                &end_command_id,
+                signed_snapshot,
+                &plan,
+                &step_command_id,
                 issued_at,
                 identity.signing_key(),
             )?;
@@ -538,20 +554,20 @@ impl SecurePublicPackageInstall {
                 "/api/workspace/v1/secure/workspaces/{}/commits",
                 self.config.workspace_id
             );
-            if !journal.contains_id(&end_command_id) {
+            if !journal.contains_id(&step_command_id) {
                 journal.prepare(SecurePacketInput {
-                    intent_id: &end_command_id,
+                    intent_id: &step_command_id,
                     path: &path,
-                    action_id: "secure.structure.end",
+                    action_id: signed.action_id(),
                     workspace_id: Some(&self.config.workspace_id),
                     trusted_owner_key: Some(identity.key_id()),
                     intent_digest: signed.commit_hash(),
                     exact_request: signed.request_wire(),
                 })?;
             }
-            let saved = journal.exact_request(&end_command_id)?;
+            let saved = journal.exact_request(&step_command_id)?;
             if saved != signed.request_wire()
-                || journal.intent_digest(&end_command_id)? != signed.commit_hash()
+                || journal.intent_digest(&step_command_id)? != signed.commit_hash()
             {
                 return Err(PublicPackageInstallError::Input);
             }
@@ -559,15 +575,15 @@ impl SecurePublicPackageInstall {
                 &self.config,
                 fresh.origin(),
                 &mut journal,
-                &end_command_id,
+                &step_command_id,
                 saved,
                 cancel,
             )?;
             Ok(PublicPackageInstallProgress {
                 status: "PENDING",
                 begin_command_id: begin_command_id.to_owned(),
-                step_command_id: end_command_id,
-                step_action_id: "secure.structure.end",
+                step_command_id,
+                step_action_id: signed.action_id(),
                 workspace_id: self.config.workspace_id.clone(),
                 package_digest: selection.package_digest,
                 protocol_digest: selection.protocol_digest,
@@ -615,6 +631,93 @@ fn post_saved_install_step(
         Err(_) => return Err(PublicPackageInstallError::Transport),
     }
     Ok(())
+}
+
+fn snapshot_offset(snapshot: &WireValue) -> Result<usize, PublicPackageInstallError> {
+    let number = snapshot
+        .get("offset")
+        .and_then(WireValue::as_number)
+        .ok_or(PublicPackageInstallError::Input)?;
+    if !number.is_finite() || number < 0.0 || number.fract() != 0.0 || number > 100_000.0 {
+        return Err(PublicPackageInstallError::Input);
+    }
+    Ok(number as usize)
+}
+
+fn snapshot_total(plan: &PublicInstallSnapshotPlan) -> usize {
+    plan.records().len() + plan.heads().len()
+}
+
+fn snapshot_page_len(
+    plan: &PublicInstallSnapshotPlan,
+    offset: usize,
+) -> Result<usize, PublicPackageInstallError> {
+    let records = plan.records().len();
+    let total = snapshot_total(plan);
+    if offset >= total {
+        return Err(PublicPackageInstallError::Input);
+    }
+    Ok(if offset < records {
+        (records - offset).min(50)
+    } else {
+        (total - offset).min(50)
+    })
+}
+
+fn snapshot_with_offset(
+    initial: &WireValue,
+    offset: usize,
+) -> Result<WireValue, PublicPackageInstallError> {
+    let mut snapshot = initial.clone();
+    let WireValue::Object(fields) = &mut snapshot else {
+        return Err(PublicPackageInstallError::Input);
+    };
+    let (_, current) = fields
+        .iter_mut()
+        .find(|(name, _)| name.iter().copied().eq("offset".encode_utf16()))
+        .ok_or(PublicPackageInstallError::Input)?;
+    *current = WireValue::Number(offset as f64);
+    Ok(snapshot)
+}
+
+fn same_snapshot_state(left: &WireValue, right: &WireValue) -> bool {
+    ["source", "root", "records", "heads"]
+        .iter()
+        .all(|field| left.get(field).is_some() && left.get(field) == right.get(field))
+}
+
+fn install_step_id(begin_id: &str, offset: usize, done: bool) -> String {
+    let domain = if done {
+        format!("peerwork.public.install.end.v1:{begin_id}")
+    } else {
+        format!("peerwork.public.install.page.v1:{begin_id}:{offset}")
+    };
+    base64url(&sha256(domain.as_bytes()))
+}
+
+fn prove_snapshot_plan(
+    prior: &TransportReplayedJournal,
+    signed_policy_wire: &[u8],
+    saved_begin_snapshot: &WireValue,
+) -> Result<PublicInstallSnapshotPlan, PublicPackageInstallError> {
+    let policy = parse_wire_json_bounded(signed_policy_wire, 64, 196_608)
+        .map_err(|_| PublicPackageInstallError::Input)?;
+    let contract = policy
+        .get("payload")
+        .and_then(|payload| payload.get("structure"))
+        .ok_or(PublicPackageInstallError::Input)?;
+    let checkpoint =
+        parse_wire_json_bounded(prior.checkpoint_canonical_json().as_bytes(), 32, 8192)
+            .map_err(|_| PublicPackageInstallError::Input)?;
+    let plan = plan_public_install_snapshot(prior.replay().objects(), contract, &checkpoint)?;
+    let expected = canonical_wire_value(plan.snapshot(), CanonicalPath::SecureArtifact)
+        .map_err(|_| PublicPackageInstallError::Input)?;
+    let saved = canonical_wire_value(saved_begin_snapshot, CanonicalPath::SecureArtifact)
+        .map_err(|_| PublicPackageInstallError::Input)?;
+    if expected != saved {
+        return Err(PublicPackageInstallError::Input);
+    }
+    Ok(plan)
 }
 
 fn prove_saved_begin(
@@ -666,7 +769,71 @@ fn prove_saved_begin(
     Ok(saved)
 }
 
-fn accept_completed_empty_install(
+fn reprove_completed_install(
+    journal: &SecureIntentJournal,
+    begin_command_id: &str,
+    accepted: &AcceptedPublicInstall,
+    fresh: &TransportReplayedJournal,
+) -> Result<PublicPackageInstallProgress, PublicPackageInstallError> {
+    let selection = journal.public_install_selection(begin_command_id)?;
+    if accepted.begin_command_id != begin_command_id
+        || accepted.workspace_id != fresh.replay().workspace_id()
+        || accepted.instance_id != selection.instance_id
+        || accepted.package_digest != selection.package_digest
+        || accepted.protocol_digest != selection.protocol_digest
+        || accepted.end_command_id != install_step_id(begin_command_id, 0, true)
+        || journal.intent_digest(&accepted.end_command_id)? != accepted.end_commit_hash
+    {
+        return Err(PublicPackageInstallError::Input);
+    }
+    let prior_checkpoint =
+        parse_wire_json_bounded(selection.prior_checkpoint_json.as_bytes(), 32, 8192)
+            .map_err(|_| PublicPackageInstallError::Input)?;
+    let prior_sequence = prior_checkpoint
+        .get("sequence")
+        .and_then(WireValue::as_number)
+        .filter(|n| n.is_finite() && *n >= 0.0 && n.fract() == 0.0)
+        .map(|n| n as u64)
+        .ok_or(PublicPackageInstallError::Input)?;
+    let begin_sequence = prior_sequence
+        .checked_add(1)
+        .ok_or(PublicPackageInstallError::Input)?;
+    let saved_begin = journal.exact_request(begin_command_id)?;
+    let begin = parse_wire_json_bounded(&saved_begin, 64, 262_144)
+        .map_err(|_| PublicPackageInstallError::Input)?;
+    let policy = begin
+        .get("policy_update")
+        .ok_or(PublicPackageInstallError::Input)?;
+    let policy_hash = sha256_hex(
+        canonical_wire_value(policy, CanonicalPath::SecureArtifact)
+            .map_err(|_| PublicPackageInstallError::Input)?
+            .as_bytes(),
+    );
+    if !fresh.replay().contains_checkpoint(
+        begin_sequence,
+        Some(journal.intent_digest(begin_command_id)?),
+        &policy_hash,
+    ) || !fresh.replay().contains_checkpoint(
+        accepted.sequence,
+        Some(&accepted.end_commit_hash),
+        &policy_hash,
+    ) {
+        return Err(PublicPackageInstallError::Input);
+    }
+    Ok(PublicPackageInstallProgress {
+        status: "ACCEPTED",
+        begin_command_id: begin_command_id.to_owned(),
+        step_command_id: accepted.end_command_id.clone(),
+        step_action_id: "secure.structure.end",
+        workspace_id: accepted.workspace_id.clone(),
+        package_digest: accepted.package_digest.clone(),
+        protocol_digest: accepted.protocol_digest.clone(),
+        instance_id: accepted.instance_id.clone(),
+        commit_hash: accepted.end_commit_hash.clone(),
+    })
+}
+
+fn accept_completed_install(
     journal: &mut SecureIntentJournal,
     begin_command_id: &str,
     selection: &PublicInstallSelection,
@@ -683,21 +850,10 @@ fn accept_completed_empty_install(
         .sequence()
         .checked_add(1)
         .ok_or(PublicPackageInstallError::Input)?;
-    let end_sequence = begin_sequence
-        .checked_add(1)
-        .ok_or(PublicPackageInstallError::Input)?;
-    let end_command_id = base64url(&sha256(
-        format!("peerwork.public.install.end.v1:{begin_command_id}").as_bytes(),
-    ));
-    let saved_end = journal.exact_request(&end_command_id)?;
-    let end_hash = journal.intent_digest(&end_command_id)?.to_owned();
     if fresh.replay().structure_status() != StructureStatus::Active
         || !fresh
             .replay()
             .contains_checkpoint(begin_sequence, Some(&begin_hash), begin_policy_hash)
-        || !fresh
-            .replay()
-            .contains_checkpoint(end_sequence, Some(&end_hash), begin_policy_hash)
     {
         return Err(PublicPackageInstallError::Input);
     }
@@ -784,41 +940,78 @@ fn accept_completed_empty_install(
     let policy = fresh
         .signed_policy_by_hash(begin_policy_hash)
         .ok_or(PublicPackageInstallError::Input)?;
-    let checkpoint = serde_json::json!({
-        "v":1,
-        "workspace_id":fresh.replay().workspace_id(),
-        "owner_id":fresh.replay().owner_actor_id(),
-        "owner_key":fresh.replay().owner_signing_key(),
-        "sequence":begin_sequence,
-        "head":begin_hash,
-        "policy_hash":begin_policy_hash,
-    });
-    let checkpoint_wire =
-        serde_json::to_vec(&checkpoint).map_err(|_| PublicPackageInstallError::Input)?;
-    let end = parse_wire_json_bounded(&saved_end, 64, 262_144)
-        .map_err(|_| PublicPackageInstallError::Input)?;
-    let end_issued_at = end
-        .get("commit")
-        .and_then(|commit| commit.get("payload"))
-        .and_then(|payload| payload.get("issued_at"))
-        .and_then(WireValue::as_number)
-        .filter(|number| number.is_finite() && *number >= 0.0 && number.fract() == 0.0)
-        .map(|number| number as u64)
-        .ok_or(PublicPackageInstallError::Input)?;
-    let reproved = sign_public_empty_install_end(
-        policy,
-        &checkpoint_wire,
-        snapshot,
-        &end_command_id,
-        end_issued_at,
-        identity.signing_key(),
-    )?;
-    if reproved.request_wire() != saved_end || reproved.commit_hash() != end_hash {
-        return Err(PublicPackageInstallError::Input);
-    }
+    let plan = prove_snapshot_plan(prior, policy, snapshot)?;
+    let mut offset = 0usize;
+    let mut sequence = begin_sequence;
+    let mut previous_hash = begin_hash;
+    let mut page_ids = Vec::new();
+    let (end_command_id, end_hash, end_sequence) = loop {
+        let done = offset == snapshot_total(&plan);
+        let step_id = install_step_id(begin_command_id, offset, done);
+        let saved = journal.exact_request(&step_id)?;
+        let parsed = parse_wire_json_bounded(&saved, 64, 262_144)
+            .map_err(|_| PublicPackageInstallError::Input)?;
+        let issued_at = parsed
+            .get("commit")
+            .and_then(|commit| commit.get("payload"))
+            .and_then(|payload| payload.get("issued_at"))
+            .and_then(WireValue::as_number)
+            .filter(|number| number.is_finite() && *number >= 0.0 && number.fract() == 0.0)
+            .map(|number| number as u64)
+            .ok_or(PublicPackageInstallError::Input)?;
+        let checkpoint = serde_json::json!({
+            "v":1,
+            "workspace_id":fresh.replay().workspace_id(),
+            "owner_id":fresh.replay().owner_actor_id(),
+            "owner_key":fresh.replay().owner_signing_key(),
+            "sequence":sequence,
+            "head":previous_hash,
+            "policy_hash":begin_policy_hash,
+        });
+        let checkpoint_wire =
+            serde_json::to_vec(&checkpoint).map_err(|_| PublicPackageInstallError::Input)?;
+        let step_snapshot = snapshot_with_offset(snapshot, offset)?;
+        let reproved = sign_public_install_step(
+            policy,
+            &checkpoint_wire,
+            &step_snapshot,
+            &plan,
+            &step_id,
+            issued_at,
+            identity.signing_key(),
+        )?;
+        let step_hash = journal.intent_digest(&step_id)?.to_owned();
+        if reproved.request_wire() != saved
+            || reproved.commit_hash() != step_hash
+            || reproved.action_id()
+                != if done {
+                    "secure.structure.end"
+                } else {
+                    "secure.structure.page"
+                }
+        {
+            return Err(PublicPackageInstallError::Input);
+        }
+        sequence = sequence
+            .checked_add(1)
+            .ok_or(PublicPackageInstallError::Input)?;
+        if !fresh
+            .replay()
+            .contains_checkpoint(sequence, Some(&step_hash), begin_policy_hash)
+        {
+            return Err(PublicPackageInstallError::Input);
+        }
+        if done {
+            break (step_id, step_hash, sequence);
+        }
+        page_ids.push(step_id);
+        previous_hash = step_hash;
+        offset += snapshot_page_len(&plan, offset)?;
+    };
     journal.accept_public_install(AcceptedPublicInstall {
         begin_command_id: begin_command_id.to_owned(),
         end_command_id: end_command_id.clone(),
+        page_command_ids: page_ids,
         workspace_id: fresh.replay().workspace_id().to_owned(),
         instance_id: selection.instance_id.clone(),
         package_digest: selection.package_digest.clone(),
@@ -1152,6 +1345,17 @@ mod tests {
             .unwrap()
             .iter()
             .any(|object| object["kind"] == "instances" && object["id"] == "z".repeat(43)));
+        let after_read_config = config.clone();
+        let after_read = tokio::task::spawn_blocking(move || {
+            SecurePublicPackageInstall::new(after_read_config)
+                .continue_install_json(&"c".repeat(43))
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        let after_read: serde_json::Value = serde_json::from_str(&after_read).unwrap();
+        assert_eq!(after_read["status"], "ACCEPTED");
+        assert_eq!(after_read["commit_hash"], continued["commit_hash"]);
 
         // The installed STRUCTURED policy must remain usable by the public
         // native ACTION producer, including its exact server-readable DELTA.

@@ -58,6 +58,7 @@ pub struct ReplayedSecureJournal {
     recoveries: Vec<WireValue>,
     action_receipts: Vec<WireValue>,
     structure_status: StructureStatus,
+    structure_snapshot: Option<WireValue>,
     legacy: bool,
 }
 
@@ -113,6 +114,11 @@ impl ReplayedSecureJournal {
     }
     pub fn structure_status(&self) -> StructureStatus {
         self.structure_status
+    }
+    /// The signed, fully replayed SEEDING offset. This is absent for ACTIVE
+    /// histories and must not be treated as authority for ordinary actions.
+    pub fn structure_snapshot(&self) -> Option<&WireValue> {
+        self.structure_snapshot.as_ref()
     }
     pub fn legacy(&self) -> bool {
         self.legacy
@@ -201,6 +207,7 @@ pub fn replay_secure_journal_exact(
         recoveries: facts.recoveries,
         action_receipts: facts.action_receipts,
         structure_status,
+        structure_snapshot: facts.structure_snapshot,
         legacy: facts.legacy,
     })
 }

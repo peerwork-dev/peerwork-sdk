@@ -97,6 +97,8 @@ struct Entry {
 pub(crate) struct AcceptedPublicInstall {
     pub begin_command_id: String,
     pub end_command_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub page_command_ids: Vec<String>,
     pub workspace_id: String,
     pub instance_id: String,
     pub package_digest: String,
@@ -213,7 +215,10 @@ impl SecureIntentJournal {
                         .rows
                         .get(begin_id)
                         .and_then(|begin| begin.accepted_install.as_ref())
-                        .is_none_or(|accepted| accepted.end_command_id != *id)
+                        .is_none_or(|accepted| {
+                            accepted.end_command_id != *id
+                                && !accepted.page_command_ids.iter().any(|page| page == id)
+                        })
                 })
             })
         {
@@ -892,7 +897,23 @@ impl SecureIntentJournal {
         let mut next = self.document.clone();
         if next.rows.get(&accepted.end_command_id).is_none_or(|end| {
             end.action_id != "secure.structure.end" || end.intent_digest != accepted.end_commit_hash
-        }) {
+        }) || accepted.page_command_ids.len() > 2_000
+            || accepted.page_command_ids.iter().any(|id| {
+                !valid_id(id)
+                    || id == &accepted.begin_command_id
+                    || id == &accepted.end_command_id
+                    || next
+                        .rows
+                        .get(id)
+                        .is_none_or(|row| row.action_id != "secure.structure.page")
+            })
+            || accepted
+                .page_command_ids
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                != accepted.page_command_ids.len()
+        {
             return Err(SecureIntentError::Invalid);
         }
         {
@@ -926,7 +947,13 @@ impl SecureIntentJournal {
         next.rows
             .get_mut(&accepted.end_command_id)
             .ok_or(SecureIntentError::NotFound)?
-            .accepted_install_step = Some(accepted.begin_command_id);
+            .accepted_install_step = Some(accepted.begin_command_id.clone());
+        for page_id in &accepted.page_command_ids {
+            next.rows
+                .get_mut(page_id)
+                .ok_or(SecureIntentError::NotFound)?
+                .accepted_install_step = Some(accepted.begin_command_id.clone());
+        }
         self.persist(next)
     }
 
@@ -1109,12 +1136,16 @@ fn valid_row(id: &str, row: &Entry, actor_id: &str) -> bool {
                     || selection.package_digest != accepted.package_digest
                     || selection.protocol_digest != accepted.protocol_digest
             }) || !valid_id(&accepted.end_command_id)
+                || accepted.page_command_ids.len() > 2_000
+                || accepted.page_command_ids.iter().any(|id| !valid_id(id))
                 || !valid_digest(&accepted.end_commit_hash)
                 || accepted.sequence < 3
         })
         || row.accepted_install_step.as_ref().is_some_and(|begin| {
-            row.action_id != "secure.structure.end"
-                || !valid_id(begin)
+            !matches!(
+                row.action_id.as_str(),
+                "secure.structure.end" | "secure.structure.page"
+            ) || !valid_id(begin)
                 || row.accepted_install.is_some()
                 || row.public_install.is_some()
         })

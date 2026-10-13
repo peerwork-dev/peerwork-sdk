@@ -383,6 +383,7 @@ pub struct SignedPublicInstallEnd {
     request_wire: Vec<u8>,
     commit_hash: String,
     policy_hash: String,
+    action_id: &'static str,
 }
 impl SignedPublicInstallEnd {
     pub fn request_wire(&self) -> &[u8] {
@@ -394,15 +395,19 @@ impl SignedPublicInstallEnd {
     pub fn policy_hash(&self) -> &str {
         &self.policy_hash
     }
+    pub fn action_id(&self) -> &'static str {
+        self.action_id
+    }
 }
 
-/// Low-level empty-snapshot END signer. Runtime must obtain `policy` and
-/// `checkpoint` from a complete signed SEEDING replay and bind `snapshot` to
-/// its exact saved and independently reproved BEGIN before transport.
-pub fn sign_public_empty_install_end(
+/// Low-level PAGE/END signer. Runtime must derive `plan` from authenticated
+/// prior objects and the signed BEGIN policy, and obtain `snapshot` and
+/// `checkpoint` from a complete signed SEEDING replay before transport.
+pub fn sign_public_install_step(
     signed_policy_wire: &[u8],
     checkpoint_wire: &[u8],
     snapshot: &WireValue,
+    plan: &PublicInstallSnapshotPlan,
     command_id: &str,
     issued_at: u64,
     signer: &SigningKey,
@@ -440,14 +445,49 @@ pub fn sign_public_empty_install_end(
         || required(p, "workspace_id")? != required(&checkpoint, "workspace_id")?
         || safe_int(required(p, "issued_at")?)? > issued_at
         || !matches!(required(&checkpoint, "head")?, WireValue::String(_))
-        || required(snapshot, "records")? != &WireValue::Number(0.0)
-        || required(snapshot, "heads")? != &WireValue::Number(0.0)
-        || required(snapshot, "offset")? != &WireValue::Number(0.0)
-        || required(snapshot, "root")?.as_string().as_deref()
-            != Some("5df677702279081de975c0b78651baa9fd6d5987ab205898154fd9ed3bafc9ff")
     {
         return Err(invalid());
     }
+    for field in ["source", "root", "records", "heads"] {
+        if required(snapshot, field)? != required(plan.snapshot(), field)? {
+            return Err(invalid());
+        }
+    }
+    let offset =
+        usize::try_from(safe_int(required(snapshot, "offset")?)?).map_err(|_| invalid())?;
+    let record_count = plan.records().len();
+    let total = record_count
+        .checked_add(plan.heads().len())
+        .ok_or_else(invalid)?;
+    if offset > total {
+        return Err(invalid());
+    }
+    let done = offset == total;
+    let (action_id, mode, page_records, page_heads) = if done {
+        (
+            "secure.structure.end",
+            "SNAPSHOT_END",
+            Vec::new(),
+            Vec::new(),
+        )
+    } else if offset < record_count {
+        let end = offset.saturating_add(50).min(record_count);
+        (
+            "secure.structure.page",
+            "SNAPSHOT_PAGE",
+            plan.records()[offset..end].to_vec(),
+            Vec::new(),
+        )
+    } else {
+        let start = offset - record_count;
+        let end = start.saturating_add(50).min(plan.heads().len());
+        (
+            "secure.structure.page",
+            "SNAPSHOT_PAGE",
+            Vec::new(),
+            plan.heads()[start..end].to_vec(),
+        )
+    };
     let sequence = safe_int(required(&checkpoint, "sequence")?)?
         .checked_add(1)
         .ok_or_else(invalid)?;
@@ -459,10 +499,10 @@ pub fn sign_public_empty_install_end(
     ]);
     let structure = obj(vec![
         ("v", WireValue::Number(1.0)),
-        ("mode", text("SNAPSHOT_END")),
+        ("mode", text(mode)),
         ("snapshot", snapshot.clone()),
-        ("records", WireValue::Array(vec![])),
-        ("heads", WireValue::Array(vec![])),
+        ("records", WireValue::Array(page_records)),
+        ("heads", WireValue::Array(page_heads)),
     ]);
     let payload = obj(vec![
         ("v", WireValue::Number(3.0)),
@@ -477,7 +517,7 @@ pub fn sign_public_empty_install_end(
         ("actor_id", text(&actor)),
         ("signing_key", text(&key_id)),
         ("command_id", text(command_id)),
-        ("action_id", text("secure.structure.end")),
+        ("action_id", text(action_id)),
         ("instance_id", WireValue::Null),
         ("issued_at", WireValue::Number(issued_at as f64)),
         ("delegation", WireValue::Null),
@@ -502,7 +542,42 @@ pub fn sign_public_empty_install_end(
         policy_hash: required(&checkpoint, "policy_hash")?
             .as_string()
             .ok_or_else(invalid)?,
+        action_id,
     })
+}
+
+/// Compatibility signer for the already supported empty snapshot. It remains
+/// strict while generic PAGE continuation is integrated by the runtime.
+pub fn sign_public_empty_install_end(
+    signed_policy_wire: &[u8],
+    checkpoint_wire: &[u8],
+    snapshot: &WireValue,
+    command_id: &str,
+    issued_at: u64,
+    signer: &SigningKey,
+) -> Result<SignedPublicInstallEnd, DirectInstallError> {
+    if required(snapshot, "records")? != &WireValue::Number(0.0)
+        || required(snapshot, "heads")? != &WireValue::Number(0.0)
+        || required(snapshot, "offset")? != &WireValue::Number(0.0)
+        || required(snapshot, "root")?.as_string().as_deref()
+            != Some("5df677702279081de975c0b78651baa9fd6d5987ab205898154fd9ed3bafc9ff")
+    {
+        return Err(DirectInstallError::Invalid);
+    }
+    let plan = PublicInstallSnapshotPlan {
+        snapshot: snapshot.clone(),
+        records: vec![],
+        heads: vec![],
+    };
+    sign_public_install_step(
+        signed_policy_wire,
+        checkpoint_wire,
+        snapshot,
+        &plan,
+        command_id,
+        issued_at,
+        signer,
+    )
 }
 
 fn entries(value: &WireValue) -> Result<&[(Vec<u16>, WireValue)], DirectInstallError> {
