@@ -1,10 +1,12 @@
 """Three independent installed PUBLIC Owner install/action/read paths.
 
-The closure comes from an externally pinned reference vector, not catalog
-discovery. This scripted test observes interface behavior; it is not an Agent.
+The default closure comes from an externally pinned vector. Opt-in catalog
+mode assembles it from each interface's exact inspected canonical bundle.
+This scripted test observes interface behavior; it is not an Agent.
 """
 
 import hashlib
+import base64
 import json
 import os
 from pathlib import Path
@@ -32,6 +34,11 @@ assert binding["root_package_digest"] == os.environ["PEERWORK_TEST_BINDING_ROOT_
 assert binding["selected_protocol_digest"] == os.environ["PEERWORK_TEST_BOUND_PROTOCOL_DIGEST"]
 assert binding["default_protocol_digest"] == os.environ["PEERWORK_TEST_DEFAULT_PROTOCOL_DIGEST"]
 assert binding["selected_protocol_digest"] != binding["default_protocol_digest"]
+source_mode = os.environ.get("PEERWORK_TEST_SOURCE_MODE", "pinned_vector")
+assert source_mode in ("pinned_vector", "catalog")
+if source_mode == "catalog":
+    catalog_fixture = Path(__file__).with_name("reference-catalog-server.mjs")
+    assert hashlib.sha256(catalog_fixture.read_bytes()).hexdigest() == os.environ["PEERWORK_TEST_CATALOG_FIXTURE_SHA256"]
 STATE.mkdir(mode=0o700, parents=True, exist_ok=False)
 
 
@@ -103,6 +110,52 @@ class Interface:
         path = self.config_file.parent / name
         path.write_text(json.dumps(value, separators=(",", ":")))
         return path
+
+    def catalog_package(self, origin):
+        digest = binding["root_package_digest"]
+        if self.kind == "python":
+            catalog = peerwork.PublicCatalogClient(origin, allow_loopback_http=True)
+            listing = catalog.search("")["listing"]
+            inspected = catalog.inspect_exact(digest)
+        elif self.kind == "node":
+            code = r'''
+void (async () => {
+  const sdk=require(process.env.PEERWORK_TEST_NODE_PACKAGE);
+  const catalog=sdk.openPublicCatalog({origin:process.env.PEERWORK_TEST_CATALOG_ORIGIN,allowLoopbackHttp:true});
+  const listing=await catalog.search('');
+  const inspected=await catalog.inspectExact(process.env.PEERWORK_TEST_CATALOG_DIGEST);
+  console.log(JSON.stringify({listing:listing.listing,inspected}));
+})().catch(error=>{console.error(error.code||error.message);process.exitCode=1;});
+'''
+            env = dict(os.environ, PEERWORK_TEST_NODE_PACKAGE=NODE_PACKAGE,
+                       PEERWORK_TEST_CATALOG_ORIGIN=origin, PEERWORK_TEST_CATALOG_DIGEST=digest)
+            result = subprocess.run([NODE, "-e", code], env=env, capture_output=True,
+                                    text=True, timeout=30)
+            assert result.returncode == 0, result.stderr[-800:]
+            value = json.loads(result.stdout)
+            listing, inspected = value["listing"], value["inspected"]
+        else:
+            config = self.file("catalog-config.json", dict(origin=origin, allow_loopback_http=True))
+            listing_result = subprocess.run([CLI, "secure", "catalog-search", str(config), ""],
+                                            capture_output=True, text=True, timeout=30)
+            assert listing_result.returncode == 0, listing_result.stderr[-800:]
+            listing = json.loads(json.loads(listing_result.stdout)["listing_canonical_json"])
+            inspected_result = subprocess.run([CLI, "secure", "catalog-inspect", str(config), digest],
+                                              capture_output=True, text=True, timeout=30)
+            assert inspected_result.returncode == 0, inspected_result.stderr[-800:]
+            inspected = json.loads(inspected_result.stdout)
+        assert any(row["bundle_digest"] == digest for row in listing["items"])
+        assert inspected["bundle_digest"] == digest
+        bundle_bytes = inspected["bundle_canonical_json"].encode("utf-8")
+        assert hashlib.sha256(bundle_bytes).hexdigest() == digest
+        bundle = json.loads(bundle_bytes)
+        assert bundle["format"] == "peerwork.protocol-package.v1"
+        source = json.loads(bundle["files"]["protocol.source.json"])
+        lock = json.loads(bundle["files"]["release.lock.json"])
+        assert source["imports"] == [] and lock["dependencies"] == []
+        encoded = base64.urlsafe_b64encode(bundle_bytes).decode("ascii").rstrip("=")
+        return dict(format="peerwork.protocol-package-closure.v1", root_package_digest=digest,
+                    packages={digest: encoded})
 
     def prepare(self):
         name = "Independent " + self.kind + " binding workspace"
@@ -215,10 +268,24 @@ server = subprocess.Popen([NODE, str(SOURCE / "tests/reference-kernel-server.mjs
     cwd=SOURCE, env=dict(os.environ, PEERWORK_TEST_STATE=str(STATE),
                          PEERWORK_TEST_FIRST_POST_MODE="normal"),
     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+catalog_server = None
 try:
     line = server.stdout.readline()
     assert line, f"service did not start: {server.stderr.read()[-800:]}"
     origin = json.loads(line)["origin"]
+    catalog_origin = None
+    if source_mode == "catalog":
+        catalog_state = STATE / "catalog"
+        catalog_state.mkdir(mode=0o700)
+        catalog_server = subprocess.Popen([NODE, str(catalog_fixture)], cwd=SOURCE,
+            env=dict(os.environ, PEERWORK_TEST_STATE=str(catalog_state),
+                     PEERWORK_SDK_ROOT=str(SOURCE), PEERWORK_TEST_CATALOG_BINDING_PACKAGE="1"),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        catalog_line = catalog_server.stdout.readline()
+        assert catalog_line, f"catalog fixture did not start: {catalog_server.stderr.read()[-800:]}"
+        ready = json.loads(catalog_line)
+        assert ready["bundles"] == 3
+        catalog_origin = ready["origin"]
     selected_interface = os.environ.get("PEERWORK_TEST_INTERFACE", "all")
     assert selected_interface in ("all", "cli")
     interfaces = ("python", "node", "cli") if selected_interface == "all" else ("cli",)
@@ -241,7 +308,8 @@ try:
         initial = api.read(workspace_id)
         assert initial["sequence"] == 1 and initial["structure_status"] == "ACTIVE"
         instance_id = secrets.token_urlsafe(32)
-        selection = dict(closure_json=json.dumps(binding["closure"], separators=(",", ":")),
+        closure = api.catalog_package(catalog_origin) if source_mode == "catalog" else binding["closure"]
+        selection = dict(closure_json=json.dumps(closure, separators=(",", ":")),
             bindings=binding["selected_bindings"], expected_package_id="binding-option",
             expected_package_version="1.0.0",
             expected_package_digest=binding["root_package_digest"],
@@ -296,9 +364,12 @@ try:
         summaries.append(dict(interface=kind, workspace_id=workspace_id,
             begin_id=begin_id, action_id=command_id, final_sequence=final["sequence"]))
     assert len({row["workspace_id"] for row in summaries}) == len(interfaces)
-    print(json.dumps(dict(status="PASS", source_mode="pinned_vector_no_catalog",
+    print(json.dumps(dict(status="PASS", source_mode=source_mode,
                           selected_protocol_digest=binding["selected_protocol_digest"],
                           interfaces=summaries)))
 finally:
+    if catalog_server is not None:
+        catalog_server.terminate()
+        catalog_server.wait(timeout=10)
     server.terminate()
     server.wait(timeout=10)
