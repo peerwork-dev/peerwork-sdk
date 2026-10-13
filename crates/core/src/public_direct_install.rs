@@ -8,7 +8,9 @@ use crate::{
     full_manifest::validate_full_manifest,
     genesis_structure_policy::derive_genesis_structure_policy_with_keep_encrypted,
     package_closure::{compile_package_material, scan_package_closure},
+    secure_replay::project_structure_data,
     structure_bindings::validate_object_bindings,
+    structure_policy::validate_structure_policy,
     wire_json::{canonical_wire_value, parse_wire_json_bounded, WireValue},
 };
 use ed25519_dalek::{Signer, SigningKey};
@@ -211,12 +213,6 @@ pub fn prepare_public_direct_install_begin(
         || required(required(&prior_policy, "payload")?, "workspace_id")?
             != required(&checkpoint, "workspace_id")?
         || objects.iter().any(|object| {
-            matches!(
-                object.get("kind").and_then(WireValue::as_string).as_deref(),
-                Some("records" | "entity_heads")
-            )
-        })
-        || objects.iter().any(|object| {
             object.get("id").and_then(WireValue::as_string).as_deref() == Some(instance_id)
         })
     {
@@ -273,12 +269,14 @@ pub fn prepare_public_direct_install_begin(
         instance_id,
         issued_at,
     )?;
-    let begin = build_empty_direct_install_begin(
+    let snapshot = plan_public_install_snapshot(objects, &structure, &checkpoint)?;
+    let begin = build_direct_install_begin(
         &checkpoint,
         &built.added,
         instance_id,
         expected_protocol_digest,
         entrypoint_name,
+        snapshot.snapshot(),
     )?;
     sign_public_direct_install_begin(&payload, &checkpoint, &begin, command_id, issued_at, signer)
 }
@@ -290,6 +288,71 @@ pub(crate) struct DirectInstallObjects {
 pub(crate) struct EmptySnapshotBegin {
     pub operation: WireValue,
     pub structure: WireValue,
+}
+
+/// Exact sorted projection that the signed BEGIN commits to. The same plan
+/// yields bounded PAGE slices during authenticated continuation.
+pub struct PublicInstallSnapshotPlan {
+    snapshot: WireValue,
+    records: Vec<WireValue>,
+    heads: Vec<WireValue>,
+}
+
+impl PublicInstallSnapshotPlan {
+    pub fn snapshot(&self) -> &WireValue {
+        &self.snapshot
+    }
+    pub fn records(&self) -> &[WireValue] {
+        &self.records
+    }
+    pub fn heads(&self) -> &[WireValue] {
+        &self.heads
+    }
+}
+
+pub fn plan_public_install_snapshot(
+    prior_objects: &[WireValue],
+    contract: &WireValue,
+    source_checkpoint: &WireValue,
+) -> Result<PublicInstallSnapshotPlan, DirectInstallError> {
+    validate_structure_policy(contract).map_err(|_| DirectInstallError::Invalid)?;
+    let (mut records, mut heads) =
+        project_structure_data(prior_objects, contract).map_err(|_| DirectInstallError::Invalid)?;
+    if records
+        .len()
+        .checked_add(heads.len())
+        .is_none_or(|total| total > 100_000)
+    {
+        return Err(DirectInstallError::Resource);
+    }
+    records.sort_by(|left, right| {
+        left.get("record_id")
+            .and_then(WireValue::as_utf16)
+            .cmp(&right.get("record_id").and_then(WireValue::as_utf16))
+    });
+    heads.sort_by(|left, right| {
+        left.get("entity_id")
+            .and_then(WireValue::as_utf16)
+            .cmp(&right.get("entity_id").and_then(WireValue::as_utf16))
+    });
+    let data = obj(vec![
+        ("records", WireValue::Array(records.clone())),
+        ("heads", WireValue::Array(heads.clone())),
+    ]);
+    let canonical = canonical_wire_value(&data, Path::SecureArtifact)
+        .map_err(|_| DirectInstallError::Invalid)?;
+    let snapshot = obj(vec![
+        ("source", source_checkpoint.clone()),
+        ("root", text(&sha256_hex(canonical.as_bytes()))),
+        ("records", WireValue::Number(records.len() as f64)),
+        ("heads", WireValue::Number(heads.len() as f64)),
+        ("offset", WireValue::Number(0.0)),
+    ]);
+    Ok(PublicInstallSnapshotPlan {
+        snapshot,
+        records,
+        heads,
+    })
 }
 pub struct SignedPublicInstallBegin {
     request_wire: Vec<u8>,
@@ -847,14 +910,13 @@ pub(crate) fn derive_direct_install_policy_payload(
     Ok(payload)
 }
 
-/// First-install narrow snapshot: only when authenticated prior structure has
-/// no records or heads. Other histories need projected snapshot paging.
-pub(crate) fn build_empty_direct_install_begin(
+pub(crate) fn build_direct_install_begin(
     checkpoint: &WireValue,
     added: &[WireValue],
     instance_id: &str,
     protocol_digest: &str,
     entrypoint_name: &str,
+    snapshot: &WireValue,
 ) -> Result<EmptySnapshotBegin, DirectInstallError> {
     if !token(instance_id)
         || !entrypoint(entrypoint_name)
@@ -865,28 +927,16 @@ pub(crate) fn build_empty_direct_install_begin(
     {
         return Err(DirectInstallError::Invalid);
     }
-    let empty_data = obj(vec![
-        ("records", WireValue::Array(vec![])),
-        ("heads", WireValue::Array(vec![])),
-    ]);
-    let root = sha256_hex(
-        canonical_wire_value(&empty_data, Path::SecureArtifact)
-            .map_err(|_| DirectInstallError::Invalid)?
-            .as_bytes(),
-    );
-    let snapshot = obj(vec![
-        ("source", checkpoint.clone()),
-        ("root", text(&root)),
-        ("records", WireValue::Number(0.0)),
-        ("heads", WireValue::Number(0.0)),
-        ("offset", WireValue::Number(0.0)),
-    ]);
+    if required(snapshot, "source")? != checkpoint || safe_int(required(snapshot, "offset")?)? != 0
+    {
+        return Err(DirectInstallError::Invalid);
+    }
     let structure = obj(vec![
         ("v", WireValue::Number(1.0)),
         ("mode", text("SNAPSHOT_BEGIN")),
         ("records", WireValue::Array(vec![])),
         ("heads", WireValue::Array(vec![])),
-        ("snapshot", snapshot),
+        ("snapshot", snapshot.clone()),
     ]);
     let operation = obj(vec![
         ("v", WireValue::Number(1.0)),
@@ -908,6 +958,31 @@ pub(crate) fn build_empty_direct_install_begin(
         operation,
         structure,
     })
+}
+
+#[cfg(test)]
+pub(crate) fn build_empty_direct_install_begin(
+    checkpoint: &WireValue,
+    added: &[WireValue],
+    instance_id: &str,
+    protocol_digest: &str,
+    entrypoint_name: &str,
+) -> Result<EmptySnapshotBegin, DirectInstallError> {
+    let empty_contract = obj(vec![
+        ("v", WireValue::Number(1.0)),
+        ("protocols", WireValue::Array(vec![])),
+        ("disclosure", WireValue::Array(vec![])),
+        ("instances", WireValue::Array(vec![])),
+    ]);
+    let snapshot = plan_public_install_snapshot(&[], &empty_contract, checkpoint)?;
+    build_direct_install_begin(
+        checkpoint,
+        added,
+        instance_id,
+        protocol_digest,
+        entrypoint_name,
+        snapshot.snapshot(),
+    )
 }
 
 fn sign_envelope(
@@ -1053,6 +1128,54 @@ pub(crate) fn sign_public_direct_install_begin(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nonempty_prior_snapshot_matches_pinned_install_planner() {
+        let fixture = parse_wire_json_bounded(
+            include_bytes!("../../../conformance/public-direct-install-nonempty-vectors.json"),
+            64,
+            700_000,
+        )
+        .unwrap();
+        let WireValue::Array(prior) = fixture.get("prior_objects").unwrap() else {
+            panic!("prior objects")
+        };
+        let plan = plan_public_install_snapshot(
+            prior,
+            fixture.get("structure").unwrap(),
+            fixture.get("checkpoint").unwrap(),
+        )
+        .unwrap();
+        let same = |actual: &WireValue, expected: &WireValue| {
+            canonical_wire_value(actual, Path::SecureArtifact).unwrap()
+                == canonical_wire_value(expected, Path::SecureArtifact).unwrap()
+        };
+        assert!(same(plan.snapshot(), fixture.get("snapshot").unwrap()));
+        assert!(same(
+            &WireValue::Array(plan.records().to_vec()),
+            fixture.get("projected").unwrap().get("records").unwrap()
+        ));
+        assert!(same(
+            &WireValue::Array(plan.heads().to_vec()),
+            fixture.get("projected").unwrap().get("heads").unwrap()
+        ));
+        let WireValue::Array(added) = fixture.get("added").unwrap() else {
+            panic!("added")
+        };
+        let begin = build_direct_install_begin(
+            fixture.get("checkpoint").unwrap(),
+            added,
+            &fixture.get("instance_id").unwrap().as_string().unwrap(),
+            &fixture.get("protocol_digest").unwrap().as_string().unwrap(),
+            &fixture.get("entrypoint").unwrap().as_string().unwrap(),
+            plan.snapshot(),
+        )
+        .unwrap();
+        assert!(same(
+            begin.structure.get("snapshot").unwrap(),
+            fixture.get("snapshot").unwrap()
+        ));
+    }
 
     #[test]
     fn official_public_direct_objects_match_pinned_planner() {
