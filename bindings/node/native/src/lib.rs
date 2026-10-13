@@ -12,6 +12,9 @@ use peerwork_runtime::secure_public_install::{
 };
 use peerwork_runtime::secure_read_access::{SecureReadAccess, SecureReadConfig};
 use peerwork_runtime::secure_read_profile::{SecureReadProfile, SecureReadProfileConfig};
+use peerwork_runtime::secure_recipient_enrollment::{
+    RecipientEnrollmentConfig, SecureRecipientEnrollment,
+};
 use peerwork_runtime::KernelCancellationToken;
 use std::path::Path;
 
@@ -453,6 +456,73 @@ pub fn secure_public_install_json(
         config_json,
         input_json,
         begin_command_id,
+        cancel: cancel_handle
+            .map(|handle| handle.token.clone())
+            .unwrap_or_default(),
+    })
+}
+
+pub struct SecureEnrollmentTask {
+    operation: String,
+    origin: String,
+    state_dir: String,
+    allow_loopback_http: bool,
+    cancel: KernelCancellationToken,
+}
+
+impl Task for SecureEnrollmentTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let mut config = RecipientEnrollmentConfig::for_state_dir(
+            self.origin.clone(),
+            Path::new(&self.state_dir),
+        );
+        config.allow_loopback_http = self.allow_loopback_http;
+        let access = SecureRecipientEnrollment::new(config);
+        if self.operation == "certificate" {
+            return Ok(match access.certificate_json() {
+                Ok(value) => serde_json::json!({"ok":true,"value":value}).to_string(),
+                Err(error) => {
+                    serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()})
+                        .to_string()
+                }
+            });
+        }
+        let result = match self.operation.as_str() {
+            "create_local" => access.create_local().map(Some),
+            "publish" => access.publish_with_cancel(&self.cancel).map(Some),
+            "pending" => access.pending(),
+            _ => return Ok(serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"unsupported recipient enrollment operation"}).to_string()),
+        };
+        Ok(match result {
+            Ok(value) => serde_json::json!({"ok":true,"value":value}).to_string(),
+            Err(error) => {
+                serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()})
+                    .to_string()
+            }
+        })
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+#[napi]
+pub fn secure_recipient_enrollment_json(
+    operation: String,
+    origin: String,
+    state_dir: String,
+    allow_loopback_http: bool,
+    cancel_handle: Option<ClassInstance<KernelCancelHandle>>,
+) -> AsyncTask<SecureEnrollmentTask> {
+    AsyncTask::new(SecureEnrollmentTask {
+        operation,
+        origin,
+        state_dir,
+        allow_loopback_http,
         cancel: cancel_handle
             .map(|handle| handle.token.clone())
             .unwrap_or_default(),

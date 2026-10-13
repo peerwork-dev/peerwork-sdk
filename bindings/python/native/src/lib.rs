@@ -7,6 +7,9 @@ use peerwork_runtime::secure_public_install::{
 };
 use peerwork_runtime::secure_read_access::{SecureReadAccess, SecureReadConfig};
 use peerwork_runtime::secure_read_profile::{SecureReadProfile, SecureReadProfileConfig};
+use peerwork_runtime::secure_recipient_enrollment::{
+    RecipientEnrollmentConfig, SecureRecipientEnrollment,
+};
 use peerwork_runtime::KernelCancellationToken;
 use pyo3::prelude::*;
 use std::path::Path;
@@ -314,6 +317,44 @@ fn secure_public_install_json(
     }))
 }
 
+#[pyfunction]
+#[pyo3(signature = (operation, origin, state_dir, allow_loopback_http=false, cancel_handle=None))]
+fn secure_recipient_enrollment_json(
+    py: Python<'_>,
+    operation: &str,
+    origin: &str,
+    state_dir: &str,
+    allow_loopback_http: bool,
+    cancel_handle: Option<PyRef<'_, KernelCancelHandle>>,
+) -> PyResult<String> {
+    let mut config =
+        RecipientEnrollmentConfig::for_state_dir(origin.to_owned(), Path::new(state_dir));
+    config.allow_loopback_http = allow_loopback_http;
+    let operation = operation.to_owned();
+    let cancel = cancel_handle
+        .map(|handle| handle.token.clone())
+        .unwrap_or_default();
+    Ok(py.allow_threads(move || {
+        let access = SecureRecipientEnrollment::new(config);
+        if operation == "certificate" {
+            return match access.certificate_json() {
+                Ok(value) => serde_json::json!({"ok":true,"value":value}).to_string(),
+                Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
+            };
+        }
+        let result = match operation.as_str() {
+            "create_local" => access.create_local().map(Some),
+            "publish" => access.publish_with_cancel(&cancel).map(Some),
+            "pending" => access.pending(),
+            _ => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"unsupported recipient enrollment operation"}).to_string(),
+        };
+        match result {
+            Ok(value) => serde_json::json!({"ok":true,"value":value}).to_string(),
+            Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
+        }
+    }))
+}
+
 #[pymodule]
 fn _peerwork_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(version, module)?)?;
@@ -327,6 +368,7 @@ fn _peerwork_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(secure_read_profile_json, module)?)?;
     module.add_function(wrap_pyfunction!(secure_public_action_json, module)?)?;
     module.add_function(wrap_pyfunction!(secure_public_install_json, module)?)?;
+    module.add_function(wrap_pyfunction!(secure_recipient_enrollment_json, module)?)?;
     module.add_class::<KernelCancelHandle>()?;
     Ok(())
 }

@@ -149,6 +149,32 @@ export interface SecurePublicActionSession {
 /** Uses a protected latest-read profile; an uncertain POST stays PENDING until signed replay. */
 export declare function openSecurePublicActions(options: SecureReadOptions): SecurePublicActionSession;
 
+export interface RecipientEnrollmentOptions {
+  origin: string;
+  stateDir: string;
+  allowLoopbackHttp?: boolean;
+}
+export interface RecipientEnrollmentResult {
+  status: 'LOCAL' | 'REGISTRATION_PENDING' | 'PUBLICATION_PENDING' | 'PUBLISHED' | 'PUBLISHED_LOCAL';
+  actor_id: string;
+  signing_key_id: string;
+  encryption_key_id: string;
+  certificate_digest: string;
+  registration_command_id: string | null;
+  directory_entry_hash: string | null;
+}
+export interface SecureRecipientEnrollmentSession {
+  /** Protected local key creation only; no network or membership grant. */
+  createLocal(): Promise<RecipientEnrollmentResult>;
+  /** Reuses protected exact registration/publication bytes after uncertain replies. */
+  publish(options?: { signal?: AbortSignal }): Promise<RecipientEnrollmentResult>;
+  /** Local progress only; a pending status is not directory acceptance. */
+  pending(): Promise<RecipientEnrollmentResult | null>;
+  /** Exact signed public certificate; this alone does not prove publication. */
+  certificateJson(): Promise<string>;
+}
+export declare function openSecureRecipientEnrollment(options: RecipientEnrollmentOptions): SecureRecipientEnrollmentSession;
+
 /** Exact locally selected package closure; digest validation does not prove publisher origin. */
 export interface PublicPackageInstallSelection {
   closureJson: string;

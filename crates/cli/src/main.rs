@@ -8,6 +8,9 @@ use peerwork_runtime::secure_public_install::{
 };
 use peerwork_runtime::secure_read_access::{SecureReadAccess, SecureReadConfig};
 use peerwork_runtime::secure_read_profile::{SecureReadProfile, SecureReadProfileConfig};
+use peerwork_runtime::secure_recipient_enrollment::{
+    RecipientEnrollmentConfig, SecureRecipientEnrollment,
+};
 use peerwork_runtime::KernelCancellationToken;
 use std::fs;
 use std::io::Read;
@@ -188,11 +191,87 @@ fn main() -> ExitCode {
                 }
             }
         }
+        [noun, verb, rest @ ..]
+            if noun == "secure"
+                && (verb == "recipient-create"
+                    || verb == "recipient-publish"
+                    || verb == "recipient-pending"
+                    || verb == "recipient-certificate") =>
+        {
+            match secure_recipient_command(verb, rest) {
+                Ok(value) => {
+                    println!("{value}");
+                    ExitCode::SUCCESS
+                }
+                Err((code, message)) => {
+                    eprintln!(
+                        "{}",
+                        serde_json::json!({"code": if InterruptMonitor::interrupted() {"INTERRUPTED"} else {code}, "message":message})
+                    );
+                    if InterruptMonitor::interrupted() {
+                        ExitCode::from(130)
+                    } else {
+                        ExitCode::FAILURE
+                    }
+                }
+            }
+        }
         _ => {
-            eprintln!("{{\"code\":\"USAGE\",\"message\":\"peerwork version|capabilities|identity create PATH|identity info PATH|identity import-legacy-pem PATH PROTECTED_PEM_FILE|identity import-seed-file PATH PROTECTED_SEED_FILE|kernel open|prepare|pending|status|submit ORIGIN JOURNAL IDENTITY [COMMAND_FILE|COMMAND_ID] [--allow-loopback-http] [--authority=HEX] [--chunk-file=PATH|--chunk-stdin for prepare]; kernel migrate ORIGIN JOURNAL IDENTITY SOURCE BACKUP --trusted-signer=KEY_ID [--trusted-signer=KEY_ID ...]; secure read --origin=URL --state-dir=DIR --identity=PATH --workspace=ID [--owner-actor=ID --owner-key=ID] [--authority=HEX]; secure snapshot ORIGIN KERNEL_JOURNAL READ_STATE LIFECYCLE IDENTITY WORKSPACE AUTHORITY OWNER_ACTOR OWNER_KEY [--allow-loopback-http] [--max-replay-artifact-bytes=N]; secure action-submit|action-status|action-retry CONFIG_JSON_FILE ACTION_JSON_FILE|COMMAND_ID; secure action-pending CONFIG_JSON_FILE; secure install-begin CONFIG_JSON_FILE INPUT_JSON_FILE | install-continue CONFIG_JSON_FILE BEGIN_COMMAND_ID | install-pending CONFIG_JSON_FILE\"}}");
+            eprintln!("{{\"code\":\"USAGE\",\"message\":\"peerwork version|capabilities|identity create PATH|identity info PATH|identity import-legacy-pem PATH PROTECTED_PEM_FILE|identity import-seed-file PATH PROTECTED_SEED_FILE|kernel open|prepare|pending|status|submit ORIGIN JOURNAL IDENTITY [COMMAND_FILE|COMMAND_ID] [--allow-loopback-http] [--authority=HEX] [--chunk-file=PATH|--chunk-stdin for prepare]; kernel migrate ORIGIN JOURNAL IDENTITY SOURCE BACKUP --trusted-signer=KEY_ID [--trusted-signer=KEY_ID ...]; secure read --origin=URL --state-dir=DIR --identity=PATH --workspace=ID [--owner-actor=ID --owner-key=ID] [--authority=HEX]; secure snapshot ORIGIN KERNEL_JOURNAL READ_STATE LIFECYCLE IDENTITY WORKSPACE AUTHORITY OWNER_ACTOR OWNER_KEY [--allow-loopback-http] [--max-replay-artifact-bytes=N]; secure action-submit|action-status|action-retry CONFIG_JSON_FILE ACTION_JSON_FILE|COMMAND_ID; secure action-pending CONFIG_JSON_FILE; secure install-begin CONFIG_JSON_FILE INPUT_JSON_FILE | install-continue CONFIG_JSON_FILE BEGIN_COMMAND_ID | install-pending CONFIG_JSON_FILE; secure recipient-create|recipient-publish|recipient-pending|recipient-certificate --origin=URL --state-dir=DIR [--allow-loopback-http]\"}}");
             ExitCode::FAILURE
         }
     }
+}
+
+fn secure_recipient_command(verb: &str, args: &[String]) -> Result<String, (&'static str, String)> {
+    let mut origin = None;
+    let mut state_dir = None;
+    let mut allow_loopback_http = false;
+    for arg in args {
+        if let Some(value) = arg.strip_prefix("--origin=") {
+            origin = Some(value.to_owned());
+        } else if let Some(value) = arg.strip_prefix("--state-dir=") {
+            state_dir = Some(value.to_owned());
+        } else if arg == "--allow-loopback-http" {
+            allow_loopback_http = true;
+        } else {
+            return Err(("USAGE", "unknown recipient enrollment option".to_owned()));
+        }
+    }
+    let origin = origin
+        .filter(|value: &String| !value.is_empty())
+        .ok_or(("USAGE", "--origin is required".to_owned()))?;
+    let state_dir = state_dir
+        .filter(|value: &String| !value.is_empty())
+        .ok_or(("USAGE", "--state-dir is required".to_owned()))?;
+    let mut config = RecipientEnrollmentConfig::for_state_dir(origin, Path::new(&state_dir));
+    config.allow_loopback_http = allow_loopback_http;
+    let access = SecureRecipientEnrollment::new(config);
+    if verb == "recipient-certificate" {
+        return access
+            .certificate_json()
+            .map_err(|error| (error.code(), error.to_string()));
+    }
+    let cancel = KernelCancellationToken::new();
+    let _interrupts = InterruptMonitor::start(cancel.clone()).map_err(|_| {
+        (
+            "INTERRUPT_HANDLER",
+            "unable to install interrupt handler".to_owned(),
+        )
+    })?;
+    let result = match verb {
+        "recipient-create" => access.create_local().map(Some),
+        "recipient-publish" => access.publish_with_cancel(&cancel).map(Some),
+        "recipient-pending" => access.pending(),
+        _ => unreachable!(),
+    }
+    .map_err(|error| (error.code(), error.to_string()))?;
+    serde_json::to_string(&result).map_err(|_| {
+        (
+            "RESULT_ENCODING_FAILED",
+            "recipient result encoding failed".to_owned(),
+        )
+    })
 }
 
 fn secure_install_command(verb: &str, args: &[String]) -> Result<String, (&'static str, String)> {

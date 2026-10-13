@@ -307,6 +307,39 @@ exports.openSecurePublicActions = options => {
   });
 };
 
+/** Create protected recipient keys and explicitly publish their signed directory entry. */
+exports.openSecureRecipientEnrollment = options => {
+  if (!options || typeof options.origin !== 'string' || typeof options.stateDir !== 'string') {
+    throw new TypeError('recipient enrollment requires origin and stateDir');
+  }
+  const invoke = async (operation, signal) => {
+    const handle = new binding.KernelCancelHandle();
+    const onAbort = () => handle.cancel();
+    if (signal?.aborted) onAbort();
+    signal?.addEventListener?.('abort', onAbort, { once: true });
+    try {
+      const result = JSON.parse(await binding.secureRecipientEnrollmentJson(
+        operation, options.origin, options.stateDir,
+        options.allowLoopbackHttp ?? false, handle,
+      ));
+      if (result.ok !== true) {
+        const error = new Error(result.message);
+        error.code = result.code;
+        throw error;
+      }
+      return result.value;
+    } finally {
+      signal?.removeEventListener?.('abort', onAbort);
+    }
+  };
+  return Object.freeze({
+    createLocal: () => invoke('create_local'),
+    publish: (options = {}) => invoke('publish', options.signal),
+    pending: () => invoke('pending'),
+    certificateJson: () => invoke('certificate'),
+  });
+};
+
 /** Begin and continue a PUBLIC direct install through protected local state. */
 exports.openSecurePublicPackageInstaller = options => {
   const { config } = secureProfileOptions(options);

@@ -115,6 +115,29 @@ pub enum PublicAdmissionRuntimeError {
     Encoding,
 }
 
+impl PublicAdmissionRuntimeError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Read(error) => error.code(),
+            Self::Intent(SecureIntentError::Conflict) => "INTENT_CONFLICT",
+            Self::Intent(SecureIntentError::NotFound) => "INTENT_NOT_FOUND",
+            Self::Intent(SecureIntentError::TooLarge) => "RESOURCE_LIMIT",
+            Self::Intent(SecureIntentError::Transport(_)) | Self::Transport => "TRANSPORT_FAILED",
+            Self::Intent(SecureIntentError::ServerRejected(_)) | Self::ServerRejected(_) => {
+                "SERVER_REJECTED"
+            }
+            Self::Intent(SecureIntentError::ReplayMismatch) => "VERIFICATION_FAILED",
+            Self::Intent(_) => "INTENT_STATE",
+            Self::Offer(_) | Self::Input => "ADMISSION_INPUT_INVALID",
+            Self::ReadProof => "READ_PROOF_FAILED",
+            Self::Identity => "IDENTITY_STATE",
+            Self::Clock => "CLOCK_INVALID",
+            Self::Runtime => "RUNTIME_FAILED",
+            Self::Encoding => "RESULT_ENCODING_FAILED",
+        }
+    }
+}
+
 pub struct SecurePublicAdmission {
     config: SecureReadProfileConfig,
 }

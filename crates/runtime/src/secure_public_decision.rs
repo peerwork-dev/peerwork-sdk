@@ -118,6 +118,31 @@ pub enum PublicDecisionError {
     Encoding,
 }
 
+impl PublicDecisionError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Read(error) => error.code(),
+            Self::Intent(SecureIntentError::Conflict) => "INTENT_CONFLICT",
+            Self::Intent(SecureIntentError::NotFound) => "INTENT_NOT_FOUND",
+            Self::Intent(SecureIntentError::TooLarge) => "RESOURCE_LIMIT",
+            Self::Intent(SecureIntentError::Transport(_)) | Self::Transport => "TRANSPORT_FAILED",
+            Self::Intent(SecureIntentError::ServerRejected(_)) | Self::ServerRejected(_) => {
+                "SERVER_REJECTED"
+            }
+            Self::Intent(SecureIntentError::ReplayMismatch) => "VERIFICATION_FAILED",
+            Self::Intent(_) => "INTENT_STATE",
+            Self::Core(_) | Self::Invalid => "DECISION_INVALID",
+            Self::Identity => "IDENTITY_STATE",
+            Self::Store(_) => "LOCAL_STATE_FAILED",
+            Self::Grant => "GRANT_VERIFICATION_FAILED",
+            Self::Lifecycle => "LIFECYCLE_STATE",
+            Self::Runtime => "RUNTIME_FAILED",
+            Self::Clock => "CLOCK_INVALID",
+            Self::Encoding => "RESULT_ENCODING_FAILED",
+        }
+    }
+}
+
 pub struct SecurePublicDecision {
     config: PublicDecisionConfig,
 }

@@ -15,6 +15,7 @@ from ._peerwork_native import (
     secure_read_profile_json,
     secure_public_action_json,
     secure_public_install_json,
+    secure_recipient_enrollment_json,
     version,
 )
 
@@ -716,3 +717,80 @@ class SecurePublicPackageInstaller(SecureReadClient):
 
 
 __all__ += ["SecurePublicPackageInstaller", "PublicInstallBeginResult", "PublicInstallProgress", "PendingPublicInstall", "PublicInstallError"]
+
+
+class RecipientEnrollmentResult(TypedDict):
+    status: Literal["LOCAL", "REGISTRATION_PENDING", "PUBLICATION_PENDING", "PUBLISHED", "PUBLISHED_LOCAL"]
+    actor_id: str
+    signing_key_id: str
+    encryption_key_id: str
+    certificate_digest: str
+    registration_command_id: str | None
+    directory_entry_hash: str | None
+
+
+class RecipientEnrollmentError(RuntimeError):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+class SecureRecipientEnrollmentClient:
+    """Explicit protected recipient creation and directory publication.
+
+    Publication does not grant workspace membership. Reopen and call publish
+    again after an uncertain response; the native journal reuses saved bytes.
+    """
+
+    def __init__(self, origin: str, state_dir: str, *,
+                 allow_loopback_http: bool = False):
+        self._origin = origin
+        self._state_dir = state_dir
+        self._allow_loopback_http = allow_loopback_http
+
+    def _enroll(self, operation: str,
+                cancel_handle: KernelCancelHandle | None = None) -> RecipientEnrollmentResult | None:
+        result = json.loads(secure_recipient_enrollment_json(
+            operation, self._origin, self._state_dir,
+            self._allow_loopback_http, cancel_handle))
+        if result["ok"] is not True:
+            raise RecipientEnrollmentError(result["code"], result["message"])
+        return cast(RecipientEnrollmentResult | None, result["value"])
+
+    def create_local(self) -> RecipientEnrollmentResult:
+        """Create or reopen protected signing and recipient keys offline."""
+        return cast(RecipientEnrollmentResult, self._enroll("create_local"))
+
+    def publish(self) -> RecipientEnrollmentResult:
+        """Register then publish the signed certificate; pending is not success."""
+        return cast(RecipientEnrollmentResult, self._enroll("publish"))
+
+    def pending(self) -> RecipientEnrollmentResult | None:
+        """Inspect protected local progress without a network request."""
+        return self._enroll("pending")
+
+    def certificate_json(self) -> str:
+        """Export the exact signed public certificate; publication is separate."""
+        return cast(str, self._enroll("certificate"))
+
+    async def publish_async(self) -> RecipientEnrollmentResult:
+        cancel_handle = KernelCancelHandle()
+        worker = asyncio.create_task(asyncio.to_thread(self._enroll, "publish", cancel_handle))
+        try:
+            return cast(RecipientEnrollmentResult, await asyncio.shield(worker))
+        except asyncio.CancelledError:
+            cancel_handle.cancel()
+            while not worker.done():
+                try:
+                    await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    cancel_handle.cancel()
+                except Exception:
+                    break
+            try:
+                worker.result()
+            except Exception:
+                pass
+            raise
+
+__all__ += ["SecureRecipientEnrollmentClient", "RecipientEnrollmentResult", "RecipientEnrollmentError"]
