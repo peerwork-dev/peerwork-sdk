@@ -1,0 +1,20 @@
+# Historical Owner completed inbox import checkpoint (2026-10-13)
+
+The isolated candidate is commit `9d1152f04fe2ecd8caaa0681b3764b8fa997edae`, forked from main `fc04fbd12c72f9c162150fdb4b1ed64d475d7ecc`. Its changed runtime file `crates/runtime/src/secure_owner_attach.rs` is SHA-256 `e6854c4a8422fd2fae044890e83e8518007ba3d43111db48d72a3520ad0b9c9e`; the new genuine-old-client fixture `tests/legacy-completed-inbox-source.mjs` is `e992c4629c488920654e06c74f82d10b91fed04c9997ea5ce969c64b37da4049`. The unchanged service fixture `tests/reference-kernel-server.mjs` is `50168d56f654e51d5d3696815e8cae7590e0a002721ca076ec636bf47d2769b0`. Service source was pinned `f828b6c50a0a58d1e718af90f653b214adcc3328`; tracked old-client source was `ae5d1151c2a1e72bc599eb4022291cf8496beba3`. The task-created fixtures contain only test-generated identities and workspace state. No service DB was edited and no production source or credentials were imported.
+
+The source-backed gap was an overbroad refusal of every retained `inbox_receipts` entry. The old client saves an inbox receipt marker before sending a signed `coordination.ack`; a crash there is unresolved, while a completed historical ACK may leave the marker in local state. The importer now parses the marker with strict workspace/item/source/hash shape, then uses a complete origin-bound authenticated replay to require a signed Owner ACK whose workspace, actor/key, action, item and source reference/hash all match. The separate `before-ack` fixture stops immediately after the old client's durable marker save. It has no signed ACK and must return `SOURCE_UNRESOLVED` without an ATTACHED row or ordinary action selector. The `complete` fixture performs the genuine signed ACK and imports; after its old-client source directory is renamed, native protected state still supports fresh verified read at the same signed sequence/head.
+
+The source setup alone passed in task chunk `97c615`: both modes produced genuine wire-v2 PRIVATE structured coordination workspaces and the expected signed-ACK presence/absence. Runtime `cargo check -p peerwork-runtime --offline --locked` passed in session `69511` (only the preexisting `decode_base64url` unused-import warning). The focused test compiled with `--no-run` in session `22433`, exit 0, 2m52s. The exact frozen candidate's actual-service test in session `68373` exited 0: one test passed in 38.71s, 96 filtered out. The tested command was:
+
+```sh
+cd /root/workdir/message/.worktrees/peerwork-sdk-owner-attach-inbox-20261013
+export CARGO_HOME=/root/workdir/message/.worktrees/peerwork-sdk-native-20261012/.build-target/cargo-home
+export CARGO_TARGET_DIR=/root/workdir/message/.worktrees/peerwork-sdk-owner-attach-inbox-20261013/.build-target
+export RUSTC=/tmp/peerwork-rustup/toolchains/1.89.0-x86_64-unknown-linux-gnu/bin/rustc
+export PEERWORK_REFERENCE_ROOT=/root/workdir/message/.worktrees/e2ee-main-integration-20261006
+export PEERWORK_LEGACY_CLIENT_ROOT=/root/workdir/message/.worktrees/peerwork-legacy-owner-client-20261013
+export PEERWORK_NODE_BIN=/root/workdir/message/.tools/node-v24.20.0-linux-x64/bin/node
+/tmp/peerwork-rustup/toolchains/1.89.0-x86_64-unknown-linux-gnu/bin/cargo test -p peerwork-runtime secure_owner_attach::tests::actual_service_completed_inbox_marker_requires_exact_owner_ack --offline --locked -- --nocapture
+```
+
+The actual-service test exercises full importer refusal/no promotion for the genuine pre-ACK marker and positive import/read after the signed ACK. Wrong source hash, item ID and actor arguments are tested directly against the signer-bound ACK matcher using that real signed commit; those are matcher-level negatives, not separate whole-importer mutation cases. The fixture setup and Rust test do not establish installed Python/Node/CLI access, natural Agent workflow compliance, every retained completed-control/receipt family, unresolved-operation preservation, or macOS/Windows operation. Workflow compliance is unverified separately from this scripted business result. The importer still conservatively refuses other completed receipt families where exact remote completion proof has not been added.
