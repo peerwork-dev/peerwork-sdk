@@ -1472,6 +1472,156 @@ mod tests {
     }
 
     #[test]
+    fn actual_service_legacy_structured_public_owner_upgrade() {
+        let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else {
+            return;
+        };
+        let Ok(legacy_root) = std::env::var("PEERWORK_LEGACY_CLIENT_ROOT") else {
+            return;
+        };
+        let node = std::env::var("PEERWORK_NODE_BIN").unwrap_or_else(|_| "node".into());
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let bridge =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/reference-kernel-server.mjs");
+        let child = Command::new(&node)
+            .arg(bridge)
+            .env("PEERWORK_REFERENCE_ROOT", reference_root)
+            .env("PEERWORK_TEST_STATE", root.path())
+            .env("PEERWORK_TEST_FIRST_POST_MODE", "normal")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        struct StopStructured(Child);
+        impl Drop for StopStructured {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut child = StopStructured(child);
+        let mut line = String::new();
+        BufReader::new(child.0.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        assert!(!line.is_empty(), "pinned service exited before readiness");
+        let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let origin = ready["origin"].as_str().unwrap();
+        let helper =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/legacy-owner-source.mjs");
+        let setup = Command::new(&node)
+            .arg(helper)
+            .arg(origin)
+            .arg(root.path().join("legacy-public-structured"))
+            .arg(legacy_root)
+            .arg("legacy-public-structured")
+            .output()
+            .unwrap();
+        assert!(
+            setup.status.success(),
+            "legacy structured PUBLIC setup: {}",
+            String::from_utf8_lossy(&setup.stderr)
+        );
+        let source: serde_json::Value = serde_json::from_slice(&setup.stdout).unwrap();
+        assert_eq!(source["policy_v"], 2);
+        let workspace_id = source["workspace_id"].as_str().unwrap();
+        let config = SecureOwnerCreateConfig {
+            origin: origin.into(),
+            state_dir: root.path().join("native-owner"),
+            allow_loopback_http: true,
+            max_replay_artifact_bytes: 64 * 1024 * 1024,
+        };
+        let cancel = CancellationToken::new();
+        let attached = SecureHistoricalOwnerAttach::new(config.clone())
+            .attach(
+                HistoricalOwnerAttachInput {
+                    workspace_id: workspace_id.into(),
+                    protected_ts_state_path: PathBuf::from(source["state_path"].as_str().unwrap()),
+                    protected_owner_pkcs8_path: PathBuf::from(source["pem_path"].as_str().unwrap()),
+                    protected_ts_intent_db_path: PathBuf::from(
+                        source["intent_db_path"].as_str().unwrap(),
+                    ),
+                    expected_owner_actor_id: source["owner_actor_id"].as_str().unwrap().into(),
+                    expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
+                },
+                &cancel,
+            )
+            .unwrap();
+        assert_eq!(attached.status, "ATTACHED");
+        let owner = SecureOwnerWorkspaceCreate::new(config);
+        let access = owner.format_transition_access(workspace_id).unwrap();
+        let policy =
+            |access: &crate::secure_owner_format_transition::SecureOwnerFormatTransition| {
+                SecureReadProfile::new(access.profile_config().clone()).with_latest_replay(&cancel,|source| {
+                let wire=source.signed_policy_by_hash(source.replay().policy_hash())
+                    .ok_or(crate::secure_owner_format_transition::OwnerFormatTransitionError::Verification)?;
+                let policy:serde_json::Value=serde_json::from_slice(wire)
+                    .map_err(|_|crate::secure_owner_format_transition::OwnerFormatTransitionError::Verification)?;
+                Ok::<_,crate::secure_owner_format_transition::OwnerFormatTransitionError>((policy,source.replay().policy_hash().to_owned(),source.replay().sequence()))
+            }).unwrap()
+            };
+        let before = policy(&access);
+        assert_eq!(before.0["payload"]["v"], 2);
+        assert_eq!(before.0["payload"]["visibility"], "PUBLIC");
+        assert!(before.0["payload"]["structure"].is_object());
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let activated = rt
+            .block_on(
+                reqwest::Client::new()
+                    .post(format!("{origin}__test/activate-protocol-cutover"))
+                    .body("{}")
+                    .send(),
+            )
+            .unwrap();
+        assert_eq!(activated.status(), 200);
+        let phase: serde_json::Value =
+            serde_json::from_slice(&rt.block_on(activated.bytes()).unwrap()).unwrap();
+        assert_eq!(phase["phase"], "ENFORCE");
+        let result:serde_json::Value=serde_json::from_str(&access.submit_json_with_cancel(
+            crate::secure_owner_format_transition::OwnerFormatTransitionInput {
+                workspace_id:workspace_id.into(),transition:crate::secure_owner_format_transition::OwnerFormatTransition::UpgradeWireV3,
+                command_id:None,issued_at_ms:None },&cancel).unwrap()).unwrap();
+        let id = result["command_id"].as_str().unwrap();
+        let accepted: serde_json::Value =
+            serde_json::from_str(&access.resume_json_with_cancel(id, &cancel).unwrap()).unwrap();
+        assert_eq!(accepted["status"], "ACCEPTED");
+        let after = policy(&access);
+        assert_eq!(after.0["payload"]["v"], 3);
+        assert_eq!(after.0["payload"]["protocol_format_ceiling"], 1);
+        assert_eq!(after.0["payload"]["structure_mode"], "STRUCTURED");
+        assert_eq!(
+            after.0["payload"]["structure"],
+            before.0["payload"]["structure"]
+        );
+        for field in [
+            "workspace_id",
+            "owner_id",
+            "signing_key",
+            "visibility",
+            "epoch",
+            "members",
+        ] {
+            assert_eq!(after.0["payload"][field], before.0["payload"][field]);
+        }
+        assert_eq!(after.0["payload"]["previous_policy"], before.1);
+        assert_eq!(
+            after.0["payload"]["effective_sequence"].as_u64(),
+            Some(before.2 + 1)
+        );
+        assert_eq!(after.1, accepted["policy_hash"]);
+        assert_eq!(after.2, before.2 + 1);
+        assert_eq!(policy(&access).2, after.2);
+    }
+
+    #[test]
     fn actual_service_legacy_private_owner_attach_then_native_action() {
         let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else {
             return;
