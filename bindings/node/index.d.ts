@@ -148,6 +148,10 @@ export interface HistoricalOwnerAttachmentInput {
   kernelPendingCommandIds?: string[];
   /** Required for selected IDs; obtain from inspectKernelPending. */
   expectedKernelIntentDbDigest?: string;
+  /** Select one inspected saved package-stage command; attach does not POST it. */
+  selectedPendingPackageStageCommandId?: string;
+  /** Required with selectedPendingPackageStageCommandId; digest of the whole TS state file. */
+  expectedTsStateDigest?: string;
 }
 export interface HistoricalOwnerAttachmentResult {
   attach_id: string;
@@ -162,6 +166,16 @@ export interface HistoricalOwnerAttachmentResult {
   retained_other_kernel_count: number;
   pending_action_command_id: string | null;
   pending_action_status: 'RETAINED_UNRESOLVED' | 'ACCEPTED' | null;
+  pending_package_stage_command_id: string | null;
+  pending_package_stage_status: 'PENDING_UNRESOLVED' | 'ACCEPTED' | null;
+}
+export interface HistoricalPackageStagePendingInventory {
+  ts_state_digest: string;
+  command_id: string;
+  source_id: string;
+  source_sha256: string;
+  source_sequence: number;
+  status: 'PENDING_UNRESOLVED' | 'APPLIED_IN_SIGNED_REPLAY';
 }
 export interface HistoricalKernelCommandStatus {
   command_id: string;
@@ -200,6 +214,10 @@ export interface SecureOwnerWorkspaceSession {
   attach(input: HistoricalOwnerAttachmentInput, options?: {signal?: AbortSignal}): Promise<HistoricalOwnerAttachmentResult>;
   /** Read-only verified source inventory; no attach row or command POST. */
   inspectKernelPending(input: HistoricalOwnerAttachmentInput, options?: {signal?: AbortSignal}): Promise<HistoricalKernelPendingInventory>;
+  /** Read-only inspection; no attach row or package-stage POST. */
+  inspectPendingPackageStage(input: HistoricalOwnerAttachmentInput, options?: {signal?: AbortSignal}): Promise<HistoricalPackageStagePendingInventory>;
+  /** Explicit recovery of one selected original ADMIN stage packet. */
+  recoverPendingPackageStage(attachId: string, expectedCommandId: string, options?: {signal?: AbortSignal}): Promise<HistoricalOwnerAttachmentResult>;
   /** Protected local status only. */
   kernelCommandStatus(attachId: string, options?: {signal?: AbortSignal}): Promise<HistoricalKernelCommandStatus[]>;
   /** Explicit retry of one retained original signed JWS. */

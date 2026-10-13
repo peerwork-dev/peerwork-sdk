@@ -422,6 +422,15 @@ exports.openSecureOwnerWorkspaces = options => {
         typeof input.expectedKernelIntentDbDigest !== 'string') {
       throw new TypeError('expectedKernelIntentDbDigest must be a string');
     }
+    const stageId = input.selectedPendingPackageStageCommandId;
+    const stateDigest = input.expectedTsStateDigest;
+    if ((stageId == null) !== (stateDigest == null)) {
+      throw new TypeError('selected package stage requires the inspected TS state digest');
+    }
+    if (stageId != null &&
+        (typeof stageId !== 'string' || !stageId || typeof stateDigest !== 'string' || !stateDigest)) {
+      throw new TypeError('selected package stage ID and TS state digest must be nonempty strings');
+    }
     return {
       workspace_id: input.workspaceId,
       protected_ts_state_path: input.protectedTsStatePath,
@@ -433,6 +442,8 @@ exports.openSecureOwnerWorkspaces = options => {
       retain_pending_action_command_id: input.retainPendingActionCommandId ?? null,
       kernel_pending_command_ids: kernelIds,
       expected_kernel_intent_db_digest: input.expectedKernelIntentDbDigest ?? null,
+      selected_pending_package_stage_command_id: stageId ?? null,
+      expected_ts_state_digest: stateDigest ?? null,
     };
   };
   const formatTransitionInput = input => {
@@ -599,6 +610,8 @@ exports.openSecureOwnerWorkspaces = options => {
     operations: ({ signal } = {}) => invoke('operations', undefined, undefined, undefined, signal),
     attach: (input, { signal } = {}) => invoke('attach', attachmentInput(input), undefined, undefined, signal),
     inspectKernelPending: (input, { signal } = {}) => invoke('kernel_inspect', attachmentInput(input), undefined, undefined, signal),
+    inspectPendingPackageStage: (input, { signal } = {}) => invoke('stage_inspect', attachmentInput(input), undefined, undefined, signal),
+    recoverPendingPackageStage: (attachId, expectedCommandId, { signal } = {}) => invoke('stage_recover', undefined, expectedCommandId, attachId, signal),
     kernelCommandStatus: (attachId, { signal } = {}) => invoke('kernel_status', undefined, attachId, undefined, signal),
     recoverKernelCommand: (attachId, commandId, { signal } = {}) => invoke('kernel_recover', undefined, commandId, attachId, signal),
     resumeAttachment: (attachId, { signal } = {}) => invoke('resume_attachment', undefined, attachId, undefined, signal),
