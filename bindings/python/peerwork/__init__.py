@@ -1007,6 +1007,9 @@ class SecureOwnerWorkspaceClient:
     def public_installer(self, workspace_id: str) -> "OwnerWorkspacePackageInstaller":
         return OwnerWorkspacePackageInstaller(self._config, workspace_id)
 
+    def private_package_stager(self, workspace_id: str) -> "OwnerWorkspacePrivatePackageStager":
+        return OwnerWorkspacePrivatePackageStager(self._config, workspace_id)
+
     def public_admission(self, workspace_id: str) -> "OwnerWorkspaceAdmissionClient":
         return OwnerWorkspaceAdmissionClient(self._config, workspace_id)
 
@@ -1088,8 +1091,95 @@ class OwnerWorkspacePackageInstaller(SecurePublicPackageInstaller):
         return cast(PublicInstallBeginResult | PublicInstallProgress | list[PendingPublicInstall], result["value"])
 
 
+class PrivatePackageStageResult(TypedDict):
+    status: Literal["PENDING", "STAGED"]
+    stage_id: str
+    workspace_id: str
+    source_id: str
+    root_package_digest: str
+    protocol_digest: str
+    part_count: int
+    applied_parts: int
+    pending_command_id: str | None
+
+
+class SavedPrivatePackageStage(TypedDict):
+    stage_id: str
+    workspace_id: str
+    source_id: str
+    root_package_digest: str
+    protocol_digest: str
+    part_count: int
+    saved_steps: int
+    locally_verified_complete: bool
+
+
+class PrivatePackageStageError(RuntimeError):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+class OwnerWorkspacePrivatePackageStager:
+    """Save and verify PRIVATE package parts; STAGED does not install them."""
+
+    def __init__(self, owner_config: dict, workspace_id: str):
+        self._owner_config = owner_config
+        self._workspace_id = workspace_id
+
+    def _stage(self, operation: str, *, input_value: dict | None = None,
+               stage_id: str | None = None,
+               cancel_handle: KernelCancelHandle | None = None) -> PrivatePackageStageResult | list[SavedPrivatePackageStage]:
+        result = json.loads(secure_owner_consumer_json("private_stage", operation,
+            json.dumps(self._owner_config, ensure_ascii=True, allow_nan=False, separators=(",", ":")),
+            self._workspace_id,
+            None if input_value is None else json.dumps(input_value, ensure_ascii=True, allow_nan=False, separators=(",", ":")),
+            stage_id, cancel_handle))
+        if result["ok"] is not True:
+            raise PrivatePackageStageError(result["code"], result["message"])
+        return cast(PrivatePackageStageResult | list[SavedPrivatePackageStage], result["value"])
+
+    def stage(self, material_json: str, *, expected_root_package_digest: str,
+              expected_protocol_digest: str, stage_id: str | None = None,
+              command_id: str | None = None,
+              issued_at_ms: int | None = None) -> PrivatePackageStageResult:
+        input_value = dict(material_json=material_json,
+            expected_root_package_digest=expected_root_package_digest,
+            expected_protocol_digest=expected_protocol_digest,
+            stage_id=stage_id, command_id=command_id, issued_at_ms=issued_at_ms)
+        return cast(PrivatePackageStageResult, self._stage("stage", input_value=input_value))
+
+    def continue_stage(self, stage_id: str) -> PrivatePackageStageResult:
+        return cast(PrivatePackageStageResult, self._stage("continue", stage_id=stage_id))
+
+    def stages(self) -> list[SavedPrivatePackageStage]:
+        """Protected local stage IDs and progress, not fresh service status."""
+        return cast(list[SavedPrivatePackageStage], self._stage("stages"))
+
+    async def stage_async(self, material_json: str, *, expected_root_package_digest: str,
+                          expected_protocol_digest: str, stage_id: str | None = None,
+                          command_id: str | None = None,
+                          issued_at_ms: int | None = None) -> PrivatePackageStageResult:
+        input_value = dict(material_json=material_json,
+            expected_root_package_digest=expected_root_package_digest,
+            expected_protocol_digest=expected_protocol_digest,
+            stage_id=stage_id, command_id=command_id, issued_at_ms=issued_at_ms)
+        return cast(PrivatePackageStageResult, await _run_cancelled_async(self._stage,
+            "stage", input_value=input_value))
+
+    async def continue_stage_async(self, stage_id: str) -> PrivatePackageStageResult:
+        return cast(PrivatePackageStageResult, await _run_cancelled_async(self._stage,
+            "continue", stage_id=stage_id))
+
+    async def stages_async(self) -> list[SavedPrivatePackageStage]:
+        return cast(list[SavedPrivatePackageStage], await _run_cancelled_async(self._stage,
+            "stages"))
+
+
 __all__ += ["SecureOwnerWorkspaceClient", "OwnerWorkspaceResult", "OwnerWorkspaceError",
-            "OwnerWorkspaceActionClient", "OwnerWorkspacePackageInstaller"]
+            "OwnerWorkspaceActionClient", "OwnerWorkspacePackageInstaller",
+            "OwnerWorkspacePrivatePackageStager", "PrivatePackageStageResult",
+            "SavedPrivatePackageStage", "PrivatePackageStageError"]
 
 
 class VerifiedIdentityCertificate(TypedDict):

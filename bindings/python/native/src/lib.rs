@@ -8,6 +8,7 @@ use peerwork_runtime::secure_identity_directory::{IdentityDirectoryConfig, Secur
 use peerwork_runtime::secure_public_install::{
     PublicPackageInstallInput, SecurePublicPackageInstall,
 };
+use peerwork_runtime::secure_private_install::PrivatePackageStageInput;
 use peerwork_runtime::secure_read_access::{SecureReadAccess, SecureReadConfig};
 use peerwork_runtime::secure_read_profile::{SecureReadProfile, SecureReadProfileConfig};
 use peerwork_runtime::secure_private_read_access::SecurePrivateReadAccess;
@@ -483,6 +484,26 @@ fn secure_owner_consumer_json(
                 },
                 "pending" => access.list_pending_json_with_cancel(&cancel),
                 _ => return fail("INSTALL_INPUT_INVALID", "unsupported Owner install operation"),
+            }.map_err(|error| (error.code(), error.to_string()))
+        } else if kind == "private_stage" {
+            let access = match owner.private_install_access(&workspace_id) {
+                Ok(value) => value,
+                Err(error) => return fail(error.code(), &error.to_string()),
+            };
+            match operation.as_str() {
+                "stage" => {
+                    let input: PrivatePackageStageInput = match input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {
+                        Some(value) => value,
+                        None => return fail("INSTALL_INPUT_INVALID", "invalid PRIVATE stage input"),
+                    };
+                    access.stage_package_json_with_cancel(input, &cancel)
+                }
+                "continue" => match command_id.as_deref() {
+                    Some(id) => access.continue_stage_json_with_cancel(id, &cancel),
+                    None => return fail("INSTALL_INPUT_INVALID", "stage ID is required"),
+                },
+                "stages" => access.stages_json(),
+                _ => return fail("INSTALL_INPUT_INVALID", "unsupported PRIVATE stage operation"),
             }.map_err(|error| (error.code(), error.to_string()))
         } else if kind == "public_admission" {
             let access = match owner.public_admission_access(&workspace_id) {

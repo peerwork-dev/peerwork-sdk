@@ -393,7 +393,7 @@ exports.openSecureOwnerWorkspaces = options => {
           throw error;
         }
         const value = result.value;
-        if (kind === 'public_install' || kind === 'public_admission' || kind === 'private_admission' || operation === 'pending') return value;
+        if (kind === 'public_install' || kind === 'private_stage' || kind === 'public_admission' || kind === 'private_admission' || operation === 'pending') return value;
         const receipt = value.receipt_canonical_json === null ? null : JSON.parse(value.receipt_canonical_json);
         delete value.receipt_canonical_json;
         return { ...value, receipt };
@@ -420,6 +420,24 @@ exports.openSecureOwnerWorkspaces = options => {
       },
       continueInstall: (beginCommandId, options = {}) => call('continue', undefined, beginCommandId, options.signal),
       pending: (options = {}) => call('pending', undefined, undefined, options.signal),
+    });
+    if (kind === 'private_stage') return Object.freeze({
+      stage: (materialJson, expectedRootPackageDigest, expectedProtocolDigest, options = {}) => {
+        if (typeof materialJson !== 'string' || typeof expectedRootPackageDigest !== 'string' ||
+            typeof expectedProtocolDigest !== 'string') {
+          throw new TypeError('PRIVATE stage requires materialJson and exact root/protocol digests');
+        }
+        return call('stage', {
+          material_json: materialJson,
+          expected_root_package_digest: expectedRootPackageDigest,
+          expected_protocol_digest: expectedProtocolDigest,
+          stage_id: options.stageId ?? null,
+          command_id: options.commandId ?? null,
+          issued_at_ms: options.issuedAtMs ?? null,
+        }, undefined, options.signal);
+      },
+      continueStage: (stageId, options = {}) => call('continue', undefined, stageId, options.signal),
+      stages: (options = {}) => call('stages', undefined, undefined, options.signal),
     });
     if (kind === 'public_admission' || kind === 'private_admission') return Object.freeze({
       offer: (recipientCertificateJson, scopes, options = {}) => {
@@ -462,6 +480,7 @@ exports.openSecureOwnerWorkspaces = options => {
     publicActions: workspaceId => consumer('public_action', workspaceId),
     privateActions: workspaceId => consumer('private_action', workspaceId),
     publicInstaller: workspaceId => consumer('public_install', workspaceId),
+    privatePackageStager: workspaceId => consumer('private_stage', workspaceId),
     publicAdmission: workspaceId => consumer('public_admission', workspaceId),
     privateAdmission: workspaceId => consumer('private_admission', workspaceId),
   });

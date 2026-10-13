@@ -145,6 +145,8 @@ export interface SecureOwnerWorkspaceSession {
   privateActions(workspaceId: string): SecurePublicActionSession;
   /** Install a caller-selected closure into a created PUBLIC workspace. */
   publicInstaller(workspaceId: string): SecurePublicPackageInstaller;
+  /** Save verified PRIVATE package parts; STAGED is not installed/ACTIVE. */
+  privatePackageStager(workspaceId: string): SecurePrivatePackageStager;
   publicAdmission(workspaceId: string): SecureOwnerAdmissionSession;
   /** PRIVATE Owner admission derives protected workspace keys and paths from creation history. */
   privateAdmission(workspaceId: string): SecureOwnerAdmissionSession;
@@ -384,3 +386,32 @@ export interface SecurePublicPackageInstaller {
   pending(options?: { signal?: AbortSignal }): Promise<PendingPublicInstall[]>;
 }
 export declare function openSecurePublicPackageInstaller(options: SecureReadOptions): SecurePublicPackageInstaller;
+
+export interface PrivatePackageStageResult {
+  status: 'PENDING' | 'STAGED';
+  stage_id: string;
+  workspace_id: string;
+  source_id: string;
+  root_package_digest: string;
+  protocol_digest: string;
+  part_count: number;
+  applied_parts: number;
+  pending_command_id: string | null;
+}
+export interface SavedPrivatePackageStage {
+  stage_id: string;
+  workspace_id: string;
+  source_id: string;
+  root_package_digest: string;
+  protocol_digest: string;
+  part_count: number;
+  saved_steps: number;
+  locally_verified_complete: boolean;
+}
+export interface SecurePrivatePackageStager {
+  stage(materialJson: string, expectedRootPackageDigest: string, expectedProtocolDigest: string,
+    options?: {stageId?: string; commandId?: string; issuedAtMs?: number; signal?: AbortSignal}): Promise<PrivatePackageStageResult>;
+  continueStage(stageId: string, options?: {signal?: AbortSignal}): Promise<PrivatePackageStageResult>;
+  /** Local protected history, including completed stages; no fresh service status. */
+  stages(options?: {signal?: AbortSignal}): Promise<SavedPrivatePackageStage[]>;
+}
