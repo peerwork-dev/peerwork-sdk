@@ -278,7 +278,8 @@ try:
         accepted = api.action_reconcile(workspace_id, command_id)
         assert accepted["status"] == "ACCEPTED"
         assert accepted["receipt"]["actor_id"] == actor_id
-        assert len(accepted["receipt"]["effects"]) == 1
+        # The pinned vote mutates instance state; it declares no content entities.
+        assert accepted["receipt"]["effects"] == []
         before_retry = counts(origin)
         assert api.action_retry(workspace_id, command_id) == accepted
         assert counts(origin) == before_retry
