@@ -143,6 +143,22 @@ impl PublicDecisionError {
     }
 }
 
+impl PublicDecisionConfig {
+    /// Bind the recipient's read authority to its protected local identity.
+    /// An explicit nonempty authority remains an intentional override.
+    pub fn resolve_default_authority(mut self) -> Result<Self, PublicDecisionError> {
+        if self.identity_path != self.state_dir.join("identity.state") {
+            return Err(PublicDecisionError::Identity);
+        }
+        let identity =
+            KernelIdentity::open(&self.identity_path).map_err(|_| PublicDecisionError::Identity)?;
+        if self.authority.is_empty() {
+            self.authority = sha256_hex(identity.actor_id().as_bytes());
+        }
+        Ok(self)
+    }
+}
+
 pub struct SecurePublicDecision {
     config: PublicDecisionConfig,
 }

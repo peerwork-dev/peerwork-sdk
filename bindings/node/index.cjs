@@ -392,14 +392,15 @@ exports.openSecurePublicAdmission = options => {
 exports.openSecurePublicDecision = options => {
   if (!options || typeof options.origin !== 'string' || typeof options.stateDir !== 'string' ||
       typeof options.workspaceId !== 'string' || typeof options.ownerActorId !== 'string' ||
-      typeof options.ownerKeyId !== 'string' || typeof options.authority !== 'string') {
-    throw new TypeError('recipient decision requires origin, stateDir, workspaceId and owner/authority pins');
+      typeof options.ownerKeyId !== 'string' ||
+      (options.authority !== undefined && (typeof options.authority !== 'string' || options.authority.length === 0))) {
+    throw new TypeError('recipient decision requires origin, stateDir, workspaceId and owner pins');
   }
   const config = {
     origin: options.origin, state_dir: options.stateDir,
     identity_path: require('node:path').join(options.stateDir, 'identity.state'),
     workspace_id: options.workspaceId, owner_actor_id: options.ownerActorId,
-    owner_key_id: options.ownerKeyId, authority: options.authority,
+    owner_key_id: options.ownerKeyId, authority: options.authority ?? '',
     allow_loopback_http: options.allowLoopbackHttp ?? false,
     required_features: options.requiredFeatures ?? [],
     max_replay_artifact_bytes: options.maxReplayArtifactBytes ?? 64 * 1024 * 1024,

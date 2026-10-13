@@ -596,6 +596,13 @@ impl Task for SecureAdmissionTask {
         } else if self.role == "recipient" {
             let config: PublicDecisionConfig = serde_json::from_str(&self.config_json)
                 .map_err(|_| napi::Error::from_reason("invalid PUBLIC decision configuration"))?;
+            let config = match config.resolve_default_authority() {
+                Ok(value) => value,
+                Err(error) => return Ok(
+                    serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()})
+                        .to_string(),
+                ),
+            };
             let access = SecurePublicDecision::new(config);
             match self.operation.as_str() {
                 "decide" => access

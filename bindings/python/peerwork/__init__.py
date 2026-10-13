@@ -922,19 +922,21 @@ class SecurePublicDecisionClient:
     """Recipient consent and receipt with explicit immutable owner and authority pins."""
 
     def __init__(self, origin: str, state_dir: str, workspace_id: str,
-                 owner_actor_id: str, owner_key_id: str, authority: str, *,
+                 owner_actor_id: str, owner_key_id: str, authority: str | None = None, *,
                  allow_loopback_http: bool = False,
                  required_features: tuple[str, ...] = (),
                  max_replay_artifact_bytes: int = 64 * 1024 * 1024):
-        if not all((origin, state_dir, workspace_id, owner_actor_id, owner_key_id, authority)):
-            raise ValueError("origin, state directory, workspace and owner/authority pins are required")
+        if not all((origin, state_dir, workspace_id, owner_actor_id, owner_key_id)):
+            raise ValueError("origin, state directory, workspace and owner pins are required")
+        if authority is not None and not authority:
+            raise ValueError("explicit authority must be nonempty")
         if isinstance(max_replay_artifact_bytes, bool) or not isinstance(max_replay_artifact_bytes, int) or max_replay_artifact_bytes <= 0 or max_replay_artifact_bytes > 2**64 - 1:
             raise ValueError("max_replay_artifact_bytes must be a positive u64")
         from pathlib import Path
         self._config = dict(origin=origin, state_dir=state_dir,
                             identity_path=str(Path(state_dir) / "identity.state"),
                             workspace_id=workspace_id, owner_actor_id=owner_actor_id,
-                            owner_key_id=owner_key_id, authority=authority,
+                            owner_key_id=owner_key_id, authority=authority or "",
                             allow_loopback_http=allow_loopback_http,
                             required_features=list(required_features),
                             max_replay_artifact_bytes=max_replay_artifact_bytes)

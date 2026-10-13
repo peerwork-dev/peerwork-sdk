@@ -384,8 +384,16 @@ fn secure_decision_command(verb: &str, args: &[String]) -> Result<String, (&'sta
             "identity_path".to_owned(),
             serde_json::Value::String(identity_path.to_string_lossy().into_owned()),
         );
+    config_value
+        .as_object_mut()
+        .expect("checked object")
+        .entry("authority")
+        .or_insert_with(|| serde_json::Value::String(String::new()));
     let config: PublicDecisionConfig =
         serde_json::from_value(config_value).map_err(|e| ("CONFIG_INVALID", e.to_string()))?;
+    let config = config
+        .resolve_default_authority()
+        .map_err(|e| (e.code(), e.to_string()))?;
     let access = SecurePublicDecision::new(config);
     let cancel = KernelCancellationToken::new();
     let _interrupts = InterruptMonitor::start(cancel.clone()).map_err(|_| {

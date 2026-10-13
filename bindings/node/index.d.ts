@@ -217,7 +217,7 @@ export interface SecurePublicDecisionOptions extends RecipientEnrollmentOptions 
   workspaceId: string;
   ownerActorId: string;
   ownerKeyId: string;
-  authority: string;
+  authority?: string;
   requiredFeatures?: string[];
   maxReplayArtifactBytes?: number;
 }

@@ -416,6 +416,10 @@ fn secure_public_decision_json(
         .map(|handle| handle.token.clone())
         .unwrap_or_default();
     Ok(py.allow_threads(move || {
+        let config = match config.resolve_default_authority() {
+            Ok(value) => value,
+            Err(error) => return serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
+        };
         let access = SecurePublicDecision::new(config);
         let result = match operation.as_str() {
             "decide" => match (invite_id.as_deref(), decision.as_deref()) { (Some(id), Some(value)) => access.decide_json_with_cancel(id, value, &cancel), _ => return serde_json::json!({"ok":false,"code":"DECISION_INVALID","message":"invite ID and decision are required"}).to_string() },
