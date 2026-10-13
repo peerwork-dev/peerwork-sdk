@@ -15,6 +15,7 @@ use peerwork_runtime::secure_private_read_access::SecurePrivateReadAccess;
 use peerwork_runtime::secure_owner_create::{
     SecureOwnerCreateConfig, SecureOwnerCreateInput, SecureOwnerWorkspaceCreate,
 };
+use peerwork_runtime::secure_owner_attach::{HistoricalOwnerAttachInput, SecureHistoricalOwnerAttach};
 use peerwork_runtime::public_catalog::{PublicCatalog, PublicCatalogConfig};
 use peerwork_runtime::secure_recipient_enrollment::{
     RecipientEnrollmentConfig, SecureRecipientEnrollment,
@@ -374,6 +375,28 @@ fn secure_owner_create_json(
             Ok(value) => value,
             Err(_) => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid Owner configuration"}).to_string(),
         };
+        if matches!(operation.as_str(), "attach" | "resume_attachment" | "attachments") {
+            let access = SecureHistoricalOwnerAttach::new(config);
+            let result = match operation.as_str() {
+                "attach" => {
+                    let input: HistoricalOwnerAttachInput = match input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {
+                        Some(value) => value,
+                        None => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid Owner attachment input"}).to_string(),
+                    };
+                    access.attach(input, &cancel).map(|value| serde_json::to_string(&value).expect("attachment result serializes"))
+                }
+                "resume_attachment" => match command_id.as_deref() {
+                    Some(id) => access.resume_attachment(id, &cancel).map(|value| serde_json::to_string(&value).expect("attachment result serializes")),
+                    None => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"attachment ID is required"}).to_string(),
+                },
+                "attachments" => access.attachments().map(|value| serde_json::to_string(&value).expect("attachment history serializes")),
+                _ => unreachable!(),
+            };
+            return match result {
+                Ok(value) => format!("{{\"ok\":true,\"value\":{value}}}"),
+                Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
+            };
+        }
         let access = SecureOwnerWorkspaceCreate::new(config);
         let result = match operation.as_str() {
             "prepare" | "create" => {

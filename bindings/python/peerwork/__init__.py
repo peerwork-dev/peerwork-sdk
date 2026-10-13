@@ -917,6 +917,17 @@ class OwnerWorkspaceResult(TypedDict):
     head: str | None
 
 
+class HistoricalOwnerAttachmentResult(TypedDict):
+    attach_id: str
+    workspace_id: str
+    provenance: Literal["ATTACHED"]
+    status: Literal["PREPARED", "ATTACHED"]
+    owner_actor_id: str
+    owner_key_id: str
+    sequence: int | None
+    head: str | None
+
+
 class OwnerWorkspaceError(RuntimeError):
     def __init__(self, code: str, message: str):
         super().__init__(message)
@@ -995,6 +1006,27 @@ class SecureOwnerWorkspaceClient:
         """Local protected PENDING and CREATED history; no fresh service status."""
         return cast(list[OwnerWorkspaceResult], self._owner("operations"))
 
+    def attach(self, workspace_id: str, protected_ts_state_path: str,
+               protected_ts_intent_db_path: str, protected_owner_pkcs8_path: str,
+               expected_owner_actor_id: str,
+               expected_owner_key_id: str) -> HistoricalOwnerAttachmentResult:
+        """Attach an existing Owner after protected source and remote proof checks."""
+        value = dict(workspace_id=workspace_id,
+            protected_ts_state_path=protected_ts_state_path,
+            protected_ts_intent_db_path=protected_ts_intent_db_path,
+            protected_owner_pkcs8_path=protected_owner_pkcs8_path,
+            expected_owner_actor_id=expected_owner_actor_id,
+            expected_owner_key_id=expected_owner_key_id)
+        return cast(HistoricalOwnerAttachmentResult, self._owner("attach", input_value=value))
+
+    def resume_attachment(self, attach_id: str) -> HistoricalOwnerAttachmentResult:
+        return cast(HistoricalOwnerAttachmentResult,
+            self._owner("resume_attachment", command_id=attach_id))
+
+    def attachments(self) -> list[HistoricalOwnerAttachmentResult]:
+        """Protected local attachment history; PREPARED is not remote acceptance."""
+        return cast(list[HistoricalOwnerAttachmentResult], self._owner("attachments"))
+
     def read(self, workspace_id: str) -> VerifiedSecureWorkspace:
         return cast(VerifiedSecureWorkspace, self._owner("read", workspace_id=workspace_id))
 
@@ -1042,6 +1074,27 @@ class SecureOwnerWorkspaceClient:
     async def operations_async(self) -> list[OwnerWorkspaceResult]:
         return cast(list[OwnerWorkspaceResult], await _run_cancelled_async(self._owner,
             "operations"))
+
+    async def attach_async(self, workspace_id: str, protected_ts_state_path: str,
+                           protected_ts_intent_db_path: str,
+                           protected_owner_pkcs8_path: str, expected_owner_actor_id: str,
+                           expected_owner_key_id: str) -> HistoricalOwnerAttachmentResult:
+        value = dict(workspace_id=workspace_id,
+            protected_ts_state_path=protected_ts_state_path,
+            protected_ts_intent_db_path=protected_ts_intent_db_path,
+            protected_owner_pkcs8_path=protected_owner_pkcs8_path,
+            expected_owner_actor_id=expected_owner_actor_id,
+            expected_owner_key_id=expected_owner_key_id)
+        return cast(HistoricalOwnerAttachmentResult, await _run_cancelled_async(
+            self._owner, "attach", input_value=value))
+
+    async def resume_attachment_async(self, attach_id: str) -> HistoricalOwnerAttachmentResult:
+        return cast(HistoricalOwnerAttachmentResult, await _run_cancelled_async(
+            self._owner, "resume_attachment", command_id=attach_id))
+
+    async def attachments_async(self) -> list[HistoricalOwnerAttachmentResult]:
+        return cast(list[HistoricalOwnerAttachmentResult], await _run_cancelled_async(
+            self._owner, "attachments"))
 
     async def read_async(self, workspace_id: str) -> VerifiedSecureWorkspace:
         return cast(VerifiedSecureWorkspace, await _run_cancelled_async(self._owner,
@@ -1281,7 +1334,7 @@ class OwnerWorkspacePrivatePackageInstaller(OwnerWorkspacePrivatePackageStager):
             "installs"))
 
 
-__all__ += ["SecureOwnerWorkspaceClient", "OwnerWorkspaceResult", "OwnerWorkspaceError",
+__all__ += ["SecureOwnerWorkspaceClient", "OwnerWorkspaceResult", "HistoricalOwnerAttachmentResult", "OwnerWorkspaceError",
             "OwnerWorkspaceActionClient", "OwnerWorkspacePackageInstaller",
             "OwnerWorkspacePrivatePackageStager", "PrivatePackageStageResult",
             "SavedPrivatePackageStage", "PrivatePackageStageError",

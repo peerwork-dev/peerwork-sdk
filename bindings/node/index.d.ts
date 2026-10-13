@@ -133,14 +133,37 @@ export interface SecureOwnerWorkspaceResult {
   sequence: number | null;
   head: string | null;
 }
+export interface HistoricalOwnerAttachmentInput {
+  workspaceId: string;
+  protectedTsStatePath: string;
+  protectedTsIntentDbPath: string;
+  protectedOwnerPkcs8Path: string;
+  expectedOwnerActorId: string;
+  expectedOwnerKeyId: string;
+}
+export interface HistoricalOwnerAttachmentResult {
+  attach_id: string;
+  workspace_id: string;
+  provenance: 'ATTACHED';
+  status: 'PREPARED' | 'ATTACHED';
+  owner_actor_id: string;
+  owner_key_id: string;
+  sequence: number | null;
+  head: string | null;
+}
 export interface SecureOwnerWorkspaceSession {
   prepare(input: SecureOwnerWorkspaceInput, options?: {signal?: AbortSignal}): Promise<SecureOwnerWorkspaceResult>;
   create(input: SecureOwnerWorkspaceInput, options?: {signal?: AbortSignal}): Promise<SecureOwnerWorkspaceResult>;
   resume(commandId: string, options?: {signal?: AbortSignal}): Promise<SecureOwnerWorkspaceResult>;
   /** Protected local history; CREATED_LOCAL rows may be reconciled by resume. */
   operations(options?: {signal?: AbortSignal}): Promise<SecureOwnerWorkspaceResult[]>;
+  /** Attach a protected existing Owner after exact local and remote proofs. */
+  attach(input: HistoricalOwnerAttachmentInput, options?: {signal?: AbortSignal}): Promise<HistoricalOwnerAttachmentResult>;
+  resumeAttachment(attachId: string, options?: {signal?: AbortSignal}): Promise<HistoricalOwnerAttachmentResult>;
+  /** Protected local PREPARED/ATTACHED history; PREPARED is not accepted. */
+  attachments(options?: {signal?: AbortSignal}): Promise<HistoricalOwnerAttachmentResult[]>;
   read(workspaceId: string, options?: {signal?: AbortSignal}): Promise<VerifiedSecureWorkspace>;
-  /** Derive action authority and saved intent paths from protected created-workspace history. */
+  /** Derive action authority and saved intent paths from verified protected Owner history. */
   publicActions(workspaceId: string): SecurePublicActionSession;
   privateActions(workspaceId: string): SecurePublicActionSession;
   /** Install a caller-selected closure into a created PUBLIC workspace. */

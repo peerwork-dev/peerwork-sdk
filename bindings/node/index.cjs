@@ -376,6 +376,22 @@ exports.openSecureOwnerWorkspaces = options => {
       coordination_version: input.coordinationVersion ?? null,
     };
   };
+  const attachmentInput = input => {
+    if (!input || typeof input !== 'object' ||
+        ['workspaceId', 'protectedTsStatePath', 'protectedTsIntentDbPath',
+          'protectedOwnerPkcs8Path', 'expectedOwnerActorId', 'expectedOwnerKeyId']
+          .some(key => typeof input[key] !== 'string' || !input[key])) {
+      throw new TypeError('attachment requires workspace, protected source paths and exact Owner actor/key pins');
+    }
+    return {
+      workspace_id: input.workspaceId,
+      protected_ts_state_path: input.protectedTsStatePath,
+      protected_ts_intent_db_path: input.protectedTsIntentDbPath,
+      protected_owner_pkcs8_path: input.protectedOwnerPkcs8Path,
+      expected_owner_actor_id: input.expectedOwnerActorId,
+      expected_owner_key_id: input.expectedOwnerKeyId,
+    };
+  };
   const consumer = (kind, workspaceId) => {
     if (typeof workspaceId !== 'string' || !workspaceId) throw new TypeError('workspace ID is required');
     const call = async (operation, input, commandId, signal) => {
@@ -515,6 +531,9 @@ exports.openSecureOwnerWorkspaces = options => {
     create: (input, { signal } = {}) => invoke('create', createInput(input), undefined, undefined, signal),
     resume: (commandId, { signal } = {}) => invoke('resume', undefined, commandId, undefined, signal),
     operations: ({ signal } = {}) => invoke('operations', undefined, undefined, undefined, signal),
+    attach: (input, { signal } = {}) => invoke('attach', attachmentInput(input), undefined, undefined, signal),
+    resumeAttachment: (attachId, { signal } = {}) => invoke('resume_attachment', undefined, attachId, undefined, signal),
+    attachments: ({ signal } = {}) => invoke('attachments', undefined, undefined, undefined, signal),
     read: (workspaceId, { signal } = {}) => invoke('read', undefined, undefined, workspaceId, signal),
     publicActions: workspaceId => consumer('public_action', workspaceId),
     privateActions: workspaceId => consumer('private_action', workspaceId),
