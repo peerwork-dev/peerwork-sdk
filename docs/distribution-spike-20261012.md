@@ -407,3 +407,42 @@ exited 0, emitting 7,822 bytes of LLVM IR with target triple
 This validates guest loader and compiler execution only. Guest subprocess
 translation, linking, executing an ARM64 binary, SDK build, and dependency
 closure remain to be tested.
+
+The next bounded link probe used Debian repository-pinned `proot`
+5.1.0-1.3+b1 (SHA-256
+`7ca9260edf1ca6666f9b33e1da551638055934d673117acd135ff5367f420744`)
+and `libtalloc2` (SHA-256
+`b4cc8aa74c8b7c05a64efb6577acc955f522a8e39d8f37fe60b1b3fe6634ce96`)
+without host installation. Task-local `proot -q qemu-aarch64` failed with
+`ptrace(TRACEME): Operation not permitted` both in the default sandbox and
+the permitted unsandboxed retry. A user-namespace retry got beyond that
+error but failed to discover its loader through `/proc/self/fd`; that
+namespace has no mounted proc. No host binfmt or proc mount was added.
+
+Direct QEMU orchestration does link and execute a tiny ARM64 program without
+proot. A first emulated `rust-lld` invocation received GCC-driver `-Wl`
+arguments because rustc's default linker flavor was wrong for raw lld. An
+experimental task-local argument-translating wrapper linked it, but the
+final probe used stable `-C linker-flavor=ld.lld` and a simple wrapper that
+only invokes the verified guest `rust-lld` through QEMU. The first such
+wrapper mistakenly supplied `-flavor gnu` twice; removing that duplicate
+fixed the probe. `rustc hello.rs -C linker-flavor=ld.lld
+-C linker=<qemu-rust-lld-wrapper>` exited 0; `file` reported a statically
+linked aarch64 executable, and direct QEMU execution printed
+`arm64 toolchain probe`. The 4,229,928-byte executable SHA-256 is
+`cd8b43c9116f36a95947e16dfe78f794cfc30ec212ead75a686110763612c6c0`;
+the final task-local wrapper SHA-256 is
+`1d1ab7cc05d744ea209ec76f880bf7d6203e6d63730051f0bda5a996ba7926dd`.
+This is a linked guest Rust hello, not an SDK build or package test.
+
+The next SDK build is materially larger: the current core ICU build script
+refuses host/target cross builds, while a full guest Cargo build needs
+translated child processes and a guest C/C++ toolchain. The successful
+single-process QEMU/rust-lld probe does not establish either. A first ARM64
+SDK build would require a target-native guest execution route with working
+`/proc` and child translation, or a separately engineered cross build that
+preserves pinned ICU data/source, target C/C++ archives and linkage. It would
+then need ARM64 Python/Node extension packaging, dependency closure, and
+emulated installed API tests. No duration or package size is claimed from
+this tiny probe; the work spans toolchain, ICU, two extensions, CLI and
+installed-service validation rather than a single rerun of x64 jobs.
