@@ -44,7 +44,7 @@ with tempfile.TemporaryDirectory(prefix="peerwork-installed-actions-") as direct
     state.chmod(0o700)
     env = os.environ.copy()
     env.update(PEERWORK_TEST_STATE=str(state), PEERWORK_TEST_PUBLIC_READ="1",
-               PEERWORK_TEST_FIRST_POST_MODE="normal")
+               PEERWORK_TEST_FIRST_POST_MODE="drop")
     server = subprocess.Popen([NODE, str(ROOT / "tests/reference-kernel-server.mjs")],
                               cwd=ROOT, env=env, stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE, text=True)
@@ -65,7 +65,6 @@ with tempfile.TemporaryDirectory(prefix="peerwork-installed-actions-") as direct
         assert client.read()["sequence"] == 1
 
         first = "q" * 43
-        post(origin, "__test/drop-next-post")
         pending = client.submit("discussion.post", fixture["instance_id"],
                                 {"message": "Python authored record"}, command_id=first)
         assert pending["status"] == "PENDING" and pending["command_id"] == first
