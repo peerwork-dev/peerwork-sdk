@@ -12,6 +12,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import urllib.request
+import urllib.error
 
 import peerwork
 
@@ -25,10 +26,13 @@ TEMP_ROOT = Path(os.environ["PEERWORK_TEST_ARTIFACT_DIR"])
 
 def test_post(origin, operation, **fields):
     wire = json.dumps(fields, separators=(",", ":"), ensure_ascii=True).encode()
-    with urllib.request.urlopen(urllib.request.Request(
-            origin + "__test/private-owner-" + operation, data=wire,
-            headers={"content-type": "application/json"}, method="POST"), timeout=60) as response:
-        return json.load(response)
+    try:
+        with urllib.request.urlopen(urllib.request.Request(
+                origin + "__test/private-owner-" + operation, data=wire,
+                headers={"content-type": "application/json"}, method="POST"), timeout=60) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as error:
+        raise AssertionError((operation, error.code, error.read().decode()[:500])) from error
 
 
 def node_call(operation, config, **fields):
