@@ -213,6 +213,7 @@ try:
     assert record["value"]["payload"]["title"] == title
     assert record["value"]["payload"]["body"] == body
     assert node_call(config, "resume", commandId=second_id) == second
+    assert fresh.resume_format_transition(first_id) == first
     assert counts(origin) == baseline_commits + 2
 
     server.terminate()
