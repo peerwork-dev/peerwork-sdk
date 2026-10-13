@@ -241,3 +241,20 @@ uploaded release artifact exists yet. The local namespace run above is the
 observed native-musl evidence; macOS, Windows, musl arm64, older glibc floor,
 and broader real-service installed functionality remain required release
 checks.
+
+### Musl CI notice-path correction (`8dbe11c`)
+
+Independent source review found that the LLVM notice copy in `da3f3a7`
+resolved its path from process cwd. The local package run started in
+`bindings/node` and included the notice, but the CI step in `48277a4`
+starts at the repository root and would fail before producing a tarball.
+`8dbe11c` resolves both the LLVM and SDK license paths relative to the
+packaging script URL and retains both tested npm tarballs as CI artifacts.
+The corrected native Alpine packaging command passed from the SDK root and
+from `bindings/node`; the root-cwd output loaded as a Node addon and its LLVM
+notice SHA-256 remained
+`8d85c1057d742e597985c7d4e6320b015a9139385cff4cbae06ffc0ebe89afee`.
+The first root-cwd `node -e` probe failed JavaScript shell quoting, then an
+equivalent file-based import passed. This source correction was not exercised
+by a GitHub runner and did not change the earlier installed wheel or tarball
+binary evidence.
