@@ -259,6 +259,8 @@ let serveStaleIdentityDirectory = false;
 let tamperNextIdentityDirectory = false;
 let tamperNextPrivateGrant = false;
 let tamperNextPrivateInvitation = false;
+let delayNextIdentityDirectoryPost = false;
+let delayedIdentityDirectoryApplied = false;
 let rejectNextPostBeforeApply = false;
 let delayNextPostAfterApply = false;
 let delayedPostStarted = false;
@@ -367,6 +369,19 @@ const proxy = createServer(async (request, response) => {
       tamperNextPrivateInvitation = true;
       response.writeHead(200, {'content-type':'application/json'});
       response.end(JSON.stringify({enabled:true}));
+      return;
+    }
+    if (request.url === '/__test/delay-next-identity-directory-post' && request.method === 'POST') {
+      if (delayNextIdentityDirectoryPost) throw new Error('identity directory delay already armed');
+      delayNextIdentityDirectoryPost = true;
+      delayedIdentityDirectoryApplied = false;
+      response.writeHead(200, {'content-type':'application/json'});
+      response.end(JSON.stringify({enabled:true}));
+      return;
+    }
+    if (request.url === '/__test/identity-directory-post-delay-status' && request.method === 'GET') {
+      response.writeHead(200, {'content-type':'application/json'});
+      response.end(JSON.stringify({applied:delayedIdentityDirectoryApplied}));
       return;
     }
     if (request.url === '/__test/restore-identity-directory' && request.method === 'POST') {
@@ -478,6 +493,13 @@ const proxy = createServer(async (request, response) => {
       dropNextIdentityDirectory = false;
       response.destroy();
       return;
+    }
+    if (request.method === 'POST' && request.url === '/api/workspace/v1/secure/identity-keys'
+        && delayNextIdentityDirectoryPost && original.status === 201) {
+      delayNextIdentityDirectoryPost = false;
+      delayedIdentityDirectoryApplied = true;
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      if (response.destroyed) return;
     }
     if (publicReadFixture && request.method === 'GET' && request.url?.includes('/journal?') && original.status === 200) {
       if (!publicReadFirstPage) publicReadFirstPage = Buffer.from(bytes);

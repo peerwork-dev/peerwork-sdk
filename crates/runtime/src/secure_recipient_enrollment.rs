@@ -95,6 +95,8 @@ pub enum RecipientEnrollmentError {
     ServerRejected(u16),
     #[error("system clock or random source failed")]
     ClockOrEntropy,
+    #[error("recipient key update was cancelled")]
+    Cancelled,
 }
 
 impl RecipientEnrollmentError {
@@ -107,6 +109,7 @@ impl RecipientEnrollmentError {
             Self::Local => "LOCAL_STATE_FAILED",
             Self::ServerRejected(_) => "SERVER_REJECTED",
             Self::ClockOrEntropy => "CLOCK_OR_ENTROPY",
+            Self::Cancelled => "CANCELLED",
         }
     }
 }
@@ -243,19 +246,42 @@ impl SecureRecipientEnrollment {
         expected_certificate_hash: &str,
         update_id: Option<&str>,
     ) -> Result<RecipientKeyUpdateResult, RecipientEnrollmentError> {
+        self.update_key_with_cancel(
+            mode,
+            expected_certificate_hash,
+            update_id,
+            &CancellationToken::new(),
+        )
+    }
+
+    pub fn update_key_with_cancel(
+        &self,
+        mode: &str,
+        expected_certificate_hash: &str,
+        update_id: Option<&str>,
+        cancel: &CancellationToken,
+    ) -> Result<RecipientKeyUpdateResult, RecipientEnrollmentError> {
         if !matches!(mode, "RENEW" | "ROTATE")
             || !valid_token_or_hash(expected_certificate_hash, false)
         {
             return Err(RecipientEnrollmentError::Invalid);
         }
-        self.run_key_update(update_id, Some((mode, expected_certificate_hash)))
+        self.run_key_update(update_id, Some((mode, expected_certificate_hash)), cancel)
     }
 
     pub fn retry_key_update(
         &self,
         update_id: &str,
     ) -> Result<RecipientKeyUpdateResult, RecipientEnrollmentError> {
-        self.run_key_update(Some(update_id), None)
+        self.retry_key_update_with_cancel(update_id, &CancellationToken::new())
+    }
+
+    pub fn retry_key_update_with_cancel(
+        &self,
+        update_id: &str,
+        cancel: &CancellationToken,
+    ) -> Result<RecipientKeyUpdateResult, RecipientEnrollmentError> {
+        self.run_key_update(Some(update_id), None, cancel)
     }
 
     pub fn pending_key_updates(
@@ -289,7 +315,11 @@ impl SecureRecipientEnrollment {
         &self,
         requested_id: Option<&str>,
         requested: Option<(&str, &str)>,
+        cancel: &CancellationToken,
     ) -> Result<RecipientKeyUpdateResult, RecipientEnrollmentError> {
+        if cancel.is_cancelled() {
+            return Err(RecipientEnrollmentError::Cancelled);
+        }
         if requested_id.is_some_and(|id| !valid_token_or_hash(id, true)) {
             return Err(RecipientEnrollmentError::Invalid);
         }
@@ -340,12 +370,8 @@ impl SecureRecipientEnrollment {
             }
             let directory = self.own_directory();
             let prior = directory
-                .lookup_for_update(
-                    identity.actor_id(),
-                    identity.key_id(),
-                    &CancellationToken::new(),
-                )
-                .map_err(|_| RecipientEnrollmentError::DirectoryContinuity)?;
+                .lookup_for_update(identity.actor_id(), identity.key_id(), cancel)
+                .map_err(|_| directory_or_cancel(cancel))?;
             if Some(prior.directory_head.as_str()) != doc.published_head.as_deref()
                 || prior.certificate_json != canonical_certificate(recipient.certificate())?
                 || prior.directory_version >= 128
@@ -413,6 +439,9 @@ impl SecureRecipientEnrollment {
         }
         let index = selected.unwrap_or(doc.updates.len() - 1);
         let pending = &doc.updates[index];
+        if cancel.is_cancelled() {
+            return Ok(update_result(pending, "PENDING"));
+        }
         let (next, cert, version, previous) = validate_saved_update(pending, &identity)?;
         if pending.previous_certificate_hash != doc.certificate_digest
             || Some(previous.as_str()) != doc.published_head.as_deref()
@@ -421,12 +450,15 @@ impl SecureRecipientEnrollment {
         }
         let directory = self.own_directory();
         let observed = directory
-            .lookup_for_update(
-                identity.actor_id(),
-                identity.key_id(),
-                &CancellationToken::new(),
-            )
-            .map_err(|_| RecipientEnrollmentError::DirectoryContinuity)?;
+            .lookup_for_update(identity.actor_id(), identity.key_id(), cancel)
+            .map_err(|_| directory_or_cancel(cancel));
+        let observed = match observed {
+            Ok(value) => value,
+            Err(RecipientEnrollmentError::Cancelled) => {
+                return Ok(update_result(pending, "PENDING"))
+            }
+            Err(error) => return Err(error),
+        };
         if observed.directory_head != pending.entry_hash {
             if observed.directory_head != previous || observed.directory_version + 1 != version {
                 return Err(RecipientEnrollmentError::DirectoryContinuity);
@@ -442,23 +474,36 @@ impl SecureRecipientEnrollment {
                     transport,
                     &self.config.kernel_journal_path,
                     &[],
-                    &CancellationToken::new(),
+                    cancel,
                 ))
-                .map_err(map_kernel)?;
+                .map_err(|error| {
+                    if cancel.is_cancelled() {
+                        RecipientEnrollmentError::Cancelled
+                    } else {
+                        map_kernel(error)
+                    }
+                });
+            let client = match client {
+                Ok(value) => value,
+                Err(RecipientEnrollmentError::Cancelled) => {
+                    return Ok(update_result(pending, "PENDING"))
+                }
+                Err(error) => return Err(error),
+            };
             let authority = sha256_hex(identity.actor_id().as_bytes());
             let proof = sign_read_proof(DIRECTORY_PATH, client.discovery(), &identity, &authority)
                 .map_err(|_| RecipientEnrollmentError::Transport)?;
             let sent = runtime.block_on(client.transport().post_secure_identity_key_exact(
                 pending.request_wire.as_bytes().to_vec(),
                 &proof,
-                &CancellationToken::new(),
+                cancel,
             ));
             match sent {
                 Ok(response) if (200..300).contains(&response.status) => (),
                 Ok(response) => {
                     return Err(RecipientEnrollmentError::ServerRejected(response.status))
                 }
-                Err(TransportError::SubmittedUncertain) => {
+                Err(TransportError::SubmittedUncertain | TransportError::Cancelled) => {
                     return Ok(update_result(pending, "PENDING"))
                 }
                 Err(_) => return Err(RecipientEnrollmentError::Transport),
@@ -467,17 +512,23 @@ impl SecureRecipientEnrollment {
             drop(runtime);
         }
         let verified = directory
-            .lookup_for_update(
-                identity.actor_id(),
-                identity.key_id(),
-                &CancellationToken::new(),
-            )
-            .map_err(|_| RecipientEnrollmentError::DirectoryContinuity)?;
+            .lookup_for_update(identity.actor_id(), identity.key_id(), cancel)
+            .map_err(|_| directory_or_cancel(cancel));
+        let verified = match verified {
+            Ok(value) => value,
+            Err(RecipientEnrollmentError::Cancelled) => {
+                return Ok(update_result(pending, "PENDING"))
+            }
+            Err(error) => return Err(error),
+        };
         if verified.directory_head != pending.entry_hash
             || verified.directory_version != version
             || verified.certificate_json != canonical_certificate(&cert)?
         {
             return Err(RecipientEnrollmentError::DirectoryContinuity);
+        }
+        if cancel.is_cancelled() {
+            return Ok(update_result(pending, "PENDING"));
         }
         if current_hash == pending.previous_certificate_hash {
             recipient
@@ -1011,6 +1062,14 @@ fn result(
     }
 }
 
+fn directory_or_cancel(cancel: &CancellationToken) -> RecipientEnrollmentError {
+    if cancel.is_cancelled() {
+        RecipientEnrollmentError::Cancelled
+    } else {
+        RecipientEnrollmentError::DirectoryContinuity
+    }
+}
+
 fn map_kernel(error: KernelClientError) -> RecipientEnrollmentError {
     match error {
         KernelClientError::ServerRejected(status) => {
@@ -1392,19 +1451,65 @@ mod tests {
                 .unwrap()
                 .certificate()
                 .clone();
+        let pre_cancel = CancellationToken::new();
+        pre_cancel.cancel();
+        assert!(matches!(
+            enrollment.update_key_with_cancel(
+                "ROTATE",
+                &local.certificate_digest,
+                None,
+                &pre_cancel
+            ),
+            Err(RecipientEnrollmentError::Cancelled)
+        ));
+        assert!(enrollment.pending_key_updates().unwrap().is_empty());
         runtime.block_on(async {
             let response = reqwest::Client::new()
-                .post(format!("{origin}__test/drop-next-identity-directory"))
+                .post(format!("{origin}__test/delay-next-identity-directory-post"))
                 .send()
                 .await
                 .unwrap();
             assert!(response.status().is_success());
         });
+        let cancel = CancellationToken::new();
+        let observed_cancel = cancel.clone();
+        let observed_origin = origin.clone();
+        let observer = std::thread::spawn(move || {
+            let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+            runtime.block_on(async move {
+                for _ in 0..100 {
+                    let response = reqwest::Client::new()
+                        .get(format!(
+                            "{observed_origin}__test/identity-directory-post-delay-status"
+                        ))
+                        .send()
+                        .await
+                        .unwrap();
+                    let body: serde_json::Value =
+                        serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+                    if body["applied"] == true {
+                        observed_cancel.cancel();
+                        return true;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                }
+                false
+            })
+        });
         let pending_rotation = enrollment
-            .update_key("ROTATE", &local.certificate_digest, None)
+            .update_key_with_cancel("ROTATE", &local.certificate_digest, None, &cancel)
             .unwrap();
+        assert!(
+            observer.join().unwrap(),
+            "tracked directory POST was not applied"
+        );
         assert_eq!(pending_rotation.status, "PENDING");
         assert_eq!(pending_rotation.directory_version, 2);
+        assert_eq!(enrollment.pending_key_updates().unwrap().len(), 1);
+        assert_eq!(
+            enrollment.pending_key_updates().unwrap()[0].update_id,
+            pending_rotation.update_id
+        );
         let recovered_rotation = SecureRecipientEnrollment::new(config.clone())
             .retry_key_update(&pending_rotation.update_id)
             .unwrap();
