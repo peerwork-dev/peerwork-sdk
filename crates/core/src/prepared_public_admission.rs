@@ -1195,6 +1195,76 @@ mod tests {
     };
 
     #[test]
+    fn signed_v2_policy_offer_uses_v2_domain_and_rejects_wrong_domain() {
+        let now = 1_700_000_000_000;
+        let owner = SigningKey::from_bytes(&[17; 32]);
+        let recipient = SigningKey::from_bytes(&[19; 32]);
+        let recipient_secret = SecretRecipient::generate().unwrap();
+        let certificate_wire =
+            serde_json::to_vec(&recipient_secret.certify(&recipient, now).unwrap()).unwrap();
+        let workspace = base64url(&[13; 32]);
+        let owner_key = base64url(&owner.verifying_key().to_bytes());
+        let owner_actor = actor_id(&owner.verifying_key().to_bytes());
+        let payload = object(vec![
+            ("v", WireValue::Number(2.0)),
+            ("workspace_id", s(&workspace)),
+            ("owner_id", s(&owner_actor)),
+            ("signing_key", s(&owner_key)),
+            ("version", WireValue::Number(2.0)),
+            ("previous_policy", WireValue::Null),
+            ("effective_sequence", WireValue::Number(1.0)),
+            ("visibility", s("PUBLIC")),
+            ("epoch", WireValue::Number(0.0)),
+            ("members", WireValue::Array(Vec::new())),
+            ("issued_at", WireValue::Number(now as f64)),
+        ]);
+        let scopes = br#"[{"instance_id":null,"actions":["proposal.adopt"],"protocol_roles":["ADOPTER"],"capabilities":[]}]"#;
+        let invite_id = base64url(&[14; 32]);
+        let correct = sign_payload(payload.clone(), "peerwork.secure.policy.v2", &owner).unwrap();
+        let correct_wire = canonical_wire_value(&correct, Path::SecureArtifact).unwrap();
+        let offer = prepare_public_offer(
+            correct_wire.as_bytes(),
+            &certificate_wire,
+            scopes,
+            "v2 policy",
+            Some(&invite_id),
+            now + 1,
+            now + 86_400_000,
+            &owner,
+        )
+        .unwrap();
+        assert!(verify_saved_public_offer(
+            offer.request_wire(),
+            correct_wire.as_bytes(),
+            &owner_actor,
+            &owner_key,
+            &workspace,
+        )
+        .is_ok());
+        let wrong = sign_payload(payload, "peerwork.secure.policy.v1", &owner).unwrap();
+        let wrong_wire = canonical_wire_value(&wrong, Path::SecureArtifact).unwrap();
+        assert!(prepare_public_offer(
+            wrong_wire.as_bytes(),
+            &certificate_wire,
+            scopes,
+            "v2 policy",
+            Some(&invite_id),
+            now + 1,
+            now + 86_400_000,
+            &owner,
+        )
+        .is_err());
+        assert!(verify_saved_public_offer(
+            offer.request_wire(),
+            wrong_wire.as_bytes(),
+            &owner_actor,
+            &owner_key,
+            &workspace,
+        )
+        .is_err());
+    }
+
+    #[test]
     fn public_offer_and_recipient_consent_bind_exact_signed_artifacts() {
         let now = 1_700_000_000_000;
         let owner = SigningKey::from_bytes(&[17; 32]);
