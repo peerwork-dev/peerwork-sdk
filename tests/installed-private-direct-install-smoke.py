@@ -21,6 +21,9 @@ STATE = Path(os.environ["PEERWORK_TEST_STATE"])
 NODE = os.environ["PEERWORK_TEST_NODE"]
 NODE_PACKAGE = os.environ["PEERWORK_TEST_NODE_PACKAGE"]
 CLI = os.environ["PEERWORK_TEST_CLI"]
+SECOND_MODE = os.environ.get("PEERWORK_TEST_PRIVATE_DIRECT_SECOND", "0")
+assert SECOND_MODE in {"0", "1"}
+SECOND = SECOND_MODE == "1"
 for relative, variable in (
     ("crates/runtime/src/secure_private_install.rs", "PEERWORK_TEST_INSTALL_SOURCE_SHA256"),
     ("crates/core/src/secure_replay.rs", "PEERWORK_TEST_REPLAY_SOURCE_SHA256"),
@@ -174,6 +177,34 @@ def assert_direct_policy_upgrade(before, after, prior_objects, old_hash,
         assert len(matches) == 1 and matches[0]["fields"] == readable
         assert not e2ee.intersection(matches[0]["fields"])
     assert saw_e2ee
+
+
+def assert_same_protocol_instance_upgrade(before, after, old_hash, source_sequence,
+                                          owner_actor, instance_id, protocol_digest,
+                                          requested_scope):
+    assert before["v"] == after["v"] == 3
+    assert before["structure_mode"] == after["structure_mode"] == "STRUCTURED"
+    for name in ("workspace_id", "visibility", "owner_id", "signing_key", "epoch",
+                 "protocol_format_ceiling"):
+        assert before[name] == after[name]
+    assert after["visibility"] == "PRIVATE" and after["owner_id"] == owner_actor
+    assert after["version"] == before["version"] + 1
+    assert after["previous_policy"] == old_hash
+    assert after["effective_sequence"] == source_sequence + 1
+    assert len(before["members"]) == len(after["members"]) == 1
+    old_member, new_member = before["members"][0], after["members"][0]
+    for name in ("actor_id", "certificate", "role"):
+        assert old_member[name] == new_member[name]
+    assert new_member["scopes"] == old_member["scopes"] + [
+        dict(instance_id=instance_id, **requested_scope)]
+    old_structure, new_structure = before["structure"], after["structure"]
+    assert new_structure["protocols"] == old_structure["protocols"]
+    assert new_structure["disclosure"] == old_structure["disclosure"]
+    for old_instance in old_structure["instances"]:
+        assert new_structure["instances"].count(old_instance) == 1
+    assert len(new_structure["instances"]) == len(old_structure["instances"]) + 1
+    assert new_structure["instances"].count(
+        dict(instance_id=instance_id, protocol_digest=protocol_digest)) == 1
 
 
 def node_call(config, workspace_id, operation, **values):
@@ -375,12 +406,104 @@ try:
     assert counts(origin)["head_sequence"] == read["sequence"]
     assert reopened.private_package_stager(workspace_id).stages() == []
 
+    second_result = None
+    expected_history = installs
+    if SECOND:
+        # The next direct source selects the same already installed protocol
+        # for a distinct instance. No new protocol/schema is allowed here.
+        first_read = read
+        first_policy = signed_policy(workspace_id, first_read)
+        second_instance = secrets.token_urlsafe(32)
+        assert second_instance != instance_id and len(second_instance) == 43
+        second_start = counts(origin)["commits"]
+        next_begin = reopened.private_package_installer(workspace_id).begin_direct(
+            closure_json, root_digest, protocol_digest, second_instance,
+            "proposal", grants_json=grants_json)
+        assert next_begin["status"] == "PENDING"
+        assert next_begin["step_action_id"] == "secure.structure.begin"
+        second_begin_id = next_begin["begin_command_id"]
+        assert second_begin_id != begin_id
+        assert counts(origin)["commits"] == second_start + 1
+        expected_history = reopened.private_package_installer(workspace_id).installs()
+        history_by_id = {row["begin_command_id"]: row for row in expected_history}
+        assert len(history_by_id) == 2 and history_by_id[begin_id] == installs[0]
+        assert second_begin_id in history_by_id
+        second_row = history_by_id[second_begin_id]
+        assert second_row["source_kind"] == "DIRECT" and "stage_id" not in second_row
+        assert second_row["instance_id"] == second_instance
+        assert second_row["protocol_digest"] == protocol_digest
+        second_steps = []
+        progress = cli("owner-private-install-continue", config_file, workspace_id,
+                       second_begin_id)
+        for _ in range(8):
+            if progress["status"] == "ACCEPTED":
+                break
+            assert progress["status"] == "PENDING"
+            assert progress["step_action_id"] in {"secure.structure.page", "secure.structure.end"}
+            assert progress["begin_command_id"] == second_begin_id
+            assert progress["protocol_digest"] == protocol_digest
+            assert progress["instance_id"] == second_instance
+            if not second_steps or progress["step_command_id"] != second_steps[-1]["command_id"]:
+                assert all(progress["step_command_id"] != row["command_id"] for row in second_steps)
+                second_steps.append(dict(action_id=progress["step_action_id"],
+                    command_id=progress["step_command_id"], commit_hash=progress["commit_hash"]))
+            progress = node_call(config, workspace_id, "continueInstall", beginId=second_begin_id)
+        assert progress["status"] == "ACCEPTED"
+        assert progress["step_action_id"] == "secure.structure.end"
+        assert second_steps[-1]["action_id"] == "secure.structure.end"
+        assert progress["step_command_id"] == second_steps[-1]["command_id"]
+        assert any(row["action_id"] == "secure.structure.page" for row in second_steps)
+        assert counts(origin)["commits"] == second_start + 1 + len(second_steps)
+        after_second = reopened.read(workspace_id)
+        assert after_second["structure_status"] == "ACTIVE"
+        after_second_policy = signed_policy(workspace_id, after_second)
+        assert_same_protocol_instance_upgrade(first_policy, after_second_policy,
+            read["policy_hash"], read["sequence"], owner_actor, second_instance,
+            protocol_digest, requested_scope)
+        for retained_id, retained_title, retained_body in (
+            (old_record_id, old_title, old_body), (record_id, title, body)):
+            retained = next(row for row in after_second["objects"] if row.get("id") == retained_id)
+            assert retained["value"]["payload"]["title"] == retained_title
+            assert retained["value"]["payload"]["body"] == retained_body
+        second_title, second_body = "Second direct proposal", "Already installed protocol, new instance"
+        next_action = node_call(config, workspace_id, "propose", instanceId=second_instance,
+                                title=second_title, body=second_body)
+        assert next_action["status"] == "PENDING"
+        next_receipt = reopened.private_actions(workspace_id).retry_saved(next_action["command_id"])
+        assert next_receipt["status"] == "ACCEPTED"
+        assert next_receipt["receipt"]["actor_id"] == owner_actor
+        assert len(next_receipt["receipt"]["effects"]) == 1
+        second_record_id = next_receipt["receipt"]["effects"][0]["record_id"]
+        read = reopened.read(workspace_id)
+        before_protocols = [row for row in first_read["objects"] if row.get("kind") == "protocols"]
+        after_protocols = [row for row in read["objects"] if row.get("kind") == "protocols"]
+        assert len(after_protocols) == len(before_protocols)
+        assert {row["id"] for row in after_protocols} == {row["id"] for row in before_protocols}
+        second_record = next(row for row in read["objects"] if row.get("id") == second_record_id)
+        assert second_record["value"]["payload"]["title"] == second_title
+        assert second_record["value"]["payload"]["body"] == second_body
+        for retained_id, retained_title, retained_body in (
+            (old_record_id, old_title, old_body), (record_id, title, body)):
+            retained = next(row for row in read["objects"] if row.get("id") == retained_id)
+            assert retained["value"]["payload"]["title"] == retained_title
+            assert retained["value"]["payload"]["body"] == retained_body
+        assert cli("owner-private-install-continue", config_file, workspace_id,
+                   second_begin_id)["status"] == "ACCEPTED"
+        assert cli("owner-private-install-continue", config_file, workspace_id,
+                   begin_id)["status"] == "ACCEPTED"
+        assert counts(origin)["commits"] == second_start + 2 + len(second_steps)
+        assert counts(origin)["head_sequence"] == read["sequence"]
+        assert reopened.private_package_stager(workspace_id).stages() == []
+        second_result = dict(begin_command_id=second_begin_id, instance_id=second_instance,
+            record_id=second_record_id, steps=second_steps,
+            policy_versions=[first_policy["version"], after_second_policy["version"]])
+
     server.terminate()
     server.wait(timeout=5)
     rows_python = reopened.private_package_installer(workspace_id).installs()
     rows_node = node_call(config, workspace_id, "installs")
     rows_cli = cli("owner-private-install-list", config_file, workspace_id)
-    assert rows_python == rows_node == rows_cli == installs
+    assert rows_python == rows_node == rows_cli == expected_history
     print(json.dumps(dict(status="PASS", workspace_id=workspace_id,
         begin_command_id=begin_id, source_kind="DIRECT", stage_count=0,
         root_package_digest=root_digest, protocol_digest=protocol_digest,
@@ -391,7 +514,7 @@ try:
         policy_wire_v=old_policy["v"], source_structure_mode=old_policy["structure_mode"],
         installed_structure_mode=new_policy["structure_mode"],
         policy_versions=[old_policy["version"], new_policy["version"]],
-        service_policy_oracle_bound=True)))
+        service_policy_oracle_bound=True, second_direct=second_result)))
 finally:
     if server.poll() is None:
         server.terminate()
