@@ -113,3 +113,131 @@ file or directory`. No local native musl build or installed-interface test was
 run. A cross-compiled binary on this glibc host would not establish native
 musl runtime behavior. The declared musl platform packages still require
 target-native build, install, and API tests in a provisioned environment.
+
+## Native Alpine musl package checkpoint (2026-10-13)
+
+The earlier “no local native musl” finding above is superseded for x86_64 by a
+task-owned Alpine 3.22.6 minirootfs run under `unshare --user --map-root-user
+--mount --pid --fork` and `chroot`. This is native musl execution, not
+cross-compilation or emulation. The official minirootfs archive SHA-256 was
+`27694aaa55fd7a9e3ef596e0ad4eb66802308bb20172b17030cd5f4d8ae9bac2`;
+the official Rustup installer SHA-256 was
+`331228566cc931f32cd684f9bebc5956a5e5d7394c8d5de595f196a658ab98e6`.
+Rust 1.89.0 `x86_64-unknown-linux-musl` ran from the isolated rootfs; Alpine's
+Rust 1.87 was below the SDK MSRV. The installed native build packages included
+Alpine `clang20`, `libc++`, `libc++-dev`, `llvm-libunwind-dev`, `patchelf`,
+Python 3.12, and Node 22. The namespace bound only host `/dev/null` over the
+rootfs mountpoint; it did not mount the host `/dev` tree or operator state.
+
+The SDK input was immutable `git archive 21aa3038184eb6c963edb329510b46295f907c09`
+under `/work/sdk`, plus only the committed musl ICU change `0d714ae` in
+`crates/core/build.rs` (SHA-256
+`a738f3fdc095d052177fae8a627bdbe5ef8dcba2b371e2db678617203d2bab8d`).
+The package scripts and LLVM notice overlaid that archive from commits
+`28f9dd7` and `da3f3a7`; the repaired artifact source did not include later
+core/action worktree edits. The LLVM 20.1.8 notice was taken from the official
+`llvmorg-20.1.8/llvm/LICENSE.TXT` source, SHA-256
+`8d85c1057d742e597985c7d4e6320b015a9139385cff4cbae06ffc0ebe89afee`.
+The `build.rs` musl branch compiles pinned ICU 78.3 with `clang++-20` and
+`-stdlib=libc++`; Linux GNU and other platform branches remain separate.
+
+With `CARGO_TARGET_DIR=/work/target-libcxx`, native Alpine
+`RUSTFLAGS='-C target-feature=-crt-static' cargo build --release --offline
+--locked -p peerwork-python-native -p peerwork-node-native` passed. The pinned
+Node/ICU collation regression
+`cargo test --offline --locked -p peerwork-core
+js_locale::tests::pinned_node_locale_compare_vectors` passed 1/1 on musl.
+Clean Python extension import under Alpine Python 3.12 and direct Node addon
+import under Alpine Node 22 passed without `LD_PRELOAD`. The shared extensions
+have `libc++.so.1`, `libc++abi.so.1`, `libunwind.so.1` and musl dependencies;
+no `R_X86_64_TPOFF64` relocations were found in the candidate extensions.
+
+Pinned `maturin==1.15.0` (download SHA-256
+`653020a63525bb224e5ab0adf02e17a2e08bc86dbea7fc1399c9a56d7529b99e`)
+built a `musllinux_1_2_x86_64` wheel with `--release --offline --locked
+--compatibility musllinux_1_2 --interpreter python3.12`. The final wheel
+`peerwork_sdk-0.0.1-cp311-abi3-musllinux_1_2_x86_64.whl` has SHA-256
+`e0e24a6e2b4a430af2fb58e00f441f80b867f21ba2ae38f0c264e0e6f3a4b990`.
+Maturin copied hashed libc++, ABI, and unwind DSOs into `peerwork_sdk.libs`,
+rewrote the extension's needed names and `$ORIGIN/../peerwork_sdk.libs` RPATH,
+and included both the SDK and LLVM licenses. `pip install --no-deps --target`
+into a fresh directory followed by import outside the SDK source tree passed
+without a preload. The Node platform script in `28f9dd7`/`da3f3a7` copied
+those three Alpine LLVM runtime DSOs into the musl platform package, set
+relative `$ORIGIN/lib` and per-library `$ORIGIN` RUNPATH, and included the
+LLVM notice. Its final tarball
+`peerwork-agent-sdk-linux-x64-musl-0.0.1.tgz` has SHA-256
+`3d6fa0cc585c887cc644772c4b89e0f1ac5504536aa3eb78627bfc3f30e310d4`.
+An offline npm install into a fresh consumer loaded the addon; `ldd` resolved
+all three C++ libraries from that installed package, not `/usr/lib`.
+
+For actual service behavior, the test-only bridge source was exactly
+`21aa303:tests/reference-kernel-server.mjs` (SHA-256
+`bd7c42a3cc5194d51fddc3bef820419331089fd2d3946c28e50594426cd4f691`)
+and its guarded tracked TypeScript service checkout was
+`f828b6c50a0a58d1e718af90f653b214adcc3328`. The bridge created a fresh
+synthetic PUBLIC workspace. The installed wheel imported the fixture's PKCS#8
+owner identity, then authenticated and read sequence 1, 13 objects, and one
+operation through the real service. The installed Node facade and musl binary
+package independently returned the same verified checkpoint and counts. Both
+returned redacted DTOs without raw JWS/keyring material. This is a scripted
+business-path test, not an Agent workflow test: no Agent entry-instruction or
+space-protocol compliance trace was collected, so workflow compliance remains
+unverified. The bridge was intentionally stopped after the test (session
+`34503`, exit 130); no test server remains running.
+
+The first attempts remain distinct evidence: the minirootfs lacked DNS; Alpine
+Rust was 1.87; Rustup's proxy needed `/proc/self/exe` but direct verified
+Rust 1.89 binaries worked; a dynamic libstdc++ extension failed late-load
+initial-exec TLS; a static libstdc++ candidate still failed late-load TLS;
+the first libc++ configuration had an invalid global linker flag; missing
+`llvm-libunwind-dev` caused `-lunwind` link failure; and a regular-file
+`/dev/null` invalidated probes until the narrow bind. The first maturin
+invocation lacked Cargo on `PATH`, the next lacked `patchelf`, and a second
+repair initially saw maturin's already-patched intermediate copy before the
+unmodified extension was regenerated. Two Node `-e` probes failed shell
+quoting, then file-based probes passed. The first repeated Node packaging
+failed on an existing `lib/` directory, corrected by idempotent directory
+creation. None of these failures is counted as an Agent workflow deviation.
+
+This checkpoint establishes one native x86_64 musl build and installed
+Python/Node PUBLIC read. It does not establish musl arm64, older musl baseline
+compatibility beyond the built `musllinux_1_2` tag, full secure ACTION/replay
+parity, macOS or Windows execution, or release qualification. A final
+standalone static CLI from the committed libc++ configuration and broader
+installed APIs remain separate checks.
+
+### Standalone musl CLI and matrix wiring
+
+A first no-`RUSTFLAGS` CLI build from `0d714ae` completed but still had
+`DT_NEEDED` entries for `libc++.so.1` and `libc++abi.so.1`; its successful
+host `version` command was not counted as standalone compatibility. The first
+explicit static-C++ selector then failed to find Alpine's installed
+`libc++.a` until `build.rs` added a checked native archive search path.
+The correction is committed as `7785a2e` (`build.rs` SHA-256
+`b52d5ac867b761ebf99f7996bf9c502e86e3769fd047e9cfe026c415f58a6348`). With official Alpine
+`libc++-static` and `llvm-libunwind-static`, the command
+`PEERWORK_MUSL_STATIC_CXX=1 PEERWORK_MUSL_CXX_LIB_DIR=/usr/lib
+cargo build --release --offline --locked -p peerwork-cli` completed in the
+native rootfs. The resulting x86_64 musl CLI SHA-256 is
+`e52661dfdc4b94adc631623bf82fed694d4cf87de1987849dcad3e76eecd942d`.
+`file` identified a static PIE, `readelf -d` found no `DT_NEEDED`, and
+`readelf -l` found no interpreter. It ran `peerwork version` on the GNU host.
+Using a second fresh tracked-service fixture, the same host-run static CLI
+imported the protected fixture PKCS#8 identity and returned the authenticated
+PUBLIC sequence-1 checkpoint with 13 objects and one operation. The first
+CLI test used relative protected-state paths and returned `IDENTITY_STATE`;
+absolute paths corrected that test harness error. The fixture service was
+intentionally stopped afterward (session `30008`, exit 130).
+
+The experimental distribution workflow now includes a native Alpine x64 musl
+job. It verifies the official minirootfs and Rust installer SHA-256 hashes,
+imports that rootfs into Docker on an Ubuntu runner, builds shared extensions
+with dynamic libc++ and a separate CLI with
+`PEERWORK_MUSL_STATIC_CXX=1`, installs wheel/npm artifacts, runs the pinned
+collation vector, and checks that the CLI has no dynamic dependencies and can
+run on the GNU host. This CI job is source-only here: no GitHub runner log or
+uploaded release artifact exists yet. The local namespace run above is the
+observed native-musl evidence; macOS, Windows, musl arm64, older glibc floor,
+and broader real-service installed functionality remain required release
+checks.

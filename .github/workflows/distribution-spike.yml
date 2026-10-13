@@ -60,6 +60,65 @@ jobs:
             dist/wheels/*.whl
             dist/agent-sdk-*/
 
+  linux_musl_x64:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify native Alpine and Rust bootstrap inputs
+        shell: bash
+        run: |
+          mkdir -p dist
+          curl -fL --retry 3 https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/x86_64/alpine-minirootfs-3.22.6-x86_64.tar.gz -o dist/alpine-minirootfs.tar.gz
+          echo '27694aaa55fd7a9e3ef596e0ad4eb66802308bb20172b17030cd5f4d8ae9bac2  dist/alpine-minirootfs.tar.gz' | sha256sum -c -
+          curl -fL --retry 3 https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-musl/rustup-init -o dist/rustup-init
+          echo '331228566cc931f32cd684f9bebc5956a5e5d7394c8d5de595f196a658ab98e6  dist/rustup-init' | sha256sum -c -
+          chmod 755 dist/rustup-init
+          docker import dist/alpine-minirootfs.tar.gz peerwork-alpine:3.22.6
+      - name: Build and install native musllinux interfaces
+        shell: bash
+        run: |
+          docker run --rm -v "$PWD:/work/sdk" -w /work/sdk peerwork-alpine:3.22.6 /bin/sh -ec '
+            apk add --no-cache build-base cmake perl python3 py3-pip nodejs npm git curl ca-certificates openssl-dev pkgconf binutils clang20 libc++ libc++-dev libc++-static llvm-libunwind-dev llvm-libunwind-static patchelf
+            export RUSTUP_HOME=/tmp/peerwork-rustup CARGO_HOME=/tmp/peerwork-cargo
+            /work/sdk/dist/rustup-init -y --no-modify-path --default-toolchain 1.89.0 --profile minimal
+            export PATH="$RUSTUP_HOME/toolchains/1.89.0-x86_64-unknown-linux-musl/bin:$PATH"
+            export RUSTC="$RUSTUP_HOME/toolchains/1.89.0-x86_64-unknown-linux-musl/bin/rustc"
+            export RUSTDOC="$RUSTUP_HOME/toolchains/1.89.0-x86_64-unknown-linux-musl/bin/rustdoc"
+            export LD_LIBRARY_PATH="$RUSTUP_HOME/toolchains/1.89.0-x86_64-unknown-linux-musl/lib"
+            export CARGO_TARGET_DIR=/work/sdk/target/musl-shared
+            export RUSTFLAGS="-C target-feature=-crt-static"
+            cargo test --locked -p peerwork-core js_locale::tests::pinned_node_locale_compare_vectors -- --exact
+            cargo build --release --locked -p peerwork-node-native
+            python3 -m pip download --no-deps --dest /tmp/maturin maturin==1.15.0
+            python3 -m pip install --no-deps --target /tmp/maturin-tools /tmp/maturin/maturin-1.15.0-*.whl
+            cd bindings/python
+            /tmp/maturin-tools/bin/maturin build --release --locked --compatibility musllinux_1_2 --interpreter python3 --out ../../dist/wheels
+            cd ../..
+            PEERWORK_MUSL_CXX_LIB_DIR=/usr/lib node bindings/node/scripts/package-platform.mjs linux-x64-musl target/musl-shared/release/libpeerwork_node_native.so dist
+            npm pack ./bindings/node --pack-destination dist --offline
+            npm pack ./dist/agent-sdk-linux-x64-musl --pack-destination dist --offline
+            mkdir -p dist/node-consumer
+            npm install --prefix dist/node-consumer --offline --ignore-scripts --no-audit --no-fund --omit=optional ./dist/peerwork-agent-sdk-0.0.1.tgz ./dist/peerwork-agent-sdk-linux-x64-musl-0.0.1.tgz
+            node bindings/node/scripts/offline-smoke.mjs dist/node-consumer
+            python3 -m pip install --no-deps --target dist/wheel-consumer dist/wheels/*.whl
+            PYTHONPATH=dist/wheel-consumer python3 -c "import peerwork; assert peerwork.version() == \"0.0.1\""
+            unset RUSTFLAGS
+            export CARGO_TARGET_DIR=/work/sdk/target/musl-static
+            export PEERWORK_MUSL_STATIC_CXX=1 PEERWORK_MUSL_CXX_LIB_DIR=/usr/lib
+            cargo build --release --locked -p peerwork-cli
+            if readelf -d target/musl-static/release/peerwork | grep -q NEEDED; then exit 1; fi
+            if readelf -l target/musl-static/release/peerwork | grep -q INTERP; then exit 1; fi
+            target/musl-static/release/peerwork version
+          '
+          ./target/musl-static/release/peerwork version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: experimental-linux-x64-musl
+          path: |
+            target/musl-static/release/peerwork
+            dist/wheels/*.whl
+            dist/agent-sdk-linux-x64-musl/
+
   macos:
     strategy:
       fail-fast: false
