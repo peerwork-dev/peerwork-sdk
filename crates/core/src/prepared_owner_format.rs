@@ -501,5 +501,80 @@ mod tests {
             2000
         )
         .is_err());
+
+        // The pinned nested-format vector carries a protocol in archived
+        // public history. A v1 manifest is an eligible old prefix; changing
+        // only the two nested manifest format fields to v2 must refuse this
+        // same otherwise-valid PRIVATE Owner transition before authoring.
+        let vectors: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../conformance/migration-format-vectors.json"
+        ))
+        .unwrap();
+        let archived_v2 = vectors
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|case| case["name"] == "archive_v2_denied")
+            .unwrap()["objects"]
+            .clone();
+        let mut archived_v1 = archived_v2.clone();
+        let nested = &mut archived_v1[0]["value"]["payload"]["body"]["objects"][0]["value"];
+        nested["manifest"]
+            .as_object_mut()
+            .unwrap()
+            .remove("format_version");
+        nested["resolved_manifest"]
+            .as_object_mut()
+            .unwrap()
+            .remove("format_version");
+        let parse_objects = |value: &serde_json::Value| {
+            let bytes = serde_json::to_vec(value).unwrap();
+            let WireValue::Array(rows) = parse_wire_json_bounded(&bytes, 64, 1024 * 1024).unwrap()
+            else {
+                panic!("archive vector must contain objects")
+            };
+            rows
+        };
+        let eligible = parse_objects(&archived_v1);
+        let forbidden = parse_objects(&archived_v2);
+        let with_old_archive = prepare_owner_private_format_transition(
+            OwnerFormatTransitionKind::UpgradeWireV3,
+            policy_wire.as_bytes(),
+            checkpoint_wire.as_bytes(),
+            &eligible,
+            &[7; 32],
+            &signer,
+            &command,
+            2000,
+        )
+        .unwrap();
+        assert_eq!(with_old_archive.policy_hash(), prepared.policy_hash());
+        assert!(matches!(
+            prepare_owner_private_format_transition(
+                OwnerFormatTransitionKind::UpgradeWireV3,
+                policy_wire.as_bytes(),
+                checkpoint_wire.as_bytes(),
+                &forbidden,
+                &[7; 32],
+                &signer,
+                &command,
+                2000,
+            ),
+            Err(OwnerFormatPrepareError::Invalid)
+        ));
+        assert!(matches!(
+            verify_saved_owner_private_format_transition(
+                prepared.request_wire(),
+                OwnerFormatTransitionKind::UpgradeWireV3,
+                policy_wire.as_bytes(),
+                checkpoint_wire.as_bytes(),
+                &forbidden,
+                &[7; 32],
+                &signer,
+                &command,
+                2000,
+            ),
+            Err(OwnerFormatPrepareError::Invalid)
+        ));
     }
 }
