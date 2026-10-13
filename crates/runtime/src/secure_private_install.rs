@@ -146,6 +146,8 @@ mod historical_v1_direct_test {
                     expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
                     recover_pending_action: false,
                     retain_pending_action_command_id: None,
+                    selected_pending_package_stage_command_id: None,
+                    expected_ts_state_digest: None,
                     kernel_pending_command_ids: Vec::new(),
                     expected_kernel_intent_db_digest: None,
                 },

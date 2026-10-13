@@ -19,6 +19,7 @@ use crate::{
 };
 use ed25519_dalek::{Signer, SigningKey};
 use thiserror::Error;
+use zeroize::Zeroizing;
 
 const MAX_SAFE: u64 = 9_007_199_254_740_991;
 
@@ -497,6 +498,91 @@ pub fn verify_saved_private_package_stage(
         part_count: plan.part_count,
         part_index,
     })
+}
+
+/// Reprove one old-client saved, encrypted ADMIN stage without re-signing it.
+/// The caller must supply the source checkpoint and policy from complete,
+/// origin-bound replay, and the imported Owner signing/epoch keys. The old
+/// client persisted a body object, so `request_wire` is the canonical native
+/// retry envelope; its signed commit and ciphertext are the original values.
+/// This helper is limited to a sole part at the supplied source checkpoint.
+pub fn verify_imported_private_package_stage(
+    request_wire: &[u8],
+    source_checkpoint_wire: &[u8],
+    signed_policy_wire: &[u8],
+    command_id: &str,
+    signing_key: &SigningKey,
+    epoch_key: &[u8; 32],
+) -> Result<PreparedPrivatePackageStage, PrivateInstallError> {
+    let bad = || PrivateInstallError::Invalid;
+    if request_wire.is_empty() || request_wire.len() > 220_000 {
+        return Err(bad());
+    }
+    let request = parse_wire_json_bounded(request_wire, 64, 220_000).map_err(|_| bad())?;
+    if request.object_len() != Some(1) {
+        return Err(bad());
+    }
+    let commit = request.get("commit").ok_or_else(bad)?;
+    if commit.object_len() != Some(2) {
+        return Err(bad());
+    }
+    let commit_wire = canonical_wire_value(commit, Path::SecureArtifact).map_err(|_| bad())?;
+    if request_wire != format!("{{\"commit\":{commit_wire}}}").as_bytes()
+        || !verify_secure_signed_wire(
+            commit_wire.as_bytes(),
+            "peerwork.secure.commit.v1",
+            &base64url(&signing_key.verifying_key().to_bytes()),
+        )
+        .map_err(|_| bad())?
+    {
+        return Err(bad());
+    }
+    let payload = commit.get("payload").ok_or_else(bad)?;
+    let WireValue::Object(fields) = payload else {
+        return Err(bad());
+    };
+    let context = WireValue::Object(
+        fields
+            .iter()
+            .filter(|(name, _)| {
+                !name.iter().copied().eq("mode".encode_utf16())
+                    && !name.iter().copied().eq("body".encode_utf16())
+            })
+            .cloned()
+            .collect(),
+    );
+    let context_wire = canonical_wire_value(&context, Path::SecureArtifact).map_err(|_| bad())?;
+    let sealed_wire = canonical_wire_value(payload.get("body").ok_or_else(bad)?, Path::SecureArtifact)
+        .map_err(|_| bad())?;
+    let sealed: SealedContent = serde_json::from_str(&sealed_wire).map_err(|_| bad())?;
+    let plaintext = Zeroizing::new(
+        open_content_wire(epoch_key, &sealed, context_wire.as_bytes()).map_err(|_| bad())?,
+    );
+    let operation = parse_wire_json_bounded(&plaintext, 64, 16 * 1024 * 1024)
+        .map_err(|_| bad())?;
+    let WireValue::Array(objects) = operation.get("objects").ok_or_else(bad)? else {
+        return Err(bad());
+    };
+    if objects.len() != 1 {
+        return Err(bad());
+    }
+    let material = objects[0]
+        .get("value")
+        .and_then(|value| value.get("text"))
+        .and_then(WireValue::as_string)
+        .ok_or_else(bad)?;
+    verify_saved_private_package_stage(
+        request_wire,
+        material.as_bytes(),
+        source_checkpoint_wire,
+        source_checkpoint_wire,
+        signed_policy_wire,
+        0,
+        command_id,
+        number(payload, "issued_at")?,
+        signing_key,
+        epoch_key,
+    )
 }
 
 fn replace(value: &mut WireValue, field: &str, item: WireValue) -> Result<(), PrivateInstallError> {
@@ -1804,6 +1890,26 @@ mod tests {
         )
         .unwrap();
         assert_eq!(saved.commit_hash(), result.commit_hash());
+        let imported = verify_imported_private_package_stage(
+            result.request_wire(),
+            source_wire.as_bytes(),
+            &policy,
+            &base64url(&[21; 32]),
+            &signer,
+            &[19; 32],
+        )
+        .unwrap();
+        assert_eq!(imported.commit_hash(), result.commit_hash());
+        assert_eq!(imported.request_wire(), result.request_wire());
+        assert!(verify_imported_private_package_stage(
+            result.request_wire(),
+            source_wire.as_bytes(),
+            &policy,
+            &base64url(&[21; 32]),
+            &signer,
+            &[20; 32],
+        )
+        .is_err());
         assert!(verify_saved_private_package_stage(
             result.request_wire(),
             material_wire.as_bytes(),

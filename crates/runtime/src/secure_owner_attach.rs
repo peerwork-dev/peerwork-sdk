@@ -44,6 +44,8 @@ static TEST_STOP_AFTER_ATTACH_ROW: AtomicBool = AtomicBool::new(false);
 #[cfg(test)]
 static TEST_IMPORTED_ACTION_POSTS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(test)]
+static TEST_IMPORTED_PACKAGE_STAGE_POSTS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
 static TEST_STOP_AFTER_IMPORTED_ACTION_ACCEPTED: AtomicBool = AtomicBool::new(false);
 #[cfg(test)]
 static TEST_STOP_AFTER_RETAINED_ACTION_INTENT: AtomicBool = AtomicBool::new(false);
@@ -72,6 +74,12 @@ pub struct HistoricalOwnerAttachInput {
     /// Recovery remains explicit; retaining never marks the packet accepted or rejected.
     #[serde(default)]
     pub retain_pending_action_command_id: Option<String>,
+    /// Import this exact saved package-stage ADMIN packet without POST.
+    /// The selected source-state digest must come from read-only inspection.
+    #[serde(default)]
+    pub selected_pending_package_stage_command_id: Option<String>,
+    #[serde(default)]
+    pub expected_ts_state_digest: Option<String>,
     /// Explicitly retain every pending kernel JWS signed for this workspace.
     /// Attachment imports these exact packets but never submits them. A caller
     /// must invoke per-command recovery separately after inspecting history.
@@ -99,6 +107,10 @@ pub struct HistoricalOwnerAttachResult {
     pub retained_other_kernel_count: usize,
     pub pending_action_command_id: Option<String>,
     pub pending_action_status: Option<String>,
+    #[serde(default)]
+    pub pending_package_stage_command_id: Option<String>,
+    #[serde(default)]
+    pub pending_package_stage_status: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -123,6 +135,21 @@ pub struct HistoricalKernelPendingInventory {
     pub commands: Vec<HistoricalKernelCommandStatus>,
     pub retained_other_pending_count: usize,
     pub retained_nonworkspace_pending_count: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HistoricalPackageStagePendingInventory {
+    /// SHA-256 of the entire protected TS agent-state file inspected here.
+    /// Pass it unchanged with the selected command ID to attach().
+    pub ts_state_digest: String,
+    pub command_id: String,
+    pub source_id: String,
+    pub source_sha256: String,
+    pub source_sequence: u64,
+    /// Local advisory only. PENDING does not prove that the server has not
+    /// applied the exact signed packet.
+    pub status: String,
 }
 
 #[derive(Debug, Error)]
@@ -151,6 +178,8 @@ pub enum HistoricalOwnerAttachError {
     PendingActionConflict,
     #[error("selected historical kernel command is unresolved and retained")]
     KernelCommandUnresolved,
+    #[error("saved historical package stage is unresolved and retained")]
+    PendingPackageStageUnresolved,
 }
 
 impl HistoricalOwnerAttachError {
@@ -168,6 +197,7 @@ impl HistoricalOwnerAttachError {
             Self::PendingActionRetry => "PENDING_ACTION_RETRY",
             Self::PendingActionConflict => "PENDING_ACTION_CONFLICT",
             Self::KernelCommandUnresolved => "KERNEL_COMMAND_UNRESOLVED",
+            Self::PendingPackageStageUnresolved => "PENDING_PACKAGE_STAGE_UNRESOLVED",
         }
     }
 }
@@ -206,6 +236,20 @@ struct SavedAttach {
     retained_upgrade_accepted: bool,
     #[serde(default)]
     retained_action_accepted: bool,
+    #[serde(default)]
+    pending_package_stage: Option<SavedPendingPackageStage>,
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct SavedPendingPackageStage {
+    command_id: String,
+    source_wire: String,
+    source_id: String,
+    source_sha256: String,
+    path: String,
+    commit_hash: String,
+    accepted_in_signed_replay: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -236,14 +280,22 @@ struct LegacySource {
     retained_member_commands: Vec<String>,
     retained_inbox_receipts: Vec<RetainedInboxReceipt>,
     completed_package_stage: Option<CompletedPackageStageMarker>,
+    pending_package_stage: Option<LegacyPendingPackageStage>,
     pending_action: Option<LegacyPendingAction>,
 }
 
+#[derive(Clone)]
 struct CompletedPackageStageMarker {
     command_id: String,
     source: WireValue,
     source_id: String,
     source_sha256: String,
+}
+
+struct LegacyPendingPackageStage {
+    marker: CompletedPackageStageMarker,
+    path: String,
+    request: Zeroizing<Vec<u8>>,
 }
 
 const STAGE_PREFLIGHT_MARKER: &[u8] = b"peerwork.owner.stage-preflight.v1\n";
@@ -415,6 +467,72 @@ impl SecureHistoricalOwnerAttach {
             .completed_package_stage
             .as_ref()
             .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+        self.with_preflight_replay(input, source, cancel, |replayed, _owner| {
+            verify_completed_package_stage(marker, replayed, input)
+        })
+    }
+
+    /// Reprove the original saved ADMIN packet against the source checkpoint
+    /// and full origin-bound replay before persisting an attach selection.
+    /// This never submits the packet. A later signed stage may be reconciled,
+    /// while an unchanged head remains explicitly unresolved.
+    fn preflight_pending_package_stage(
+        &self,
+        input: &HistoricalOwnerAttachInput,
+        source: &LegacySource,
+        cancel: &CancellationToken,
+    ) -> Result<bool, HistoricalOwnerAttachError> {
+        let pending = source.pending_package_stage.as_ref()
+            .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+        let ring = source.ring.as_ref().ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+        self.with_preflight_replay(input, source, cancel, |replayed, owner| {
+            verify_pending_package_stage(pending, ring, replayed, owner, input).map(|(applied, _)| applied)
+        })
+    }
+
+    /// Inspect a genuine saved package-stage packet without submitting it or
+    /// creating an attachment row. The scratch replay is origin-bound and
+    /// removed before this method returns; the old TS writer must be stopped.
+    pub fn inspect_pending_package_stage(
+        &self,
+        input: &HistoricalOwnerAttachInput,
+        cancel: &CancellationToken,
+    ) -> Result<HistoricalPackageStagePendingInventory, HistoricalOwnerAttachError> {
+        validate_input(input)?;
+        if cancel.is_cancelled() {
+            return Err(HistoricalOwnerAttachError::Cancelled);
+        }
+        let (source, digest, pem_digest, intent_digest) = self.inspect_sources(input)?;
+        let pending = source.pending_package_stage.as_ref()
+            .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+        ensure_dir(&self.config.state_dir)?;
+        let _lock = SecureStateStore::open(&self.config.state_dir.join("owner-attach-recovery.state"))
+            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        let applied = self.preflight_pending_package_stage(input, &source, cancel)?;
+        let (_, state_after, pem_after, intent_after) = self.inspect_sources(input)?;
+        if (state_after, pem_after, intent_after) != (digest.clone(), pem_digest, intent_digest) {
+            return Err(HistoricalOwnerAttachError::SourceChanged);
+        }
+        Ok(HistoricalPackageStagePendingInventory {
+            ts_state_digest: digest,
+            command_id: pending.marker.command_id.clone(),
+            source_id: pending.marker.source_id.clone(),
+            source_sha256: pending.marker.source_sha256.clone(),
+            source_sequence: exact_u64(pending.marker.source.get("sequence"))
+                .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?,
+            status: if applied { "APPLIED_IN_SIGNED_REPLAY" } else { "PENDING_UNRESOLVED" }.into(),
+        })
+    }
+
+    /// Verify a selected historical source using only an exclusive private
+    /// scratch profile. The caller holds the native root recovery lock.
+    fn with_preflight_replay<T>(
+        &self,
+        input: &HistoricalOwnerAttachInput,
+        source: &LegacySource,
+        cancel: &CancellationToken,
+        verify: impl FnOnce(&TransportReplayedJournal, &KernelIdentity) -> Result<T, HistoricalOwnerAttachError>,
+    ) -> Result<T, HistoricalOwnerAttachError> {
         let ring = source
             .ring
             .as_ref()
@@ -441,11 +559,12 @@ impl SecureHistoricalOwnerAttach {
                 .write_exact(STAGE_PREFLIGHT_MARKER)
                 .map_err(|_| HistoricalOwnerAttachError::Local)?;
             drop(ownership_marker);
-            KernelIdentity::import_pkcs8_pem_file(
+            let scratch_owner = KernelIdentity::import_pkcs8_pem_file(
                 &scratch.join("identity.state"),
                 &input.protected_owner_pkcs8_path,
             )
             .map_err(|_| HistoricalOwnerAttachError::Identity)?;
+            drop(scratch_owner);
             let mut lifecycle = SecureLifecycle::open(
                 &scratch.join("lifecycle.state"),
                 &self.config.origin,
@@ -480,7 +599,9 @@ impl SecureHistoricalOwnerAttach {
             ) {
                 return Err(HistoricalOwnerAttachError::SourceChanged);
             }
-            verify_completed_package_stage(marker, &replayed, input)
+            let scratch_owner = KernelIdentity::open(&scratch.join("identity.state"))
+                .map_err(|_| HistoricalOwnerAttachError::Identity)?;
+            verify(&replayed, &scratch_owner)
         })();
         // Explicitly report cleanup failure on success, cancellation or
         // refusal. A process crash leaves only the marked protected scratch,
@@ -499,6 +620,18 @@ impl SecureHistoricalOwnerAttach {
             return Err(HistoricalOwnerAttachError::Cancelled);
         }
         let (source, ts_digest, pem_digest, intent_digest) = self.inspect_sources(&input)?;
+        match (
+            input.selected_pending_package_stage_command_id.as_deref(),
+            source.pending_package_stage.as_ref(),
+        ) {
+            (Some(selected), Some(pending)) if selected == pending.marker.command_id => {
+                if input.expected_ts_state_digest.as_deref() != Some(ts_digest.as_str()) {
+                    return Err(HistoricalOwnerAttachError::SourceChanged);
+                }
+            }
+            (None, None) => (),
+            _ => return Err(HistoricalOwnerAttachError::SourceUnresolved),
+        }
         if !input.kernel_pending_command_ids.is_empty()
             && input.expected_kernel_intent_db_digest.is_none()
         {
@@ -535,10 +668,15 @@ impl SecureHistoricalOwnerAttach {
         // Validate the complete signed target selection before an immutable
         // PREPARED row, pending ring, or optional secure ACTION can be written.
         self.preflight_kernel_source(&input, cancel, Some(&input.kernel_pending_command_ids))?;
-        let stage_preflight_lock = if source.completed_package_stage.is_some() {
+        let stage_preflight_lock = if source.completed_package_stage.is_some()
+            || source.pending_package_stage.is_some() {
             let lock = SecureStateStore::open(&root.join("owner-attach-recovery.state"))
                 .map_err(|_| HistoricalOwnerAttachError::Local)?;
-            self.preflight_completed_package_stage(&input, &source, cancel)?;
+            if source.completed_package_stage.is_some() {
+                self.preflight_completed_package_stage(&input, &source, cancel)?;
+            } else {
+                self.preflight_pending_package_stage(&input, &source, cancel)?;
+            }
             let (_, ts_after, pem_after, intent_after) = self.inspect_sources(&input)?;
             if (ts_after, pem_after, intent_after)
                 != (ts_digest.clone(), pem_digest.clone(), intent_digest.clone())
@@ -604,6 +742,7 @@ impl SecureHistoricalOwnerAttach {
             retained_action_command_id,
             retained_upgrade_accepted: false,
             retained_action_accepted: false,
+            pending_package_stage: None,
         };
         history.rows.insert(id.clone(), row);
         save_history(&store, &history)?;
@@ -800,6 +939,44 @@ impl SecureHistoricalOwnerAttach {
                 return Err(HistoricalOwnerAttachError::Cancelled);
             }
         }
+        let saved_package_stage = if let Some(pending) = source.pending_package_stage.as_ref() {
+            let ring = source.ring.as_ref().ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+            let (applied, commit_hash) = verify_pending_package_stage(
+                pending, ring, &replayed, &owner, &row.input,
+            )?;
+            self.assert_source_unchanged(&row)?;
+            let mut journal = SecureIntentJournal::open(
+                &directory.join("package-stage-intents.state"),
+                &self.config.origin,
+                owner.actor_id(),
+            ).map_err(|_| HistoricalOwnerAttachError::Local)?;
+            let packet = || SecurePacketInput {
+                intent_id: &pending.marker.command_id,
+                path: &pending.path,
+                action_id: "secure.protocol-package.stage",
+                workspace_id: Some(&row.input.workspace_id),
+                trusted_owner_key: Some(owner.key_id()),
+                intent_digest: &commit_hash,
+                exact_request: &pending.request,
+            };
+            if journal.contains_id(&pending.marker.command_id) {
+                journal.exact_imported_action_matches(packet())
+                    .map_err(|_| HistoricalOwnerAttachError::Conflict)?;
+            } else {
+                journal.prepare(packet()).map_err(|_| HistoricalOwnerAttachError::Local)?;
+            }
+            drop(journal);
+            Some(SavedPendingPackageStage {
+                command_id: pending.marker.command_id.clone(),
+                source_wire: canonical_wire_value(&pending.marker.source, CanonicalPath::SecureArtifact)
+                    .map_err(|_| HistoricalOwnerAttachError::SourceUnresolved)?,
+                source_id: pending.marker.source_id.clone(),
+                source_sha256: pending.marker.source_sha256.clone(),
+                path: pending.path.clone(),
+                commit_hash,
+                accepted_in_signed_replay: applied,
+            })
+        } else { None };
         let kernel_import = self.import_selected_kernel_source(&row, &owner, cancel)?;
         {
             let store = SecureStateStore::open(&self.history_path())
@@ -821,6 +998,14 @@ impl SecureHistoricalOwnerAttach {
             }
             if saved.kernel_import.is_none() {
                 saved.kernel_import = Some(kernel_import.clone());
+                save_history(&store, &history)?;
+            }
+            let saved = history.rows.get_mut(attach_id).ok_or(HistoricalOwnerAttachError::NotFound)?;
+            if saved.pending_package_stage.as_ref().is_some_and(|old| Some(old) != saved_package_stage.as_ref()) {
+                return Err(HistoricalOwnerAttachError::Conflict);
+            }
+            if saved.pending_package_stage.is_none() && saved_package_stage.is_some() {
+                saved.pending_package_stage = saved_package_stage;
                 save_history(&store, &history)?;
             }
         }
@@ -867,6 +1052,142 @@ impl SecureHistoricalOwnerAttach {
         {
             return Err(HistoricalOwnerAttachError::Conflict);
         }
+        saved.attached_sequence = Some(replayed.replay().sequence());
+        saved.attached_head = replayed.replay().head().map(str::to_owned);
+        let completed = saved.clone();
+        save_history(&store, &history)?;
+        Ok(summary(attach_id, &completed))
+    }
+
+    /// Explicitly reconcile or submit one imported package-stage ADMIN packet.
+    /// Ordinary attach, history and read never submit it. If a signed stage is
+    /// already in complete replay this performs no POST. An uncertain reply
+    /// leaves the original protected packet and restricted status intact.
+    pub fn recover_pending_package_stage(
+        &self,
+        attach_id: &str,
+        expected_command_id: &str,
+        cancel: &CancellationToken,
+    ) -> Result<HistoricalOwnerAttachResult, HistoricalOwnerAttachError> {
+        if !valid_token(attach_id) || !valid_token(expected_command_id) {
+            return Err(HistoricalOwnerAttachError::Input);
+        }
+        if cancel.is_cancelled() { return Err(HistoricalOwnerAttachError::Cancelled); }
+        let _lock = SecureStateStore::open(&self.config.state_dir.join("owner-attach-recovery.state"))
+            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        let store = SecureStateStore::open(&self.history_path())
+            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        let history = read_history(&store, &self.config.origin)?;
+        let row = history.rows.get(attach_id).ok_or(HistoricalOwnerAttachError::NotFound)?.clone();
+        drop(history);
+        drop(store);
+        let stage = row.pending_package_stage.as_ref()
+            .ok_or(HistoricalOwnerAttachError::NotFound)?;
+        if row.attached_sequence.is_none() || stage.command_id != expected_command_id {
+            return Err(HistoricalOwnerAttachError::Conflict);
+        }
+        let owner = KernelIdentity::open(&self.identity_path())
+            .map_err(|_| HistoricalOwnerAttachError::Identity)?;
+        if owner.actor_id() != row.input.expected_owner_actor_id
+            || owner.key_id() != row.input.expected_owner_key_id {
+            return Err(HistoricalOwnerAttachError::Identity);
+        }
+        let directory = self.workspace_dir(&row.input.workspace_id);
+        let lifecycle = SecureLifecycle::open(
+            &directory.join("lifecycle.state"), &self.config.origin,
+            owner.actor_id(), &row.input.workspace_id, owner.actor_id(), owner.key_id(),
+        ).map_err(|_| HistoricalOwnerAttachError::Local)?;
+        let candidate = lifecycle.replay_keyring_candidate()
+            .ok_or(HistoricalOwnerAttachError::Verification)?;
+        let ring_wire = candidate.ring.canonical_wire()
+            .map_err(|_| HistoricalOwnerAttachError::Verification)?;
+        drop(lifecycle);
+        let ring = SecretKeyring::parse_wire(&ring_wire)
+            .map_err(|_| HistoricalOwnerAttachError::Verification)?;
+        let mut journal = SecureIntentJournal::open(
+            &directory.join("package-stage-intents.state"),
+            &self.config.origin, owner.actor_id(),
+        ).map_err(|_| HistoricalOwnerAttachError::Local)?;
+        let request = Zeroizing::new(journal.exact_request(expected_command_id)
+            .map_err(|_| HistoricalOwnerAttachError::Conflict)?);
+        journal.exact_imported_action_matches(SecurePacketInput {
+            intent_id: expected_command_id,
+            path: &stage.path,
+            action_id: "secure.protocol-package.stage",
+            workspace_id: Some(&row.input.workspace_id),
+            trusted_owner_key: Some(owner.key_id()),
+            intent_digest: &stage.commit_hash,
+            exact_request: &request,
+        }).map_err(|_| HistoricalOwnerAttachError::Conflict)?;
+        let source_wire = parse_wire_json_bounded(stage.source_wire.as_bytes(), 48, 32_768)
+            .map_err(|_| HistoricalOwnerAttachError::Conflict)?;
+        let pending = LegacyPendingPackageStage {
+            marker: CompletedPackageStageMarker {
+                command_id: stage.command_id.clone(), source: source_wire,
+                source_id: stage.source_id.clone(), source_sha256: stage.source_sha256.clone(),
+            },
+            path: stage.path.clone(), request,
+        };
+        let access = SecureReadAccess::new(self.attach_read_config(&row.input));
+        let mut replayed = access.replay_checked_attach_generation(cancel)
+            .map_err(|_| HistoricalOwnerAttachError::Verification)?;
+        if !replayed.replay().contains_checkpoint(
+            row.source_sequence, row.source_head.as_deref(), &row.source_policy_hash,
+        ) || replayed.replay().structure_status() == StructureStatus::Seeding {
+            return Err(HistoricalOwnerAttachError::Verification);
+        }
+        let (mut applied, hash) = verify_pending_package_stage(
+            &pending, &ring, &replayed, &owner, &row.input,
+        )?;
+        if hash != stage.commit_hash { return Err(HistoricalOwnerAttachError::Conflict); }
+        if !applied {
+            let mut transport_config = TransportConfig::new(self.config.origin.clone());
+            transport_config.allow_loopback_http = self.config.allow_loopback_http;
+            let transport = HttpTransport::new(transport_config)
+                .map_err(|_| HistoricalOwnerAttachError::Verification)?;
+            if transport.trusted_origin() != self.config.origin {
+                return Err(HistoricalOwnerAttachError::Verification);
+            }
+            let runtime = Builder::new_current_thread().enable_all().build()
+                .map_err(|_| HistoricalOwnerAttachError::Local)?;
+            #[cfg(test)]
+            TEST_IMPORTED_PACKAGE_STAGE_POSTS.fetch_add(1, Ordering::SeqCst);
+            let response = runtime.block_on(transport.post_exact(
+                &stage.path, pending.request.to_vec(), cancel,
+            ));
+            match response {
+                Ok(response) => {
+                    if !response.wire.is_empty() {
+                        journal.observe_response(expected_command_id, &response.wire)
+                            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+                    }
+                    // HTTP success/rejection is only an observation. Signed
+                    // replay below alone can set ACCEPTED.
+                }
+                Err(_) => return Err(HistoricalOwnerAttachError::PendingPackageStageUnresolved),
+            }
+            drop(journal);
+            replayed = access.replay_checked_attach_generation(cancel)
+                .map_err(|_| HistoricalOwnerAttachError::PendingPackageStageUnresolved)?;
+            applied = verify_pending_package_stage(
+                &pending, &ring, &replayed, &owner, &row.input,
+            )?.0;
+        } else {
+            drop(journal);
+        }
+        if !applied { return Err(HistoricalOwnerAttachError::PendingPackageStageUnresolved); }
+        SecureReadProfile::new(self.profile_config(&row.input))
+            .read_latest_json_with_cancel(cancel)
+            .map_err(|_| HistoricalOwnerAttachError::Verification)?;
+        let store = SecureStateStore::open(&self.history_path())
+            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        let mut history = read_history(&store, &self.config.origin)?;
+        let saved = history.rows.get_mut(attach_id).ok_or(HistoricalOwnerAttachError::NotFound)?;
+        if saved.input != row.input || saved.pending_package_stage.as_ref() != row.pending_package_stage.as_ref() {
+            return Err(HistoricalOwnerAttachError::Conflict);
+        }
+        saved.pending_package_stage.as_mut().ok_or(HistoricalOwnerAttachError::Conflict)?
+            .accepted_in_signed_replay = true;
         saved.attached_sequence = Some(replayed.replay().sequence());
         saved.attached_head = replayed.replay().head().map(str::to_owned);
         let completed = saved.clone();
@@ -1774,6 +2095,8 @@ impl SecureHistoricalOwnerAttach {
                 row.input.workspace_id == workspace_id
                     && row.visibility == visibility
                     && row.attached_sequence.is_some()
+                    && (allow_restricted || row.pending_package_stage.as_ref()
+                        .is_none_or(|stage| stage.accepted_in_signed_replay))
                     && (allow_restricted
                         || row.retained_action_commit_hash.is_none()
                         || row.retained_upgrade_accepted
@@ -1916,11 +2239,15 @@ fn valid_history_config(config: &SecureOwnerCreateConfig) -> bool {
 
 fn summary(id: &str, row: &SavedAttach) -> HistoricalOwnerAttachResult {
     let retained = row.retained_action_commit_hash.is_some();
+    let stage_unresolved = row.pending_package_stage.as_ref()
+        .is_some_and(|stage| !stage.accepted_in_signed_replay);
     HistoricalOwnerAttachResult {
         attach_id: id.into(),
         workspace_id: row.input.workspace_id.clone(),
         provenance: "HISTORICAL_TS_OWNER".into(),
-        status: if row.attached_sequence.is_some()
+        status: if row.attached_sequence.is_some() && stage_unresolved {
+            "ATTACHED_RESTRICTED"
+        } else if row.attached_sequence.is_some()
             && retained
             && !row.retained_upgrade_accepted
             && !row.retained_action_accepted
@@ -1951,6 +2278,10 @@ fn summary(id: &str, row: &SavedAttach) -> HistoricalOwnerAttachResult {
                 "RETAINED_UNRESOLVED"
             }
             .into()
+        }),
+        pending_package_stage_command_id: row.pending_package_stage.as_ref().map(|stage| stage.command_id.clone()),
+        pending_package_stage_status: row.pending_package_stage.as_ref().map(|stage| {
+            if stage.accepted_in_signed_replay { "ACCEPTED" } else { "PENDING_UNRESOLVED" }.into()
         }),
     }
 }
@@ -2005,6 +2336,14 @@ fn save_history(
 
 fn validate_input(input: &HistoricalOwnerAttachInput) -> Result<(), HistoricalOwnerAttachError> {
     if input.kernel_pending_command_ids.len() > 4096
+        || input.selected_pending_package_stage_command_id.is_some()
+            != input.expected_ts_state_digest.is_some()
+        || input.selected_pending_package_stage_command_id.as_deref()
+            .is_some_and(|id| !valid_token(id))
+        || input.expected_ts_state_digest.as_deref()
+            .is_some_and(|digest| !valid_digest(digest))
+        || (input.selected_pending_package_stage_command_id.is_some()
+            && (input.recover_pending_action || input.retain_pending_action_command_id.is_some()))
         || input
             .retain_pending_action_command_id
             .as_deref()
@@ -2443,7 +2782,6 @@ fn confirmed_browser_approvals(
 
 fn completed_package_stage_marker(
     value: Option<&WireValue>,
-    pending: Option<&WireValue>,
     input: &HistoricalOwnerAttachInput,
 ) -> Result<Option<CompletedPackageStageMarker>, HistoricalOwnerAttachError> {
     let rows = match value {
@@ -2491,7 +2829,6 @@ fn completed_package_stage_marker(
             .and_then(WireValue::as_string)
             .as_deref()
             != Some(&input.expected_owner_key_id)
-        || matches!(pending, Some(WireValue::Object(rows)) if rows.iter().any(|(key, _)| String::from_utf16(key).ok().as_deref() == Some(&command_id)))
     {
         return Err(HistoricalOwnerAttachError::SourceUnresolved);
     }
@@ -2500,6 +2837,72 @@ fn completed_package_stage_marker(
         source: source.clone(),
         source_id,
         source_sha256,
+    }))
+}
+
+fn parse_pending_package_stage(
+    value: Option<&WireValue>,
+    marker: Option<&CompletedPackageStageMarker>,
+    input: &HistoricalOwnerAttachInput,
+) -> Result<Option<LegacyPendingPackageStage>, HistoricalOwnerAttachError> {
+    let Some(WireValue::Object(rows)) = value else {
+        return Err(HistoricalOwnerAttachError::SourceUnresolved);
+    };
+    let Some(marker) = marker else {
+        return Ok(None);
+    };
+    if rows.is_empty() {
+        return Ok(None);
+    }
+    if rows.len() != 1 {
+        return Err(HistoricalOwnerAttachError::SourceUnresolved);
+    }
+    let (id_units, row) = &rows[0];
+    let id = String::from_utf16(id_units).map_err(|_| HistoricalOwnerAttachError::SourceUnresolved)?;
+    if id != marker.command_id || row.object_len() != Some(2) {
+        return Err(HistoricalOwnerAttachError::SourceUnresolved);
+    }
+    let path = row.get("path").and_then(WireValue::as_string)
+        .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+    if path != format!("/api/workspace/v1/secure/workspaces/{}/commits", input.workspace_id) {
+        return Err(HistoricalOwnerAttachError::SourceUnresolved);
+    }
+    let body = row.get("body").ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+    let commit = body.get("commit").ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+    if body.object_len() != Some(1) || commit.object_len() != Some(2)
+        || commit.get("signature").and_then(WireValue::as_string).is_none() {
+        return Err(HistoricalOwnerAttachError::SourceUnresolved);
+    }
+    let payload = commit.get("payload").ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+    let text = |key| payload.get(key).and_then(WireValue::as_string)
+        .ok_or(HistoricalOwnerAttachError::SourceUnresolved);
+    let base = exact_u64(marker.source.get("sequence"))
+        .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+    let previous = marker.source.get("head").and_then(WireValue::as_string)
+        .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+    let policy = marker.source.get("policy_hash").and_then(WireValue::as_string)
+        .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+    if text("command_id")? != id
+        || text("action_id")? != "secure.protocol-package.stage"
+        || text("workspace_id")? != input.workspace_id
+        || text("actor_id")? != input.expected_owner_actor_id
+        || text("signing_key")? != input.expected_owner_key_id
+        || text("mode")? != "PRIVATE"
+        || text("previous")? != previous
+        || text("policy_hash")? != policy
+        || exact_u64(payload.get("sequence")) != base.checked_add(1)
+        || !matches!(exact_u64(payload.get("v")), Some(2 | 3))
+        || exact_u64(payload.get("epoch")).is_none_or(|epoch| epoch == 0)
+    {
+        return Err(HistoricalOwnerAttachError::SourceUnresolved);
+    }
+    let request = canonical_wire_value(body, CanonicalPath::SecureArtifact)
+        .map_err(|_| HistoricalOwnerAttachError::SourceUnresolved)?;
+    if request.len() > 220_000 {
+        return Err(HistoricalOwnerAttachError::SourceUnresolved);
+    }
+    Ok(Some(LegacyPendingPackageStage {
+        marker: marker.clone(), path, request: Zeroizing::new(request.into_bytes()),
     }))
 }
 
@@ -2626,6 +3029,58 @@ fn verify_completed_package_stage(
     Ok(())
 }
 
+fn verify_pending_package_stage(
+    pending: &LegacyPendingPackageStage,
+    ring: &SecretKeyring,
+    replayed: &TransportReplayedJournal,
+    owner: &KernelIdentity,
+    input: &HistoricalOwnerAttachInput,
+) -> Result<(bool, String), HistoricalOwnerAttachError> {
+    let invalid = || HistoricalOwnerAttachError::SourceUnresolved;
+    let checkpoint = &pending.marker.source;
+    let checkpoint_wire = canonical_wire_value(checkpoint, CanonicalPath::SecureArtifact)
+        .map_err(|_| invalid())?;
+    let policy_hash = checkpoint.get("policy_hash").and_then(WireValue::as_string)
+        .ok_or_else(invalid)?;
+    let policy = replayed.signed_policy_by_hash(&policy_hash).ok_or_else(invalid)?;
+    let request = parse_wire_json_bounded(&pending.request, 64, 220_000).map_err(|_| invalid())?;
+    let epoch = request.get("commit").and_then(|v| v.get("payload"))
+        .and_then(|v| exact_u64(v.get("epoch"))).ok_or_else(invalid)?;
+    let epoch_key = ring.key_at(epoch).ok_or_else(invalid)?;
+    let prepared = peerwork_core::prepared_private_install::verify_imported_private_package_stage(
+        &pending.request,
+        checkpoint_wire.as_bytes(),
+        policy,
+        &pending.marker.command_id,
+        owner.signing_key(),
+        epoch_key,
+    ).map_err(|_| invalid())?;
+    if prepared.source_id() != pending.marker.source_id
+        || prepared.part_index() != 0
+        || prepared.part_count() != 1
+    {
+        return Err(invalid());
+    }
+    let base = exact_u64(checkpoint.get("sequence")).ok_or_else(invalid)?;
+    let head = checkpoint.get("head").and_then(WireValue::as_string).ok_or_else(invalid)?;
+    if !replayed.replay().contains_checkpoint(base, Some(&head), &policy_hash) {
+        return Err(invalid());
+    }
+    if let Some(signed) = replayed.signed_commit_wires().get(base as usize) {
+        if sha256_hex(signed) == prepared.commit_hash() {
+            verify_completed_package_stage(&pending.marker, replayed, input)?;
+            return Ok((true, prepared.commit_hash().into()));
+        }
+    }
+    if replayed.replay().sequence() == base
+        && replayed.replay().head() == Some(head.as_str())
+        && replayed.replay().policy_hash() == policy_hash
+    {
+        return Ok((false, prepared.commit_hash().into()));
+    }
+    Err(invalid())
+}
+
 fn parse_legacy_source(
     bytes: &[u8],
     input: &HistoricalOwnerAttachInput,
@@ -2697,11 +3152,9 @@ fn parse_legacy_source(
             return Err(HistoricalOwnerAttachError::SourceUnresolved);
         }
         let retained_inbox_receipts = parse_inbox_receipts(value.get("inbox_receipts"), input)?;
-        let completed_package_stage = completed_package_stage_marker(
-            value.get("package_stage_intents"),
-            value.get("pending"),
-            input,
-        )?;
+        let stage_marker = completed_package_stage_marker(value.get("package_stage_intents"), input)?;
+        let pending_package_stage = parse_pending_package_stage(value.get("pending"), stage_marker.as_ref(), input)?;
+        let completed_package_stage = if pending_package_stage.is_some() { None } else { stage_marker };
         for key in [
             "admission_browser_revocations",
             "configuration_receipts",
@@ -2887,7 +3340,11 @@ fn parse_legacy_source(
         } else {
             None
         };
-        let pending_action = parse_pending_owner_action(value.get("pending"), input)?;
+        let pending_action = if pending_package_stage.is_some() {
+            None
+        } else {
+            parse_pending_owner_action(value.get("pending"), input)?
+        };
         if let Some(action) = pending_action.as_ref() {
             if action.visibility != if ring.is_some() { "PRIVATE" } else { "PUBLIC" }
                 || sequence.checked_add(1) != Some(action.sequence)
@@ -2906,6 +3363,7 @@ fn parse_legacy_source(
             retained_member_commands,
             retained_inbox_receipts,
             completed_package_stage,
+            pending_package_stage,
             pending_action,
         })
     })();
@@ -3062,6 +3520,8 @@ mod tests {
             expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
             recover_pending_action: false,
             retain_pending_action_command_id: None,
+            selected_pending_package_stage_command_id: None,
+            expected_ts_state_digest: None,
             kernel_pending_command_ids: Vec::new(),
             expected_kernel_intent_db_digest: None,
         };
@@ -3234,6 +3694,8 @@ mod tests {
             expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
             recover_pending_action: recover,
             retain_pending_action_command_id: None,
+            selected_pending_package_stage_command_id: None,
+            expected_ts_state_digest: None,
             kernel_pending_command_ids: Vec::new(),
             expected_kernel_intent_db_digest: None,
         };
@@ -3440,6 +3902,8 @@ mod tests {
             expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
             recover_pending_action: true,
             retain_pending_action_command_id: None,
+            selected_pending_package_stage_command_id: None,
+            expected_ts_state_digest: None,
             kernel_pending_command_ids: Vec::new(),
             expected_kernel_intent_db_digest: None,
         };
@@ -3727,6 +4191,8 @@ mod tests {
                 expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
                 recover_pending_action: true,
                 retain_pending_action_command_id: Some(pending_id.into()),
+                selected_pending_package_stage_command_id: None,
+                expected_ts_state_digest: None,
                 kernel_pending_command_ids: Vec::new(),
                 expected_kernel_intent_db_digest: None,
             };
@@ -4031,6 +4497,8 @@ mod tests {
                 expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
                 recover_pending_action: false,
                 retain_pending_action_command_id: None,
+                selected_pending_package_stage_command_id: None,
+                expected_ts_state_digest: None,
                 kernel_pending_command_ids: Vec::new(),
                 expected_kernel_intent_db_digest: None,
             };
@@ -4094,6 +4562,288 @@ mod tests {
                     .unwrap();
                 assert_eq!(after, 2);
             }
+        }
+    }
+
+    #[test]
+    fn actual_service_imports_and_explicitly_recovers_saved_package_stage() {
+        let _fault_guard = ATTACH_FAULT_TEST_LOCK.lock().unwrap();
+        let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else { return; };
+        let node = std::env::var("PEERWORK_NODE_BIN").unwrap_or_else(|_| "node".into());
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)] {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let bridge = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/reference-kernel-server.mjs");
+        let child = Command::new(&node).arg(bridge)
+            .env("PEERWORK_REFERENCE_ROOT", &reference_root)
+            .env("PEERWORK_TEST_STATE", root.path())
+            .env("PEERWORK_TEST_FIRST_POST_MODE", "normal")
+            .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        struct StopStageRecovery(Child);
+        impl Drop for StopStageRecovery {
+            fn drop(&mut self) { let _ = self.0.kill(); let _ = self.0.wait(); }
+        }
+        let mut child = StopStageRecovery(child);
+        let mut line = String::new();
+        BufReader::new(child.0.stdout.take().unwrap()).read_line(&mut line).unwrap();
+        assert!(!line.is_empty(), "pinned service exited before readiness");
+        let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let origin = ready["origin"].as_str().unwrap();
+        let helper = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/legacy-owner-source.mjs");
+        let oracle = rusqlite::Connection::open_with_flags(
+            root.path().join("control.sqlite"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        ).unwrap();
+        for (name, mode, initially_applied) in [
+            ("applied", "stage-marker-pending", true),
+            ("before", "stage-marker-before-post", false),
+        ] {
+            let output = Command::new(&node).arg(&helper).arg(origin)
+                .arg(root.path().join(name)).arg(&reference_root).arg(mode)
+                .output().unwrap();
+            assert!(output.status.success(), "source stage {name}: {}", String::from_utf8_lossy(&output.stderr));
+            let source: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(source["policy_v"], 3);
+            assert_eq!(source["visibility"], "PRIVATE");
+            assert_eq!(source["structure_mode"], "STRUCTURED");
+            assert_eq!(source["stage_part_count"], 1);
+            assert_eq!(source["pending_count"], 1);
+            let workspace = source["workspace_id"].as_str().unwrap();
+            let command = source["stage_marker"]["command_id"].as_str().unwrap();
+            assert_eq!(source["pending_command_id"], command);
+            let before: i64 = oracle.query_row(
+                "SELECT count(*) FROM secure_commits WHERE workspace_id=?1 AND command_id=?2",
+                [workspace, command], |row| row.get(0),
+            ).unwrap();
+            assert_eq!(before, i64::from(initially_applied), "{name}");
+            let attach = SecureHistoricalOwnerAttach::new(SecureOwnerCreateConfig {
+                origin: origin.into(),
+                state_dir: root.path().join(format!("native-{name}")),
+                allow_loopback_http: true,
+                max_replay_artifact_bytes: 64 * 1024 * 1024,
+            });
+            let mut input = HistoricalOwnerAttachInput {
+                workspace_id: workspace.into(),
+                protected_ts_state_path: source["state_path"].as_str().unwrap().into(),
+                protected_owner_pkcs8_path: source["pem_path"].as_str().unwrap().into(),
+                protected_ts_intent_db_path: source["intent_db_path"].as_str().unwrap().into(),
+                expected_owner_actor_id: source["owner_actor_id"].as_str().unwrap().into(),
+                expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
+                recover_pending_action: false,
+                retain_pending_action_command_id: None,
+                selected_pending_package_stage_command_id: None,
+                expected_ts_state_digest: None,
+                kernel_pending_command_ids: Vec::new(),
+                expected_kernel_intent_db_digest: None,
+            };
+            let cancel = CancellationToken::new();
+            let inventory = attach.inspect_pending_package_stage(&input, &cancel).unwrap();
+            assert_eq!(inventory.command_id, command);
+            assert_eq!(inventory.source_id, source["stage_marker"]["source_id"]);
+            assert_eq!(inventory.source_sha256, source["stage_marker"]["source_sha256"]);
+            assert_eq!(inventory.source_sequence, 1);
+            assert_eq!(inventory.status, if initially_applied { "APPLIED_IN_SIGNED_REPLAY" } else { "PENDING_UNRESOLVED" });
+            input.expected_ts_state_digest = Some(inventory.ts_state_digest);
+            input.selected_pending_package_stage_command_id = Some(random_token().unwrap());
+            let before_rejected = TEST_IMPORTED_PACKAGE_STAGE_POSTS.load(Ordering::SeqCst);
+            assert!(matches!(attach.attach(input.clone(), &cancel), Err(HistoricalOwnerAttachError::SourceUnresolved)));
+            assert!(attach.attachments().unwrap().is_empty());
+            assert!(!attach.config.state_dir.join("workspaces").join(workspace).join("lifecycle.state").exists());
+            assert_eq!(TEST_IMPORTED_PACKAGE_STAGE_POSTS.load(Ordering::SeqCst), before_rejected);
+            let unchanged: i64 = oracle.query_row(
+                "SELECT count(*) FROM secure_commits WHERE workspace_id=?1 AND command_id=?2",
+                [workspace, command], |row| row.get(0),
+            ).unwrap();
+            assert_eq!(unchanged, before);
+            input.selected_pending_package_stage_command_id = Some(command.into());
+            let posts = TEST_IMPORTED_PACKAGE_STAGE_POSTS.load(Ordering::SeqCst);
+            let attached = attach.attach(input, &cancel).unwrap();
+            assert_eq!(attached.pending_package_stage_command_id.as_deref(), Some(command));
+            assert_eq!(attached.status, if initially_applied { "ATTACHED" } else { "ATTACHED_RESTRICTED" });
+            assert_eq!(TEST_IMPORTED_PACKAGE_STAGE_POSTS.load(Ordering::SeqCst), posts);
+            let facade = SecureOwnerWorkspaceCreate::new(attach.config.clone());
+            let read: serde_json::Value = serde_json::from_str(&facade.read_workspace_json(workspace, &cancel).unwrap()).unwrap();
+            assert_eq!(read["sequence"], if initially_applied { 2 } else { 1 });
+            if !initially_applied {
+                assert!(facade.private_action_access(workspace).is_err());
+                assert!(facade.private_format_transition_access(workspace).is_err());
+            }
+            std::fs::rename(root.path().join(name), root.path().join(format!("archived-{name}"))).unwrap();
+            let recovered = SecureHistoricalOwnerAttach::new(attach.config.clone())
+                .recover_pending_package_stage(&attached.attach_id, command, &cancel).unwrap();
+            assert_eq!(recovered.status, "ATTACHED");
+            assert_eq!(recovered.pending_package_stage_status.as_deref(), Some("ACCEPTED"));
+            assert_eq!(TEST_IMPORTED_PACKAGE_STAGE_POSTS.load(Ordering::SeqCst), posts + usize::from(!initially_applied));
+            let replay_read: serde_json::Value = serde_json::from_str(&facade.read_workspace_json(workspace, &cancel).unwrap()).unwrap();
+            assert_eq!(replay_read["sequence"], 2);
+            assert!(replay_read["objects"].as_array().unwrap().iter().any(|item| {
+                item["kind"] == "protocol_package_part"
+                    && item["id"] == source["stage_marker"]["part_id"]
+                    && item["value"]["source_id"] == source["stage_marker"]["source_id"]
+                    && item["value"]["sha256"] == source["stage_marker"]["part_sha256"]
+            }));
+            let second = SecureHistoricalOwnerAttach::new(attach.config.clone())
+                .recover_pending_package_stage(&attached.attach_id, command, &cancel).unwrap();
+            assert_eq!(second, recovered);
+            assert_eq!(TEST_IMPORTED_PACKAGE_STAGE_POSTS.load(Ordering::SeqCst), posts + usize::from(!initially_applied));
+            let after: i64 = oracle.query_row(
+                "SELECT count(*) FROM secure_commits WHERE workspace_id=?1 AND command_id=?2",
+                [workspace, command], |row| row.get(0),
+            ).unwrap();
+            assert_eq!(after, 1, "{name}");
+        }
+    }
+
+    #[test]
+    fn actual_service_generates_presend_and_orphan_package_stage_markers() {
+        let _fault_guard = ATTACH_FAULT_TEST_LOCK.lock().unwrap();
+        let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else {
+            return;
+        };
+        let node = std::env::var("PEERWORK_NODE_BIN").unwrap_or_else(|_| "node".into());
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let bridge =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/reference-kernel-server.mjs");
+        let child = Command::new(&node)
+            .arg(bridge)
+            .env("PEERWORK_REFERENCE_ROOT", &reference_root)
+            .env("PEERWORK_TEST_STATE", root.path())
+            .env("PEERWORK_TEST_FIRST_POST_MODE", "normal")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        struct StopStageSource(Child);
+        impl Drop for StopStageSource {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut child = StopStageSource(child);
+        let mut line = String::new();
+        BufReader::new(child.0.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        assert!(!line.is_empty(), "pinned service exited before readiness");
+        let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let origin = ready["origin"].as_str().unwrap();
+        let helper =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/legacy-owner-source.mjs");
+        let oracle = rusqlite::Connection::open_with_flags(
+            root.path().join("control.sqlite"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        for (name, mode, pending_count) in [
+            ("before-post", "stage-marker-before-post", 1),
+            ("orphan", "stage-marker-orphan", 0),
+        ] {
+            let output = Command::new(&node)
+                .arg(&helper)
+                .arg(origin)
+                .arg(root.path().join(name))
+                .arg(&reference_root)
+                .arg(mode)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "source-generated stage marker {name}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let source: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(source["policy_v"], 3);
+            assert_eq!(source["visibility"], "PRIVATE");
+            assert_eq!(source["structure_mode"], "STRUCTURED");
+            assert_eq!(source["stage_part_count"], 1);
+            assert_eq!(source["stage_applied"], false);
+            assert_eq!(source["pending_count"], pending_count);
+            assert_eq!(source["sequence"], 1);
+            let workspace = source["workspace_id"].as_str().unwrap();
+            let command = source["stage_marker"]["command_id"].as_str().unwrap();
+            assert_eq!(source["stage_signed_command_id"], serde_json::Value::Null);
+            if pending_count == 1 {
+                assert_eq!(source["pending_command_id"], command);
+                assert!(source["pending_commit_hash"].as_str().is_some());
+                // Compatibility probe on the test-created protected source:
+                // this proves the genuine f828 encrypted ADMIN packet has the
+                // shape accepted by the new core verifier. Runtime replay
+                // authority and durable recovery are separate gates.
+                let state = std::fs::read(source["state_path"].as_str().unwrap()).unwrap();
+                let wire = parse_wire_json_bounded(&state, 48, MAX_SOURCE).unwrap();
+                let local = wire.get("workspaces").unwrap().get(workspace).unwrap();
+                let ring_wire = canonical_wire_value(
+                    local.get("keyring").unwrap(),
+                    CanonicalPath::SecureArtifact,
+                )
+                .unwrap();
+                let ring = SecretKeyring::parse_wire(ring_wire.as_bytes()).unwrap();
+                let WireValue::Array(policies) = local.get("policies").unwrap() else {
+                    panic!("source policies are absent");
+                };
+                let policy_wire = canonical_wire_value(
+                    policies.last().unwrap(),
+                    CanonicalPath::SecureArtifact,
+                )
+                .unwrap();
+                let marker = wire
+                    .get("package_stage_intents")
+                    .unwrap()
+                    .get(&format!("{}.{}", workspace, source["stage_marker"]["source_id"].as_str().unwrap()))
+                    .unwrap();
+                let checkpoint_wire = canonical_wire_value(
+                    marker.get("source").unwrap(),
+                    CanonicalPath::SecureArtifact,
+                )
+                .unwrap();
+                let body = wire.get("pending").unwrap().get(command).unwrap().get("body").unwrap();
+                let request_wire = canonical_wire_value(body, CanonicalPath::SecureArtifact).unwrap();
+                let identity = KernelIdentity::import_pkcs8_pem_file(
+                    &root.path().join(format!("{name}-probe-identity.state")),
+                    Path::new(source["pem_path"].as_str().unwrap()),
+                )
+                .unwrap();
+                let epoch = exact_u64(policies.last().unwrap().get("payload").unwrap().get("epoch"))
+                    .unwrap();
+                let verified = peerwork_core::prepared_private_install::verify_imported_private_package_stage(
+                    request_wire.as_bytes(),
+                    checkpoint_wire.as_bytes(),
+                    policy_wire.as_bytes(),
+                    command,
+                    identity.signing_key(),
+                    ring.key_at(epoch).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(verified.commit_hash(), source["pending_commit_hash"].as_str().unwrap());
+            } else {
+                assert_eq!(source["pending_command_id"], serde_json::Value::Null);
+                assert_eq!(source["pending_commit_hash"], serde_json::Value::Null);
+            }
+            let committed: i64 = oracle
+                .query_row(
+                    "SELECT count(*) FROM secure_commits WHERE workspace_id=?1 AND command_id=?2",
+                    [workspace, command],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(committed, 0, "{name}");
+            let total: i64 = oracle
+                .query_row(
+                    "SELECT count(*) FROM secure_commits WHERE workspace_id=?1",
+                    [workspace],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(total, 1, "{name}");
         }
     }
 
@@ -4198,6 +4948,8 @@ mod tests {
                 expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
                 recover_pending_action: true,
                 retain_pending_action_command_id: None,
+                selected_pending_package_stage_command_id: None,
+                expected_ts_state_digest: None,
                 kernel_pending_command_ids: Vec::new(),
                 expected_kernel_intent_db_digest: None,
             };
@@ -4499,6 +5251,8 @@ mod tests {
                 expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
                 recover_pending_action: true,
                 retain_pending_action_command_id: None,
+                selected_pending_package_stage_command_id: None,
+                expected_ts_state_digest: None,
                 kernel_pending_command_ids: Vec::new(),
                 expected_kernel_intent_db_digest: None,
             };
@@ -4995,6 +5749,8 @@ mod tests {
             expected_owner_key_id: changed["owner_key_id"].as_str().unwrap().into(),
             recover_pending_action: false,
             retain_pending_action_command_id: None,
+            selected_pending_package_stage_command_id: None,
+            expected_ts_state_digest: None,
             kernel_pending_command_ids: vec![changed_id.into()],
             expected_kernel_intent_db_digest: None,
         };
@@ -5102,6 +5858,8 @@ mod tests {
                 expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
                 recover_pending_action: false,
                 retain_pending_action_command_id: None,
+                selected_pending_package_stage_command_id: None,
+                expected_ts_state_digest: None,
                 kernel_pending_command_ids: vec![selected.into()],
                 expected_kernel_intent_db_digest: None,
             };
@@ -5309,6 +6067,8 @@ mod tests {
                     expected_owner_key_id: missing["owner_key_id"].as_str().unwrap().into(),
                     recover_pending_action: false,
                     retain_pending_action_command_id: None,
+                    selected_pending_package_stage_command_id: None,
+                    expected_ts_state_digest: None,
                     kernel_pending_command_ids: Vec::new(),
                     expected_kernel_intent_db_digest: None,
                 },
@@ -5361,6 +6121,8 @@ mod tests {
                     expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
                     recover_pending_action: false,
                     retain_pending_action_command_id: None,
+                    selected_pending_package_stage_command_id: None,
+                    expected_ts_state_digest: None,
                     kernel_pending_command_ids: Vec::new(),
                     expected_kernel_intent_db_digest: None,
                 },
@@ -5585,6 +6347,8 @@ mod tests {
                     expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
                     recover_pending_action: false,
                     retain_pending_action_command_id: None,
+                    selected_pending_package_stage_command_id: None,
+                    expected_ts_state_digest: None,
                     kernel_pending_command_ids: Vec::new(),
                     expected_kernel_intent_db_digest: None,
                 },
@@ -5744,6 +6508,8 @@ mod tests {
                 expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
                 recover_pending_action: false,
                 retain_pending_action_command_id: None,
+                selected_pending_package_stage_command_id: None,
+                expected_ts_state_digest: None,
                 kernel_pending_command_ids: Vec::new(),
                 expected_kernel_intent_db_digest: None,
             };
@@ -5789,6 +6555,8 @@ mod tests {
             expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
             recover_pending_action: false,
             retain_pending_action_command_id: None,
+            selected_pending_package_stage_command_id: None,
+            expected_ts_state_digest: None,
             kernel_pending_command_ids: Vec::new(),
             expected_kernel_intent_db_digest: None,
         };
