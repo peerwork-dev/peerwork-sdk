@@ -1242,6 +1242,58 @@ mod tests {
         let origin = ready["origin"].as_str().unwrap();
         let helper =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/legacy-owner-source.mjs");
+        // A test-created PRIVATE source with its local ring removed must not
+        // be reclassified as an attached PUBLIC workspace. Signed replay is
+        // the authority for the workspace's visibility and encrypted history.
+        let missing_ring = Command::new(&node)
+            .arg(&helper)
+            .arg(origin)
+            .arg(root.path().join("legacy-missing-ring"))
+            .arg(&legacy_root)
+            .arg("private-missing-ring")
+            .output()
+            .unwrap();
+        assert!(
+            missing_ring.status.success(),
+            "missing-ring setup: {}",
+            String::from_utf8_lossy(&missing_ring.stderr)
+        );
+        let missing: serde_json::Value = serde_json::from_slice(&missing_ring.stdout).unwrap();
+        let missing_workspace = missing["workspace_id"].as_str().unwrap();
+        let bad_config = SecureOwnerCreateConfig {
+            origin: origin.into(),
+            state_dir: root.path().join("native-missing-ring"),
+            allow_loopback_http: true,
+            max_replay_artifact_bytes: 64 * 1024 * 1024,
+        };
+        let cancel = CancellationToken::new();
+        let bad_attach = SecureHistoricalOwnerAttach::new(bad_config.clone());
+        assert!(matches!(
+            bad_attach.attach(
+                HistoricalOwnerAttachInput {
+                    workspace_id: missing_workspace.into(),
+                    protected_ts_state_path: PathBuf::from(missing["state_path"].as_str().unwrap()),
+                    protected_owner_pkcs8_path: PathBuf::from(
+                        missing["pem_path"].as_str().unwrap()
+                    ),
+                    protected_ts_intent_db_path: PathBuf::from(
+                        missing["intent_db_path"].as_str().unwrap()
+                    ),
+                    expected_owner_actor_id: missing["owner_actor_id"].as_str().unwrap().into(),
+                    expected_owner_key_id: missing["owner_key_id"].as_str().unwrap().into(),
+                },
+                &cancel
+            ),
+            Err(HistoricalOwnerAttachError::Verification)
+        ));
+        assert!(bad_attach
+            .attachments()
+            .unwrap()
+            .iter()
+            .all(|row| row.status != "ATTACHED"));
+        assert!(SecureOwnerWorkspaceCreate::new(bad_config)
+            .public_action_access(missing_workspace)
+            .is_err());
         let setup = Command::new(&node)
             .arg(helper)
             .arg(origin)

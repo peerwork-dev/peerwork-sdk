@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 
 const [origin, sourceDir, legacyRoot, mode = 'clean'] = process.argv.slice(2);
 if (!origin || !sourceDir || !legacyRoot) throw new Error('LEGACY_TEST_INPUT_REQUIRED');
-if (!['clean', 'completed', 'legacy-record', 'pending', 'unknown-store', 'malformed-store', 'legacy-structured', 'legacy-public'].includes(mode)) throw new Error('LEGACY_TEST_MODE_INVALID');
+if (!['clean', 'completed', 'legacy-record', 'pending', 'unknown-store', 'malformed-store', 'legacy-structured', 'legacy-public', 'private-missing-ring'].includes(mode)) throw new Error('LEGACY_TEST_MODE_INVALID');
 mkdirSync(sourceDir, { recursive: true, mode: 0o700 });
 const { privateKey } = generateKeyPairSync('ed25519');
 const pemPath = join(sourceDir, 'owner.pem');
@@ -44,6 +44,10 @@ try {
   }
   if (mode === 'malformed-store') {
     agent.state.admission_browser_approvals = null;
+    agent.save();
+  }
+  if (mode === 'private-missing-ring') {
+    delete agent.state.workspaces[created.workspaceId].keyring;
     agent.save();
   }
   if (mode === 'completed') {
