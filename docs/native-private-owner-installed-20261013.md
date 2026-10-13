@@ -13,9 +13,24 @@ The Rust 1.89 offline locked CLI/Node release build `15636`, wheel build `49588`
 | Python `manylinux_2_38_x86_64` wheel | `e1499786e6403d62e38105f166209048e2df22ac783f56b6d024ff805fe40dd3` |
 | Node facade tarball | `a3a7e1a6536017f9c16c3cd836dce6dd6400b66ab1dbf5d49a11c7c43c169bcd` |
 | Node platform tarball | `fa1cb595a84cc7fc326c034c32a4b96aed8cc183cf923ff9eb7f1fb9e14489cc` |
-| Installed wheel `RECORD` | `2f14d30d185447dd0b3defe52634ef59f2d09a94ae1f98187141860bc59c2f93` |
+| Installed wheel `RECORD` file | `2f14d30d185447dd0b3defe52634ef59f2d09a94ae1f98187141860bc59c2f93` |
 
 The wheel and both npm tarballs were installed offline into fresh task-local venv/node directories before the service test. The first npm install invocation failed exit 127 because npm's `env node` shebang lacked the pinned Node binary on `PATH`; repeating the same offline install with `/root/workdir/message/.tools/node-v24.20.0-linux-x64/bin` prepended passed. A diagnostic `import peerwork_sdk` failed because the distribution name is `peerwork-sdk` while its import module is `peerwork`; the installed `import peerwork` passed. These were invocation errors, not SDK business failures. The test used the correct pinned Node absolute path throughout.
+
+From the SDK worktree root, the exact successful service invocation was:
+
+```sh
+PEERWORK_TEST_SDK_ROOT=$PWD/.build-artifacts/private-owner-5e8/source \
+PEERWORK_TEST_STATE=$PWD/.build-artifacts/private-owner-5e8/build/private-state-1 \
+PEERWORK_TEST_NODE=/root/workdir/message/.tools/node-v24.20.0-linux-x64/bin/node \
+PEERWORK_TEST_NODE_PACKAGE=$PWD/.build-artifacts/private-owner-5e8/install/node/node_modules/@peerwork/agent-sdk \
+PEERWORK_TEST_CLI=$PWD/.build-artifacts/private-owner-5e8/build/target/release/peerwork \
+PEERWORK_TEST_OWNER_SOURCE_SHA256=5c40aa4a85aa38eb06955e956176ab123a39e44b9bc107e8abc334aa8d4b5b5a \
+PEERWORK_REFERENCE_ROOT=/root/workdir/message/.worktrees/e2ee-main-integration-20261006 \
+.build-artifacts/private-owner-5e8/install/venv/bin/python tests/installed-native-private-owner-admission.py
+```
+
+The `RECORD` entry above is a hash of the installed file; this run did not independently verify every `RECORD` member.
 
 The test created a PRIVATE workspace through the installed Python Owner client, created and published a distinct native recipient, and used an owner-side verified directory lookup certificate for a Node PRIVATE offer. Python native invitation consent accepted that offer. The service applied delivery while dropping the response; Python returned `PENDING`, a fresh Node client found the exact protected pending grant ID/hash, and CLI exact retry returned `AUTHORIZED` without another commit. Recipient receive returned `READY`. The Owner submitted encrypted `wiki.create`; Node reconciled one signed record effect, and the recipient's verified PRIVATE read returned the exact record ID, title `Native private member readback`, and body `Encrypted after grant`. CLI same-ID action retry did not advance the journal. The final signed sequence was 3; owner and recipient actor IDs differed. The local service process was terminated by the test finalizer.
 
