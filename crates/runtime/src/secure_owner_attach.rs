@@ -934,12 +934,17 @@ impl SecureHistoricalOwnerAttach {
         };
         let plans_root = self.config.state_dir.join("owner-orphan-plans");
         ensure_dir(&plans_root)?;
-        let directory = plans_root.join(&plan_id);
-        let existed = match std::fs::symlink_metadata(&directory) {
+        let final_directory = plans_root.join(&plan_id);
+        let existed = match std::fs::symlink_metadata(&final_directory) {
             Ok(_) => true,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
             Err(_) => return Err(HistoricalOwnerAttachError::Local),
         };
+        // Only a complete staged directory is promoted to the deterministic
+        // row-bound name. A crash before rename leaves an inert random name;
+        // a retry never deletes or reuses an unmarked partial directory.
+        let staging = if existed { None } else { Some(new_orphan_plan_staging(&plans_root)?) };
+        let directory = staging.as_ref().map_or(final_directory.as_path(), |tmp| tmp.path());
         ensure_dir(&directory)?;
         let marker_store = SecureStateStore::open(&directory.join("plan-marker.state"))
             .map_err(|_| HistoricalOwnerAttachError::Local)?;
@@ -1011,6 +1016,10 @@ impl SecureHistoricalOwnerAttach {
             manifest_store.write_exact(&serde_json::to_vec(&manifest)
                 .map_err(|_| HistoricalOwnerAttachError::Local)?)
                 .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        }
+        drop(manifest_store);
+        if let Some(staging) = staging.as_ref() {
+            publish_orphan_plan_staging(staging, &final_directory, &plans_root)?;
         }
         Ok(manifest)
     }
@@ -3755,6 +3764,41 @@ fn validate_input(input: &HistoricalOwnerAttachInput) -> Result<(), HistoricalOw
     Ok(())
 }
 
+fn new_orphan_plan_staging(root: &Path) -> Result<tempfile::TempDir, HistoricalOwnerAttachError> {
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(".owner-orphan-plan-staging-");
+    #[cfg(unix)] {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(std::fs::Permissions::from_mode(0o700));
+    }
+    let staging = builder.tempdir_in(root).map_err(|_| HistoricalOwnerAttachError::Local)?;
+    ensure_dir(staging.path())?;
+    Ok(staging)
+}
+
+fn publish_orphan_plan_staging(
+    staging: &tempfile::TempDir,
+    final_directory: &Path,
+    root: &Path,
+) -> Result<(), HistoricalOwnerAttachError> {
+    // The caller has already synced the protected files, checked backup and
+    // final manifest. Sync their directory before publishing its name.
+    #[cfg(unix)]
+    std::fs::File::open(staging.path()).and_then(|file| file.sync_all())
+        .map_err(|_| HistoricalOwnerAttachError::Local)?;
+    match std::fs::symlink_metadata(final_directory) {
+        Ok(_) => return Err(HistoricalOwnerAttachError::Conflict),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+        Err(_) => return Err(HistoricalOwnerAttachError::Local),
+    }
+    std::fs::rename(staging.path(), final_directory)
+        .map_err(|_| HistoricalOwnerAttachError::Local)?;
+    #[cfg(unix)]
+    std::fs::File::open(root).and_then(|file| file.sync_all())
+        .map_err(|_| HistoricalOwnerAttachError::Local)?;
+    Ok(())
+}
+
 fn valid_token(value: &str) -> bool {
     value.len() == 43
         && value
@@ -5187,6 +5231,45 @@ mod tests {
     };
 
     static ATTACH_FAULT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn orphan_plan_partial_staging_never_strands_or_clobbers_retry() {
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)] {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let plans = root.path().join("owner-orphan-plans");
+        ensure_dir(&plans).unwrap();
+        let before_marker = new_orphan_plan_staging(&plans).unwrap();
+        let before_marker_path = before_marker.path().to_owned();
+        // Forgetting the handle models process death before the first marker
+        // write. A retry must allocate a different directory and leave it inert.
+        std::mem::forget(before_marker);
+        let after_marker = new_orphan_plan_staging(&plans).unwrap();
+        let after_marker_path = after_marker.path().to_owned();
+        let marker = SecureStateStore::open(&after_marker_path.join("plan-marker.state")).unwrap();
+        marker.write_exact(b"owned partial plan").unwrap();
+        drop(marker);
+        std::fs::write(after_marker_path.join("source-intents.sqlite"), b"partial backup").unwrap();
+        std::mem::forget(after_marker);
+        let retry = new_orphan_plan_staging(&plans).unwrap();
+        assert_ne!(retry.path(), before_marker_path);
+        assert_ne!(retry.path(), after_marker_path);
+        let final_directory = plans.join("verified-plan-id");
+        let manifest = SecureStateStore::open(&retry.path().join("plan-manifest.state")).unwrap();
+        manifest.write_exact(b"complete checked manifest").unwrap();
+        drop(manifest);
+        publish_orphan_plan_staging(&retry, &final_directory, &plans).unwrap();
+        drop(retry);
+        assert!(before_marker_path.is_dir());
+        assert_eq!(std::fs::read(after_marker_path.join("source-intents.sqlite")).unwrap(), b"partial backup");
+        assert!(final_directory.join("plan-manifest.state").exists());
+        let unexpected = new_orphan_plan_staging(&plans).unwrap();
+        assert!(matches!(publish_orphan_plan_staging(&unexpected, &final_directory, &plans),
+            Err(HistoricalOwnerAttachError::Conflict)));
+        assert!(final_directory.join("plan-manifest.state").exists());
+    }
 
     #[test]
     fn actual_service_completed_inbox_marker_requires_exact_owner_ack() {
