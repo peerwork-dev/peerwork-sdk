@@ -618,6 +618,9 @@ mod tests {
             PrivateDirectInstallBeginInput, PrivatePackageInstallBeginInput,
             PrivatePackageStageInput,
         },
+        secure_public_admission::PublicOfferInput,
+        secure_public_decision::{PublicDecisionConfig, SecurePublicDecision},
+        secure_recipient_enrollment::{RecipientEnrollmentConfig, SecureRecipientEnrollment},
     };
     use std::{
         io::{BufRead, BufReader},
@@ -1077,6 +1080,162 @@ mod tests {
             .unwrap();
         assert_eq!(
             instance["value"]["state"]["lib"]["refs"],
+            serde_json::json!([{"record_id":produced_id,"revision":1}])
+        );
+
+        // Admit a separate native identity to consume the exact reference.
+        let member_dir = root.path().join("native-member");
+        let mut enrollment_config =
+            RecipientEnrollmentConfig::for_state_dir(origin.clone(), &member_dir);
+        enrollment_config.allow_loopback_http = true;
+        let enrollment = SecureRecipientEnrollment::new(enrollment_config);
+        let member = enrollment.create_local().unwrap();
+        assert_eq!(enrollment.publish().unwrap().status, "PUBLISHED");
+        let admission = owner.private_admission_access(&workspace_id).unwrap();
+        let offer: serde_json::Value = serde_json::from_str(
+            &admission
+                .submit_offer_json_with_cancel(
+                    PublicOfferInput {
+                        recipient_certificate_json: enrollment.certificate_json().unwrap(),
+                        scopes_json: serde_json::json!([{
+                            "instance_id":typed_instance,
+                            "actions":["lib.consume"],
+                            "protocol_roles":[],"capabilities":[]
+                        }])
+                        .to_string(),
+                        message: "Native format-two exact-ref member".into(),
+                        message_utf16: None,
+                        invite_id: None,
+                        issued_at_ms: None,
+                        expires_at_ms: None,
+                    },
+                    &cancel,
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        let invite_id = offer["invite_id"].as_str().unwrap();
+        let decision = SecurePublicDecision::new(PublicDecisionConfig {
+            origin: origin.clone(),
+            state_dir: member_dir.clone(),
+            identity_path: member_dir.join("identity.state"),
+            workspace_id: workspace_id.clone(),
+            owner_actor_id: source["owner_actor_id"].as_str().unwrap().into(),
+            owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
+            authority: peerwork_core::crypto::sha256_hex(member.actor_id.as_bytes()),
+            allow_loopback_http: true,
+            required_features: vec![],
+            max_replay_artifact_bytes: 64 * 1024 * 1024,
+        });
+        let decided: serde_json::Value =
+            serde_json::from_str(&decision.decide_json(invite_id, "ACCEPT").unwrap()).unwrap();
+        assert_eq!(decided["invite_id"], invite_id);
+        let delivered: serde_json::Value = serde_json::from_str(
+            &admission
+                .deliver_accepted_json_with_cancel(invite_id, &cancel)
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            delivered["status"].as_str(),
+            Some("PENDING" | "AUTHORIZED")
+        ));
+        if delivered["status"] == "PENDING" {
+            let recovered: serde_json::Value = serde_json::from_str(
+                &admission
+                    .retry_delivery_json_with_cancel(
+                        delivered["grant_id"].as_str().unwrap(),
+                        &cancel,
+                    )
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(recovered["status"], "AUTHORIZED");
+        }
+        let mut received: serde_json::Value =
+            serde_json::from_str(&decision.receive_json(invite_id).unwrap()).unwrap();
+        if received["status"] == "PENDING" {
+            received =
+                serde_json::from_str(&decision.retry_receive_json(invite_id).unwrap()).unwrap();
+        }
+        assert_eq!(received["status"], "READY");
+        let member_profile = SecureReadProfileConfig {
+            origin: origin.clone(),
+            state_dir: member_dir.clone(),
+            identity_path: member_dir.join("identity.state"),
+            workspace_id: workspace_id.clone(),
+            owner_actor_id: Some(source["owner_actor_id"].as_str().unwrap().into()),
+            owner_key_id: Some(source["owner_key_id"].as_str().unwrap().into()),
+            authority: Some(peerwork_core::crypto::sha256_hex(
+                member.actor_id.as_bytes(),
+            )),
+            required_features: vec![],
+            allow_loopback_http: true,
+            max_replay_artifact_bytes: 64 * 1024 * 1024,
+        };
+        let before_consume = counts()["commits"].as_u64().unwrap();
+        let member_action =
+            crate::secure_action_access::SecurePrivateActionAccess::new(member_profile.clone());
+        let consume: serde_json::Value = serde_json::from_str(
+            &member_action
+                .submit_new_json(PublicActionInput {
+                    action_id: "lib.consume".into(),
+                    instance_id: typed_instance.clone(),
+                    body_json: "{}".into(),
+                    exact_input_refs_json: Some(
+                        serde_json::json!([{"record_id":produced_id,"revision":1}]).to_string(),
+                    ),
+                    allocations_json: None,
+                    command_id: None,
+                    issued_at_ms: None,
+                })
+                .unwrap(),
+        )
+        .unwrap();
+        let consumed: serde_json::Value = serde_json::from_str(
+            &member_action
+                .retry_saved_json(consume["command_id"].as_str().unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(consumed["status"], "ACCEPTED");
+        assert_eq!(counts()["commits"], before_consume + 1);
+        let consume_receipt: serde_json::Value =
+            serde_json::from_str(consumed["receipt_canonical_json"].as_str().unwrap()).unwrap();
+        assert_eq!(consume_receipt["actor_id"], member.actor_id);
+        let duplicate: serde_json::Value = serde_json::from_str(
+            &member_action
+                .retry_saved_json(consume["command_id"].as_str().unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(duplicate["status"], "ACCEPTED");
+        assert_eq!(counts()["commits"], before_consume + 1);
+        let member_read: serde_json::Value = serde_json::from_str(
+            &SecureReadProfile::new(member_profile)
+                .read_latest_json()
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(member_read["objects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|object| {
+                object["kind"] == "records"
+                    && object["id"] == source["prior_record_id"]
+                    && object["value"]["payload"]["title"] == "Legacy encrypted record"
+                    && object["value"]["payload"]["body"] == "Old wire-v1 encrypted body"
+            }));
+        let member_instance = member_read["objects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|object| object["kind"] == "instances" && object["id"] == typed_instance)
+            .unwrap();
+        assert_eq!(
+            member_instance["value"]["state"]["lib"]["refs"],
             serde_json::json!([{"record_id":produced_id,"revision":1}])
         );
     }
