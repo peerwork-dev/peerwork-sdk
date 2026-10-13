@@ -166,8 +166,11 @@ impl SecureLifecycle {
 
     /// Promote only a signed grant reverified against the exact completed
     /// origin-bound journal replay. A staged local transition, if present,
-    /// must contain precisely the same protected key material. Persistence
-    /// completes before in-memory active state changes.
+    /// must contain precisely the same protected key material. A recipient
+    /// can also learn a later epoch from a verified direct grant without a
+    /// locally staged owner rotation; in that case every previously active
+    /// epoch and key must be an exact prefix of the granted history.
+    /// Persistence completes before in-memory active state changes.
     pub(crate) fn activate_verified_grant(
         &mut self,
         proof: GrantActivationProof,
@@ -177,6 +180,8 @@ impl SecureLifecycle {
             || proof.owner_actor() != self.owner_actor_id
             || proof.owner_key() != self.owner_key_id
             || proof.local_actor() != self.actor_id
+            || !(proof.epoch() == 0 && proof.keyring().epochs().next().is_none()
+                || proof.keyring().epochs().last() == Some(proof.epoch()))
         {
             return Err(SecureLifecycleError::PinChanged);
         }
@@ -186,11 +191,12 @@ impl SecureLifecycle {
                 return Err(SecureLifecycleError::PendingConflict);
             }
         } else if let Some(active) = &self.active {
-            return if active.canonical_wire()?.as_slice() == wire.as_slice() {
-                Ok(self.status())
-            } else {
-                Err(SecureLifecycleError::PendingConflict)
-            };
+            if active.canonical_wire()?.as_slice() == wire.as_slice() {
+                return Ok(self.status());
+            }
+            if !exact_keyring_extension(active, proof.keyring()) {
+                return Err(SecureLifecycleError::PendingConflict);
+            }
         }
         let active = SecretKeyring::parse_wire(&wire)?;
         self.save_with(Some(&active), None)?;
@@ -346,6 +352,24 @@ impl SecureLifecycle {
     }
 }
 
+fn exact_keyring_extension(active: &SecretKeyring, granted: &SecretKeyring) -> bool {
+    if active.workspace_id() != granted.workspace_id() {
+        return false;
+    }
+    let old_epochs = active.epochs().collect::<Vec<_>>();
+    let new_epochs = granted.epochs().collect::<Vec<_>>();
+    if old_epochs.is_empty()
+        || new_epochs.len() <= old_epochs.len()
+        || !new_epochs.windows(2).all(|pair| pair[0] < pair[1])
+        || new_epochs[..old_epochs.len()] != old_epochs
+    {
+        return false;
+    }
+    old_epochs.iter().all(|epoch| {
+        active.key_at(*epoch).is_some() && active.key_at(*epoch) == granted.key_at(*epoch)
+    })
+}
+
 fn put_public(out: &mut Vec<u8>, value: &str) -> Result<(), SecureLifecycleError> {
     let len: u16 = value
         .len()
@@ -438,6 +462,22 @@ mod tests {
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn verified_grant_extension_preserves_every_active_epoch_key() {
+        let workspace = base64url(&[7u8; 32]);
+        let active = SecretKeyring::new_private(&workspace, 1).unwrap();
+        let mut extended = SecretKeyring::parse_wire(&active.canonical_wire().unwrap()).unwrap();
+        extended.rotate(3).unwrap();
+        assert!(exact_keyring_extension(&active, &extended));
+
+        let missing_old = SecretKeyring::new_private(&workspace, 3).unwrap();
+        assert!(!exact_keyring_extension(&active, &missing_old));
+        let mut changed_old = SecretKeyring::new_private(&workspace, 1).unwrap();
+        changed_old.rotate(3).unwrap();
+        assert!(!exact_keyring_extension(&active, &changed_old));
+        assert!(!exact_keyring_extension(&active, &active));
+    }
 
     #[test]
     fn empty_lifecycle_persists_first_owner_pin() {

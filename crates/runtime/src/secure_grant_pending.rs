@@ -56,6 +56,10 @@ pub(crate) struct GrantActivationProof {
 }
 
 impl GrantActivationProof {
+    pub(crate) fn epoch(&self) -> u64 {
+        self.material.epoch()
+    }
+
     pub(crate) fn keyring(&self) -> &SecretKeyring {
         self.material.keyring()
     }
