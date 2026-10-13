@@ -172,13 +172,13 @@ with tempfile.TemporaryDirectory(prefix="peerwork-installed-install-") as direct
                 break
         assert steps[-1]["status"] == "ACCEPTED"
         assert counts(ready["origin"])["head_sequence"] == 3
+        assert client.pending() == []
+        latest = client.read()
+        assert latest["sequence"] == 3 and latest["structure_status"] == "ACTIVE"
         python_repeat = client.continue_install(begin_id)
         assert python_repeat["status"] == "ACCEPTED"
         assert python_repeat["commit_hash"] == steps[-1]["commit_hash"]
         assert counts(ready["origin"])["head_sequence"] == 3
-        assert client.pending() == []
-        latest = client.read()
-        assert latest["sequence"] == 3 and latest["structure_status"] == "ACTIVE"
         print(json.dumps({"source_commit": SOURCE_COMMIT,
                           "reference_commit": "f828b6c50a0a58d1e718af90f653b214adcc3328",
                           "offline_generated_id_recovered": len(command_id) == 43,
