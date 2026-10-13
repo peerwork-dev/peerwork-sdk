@@ -261,8 +261,8 @@ exports.readSecureWorkspace = async options => {
   }
 };
 
-/** Acquire an authenticated direct PRIVATE grant and persist a verified read floor. */
-exports.activatePrivateRead = async options => {
+/** Read verified PRIVATE state, recovering a protected direct grant when needed. */
+exports.readSecurePrivateWorkspace = async options => {
   const { config, signal } = secureProfileOptions(options);
   const handle = new binding.KernelCancelHandle();
   const onAbort = () => handle.cancel();

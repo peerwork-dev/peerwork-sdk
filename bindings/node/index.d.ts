@@ -109,8 +109,8 @@ export interface SecureReadOptions {
 }
 /** Fetches the latest verified supported active history; failed refresh rejects. */
 export declare function readSecureWorkspace(options: SecureReadOptions): Promise<VerifiedSecureWorkspace>;
-/** Acquire a signed direct PRIVATE grant using protected recipient/profile state. */
-export declare function activatePrivateRead(options: SecureReadOptions): Promise<VerifiedSecureWorkspace>;
+/** Read verified PRIVATE state, recovering a protected direct grant when needed. */
+export declare function readSecurePrivateWorkspace(options: SecureReadOptions): Promise<VerifiedSecureWorkspace>;
 
 export interface SecureActionReceipt {
   command_id: string;

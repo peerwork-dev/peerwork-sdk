@@ -498,11 +498,11 @@ class SecureReadClient:
             raise SecureReadError(result["code"], result["message"])
         return cast(VerifiedSecureWorkspace, result["value"])
 
-    def activate_private(self) -> VerifiedSecureWorkspace:
-        """Acquire an authenticated direct PRIVATE grant, then save a verified read floor."""
+    def read_private(self) -> VerifiedSecureWorkspace:
+        """Read verified PRIVATE state, recovering a protected direct grant when needed."""
         return self._activate_private()
 
-    async def activate_private_async(self) -> VerifiedSecureWorkspace:
+    async def read_private_async(self) -> VerifiedSecureWorkspace:
         cancel_handle = KernelCancelHandle()
         worker = asyncio.create_task(asyncio.to_thread(self._activate_private, cancel_handle))
         try:
