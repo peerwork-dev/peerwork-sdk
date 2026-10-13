@@ -13,6 +13,7 @@ use crate::{
         SecureReadAccess, SecureReadAccessError, SecureReadConfig, VerifiedReadFloor,
     },
     secure_read_profile::{SecureReadProfile, SecureReadProfileConfig},
+    secure_state::SecureStateError,
     secure_verified_read::TransportReplayedJournal,
     transport::{HttpTransport, TransportConfig, TransportError},
 };
@@ -114,6 +115,38 @@ pub enum PublicPackageInstallError {
     ServerRejected(u16),
     #[error("install result could not be encoded")]
     ResultEncoding,
+}
+
+impl PublicPackageInstallError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Read(error) => error.code(),
+            Self::Identity => "IDENTITY_STATE",
+            Self::Input => "INSTALL_INPUT_INVALID",
+            Self::Entropy => "ENTROPY_UNAVAILABLE",
+            Self::Plan => "INSTALL_PLAN_FAILED",
+            Self::Intent(error) => match error {
+                SecureIntentError::Conflict => "INTENT_CONFLICT",
+                SecureIntentError::NotFound => "INTENT_NOT_FOUND",
+                SecureIntentError::TooLarge
+                | SecureIntentError::Store(SecureStateError::TooLarge) => "RESOURCE_LIMIT",
+                SecureIntentError::Store(SecureStateError::Busy) => "STATE_BUSY",
+                SecureIntentError::Store(_)
+                | SecureIntentError::Incompatible
+                | SecureIntentError::Invalid => "INTENT_STATE",
+                SecureIntentError::Proof(_) | SecureIntentError::BootstrapProof(_) => {
+                    "INTENT_PROOF_FAILED"
+                }
+                SecureIntentError::Transport(_) => "TRANSPORT_FAILED",
+                SecureIntentError::ServerRejected(_) => "SERVER_REJECTED",
+                SecureIntentError::ReplayMismatch => "VERIFICATION_FAILED",
+            },
+            Self::Transport => "TRANSPORT_FAILED",
+            Self::Runtime => "RUNTIME_FAILED",
+            Self::ServerRejected(_) => "SERVER_REJECTED",
+            Self::ResultEncoding => "RESULT_ENCODING_FAILED",
+        }
+    }
 }
 
 impl From<DirectInstallError> for PublicPackageInstallError {
