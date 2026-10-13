@@ -27,6 +27,10 @@ try{
  assert.equal(v.decision.payload.offer_hash,await client.secureHash(v.offer));
  assert.equal(v.decision.payload.actor_id,v.recipient_actor);
  assert.equal(v.decision.payload.decision,'ACCEPT');
+ await assert.rejects(client.verifyInvitation(v.uppercase_offer,{actorId:v.owner_actor,key:v.owner_key},v.now));
+ const surrogateOffer=JSON.parse(v.surrogate_offer);
+ await client.verifyInvitation(surrogateOffer,{actorId:v.owner_actor,key:v.owner_key},v.now);
+ await client.verifyInvitation(v.noncanonical_offer,{actorId:v.owner_actor,key:v.owner_key},v.now);
  const altered=structuredClone(v.offer);
  altered.payload.policy_hash='a'.repeat(64);
  await assert.rejects(client.verifyInvitation(altered,{actorId:v.owner_actor,key:v.owner_key},v.now));

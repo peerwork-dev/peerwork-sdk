@@ -694,7 +694,9 @@ fn permits_discovery(saved: &Document, current: &ParsedDiscovery) -> bool {
         && current.permits_update_from(&previous)
 }
 
-fn sign_read_proof(
+/// Internal signed GET proof shared by journal and exact admission control
+/// reads. The transport separately allowlists each path before sending.
+pub(crate) fn sign_read_proof(
     path: &str,
     discovery: &ParsedDiscovery,
     identity: &KernelIdentity,

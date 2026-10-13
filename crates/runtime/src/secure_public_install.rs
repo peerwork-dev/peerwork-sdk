@@ -411,9 +411,8 @@ impl SecurePublicPackageInstall {
         serde_json::to_string(&result).map_err(|_| PublicPackageInstallError::ResultEncoding)
     }
 
-    /// Continue an authenticated zero-record/head snapshot after BEGIN. Both
-    /// the source BEGIN and the fresh SEEDING candidate are fully replayed;
-    /// the protected END packet is created once and reused after uncertainty.
+    /// Compatibility alias for an existing empty-snapshot caller. It now uses
+    /// the same authenticated PAGE/END continuation as nonempty installs.
     pub fn continue_empty_snapshot_json(
         &self,
         begin_command_id: &str,
@@ -422,9 +421,8 @@ impl SecurePublicPackageInstall {
     }
 
     /// Resume a protected PUBLIC install by its BEGIN command ID. The saved
-    /// packet is reused after an uncertain reply; this currently advances an
-    /// empty snapshot and refuses other snapshot shapes until PAGE support is
-    /// integrated.
+    /// packet is reused after an uncertain reply. Signed SEEDING replay binds
+    /// each PAGE offset and END to the original snapshot root and checkpoint.
     pub fn continue_install_json(
         &self,
         begin_command_id: &str,

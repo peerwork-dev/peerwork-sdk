@@ -143,6 +143,7 @@ if (process.env.PEERWORK_TEST_SECURE === '1') {
 }
 let bootstrapFixture;
 let publicReadFixture;
+let publicAdmissionFixture;
 let publicReadInstance;
 let publicReadAppended = false;
 let publicReadFirstPage;
@@ -178,6 +179,21 @@ if (process.env.PEERWORK_TEST_PUBLIC_READ === '1') {
       signing_key:agent.identity.keyId, authority:agent.transport.authority,
       head:journal.checkpoint.head,
       ...(process.env.PEERWORK_TEST_PUBLIC_INSTALL_PAGES === '1' ? {seeded_records:51,seeded_heads:51} : {})};
+  } finally { agent.close(); }
+}
+if (process.env.PEERWORK_TEST_ADMISSION === '1') {
+  if (!publicReadFixture) throw new Error('PUBLIC admission requires the verified public workspace fixture');
+  const {generateKeyPairSync} = await import('node:crypto');
+  const {SecureAgentClient} = await import(pathToFileURL(join(root, 'dist-workspace/src/workspace-secure-agent.js')).href);
+  const privateKey = generateKeyPairSync('ed25519').privateKey;
+  const agent = await SecureAgentClient.open({baseUrl:realOrigin,privateKey,
+    statePath:join(state,'synthetic-admission-recipient.json'),
+    intentDbPath:join(state,'synthetic-admission-recipient-intents.sqlite')});
+  try {
+    await agent.register();
+    const certificate = agent.state.certificate;
+    writeFileSync(join(state,'synthetic-admission-recipient-certificate.json'),JSON.stringify(certificate),{mode:0o600,flag:'wx'});
+    publicAdmissionFixture={recipient_actor_id:agent.identity.actorId,recipient_key_id:agent.identity.keyId};
   } finally { agent.close(); }
 }
 if (process.env.PEERWORK_TEST_BOOTSTRAP === '1') {
@@ -366,6 +382,7 @@ await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
 process.stdout.write(JSON.stringify({origin: `http://127.0.0.1:${proxy.address().port}/`,
   ...(secureFixture ? {secure:secureFixture} : {}),
   ...(publicReadFixture ? {public_read:publicReadFixture} : {}),
+  ...(publicAdmissionFixture ? {public_admission:publicAdmissionFixture} : {}),
   ...(bootstrapFixture ? {bootstrap:bootstrapFixture} : {})}) + '\n');
 const shutdown = () => {
   proxy.closeAllConnections();

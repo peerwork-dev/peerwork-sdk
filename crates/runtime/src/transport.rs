@@ -143,6 +143,41 @@ impl HttpTransport {
             .map_err(|_| TransportError::SubmittedUncertain)
     }
 
+    /// Submit a persisted exact admission packet with a fresh signed control
+    /// proof for this route. Once sending starts, cancellation/network loss is
+    /// uncertain and the caller must inspect signed control evidence first.
+    pub(crate) async fn post_secure_admission_exact(
+        &self,
+        path: &str,
+        body: Vec<u8>,
+        read_proof: &str,
+        cancel: &CancellationToken,
+    ) -> Result<ExactHttpResponse, TransportError> {
+        if !valid_admission_post_path(path)
+            || body.is_empty()
+            || body.len() > 220_000
+            || read_proof.is_empty()
+            || read_proof.len() > 12000
+        {
+            return Err(TransportError::InvalidOrigin);
+        }
+        let url = self.endpoint(path)?;
+        let send = self
+            .client
+            .post(url)
+            .header("content-type", "application/json")
+            .header("X-Peerwork-Read", read_proof)
+            .body(body)
+            .send();
+        let response = tokio::select! {
+            _ = cancel.cancelled() => return Err(TransportError::SubmittedUncertain),
+            result = send => result.map_err(|_| TransportError::SubmittedUncertain)?,
+        };
+        read_bounded(response, MAX_COMMAND_RESPONSE_BYTES, cancel)
+            .await
+            .map_err(|_| TransportError::SubmittedUncertain)
+    }
+
     /// Exact authenticated secure-journal GET. The caller supplies a fresh
     /// signed read proof bound to this complete canonical path and configured
     /// origin. The returned bytes are untrusted until full journal replay.
@@ -187,6 +222,39 @@ impl HttpTransport {
         read_bounded(response, max_response_bytes, cancel).await
     }
 
+    /// Exact authenticated admission control GET. The signed read proof must
+    /// bind this same path and configured origin; returned service labels are
+    /// untrusted until signed artifacts and saved pins verify.
+    pub(crate) async fn get_secure_invitation_exact(
+        &self,
+        path: &str,
+        read_proof: &str,
+        cancel: &CancellationToken,
+    ) -> Result<ExactHttpResponse, TransportError> {
+        let id = path.strip_prefix("/api/workspace/v1/secure/invitations/");
+        if !id.is_some_and(|id| {
+            id.len() == 43
+                && id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        }) || read_proof.is_empty()
+            || read_proof.len() > 12000
+        {
+            return Err(TransportError::InvalidOrigin);
+        }
+        let url = self.endpoint(path)?;
+        let send = self
+            .client
+            .get(url)
+            .header("X-Peerwork-Read", read_proof)
+            .send();
+        let response = tokio::select! {
+            _ = cancel.cancelled() => return Err(TransportError::Cancelled),
+            result = send => result.map_err(map_network_error)?,
+        };
+        read_bounded(response, 220_000, cancel).await
+    }
+
     fn endpoint(&self, path: &str) -> Result<Url, TransportError> {
         self.origin
             .join(path)
@@ -219,6 +287,23 @@ fn valid_command_path(path: &str) -> bool {
                         .bytes()
                         .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
             })
+}
+
+fn valid_admission_post_path(path: &str) -> bool {
+    if path == "/api/workspace/v1/secure/invitations" {
+        return true;
+    }
+    path.strip_prefix("/api/workspace/v1/secure/invitations/")
+        .and_then(|tail| {
+            tail.strip_suffix("/decision")
+                .or_else(|| tail.strip_suffix("/key-grants"))
+        })
+        .is_some_and(|id| {
+            id.len() == 43
+                && id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+        })
 }
 
 fn map_network_error(error: reqwest::Error) -> TransportError {
@@ -377,6 +462,26 @@ mod tests {
             "/api/workspace/v1/secure/invitations",
         ] {
             assert!(!valid_command_path(path), "{path}");
+        }
+    }
+
+    #[test]
+    fn admission_write_routes_require_exact_token_and_signed_control_primitive() {
+        let id = "a".repeat(43);
+        for path in [
+            "/api/workspace/v1/secure/invitations".to_owned(),
+            format!("/api/workspace/v1/secure/invitations/{id}/decision"),
+            format!("/api/workspace/v1/secure/invitations/{id}/key-grants"),
+        ] {
+            assert!(valid_admission_post_path(&path));
+            assert!(!valid_command_path(&path));
+        }
+        for path in [
+            format!("/api/workspace/v1/secure/invitations/{id}/receipt"),
+            format!("/api/workspace/v1/secure/invitations/{id}/decision?x=1"),
+            "/api/workspace/v1/secure/invitations/short/decision".to_owned(),
+        ] {
+            assert!(!valid_admission_post_path(&path));
         }
     }
 }

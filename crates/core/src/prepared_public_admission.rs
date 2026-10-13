@@ -50,6 +50,81 @@ impl PreparedAdmissionPacket {
     }
 }
 
+/// Reprove an exact saved owner offer against a policy recovered from signed
+/// journal history. This does not interpret an HTTP response as acceptance.
+pub fn verify_saved_public_offer(
+    request_wire: &[u8],
+    signed_policy_wire: &[u8],
+    owner_actor: &str,
+    owner_key: &str,
+    workspace_id: &str,
+) -> Result<PreparedAdmissionPacket, PublicAdmissionError> {
+    let bad = || PublicAdmissionError::Invalid;
+    let request = parse_wire_json_js_bounded(request_wire, 64, 220_000).map_err(|_| bad())?;
+    if request.object_len() != Some(1) {
+        return Err(bad());
+    }
+    let artifact = request.get("offer").ok_or_else(bad)?;
+    let artifact_wire = canonical_wire_value(artifact, Path::SecureArtifact)
+        .map_err(|_| bad())?
+        .into_bytes();
+    if !verify_secure_signed_wire(&artifact_wire, "peerwork.secure.invitation.v1", owner_key)
+        .map_err(|_| bad())?
+    {
+        return Err(bad());
+    }
+    let payload = artifact.get("payload").ok_or_else(bad)?;
+    let id = string(payload, "invite_id")?;
+    if !token(&id)
+        || string(payload, "workspace_id")? != workspace_id
+        || string(payload, "actor_id")? != owner_actor
+        || string(payload, "signing_key")? != owner_key
+        || unsigned(payload, "v")? != 1
+        || !payload.get("scopes").is_some_and(valid_scopes)
+        || payload.get("recipient").is_none()
+        || payload.get("message").is_none()
+    {
+        return Err(bad());
+    }
+    let issued_at = unsigned(payload, "issued_at")?;
+    let expires_at = unsigned(payload, "expires_at")?;
+    if expires_at <= issued_at || expires_at - issued_at > INVITATION_LIFETIME {
+        return Err(bad());
+    }
+    verify_certificate(payload.get("recipient").ok_or_else(bad)?, issued_at)?;
+    let policy = parse_wire_json_js_bounded(signed_policy_wire, 64, 196_608).map_err(|_| bad())?;
+    let pp = policy.get("payload").ok_or_else(bad)?;
+    if string(pp, "workspace_id")? != workspace_id
+        || string(pp, "owner_id")? != owner_actor
+        || string(pp, "signing_key")? != owner_key
+        || string(pp, "visibility")? != "PUBLIC"
+        || unsigned(pp, "epoch")? != 0
+        || !verify_secure_signed_wire(signed_policy_wire, "peerwork.secure.policy.v1", owner_key)
+            .map_err(|_| bad())?
+    {
+        return Err(bad());
+    }
+    let policy_hash = sha256_hex(
+        canonical_wire_value(&policy, Path::SecureArtifact)
+            .map_err(|_| bad())?
+            .as_bytes(),
+    );
+    if string(payload, "policy_hash")? != policy_hash {
+        return Err(bad());
+    }
+    let canonical_request =
+        format!("{{\"offer\":{}}}", String::from_utf8_lossy(&artifact_wire)).into_bytes();
+    if canonical_request != request_wire {
+        return Err(bad());
+    }
+    Ok(PreparedAdmissionPacket {
+        artifact_hash: sha256_hex(&artifact_wire),
+        request_wire: canonical_request,
+        artifact_wire,
+        id,
+    })
+}
+
 /// Construct the owner-signed offer and its exact POST body. The caller must
 /// supply the latest policy from a complete origin-bound replay and check the
 /// recipient certificate against current directory state before sending.
@@ -63,8 +138,34 @@ pub fn prepare_public_offer(
     expires_at: u64,
     owner_signing_key: &SigningKey,
 ) -> Result<PreparedAdmissionPacket, PublicAdmissionError> {
+    let utf16 = message.encode_utf16().collect::<Vec<_>>();
+    prepare_public_offer_utf16(
+        signed_policy_wire,
+        recipient_certificate_wire,
+        scopes_wire,
+        &utf16,
+        invite_id,
+        issued_at,
+        expires_at,
+        owner_signing_key,
+    )
+}
+
+/// Lossless JavaScript-string producer, including lone UTF-16 surrogates.
+/// TextEncoder's replacement encoding is used only for the 8192-byte limit;
+/// JSON serialization retains the original UTF-16 units.
+pub fn prepare_public_offer_utf16(
+    signed_policy_wire: &[u8],
+    recipient_certificate_wire: &[u8],
+    scopes_wire: &[u8],
+    message: &[u16],
+    invite_id: Option<&str>,
+    issued_at: u64,
+    expires_at: u64,
+    owner_signing_key: &SigningKey,
+) -> Result<PreparedAdmissionPacket, PublicAdmissionError> {
     let bad = || PublicAdmissionError::Invalid;
-    if message.len() > 8192
+    if String::from_utf16_lossy(message).len() > 8192
         || issued_at > MAX_SAFE
         || expires_at > MAX_SAFE
         || expires_at <= issued_at
@@ -121,7 +222,7 @@ pub fn prepare_public_offer(
         ("issued_at", WireValue::Number(issued_at as f64)),
         ("expires_at", WireValue::Number(expires_at as f64)),
     ]);
-    let plaintext = object(vec![("message", s(message))]);
+    let plaintext = object(vec![("message", WireValue::String(message.to_vec()))]);
     let box_value = hpke_seal_wire(
         &recipient_jwk,
         canonical_wire_value(&plaintext, Path::SecureArtifact)
@@ -390,10 +491,12 @@ fn token(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
-        && decode_base64url(value).is_ok_and(|decoded| decoded.len() == 32)
 }
 fn hex_digest(value: &str) -> bool {
-    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 #[cfg(test)]
@@ -511,6 +614,93 @@ mod tests {
             Some(offer.artifact_hash())
         );
         assert_eq!(decision.id(), offer.id());
+        let mut uppercase_payload = offer_value.get("payload").unwrap().clone();
+        let WireValue::Object(ref mut values) = uppercase_payload else {
+            panic!("offer payload");
+        };
+        let (_, digest_value) = values
+            .iter_mut()
+            .find(|(name, _)| name.iter().copied().eq("policy_hash".encode_utf16()))
+            .unwrap();
+        let uppercase_digest = digest_value.as_string().unwrap().to_ascii_uppercase();
+        assert_ne!(uppercase_digest, digest_value.as_string().unwrap());
+        *digest_value = s(&uppercase_digest);
+        let uppercase_offer =
+            sign_payload(uppercase_payload, "peerwork.secure.invitation.v1", &owner).unwrap();
+        let uppercase_wire = canonical_wire_value(&uppercase_offer, Path::SecureArtifact).unwrap();
+        assert!(verify_secure_signed_wire(
+            uppercase_wire.as_bytes(),
+            "peerwork.secure.invitation.v1",
+            &owner_key
+        )
+        .unwrap());
+        assert!(prepare_public_decision(
+            uppercase_wire.as_bytes(),
+            &owner_actor,
+            &owner_key,
+            &recipient,
+            "ACCEPT",
+            now + 2,
+        )
+        .is_err());
+        let surrogate_offer = prepare_public_offer_utf16(
+            policy_wire.as_bytes(),
+            &certificate_wire,
+            scopes_wire,
+            &[0xd800],
+            Some(&base64url(&[15; 32])),
+            now + 1,
+            now + 86_400_000,
+            &owner,
+        )
+        .unwrap();
+        let surrogate_value =
+            parse_wire_json_js_bounded(surrogate_offer.artifact_wire(), 64, 220_000).unwrap();
+        let WireValue::Object(surrogate_fields) = surrogate_value.get("payload").unwrap().clone()
+        else {
+            panic!("surrogate offer payload");
+        };
+        let surrogate_box = surrogate_fields
+            .iter()
+            .find(|(name, _)| name.iter().copied().eq("message".encode_utf16()))
+            .unwrap()
+            .1
+            .clone();
+        let surrogate_context = WireValue::Object(
+            surrogate_fields
+                .into_iter()
+                .filter(|(name, _)| !name.iter().copied().eq("message".encode_utf16()))
+                .collect(),
+        );
+        let box_json = canonical_wire_value(&surrogate_box, Path::SecureArtifact).unwrap();
+        let surrogate_key_box: KeyBox = serde_json::from_str(&box_json).unwrap();
+        let context_json = canonical_wire_value(&surrogate_context, Path::SecureArtifact).unwrap();
+        let surrogate_opened = hpke_open_wire(
+            recipient_secret.private_bytes(),
+            &surrogate_key_box,
+            context_json.as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(
+            surrogate_opened
+                .get("message")
+                .and_then(WireValue::as_utf16),
+            Some(&[0xd800][..])
+        );
+        let noncanonical_id = format!("{}B", "A".repeat(42));
+        assert!(decode_base64url(&noncanonical_id).is_err());
+        let noncanonical_offer = prepare_public_offer(
+            policy_wire.as_bytes(),
+            &certificate_wire,
+            scopes_wire,
+            "message",
+            Some(&noncanonical_id),
+            now + 1,
+            now + 86_400_000,
+            &owner,
+        )
+        .unwrap();
+        assert_eq!(noncanonical_offer.id(), noncanonical_id);
         let wrong = SigningKey::from_bytes(&[21; 32]);
         assert!(prepare_public_decision(
             offer.artifact_wire(),
@@ -525,6 +715,9 @@ mod tests {
             let public_vector = serde_json::json!({
                 "offer":serde_json::from_slice::<serde_json::Value>(offer.artifact_wire()).unwrap(),
                 "decision":serde_json::from_slice::<serde_json::Value>(decision.artifact_wire()).unwrap(),
+                "uppercase_offer":serde_json::from_str::<serde_json::Value>(&uppercase_wire).unwrap(),
+                "surrogate_offer":std::str::from_utf8(surrogate_offer.artifact_wire()).unwrap(),
+                "noncanonical_offer":serde_json::from_slice::<serde_json::Value>(noncanonical_offer.artifact_wire()).unwrap(),
                 "owner_actor":owner_actor,
                 "owner_key":owner_key,
                 "recipient_actor":actor_id(&recipient.verifying_key().to_bytes()),
