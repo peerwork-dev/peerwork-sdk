@@ -1010,6 +1010,9 @@ class SecureOwnerWorkspaceClient:
     def private_package_stager(self, workspace_id: str) -> "OwnerWorkspacePrivatePackageStager":
         return OwnerWorkspacePrivatePackageStager(self._config, workspace_id)
 
+    def private_package_installer(self, workspace_id: str) -> "OwnerWorkspacePrivatePackageInstaller":
+        return OwnerWorkspacePrivatePackageInstaller(self._config, workspace_id)
+
     def public_admission(self, workspace_id: str) -> "OwnerWorkspaceAdmissionClient":
         return OwnerWorkspaceAdmissionClient(self._config, workspace_id)
 
@@ -1176,10 +1179,88 @@ class OwnerWorkspacePrivatePackageStager:
             "stages"))
 
 
+class PrivatePackageInstallProgress(TypedDict):
+    status: Literal["PENDING", "ACCEPTED"]
+    begin_command_id: str
+    step_command_id: str
+    step_action_id: Literal["secure.structure.begin", "secure.structure.page", "secure.structure.end"]
+    workspace_id: str
+    protocol_digest: str
+    instance_id: str
+    commit_hash: str
+
+
+class SavedPrivatePackageInstall(TypedDict):
+    begin_command_id: str
+    stage_id: str
+    workspace_id: str
+    instance_id: str
+    protocol_digest: str
+    locally_saved: bool
+
+
+class PrivatePackageInstallError(RuntimeError):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+class OwnerWorkspacePrivatePackageInstaller(OwnerWorkspacePrivatePackageStager):
+    """Install a staged PRIVATE package through signed BEGIN/PAGE/END replay.
+
+    ACCEPTED is a step result; only verified END and a later signed ACTIVE
+    read prove the installed protocol is usable.
+    """
+
+    def _install(self, operation: str, *, input_value: dict | None = None,
+                 begin_command_id: str | None = None,
+                 cancel_handle: KernelCancelHandle | None = None) -> PrivatePackageInstallProgress | list[SavedPrivatePackageInstall]:
+        result = json.loads(secure_owner_consumer_json("private_install", operation,
+            json.dumps(self._owner_config, ensure_ascii=True, allow_nan=False, separators=(",", ":")),
+            self._workspace_id,
+            None if input_value is None else json.dumps(input_value, ensure_ascii=True, allow_nan=False, separators=(",", ":")),
+            begin_command_id, cancel_handle))
+        if result["ok"] is not True:
+            raise PrivatePackageInstallError(result["code"], result["message"])
+        return cast(PrivatePackageInstallProgress | list[SavedPrivatePackageInstall], result["value"])
+
+    def begin(self, stage_id: str, instance_id: str, entrypoint: str, *,
+              grants_json: str = "[]", command_id: str | None = None,
+              issued_at_ms: int | None = None) -> PrivatePackageInstallProgress:
+        value = dict(stage_id=stage_id, instance_id=instance_id, entrypoint=entrypoint,
+            grants_json=grants_json, command_id=command_id, issued_at_ms=issued_at_ms)
+        return cast(PrivatePackageInstallProgress, self._install("begin", input_value=value))
+
+    def continue_install(self, begin_command_id: str) -> PrivatePackageInstallProgress:
+        return cast(PrivatePackageInstallProgress, self._install("continue", begin_command_id=begin_command_id))
+
+    def installs(self) -> list[SavedPrivatePackageInstall]:
+        """Recover saved BEGIN IDs locally; rows do not establish acceptance."""
+        return cast(list[SavedPrivatePackageInstall], self._install("installs"))
+
+    async def begin_async(self, stage_id: str, instance_id: str, entrypoint: str, *,
+                          grants_json: str = "[]", command_id: str | None = None,
+                          issued_at_ms: int | None = None) -> PrivatePackageInstallProgress:
+        value = dict(stage_id=stage_id, instance_id=instance_id, entrypoint=entrypoint,
+            grants_json=grants_json, command_id=command_id, issued_at_ms=issued_at_ms)
+        return cast(PrivatePackageInstallProgress, await _run_cancelled_async(self._install,
+            "begin", input_value=value))
+
+    async def continue_install_async(self, begin_command_id: str) -> PrivatePackageInstallProgress:
+        return cast(PrivatePackageInstallProgress, await _run_cancelled_async(self._install,
+            "continue", begin_command_id=begin_command_id))
+
+    async def installs_async(self) -> list[SavedPrivatePackageInstall]:
+        return cast(list[SavedPrivatePackageInstall], await _run_cancelled_async(self._install,
+            "installs"))
+
+
 __all__ += ["SecureOwnerWorkspaceClient", "OwnerWorkspaceResult", "OwnerWorkspaceError",
             "OwnerWorkspaceActionClient", "OwnerWorkspacePackageInstaller",
             "OwnerWorkspacePrivatePackageStager", "PrivatePackageStageResult",
-            "SavedPrivatePackageStage", "PrivatePackageStageError"]
+            "SavedPrivatePackageStage", "PrivatePackageStageError",
+            "OwnerWorkspacePrivatePackageInstaller", "PrivatePackageInstallProgress",
+            "SavedPrivatePackageInstall", "PrivatePackageInstallError"]
 
 
 class VerifiedIdentityCertificate(TypedDict):

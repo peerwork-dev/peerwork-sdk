@@ -9,7 +9,7 @@ use peerwork_runtime::secure_identity_directory::{IdentityDirectoryConfig, Secur
 use peerwork_runtime::secure_public_install::{
     PublicPackageInstallInput, SecurePublicPackageInstall,
 };
-use peerwork_runtime::secure_private_install::PrivatePackageStageInput;
+use peerwork_runtime::secure_private_install::{PrivatePackageInstallBeginInput, PrivatePackageStageInput};
 use peerwork_runtime::secure_read_access::{SecureReadAccess, SecureReadConfig};
 use peerwork_runtime::secure_read_profile::{SecureReadProfile, SecureReadProfileConfig};
 use peerwork_runtime::secure_private_read_access::SecurePrivateReadAccess;
@@ -245,6 +245,9 @@ fn main() -> ExitCode {
                     || verb == "owner-private-stage-submit"
                     || verb == "owner-private-stage-continue"
                     || verb == "owner-private-stage-list"
+                    || verb == "owner-private-install-begin"
+                    || verb == "owner-private-install-continue"
+                    || verb == "owner-private-install-list"
                     || verb == "owner-admit-offer"
                     || verb == "owner-admit-retry-offer"
                     || verb == "owner-admit-pending-offers"
@@ -296,14 +299,14 @@ fn main() -> ExitCode {
             cli_result(public_catalog_command(verb, rest))
         }
         _ => {
-            eprintln!("{{\"code\":\"USAGE\",\"message\":\"peerwork version|capabilities|identity create PATH|identity info PATH|identity import-legacy-pem PATH PROTECTED_PEM_FILE|identity import-seed-file PATH PROTECTED_SEED_FILE|kernel open|prepare|pending|status|submit ORIGIN JOURNAL IDENTITY [COMMAND_FILE|COMMAND_ID] [--allow-loopback-http] [--authority=HEX] [--chunk-file=PATH|--chunk-stdin for prepare]; kernel migrate ORIGIN JOURNAL IDENTITY SOURCE BACKUP --trusted-signer=KEY_ID [--trusted-signer=KEY_ID ...]; secure read|private-read --origin=URL --state-dir=DIR --identity=PATH --workspace=ID [--owner-actor=ID --owner-key=ID] [--authority=HEX]; secure snapshot ORIGIN KERNEL_JOURNAL READ_STATE LIFECYCLE IDENTITY WORKSPACE AUTHORITY OWNER_ACTOR OWNER_KEY [--allow-loopback-http] [--max-replay-artifact-bytes=N]; secure action-submit|action-status|action-retry CONFIG_JSON_FILE ACTION_JSON_FILE|COMMAND_ID; secure action-pending CONFIG_JSON_FILE; secure install-begin CONFIG_JSON_FILE INPUT_JSON_FILE | install-continue CONFIG_JSON_FILE BEGIN_COMMAND_ID | install-pending CONFIG_JSON_FILE; secure owner-prepare|owner-create CONFIG_JSON_FILE INPUT_JSON_FILE | owner-resume CONFIG_JSON_FILE COMMAND_ID | owner-operations CONFIG_JSON_FILE | owner-read CONFIG_JSON_FILE WORKSPACE_ID | owner-action-submit|owner-action-status|owner-action-retry|owner-action-pending|owner-private-action-submit|owner-private-action-status|owner-private-action-retry|owner-private-action-pending|owner-install-begin|owner-install-continue|owner-install-pending|owner-private-stage-submit|owner-private-stage-continue|owner-private-stage-list|owner-admit-offer|owner-admit-retry-offer|owner-admit-pending-offers|owner-admit-deliver|owner-admit-retry-delivery|owner-admit-pending-deliveries|owner-private-admit-offer|owner-private-admit-retry-offer|owner-private-admit-pending-offers|owner-private-admit-deliver|owner-private-admit-retry-delivery|owner-private-admit-pending-deliveries CONFIG_JSON_FILE WORKSPACE_ID [INPUT_JSON_FILE|COMMAND_ID]; secure catalog-search CONFIG_JSON_FILE QUERY [AFTER] [LIMIT] | catalog-inspect CONFIG_JSON_FILE LOWERCASE_DIGEST; secure recipient-create|recipient-publish|recipient-pending|recipient-certificate|recipient-update|recipient-retry-update|recipient-pending-updates --origin=URL --state-dir=DIR [--mode=ROTATE|RENEW --expected-certificate-hash=HEX --update-id=ID] [--allow-loopback-http]; secure directory-lookup --origin=URL --state-dir=DIR --actor=ACTOR --key=KEY [--identity=PATH] [--allow-loopback-http]\"}}");
+            eprintln!("{{\"code\":\"USAGE\",\"message\":\"peerwork version|capabilities|identity create PATH|identity info PATH|identity import-legacy-pem PATH PROTECTED_PEM_FILE|identity import-seed-file PATH PROTECTED_SEED_FILE|kernel open|prepare|pending|status|submit ORIGIN JOURNAL IDENTITY [COMMAND_FILE|COMMAND_ID] [--allow-loopback-http] [--authority=HEX] [--chunk-file=PATH|--chunk-stdin for prepare]; kernel migrate ORIGIN JOURNAL IDENTITY SOURCE BACKUP --trusted-signer=KEY_ID [--trusted-signer=KEY_ID ...]; secure read|private-read --origin=URL --state-dir=DIR --identity=PATH --workspace=ID [--owner-actor=ID --owner-key=ID] [--authority=HEX]; secure snapshot ORIGIN KERNEL_JOURNAL READ_STATE LIFECYCLE IDENTITY WORKSPACE AUTHORITY OWNER_ACTOR OWNER_KEY [--allow-loopback-http] [--max-replay-artifact-bytes=N]; secure action-submit|action-status|action-retry CONFIG_JSON_FILE ACTION_JSON_FILE|COMMAND_ID; secure action-pending CONFIG_JSON_FILE; secure install-begin CONFIG_JSON_FILE INPUT_JSON_FILE | install-continue CONFIG_JSON_FILE BEGIN_COMMAND_ID | install-pending CONFIG_JSON_FILE; secure owner-prepare|owner-create CONFIG_JSON_FILE INPUT_JSON_FILE | owner-resume CONFIG_JSON_FILE COMMAND_ID | owner-operations CONFIG_JSON_FILE | owner-read CONFIG_JSON_FILE WORKSPACE_ID | owner-action-submit|owner-action-status|owner-action-retry|owner-action-pending|owner-private-action-submit|owner-private-action-status|owner-private-action-retry|owner-private-action-pending|owner-install-begin|owner-install-continue|owner-install-pending|owner-private-stage-submit|owner-private-stage-continue|owner-private-stage-list|owner-private-install-begin|owner-private-install-continue|owner-private-install-list|owner-admit-offer|owner-admit-retry-offer|owner-admit-pending-offers|owner-admit-deliver|owner-admit-retry-delivery|owner-admit-pending-deliveries|owner-private-admit-offer|owner-private-admit-retry-offer|owner-private-admit-pending-offers|owner-private-admit-deliver|owner-private-admit-retry-delivery|owner-private-admit-pending-deliveries CONFIG_JSON_FILE WORKSPACE_ID [INPUT_JSON_FILE|COMMAND_ID]; secure catalog-search CONFIG_JSON_FILE QUERY [AFTER] [LIMIT] | catalog-inspect CONFIG_JSON_FILE LOWERCASE_DIGEST; secure recipient-create|recipient-publish|recipient-pending|recipient-certificate|recipient-update|recipient-retry-update|recipient-pending-updates --origin=URL --state-dir=DIR [--mode=ROTATE|RENEW --expected-certificate-hash=HEX --update-id=ID] [--allow-loopback-http]; secure directory-lookup --origin=URL --state-dir=DIR --actor=ACTOR --key=KEY [--identity=PATH] [--allow-loopback-http]\"}}");
             ExitCode::FAILURE
         }
     }
 }
 
 fn secure_owner_command(verb: &str, args: &[String]) -> Result<String, (&'static str, String)> {
-    if verb.starts_with("owner-action-") || verb.starts_with("owner-private-action-") || verb.starts_with("owner-install-") || verb.starts_with("owner-private-stage-") || verb.starts_with("owner-admit-") || verb.starts_with("owner-private-admit-") {
+    if verb.starts_with("owner-action-") || verb.starts_with("owner-private-action-") || verb.starts_with("owner-install-") || verb.starts_with("owner-private-stage-") || verb.starts_with("owner-private-install-") || verb.starts_with("owner-admit-") || verb.starts_with("owner-private-admit-") {
         return secure_owner_consumer_command(verb, args);
     }
     if args.len() != if verb == "owner-operations" { 1 } else { 2 } {
@@ -344,9 +347,9 @@ fn secure_owner_command(verb: &str, args: &[String]) -> Result<String, (&'static
 }
 
 fn secure_owner_consumer_command(verb: &str, args: &[String]) -> Result<String, (&'static str, String)> {
-    let pending = verb.ends_with("-pending") || verb.ends_with("-pending-offers") || verb.ends_with("-pending-deliveries") || verb == "owner-private-stage-list";
+    let pending = verb.ends_with("-pending") || verb.ends_with("-pending-offers") || verb.ends_with("-pending-deliveries") || verb == "owner-private-stage-list" || verb == "owner-private-install-list";
     if args.len() != if pending { 2 } else { 3 } {
-        return Err(("USAGE", "secure owner-action-submit|owner-action-status|owner-action-retry|owner-action-pending|owner-private-action-submit|owner-private-action-status|owner-private-action-retry|owner-private-action-pending|owner-install-begin|owner-install-continue|owner-install-pending|owner-private-stage-submit|owner-private-stage-continue|owner-private-stage-list|owner-admit-offer|owner-admit-retry-offer|owner-admit-pending-offers|owner-admit-deliver|owner-admit-retry-delivery|owner-admit-pending-deliveries|owner-private-admit-offer|owner-private-admit-retry-offer|owner-private-admit-pending-offers|owner-private-admit-deliver|owner-private-admit-retry-delivery|owner-private-admit-pending-deliveries CONFIG_JSON_FILE WORKSPACE_ID [INPUT_JSON_FILE|COMMAND_ID]".to_owned()));
+        return Err(("USAGE", "secure owner-action-submit|owner-action-status|owner-action-retry|owner-action-pending|owner-private-action-submit|owner-private-action-status|owner-private-action-retry|owner-private-action-pending|owner-install-begin|owner-install-continue|owner-install-pending|owner-private-stage-submit|owner-private-stage-continue|owner-private-stage-list|owner-private-install-begin|owner-private-install-continue|owner-private-install-list|owner-admit-offer|owner-admit-retry-offer|owner-admit-pending-offers|owner-admit-deliver|owner-admit-retry-delivery|owner-admit-pending-deliveries|owner-private-admit-offer|owner-private-admit-retry-offer|owner-private-admit-pending-offers|owner-private-admit-deliver|owner-private-admit-retry-delivery|owner-private-admit-pending-deliveries CONFIG_JSON_FILE WORKSPACE_ID [INPUT_JSON_FILE|COMMAND_ID]".to_owned()));
     }
     let bytes = fs::read(&args[0]).map_err(|e| ("CONFIG_FILE", e.to_string()))?;
     let config: SecureOwnerCreateConfig = serde_json::from_slice(&bytes)
@@ -367,6 +370,21 @@ fn secure_owner_consumer_command(verb: &str, args: &[String]) -> Result<String, 
             }
             "owner-private-stage-continue" => access.continue_stage_json_with_cancel(&args[2], &cancel),
             "owner-private-stage-list" => access.stages_json(),
+            _ => unreachable!(),
+        };
+        return result.map_err(|e| (e.code(), e.to_string()));
+    }
+    if verb.starts_with("owner-private-install-") {
+        let access = owner.private_install_access(workspace_id).map_err(|e| (e.code(), e.to_string()))?;
+        let result = match verb {
+            "owner-private-install-begin" => {
+                let bytes = fs::read(&args[2]).map_err(|e| ("INSTALL_FILE", e.to_string()))?;
+                let input: PrivatePackageInstallBeginInput = serde_json::from_slice(&bytes)
+                    .map_err(|_| ("INSTALL_INPUT_INVALID", "invalid PRIVATE install input".to_owned()))?;
+                access.submit_begin_json_with_cancel(input, &cancel)
+            }
+            "owner-private-install-continue" => access.continue_install_json_with_cancel(&args[2], &cancel),
+            "owner-private-install-list" => access.installs_json(),
             _ => unreachable!(),
         };
         return result.map_err(|e| (e.code(), e.to_string()));

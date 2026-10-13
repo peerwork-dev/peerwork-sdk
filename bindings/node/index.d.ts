@@ -147,6 +147,8 @@ export interface SecureOwnerWorkspaceSession {
   publicInstaller(workspaceId: string): SecurePublicPackageInstaller;
   /** Save verified PRIVATE package parts; STAGED is not installed/ACTIVE. */
   privatePackageStager(workspaceId: string): SecurePrivatePackageStager;
+  /** Install a staged PRIVATE package using protected Owner authority. */
+  privatePackageInstaller(workspaceId: string): SecurePrivatePackageInstaller;
   publicAdmission(workspaceId: string): SecureOwnerAdmissionSession;
   /** PRIVATE Owner admission derives protected workspace keys and paths from creation history. */
   privateAdmission(workspaceId: string): SecureOwnerAdmissionSession;
@@ -414,4 +416,35 @@ export interface SecurePrivatePackageStager {
   continueStage(stageId: string, options?: {signal?: AbortSignal}): Promise<PrivatePackageStageResult>;
   /** Local protected history, including completed stages; no fresh service status. */
   stages(options?: {signal?: AbortSignal}): Promise<SavedPrivatePackageStage[]>;
+}
+export interface PrivatePackageInstallSelection {
+  stageId: string;
+  instanceId: string;
+  entrypoint: string;
+  grantsJson: string;
+}
+export interface PrivatePackageInstallProgress {
+  status: 'PENDING' | 'ACCEPTED';
+  begin_command_id: string;
+  step_command_id: string;
+  step_action_id: 'secure.structure.begin' | 'secure.structure.page' | 'secure.structure.end';
+  workspace_id: string;
+  protocol_digest: string;
+  instance_id: string;
+  commit_hash: string;
+}
+export interface SavedPrivatePackageInstall {
+  begin_command_id: string;
+  stage_id: string;
+  workspace_id: string;
+  instance_id: string;
+  protocol_digest: string;
+  locally_saved: boolean;
+}
+export interface SecurePrivatePackageInstaller {
+  begin(selection: PrivatePackageInstallSelection,
+    options?: {commandId?: string; issuedAtMs?: number; signal?: AbortSignal}): Promise<PrivatePackageInstallProgress>;
+  continueInstall(beginCommandId: string, options?: {signal?: AbortSignal}): Promise<PrivatePackageInstallProgress>;
+  /** Local saved BEGIN IDs; listing does not establish service acceptance or ACTIVE status. */
+  installs(options?: {signal?: AbortSignal}): Promise<SavedPrivatePackageInstall[]>;
 }

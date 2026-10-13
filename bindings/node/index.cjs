@@ -393,7 +393,7 @@ exports.openSecureOwnerWorkspaces = options => {
           throw error;
         }
         const value = result.value;
-        if (kind === 'public_install' || kind === 'private_stage' || kind === 'public_admission' || kind === 'private_admission' || operation === 'pending') return value;
+        if (kind === 'public_install' || kind === 'private_stage' || kind === 'private_install' || kind === 'public_admission' || kind === 'private_admission' || operation === 'pending') return value;
         const receipt = value.receipt_canonical_json === null ? null : JSON.parse(value.receipt_canonical_json);
         delete value.receipt_canonical_json;
         return { ...value, receipt };
@@ -439,6 +439,25 @@ exports.openSecureOwnerWorkspaces = options => {
       continueStage: (stageId, options = {}) => call('continue', undefined, stageId, options.signal),
       stages: (options = {}) => call('stages', undefined, undefined, options.signal),
     });
+    if (kind === 'private_install') return Object.freeze({
+      begin: (selection, options = {}) => {
+        if (selection === null || typeof selection !== 'object' ||
+            typeof selection.stageId !== 'string' || typeof selection.instanceId !== 'string' ||
+            typeof selection.entrypoint !== 'string' || typeof selection.grantsJson !== 'string') {
+          throw new TypeError('PRIVATE install requires staged ID, instance, entrypoint and grantsJson');
+        }
+        return call('begin', {
+          stage_id: selection.stageId,
+          instance_id: selection.instanceId,
+          entrypoint: selection.entrypoint,
+          grants_json: selection.grantsJson,
+          command_id: options.commandId ?? null,
+          issued_at_ms: options.issuedAtMs ?? null,
+        }, undefined, options.signal);
+      },
+      continueInstall: (beginCommandId, options = {}) => call('continue', undefined, beginCommandId, options.signal),
+      installs: (options = {}) => call('installs', undefined, undefined, options.signal),
+    });
     if (kind === 'public_admission' || kind === 'private_admission') return Object.freeze({
       offer: (recipientCertificateJson, scopes, options = {}) => {
         const message = options.message ?? '';
@@ -481,6 +500,7 @@ exports.openSecureOwnerWorkspaces = options => {
     privateActions: workspaceId => consumer('private_action', workspaceId),
     publicInstaller: workspaceId => consumer('public_install', workspaceId),
     privatePackageStager: workspaceId => consumer('private_stage', workspaceId),
+    privatePackageInstaller: workspaceId => consumer('private_install', workspaceId),
     publicAdmission: workspaceId => consumer('public_admission', workspaceId),
     privateAdmission: workspaceId => consumer('private_admission', workspaceId),
   });
