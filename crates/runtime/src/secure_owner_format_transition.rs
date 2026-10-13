@@ -1252,4 +1252,198 @@ mod tests {
             serde_json::json!([{"record_id":produced_id,"revision":1}])
         );
     }
+    #[test]
+    fn actual_service_enforced_legacy_structured_v2_upgrade() {
+        let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else {
+            return;
+        };
+        let Ok(legacy_root) = std::env::var("PEERWORK_LEGACY_CLIENT_ROOT") else {
+            return;
+        };
+        let node = std::env::var("PEERWORK_NODE_BIN").unwrap_or_else(|_| "node".into());
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let bridge =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/reference-kernel-server.mjs");
+        let child = Command::new(&node)
+            .arg(bridge)
+            .env("PEERWORK_REFERENCE_ROOT", reference_root)
+            .env("PEERWORK_TEST_STATE", root.path())
+            .env("PEERWORK_TEST_FIRST_POST_MODE", "normal")
+            .env("PEERWORK_TEST_OWNER_FORMAT", "1")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        struct StopV2(Child);
+        impl Drop for StopV2 {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut child = StopV2(child);
+        let mut line = String::new();
+        BufReader::new(child.0.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        assert!(!line.is_empty(), "pinned service exited before readiness");
+        let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let origin = ready["origin"].as_str().unwrap().to_owned();
+        let helper =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/legacy-owner-source.mjs");
+        let source = Command::new(&node)
+            .arg(helper)
+            .arg(&origin)
+            .arg(root.path().join("legacy-owner"))
+            .arg(legacy_root)
+            .arg("legacy-structured")
+            .output()
+            .unwrap();
+        assert!(
+            source.status.success(),
+            "legacy v2 setup: {}",
+            String::from_utf8_lossy(&source.stderr)
+        );
+        let source: serde_json::Value = serde_json::from_slice(&source.stdout).unwrap();
+        assert_eq!(source["policy_v"], 2);
+        let workspace_id = source["workspace_id"].as_str().unwrap().to_owned();
+        let config = SecureOwnerCreateConfig {
+            origin: origin.clone(),
+            state_dir: root.path().join("native-owner"),
+            allow_loopback_http: true,
+            max_replay_artifact_bytes: 64 * 1024 * 1024,
+        };
+        let cancel = CancellationToken::new();
+        let attached = SecureHistoricalOwnerAttach::new(config.clone())
+            .attach(
+                HistoricalOwnerAttachInput {
+                    workspace_id: workspace_id.clone(),
+                    protected_ts_state_path: PathBuf::from(source["state_path"].as_str().unwrap()),
+                    protected_owner_pkcs8_path: PathBuf::from(source["pem_path"].as_str().unwrap()),
+                    protected_ts_intent_db_path: PathBuf::from(
+                        source["intent_db_path"].as_str().unwrap(),
+                    ),
+                    expected_owner_actor_id: source["owner_actor_id"].as_str().unwrap().into(),
+                    expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
+                },
+                &cancel,
+            )
+            .unwrap();
+        assert_eq!(attached.status, "ATTACHED");
+        let owner = SecureOwnerWorkspaceCreate::new(config);
+        let access = owner
+            .private_format_transition_access(&workspace_id)
+            .unwrap();
+        let before = SecureReadProfile::new(access.config.clone())
+            .with_latest_replay(&cancel, |source| {
+                let wire = source
+                    .signed_policy_by_hash(source.replay().policy_hash())
+                    .ok_or(OwnerFormatTransitionError::Verification)?;
+                let policy: serde_json::Value = serde_json::from_slice(wire)
+                    .map_err(|_| OwnerFormatTransitionError::Verification)?;
+                Ok::<_, OwnerFormatTransitionError>((
+                    policy,
+                    source.replay().policy_hash().to_owned(),
+                    source.replay().sequence(),
+                ))
+            })
+            .unwrap();
+        assert_eq!(before.0["payload"]["v"], 2);
+        assert!(before.0["payload"]["structure"].is_object());
+        let rt = Builder::new_current_thread().enable_all().build().unwrap();
+        let activated = rt
+            .block_on(
+                reqwest::Client::new()
+                    .post(format!("{origin}__test/activate-protocol-cutover"))
+                    .body("{}")
+                    .send(),
+            )
+            .unwrap();
+        assert_eq!(activated.status(), 200);
+        let phase: serde_json::Value =
+            serde_json::from_slice(&rt.block_on(activated.bytes()).unwrap()).unwrap();
+        assert_eq!(phase["phase"], "ENFORCE");
+        let result: serde_json::Value = serde_json::from_str(
+            &access
+                .submit_json_with_cancel(
+                    OwnerFormatTransitionInput {
+                        workspace_id: workspace_id.clone(),
+                        transition: OwnerFormatTransition::UpgradeWireV3,
+                        command_id: None,
+                        issued_at_ms: None,
+                    },
+                    &cancel,
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        let id = result["command_id"].as_str().unwrap();
+        let accepted: serde_json::Value =
+            serde_json::from_str(&access.resume_json_with_cancel(id, &cancel).unwrap()).unwrap();
+        assert_eq!(accepted["status"], "ACCEPTED");
+        let after = SecureReadProfile::new(access.config.clone())
+            .with_latest_replay(&cancel, |source| {
+                let wire = source
+                    .signed_policy_by_hash(source.replay().policy_hash())
+                    .ok_or(OwnerFormatTransitionError::Verification)?;
+                let policy: serde_json::Value = serde_json::from_slice(wire)
+                    .map_err(|_| OwnerFormatTransitionError::Verification)?;
+                Ok::<_, OwnerFormatTransitionError>((
+                    policy,
+                    source.replay().policy_hash().to_owned(),
+                    source.replay().sequence(),
+                ))
+            })
+            .unwrap();
+        assert_eq!(after.0["payload"]["v"], 3);
+        assert_eq!(after.0["payload"]["protocol_format_ceiling"], 1);
+        assert_eq!(after.0["payload"]["structure_mode"], "STRUCTURED");
+        assert_eq!(
+            after.0["payload"]["structure"],
+            before.0["payload"]["structure"]
+        );
+        for field in [
+            "workspace_id",
+            "owner_id",
+            "signing_key",
+            "visibility",
+            "epoch",
+            "members",
+        ] {
+            assert_eq!(
+                after.0["payload"][field], before.0["payload"][field],
+                "preserve {field}"
+            );
+        }
+        assert_eq!(
+            after.0["payload"]["version"].as_u64(),
+            Some(before.0["payload"]["version"].as_u64().unwrap() + 1)
+        );
+        assert_eq!(after.0["payload"]["previous_policy"], before.1);
+        assert_eq!(
+            after.0["payload"]["effective_sequence"].as_u64(),
+            Some(before.2 + 1)
+        );
+        assert_eq!(after.1, accepted["policy_hash"]);
+        assert_eq!(after.2, before.2 + 1);
+        let read: serde_json::Value =
+            serde_json::from_str(&owner.read_workspace_json(&workspace_id, &cancel).unwrap())
+                .unwrap();
+        assert!(read["objects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["kind"] == "records"
+                && row["id"] == source["prior_record_id"]
+                && row["value"]["payload"]["title"] == "Legacy encrypted record"
+                && row["value"]["payload"]["body"] == "Old wire-v1 encrypted body"));
+        let retry: serde_json::Value =
+            serde_json::from_str(&access.resume_json_with_cancel(id, &cancel).unwrap()).unwrap();
+        assert_eq!(retry, accepted);
+    }
 }

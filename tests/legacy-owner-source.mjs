@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 
 const [origin, sourceDir, legacyRoot, mode = 'clean'] = process.argv.slice(2);
 if (!origin || !sourceDir || !legacyRoot) throw new Error('LEGACY_TEST_INPUT_REQUIRED');
-if (!['clean', 'completed', 'legacy-record', 'pending', 'unknown-store', 'malformed-store'].includes(mode)) throw new Error('LEGACY_TEST_MODE_INVALID');
+if (!['clean', 'completed', 'legacy-record', 'pending', 'unknown-store', 'malformed-store', 'legacy-structured'].includes(mode)) throw new Error('LEGACY_TEST_MODE_INVALID');
 mkdirSync(sourceDir, { recursive: true, mode: 0o700 });
 const { privateKey } = generateKeyPairSync('ed25519');
 const pemPath = join(sourceDir, 'owner.pem');
@@ -20,10 +20,10 @@ const { SecureAgentClient } = await import(pathToFileURL(modulePath).href);
 const { secureHash } = await import(pathToFileURL(join(legacyRoot, 'dist-workspace/src/workspace-secure-client.js')).href);
 const agent = await SecureAgentClient.open({ baseUrl: new URL(origin).origin, privateKey, statePath, intentDbPath });
 try {
-  const created = await agent.create('Legacy native attach proof', 'PRIVATE', { structure: false });
+  const created = await agent.create('Legacy native attach proof', 'PRIVATE', { structure: mode === 'legacy-structured' });
   const journal = await agent.journal(created.workspaceId);
-  if (journal.policy.payload.v !== 1 || journal.policy.payload.visibility !== 'PRIVATE') {
-    throw new Error('LEGACY_V1_NOT_CREATED');
+  if (journal.policy.payload.v !== (mode === 'legacy-structured' ? 2 : 1) || journal.policy.payload.visibility !== 'PRIVATE') {
+    throw new Error('LEGACY_EXPECTED_WIRE_NOT_CREATED');
   }
   if (mode === 'pending') {
     const wiki = journal.objects.find(row => row.kind === 'instances' && row.value.origin_entrypoint === 'wiki');
@@ -52,7 +52,7 @@ try {
     if (update.state !== 'PUBLISHED') throw new Error('LEGACY_COMPLETED_UPDATE_MISSING');
   }
   let priorRecordId = null;
-  if (mode === 'legacy-record') {
+  if (mode === 'legacy-record' || mode === 'legacy-structured') {
     const wiki = journal.objects.find(row => row.kind === 'instances' && row.value.origin_entrypoint === 'wiki');
     if (!wiki) throw new Error('LEGACY_WIKI_MISSING');
     const advanced = await agent.action(created.workspaceId, wiki.id, 'wiki.create', {
