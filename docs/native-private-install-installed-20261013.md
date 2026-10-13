@@ -1,0 +1,27 @@
+# Installed PRIVATE package continuation (2026-10-13)
+
+The scripted installed-service test `tests/installed-private-package-install-smoke.py` at `8d7dbee391aae110dbd0b6bc452c355963d0a3eb` (SHA-256 `8ccc664eb5254eb7dedf42e6c35aaf236b8deb342a91350d4e508f5073913362`) passed in session `96498` (exit 0). It ran against the tracked local service at `f828b6c50a0a58d1e718af90f653b214adcc3328`, using a fresh installed wheel, two npm tarballs and native CLI. This is a Linux x64 scripted API and business test, not a natural Agent workflow or macOS/Windows release result.
+
+The build input was `git archive b81f9ed95a0049409cb8eceeb916133b4d06cbb4`, SHA-256 `410fcc20c489ce8a04ec7dd91950e3d5beb02ebd87d201e07b1365f5a8c6ba37`. Its only difference from reviewed replay source pin `7bc6216` is `docs/snapshot-install-replay-20261013.md`; `git diff 7bc6216 b81f9ed -- crates bindings tests conformance third_party Cargo.lock Cargo.toml pyproject.toml` exited 0. The extracted source hashes were `crates/core/src/secure_replay.rs` `e4b440272d0daf1c08d9e83fa98477cf3a804fda67cd6b286990d472e62c5800` and `crates/runtime/src/secure_private_install.rs` `c261e0f90e98d39910040f72988502b02d6abbd65f5f6d657816d6d231c6c5d0`. The test required those independently supplied hashes before starting the service. The one-part source vector `conformance/public-package-vectors.json` had SHA-256 `a8d18264824cc00109ced8b4d244ebb51e566fd32ae62d164ca92e378ec924c8`.
+
+Locked-offline Rust 1.89 release CLI/Node build session `32823` exited 0 in 2m29s; locked-offline Maturin wheel build session `35583` exited 0. The wheel installed with `pip --no-index --no-deps` into a fresh virtual environment, and both npm tarballs installed with `npm install --offline --ignore-scripts` into a fresh consumer. Clean installed Python and Node imports passed. Wheel RECORD hashes and sizes verified for all eight hashed entries. Artifact SHA-256 values: CLI `b23c13a193cd92f645aba303b0f5cdca5a5c9bc92ebe080bf22ed7e5b7214363`; wheel `05bfbd217bfc495d717d6d4fd934499079b565eee44a0cda89adf61b76fed8ee`; Node facade tarball `57fc8618e34ec0eca59aea8ec5b1abfff97bb279d9750542f5ebc59967b7e754`; GNU x64 platform tarball `ea9cf84fea705ad43e8f983f16f3a3a0af4dd86ceb71eb1ffa15992e19940fe7`; installed addon `76832386ef2cc8c48b6242f8d7d024dd7864c32d0022217e86a082129e472d9c`.
+
+The test created a native Owner PRIVATE structured workspace and read signed sequence 1, then staged the exact one-part closure. Staging returned the expected root and protocol digests, source ID, part count 1, and verified STAGED progress. For BEGIN, the fixture applied the signed POST and dropped its reply. A child Node process intentionally withheld the generated BEGIN command ID from its supervising caller. A fresh Python Owner client recovered that ID, stage ID, instance ID and protocol digest from protected local `installs()`; this is withheld-result recovery, not an async cancellation test. CLI END also received an applied-but-dropped response; Node exact continuation returned ACCEPTED without another commit. A signed Owner read reported ACTIVE and the exact installed instance/protocol digest. Node authored an encrypted `proposal.propose`; Python and CLI retried the saved action ID, and signed receipt/readback agreed on the Owner actor, one record ID, and exact title/body. CLI repeated installer continuation without another commit. The final verified read reported sequence 5 and the fixture's service head/count agreed. After stopping the service, Python, Node and CLI local installs listings matched on the saved BEGIN ID. The test printed workspace `mcKOTnIJT-cGxMtNqd25rfC2Grtmy88gTeyRR5BQ-nM`, stage `UZd97QHlzbNS-M9m95pkqlTmANyTJNdR7H_eXPJLLCA`, BEGIN ID `pokSSVc5MS9bOfWuSwMaqoiVYbuYIvBXARf6Bc6_9XU`, instance `IVID_AyX3MP8Svj5cHEVm4u0klNhw3mdrNPrTnevtxk`, and record `j2bEFUlmAnLTL9IjqfngeiB5WIMFlNOrRe09lS_cVUI`.
+
+The first invocation stopped before service startup because the process sandbox denied the fixture's `spawnSync git -C ... rev-parse HEAD` with `EPERM`; it performed no SDK business operation. The unchanged artifacts/test ran with a fresh `private-install-state-2` under approved local service execution and passed. The affected invocation, from the SDK worktree, was:
+
+```sh
+artifact_root="$PWD/.build-artifacts/private-install-b81f9ed"
+PEERWORK_TEST_SDK_ROOT="$artifact_root/source" \
+PEERWORK_TEST_STATE="$artifact_root/build/private-install-state-2" \
+PEERWORK_TEST_NODE=/root/workdir/message/.tools/node-v24.20.0-linux-x64/bin/node \
+PEERWORK_TEST_NODE_PACKAGE="$artifact_root/install/node/node_modules/@peerwork/agent-sdk" \
+PEERWORK_TEST_CLI="$artifact_root/build/target/release/peerwork" \
+PEERWORK_TEST_INSTALL_SOURCE_SHA256=c261e0f90e98d39910040f72988502b02d6abbd65f5f6d657816d6d231c6c5d0 \
+PEERWORK_TEST_REPLAY_SOURCE_SHA256=e4b440272d0daf1c08d9e83fa98477cf3a804fda67cd6b286990d472e62c5800 \
+PEERWORK_REFERENCE_ROOT=/root/workdir/message/.worktrees/e2ee-main-integration-20261006 \
+TMPDIR="$artifact_root/build/tmp" \
+"$artifact_root/install/venv/bin/python" "$artifact_root/source/tests/installed-private-package-install-smoke.py"
+```
+
+This covers the official one-part/empty-history PRIVATE install path and one encrypted record effect. PRIVATE PAGE/nonempty history, package-family parity, other operating systems, and Agent instruction-following remain separate acceptance work.
