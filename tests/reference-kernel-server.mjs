@@ -292,6 +292,7 @@ if (process.env.PEERWORK_TEST_BOOTSTRAP === '1') {
   } finally { agent.close(); }
 }
 let dropFirstPost = true;
+let forceDropNextPost = false;
 let dropNextIdentityDirectory = false;
 let serveStaleIdentityDirectory = false;
 let tamperNextIdentityDirectory = false;
@@ -336,9 +337,23 @@ const proxy = createServer(async (request, response) => {
         if (request.url === '/__test/private-owner-invite') {
           if (typeof input.certificate_json !== 'string') throw new Error('native public certificate is required');
           const certificate = JSON.parse(input.certificate_json);
+          const actorId = certificate?.payload?.actor_id;
+          const signingKey = certificate?.payload?.signing_key;
+          if (typeof actorId !== 'string' || typeof signingKey !== 'string')
+            throw new Error('native public certificate actor/key is required');
+          // Test setup makes an explicit first-contact trust decision from the
+          // native recipient's shared public certificate. The tracked client
+          // then validates the signed directory and requires the current
+          // directory certificate to equal those exact shared bytes.
+          const expectedFingerprint = createHash('sha256')
+            .update(Buffer.from(signingKey, 'base64url')).digest('hex');
+          await owner.confirmIdentity(actorId,expectedFingerprint);
+          const currentCertificate = await owner.identityCertificate(actorId);
+          if (canonical(currentCertificate) !== canonical(certificate))
+            throw new Error('native recipient directory certificate changed');
           const scopes = input.scopes_json === undefined ? [] : JSON.parse(input.scopes_json);
           if (!Array.isArray(scopes)) throw new Error('invitation scopes must be an array');
-          const offer = await owner.invite(privateNativeAdmissionFixture.workspace_id,certificate,scopes,
+          const offer = await owner.invite(privateNativeAdmissionFixture.workspace_id,currentCertificate,scopes,
             'Native recipient private invitation');
           result = {invite_id:offer.payload.invite_id,workspace_id:privateNativeAdmissionFixture.workspace_id};
         } else if (request.url === '/__test/private-owner-deliver') {
@@ -408,6 +423,7 @@ const proxy = createServer(async (request, response) => {
     if (request.url === '/__test/drop-next-post' && request.method === 'POST') {
       if (dropFirstPost) throw new Error('dropped-response fixture is already armed');
       dropFirstPost = true;
+      forceDropNextPost = true;
       response.writeHead(200, {'content-type':'application/json'});
       response.end(JSON.stringify({enabled:true}));
       return;
@@ -605,7 +621,8 @@ const proxy = createServer(async (request, response) => {
     }
     if (request.method === 'POST' && dropFirstPost) {
       dropFirstPost = false;
-      if (firstPostMode === 'drop') {
+      if (forceDropNextPost || firstPostMode === 'drop') {
+        forceDropNextPost = false;
         response.destroy(); // Real kernel has already committed and replied.
         return;
       }
