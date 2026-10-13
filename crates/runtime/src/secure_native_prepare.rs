@@ -1,6 +1,7 @@
 //! Private native identity/keyring to durable secure packet bridge.
-//! Caller-supplied policy and operation pins are not authenticated here;
-//! no public action API or final outcome can use this without full replay.
+//! Legacy low-level preparation takes caller-supplied policy and operation pins.
+//! Replay-backed action preparation authenticates those inputs before saving a packet;
+//! final outcomes still require the signed journal replay and receipt checks.
 
 use crate::{
     kernel_identity::KernelIdentity,
@@ -21,9 +22,10 @@ use peerwork_core::{
         derive_genesis_structure_policy_with_coordination_and_keep_encrypted,
         derive_genesis_structure_policy_with_keep_encrypted,
     },
+    prepared_secure_action::{validate_prepared_action_operation, ValidatedPreparedAction},
     prepared_secure_author::{
-        author_private_bootstrap, author_private_commit, author_private_commit_with_policy,
-        author_public_bootstrap, SecureAuthorError,
+        author_private_bootstrap, author_private_commit, author_private_validated_action,
+        author_public_bootstrap, author_public_validated_action, SecureAuthorError,
     },
     prepared_secure_request::SecureCommitRequestPins,
 };
@@ -598,6 +600,13 @@ pub(crate) fn prepare_new_private_commit_from_replay(
     let policy_wire = source
         .signed_policy_by_hash(pins.policy_hash)
         .ok_or(NativePrepareError::Context)?;
+    let action = validate_prepared_action_operation(
+        operation_wire,
+        context_wire,
+        policy_wire,
+        source.replay().objects(),
+    )
+    .map_err(|_| NativePrepareError::Context)?;
     prepare_new_private_commit_inner(
         journal,
         identity,
@@ -606,8 +615,96 @@ pub(crate) fn prepare_new_private_commit_from_replay(
         context_wire,
         operation_wire,
         pins,
-        Some((policy_wire, lifecycle.owner_key_id())),
+        Some((policy_wire, lifecycle.owner_key_id(), &action)),
     )
+}
+
+/// Author and persist a PUBLIC ACTION from a complete authenticated current
+/// history. The candidate operation is recomputed against prior objects before
+/// it is signed; no epoch key exists for a PUBLIC policy.
+pub(crate) fn prepare_new_public_action_from_replay(
+    journal: &mut SecureIntentJournal,
+    identity: &KernelIdentity,
+    lifecycle: &SecureLifecycle,
+    source: &TransportReplayedJournal,
+    intent_id: &str,
+    context_wire: &[u8],
+    operation_wire: &[u8],
+    pins: &SecureCommitRequestPins<'_>,
+) -> Result<PendingSecureIntent, NativePrepareError> {
+    source
+        .verified_read()
+        .map_err(|_| NativePrepareError::Context)?;
+    if pins.mode != "PUBLIC"
+        || pins.epoch != 0
+        || identity.actor_id() != lifecycle.actor_id()
+        || identity.actor_id() != journal.actor_id()
+        || pins.actor_id != identity.actor_id()
+        || pins.signing_key != identity.key_id()
+        || pins.workspace_id != lifecycle.workspace_id()
+        || lifecycle.origin() != journal.trusted_origin()
+        || source.origin() != lifecycle.origin()
+        || source.source_actor_id() != identity.actor_id()
+        || source.source_key_id() != identity.key_id()
+        || source.replay().workspace_id() != lifecycle.workspace_id()
+        || source.replay().owner_actor_id() != lifecycle.owner_actor_id()
+        || source.replay().owner_signing_key() != lifecycle.owner_key_id()
+        || pins.sequence
+            != source
+                .replay()
+                .sequence()
+                .checked_add(1)
+                .ok_or(NativePrepareError::Context)?
+        || pins.previous != source.replay().head()
+        || pins.policy_hash != source.replay().policy_hash()
+    {
+        return Err(NativePrepareError::Context);
+    }
+    if journal.contains_id(intent_id) {
+        return Err(NativePrepareError::Existing);
+    }
+    let policy_wire = source
+        .signed_policy_by_hash(pins.policy_hash)
+        .ok_or(NativePrepareError::Context)?;
+    let action = validate_prepared_action_operation(
+        operation_wire,
+        context_wire,
+        policy_wire,
+        source.replay().objects(),
+    )
+    .map_err(|_| NativePrepareError::Context)?;
+    let path = format!(
+        "/api/workspace/v1/secure/workspaces/{}/commits",
+        lifecycle.workspace_id()
+    );
+    let authored = author_public_validated_action(
+        context_wire,
+        &action,
+        identity.signing_key(),
+        &path,
+        pins,
+        policy_wire,
+        lifecycle.owner_key_id(),
+    )?;
+    let proof = authored.proof();
+    if proof.command_id() != intent_id
+        || proof.workspace_id() != lifecycle.workspace_id()
+        || proof.actor_id() != identity.actor_id()
+        || proof.signing_key() != identity.key_id()
+        || proof.path() != path
+        || proof.policy_hash() != pins.policy_hash
+    {
+        return Err(NativePrepareError::Context);
+    }
+    Ok(journal.prepare(SecurePacketInput {
+        intent_id: proof.command_id(),
+        path: proof.path(),
+        action_id: proof.action_id(),
+        workspace_id: Some(proof.workspace_id()),
+        trusted_owner_key: Some(lifecycle.owner_key_id()),
+        intent_digest: proof.commit_digest(),
+        exact_request: authored.request_wire(),
+    })?)
 }
 
 fn prepare_new_private_commit_inner(
@@ -618,7 +715,7 @@ fn prepare_new_private_commit_inner(
     context_wire: &[u8],
     operation_wire: &[u8],
     pins: &SecureCommitRequestPins<'_>,
-    policy: Option<(&[u8], &str)>,
+    policy: Option<(&[u8], &str, &ValidatedPreparedAction)>,
 ) -> Result<PendingSecureIntent, NativePrepareError> {
     if identity.actor_id() != lifecycle.actor_id()
         || identity.actor_id() != journal.actor_id()
@@ -640,10 +737,10 @@ fn prepare_new_private_commit_inner(
         "/api/workspace/v1/secure/workspaces/{}/commits",
         lifecycle.workspace_id()
     );
-    let authored = if let Some((policy_wire, owner_key)) = policy {
-        author_private_commit_with_policy(
+    let authored = if let Some((policy_wire, owner_key, action)) = policy {
+        author_private_validated_action(
             context_wire,
-            operation_wire,
+            action,
             key,
             identity.signing_key(),
             &path,
@@ -2329,5 +2426,204 @@ mod tests {
             .unwrap();
         assert_eq!(reopened.pending()[0].observed_responses, 1);
         assert_eq!(count().await, applied, "exact retry must not reapply");
+    }
+
+    #[tokio::test]
+    async fn actual_service_public_action_is_natively_authored_from_replayed_state() {
+        let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else {
+            return;
+        };
+        let node = std::env::var("PEERWORK_NODE_BIN").unwrap_or_else(|_| "node".into());
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let bridge = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/reference-kernel-server.mjs");
+        let child = Command::new(node)
+            .arg(bridge)
+            .env("PEERWORK_REFERENCE_ROOT", reference_root)
+            .env("PEERWORK_TEST_STATE", root.path())
+            .env("PEERWORK_TEST_PUBLIC_READ", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        struct Stop(Child);
+        impl Drop for Stop {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut child = Stop(child);
+        let mut line = String::new();
+        std::io::BufReader::new(child.0.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        assert!(!line.is_empty(), "public fixture exited before readiness");
+        let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let origin = ready["origin"].as_str().unwrap().to_owned();
+        let fixture = &ready["public_read"];
+        let workspace = fixture["workspace_id"].as_str().unwrap().to_owned();
+        let authority = fixture["authority"].as_str().unwrap();
+        let identity = KernelIdentity::import_pkcs8_pem_file(
+            &root.path().join("native-public-identity.state"),
+            &root.path().join("synthetic-public-read-owner.pem"),
+        )
+        .unwrap();
+        let lifecycle = SecureLifecycle::open(
+            &root.path().join("native-public-lifecycle.state"),
+            &origin,
+            identity.actor_id(),
+            &workspace,
+            identity.actor_id(),
+            identity.key_id(),
+        )
+        .unwrap();
+        let mut config = TransportConfig::new(origin.clone());
+        config.allow_loopback_http = true;
+        let mut read_config = TransportConfig::new(origin.clone());
+        read_config.allow_loopback_http = true;
+        let client = crate::kernel_client::KernelClient::open(
+            read_config,
+            &root.path().join("native-public-discovery.sqlite"),
+            &[],
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        let mut reader = crate::secure_journal_read::SecureJournalRead::open(
+            &root.path().join("native-public-prior.state"),
+            &client,
+            &identity,
+            &workspace,
+            authority,
+        )
+        .unwrap();
+        assert!(
+            reader
+                .fetch_next(&client, &identity, &CancellationToken::new())
+                .await
+                .unwrap()
+                .complete_transport
+        );
+        let pages = reader.authenticated_pages(&client, &identity).unwrap();
+        let source =
+            crate::secure_verified_read::replay_authenticated_pages(&pages, &lifecycle).unwrap();
+        assert_eq!(source.replay().sequence(), 1);
+        let prepared: serde_json::Value = serde_json::from_slice(
+            &reqwest::get(format!("{origin}__test/prepare-public-action"))
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(prepared["checkpoint"]["sequence"], 1);
+        let context = &prepared["context"];
+        let previous = context["previous"].as_str();
+        let pins = SecureCommitRequestPins {
+            actor_id: identity.actor_id(),
+            signing_key: identity.key_id(),
+            workspace_id: &workspace,
+            policy_hash: context["policy_hash"].as_str().unwrap(),
+            sequence: context["sequence"].as_u64().unwrap(),
+            previous,
+            epoch: context["epoch"].as_u64().unwrap(),
+            mode: "PUBLIC",
+            version: context["v"].as_u64().unwrap(),
+            protocol_format_ceiling: context["protocol_format_ceiling"].as_u64(),
+        };
+        let intent_id = context["command_id"].as_str().unwrap();
+        let context_wire = serde_json::to_vec(context).unwrap();
+        let operation_wire = serde_json::to_vec(&prepared["operation"]).unwrap();
+        let mut wrong_operation = prepared["operation"].clone();
+        wrong_operation["objects"][0]["id"] = json!("z".repeat(43));
+        let mut journal = SecureIntentJournal::open(
+            &root.path().join("native-public-action.state"),
+            &origin,
+            identity.actor_id(),
+        )
+        .unwrap();
+        assert!(prepare_new_public_action_from_replay(
+            &mut journal,
+            &identity,
+            &lifecycle,
+            &source,
+            intent_id,
+            &context_wire,
+            &serde_json::to_vec(&wrong_operation).unwrap(),
+            &pins,
+        )
+        .is_err());
+        assert!(journal.pending().is_empty());
+        prepare_new_public_action_from_replay(
+            &mut journal,
+            &identity,
+            &lifecycle,
+            &source,
+            intent_id,
+            &context_wire,
+            &operation_wire,
+            &pins,
+        )
+        .unwrap();
+        let transport = HttpTransport::new(config).unwrap();
+        journal
+            .verified_saved_commit_from_replay(intent_id, &identity, &transport, &source, &pins)
+            .unwrap();
+        let sent = journal
+            .submit_saved_commit_from_replay(
+                intent_id,
+                &identity,
+                &transport,
+                &source,
+                &pins,
+                &CancellationToken::new(),
+            )
+            .await;
+        assert!(matches!(
+            sent,
+            Err(SecureIntentError::Transport(
+                TransportError::SubmittedUncertain
+            ))
+        ));
+        let counts: serde_json::Value = serde_json::from_slice(
+            &reqwest::get(format!("{origin}__test/secure-counts"))
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(counts["commits"], 2);
+        assert_eq!(counts["head_sequence"], 2);
+        let mut after = crate::secure_journal_read::SecureJournalRead::open(
+            &root.path().join("native-public-after.state"),
+            &client,
+            &identity,
+            &workspace,
+            authority,
+        )
+        .unwrap();
+        assert!(
+            after
+                .fetch_next(&client, &identity, &CancellationToken::new())
+                .await
+                .unwrap()
+                .complete_transport
+        );
+        let after_pages = after.authenticated_pages(&client, &identity).unwrap();
+        let verified =
+            crate::secure_verified_read::replay_authenticated_pages(&after_pages, &lifecycle)
+                .unwrap();
+        let accepted = journal
+            .accept_replayed_action(intent_id, &identity, &transport, &verified)
+            .unwrap();
+        assert_eq!(accepted.sequence, 2);
+        assert!(journal.pending().is_empty());
     }
 }

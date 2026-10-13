@@ -195,6 +195,32 @@ let delayFirstJournal = firstJournalDelayMs > 0;
 let journalDelayStarted = false;
 const proxy = createServer(async (request, response) => {
   try {
+    if (request.url === '/__test/prepare-public-action' && request.method === 'GET') {
+      if (!publicReadFixture || publicReadAppended) throw new Error('public preparation fixture unavailable');
+      const {createPrivateKey} = await import('node:crypto');
+      const {SecureAgentClient} = await import(pathToFileURL(join(root, 'dist-workspace/src/workspace-secure-agent.js')).href);
+      const {createActionContext, createCommitContext} = await import(pathToFileURL(join(root, 'dist-workspace/src/workspace-secure-client.js')).href);
+      const {prepareSecureAction} = await import(pathToFileURL(join(root, 'dist-workspace/src/workspace-secure-engine.js')).href);
+      const privateKey = createPrivateKey(readFileSync(join(state, 'synthetic-public-read-owner.pem')));
+      const agent = await SecureAgentClient.open({baseUrl:realOrigin,privateKey,
+        statePath:join(state,'synthetic-public-read-agent.json'),
+        intentDbPath:join(state,'synthetic-public-read-agent-intents.sqlite')});
+      try {
+        const journal = await agent.journal(publicReadFixture.workspace_id);
+        if (journal.checkpoint.sequence !== 1) throw new Error('public prepare expected sequence one');
+        const input = {identity:agent.identity,policy:journal.policy,
+          checkpoint:journal.checkpoint,actionId:'discussion.post',
+          instanceId:publicReadInstance,commandId:'p'.repeat(43),issuedAt:Date.now()};
+        const header = await createActionContext(input);
+        const operation = await prepareSecureAction({objects:journal.objects,
+          context:header,policy:journal.policy,body:{message:'native public authored action'}});
+        const context = await createCommitContext({...input,operation});
+        response.writeHead(200, {'content-type':'application/json'});
+        response.end(JSON.stringify({context,operation,policy:journal.policy,
+          checkpoint:journal.checkpoint}));
+      } finally { agent.close(); }
+      return;
+    }
     if (request.url === '/__test/append-public' && request.method === 'POST') {
       if (!publicReadFixture || publicReadAppended) throw new Error('public append fixture unavailable');
       const {createPrivateKey} = await import('node:crypto');

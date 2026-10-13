@@ -6,6 +6,7 @@
 use crate::{
     canonical::Path,
     crypto::{actor_id, base64url},
+    prepared_secure_action::ValidatedPreparedAction,
     prepared_secure_bootstrap::{
         verify_prepared_owner_bootstrap, BootstrapPins, VerifiedPreparedBootstrap,
     },
@@ -110,6 +111,103 @@ pub fn author_private_commit_with_policy(
         pins,
         Some((signed_policy_wire, trusted_owner_key)),
     )
+}
+
+/// Author only an operation already recomputed from authenticated prior state
+/// for this exact context and signed policy. This remains low-level Rust API;
+/// runtime must bind the replay origin and checkpoint before calling it.
+pub fn author_private_validated_action(
+    context_wire: &[u8],
+    action: &ValidatedPreparedAction,
+    epoch_key: &[u8; 32],
+    signing_key: &SigningKey,
+    path: &str,
+    pins: &SecureCommitRequestPins<'_>,
+    signed_policy_wire: &[u8],
+    trusted_owner_key: &str,
+) -> Result<AuthoredSecureCommit, SecureAuthorError> {
+    if !action.matches_context_and_policy(context_wire, signed_policy_wire) {
+        return Err(SecureAuthorError::Invalid);
+    }
+    author_private_commit_with_policy(
+        context_wire,
+        action.operation_wire(),
+        epoch_key,
+        signing_key,
+        path,
+        pins,
+        signed_policy_wire,
+        trusted_owner_key,
+    )
+}
+
+/// Sign a PUBLIC ACTION after the evaluator has checked the exact operation
+/// against authenticated prior objects and this signed policy. The runtime
+/// still must bind the pre-append checkpoint and persist the packet before POST.
+pub fn author_public_validated_action(
+    context_wire: &[u8],
+    action: &ValidatedPreparedAction,
+    signing_key: &SigningKey,
+    path: &str,
+    pins: &SecureCommitRequestPins<'_>,
+    signed_policy_wire: &[u8],
+    trusted_owner_key: &str,
+) -> Result<AuthoredSecureCommit, SecureAuthorError> {
+    let invalid = || SecureAuthorError::Invalid;
+    if pins.mode != "PUBLIC"
+        || pins.epoch != 0
+        || !matches!(pins.version, 1 | 2 | 3)
+        || pins.actor_id != actor_id(&signing_key.verifying_key().to_bytes())
+        || pins.signing_key != base64url(&signing_key.verifying_key().to_bytes())
+        || !action.matches_context_and_policy(context_wire, signed_policy_wire)
+    {
+        return Err(invalid());
+    }
+    let context = parse_wire_json_bounded(context_wire, 64, 196_608).map_err(|_| invalid())?;
+    let WireValue::Object(fields) = &context else {
+        return Err(invalid());
+    };
+    if context.get("mode").is_some() || context.get("body").is_some() {
+        return Err(invalid());
+    }
+    let operation = parse_wire_json_bounded(action.operation_wire(), 64, MAX_PLAINTEXT)
+        .map_err(|_| invalid())?;
+    let mut payload_fields = fields.clone();
+    payload_fields.push((units("mode"), WireValue::String(units("PUBLIC"))));
+    payload_fields.push((units("body"), operation));
+    let payload = WireValue::Object(payload_fields);
+    let canonical_payload =
+        canonical_wire_value(&payload, Path::SecureArtifact).map_err(|_| invalid())?;
+    let domain = match pins.version {
+        1 => "peerwork.secure.commit.v1",
+        2 => "peerwork.secure.commit.v2",
+        3 => "peerwork.secure.commit.v3",
+        _ => return Err(invalid()),
+    };
+    let mut message = Zeroizing::new(Vec::with_capacity(canonical_payload.len() + 32));
+    message.extend_from_slice(domain.as_bytes());
+    message.push(0);
+    message.extend_from_slice(canonical_payload.as_bytes());
+    let signature = base64url(&signing_key.sign(&message).to_bytes());
+    let commit = WireValue::Object(vec![
+        (units("payload"), payload),
+        (units("signature"), WireValue::String(units(&signature))),
+    ]);
+    let canonical_commit =
+        canonical_wire_value(&commit, Path::SecureArtifact).map_err(|_| invalid())?;
+    let request_wire = format!("{{\"commit\":{canonical_commit}}}").into_bytes();
+    let proof = verify_prepared_secure_commit_request_with_policy(
+        &request_wire,
+        path,
+        pins,
+        signed_policy_wire,
+        trusted_owner_key,
+    )
+    .map_err(|_| invalid())?;
+    Ok(AuthoredSecureCommit {
+        request_wire,
+        proof,
+    })
 }
 
 fn author_private_commit_inner(

@@ -400,7 +400,7 @@ fn normalized_structure_reference(value: &WireValue) -> Result<WireValue, Replay
     ]))
 }
 
-fn project_structure_data(
+pub(crate) fn project_structure_data(
     objects: &[WireValue],
     contract: &WireValue,
 ) -> Result<(Vec<WireValue>, Vec<WireValue>), ReplayError> {
@@ -2414,7 +2414,7 @@ fn validate_admin_preflight(
 /// Private ACTION evaluator covering state, record, head, relation, protected
 /// field, and workflow effects. Other histories still return `UNSUPPORTED`;
 /// this never yields a verified journal or receipt.
-fn validate_action_state_slice(
+pub(crate) fn validate_action_state_slice(
     operation: &WireValue,
     context: &WireValue,
     policy: &WireValue,

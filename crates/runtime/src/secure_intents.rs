@@ -1408,6 +1408,16 @@ mod tests {
         native_context = native_context["commit"]["payload"].clone();
         native_context.as_object_mut().unwrap().remove("mode");
         native_context.as_object_mut().unwrap().remove("body");
+        let original_context = native_context.clone();
+        let signed_request: serde_json::Value = serde_json::from_slice(&request).unwrap();
+        let sealed: SealedContent =
+            serde_json::from_value(signed_request["commit"]["payload"]["body"].clone()).unwrap();
+        let operation_wire = open_content_wire(
+            pre_lifecycle.active_key(pins.epoch).unwrap(),
+            &sealed,
+            &serde_json::to_vec(&original_context).unwrap(),
+        )
+        .unwrap();
         let native_id = base64url(&[91; 32]);
         native_context["command_id"] = serde_json::json!(native_id);
         let mut native_journal = SecureIntentJournal::open(
@@ -1423,7 +1433,7 @@ mod tests {
             &pre_source,
             &native_id,
             &serde_json::to_vec(&native_context).unwrap(),
-            br#"{"v":1,"kind":"ACTION","input":{},"objects":[]}"#,
+            &operation_wire,
             &pins,
         )
         .unwrap();

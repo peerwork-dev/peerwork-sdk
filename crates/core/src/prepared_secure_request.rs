@@ -186,7 +186,8 @@ fn verify_prepared_secure_commit_request_inner(
         || pins.epoch as f64 > MAX_SAFE
         || !matches!(pins.version, 1 | 3) && authenticated_policy.is_none()
         || !matches!(pins.version, 1 | 2 | 3)
-        || pins.mode != "PRIVATE"
+        || pins.mode != "PRIVATE" && !(authenticated_policy.is_some() && pins.mode == "PUBLIC")
+        || pins.mode == "PUBLIC" && pins.epoch != 0
         || pins.version == 3 && !matches!(pins.protocol_format_ceiling, Some(1 | 2))
         || pins.version != 3 && pins.protocol_format_ceiling.is_some()
     {
@@ -315,7 +316,18 @@ fn verify_prepared_secure_commit_request_inner(
         return Err(invalid());
     }
     let body = payload.get("body").ok_or_else(invalid)?;
-    validate_ciphertext(body)?;
+    if pins.mode == "PRIVATE" {
+        validate_ciphertext(body)?;
+    } else {
+        exact_keys(body, &["v", "kind", "input", "objects"])?;
+        if number(body, "v")? != 1
+            || string(body, "kind")? != "ACTION"
+            || !matches!(body.get("input"), Some(WireValue::Object(_)))
+            || !matches!(body.get("objects"), Some(WireValue::Array(_)))
+        {
+            return Err(invalid());
+        }
+    }
     let commit_canonical =
         canonical_wire_value(commit, Path::SecureArtifact).map_err(|_| invalid())?;
     if commit_canonical.len() > COMMIT_LIMIT

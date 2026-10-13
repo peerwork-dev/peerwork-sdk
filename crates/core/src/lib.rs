@@ -25,6 +25,7 @@ mod package_schema;
 #[allow(dead_code)]
 mod prepared_package_source;
 pub mod prepared_command;
+pub mod prepared_secure_action;
 pub mod prepared_secure_author;
 pub mod prepared_secure_bootstrap;
 pub mod prepared_secure_request;
