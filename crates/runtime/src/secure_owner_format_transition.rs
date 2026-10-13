@@ -1154,11 +1154,20 @@ mod tests {
         }
         let mut received: serde_json::Value =
             serde_json::from_str(&decision.receive_json(invite_id).unwrap()).unwrap();
-        if received["status"] == "PENDING" {
+        assert_eq!(received["status"], "PENDING");
+        let receipt_hash = received["receipt_hash"].clone();
+        let before_receipt_retry = counts()["commits"].as_u64().unwrap();
+        for _ in 0..4 {
+            if received["status"] == "READY" {
+                break;
+            }
+            assert_eq!(received["status"], "PENDING");
             received =
                 serde_json::from_str(&decision.retry_receive_json(invite_id).unwrap()).unwrap();
+            assert_eq!(received["receipt_hash"], receipt_hash);
         }
         assert_eq!(received["status"], "READY");
+        assert_eq!(counts()["commits"], before_receipt_retry);
         let member_profile = SecureReadProfileConfig {
             origin: origin.clone(),
             state_dir: member_dir.clone(),
