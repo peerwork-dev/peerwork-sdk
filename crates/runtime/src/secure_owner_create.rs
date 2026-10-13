@@ -1,0 +1,1048 @@
+//! Native Owner workspace creation from the pinned collaboration presets.
+//! Generated IDs and exact signed BOOTSTRAP are protected before POST. A
+//! response or local key never establishes CREATED: complete signed replay
+//! and the ordinary protected read profile must both verify first.
+
+use crate::{
+    kernel_client::KernelClient,
+    kernel_identity::KernelIdentity,
+    secure_intents::{SecureIntentError, SecureIntentJournal},
+    secure_journal_read::SecureJournalRead,
+    secure_lifecycle::SecureLifecycle,
+    secure_native_prepare::{
+        prepare_coordinated_private_owner_workspace,
+        prepare_coordinated_public_owner_workspace_with_options,
+        prepare_private_owner_workspace_with_options, prepare_public_owner_workspace_with_options,
+        NativePrepareError,
+    },
+    secure_read_access::SecureReadAccessError,
+    secure_read_profile::{SecureReadProfile, SecureReadProfileConfig},
+    secure_recipient_enrollment::{RecipientEnrollmentConfig, SecureRecipientEnrollment},
+    secure_recipient_state::RecipientState,
+    secure_state::SecureStateStore,
+    secure_verified_read::{replay_authenticated_pages_with_budget, SecureJournalReadBudget},
+    transport::{HttpTransport, TransportConfig, TransportError},
+};
+use peerwork_core::{
+    crypto::{base64url, sha256_hex},
+    prepared_secure_bootstrap::{verify_prepared_owner_bootstrap, BootstrapPins},
+    replayed_secure_journal::StructureStatus,
+};
+use rand_core::{OsRng, RngCore};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
+};
+use thiserror::Error;
+use tokio::runtime::Builder;
+use tokio_util::sync::CancellationToken;
+
+const MAX_HISTORY: usize = 4096;
+const MAX_DOCUMENT: usize = 2 * 1024 * 1024;
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SecureOwnerCreateConfig {
+    pub origin: String,
+    pub state_dir: PathBuf,
+    #[serde(default)]
+    pub allow_loopback_http: bool,
+    #[serde(default = "default_budget")]
+    pub max_replay_artifact_bytes: u64,
+}
+
+fn default_budget() -> u64 {
+    SecureJournalReadBudget::default().max_replay_artifact_bytes
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SecureOwnerCreateInput {
+    pub name: String,
+    pub visibility: String,
+    #[serde(default)]
+    pub structured: bool,
+    #[serde(default = "empty_keep_encrypted")]
+    pub keep_encrypted_json: String,
+    #[serde(default)]
+    pub coordination_version: Option<u8>,
+}
+
+fn empty_keep_encrypted() -> String {
+    "[]".into()
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SecureOwnerCreateResult {
+    pub status: String,
+    pub command_id: String,
+    pub workspace_id: String,
+    pub visibility: String,
+    pub sequence: Option<u64>,
+    pub head: Option<String>,
+}
+
+#[derive(Debug, Error)]
+pub enum SecureOwnerCreateError {
+    #[error("owner-create input or protected history is invalid")]
+    Invalid,
+    #[error("protected owner identity or origin changed")]
+    Identity,
+    #[error("owner-create operation was not found")]
+    NotFound,
+    #[error("owner-create local resource limit exceeded")]
+    ResourceLimit,
+    #[error("owner-create local state failed")]
+    Local,
+    #[error("owner enrollment or directory publication failed")]
+    Enrollment,
+    #[error("saved owner bootstrap failed source verification")]
+    Bootstrap,
+    #[error("complete signed owner journal or read profile did not verify")]
+    Verification,
+    #[error("owner-create transport failed")]
+    Transport,
+    #[error("owner-create was cancelled; recover by command ID or list")]
+    Cancelled,
+    #[error("server rejected owner bootstrap with HTTP {0}")]
+    ServerRejected(u16),
+}
+
+impl SecureOwnerCreateError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Invalid => "INPUT_INVALID",
+            Self::Identity => "IDENTITY_CHANGED",
+            Self::NotFound => "NOT_FOUND",
+            Self::ResourceLimit => "RESOURCE_LIMIT",
+            Self::Local => "LOCAL_STATE_FAILED",
+            Self::Enrollment => "ENROLLMENT_FAILED",
+            Self::Bootstrap => "BOOTSTRAP_INVALID",
+            Self::Verification => "VERIFICATION_FAILED",
+            Self::Transport => "TRANSPORT_FAILED",
+            Self::Cancelled => "CANCELLED",
+            Self::ServerRejected(_) => "SERVER_REJECTED",
+        }
+    }
+}
+
+impl From<SecureReadAccessError> for SecureOwnerCreateError {
+    fn from(_: SecureReadAccessError) -> Self {
+        Self::Verification
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SavedCreate {
+    workspace_id: String,
+    created: u64,
+    instance_ids: Vec<String>,
+    input: SecureOwnerCreateInput,
+    created_sequence: Option<u64>,
+    created_head: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OwnerHistory {
+    version: u8,
+    origin: String,
+    actor_id: String,
+    signing_key_id: String,
+    rows: BTreeMap<String, SavedCreate>,
+}
+
+pub struct SecureOwnerWorkspaceCreate {
+    config: SecureOwnerCreateConfig,
+}
+
+impl SecureOwnerWorkspaceCreate {
+    pub fn new(config: SecureOwnerCreateConfig) -> Self {
+        Self { config }
+    }
+
+    /// Explicit local preparation also performs the previously requested
+    /// identity registration/directory publication. It does not POST the
+    /// workspace. The returned generated ID remains in protected history.
+    pub fn prepare(
+        &self,
+        input: SecureOwnerCreateInput,
+        cancel: &CancellationToken,
+    ) -> Result<SecureOwnerCreateResult, SecureOwnerCreateError> {
+        validate_input(&input)?;
+        if cancel.is_cancelled() {
+            return Err(SecureOwnerCreateError::Cancelled);
+        }
+        let enrollment = self.enrollment();
+        enrollment
+            .create_local()
+            .map_err(|_| SecureOwnerCreateError::Enrollment)?;
+        let published = enrollment
+            .publish_with_cancel(cancel)
+            .map_err(|_| SecureOwnerCreateError::Enrollment)?;
+        if published.status != "PUBLISHED" {
+            return Err(SecureOwnerCreateError::Enrollment);
+        }
+        let identity = KernelIdentity::open(&self.identity_path())
+            .map_err(|_| SecureOwnerCreateError::Identity)?;
+        let recipient = RecipientState::open(&self.recipient_path(), &identity)
+            .map_err(|_| SecureOwnerCreateError::Identity)?;
+        let store = SecureStateStore::open(&self.history_path())
+            .map_err(|_| SecureOwnerCreateError::Local)?;
+        let mut history = read_history(&store, &self.config, &identity)?;
+        if history.rows.len() >= MAX_HISTORY {
+            return Err(SecureOwnerCreateError::ResourceLimit);
+        }
+        let mut command = random_token();
+        while history.rows.contains_key(&command) {
+            command = random_token();
+        }
+        let mut workspace = random_token();
+        while workspace == command
+            || history
+                .rows
+                .values()
+                .any(|row| row.workspace_id == workspace)
+        {
+            workspace = random_token();
+        }
+        let mut used = std::collections::HashSet::from([workspace.clone(), command.clone()]);
+        let instance_count = if input.coordination_version.is_some() {
+            7
+        } else {
+            6
+        };
+        let mut instance_ids = Vec::with_capacity(instance_count);
+        for _ in 0..instance_count {
+            let mut instance = random_token();
+            while !used.insert(instance.clone()) {
+                instance = random_token();
+            }
+            instance_ids.push(instance);
+        }
+        let row = SavedCreate {
+            workspace_id: workspace.clone(),
+            created: now_ms()?,
+            instance_ids,
+            input,
+            created_sequence: None,
+            created_head: None,
+        };
+        history.rows.insert(command.clone(), row.clone());
+        write_history(&store, &history)?;
+        drop(history);
+        drop(store);
+        self.stage_saved(&identity, &recipient, &command, &row)?;
+        Ok(summary(&command, &row))
+    }
+
+    /// Protected local discovery includes PENDING and CREATED rows, including
+    /// a result hidden by process cancellation. It does not assert current
+    /// server state or expose requests, keys, or encrypted bodies.
+    pub fn operations(&self) -> Result<Vec<SecureOwnerCreateResult>, SecureOwnerCreateError> {
+        let identity = KernelIdentity::open(&self.identity_path())
+            .map_err(|_| SecureOwnerCreateError::Identity)?;
+        let store = SecureStateStore::open(&self.history_path())
+            .map_err(|_| SecureOwnerCreateError::Local)?;
+        let history = read_history(&store, &self.config, &identity)?;
+        Ok(history
+            .rows
+            .iter()
+            .map(|(id, row)| summary(id, row))
+            .collect())
+    }
+
+    /// Read an Owner-created workspace through its normal protected profile.
+    /// The caller supplies only the public workspace ID; the shared local
+    /// identity and per-workspace profile paths come from saved state.
+    pub fn read_workspace_json(
+        &self,
+        workspace_id: &str,
+        cancel: &CancellationToken,
+    ) -> Result<String, SecureOwnerCreateError> {
+        let identity = KernelIdentity::open(&self.identity_path())
+            .map_err(|_| SecureOwnerCreateError::Identity)?;
+        let store = SecureStateStore::open(&self.history_path())
+            .map_err(|_| SecureOwnerCreateError::Local)?;
+        let history = read_history(&store, &self.config, &identity)?;
+        let (command, row) = history
+            .rows
+            .iter()
+            .find(|(_, row)| row.workspace_id == workspace_id && row.created_sequence.is_some())
+            .ok_or(SecureOwnerCreateError::NotFound)?;
+        let command = command.clone();
+        let row = row.clone();
+        drop(history);
+        drop(store);
+        let journal = SecureIntentJournal::open(
+            &self.config.state_dir.join("secure-intents.state"),
+            &self.config.origin,
+            identity.actor_id(),
+        )
+        .map_err(|_| SecureOwnerCreateError::Local)?;
+        let request = journal
+            .exact_request(&command)
+            .map_err(|_| SecureOwnerCreateError::Bootstrap)?;
+        let proof = verify_prepared_owner_bootstrap(
+            &request,
+            journal
+                .path(&command)
+                .map_err(|_| SecureOwnerCreateError::Bootstrap)?,
+            &BootstrapPins {
+                workspace_id,
+                owner_actor: identity.actor_id(),
+                owner_key: identity.key_id(),
+            },
+        )
+        .map_err(|_| SecureOwnerCreateError::Bootstrap)?;
+        if proof.command_id() != command
+            || proof.visibility() != row.input.visibility
+            || journal
+                .intent_digest(&command)
+                .map_err(|_| SecureOwnerCreateError::Bootstrap)?
+                != proof.commit_digest()
+        {
+            return Err(SecureOwnerCreateError::Bootstrap);
+        }
+        let profile = self.profile(&row.workspace_id, identity.actor_id(), identity.key_id());
+        drop(journal);
+        drop(identity);
+        let json = profile.read_latest_json_with_cancel(cancel)?;
+        profile.with_pinned_replay(cancel, |latest| {
+            if latest.origin() != self.config.origin
+                || latest.replay().workspace_id() != workspace_id
+                || !latest.replay().contains_checkpoint(
+                    1,
+                    Some(proof.commit_digest()),
+                    proof.policy_hash(),
+                )
+            {
+                return Err(SecureOwnerCreateError::Verification);
+            }
+            latest
+                .verified_read()
+                .map_err(|_| SecureOwnerCreateError::Verification)?;
+            Ok(())
+        })?;
+        Ok(json)
+    }
+
+    pub fn resume(
+        &self,
+        command_id: &str,
+        cancel: &CancellationToken,
+    ) -> Result<SecureOwnerCreateResult, SecureOwnerCreateError> {
+        if cancel.is_cancelled() {
+            return Err(SecureOwnerCreateError::Cancelled);
+        }
+        let identity = KernelIdentity::open(&self.identity_path())
+            .map_err(|_| SecureOwnerCreateError::Identity)?;
+        let recipient = RecipientState::open(&self.recipient_path(), &identity)
+            .map_err(|_| SecureOwnerCreateError::Identity)?;
+        let store = SecureStateStore::open(&self.history_path())
+            .map_err(|_| SecureOwnerCreateError::Local)?;
+        let history = read_history(&store, &self.config, &identity)?;
+        let row = history
+            .rows
+            .get(command_id)
+            .ok_or(SecureOwnerCreateError::NotFound)?
+            .clone();
+        drop(history);
+        drop(store);
+        self.stage_saved(&identity, &recipient, command_id, &row)?;
+        self.finish_saved(identity, command_id, row, cancel)
+    }
+
+    pub fn create(
+        &self,
+        input: SecureOwnerCreateInput,
+        cancel: &CancellationToken,
+    ) -> Result<SecureOwnerCreateResult, SecureOwnerCreateError> {
+        let prepared = self.prepare(input, cancel)?;
+        self.resume(&prepared.command_id, cancel)
+    }
+
+    fn stage_saved(
+        &self,
+        identity: &KernelIdentity,
+        recipient: &RecipientState,
+        command: &str,
+        row: &SavedCreate,
+    ) -> Result<(), SecureOwnerCreateError> {
+        let workspace_dir = self.workspace_dir(&row.workspace_id);
+        ensure_private_dir(&workspace_dir)?;
+        let mut journal = SecureIntentJournal::open(
+            &self.config.state_dir.join("secure-intents.state"),
+            &self.config.origin,
+            identity.actor_id(),
+        )
+        .map_err(|_| SecureOwnerCreateError::Local)?;
+        if journal.contains_id(command) {
+            return Ok(());
+        }
+        let six: [String; 6] = std::array::from_fn(|i| row.instance_ids[i].clone());
+        let keep = row.input.keep_encrypted_json.as_bytes();
+        match (
+            row.input.visibility.as_str(),
+            row.input.coordination_version,
+        ) {
+            ("PRIVATE", Some(version)) => {
+                let seven: [String; 7] = std::array::from_fn(|i| row.instance_ids[i].clone());
+                let mut lifecycle = self.lifecycle(identity, &row.workspace_id)?;
+                prepare_coordinated_private_owner_workspace(
+                    &mut journal,
+                    identity,
+                    recipient,
+                    &mut lifecycle,
+                    command,
+                    &row.input.name,
+                    row.created,
+                    &seven,
+                    version,
+                    keep,
+                )
+                .map_err(map_prepare)?;
+            }
+            ("PRIVATE", None) => {
+                let mut lifecycle = self.lifecycle(identity, &row.workspace_id)?;
+                prepare_private_owner_workspace_with_options(
+                    &mut journal,
+                    identity,
+                    recipient,
+                    &mut lifecycle,
+                    command,
+                    &row.input.name,
+                    row.created,
+                    &six,
+                    row.input.structured,
+                    keep,
+                )
+                .map_err(map_prepare)?;
+            }
+            ("PUBLIC", Some(version)) => {
+                let seven: [String; 7] = std::array::from_fn(|i| row.instance_ids[i].clone());
+                prepare_coordinated_public_owner_workspace_with_options(
+                    &mut journal,
+                    identity,
+                    recipient,
+                    &row.workspace_id,
+                    command,
+                    &row.input.name,
+                    row.created,
+                    &seven,
+                    version,
+                    keep,
+                )
+                .map_err(map_prepare)?;
+            }
+            ("PUBLIC", None) => {
+                if row.input.structured {
+                    prepare_public_owner_workspace_with_options(
+                        &mut journal,
+                        identity,
+                        recipient,
+                        &row.workspace_id,
+                        command,
+                        &row.input.name,
+                        row.created,
+                        &six,
+                        keep,
+                    )
+                    .map_err(map_prepare)?;
+                } else {
+                    crate::secure_native_prepare::prepare_default_public_owner_workspace(
+                        &mut journal,
+                        identity,
+                        recipient,
+                        &row.workspace_id,
+                        command,
+                        &row.input.name,
+                        row.created,
+                        &six,
+                    )
+                    .map_err(map_prepare)?;
+                }
+            }
+            _ => return Err(SecureOwnerCreateError::Invalid),
+        }
+        Ok(())
+    }
+
+    fn finish_saved(
+        &self,
+        identity: KernelIdentity,
+        command: &str,
+        row: SavedCreate,
+        cancel: &CancellationToken,
+    ) -> Result<SecureOwnerCreateResult, SecureOwnerCreateError> {
+        let mut journal = SecureIntentJournal::open(
+            &self.config.state_dir.join("secure-intents.state"),
+            &self.config.origin,
+            identity.actor_id(),
+        )
+        .map_err(|_| SecureOwnerCreateError::Local)?;
+        let mut transport_config = TransportConfig::new(self.config.origin.clone());
+        transport_config.allow_loopback_http = self.config.allow_loopback_http;
+        let transport =
+            HttpTransport::new(transport_config).map_err(|_| SecureOwnerCreateError::Transport)?;
+        let mut lifecycle = self.lifecycle(&identity, &row.workspace_id)?;
+        let (proof, request) = if row.input.visibility == "PRIVATE"
+            && lifecycle.pending_bootstrap_key().is_some()
+        {
+            journal
+                .verified_saved_bootstrap(command, &identity, &transport, &lifecycle)
+                .map_err(|_| SecureOwnerCreateError::Bootstrap)?
+        } else if row.input.visibility == "PUBLIC" {
+            journal
+                .verified_saved_public_bootstrap(command, &row.workspace_id, &identity, &transport)
+                .map_err(|_| SecureOwnerCreateError::Bootstrap)?
+        } else {
+            let request = journal
+                .exact_request(command)
+                .map_err(|_| SecureOwnerCreateError::Bootstrap)?;
+            let proof = verify_prepared_owner_bootstrap(
+                &request,
+                journal
+                    .path(command)
+                    .map_err(|_| SecureOwnerCreateError::Bootstrap)?,
+                &BootstrapPins {
+                    workspace_id: &row.workspace_id,
+                    owner_actor: identity.actor_id(),
+                    owner_key: identity.key_id(),
+                },
+            )
+            .map_err(|_| SecureOwnerCreateError::Bootstrap)?;
+            if proof.visibility() != "PRIVATE"
+                || journal
+                    .intent_digest(command)
+                    .map_err(|_| SecureOwnerCreateError::Bootstrap)?
+                    != proof.commit_digest()
+                || lifecycle.active_key(1).is_none()
+            {
+                return Err(SecureOwnerCreateError::Bootstrap);
+            }
+            (proof, request)
+        };
+        if !request.is_empty() && proof.command_id() != command {
+            return Err(SecureOwnerCreateError::Bootstrap);
+        }
+        if row.created_sequence.is_none()
+            && (row.input.visibility == "PUBLIC" || lifecycle.pending_bootstrap_key().is_some())
+        {
+            let submitted = if row.input.visibility == "PUBLIC" {
+                self.runtime()?
+                    .block_on(journal.submit_saved_public_bootstrap(
+                        command,
+                        &row.workspace_id,
+                        &identity,
+                        &transport,
+                        cancel,
+                    ))
+            } else {
+                self.runtime()?.block_on(
+                    journal
+                        .submit_saved_bootstrap(command, &identity, &transport, &lifecycle, cancel),
+                )
+            };
+            match submitted {
+                Ok(_) => (),
+                Err(SecureIntentError::Transport(TransportError::SubmittedUncertain)) => {
+                    return Ok(summary(command, &row))
+                }
+                Err(SecureIntentError::Transport(TransportError::Cancelled)) => {
+                    return Ok(summary(command, &row))
+                }
+                Err(SecureIntentError::ServerRejected(code)) => {
+                    return Err(SecureOwnerCreateError::ServerRejected(code))
+                }
+                Err(_) => return Err(SecureOwnerCreateError::Transport),
+            }
+        }
+        if cancel.is_cancelled() {
+            return Ok(summary(command, &row));
+        }
+        let mut client_config = TransportConfig::new(self.config.origin.clone());
+        client_config.allow_loopback_http = self.config.allow_loopback_http;
+        let runtime = self.runtime()?;
+        let client = runtime
+            .block_on(KernelClient::open(
+                client_config,
+                &self.workspace_dir(&row.workspace_id).join("kernel.sqlite"),
+                &[],
+                cancel,
+            ))
+            .map_err(|_| SecureOwnerCreateError::Transport)?;
+        let authority = sha256_hex(identity.actor_id().as_bytes());
+        let mut reader = SecureJournalRead::open(
+            &self
+                .workspace_dir(&row.workspace_id)
+                .join("owner-genesis-pages.state"),
+            &client,
+            &identity,
+            &row.workspace_id,
+            &authority,
+        )
+        .map_err(|_| SecureOwnerCreateError::Verification)?;
+        while !reader
+            .progress()
+            .map_err(|_| SecureOwnerCreateError::Verification)?
+            .complete_transport
+        {
+            if cancel.is_cancelled() {
+                return Ok(summary(command, &row));
+            }
+            runtime
+                .block_on(reader.fetch_next(&client, &identity, cancel))
+                .map_err(|_| SecureOwnerCreateError::Transport)?;
+        }
+        let pages = reader
+            .authenticated_pages(&client, &identity)
+            .map_err(|_| SecureOwnerCreateError::Verification)?;
+        let budget = SecureJournalReadBudget::new(self.config.max_replay_artifact_bytes)
+            .ok_or(SecureOwnerCreateError::ResourceLimit)?;
+        let replay = replay_authenticated_pages_with_budget(&pages, &lifecycle, budget)
+            .map_err(|_| SecureOwnerCreateError::Verification)?;
+        if replay.origin() != self.config.origin
+            || replay.source_actor_id() != identity.actor_id()
+            || replay.source_key_id() != identity.key_id()
+            || replay.replay().workspace_id() != row.workspace_id
+            || replay.replay().structure_status() == StructureStatus::Seeding
+            || !replay.replay().contains_checkpoint(
+                1,
+                Some(proof.commit_digest()),
+                proof.policy_hash(),
+            )
+        {
+            return Err(SecureOwnerCreateError::Verification);
+        }
+        let sequence = replay.replay().sequence();
+        let head = replay.replay().head().map(str::to_owned);
+        if row.input.visibility == "PRIVATE" {
+            lifecycle
+                .activate_verified_owner_bootstrap(&proof, &replay)
+                .map_err(|_| SecureOwnerCreateError::Verification)?;
+        } else {
+            replay
+                .verified_read()
+                .map_err(|_| SecureOwnerCreateError::Verification)?;
+        }
+        let owner_actor = identity.actor_id().to_owned();
+        let owner_key = identity.key_id().to_owned();
+        drop(reader);
+        drop(client);
+        drop(journal);
+        drop(lifecycle);
+        drop(identity);
+        // Establish the ordinary profile with the same protected Owner pins.
+        // Its slot/floor verification is independent of the bootstrap reader.
+        let profile = self.profile(&row.workspace_id, &owner_actor, &owner_key);
+        let _ = profile
+            .read_latest_json_with_cancel(cancel)
+            .map_err(|_| SecureOwnerCreateError::Verification)?;
+        profile.with_pinned_replay(cancel, |latest| {
+            if latest.origin() != self.config.origin
+                || latest.replay().workspace_id() != row.workspace_id
+                || !latest.replay().contains_checkpoint(
+                    1,
+                    Some(proof.commit_digest()),
+                    proof.policy_hash(),
+                )
+            {
+                return Err(SecureOwnerCreateError::Verification);
+            }
+            latest
+                .verified_read()
+                .map_err(|_| SecureOwnerCreateError::Verification)?;
+            Ok(())
+        })?;
+        let identity = KernelIdentity::open(&self.identity_path())
+            .map_err(|_| SecureOwnerCreateError::Identity)?;
+        let store = SecureStateStore::open(&self.history_path())
+            .map_err(|_| SecureOwnerCreateError::Local)?;
+        let mut history = read_history(&store, &self.config, &identity)?;
+        let saved = history
+            .rows
+            .get_mut(command)
+            .ok_or(SecureOwnerCreateError::NotFound)?;
+        if saved.workspace_id != row.workspace_id || saved.input != row.input {
+            return Err(SecureOwnerCreateError::Identity);
+        }
+        saved.created_sequence = Some(sequence);
+        saved.created_head = head;
+        let final_row = saved.clone();
+        write_history(&store, &history)?;
+        let mut result = summary(command, &final_row);
+        result.status = "CREATED".into();
+        Ok(result)
+    }
+
+    fn enrollment(&self) -> SecureRecipientEnrollment {
+        let mut config = RecipientEnrollmentConfig::for_state_dir(
+            self.config.origin.clone(),
+            &self.config.state_dir,
+        );
+        config.allow_loopback_http = self.config.allow_loopback_http;
+        SecureRecipientEnrollment::new(config)
+    }
+    fn identity_path(&self) -> PathBuf {
+        self.config.state_dir.join("identity.state")
+    }
+    fn recipient_path(&self) -> PathBuf {
+        self.config.state_dir.join("recipient.state")
+    }
+    fn history_path(&self) -> PathBuf {
+        self.config.state_dir.join("owner-create.state")
+    }
+    fn profile(&self, workspace_id: &str, owner_actor: &str, owner_key: &str) -> SecureReadProfile {
+        SecureReadProfile::new(SecureReadProfileConfig {
+            origin: self.config.origin.clone(),
+            state_dir: self.workspace_dir(workspace_id),
+            identity_path: self.identity_path(),
+            workspace_id: workspace_id.to_owned(),
+            owner_actor_id: Some(owner_actor.to_owned()),
+            owner_key_id: Some(owner_key.to_owned()),
+            authority: Some(sha256_hex(owner_actor.as_bytes())),
+            required_features: Vec::new(),
+            allow_loopback_http: self.config.allow_loopback_http,
+            max_replay_artifact_bytes: self.config.max_replay_artifact_bytes,
+        })
+    }
+    fn workspace_dir(&self, workspace_id: &str) -> PathBuf {
+        self.config.state_dir.join("workspaces").join(workspace_id)
+    }
+    fn lifecycle(
+        &self,
+        identity: &KernelIdentity,
+        workspace_id: &str,
+    ) -> Result<SecureLifecycle, SecureOwnerCreateError> {
+        SecureLifecycle::open(
+            &self.workspace_dir(workspace_id).join("lifecycle.state"),
+            &self.config.origin,
+            identity.actor_id(),
+            workspace_id,
+            identity.actor_id(),
+            identity.key_id(),
+        )
+        .map_err(|_| SecureOwnerCreateError::Local)
+    }
+    fn runtime(&self) -> Result<tokio::runtime::Runtime, SecureOwnerCreateError> {
+        Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| SecureOwnerCreateError::Transport)
+    }
+}
+
+fn validate_input(input: &SecureOwnerCreateInput) -> Result<(), SecureOwnerCreateError> {
+    if input.name.is_empty()
+        || input.name.as_bytes().len() > 240
+        || !matches!(input.visibility.as_str(), "PUBLIC" | "PRIVATE")
+        || input
+            .coordination_version
+            .is_some_and(|v| !matches!(v, 1 | 2))
+        || (input.coordination_version.is_some() && !input.structured)
+        || (!input.structured && input.keep_encrypted_json != "[]")
+    {
+        return Err(SecureOwnerCreateError::Invalid);
+    }
+    let keep: serde_json::Value = serde_json::from_str(&input.keep_encrypted_json)
+        .map_err(|_| SecureOwnerCreateError::Invalid)?;
+    if !keep.is_array() {
+        return Err(SecureOwnerCreateError::Invalid);
+    }
+    Ok(())
+}
+
+fn read_history(
+    store: &SecureStateStore,
+    config: &SecureOwnerCreateConfig,
+    identity: &KernelIdentity,
+) -> Result<OwnerHistory, SecureOwnerCreateError> {
+    let Some(bytes) = store
+        .read_exact()
+        .map_err(|_| SecureOwnerCreateError::Local)?
+    else {
+        return Ok(OwnerHistory {
+            version: 1,
+            origin: config.origin.clone(),
+            actor_id: identity.actor_id().into(),
+            signing_key_id: identity.key_id().into(),
+            rows: BTreeMap::new(),
+        });
+    };
+    if bytes.len() > MAX_DOCUMENT {
+        return Err(SecureOwnerCreateError::ResourceLimit);
+    }
+    let history: OwnerHistory =
+        serde_json::from_slice(&bytes).map_err(|_| SecureOwnerCreateError::Invalid)?;
+    if history.version != 1
+        || history.origin != config.origin
+        || history.actor_id != identity.actor_id()
+        || history.signing_key_id != identity.key_id()
+    {
+        return Err(SecureOwnerCreateError::Identity);
+    }
+    if history.rows.len() > MAX_HISTORY
+        || history.rows.iter().any(|(id, row)| {
+            !valid_token(id)
+                || !valid_token(&row.workspace_id)
+                || row.instance_ids.len()
+                    != if row.input.coordination_version.is_some() {
+                        7
+                    } else {
+                        6
+                    }
+                || row
+                    .instance_ids
+                    .iter()
+                    .any(|instance| !valid_token(instance))
+                || validate_input(&row.input).is_err()
+                || row.created_sequence.is_some() != row.created_head.is_some()
+        })
+    {
+        return Err(SecureOwnerCreateError::Invalid);
+    }
+    Ok(history)
+}
+
+fn write_history(
+    store: &SecureStateStore,
+    history: &OwnerHistory,
+) -> Result<(), SecureOwnerCreateError> {
+    let bytes = serde_json::to_vec(history).map_err(|_| SecureOwnerCreateError::Invalid)?;
+    if bytes.len() > MAX_DOCUMENT {
+        return Err(SecureOwnerCreateError::ResourceLimit);
+    }
+    store
+        .write_exact(&bytes)
+        .map_err(|_| SecureOwnerCreateError::Local)
+}
+
+fn summary(command: &str, row: &SavedCreate) -> SecureOwnerCreateResult {
+    SecureOwnerCreateResult {
+        status: if row.created_sequence.is_some() {
+            "CREATED_LOCAL".into()
+        } else {
+            "PENDING".into()
+        },
+        command_id: command.into(),
+        workspace_id: row.workspace_id.clone(),
+        visibility: row.input.visibility.clone(),
+        sequence: row.created_sequence,
+        head: row.created_head.clone(),
+    }
+}
+
+fn map_prepare(error: NativePrepareError) -> SecureOwnerCreateError {
+    match error {
+        NativePrepareError::Existing => SecureOwnerCreateError::Bootstrap,
+        _ => SecureOwnerCreateError::Invalid,
+    }
+}
+
+fn random_token() -> String {
+    let mut bytes = [0_u8; 32];
+    OsRng.fill_bytes(&mut bytes);
+    base64url(&bytes)
+}
+
+fn now_ms() -> Result<u64, SecureOwnerCreateError> {
+    let at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| SecureOwnerCreateError::Invalid)?
+        .as_millis();
+    u64::try_from(at)
+        .ok()
+        .filter(|v| *v <= 9_007_199_254_740_991)
+        .ok_or(SecureOwnerCreateError::Invalid)
+}
+
+fn valid_token(value: &str) -> bool {
+    value.len() == 43
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+fn ensure_private_dir(path: &Path) -> Result<(), SecureOwnerCreateError> {
+    let parent = path.parent().ok_or(SecureOwnerCreateError::Local)?;
+    for directory in [parent, path] {
+        fs::create_dir(directory)
+            .or_else(|error| {
+                if error.kind() == std::io::ErrorKind::AlreadyExists {
+                    Ok(())
+                } else {
+                    Err(error)
+                }
+            })
+            .map_err(|_| SecureOwnerCreateError::Local)?;
+        let metadata =
+            fs::symlink_metadata(directory).map_err(|_| SecureOwnerCreateError::Local)?;
+        if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+            return Err(SecureOwnerCreateError::Local);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if metadata.permissions().mode() & 0o077 != 0 {
+                fs::set_permissions(directory, fs::Permissions::from_mode(0o700))
+                    .map_err(|_| SecureOwnerCreateError::Local)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        io::{BufRead, BufReader},
+        process::{Child, Command, Stdio},
+    };
+
+    #[test]
+    fn actual_service_native_public_and_private_owner_create_recover_lost_reply() {
+        let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else {
+            return;
+        };
+        let node = std::env::var("PEERWORK_NODE_BIN").unwrap_or_else(|_| "node".into());
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let bridge =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/reference-kernel-server.mjs");
+        let child = Command::new(node)
+            .arg(bridge)
+            .env("PEERWORK_REFERENCE_ROOT", reference_root)
+            .env("PEERWORK_TEST_STATE", root.path())
+            .env("PEERWORK_TEST_FIRST_POST_MODE", "normal")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        struct Stop(Child);
+        impl Drop for Stop {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut child = Stop(child);
+        let mut line = String::new();
+        BufReader::new(child.0.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        assert!(!line.is_empty(), "pinned service exited before readiness");
+        let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let origin = ready["origin"].as_str().unwrap().to_owned();
+        let config = SecureOwnerCreateConfig {
+            origin: origin.clone(),
+            state_dir: root.path().join("sdk-state"),
+            allow_loopback_http: true,
+            max_replay_artifact_bytes: default_budget(),
+        };
+        let token = CancellationToken::new();
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+        let counts = || {
+            runtime.block_on(async {
+                let bytes = reqwest::get(format!("{origin}__test/secure-counts"))
+                    .await
+                    .unwrap()
+                    .bytes()
+                    .await
+                    .unwrap();
+                serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()
+            })
+        };
+        for visibility in ["PUBLIC", "PRIVATE"] {
+            let access = SecureOwnerWorkspaceCreate::new(config.clone());
+            let prepared = access
+                .prepare(
+                    SecureOwnerCreateInput {
+                        name: format!("Native {visibility} owner workspace"),
+                        visibility: visibility.into(),
+                        structured: false,
+                        keep_encrypted_json: "[]".into(),
+                        coordination_version: None,
+                    },
+                    &token,
+                )
+                .unwrap();
+            let before = counts();
+            assert_eq!(
+                before["head_sequence"].as_u64().unwrap_or(0),
+                if visibility == "PUBLIC" { 0 } else { 1 }
+            );
+            runtime.block_on(async {
+                let response = reqwest::Client::new()
+                    .post(format!("{origin}__test/drop-next-post"))
+                    .body("{}")
+                    .send()
+                    .await
+                    .unwrap();
+                assert!(response.status().is_success());
+            });
+            let uncertain = access.resume(&prepared.command_id, &token).unwrap();
+            assert_eq!(uncertain.status, "PENDING");
+            let applied = counts();
+            assert_eq!(
+                applied["commits"].as_u64().unwrap(),
+                before["commits"].as_u64().unwrap() + 1
+            );
+            drop(access);
+            let reopened = SecureOwnerWorkspaceCreate::new(config.clone());
+            assert!(reopened
+                .operations()
+                .unwrap()
+                .iter()
+                .any(|operation| operation.command_id == prepared.command_id
+                    && operation.workspace_id == prepared.workspace_id
+                    && operation.status == "PENDING"));
+            let result = reopened.resume(&prepared.command_id, &token).unwrap();
+            assert_eq!(result.status, "CREATED");
+            assert_eq!(result.sequence, Some(1));
+            assert!(result.head.as_deref().is_some_and(|head| head.len() == 64));
+            let after_retry = counts();
+            assert_eq!(
+                after_retry["commits"], applied["commits"],
+                "exact saved retry must not duplicate genesis"
+            );
+            assert_eq!(after_retry["head_hash"], applied["head_hash"]);
+            assert!(reopened
+                .operations()
+                .unwrap()
+                .iter()
+                .any(|operation| operation.command_id == prepared.command_id
+                    && operation.status == "CREATED_LOCAL"));
+            let again = reopened.resume(&prepared.command_id, &token).unwrap();
+            assert_eq!(again, result);
+            assert_eq!(counts()["commits"], applied["commits"]);
+            let read: serde_json::Value = serde_json::from_str(
+                &reopened
+                    .read_workspace_json(&prepared.workspace_id, &token)
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(read["workspace_id"], prepared.workspace_id);
+            assert_eq!(read["sequence"], 1);
+            assert_eq!(read["objects"].as_array().unwrap().len(), 13);
+        }
+        assert_eq!(
+            SecureOwnerWorkspaceCreate::new(config)
+                .operations()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+}

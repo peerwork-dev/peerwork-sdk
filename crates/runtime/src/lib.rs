@@ -22,6 +22,7 @@ mod secure_journal_read;
 mod secure_lifecycle;
 #[allow(dead_code)]
 mod secure_native_prepare;
+pub mod secure_owner_create;
 #[allow(dead_code)]
 mod secure_package_pending;
 pub mod secure_private_grant_read;

@@ -4,7 +4,10 @@
 
 use crate::secure_grant_pending::GrantActivationProof;
 use crate::secure_state::{SecureStateError, SecureStateStore};
+use crate::secure_verified_read::TransportReplayedJournal;
 use peerwork_core::crypto::decode_base64url;
+use peerwork_core::prepared_secure_bootstrap::VerifiedPreparedBootstrap;
+use peerwork_core::replayed_secure_journal::StructureStatus;
 use peerwork_core::secure_keyring::{KeyringError, SecretKeyring};
 use reqwest::Url;
 use std::path::Path;
@@ -26,6 +29,8 @@ pub enum SecureLifecycleError {
     PinChanged,
     #[error("a different pending keyring transition already exists")]
     PendingConflict,
+    #[error("complete signed owner bootstrap does not bind the staged epoch key")]
+    BootstrapProof,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -162,6 +167,62 @@ impl SecureLifecycle {
             ring,
             state: ReplayKeyringState::Active,
         })
+    }
+
+    /// A new Owner has no external key grant. Its staged epoch-one key can
+    /// become active only after configured-origin complete replay decrypts
+    /// the signed BOOTSTRAP and proves the exact saved commit at sequence one.
+    /// This is separate from recipient grant activation and is idempotent
+    /// after a crash between key promotion and result persistence.
+    pub(crate) fn activate_verified_owner_bootstrap(
+        &mut self,
+        prepared: &VerifiedPreparedBootstrap,
+        source: &TransportReplayedJournal,
+    ) -> Result<KeyringStatus, SecureLifecycleError> {
+        if prepared.visibility() != "PRIVATE"
+            || prepared.workspace_id() != self.workspace_id
+            || source.origin() != self.origin
+            || source.source_actor_id() != self.actor_id
+            || source.source_key_id() != self.owner_key_id
+            || self.actor_id != self.owner_actor_id
+            || source.replay().workspace_id() != self.workspace_id
+            || source.replay().owner_actor_id() != self.owner_actor_id
+            || source.replay().owner_signing_key() != self.owner_key_id
+            || source.replay().structure_status() == StructureStatus::Seeding
+            || !source.replay().contains_checkpoint(
+                1,
+                Some(prepared.commit_digest()),
+                prepared.policy_hash(),
+            )
+            || source
+                .signed_policy_by_hash(prepared.policy_hash())
+                .is_none()
+        {
+            return Err(SecureLifecycleError::BootstrapProof);
+        }
+        if self.active.is_some() && self.pending.is_none() {
+            if source.keyring_state() != Some(ReplayKeyringState::Active)
+                || self.active_key(1).is_none()
+            {
+                return Err(SecureLifecycleError::BootstrapProof);
+            }
+            return Ok(self.status());
+        }
+        if source.keyring_state() != Some(ReplayKeyringState::Pending) || self.active.is_some() {
+            return Err(SecureLifecycleError::BootstrapProof);
+        }
+        let pending = self
+            .pending
+            .as_ref()
+            .ok_or(SecureLifecycleError::BootstrapProof)?;
+        if !pending.epochs().eq([1]) {
+            return Err(SecureLifecycleError::BootstrapProof);
+        }
+        let active = SecretKeyring::parse_wire(&pending.canonical_wire()?)?;
+        self.save_with(Some(&active), None)?;
+        self.active = Some(active);
+        self.pending = None;
+        Ok(self.status())
     }
 
     /// Promote only a signed grant reverified against the exact completed

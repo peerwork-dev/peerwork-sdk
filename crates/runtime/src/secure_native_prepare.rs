@@ -308,6 +308,32 @@ pub(crate) fn prepare_coordinated_public_owner_workspace(
     instance_ids: &[String; 7],
     coordination_version: u8,
 ) -> Result<PendingSecureIntent, NativePrepareError> {
+    prepare_coordinated_public_owner_workspace_with_options(
+        journal,
+        identity,
+        recipient,
+        workspace_id,
+        intent_id,
+        name,
+        created,
+        instance_ids,
+        coordination_version,
+        b"[]",
+    )
+}
+
+pub(crate) fn prepare_coordinated_public_owner_workspace_with_options(
+    journal: &mut SecureIntentJournal,
+    identity: &KernelIdentity,
+    recipient: &crate::secure_recipient_state::RecipientState,
+    workspace_id: &str,
+    intent_id: &str,
+    name: &str,
+    created: u64,
+    instance_ids: &[String; 7],
+    coordination_version: u8,
+    keep_encrypted_wire: &[u8],
+) -> Result<PendingSecureIntent, NativePrepareError> {
     let built = owner_bootstrap_objects_with_coordination(
         name,
         workspace_id,
@@ -331,7 +357,7 @@ pub(crate) fn prepare_coordinated_public_owner_workspace(
         built,
         true,
         Some((&instance_ids[6], &digest, coordination_version)),
-        b"[]",
+        keep_encrypted_wire,
     )
 }
 
