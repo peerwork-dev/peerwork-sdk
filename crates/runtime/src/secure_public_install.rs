@@ -1932,8 +1932,10 @@ mod selected_binding_service_test {
             &owner.read_workspace_json(&created.workspace_id, &token).unwrap(),
         ).unwrap();
         let instance = read["objects"].as_array().unwrap().iter()
-            .find(|row| row["kind"] == "instances" && row["id"] == instance_id)
+            .filter(|row| row["kind"] == "instances" && row["id"] == instance_id)
+            .max_by_key(|row| row["revision"].as_u64().unwrap_or(0))
             .unwrap();
+        assert_eq!(instance["revision"], 2);
         assert_eq!(instance["value"]["protocol_digest"], selected_digest);
         assert_eq!(instance["value"]["state"]["count"], 1);
         let before_action_retry = counts();
