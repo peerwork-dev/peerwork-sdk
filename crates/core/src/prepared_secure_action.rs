@@ -4,11 +4,15 @@
 
 use crate::{
     canonical::Path,
-    crypto::sha256_hex,
-    secure_replay::{compute_action_objects, project_structure_data, validate_action_state_slice},
+    crypto::{base64url, sha256_hex},
+    secure_replay::{
+        compute_action_objects_with_default_allocations, project_structure_data,
+        validate_action_state_slice,
+    },
     structure_delta::validate_projection_page,
     wire_json::{canonical_wire_value, parse_wire_json_bounded, WireValue},
 };
+use rand_core::{OsRng, RngCore};
 
 const MAX_WIRE: usize = 16 * 1024 * 1024;
 
@@ -16,6 +20,7 @@ const MAX_WIRE: usize = 16 * 1024 * 1024;
 pub enum PreparedActionError {
     Invalid,
     Unsupported,
+    Entropy,
 }
 
 /// Private-constructor exact operation candidate checked against the selected
@@ -55,8 +60,8 @@ fn same(left: &WireValue, right: &WireValue) -> Result<bool, PreparedActionError
 }
 
 /// Produce the exact ACTION operation from an action input and authenticated
-/// context. Allocation tokens belong to the action input, as in the tracked
-/// writer; the caller must generate them before this function is invoked.
+/// context. An allocation array is honored exactly; `allocations:null`
+/// generates OS-random defaults for the interpreter's produced records.
 pub fn build_prepared_action_operation(
     action_input_wire: &[u8],
     context_wire: &[u8],
@@ -66,17 +71,46 @@ pub fn build_prepared_action_operation(
     let parse = |wire: &[u8]| {
         parse_wire_json_bounded(wire, 64, MAX_WIRE).map_err(|_| PreparedActionError::Invalid)
     };
-    let input = parse(action_input_wire)?;
+    let mut input = parse(action_input_wire)?;
     let context = parse(context_wire)?;
     let policy = parse(signed_policy_wire)?;
-    let objects = compute_action_objects(&input, &context, &policy, authenticated_prior_objects)
-        .map_err(|code| {
-            if code == "UNSUPPORTED" {
-                PreparedActionError::Unsupported
-            } else {
-                PreparedActionError::Invalid
-            }
-        })?;
+    let mut candidates = Vec::new();
+    if matches!(input.get("allocations"), Some(WireValue::Null)) {
+        for _ in 0..8 {
+            let mut record = [0u8; 32];
+            let mut entity = [0u8; 32];
+            OsRng
+                .try_fill_bytes(&mut record)
+                .map_err(|_| PreparedActionError::Entropy)?;
+            OsRng
+                .try_fill_bytes(&mut entity)
+                .map_err(|_| PreparedActionError::Entropy)?;
+            candidates.push(WireValue::Object(vec![
+                (
+                    "record_id".encode_utf16().collect(),
+                    WireValue::String(base64url(&record).encode_utf16().collect()),
+                ),
+                (
+                    "entity_id".encode_utf16().collect(),
+                    WireValue::String(base64url(&entity).encode_utf16().collect()),
+                ),
+            ]));
+        }
+    }
+    let objects = compute_action_objects_with_default_allocations(
+        &mut input,
+        &context,
+        &policy,
+        authenticated_prior_objects,
+        &candidates,
+    )
+    .map_err(|code| {
+        if code == "UNSUPPORTED" {
+            PreparedActionError::Unsupported
+        } else {
+            PreparedActionError::Invalid
+        }
+    })?;
     let operation = WireValue::Object(vec![
         ("v".encode_utf16().collect(), WireValue::Number(1.0)),
         (

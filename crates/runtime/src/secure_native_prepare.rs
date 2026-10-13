@@ -748,8 +748,8 @@ pub(crate) fn prepare_new_public_action_input_from_replay(
     )
 }
 
-/// The caller supplies action values and allocation tokens, while the
-/// expected instance revision is taken from the authenticated replay.
+/// The caller supplies action values; `allocations:null` generates OS-random
+/// tokens once. Instance revision comes from the authenticated replay.
 pub(crate) fn prepare_new_public_action_values_from_replay(
     journal: &mut SecureIntentJournal,
     identity: &KernelIdentity,
@@ -770,7 +770,9 @@ pub(crate) fn prepare_new_public_action_values_from_replay(
     let body = parse(body_wire)?;
     let refs = parse(exact_refs_wire)?;
     let allocations = parse(allocations_wire)?;
-    if !matches!(refs, WireValue::Array(_)) || !matches!(allocations, WireValue::Array(_)) {
+    if !matches!(refs, WireValue::Array(_))
+        || !matches!(allocations, WireValue::Array(_) | WireValue::Null)
+    {
         return Err(NativePrepareError::Context);
     }
     let latest = source
@@ -825,7 +827,8 @@ pub(crate) fn prepare_new_public_action_values_from_replay(
 
 /// Author a PUBLIC v3 unstructured action from the current verified checkpoint
 /// and action values. Context and instance revision are derived locally;
-/// allocation tokens are supplied explicitly and saved before the first POST.
+/// allocation tokens may be supplied or generated once before the first POST
+/// and retained in the exact saved request.
 pub(crate) fn prepare_public_action_from_replay(
     journal: &mut SecureIntentJournal,
     identity: &KernelIdentity,
@@ -2758,10 +2761,7 @@ mod tests {
         let body_wire =
             serde_json::to_vec(&json!({"message":"native public authored action"})).unwrap();
         let refs_wire = b"[]";
-        let allocations_wire = serde_json::to_vec(&json!([{
-            "record_id":"r".repeat(43),"entity_id":"e".repeat(43)
-        }]))
-        .unwrap();
+        let allocations_wire = b"null";
         let mut journal = SecureIntentJournal::open(
             &root.path().join("native-public-action.state"),
             &origin,
@@ -2779,7 +2779,7 @@ mod tests {
             issued_at,
             &body_wire,
             refs_wire,
-            &allocations_wire,
+            allocations_wire,
         )
         .is_err());
         assert!(journal.pending().is_empty());
@@ -2794,7 +2794,7 @@ mod tests {
             issued_at,
             &body_wire,
             refs_wire,
-            &allocations_wire,
+            allocations_wire,
         )
         .unwrap();
         let transport = HttpTransport::new(config).unwrap();
@@ -2852,5 +2852,104 @@ mod tests {
             .unwrap();
         assert_eq!(accepted.sequence, 2);
         assert!(journal.pending().is_empty());
+
+        let profile_config = crate::secure_read_profile::SecureReadProfileConfig {
+            origin: origin.clone(),
+            state_dir: root.path().to_path_buf(),
+            identity_path: root.path().join("native-public-identity.state"),
+            workspace_id: workspace.clone(),
+            owner_actor_id: Some(identity.actor_id().to_owned()),
+            owner_key_id: Some(identity.key_id().to_owned()),
+            authority: Some(authority.to_owned()),
+            required_features: vec![],
+            allow_loopback_http: true,
+            max_replay_artifact_bytes: 64 * 1024 * 1024,
+        };
+        let reconcile_config = profile_config.clone();
+        let readback_config = profile_config.clone();
+        let retry_config = profile_config.clone();
+        let facade_instance_id = instance_id.to_owned();
+        assert!(reqwest::Client::new()
+            .post(format!("{origin}__test/drop-next-post"))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .is_success());
+        let submitted_wire = tokio::task::spawn_blocking(move || {
+            let facade = crate::secure_action_access::SecurePublicActionAccess::new(profile_config);
+            facade.submit_new_json(crate::secure_action_access::PublicActionInput {
+                action_id: "discussion.post".into(),
+                instance_id: facade_instance_id,
+                body_json: r#"{"message":"native facade authored record"}"#.into(),
+                exact_input_refs_json: None,
+                allocations_json: None,
+                command_id: Some("q".repeat(43)),
+                issued_at_ms: None,
+            })
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        let submitted: serde_json::Value = serde_json::from_str(&submitted_wire).unwrap();
+        assert_eq!(submitted["status"], "PENDING");
+        let applied_counts: serde_json::Value = serde_json::from_slice(
+            &reqwest::get(format!("{origin}__test/secure-counts"))
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(applied_counts["commits"], 3);
+        let reconciled_wire = tokio::task::spawn_blocking(move || {
+            let facade =
+                crate::secure_action_access::SecurePublicActionAccess::new(reconcile_config);
+            facade.reconcile_json("q".repeat(43).as_str())
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        let reconciled: serde_json::Value = serde_json::from_str(&reconciled_wire).unwrap();
+        assert_eq!(reconciled["status"], "ACCEPTED");
+        assert_eq!(reconciled["sequence"], 3);
+        let retried_wire = tokio::task::spawn_blocking(move || {
+            let facade = crate::secure_action_access::SecurePublicActionAccess::new(retry_config);
+            facade.retry_saved_json("q".repeat(43).as_str())
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        let retried: serde_json::Value = serde_json::from_str(&retried_wire).unwrap();
+        assert_eq!(retried["status"], "ACCEPTED");
+        let final_counts: serde_json::Value = serde_json::from_slice(
+            &reqwest::get(format!("{origin}__test/secure-counts"))
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(final_counts["commits"], 3);
+        let receipt: serde_json::Value =
+            serde_json::from_str(reconciled["receipt_canonical_json"].as_str().unwrap()).unwrap();
+        let effects = receipt["effects"].as_array().unwrap();
+        assert_eq!(effects.len(), 1);
+        let record_id = effects[0]["record_id"].as_str().unwrap();
+        let readback_wire = tokio::task::spawn_blocking(move || {
+            crate::secure_read_profile::SecureReadProfile::new(readback_config).read_latest_json()
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        let readback: serde_json::Value = serde_json::from_str(&readback_wire).unwrap();
+        assert_eq!(readback["sequence"], 3);
+        assert!(readback["objects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|object| object["kind"] == "records" && object["id"] == record_id));
     }
 }

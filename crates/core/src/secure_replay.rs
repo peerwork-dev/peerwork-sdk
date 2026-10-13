@@ -2442,6 +2442,26 @@ pub(crate) fn compute_action_objects(
     policy: &WireValue,
     prior: &[WireValue],
 ) -> Result<WireValue, &'static str> {
+    compute_action_objects_inner(&mut input.clone(), context, policy, prior, None)
+}
+
+pub(crate) fn compute_action_objects_with_default_allocations(
+    input: &mut WireValue,
+    context: &WireValue,
+    policy: &WireValue,
+    prior: &[WireValue],
+    candidates: &[WireValue],
+) -> Result<WireValue, &'static str> {
+    compute_action_objects_inner(input, context, policy, prior, Some(candidates))
+}
+
+fn compute_action_objects_inner(
+    input: &mut WireValue,
+    context: &WireValue,
+    policy: &WireValue,
+    prior: &[WireValue],
+    default_allocations: Option<&[WireValue]>,
+) -> Result<WireValue, &'static str> {
     if !exact_fields(
         input,
         &[
@@ -2469,10 +2489,6 @@ pub(crate) fn compute_action_objects(
         return Err("ACTION_CONTEXT_MISMATCH");
     }
     let refs_wire = input.get("exact_input_refs").ok_or("REFERENCE_INVALID")?;
-    let allocations = match input.get("allocations") {
-        Some(WireValue::Array(values)) => values,
-        _ => return Err("ACTION_CONTEXT_MISMATCH"),
-    };
     let instance = prior
         .iter()
         .filter(|object| {
@@ -2647,6 +2663,23 @@ pub(crate) fn compute_action_objects(
         None,
     )
     .map_err(|_| "INVALID_PAYLOAD")?;
+    if matches!(input.get("allocations"), Some(WireValue::Null)) {
+        let candidates = default_allocations.ok_or("ALLOCATION_INVALID")?;
+        let count = interpreted.records.len();
+        if count > candidates.len() {
+            return Err("ALLOCATION_INVALID");
+        }
+        replace_field(
+            input,
+            "allocations",
+            WireValue::Array(candidates[..count].to_vec()),
+        )
+        .map_err(|_| "ALLOCATION_INVALID")?;
+    }
+    let allocations = match input.get("allocations") {
+        Some(WireValue::Array(values)) => values,
+        _ => return Err("ACTION_CONTEXT_MISMATCH"),
+    };
     let crate::secure_action_allocations::AllocationPlan {
         assigned,
         record_slots,

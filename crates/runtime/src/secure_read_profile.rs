@@ -8,6 +8,7 @@ use crate::{
         SecureReadAccess, SecureReadAccessError, SecureReadConfig, VerifiedReadFloor,
     },
     secure_state::SecureStateStore,
+    secure_verified_read::TransportReplayedJournal,
 };
 use peerwork_core::crypto::sha256_hex;
 use serde::{Deserialize, Serialize};
@@ -213,6 +214,73 @@ impl SecureReadProfile {
             result = Some(json);
         }
         result.ok_or(SecureReadAccessError::Profile)
+    }
+
+    /// Refresh and prove the latest protected generation, then keep the
+    /// profile state lock and exact replay alive through a private consumer.
+    pub(crate) fn with_latest_replay<T, E, F>(
+        &self,
+        cancel: &CancellationToken,
+        consume: F,
+    ) -> Result<T, E>
+    where
+        E: From<SecureReadAccessError>,
+        F: FnOnce(&TransportReplayedJournal) -> Result<T, E>,
+    {
+        self.read_latest_json_with_cancel(cancel).map_err(E::from)?;
+        if cancel.is_cancelled() {
+            return Err(E::from(SecureReadAccessError::Cancelled));
+        }
+        let store = SecureStateStore::open(&self.config.state_dir.join("read.profile"))
+            .map_err(|_| E::from(SecureReadAccessError::Profile))?;
+        let wire = store
+            .read_exact()
+            .map_err(|_| E::from(SecureReadAccessError::Profile))?
+            .ok_or_else(|| E::from(SecureReadAccessError::Profile))?;
+        if wire.len() > 16 * 1024 {
+            return Err(E::from(SecureReadAccessError::Profile));
+        }
+        let saved: ProfileDocument =
+            serde_json::from_slice(&wire).map_err(|_| E::from(SecureReadAccessError::Profile))?;
+        if !saved.valid()
+            || saved.origin != self.config.origin
+            || saved.identity_path != self.config.identity_path
+            || saved.workspace_id != self.config.workspace_id
+            || saved.required_features != self.config.required_features
+            || saved.allow_loopback_http != self.config.allow_loopback_http
+            || self
+                .config
+                .owner_actor_id
+                .as_deref()
+                .is_some_and(|value| value != saved.owner_actor_id)
+            || self
+                .config
+                .owner_key_id
+                .as_deref()
+                .is_some_and(|value| value != saved.owner_key_id)
+            || self
+                .config
+                .authority
+                .as_deref()
+                .is_some_and(|value| value != saved.authority)
+        {
+            return Err(E::from(SecureReadAccessError::Profile));
+        }
+        let slot = saved
+            .current
+            .ok_or_else(|| E::from(SecureReadAccessError::Profile))?;
+        let floor = saved
+            .floor
+            .as_ref()
+            .ok_or_else(|| E::from(SecureReadAccessError::Profile))?;
+        let access = self.access(&saved, slot);
+        let (replayed, checked) = access
+            .replay_checked_generation(cancel, Some(floor), false)
+            .map_err(E::from)?;
+        if &checked != floor {
+            return Err(E::from(SecureReadAccessError::Profile));
+        }
+        consume(&replayed)
     }
 
     fn access(&self, profile: &ProfileDocument, slot: u8) -> SecureReadAccess {

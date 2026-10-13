@@ -8,7 +8,8 @@ use crate::{
     secure_journal_read::{JournalReadError, SecureJournalRead},
     secure_lifecycle::SecureLifecycle,
     secure_verified_read::{
-        replay_authenticated_pages_with_budget, SecureJournalReadBudget, VerifiedReadError,
+        replay_authenticated_pages_with_budget, SecureJournalReadBudget, TransportReplayedJournal,
+        VerifiedReadError,
     },
     transport::{TransportConfig, TransportError},
 };
@@ -187,6 +188,47 @@ impl SecureReadAccess {
         floor: Option<&VerifiedReadFloor>,
         reset_inactive: bool,
     ) -> Result<(String, VerifiedReadFloor), SecureReadAccessError> {
+        let (replayed, new_floor) =
+            self.replay_checked_generation(cancel, floor, reset_inactive)?;
+        let verified = replayed.verified_read().map_err(map_verify_error)?;
+        let objects = canonical_array(verified.objects())?;
+        let operations = canonical_array(verified.operations())?;
+        let recoveries = canonical_array(verified.recoveries())?;
+        let structure_status = match verified.structure_status() {
+            StructureStatus::Unstructured => "UNSTRUCTURED",
+            StructureStatus::Active => "ACTIVE",
+            StructureStatus::Seeding => return Err(SecureReadAccessError::NotActive),
+        };
+        let metadata = json!({
+            "origin": replayed.origin(),
+            "workspace_id": verified.workspace_id(),
+            "sequence": verified.sequence(),
+            "head": verified.head(),
+            "policy_hash": verified.policy_hash(),
+            "structure_status": structure_status,
+        });
+        let mut result =
+            serde_json::to_string(&metadata).map_err(|_| SecureReadAccessError::ResultEncoding)?;
+        if cancel.is_cancelled() {
+            return Err(SecureReadAccessError::Cancelled);
+        }
+        assert_eq!(result.pop(), Some('}'));
+        result.push_str(",\"objects\":");
+        result.push_str(&objects);
+        result.push_str(",\"operations\":");
+        result.push_str(&operations);
+        result.push_str(",\"recoveries\":");
+        result.push_str(&recoveries);
+        result.push('}');
+        Ok((result, new_floor))
+    }
+
+    pub(crate) fn replay_checked_generation(
+        &self,
+        cancel: &CancellationToken,
+        floor: Option<&VerifiedReadFloor>,
+        reset_inactive: bool,
+    ) -> Result<(TransportReplayedJournal, VerifiedReadFloor), SecureReadAccessError> {
         if cancel.is_cancelled() {
             return Err(SecureReadAccessError::Cancelled);
         }
@@ -273,36 +315,7 @@ impl SecureReadAccess {
             head: verified.head().map(str::to_owned),
             policy_hash: verified.policy_hash().to_owned(),
         };
-        let objects = canonical_array(verified.objects())?;
-        let operations = canonical_array(verified.operations())?;
-        let recoveries = canonical_array(verified.recoveries())?;
-        let structure_status = match verified.structure_status() {
-            StructureStatus::Unstructured => "UNSTRUCTURED",
-            StructureStatus::Active => "ACTIVE",
-            StructureStatus::Seeding => return Err(SecureReadAccessError::NotActive),
-        };
-        let metadata = json!({
-            "origin": replayed.origin(),
-            "workspace_id": verified.workspace_id(),
-            "sequence": verified.sequence(),
-            "head": verified.head(),
-            "policy_hash": verified.policy_hash(),
-            "structure_status": structure_status,
-        });
-        let mut result =
-            serde_json::to_string(&metadata).map_err(|_| SecureReadAccessError::ResultEncoding)?;
-        if cancel.is_cancelled() {
-            return Err(SecureReadAccessError::Cancelled);
-        }
-        assert_eq!(result.pop(), Some('}'));
-        result.push_str(",\"objects\":");
-        result.push_str(&objects);
-        result.push_str(",\"operations\":");
-        result.push_str(&operations);
-        result.push_str(",\"recoveries\":");
-        result.push_str(&recoveries);
-        result.push('}');
-        Ok((result, new_floor))
+        Ok((replayed, new_floor))
     }
 }
 

@@ -236,6 +236,13 @@ const proxy = createServer(async (request, response) => {
       response.end(JSON.stringify({enabled:true}));
       return;
     }
+    if (request.url === '/__test/drop-next-post' && request.method === 'POST') {
+      if (!publicReadFixture || dropFirstPost) throw new Error('public dropped-response fixture unavailable');
+      dropFirstPost = true;
+      response.writeHead(200, {'content-type':'application/json'});
+      response.end(JSON.stringify({enabled:true}));
+      return;
+    }
     if (request.url === '/__test/journal-delay-status' && request.method === 'GET') {
       response.writeHead(200, {'content-type':'application/json'});
       response.end(JSON.stringify({started:journalDelayStarted}));
