@@ -422,8 +422,14 @@ impl SecureHistoricalOwnerAttach {
         // The caller holds the native root recovery lock through PREPARED.
         // A previous crash may leave a protected, inert scratch directory.
         clear_stale_stage_preflights(&self.config.state_dir)?;
-        let scratch_dir = tempfile::Builder::new()
-            .prefix(".owner-stage-preflight-")
+        let mut builder = tempfile::Builder::new();
+        builder.prefix(".owner-stage-preflight-");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            builder.permissions(std::fs::Permissions::from_mode(0o700));
+        }
+        let scratch_dir = builder
             .tempdir_in(&self.config.state_dir)
             .map_err(|_| HistoricalOwnerAttachError::Local)?;
         let scratch = scratch_dir.path().to_owned();
