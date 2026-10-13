@@ -7111,6 +7111,76 @@ mod tests {
     }
 
     #[test]
+    fn actual_service_creates_pending_multipart_later_history_source_snapshots() {
+        let _fault_guard = ATTACH_FAULT_TEST_LOCK.lock().unwrap();
+        let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else { return; };
+        let node = std::env::var("PEERWORK_NODE_BIN").unwrap_or_else(|_| "node".into());
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)] {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let bridge = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/reference-kernel-server.mjs");
+        let child = Command::new(&node).arg(bridge)
+            .env("PEERWORK_REFERENCE_ROOT", &reference_root)
+            .env("PEERWORK_TEST_STATE", root.path())
+            .env("PEERWORK_TEST_FIRST_POST_MODE", "normal")
+            .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        struct StopLaterHistory(Child);
+        impl Drop for StopLaterHistory {
+            fn drop(&mut self) { let _ = self.0.kill(); let _ = self.0.wait(); }
+        }
+        let mut child = StopLaterHistory(child);
+        let mut line = String::new();
+        BufReader::new(child.0.stdout.take().unwrap()).read_line(&mut line).unwrap();
+        assert!(!line.is_empty(), "pinned service exited before readiness");
+        let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let origin = ready["origin"].as_str().unwrap();
+        let helper = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/legacy-owner-later-stage.mjs");
+        let oracle = rusqlite::Connection::open_with_flags(
+            root.path().join("control.sqlite"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        ).unwrap();
+        for (mode, complete, raised) in [
+            ("complete-action", true, false),
+            ("complete-ceiling2", true, true),
+            ("incomplete-stale", false, false),
+        ] {
+            let output = Command::new(&node).arg(&helper).arg(origin)
+                .arg(root.path().join(mode)).arg(&reference_root).arg(mode)
+                .output().unwrap();
+            assert!(output.status.success(), "{mode}: {}",
+                String::from_utf8_lossy(&output.stderr));
+            let source: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(source["pending_count"], 1, "{mode}");
+            assert_eq!(source["stage_marker"]["part_index"], 1, "{mode}");
+            assert!(source["stage_part_count"].as_u64().unwrap() >= 3, "{mode}");
+            assert_eq!(source["selected_sequence"], 3, "{mode}");
+            assert_eq!(source["latest_sequence"], if complete {
+                source["stage_marker"]["source"]["sequence"].as_u64().unwrap()
+                    + source["stage_part_count"].as_u64().unwrap() + 1
+            } else { 4 }, "{mode}");
+            assert_eq!(source["completed_sequence"].is_null(), !complete, "{mode}");
+            assert_eq!(source["latest_policy_hash"] == source["selected_policy_hash"],
+                !raised, "{mode}");
+            assert_eq!(source["latest_ceiling"], if raised { 2 } else { 1 }, "{mode}");
+            let workspace = source["workspace_id"].as_str().unwrap();
+            let count: i64 = oracle.query_row(
+                "SELECT count(*) FROM secure_commits WHERE workspace_id=?1", [workspace],
+                |row| row.get(0),
+            ).unwrap();
+            assert_eq!(count as u64, source["latest_sequence"].as_u64().unwrap(), "{mode}");
+            let state: serde_json::Value = serde_json::from_slice(&std::fs::read(
+                source["state_path"].as_str().unwrap(),
+            ).unwrap()).unwrap();
+            let command = source["pending_command_id"].as_str().unwrap();
+            assert!(state["pending"].get(command).is_some(), "{mode}: selected packet retained");
+            assert!(source["state_path"].as_str().unwrap().contains("selected-snapshot"));
+        }
+    }
+
+    #[test]
     fn actual_service_imports_and_recovers_pending_multipart_stage_with_source_removed() {
         let _fault_guard = ATTACH_FAULT_TEST_LOCK.lock().unwrap();
         let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else { return; };
