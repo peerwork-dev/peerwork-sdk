@@ -145,6 +145,7 @@ let bootstrapFixture;
 let publicReadFixture;
 let publicAdmissionFixture;
 let privateGrantFixture;
+let privateNativeAdmissionFixture;
 let publicReadInstance;
 let publicReadAppended = false;
 let publicReadFirstPage;
@@ -253,6 +254,28 @@ if (process.env.PEERWORK_TEST_PRIVATE_GRANT === '1' || process.env.PEERWORK_TEST
       instance_id:wiki.id};
   } finally { owner.close(); recipient.close(); }
 }
+if (process.env.PEERWORK_TEST_PRIVATE_NATIVE_ADMISSION === '1') {
+  // Only the owner is provisioned by the tracked TypeScript fixture. The
+  // recipient must create and publish its own identity, sign ACCEPT, and
+  // receive the actual signed grant through the native installed interface.
+  const {generateKeyPairSync} = await import('node:crypto');
+  const {SecureAgentClient} = await import(pathToFileURL(join(root, 'dist-workspace/src/workspace-secure-agent.js')).href);
+  const ownerPrivate = generateKeyPairSync('ed25519').privateKey;
+  writeFileSync(join(state,'private-native-admission-owner.pem'),ownerPrivate.export({format:'pem',type:'pkcs8'}),{mode:0o600,flag:'wx'});
+  const owner = await SecureAgentClient.open({baseUrl:realOrigin,privateKey:ownerPrivate,
+    statePath:join(state,'private-native-admission-owner.json'),
+    intentDbPath:join(state,'private-native-admission-owner-intents.sqlite')});
+  try {
+    const created = await owner.create('Native recipient admission fixture','PRIVATE');
+    const journal = await owner.journal(created.workspaceId);
+    if (journal.policy.payload.visibility !== 'PRIVATE' || journal.checkpoint.sequence !== 1)
+      throw new Error('private native admission owner bootstrap did not verify');
+    privateNativeAdmissionFixture = {workspace_id:created.workspaceId,
+      owner_actor_id:owner.identity.actorId,owner_key_id:owner.identity.keyId,
+      owner_authority:owner.transport.authority,sequence:journal.checkpoint.sequence,
+      head:journal.checkpoint.head};
+  } finally { owner.close(); }
+}
 if (process.env.PEERWORK_TEST_BOOTSTRAP === '1') {
   const {generateKeyPairSync} = await import('node:crypto');
   const {SecureAgentClient} = await import(pathToFileURL(join(root, 'dist-workspace/src/workspace-secure-agent.js')).href);
@@ -292,6 +315,56 @@ let journalDelayStarted = false;
 let journalGetCount = 0;
 const proxy = createServer(async (request, response) => {
   try {
+    if (request.url?.startsWith('/__test/private-owner-') && request.method === 'POST') {
+      if (!privateNativeAdmissionFixture) throw new Error('private native admission fixture unavailable');
+      const chunks = [];
+      let bodyBytes = 0;
+      for await (const chunk of request) {
+        bodyBytes += chunk.length;
+        if (bodyBytes > 65536) throw new Error('private owner test request too large');
+        chunks.push(chunk);
+      }
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+      const {createPrivateKey} = await import('node:crypto');
+      const {SecureAgentClient} = await import(pathToFileURL(join(root, 'dist-workspace/src/workspace-secure-agent.js')).href);
+      const privateKey = createPrivateKey(readFileSync(join(state,'private-native-admission-owner.pem')));
+      const owner = await SecureAgentClient.open({baseUrl:realOrigin,privateKey,
+        statePath:join(state,'private-native-admission-owner.json'),
+        intentDbPath:join(state,'private-native-admission-owner-intents.sqlite')});
+      try {
+        let result;
+        if (request.url === '/__test/private-owner-invite') {
+          if (typeof input.certificate_json !== 'string') throw new Error('native public certificate is required');
+          const certificate = JSON.parse(input.certificate_json);
+          const scopes = input.scopes_json === undefined ? [] : JSON.parse(input.scopes_json);
+          if (!Array.isArray(scopes)) throw new Error('invitation scopes must be an array');
+          const offer = await owner.invite(privateNativeAdmissionFixture.workspace_id,certificate,scopes,
+            'Native recipient private invitation');
+          result = {invite_id:offer.payload.invite_id,workspace_id:privateNativeAdmissionFixture.workspace_id};
+        } else if (request.url === '/__test/private-owner-deliver') {
+          if (typeof input.invite_id !== 'string') throw new Error('invite ID is required');
+          const grant = await owner.deliverAdmission(input.invite_id);
+          result = {grant_id:grant.payload.grant_id,invite_id:input.invite_id};
+        } else if (request.url === '/__test/private-owner-rotate') {
+          const rotated = await owner.rotate(privateNativeAdmissionFixture.workspace_id);
+          const wiki = rotated.objects.find(object => object.kind === 'instances' && object.value?.origin_entrypoint === 'wiki');
+          if (!wiki) throw new Error('private owner rotation fixture lacks wiki instance');
+          const journal = await owner.action(privateNativeAdmissionFixture.workspace_id,wiki.id,'wiki.create',
+            {title:'Native private admission readback',body:'Encrypted record after owner epoch advance'});
+          const record = journal.objects.find(object => object.kind === 'records' &&
+            object.value?.payload?.title === 'Native private admission readback');
+          if (!record || journal.policy.payload.visibility !== 'PRIVATE' ||
+              journal.policy.payload.epoch !== rotated.policy.payload.epoch)
+            throw new Error('private owner rotation did not produce encrypted record');
+          result = {workspace_id:privateNativeAdmissionFixture.workspace_id,
+            sequence:journal.checkpoint.sequence,epoch:journal.policy.payload.epoch,
+            record_id:record.id};
+        } else throw new Error('unknown private owner test endpoint');
+        response.writeHead(200, {'content-type':'application/json'});
+        response.end(JSON.stringify(result));
+      } finally { owner.close(); }
+      return;
+    }
     if (request.url === '/__test/append-public' && request.method === 'POST') {
       if (!publicReadFixture || publicReadAppended) throw new Error('public append fixture unavailable');
       const {createPrivateKey} = await import('node:crypto');
@@ -373,7 +446,8 @@ const proxy = createServer(async (request, response) => {
       return;
     }
     if (request.url === '/__test/tamper-next-private-grant' && request.method === 'POST') {
-      if (!privateGrantFixture || tamperNextPrivateGrant) throw new Error('private grant tamper fixture unavailable');
+      if ((!privateGrantFixture && !privateNativeAdmissionFixture) || tamperNextPrivateGrant)
+        throw new Error('private grant tamper fixture unavailable');
       tamperNextPrivateGrant = true;
       response.writeHead(200, {'content-type':'application/json'});
       response.end(JSON.stringify({enabled:true}));
@@ -567,6 +641,7 @@ process.stdout.write(JSON.stringify({origin: `http://127.0.0.1:${proxy.address()
   ...(publicReadFixture ? {public_read:publicReadFixture} : {}),
   ...(publicAdmissionFixture ? {public_admission:publicAdmissionFixture} : {}),
   ...(privateGrantFixture ? {private_grant:privateGrantFixture} : {}),
+  ...(privateNativeAdmissionFixture ? {private_native_admission:privateNativeAdmissionFixture} : {}),
   ...(bootstrapFixture ? {bootstrap:bootstrapFixture} : {})}) + '\n');
 const shutdown = () => {
   proxy.closeAllConnections();
