@@ -403,6 +403,18 @@ exports.openSecureOwnerWorkspaces = options => {
     if (input.recoverPendingAction !== undefined && typeof input.recoverPendingAction !== 'boolean') {
       throw new TypeError('recoverPendingAction must be a boolean');
     }
+    const kernelIds = input.kernelPendingCommandIds ?? [];
+    if (!Array.isArray(kernelIds) || kernelIds.some(id => typeof id !== 'string' || !id)) {
+      throw new TypeError('kernelPendingCommandIds must be an array of nonempty strings');
+    }
+    if (kernelIds.length &&
+        (typeof input.expectedKernelIntentDbDigest !== 'string' || !input.expectedKernelIntentDbDigest)) {
+      throw new TypeError('selected kernel commands require the inspected intent DB digest');
+    }
+    if (input.expectedKernelIntentDbDigest !== undefined && input.expectedKernelIntentDbDigest !== null &&
+        typeof input.expectedKernelIntentDbDigest !== 'string') {
+      throw new TypeError('expectedKernelIntentDbDigest must be a string');
+    }
     return {
       workspace_id: input.workspaceId,
       protected_ts_state_path: input.protectedTsStatePath,
@@ -411,6 +423,8 @@ exports.openSecureOwnerWorkspaces = options => {
       expected_owner_actor_id: input.expectedOwnerActorId,
       expected_owner_key_id: input.expectedOwnerKeyId,
       recover_pending_action: input.recoverPendingAction ?? false,
+      kernel_pending_command_ids: kernelIds,
+      expected_kernel_intent_db_digest: input.expectedKernelIntentDbDigest ?? null,
     };
   };
   const formatTransitionInput = input => {
@@ -576,6 +590,9 @@ exports.openSecureOwnerWorkspaces = options => {
     resume: (commandId, { signal } = {}) => invoke('resume', undefined, commandId, undefined, signal),
     operations: ({ signal } = {}) => invoke('operations', undefined, undefined, undefined, signal),
     attach: (input, { signal } = {}) => invoke('attach', attachmentInput(input), undefined, undefined, signal),
+    inspectKernelPending: (input, { signal } = {}) => invoke('kernel_inspect', attachmentInput(input), undefined, undefined, signal),
+    kernelCommandStatus: (attachId, { signal } = {}) => invoke('kernel_status', undefined, attachId, undefined, signal),
+    recoverKernelCommand: (attachId, commandId, { signal } = {}) => invoke('kernel_recover', undefined, commandId, attachId, signal),
     resumeAttachment: (attachId, { signal } = {}) => invoke('resume_attachment', undefined, attachId, undefined, signal),
     attachments: ({ signal } = {}) => invoke('attachments', undefined, undefined, undefined, signal),
     submitFormatTransition: (input, { signal } = {}) => invoke('format_submit', formatTransitionInput(input), undefined, undefined, signal),

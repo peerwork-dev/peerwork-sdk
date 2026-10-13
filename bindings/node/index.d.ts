@@ -142,6 +142,10 @@ export interface HistoricalOwnerAttachmentInput {
   expectedOwnerKeyId: string;
   /** Opt in to exact recovery of one saved legacy Owner ACTION; stop the old client first. */
   recoverPendingAction?: boolean;
+  /** Exact inspected workspace command IDs to retain without submitting. */
+  kernelPendingCommandIds?: string[];
+  /** Required for selected IDs; obtain from inspectKernelPending. */
+  expectedKernelIntentDbDigest?: string;
 }
 export interface HistoricalOwnerAttachmentResult {
   attach_id: string;
@@ -152,6 +156,21 @@ export interface HistoricalOwnerAttachmentResult {
   owner_key_id: string;
   sequence: number | null;
   head: string | null;
+  selected_kernel_count: number;
+  retained_other_kernel_count: number;
+}
+export interface HistoricalKernelCommandStatus {
+  command_id: string;
+  intent_digest: string;
+  expires_at_ms: number;
+  status: 'PENDING' | 'RETAINED_UNRESOLVED' | 'EXPIRED_UNRESOLVED' | 'ACCEPTED';
+  last_http_status: number | null;
+}
+export interface HistoricalKernelPendingInventory {
+  intent_db_digest: string;
+  commands: HistoricalKernelCommandStatus[];
+  retained_other_pending_count: number;
+  retained_nonworkspace_pending_count: number;
 }
 export interface OwnerFormatTransitionInput {
   workspaceId: string;
@@ -175,6 +194,12 @@ export interface SecureOwnerWorkspaceSession {
   operations(options?: {signal?: AbortSignal}): Promise<SecureOwnerWorkspaceResult[]>;
   /** Attach a protected existing Owner after exact local and remote proofs. */
   attach(input: HistoricalOwnerAttachmentInput, options?: {signal?: AbortSignal}): Promise<HistoricalOwnerAttachmentResult>;
+  /** Read-only verified source inventory; no attach row or command POST. */
+  inspectKernelPending(input: HistoricalOwnerAttachmentInput, options?: {signal?: AbortSignal}): Promise<HistoricalKernelPendingInventory>;
+  /** Protected local status only. */
+  kernelCommandStatus(attachId: string, options?: {signal?: AbortSignal}): Promise<HistoricalKernelCommandStatus[]>;
+  /** Explicit retry of one retained original signed JWS. */
+  recoverKernelCommand(attachId: string, commandId: string, options?: {signal?: AbortSignal}): Promise<HistoricalKernelCommandStatus>;
   resumeAttachment(attachId: string, options?: {signal?: AbortSignal}): Promise<HistoricalOwnerAttachmentResult>;
   /** Protected local PREPARED/ATTACHED history; PREPARED is not accepted. */
   attachments(options?: {signal?: AbortSignal}): Promise<HistoricalOwnerAttachmentResult[]>;

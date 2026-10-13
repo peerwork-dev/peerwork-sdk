@@ -236,6 +236,9 @@ fn main() -> ExitCode {
                     || verb == "owner-attach"
                     || verb == "owner-attach-resume"
                     || verb == "owner-attachments"
+                    || verb == "owner-kernel-inspect"
+                    || verb == "owner-kernel-status"
+                    || verb == "owner-kernel-recover"
                     || verb == "owner-format-submit"
                     || verb == "owner-format-resume"
                     || verb == "owner-format-history"
@@ -308,7 +311,7 @@ fn main() -> ExitCode {
             cli_result(public_catalog_command(verb, rest))
         }
         _ => {
-            eprintln!("{{\"code\":\"USAGE\",\"message\":\"peerwork version|capabilities|identity create PATH|identity info PATH|identity import-legacy-pem PATH PROTECTED_PEM_FILE|identity import-seed-file PATH PROTECTED_SEED_FILE|kernel open|prepare|pending|status|submit ORIGIN JOURNAL IDENTITY [COMMAND_FILE|COMMAND_ID] [--allow-loopback-http] [--authority=HEX] [--chunk-file=PATH|--chunk-stdin for prepare]; kernel migrate ORIGIN JOURNAL IDENTITY SOURCE BACKUP --trusted-signer=KEY_ID [--trusted-signer=KEY_ID ...]; secure read|private-read --origin=URL --state-dir=DIR --identity=PATH --workspace=ID [--owner-actor=ID --owner-key=ID] [--authority=HEX]; secure snapshot ORIGIN KERNEL_JOURNAL READ_STATE LIFECYCLE IDENTITY WORKSPACE AUTHORITY OWNER_ACTOR OWNER_KEY [--allow-loopback-http] [--max-replay-artifact-bytes=N]; secure action-submit|action-status|action-retry CONFIG_JSON_FILE ACTION_JSON_FILE|COMMAND_ID; secure action-pending CONFIG_JSON_FILE; secure install-begin CONFIG_JSON_FILE INPUT_JSON_FILE | install-continue CONFIG_JSON_FILE BEGIN_COMMAND_ID | install-pending CONFIG_JSON_FILE; secure owner-prepare|owner-create CONFIG_JSON_FILE INPUT_JSON_FILE | owner-resume CONFIG_JSON_FILE COMMAND_ID | owner-operations CONFIG_JSON_FILE | owner-read CONFIG_JSON_FILE WORKSPACE_ID | owner-attach CONFIG_JSON_FILE INPUT_JSON_FILE | owner-attach-resume CONFIG_JSON_FILE ATTACH_ID | owner-attachments CONFIG_JSON_FILE | owner-format-submit CONFIG_JSON_FILE INPUT_JSON_FILE | owner-format-resume CONFIG_JSON_FILE WORKSPACE_ID COMMAND_ID | owner-format-history CONFIG_JSON_FILE WORKSPACE_ID | owner-action-submit|owner-action-status|owner-action-retry|owner-action-pending|owner-private-action-submit|owner-private-action-status|owner-private-action-retry|owner-private-action-pending|owner-install-begin|owner-install-continue|owner-install-pending|owner-private-stage-submit|owner-private-stage-continue|owner-private-stage-list|owner-private-install-begin|owner-private-install-begin-direct|owner-private-install-continue|owner-private-install-list|owner-admit-offer|owner-admit-retry-offer|owner-admit-pending-offers|owner-admit-deliver|owner-admit-retry-delivery|owner-admit-pending-deliveries|owner-private-admit-offer|owner-private-admit-retry-offer|owner-private-admit-pending-offers|owner-private-admit-deliver|owner-private-admit-retry-delivery|owner-private-admit-pending-deliveries CONFIG_JSON_FILE WORKSPACE_ID [INPUT_JSON_FILE|COMMAND_ID]; secure catalog-search CONFIG_JSON_FILE QUERY [AFTER] [LIMIT] | catalog-inspect CONFIG_JSON_FILE LOWERCASE_DIGEST; secure recipient-create|recipient-publish|recipient-pending|recipient-certificate|recipient-update|recipient-retry-update|recipient-pending-updates --origin=URL --state-dir=DIR [--mode=ROTATE|RENEW --expected-certificate-hash=HEX --update-id=ID] [--allow-loopback-http]; secure directory-lookup --origin=URL --state-dir=DIR --actor=ACTOR --key=KEY [--identity=PATH] [--allow-loopback-http]\"}}");
+            eprintln!("{{\"code\":\"USAGE\",\"message\":\"peerwork version|capabilities|identity create PATH|identity info PATH|identity import-legacy-pem PATH PROTECTED_PEM_FILE|identity import-seed-file PATH PROTECTED_SEED_FILE|kernel open|prepare|pending|status|submit ORIGIN JOURNAL IDENTITY [COMMAND_FILE|COMMAND_ID] [--allow-loopback-http] [--authority=HEX] [--chunk-file=PATH|--chunk-stdin for prepare]; kernel migrate ORIGIN JOURNAL IDENTITY SOURCE BACKUP --trusted-signer=KEY_ID [--trusted-signer=KEY_ID ...]; secure read|private-read --origin=URL --state-dir=DIR --identity=PATH --workspace=ID [--owner-actor=ID --owner-key=ID] [--authority=HEX]; secure snapshot ORIGIN KERNEL_JOURNAL READ_STATE LIFECYCLE IDENTITY WORKSPACE AUTHORITY OWNER_ACTOR OWNER_KEY [--allow-loopback-http] [--max-replay-artifact-bytes=N]; secure action-submit|action-status|action-retry CONFIG_JSON_FILE ACTION_JSON_FILE|COMMAND_ID; secure action-pending CONFIG_JSON_FILE; secure install-begin CONFIG_JSON_FILE INPUT_JSON_FILE | install-continue CONFIG_JSON_FILE BEGIN_COMMAND_ID | install-pending CONFIG_JSON_FILE; secure owner-prepare|owner-create CONFIG_JSON_FILE INPUT_JSON_FILE | owner-resume CONFIG_JSON_FILE COMMAND_ID | owner-operations CONFIG_JSON_FILE | owner-read CONFIG_JSON_FILE WORKSPACE_ID | owner-attach CONFIG_JSON_FILE INPUT_JSON_FILE | owner-attach-resume CONFIG_JSON_FILE ATTACH_ID | owner-attachments CONFIG_JSON_FILE | owner-kernel-inspect CONFIG_JSON_FILE INPUT_JSON_FILE | owner-kernel-status CONFIG_JSON_FILE ATTACH_ID | owner-kernel-recover CONFIG_JSON_FILE ATTACH_ID COMMAND_ID | owner-format-submit CONFIG_JSON_FILE INPUT_JSON_FILE | owner-format-resume CONFIG_JSON_FILE WORKSPACE_ID COMMAND_ID | owner-format-history CONFIG_JSON_FILE WORKSPACE_ID | owner-action-submit|owner-action-status|owner-action-retry|owner-action-pending|owner-private-action-submit|owner-private-action-status|owner-private-action-retry|owner-private-action-pending|owner-install-begin|owner-install-continue|owner-install-pending|owner-private-stage-submit|owner-private-stage-continue|owner-private-stage-list|owner-private-install-begin|owner-private-install-begin-direct|owner-private-install-continue|owner-private-install-list|owner-admit-offer|owner-admit-retry-offer|owner-admit-pending-offers|owner-admit-deliver|owner-admit-retry-delivery|owner-admit-pending-deliveries|owner-private-admit-offer|owner-private-admit-retry-offer|owner-private-admit-pending-offers|owner-private-admit-deliver|owner-private-admit-retry-delivery|owner-private-admit-pending-deliveries CONFIG_JSON_FILE WORKSPACE_ID [INPUT_JSON_FILE|COMMAND_ID]; secure catalog-search CONFIG_JSON_FILE QUERY [AFTER] [LIMIT] | catalog-inspect CONFIG_JSON_FILE LOWERCASE_DIGEST; secure recipient-create|recipient-publish|recipient-pending|recipient-certificate|recipient-update|recipient-retry-update|recipient-pending-updates --origin=URL --state-dir=DIR [--mode=ROTATE|RENEW --expected-certificate-hash=HEX --update-id=ID] [--allow-loopback-http]; secure directory-lookup --origin=URL --state-dir=DIR --actor=ACTOR --key=KEY [--identity=PATH] [--allow-loopback-http]\"}}");
             ExitCode::FAILURE
         }
     }
@@ -320,11 +323,11 @@ fn secure_owner_command(verb: &str, args: &[String]) -> Result<String, (&'static
     }
     let expected_args = match verb {
         "owner-operations" | "owner-attachments" => 1,
-        "owner-format-resume" => 3,
+        "owner-format-resume" | "owner-kernel-recover" => 3,
         _ => 2,
     };
     if args.len() != expected_args {
-        return Err(("USAGE", "secure owner-prepare|owner-create CONFIG_JSON_FILE INPUT_JSON_FILE | owner-resume CONFIG_JSON_FILE COMMAND_ID | owner-operations CONFIG_JSON_FILE | owner-read CONFIG_JSON_FILE WORKSPACE_ID | owner-attach CONFIG_JSON_FILE INPUT_JSON_FILE | owner-attach-resume CONFIG_JSON_FILE ATTACH_ID | owner-attachments CONFIG_JSON_FILE | owner-format-submit CONFIG_JSON_FILE INPUT_JSON_FILE | owner-format-resume CONFIG_JSON_FILE WORKSPACE_ID COMMAND_ID | owner-format-history CONFIG_JSON_FILE WORKSPACE_ID".to_owned()));
+        return Err(("USAGE", "secure owner-prepare|owner-create CONFIG_JSON_FILE INPUT_JSON_FILE | owner-resume CONFIG_JSON_FILE COMMAND_ID | owner-operations CONFIG_JSON_FILE | owner-read CONFIG_JSON_FILE WORKSPACE_ID | owner-attach CONFIG_JSON_FILE INPUT_JSON_FILE | owner-attach-resume CONFIG_JSON_FILE ATTACH_ID | owner-attachments CONFIG_JSON_FILE | owner-kernel-inspect CONFIG_JSON_FILE INPUT_JSON_FILE | owner-kernel-status CONFIG_JSON_FILE ATTACH_ID | owner-kernel-recover CONFIG_JSON_FILE ATTACH_ID COMMAND_ID | owner-format-submit CONFIG_JSON_FILE INPUT_JSON_FILE | owner-format-resume CONFIG_JSON_FILE WORKSPACE_ID COMMAND_ID | owner-format-history CONFIG_JSON_FILE WORKSPACE_ID".to_owned()));
     }
     let config_bytes = fs::read(&args[0]).map_err(|e| ("CONFIG_FILE", e.to_string()))?;
     let config: SecureOwnerCreateConfig = serde_json::from_slice(&config_bytes)
@@ -333,6 +336,24 @@ fn secure_owner_command(verb: &str, args: &[String]) -> Result<String, (&'static
     let _interrupts = InterruptMonitor::start(cancel.clone()).map_err(|_| {
         ("INTERRUPT_HANDLER", "unable to install interrupt handler".to_owned())
     })?;
+    if matches!(verb, "owner-kernel-inspect" | "owner-kernel-status" | "owner-kernel-recover") {
+        let attach = SecureHistoricalOwnerAttach::new(config);
+        let value = match verb {
+            "owner-kernel-inspect" => {
+                let bytes = fs::read(&args[1]).map_err(|_| ("INPUT_FILE", "unable to read kernel inspection input".to_owned()))?;
+                let input: HistoricalOwnerAttachInput = serde_json::from_slice(&bytes)
+                    .map_err(|_| ("INPUT_INVALID", "invalid kernel inspection input".to_owned()))?;
+                serde_json::to_string(&attach.inspect_kernel_pending(&input, &cancel)
+                    .map_err(|e| (e.code(), e.to_string()))?)
+            }
+            "owner-kernel-status" => serde_json::to_string(&attach.kernel_command_status(&args[1])
+                .map_err(|e| (e.code(), e.to_string()))?),
+            "owner-kernel-recover" => serde_json::to_string(&attach.recover_kernel_command(&args[1], &args[2], &cancel)
+                .map_err(|e| (e.code(), e.to_string()))?),
+            _ => unreachable!(),
+        };
+        return value.map_err(|_| ("RESULT_ENCODING_FAILED", "kernel command result encoding failed".to_owned()));
+    }
     if matches!(verb, "owner-attach" | "owner-attach-resume" | "owner-attachments") {
         let attach = SecureHistoricalOwnerAttach::new(config);
         let value = match verb {

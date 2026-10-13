@@ -949,6 +949,23 @@ class HistoricalOwnerAttachmentResult(TypedDict):
     owner_key_id: str
     sequence: int | None
     head: str | None
+    selected_kernel_count: int
+    retained_other_kernel_count: int
+
+
+class HistoricalKernelCommandStatus(TypedDict):
+    command_id: str
+    intent_digest: str
+    expires_at_ms: int
+    status: Literal["PENDING", "RETAINED_UNRESOLVED", "EXPIRED_UNRESOLVED", "ACCEPTED"]
+    last_http_status: int | None
+
+
+class HistoricalKernelPendingInventory(TypedDict):
+    intent_db_digest: str
+    commands: list[HistoricalKernelCommandStatus]
+    retained_other_pending_count: int
+    retained_nonworkspace_pending_count: int
 
 
 class OwnerFormatTransitionResult(TypedDict):
@@ -989,6 +1006,31 @@ class SecureOwnerWorkspaceClient:
         if result["ok"] is not True:
             raise OwnerWorkspaceError(result["code"], result["message"])
         return result["value"]
+
+    @staticmethod
+    def _attachment_input(workspace_id: str, protected_ts_state_path: str,
+                          protected_ts_intent_db_path: str,
+                          protected_owner_pkcs8_path: str,
+                          expected_owner_actor_id: str, expected_owner_key_id: str,
+                          recover_pending_action: bool = False,
+                          kernel_pending_command_ids: list[str] | None = None,
+                          expected_kernel_intent_db_digest: str | None = None) -> dict:
+        if type(recover_pending_action) is not bool:
+            raise TypeError("recover_pending_action must be a bool")
+        ids = [] if kernel_pending_command_ids is None else kernel_pending_command_ids
+        if not isinstance(ids, list) or any(not isinstance(item, str) or not item for item in ids):
+            raise TypeError("kernel_pending_command_ids must be a list of nonempty strings")
+        if ids and not expected_kernel_intent_db_digest:
+            raise ValueError("selected kernel commands require the inspected intent DB digest")
+        return dict(workspace_id=workspace_id,
+            protected_ts_state_path=protected_ts_state_path,
+            protected_ts_intent_db_path=protected_ts_intent_db_path,
+            protected_owner_pkcs8_path=protected_owner_pkcs8_path,
+            expected_owner_actor_id=expected_owner_actor_id,
+            expected_owner_key_id=expected_owner_key_id,
+            recover_pending_action=recover_pending_action,
+            kernel_pending_command_ids=ids,
+            expected_kernel_intent_db_digest=expected_kernel_intent_db_digest)
 
     @staticmethod
     def _input(name: str, visibility: Literal["PUBLIC", "PRIVATE"], *,
@@ -1042,18 +1084,38 @@ class SecureOwnerWorkspaceClient:
                protected_ts_intent_db_path: str, protected_owner_pkcs8_path: str,
                expected_owner_actor_id: str,
                expected_owner_key_id: str, *,
-               recover_pending_action: bool = False) -> HistoricalOwnerAttachmentResult:
-        """Attach a stopped Owner; opt in to exact recovery of one saved ACTION."""
-        if type(recover_pending_action) is not bool:
-            raise TypeError("recover_pending_action must be a bool")
-        value = dict(workspace_id=workspace_id,
-            protected_ts_state_path=protected_ts_state_path,
-            protected_ts_intent_db_path=protected_ts_intent_db_path,
-            protected_owner_pkcs8_path=protected_owner_pkcs8_path,
-            expected_owner_actor_id=expected_owner_actor_id,
-            expected_owner_key_id=expected_owner_key_id,
-            recover_pending_action=recover_pending_action)
+               recover_pending_action: bool = False,
+               kernel_pending_command_ids: list[str] | None = None,
+               expected_kernel_intent_db_digest: str | None = None) -> HistoricalOwnerAttachmentResult:
+        """Attach a stopped Owner; selected kernel packets stay local until explicit recovery."""
+        value = self._attachment_input(workspace_id, protected_ts_state_path,
+            protected_ts_intent_db_path, protected_owner_pkcs8_path,
+            expected_owner_actor_id, expected_owner_key_id, recover_pending_action,
+            kernel_pending_command_ids, expected_kernel_intent_db_digest)
         return cast(HistoricalOwnerAttachmentResult, self._owner("attach", input_value=value))
+
+    def inspect_kernel_pending(self, workspace_id: str, protected_ts_state_path: str,
+                               protected_ts_intent_db_path: str,
+                               protected_owner_pkcs8_path: str,
+                               expected_owner_actor_id: str,
+                               expected_owner_key_id: str) -> HistoricalKernelPendingInventory:
+        """Inspect verified pending source commands without attaching or submitting them."""
+        value = self._attachment_input(workspace_id, protected_ts_state_path,
+            protected_ts_intent_db_path, protected_owner_pkcs8_path,
+            expected_owner_actor_id, expected_owner_key_id)
+        return cast(HistoricalKernelPendingInventory,
+            self._owner("kernel_inspect", input_value=value))
+
+    def kernel_command_status(self, attach_id: str) -> list[HistoricalKernelCommandStatus]:
+        """Read local status for selected commands; this does not contact the service."""
+        return cast(list[HistoricalKernelCommandStatus],
+            self._owner("kernel_status", command_id=attach_id))
+
+    def recover_kernel_command(self, attach_id: str,
+                               command_id: str) -> HistoricalKernelCommandStatus:
+        """Explicitly retry one imported original signed kernel command."""
+        return cast(HistoricalKernelCommandStatus,
+            self._owner("kernel_recover", command_id=command_id, workspace_id=attach_id))
 
     def resume_attachment(self, attach_id: str) -> HistoricalOwnerAttachmentResult:
         return cast(HistoricalOwnerAttachmentResult,
@@ -1132,18 +1194,36 @@ class SecureOwnerWorkspaceClient:
                            protected_ts_intent_db_path: str,
                            protected_owner_pkcs8_path: str, expected_owner_actor_id: str,
                            expected_owner_key_id: str, *,
-                           recover_pending_action: bool = False) -> HistoricalOwnerAttachmentResult:
-        if type(recover_pending_action) is not bool:
-            raise TypeError("recover_pending_action must be a bool")
-        value = dict(workspace_id=workspace_id,
-            protected_ts_state_path=protected_ts_state_path,
-            protected_ts_intent_db_path=protected_ts_intent_db_path,
-            protected_owner_pkcs8_path=protected_owner_pkcs8_path,
-            expected_owner_actor_id=expected_owner_actor_id,
-            expected_owner_key_id=expected_owner_key_id,
-            recover_pending_action=recover_pending_action)
+                           recover_pending_action: bool = False,
+                           kernel_pending_command_ids: list[str] | None = None,
+                           expected_kernel_intent_db_digest: str | None = None) -> HistoricalOwnerAttachmentResult:
+        value = self._attachment_input(workspace_id, protected_ts_state_path,
+            protected_ts_intent_db_path, protected_owner_pkcs8_path,
+            expected_owner_actor_id, expected_owner_key_id, recover_pending_action,
+            kernel_pending_command_ids, expected_kernel_intent_db_digest)
         return cast(HistoricalOwnerAttachmentResult, await _run_cancelled_async(
             self._owner, "attach", input_value=value))
+
+    async def inspect_kernel_pending_async(self, workspace_id: str,
+                                           protected_ts_state_path: str,
+                                           protected_ts_intent_db_path: str,
+                                           protected_owner_pkcs8_path: str,
+                                           expected_owner_actor_id: str,
+                                           expected_owner_key_id: str) -> HistoricalKernelPendingInventory:
+        value = self._attachment_input(workspace_id, protected_ts_state_path,
+            protected_ts_intent_db_path, protected_owner_pkcs8_path,
+            expected_owner_actor_id, expected_owner_key_id)
+        return cast(HistoricalKernelPendingInventory, await _run_cancelled_async(
+            self._owner, "kernel_inspect", input_value=value))
+
+    async def kernel_command_status_async(self, attach_id: str) -> list[HistoricalKernelCommandStatus]:
+        return cast(list[HistoricalKernelCommandStatus], await _run_cancelled_async(
+            self._owner, "kernel_status", command_id=attach_id))
+
+    async def recover_kernel_command_async(self, attach_id: str,
+                                           command_id: str) -> HistoricalKernelCommandStatus:
+        return cast(HistoricalKernelCommandStatus, await _run_cancelled_async(
+            self._owner, "kernel_recover", command_id=command_id, workspace_id=attach_id))
 
     async def resume_attachment_async(self, attach_id: str) -> HistoricalOwnerAttachmentResult:
         return cast(HistoricalOwnerAttachmentResult, await _run_cancelled_async(
@@ -1449,7 +1529,7 @@ class OwnerWorkspacePrivatePackageInstaller(OwnerWorkspacePrivatePackageStager):
             "installs"))
 
 
-__all__ += ["SecureOwnerWorkspaceClient", "OwnerWorkspaceResult", "HistoricalOwnerAttachmentResult", "OwnerFormatTransitionResult", "OwnerWorkspaceError",
+__all__ += ["SecureOwnerWorkspaceClient", "OwnerWorkspaceResult", "HistoricalOwnerAttachmentResult", "HistoricalKernelCommandStatus", "HistoricalKernelPendingInventory", "OwnerFormatTransitionResult", "OwnerWorkspaceError",
             "OwnerWorkspaceActionClient", "OwnerWorkspacePackageInstaller",
             "OwnerWorkspacePrivatePackageStager", "PrivatePackageStageResult",
             "SavedPrivatePackageStage", "PrivatePackageStageError",

@@ -376,7 +376,7 @@ fn secure_owner_create_json(
             Ok(value) => value,
             Err(_) => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid Owner configuration"}).to_string(),
         };
-        if matches!(operation.as_str(), "attach" | "resume_attachment" | "attachments") {
+        if matches!(operation.as_str(), "attach" | "resume_attachment" | "attachments" | "kernel_inspect" | "kernel_status" | "kernel_recover") {
             let access = SecureHistoricalOwnerAttach::new(config);
             let result = match operation.as_str() {
                 "attach" => {
@@ -391,6 +391,21 @@ fn secure_owner_create_json(
                     None => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"attachment ID is required"}).to_string(),
                 },
                 "attachments" => access.attachments().map(|value| serde_json::to_string(&value).expect("attachment history serializes")),
+                "kernel_inspect" => {
+                    let input: HistoricalOwnerAttachInput = match input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {
+                        Some(value) => value,
+                        None => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid kernel inspection input"}).to_string(),
+                    };
+                    access.inspect_kernel_pending(&input, &cancel).map(|value| serde_json::to_string(&value).expect("kernel inventory serializes"))
+                }
+                "kernel_status" => match command_id.as_deref() {
+                    Some(attach_id) => access.kernel_command_status(attach_id).map(|value| serde_json::to_string(&value).expect("kernel status serializes")),
+                    None => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"attachment ID is required"}).to_string(),
+                },
+                "kernel_recover" => match (workspace_id.as_deref(), command_id.as_deref()) {
+                    (Some(attach_id), Some(id)) => access.recover_kernel_command(attach_id, id, &cancel).map(|value| serde_json::to_string(&value).expect("kernel recovery status serializes")),
+                    _ => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"attachment and kernel command IDs are required"}).to_string(),
+                },
                 _ => unreachable!(),
             };
             return match result {
