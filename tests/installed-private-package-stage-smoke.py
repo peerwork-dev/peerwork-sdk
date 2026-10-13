@@ -93,7 +93,10 @@ try:
     assert created["status"] == "CREATED" and created["visibility"] == "PRIVATE"
     workspace_id = created["workspace_id"]
     assert owner.read(workspace_id)["sequence"] == 1
-    vector = json.loads((SOURCE / "conformance/public-package-vectors.json").read_text())
+    vector_name = os.environ.get("PEERWORK_TEST_VECTOR", "public-package-vectors.json")
+    assert vector_name in {"public-package-vectors.json", "official-proposal-task-composition.json"}
+    vector = json.loads((SOURCE / "conformance" / vector_name).read_text())
+    expected_part_count = int(os.environ.get("PEERWORK_TEST_EXPECTED_PART_COUNT", "1"))
     material_json = json.dumps({"v": 1, "closure": vector["closure"], "bindings": {}},
                                separators=(",", ":"))
     root_digest = vector["closure"]["root_package_digest"]
@@ -109,6 +112,7 @@ try:
     first = stage_without_returning_id(origin, owner_dir, workspace_id, material_json,
                                        root_digest, protocol_digest)
     assert first["status"] == "PENDING"
+    assert first["part_count"] == expected_part_count
     assert first["root_package_digest"] == root_digest
     assert first["protocol_digest"] == protocol_digest
     after_apply = counts(origin)["commits"]
@@ -131,6 +135,7 @@ try:
     assert next_result["root_package_digest"] == root_digest
     assert next_result["protocol_digest"] == protocol_digest
     assert next_result["applied_parts"] == next_result["part_count"]
+    assert next_result["part_count"] == expected_part_count
     assert counts(origin)["commits"] == before + next_result["part_count"]
     repeated = cli("owner-private-stage-continue", owner_config_file, workspace_id, stage_id)
     assert repeated == next_result
@@ -146,7 +151,8 @@ try:
     assert offline_python[0]["stage_id"] == stage_id
     print(json.dumps(dict(status="PASS", workspace_id=workspace_id, stage_id=stage_id,
         source_id=next_result["source_id"], root_package_digest=root_digest,
-        protocol_digest=protocol_digest, part_count=next_result["part_count"],
+        protocol_digest=protocol_digest, vector=vector_name,
+        part_count=next_result["part_count"],
         final_sequence=before + next_result["part_count"], local_offline_list=True,
         installed=False)))
 finally:
