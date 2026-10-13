@@ -60,10 +60,12 @@ try {
   }
   let stageMarker = null;
   let stagePartCount = null;
+  let stagePartId = null;
+  let stagePartSha = null;
   if (mode.startsWith('stage-marker-')) {
     const { parseProtocolPackage, PROTOCOL_PACKAGE_FORMAT } = await import(pathToFileURL(join(legacyRoot, 'dist-workspace/src/protocol-package.js')).href);
     const { createProtocolPackageClosure } = await import(pathToFileURL(join(legacyRoot, 'dist-workspace/src/protocol-package-closure.js')).href);
-    const { createProtocolPackageSource } = await import(pathToFileURL(join(legacyRoot, 'dist-workspace/src/workspace-protocol-package-source.js')).href);
+    const { createProtocolPackageSource, verifyStagedPackageCheckpoint } = await import(pathToFileURL(join(legacyRoot, 'dist-workspace/src/workspace-protocol-package-source.js')).href);
     const directory = join(legacyRoot, 'protocols/discussion');
     const files = {};
     const walk = at => {
@@ -79,18 +81,23 @@ try {
     const staged = createProtocolPackageSource(material, journal.checkpoint);
     if (staged.parts.length !== 1) throw new Error('TEST_STAGE_PART_COUNT_UNEXPECTED');
     stagePartCount = staged.parts.length;
+    stagePartId = staged.proof.parts[0].id;
+    stagePartSha = staged.proof.parts[0].sha256;
     const originalPost = agent.post.bind(agent);
     let stopped = false;
-    if (mode === 'stage-marker-completed') {
-      agent.post = async (...args) => {
-        const result = await originalPost(...args);
-        if (!stopped) {
-          stopped = true;
-          throw new Error('TEST_STOP_AFTER_STAGE_POST');
-        }
-        return result;
+    let submittedCommand = null;
+    agent.post = async (...args) => {
+      if (!submittedCommand) submittedCommand = {
+        command_id: args[2], action_id: args[1]?.commit?.payload?.action_id,
       };
-    } else {
+      const result = await originalPost(...args);
+      if (mode === 'stage-marker-completed' && !stopped) {
+        stopped = true;
+        throw new Error('TEST_STOP_AFTER_STAGE_POST');
+      }
+      return result;
+    };
+    if (mode === 'stage-marker-pending') {
       const hook = await fetch(new URL('/__test/drop-next-post', origin), { method: 'POST', body: '{}' });
       if (!hook.ok) throw new Error('TEST_STAGE_DROP_HOOK_FAILED');
     }
@@ -105,6 +112,8 @@ try {
     const markers = Object.values(agent.state.package_stage_intents ?? {});
     if (markers.length !== 1) throw new Error('TEST_STAGE_MARKER_MISSING');
     stageMarker = markers[0];
+    if (submittedCommand?.command_id !== stageMarker.command_id
+      || submittedCommand.action_id !== 'secure.protocol-package.stage') throw new Error('TEST_STAGE_COMMAND_BINDING_MISSING');
     const expectedPending = mode === 'stage-marker-pending' ? 1 : 0;
     if (Object.keys(agent.state.pending).length !== expectedPending) throw new Error('TEST_STAGE_PENDING_CLASS_MISMATCH');
     journal = await agent.journal(created.workspaceId);
@@ -115,6 +124,14 @@ try {
       || await secureHash(stageOperation.input.package_stage.source) !== await secureHash(stageMarker.source)) {
       throw new Error('TEST_STAGE_SIGNED_OPERATION_MISMATCH');
     }
+    const stagedPart = stageOperation.objects?.[0];
+    if (stageOperation.objects?.length !== 1
+      || stagedPart?.kind !== 'protocol_package_part'
+      || stagedPart.id !== staged.proof.parts[0].id
+      || stagedPart.value?.index !== 0
+      || stagedPart.value?.source_id !== stageMarker.source_id
+      || stagedPart.value?.sha256 !== staged.proof.parts[0].sha256) throw new Error('TEST_STAGE_SIGNED_PART_MISMATCH');
+    verifyStagedPackageCheckpoint(journal, staged.proof);
   }
   let kernelSource = null;
   if (mode === 'kernel-jws-source') {
@@ -205,6 +222,8 @@ try {
       source_sha256: stageMarker.source_sha256,
       part_index: stageMarker.part_index,
       source: stageMarker.source,
+      part_id: stagePartId,
+      part_sha256: stagePartSha,
     } : null,
     stage_part_count: stagePartCount,
     kernel_source: kernelSource,

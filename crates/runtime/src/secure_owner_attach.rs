@@ -3661,6 +3661,8 @@ mod tests {
             assert_eq!(marker["part_index"], 0);
             assert!(marker["source_id"].as_str().is_some());
             assert!(marker["source_sha256"].as_str().is_some());
+            assert!(marker["part_id"].as_str().is_some());
+            assert!(marker["part_sha256"].as_str().is_some());
             let command = marker["command_id"].as_str().unwrap();
             let committed: i64 = oracle
                 .query_row(
