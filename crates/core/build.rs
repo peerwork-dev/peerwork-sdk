@@ -222,6 +222,13 @@ fn main() {
     run(
         {
             let mut command = Command::new(source.join("icu/source/runConfigureICU"));
+            if target_triple.ends_with("-musl") {
+                // Alpine's libstdc++ has initial-exec TLS and cannot be loaded
+                // with a Python extension after interpreter startup. libc++
+                // is late-loadable on the native musl runner.
+                command.env("CXX", "clang++-20");
+                command.env("CXXFLAGS", "-stdlib=libc++");
+            }
             command.current_dir(&build).args([
                 if target == "macos" { "MacOSX" } else { "Linux" },
                 "--enable-static",
@@ -255,6 +262,10 @@ fn main() {
     println!("cargo:rustc-link-lib=static=icudatapeerwork");
     if target == "macos" {
         println!("cargo:rustc-link-lib=dylib=c++");
+    } else if target_triple.ends_with("-musl") {
+        println!("cargo:rustc-link-lib=dylib=c++");
+        println!("cargo:rustc-link-lib=dylib=pthread");
+        println!("cargo:rustc-link-lib=dylib=dl");
     } else {
         println!("cargo:rustc-link-lib=dylib=stdc++");
         println!("cargo:rustc-link-lib=dylib=pthread");
