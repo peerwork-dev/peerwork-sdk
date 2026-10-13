@@ -373,6 +373,9 @@ pub(crate) struct SimpleCompilation {
     pub manifest: WireValue,
     pub source_digest: String,
     pub protocol_digest: String,
+    /// Exact normalized manifest closure for a dependency-bearing secure
+    /// protocol object. This is compiler output, not an install authority.
+    pub composition: Option<WireValue>,
     pub compilation_lock: WireValue,
     scenarios: Vec<FixtureScenario>,
     dispositions: Vec<FixtureDisposition>,
@@ -2411,9 +2414,42 @@ fn compile_at(
             ]),
         )?;
     }
-    let (manifest, _dependency_closure) =
+    let (manifest, dependency_closure) =
         crate::protocol_composition::resolve_protocol(&root, &nodes)
             .map_err(|_| ClosureError::Invalid)?;
+    let composition = if dependency_closure.is_empty() {
+        None
+    } else {
+        let source_canonical = crate::full_manifest::validate_full_manifest(&root)
+            .map_err(|_| ClosureError::Invalid)?;
+        let source_wrapped = parse_wire_json_bounded(source_canonical.as_bytes(), 64, 2_000_000)
+            .map_err(|_| ClosureError::Invalid)?;
+        let source_manifest = field(&source_wrapped, "manifest")?.clone();
+        let mut dependencies = Vec::with_capacity(dependency_closure.len());
+        for id in dependency_closure {
+            let manifest = nodes.get(&id).ok_or(ClosureError::Missing)?.clone();
+            dependencies.push(WireValue::Object(vec![
+                ("digest".encode_utf16().collect(), WireValue::String(id)),
+                ("manifest".encode_utf16().collect(), manifest),
+            ]));
+        }
+        Some(WireValue::Object(vec![
+            ("v".encode_utf16().collect(), WireValue::Number(1.0)),
+            (
+                "source_digest".encode_utf16().collect(),
+                WireValue::String(
+                    sha256_hex(source_canonical.as_bytes())
+                        .encode_utf16()
+                        .collect(),
+                ),
+            ),
+            ("source_manifest".encode_utf16().collect(), source_manifest),
+            (
+                "dependencies".encode_utf16().collect(),
+                WireValue::Array(dependencies),
+            ),
+        ]))
+    };
     let canonical_manifest = crate::full_manifest::validate_full_manifest(&manifest)
         .map_err(|_| ClosureError::Invalid)?;
     let protocol_digest = sha256_hex(canonical_manifest.as_bytes());
@@ -2484,6 +2520,7 @@ fn compile_at(
         manifest,
         source_digest,
         protocol_digest,
+        composition,
         compilation_lock,
         scenarios,
         dispositions,

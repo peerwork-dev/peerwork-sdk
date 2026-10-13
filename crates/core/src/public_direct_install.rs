@@ -8,6 +8,7 @@ use crate::{
     full_manifest::validate_full_manifest,
     genesis_structure_policy::derive_install_structure_policy_with_keep_encrypted,
     package_closure::{compile_package_material, scan_package_closure},
+    protocol_composition::verify_composition,
     secure_replay::project_structure_data,
     structure_bindings::validate_object_bindings,
     structure_policy::validate_structure_policy,
@@ -27,6 +28,7 @@ pub struct PublicPackageCompilation {
     package_version: String,
     protocol_digest: String,
     manifest_wire: Vec<u8>,
+    composition: Option<WireValue>,
 }
 impl PublicPackageCompilation {
     pub fn package_digest(&self) -> &str {
@@ -43,6 +45,9 @@ impl PublicPackageCompilation {
     }
     pub fn manifest_wire(&self) -> &[u8] {
         &self.manifest_wire
+    }
+    pub(crate) fn composition(&self) -> Option<&WireValue> {
+        self.composition.as_ref()
     }
 }
 pub struct PreparedPublicPackageInstallBegin {
@@ -79,8 +84,9 @@ impl PreparedPublicPackageInstallBegin {
 }
 
 /// Verify the exact locally selected package closure before PUBLIC direct
-/// install. The signed PUBLIC wire later carries only the resolved manifest;
-/// this package digest therefore remains protected local selection evidence.
+/// install. The signed PUBLIC wire carries the resolved manifest and, for a
+/// composed package, its compiler-derived composition proof. The package
+/// digest remains protected local selection evidence.
 pub fn compile_public_package_closure(
     closure_wire: &[u8],
 ) -> Result<PublicPackageCompilation, DirectInstallError> {
@@ -115,9 +121,20 @@ pub fn compile_public_package_closure(
         .map_err(|_| DirectInstallError::Invalid)?
         .into_bytes();
     if compiled.manifest.get("format_version") == Some(&WireValue::Number(2.0))
-        || compiled.manifest.get("dependencies") != Some(&WireValue::Array(vec![]))
         || compiled.manifest.get("constraints") != Some(&obj(vec![]))
     {
+        return Err(DirectInstallError::Invalid);
+    }
+    if let Some(proof) = &compiled.composition {
+        verify_composition(
+            proof,
+            &compiled.manifest,
+            &compiled.manifest,
+            &compiled.protocol_digest,
+            1,
+        )
+        .map_err(|_| DirectInstallError::Invalid)?;
+    } else if compiled.manifest.get("dependencies") != Some(&WireValue::Array(vec![])) {
         return Err(DirectInstallError::Invalid);
     }
     Ok(PublicPackageCompilation {
@@ -126,6 +143,7 @@ pub fn compile_public_package_closure(
         package_version,
         protocol_digest: compiled.protocol_digest,
         manifest_wire,
+        composition: compiled.composition,
     })
 }
 
@@ -153,8 +171,9 @@ pub fn prepare_public_package_install_begin(
     {
         return Err(DirectInstallError::Invalid);
     }
-    let signed = prepare_public_direct_install_begin(
+    let signed = prepare_public_direct_install_begin_with_composition(
         compiled.manifest_wire(),
+        compiled.composition(),
         expected_protocol_digest,
         prior_signed_policy_wire,
         prior_checkpoint_wire,
@@ -181,6 +200,37 @@ pub fn prepare_public_package_install_begin(
 #[allow(clippy::too_many_arguments)]
 pub fn prepare_public_direct_install_begin(
     manifest_wire: &[u8],
+    expected_protocol_digest: &str,
+    prior_signed_policy_wire: &[u8],
+    prior_checkpoint_wire: &[u8],
+    prior_objects: &[WireValue],
+    grants_wire: &[u8],
+    instance_id: &str,
+    entrypoint_name: &str,
+    command_id: &str,
+    issued_at: u64,
+    signer: &SigningKey,
+) -> Result<SignedPublicInstallBegin, DirectInstallError> {
+    prepare_public_direct_install_begin_with_composition(
+        manifest_wire,
+        None,
+        expected_protocol_digest,
+        prior_signed_policy_wire,
+        prior_checkpoint_wire,
+        prior_objects,
+        grants_wire,
+        instance_id,
+        entrypoint_name,
+        command_id,
+        issued_at,
+        signer,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_public_direct_install_begin_with_composition(
+    manifest_wire: &[u8],
+    composition: Option<&WireValue>,
     expected_protocol_digest: &str,
     prior_signed_policy_wire: &[u8],
     prior_checkpoint_wire: &[u8],
@@ -243,8 +293,9 @@ pub fn prepare_public_direct_install_begin(
     let workspace_id = required(&checkpoint, "workspace_id")?
         .as_string()
         .ok_or_else(invalid)?;
-    let built = build_direct_install_objects(
+    let built = build_direct_install_objects_with_composition(
         manifest_wire,
+        composition,
         expected_protocol_digest,
         &workspace_id,
         instance_id,
@@ -550,8 +601,8 @@ pub fn sign_public_install_step(
     })
 }
 
-/// Compatibility signer for the already supported empty snapshot. It remains
-/// strict while generic PAGE continuation is integrated by the runtime.
+/// Compatibility signer for an empty snapshot. Generic PAGE/END continuation
+/// uses the snapshot plan signer above.
 pub fn sign_public_empty_install_end(
     signed_policy_wire: &[u8],
     checkpoint_wire: &[u8],
@@ -731,8 +782,30 @@ fn entrypoint(value: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || *b == b'_' || *b == b'-')
 }
 
+#[cfg(test)]
 pub(crate) fn build_direct_install_objects(
     manifest_wire: &[u8],
+    expected_digest: &str,
+    workspace_id: &str,
+    instance_id: &str,
+    origin_entrypoint: &str,
+    issued_at: u64,
+) -> Result<DirectInstallObjects, DirectInstallError> {
+    build_direct_install_objects_with_composition(
+        manifest_wire,
+        None,
+        expected_digest,
+        workspace_id,
+        instance_id,
+        origin_entrypoint,
+        issued_at,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_direct_install_objects_with_composition(
+    manifest_wire: &[u8],
+    composition: Option<&WireValue>,
     expected_digest: &str,
     workspace_id: &str,
     instance_id: &str,
@@ -758,11 +831,10 @@ pub(crate) fn build_direct_install_objects(
     let wrapped = validate_full_manifest(&raw).map_err(|_| bad())?;
     let parsed = parse_wire_json_bounded(wrapped.as_bytes(), 64, 2_000_000).map_err(|_| bad())?;
     let manifest = parsed.get("manifest").ok_or_else(bad)?.clone();
-    // PUBLIC direct install carries a resolved executable manifest. Package
-    // closure provenance stays local; dependencies require the separate
-    // source-matched composition path and are refused by this builder.
+    // The selected package compiler may provide an exact dependency proof.
+    // The service verifies the composition from this signed object itself;
+    // package selection remains protected local provenance.
     if manifest.get("format_version") == Some(&WireValue::Number(2.0))
-        || manifest.get("dependencies") != Some(&WireValue::Array(vec![]))
         || manifest.get("constraints") != Some(&obj(vec![]))
     {
         return Err(bad());
@@ -770,20 +842,26 @@ pub(crate) fn build_direct_install_objects(
     if sha256_hex(wrapped.as_bytes()) != expected_digest {
         return Err(bad());
     }
+    if let Some(proof) = composition {
+        verify_composition(proof, &manifest, &manifest, expected_digest, 1).map_err(|_| bad())?;
+    } else if manifest.get("dependencies") != Some(&WireValue::Array(vec![])) {
+        return Err(bad());
+    }
+    let mut protocol_value = vec![
+        ("workspace_id", text(workspace_id)),
+        ("digest", text(expected_digest)),
+        ("manifest", manifest.clone()),
+        ("resolved_manifest", manifest.clone()),
+    ];
+    if let Some(proof) = composition {
+        protocol_value.push(("composition", proof.clone()));
+    }
     let protocol = obj(vec![
         ("kind", text("protocols")),
         ("id", text(expected_digest)),
         ("revision", WireValue::Number(1.0)),
         ("provenance", text("AUTHOR_SIGNED")),
-        (
-            "value",
-            obj(vec![
-                ("workspace_id", text(workspace_id)),
-                ("digest", text(expected_digest)),
-                ("manifest", manifest.clone()),
-                ("resolved_manifest", manifest.clone()),
-            ]),
-        ),
+        ("value", obj(protocol_value)),
     ]);
     let instance = obj(vec![
         ("kind", text("instances")),
@@ -1240,6 +1318,198 @@ pub(crate) fn sign_public_direct_install_begin(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn official_connected_proposal_task_closure_has_exact_composition_proof() {
+        let fixture = parse_wire_json_bounded(
+            include_bytes!("../../../conformance/official-proposal-task-composition.json"),
+            64,
+            2_000_000,
+        )
+        .unwrap();
+        let closure =
+            canonical_wire_value(fixture.get("closure").unwrap(), Path::SecureArtifact).unwrap();
+        let compiled = compile_public_package_closure(closure.as_bytes()).unwrap();
+        assert_eq!(
+            compiled.package_digest(),
+            fixture
+                .get("root_package_digest")
+                .unwrap()
+                .as_string()
+                .unwrap()
+        );
+        assert_eq!(
+            compiled.protocol_digest(),
+            fixture.get("protocol_digest").unwrap().as_string().unwrap()
+        );
+        let expected_manifest = canonical_wire_value(
+            fixture.get("compiled_manifest").unwrap(),
+            Path::SecureArtifact,
+        )
+        .unwrap();
+        assert_eq!(compiled.manifest_wire(), expected_manifest.as_bytes());
+        let proof = compiled.composition().unwrap();
+        let expected_closure = array(fixture.get("dependency_closure").unwrap()).unwrap();
+        let actual = array(proof.get("dependencies").unwrap()).unwrap();
+        assert_eq!(actual.len(), expected_closure.len());
+        for (node, id) in actual.iter().zip(expected_closure) {
+            assert_eq!(node.get("digest"), Some(id));
+        }
+        let built = build_direct_install_objects_with_composition(
+            compiled.manifest_wire(),
+            Some(proof),
+            compiled.protocol_digest(),
+            &"w".repeat(43),
+            &"z".repeat(43),
+            "proposalTasks",
+            1_700_000_000_000,
+        )
+        .unwrap();
+        assert_eq!(
+            built.added[0].get("value").unwrap().get("composition"),
+            Some(proof)
+        );
+        assert!(build_direct_install_objects(
+            compiled.manifest_wire(),
+            compiled.protocol_digest(),
+            &"w".repeat(43),
+            &"z".repeat(43),
+            "proposalTasks",
+            1_700_000_000_000,
+        )
+        .is_err());
+        let mut tampered = proof.clone();
+        put(&mut tampered, "source_digest", text(&"0".repeat(64))).unwrap();
+        assert!(build_direct_install_objects_with_composition(
+            compiled.manifest_wire(),
+            Some(&tampered),
+            compiled.protocol_digest(),
+            &"w".repeat(43),
+            &"z".repeat(43),
+            "proposalTasks",
+            1_700_000_000_000,
+        )
+        .is_err());
+
+        // A real signed BEGIN must carry the same composition, within the
+        // tracked service request bound, rather than only passing an isolated
+        // object-construction check.
+        let prior = parse_wire_json_bounded(
+            include_bytes!("../../../conformance/public-direct-install-vectors.json"),
+            64,
+            500_000,
+        )
+        .unwrap();
+        let signer = SigningKey::from_bytes(&[7u8; 32]);
+        let actor = actor_id(&signer.verifying_key().to_bytes());
+        let key_id = base64url(&signer.verifying_key().to_bytes());
+        let mut payload = prior
+            .get("prior_policy")
+            .unwrap()
+            .get("payload")
+            .unwrap()
+            .clone();
+        put(&mut payload, "owner_id", text(&actor)).unwrap();
+        put(&mut payload, "signing_key", text(&key_id)).unwrap();
+        let WireValue::Array(mut members) = required(&payload, "members").unwrap().clone() else {
+            panic!("members")
+        };
+        put(&mut members[0], "actor_id", text(&actor)).unwrap();
+        put(&mut payload, "members", WireValue::Array(members)).unwrap();
+        let old = sign_envelope(payload, "peerwork.secure.policy.v3", &signer).unwrap();
+        let old_wire = canonical_wire_value(&old, Path::SecureArtifact).unwrap();
+        let mut checkpoint = prior.get("checkpoint").unwrap().clone();
+        put(&mut checkpoint, "owner_id", text(&actor)).unwrap();
+        put(&mut checkpoint, "owner_key", text(&key_id)).unwrap();
+        put(
+            &mut checkpoint,
+            "policy_hash",
+            text(&sha256_hex(old_wire.as_bytes())),
+        )
+        .unwrap();
+        let checkpoint_wire = canonical_wire_value(&checkpoint, Path::SecureArtifact).unwrap();
+        let WireValue::Array(prior_objects) = prior.get("prior_objects").unwrap() else {
+            panic!("prior objects")
+        };
+        let structure = derive_direct_install_structure(
+            required(required(&old, "payload").unwrap(), "structure").unwrap(),
+            prior_objects,
+            &built.added,
+            compiled.protocol_digest(),
+            &built.manifest,
+        )
+        .unwrap();
+        let next_policy = derive_direct_install_policy_payload(
+            &old,
+            1,
+            &structure,
+            &[],
+            &built.manifest,
+            &"z".repeat(43),
+            1_700_000_000_000,
+        )
+        .unwrap();
+        let snapshot =
+            plan_public_install_snapshot(prior_objects, &structure, &checkpoint).unwrap();
+        let begin = build_direct_install_begin(
+            &checkpoint,
+            &built.added,
+            &"z".repeat(43),
+            compiled.protocol_digest(),
+            "proposalTasks",
+            snapshot.snapshot(),
+        )
+        .unwrap();
+        sign_public_direct_install_begin(
+            &next_policy,
+            &checkpoint,
+            &begin,
+            &"c".repeat(43),
+            1_700_000_000_000,
+            &signer,
+        )
+        .unwrap();
+        let prepared = prepare_public_package_install_begin(
+            closure.as_bytes(),
+            compiled.package_digest(),
+            compiled.protocol_digest(),
+            old_wire.as_bytes(),
+            checkpoint_wire.as_bytes(),
+            prior_objects,
+            b"[]",
+            &"z".repeat(43),
+            "proposalTasks",
+            &"c".repeat(43),
+            1_700_000_000_000,
+            &signer,
+        )
+        .unwrap();
+        let signed = parse_wire_json_bounded(prepared.request_wire(), 64, 220_000).unwrap();
+        let signed_protocol = signed
+            .get("commit")
+            .unwrap()
+            .get("payload")
+            .unwrap()
+            .get("body")
+            .unwrap()
+            .get("objects")
+            .unwrap();
+        let WireValue::Array(signed_objects) = signed_protocol else {
+            panic!("signed objects")
+        };
+        assert_eq!(
+            canonical_wire_value(
+                signed_objects[0]
+                    .get("value")
+                    .unwrap()
+                    .get("composition")
+                    .unwrap(),
+                Path::SecureArtifact,
+            )
+            .unwrap(),
+            canonical_wire_value(proof, Path::SecureArtifact).unwrap(),
+        );
+    }
 
     #[test]
     fn nonempty_prior_snapshot_matches_pinned_install_planner() {

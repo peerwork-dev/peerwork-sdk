@@ -1,7 +1,9 @@
 """Opt-in installed-service preflight for the official proposal→task workflow.
 
-This intentionally stops before adoption: installed PUBLIC APIs cannot add a
-second signed policy member. A proposal-only success is not workflow success.
+The tracked secure-agent fixture enrolls the distinct adopter through signed
+invite/accept/deliver because the installed SDK lacks membership authoring.
+Installed APIs then complete proposal and adoption; the test stops at the
+missing composed task package install capability.
 """
 
 import json
