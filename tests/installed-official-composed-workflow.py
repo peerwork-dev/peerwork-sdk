@@ -25,6 +25,15 @@ NODE = os.environ["PEERWORK_TEST_NODE"]
 NODE_PACKAGE = os.environ["PEERWORK_TEST_NODE_PACKAGE"]
 CLI = os.environ["PEERWORK_TEST_CLI"]
 assert subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=SDK_ROOT, text=True).strip() == SOURCE_COMMIT
+if os.environ.get("PEERWORK_TEST_BROWSER") == "1":
+    browser_root = os.environ.get("PEERWORK_TEST_BROWSER_REFERENCE_ROOT", os.environ["PEERWORK_REFERENCE_ROOT"])
+    expected_browser_commit = os.environ.get("PEERWORK_TEST_BROWSER_REFERENCE_COMMIT")
+    if not expected_browser_commit or len(expected_browser_commit) != 40:
+        raise AssertionError("full browser UI source commit is required before service startup")
+    actual_browser_commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=browser_root, text=True
+    ).strip()
+    assert actual_browser_commit == expected_browser_commit, "browser UI source commit differs before service startup"
 
 
 def counts(origin):
