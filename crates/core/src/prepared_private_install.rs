@@ -638,6 +638,64 @@ pub fn verify_imported_private_package_stage(
     )
 }
 
+/// Reprove a multipart old-client packet against caller-supplied complete
+/// material. The material is required because one decrypted part cannot prove
+/// the full source. This does not authorize a POST: the caller must separately
+/// authenticate source/current checkpoints, every earlier signed part, Owner
+/// authority, and current replay ancestry before persisting a selection.
+pub struct VerifiedImportedMultipartStage {
+    prepared: PreparedPrivatePackageStage,
+    proof: WireValue,
+    parts: Vec<WireValue>,
+    canonical_material: String,
+}
+
+impl VerifiedImportedMultipartStage {
+    pub fn prepared(&self) -> &PreparedPrivatePackageStage { &self.prepared }
+    pub fn proof(&self) -> &WireValue { &self.proof }
+    pub fn part(&self, index: usize) -> Option<&WireValue> { self.parts.get(index) }
+    pub fn part_count(&self) -> usize { self.parts.len() }
+    pub fn canonical_material(&self) -> &str { &self.canonical_material }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn verify_imported_private_package_stage_with_material(
+    request_wire: &[u8],
+    material_wire: &[u8],
+    source_checkpoint_wire: &[u8],
+    current_checkpoint_wire: &[u8],
+    signed_policy_wire: &[u8],
+    part_index: usize,
+    command_id: &str,
+    issued_at: u64,
+    signing_key: &SigningKey,
+    epoch_key: &[u8; 32],
+) -> Result<VerifiedImportedMultipartStage, PrivateInstallError> {
+    if part_index == 0 || part_index >= MAX_PACKAGE_SOURCE_PARTS {
+        return Err(PrivateInstallError::Invalid);
+    }
+    let source = prepare_package_source_wire(material_wire, source_checkpoint_wire)
+        .map_err(|_| PrivateInstallError::Invalid)?;
+    if part_index >= source.parts.len() {
+        return Err(PrivateInstallError::Invalid);
+    }
+    let prepared = verify_saved_private_package_stage(
+        request_wire, source.canonical_material.as_bytes(),
+        source_checkpoint_wire, current_checkpoint_wire, signed_policy_wire,
+        part_index, command_id, issued_at, signing_key, epoch_key,
+    )?;
+    if prepared.part_count() != source.parts.len()
+        || source.proof.get("source_id").and_then(WireValue::as_string).as_deref()
+            != Some(prepared.source_id())
+    {
+        return Err(PrivateInstallError::Invalid);
+    }
+    Ok(VerifiedImportedMultipartStage {
+        prepared, proof: source.proof, parts: source.parts,
+        canonical_material: source.canonical_material,
+    })
+}
+
 fn replace(value: &mut WireValue, field: &str, item: WireValue) -> Result<(), PrivateInstallError> {
     let WireValue::Object(fields) = value else {
         return Err(PrivateInstallError::Invalid);

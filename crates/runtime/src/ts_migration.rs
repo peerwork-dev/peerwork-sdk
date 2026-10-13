@@ -152,6 +152,38 @@ pub(crate) fn backed_up_rows(
     discovery: &ParsedDiscovery,
     trusted_local_key_ids: &[String],
 ) -> Result<Vec<TsImportRow>, TsMigrationError> {
+    let saved = checked_backup_snapshot(source_path, backup_path)?;
+    let old_context = peerwork_core::discovery::parse_discovery_wire(
+        saved.context.as_bytes(),
+        crate::transport::MAX_DISCOVERY_BYTES,
+    )
+    .map_err(|_| TsMigrationError::Incompatible)?;
+    if !discovery.permits_update_from(&old_context) {
+        return Err(TsMigrationError::Incompatible);
+    }
+    saved
+        .rows
+        .iter()
+        .map(|row| prepare_row(row, discovery, trusted_local_key_ids))
+        .collect()
+}
+
+/// Make a checked, protected SQLite copy before the old source can disappear.
+/// The copy remains inert: no native command is imported or submitted here.
+/// The caller must keep the old writer quiescent through its final source
+/// digest check, and bind this returned digest to the selected attach row.
+pub(crate) fn checked_backup_snapshot_allow_pending(
+    source_path: &Path,
+    backup_path: &Path,
+) -> Result<String, TsMigrationError> {
+    checked_backup_snapshot(source_path, backup_path)?;
+    source_snapshot_digest_allow_pending(backup_path)
+}
+
+fn checked_backup_snapshot(
+    source_path: &Path,
+    backup_path: &Path,
+) -> Result<TsSnapshot, TsMigrationError> {
     if source_path == backup_path || !source_path.is_absolute() || !backup_path.is_absolute() {
         return Err(TsMigrationError::BackupConflict);
     }
@@ -201,19 +233,7 @@ pub(crate) fn backed_up_rows(
     if before != saved || before != after {
         return Err(TsMigrationError::Incompatible);
     }
-    let old_context = peerwork_core::discovery::parse_discovery_wire(
-        saved.context.as_bytes(),
-        crate::transport::MAX_DISCOVERY_BYTES,
-    )
-    .map_err(|_| TsMigrationError::Incompatible)?;
-    if !discovery.permits_update_from(&old_context) {
-        return Err(TsMigrationError::Incompatible);
-    }
-    saved
-        .rows
-        .iter()
-        .map(|row| prepare_row(row, discovery, trusted_local_key_ids))
-        .collect()
+    Ok(saved)
 }
 
 fn read_snapshot(db: &Connection) -> Result<TsSnapshot, TsMigrationError> {
@@ -808,6 +828,9 @@ mod tests {
             (2, 1)
         );
         assert_eq!(fs::read(&source_path).unwrap(), original_source);
+        let copied_digest = checked_backup_snapshot_allow_pending(&source_path, &backup_path).unwrap();
+        assert_eq!(copied_digest, source_snapshot_digest_allow_pending(&source_path).unwrap());
+        assert_eq!(copied_digest, source_snapshot_digest_allow_pending(&backup_path).unwrap());
         assert_eq!(
             native
                 .exact_request_for_test(&pending_id)

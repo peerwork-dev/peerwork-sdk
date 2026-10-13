@@ -45,6 +45,12 @@ impl KernelIdentity {
     /// its PREPARED source binding; the source file is never modified.
     pub(crate) fn inspect_pkcs8_pem_file(source_path: &Path) -> Result<Self, KernelIdentityError> {
         let bytes = read_private_file_bounded(source_path, 2048)?;
+        Self::inspect_pkcs8_pem_bytes(&bytes)
+    }
+    /// Revalidate a protected copy of the exact legacy PEM after its original
+    /// file is unavailable. The bytes must already have passed a protected
+    /// store read and remain private to the migration path.
+    pub(crate) fn inspect_pkcs8_pem_bytes(bytes: &[u8]) -> Result<Self, KernelIdentityError> {
         let pem = std::str::from_utf8(&bytes).map_err(|_| KernelIdentityError::InvalidPemSource)?;
         validate_single_private_pem(pem)?;
         let parsed =
@@ -62,6 +68,15 @@ impl KernelIdentity {
             return Err(KernelIdentityError::InvalidPemSource);
         }
         let bytes = read_private_file_bounded(source_path, 2048)?;
+        Self::import_pkcs8_pem_bytes(path, &bytes)
+    }
+    /// Import a separately protected, digest-bound legacy PEM copy. This
+    /// retains the same strict PEM checks as direct file import and never
+    /// changes the signature or creates a fresh Owner key.
+    pub(crate) fn import_pkcs8_pem_bytes(
+        path: &Path,
+        bytes: &[u8],
+    ) -> Result<Self, KernelIdentityError> {
         let pem = std::str::from_utf8(&bytes).map_err(|_| KernelIdentityError::InvalidPemSource)?;
         validate_single_private_pem(pem)?;
         let parsed =
@@ -365,5 +380,11 @@ mod tests {
             .is_err());
         }
         assert_eq!(fs::read(&target_path).is_ok(), true);
+        fs::remove_file(&source_path).unwrap();
+        let copied = KernelIdentity::import_pkcs8_pem_bytes(
+            &dir.path().join("copied-identity.state"), &original,
+        ).unwrap();
+        assert_eq!(copied.key_id(), imported.key_id());
+        assert_eq!(KernelIdentity::inspect_pkcs8_pem_bytes(&original).unwrap().actor_id(), copied.actor_id());
     }
 }

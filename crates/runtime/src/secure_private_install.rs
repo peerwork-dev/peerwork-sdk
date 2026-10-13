@@ -40,6 +40,9 @@ use tokio_util::sync::CancellationToken;
 #[cfg(test)]
 static TEST_CRASH_AFTER_BEGIN_ROW: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+pub(crate) static TEST_STOP_AFTER_IMPORTED_LATER_STAGE_ROW: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 fn test_crash_after_begin_row() -> Result<(), PrivatePackageInstallError> {
     #[cfg(test)]
@@ -963,7 +966,7 @@ fn reject_saved_begin_id(
     Ok(())
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StageStep {
     command_id: String,
@@ -971,9 +974,14 @@ struct StageStep {
     request_b64: String,
     commit_hash: String,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StageRow {
+    /// Imported historical rows are invisible to ordinary stage discovery
+    /// and continuation. Only the matching attach's root-locked recovery may
+    /// operate on them after its PREPARED consent has been saved.
+    #[serde(default)]
+    import_attach_id: Option<String>,
     material_b64: String,
     source_checkpoint_json: String,
     policy_hash: String,
@@ -983,6 +991,16 @@ struct StageRow {
     part_count: usize,
     steps: Vec<StageStep>,
     completed: bool,
+}
+
+/// Internal attach output. Earlier requests reconstructed from authenticated
+/// signed replay are never represented as original HTTP transport bytes;
+/// the selected uncertain step retains its actual saved request bytes.
+pub(crate) struct ImportedHistoricalStageStep {
+    pub command_id: String,
+    pub issued_at_ms: u64,
+    pub request_wire: Vec<u8>,
+    pub commit_hash: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -2227,10 +2245,80 @@ impl SecurePrivatePackageInstall {
             &scope.owner_actor_id,
             &scope.owner_key_id,
         )?;
-        let rows:Vec<_>=doc.rows.iter().map(|(id,row)|serde_json::json!({"stage_id":id,"workspace_id":doc.workspace_id,
+        let rows:Vec<_>=doc.rows.iter().filter(|(_,row)| row.import_attach_id.is_none()).map(|(id,row)|serde_json::json!({"stage_id":id,"workspace_id":doc.workspace_id,
             "source_id":row.source_id,"root_package_digest":row.root_package_digest,"protocol_digest":row.protocol_digest,
             "part_count":row.part_count,"saved_steps":row.steps.len(),"locally_verified_complete":row.completed})).collect();
         serde_json::to_string(&rows).map_err(|_| PrivatePackageInstallError::Encoding)
+    }
+
+    /// Save an attach-provenance stage row only after the matching PREPARED
+    /// attachment is durable. This method makes no network request and does
+    /// not grant ordinary stage APIs access to the imported packet.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn save_imported_stage_row_for_attach(
+        &self,
+        attach_id: &str,
+        stage_id: &str,
+        material: &[u8],
+        source_checkpoint_json: &str,
+        policy_hash: &str,
+        source_id: &str,
+        root_package_digest: &str,
+        protocol_digest: &str,
+        part_count: usize,
+        steps: Vec<ImportedHistoricalStageStep>,
+    ) -> Result<(), PrivatePackageInstallError> {
+        if !token(attach_id) || !token(stage_id)
+            || material.is_empty() || material.len() > 8 * 1024 * 1024
+            || !digest(policy_hash) || !digest(source_id)
+            || !digest(root_package_digest) || !digest(protocol_digest)
+            || part_count == 0 || part_count > peerwork_core::prepared_private_install::MAX_PACKAGE_SOURCE_PARTS
+            || steps.is_empty() || steps.len() > part_count
+            || steps.iter().any(|step| !token(&step.command_id)
+                || !digest(&step.commit_hash) || step.request_wire.is_empty()
+                || step.request_wire.len() > 262_144)
+        {
+            return Err(PrivatePackageInstallError::Input);
+        }
+        let checkpoint = parse_wire_json_bounded(source_checkpoint_json.as_bytes(), 32, 8192)
+            .map_err(|_| PrivatePackageInstallError::Input)?;
+        if number(&checkpoint, "sequence").is_err()
+            || scalar(&checkpoint, "head").is_err()
+            || scalar(&checkpoint, "policy_hash")? != policy_hash
+        {
+            return Err(PrivatePackageInstallError::Input);
+        }
+        let identity = KernelIdentity::open(&self.config.identity_path)
+            .map_err(|_| PrivatePackageInstallError::Identity)?;
+        if self.config.owner_actor_id.as_deref() != Some(identity.actor_id())
+            || self.config.owner_key_id.as_deref() != Some(identity.key_id()) {
+            return Err(PrivatePackageInstallError::Identity);
+        }
+        let row = StageRow {
+            import_attach_id: Some(attach_id.into()),
+            material_b64: base64url(material),
+            source_checkpoint_json: source_checkpoint_json.into(),
+            policy_hash: policy_hash.into(), source_id: source_id.into(),
+            root_package_digest: root_package_digest.into(),
+            protocol_digest: protocol_digest.into(), part_count,
+            steps: steps.into_iter().map(|step| StageStep {
+                command_id: step.command_id, issued_at_ms: step.issued_at_ms,
+                request_b64: base64url(&step.request_wire), commit_hash: step.commit_hash,
+            }).collect(),
+            completed: false,
+        };
+        let store = SecureStateStore::open(&self.config.state_dir.join("private-install.state"))?;
+        let mut doc = StageDocument::open(
+            &store, &self.config, identity.actor_id(), identity.actor_id(), identity.key_id(),
+        )?;
+        match doc.rows.get(stage_id) {
+            Some(existing) if existing == &row => Ok(()),
+            Some(_) => Err(PrivatePackageInstallError::Plan),
+            None => {
+                doc.rows.insert(stage_id.into(), row);
+                doc.save(&store)
+            }
+        }
     }
 
     pub fn stage_package_json(
@@ -2277,7 +2365,7 @@ impl SecurePrivatePackageInstall {
         let issued_at = input.issued_at_ms.map(Ok).unwrap_or_else(now_ms)?;
         let result =
             SecureReadProfile::new(self.config.clone()).with_latest_replay(cancel, |source| {
-                self.stage_from_replay(source, &input, &stage_id, &command_id, issued_at, expected_source_id, cancel)
+                self.stage_from_replay(source, &input, &stage_id, &command_id, issued_at, expected_source_id, None, cancel)
             })?;
         serde_json::to_string(&result).map_err(|_| PrivatePackageInstallError::Encoding)
     }
@@ -2293,6 +2381,82 @@ impl SecurePrivatePackageInstall {
     pub fn continue_stage_json_with_cancel(
         &self,
         stage_id: &str,
+        cancel: &CancellationToken,
+    ) -> Result<String, PrivatePackageInstallError> {
+        self.continue_stage_for_attach(stage_id, None, cancel)
+    }
+
+    /// The Owner attach caller holds its root recovery lock and has re-proved
+    /// the exact imported packet, material and signed prefix before invoking
+    /// this restricted continuation. The row keeps its attach provenance.
+    pub(crate) fn continue_imported_stage_json_with_cancel(
+        &self,
+        stage_id: &str,
+        attach_id: &str,
+        cancel: &CancellationToken,
+    ) -> Result<String, PrivatePackageInstallError> {
+        if !token(attach_id) { return Err(PrivatePackageInstallError::Input); }
+        self.continue_stage_for_attach(stage_id, Some(attach_id), cancel)
+    }
+
+    /// Return the exact final saved step only after this attach-owned row has
+    /// reconciled every part with signed replay. The caller must additionally
+    /// verify the complete source and current Owner authority before unlock.
+    pub(crate) fn imported_stage_final_step_for_attach(
+        &self,
+        stage_id: &str,
+        attach_id: &str,
+        source_id: &str,
+        part_count: usize,
+    ) -> Result<(String, String), PrivatePackageInstallError> {
+        if !token(stage_id) || !token(attach_id) || !digest(source_id) {
+            return Err(PrivatePackageInstallError::Input);
+        }
+        let identity = KernelIdentity::open(&self.config.identity_path)
+            .map_err(|_| PrivatePackageInstallError::Identity)?;
+        let store = SecureStateStore::open(&self.config.state_dir.join("private-install.state"))?;
+        let doc = StageDocument::open(
+            &store, &self.config, identity.actor_id(), identity.actor_id(), identity.key_id(),
+        )?;
+        let row = doc.rows.get(stage_id).ok_or(PrivatePackageInstallError::Plan)?;
+        if row.import_attach_id.as_deref() != Some(attach_id)
+            || row.source_id != source_id || row.part_count != part_count
+            || !row.completed || row.steps.len() != part_count
+        {
+            return Err(PrivatePackageInstallError::Plan);
+        }
+        let final_step = row.steps.last().ok_or(PrivatePackageInstallError::Plan)?;
+        Ok((final_step.command_id.clone(), final_step.commit_hash.clone()))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn imported_stage_saved_step_for_attach(
+        &self,
+        stage_id: &str,
+        attach_id: &str,
+        index: usize,
+    ) -> Result<(String, String, String), PrivatePackageInstallError> {
+        let identity = KernelIdentity::open(&self.config.identity_path)
+            .map_err(|_| PrivatePackageInstallError::Identity)?;
+        let store = SecureStateStore::open(&self.config.state_dir.join("private-install.state"))?;
+        let doc = StageDocument::open(
+            &store, &self.config, identity.actor_id(), identity.actor_id(), identity.key_id(),
+        )?;
+        let row = doc.rows.get(stage_id).ok_or(PrivatePackageInstallError::Plan)?;
+        if row.import_attach_id.as_deref() != Some(attach_id)
+            || index >= row.part_count {
+            return Err(PrivatePackageInstallError::Plan);
+        }
+        let step = row.steps.get(index).ok_or(PrivatePackageInstallError::Plan)?;
+        let exact = decode_base64url(&step.request_b64)
+            .map_err(|_| PrivatePackageInstallError::Plan)?;
+        Ok((step.command_id.clone(), step.commit_hash.clone(), sha256_hex(&exact)))
+    }
+
+    fn continue_stage_for_attach(
+        &self,
+        stage_id: &str,
+        expected_import_attach_id: Option<&str>,
         cancel: &CancellationToken,
     ) -> Result<String, PrivatePackageInstallError> {
         if !token(stage_id) {
@@ -2320,6 +2484,9 @@ impl SecurePrivatePackageInstall {
             .rows
             .get(stage_id)
             .ok_or(PrivatePackageInstallError::Input)?;
+        if row.import_attach_id.as_deref() != expected_import_attach_id {
+            return Err(PrivatePackageInstallError::Plan);
+        }
         let material = decode_base64url(&row.material_b64)
             .map_err(|_| PrivatePackageInstallError::Identity)?;
         let input = PrivatePackageStageInput {
@@ -2335,7 +2502,7 @@ impl SecurePrivatePackageInstall {
         drop(store);
         let result = SecureReadProfile::new(self.config.clone())
             .with_latest_replay(cancel, |source| {
-                self.stage_from_replay(source, &input, stage_id, stage_id, 0, None, cancel)
+                self.stage_from_replay(source, &input, stage_id, stage_id, 0, None, expected_import_attach_id, cancel)
             })?;
         serde_json::to_string(&result).map_err(|_| PrivatePackageInstallError::Encoding)
     }
@@ -2402,7 +2569,7 @@ impl SecurePrivatePackageInstall {
         drop(store);
         let result = SecureReadProfile::new(self.config.clone())
             .with_latest_replay(cancel, |source| {
-                self.stage_from_replay(source, &input, stage_id, command_id, issued_at_ms, Some(source_id), cancel)
+                self.stage_from_replay(source, &input, stage_id, command_id, issued_at_ms, Some(source_id), None, cancel)
             })?;
         Ok(Some(serde_json::to_string(&result)
             .map_err(|_| PrivatePackageInstallError::Encoding)?))
@@ -2416,6 +2583,7 @@ impl SecurePrivatePackageInstall {
         command_id: &str,
         issued_at: u64,
         expected_source_id: Option<&str>,
+        expected_import_attach_id: Option<&str>,
         cancel: &CancellationToken,
     ) -> Result<PrivatePackageStageResult, PrivatePackageInstallError> {
         source
@@ -2497,6 +2665,7 @@ impl SecurePrivatePackageInstall {
                 return Err(PrivatePackageInstallError::Input);
             };
             let row = StageRow {
+                import_attach_id: expected_import_attach_id.map(str::to_owned),
                 material_b64: base64url(input.material_json.as_bytes()),
                 source_checkpoint_json: source.checkpoint_canonical_json().to_owned(),
                 policy_hash: source.replay().policy_hash().to_owned(),
@@ -2520,6 +2689,9 @@ impl SecurePrivatePackageInstall {
             .get(stage_id)
             .cloned()
             .ok_or(PrivatePackageInstallError::Identity)?;
+        if row.import_attach_id.as_deref() != expected_import_attach_id {
+            return Err(PrivatePackageInstallError::Plan);
+        }
         if input.command_id.is_some() && row.steps.first().map(|step| step.command_id.as_str()) != Some(command_id)
             || input.issued_at_ms.is_some() && row.steps.first().map(|step| step.issued_at_ms) != Some(issued_at)
         {
@@ -2622,6 +2794,13 @@ impl SecurePrivatePackageInstall {
             });
             doc.rows.insert(stage_id.to_owned(), row.clone());
             doc.save(&store)?;
+            #[cfg(test)]
+            if expected_import_attach_id.is_some()
+                && TEST_STOP_AFTER_IMPORTED_LATER_STAGE_ROW.swap(
+                    false, std::sync::atomic::Ordering::SeqCst,
+                ) {
+                return Err(PrivatePackageInstallError::Runtime);
+            }
         }
         let step = &row.steps[applied];
         let material = decode_base64url(&row.material_b64)

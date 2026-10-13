@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 
 const [origin, sourceDir, legacyRoot, mode = 'clean'] = process.argv.slice(2);
 if (!origin || !sourceDir || !legacyRoot) throw new Error('LEGACY_TEST_INPUT_REQUIRED');
-if (!['clean', 'completed', 'legacy-record', 'pending', 'pending-before-post', 'pending-private-structured', 'pending-private-structured-before-post', 'pending-public', 'pending-public-before-post', 'pending-public-structured', 'pending-public-structured-before-post', 'pending-current-private', 'pending-current-private-before-post', 'pending-current-private-structured', 'pending-current-private-structured-before-post', 'pending-current-private-structured-ceiling2', 'pending-current-private-structured-ceiling2-before-post', 'pending-current-public', 'pending-current-public-before-post', 'pending-current-public-structured', 'pending-current-public-structured-before-post', 'stage-marker-completed', 'stage-marker-pending', 'stage-marker-mismatch', 'stage-marker-command-mismatch', 'stage-marker-before-post', 'stage-marker-orphan', 'stage-marker-multipart-final', 'stage-marker-multipart-intermediate', 'stage-marker-multipart-final-later', 'kernel-jws-source', 'unknown-store', 'malformed-store', 'legacy-structured', 'legacy-public', 'legacy-public-structured', 'legacy-public-record', 'legacy-public-structured-record', 'private-missing-ring'].includes(mode)) throw new Error('LEGACY_TEST_MODE_INVALID');
+if (!['clean', 'completed', 'legacy-record', 'pending', 'pending-before-post', 'pending-private-structured', 'pending-private-structured-before-post', 'pending-public', 'pending-public-before-post', 'pending-public-structured', 'pending-public-structured-before-post', 'pending-current-private', 'pending-current-private-before-post', 'pending-current-private-structured', 'pending-current-private-structured-before-post', 'pending-current-private-structured-ceiling2', 'pending-current-private-structured-ceiling2-before-post', 'pending-current-public', 'pending-current-public-before-post', 'pending-current-public-structured', 'pending-current-public-structured-before-post', 'stage-marker-completed', 'stage-marker-pending', 'stage-marker-mismatch', 'stage-marker-command-mismatch', 'stage-marker-before-post', 'stage-marker-orphan', 'stage-marker-multipart-final', 'stage-marker-multipart-intermediate', 'stage-marker-multipart-final-later', 'stage-marker-multipart-pending-applied-index1', 'stage-marker-multipart-pending-before-post-index1', 'kernel-jws-source', 'unknown-store', 'malformed-store', 'legacy-structured', 'legacy-public', 'legacy-public-structured', 'legacy-public-record', 'legacy-public-structured-record', 'private-missing-ring'].includes(mode)) throw new Error('LEGACY_TEST_MODE_INVALID');
 mkdirSync(sourceDir, { recursive: true, mode: 0o700 });
 const { privateKey } = generateKeyPairSync('ed25519');
 const pemPath = join(sourceDir, 'owner.pem');
@@ -65,6 +65,8 @@ try {
   let stagePartSha = null;
   let stageSignedCommandId = null;
   let orphanStageMaterialJson = null;
+  let pendingStageMaterialJson = null;
+  let wrongPendingStageMaterialJson = null;
   if (mode.startsWith('stage-marker-')) {
     const { parseProtocolPackage, PROTOCOL_PACKAGE_FORMAT } = await import(pathToFileURL(join(legacyRoot, 'dist-workspace/src/protocol-package.js')).href);
     const { createProtocolPackageClosure } = await import(pathToFileURL(join(legacyRoot, 'dist-workspace/src/protocol-package-closure.js')).href);
@@ -80,24 +82,42 @@ try {
     };
     walk(directory);
     const multipart = mode.startsWith('stage-marker-multipart-');
+    const pendingMultipart = mode.startsWith('stage-marker-multipart-pending-');
     // Documentation is package material but not a protocol behavior change.
     // This remains within the pinned package file budget and makes two real
     // source parts under the f828 64 KiB per-part limit.
-    if (multipart) files['README.md'] += '\n' + 'A'.repeat(70000);
+    if (multipart) files['README.md'] += '\n' + 'A'.repeat(pendingMultipart ? 150000 : 70000);
     const bundle = parseProtocolPackage({ format: PROTOCOL_PACKAGE_FORMAT, files });
     const material = { v: 1, closure: createProtocolPackageClosure(bundle, []), bindings: {} };
     if (mode === 'stage-marker-orphan') orphanStageMaterialJson = JSON.stringify(material);
+    if (pendingMultipart) {
+      pendingStageMaterialJson = JSON.stringify(material);
+      const wrongBundle = parseProtocolPackage({
+        format: PROTOCOL_PACKAGE_FORMAT,
+        files: { ...files, 'README.md': files['README.md'] + '\nDifferent source material' },
+      });
+      wrongPendingStageMaterialJson = JSON.stringify({
+        v: 1, closure: createProtocolPackageClosure(wrongBundle, []), bindings: {},
+      });
+    }
     const staged = createProtocolPackageSource(material, journal.checkpoint);
-    if (staged.parts.length !== (multipart ? 2 : 1)) throw new Error('TEST_STAGE_PART_COUNT_UNEXPECTED');
+    if (pendingMultipart) {
+      const wrongStaged = createProtocolPackageSource(JSON.parse(wrongPendingStageMaterialJson), journal.checkpoint);
+      if (wrongStaged.parts.length !== staged.parts.length || wrongStaged.proof.source_id === staged.proof.source_id) {
+        throw new Error('TEST_ALTERNATE_STAGE_MATERIAL_NOT_DISTINCT');
+      }
+    }
+    if (pendingMultipart ? staged.parts.length < 3 : staged.parts.length !== (multipart ? 2 : 1)) throw new Error('TEST_STAGE_PART_COUNT_UNEXPECTED');
     stagePartCount = staged.parts.length;
     stageParts = staged.proof.parts;
     const originalPost = agent.post.bind(agent);
     const originalRequest = agent.request.bind(agent);
-    const beforePost = mode === 'stage-marker-before-post';
+    const beforePost = mode === 'stage-marker-before-post' || mode === 'stage-marker-multipart-pending-before-post-index1';
     const orphan = mode === 'stage-marker-orphan';
     const applied = !beforePost && !orphan;
     const stopAt = multipart && mode !== 'stage-marker-multipart-intermediate' ? 2 : 1;
     let stopped = false;
+    let dropArmed = false;
     let stagePosts = 0;
     let submittedCommand = null;
     agent.post = async (...args) => {
@@ -108,6 +128,11 @@ try {
       if (orphan && !stopped) {
         stopped = true;
         throw new Error('TEST_STOP_AFTER_STAGE_MARKER_SAVE');
+      }
+      if (mode === 'stage-marker-multipart-pending-applied-index1' && stagePosts === 2) {
+        const hook = await fetch(new URL('/__test/drop-next-post', origin), { method: 'POST', body: '{}' });
+        if (!hook.ok) throw new Error('TEST_STAGE_DROP_HOOK_FAILED');
+        dropArmed = true;
       }
       const result = await originalPost(...args);
       if ((mode === 'stage-marker-completed' || mode === 'stage-marker-mismatch' || mode === 'stage-marker-command-mismatch' || multipart) && !stopped && stagePosts === stopAt) {
@@ -122,7 +147,7 @@ try {
     }
     if (beforePost) {
       agent.request = async (path, options) => {
-        if (!stopped && path === `/api/workspace/v1/secure/workspaces/${created.workspaceId}/commits` && options?.method === 'POST') {
+        if (!stopped && (!pendingMultipart || stagePosts === 2) && path === `/api/workspace/v1/secure/workspaces/${created.workspaceId}/commits` && options?.method === 'POST') {
           stopped = true;
           throw new Error('TEST_STOP_BEFORE_STAGE_POST');
         }
@@ -135,23 +160,40 @@ try {
     } catch (error) {
       const expected = orphan ? 'TEST_STOP_AFTER_STAGE_MARKER_SAVE'
         : beforePost ? 'TEST_STOP_BEFORE_STAGE_POST'
-        : mode === 'stage-marker-pending' ? null : 'TEST_STOP_AFTER_STAGE_POST';
+        : mode === 'stage-marker-pending' || pendingMultipart ? null : 'TEST_STOP_AFTER_STAGE_POST';
       if (expected ? error?.message !== expected : error?.message === 'TEST_STAGE_DID_NOT_INTERRUPT') throw error;
     } finally { agent.post = originalPost; agent.request = originalRequest; }
-    if ((beforePost || orphan || mode !== 'stage-marker-pending') && !stopped) throw new Error('TEST_STAGE_STOP_NOT_REACHED');
+    if ((beforePost || orphan || (mode !== 'stage-marker-pending' && !pendingMultipart)) && !stopped) throw new Error('TEST_STAGE_STOP_NOT_REACHED');
     const markers = Object.values(agent.state.package_stage_intents ?? {});
     if (markers.length !== 1) throw new Error('TEST_STAGE_MARKER_MISSING');
     stageMarker = markers[0];
+    if (pendingMultipart && (stagePosts !== 2 || stageMarker.part_index !== 1 || (mode.endsWith('applied-index1') && !dropArmed))) {
+      throw new Error('TEST_STAGE_PENDING_INDEX1_NOT_REACHED');
+    }
     stagePartId = staged.proof.parts[stageMarker.part_index]?.id;
     stagePartSha = staged.proof.parts[stageMarker.part_index]?.sha256;
     if (submittedCommand?.command_id !== stageMarker.command_id
       || submittedCommand.action_id !== 'secure.protocol-package.stage') throw new Error('TEST_STAGE_COMMAND_BINDING_MISSING');
     stageSignedCommandId = applied ? submittedCommand.command_id : null;
-    const expectedPending = mode === 'stage-marker-pending' || beforePost ? 1 : 0;
+    const expectedPending = mode === 'stage-marker-pending' || beforePost || pendingMultipart ? 1 : 0;
     if (Object.keys(agent.state.pending).length !== expectedPending) throw new Error('TEST_STAGE_PENDING_CLASS_MISMATCH');
     if (expectedPending && Object.keys(agent.state.pending)[0] !== stageMarker.command_id) throw new Error('TEST_STAGE_SAVED_ID_MISMATCH');
     journal = await agent.journal(created.workspaceId);
-    if (journal.checkpoint.sequence !== staged.proof.source.sequence + (applied ? stopAt : 0)) throw new Error('TEST_STAGE_SIGNED_COMMIT_CLASS_MISMATCH');
+    const expectedAppliedParts = pendingMultipart ? (beforePost ? 1 : 2) : (applied ? stopAt : 0);
+    if (journal.checkpoint.sequence !== staged.proof.source.sequence + expectedAppliedParts) throw new Error('TEST_STAGE_SIGNED_COMMIT_CLASS_MISMATCH');
+    if (pendingMultipart) {
+      verifyStagedPackageCheckpoint(journal, staged.proof);
+      const signedPrefix = journal.operations.slice(-expectedAppliedParts);
+      for (let index = 0; index < expectedAppliedParts; index++) {
+        const operation = signedPrefix[index];
+        const part = operation?.objects?.[0];
+        if (operation?.kind !== 'ADMIN' || operation.input?.package_stage?.source_id !== staged.proof.source_id
+          || operation.input.package_stage.part_index !== index || operation.objects?.length !== 1
+          || part?.id !== staged.proof.parts[index]?.id || part.value?.sha256 !== staged.proof.parts[index]?.sha256) {
+          throw new Error('TEST_STAGE_SIGNED_PREFIX_MISMATCH');
+        }
+      }
+    }
     if (applied) {
       const stageOperation = journal.operations.at(-1);
       if (stageOperation?.input?.package_stage?.source_id !== stageMarker.source_id
@@ -282,9 +324,11 @@ try {
     } : null,
     stage_part_count: stagePartCount,
     stage_parts: stageParts,
-    stage_applied: mode.startsWith('stage-marker-') ? !['stage-marker-before-post', 'stage-marker-orphan'].includes(mode) : null,
+    stage_applied: mode.startsWith('stage-marker-') ? !['stage-marker-before-post', 'stage-marker-orphan', 'stage-marker-multipart-pending-before-post-index1'].includes(mode) : null,
     stage_signed_command_id: stageSignedCommandId,
     orphan_stage_material_json: orphanStageMaterialJson,
+    pending_stage_material_json: pendingStageMaterialJson,
+    wrong_pending_stage_material_json: wrongPendingStageMaterialJson,
     kernel_source: kernelSource,
     completed_identity_updates: Object.values(agent.state.identity_key_intents ?? {}).filter(row => row.state === 'PUBLISHED').length,
     prior_record_id: priorRecordId,

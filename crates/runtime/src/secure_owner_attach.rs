@@ -8,7 +8,7 @@ use crate::{
     secure_intents::{SecureIntentError, SecureIntentJournal, SecurePacketInput},
     secure_lifecycle::SecureLifecycle,
     secure_owner_create::{SecureOwnerCreateConfig, SecureOwnerWorkspaceCreate},
-    secure_private_install::{PrivatePackageStageInput, SecurePrivatePackageInstall},
+    secure_private_install::{ImportedHistoricalStageStep, PrivatePackageStageInput, SecurePrivatePackageInstall},
     secure_read_access::{SecureReadAccess, SecureReadConfig},
     secure_read_profile::{SecureReadProfile, SecureReadProfileConfig},
     secure_state::{read_private_file_bounded, SecureStateStore},
@@ -17,7 +17,7 @@ use crate::{
 };
 use peerwork_core::{
     canonical::Path as CanonicalPath,
-    crypto::sha256_hex,
+    crypto::{base64url, sha256, sha256_hex},
     prepared_secure_request::{
         verify_prepared_secure_commit_request_with_policy, SecureCommitRequestPins,
     },
@@ -52,6 +52,8 @@ static TEST_STOP_AFTER_IMPORTED_ACTION_ACCEPTED: AtomicBool = AtomicBool::new(fa
 static TEST_STOP_AFTER_RETAINED_ACTION_INTENT: AtomicBool = AtomicBool::new(false);
 #[cfg(test)]
 static TEST_STOP_AFTER_ORPHAN_REPLAN_INTENT: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+static TEST_STOP_AFTER_IMPORTED_MULTIPART_STAGE_ROW: AtomicBool = AtomicBool::new(false);
 
 const MAX_SOURCE: usize = 64 * 1024 * 1024;
 const MAX_HISTORY: usize = 4096;
@@ -119,6 +121,8 @@ pub struct HistoricalOwnerAttachResult {
     #[serde(default)]
     pub pending_package_stage_status: Option<String>,
     #[serde(default)]
+    pub pending_package_stage_id: Option<String>,
+    #[serde(default)]
     pub orphan_package_stage_command_id: Option<String>,
     #[serde(default)]
     pub orphan_package_stage_status: Option<String>,
@@ -162,6 +166,12 @@ pub struct HistoricalPackageStagePendingInventory {
     pub source_id: String,
     pub source_sha256: String,
     pub source_sequence: u64,
+    #[serde(default)]
+    pub part_index: usize,
+    #[serde(default)]
+    pub part_count: Option<usize>,
+    #[serde(default)]
+    pub original_commit_hash: Option<String>,
     /// Local advisory only. PENDING does not prove that the server has not
     /// applied the exact signed packet.
     pub status: String,
@@ -272,6 +282,8 @@ struct SavedAttach {
     #[serde(default)]
     pending_package_stage: Option<SavedPendingPackageStage>,
     #[serde(default)]
+    pending_multipart_plan_id: Option<String>,
+    #[serde(default)]
     orphan_package_stage: Option<SavedOrphanPackageStage>,
 }
 
@@ -293,9 +305,9 @@ struct SavedOrphanReplan {
     command_id: String,
     issued_at_ms: u64,
     material_sha256: String,
-    proof_sha256: String,
     root_package_digest: String,
     protocol_digest: String,
+    proof_sha256: String,
     #[serde(default)]
     accepted_in_signed_replay: bool,
 }
@@ -310,6 +322,56 @@ struct SavedPendingPackageStage {
     path: String,
     commit_hash: String,
     accepted_in_signed_replay: bool,
+    #[serde(default)]
+    part_index: usize,
+    #[serde(default = "one_part")]
+    part_count: usize,
+    /// Old one-part rows predate this field; accepted there meant complete.
+    #[serde(default = "true_value")]
+    complete_source_verified: bool,
+}
+
+fn one_part() -> usize { 1 }
+fn true_value() -> bool { true }
+
+fn imported_multipart_stage_id(plan_id: &str) -> String {
+    base64url(&sha256(format!("peerwork.owner.imported-stage.v1:{plan_id}").as_bytes()))
+}
+
+/// An inert, attach-owned copy of every local input needed after PREPARED.
+/// The manifest is written last; ordinary staging cannot enumerate this
+/// directory or treat it as a StageRow. The caller holds the Owner root lock.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct QuarantinedMultipartPlan {
+    version: u8,
+    origin: String,
+    plan_id: String,
+    stage_id: String,
+    workspace_id: String,
+    owner_actor_id: String,
+    owner_key_id: String,
+    command_id: String,
+    original_commit_hash: String,
+    source_sequence: u64,
+    source_head: Option<String>,
+    source_policy_hash: String,
+    ts_state_sha256: String,
+    owner_pem_sha256: String,
+    ts_intent_sha256: String,
+    material_sha256: String,
+    root_package_digest: String,
+    protocol_digest: String,
+    part_index: usize,
+    part_count: usize,
+}
+
+struct LoadedMultipartPlan {
+    manifest: QuarantinedMultipartPlan,
+    source: LegacySource,
+    pem: Zeroizing<Vec<u8>>,
+    material: Zeroizing<Vec<u8>>,
+    intent_backup_path: PathBuf,
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -357,6 +419,15 @@ struct LegacyPendingPackageStage {
     marker: CompletedPackageStageMarker,
     path: String,
     request: Zeroizing<Vec<u8>>,
+}
+
+struct VerifiedPendingMultipart {
+    applied: bool,
+    original_commit_hash: String,
+    canonical_material: String,
+    part_count: usize,
+    root_package_digest: String,
+    protocol_digest: String,
 }
 
 const STAGE_PREFLIGHT_MARKER: &[u8] = b"peerwork.owner.stage-preflight.v1\n";
@@ -594,8 +665,313 @@ impl SecureHistoricalOwnerAttach {
             source_sha256: pending.marker.source_sha256.clone(),
             source_sequence: exact_u64(pending.marker.source.get("sequence"))
                 .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?,
+            part_index: 0,
+            part_count: Some(1),
+            original_commit_hash: None,
             status: if applied { "APPLIED_IN_SIGNED_REPLAY" } else { "PENDING_UNRESOLVED" }.into(),
         })
+    }
+
+    /// Inspect a saved nonzero stage packet only with the full source material.
+    /// The caller's material, earlier signed parts and original packet must
+    /// all match before this returns a selectable source digest. No POST or
+    /// attachment row is created.
+    pub fn inspect_pending_package_stage_with_material(
+        &self,
+        input: &HistoricalOwnerAttachInput,
+        material_json: &str,
+        cancel: &CancellationToken,
+    ) -> Result<HistoricalPackageStagePendingInventory, HistoricalOwnerAttachError> {
+        validate_input(input)?;
+        if cancel.is_cancelled() { return Err(HistoricalOwnerAttachError::Cancelled); }
+        if material_json.is_empty() || material_json.len() > 8 * 1024 * 1024 {
+            return Err(HistoricalOwnerAttachError::Input);
+        }
+        let (source, digest, pem_digest, intent_digest) = self.inspect_sources(input)?;
+        let pending = source.pending_package_stage.as_ref()
+            .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+        if pending.marker.part_index == 0 { return Err(HistoricalOwnerAttachError::Input); }
+        let ring = source.ring.as_ref().ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+        ensure_dir(&self.config.state_dir)?;
+        let _lock = SecureStateStore::open(&self.config.state_dir.join("owner-attach-recovery.state"))
+            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        let verified = self.with_preflight_replay(
+            input, &source, cancel, |replayed, owner| {
+                verify_pending_multipart_package_stage(
+                    pending, material_json.as_bytes(), ring, replayed, owner, input,
+                )
+            },
+        )?;
+        let (_, state_after, pem_after, intent_after) = self.inspect_sources(input)?;
+        if (state_after, pem_after, intent_after) != (digest.clone(), pem_digest, intent_digest) {
+            return Err(HistoricalOwnerAttachError::SourceChanged);
+        }
+        Ok(HistoricalPackageStagePendingInventory {
+            ts_state_digest: digest,
+            command_id: pending.marker.command_id.clone(),
+            source_id: pending.marker.source_id.clone(),
+            source_sha256: pending.marker.source_sha256.clone(),
+            source_sequence: exact_u64(pending.marker.source.get("sequence"))
+                .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?,
+            part_index: pending.marker.part_index,
+            part_count: Some(verified.part_count),
+            original_commit_hash: Some(verified.original_commit_hash),
+            status: if verified.applied { "APPLIED_IN_SIGNED_REPLAY" } else { "PENDING_UNRESOLVED" }.into(),
+        })
+    }
+
+    /// Persist an inert, source-bound recovery plan after complete replay and
+    /// packet proof. The root recovery lock must span this call and the later
+    /// PREPARED history write; this function itself grants no Owner authority.
+    #[allow(clippy::too_many_arguments)]
+    fn save_quarantined_multipart_plan(
+        &self,
+        input: &HistoricalOwnerAttachInput,
+        source: &LegacySource,
+        ts_digest: &str,
+        pem_digest: &str,
+        intent_digest: &str,
+        pending: &LegacyPendingPackageStage,
+        canonical_material: &str,
+        original_commit_hash: &str,
+        part_count: usize,
+        root_package_digest: &str,
+        protocol_digest: &str,
+    ) -> Result<QuarantinedMultipartPlan, HistoricalOwnerAttachError> {
+        if canonical_material.is_empty() || canonical_material.len() > 8 * 1024 * 1024
+            || pending.marker.part_index == 0 || pending.marker.part_index >= part_count
+            || !valid_digest(ts_digest) || !valid_digest(pem_digest)
+            || !valid_digest(intent_digest) || !valid_digest(original_commit_hash)
+            || !valid_digest(root_package_digest) || !valid_digest(protocol_digest)
+        {
+            return Err(HistoricalOwnerAttachError::SourceUnresolved);
+        }
+        let material_digest = sha256_hex(canonical_material.as_bytes());
+        let selection = serde_json::to_vec(&(
+            "peerwork.owner.pending-multipart-plan.v1", &self.config.origin,
+            &input.workspace_id, ts_digest, &pending.marker.command_id, &material_digest,
+        )).map_err(|_| HistoricalOwnerAttachError::Local)?;
+        let plan_id = base64url(&sha256(&selection));
+        let stage_id = imported_multipart_stage_id(&plan_id);
+        let manifest = QuarantinedMultipartPlan {
+            version: 1, origin: self.config.origin.clone(), plan_id: plan_id.clone(), stage_id,
+            workspace_id: input.workspace_id.clone(),
+            owner_actor_id: input.expected_owner_actor_id.clone(),
+            owner_key_id: input.expected_owner_key_id.clone(),
+            command_id: pending.marker.command_id.clone(),
+            original_commit_hash: original_commit_hash.into(),
+            source_sequence: source.sequence, source_head: source.head.clone(),
+            source_policy_hash: source.policy_hash.clone(),
+            ts_state_sha256: ts_digest.into(), owner_pem_sha256: pem_digest.into(),
+            ts_intent_sha256: intent_digest.into(), material_sha256: material_digest,
+            root_package_digest: root_package_digest.into(), protocol_digest: protocol_digest.into(),
+            part_index: pending.marker.part_index, part_count,
+        };
+        let plans_root = self.config.state_dir.join("owner-stage-plans");
+        ensure_dir(&plans_root)?;
+        let directory = plans_root.join(&plan_id);
+        let existed = match std::fs::symlink_metadata(&directory) {
+            Ok(_) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(_) => return Err(HistoricalOwnerAttachError::Local),
+        };
+        ensure_dir(&directory)?;
+        let marker = SecureStateStore::open(&directory.join("plan-marker.state"))
+            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        let marker_wire = format!("peerwork.owner.pending-multipart-plan.v1:{plan_id}\n");
+        match marker.read_exact_secret().map_err(|_| HistoricalOwnerAttachError::Local)? {
+            Some(saved) if saved.as_slice() == marker_wire.as_bytes() => (),
+            Some(_) => return Err(HistoricalOwnerAttachError::Conflict),
+            None if existed => return Err(HistoricalOwnerAttachError::Local),
+            None => marker.write_exact(marker_wire.as_bytes())
+                .map_err(|_| HistoricalOwnerAttachError::Local)?,
+        }
+        drop(marker);
+        let state = read_private_file_bounded(&input.protected_ts_state_path, MAX_SOURCE)
+            .map_err(|_| HistoricalOwnerAttachError::SourceChanged)?;
+        let pem = read_private_file_bounded(&input.protected_owner_pkcs8_path, 2048)
+            .map_err(|_| HistoricalOwnerAttachError::SourceChanged)?;
+        if sha256_hex(&state) != ts_digest || sha256_hex(&pem) != pem_digest {
+            return Err(HistoricalOwnerAttachError::SourceChanged);
+        }
+        let manifest_store = SecureStateStore::open(&directory.join("plan-manifest.state"))
+            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        if let Some(saved) = manifest_store.read_exact_secret()
+            .map_err(|_| HistoricalOwnerAttachError::Local)? {
+            let old: QuarantinedMultipartPlan = serde_json::from_slice(&saved)
+                .map_err(|_| HistoricalOwnerAttachError::Local)?;
+            if old != manifest { return Err(HistoricalOwnerAttachError::Conflict); }
+            for (name, expected) in [
+                ("source-state.state", ts_digest), ("owner-pem.state", pem_digest),
+                ("material.state", manifest.material_sha256.as_str()),
+            ] {
+                let store = SecureStateStore::open(&directory.join(name))
+                    .map_err(|_| HistoricalOwnerAttachError::Local)?;
+                let bytes = store.read_exact_secret().map_err(|_| HistoricalOwnerAttachError::Local)?
+                    .ok_or(HistoricalOwnerAttachError::Local)?;
+                if sha256_hex(&bytes) != expected { return Err(HistoricalOwnerAttachError::Conflict); }
+            }
+        } else {
+            for (name, bytes) in [
+                ("source-state.state", state.as_slice()),
+                ("owner-pem.state", pem.as_slice()),
+                ("material.state", canonical_material.as_bytes()),
+            ] {
+                let store = SecureStateStore::open(&directory.join(name))
+                    .map_err(|_| HistoricalOwnerAttachError::Local)?;
+                store.write_exact(bytes).map_err(|_| HistoricalOwnerAttachError::Local)?;
+            }
+        }
+        let backup_digest = crate::ts_migration::checked_backup_snapshot_allow_pending(
+            &input.protected_ts_intent_db_path, &directory.join("source-intents.sqlite"),
+        ).map_err(|_| HistoricalOwnerAttachError::SourceChanged)?;
+        if backup_digest != intent_digest { return Err(HistoricalOwnerAttachError::SourceChanged); }
+        let (_, ts_after, pem_after, intent_after) = self.inspect_sources(input)?;
+        if (ts_after, pem_after, intent_after) !=
+            (ts_digest.into(), pem_digest.into(), intent_digest.into()) {
+            return Err(HistoricalOwnerAttachError::SourceChanged);
+        }
+        if manifest_store.read_exact_secret().map_err(|_| HistoricalOwnerAttachError::Local)?.is_none() {
+            manifest_store.write_exact(&serde_json::to_vec(&manifest)
+                .map_err(|_| HistoricalOwnerAttachError::Local)?)
+                .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        }
+        Ok(manifest)
+    }
+
+    /// Read only a complete manifest-last plan; partial copy residue never
+    /// becomes an attachment source or stage producer input.
+    fn load_quarantined_multipart_plan(
+        &self,
+        row: &SavedAttach,
+    ) -> Result<LoadedMultipartPlan, HistoricalOwnerAttachError> {
+        let plan_id = row.pending_multipart_plan_id.as_deref()
+            .ok_or(HistoricalOwnerAttachError::Conflict)?;
+        if !valid_token(plan_id) { return Err(HistoricalOwnerAttachError::Local); }
+        let directory = self.config.state_dir.join("owner-stage-plans").join(plan_id);
+        std::fs::symlink_metadata(&directory).map_err(|_| HistoricalOwnerAttachError::Local)?;
+        ensure_dir(&directory)?;
+        let marker = SecureStateStore::open(&directory.join("plan-marker.state"))
+            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        let marker_wire = format!("peerwork.owner.pending-multipart-plan.v1:{plan_id}\n");
+        if marker.read_exact_secret().map_err(|_| HistoricalOwnerAttachError::Local)?
+            .as_deref().map(Vec::as_slice) != Some(marker_wire.as_bytes()) {
+            return Err(HistoricalOwnerAttachError::Local);
+        }
+        drop(marker);
+        let manifest_store = SecureStateStore::open(&directory.join("plan-manifest.state"))
+            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        let manifest_wire = manifest_store.read_exact_secret()
+            .map_err(|_| HistoricalOwnerAttachError::Local)?
+            .ok_or(HistoricalOwnerAttachError::Local)?;
+        let manifest: QuarantinedMultipartPlan = serde_json::from_slice(&manifest_wire)
+            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        if manifest.version != 1 || manifest.origin != self.config.origin
+            || manifest.plan_id != plan_id || !valid_token(&manifest.stage_id)
+            || manifest.workspace_id != row.input.workspace_id
+            || manifest.owner_actor_id != row.input.expected_owner_actor_id
+            || manifest.owner_key_id != row.input.expected_owner_key_id
+            || manifest.ts_state_sha256 != row.ts_state_sha256
+            || manifest.owner_pem_sha256 != row.owner_pem_sha256
+            || manifest.ts_intent_sha256 != row.ts_intent_sha256
+            || manifest.source_sequence != row.source_sequence
+            || manifest.source_head != row.source_head
+            || manifest.source_policy_hash != row.source_policy_hash
+            || row.input.selected_pending_package_stage_command_id.as_deref()
+                != Some(manifest.command_id.as_str())
+            || manifest.part_index == 0 || manifest.part_index >= manifest.part_count
+            || manifest.part_count > MAX_PACKAGE_SOURCE_PARTS
+            || !valid_digest(&manifest.original_commit_hash)
+            || !valid_digest(&manifest.root_package_digest)
+            || !valid_digest(&manifest.protocol_digest)
+        {
+            return Err(HistoricalOwnerAttachError::Conflict);
+        }
+        let load = |name: &str| -> Result<Zeroizing<Vec<u8>>, HistoricalOwnerAttachError> {
+            SecureStateStore::open(&directory.join(name))
+                .map_err(|_| HistoricalOwnerAttachError::Local)?
+                .read_exact_secret().map_err(|_| HistoricalOwnerAttachError::Local)?
+                .ok_or(HistoricalOwnerAttachError::Local)
+        };
+        let state = load("source-state.state")?;
+        let pem = load("owner-pem.state")?;
+        let material = load("material.state")?;
+        if state.len() > MAX_SOURCE || pem.len() > 2048
+            || material.len() > 8 * 1024 * 1024
+            || sha256_hex(&state) != manifest.ts_state_sha256
+            || sha256_hex(&pem) != manifest.owner_pem_sha256
+            || sha256_hex(&material) != manifest.material_sha256
+        {
+            return Err(HistoricalOwnerAttachError::Conflict);
+        }
+        let owner = KernelIdentity::inspect_pkcs8_pem_bytes(&pem)
+            .map_err(|_| HistoricalOwnerAttachError::Identity)?;
+        if owner.actor_id() != manifest.owner_actor_id || owner.key_id() != manifest.owner_key_id {
+            return Err(HistoricalOwnerAttachError::Identity);
+        }
+        let source = parse_legacy_source(&state, &row.input)?;
+        if source.visibility != row.visibility || source.sequence != row.source_sequence
+            || source.head != row.source_head || source.policy_hash != row.source_policy_hash
+            || source.pending_package_stage.as_ref().map(|pending| pending.marker.command_id.as_str())
+                != Some(manifest.command_id.as_str())
+            || source.pending_package_stage.as_ref().map(|pending| pending.marker.part_index)
+                != Some(manifest.part_index)
+        {
+            return Err(HistoricalOwnerAttachError::SourceChanged);
+        }
+        let intent_backup_path = directory.join("source-intents.sqlite");
+        if crate::ts_migration::source_snapshot_digest_allow_pending(&intent_backup_path)
+            .map_err(|_| HistoricalOwnerAttachError::Local)? != manifest.ts_intent_sha256 {
+            return Err(HistoricalOwnerAttachError::Conflict);
+        }
+        Ok(LoadedMultipartPlan { manifest, source, pem, material, intent_backup_path })
+    }
+
+    /// An existing PREPARED multipart row may resume from its digest-bound
+    /// protected copies after all original exports have been removed. If any
+    /// original path is still present, recheck all three against the copied
+    /// source and refuse partial removal or divergence.
+    fn inspect_saved_sources(
+        &self,
+        row: &SavedAttach,
+    ) -> Result<(LegacySource, Option<Zeroizing<Vec<u8>>>, Option<Zeroizing<Vec<u8>>>, PathBuf), HistoricalOwnerAttachError> {
+        if row.pending_multipart_plan_id.is_none() {
+            let (source, state_digest, pem_digest, intent_digest) = self.inspect_sources(&row.input)?;
+            if state_digest != row.ts_state_sha256 || pem_digest != row.owner_pem_sha256
+                || intent_digest != row.ts_intent_sha256 || source.visibility != row.visibility
+                || source.sequence != row.source_sequence || source.head != row.source_head
+                || source.policy_hash != row.source_policy_hash {
+                return Err(HistoricalOwnerAttachError::SourceChanged);
+            }
+            return Ok((source, None, None, row.input.protected_ts_intent_db_path.clone()));
+        }
+        let loaded = self.load_quarantined_multipart_plan(row)?;
+        let original_paths = [
+            &row.input.protected_ts_state_path,
+            &row.input.protected_owner_pkcs8_path,
+            &row.input.protected_ts_intent_db_path,
+        ];
+        let mut all_missing = true;
+        for path in original_paths {
+            match std::fs::symlink_metadata(path) {
+                Ok(_) => all_missing = false,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                Err(_) => return Err(HistoricalOwnerAttachError::SourceChanged),
+            }
+        }
+        if !all_missing {
+            let (source, state_digest, pem_digest, intent_digest) = self.inspect_sources(&row.input)?;
+            if state_digest != loaded.manifest.ts_state_sha256
+                || pem_digest != loaded.manifest.owner_pem_sha256
+                || intent_digest != loaded.manifest.ts_intent_sha256
+                || source.visibility != loaded.source.visibility
+                || source.sequence != loaded.source.sequence
+                || source.head != loaded.source.head
+                || source.policy_hash != loaded.source.policy_hash {
+                return Err(HistoricalOwnerAttachError::SourceChanged);
+            }
+        }
+        Ok((loaded.source, Some(loaded.pem), Some(loaded.material), loaded.intent_backup_path))
     }
 
     /// Inspect a marker with no saved packet only after proving the signed
@@ -723,6 +1099,29 @@ impl SecureHistoricalOwnerAttach {
         input: HistoricalOwnerAttachInput,
         cancel: &CancellationToken,
     ) -> Result<HistoricalOwnerAttachResult, HistoricalOwnerAttachError> {
+        self.attach_inner(input, None, cancel)
+    }
+
+    /// Select an index>0 saved stage only with the complete source material.
+    /// This path is import-only: it creates no package-stage POST.
+    pub fn attach_pending_package_stage_with_material(
+        &self,
+        input: HistoricalOwnerAttachInput,
+        material_json: &str,
+        cancel: &CancellationToken,
+    ) -> Result<HistoricalOwnerAttachResult, HistoricalOwnerAttachError> {
+        if material_json.is_empty() || material_json.len() > 8 * 1024 * 1024 {
+            return Err(HistoricalOwnerAttachError::Input);
+        }
+        self.attach_inner(input, Some(material_json), cancel)
+    }
+
+    fn attach_inner(
+        &self,
+        input: HistoricalOwnerAttachInput,
+        multipart_material: Option<&str>,
+        cancel: &CancellationToken,
+    ) -> Result<HistoricalOwnerAttachResult, HistoricalOwnerAttachError> {
         validate_input(&input)?;
         if cancel.is_cancelled() {
             return Err(HistoricalOwnerAttachError::Cancelled);
@@ -788,6 +1187,7 @@ impl SecureHistoricalOwnerAttach {
         // Validate the complete signed target selection before an immutable
         // PREPARED row, pending ring, or optional secure ACTION can be written.
         self.preflight_kernel_source(&input, cancel, Some(&input.kernel_pending_command_ids))?;
+        let mut multipart_plan = None;
         let stage_preflight_lock = if source.completed_package_stage.is_some()
             || source.pending_package_stage.is_some() {
             let lock = SecureStateStore::open(&root.join("owner-attach-recovery.state"))
@@ -799,7 +1199,28 @@ impl SecureHistoricalOwnerAttach {
                     self.preflight_completed_package_stage(&input, &source, cancel)?;
                 }
             } else {
-                self.preflight_pending_package_stage(&input, &source, cancel)?;
+                let pending = source.pending_package_stage.as_ref()
+                    .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+                if pending.marker.part_index == 0 {
+                    if multipart_material.is_some() { return Err(HistoricalOwnerAttachError::Input); }
+                    self.preflight_pending_package_stage(&input, &source, cancel)?;
+                } else {
+                    let material = multipart_material.ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+                    let ring = source.ring.as_ref().ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+                    let verified = self.with_preflight_replay(
+                        &input, &source, cancel, |replayed, owner| {
+                            verify_pending_multipart_package_stage(
+                                pending, material.as_bytes(), ring, replayed, owner, &input,
+                            )
+                        },
+                    )?;
+                    multipart_plan = Some(self.save_quarantined_multipart_plan(
+                        &input, &source, &ts_digest, &pem_digest, &intent_digest,
+                        pending, &verified.canonical_material, &verified.original_commit_hash,
+                        verified.part_count, &verified.root_package_digest,
+                        &verified.protocol_digest,
+                    )?);
+                }
             }
             let (_, ts_after, pem_after, intent_after) = self.inspect_sources(&input)?;
             if (ts_after, pem_after, intent_after)
@@ -836,6 +1257,7 @@ impl SecureHistoricalOwnerAttach {
                 || row.source_sequence != source.sequence
                 || row.source_head != source.head
                 || row.source_policy_hash != source.policy_hash
+                || row.pending_multipart_plan_id != multipart_plan.as_ref().map(|plan| plan.plan_id.clone())
             {
                 return Err(HistoricalOwnerAttachError::Conflict);
             }
@@ -867,6 +1289,7 @@ impl SecureHistoricalOwnerAttach {
             retained_upgrade_accepted: false,
             retained_action_accepted: false,
             pending_package_stage: None,
+            pending_multipart_plan_id: multipart_plan.map(|plan| plan.plan_id),
             orphan_package_stage: None,
         };
         history.rows.insert(id.clone(), row);
@@ -915,24 +1338,19 @@ impl SecureHistoricalOwnerAttach {
                 .map_err(|_| HistoricalOwnerAttachError::Verification)?;
             return Ok(summary(attach_id, &row));
         }
-        let (source, ts_digest, pem_digest, intent_digest) = self.inspect_sources(&row.input)?;
-        if ts_digest != row.ts_state_sha256
-            || source.visibility != row.visibility
-            || pem_digest != row.owner_pem_sha256
-            || intent_digest != row.ts_intent_sha256
-            || source.sequence != row.source_sequence
-            || source.head != row.source_head
-            || source.policy_hash != row.source_policy_hash
-        {
-            return Err(HistoricalOwnerAttachError::SourceChanged);
-        }
+        let (source, copied_pem, multipart_material, _intent_source_path) =
+            self.inspect_saved_sources(&row)?;
         let owner = match KernelIdentity::open(&self.identity_path()) {
             Ok(identity) => identity,
-            Err(KernelIdentityError::NotFound) => KernelIdentity::import_pkcs8_pem_file(
-                &self.identity_path(),
-                &row.input.protected_owner_pkcs8_path,
-            )
-            .map_err(|_| HistoricalOwnerAttachError::Identity)?,
+            Err(KernelIdentityError::NotFound) => {
+                if let Some(bytes) = copied_pem.as_ref() {
+                    KernelIdentity::import_pkcs8_pem_bytes(&self.identity_path(), bytes)
+                } else {
+                    KernelIdentity::import_pkcs8_pem_file(
+                        &self.identity_path(), &row.input.protected_owner_pkcs8_path,
+                    )
+                }.map_err(|_| HistoricalOwnerAttachError::Identity)?
+            },
             Err(_) => return Err(HistoricalOwnerAttachError::Identity),
         };
         if owner.actor_id() != row.input.expected_owner_actor_id
@@ -1070,9 +1488,26 @@ impl SecureHistoricalOwnerAttach {
         }
         let saved_package_stage = if let Some(pending) = source.pending_package_stage.as_ref() {
             let ring = source.ring.as_ref().ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
-            let (applied, commit_hash) = verify_pending_package_stage(
-                pending, ring, &replayed, &owner, &row.input,
-            )?;
+            let (applied, commit_hash, part_count) = if pending.marker.part_index == 0 {
+                let (applied, hash) = verify_pending_package_stage(
+                    pending, ring, &replayed, &owner, &row.input,
+                )?;
+                (applied, hash, 1)
+            } else {
+                let material = multipart_material.as_ref()
+                    .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+                let verified = verify_pending_multipart_package_stage(
+                    pending, material, ring, &replayed, &owner, &row.input,
+                )?;
+                let plan = self.load_quarantined_multipart_plan(&row)?;
+                if plan.manifest.original_commit_hash != verified.original_commit_hash
+                    || plan.manifest.part_count != verified.part_count
+                    || plan.manifest.root_package_digest != verified.root_package_digest
+                    || plan.manifest.protocol_digest != verified.protocol_digest {
+                    return Err(HistoricalOwnerAttachError::Conflict);
+                }
+                (verified.applied, verified.original_commit_hash, verified.part_count)
+            };
             self.assert_source_unchanged(&row)?;
             let mut journal = SecureIntentJournal::open(
                 &directory.join("package-stage-intents.state"),
@@ -1104,6 +1539,9 @@ impl SecureHistoricalOwnerAttach {
                 path: pending.path.clone(),
                 commit_hash,
                 accepted_in_signed_replay: applied,
+                part_index: pending.marker.part_index,
+                part_count,
+                complete_source_verified: pending.marker.part_index == 0 && applied,
             })
         } else { None };
         let saved_orphan = if row.input.selected_orphan_package_stage_command_id.is_some() {
@@ -1147,7 +1585,7 @@ impl SecureHistoricalOwnerAttach {
                     return Err(HistoricalOwnerAttachError::Conflict);
                 }
                 if saved.pending_package_stage.is_none() && saved_package_stage.is_some() {
-                    saved.pending_package_stage = saved_package_stage;
+                    saved.pending_package_stage = saved_package_stage.clone();
                 }
             }
             save_history(&store, &history)?;
@@ -1165,6 +1603,35 @@ impl SecureHistoricalOwnerAttach {
                     saved.orphan_package_stage = Some(expected.clone());
                     save_history(&store, &history)?;
                 }
+            }
+        }
+        if let Some(plan_id) = row.pending_multipart_plan_id.as_deref() {
+            let plan = self.load_quarantined_multipart_plan(&row)?;
+            if plan.manifest.plan_id != plan_id {
+                return Err(HistoricalOwnerAttachError::Conflict);
+            }
+            let pending = source.pending_package_stage.as_ref()
+                .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+            let saved = saved_package_stage.as_ref()
+                .ok_or(HistoricalOwnerAttachError::Conflict)?;
+            if saved.commit_hash != plan.manifest.original_commit_hash
+                || saved.part_index != plan.manifest.part_index
+                || saved.part_count != plan.manifest.part_count {
+                return Err(HistoricalOwnerAttachError::Conflict);
+            }
+            let steps = imported_multipart_steps(pending, &replayed, &saved.commit_hash)?;
+            let source_wire = canonical_wire_value(&pending.marker.source, CanonicalPath::SecureArtifact)
+                .map_err(|_| HistoricalOwnerAttachError::SourceUnresolved)?;
+            SecurePrivatePackageInstall::new(self.profile_config(&row.input))
+                .save_imported_stage_row_for_attach(
+                    attach_id, &plan.manifest.stage_id, &plan.material,
+                    &source_wire, &row.source_policy_hash, &saved.source_id,
+                    &plan.manifest.root_package_digest, &plan.manifest.protocol_digest,
+                    saved.part_count, steps,
+                ).map_err(|_| HistoricalOwnerAttachError::Conflict)?;
+            #[cfg(test)]
+            if TEST_STOP_AFTER_IMPORTED_MULTIPART_STAGE_ROW.swap(false, Ordering::SeqCst) {
+                return Err(HistoricalOwnerAttachError::Cancelled);
             }
         }
         if let Some(ring) = source.ring.as_ref() {
@@ -1424,6 +1891,11 @@ impl SecureHistoricalOwnerAttach {
         drop(store);
         let stage = row.pending_package_stage.as_ref()
             .ok_or(HistoricalOwnerAttachError::NotFound)?;
+        if stage.part_index > 0 {
+            return self.recover_pending_multipart_package_stage(
+                attach_id, expected_command_id, &row, cancel,
+            );
+        }
         if row.attached_sequence.is_none() || stage.command_id != expected_command_id {
             return Err(HistoricalOwnerAttachError::Conflict);
         }
@@ -1530,8 +2002,143 @@ impl SecureHistoricalOwnerAttach {
         }
         saved.pending_package_stage.as_mut().ok_or(HistoricalOwnerAttachError::Conflict)?
             .accepted_in_signed_replay = true;
+        saved.pending_package_stage.as_mut().ok_or(HistoricalOwnerAttachError::Conflict)?
+            .complete_source_verified = true;
         saved.attached_sequence = Some(replayed.replay().sequence());
         saved.attached_head = replayed.replay().head().map(str::to_owned);
+        let completed = saved.clone();
+        save_history(&store, &history)?;
+        Ok(summary(attach_id, &completed))
+    }
+
+    /// Continue only the exact attach-owned stage row. The old signed packet
+    /// is re-proved first; subsequent parts are saved by the stage producer
+    /// before any POST. A complete signed source, not HTTP success, unlocks.
+    fn recover_pending_multipart_package_stage(
+        &self,
+        attach_id: &str,
+        expected_command_id: &str,
+        row: &SavedAttach,
+        cancel: &CancellationToken,
+    ) -> Result<HistoricalOwnerAttachResult, HistoricalOwnerAttachError> {
+        let stage = row.pending_package_stage.as_ref()
+            .ok_or(HistoricalOwnerAttachError::Conflict)?;
+        if row.attached_sequence.is_none() || stage.command_id != expected_command_id
+            || stage.part_index == 0 || stage.part_index >= stage.part_count {
+            return Err(HistoricalOwnerAttachError::Conflict);
+        }
+        let plan = self.load_quarantined_multipart_plan(row)?;
+        let (source, _, _, _) = self.inspect_saved_sources(row)?;
+        let pending = source.pending_package_stage.as_ref()
+            .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+        if pending.marker.command_id != stage.command_id
+            || plan.manifest.original_commit_hash != stage.commit_hash
+            || plan.manifest.part_index != stage.part_index
+            || plan.manifest.part_count != stage.part_count {
+            return Err(HistoricalOwnerAttachError::Conflict);
+        }
+        let owner = KernelIdentity::open(&self.identity_path())
+            .map_err(|_| HistoricalOwnerAttachError::Identity)?;
+        if owner.actor_id() != row.input.expected_owner_actor_id
+            || owner.key_id() != row.input.expected_owner_key_id {
+            return Err(HistoricalOwnerAttachError::Identity);
+        }
+        let directory = self.workspace_dir(&row.input.workspace_id);
+        let lifecycle = SecureLifecycle::open(
+            &directory.join("lifecycle.state"), &self.config.origin,
+            owner.actor_id(), &row.input.workspace_id, owner.actor_id(), owner.key_id(),
+        ).map_err(|_| HistoricalOwnerAttachError::Local)?;
+        let candidate = lifecycle.replay_keyring_candidate()
+            .ok_or(HistoricalOwnerAttachError::Verification)?;
+        let ring_wire = candidate.ring.canonical_wire()
+            .map_err(|_| HistoricalOwnerAttachError::Verification)?;
+        drop(lifecycle);
+        let ring = SecretKeyring::parse_wire(&ring_wire)
+            .map_err(|_| HistoricalOwnerAttachError::Verification)?;
+        let journal = SecureIntentJournal::open(
+            &directory.join("package-stage-intents.state"),
+            &self.config.origin, owner.actor_id(),
+        ).map_err(|_| HistoricalOwnerAttachError::Local)?;
+        journal.exact_imported_action_matches(SecurePacketInput {
+            intent_id: expected_command_id,
+            path: &stage.path,
+            action_id: "secure.protocol-package.stage",
+            workspace_id: Some(&row.input.workspace_id),
+            trusted_owner_key: Some(owner.key_id()),
+            intent_digest: &stage.commit_hash,
+            exact_request: &pending.request,
+        }).map_err(|_| HistoricalOwnerAttachError::Conflict)?;
+        drop(journal);
+        let access = SecureReadAccess::new(self.attach_read_config(&row.input));
+        let replayed = access.replay_checked_attach_generation(cancel)
+            .map_err(|_| HistoricalOwnerAttachError::Verification)?;
+        if !replayed.replay().contains_checkpoint(
+            row.source_sequence, row.source_head.as_deref(), &row.source_policy_hash,
+        ) || replayed.replay().structure_status() == StructureStatus::Seeding {
+            return Err(HistoricalOwnerAttachError::Verification);
+        }
+        let verified = verify_pending_multipart_package_stage(
+            pending, &plan.material, &ring, &replayed, &owner, &row.input,
+        )?;
+        if verified.original_commit_hash != stage.commit_hash
+            || verified.part_count != stage.part_count
+            || verified.root_package_digest != plan.manifest.root_package_digest
+            || verified.protocol_digest != plan.manifest.protocol_digest {
+            return Err(HistoricalOwnerAttachError::Conflict);
+        }
+        self.assert_source_unchanged(row)?;
+        let stager = SecurePrivatePackageInstall::new(self.profile_config(&row.input));
+        let progress_wire = stager.continue_imported_stage_json_with_cancel(
+            &plan.manifest.stage_id, attach_id, cancel,
+        ).map_err(|_| HistoricalOwnerAttachError::PendingPackageStageUnresolved)?;
+        let progress: serde_json::Value = serde_json::from_str(&progress_wire)
+            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        if progress.get("status").and_then(serde_json::Value::as_str) != Some("STAGED")
+            || progress.get("stage_id").and_then(serde_json::Value::as_str)
+                != Some(plan.manifest.stage_id.as_str()) {
+            return Err(HistoricalOwnerAttachError::PendingPackageStageUnresolved);
+        }
+        let (final_command_id, final_commit_hash) = stager
+            .imported_stage_final_step_for_attach(
+                &plan.manifest.stage_id, attach_id, &stage.source_id, stage.part_count,
+            ).map_err(|_| HistoricalOwnerAttachError::Conflict)?;
+        let completed_replay = access.replay_checked_attach_generation(cancel)
+            .map_err(|_| HistoricalOwnerAttachError::PendingPackageStageUnresolved)?;
+        let source_wire = parse_wire_json_bounded(stage.source_wire.as_bytes(), 48, 32_768)
+            .map_err(|_| HistoricalOwnerAttachError::Conflict)?;
+        let completed_marker = CompletedPackageStageMarker {
+            command_id: final_command_id,
+            source: source_wire,
+            source_id: stage.source_id.clone(),
+            source_sha256: stage.source_sha256.clone(),
+            part_index: stage.part_count - 1,
+        };
+        verify_completed_package_stage(&completed_marker, &completed_replay, &row.input)?;
+        let final_sequence = exact_u64(completed_marker.source.get("sequence"))
+            .ok_or(HistoricalOwnerAttachError::Conflict)?
+            .checked_add(stage.part_count as u64)
+            .ok_or(HistoricalOwnerAttachError::Conflict)?;
+        if !completed_replay.replay().contains_checkpoint(
+            final_sequence, Some(&final_commit_hash), &row.source_policy_hash,
+        ) {
+            return Err(HistoricalOwnerAttachError::Conflict);
+        }
+        self.assert_source_unchanged(row)?;
+        let store = SecureStateStore::open(&self.history_path())
+            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        let mut history = read_history(&store, &self.config.origin)?;
+        let saved = history.rows.get_mut(attach_id)
+            .ok_or(HistoricalOwnerAttachError::NotFound)?;
+        if saved.input != row.input || saved.pending_package_stage != row.pending_package_stage
+            || saved.pending_multipart_plan_id != row.pending_multipart_plan_id {
+            return Err(HistoricalOwnerAttachError::Conflict);
+        }
+        let saved_stage = saved.pending_package_stage.as_mut()
+            .ok_or(HistoricalOwnerAttachError::Conflict)?;
+        saved_stage.accepted_in_signed_replay = true;
+        saved_stage.complete_source_verified = true;
+        saved.attached_sequence = Some(completed_replay.replay().sequence());
+        saved.attached_head = completed_replay.replay().head().map(str::to_owned);
         let completed = saved.clone();
         save_history(&store, &history)?;
         Ok(summary(attach_id, &completed))
@@ -1887,9 +2494,14 @@ impl SecureHistoricalOwnerAttach {
             self.config.allow_loopback_http,
         );
         let backup = directory.join("historical-ts-intents-backup.sqlite");
+        let source_intents = if row.pending_multipart_plan_id.is_some() {
+            self.load_quarantined_multipart_plan(row)?.intent_backup_path
+        } else {
+            row.input.protected_ts_intent_db_path.clone()
+        };
         let imported = access
             .migrate_ts_store_selected(
-                &row.input.protected_ts_intent_db_path,
+                &source_intents,
                 &backup,
                 &row.input.workspace_id,
                 &row.input.kernel_pending_command_ids,
@@ -2150,17 +2762,7 @@ impl SecureHistoricalOwnerAttach {
     }
 
     fn assert_source_unchanged(&self, row: &SavedAttach) -> Result<(), HistoricalOwnerAttachError> {
-        let (source, state_digest, pem_digest, intent_digest) = self.inspect_sources(&row.input)?;
-        if state_digest != row.ts_state_sha256
-            || pem_digest != row.owner_pem_sha256
-            || intent_digest != row.ts_intent_sha256
-            || source.visibility != row.visibility
-            || source.sequence != row.source_sequence
-            || source.head != row.source_head
-            || source.policy_hash != row.source_policy_hash
-        {
-            return Err(HistoricalOwnerAttachError::SourceChanged);
-        }
+        let _ = self.inspect_saved_sources(row)?;
         Ok(())
     }
 
@@ -2414,7 +3016,7 @@ impl SecureHistoricalOwnerAttach {
             return Err(HistoricalOwnerAttachError::Identity);
         }
         if row.pending_package_stage.as_ref()
-            .is_some_and(|stage| !stage.accepted_in_signed_replay)
+            .is_some_and(|stage| !stage.accepted_in_signed_replay || !stage.complete_source_verified)
         {
             return Err(HistoricalOwnerAttachError::PendingPackageStageUnresolved);
         }
@@ -2459,7 +3061,7 @@ impl SecureHistoricalOwnerAttach {
             return Err(HistoricalOwnerAttachError::Identity);
         }
         if !allow_restricted && row.pending_package_stage.as_ref()
-            .is_some_and(|stage| !stage.accepted_in_signed_replay)
+            .is_some_and(|stage| !stage.accepted_in_signed_replay || !stage.complete_source_verified)
         {
             return Err(HistoricalOwnerAttachError::PendingPackageStageUnresolved);
         }
@@ -2608,7 +3210,7 @@ fn valid_history_config(config: &SecureOwnerCreateConfig) -> bool {
 fn summary(id: &str, row: &SavedAttach) -> HistoricalOwnerAttachResult {
     let retained = row.retained_action_commit_hash.is_some();
     let stage_unresolved = row.pending_package_stage.as_ref()
-        .is_some_and(|stage| !stage.accepted_in_signed_replay);
+        .is_some_and(|stage| !stage.accepted_in_signed_replay || !stage.complete_source_verified);
     let orphan_unresolved = row.orphan_package_stage.as_ref()
         .is_some_and(|stage| !stage.replan.as_ref()
             .is_some_and(|replan| replan.accepted_in_signed_replay));
@@ -2651,8 +3253,16 @@ fn summary(id: &str, row: &SavedAttach) -> HistoricalOwnerAttachResult {
             .into()
         }),
         pending_package_stage_command_id: row.pending_package_stage.as_ref().map(|stage| stage.command_id.clone()),
+        pending_package_stage_id: row.pending_multipart_plan_id.as_deref()
+            .map(imported_multipart_stage_id),
         pending_package_stage_status: row.pending_package_stage.as_ref().map(|stage| {
-            if stage.accepted_in_signed_replay { "ACCEPTED" } else { "PENDING_UNRESOLVED" }.into()
+            if stage.complete_source_verified && stage.accepted_in_signed_replay {
+                "ACCEPTED"
+            } else if stage.accepted_in_signed_replay {
+                "PART_ACCEPTED_CONTINUATION_PENDING"
+            } else {
+                "PENDING_UNRESOLVED"
+            }.into()
         }),
         orphan_package_stage_command_id: row.orphan_package_stage.as_ref()
             .map(|stage| stage.original_command_id.clone()),
@@ -3248,10 +3858,9 @@ fn parse_pending_package_stage(
     if rows.is_empty() {
         return Ok(None);
     }
-    // The exact-packet importer still has a sole-part verifier. A later
-    // multipart pending packet requires the authenticated earlier prefix and
-    // caller-supplied complete material; never misclassify it as part zero.
-    if marker.part_index != 0 {
+    // A later multipart packet is parsed as an exact saved packet, but never
+    // selected without full caller material and authenticated prefix proof.
+    if marker.part_index >= MAX_PACKAGE_SOURCE_PARTS {
         return Err(HistoricalOwnerAttachError::SourceUnresolved);
     }
     if rows.len() != 1 {
@@ -3288,9 +3897,10 @@ fn parse_pending_package_stage(
         || text("actor_id")? != input.expected_owner_actor_id
         || text("signing_key")? != input.expected_owner_key_id
         || text("mode")? != "PRIVATE"
-        || text("previous")? != previous
+        || (marker.part_index == 0 && text("previous")? != previous)
         || text("policy_hash")? != policy
-        || exact_u64(payload.get("sequence")) != base.checked_add(1)
+        || exact_u64(payload.get("sequence"))
+            != base.checked_add(marker.part_index as u64 + 1)
         || !matches!(exact_u64(payload.get("v")), Some(2 | 3))
         || exact_u64(payload.get("epoch")).is_none_or(|epoch| epoch == 0)
     {
@@ -3506,6 +4116,193 @@ fn verify_pending_package_stage(
         return Ok((false, prepared.commit_hash().into()));
     }
     Err(invalid())
+}
+
+/// Full-material proof for a saved nonzero package part. The exact old packet
+/// is verified by core; this runtime layer authenticates every earlier signed
+/// part and the current replay before it can become an attach selection.
+fn verify_pending_multipart_package_stage(
+    pending: &LegacyPendingPackageStage,
+    material_wire: &[u8],
+    ring: &SecretKeyring,
+    replayed: &TransportReplayedJournal,
+    owner: &KernelIdentity,
+    input: &HistoricalOwnerAttachInput,
+) -> Result<VerifiedPendingMultipart, HistoricalOwnerAttachError> {
+    let invalid = || HistoricalOwnerAttachError::SourceUnresolved;
+    let marker = &pending.marker;
+    let source = &marker.source;
+    let base = exact_u64(source.get("sequence")).ok_or_else(invalid)?;
+    let base_head = source.get("head").and_then(WireValue::as_string).ok_or_else(invalid)?;
+    let policy_hash = source.get("policy_hash").and_then(WireValue::as_string).ok_or_else(invalid)?;
+    let index = marker.part_index;
+    if index == 0 || index >= MAX_PACKAGE_SOURCE_PARTS
+        || !replayed.replay().contains_checkpoint(base, Some(&base_head), &policy_hash)
+        || replayed.replay().structure_status() != StructureStatus::Active
+        || replayed.replay().owner_actor_id() != input.expected_owner_actor_id
+        || replayed.replay().owner_signing_key() != input.expected_owner_key_id
+    {
+        return Err(invalid());
+    }
+    let source_wire = canonical_wire_value(source, CanonicalPath::SecureArtifact).map_err(|_| invalid())?;
+    let policy_wire = replayed.signed_policy_by_hash(&policy_hash).ok_or_else(invalid)?;
+    let policy = parse_wire_json_bounded(policy_wire, 64, 196_608).map_err(|_| invalid())?;
+    let policy_payload = policy.get("payload").ok_or_else(invalid)?;
+    let owner_member = matches!(policy_payload.get("members"), Some(WireValue::Array(members))
+        if members.iter().any(|member| {
+            member.get("actor_id").and_then(WireValue::as_string).as_deref()
+                == Some(input.expected_owner_actor_id.as_str())
+                && member.get("role").and_then(WireValue::as_string).as_deref() == Some("OWNER")
+                && member.get("certificate").and_then(|v| v.get("payload"))
+                    .and_then(|v| v.get("signing_key")).and_then(WireValue::as_string).as_deref()
+                    == Some(input.expected_owner_key_id.as_str())
+        }));
+    if policy_payload.get("visibility").and_then(WireValue::as_string).as_deref() != Some("PRIVATE")
+        || !owner_member
+        || replayed.replay().policy_hash() != policy_hash
+    {
+        return Err(invalid());
+    }
+    let request = parse_wire_json_bounded(&pending.request, 64, 220_000).map_err(|_| invalid())?;
+    let payload = request.get("commit").and_then(|commit| commit.get("payload"))
+        .ok_or_else(invalid)?;
+    let epoch = exact_u64(payload.get("epoch")).ok_or_else(invalid)?;
+    let issued_at = exact_u64(payload.get("issued_at")).ok_or_else(invalid)?;
+    let epoch_key = ring.key_at(epoch).ok_or_else(invalid)?;
+    let mut predecessor = base_head;
+    let mut prefix = Vec::with_capacity(index);
+    for part_index in 0..index {
+        let sequence = base.checked_add(part_index as u64 + 1).ok_or_else(invalid)?;
+        let replay_index = usize::try_from(sequence - 1).map_err(|_| invalid())?;
+        let signed = replayed.signed_commit_wires().get(replay_index).ok_or_else(invalid)?;
+        let operation = replayed.replay().operations().get(replay_index).ok_or_else(invalid)?;
+        let commit = parse_wire_json_bounded(signed, 64, 262_144).map_err(|_| invalid())?;
+        let signed_payload = commit.get("payload").ok_or_else(invalid)?;
+        let signed_hash = sha256_hex(signed);
+        let stage = operation.get("input").and_then(|v| v.get("package_stage")).ok_or_else(invalid)?;
+        let WireValue::Array(objects) = operation.get("objects").ok_or_else(invalid)? else { return Err(invalid()); };
+        if !replayed.replay().contains_checkpoint(sequence, Some(&signed_hash), &policy_hash)
+            || signed_payload.get("action_id").and_then(WireValue::as_string).as_deref()
+                != Some("secure.protocol-package.stage")
+            || signed_payload.get("actor_id").and_then(WireValue::as_string).as_deref()
+                != Some(input.expected_owner_actor_id.as_str())
+            || signed_payload.get("signing_key").and_then(WireValue::as_string).as_deref()
+                != Some(input.expected_owner_key_id.as_str())
+            || signed_payload.get("workspace_id").and_then(WireValue::as_string).as_deref()
+                != Some(input.workspace_id.as_str())
+            || signed_payload.get("mode").and_then(WireValue::as_string).as_deref() != Some("PRIVATE")
+            || signed_payload.get("policy_hash").and_then(WireValue::as_string).as_deref()
+                != Some(policy_hash.as_str())
+            || signed_payload.get("previous").and_then(WireValue::as_string).as_deref()
+                != Some(predecessor.as_str())
+            || exact_u64(signed_payload.get("sequence")) != Some(sequence)
+            || operation.get("kind").and_then(WireValue::as_string).as_deref() != Some("ADMIN")
+            || objects.len() != 1
+            || stage.get("source_id").and_then(WireValue::as_string).as_deref()
+                != Some(marker.source_id.as_str())
+            || exact_u64(stage.get("part_index")) != Some(part_index as u64)
+            || canonical_wire_value(stage.get("source").ok_or_else(invalid)?, CanonicalPath::SecureArtifact)
+                .map_err(|_| invalid())? != source_wire
+        {
+            return Err(invalid());
+        }
+        prefix.push(objects[0].clone());
+        predecessor = signed_hash;
+    }
+    let predecessor_sequence = base.checked_add(index as u64).ok_or_else(invalid)?;
+    let predecessor_wire = serde_json::to_string(&serde_json::json!({
+        "v": 1, "workspace_id": input.workspace_id, "owner_id": input.expected_owner_actor_id,
+        "owner_key": input.expected_owner_key_id, "sequence": predecessor_sequence,
+        "head": predecessor, "policy_hash": policy_hash,
+    })).map_err(|_| invalid())?;
+    let prepared = peerwork_core::prepared_private_install::verify_imported_private_package_stage_with_material(
+        &pending.request, material_wire, source_wire.as_bytes(), predecessor_wire.as_bytes(),
+        policy_wire, index, &marker.command_id, issued_at, owner.signing_key(), epoch_key,
+    ).map_err(|_| invalid())?;
+    if prepared.prepared().source_id() != marker.source_id
+        || prepared.proof().get("source_sha256").and_then(WireValue::as_string).as_deref()
+            != Some(marker.source_sha256.as_str())
+        || prepared.part_count() <= index
+        || prefix.iter().enumerate().any(|(i, signed)| {
+            canonical_wire_value(signed, CanonicalPath::SecureArtifact).ok()
+                != prepared.part(i).and_then(|part| canonical_wire_value(part, CanonicalPath::SecureArtifact).ok())
+        })
+    {
+        return Err(invalid());
+    }
+    let original_hash = prepared.prepared().commit_hash().to_owned();
+    let result = |applied| VerifiedPendingMultipart {
+        applied,
+        original_commit_hash: original_hash.clone(),
+        canonical_material: prepared.canonical_material().to_owned(),
+        part_count: prepared.part_count(),
+        root_package_digest: prepared.prepared().root_package_digest().to_owned(),
+        protocol_digest: prepared.prepared().protocol_digest().to_owned(),
+    };
+    let packet_sequence = predecessor_sequence.checked_add(1).ok_or_else(invalid)?;
+    if replayed.replay().sequence() == predecessor_sequence
+        && replayed.replay().head() == Some(predecessor.as_str())
+    {
+        return Ok(result(false));
+    }
+    if replayed.replay().sequence() >= packet_sequence
+        && replayed.replay().contains_checkpoint(packet_sequence, Some(&original_hash), &policy_hash)
+    {
+        let replay_index = usize::try_from(packet_sequence - 1).map_err(|_| invalid())?;
+        let signed = replayed.signed_commit_wires().get(replay_index).ok_or_else(invalid)?;
+        let operation = replayed.replay().operations().get(replay_index).ok_or_else(invalid)?;
+        let WireValue::Array(objects) = operation.get("objects").ok_or_else(invalid)? else { return Err(invalid()); };
+        if sha256_hex(signed) != original_hash || objects.len() != 1
+            || canonical_wire_value(&objects[0], CanonicalPath::SecureArtifact).map_err(|_| invalid())?
+                != canonical_wire_value(prepared.part(index).ok_or_else(invalid)?, CanonicalPath::SecureArtifact)
+                    .map_err(|_| invalid())?
+        {
+            return Err(invalid());
+        }
+        return Ok(result(true));
+    }
+    Err(invalid())
+}
+
+/// Reconstruct transport envelopes only for already signed/accepted prefix
+/// parts. The selected uncertain part always uses its exact saved TS body.
+fn imported_multipart_steps(
+    pending: &LegacyPendingPackageStage,
+    replayed: &TransportReplayedJournal,
+    original_commit_hash: &str,
+) -> Result<Vec<ImportedHistoricalStageStep>, HistoricalOwnerAttachError> {
+    let invalid = || HistoricalOwnerAttachError::SourceUnresolved;
+    let base = exact_u64(pending.marker.source.get("sequence")).ok_or_else(invalid)?;
+    let mut steps = Vec::with_capacity(pending.marker.part_index + 1);
+    for index in 0..pending.marker.part_index {
+        let absolute = base.checked_add(index as u64).ok_or_else(invalid)?;
+        let signed = replayed.signed_commit_wires().get(usize::try_from(absolute)
+            .map_err(|_| invalid())?).ok_or_else(invalid)?;
+        let commit = parse_wire_json_bounded(signed, 64, 262_144).map_err(|_| invalid())?;
+        let payload = commit.get("payload").ok_or_else(invalid)?;
+        let command_id = payload.get("command_id").and_then(WireValue::as_string)
+            .ok_or_else(invalid)?;
+        let issued_at_ms = exact_u64(payload.get("issued_at")).ok_or_else(invalid)?;
+        if !valid_token(&command_id) { return Err(invalid()); }
+        let mut request_wire = Vec::with_capacity(signed.len() + 11);
+        request_wire.extend_from_slice(b"{\"commit\":");
+        request_wire.extend_from_slice(signed);
+        request_wire.push(b'}');
+        steps.push(ImportedHistoricalStageStep {
+            command_id, issued_at_ms, request_wire,
+            commit_hash: sha256_hex(signed),
+        });
+    }
+    let request = parse_wire_json_bounded(&pending.request, 64, 262_144).map_err(|_| invalid())?;
+    let payload = request.get("commit").and_then(|commit| commit.get("payload"))
+        .ok_or_else(invalid)?;
+    let issued_at_ms = exact_u64(payload.get("issued_at")).ok_or_else(invalid)?;
+    steps.push(ImportedHistoricalStageStep {
+        command_id: pending.marker.command_id.clone(), issued_at_ms,
+        request_wire: pending.request.as_slice().to_vec(),
+        commit_hash: original_commit_hash.into(),
+    });
+    Ok(steps)
 }
 
 fn parse_legacy_source(
@@ -5160,6 +5957,303 @@ mod tests {
                     .unwrap();
                 assert_eq!(after, 2);
             }
+        }
+    }
+
+    #[test]
+    fn actual_service_creates_genuine_pending_multipart_stage_index_one_sources() {
+        let _fault_guard = ATTACH_FAULT_TEST_LOCK.lock().unwrap();
+        let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else { return; };
+        let node = std::env::var("PEERWORK_NODE_BIN").unwrap_or_else(|_| "node".into());
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)] {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let bridge = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/reference-kernel-server.mjs");
+        let child = Command::new(&node).arg(bridge)
+            .env("PEERWORK_REFERENCE_ROOT", &reference_root)
+            .env("PEERWORK_TEST_STATE", root.path())
+            .env("PEERWORK_TEST_FIRST_POST_MODE", "normal")
+            .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        struct StopPendingMultipart(Child);
+        impl Drop for StopPendingMultipart {
+            fn drop(&mut self) { let _ = self.0.kill(); let _ = self.0.wait(); }
+        }
+        let mut child = StopPendingMultipart(child);
+        let mut line = String::new();
+        BufReader::new(child.0.stdout.take().unwrap()).read_line(&mut line).unwrap();
+        assert!(!line.is_empty(), "pinned service exited before readiness");
+        let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let origin = ready["origin"].as_str().unwrap();
+        let helper = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/legacy-owner-source.mjs");
+        let oracle = rusqlite::Connection::open_with_flags(
+            root.path().join("control.sqlite"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        ).unwrap();
+        for (name, mode, expected_sequence) in [
+            ("applied", "stage-marker-multipart-pending-applied-index1", 3),
+            ("before", "stage-marker-multipart-pending-before-post-index1", 2),
+        ] {
+            let output = Command::new(&node).arg(&helper).arg(origin)
+                .arg(root.path().join(name)).arg(&reference_root).arg(mode)
+                .output().unwrap();
+            assert!(output.status.success(), "{name}: {}",
+                String::from_utf8_lossy(&output.stderr));
+            let source: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(source["policy_v"], 3, "{name}");
+            assert_eq!(source["visibility"], "PRIVATE", "{name}");
+            assert_eq!(source["structure_mode"], "STRUCTURED", "{name}");
+            assert!(source["stage_part_count"].as_u64().unwrap() >= 3, "{name}");
+            assert_eq!(source["stage_marker"]["part_index"], 1, "{name}");
+            assert_eq!(source["pending_count"], 1, "{name}");
+            assert_eq!(source["pending_command_id"], source["stage_marker"]["command_id"], "{name}");
+            assert_eq!(source["sequence"], expected_sequence, "{name}");
+            assert!(source["pending_stage_material_json"].as_str().unwrap().len() > 131_072, "{name}");
+            let workspace = source["workspace_id"].as_str().unwrap();
+            let count: i64 = oracle.query_row(
+                "SELECT count(*) FROM secure_commits WHERE workspace_id=?1", [workspace],
+                |row| row.get(0),
+            ).unwrap();
+            assert_eq!(count, expected_sequence, "{name}");
+            if name == "applied" {
+                assert_eq!(source["stage_signed_command_id"], source["pending_command_id"]);
+            } else {
+                assert!(source["stage_signed_command_id"].is_null());
+            }
+            let config = SecureOwnerCreateConfig {
+                origin: origin.into(), state_dir: root.path().join(format!("native-{name}")),
+                allow_loopback_http: true, max_replay_artifact_bytes: 64 * 1024 * 1024,
+            };
+            let attach = SecureHistoricalOwnerAttach::new(config.clone());
+            let input = HistoricalOwnerAttachInput {
+                workspace_id: workspace.into(),
+                protected_ts_state_path: source["state_path"].as_str().unwrap().into(),
+                protected_owner_pkcs8_path: source["pem_path"].as_str().unwrap().into(),
+                protected_ts_intent_db_path: source["intent_db_path"].as_str().unwrap().into(),
+                expected_owner_actor_id: source["owner_actor_id"].as_str().unwrap().into(),
+                expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
+                recover_pending_action: false, retain_pending_action_command_id: None,
+                selected_pending_package_stage_command_id: None,
+                selected_orphan_package_stage_command_id: None,
+                expected_ts_state_digest: None,
+                kernel_pending_command_ids: Vec::new(), expected_kernel_intent_db_digest: None,
+            };
+            let material = source["pending_stage_material_json"].as_str().unwrap();
+            let inventory = attach.inspect_pending_package_stage_with_material(
+                &input, material, &CancellationToken::new(),
+            ).unwrap();
+            assert_eq!(inventory.command_id, source["pending_command_id"].as_str().unwrap());
+            assert_eq!(inventory.part_index, 1);
+            assert_eq!(inventory.part_count, source["stage_part_count"].as_u64().map(|n| n as usize));
+            assert_eq!(inventory.original_commit_hash.as_deref(), source["pending_commit_hash"].as_str());
+            assert_eq!(inventory.status, if name == "applied" {
+                "APPLIED_IN_SIGNED_REPLAY"
+            } else { "PENDING_UNRESOLVED" });
+            let wrong_material = source["wrong_pending_stage_material_json"].as_str().unwrap();
+            assert_ne!(sha256_hex(wrong_material.as_bytes()), sha256_hex(material.as_bytes()));
+            assert!(matches!(attach.inspect_pending_package_stage_with_material(
+                &input, wrong_material, &CancellationToken::new(),
+            ), Err(HistoricalOwnerAttachError::SourceUnresolved)));
+            assert!(attach.attachments().unwrap().is_empty());
+            let unchanged: i64 = oracle.query_row(
+                "SELECT count(*) FROM secure_commits WHERE workspace_id=?1", [workspace],
+                |row| row.get(0),
+            ).unwrap();
+            assert_eq!(unchanged, expected_sequence, "{name}");
+        }
+    }
+
+    #[test]
+    fn actual_service_imports_and_recovers_pending_multipart_stage_with_source_removed() {
+        let _fault_guard = ATTACH_FAULT_TEST_LOCK.lock().unwrap();
+        let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else { return; };
+        let node = std::env::var("PEERWORK_NODE_BIN").unwrap_or_else(|_| "node".into());
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)] {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let bridge = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/reference-kernel-server.mjs");
+        let child = Command::new(&node).arg(bridge)
+            .env("PEERWORK_REFERENCE_ROOT", &reference_root)
+            .env("PEERWORK_TEST_STATE", root.path())
+            .env("PEERWORK_TEST_FIRST_POST_MODE", "normal")
+            .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        struct StopPendingMultipart(Child);
+        impl Drop for StopPendingMultipart {
+            fn drop(&mut self) { let _ = self.0.kill(); let _ = self.0.wait(); }
+        }
+        let mut child = StopPendingMultipart(child);
+        let mut line = String::new();
+        BufReader::new(child.0.stdout.take().unwrap()).read_line(&mut line).unwrap();
+        assert!(!line.is_empty(), "pinned service exited before readiness");
+        let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let origin = ready["origin"].as_str().unwrap();
+        let helper = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/legacy-owner-source.mjs");
+        let oracle = rusqlite::Connection::open_with_flags(
+            root.path().join("control.sqlite"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        ).unwrap();
+        for (name, mode, initial_sequence) in [
+            ("applied", "stage-marker-multipart-pending-applied-index1", 3),
+            ("before", "stage-marker-multipart-pending-before-post-index1", 2),
+        ] {
+            let output = Command::new(&node).arg(&helper).arg(origin)
+                .arg(root.path().join(name)).arg(&reference_root).arg(mode)
+                .output().unwrap();
+            assert!(output.status.success(), "{name}: {}",
+                String::from_utf8_lossy(&output.stderr));
+            let source: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            let workspace = source["workspace_id"].as_str().unwrap();
+            let command = source["pending_command_id"].as_str().unwrap();
+            let material = source["pending_stage_material_json"].as_str().unwrap();
+            let count = || -> i64 { oracle.query_row(
+                "SELECT count(*) FROM secure_commits WHERE workspace_id=?1", [workspace],
+                |row| row.get(0),
+            ).unwrap() };
+            assert_eq!(count(), initial_sequence, "{name}");
+            let config = SecureOwnerCreateConfig {
+                origin: origin.into(), state_dir: root.path().join(format!("native-{name}")),
+                allow_loopback_http: true, max_replay_artifact_bytes: 64 * 1024 * 1024,
+            };
+            let attach = SecureHistoricalOwnerAttach::new(config.clone());
+            let mut input = HistoricalOwnerAttachInput {
+                workspace_id: workspace.into(),
+                protected_ts_state_path: source["state_path"].as_str().unwrap().into(),
+                protected_owner_pkcs8_path: source["pem_path"].as_str().unwrap().into(),
+                protected_ts_intent_db_path: source["intent_db_path"].as_str().unwrap().into(),
+                expected_owner_actor_id: source["owner_actor_id"].as_str().unwrap().into(),
+                expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
+                recover_pending_action: false, retain_pending_action_command_id: None,
+                selected_pending_package_stage_command_id: None,
+                selected_orphan_package_stage_command_id: None,
+                expected_ts_state_digest: None,
+                kernel_pending_command_ids: Vec::new(), expected_kernel_intent_db_digest: None,
+            };
+            let cancel = CancellationToken::new();
+            let inventory = attach.inspect_pending_package_stage_with_material(
+                &input, material, &cancel,
+            ).unwrap();
+            assert_eq!(inventory.command_id, command);
+            assert_eq!(inventory.part_index, 1);
+            assert_eq!(inventory.original_commit_hash.as_deref(),
+                source["pending_commit_hash"].as_str());
+            input.selected_pending_package_stage_command_id = Some(command.into());
+            input.expected_ts_state_digest = Some(inventory.ts_state_digest);
+            let mut wrong_selection = input.clone();
+            wrong_selection.selected_pending_package_stage_command_id = Some(random_token().unwrap());
+            assert!(matches!(attach.attach_pending_package_stage_with_material(
+                wrong_selection, material, &cancel,
+            ), Err(HistoricalOwnerAttachError::SourceUnresolved)));
+            assert!(matches!(attach.attach_pending_package_stage_with_material(
+                input.clone(), source["wrong_pending_stage_material_json"].as_str().unwrap(), &cancel,
+            ), Err(HistoricalOwnerAttachError::SourceUnresolved)));
+            assert!(attach.attachments().unwrap().is_empty());
+            assert_eq!(count(), initial_sequence);
+            if name == "before" {
+                TEST_STOP_AFTER_ATTACH_ROW.store(true, Ordering::SeqCst);
+            } else {
+                TEST_STOP_AFTER_IMPORTED_MULTIPART_STAGE_ROW.store(true, Ordering::SeqCst);
+            }
+            assert!(matches!(attach.attach_pending_package_stage_with_material(
+                input.clone(), material, &cancel,
+            ), Err(HistoricalOwnerAttachError::Cancelled)));
+            let pending = attach.attachments().unwrap();
+            assert_eq!(pending.len(), 1);
+            assert_eq!(pending[0].status, "PREPARED");
+            assert_eq!(count(), initial_sequence, "{name}: interrupted import must not POST");
+            std::fs::rename(root.path().join(name), root.path().join(format!("archived-{name}")))
+                .unwrap();
+            let reopened = SecureHistoricalOwnerAttach::new(config.clone());
+            let attached = reopened.resume_attachment(&pending[0].attach_id, &cancel).unwrap();
+            assert_eq!(attached.status, "ATTACHED_RESTRICTED");
+            assert_eq!(attached.pending_package_stage_command_id.as_deref(), Some(command));
+            let stage_id = attached.pending_package_stage_id.as_deref().unwrap().to_owned();
+            assert!(matches!(SecureOwnerWorkspaceCreate::new(config.clone())
+                .private_install_access(workspace),
+                Err(_)), "{name}: ordinary install must remain restricted");
+            assert_eq!(count(), initial_sequence, "{name}: attach must not POST");
+            crate::secure_private_install::TEST_STOP_AFTER_IMPORTED_LATER_STAGE_ROW
+                .store(true, Ordering::SeqCst);
+            let stager = SecurePrivatePackageInstall::new(reopened.profile_config(&input));
+            let mut saved_later = None;
+            for _ in 0..3 {
+                assert!(matches!(reopened.recover_pending_package_stage(
+                    &attached.attach_id, command, &cancel,
+                ), Err(HistoricalOwnerAttachError::PendingPackageStageUnresolved)));
+                if let Ok(step) = stager.imported_stage_saved_step_for_attach(
+                    &stage_id, &attached.attach_id, 2,
+                ) {
+                    saved_later = Some(step);
+                    break;
+                }
+            }
+            let saved_later = saved_later.expect("new index-2 packet must be durable before POST");
+            assert_eq!(count(), 3, "{name}: later packet remains unsubmitted at saved boundary");
+            let recovered = SecureHistoricalOwnerAttach::new(config.clone());
+            let mut finished = None;
+            for _ in 0..6 {
+                match recovered.recover_pending_package_stage(&attached.attach_id, command, &cancel) {
+                    Ok(result) if result.status == "ATTACHED" => { finished = Some(result); break; }
+                    Err(HistoricalOwnerAttachError::PendingPackageStageUnresolved) => (),
+                    other => panic!("{name}: unexpected recovery state: {other:?}"),
+                }
+            }
+            let finished = finished.expect("bounded same-ID recovery must prove full signed source");
+            assert_eq!(finished.pending_package_stage_status.as_deref(), Some("ACCEPTED"));
+            let part_count = source["stage_part_count"].as_i64().unwrap();
+            assert_eq!(count(), 1 + part_count, "{name}: exact source parts");
+            assert_eq!(stager.imported_stage_saved_step_for_attach(
+                &stage_id, &attached.attach_id, 2,
+            ).unwrap(), saved_later, "{name}: exact later ID and packet hash persist across reopen");
+            assert_eq!(recovered.recover_pending_package_stage(
+                &attached.attach_id, command, &cancel,
+            ).unwrap().pending_package_stage_status.as_deref(), Some("ACCEPTED"));
+            assert_eq!(count(), 1 + part_count, "{name}: exact same-ID retry adds no commit");
+            let facade = SecureOwnerWorkspaceCreate::new(config.clone());
+            let installer = facade.private_install_access(workspace).unwrap();
+            let actor = source["owner_actor_id"].as_str().unwrap();
+            let begin_wire = installer.submit_begin_json(
+                crate::secure_private_install::PrivatePackageInstallBeginInput {
+                    stage_id: stage_id.clone(), instance_id: random_token().unwrap(),
+                    entrypoint: "imported-discussion".into(),
+                    grants_json: serde_json::json!([{"actor_id":actor,
+                        "actions":["discussion.post"],
+                        "protocol_roles":["CONTRIBUTOR"],"capabilities":["POST"]}]).to_string(),
+                    disclose: None, command_id: None, issued_at_ms: None,
+                },
+            ).unwrap();
+            let begin: serde_json::Value = serde_json::from_str(&begin_wire).unwrap();
+            let begin_id = begin["begin_command_id"].as_str().unwrap().to_owned();
+            let installs: serde_json::Value = serde_json::from_str(&installer.installs_json().unwrap()).unwrap();
+            assert_eq!(installs.as_array().unwrap().len(), 1);
+            assert_eq!(installs[0]["stage_id"], stage_id);
+            assert_eq!(installs[0]["begin_command_id"], begin_id);
+            assert_eq!(installs[0]["source_kind"], "STAGED");
+            let mut installed = begin;
+            for _ in 0..8 {
+                if installed["status"] == "ACCEPTED" { break; }
+                installed = serde_json::from_str(&installer.continue_install_json(&begin_id).unwrap()).unwrap();
+            }
+            assert_eq!(installed["status"], "ACCEPTED", "{name}: imported source install");
+            assert!(count() > 1 + part_count, "{name}: signed install advances history");
+            let signed_read: serde_json::Value = serde_json::from_str(
+                &facade.read_workspace_json(workspace, &cancel).unwrap(),
+            ).unwrap();
+            let objects = signed_read["objects"].as_array().unwrap();
+            assert!(objects.iter().any(|object| object["kind"] == "protocols"
+                && object["id"] == installed["protocol_digest"]),
+                "{name}: installed protocol in authenticated read");
+            assert!(objects.iter().any(|object| object["kind"] == "instances"
+                && object["id"] == installed["instance_id"]
+                && object["value"]["protocol_digest"] == installed["protocol_digest"]
+                && object["value"]["origin_entrypoint"] == "imported-discussion"),
+                "{name}: exact installed instance in authenticated read");
+            assert_eq!(recovered.attachments().unwrap()[0].pending_package_stage_status.as_deref(),
+                Some("ACCEPTED"));
         }
     }
 
