@@ -368,10 +368,10 @@ impl SecureRecipientEnrollment {
                 peerwork_core::secure_recipient::SecretRecipient::generate()
                     .map_err(|_| RecipientEnrollmentError::ClockOrEntropy)?
             } else {
-                peerwork_core::secure_recipient::SecretRecipient::from_private(Zeroizing::new(
-                    *recipient.recipient().private_bytes(),
-                ))
-                .map_err(|_| RecipientEnrollmentError::Invalid)?
+                let mut private = Zeroizing::new([0u8; 32]);
+                private.copy_from_slice(recipient.recipient().private_bytes());
+                peerwork_core::secure_recipient::SecretRecipient::from_private(private)
+                    .map_err(|_| RecipientEnrollmentError::Invalid)?
             };
             let cert = next
                 .certify(identity.signing_key(), at)
