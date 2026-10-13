@@ -12,7 +12,26 @@ authority must match the client's configured digest. By default that digest is
 SHA-256 of the local actor ID, matching the TypeScript client's default.
 Catalog chunk commands use `prepare(command, upload_chunk=bytes)`; the shared
 core checks its byte length and signed digest before saving exact bytes.
-Verified secure-agent reads and actions remain incomplete.
+`SecureReadClient` reads the latest verified supported PUBLIC workspace from
+a protected state directory. `SecurePublicActionClient` uses the same profile:
+
+```python
+client = peerwork.SecurePublicActionClient(origin, state_dir, identity_path, workspace_id,
+    owner_actor_id=owner_actor_id, owner_key_id=owner_key_id)
+pending = client.submit("discussion.post", instance_id, {"message": "Hello"})
+result = client.reconcile(pending["command_id"])
+if result["status"] == "PENDING":
+    result = client.retry_saved(pending["command_id"])
+if result["status"] == "ACCEPTED":
+    effects = result["receipt"]["effects"]
+```
+
+The action packet and OS-random allocation tokens are saved before POST;
+`retry_saved` reuses those exact bytes. A successful HTTP response still
+returns `PENDING` until fresh signed replay proves the matching effect.
+The action API currently covers supported PUBLIC actions; PRIVATE onboarding,
+some structured/delegated action families, and general Agent workflow remain
+incomplete.
 Cancelling an async wrapper stops waiting for its worker thread; a local
 identity creation already in progress can still finish. Reopen the requested
 path to inspect the result before retrying creation. The kernel async methods
