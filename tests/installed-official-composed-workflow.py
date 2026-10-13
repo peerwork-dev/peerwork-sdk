@@ -291,6 +291,17 @@ with tempfile.TemporaryDirectory(prefix="peerwork-official-workflow-") as direct
         assert task_retry.returncode == 0, task_retry.stderr[-1200:]
         assert json.loads(task_retry.stdout)["status"] == "ACCEPTED"
         assert counts(origin)["head_sequence"] == 7
+        browser_result = None
+        if os.environ.get("PEERWORK_TEST_BROWSER") == "1":
+            browser_env = dict(os.environ, PEERWORK_TEST_STATE=str(state),
+                               PEERWORK_TEST_WORKSPACE=fixture["workspace_id"],
+                               PEERWORK_TEST_TASK_RECORD=task_record_id,
+                               PEERWORK_TEST_CANDIDATE_RECORD=candidate_id)
+            browser = subprocess.run(
+                [NODE, str(Path(__file__).parent / "installed-official-composed-browser.mjs")],
+                env=browser_env, capture_output=True, text=True, timeout=90)
+            assert browser.returncode == 0, browser.stderr[-1800:]
+            browser_result = json.loads(browser.stdout)
         print(json.dumps({"source_commit": SOURCE_COMMIT,
                           "reference_commit": "f828b6c50a0a58d1e718af90f653b214adcc3328",
                           "adopter_grant_refused_before_post": True,
@@ -298,6 +309,7 @@ with tempfile.TemporaryDirectory(prefix="peerwork-official-workflow-") as direct
                           "proposal_sequence": 5, "adoption_sequence": 6, "task_sequence": 7,
                           "adopter_enrollment": "tracked TypeScript signed invite fixture",
                           "candidate_id": candidate_id, "task_record_id": task_record_id,
+                          "browser": browser_result,
                           "full_workflow": "SIGNED_COMPOSED_TASK_EFFECTS_VERIFIED"}))
     finally:
         server.terminate()
