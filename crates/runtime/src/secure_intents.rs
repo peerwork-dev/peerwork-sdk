@@ -120,6 +120,8 @@ pub(crate) struct PublicInstallSelection {
     pub closure_b64: String,
     pub prior_checkpoint_json: String,
     pub grants_json: String,
+    #[serde(default)]
+    pub bindings_json: Option<String>,
 }
 
 impl PublicInstallSelection {
