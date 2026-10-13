@@ -42,9 +42,10 @@ else:
 def node_call(config, operation, **values):
     code = r'''
 void (async () => {
+  const fs = require('node:fs');
   const sdk = require(process.env.PEERWORK_TEST_NODE_PACKAGE);
   const owner = sdk.openSecureOwnerWorkspaces(JSON.parse(process.env.PEERWORK_TEST_OWNER_CONFIG));
-  const value = JSON.parse(process.env.PEERWORK_TEST_VALUES);
+  const value = JSON.parse(fs.readFileSync(0, 'utf8'));
   let result;
   switch (process.env.PEERWORK_TEST_OPERATION) {
     case 'inspect': result = await owner.inspectPendingMultipartPackageStage(value.input, value.materialJson); break;
@@ -58,9 +59,8 @@ void (async () => {
 '''
     env = dict(os.environ, PEERWORK_TEST_NODE_PACKAGE=NODE_PACKAGE,
                PEERWORK_TEST_OWNER_CONFIG=json.dumps(config),
-               PEERWORK_TEST_VALUES=json.dumps(values),
                PEERWORK_TEST_OPERATION=operation)
-    output = subprocess.run([NODE, "-e", code], env=env, capture_output=True,
+    output = subprocess.run([NODE, "-e", code], env=env, input=json.dumps(values), capture_output=True,
                             text=True, timeout=120)
     assert output.returncode == 0, output.stderr[-800:]
     return json.loads(output.stdout)
