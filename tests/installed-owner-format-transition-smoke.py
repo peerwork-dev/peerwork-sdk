@@ -85,8 +85,8 @@ void (async () => {
   let result;
   switch (process.env.PEERWORK_TEST_OPERATION) {
     case 'submit': result = await owner.submitFormatTransition(value.input); break;
-    case 'resume': result = await owner.resumeFormatTransition(value.commandId); break;
-    case 'history': result = await owner.formatTransitions(); break;
+    case 'resume': result = await owner.resumeFormatTransition(value.workspaceId, value.commandId); break;
+    case 'history': result = await owner.formatTransitions(value.workspaceId); break;
     default: throw new Error('unsupported format transition test operation');
   }
   // The submit child intentionally withholds its generated ID from its caller.
@@ -107,10 +107,9 @@ void (async () => {
     return json.loads(result.stdout)
 
 
-def cli(config_file, verb, argument=None):
+def cli(config_file, verb, *arguments):
     command = [CLI, "secure", verb, str(config_file)]
-    if argument is not None:
-        command.append(str(argument))
+    command.extend(str(argument) for argument in arguments)
     result = subprocess.run(command, capture_output=True, text=True, timeout=120)
     assert result.returncode == 0, result.stderr[-800:]
     return json.loads(result.stdout)
@@ -164,11 +163,19 @@ try:
         transition="UPGRADE_WIRE_V3"))
     assert withheld == {"status": "PENDING"}
     fresh = peerwork.SecureOwnerWorkspaceClient(origin, str(root), allow_loopback_http=True)
-    saved = fresh.format_transitions()
+    saved = fresh.format_transitions(workspace_id)
     assert len(saved) == 1 and saved[0]["transition"] == "UPGRADE_WIRE_V3"
     assert saved[0]["status"] == "PENDING" and saved[0]["workspace_id"] == workspace_id
     first_id = saved[0]["command_id"]
-    first = cli(config_file, "owner-format-resume", first_id)
+    wrong_workspace = "z" * 43 if workspace_id != "z" * 43 else "y" * 43
+    try:
+        fresh.resume_format_transition(wrong_workspace, first_id)
+    except peerwork.OwnerWorkspaceError as error:
+        assert error.code == "NOT_FOUND"
+    else:
+        raise AssertionError("wrong workspace must not resolve a saved transition")
+    assert counts(origin) == baseline_commits + 1
+    first = cli(config_file, "owner-format-resume", workspace_id, first_id)
     assert first["command_id"] == first_id and first["status"] == "ACCEPTED"
     assert first["transition"] == "UPGRADE_WIRE_V3"
     assert counts(origin) == baseline_commits + 1
@@ -185,7 +192,7 @@ try:
     assert first_policy["previous_policy"] == prior["policy_hash"]
     assert first_policy["effective_sequence"] == first_read["sequence"]
     assert first["sequence"] == first_read["sequence"] and first["policy_hash"] == first_read["policy_hash"]
-    assert fresh.resume_format_transition(first_id) == first
+    assert fresh.resume_format_transition(workspace_id, first_id) == first
     assert counts(origin) == baseline_commits + 1
 
     second = fresh.submit_format_transition(workspace_id, "RAISE_PRIVATE_CEILING_TWO")
@@ -193,7 +200,7 @@ try:
     second_id = second["command_id"]
     assert second_id != first_id
     if second["status"] == "PENDING":
-        second = node_call(config, "resume", commandId=second_id)
+        second = node_call(config, "resume", workspaceId=workspace_id, commandId=second_id)
     assert second["status"] == "ACCEPTED" and second["command_id"] == second_id
     assert counts(origin) == baseline_commits + 2
     final = fresh.read(workspace_id)
@@ -212,17 +219,17 @@ try:
     record = next(row for row in final["objects"] if row.get("id") == record_id)
     assert record["value"]["payload"]["title"] == title
     assert record["value"]["payload"]["body"] == body
-    assert node_call(config, "resume", commandId=second_id) == second
-    assert fresh.resume_format_transition(first_id) == first
+    assert node_call(config, "resume", workspaceId=workspace_id, commandId=second_id) == second
+    assert fresh.resume_format_transition(workspace_id, first_id) == first
     assert counts(origin) == baseline_commits + 2
 
     server.terminate()
     server.wait(timeout=5)
-    expected = fresh.format_transitions()
+    expected = fresh.format_transitions(workspace_id)
     assert len(expected) == 2 and {row["command_id"] for row in expected} == {first_id, second_id}
     assert all(row["status"] == "ACCEPTED" for row in expected)
-    assert node_call(config, "history") == expected
-    assert cli(config_file, "owner-format-history") == expected
+    assert node_call(config, "history", workspaceId=workspace_id) == expected
+    assert cli(config_file, "owner-format-history", workspace_id) == expected
     print(json.dumps(dict(status="PASS", workspace_id=workspace_id, source_policy_v=1,
         first_command_id=first_id, second_command_id=second_id,
         record_id=record_id, final_sequence=final["sequence"])))

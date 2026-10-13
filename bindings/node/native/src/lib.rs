@@ -21,7 +21,7 @@ use peerwork_runtime::secure_owner_create::{
     SecureOwnerCreateConfig, SecureOwnerCreateInput, SecureOwnerWorkspaceCreate,
 };
 use peerwork_runtime::secure_owner_attach::{HistoricalOwnerAttachInput, SecureHistoricalOwnerAttach};
-use peerwork_runtime::secure_owner_format_transition::{OwnerFormatTransitionInput, SecureOwnerFormatTransition};
+use peerwork_runtime::secure_owner_format_transition::OwnerFormatTransitionInput;
 use peerwork_runtime::public_catalog::{PublicCatalog, PublicCatalogConfig};
 use peerwork_runtime::secure_recipient_enrollment::{
     RecipientEnrollmentConfig, SecureRecipientEnrollment,
@@ -555,15 +555,24 @@ impl Task for SecureOwnerCreateTask {
             });
         }
         if matches!(self.operation.as_str(), "format_submit" | "format_resume" | "format_history") {
-            let access = SecureOwnerFormatTransition::new(config);
-            let result = match self.operation.as_str() {
-                "format_submit" => {
-                    let input: OwnerFormatTransitionInput = match self.input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {
-                        Some(value) => value,
-                        None => return Ok(serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid Owner format transition input"}).to_string()),
-                    };
-                    access.submit_json_with_cancel(input, &self.cancel)
+            let input: Option<OwnerFormatTransitionInput> = if self.operation == "format_submit" {
+                match self.input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {
+                    Some(value) => Some(value),
+                    None => return Ok(serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid Owner format transition input"}).to_string()),
                 }
+            } else { None };
+            let selected_workspace = input.as_ref().map(|value| value.workspace_id.as_str())
+                .or(self.workspace_id.as_deref());
+            let Some(selected_workspace) = selected_workspace else {
+                return Ok(serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"workspace ID is required"}).to_string());
+            };
+            let access = match SecureOwnerWorkspaceCreate::new(config)
+                .private_format_transition_access(selected_workspace) {
+                Ok(value) => value,
+                Err(error) => return Ok(serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string()),
+            };
+            let result = match self.operation.as_str() {
+                "format_submit" => access.submit_json_with_cancel(input.expect("submit input parsed"), &self.cancel),
                 "format_resume" => match self.command_id.as_deref() {
                     Some(id) => access.resume_json_with_cancel(id, &self.cancel),
                     None => return Ok(serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"transition command ID is required"}).to_string()),

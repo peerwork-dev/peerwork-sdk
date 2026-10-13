@@ -1045,13 +1045,13 @@ class SecureOwnerWorkspaceClient:
         return cast(OwnerFormatTransitionResult,
                     self._owner("format_submit", input_value=value))
 
-    def resume_format_transition(self, command_id: str) -> OwnerFormatTransitionResult:
+    def resume_format_transition(self, workspace_id: str, command_id: str) -> OwnerFormatTransitionResult:
         return cast(OwnerFormatTransitionResult,
-                    self._owner("format_resume", command_id=command_id))
+                    self._owner("format_resume", command_id=command_id, workspace_id=workspace_id))
 
-    def format_transitions(self) -> list[OwnerFormatTransitionResult]:
+    def format_transitions(self, workspace_id: str) -> list[OwnerFormatTransitionResult]:
         """Protected local PENDING/ACCEPTED history; PENDING is not remote acceptance."""
-        return cast(list[OwnerFormatTransitionResult], self._owner("format_history"))
+        return cast(list[OwnerFormatTransitionResult], self._owner("format_history", workspace_id=workspace_id))
 
     def read(self, workspace_id: str) -> VerifiedSecureWorkspace:
         return cast(VerifiedSecureWorkspace, self._owner("read", workspace_id=workspace_id))
@@ -1131,13 +1131,13 @@ class SecureOwnerWorkspaceClient:
         return cast(OwnerFormatTransitionResult, await _run_cancelled_async(
             self._owner, "format_submit", input_value=value))
 
-    async def resume_format_transition_async(self, command_id: str) -> OwnerFormatTransitionResult:
+    async def resume_format_transition_async(self, workspace_id: str, command_id: str) -> OwnerFormatTransitionResult:
         return cast(OwnerFormatTransitionResult, await _run_cancelled_async(
-            self._owner, "format_resume", command_id=command_id))
+            self._owner, "format_resume", command_id=command_id, workspace_id=workspace_id))
 
-    async def format_transitions_async(self) -> list[OwnerFormatTransitionResult]:
+    async def format_transitions_async(self, workspace_id: str) -> list[OwnerFormatTransitionResult]:
         return cast(list[OwnerFormatTransitionResult], await _run_cancelled_async(
-            self._owner, "format_history"))
+            self._owner, "format_history", workspace_id=workspace_id))
 
     async def read_async(self, workspace_id: str) -> VerifiedSecureWorkspace:
         return cast(VerifiedSecureWorkspace, await _run_cancelled_async(self._owner,

@@ -177,9 +177,9 @@ export interface SecureOwnerWorkspaceSession {
   /** Protected local PREPARED/ATTACHED history; PREPARED is not accepted. */
   attachments(options?: {signal?: AbortSignal}): Promise<HistoricalOwnerAttachmentResult[]>;
   submitFormatTransition(input: OwnerFormatTransitionInput, options?: {signal?: AbortSignal}): Promise<OwnerFormatTransitionResult>;
-  resumeFormatTransition(commandId: string, options?: {signal?: AbortSignal}): Promise<OwnerFormatTransitionResult>;
+  resumeFormatTransition(workspaceId: string, commandId: string, options?: {signal?: AbortSignal}): Promise<OwnerFormatTransitionResult>;
   /** Protected local PENDING/ACCEPTED history; PENDING is not accepted. */
-  formatTransitions(options?: {signal?: AbortSignal}): Promise<OwnerFormatTransitionResult[]>;
+  formatTransitions(workspaceId: string, options?: {signal?: AbortSignal}): Promise<OwnerFormatTransitionResult[]>;
   read(workspaceId: string, options?: {signal?: AbortSignal}): Promise<VerifiedSecureWorkspace>;
   /** Derive action authority and saved intent paths from verified protected Owner history. */
   publicActions(workspaceId: string): SecurePublicActionSession;
