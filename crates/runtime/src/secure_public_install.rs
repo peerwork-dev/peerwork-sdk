@@ -315,6 +315,9 @@ impl SecurePublicPackageInstall {
             {
                 return Err(PublicPackageInstallError::Input);
             }
+            // PAGE continuation is not yet available. Refuse before saving or
+            // posting a BEGIN that would leave an existing history in SEEDING.
+            ensure_empty_install_snapshot(prepared.request_wire())?;
             let selection = PublicInstallSelection {
                 package_id: prepared.package_id().to_owned(),
                 package_version: prepared.package_version().to_owned(),
@@ -836,6 +839,29 @@ fn accept_completed_empty_install(
     })
 }
 
+fn ensure_empty_install_snapshot(request: &[u8]) -> Result<(), PublicPackageInstallError> {
+    let request = parse_wire_json_bounded(request, 64, 262_144)
+        .map_err(|_| PublicPackageInstallError::Input)?;
+    let snapshot = request
+        .get("commit")
+        .and_then(|commit| commit.get("payload"))
+        .and_then(|payload| payload.get("structure"))
+        .and_then(|structure| structure.get("snapshot"))
+        .ok_or(PublicPackageInstallError::Input)?;
+    if snapshot.get("records") != Some(&WireValue::Number(0.0))
+        || snapshot.get("heads") != Some(&WireValue::Number(0.0))
+        || snapshot.get("offset") != Some(&WireValue::Number(0.0))
+        || snapshot
+            .get("root")
+            .and_then(WireValue::as_string)
+            .as_deref()
+            != Some("5df677702279081de975c0b78651baa9fd6d5987ab205898154fd9ed3bafc9ff")
+    {
+        return Err(PublicPackageInstallError::Input);
+    }
+    Ok(())
+}
+
 fn random_id() -> Result<String, PublicPackageInstallError> {
     let mut bytes = [0u8; 32];
     OsRng
@@ -860,6 +886,22 @@ mod tests {
         path::Path,
         process::{Child, Command, Stdio},
     };
+
+    #[test]
+    fn nonempty_begin_is_refused_before_persistence() {
+        let packet = |records| {
+            serde_json::json!({"commit":{"payload":{"structure":{"snapshot":{
+                "records":records,"heads":0,"offset":0,
+                "root":"5df677702279081de975c0b78651baa9fd6d5987ab205898154fd9ed3bafc9ff"
+            }}}}})
+            .to_string()
+        };
+        assert!(ensure_empty_install_snapshot(packet(0).as_bytes()).is_ok());
+        assert!(matches!(
+            ensure_empty_install_snapshot(packet(1).as_bytes()),
+            Err(PublicPackageInstallError::Input)
+        ));
+    }
 
     #[tokio::test]
     async fn actual_service_public_install_begin_is_saved_before_uncertain_reply() {
