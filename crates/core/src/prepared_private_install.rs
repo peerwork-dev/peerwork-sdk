@@ -32,6 +32,31 @@ pub enum PrivateInstallError {
     Author,
 }
 
+/// Reconstruct one complete package source from an authenticated signed part.
+/// The caller must separately bind the part to an origin-bound replayed stage
+/// commit and the source checkpoint to that replay. A multipart prefix is not
+/// a completed source and is refused here.
+pub fn verify_single_part_package_source(
+    signed_part: &WireValue,
+    source_checkpoint: &WireValue,
+) -> Result<WireValue, PrivateInstallError> {
+    let text = signed_part
+        .get("value")
+        .and_then(|value| value.get("text"))
+        .and_then(WireValue::as_string)
+        .ok_or(PrivateInstallError::Invalid)?;
+    let source_wire = canonical_wire_value(source_checkpoint, Path::SecureArtifact)
+        .map_err(|_| PrivateInstallError::Invalid)?;
+    let prepared = prepare_package_source_wire(text.as_bytes(), source_wire.as_bytes())
+        .map_err(|_| PrivateInstallError::Invalid)?;
+    if prepared.parts.len() != 1 || prepared.parts[0] != *signed_part {
+        return Err(PrivateInstallError::Invalid);
+    }
+    verify_protocol_package_source(&prepared.proof, std::slice::from_ref(signed_part))
+        .map_err(|_| PrivateInstallError::Invalid)?;
+    Ok(prepared.proof)
+}
+
 /// Exact encrypted packet plus the source-derived material proof. Persist the
 /// packet and chosen source before POST; never re-encrypt an uncertain step.
 pub struct PreparedPrivatePackageStage {

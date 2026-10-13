@@ -20,6 +20,7 @@ use peerwork_core::{
     prepared_secure_request::{
         verify_prepared_secure_commit_request_with_policy, SecureCommitRequestPins,
     },
+    prepared_private_install::verify_single_part_package_source,
     replayed_secure_journal::StructureStatus,
     secure_keyring::SecretKeyring,
     wire_json::{canonical_wire_value, parse_wire_json_bounded, WireValue},
@@ -234,7 +235,15 @@ struct LegacySource {
     policy_hash: String,
     retained_member_commands: Vec<String>,
     retained_inbox_receipts: Vec<RetainedInboxReceipt>,
+    completed_package_stage: Option<CompletedPackageStageMarker>,
     pending_action: Option<LegacyPendingAction>,
+}
+
+struct CompletedPackageStageMarker {
+    command_id: String,
+    source: WireValue,
+    source_id: String,
+    source_sha256: String,
 }
 
 struct LegacyPendingAction {
@@ -590,6 +599,9 @@ impl SecureHistoricalOwnerAttach {
             if !completed {
                 return Err(HistoricalOwnerAttachError::SourceUnresolved);
             }
+        }
+        if let Some(marker) = source.completed_package_stage.as_ref() {
+            verify_completed_package_stage(marker, &replayed, &row.input)?;
         }
         let policy_wire = replayed
             .signed_policy_by_hash(replayed.replay().policy_hash())
@@ -2298,6 +2310,188 @@ fn confirmed_browser_approvals(
     }
 }
 
+fn completed_package_stage_marker(
+    value: Option<&WireValue>,
+    pending: Option<&WireValue>,
+    input: &HistoricalOwnerAttachInput,
+) -> Result<Option<CompletedPackageStageMarker>, HistoricalOwnerAttachError> {
+    let rows = match value {
+        None => return Ok(None),
+        Some(WireValue::Object(rows)) if rows.is_empty() => return Ok(None),
+        Some(WireValue::Object(rows)) if rows.len() == 1 => rows,
+        _ => return Err(HistoricalOwnerAttachError::SourceUnresolved),
+    };
+    let (key, marker) = &rows[0];
+    if marker.object_len() != Some(6) {
+        return Err(HistoricalOwnerAttachError::SourceUnresolved);
+    }
+    let workspace = marker.get("workspace_id").and_then(WireValue::as_string);
+    let source_id = marker.get("source_id").and_then(WireValue::as_string);
+    let source_sha256 = marker.get("source_sha256").and_then(WireValue::as_string);
+    let command_id = marker.get("command_id").and_then(WireValue::as_string);
+    let source = marker.get("source");
+    let (Some(workspace), Some(source_id), Some(source_sha256), Some(command_id), Some(source)) =
+        (workspace, source_id, source_sha256, command_id, source)
+    else {
+        return Err(HistoricalOwnerAttachError::SourceUnresolved);
+    };
+    if workspace != input.workspace_id
+        || String::from_utf16(key).ok().as_deref()
+            != Some(format!("{workspace}.{source_id}").as_str())
+        || source_id.len() != 64
+        || source_sha256.len() != 64
+        || !valid_token(&command_id)
+        || exact_u64(marker.get("part_index")) != Some(0)
+        || source
+            .get("workspace_id")
+            .and_then(WireValue::as_string)
+            .as_deref()
+            != Some(&workspace)
+        || source
+            .get("owner_id")
+            .and_then(WireValue::as_string)
+            .as_deref()
+            != Some(&input.expected_owner_actor_id)
+        || source
+            .get("owner_key")
+            .and_then(WireValue::as_string)
+            .as_deref()
+            != Some(&input.expected_owner_key_id)
+        || matches!(pending, Some(WireValue::Object(rows)) if rows.iter().any(|(key, _)| String::from_utf16(key).ok().as_deref() == Some(&command_id)))
+    {
+        return Err(HistoricalOwnerAttachError::SourceUnresolved);
+    }
+    Ok(Some(CompletedPackageStageMarker {
+        command_id,
+        source: source.clone(),
+        source_id,
+        source_sha256,
+    }))
+}
+
+fn verify_completed_package_stage(
+    marker: &CompletedPackageStageMarker,
+    replayed: &TransportReplayedJournal,
+    input: &HistoricalOwnerAttachInput,
+) -> Result<(), HistoricalOwnerAttachError> {
+    let invalid = || HistoricalOwnerAttachError::SourceUnresolved;
+    let source = &marker.source;
+    let base = exact_u64(source.get("sequence")).ok_or_else(invalid)?;
+    let head = source
+        .get("head")
+        .and_then(WireValue::as_string)
+        .ok_or_else(invalid)?;
+    let policy_hash = source
+        .get("policy_hash")
+        .and_then(WireValue::as_string)
+        .ok_or_else(invalid)?;
+    let sequence = base.checked_add(1).ok_or_else(invalid)?;
+    if !replayed
+        .replay()
+        .contains_checkpoint(base, Some(&head), &policy_hash)
+    {
+        return Err(invalid());
+    }
+    let index = usize::try_from(base).map_err(|_| invalid())?;
+    let wire = replayed
+        .signed_commit_wires()
+        .get(index)
+        .ok_or_else(invalid)?;
+    let operation = replayed
+        .replay()
+        .operations()
+        .get(index)
+        .ok_or_else(invalid)?;
+    let commit = parse_wire_json_bounded(wire, 64, 262_144).map_err(|_| invalid())?;
+    let payload = commit.get("payload").ok_or_else(invalid)?;
+    let commit_hash = sha256_hex(wire);
+    let stage = operation
+        .get("input")
+        .and_then(|input| input.get("package_stage"))
+        .ok_or_else(invalid)?;
+    let WireValue::Array(objects) = operation.get("objects").ok_or_else(invalid)? else {
+        return Err(invalid());
+    };
+    if !replayed
+        .replay()
+        .contains_checkpoint(sequence, Some(&commit_hash), &policy_hash)
+        || payload
+            .get("command_id")
+            .and_then(WireValue::as_string)
+            .as_deref()
+            != Some(&marker.command_id)
+        || payload
+            .get("action_id")
+            .and_then(WireValue::as_string)
+            .as_deref()
+            != Some("secure.protocol-package.stage")
+        || payload
+            .get("actor_id")
+            .and_then(WireValue::as_string)
+            .as_deref()
+            != Some(&input.expected_owner_actor_id)
+        || payload
+            .get("signing_key")
+            .and_then(WireValue::as_string)
+            .as_deref()
+            != Some(&input.expected_owner_key_id)
+        || payload
+            .get("workspace_id")
+            .and_then(WireValue::as_string)
+            .as_deref()
+            != Some(&input.workspace_id)
+        || payload
+            .get("policy_hash")
+            .and_then(WireValue::as_string)
+            .as_deref()
+            != Some(&policy_hash)
+        || exact_u64(payload.get("sequence")) != Some(sequence)
+        || payload
+            .get("previous")
+            .and_then(WireValue::as_string)
+            .as_deref()
+            != Some(&head)
+        || operation
+            .get("kind")
+            .and_then(WireValue::as_string)
+            .as_deref()
+            != Some("ADMIN")
+        || objects.len() != 1
+        || stage
+            .get("source_id")
+            .and_then(WireValue::as_string)
+            .as_deref()
+            != Some(&marker.source_id)
+        || exact_u64(stage.get("part_index")) != Some(0)
+        || canonical_wire_value(
+            stage.get("source").ok_or_else(invalid)?,
+            CanonicalPath::SecureArtifact,
+        )
+        .map_err(|_| invalid())?
+            != canonical_wire_value(source, CanonicalPath::SecureArtifact).map_err(|_| invalid())?
+    {
+        return Err(invalid());
+    }
+    // Replay already validates the signed stage context, ADMIN DELTA shape,
+    // policy, ciphertext, and source ancestry. Recompile the entire material
+    // from its sole signed part; no incomplete multipart prefix can pass.
+    let proof = verify_single_part_package_source(&objects[0], source).map_err(|_| invalid())?;
+    if proof
+        .get("source_id")
+        .and_then(WireValue::as_string)
+        .as_deref()
+        != Some(&marker.source_id)
+        || proof
+            .get("source_sha256")
+            .and_then(WireValue::as_string)
+            .as_deref()
+            != Some(&marker.source_sha256)
+    {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
 fn parse_legacy_source(
     bytes: &[u8],
     input: &HistoricalOwnerAttachInput,
@@ -2325,7 +2519,6 @@ fn parse_legacy_source(
             "application_decision_intents",
             "field_policy_intents",
             "protocol_install_intents",
-            "package_stage_intents",
             "protocol_object_stage_intents",
             "coordination_intents",
             "inbox_receipts",
@@ -2369,6 +2562,11 @@ fn parse_legacy_source(
             return Err(HistoricalOwnerAttachError::SourceUnresolved);
         }
         let retained_inbox_receipts = parse_inbox_receipts(value.get("inbox_receipts"), input)?;
+        let completed_package_stage = completed_package_stage_marker(
+            value.get("package_stage_intents"),
+            value.get("pending"),
+            input,
+        )?;
         for key in [
             "admission_browser_revocations",
             "configuration_receipts",
@@ -2573,6 +2771,7 @@ fn parse_legacy_source(
             policy_hash,
             retained_member_commands,
             retained_inbox_receipts,
+            completed_package_stage,
             pending_action,
         })
     })();
@@ -3586,7 +3785,7 @@ mod tests {
     }
 
     #[test]
-    fn actual_service_creates_completed_and_pending_package_stage_markers() {
+    fn actual_service_imports_only_signed_complete_one_part_package_stage_marker() {
         let _fault_guard = ATTACH_FAULT_TEST_LOCK.lock().unwrap();
         let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else {
             return;
@@ -3699,11 +3898,51 @@ mod tests {
                 kernel_pending_command_ids: Vec::new(),
                 expected_kernel_intent_db_digest: None,
             };
-            assert!(matches!(
-                attach.attach(input, &CancellationToken::new()),
-                Err(HistoricalOwnerAttachError::SourceUnresolved)
-            ));
-            assert!(attach.attachments().unwrap().is_empty());
+            let cancel = CancellationToken::new();
+            if name == "pending" {
+                assert!(matches!(
+                    attach.attach(input, &cancel),
+                    Err(HistoricalOwnerAttachError::SourceUnresolved)
+                ));
+                assert!(attach.attachments().unwrap().is_empty());
+            } else {
+                let attached = attach.attach(input.clone(), &cancel).unwrap();
+                assert_eq!(attached.status, "ATTACHED");
+                let facade = SecureOwnerWorkspaceCreate::new(attach.config.clone());
+                let read: serde_json::Value =
+                    serde_json::from_str(&facade.read_workspace_json(workspace, &cancel).unwrap())
+                        .unwrap();
+                assert_eq!(read["sequence"], 2);
+                assert!(read["objects"].as_array().unwrap().iter().any(|row| {
+                    row["kind"] == "protocol_package_part"
+                        && row["id"] == marker["part_id"]
+                        && row["value"]["source_id"] == marker["source_id"]
+                        && row["value"]["sha256"] == marker["part_sha256"]
+                }));
+                assert_eq!(attach.attachments().unwrap(), vec![attached.clone()]);
+                std::fs::rename(
+                    root.path().join(name),
+                    root.path().join("archived-completed"),
+                )
+                .unwrap();
+                assert_eq!(
+                    serde_json::from_str::<serde_json::Value>(
+                        &SecureOwnerWorkspaceCreate::new(attach.config.clone())
+                            .read_workspace_json(workspace, &cancel)
+                            .unwrap()
+                    )
+                    .unwrap()["sequence"],
+                    2
+                );
+                let after: i64 = oracle
+                    .query_row(
+                        "SELECT count(*) FROM secure_commits WHERE workspace_id=?1",
+                        [workspace],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(after, 2);
+            }
         }
     }
 
