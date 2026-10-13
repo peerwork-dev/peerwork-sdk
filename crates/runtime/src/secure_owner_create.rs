@@ -16,6 +16,7 @@ use crate::{
         prepare_owner_workspace_with_utf16_name, prepare_private_owner_workspace_with_options,
         prepare_public_owner_workspace_with_options, NativePrepareError,
     },
+    secure_public_admission::SecurePublicAdmission,
     secure_public_install::SecurePublicPackageInstall,
     secure_read_access::SecureReadAccessError,
     secure_read_profile::{SecureReadProfile, SecureReadProfileConfig},
@@ -208,6 +209,18 @@ impl SecureOwnerWorkspaceCreate {
         workspace_id: &str,
     ) -> Result<SecurePublicPackageInstall, SecureOwnerCreateError> {
         Ok(SecurePublicPackageInstall::new(
+            self.created_profile_config(workspace_id, "PUBLIC")?,
+        ))
+    }
+
+    /// Invite and deliver for an Owner-created PUBLIC workspace using the
+    /// verified, protected Owner profile selected by its public workspace ID.
+    /// Recipient identity and consent remain separate admission checks.
+    pub fn public_admission_access(
+        &self,
+        workspace_id: &str,
+    ) -> Result<SecurePublicAdmission, SecureOwnerCreateError> {
+        Ok(SecurePublicAdmission::new(
             self.created_profile_config(workspace_id, "PUBLIC")?,
         ))
     }
