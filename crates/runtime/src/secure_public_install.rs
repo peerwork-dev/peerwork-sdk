@@ -1831,7 +1831,7 @@ mod selected_binding_service_test {
                 .unwrap(),
         )
         .unwrap();
-        let begin_id = submitted["begin_command_id"].as_str().unwrap().to_owned();
+        let begin_id = submitted["command_id"].as_str().unwrap().to_owned();
         let mut progress = submitted;
         for _ in 0..8 {
             if progress["status"] == "ACCEPTED" {
@@ -1886,7 +1886,7 @@ mod selected_binding_service_test {
                 issued_at_ms: None,
             }).unwrap(),
         ).unwrap();
-        let default_id = default_begin["begin_command_id"].as_str().unwrap().to_owned();
+        let default_id = default_begin["command_id"].as_str().unwrap().to_owned();
         let mut default_progress = default_begin;
         for _ in 0..8 {
             if default_progress["status"] == "ACCEPTED" { break; }
