@@ -329,13 +329,14 @@ impl SecureReadProfile {
         Ok((store, saved))
     }
 
-    /// Return source and owner pins only from the protected profile. A direct
-    /// PRIVATE grant may use the staged page slot, but it must not choose a
-    /// new authority or owner from a key-grant response.
+    /// Return source and owner pins only from the protected profile. PRIVATE
+    /// grant acquisition uses its own pages, leaving both verified and staged
+    /// profile generations untouched until a later full verified refresh.
     pub(crate) fn private_grant_read_config(&self) -> Result<SecureReadConfig, SecureReadAccessError> {
         let (_, saved) = self.open_local_profile()?;
-        let slot = saved.staged.or(saved.current).unwrap_or(0);
-        Ok(self.read_config(&saved, slot))
+        let mut config = self.read_config(&saved, 0);
+        config.read_state_path = self.config.state_dir.join("private-grant-pages.state");
+        Ok(config)
     }
 
     fn access(&self, profile: &ProfileDocument, slot: u8) -> SecureReadAccess {
