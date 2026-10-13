@@ -316,6 +316,132 @@ impl SignedPublicInstallBegin {
     }
 }
 
+pub struct SignedPublicInstallEnd {
+    request_wire: Vec<u8>,
+    commit_hash: String,
+    policy_hash: String,
+}
+impl SignedPublicInstallEnd {
+    pub fn request_wire(&self) -> &[u8] {
+        &self.request_wire
+    }
+    pub fn commit_hash(&self) -> &str {
+        &self.commit_hash
+    }
+    pub fn policy_hash(&self) -> &str {
+        &self.policy_hash
+    }
+}
+
+/// Low-level empty-snapshot END signer. Runtime must obtain `policy` and
+/// `checkpoint` from a complete signed SEEDING replay and bind `snapshot` to
+/// its exact saved and independently reproved BEGIN before transport.
+pub fn sign_public_empty_install_end(
+    signed_policy_wire: &[u8],
+    checkpoint_wire: &[u8],
+    snapshot: &WireValue,
+    command_id: &str,
+    issued_at: u64,
+    signer: &SigningKey,
+) -> Result<SignedPublicInstallEnd, DirectInstallError> {
+    let invalid = || DirectInstallError::Invalid;
+    if !token(command_id) || issued_at > 9_007_199_254_740_991 {
+        return Err(invalid());
+    }
+    let policy = parse_wire_json_bounded(signed_policy_wire, 64, 196_608).map_err(|_| invalid())?;
+    let checkpoint = parse_wire_json_bounded(checkpoint_wire, 32, 8192).map_err(|_| invalid())?;
+    let key_id = base64url(&signer.verifying_key().to_bytes());
+    let actor = actor_id(&signer.verifying_key().to_bytes());
+    let policy_canonical =
+        canonical_wire_value(&policy, Path::SecureArtifact).map_err(|_| invalid())?;
+    if !verify_secure_signed_wire(
+        policy_canonical.as_bytes(),
+        "peerwork.secure.policy.v3",
+        &key_id,
+    )
+    .map_err(|_| invalid())?
+        || required(&checkpoint, "policy_hash")?.as_string().as_deref()
+            != Some(&sha256_hex(policy_canonical.as_bytes()))
+        || required(&checkpoint, "owner_id")?.as_string().as_deref() != Some(&actor)
+        || required(&checkpoint, "owner_key")?.as_string().as_deref() != Some(&key_id)
+    {
+        return Err(invalid());
+    }
+    let p = required(&policy, "payload")?;
+    if required(p, "v")? != &WireValue::Number(3.0)
+        || required(p, "visibility")?.as_string().as_deref() != Some("PUBLIC")
+        || required(p, "structure_mode")?.as_string().as_deref() != Some("STRUCTURED")
+        || required(p, "protocol_format_ceiling")? != &WireValue::Number(1.0)
+        || required(p, "owner_id")?.as_string().as_deref() != Some(&actor)
+        || required(p, "signing_key")?.as_string().as_deref() != Some(&key_id)
+        || required(p, "workspace_id")? != required(&checkpoint, "workspace_id")?
+        || safe_int(required(p, "issued_at")?)? > issued_at
+        || !matches!(required(&checkpoint, "head")?, WireValue::String(_))
+        || required(snapshot, "records")? != &WireValue::Number(0.0)
+        || required(snapshot, "heads")? != &WireValue::Number(0.0)
+        || required(snapshot, "offset")? != &WireValue::Number(0.0)
+        || required(snapshot, "root")?.as_string().as_deref()
+            != Some("5df677702279081de975c0b78651baa9fd6d5987ab205898154fd9ed3bafc9ff")
+    {
+        return Err(invalid());
+    }
+    let sequence = safe_int(required(&checkpoint, "sequence")?)?
+        .checked_add(1)
+        .ok_or_else(invalid)?;
+    let operation = obj(vec![
+        ("v", WireValue::Number(1.0)),
+        ("kind", text("ADMIN")),
+        ("input", obj(vec![])),
+        ("objects", WireValue::Array(vec![])),
+    ]);
+    let structure = obj(vec![
+        ("v", WireValue::Number(1.0)),
+        ("mode", text("SNAPSHOT_END")),
+        ("snapshot", snapshot.clone()),
+        ("records", WireValue::Array(vec![])),
+        ("heads", WireValue::Array(vec![])),
+    ]);
+    let payload = obj(vec![
+        ("v", WireValue::Number(3.0)),
+        (
+            "workspace_id",
+            required(&checkpoint, "workspace_id")?.clone(),
+        ),
+        ("sequence", WireValue::Number(sequence as f64)),
+        ("previous", required(&checkpoint, "head")?.clone()),
+        ("policy_hash", required(&checkpoint, "policy_hash")?.clone()),
+        ("epoch", WireValue::Number(0.0)),
+        ("actor_id", text(&actor)),
+        ("signing_key", text(&key_id)),
+        ("command_id", text(command_id)),
+        ("action_id", text("secure.structure.end")),
+        ("instance_id", WireValue::Null),
+        ("issued_at", WireValue::Number(issued_at as f64)),
+        ("delegation", WireValue::Null),
+        ("protocol_format_ceiling", WireValue::Number(1.0)),
+        ("structure", structure),
+        ("mode", text("PUBLIC")),
+        ("body", operation),
+    ]);
+    let commit = sign_envelope(payload, "peerwork.secure.commit.v3", signer)?;
+    let commit_wire = canonical_wire_value(&commit, Path::SecureArtifact).map_err(|_| invalid())?;
+    if !verify_secure_signed_wire(commit_wire.as_bytes(), "peerwork.secure.commit.v3", &key_id)
+        .map_err(|_| invalid())?
+    {
+        return Err(invalid());
+    }
+    let request_wire = canonical_wire_value(&obj(vec![("commit", commit)]), Path::SecureArtifact)
+        .map_err(|_| invalid())?
+        .into_bytes();
+    Ok(SignedPublicInstallEnd {
+        request_wire,
+        commit_hash: sha256_hex(commit_wire.as_bytes()),
+        policy_hash: required(&checkpoint, "policy_hash")?
+            .as_string()
+            .ok_or_else(invalid)?,
+    })
+}
+
 fn entries(value: &WireValue) -> Result<&[(Vec<u16>, WireValue)], DirectInstallError> {
     if let WireValue::Object(fields) = value {
         Ok(fields)

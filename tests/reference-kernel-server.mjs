@@ -184,6 +184,7 @@ if (process.env.PEERWORK_TEST_BOOTSTRAP === '1') {
   } finally { agent.close(); }
 }
 let dropFirstPost = true;
+let rejectNextPostBeforeApply = false;
 let alterFirstChunk = process.env.PEERWORK_TEST_WRONG_CHUNK_STATE === '1';
 const firstPostMode = process.env.PEERWORK_TEST_FIRST_POST_MODE || 'drop';
 const firstPostDelayMs = Number(process.env.PEERWORK_TEST_FIRST_POST_DELAY_MS || 0);
@@ -243,6 +244,14 @@ const proxy = createServer(async (request, response) => {
       response.end(JSON.stringify({enabled:true}));
       return;
     }
+    if (request.url === '/__test/reject-next-post-before-apply' && request.method === 'POST') {
+      if (!publicReadFixture || rejectNextPostBeforeApply)
+        throw new Error('public rejected-request fixture unavailable');
+      rejectNextPostBeforeApply = true;
+      response.writeHead(200, {'content-type': 'application/json'});
+      response.end(JSON.stringify({enabled:true}));
+      return;
+    }
     if (request.url === '/__test/journal-delay-status' && request.method === 'GET') {
       response.writeHead(200, {'content-type':'application/json'});
       response.end(JSON.stringify({started:journalDelayStarted}));
@@ -286,6 +295,12 @@ const proxy = createServer(async (request, response) => {
     }
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
+    if (rejectNextPostBeforeApply && request.method === 'POST') {
+      rejectNextPostBeforeApply = false;
+      response.writeHead(503, {'content-type': 'application/json'});
+      response.end(JSON.stringify({code:'TEST_NOT_APPLIED'}));
+      return;
+    }
     const original = await fetch(realOrigin + request.url, {
       method: request.method,
       headers: {'content-type': request.headers['content-type'] || 'application/json',

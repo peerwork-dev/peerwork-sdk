@@ -229,6 +229,27 @@ impl SecureReadAccess {
         floor: Option<&VerifiedReadFloor>,
         reset_inactive: bool,
     ) -> Result<(TransportReplayedJournal, VerifiedReadFloor), SecureReadAccessError> {
+        self.replay_checked_generation_inner(cancel, floor, reset_inactive, true)
+    }
+
+    /// Install continuation may inspect fully replayed SEEDING state as a
+    /// candidate against the protected active floor. This never produces a
+    /// verified read or changes the active profile pointer.
+    pub(crate) fn replay_checked_install_generation(
+        &self,
+        cancel: &CancellationToken,
+        floor: &VerifiedReadFloor,
+    ) -> Result<(TransportReplayedJournal, VerifiedReadFloor), SecureReadAccessError> {
+        self.replay_checked_generation_inner(cancel, Some(floor), true, false)
+    }
+
+    fn replay_checked_generation_inner(
+        &self,
+        cancel: &CancellationToken,
+        floor: Option<&VerifiedReadFloor>,
+        reset_inactive: bool,
+        require_active: bool,
+    ) -> Result<(TransportReplayedJournal, VerifiedReadFloor), SecureReadAccessError> {
         if cancel.is_cancelled() {
             return Err(SecureReadAccessError::Cancelled);
         }
@@ -309,11 +330,13 @@ impl SecureReadAccess {
         }) {
             return Err(SecureReadAccessError::VerificationFailed);
         }
-        let verified = replayed.verified_read().map_err(map_verify_error)?;
+        if require_active {
+            replayed.verified_read().map_err(map_verify_error)?;
+        }
         let new_floor = VerifiedReadFloor {
-            sequence: verified.sequence(),
-            head: verified.head().map(str::to_owned),
-            policy_hash: verified.policy_hash().to_owned(),
+            sequence: replayed.replay().sequence(),
+            head: replayed.replay().head().map(str::to_owned),
+            policy_hash: replayed.replay().policy_hash().to_owned(),
         };
         Ok((replayed, new_floor))
     }

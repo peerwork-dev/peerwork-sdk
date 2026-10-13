@@ -67,6 +67,7 @@ pub(crate) enum VerifiedReadError {
 /// closed before this can authorize a public read or accepted action.
 pub(crate) struct TransportReplayedJournal {
     origin: String,
+    authority: String,
     source_actor_id: String,
     source_key_id: String,
     keyring_state: Option<ReplayKeyringState>,
@@ -149,6 +150,9 @@ impl TransportReplayedJournal {
 
     pub(crate) fn origin(&self) -> &str {
         &self.origin
+    }
+    pub(crate) fn authority(&self) -> &str {
+        &self.authority
     }
     pub(crate) fn replay(&self) -> &ReplayedSecureJournal {
         &self.replay
@@ -360,6 +364,7 @@ fn replay_authenticated_pages_with_material(
     })?;
     Ok(TransportReplayedJournal {
         origin: pages.origin().to_owned(),
+        authority: pages.authority().to_owned(),
         source_actor_id: pages.actor_id().to_owned(),
         source_key_id: pages.key_id().to_owned(),
         keyring_state,

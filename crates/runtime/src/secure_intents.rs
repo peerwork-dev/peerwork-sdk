@@ -86,6 +86,23 @@ struct Entry {
     accepted_receipt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     public_install: Option<PublicInstallSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    accepted_install: Option<AcceptedPublicInstall>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    accepted_install_step: Option<String>,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AcceptedPublicInstall {
+    pub begin_command_id: String,
+    pub end_command_id: String,
+    pub workspace_id: String,
+    pub instance_id: String,
+    pub package_digest: String,
+    pub protocol_digest: String,
+    pub sequence: u64,
+    pub end_commit_hash: String,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -190,6 +207,15 @@ impl SecureIntentJournal {
                 .rows
                 .iter()
                 .any(|(id, row)| !valid_row(id, row, actor_id))
+            || document.rows.iter().any(|(id, row)| {
+                row.accepted_install_step.as_ref().is_some_and(|begin_id| {
+                    document
+                        .rows
+                        .get(begin_id)
+                        .and_then(|begin| begin.accepted_install.as_ref())
+                        .is_none_or(|accepted| accepted.end_command_id != *id)
+                })
+            })
         {
             return Err(SecureIntentError::Incompatible);
         }
@@ -244,9 +270,11 @@ impl SecureIntentJournal {
             response_b64: Vec::new(),
             accepted_receipt: None,
             public_install: selection,
+            accepted_install: None,
+            accepted_install_step: None,
         };
         if let Some(existing) = self.document.rows.get(input.intent_id) {
-            if existing.accepted_receipt.is_some() {
+            if existing.accepted_receipt.is_some() || existing.accepted_install.is_some() {
                 return Err(SecureIntentError::Conflict);
             }
             let mut comparable = entry;
@@ -813,7 +841,11 @@ impl SecureIntentJournal {
         self.document
             .rows
             .iter()
-            .filter(|(_, row)| row.accepted_receipt.is_none())
+            .filter(|(_, row)| {
+                row.accepted_receipt.is_none()
+                    && row.accepted_install.is_none()
+                    && row.accepted_install_step.is_none()
+            })
             .map(|(id, row)| summary(id, row))
             .collect()
     }
@@ -851,6 +883,64 @@ impl SecureIntentJournal {
             .get(intent_id)
             .ok_or(SecureIntentError::NotFound)?
             .intent_digest)
+    }
+
+    pub(crate) fn accept_public_install(
+        &mut self,
+        accepted: AcceptedPublicInstall,
+    ) -> Result<(), SecureIntentError> {
+        let mut next = self.document.clone();
+        if next.rows.get(&accepted.end_command_id).is_none_or(|end| {
+            end.action_id != "secure.structure.end" || end.intent_digest != accepted.end_commit_hash
+        }) {
+            return Err(SecureIntentError::Invalid);
+        }
+        {
+            let row = next
+                .rows
+                .get_mut(&accepted.begin_command_id)
+                .ok_or(SecureIntentError::NotFound)?;
+            let selection = row
+                .public_install
+                .as_ref()
+                .ok_or(SecureIntentError::Invalid)?;
+            if row.workspace_id.as_deref() != Some(accepted.workspace_id.as_str())
+                || selection.instance_id != accepted.instance_id
+                || selection.package_digest != accepted.package_digest
+                || selection.protocol_digest != accepted.protocol_digest
+                || !valid_id(&accepted.end_command_id)
+                || !valid_digest(&accepted.end_commit_hash)
+                || accepted.sequence < 3
+            {
+                return Err(SecureIntentError::Invalid);
+            }
+            if let Some(existing) = &row.accepted_install {
+                return if existing == &accepted {
+                    Ok(())
+                } else {
+                    Err(SecureIntentError::Conflict)
+                };
+            }
+            row.accepted_install = Some(accepted.clone());
+        }
+        next.rows
+            .get_mut(&accepted.end_command_id)
+            .ok_or(SecureIntentError::NotFound)?
+            .accepted_install_step = Some(accepted.begin_command_id);
+        self.persist(next)
+    }
+
+    pub(crate) fn accepted_public_install(
+        &self,
+        begin_command_id: &str,
+    ) -> Result<Option<&AcceptedPublicInstall>, SecureIntentError> {
+        Ok(self
+            .document
+            .rows
+            .get(begin_command_id)
+            .ok_or(SecureIntentError::NotFound)?
+            .accepted_install
+            .as_ref())
     }
 
     fn persist(&mut self, next: Document) -> Result<(), SecureIntentError> {
@@ -1011,6 +1101,23 @@ fn valid_row(id: &str, row: &Entry, actor_id: &str) -> bool {
                 || row.workspace_id.is_none()
                 || row.trusted_owner_key.is_none()
                 || row.accepted_receipt.is_some())
+        || row.accepted_install.as_ref().is_some_and(|accepted| {
+            row.public_install.as_ref().is_none_or(|selection| {
+                accepted.begin_command_id != id
+                    || row.workspace_id.as_deref() != Some(accepted.workspace_id.as_str())
+                    || selection.instance_id != accepted.instance_id
+                    || selection.package_digest != accepted.package_digest
+                    || selection.protocol_digest != accepted.protocol_digest
+            }) || !valid_id(&accepted.end_command_id)
+                || !valid_digest(&accepted.end_commit_hash)
+                || accepted.sequence < 3
+        })
+        || row.accepted_install_step.as_ref().is_some_and(|begin| {
+            row.action_id != "secure.structure.end"
+                || !valid_id(begin)
+                || row.accepted_install.is_some()
+                || row.public_install.is_some()
+        })
     {
         return false;
     }

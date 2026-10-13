@@ -228,6 +228,21 @@ impl SecureReadProfile {
         F: FnOnce(&TransportReplayedJournal) -> Result<T, E>,
     {
         self.read_latest_json_with_cancel(cancel).map_err(E::from)?;
+        self.with_pinned_replay(cancel, consume)
+    }
+
+    /// Read the last protected ACTIVE generation without refreshing its
+    /// pointer. Install continuation needs this authenticated pre-BEGIN source
+    /// even while the newest signed journal is SEEDING.
+    pub(crate) fn with_pinned_replay<T, E, F>(
+        &self,
+        cancel: &CancellationToken,
+        consume: F,
+    ) -> Result<T, E>
+    where
+        E: From<SecureReadAccessError>,
+        F: FnOnce(&TransportReplayedJournal) -> Result<T, E>,
+    {
         if cancel.is_cancelled() {
             return Err(E::from(SecureReadAccessError::Cancelled));
         }
