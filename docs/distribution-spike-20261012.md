@@ -355,3 +355,10 @@ collected, so workflow compliance remains **unverified**.
 
 This local native run does not establish a GitHub workflow run, macOS/Windows
 execution, ARM64, every supported signed history, or a release candidate.
+The experimental distribution workflow now has a separate GNU x64 job using
+the official OCI manifest digest above, pinned Rust 1.89 and Node 24.20
+inputs, the ICU vector, offline installed wheel/npm imports, CLI execution,
+and an ELF `GLIBC_2.28` ceiling check. Its shell block passed `bash -n`
+after extraction from the workflow. That job has **not** run on GitHub;
+the guarded reference checkout is unavailable there, so the job does not
+claim the actual-service action test above.

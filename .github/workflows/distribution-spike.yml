@@ -60,6 +60,63 @@ jobs:
             dist/wheels/*.whl
             dist/agent-sdk-*/
 
+  linux_gnu_2_28_x64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and install on pinned native glibc 2.28 image
+        shell: bash
+        run: |
+          image='quay.io/pypa/manylinux_2_28_x86_64@sha256:4131ddd7acb9c6c966af02fe7e71edc51e078c2d41f475966697676430bfa2ae'
+          docker run --rm -v "$PWD:/work/sdk" -w /work/sdk "$image" /bin/bash -euc '
+            test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.28"
+            export PATH="/opt/rh/gcc-toolset-14/root/usr/bin:/opt/python/cp311-cp311/bin:$PATH"
+            mkdir -p /tmp/peerwork-gnu-tools dist
+            curl -fsSL --retry 3 https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init -o /tmp/peerwork-gnu-tools/rustup-init
+            echo "dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71  /tmp/peerwork-gnu-tools/rustup-init" | sha256sum -c -
+            chmod 755 /tmp/peerwork-gnu-tools/rustup-init
+            export RUSTUP_HOME=/tmp/peerwork-gnu-tools/rustup CARGO_HOME=/tmp/peerwork-gnu-tools/cargo
+            /tmp/peerwork-gnu-tools/rustup-init -y --no-modify-path --default-toolchain 1.89.0 --profile minimal
+            export PATH="$RUSTUP_HOME/toolchains/1.89.0-x86_64-unknown-linux-gnu/bin:$PATH"
+            export LD_LIBRARY_PATH="$RUSTUP_HOME/toolchains/1.89.0-x86_64-unknown-linux-gnu/lib"
+            test "$(rustc --version | cut -d " " -f 2)" = "1.89.0"
+            curl -fsSL --retry 3 https://nodejs.org/dist/v24.20.0/node-v24.20.0-linux-x64.tar.xz -o /tmp/peerwork-gnu-tools/node.tar.xz
+            echo "2f2c0da162318f0de47665410c7c8c2ed3d36c8f3105de4bbc61176c70a7cbf2  /tmp/peerwork-gnu-tools/node.tar.xz" | sha256sum -c -
+            mkdir -p /tmp/peerwork-gnu-tools/node
+            tar --no-same-owner -xJf /tmp/peerwork-gnu-tools/node.tar.xz -C /tmp/peerwork-gnu-tools/node --strip-components=1
+            export PATH="/tmp/peerwork-gnu-tools/node/bin:$PATH"
+            test "$(node --version)" = "v24.20.0"
+            cargo test --locked -p peerwork-core js_locale::tests::pinned_node_locale_compare_vectors -- --exact
+            cargo build --release --locked -p peerwork-node-native -p peerwork-cli
+            python -m pip install "maturin==1.15.0"
+            (cd bindings/python && maturin build --release --locked --compatibility manylinux_2_28 --out ../../dist/wheels)
+            node bindings/node/scripts/package-platform.mjs linux-x64-gnu target/release/libpeerwork_node_native.so dist
+            npm pack ./bindings/node --pack-destination dist --offline
+            npm pack ./dist/agent-sdk-linux-x64-gnu --pack-destination dist --offline
+            mkdir -p dist/node-consumer
+            npm install --prefix dist/node-consumer --offline --ignore-scripts --no-audit --no-fund --no-save ./dist/peerwork-agent-sdk-0.0.1.tgz ./dist/peerwork-agent-sdk-linux-x64-gnu-0.0.1.tgz
+            python -m pip install --no-index --no-deps --target dist/wheel-consumer dist/wheels/*.whl
+            unset LD_LIBRARY_PATH
+            env -i HOME=/tmp PATH=/tmp/peerwork-gnu-tools/node/bin:/usr/bin:/bin node bindings/node/scripts/offline-smoke.mjs dist/node-consumer
+            env -i HOME=/tmp PATH=/opt/python/cp311-cp311/bin:/usr/bin:/bin PYTHONPATH=/work/sdk/dist/wheel-consumer python -c "import peerwork; assert peerwork.version() == \"0.0.1\"; assert peerwork.capabilities()[\"verified_public_workspace_reads\"]"
+            env -i HOME=/tmp PATH=/usr/bin:/bin target/release/peerwork version
+            python -c "import glob,zipfile; zipfile.ZipFile(glob.glob(\"dist/wheels/*.whl\")[0]).extractall(\"dist/wheel-inspect\")"
+            for binary in target/release/peerwork target/release/libpeerwork_node_native.so $(find dist/wheel-inspect -name "*.so"); do
+              maximum=$(readelf --version-info "$binary" | grep -oE "GLIBC_[0-9.]+" | sort -Vu | tail -1)
+              test "$(printf "%s\\n%s\\n" GLIBC_2.28 "$maximum" | sort -V | tail -1)" = GLIBC_2.28
+            done
+          '
+      - uses: actions/upload-artifact@v4
+        with:
+          name: experimental-linux-x64-gnu-glibc2_28
+          path: |
+            target/release/peerwork
+            dist/wheels/*.whl
+            dist/agent-sdk-linux-x64-gnu/
+            dist/peerwork-agent-sdk-0.0.1.tgz
+            dist/peerwork-agent-sdk-linux-x64-gnu-0.0.1.tgz
+
   linux_musl_x64:
     runs-on: ubuntu-24.04
     steps:
