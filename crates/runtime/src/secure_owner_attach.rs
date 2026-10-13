@@ -2662,6 +2662,187 @@ mod tests {
     }
 
     #[test]
+    fn actual_service_distinguishes_cached_kernel_jws_from_unsent_after_conversion() {
+        let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else {
+            return;
+        };
+        let node = std::env::var("PEERWORK_NODE_BIN").unwrap_or_else(|_| "node".into());
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let bridge =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/reference-kernel-server.mjs");
+        let child = Command::new(&node)
+            .arg(bridge)
+            .env("PEERWORK_REFERENCE_ROOT", &reference_root)
+            .env("PEERWORK_TEST_STATE", root.path())
+            .env("PEERWORK_TEST_FIRST_POST_MODE", "normal")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        struct StopKernelLifecycle(Child);
+        impl Drop for StopKernelLifecycle {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut child = StopKernelLifecycle(child);
+        let line = BufReader::new(child.0.stdout.take().unwrap())
+            .lines()
+            .next()
+            .unwrap()
+            .unwrap();
+        assert!(!line.is_empty(), "pinned service exited before readiness");
+        let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let origin = ready["origin"].as_str().unwrap();
+        let helper = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/historical-kernel-pending-source.mjs");
+        let cancel = CancellationToken::new();
+        for mode in ["applied-loss", "pre-send"] {
+            let output = Command::new(&node)
+                .arg(&helper)
+                .arg(origin)
+                .arg(root.path().join(format!("source-{mode}")))
+                .arg(&reference_root)
+                .arg(mode)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "current-client kernel lifecycle fixture: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let source: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(source["mode"], mode);
+            assert_eq!(source["policy_v"], 1);
+            assert_eq!(source["policy_visibility"], "PUBLIC");
+            assert_eq!(source["secure_sequence"], 2);
+            assert_eq!(source["pending_count"], 2);
+            assert_eq!(
+                source["dropped_responses"],
+                usize::from(mode == "applied-loss")
+            );
+            let selected = source["selected_command_id"].as_str().unwrap();
+            let other = source["unrelated_command_id"].as_str().unwrap();
+            let workspace = source["workspace_id"].as_str().unwrap();
+            let unrelated = source["unrelated_workspace_id"].as_str().unwrap();
+            assert_ne!(selected, other);
+            assert_ne!(workspace, unrelated);
+            let public_db = rusqlite::Connection::open_with_flags(
+                root.path().join("control.sqlite"),
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .unwrap();
+            let view_effects = || -> i64 {
+                public_db
+                    .query_row(
+                        "SELECT count(*) FROM events WHERE workspace_id=?1 AND kind='admin.view.set'",
+                        [workspace],
+                        |row| row.get(0),
+                    )
+                    .unwrap()
+            };
+            let expected_effects = i64::from(mode == "applied-loss");
+            assert_eq!(view_effects(), expected_effects);
+            let native = root.path().join(format!("native-{mode}"));
+            std::fs::create_dir(&native).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&native, std::fs::Permissions::from_mode(0o700)).unwrap();
+            }
+            let identity_path = native.join("identity.state");
+            let identity = crate::kernel_identity::KernelIdentity::import_pkcs8_pem_file(
+                &identity_path,
+                Path::new(source["pem_path"].as_str().unwrap()),
+            )
+            .unwrap();
+            assert_eq!(identity.actor_id(), source["owner_actor_id"]);
+            assert_eq!(identity.key_id(), source["owner_key_id"]);
+            let access = crate::kernel_access::KernelAccess::new(
+                origin,
+                native.join("kernel-intents.sqlite"),
+                &identity_path,
+                &[],
+                true,
+            );
+            let report = access
+                .migrate_ts_store(
+                    Path::new(source["intent_db_path"].as_str().unwrap()),
+                    &native.join("source-backup.sqlite"),
+                    &[identity.key_id().into()],
+                    &cancel,
+                )
+                .unwrap();
+            assert_eq!(report.pending_count, 2);
+            let pending = access.pending().unwrap();
+            assert_eq!(pending.len(), 2);
+            for (id, digest) in [
+                (selected, source["selected_intent_digest"].as_str().unwrap()),
+                (other, source["unrelated_intent_digest"].as_str().unwrap()),
+            ] {
+                assert!(pending
+                    .iter()
+                    .any(|row| row.command_id == id && row.intent_digest == digest));
+            }
+            let journal = crate::kernel_intents::KernelIntentJournal::open(
+                &native.join("kernel-intents.sqlite"),
+            )
+            .unwrap();
+            let audience: Vec<u16> = source["audience"]
+                .as_str()
+                .unwrap()
+                .encode_utf16()
+                .collect();
+            let original = journal
+                .verified_pending(selected, identity.key_id(), &audience)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                original.proof.intent_digest(),
+                source["selected_intent_digest"]
+            );
+            if mode == "applied-loss" {
+                let accepted = access.submit_saved(selected).unwrap();
+                assert_eq!(accepted.command_id, selected);
+                assert_eq!(accepted.workspace_id.as_deref(), Some(workspace));
+                assert_eq!(access.submit_saved(selected).unwrap(), accepted);
+                assert!(matches!(
+                    access.status(selected).unwrap(),
+                    Some(crate::kernel_client::KernelOperationStatus::Accepted(_))
+                ));
+            } else {
+                assert!(matches!(
+                    access.submit_saved(selected),
+                    Err(crate::kernel_access::KernelAccessError::Client(
+                        crate::kernel_client::KernelClientError::ServerRejected(409)
+                    ))
+                ));
+                assert!(matches!(
+                    access.status(selected).unwrap(),
+                    Some(crate::kernel_client::KernelOperationStatus::Pending)
+                ));
+            }
+            assert!(matches!(
+                access.status(other).unwrap(),
+                Some(crate::kernel_client::KernelOperationStatus::Pending)
+            ));
+            let after = journal
+                .verified_pending(selected, identity.key_id(), &audience)
+                .unwrap()
+                .unwrap();
+            assert_eq!(after.jws, original.jws);
+            assert_eq!(after.body, original.body);
+            assert_eq!(view_effects(), expected_effects);
+        }
+    }
+
+    #[test]
     fn absent_attachment_history_is_empty_but_corrupt_existing_state_refuses() {
         let root = tempfile::tempdir().unwrap();
         let state_dir = root.path().join("native-owner");
