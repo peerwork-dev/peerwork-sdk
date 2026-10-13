@@ -6,15 +6,17 @@
 use crate::{
     kernel_client::KernelClient,
     kernel_identity::KernelIdentity,
+    secure_action_access::{SecurePrivateActionAccess, SecurePublicActionAccess},
     secure_intents::{SecureIntentError, SecureIntentJournal},
     secure_journal_read::SecureJournalRead,
     secure_lifecycle::SecureLifecycle,
     secure_native_prepare::{
-        prepare_coordinated_private_owner_workspace,
+        owner_objects_wire, owner_operation_wire, prepare_coordinated_private_owner_workspace,
         prepare_coordinated_public_owner_workspace_with_options,
-        prepare_private_owner_workspace_with_options, prepare_public_owner_workspace_with_options,
-        NativePrepareError,
+        prepare_owner_workspace_with_utf16_name, prepare_private_owner_workspace_with_options,
+        prepare_public_owner_workspace_with_options, NativePrepareError,
     },
+    secure_public_install::SecurePublicPackageInstall,
     secure_read_access::SecureReadAccessError,
     secure_read_profile::{SecureReadProfile, SecureReadProfileConfig},
     secure_recipient_enrollment::{RecipientEnrollmentConfig, SecureRecipientEnrollment},
@@ -69,6 +71,10 @@ fn default_budget() -> u64 {
 #[serde(deny_unknown_fields)]
 pub struct SecureOwnerCreateInput {
     pub name: String,
+    /// Exact JavaScript UTF-16 for a name containing unpaired surrogates.
+    /// When present, `name` must be empty; wrappers derive this internally.
+    #[serde(default)]
+    pub name_utf16: Option<Vec<u16>>,
     pub visibility: String,
     #[serde(default)]
     pub structured: bool,
@@ -171,6 +177,59 @@ pub struct SecureOwnerWorkspaceCreate {
 impl SecureOwnerWorkspaceCreate {
     pub fn new(config: SecureOwnerCreateConfig) -> Self {
         Self { config }
+    }
+
+    /// Reuse the saved Owner identity and per-workspace verified profile for
+    /// ordinary PUBLIC action authoring. The returned facade still requires
+    /// a fresh complete signed replay before preparing an ACTION.
+    pub fn public_action_access(
+        &self,
+        workspace_id: &str,
+    ) -> Result<SecurePublicActionAccess, SecureOwnerCreateError> {
+        Ok(SecurePublicActionAccess::new(
+            self.created_profile_config(workspace_id, "PUBLIC")?,
+        ))
+    }
+
+    pub fn private_action_access(
+        &self,
+        workspace_id: &str,
+    ) -> Result<SecurePrivateActionAccess, SecureOwnerCreateError> {
+        Ok(SecurePrivateActionAccess::new(
+            self.created_profile_config(workspace_id, "PRIVATE")?,
+        ))
+    }
+
+    /// PUBLIC custom protocol installation consumes this same Owner profile;
+    /// the install facade separately validates the selected package closure,
+    /// signed BEGIN/PAGE/END and completed structure replay.
+    pub fn public_install_access(
+        &self,
+        workspace_id: &str,
+    ) -> Result<SecurePublicPackageInstall, SecureOwnerCreateError> {
+        Ok(SecurePublicPackageInstall::new(
+            self.created_profile_config(workspace_id, "PUBLIC")?,
+        ))
+    }
+
+    fn created_profile_config(
+        &self,
+        workspace_id: &str,
+        visibility: &str,
+    ) -> Result<SecureReadProfileConfig, SecureOwnerCreateError> {
+        let identity = KernelIdentity::open(&self.identity_path())
+            .map_err(|_| SecureOwnerCreateError::Identity)?;
+        let store = SecureStateStore::open(&self.history_path())
+            .map_err(|_| SecureOwnerCreateError::Local)?;
+        let history = read_history(&store, &self.config, &identity)?;
+        if !history.rows.values().any(|row| {
+            row.workspace_id == workspace_id
+                && row.input.visibility == visibility
+                && row.created_sequence.is_some()
+        }) {
+            return Err(SecureOwnerCreateError::NotFound);
+        }
+        Ok(self.profile_config(workspace_id, identity.actor_id(), identity.key_id()))
     }
 
     /// Explicit local preparation also performs the previously requested
@@ -398,6 +457,30 @@ impl SecureOwnerWorkspaceCreate {
         }
         let six: [String; 6] = std::array::from_fn(|i| row.instance_ids[i].clone());
         let keep = row.input.keep_encrypted_json.as_bytes();
+        if let Some(name_units) = row.input.name_utf16.as_deref() {
+            let mut lifecycle = if row.input.visibility == "PRIVATE" {
+                Some(self.lifecycle(identity, &row.workspace_id)?)
+            } else {
+                None
+            };
+            prepare_owner_workspace_with_utf16_name(
+                &mut journal,
+                identity,
+                recipient,
+                lifecycle.as_mut(),
+                &row.workspace_id,
+                command,
+                name_units,
+                row.created,
+                &row.instance_ids,
+                &row.input.visibility,
+                row.input.structured,
+                row.input.coordination_version,
+                keep,
+            )
+            .map_err(map_prepare)?;
+            return Ok(());
+        }
         match (
             row.input.visibility.as_str(),
             row.input.coordination_version,
@@ -710,7 +793,15 @@ impl SecureOwnerWorkspaceCreate {
         self.config.state_dir.join("owner-create.state")
     }
     fn profile(&self, workspace_id: &str, owner_actor: &str, owner_key: &str) -> SecureReadProfile {
-        SecureReadProfile::new(SecureReadProfileConfig {
+        SecureReadProfile::new(self.profile_config(workspace_id, owner_actor, owner_key))
+    }
+    fn profile_config(
+        &self,
+        workspace_id: &str,
+        owner_actor: &str,
+        owner_key: &str,
+    ) -> SecureReadProfileConfig {
+        SecureReadProfileConfig {
             origin: self.config.origin.clone(),
             state_dir: self.workspace_dir(workspace_id),
             identity_path: self.identity_path(),
@@ -721,7 +812,7 @@ impl SecureOwnerWorkspaceCreate {
             required_features: Vec::new(),
             allow_loopback_http: self.config.allow_loopback_http,
             max_replay_artifact_bytes: self.config.max_replay_artifact_bytes,
-        })
+        }
     }
     fn workspace_dir(&self, workspace_id: &str) -> PathBuf {
         self.config.state_dir.join("workspaces").join(workspace_id)
@@ -750,8 +841,18 @@ impl SecureOwnerWorkspaceCreate {
 }
 
 fn validate_input(input: &SecureOwnerCreateInput) -> Result<(), SecureOwnerCreateError> {
-    if input.name.is_empty()
-        || input.name.as_bytes().len() > 240
+    let name_bytes = if let Some(units) = input.name_utf16.as_deref() {
+        if !input.name.is_empty() || units.is_empty() {
+            return Err(SecureOwnerCreateError::Invalid);
+        }
+        // TextEncoder replaces each unpaired surrogate for the length check
+        // only; `units` remain unchanged in protected state and signed wire.
+        String::from_utf16_lossy(units).len()
+    } else {
+        input.name.len()
+    };
+    if name_bytes == 0
+        || name_bytes > 240
         || !matches!(input.visibility.as_str(), "PUBLIC" | "PRIVATE")
         || input
             .coordination_version
@@ -771,10 +872,15 @@ fn validate_input(input: &SecureOwnerCreateInput) -> Result<(), SecureOwnerCreat
 
 fn validate_plan(row: &SavedCreate, owner_actor: &str) -> Result<(), SecureOwnerCreateError> {
     let six: [String; 6] = std::array::from_fn(|i| row.instance_ids[i].clone());
+    let builder_name = if row.input.name_utf16.is_some() {
+        "_"
+    } else {
+        &row.input.name
+    };
     let built = if let Some(version) = row.input.coordination_version {
         let seven: [String; 7] = std::array::from_fn(|i| row.instance_ids[i].clone());
         owner_bootstrap_objects_with_coordination(
-            &row.input.name,
+            builder_name,
             &row.workspace_id,
             owner_actor,
             row.created,
@@ -784,7 +890,7 @@ fn validate_plan(row: &SavedCreate, owner_actor: &str) -> Result<(), SecureOwner
         )
     } else {
         owner_bootstrap_objects_with_visibility(
-            &row.input.name,
+            builder_name,
             &row.workspace_id,
             owner_actor,
             row.created,
@@ -793,9 +899,11 @@ fn validate_plan(row: &SavedCreate, owner_actor: &str) -> Result<(), SecureOwner
         )
     }
     .map_err(|_| SecureOwnerCreateError::Invalid)?;
+    let operation = owner_operation_wire(&built, row.input.name_utf16.as_deref())
+        .map_err(|_| SecureOwnerCreateError::Invalid)?;
     if row.input.structured {
-        let objects = serde_json::to_vec(&built.operation()["objects"])
-            .map_err(|_| SecureOwnerCreateError::Invalid)?;
+        let objects =
+            owner_objects_wire(&operation).map_err(|_| SecureOwnerCreateError::Invalid)?;
         if let Some(version) = row.input.coordination_version {
             let digest = built.operation()["objects"][13]["id"]
                 .as_str()
@@ -963,6 +1071,8 @@ fn ensure_private_dir(path: &Path) -> Result<(), SecureOwnerCreateError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::secure_action_access::PublicActionInput;
+    use peerwork_core::wire_json::{parse_wire_json_bounded, WireValue};
     use std::{
         io::{BufRead, BufReader},
         process::{Child, Command, Stdio},
@@ -1026,12 +1136,14 @@ mod tests {
                 serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()
             })
         };
+        let mut created_workspaces = Vec::new();
         for visibility in ["PUBLIC", "PRIVATE"] {
             let access = SecureOwnerWorkspaceCreate::new(config.clone());
             let prepared = access
                 .prepare(
                     SecureOwnerCreateInput {
                         name: format!("Native {visibility} owner workspace"),
+                        name_utf16: None,
                         visibility: visibility.into(),
                         structured: false,
                         keep_encrypted_json: "[]".into(),
@@ -1098,6 +1210,7 @@ mod tests {
             assert_eq!(read["workspace_id"], prepared.workspace_id);
             assert_eq!(read["sequence"], 1);
             assert_eq!(read["objects"].as_array().unwrap().len(), 13);
+            created_workspaces.push((visibility, prepared.workspace_id));
         }
         assert_eq!(
             SecureOwnerWorkspaceCreate::new(config.clone())
@@ -1124,6 +1237,7 @@ mod tests {
                 .prepare(
                     SecureOwnerCreateInput {
                         name: format!("Option matrix {visibility} {coordination_version:?}"),
+                        name_utf16: None,
                         visibility: visibility.into(),
                         structured,
                         keep_encrypted_json: keep.into(),
@@ -1165,6 +1279,7 @@ mod tests {
         for input in [
             SecureOwnerCreateInput {
                 name: "Bad version".into(),
+                name_utf16: None,
                 visibility: "PUBLIC".into(),
                 structured: true,
                 keep_encrypted_json: "[]".into(),
@@ -1172,6 +1287,7 @@ mod tests {
             },
             SecureOwnerCreateInput {
                 name: "Coordination without structure".into(),
+                name_utf16: None,
                 visibility: "PRIVATE".into(),
                 structured: false,
                 keep_encrypted_json: "[]".into(),
@@ -1179,10 +1295,27 @@ mod tests {
             },
             SecureOwnerCreateInput {
                 name: "Unknown protected field".into(),
+                name_utf16: None,
                 visibility: "PUBLIC".into(),
                 structured: true,
                 keep_encrypted_json:
                     r#"[{"schema":"discussion.message","fields":["not_a_field"]}]"#.into(),
+                coordination_version: None,
+            },
+            SecureOwnerCreateInput {
+                name: "ambiguous".into(),
+                name_utf16: Some(vec![0xd800]),
+                visibility: "PUBLIC".into(),
+                structured: false,
+                keep_encrypted_json: "[]".into(),
+                coordination_version: None,
+            },
+            SecureOwnerCreateInput {
+                name: String::new(),
+                name_utf16: Some(vec![0xd800; 81]),
+                visibility: "PUBLIC".into(),
+                structured: false,
+                keep_encrypted_json: "[]".into(),
                 coordination_version: None,
             },
         ] {
@@ -1191,6 +1324,142 @@ mod tests {
                 Err(SecureOwnerCreateError::Invalid)
             ));
             assert_eq!(access.operations().unwrap().len(), before_invalid);
+        }
+
+        let lone_name = vec![0xd800_u16];
+        let surrogate = access
+            .prepare(
+                SecureOwnerCreateInput {
+                    name: String::new(),
+                    name_utf16: Some(lone_name.clone()),
+                    visibility: "PUBLIC".into(),
+                    structured: false,
+                    keep_encrypted_json: "[]".into(),
+                    coordination_version: None,
+                },
+                &token,
+            )
+            .unwrap();
+        assert_eq!(
+            access.resume(&surrogate.command_id, &token).unwrap().status,
+            "CREATED"
+        );
+        let signed_read = access
+            .read_workspace_json(&surrogate.workspace_id, &token)
+            .unwrap();
+        let parsed = parse_wire_json_bounded(signed_read.as_bytes(), 64, 2_000_000).unwrap();
+        let WireValue::Array(objects) = parsed.get("objects").unwrap() else {
+            panic!("verified Owner read lacks objects");
+        };
+        let workspace = objects
+            .iter()
+            .find(|row| {
+                row.get("kind").and_then(WireValue::as_string).as_deref() == Some("workspaces")
+            })
+            .unwrap();
+        assert_eq!(
+            workspace
+                .get("value")
+                .unwrap()
+                .get("name")
+                .unwrap()
+                .as_utf16(),
+            Some(lone_name.as_slice()),
+            "signed service readback must retain original UTF-16 units"
+        );
+
+        let identity = KernelIdentity::open(&config.state_dir.join("identity.state")).unwrap();
+        let store = SecureStateStore::open(&config.state_dir.join("owner-create.state")).unwrap();
+        let history = read_history(&store, &config, &identity).unwrap();
+        let created_with_wiki = created_workspaces
+            .into_iter()
+            .map(|(visibility, workspace_id)| {
+                let wiki_instance = history
+                    .rows
+                    .values()
+                    .find(|row| row.workspace_id == workspace_id)
+                    .unwrap()
+                    .instance_ids[1]
+                    .clone();
+                (visibility, workspace_id, wiki_instance)
+            })
+            .collect::<Vec<_>>();
+        drop(history);
+        drop(store);
+        drop(identity);
+        for (visibility, workspace_id, wiki_instance) in created_with_wiki {
+            let access = SecureOwnerWorkspaceCreate::new(config.clone());
+            if visibility == "PUBLIC" {
+                access.public_install_access(&workspace_id).unwrap();
+            } else {
+                assert!(matches!(
+                    access.public_install_access(&workspace_id),
+                    Err(SecureOwnerCreateError::NotFound)
+                ));
+            }
+            let action = PublicActionInput {
+                action_id: "wiki.create".into(),
+                instance_id: wiki_instance,
+                body_json: format!(
+                    r#"{{"title":"Owner {visibility} action","body":"Created workspace effect"}}"#
+                ),
+                exact_input_refs_json: None,
+                allocations_json: None,
+                command_id: None,
+                issued_at_ms: None,
+            };
+            let submitted: serde_json::Value = if visibility == "PUBLIC" {
+                serde_json::from_str(
+                    &access
+                        .public_action_access(&workspace_id)
+                        .unwrap()
+                        .submit_new_json(action)
+                        .unwrap(),
+                )
+                .unwrap()
+            } else {
+                serde_json::from_str(
+                    &access
+                        .private_action_access(&workspace_id)
+                        .unwrap()
+                        .submit_new_json(action)
+                        .unwrap(),
+                )
+                .unwrap()
+            };
+            let command = submitted["command_id"].as_str().unwrap();
+            let accepted: serde_json::Value = if visibility == "PUBLIC" {
+                serde_json::from_str(
+                    &access
+                        .public_action_access(&workspace_id)
+                        .unwrap()
+                        .retry_saved_json(command)
+                        .unwrap(),
+                )
+                .unwrap()
+            } else {
+                serde_json::from_str(
+                    &access
+                        .private_action_access(&workspace_id)
+                        .unwrap()
+                        .retry_saved_json(command)
+                        .unwrap(),
+                )
+                .unwrap()
+            };
+            assert_eq!(accepted["status"], "ACCEPTED");
+            let receipt: serde_json::Value =
+                serde_json::from_str(accepted["receipt_canonical_json"].as_str().unwrap()).unwrap();
+            let effect_id = receipt["effects"][0]["record_id"].as_str().unwrap();
+            let read: serde_json::Value =
+                serde_json::from_str(&access.read_workspace_json(&workspace_id, &token).unwrap())
+                    .unwrap();
+            assert_eq!(read["sequence"], 2);
+            assert!(read["objects"].as_array().unwrap().iter().any(|row| {
+                row["kind"] == "records"
+                    && row["id"] == effect_id
+                    && row["value"]["payload"]["title"] == format!("Owner {visibility} action")
+            }));
         }
     }
 }

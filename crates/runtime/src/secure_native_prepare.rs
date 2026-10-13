@@ -52,6 +52,167 @@ pub(crate) enum NativePrepareError {
     Objects(#[from] BootstrapObjectsError),
 }
 
+/// The tracked writer retains the original JavaScript UTF-16 workspace name
+/// in the signed BOOTSTRAP object, including lone surrogates. The embedded
+/// preset builder uses serde_json for its otherwise scalar fields; replace
+/// only that one generated name through the lossless wire representation.
+pub(crate) fn owner_operation_wire(
+    built: &OwnerBootstrapObjects,
+    name_utf16: Option<&[u16]>,
+) -> Result<Vec<u8>, NativePrepareError> {
+    let raw = serde_json::to_vec(built.operation()).map_err(|_| NativePrepareError::Context)?;
+    let Some(name) = name_utf16 else {
+        return Ok(raw);
+    };
+    if name.is_empty() {
+        return Err(NativePrepareError::Context);
+    }
+    let mut operation =
+        parse_wire_json_bounded(&raw, 64, 2_000_000).map_err(|_| NativePrepareError::Context)?;
+    let objects = wire_field_mut(&mut operation, "objects").ok_or(NativePrepareError::Context)?;
+    let WireValue::Array(objects) = objects else {
+        return Err(NativePrepareError::Context);
+    };
+    let first = objects.first_mut().ok_or(NativePrepareError::Context)?;
+    if first.get("kind").and_then(WireValue::as_string).as_deref() != Some("workspaces") {
+        return Err(NativePrepareError::Context);
+    }
+    let value = wire_field_mut(first, "value").ok_or(NativePrepareError::Context)?;
+    let field = wire_field_mut(value, "name").ok_or(NativePrepareError::Context)?;
+    if !matches!(field, WireValue::String(_)) {
+        return Err(NativePrepareError::Context);
+    }
+    *field = WireValue::String(name.to_vec());
+    canonical_wire_value(&operation, CanonicalPath::SecureArtifact)
+        .map(String::into_bytes)
+        .map_err(|_| NativePrepareError::Context)
+}
+
+fn wire_field_mut<'a>(value: &'a mut WireValue, key: &str) -> Option<&'a mut WireValue> {
+    let WireValue::Object(fields) = value else {
+        return None;
+    };
+    fields
+        .iter_mut()
+        .find(|(name, _)| name.iter().copied().eq(key.encode_utf16()))
+        .map(|(_, value)| value)
+}
+
+pub(crate) fn owner_objects_wire(operation_wire: &[u8]) -> Result<Vec<u8>, NativePrepareError> {
+    let operation = parse_wire_json_bounded(operation_wire, 64, 2_000_000)
+        .map_err(|_| NativePrepareError::Context)?;
+    canonical_wire_value(
+        operation
+            .get("objects")
+            .ok_or(NativePrepareError::Context)?,
+        CanonicalPath::SecureArtifact,
+    )
+    .map(String::into_bytes)
+    .map_err(|_| NativePrepareError::Context)
+}
+
+/// Owner-create's lossless-name bridge. `name_utf16` is the exact JS string;
+/// the scalar placeholder never enters the saved/signed operation.
+pub(crate) fn prepare_owner_workspace_with_utf16_name(
+    journal: &mut SecureIntentJournal,
+    identity: &KernelIdentity,
+    recipient: &crate::secure_recipient_state::RecipientState,
+    lifecycle: Option<&mut SecureLifecycle>,
+    workspace_id: &str,
+    intent_id: &str,
+    name_utf16: &[u16],
+    created: u64,
+    instance_ids: &[String],
+    visibility: &str,
+    structured: bool,
+    coordination_version: Option<u8>,
+    keep_encrypted_wire: &[u8],
+) -> Result<PendingSecureIntent, NativePrepareError> {
+    if name_utf16.is_empty() || coordination_version.is_some() && !structured {
+        return Err(NativePrepareError::Context);
+    }
+    let built = if let Some(version) = coordination_version {
+        if instance_ids.len() != 7 {
+            return Err(NativePrepareError::Context);
+        }
+        let ids: [String; 7] = std::array::from_fn(|i| instance_ids[i].clone());
+        owner_bootstrap_objects_with_coordination(
+            "_",
+            workspace_id,
+            identity.actor_id(),
+            created,
+            &ids,
+            visibility,
+            version,
+        )?
+    } else {
+        if instance_ids.len() != 6 {
+            return Err(NativePrepareError::Context);
+        }
+        let ids: [String; 6] = std::array::from_fn(|i| instance_ids[i].clone());
+        owner_bootstrap_objects_with_visibility(
+            "_",
+            workspace_id,
+            identity.actor_id(),
+            created,
+            &ids,
+            visibility,
+        )?
+    };
+    let coordination_digest = if coordination_version.is_some() {
+        Some(
+            built.operation()["objects"][13]["id"]
+                .as_str()
+                .ok_or(NativePrepareError::Context)?
+                .to_owned(),
+        )
+    } else {
+        None
+    };
+    let coordination = coordination_version.map(|version| {
+        (
+            instance_ids[6].as_str(),
+            coordination_digest.as_deref().unwrap_or(""),
+            version,
+        )
+    });
+    match visibility {
+        "PRIVATE" => {
+            let lifecycle = lifecycle.ok_or(NativePrepareError::Context)?;
+            if lifecycle.workspace_id() != workspace_id {
+                return Err(NativePrepareError::Context);
+            }
+            prepare_private_owner_workspace_from_built(
+                journal,
+                identity,
+                recipient,
+                lifecycle,
+                intent_id,
+                created,
+                built,
+                structured,
+                coordination,
+                keep_encrypted_wire,
+                Some(name_utf16),
+            )
+        }
+        "PUBLIC" => prepare_public_owner_workspace_from_built(
+            journal,
+            identity,
+            recipient,
+            workspace_id,
+            intent_id,
+            created,
+            built,
+            structured,
+            coordination,
+            keep_encrypted_wire,
+            Some(name_utf16),
+        ),
+        _ => Err(NativePrepareError::Context),
+    }
+}
+
 /// Native composition of the tracked default PRIVATE owner-create objects,
 /// scopes and signed v3 genesis policy. This is still a private preparatory
 /// path: identity registration, policy/operation replay, and key activation
@@ -106,6 +267,7 @@ pub(crate) fn prepare_private_owner_workspace_with_options(
         structured,
         None,
         keep_encrypted_wire,
+        None,
     )
 }
 
@@ -146,6 +308,7 @@ pub(crate) fn prepare_coordinated_private_owner_workspace(
         true,
         Some((&instance_ids[6], &digest, coordination_version)),
         keep_encrypted_wire,
+        None,
     )
 }
 
@@ -160,14 +323,15 @@ fn prepare_private_owner_workspace_from_built(
     structured: bool,
     coordination: Option<(&str, &str, u8)>,
     keep_encrypted_wire: &[u8],
+    name_utf16: Option<&[u16]>,
 ) -> Result<PendingSecureIntent, NativePrepareError> {
     if journal.contains_id(intent_id) {
         return Err(NativePrepareError::Existing);
     }
     let workspace = lifecycle.workspace_id().to_owned();
+    let operation_wire = owner_operation_wire(&built, name_utf16)?;
     let structure = if structured {
-        let objects = serde_json::to_vec(&built.operation()["objects"])
-            .map_err(|_| NativePrepareError::Context)?;
+        let objects = owner_objects_wire(&operation_wire)?;
         let canonical = if let Some((instance, digest, version)) = coordination {
             derive_genesis_structure_policy_with_coordination_and_keep_encrypted(
                 &objects,
@@ -233,7 +397,7 @@ fn prepare_private_owner_workspace_from_built(
         intent_id,
         &serde_json::to_vec(&policy).map_err(|_| NativePrepareError::Context)?,
         &serde_json::to_vec(&context).map_err(|_| NativePrepareError::Context)?,
-        &serde_json::to_vec(built.operation()).map_err(|_| NativePrepareError::Context)?,
+        &operation_wire,
         &pins,
     )
 }
@@ -294,6 +458,7 @@ pub(crate) fn prepare_default_public_owner_workspace_with_structure(
         structured,
         None,
         b"[]",
+        None,
     )
 }
 
@@ -358,6 +523,7 @@ pub(crate) fn prepare_coordinated_public_owner_workspace_with_options(
         true,
         Some((&instance_ids[6], &digest, coordination_version)),
         keep_encrypted_wire,
+        None,
     )
 }
 
@@ -391,6 +557,7 @@ pub(crate) fn prepare_public_owner_workspace_with_options(
         true,
         None,
         keep_encrypted_wire,
+        None,
     )
 }
 
@@ -405,6 +572,7 @@ fn prepare_public_owner_workspace_from_built(
     structured: bool,
     coordination: Option<(&str, &str, u8)>,
     keep_encrypted_wire: &[u8],
+    name_utf16: Option<&[u16]>,
 ) -> Result<PendingSecureIntent, NativePrepareError> {
     if journal.contains_id(intent_id) {
         return Err(NativePrepareError::Existing);
@@ -421,9 +589,9 @@ fn prepare_public_owner_workspace_from_built(
             created,
         )
         .map_err(|_| NativePrepareError::Context)?;
+    let operation_wire = owner_operation_wire(&built, name_utf16)?;
     let structure = if structured {
-        let objects = serde_json::to_vec(&built.operation()["objects"])
-            .map_err(|_| NativePrepareError::Context)?;
+        let objects = owner_objects_wire(&operation_wire)?;
         let canonical = if let Some((instance, digest, version)) = coordination {
             derive_genesis_structure_policy_with_coordination_and_keep_encrypted(
                 &objects,
@@ -483,7 +651,7 @@ fn prepare_public_owner_workspace_from_built(
     let authored = author_public_bootstrap(
         &serde_json::to_vec(&policy).map_err(|_| NativePrepareError::Context)?,
         &serde_json::to_vec(&context).map_err(|_| NativePrepareError::Context)?,
-        &serde_json::to_vec(built.operation()).map_err(|_| NativePrepareError::Context)?,
+        &operation_wire,
         identity.signing_key(),
         &pins,
     )?;
