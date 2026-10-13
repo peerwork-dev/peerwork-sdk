@@ -205,10 +205,13 @@ fn main() {
     let target = env::var("CARGO_CFG_TARGET_OS").expect("target OS");
     let host_triple = env::var("HOST").expect("build host triple");
     let target_triple = env::var("TARGET").expect("target triple");
-    assert_eq!(
-        host_triple, target_triple,
-        "ICU4C must be built on a target-native builder; cross-toolchain selection is not implemented"
-    );
+    let cross_arm64_musl = host_triple != target_triple;
+    if cross_arm64_musl {
+        assert_eq!(
+            target_triple, "aarch64-unknown-linux-musl",
+            "ICU4C cross-build is implemented only for ARM64 musl"
+        );
+    }
     if target != "linux" && target != "macos" && target != "windows" {
         panic!("bundled ICU4C build is not yet implemented for target OS {target}");
     }
@@ -227,47 +230,132 @@ fn main() {
         build_msvc(&source, &target_triple);
         return;
     }
-    let gnu_linux_pic = target == "linux" && !target_triple.ends_with("-musl");
-    let pic_flags = gnu_linux_pic.then(|| {
-        println!("cargo:rerun-if-env-changed=CFLAGS");
-        println!("cargo:rerun-if-env-changed=CXXFLAGS");
-        (with_pic_flag("CFLAGS"), with_pic_flag("CXXFLAGS"))
-    });
-    run(
-        {
-            let mut command = Command::new(source.join("icu/source/runConfigureICU"));
-            if let Some((cflags, cxxflags)) = &pic_flags {
-                command.env("CFLAGS", cflags).env("CXXFLAGS", cxxflags);
-            }
-            if target_triple.ends_with("-musl") {
-                // Alpine's libstdc++ has initial-exec TLS and cannot be loaded
-                // with a Python extension after interpreter startup. libc++
-                // is late-loadable on the native musl runner.
-                command.env("CXX", "clang++-20");
-                command.env("CXXFLAGS", "-stdlib=libc++");
-            }
-            command.current_dir(&build).args([
-                if target == "macos" { "MacOSX" } else { "Linux" },
-                "--enable-static",
-                "--disable-shared",
-                "--with-data-packaging=archive",
-                "--with-library-suffix=peerwork",
-            ]);
-            command
-        },
-        "configure pinned ICU4C",
-    );
-    run(
-        {
-            let mut command = Command::new("make");
-            if let Some((cflags, cxxflags)) = &pic_flags {
-                command.env("CFLAGS", cflags).env("CXXFLAGS", cxxflags);
-            }
-            command.current_dir(&build).arg("-j4");
-            command
-        },
-        "build pinned ICU4C",
-    );
+    if cross_arm64_musl {
+        println!("cargo:rerun-if-env-changed=PEERWORK_ICU_ARM64_CC");
+        println!("cargo:rerun-if-env-changed=PEERWORK_ICU_ARM64_CXX");
+        let cross_cc = PathBuf::from(
+            env::var_os("PEERWORK_ICU_ARM64_CC")
+                .expect("PEERWORK_ICU_ARM64_CC required for ARM64 ICU cross-build"),
+        );
+        let cross_cxx = PathBuf::from(
+            env::var_os("PEERWORK_ICU_ARM64_CXX")
+                .expect("PEERWORK_ICU_ARM64_CXX required for ARM64 ICU cross-build"),
+        );
+        assert!(
+            cross_cc.is_absolute() && cross_cc.is_file(),
+            "ARM64 ICU C compiler must be an absolute file"
+        );
+        assert!(
+            cross_cxx.is_absolute() && cross_cxx.is_file(),
+            "ARM64 ICU C++ compiler must be an absolute file"
+        );
+        let host_build = out.join("host-build");
+        fs::create_dir_all(&host_build).expect("ICU host-tool build directory");
+        run(
+            {
+                let mut command = Command::new(source.join("icu/source/runConfigureICU"));
+                command.current_dir(&host_build).arg("Linux").args([
+                    "--enable-static",
+                    "--disable-shared",
+                    "--with-data-packaging=archive",
+                    "--with-library-suffix=peerwork",
+                ]);
+                command
+                    .env_remove("CC")
+                    .env_remove("CXX")
+                    .env_remove("CFLAGS")
+                    .env_remove("CXXFLAGS");
+                command
+            },
+            "configure pinned native ICU host tools",
+        );
+        run(
+            {
+                let mut command = Command::new("make");
+                command.current_dir(&host_build).arg("-j4");
+                command
+                    .env_remove("CC")
+                    .env_remove("CXX")
+                    .env_remove("CFLAGS")
+                    .env_remove("CXXFLAGS");
+                command
+            },
+            "build pinned native ICU host tools",
+        );
+        run(
+            {
+                let mut command = Command::new(source.join("icu/source/runConfigureICU"));
+                command
+                    .current_dir(&build)
+                    .arg("Linux")
+                    .args([
+                        "--host=aarch64-alpine-linux-musl",
+                        "--enable-static",
+                        "--disable-shared",
+                        "--with-data-packaging=archive",
+                        "--with-library-suffix=peerwork",
+                    ])
+                    .arg(format!("--with-cross-build={}", host_build.display()));
+                command
+                    .env("CC", &cross_cc)
+                    .env("CXX", &cross_cxx)
+                    .env("CFLAGS", "-fPIC")
+                    .env("CXXFLAGS", "-fPIC");
+                command
+            },
+            "configure pinned ICU4C ARM64 cross-build",
+        );
+        run(
+            {
+                let mut command = Command::new("make");
+                command.current_dir(&build).arg("-j4");
+                command
+            },
+            "build pinned ICU4C ARM64 cross-build",
+        );
+    } else {
+        let gnu_linux_pic = target == "linux" && !target_triple.ends_with("-musl");
+        let pic_flags = gnu_linux_pic.then(|| {
+            println!("cargo:rerun-if-env-changed=CFLAGS");
+            println!("cargo:rerun-if-env-changed=CXXFLAGS");
+            (with_pic_flag("CFLAGS"), with_pic_flag("CXXFLAGS"))
+        });
+        run(
+            {
+                let mut command = Command::new(source.join("icu/source/runConfigureICU"));
+                if let Some((cflags, cxxflags)) = &pic_flags {
+                    command.env("CFLAGS", cflags).env("CXXFLAGS", cxxflags);
+                }
+                if target_triple.ends_with("-musl") {
+                    // Alpine's libstdc++ has initial-exec TLS and cannot be loaded
+                    // with a Python extension after interpreter startup. libc++
+                    // is late-loadable on the native musl runner.
+                    command.env("CXX", "clang++-20");
+                    command.env("CXXFLAGS", "-stdlib=libc++");
+                }
+                command.current_dir(&build).args([
+                    if target == "macos" { "MacOSX" } else { "Linux" },
+                    "--enable-static",
+                    "--disable-shared",
+                    "--with-data-packaging=archive",
+                    "--with-library-suffix=peerwork",
+                ]);
+                command
+            },
+            "configure pinned ICU4C",
+        );
+        run(
+            {
+                let mut command = Command::new("make");
+                if let Some((cflags, cxxflags)) = &pic_flags {
+                    command.env("CFLAGS", cflags).env("CXXFLAGS", cxxflags);
+                }
+                command.current_dir(&build).arg("-j4");
+                command
+            },
+            "build pinned ICU4C",
+        );
+    }
 
     println!(
         "cargo:rustc-link-search=native={}",
@@ -287,8 +375,8 @@ fn main() {
         match env::var("PEERWORK_MUSL_STATIC_CXX") {
             Ok(value) if value == "1" => {
                 println!("cargo:rerun-if-env-changed=PEERWORK_MUSL_CXX_LIB_DIR");
-                let library_dir = env::var("PEERWORK_MUSL_CXX_LIB_DIR")
-                    .unwrap_or_else(|_| "/usr/lib".to_owned());
+                let library_dir =
+                    env::var("PEERWORK_MUSL_CXX_LIB_DIR").unwrap_or_else(|_| "/usr/lib".to_owned());
                 for name in ["libc++.a", "libc++abi.a", "libunwind.a"] {
                     assert!(
                         Path::new(&library_dir).join(name).is_file(),
