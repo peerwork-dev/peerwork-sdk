@@ -285,19 +285,30 @@ with tempfile.TemporaryDirectory(prefix="peerwork-native-admission-", dir=TEMP_R
         assert native_recipient.retry_decision(high["invite_id"])["decision_hash"] == consent["decision_hash"]
         owner_config_file = state / "owner-config.json"
         owner_config_file.write_text(json.dumps(owner._config))
-        delivery = cli("admit-deliver", str(owner_config_file), high["invite_id"])
-        assert delivery["invite_id"] == high["invite_id"]
-        received = native_recipient.receive(high["invite_id"])
+        stale_delivery = subprocess.run([CLI, "secure", "admit-deliver", str(owner_config_file),
+            high["invite_id"]], text=True, capture_output=True, timeout=60)
+        assert stale_delivery.returncode != 0
+        assert json.loads(stale_delivery.stderr)["code"] == "SERVER_REJECTED"
+        # The tracked service requires a delivery certificate equal to the
+        # current directory entry. Keep the old-v1 refusal and offer v3 anew.
+        current_offer = owner.offer(latest["certificate_json"], "[]", message="after key update")
+        assert stored_offer(service_state / "control.sqlite", current_offer["invite_id"]) == (
+            current_offer["offer_hash"], local["actor_id"])
+        current_consent = cli("consent", str(recipient_config_file), current_offer["invite_id"], "ACCEPT")
+        assert current_consent["status"] == "PENDING"
+        delivery = cli("admit-deliver", str(owner_config_file), current_offer["invite_id"])
+        assert delivery["invite_id"] == current_offer["invite_id"]
+        received = native_recipient.receive(current_offer["invite_id"])
         assert received["status"] in ("PENDING", "READY")
         if received["status"] == "PENDING":
-            received = native_recipient.retry_receive(high["invite_id"])
+            received = native_recipient.retry_receive(current_offer["invite_id"])
         assert received["status"] == "READY", received
         node_recipient_config = dict(origin=origin, stateDir=str(recipient_dir),
             workspaceId=workspace["workspace_id"], ownerActorId=workspace["actor_id"],
             ownerKeyId=workspace["signing_key"],
             allowLoopbackHttp=True)
         assert node_call("recipient", "retryReceive", node_recipient_config,
-            inviteId=high["invite_id"])["receipt_hash"] == received["receipt_hash"]
+            inviteId=current_offer["invite_id"])["receipt_hash"] == received["receipt_hash"]
         authorized = owner.retry_delivery(delivery["grant_id"])
         assert authorized["status"] == "AUTHORIZED" and authorized["grant_hash"] == delivery["grant_hash"]
         recipient_read = peerwork.SecureReadClient(origin, str(recipient_dir),
@@ -306,7 +317,8 @@ with tempfile.TemporaryDirectory(prefix="peerwork-native-admission-", dir=TEMP_R
             allow_loopback_http=True)
         assert recipient_read.read()["workspace_id"] == workspace["workspace_id"]
         print(json.dumps(dict(source="installed", recipient_actor=local["actor_id"],
-            owner_actor=workspace["actor_id"], offers=4, accepted_invite=high["invite_id"],
+            owner_actor=workspace["actor_id"], offers=5, stale_invite=high["invite_id"],
+            accepted_invite=current_offer["invite_id"],
             delivery_status=delivery["status"], recipient_status=received["status"],
             directory_version=latest["directory_version"])))
     finally:
