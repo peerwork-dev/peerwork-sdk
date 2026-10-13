@@ -587,3 +587,53 @@ SDK CLI code and a core test executed by **emulation**, not a native ARM
 machine, release package, installed HTTP workflow, Python/Node extension,
 or dependency-closed distribution artifact. Those acceptance gates remain
 open, along with actual Windows and macOS runs.
+
+### ARM64 CLI signed HTTP action/recovery, 2026-10-13
+
+The same **unchanged** 08f-source ARM CLI SHA-256
+`c5e2408f2f81823079a5454d1d435f4c68ddffc72bc040df1eb441f8a7986128`
+was run through direct QEMU against a fresh local HTTP fixture. The exact
+service implementation remained tracked commit
+`f828b6c50a0a58d1e718af90f653b214adcc3328`; the archived SDK fixture
+from source `08f0963a1fac7932829423a9f76944d192cce163` had SHA-256
+`ed67bc57e2b37eafd0c31bba72d6f9ecb23cce6d07427549008642eb160d2592`.
+The task-local orchestration script SHA-256 was
+`f12d04d714af40ccb19fbc8d730de79d578f7d4f1eca4074b2fe40e3fb989067`;
+it pins both inputs and creates only a fresh mode-0700 workspace state dir.
+The tracked TypeScript fixture creates the initial PUBLIC workspace and
+supplies the owner PEM/pins; Rust CLI imports that protected PEM, fetches and
+verifies signed sequence 1, authors `discussion.post`, and submits the exact
+saved request. The fixture applies the first POST and drops its reply.
+Independent QEMU CLI processes then list the pending command locally,
+reconcile from signed journal sequence 2, retry the same saved ID, and read
+the verified added record. Counts were commits `1 → 2 → 2`; one effect
+record, matching command ID, and identical accepted reconciliation/retry
+receipts were asserted. Local-socket session `53048` exited 0. This is
+scripted business/recovery correctness; it does not test independent Agent
+instruction-following compliance.
+
+Before that service run, a small identity probe first used a relative path
+under a mode-0755 parent and correctly returned `IDENTITY_STATE`; an
+absolute path under a task-owned mode-0700 parent let ARM CLI `identity
+create`/`identity info` match. No protection rule was changed. The service
+test used the latter protected path pattern. Its host Node fixture and
+control/count queries ran on x86-64; all SDK CLI commands ran as ARM64 under
+QEMU. Dynamic libc++/libc++abi/LLVM-libunwind dependencies came from the
+task sysroot, so the run is **not** a dependency-closed installed ARM
+package or native ARM hardware result. Python/Node ARM extensions and an
+installed ARM package remain open.
+
+Reviewer inspection of `dbda343` found the initial cross branch accepted
+arbitrary `HOST` values while invoking Linux `runConfigureICU`/`make`. A
+scoped follow-up `768f367` (build.rs SHA-256
+`23c93655531440025113caf86663d6d9d4f2e99f0d3e6e0d28433c5817e32356`)
+now requires the tested `x86_64-unknown-linux-gnu` host only when
+`HOST!=TARGET`, preserving native macOS/Windows paths. Rust 1.89 offline
+locked native `cargo check -p peerwork-core` exited 0. A standalone
+compilation of that exact build script and simulated
+`HOST=x86_64-apple-darwin`, `TARGET=aarch64-unknown-linux-musl` exited 101
+before extraction with the explicit host contract message. The first
+standalone compilation selected an unrelated cached sha2 ABI and failed
+`LowerHex`; selecting the build script's matching sha2 artifact corrected
+the probe. No ARM CLI artifact was rebuilt for this host-only guard, and
+the 08f service result is attributed to its original binary and fixture.
