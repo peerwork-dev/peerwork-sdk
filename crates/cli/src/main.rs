@@ -549,7 +549,8 @@ fn secure_owner_consumer_command(verb: &str, args: &[String]) -> Result<String, 
                 "pending" => access.list_pending_json_with_cancel(&cancel),
                 _ => unreachable!(),
             };
-            return result.map_err(|e| (e.code(), e.to_string()));
+            let result = result.map_err(|e| (e.code(), e.to_string()))?;
+            return if suffix == "pending" { Ok(result) } else { action_result_with_receipt(result) };
         }
         let access = owner.public_action_access(workspace_id).map_err(|e| (e.code(), e.to_string()))?;
         let result = match verb {
@@ -564,7 +565,8 @@ fn secure_owner_consumer_command(verb: &str, args: &[String]) -> Result<String, 
             "owner-action-pending" => access.list_pending_json_with_cancel(&cancel),
             _ => unreachable!(),
         };
-        return result.map_err(|e| (e.code(), e.to_string()));
+        let result = result.map_err(|e| (e.code(), e.to_string()))?;
+        return if verb == "owner-action-pending" { Ok(result) } else { action_result_with_receipt(result) };
     }
     let access = owner.public_install_access(workspace_id).map_err(|e| (e.code(), e.to_string()))?;
     let result = match verb {
@@ -931,6 +933,31 @@ fn secure_install_command(verb: &str, args: &[String]) -> Result<String, (&'stat
     .map_err(|e| (e.code(), e.to_string()))
 }
 
+fn action_result_with_receipt(result: String) -> Result<String, (&'static str, String)> {
+    let mut envelope: serde_json::Value = serde_json::from_str(&result)
+        .map_err(|_| ("RESULT_ENCODING_FAILED", "invalid action result".to_owned()))?;
+    let object = envelope.as_object_mut()
+        .ok_or(("RESULT_ENCODING_FAILED", "invalid result object".to_owned()))?;
+    let status = object.get("status").and_then(serde_json::Value::as_str)
+        .ok_or(("RESULT_ENCODING_FAILED", "invalid action status".to_owned()))?
+        .to_owned();
+    let receipt = match (status.as_str(), object.remove("receipt_canonical_json")) {
+        ("PENDING", None | Some(serde_json::Value::Null)) => serde_json::Value::Null,
+        ("ACCEPTED", Some(serde_json::Value::String(wire))) => {
+            let value: serde_json::Value = serde_json::from_str(&wire)
+                .map_err(|_| ("RESULT_ENCODING_FAILED", "invalid verified receipt".to_owned()))?;
+            if !value.is_object() {
+                return Err(("RESULT_ENCODING_FAILED", "invalid verified receipt".to_owned()));
+            }
+            value
+        }
+        _ => return Err(("RESULT_ENCODING_FAILED", "missing verified receipt".to_owned())),
+    };
+    object.insert("receipt".to_owned(), receipt);
+    serde_json::to_string(&envelope)
+        .map_err(|_| ("RESULT_ENCODING_FAILED", "result encoding failed".to_owned()))
+}
+
 fn secure_action_command(verb: &str, args: &[String]) -> Result<String, (&'static str, String)> {
     if args.len() != if verb == "action-pending" { 1 } else { 2 } {
         return Err(("USAGE", "secure action-submit|action-status|action-retry CONFIG_JSON_FILE ACTION_JSON_FILE|COMMAND_ID; secure action-pending CONFIG_JSON_FILE".to_owned()));
@@ -962,29 +989,9 @@ fn secure_action_command(verb: &str, args: &[String]) -> Result<String, (&'stati
     if verb == "action-pending" {
         return Ok(result);
     }
-    // The receipt is canonical verified JSON. Embed it as a JSON value so CLI
-    // consumers can inspect effect records without parsing an internal string.
-    let mut envelope: serde_json::Value = serde_json::from_str(&result)
-        .map_err(|_| ("RESULT_ENCODING_FAILED", "invalid action result".to_owned()))?;
-    let receipt = envelope
-        .get("receipt_canonical_json")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned);
-    envelope
-        .as_object_mut()
-        .ok_or(("RESULT_ENCODING_FAILED", "invalid result object".to_owned()))?
-        .remove("receipt_canonical_json");
-    let prefix = serde_json::to_string(&envelope).map_err(|_| {
-        (
-            "RESULT_ENCODING_FAILED",
-            "result encoding failed".to_owned(),
-        )
-    })?;
-    let receipt = receipt.unwrap_or_else(|| "null".to_owned());
-    Ok(format!(
-        "{},\"receipt\":{receipt}}}",
-        prefix.trim_end_matches('}')
-    ))
+    // Both standalone and Owner action verbs expose the verified receipt as
+    // a JSON value, not as the runtime's internal canonical JSON string.
+    action_result_with_receipt(result)
 }
 
 fn secure_read_profile_command(args: &[String], private_grant: bool) -> Result<String, (&'static str, String)> {
