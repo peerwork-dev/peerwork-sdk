@@ -269,6 +269,9 @@ try:
     assert action["status"] == "PENDING"
     accepted = fresh.private_actions(workspace_id).retry_saved(action["command_id"])
     assert accepted["status"] == "ACCEPTED"
+    after_action = counts(origin)["commits"]
+    assert fresh.private_actions(workspace_id).retry_saved(action["command_id"]) == accepted
+    assert counts(origin)["commits"] == after_action
     verified = fresh.read(workspace_id)
     instance = next(row for row in reversed(verified["objects"])
                     if row.get("kind") == "instances" and row.get("id") == instance_id)
