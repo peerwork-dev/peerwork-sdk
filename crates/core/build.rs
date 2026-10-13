@@ -208,6 +208,10 @@ fn main() {
     let cross_arm64_musl = host_triple != target_triple;
     if cross_arm64_musl {
         assert_eq!(
+            host_triple, "x86_64-unknown-linux-gnu",
+            "ICU4C ARM64 cross-build requires the tested x86-64 GNU/Linux host toolchain"
+        );
+        assert_eq!(
             target_triple, "aarch64-unknown-linux-musl",
             "ICU4C cross-build is implemented only for ARM64 musl"
         );
