@@ -183,7 +183,7 @@ try:
         assert upgraded["v"] == 3 and upgraded["protocol_format_ceiling"] == 1
         assert upgraded["visibility"] == "PUBLIC" and upgraded["epoch"] == 0
         assert upgraded["workspace_id"] == workspace_id
-        assert upgraded["structure_mode"] == policy["structure_mode"]
+        assert upgraded["structure_mode"] == ("STRUCTURED" if policy["v"] == 2 else "NONE")
         assert upgraded.get("structure") == policy.get("structure")
         for field in ("owner_id", "signing_key", "members"):
             assert upgraded[field] == policy[field], field
