@@ -1719,3 +1719,177 @@ mod tests {
         assert_eq!(counts["head_sequence"], 58);
     }
 }
+
+#[cfg(test)]
+mod selected_binding_service_test {
+    use super::*;
+    use crate::{
+        secure_action_access::PublicActionInput,
+        secure_owner_create::{SecureOwnerCreateConfig, SecureOwnerCreateInput, SecureOwnerWorkspaceCreate},
+    };
+    use std::{
+        io::{BufRead, BufReader},
+        path::Path,
+        process::{Child, Command, Stdio},
+    };
+
+    #[test]
+    fn actual_service_public_selected_binding_allows_guarded_vote() {
+        if std::env::var("PEERWORK_TEST_PUBLIC_SELECTED_BINDING").as_deref() != Ok("1") {
+            return;
+        }
+        let reference_root = std::env::var("PEERWORK_REFERENCE_ROOT").unwrap();
+        let node = std::env::var("PEERWORK_NODE_BIN").unwrap_or_else(|_| "node".into());
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let bridge = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/reference-kernel-server.mjs");
+        let child = Command::new(node)
+            .arg(bridge)
+            .env("PEERWORK_REFERENCE_ROOT", reference_root)
+            .env("PEERWORK_TEST_STATE", root.path())
+            .env("PEERWORK_TEST_FIRST_POST_MODE", "normal")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        struct Stop(Child);
+        impl Drop for Stop {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut child = Stop(child);
+        let mut line = String::new();
+        BufReader::new(child.0.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        assert!(!line.is_empty(), "pinned service exited before readiness");
+        let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let origin = ready["origin"].as_str().unwrap().to_owned();
+        let owner = SecureOwnerWorkspaceCreate::new(SecureOwnerCreateConfig {
+            origin: origin.clone(),
+            state_dir: root.path().join("native-owner"),
+            allow_loopback_http: true,
+            max_replay_artifact_bytes: 64 * 1024 * 1024,
+        });
+        let token = CancellationToken::new();
+        let created = owner
+            .prepare(
+                SecureOwnerCreateInput {
+                    name: "Native PUBLIC selected binding".into(),
+                    name_utf16: None,
+                    visibility: "PUBLIC".into(),
+                    structured: true,
+                    keep_encrypted_json: "[]".into(),
+                    coordination_version: None,
+                },
+                &token,
+            )
+            .unwrap();
+        assert_eq!(owner.resume(&created.command_id, &token).unwrap().status, "CREATED");
+        let install = owner.public_install_access(&created.workspace_id).unwrap();
+        let actor = KernelIdentity::open(&install.config.identity_path)
+            .unwrap()
+            .actor_id()
+            .to_owned();
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../conformance/private-package-options-reference.json"
+        ))
+        .unwrap();
+        let binding = &fixture["binding"];
+        let selected_digest = binding["selected_protocol_digest"].as_str().unwrap();
+        assert_ne!(binding["default_protocol_digest"], binding["selected_protocol_digest"]);
+        let instance_id = random_id().unwrap();
+        let submitted: serde_json::Value = serde_json::from_str(
+            &install
+                .submit_begin_json(PublicPackageInstallInput {
+                    closure_json: binding["closure"].to_string(),
+                    bindings_json: Some(binding["selected_bindings"].to_string()),
+                    expected_package_id: "binding-option".into(),
+                    expected_package_version: "1.0.0".into(),
+                    expected_package_digest: binding["root_package_digest"].as_str().unwrap().into(),
+                    expected_protocol_digest: selected_digest.into(),
+                    instance_id: instance_id.clone(),
+                    entrypoint: "binding".into(),
+                    grants_json: serde_json::json!([{
+                        "actor_id": actor,
+                        "actions": ["vote"],
+                        "protocol_roles": ["AUTHOR"],
+                        "capabilities": []
+                    }])
+                    .to_string(),
+                    command_id: None,
+                    issued_at_ms: None,
+                })
+                .unwrap(),
+        )
+        .unwrap();
+        let begin_id = submitted["begin_command_id"].as_str().unwrap().to_owned();
+        let mut progress = submitted;
+        for _ in 0..8 {
+            if progress["status"] == "ACCEPTED" {
+                break;
+            }
+            progress = serde_json::from_str(&install.continue_install_json(&begin_id).unwrap())
+                .unwrap();
+        }
+        assert_eq!(progress["status"], "ACCEPTED");
+        let installed: serde_json::Value = serde_json::from_str(
+            &owner.read_workspace_json(&created.workspace_id, &token).unwrap(),
+        )
+        .unwrap();
+        assert!(installed["objects"].as_array().unwrap().iter().any(|row|
+            row["kind"] == "protocols" && row["id"] == selected_digest));
+        assert!(installed["objects"].as_array().unwrap().iter().any(|row|
+            row["kind"] == "instances" && row["id"] == instance_id
+                && row["value"]["protocol_digest"] == selected_digest));
+        let counts = || {
+            Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+                let bytes = reqwest::get(format!("{origin}__test/secure-counts"))
+                    .await.unwrap().bytes().await.unwrap();
+                serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["commits"]
+                    .as_u64().unwrap()
+            })
+        };
+        let before_retry = counts();
+        assert_eq!(serde_json::from_str::<serde_json::Value>(
+            &install.continue_install_json(&begin_id).unwrap()).unwrap(), progress);
+        assert_eq!(counts(), before_retry);
+        let action = owner.public_action_access(&created.workspace_id).unwrap();
+        let submitted: serde_json::Value = serde_json::from_str(
+            &action.submit_new_json(PublicActionInput {
+                action_id: "vote".into(),
+                instance_id: instance_id.clone(),
+                body_json: "{}".into(),
+                exact_input_refs_json: None,
+                allocations_json: None,
+                command_id: None,
+                issued_at_ms: None,
+            }).unwrap(),
+        ).unwrap();
+        let action_id = submitted["command_id"].as_str().unwrap();
+        let accepted: serde_json::Value = serde_json::from_str(
+            &action.retry_saved_json(action_id).unwrap(),
+        ).unwrap();
+        assert_eq!(accepted["status"], "ACCEPTED");
+        assert_eq!(counts(), before_retry + 1);
+        let read: serde_json::Value = serde_json::from_str(
+            &owner.read_workspace_json(&created.workspace_id, &token).unwrap(),
+        ).unwrap();
+        let instance = read["objects"].as_array().unwrap().iter()
+            .find(|row| row["kind"] == "instances" && row["id"] == instance_id)
+            .unwrap();
+        assert_eq!(instance["value"]["protocol_digest"], selected_digest);
+        let before_action_retry = counts();
+        assert_eq!(serde_json::from_str::<serde_json::Value>(
+            &action.retry_saved_json(action_id).unwrap()).unwrap(), accepted);
+        assert_eq!(counts(), before_action_retry);
+    }
+}
