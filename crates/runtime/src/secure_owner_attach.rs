@@ -593,7 +593,7 @@ fn summary(id: &str, row: &SavedAttach) -> HistoricalOwnerAttachResult {
     HistoricalOwnerAttachResult {
         attach_id: id.into(),
         workspace_id: row.input.workspace_id.clone(),
-        provenance: "ATTACHED".into(),
+        provenance: "HISTORICAL_TS_OWNER".into(),
         status: if row.attached_sequence.is_some() {
             "ATTACHED"
         } else {
@@ -1320,7 +1320,7 @@ mod tests {
             .unwrap();
         assert_eq!(attached.attach_id, prepared[0].attach_id);
         assert_eq!(attached.status, "ATTACHED");
-        assert_eq!(attached.provenance, "ATTACHED");
+        assert_eq!(attached.provenance, "HISTORICAL_TS_OWNER");
         assert_eq!(attached.workspace_id, workspace_id);
         assert!(attached.sequence.unwrap() >= 1);
         assert_eq!(
