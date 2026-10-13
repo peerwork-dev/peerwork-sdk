@@ -275,28 +275,42 @@ jobs:
         run: |
           Remove-Item Env:\ICU_DATA -ErrorAction SilentlyContinue
           cargo test -p peerwork-core --locked js_locale::tests::pinned_node_locale_compare_vectors -- --exact
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Compile and exercise native interfaces
         shell: pwsh
         run: |
           Remove-Item Env:\ICU_DATA -ErrorAction SilentlyContinue
           cargo test --workspace --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo build --release --locked -p peerwork-cli -p peerwork-node-native
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m pip install 'maturin==1.15.0'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Push-Location bindings/python
           maturin build --release --locked --out ../../dist/wheels
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Pop-Location
           node bindings/node/scripts/package-platform.mjs win32-x64-msvc target/release/peerwork_node_native.dll dist
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm pack ./bindings/node --pack-destination dist --offline
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm pack ./dist/agent-sdk-win32-x64-msvc --pack-destination dist --offline
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           New-Item -ItemType Directory -Force -Path dist/node-consumer | Out-Null
           Set-Content -Path dist/node-consumer/package.json -Value '{"name":"peerwork-offline-consumer","version":"0.0.0","private":true}'
           npm install --prefix dist/node-consumer --offline --ignore-scripts --no-audit --no-fund ./dist/peerwork-agent-sdk-0.0.1.tgz ./dist/peerwork-agent-sdk-win32-x64-msvc-0.0.1.tgz
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node bindings/node/scripts/offline-smoke.mjs dist/node-consumer
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m venv "$env:RUNNER_TEMP\peerwork-wheel-consumer"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $wheel = (Get-ChildItem dist/wheels/*.whl | Select-Object -First 1).FullName
           python tests/verify-typed-wheel.py $wheel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & "$env:RUNNER_TEMP\peerwork-wheel-consumer\Scripts\pip.exe" install --no-index --no-deps $wheel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & "$env:RUNNER_TEMP\peerwork-wheel-consumer\Scripts\python.exe" -c 'import peerwork; assert peerwork.version() == "0.0.1"; assert peerwork.capabilities()["version"] == "0.0.1"'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m pip install 'mypy==1.18.2'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $mypy = (Get-Command mypy -ErrorAction Stop).Source
@@ -305,6 +319,7 @@ jobs:
             --mypy $mypy
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ./target/release/peerwork.exe version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $stateDir = Join-Path $env:RUNNER_TEMP 'peerwork state Ω with spaces'
           [void][System.IO.Directory]::CreateDirectory($stateDir)
           $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
@@ -315,17 +330,21 @@ jobs:
             --python "$env:RUNNER_TEMP\peerwork-wheel-consumer\Scripts\python.exe" `
             --node (Get-Command node).Source --node-consumer (Join-Path $PWD 'dist/node-consumer') `
             --cli (Join-Path $PWD 'target/release/peerwork.exe') --state-dir $stateDir
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Inspect Windows artifact dependencies and Node Intl import isolation
         shell: pwsh
         run: |
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $vsroot = (& $vswhere -latest -products '*' -requires Microsoft.Component.MSBuild -property installationPath).Trim()
+          $vsroot = & $vswhere -latest -products '*' -requires Microsoft.Component.MSBuild -property installationPath
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $vsroot = $vsroot.Trim()
           $dumpbin = (Get-ChildItem "$vsroot\VC\Tools\MSVC" -Recurse -Filter dumpbin.exe |
             Where-Object { $_.FullName -match 'Hostx64\\x64\\dumpbin\.exe$' } |
             Select-Object -First 1).FullName
           if (-not $dumpbin) { throw 'MSVC dumpbin.exe not found' }
           $wheel = (Get-ChildItem dist/wheels/*.whl | Select-Object -First 1).FullName
           python -c 'import sys,zipfile; zipfile.ZipFile(sys.argv[1]).extractall("dist/wheel-inspect")' $wheel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $binaries = @('target/release/peerwork.exe', 'dist/agent-sdk-win32-x64-msvc/index.node')
           $binaries += (Get-ChildItem dist/wheel-inspect -Recurse -Filter *.pyd).FullName
           if ($binaries.Count -ne 3) { throw "expected exe, addon, and pyd; found $($binaries.Count)" }
@@ -337,6 +356,7 @@ jobs:
             }
           }
           node -e 'const before = new Intl.Collator("en-US").compare("a-1", "a_1"); require("./dist/node-consumer/node_modules/@peerwork/agent-sdk"); const after = new Intl.Collator("en-US").compare("a-1", "a_1"); if (before !== after) process.exit(1)'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:
           name: experimental-windows-x64
