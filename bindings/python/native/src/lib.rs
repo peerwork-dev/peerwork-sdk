@@ -375,6 +375,12 @@ fn secure_recipient_enrollment_json(
                 Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
             };
         }
+        if operation == "key_updates" {
+            return match access.key_updates() {
+                Ok(value) => serde_json::json!({"ok":true,"value":value}).to_string(),
+                Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
+            };
+        }
         let result = match operation.as_str() {
             "create_local" => access.create_local().map(Some),
             "publish" => access.publish_with_cancel(&cancel).map(Some),

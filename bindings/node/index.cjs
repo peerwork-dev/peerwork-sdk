@@ -343,6 +343,7 @@ exports.openSecureRecipientEnrollment = options => {
     retryKeyUpdate: (updateId, options = {}) => invoke('retry_key_update', options.signal,
       undefined, undefined, updateId),
     pendingKeyUpdates: () => invoke('pending_key_updates'),
+    keyUpdates: () => invoke('key_updates'),
   });
 };
 

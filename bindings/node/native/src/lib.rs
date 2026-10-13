@@ -520,6 +520,12 @@ impl Task for SecureEnrollmentTask {
                 Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
             });
         }
+        if self.operation == "key_updates" {
+            return Ok(match access.key_updates() {
+                Ok(value) => serde_json::json!({"ok":true,"value":value}).to_string(),
+                Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
+            });
+        }
         let result = match self.operation.as_str() {
             "create_local" => access.create_local().map(Some),
             "publish" => access.publish_with_cancel(&self.cancel).map(Some),

@@ -802,6 +802,10 @@ class SecureRecipientEnrollmentClient:
         """Read protected local update IDs; listed rows are not publication proof."""
         return cast(list[RecipientKeyUpdateResult], self._enroll("pending_key_updates"))
 
+    def key_updates(self) -> list[RecipientKeyUpdateResult]:
+        """Read protected local update history, including signed-reconciled published IDs."""
+        return cast(list[RecipientKeyUpdateResult], self._enroll("key_updates"))
+
     async def update_key_async(self, mode: Literal["ROTATE", "RENEW"],
                                expected_certificate_hash: str, *,
                                update_id: str | None = None) -> RecipientKeyUpdateResult:

@@ -224,7 +224,8 @@ fn main() -> ExitCode {
                     || verb == "recipient-certificate"
                     || verb == "recipient-update"
                     || verb == "recipient-retry-update"
-                    || verb == "recipient-pending-updates") =>
+                    || verb == "recipient-pending-updates"
+                    || verb == "recipient-key-updates") =>
         {
             match secure_recipient_command(verb, rest) {
                 Ok(value) => {
@@ -319,6 +320,12 @@ fn secure_recipient_command(verb: &str, args: &[String]) -> Result<String, (&'st
     }
     if verb == "recipient-pending-updates" {
         let value = access.pending_key_updates()
+            .map_err(|error| (error.code(), error.to_string()))?;
+        return serde_json::to_string(&value)
+            .map_err(|_| ("RESULT_ENCODING_FAILED", "recipient update encoding failed".to_owned()));
+    }
+    if verb == "recipient-key-updates" {
+        let value = access.key_updates()
             .map_err(|error| (error.code(), error.to_string()))?;
         return serde_json::to_string(&value)
             .map_err(|_| ("RESULT_ENCODING_FAILED", "recipient update encoding failed".to_owned()));

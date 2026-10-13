@@ -186,6 +186,8 @@ export interface SecureRecipientEnrollmentSession {
   retryKeyUpdate(updateId: string, options?: { signal?: AbortSignal }): Promise<RecipientKeyUpdateResult>;
   /** Protected local IDs; PENDING is not directory publication. */
   pendingKeyUpdates(): Promise<RecipientKeyUpdateResult[]>;
+  /** Protected local history, including previously reconciled PUBLISHED IDs. */
+  keyUpdates(): Promise<RecipientKeyUpdateResult[]>;
 }
 export declare function openSecureRecipientEnrollment(options: RecipientEnrollmentOptions): SecureRecipientEnrollmentSession;
 
