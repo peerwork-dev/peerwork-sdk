@@ -1864,7 +1864,9 @@ mod selected_binding_service_test {
         assert_eq!(counts(), before_retry);
         // The same package without the selected binding guards vote with
         // REVIEWER. This Owner has only an instance AUTHOR grant, so the
-        // source's default variant must be rejected without a secure commit.
+        // source's default variant must fail native guard preparation without
+        // a secure commit. The preparer executes the pinned role guard before
+        // signing or posting an action packet.
         let default_instance_id = random_id().unwrap();
         let default_begin: serde_json::Value = serde_json::from_str(
             &install.submit_begin_json(PublicPackageInstallInput {
@@ -1905,9 +1907,9 @@ mod selected_binding_service_test {
             command_id: None,
             issued_at_ms: None,
         });
-        assert!(matches!(rejected,
-            Err(crate::secure_action_access::PublicActionError::Intent(
-                SecureIntentError::ServerRejected(409)))));
+        assert!(matches!(&rejected,
+            Err(crate::secure_action_access::PublicActionError::Prepare)),
+            "unexpected default-guard result: {rejected:?}");
         assert_eq!(counts(), before_rejected_vote);
         let submitted: serde_json::Value = serde_json::from_str(
             &action.submit_new_json(PublicActionInput {
