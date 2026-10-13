@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 
 const [origin, sourceDir, legacyRoot, mode = 'clean'] = process.argv.slice(2);
 if (!origin || !sourceDir || !legacyRoot) throw new Error('LEGACY_TEST_INPUT_REQUIRED');
-if (!['clean', 'completed', 'legacy-record', 'pending', 'pending-before-post', 'pending-private-structured', 'pending-private-structured-before-post', 'pending-public', 'pending-public-before-post', 'pending-public-structured', 'pending-public-structured-before-post', 'pending-current-private', 'pending-current-private-before-post', 'pending-current-private-structured', 'pending-current-private-structured-before-post', 'pending-current-private-structured-ceiling2', 'pending-current-private-structured-ceiling2-before-post', 'pending-current-public', 'pending-current-public-before-post', 'pending-current-public-structured', 'pending-current-public-structured-before-post', 'stage-marker-completed', 'stage-marker-pending', 'stage-marker-mismatch', 'kernel-jws-source', 'unknown-store', 'malformed-store', 'legacy-structured', 'legacy-public', 'legacy-public-structured', 'legacy-public-record', 'legacy-public-structured-record', 'private-missing-ring'].includes(mode)) throw new Error('LEGACY_TEST_MODE_INVALID');
+if (!['clean', 'completed', 'legacy-record', 'pending', 'pending-before-post', 'pending-private-structured', 'pending-private-structured-before-post', 'pending-public', 'pending-public-before-post', 'pending-public-structured', 'pending-public-structured-before-post', 'pending-current-private', 'pending-current-private-before-post', 'pending-current-private-structured', 'pending-current-private-structured-before-post', 'pending-current-private-structured-ceiling2', 'pending-current-private-structured-ceiling2-before-post', 'pending-current-public', 'pending-current-public-before-post', 'pending-current-public-structured', 'pending-current-public-structured-before-post', 'stage-marker-completed', 'stage-marker-pending', 'stage-marker-mismatch', 'stage-marker-command-mismatch', 'kernel-jws-source', 'unknown-store', 'malformed-store', 'legacy-structured', 'legacy-public', 'legacy-public-structured', 'legacy-public-record', 'legacy-public-structured-record', 'private-missing-ring'].includes(mode)) throw new Error('LEGACY_TEST_MODE_INVALID');
 mkdirSync(sourceDir, { recursive: true, mode: 0o700 });
 const { privateKey } = generateKeyPairSync('ed25519');
 const pemPath = join(sourceDir, 'owner.pem');
@@ -62,6 +62,7 @@ try {
   let stagePartCount = null;
   let stagePartId = null;
   let stagePartSha = null;
+  let stageSignedCommandId = null;
   if (mode.startsWith('stage-marker-')) {
     const { parseProtocolPackage, PROTOCOL_PACKAGE_FORMAT } = await import(pathToFileURL(join(legacyRoot, 'dist-workspace/src/protocol-package.js')).href);
     const { createProtocolPackageClosure } = await import(pathToFileURL(join(legacyRoot, 'dist-workspace/src/protocol-package-closure.js')).href);
@@ -91,7 +92,7 @@ try {
         command_id: args[2], action_id: args[1]?.commit?.payload?.action_id,
       };
       const result = await originalPost(...args);
-      if ((mode === 'stage-marker-completed' || mode === 'stage-marker-mismatch') && !stopped) {
+      if ((mode === 'stage-marker-completed' || mode === 'stage-marker-mismatch' || mode === 'stage-marker-command-mismatch') && !stopped) {
         stopped = true;
         throw new Error('TEST_STOP_AFTER_STAGE_POST');
       }
@@ -105,15 +106,16 @@ try {
       await agent.stagePackageMaterial(created.workspaceId, material, journal.checkpoint);
       throw new Error('TEST_STAGE_DID_NOT_INTERRUPT');
     } catch (error) {
-      if ((mode === 'stage-marker-completed' || mode === 'stage-marker-mismatch') && error?.message !== 'TEST_STOP_AFTER_STAGE_POST') throw error;
+      if ((mode === 'stage-marker-completed' || mode === 'stage-marker-mismatch' || mode === 'stage-marker-command-mismatch') && error?.message !== 'TEST_STOP_AFTER_STAGE_POST') throw error;
       if (mode === 'stage-marker-pending' && error?.message === 'TEST_STAGE_DID_NOT_INTERRUPT') throw error;
     } finally { agent.post = originalPost; }
-    if ((mode === 'stage-marker-completed' || mode === 'stage-marker-mismatch') && !stopped) throw new Error('TEST_STAGE_COMPLETED_STOP_NOT_REACHED');
+    if ((mode === 'stage-marker-completed' || mode === 'stage-marker-mismatch' || mode === 'stage-marker-command-mismatch') && !stopped) throw new Error('TEST_STAGE_COMPLETED_STOP_NOT_REACHED');
     const markers = Object.values(agent.state.package_stage_intents ?? {});
     if (markers.length !== 1) throw new Error('TEST_STAGE_MARKER_MISSING');
     stageMarker = markers[0];
     if (submittedCommand?.command_id !== stageMarker.command_id
       || submittedCommand.action_id !== 'secure.protocol-package.stage') throw new Error('TEST_STAGE_COMMAND_BINDING_MISSING');
+    stageSignedCommandId = submittedCommand.command_id;
     const expectedPending = mode === 'stage-marker-pending' ? 1 : 0;
     if (Object.keys(agent.state.pending).length !== expectedPending) throw new Error('TEST_STAGE_PENDING_CLASS_MISMATCH');
     journal = await agent.journal(created.workspaceId);
@@ -135,6 +137,11 @@ try {
     if (mode === 'stage-marker-mismatch') {
       // Test-created local marker tamper only; the signed stage stays intact.
       stageMarker.source_sha256 = '0'.repeat(64);
+      agent.save();
+    }
+    if (mode === 'stage-marker-command-mismatch') {
+      // A syntactically valid local marker selects a different signed command.
+      stageMarker.command_id = randomBytes(32).toString('base64url');
       agent.save();
     }
   }
@@ -231,6 +238,7 @@ try {
       part_sha256: stagePartSha,
     } : null,
     stage_part_count: stagePartCount,
+    stage_signed_command_id: stageSignedCommandId,
     kernel_source: kernelSource,
     completed_identity_updates: Object.values(agent.state.identity_key_intents ?? {}).filter(row => row.state === 'PUBLISHED').length,
     prior_record_id: priorRecordId,

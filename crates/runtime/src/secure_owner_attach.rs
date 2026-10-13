@@ -20,7 +20,7 @@ use peerwork_core::{
     prepared_secure_request::{
         verify_prepared_secure_commit_request_with_policy, SecureCommitRequestPins,
     },
-    prepared_private_install::verify_single_part_package_source,
+    prepared_private_install::{package_source_identity_matches, verify_single_part_package_source},
     replayed_secure_journal::StructureStatus,
     secure_keyring::SecretKeyring,
     wire_json::{canonical_wire_value, parse_wire_json_bounded, WireValue},
@@ -246,6 +246,36 @@ struct CompletedPackageStageMarker {
     source_sha256: String,
 }
 
+const STAGE_PREFLIGHT_MARKER: &[u8] = b"peerwork.owner.stage-preflight.v1\n";
+
+/// The caller holds owner-attach-recovery.state. Only private directories
+/// carrying our protected marker can be reclaimed after an interrupted proof.
+fn clear_stale_stage_preflights(root: &Path) -> Result<(), HistoricalOwnerAttachError> {
+    for entry in std::fs::read_dir(root).map_err(|_| HistoricalOwnerAttachError::Local)? {
+        let entry = entry.map_err(|_| HistoricalOwnerAttachError::Local)?;
+        let name = entry.file_name();
+        if !name.to_string_lossy().starts_with(".owner-stage-preflight-") {
+            continue;
+        }
+        let path = entry.path();
+        ensure_dir(&path)?;
+        let marker_path = path.join("owner-stage-preflight.marker");
+        std::fs::symlink_metadata(&marker_path)
+            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        let marker = SecureStateStore::open(&marker_path)
+            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        let exact = marker
+            .read_exact_secret()
+            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        if exact.as_deref().map(Vec::as_slice) != Some(STAGE_PREFLIGHT_MARKER) {
+            return Err(HistoricalOwnerAttachError::Local);
+        }
+        drop(marker);
+        std::fs::remove_dir_all(&path).map_err(|_| HistoricalOwnerAttachError::Local)?;
+    }
+    Ok(())
+}
+
 struct LegacyPendingAction {
     command_id: String,
     action_id: String,
@@ -375,6 +405,84 @@ impl SecureHistoricalOwnerAttach {
         })
     }
 
+    fn preflight_completed_package_stage(
+        &self,
+        input: &HistoricalOwnerAttachInput,
+        source: &LegacySource,
+        cancel: &CancellationToken,
+    ) -> Result<(), HistoricalOwnerAttachError> {
+        let marker = source
+            .completed_package_stage
+            .as_ref()
+            .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+        let ring = source
+            .ring
+            .as_ref()
+            .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+        // The caller holds the native root recovery lock through PREPARED.
+        // A previous crash may leave a protected, inert scratch directory.
+        clear_stale_stage_preflights(&self.config.state_dir)?;
+        let scratch_dir = tempfile::Builder::new()
+            .prefix(".owner-stage-preflight-")
+            .tempdir_in(&self.config.state_dir)
+            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        let scratch = scratch_dir.path().to_owned();
+        let result = (|| {
+            ensure_dir(&scratch)?;
+            let ownership_marker = SecureStateStore::open(&scratch.join("owner-stage-preflight.marker"))
+                .map_err(|_| HistoricalOwnerAttachError::Local)?;
+            ownership_marker
+                .write_exact(STAGE_PREFLIGHT_MARKER)
+                .map_err(|_| HistoricalOwnerAttachError::Local)?;
+            drop(ownership_marker);
+            KernelIdentity::import_pkcs8_pem_file(
+                &scratch.join("identity.state"),
+                &input.protected_owner_pkcs8_path,
+            )
+            .map_err(|_| HistoricalOwnerAttachError::Identity)?;
+            let mut lifecycle = SecureLifecycle::open(
+                &scratch.join("lifecycle.state"),
+                &self.config.origin,
+                &input.expected_owner_actor_id,
+                &input.workspace_id,
+                &input.expected_owner_actor_id,
+                &input.expected_owner_key_id,
+            )
+            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+            lifecycle
+                .stage_historical_owner_ring(ring)
+                .map_err(|_| HistoricalOwnerAttachError::SourceUnresolved)?;
+            drop(lifecycle);
+            let mut config = self.attach_read_config(input);
+            config.kernel_journal_path = scratch.join("kernel.sqlite");
+            config.read_state_path = scratch.join("pages.state");
+            config.lifecycle_path = scratch.join("lifecycle.state");
+            config.identity_path = scratch.join("identity.state");
+            let replayed = SecureReadAccess::new(config)
+                .replay_checked_attach_generation(cancel)
+                .map_err(|_| {
+                    if cancel.is_cancelled() {
+                        HistoricalOwnerAttachError::Cancelled
+                    } else {
+                        HistoricalOwnerAttachError::Verification
+                    }
+                })?;
+            if !replayed.replay().contains_checkpoint(
+                source.sequence,
+                source.head.as_deref(),
+                &source.policy_hash,
+            ) {
+                return Err(HistoricalOwnerAttachError::SourceChanged);
+            }
+            verify_completed_package_stage(marker, &replayed, input)
+        })();
+        // Explicitly report cleanup failure on success, cancellation or
+        // refusal. A process crash leaves only the marked protected scratch,
+        // which the next root-locked preflight validates before removal.
+        scratch_dir.close().map_err(|_| HistoricalOwnerAttachError::Local)?;
+        result
+    }
+
     pub fn attach(
         &self,
         input: HistoricalOwnerAttachInput,
@@ -421,6 +529,21 @@ impl SecureHistoricalOwnerAttach {
         // Validate the complete signed target selection before an immutable
         // PREPARED row, pending ring, or optional secure ACTION can be written.
         self.preflight_kernel_source(&input, cancel, Some(&input.kernel_pending_command_ids))?;
+        let stage_preflight_lock = if source.completed_package_stage.is_some() {
+            let lock = SecureStateStore::open(&root.join("owner-attach-recovery.state"))
+                .map_err(|_| HistoricalOwnerAttachError::Local)?;
+            self.preflight_completed_package_stage(&input, &source, cancel)?;
+            let (_, ts_after, pem_after, intent_after) = self.inspect_sources(&input)?;
+            if (ts_after, pem_after, intent_after)
+                != (ts_digest.clone(), pem_digest.clone(), intent_digest.clone())
+            {
+                return Err(HistoricalOwnerAttachError::SourceChanged);
+            }
+            // Keep the native root lock through immutable PREPARED persistence.
+            Some(lock)
+        } else {
+            None
+        };
         if crate::ts_migration::source_snapshot_digest_allow_pending(
             &input.protected_ts_intent_db_path,
         )
@@ -451,6 +574,7 @@ impl SecureHistoricalOwnerAttach {
             let id = id.clone();
             drop(history);
             drop(store);
+            drop(stage_preflight_lock);
             return self.resume_attachment(&id, cancel);
         }
         if history.rows.len() >= MAX_HISTORY {
@@ -479,6 +603,7 @@ impl SecureHistoricalOwnerAttach {
         save_history(&store, &history)?;
         drop(history);
         drop(store);
+        drop(stage_preflight_lock);
         #[cfg(test)]
         if TEST_STOP_AFTER_ATTACH_ROW.swap(false, Ordering::SeqCst) {
             return Err(HistoricalOwnerAttachError::Cancelled);
@@ -2340,6 +2465,9 @@ fn completed_package_stage_marker(
             != Some(format!("{workspace}.{source_id}").as_str())
         || source_id.len() != 64
         || source_sha256.len() != 64
+        || !valid_digest(&source_id)
+        || !valid_digest(&source_sha256)
+        || !package_source_identity_matches(source, &source_id, &source_sha256)
         || !valid_token(&command_id)
         || exact_u64(marker.get("part_index")) != Some(0)
         || source
@@ -3834,6 +3962,7 @@ mod tests {
             ("completed", "stage-marker-completed", 0),
             ("pending", "stage-marker-pending", 1),
             ("mismatch", "stage-marker-mismatch", 0),
+            ("command-mismatch", "stage-marker-command-mismatch", 0),
         ] {
             let output = Command::new(&node)
                 .arg(&helper)
@@ -3863,7 +3992,7 @@ mod tests {
             assert!(marker["source_sha256"].as_str().is_some());
             assert!(marker["part_id"].as_str().is_some());
             assert!(marker["part_sha256"].as_str().is_some());
-            let command = marker["command_id"].as_str().unwrap();
+            let command = source["stage_signed_command_id"].as_str().unwrap();
             let committed: i64 = oracle
                 .query_row(
                     "SELECT count(*) FROM secure_commits WHERE workspace_id=?1 AND command_id=?2",
@@ -3906,6 +4035,13 @@ mod tests {
                     Err(HistoricalOwnerAttachError::SourceUnresolved)
                 ));
                 assert!(attach.attachments().unwrap().is_empty());
+                assert!(!attach
+                    .config
+                    .state_dir
+                    .join("workspaces")
+                    .join(workspace)
+                    .join("lifecycle.state")
+                    .exists());
                 let after: i64 = oracle
                     .query_row(
                         "SELECT count(*) FROM secure_commits WHERE workspace_id=?1",

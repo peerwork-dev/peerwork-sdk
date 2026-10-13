@@ -8,7 +8,7 @@ use crate::{
     e2ee::{open_content_wire, SealedContent},
     prepared_package_source::prepare_package_source_wire,
     prepared_secure_author::sign_private_commit,
-    protocol_package_source::verify_protocol_package_source,
+    protocol_package_source::{package_source_id, verify_protocol_package_source},
     public_direct_install::{
         build_direct_install_begin, build_direct_install_objects_with_composition_at_ceiling,
         compile_package_closure_with_bindings_at_ceiling,
@@ -60,6 +60,17 @@ pub fn verify_single_part_package_source(
     verify_protocol_package_source(&prepared.proof, std::slice::from_ref(signed_part))
         .map_err(|_| PrivateInstallError::Invalid)?;
     Ok(prepared.proof)
+}
+
+/// Check a local retained stage marker's source identity before creating any
+/// durable attach row. This is only a consistency check; signed replay must
+/// still prove the stage command and material before attachment.
+pub fn package_source_identity_matches(
+    source: &WireValue,
+    source_id: &str,
+    source_sha256: &str,
+) -> bool {
+    package_source_id(source, source_sha256).is_ok_and(|expected| expected == source_id)
 }
 
 /// Exact encrypted packet plus the source-derived material proof. Persist the
