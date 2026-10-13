@@ -14,6 +14,7 @@ from ._peerwork_native import (
     secure_read_json,
     secure_read_profile_json,
     secure_public_action_json,
+    secure_public_install_json,
     version,
 )
 
@@ -588,3 +589,130 @@ class SecurePublicActionClient(SecureReadClient):
 
 
 __all__ += ["SecurePublicActionClient", "SecureActionResult", "SecureActionReceipt", "PendingSecureAction", "SecureActionError"]
+
+
+class PublicInstallBeginResult(TypedDict):
+    status: Literal["PENDING"]
+    command_id: str
+    workspace_id: str
+    package_id: str
+    package_version: str
+    package_digest: str
+    protocol_digest: str
+    instance_id: str
+    commit_hash: str
+
+
+class PublicInstallProgress(TypedDict):
+    status: Literal["PENDING", "ACCEPTED"]
+    begin_command_id: str
+    step_command_id: str
+    step_action_id: str
+    workspace_id: str
+    package_digest: str
+    protocol_digest: str
+    instance_id: str
+    commit_hash: str
+
+
+class PendingPublicInstall(TypedDict):
+    begin_command_id: str
+    pending_step_id: str
+    pending_action_id: str
+    workspace_id: str
+    package_id: str
+    package_version: str
+    package_digest: str
+    protocol_digest: str
+    instance_id: str
+
+
+class PublicInstallError(RuntimeError):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+class SecurePublicPackageInstaller(SecureReadClient):
+    """Begin and continue a PUBLIC direct install using protected local state.
+
+    The selected closure and expected digests are explicit caller inputs. Local
+    digest/compiler checks do not authenticate an external package publisher.
+    """
+
+    def _install(self, operation: str, *, input_value: dict | None = None,
+                 begin_command_id: str | None = None,
+                 cancel_handle: KernelCancelHandle | None = None) -> PublicInstallBeginResult | PublicInstallProgress | list[PendingPublicInstall]:
+        config_json = json.dumps(self._config, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
+        input_json = None if input_value is None else json.dumps(input_value, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
+        result = json.loads(secure_public_install_json(operation, config_json, input_json, begin_command_id, cancel_handle))
+        if result["ok"] is not True:
+            raise PublicInstallError(result["code"], result["message"])
+        return cast(PublicInstallBeginResult | PublicInstallProgress | list[PendingPublicInstall], result["value"])
+
+    def begin(self, closure_json: str, *, expected_package_id: str,
+              expected_package_version: str, expected_package_digest: str,
+              expected_protocol_digest: str, instance_id: str, entrypoint: str,
+              grants_json: str = "[]", command_id: str | None = None,
+              issued_at_ms: int | None = None) -> PublicInstallBeginResult:
+        """Persist exact BEGIN before POST; the returned status remains PENDING."""
+        value = dict(closure_json=closure_json, expected_package_id=expected_package_id,
+                     expected_package_version=expected_package_version,
+                     expected_package_digest=expected_package_digest,
+                     expected_protocol_digest=expected_protocol_digest,
+                     instance_id=instance_id, entrypoint=entrypoint, grants_json=grants_json,
+                     command_id=command_id, issued_at_ms=issued_at_ms)
+        return cast(PublicInstallBeginResult, self._install("begin", input_value=value))
+
+    def continue_install(self, begin_command_id: str) -> PublicInstallProgress:
+        """Advance or reconcile one protected install step against signed replay."""
+        return cast(PublicInstallProgress, self._install("continue", begin_command_id=begin_command_id))
+
+    def pending(self) -> list[PendingPublicInstall]:
+        """Recover pending IDs from protected local state without network access."""
+        return cast(list[PendingPublicInstall], self._install("pending"))
+
+    async def _install_async(self, operation: str, *, input_value: dict | None = None,
+                             begin_command_id: str | None = None) -> PublicInstallBeginResult | PublicInstallProgress | list[PendingPublicInstall]:
+        cancel_handle = KernelCancelHandle()
+        worker = asyncio.create_task(asyncio.to_thread(
+            self._install, operation, input_value=input_value,
+            begin_command_id=begin_command_id, cancel_handle=cancel_handle))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            cancel_handle.cancel()
+            while not worker.done():
+                try:
+                    await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    cancel_handle.cancel()
+                except Exception:
+                    break
+            try:
+                worker.result()
+            except Exception:
+                pass
+            raise
+
+    async def begin_async(self, closure_json: str, *, expected_package_id: str,
+                          expected_package_version: str, expected_package_digest: str,
+                          expected_protocol_digest: str, instance_id: str, entrypoint: str,
+                          grants_json: str = "[]", command_id: str | None = None,
+                          issued_at_ms: int | None = None) -> PublicInstallBeginResult:
+        value = dict(closure_json=closure_json, expected_package_id=expected_package_id,
+                     expected_package_version=expected_package_version,
+                     expected_package_digest=expected_package_digest,
+                     expected_protocol_digest=expected_protocol_digest,
+                     instance_id=instance_id, entrypoint=entrypoint, grants_json=grants_json,
+                     command_id=command_id, issued_at_ms=issued_at_ms)
+        return cast(PublicInstallBeginResult, await self._install_async("begin", input_value=value))
+
+    async def continue_install_async(self, begin_command_id: str) -> PublicInstallProgress:
+        return cast(PublicInstallProgress, await self._install_async("continue", begin_command_id=begin_command_id))
+
+    async def pending_async(self) -> list[PendingPublicInstall]:
+        return cast(list[PendingPublicInstall], await self._install_async("pending"))
+
+
+__all__ += ["SecurePublicPackageInstaller", "PublicInstallBeginResult", "PublicInstallProgress", "PendingPublicInstall", "PublicInstallError"]

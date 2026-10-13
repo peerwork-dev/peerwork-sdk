@@ -2,6 +2,9 @@ use peerwork_runtime::kernel_access::KernelAccess;
 use peerwork_runtime::kernel_client::{KernelAcceptedResult, KernelOperationStatus};
 use peerwork_runtime::kernel_identity::KernelIdentity;
 use peerwork_runtime::secure_action_access::{PublicActionInput, SecurePublicActionAccess};
+use peerwork_runtime::secure_public_install::{
+    PublicPackageInstallInput, SecurePublicPackageInstall,
+};
 use peerwork_runtime::secure_read_access::{SecureReadAccess, SecureReadConfig};
 use peerwork_runtime::secure_read_profile::{SecureReadProfile, SecureReadProfileConfig};
 use peerwork_runtime::KernelCancellationToken;
@@ -268,6 +271,49 @@ fn secure_public_action_json(
     }))
 }
 
+#[pyfunction]
+#[pyo3(signature = (operation, config_json, input_json=None, begin_command_id=None, cancel_handle=None))]
+fn secure_public_install_json(
+    py: Python<'_>,
+    operation: &str,
+    config_json: &str,
+    input_json: Option<&str>,
+    begin_command_id: Option<&str>,
+    cancel_handle: Option<PyRef<'_, KernelCancelHandle>>,
+) -> PyResult<String> {
+    let config: SecureReadProfileConfig = serde_json::from_str(config_json).map_err(|_| {
+        pyo3::exceptions::PyValueError::new_err("invalid PUBLIC install configuration")
+    })?;
+    let input: Option<PublicPackageInstallInput> = input_json
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|_| pyo3::exceptions::PyValueError::new_err("invalid PUBLIC install input"))?;
+    let operation = operation.to_owned();
+    let begin_command_id = begin_command_id.map(str::to_owned);
+    let cancel = cancel_handle
+        .map(|handle| handle.token.clone())
+        .unwrap_or_default();
+    Ok(py.allow_threads(move || {
+        let access = SecurePublicPackageInstall::new(config);
+        let result = match operation.as_str() {
+            "begin" => match input {
+                Some(value) => access.submit_begin_json_with_cancel(value, &cancel),
+                None => return serde_json::json!({"ok":false,"code":"INSTALL_INPUT_INVALID","message":"install input is required"}).to_string(),
+            },
+            "continue" => match begin_command_id.as_deref() {
+                Some(id) => access.continue_install_json_with_cancel(id, &cancel),
+                None => return serde_json::json!({"ok":false,"code":"INSTALL_INPUT_INVALID","message":"begin command ID is required"}).to_string(),
+            },
+            "pending" => access.list_pending_json_with_cancel(&cancel),
+            _ => return serde_json::json!({"ok":false,"code":"INSTALL_INPUT_INVALID","message":"unsupported PUBLIC install operation"}).to_string(),
+        };
+        match result {
+            Ok(value) => format!("{{\"ok\":true,\"value\":{value}}}"),
+            Err(error) => serde_json::json!({"ok":false,"code":"INSTALL_FAILED","message":error.to_string()}).to_string(),
+        }
+    }))
+}
+
 #[pymodule]
 fn _peerwork_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(version, module)?)?;
@@ -280,6 +326,7 @@ fn _peerwork_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(secure_read_json, module)?)?;
     module.add_function(wrap_pyfunction!(secure_read_profile_json, module)?)?;
     module.add_function(wrap_pyfunction!(secure_public_action_json, module)?)?;
+    module.add_function(wrap_pyfunction!(secure_public_install_json, module)?)?;
     module.add_class::<KernelCancelHandle>()?;
     Ok(())
 }

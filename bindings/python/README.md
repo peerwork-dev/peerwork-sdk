@@ -43,6 +43,17 @@ that ID against signed replay before treating the action as accepted.
 The action API currently covers supported PUBLIC actions; PRIVATE onboarding,
 some structured/delegated action families, and general Agent workflow remain
 incomplete.
+`SecurePublicPackageInstaller` shares this protected profile for PUBLIC direct
+package installation. Select a locally obtained closure and its expected
+package/protocol digests explicitly, then call `begin(closure_json,
+expected_package_id=..., expected_package_version=...,
+expected_package_digest=..., expected_protocol_digest=..., instance_id=...,
+entrypoint=..., grants_json="[]")`. The BEGIN result remains `PENDING` after
+POST. Call `continue_install(begin_command_id)` to reconcile or advance a
+supported signed install sequence; only a returned `ACCEPTED` result reflects verified
+installation. `pending()` and `pending_async()` recover protected IDs locally
+after cancellation, even while the service is unavailable. These local digest
+checks do not authenticate an external publisher or registry.
 Cancelling an async wrapper stops waiting for its worker thread; a local
 identity creation already in progress can still finish. Reopen the requested
 path to inspect the result before retrying creation. The kernel async methods

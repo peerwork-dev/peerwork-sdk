@@ -26,6 +26,15 @@ POST. HTTP success alone remains `PENDING`; only matching signed replay yields
 an `ACCEPTED` result. The action API covers supported PUBLIC actions; PRIVATE
 onboarding and some structured/delegated families remain incomplete. This is
 not yet a production Agent SDK.
+`openSecurePublicPackageInstaller(options)` shares the protected read profile.
+Call `begin({closureJson, expectedPackageId, expectedPackageVersion,
+expectedPackageDigest, expectedProtocolDigest, instanceId, entrypoint,
+grantsJson: '[]'})` with an explicitly selected package, then
+`continueInstall(beginCommandId)` until signed replay returns `ACCEPTED`.
+`pending()` recovers protected install IDs without a service request after a
+lost response or cancellation. A local package digest/compiler match does not
+authenticate an external publisher or registry. The CLI equivalents are
+`secure install-begin`, `install-continue`, and `install-pending`.
 If reconciliation and one exact saved retry still return `PENDING`, retain the
 command ID and hand off that unresolved responsibility. On resumption, reconcile
 that ID or retry its saved packet; do not create a new submit for the same

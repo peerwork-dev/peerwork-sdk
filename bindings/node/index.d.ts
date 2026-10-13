@@ -148,3 +148,55 @@ export interface SecurePublicActionSession {
 }
 /** Uses a protected latest-read profile; an uncertain POST stays PENDING until signed replay. */
 export declare function openSecurePublicActions(options: SecureReadOptions): SecurePublicActionSession;
+
+/** Exact locally selected package closure; digest validation does not prove publisher origin. */
+export interface PublicPackageInstallSelection {
+  closureJson: string;
+  expectedPackageId: string;
+  expectedPackageVersion: string;
+  expectedPackageDigest: string;
+  expectedProtocolDigest: string;
+  instanceId: string;
+  entrypoint: string;
+  grantsJson: string;
+}
+export interface PublicInstallBeginResult {
+  status: 'PENDING';
+  command_id: string;
+  workspace_id: string;
+  package_id: string;
+  package_version: string;
+  package_digest: string;
+  protocol_digest: string;
+  instance_id: string;
+  commit_hash: string;
+}
+export interface PublicInstallProgress {
+  status: 'PENDING' | 'ACCEPTED';
+  begin_command_id: string;
+  step_command_id: string;
+  step_action_id: string;
+  workspace_id: string;
+  package_digest: string;
+  protocol_digest: string;
+  instance_id: string;
+  commit_hash: string;
+}
+export interface PendingPublicInstall {
+  begin_command_id: string;
+  pending_step_id: string;
+  pending_action_id: string;
+  workspace_id: string;
+  package_id: string;
+  package_version: string;
+  package_digest: string;
+  protocol_digest: string;
+  instance_id: string;
+}
+export interface SecurePublicPackageInstaller {
+  begin(selection: PublicPackageInstallSelection, options?: { commandId?: string; issuedAtMs?: number; signal?: AbortSignal }): Promise<PublicInstallBeginResult>;
+  continueInstall(beginCommandId: string, options?: { signal?: AbortSignal }): Promise<PublicInstallProgress>;
+  /** Lists protected pending IDs locally; it does not prove service acceptance. */
+  pending(options?: { signal?: AbortSignal }): Promise<PendingPublicInstall[]>;
+}
+export declare function openSecurePublicPackageInstaller(options: SecureReadOptions): SecurePublicPackageInstaller;

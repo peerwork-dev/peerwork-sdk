@@ -7,6 +7,9 @@ use peerwork_runtime::kernel_access::KernelAccess;
 use peerwork_runtime::kernel_client::{KernelAcceptedResult, KernelOperationStatus};
 use peerwork_runtime::kernel_identity::KernelIdentity;
 use peerwork_runtime::secure_action_access::{PublicActionInput, SecurePublicActionAccess};
+use peerwork_runtime::secure_public_install::{
+    PublicPackageInstallInput, SecurePublicPackageInstall,
+};
 use peerwork_runtime::secure_read_access::{SecureReadAccess, SecureReadConfig};
 use peerwork_runtime::secure_read_profile::{SecureReadProfile, SecureReadProfileConfig};
 use peerwork_runtime::KernelCancellationToken;
@@ -378,6 +381,78 @@ pub fn secure_public_action_json(
         config_json,
         input_json,
         command_id,
+        cancel: cancel_handle
+            .map(|handle| handle.token.clone())
+            .unwrap_or_default(),
+    })
+}
+
+pub struct SecureInstallTask {
+    operation: String,
+    config_json: String,
+    input_json: Option<String>,
+    begin_command_id: Option<String>,
+    cancel: KernelCancellationToken,
+}
+
+impl Task for SecureInstallTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let config: SecureReadProfileConfig = serde_json::from_str(&self.config_json)
+            .map_err(|_| napi::Error::from_reason("invalid PUBLIC install configuration"))?;
+        let access = SecurePublicPackageInstall::new(config);
+        let result = match self.operation.as_str() {
+            "begin" => {
+                let input: PublicPackageInstallInput = serde_json::from_str(
+                    self.input_json
+                        .as_deref()
+                        .ok_or_else(|| napi::Error::from_reason("install input is required"))?,
+                )
+                .map_err(|_| napi::Error::from_reason("invalid PUBLIC install input"))?;
+                access.submit_begin_json_with_cancel(input, &self.cancel)
+            }
+            "continue" => access.continue_install_json_with_cancel(
+                self.begin_command_id
+                    .as_deref()
+                    .ok_or_else(|| napi::Error::from_reason("begin command ID is required"))?,
+                &self.cancel,
+            ),
+            "pending" => access.list_pending_json_with_cancel(&self.cancel),
+            _ => {
+                return Err(napi::Error::from_reason(
+                    "unsupported PUBLIC install operation",
+                ))
+            }
+        };
+        Ok(match result {
+            Ok(value) => format!("{{\"ok\":true,\"value\":{value}}}"),
+            Err(error) => {
+                serde_json::json!({"ok":false,"code":"INSTALL_FAILED","message":error.to_string()})
+                    .to_string()
+            }
+        })
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+#[napi]
+pub fn secure_public_install_json(
+    operation: String,
+    config_json: String,
+    input_json: Option<String>,
+    begin_command_id: Option<String>,
+    cancel_handle: Option<ClassInstance<KernelCancelHandle>>,
+) -> AsyncTask<SecureInstallTask> {
+    AsyncTask::new(SecureInstallTask {
+        operation,
+        config_json,
+        input_json,
+        begin_command_id,
         cancel: cancel_handle
             .map(|handle| handle.token.clone())
             .unwrap_or_default(),

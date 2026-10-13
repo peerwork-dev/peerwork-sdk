@@ -306,3 +306,51 @@ exports.openSecurePublicActions = options => {
     pending: (options = {}) => invoke('pending', undefined, undefined, options.signal),
   });
 };
+
+/** Begin and continue a PUBLIC direct install through protected local state. */
+exports.openSecurePublicPackageInstaller = options => {
+  const { config } = secureProfileOptions(options);
+  const invoke = async (operation, input, beginCommandId, signal) => {
+    const handle = new binding.KernelCancelHandle();
+    const onAbort = () => handle.cancel();
+    if (signal?.aborted) onAbort();
+    signal?.addEventListener?.('abort', onAbort, { once: true });
+    try {
+      const result = JSON.parse(await binding.securePublicInstallJson(
+        operation, strictCommandJson(config), input === undefined ? undefined : strictCommandJson(input),
+        beginCommandId, handle,
+      ));
+      if (result.ok !== true) {
+        const error = new Error(result.message);
+        error.code = result.code;
+        throw error;
+      }
+      return result.value;
+    } finally {
+      signal?.removeEventListener?.('abort', onAbort);
+    }
+  };
+  return Object.freeze({
+    begin: (selection, options = {}) => {
+      if (selection === null || typeof selection !== 'object' ||
+          typeof selection.closureJson !== 'string' || typeof selection.grantsJson !== 'string') {
+        throw new TypeError('install selection requires exact closureJson and grantsJson text');
+      }
+      const input = {
+        closure_json: selection.closureJson,
+        expected_package_id: selection.expectedPackageId,
+        expected_package_version: selection.expectedPackageVersion,
+        expected_package_digest: selection.expectedPackageDigest,
+        expected_protocol_digest: selection.expectedProtocolDigest,
+        instance_id: selection.instanceId,
+        entrypoint: selection.entrypoint,
+        grants_json: selection.grantsJson,
+        command_id: options.commandId ?? null,
+        issued_at_ms: options.issuedAtMs ?? null,
+      };
+      return invoke('begin', input, undefined, options.signal);
+    },
+    continueInstall: (beginCommandId, options = {}) => invoke('continue', undefined, beginCommandId, options.signal),
+    pending: (options = {}) => invoke('pending', undefined, undefined, options.signal),
+  });
+};
