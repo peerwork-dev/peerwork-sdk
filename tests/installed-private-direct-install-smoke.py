@@ -119,9 +119,25 @@ def assert_direct_policy_upgrade(before, after, prior_objects, old_hash,
 
     new_structure = after["structure"]
     assert new_structure["v"] == 1
-    old_protocols = [row for row in prior_objects if row.get("kind") == "protocols"]
-    old_instances = [row for row in prior_objects if row.get("kind") == "instances"]
+    # The verified read retains historical object revisions. The source
+    # structure-policy compiler selects the latest row of each protocol and
+    # instance ID, so count and compare that exact selection.
+    def latest(kind):
+        selected = {}
+        for row in prior_objects:
+            if row.get("kind") != kind:
+                continue
+            previous = selected.get(row["id"])
+            if previous is None or previous["revision"] < row["revision"]:
+                selected[row["id"]] = row
+            elif previous["revision"] == row["revision"]:
+                assert previous["value"] == row["value"]
+        return list(selected.values())
+
+    old_protocols = latest("protocols")
+    old_instances = latest("instances")
     assert old_protocols and old_instances
+    assert len([row for row in prior_objects if row.get("kind") == "instances"]) > len(old_instances)
     for old_protocol in old_protocols:
         value = old_protocol["value"]
         digest = value["digest"]
