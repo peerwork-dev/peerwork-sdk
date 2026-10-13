@@ -118,8 +118,8 @@ try:
     cases = []
     # Both genuine old-client workspaces must be created while cutover is PREPARE.
     for mode, expected_v, expected_structure_mode in (
-        ("legacy-public", 1, "NONE"),
-        ("legacy-public-structured", 2, "STRUCTURED"),
+        ("legacy-public-record", 1, "NONE"),
+        ("legacy-public-structured-record", 2, "STRUCTURED"),
     ):
         source_dir = STATE / mode
         setup = subprocess.run([NODE, str(SOURCE / "tests/legacy-owner-source.mjs"),

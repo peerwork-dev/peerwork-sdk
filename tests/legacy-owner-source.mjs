@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 
 const [origin, sourceDir, legacyRoot, mode = 'clean'] = process.argv.slice(2);
 if (!origin || !sourceDir || !legacyRoot) throw new Error('LEGACY_TEST_INPUT_REQUIRED');
-if (!['clean', 'completed', 'legacy-record', 'pending', 'unknown-store', 'malformed-store', 'legacy-structured', 'legacy-public', 'legacy-public-structured', 'private-missing-ring'].includes(mode)) throw new Error('LEGACY_TEST_MODE_INVALID');
+if (!['clean', 'completed', 'legacy-record', 'pending', 'unknown-store', 'malformed-store', 'legacy-structured', 'legacy-public', 'legacy-public-structured', 'legacy-public-record', 'legacy-public-structured-record', 'private-missing-ring'].includes(mode)) throw new Error('LEGACY_TEST_MODE_INVALID');
 mkdirSync(sourceDir, { recursive: true, mode: 0o700 });
 const { privateKey } = generateKeyPairSync('ed25519');
 const pemPath = join(sourceDir, 'owner.pem');
@@ -20,8 +20,8 @@ const { SecureAgentClient } = await import(pathToFileURL(modulePath).href);
 const { secureHash } = await import(pathToFileURL(join(legacyRoot, 'dist-workspace/src/workspace-secure-client.js')).href);
 const agent = await SecureAgentClient.open({ baseUrl: new URL(origin).origin, privateKey, statePath, intentDbPath });
 try {
-  const visibility = mode === 'legacy-public' || mode === 'legacy-public-structured' ? 'PUBLIC' : 'PRIVATE';
-  const structured = mode === 'legacy-structured' || mode === 'legacy-public-structured';
+  const visibility = mode.startsWith('legacy-public') ? 'PUBLIC' : 'PRIVATE';
+  const structured = mode === 'legacy-structured' || mode === 'legacy-public-structured' || mode === 'legacy-public-structured-record';
   const created = await agent.create('Legacy native attach proof', visibility, { structure: structured });
   const journal = await agent.journal(created.workspaceId);
   if (journal.policy.payload.v !== (structured ? 2 : 1) || journal.policy.payload.visibility !== visibility) {
@@ -60,7 +60,7 @@ try {
   let priorRecordId = null;
   let priorRecordTitle = null;
   let priorRecordBody = null;
-  if (mode === 'legacy-record' || mode === 'legacy-structured' || mode === 'legacy-public' || mode === 'legacy-public-structured') {
+  if (mode === 'legacy-record' || mode === 'legacy-structured' || mode === 'legacy-public-record' || mode === 'legacy-public-structured-record') {
     const wiki = journal.objects.find(row => row.kind === 'instances' && row.value.origin_entrypoint === 'wiki');
     if (!wiki) throw new Error('LEGACY_WIKI_MISSING');
     priorRecordTitle = visibility === 'PUBLIC' ? 'Legacy public record' : 'Legacy encrypted record';
