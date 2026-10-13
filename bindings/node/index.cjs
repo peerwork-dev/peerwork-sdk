@@ -367,14 +367,19 @@ exports.openSecurePublicAdmission = options => {
   const { config } = secureProfileOptions(options);
   const call = admissionCall('owner', config);
   return Object.freeze({
-    offer: (recipientCertificateJson, scopes, options = {}) => call('offer', {
+    offer: (recipientCertificateJson, scopes, options = {}) => {
+      const message = options.message ?? '';
+      if (typeof message !== 'string') throw new TypeError('offer message must be a string');
+      const messageUtf16 = Array.from({ length: message.length }, (_, index) => message.charCodeAt(index));
+      return call('offer', {
       recipient_certificate_json: recipientCertificateJson,
       scopes_json: strictCommandJson(scopes),
-      message: options.message ?? '', message_utf16: null,
+      message: '', message_utf16: messageUtf16,
       invite_id: options.inviteId ?? null,
       issued_at_ms: options.issuedAtMs ?? null,
       expires_at_ms: options.expiresAtMs ?? null,
-    }, undefined, undefined, undefined, options.signal),
+      }, undefined, undefined, undefined, options.signal);
+    },
     retryOffer: (inviteId, options = {}) => call('retry_offer', undefined, inviteId, undefined, undefined, options.signal),
     pendingOffers: () => call('pending_offers'),
     deliver: (inviteId, options = {}) => call('deliver', undefined, inviteId, undefined, undefined, options.signal),

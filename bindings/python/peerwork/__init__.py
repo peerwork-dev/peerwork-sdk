@@ -833,6 +833,28 @@ class PublicReceiveResult(TypedDict):
     receipt_hash: str
 
 
+async def _run_admission_async(method, operation: str, **kwargs):
+    cancel_handle = KernelCancelHandle()
+    worker = asyncio.create_task(asyncio.to_thread(
+        method, operation, cancel_handle=cancel_handle, **kwargs))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        cancel_handle.cancel()
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                cancel_handle.cancel()
+            except Exception:
+                break
+        try:
+            worker.result()
+        except Exception:
+            pass
+        raise
+
+
 class SecurePublicAdmissionClient(SecureReadClient):
     """Owner-signed PUBLIC offer and delivery from protected latest workspace state."""
 
@@ -846,16 +868,36 @@ class SecurePublicAdmissionClient(SecureReadClient):
             raise PublicAdmissionError(result["code"], result["message"])
         return cast(dict | list[dict], result["value"])
 
+    @staticmethod
+    def _offer_input(recipient_certificate_json: str, scopes_json: str, message: str,
+                     invite_id: str | None, issued_at_ms: int | None,
+                     expires_at_ms: int | None) -> dict:
+        message_bytes = message.encode("utf-16-le", "surrogatepass")
+        message_utf16 = [int.from_bytes(message_bytes[index:index + 2], "little")
+                         for index in range(0, len(message_bytes), 2)]
+        return dict(
+            recipient_certificate_json=recipient_certificate_json, scopes_json=scopes_json,
+            message="", message_utf16=message_utf16,
+            invite_id=invite_id, issued_at_ms=issued_at_ms,
+            expires_at_ms=expires_at_ms)
+
     def offer(self, recipient_certificate_json: str, scopes_json: str, *, message: str = "",
               invite_id: str | None = None, issued_at_ms: int | None = None,
               expires_at_ms: int | None = None) -> PublicOfferResult:
-        return cast(PublicOfferResult, self._admission("offer", input_value=dict(
-            recipient_certificate_json=recipient_certificate_json, scopes_json=scopes_json,
-            message=message, invite_id=invite_id, issued_at_ms=issued_at_ms,
-            expires_at_ms=expires_at_ms)))
+        return cast(PublicOfferResult, self._admission("offer", input_value=self._offer_input(
+            recipient_certificate_json, scopes_json, message, invite_id, issued_at_ms, expires_at_ms)))
+
+    async def offer_async(self, recipient_certificate_json: str, scopes_json: str, *, message: str = "",
+                          invite_id: str | None = None, issued_at_ms: int | None = None,
+                          expires_at_ms: int | None = None) -> PublicOfferResult:
+        return cast(PublicOfferResult, await _run_admission_async(self._admission, "offer", input_value=self._offer_input(
+            recipient_certificate_json, scopes_json, message, invite_id, issued_at_ms, expires_at_ms)))
 
     def retry_offer(self, invite_id: str) -> PublicOfferResult:
         return cast(PublicOfferResult, self._admission("retry_offer", invite_id=invite_id))
+
+    async def retry_offer_async(self, invite_id: str) -> PublicOfferResult:
+        return cast(PublicOfferResult, await _run_admission_async(self._admission, "retry_offer", invite_id=invite_id))
 
     def pending_offers(self) -> list[dict]:
         return cast(list[dict], self._admission("pending_offers"))
@@ -863,8 +905,14 @@ class SecurePublicAdmissionClient(SecureReadClient):
     def deliver(self, invite_id: str) -> PublicDeliveryResult:
         return cast(PublicDeliveryResult, self._admission("deliver", invite_id=invite_id))
 
+    async def deliver_async(self, invite_id: str) -> PublicDeliveryResult:
+        return cast(PublicDeliveryResult, await _run_admission_async(self._admission, "deliver", invite_id=invite_id))
+
     def retry_delivery(self, grant_id: str) -> PublicDeliveryResult:
         return cast(PublicDeliveryResult, self._admission("retry_delivery", grant_id=grant_id))
+
+    async def retry_delivery_async(self, grant_id: str) -> PublicDeliveryResult:
+        return cast(PublicDeliveryResult, await _run_admission_async(self._admission, "retry_delivery", grant_id=grant_id))
 
     def pending_deliveries(self) -> list[dict]:
         return cast(list[dict], self._admission("pending_deliveries"))
@@ -903,8 +951,14 @@ class SecurePublicDecisionClient:
     def decide(self, invite_id: str, decision: Literal["ACCEPT", "DECLINE"]) -> PublicDecisionResult:
         return cast(PublicDecisionResult, self._decision("decide", invite_id=invite_id, decision=decision))
 
+    async def decide_async(self, invite_id: str, decision: Literal["ACCEPT", "DECLINE"]) -> PublicDecisionResult:
+        return cast(PublicDecisionResult, await _run_admission_async(self._decision, "decide", invite_id=invite_id, decision=decision))
+
     def retry_decision(self, invite_id: str) -> PublicDecisionResult:
         return cast(PublicDecisionResult, self._decision("retry_decision", invite_id=invite_id))
+
+    async def retry_decision_async(self, invite_id: str) -> PublicDecisionResult:
+        return cast(PublicDecisionResult, await _run_admission_async(self._decision, "retry_decision", invite_id=invite_id))
 
     def pending_decisions(self) -> list[dict]:
         return cast(list[dict], self._decision("pending_decisions"))
@@ -912,8 +966,14 @@ class SecurePublicDecisionClient:
     def receive(self, invite_id: str) -> PublicReceiveResult:
         return cast(PublicReceiveResult, self._decision("receive", invite_id=invite_id))
 
+    async def receive_async(self, invite_id: str) -> PublicReceiveResult:
+        return cast(PublicReceiveResult, await _run_admission_async(self._decision, "receive", invite_id=invite_id))
+
     def retry_receive(self, invite_id: str) -> PublicReceiveResult:
         return cast(PublicReceiveResult, self._decision("retry_receive", invite_id=invite_id))
+
+    async def retry_receive_async(self, invite_id: str) -> PublicReceiveResult:
+        return cast(PublicReceiveResult, await _run_admission_async(self._decision, "retry_receive", invite_id=invite_id))
 
     def pending_receipts(self) -> list[dict]:
         return cast(list[dict], self._decision("pending_receipts"))
