@@ -164,7 +164,7 @@ try:
         wrong_file = STATE / ("wrong-digest-" + name + ".json")
         wrong_file.write_text(json.dumps(selected))
         wrong = cli(config_file, "owner-attach", wrong_file)
-        assert wrong["ok"] is False and wrong["value"]["code"] == "SOURCE_UNRESOLVED"
+        assert wrong["ok"] is False and wrong["value"]["code"] == "SOURCE_CHANGED"
         assert owner.attachments() == []
         selected["expected_ts_state_digest"] = inventory["ts_state_digest"]
         selected["selected_pending_package_stage_command_id"] = "z" * 43
