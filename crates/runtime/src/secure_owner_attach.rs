@@ -2062,9 +2062,6 @@ impl SecureHistoricalOwnerAttach {
                 row.input.workspace_id == workspace_id
                     && row.visibility == visibility
                     && row.attached_sequence.is_some()
-                    && row.retained_action_commit_hash.is_some()
-                    && !row.retained_upgrade_accepted
-                    && !row.retained_action_accepted
             })
             .ok_or(HistoricalOwnerAttachError::NotFound)?;
         let owner = KernelIdentity::open(&self.identity_path())
@@ -2073,6 +2070,17 @@ impl SecureHistoricalOwnerAttach {
             || owner.key_id() != row.input.expected_owner_key_id
         {
             return Err(HistoricalOwnerAttachError::Identity);
+        }
+        if row.pending_package_stage.as_ref()
+            .is_some_and(|stage| !stage.accepted_in_signed_replay)
+        {
+            return Err(HistoricalOwnerAttachError::PendingPackageStageUnresolved);
+        }
+        if row.retained_action_commit_hash.is_none()
+            || row.retained_upgrade_accepted
+            || row.retained_action_accepted
+        {
+            return Err(HistoricalOwnerAttachError::NotFound);
         }
         Ok((self.profile_config(&row.input), id.clone()))
     }
@@ -2095,18 +2103,24 @@ impl SecureHistoricalOwnerAttach {
                 row.input.workspace_id == workspace_id
                     && row.visibility == visibility
                     && row.attached_sequence.is_some()
-                    && (allow_restricted || row.pending_package_stage.as_ref()
-                        .is_none_or(|stage| stage.accepted_in_signed_replay))
-                    && (allow_restricted
-                        || row.retained_action_commit_hash.is_none()
-                        || row.retained_upgrade_accepted
-                        || row.retained_action_accepted)
             })
             .ok_or(HistoricalOwnerAttachError::NotFound)?;
         if owner.actor_id() != row.input.expected_owner_actor_id
             || owner.key_id() != row.input.expected_owner_key_id
         {
             return Err(HistoricalOwnerAttachError::Identity);
+        }
+        if !allow_restricted && row.pending_package_stage.as_ref()
+            .is_some_and(|stage| !stage.accepted_in_signed_replay)
+        {
+            return Err(HistoricalOwnerAttachError::PendingPackageStageUnresolved);
+        }
+        if !allow_restricted
+            && row.retained_action_commit_hash.is_some()
+            && !row.retained_upgrade_accepted
+            && !row.retained_action_accepted
+        {
+            return Err(HistoricalOwnerAttachError::NotFound);
         }
         Ok(self.profile_config(&row.input))
     }

@@ -110,6 +110,8 @@ pub enum SecureOwnerCreateError {
     Identity,
     #[error("owner-create operation was not found")]
     NotFound,
+    #[error("attached Owner package stage requires explicit saved-command recovery")]
+    PendingPackageStageUnresolved,
     #[error("owner-create local resource limit exceeded")]
     ResourceLimit,
     #[error("owner-create local state failed")]
@@ -134,6 +136,7 @@ impl SecureOwnerCreateError {
             Self::Invalid => "INPUT_INVALID",
             Self::Identity => "IDENTITY_CHANGED",
             Self::NotFound => "NOT_FOUND",
+            Self::PendingPackageStageUnresolved => "PENDING_PACKAGE_STAGE_UNRESOLVED",
             Self::ResourceLimit => "RESOURCE_LIMIT",
             Self::Local => "LOCAL_STATE_FAILED",
             Self::Enrollment => "ENROLLMENT_FAILED",
@@ -155,6 +158,8 @@ impl From<SecureReadAccessError> for SecureOwnerCreateError {
 fn map_attach_error(error: HistoricalOwnerAttachError) -> SecureOwnerCreateError {
     match error {
         HistoricalOwnerAttachError::NotFound => SecureOwnerCreateError::NotFound,
+        HistoricalOwnerAttachError::PendingPackageStageUnresolved =>
+            SecureOwnerCreateError::PendingPackageStageUnresolved,
         HistoricalOwnerAttachError::Identity => SecureOwnerCreateError::Identity,
         HistoricalOwnerAttachError::Cancelled => SecureOwnerCreateError::Cancelled,
         HistoricalOwnerAttachError::Local => SecureOwnerCreateError::Local,
