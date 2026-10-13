@@ -298,6 +298,7 @@ jobs:
           & "$env:RUNNER_TEMP\peerwork-wheel-consumer\Scripts\pip.exe" install --no-index --no-deps $wheel
           & "$env:RUNNER_TEMP\peerwork-wheel-consumer\Scripts\python.exe" -c 'import peerwork; assert peerwork.version() == "0.0.1"; assert peerwork.capabilities()["version"] == "0.0.1"'
           python -m pip install 'mypy==1.18.2'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $mypy = (Get-Command mypy -ErrorAction Stop).Source
           python tests/verify-installed-python-types.py `
             --python "$env:RUNNER_TEMP\peerwork-wheel-consumer\Scripts\python.exe" `
