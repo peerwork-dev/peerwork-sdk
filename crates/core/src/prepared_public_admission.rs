@@ -1210,13 +1210,22 @@ mod tests {
             ("workspace_id", s(&workspace)),
             ("owner_id", s(&owner_actor)),
             ("signing_key", s(&owner_key)),
-            ("version", WireValue::Number(2.0)),
+            ("version", WireValue::Number(1.0)),
             ("previous_policy", WireValue::Null),
             ("effective_sequence", WireValue::Number(1.0)),
             ("visibility", s("PUBLIC")),
             ("epoch", WireValue::Number(0.0)),
             ("members", WireValue::Array(Vec::new())),
             ("issued_at", WireValue::Number(now as f64)),
+            (
+                "structure",
+                object(vec![
+                    ("v", WireValue::Number(1.0)),
+                    ("protocols", WireValue::Array(Vec::new())),
+                    ("disclosure", WireValue::Array(Vec::new())),
+                    ("instances", WireValue::Array(Vec::new())),
+                ]),
+            ),
         ]);
         let scopes = br#"[{"instance_id":null,"actions":["proposal.adopt"],"protocol_roles":["ADOPTER"],"capabilities":[]}]"#;
         let invite_id = base64url(&[14; 32]);
