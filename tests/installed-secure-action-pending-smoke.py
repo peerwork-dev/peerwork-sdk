@@ -26,6 +26,25 @@ def counts(origin):
         return json.load(response)
 
 
+def post(origin, path):
+    with urllib.request.urlopen(urllib.request.Request(origin + path, data=b"", method="POST"), timeout=5):
+        pass
+
+
+def journal_delay_started(origin):
+    with urllib.request.urlopen(origin + "__test/journal-delay-status", timeout=5) as response:
+        return json.load(response)["started"]
+
+
+async def await_journal_delay(origin):
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if await asyncio.to_thread(journal_delay_started, origin):
+            return
+        await asyncio.sleep(0.05)
+    raise AssertionError("pre-submit journal request did not start")
+
+
 async def await_commit(origin, expected):
     deadline = time.monotonic() + 12
     while time.monotonic() < deadline:
@@ -62,8 +81,10 @@ with tempfile.TemporaryDirectory(prefix="peerwork-pending-discovery-") as direct
         assert client.read()["sequence"] == 1
 
         async def cancellation_path():
+            post(origin, "__test/delay-next-journal")
             before = asyncio.create_task(client.submit_async(
                 "discussion.post", fixture["instance_id"], {"message": "never prepared"}))
+            await await_journal_delay(origin)
             before.cancel()
             try:
                 await before
