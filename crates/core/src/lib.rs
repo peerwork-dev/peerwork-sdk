@@ -24,6 +24,7 @@ mod package_namespace;
 mod package_schema;
 #[allow(dead_code)]
 mod prepared_package_source;
+pub mod prepared_private_install;
 pub mod prepared_public_admission;
 pub mod prepared_command;
 pub mod prepared_secure_action;

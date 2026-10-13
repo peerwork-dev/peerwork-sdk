@@ -423,7 +423,7 @@ pub fn author_public_bootstrap(
     })
 }
 
-fn sign_private_commit(
+pub(crate) fn sign_private_commit(
     context: &WireValue,
     operation_wire: &[u8],
     epoch_key: &[u8; 32],
