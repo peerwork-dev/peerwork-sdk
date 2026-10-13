@@ -49,6 +49,365 @@ fn test_crash_after_begin_row() -> Result<(), PrivatePackageInstallError> {
     Ok(())
 }
 
+#[cfg(test)]
+mod historical_v1_direct_test {
+    use super::*;
+    use crate::{
+        secure_action_access::PublicActionInput,
+        secure_owner_attach::{HistoricalOwnerAttachInput, SecureHistoricalOwnerAttach},
+        secure_owner_create::{SecureOwnerCreateConfig, SecureOwnerWorkspaceCreate},
+        secure_read_profile::SecureReadProfile,
+    };
+    use std::{
+        io::{BufRead, BufReader},
+        path::{Path, PathBuf},
+        process::{Child, Command, Stdio},
+    };
+
+    #[test]
+    fn actual_service_attached_wire_v1_private_direct_install_to_v2() {
+        let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else {
+            return;
+        };
+        let Ok(legacy_root) = std::env::var("PEERWORK_LEGACY_CLIENT_ROOT") else {
+            return;
+        };
+        let node = std::env::var("PEERWORK_NODE_BIN").unwrap_or_else(|_| "node".into());
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let bridge =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/reference-kernel-server.mjs");
+        let child = Command::new(&node)
+            .arg(bridge)
+            .env("PEERWORK_REFERENCE_ROOT", reference_root)
+            .env("PEERWORK_TEST_STATE", root.path())
+            .env("PEERWORK_TEST_FIRST_POST_MODE", "normal")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        struct Stop(Child);
+        impl Drop for Stop {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut child = Stop(child);
+        let mut line = String::new();
+        BufReader::new(child.0.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        assert!(!line.is_empty(), "pinned service exited before readiness");
+        let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let origin = ready["origin"].as_str().unwrap().to_owned();
+        let helper =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/legacy-owner-source.mjs");
+        let source_dir = root.path().join("legacy-owner");
+        let setup = Command::new(&node)
+            .arg(helper)
+            .arg(&origin)
+            .arg(&source_dir)
+            .arg(legacy_root)
+            .arg("legacy-record")
+            .output()
+            .unwrap();
+        assert!(
+            setup.status.success(),
+            "legacy record setup failed: {}",
+            String::from_utf8_lossy(&setup.stderr)
+        );
+        let source: serde_json::Value = serde_json::from_slice(&setup.stdout).unwrap();
+        assert_eq!(source["policy_v"], 1);
+        let workspace_id = source["workspace_id"].as_str().unwrap().to_owned();
+        let prior_record_id = source["prior_record_id"].as_str().unwrap().to_owned();
+        let config = SecureOwnerCreateConfig {
+            origin: origin.clone(),
+            state_dir: root.path().join("native-owner"),
+            allow_loopback_http: true,
+            max_replay_artifact_bytes: 64 * 1024 * 1024,
+        };
+        let token = CancellationToken::new();
+        let attached = SecureHistoricalOwnerAttach::new(config.clone())
+            .attach(
+                HistoricalOwnerAttachInput {
+                    workspace_id: workspace_id.clone(),
+                    protected_ts_state_path: PathBuf::from(source["state_path"].as_str().unwrap()),
+                    protected_owner_pkcs8_path: PathBuf::from(source["pem_path"].as_str().unwrap()),
+                    protected_ts_intent_db_path: PathBuf::from(
+                        source["intent_db_path"].as_str().unwrap(),
+                    ),
+                    expected_owner_actor_id: source["owner_actor_id"].as_str().unwrap().into(),
+                    expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
+                },
+                &token,
+            )
+            .unwrap();
+        assert_eq!(attached.status, "ATTACHED");
+        let owner = SecureOwnerWorkspaceCreate::new(config.clone());
+        let before_read: serde_json::Value =
+            serde_json::from_str(&owner.read_workspace_json(&workspace_id, &token).unwrap())
+                .unwrap();
+        assert!(before_read["objects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["kind"] == "records"
+                && row["id"] == prior_record_id
+                && row["value"]["payload"]["title"] == "Legacy encrypted record"
+                && row["value"]["payload"]["body"] == "Old wire-v1 encrypted body"));
+        let install = owner.private_install_access(&workspace_id).unwrap();
+        let (old_policy, old_policy_hash, old_sequence): (serde_json::Value, String, u64) =
+            SecureReadProfile::new(install.config.clone())
+                .with_latest_replay(&token, |source| {
+                    let wire = source
+                        .signed_policy_by_hash(source.replay().policy_hash())
+                        .ok_or(PrivatePackageInstallError::Plan)?;
+                    let signed: serde_json::Value = serde_json::from_slice(wire)
+                        .map_err(|_| PrivatePackageInstallError::Plan)?;
+                    Ok::<_, PrivatePackageInstallError>((
+                        signed["payload"].clone(),
+                        source.replay().policy_hash().to_owned(),
+                        source.replay().sequence(),
+                    ))
+                })
+                .unwrap();
+        assert_eq!(old_policy["v"], 1);
+        assert_eq!(old_policy["visibility"], "PRIVATE");
+        let vector: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../conformance/public-package-vectors.json"
+        ))
+        .unwrap();
+        let owner_actor = source["owner_actor_id"].as_str().unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let counts = || {
+            runtime.block_on(async {
+                let bytes = reqwest::get(format!("{origin}__test/secure-counts"))
+                    .await
+                    .unwrap()
+                    .bytes()
+                    .await
+                    .unwrap();
+                serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()
+            })
+        };
+        let before_count = counts()["commits"].as_u64().unwrap();
+        let arm_drop = || {
+            runtime.block_on(async {
+                assert!(reqwest::Client::new()
+                    .post(format!("{origin}__test/drop-next-post"))
+                    .body("{}")
+                    .send()
+                    .await
+                    .unwrap()
+                    .status()
+                    .is_success());
+            })
+        };
+        arm_drop();
+        let first: serde_json::Value = serde_json::from_str(&install.submit_direct_begin_json(PrivateDirectInstallBeginInput {
+            closure_json: vector["closure"].to_string(),
+            expected_root_package_digest: vector["closure"]["root_package_digest"].as_str().unwrap().into(),
+            expected_protocol_digest: vector["protocol_digest"].as_str().unwrap().into(),
+            instance_id: random_id().unwrap(),
+            entrypoint: "proposal".into(),
+            grants_json: serde_json::json!([{ "actor_id": owner_actor, "actions": ["proposal.propose"],
+                "protocol_roles": ["AUTHOR"], "capabilities": ["PROPOSE"] }]).to_string(),
+            command_id: None, issued_at_ms: None,
+        }).unwrap()).unwrap();
+        assert_eq!(first["status"], "PENDING");
+        let begin_id = first["begin_command_id"].as_str().unwrap().to_owned();
+        assert_eq!(counts()["commits"], before_count + 1);
+        drop(install);
+        drop(owner);
+        let reopened = SecureOwnerWorkspaceCreate::new(config);
+        let install = reopened.private_install_access(&workspace_id).unwrap();
+        let local: serde_json::Value =
+            serde_json::from_str(&install.installs_json().unwrap()).unwrap();
+        assert_eq!(local.as_array().unwrap().len(), 1);
+        assert_eq!(local[0]["begin_command_id"], begin_id);
+        assert_eq!(local[0]["source_kind"], "DIRECT");
+        arm_drop();
+        let mut progress: serde_json::Value =
+            serde_json::from_str(&install.continue_install_json(&begin_id).unwrap()).unwrap();
+        assert_eq!(progress["step_action_id"], "secure.structure.page");
+        let lost_page_id = progress["step_command_id"].as_str().unwrap().to_owned();
+        for _ in 0..8 {
+            if progress["status"] == "ACCEPTED" {
+                break;
+            }
+            progress =
+                serde_json::from_str(&install.continue_install_json(&begin_id).unwrap()).unwrap();
+        }
+        assert_eq!(progress["status"], "ACCEPTED");
+        assert_ne!(lost_page_id, begin_id);
+        assert_eq!(
+            counts()["commits"],
+            before_count + 4,
+            "BEGIN, record PAGE, head PAGE, END without duplicate"
+        );
+        let (new_policy, new_policy_hash): (serde_json::Value, String) =
+            SecureReadProfile::new(install.config.clone())
+                .with_latest_replay(&token, |source| {
+                    let wire = source
+                        .signed_policy_by_hash(source.replay().policy_hash())
+                        .ok_or(PrivatePackageInstallError::Plan)?;
+                    let signed: serde_json::Value = serde_json::from_slice(wire)
+                        .map_err(|_| PrivatePackageInstallError::Plan)?;
+                    Ok::<_, PrivatePackageInstallError>((
+                        signed["payload"].clone(),
+                        source.replay().policy_hash().to_owned(),
+                    ))
+                })
+                .unwrap();
+        assert_ne!(new_policy_hash, old_policy_hash);
+        assert_eq!(new_policy["v"], 2);
+        assert_eq!(
+            new_policy["version"],
+            old_policy["version"].as_u64().unwrap() + 1
+        );
+        assert_eq!(new_policy["previous_policy"], old_policy_hash);
+        assert_eq!(new_policy["effective_sequence"], old_sequence + 1);
+        for field in [
+            "workspace_id",
+            "owner_id",
+            "signing_key",
+            "visibility",
+            "epoch",
+        ] {
+            assert_eq!(
+                new_policy[field], old_policy[field],
+                "{field} must be retained"
+            );
+        }
+        assert_eq!(
+            new_policy["members"].as_array().unwrap().len(),
+            old_policy["members"].as_array().unwrap().len()
+        );
+        for (old, new) in old_policy["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(new_policy["members"].as_array().unwrap())
+        {
+            for field in ["actor_id", "certificate", "role"] {
+                assert_eq!(new[field], old[field], "member {field}");
+            }
+            let old_scopes = old["scopes"].as_array().unwrap();
+            let new_scopes = new["scopes"].as_array().unwrap();
+            assert!(new_scopes.len() >= old_scopes.len());
+            assert_eq!(&new_scopes[..old_scopes.len()], old_scopes);
+        }
+        let structured_protocols = new_policy["structure"]["protocols"].as_array().unwrap();
+        assert!(structured_protocols
+            .iter()
+            .any(|protocol| protocol["protocol_digest"] == vector["protocol_digest"]));
+        for object in before_read["objects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["kind"] == "protocols")
+        {
+            let protocol = structured_protocols
+                .iter()
+                .find(|row| row["protocol_digest"] == object["id"])
+                .unwrap();
+            for (schema, definition) in object["value"]["manifest"]["record_schemas"]
+                .as_object()
+                .unwrap()
+            {
+                for field in definition["fields"].as_object().unwrap().keys() {
+                    assert_eq!(
+                        protocol["schemas"][schema]["fields"][field]["protection"], "e2ee",
+                        "old wire-v1 field {schema}.{field} must remain encrypted"
+                    );
+                }
+            }
+        }
+        for protocol in structured_protocols {
+            for definition in protocol["schemas"].as_object().unwrap().values() {
+                for field in definition["fields"].as_object().unwrap().values() {
+                    assert_eq!(
+                        field["protection"], "e2ee",
+                        "direct default must not disclose new fields"
+                    );
+                }
+            }
+        }
+        assert!(new_policy["structure"]["disclosure"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|entry| entry["fields"].as_array().is_some_and(Vec::is_empty)));
+        let read: serde_json::Value =
+            serde_json::from_str(&reopened.read_workspace_json(&workspace_id, &token).unwrap())
+                .unwrap();
+        assert!(read["objects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["kind"] == "records"
+                && row["id"] == prior_record_id
+                && row["value"]["payload"]["title"] == "Legacy encrypted record"
+                && row["value"]["payload"]["body"] == "Old wire-v1 encrypted body"));
+        let action = reopened.private_action_access(&workspace_id).unwrap();
+        let submitted: serde_json::Value = serde_json::from_str(
+            &action
+                .submit_new_json(PublicActionInput {
+                    action_id: "proposal.propose".into(),
+                    instance_id: progress["instance_id"].as_str().unwrap().into(),
+                    body_json:
+                        r#"{"title":"After v1 direct install","body":"Encrypted new proposal"}"#
+                            .into(),
+                    exact_input_refs_json: None,
+                    allocations_json: None,
+                    command_id: None,
+                    issued_at_ms: None,
+                })
+                .unwrap(),
+        )
+        .unwrap();
+        let accepted: serde_json::Value = serde_json::from_str(
+            &action
+                .retry_saved_json(submitted["command_id"].as_str().unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(accepted["status"], "ACCEPTED");
+        let receipt: serde_json::Value =
+            serde_json::from_str(accepted["receipt_canonical_json"].as_str().unwrap()).unwrap();
+        let effect_id = receipt["effects"][0]["record_id"].as_str().unwrap();
+        let final_read: serde_json::Value =
+            serde_json::from_str(&reopened.read_workspace_json(&workspace_id, &token).unwrap())
+                .unwrap();
+        assert!(final_read["objects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["kind"] == "records"
+                && row["id"] == effect_id
+                && row["value"]["payload"]["title"] == "After v1 direct install"
+                && row["value"]["payload"]["body"] == "Encrypted new proposal"));
+        let count_after = counts()["commits"].as_u64().unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(
+                &install.continue_install_json(&begin_id).unwrap()
+            )
+            .unwrap()["status"],
+            "ACCEPTED"
+        );
+        assert_eq!(counts()["commits"], count_after);
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum PrivatePackageInstallError {
     #[error("complete PRIVATE Owner journal read failed: {0}")]

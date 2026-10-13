@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 
 const [origin, sourceDir, legacyRoot, mode = 'clean'] = process.argv.slice(2);
 if (!origin || !sourceDir || !legacyRoot) throw new Error('LEGACY_TEST_INPUT_REQUIRED');
-if (!['clean', 'completed', 'pending', 'unknown-store', 'malformed-store'].includes(mode)) throw new Error('LEGACY_TEST_MODE_INVALID');
+if (!['clean', 'completed', 'legacy-record', 'pending', 'unknown-store', 'malformed-store'].includes(mode)) throw new Error('LEGACY_TEST_MODE_INVALID');
 mkdirSync(sourceDir, { recursive: true, mode: 0o700 });
 const { privateKey } = generateKeyPairSync('ed25519');
 const pemPath = join(sourceDir, 'owner.pem');
@@ -51,6 +51,17 @@ try {
     });
     if (update.state !== 'PUBLISHED') throw new Error('LEGACY_COMPLETED_UPDATE_MISSING');
   }
+  let priorRecordId = null;
+  if (mode === 'legacy-record') {
+    const wiki = journal.objects.find(row => row.kind === 'instances' && row.value.origin_entrypoint === 'wiki');
+    if (!wiki) throw new Error('LEGACY_WIKI_MISSING');
+    const advanced = await agent.action(created.workspaceId, wiki.id, 'wiki.create', {
+      title: 'Legacy encrypted record', body: 'Old wire-v1 encrypted body',
+    });
+    const record = advanced.objects.find(row => row.kind === 'records' && row.value?.payload?.title === 'Legacy encrypted record');
+    if (!record) throw new Error('LEGACY_RECORD_MISSING');
+    priorRecordId = record.id;
+  }
   process.stdout.write(JSON.stringify({
     workspace_id: created.workspaceId,
     owner_actor_id: agent.identity.actorId,
@@ -62,6 +73,7 @@ try {
     intent_db_path: intentDbPath,
     pending_count: Object.keys(agent.state.pending).length,
     completed_identity_updates: Object.values(agent.state.identity_key_intents ?? {}).filter(row => row.state === 'PUBLISHED').length,
+    prior_record_id: priorRecordId,
   }) + '\n');
 } finally {
   agent.close();
