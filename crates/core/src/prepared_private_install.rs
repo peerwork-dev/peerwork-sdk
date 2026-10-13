@@ -49,7 +49,12 @@ pub fn verify_single_part_package_source(
         .map_err(|_| PrivateInstallError::Invalid)?;
     let prepared = prepare_package_source_wire(text.as_bytes(), source_wire.as_bytes())
         .map_err(|_| PrivateInstallError::Invalid)?;
-    if prepared.parts.len() != 1 || prepared.parts[0] != *signed_part {
+    if prepared.parts.len() != 1
+        || canonical_wire_value(&prepared.parts[0], Path::SecureArtifact)
+            .map_err(|_| PrivateInstallError::Invalid)?
+            != canonical_wire_value(signed_part, Path::SecureArtifact)
+                .map_err(|_| PrivateInstallError::Invalid)?
+    {
         return Err(PrivateInstallError::Invalid);
     }
     verify_protocol_package_source(&prepared.proof, std::slice::from_ref(signed_part))
