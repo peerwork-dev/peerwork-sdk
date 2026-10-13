@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -174,7 +175,18 @@ with tempfile.TemporaryDirectory(prefix="peerwork-native-private-", dir=TEMP_ROO
         # Compare custody before any restorative service read. A fresh snapshot
         # fetch here could mask a damaged current slot by refilling it.
         assert protected_current_generation(recipient_dir) == protected_before_failure
-        latest = reader.read_private()
+        lifecycle_before_honest = hashlib.sha256(
+            (recipient_dir / "lifecycle.state").read_bytes()).hexdigest()
+        try:
+            latest = reader.read_private()
+        except peerwork.SecureReadError:
+            lifecycle_after_honest = hashlib.sha256(
+                (recipient_dir / "lifecycle.state").read_bytes()).hexdigest()
+            print(json.dumps(dict(phase="honest-direct-grant-failure",
+                rotated_sequence=advanced["sequence"], rotated_epoch=advanced["epoch"],
+                lifecycle_changed=lifecycle_after_honest != lifecycle_before_honest,
+                protected_generation=protected_current_generation(recipient_dir))), file=sys.stderr)
+            raise
         assert latest["sequence"] == advanced["sequence"]
         assert contains_record(latest, advanced["record_id"], "Native private admission readback")
         assert exact_record(latest, advanced["record_id"])["value"]["payload"]["body"] == \
@@ -231,5 +243,10 @@ with tempfile.TemporaryDirectory(prefix="peerwork-native-private-", dir=TEMP_ROO
         except subprocess.TimeoutExpired:
             server.terminate()
             server.wait(timeout=5)
+        if sys.exc_info()[0] is not None and os.environ.get("PEERWORK_TEST_PRESERVE_FAILURE") == "1":
+            retained = TEMP_ROOT / f"{state.name}-retained"
+            assert not retained.exists()
+            shutil.copytree(state, retained)
+            print(f"retained task-owned failure state: {retained}", file=sys.stderr)
         if sys.exc_info()[0] is not None:
             print("tracked service stderr:", server.stderr.read()[-1200:], file=sys.stderr)
