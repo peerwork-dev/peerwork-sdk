@@ -3433,7 +3433,11 @@ mod tests {
             Err(HistoricalOwnerAttachError::SourceChanged)
         ));
         assert!(changed_owner.attachments().unwrap().is_empty());
-        for (mode, applied) in [("applied-loss-global", true), ("pre-send-global", false)] {
+        for (mode, applied, expired) in [
+            ("applied-loss-global", true, false),
+            ("pre-send-global", false, false),
+            ("expired-global", false, true),
+        ] {
             let source_dir = root.path().join(format!("source-{mode}"));
             let output = Command::new(&node)
                 .arg(&helper)
@@ -3514,6 +3518,14 @@ mod tests {
                 inventory.commands[0].intent_digest,
                 source["selected_intent_digest"]
             );
+            assert_eq!(
+                inventory.commands[0].status,
+                if expired {
+                    "EXPIRED_UNRESOLVED"
+                } else {
+                    "PENDING"
+                }
+            );
             assert_eq!(inventory.retained_other_pending_count, 1);
             assert_eq!(inventory.retained_nonworkspace_pending_count, 1);
             assert!(matches!(
@@ -3553,7 +3565,14 @@ mod tests {
             assert_eq!(local.len(), 1);
             assert_eq!(local[0].command_id, selected);
             assert_eq!(local[0].intent_digest, source["selected_intent_digest"]);
-            assert_eq!(local[0].status, "PENDING");
+            assert_eq!(
+                local[0].status,
+                if expired {
+                    "EXPIRED_UNRESOLVED"
+                } else {
+                    "PENDING"
+                }
+            );
             std::fs::rename(&source_dir, root.path().join(format!("archived-{mode}"))).unwrap();
             assert_eq!(
                 SecureHistoricalOwnerAttach::new(config.clone())
@@ -3570,6 +3589,10 @@ mod tests {
                 assert_eq!(recovered.status, "ACCEPTED");
                 assert_eq!(recovered.last_http_status, None);
                 assert_eq!(accepted_command_count(selected), 1);
+            } else if expired {
+                assert_eq!(recovered.status, "EXPIRED_UNRESOLVED");
+                assert_eq!(recovered.last_http_status, None);
+                assert_eq!(accepted_command_count(selected), 0);
             } else {
                 assert_eq!(recovered.status, "RETAINED_UNRESOLVED");
                 assert_eq!(recovered.last_http_status, Some(409));

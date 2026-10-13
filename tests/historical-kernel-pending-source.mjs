@@ -6,10 +6,11 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const [origin, sourceDir, referenceRoot, mode, savedCommandId] = process.argv.slice(2);
-if (!origin || !sourceDir || !referenceRoot || !['applied-loss', 'pre-send', 'applied-loss-global', 'pre-send-global', 'resolve-existing'].includes(mode)) {
+if (!origin || !sourceDir || !referenceRoot || !['applied-loss', 'pre-send', 'applied-loss-global', 'pre-send-global', 'expired-global', 'resolve-existing'].includes(mode)) {
   throw new Error('KERNEL_PENDING_SOURCE_INPUT_INVALID');
 }
 const { SecureAgentClient } = await import(pathToFileURL(join(referenceRoot, 'dist-workspace/src/workspace-secure-agent.js')).href);
+const { WorkspaceClient } = await import(pathToFileURL(join(referenceRoot, 'dist-workspace/src/workspace-client.js')).href);
 const trustedOrigin = new URL(origin).origin;
 if (mode === 'resolve-existing') {
   if (!savedCommandId) throw new Error('KERNEL_SOURCE_SAVED_ID_REQUIRED');
@@ -57,9 +58,20 @@ try {
   const workspaceId = target.result.workspace_id;
   const unrelatedWorkspaceId = unrelated.result.workspace_id;
   if (typeof workspaceId !== 'string' || typeof unrelatedWorkspaceId !== 'string' || workspaceId === unrelatedWorkspaceId) throw new Error('KERNEL_SOURCE_WORKSPACE_INVALID');
-  const selected = agent.transport.prepare(command(workspaceId, 'admin.view.set', {
+  const selectedCommand = command(workspaceId, 'admin.view.set', {
     expected_config_revision: 0, layout_version: 1, blocks: ['document'], output_collections: [],
-  }));
+  });
+  let selected;
+  if (mode === 'expired-global') {
+    const expiredClient = await WorkspaceClient.open({
+      baseUrl: trustedOrigin, privateKey, intentDbPath, fetch: observedFetch,
+      now: () => Date.now() - 700_000,
+    });
+    try { selected = expiredClient.prepare(selectedCommand); }
+    finally { expiredClient.close(); }
+  } else {
+    selected = agent.transport.prepare(selectedCommand);
+  }
   const other = agent.transport.prepare(command(unrelatedWorkspaceId, 'admin.view.set', {
     expected_config_revision: 0, layout_version: 1, blocks: ['history'], output_collections: [],
   }));
