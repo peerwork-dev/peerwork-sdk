@@ -1,4 +1,4 @@
-//! PUBLIC action facade over the protected latest-read profile and exact
+//! Secure action facade over the protected latest-read profile and exact
 //! saved intent journal. HTTP results remain pending until signed replay
 //! binds the command to an ACTION receipt.
 
@@ -6,7 +6,9 @@ use crate::{
     kernel_identity::KernelIdentity,
     secure_intents::{SecureIntentError, SecureIntentJournal},
     secure_lifecycle::SecureLifecycle,
-    secure_native_prepare::{prepare_public_action_from_replay, NativePrepareError},
+    secure_native_prepare::{
+        prepare_private_action_from_replay, prepare_public_action_from_replay, NativePrepareError,
+    },
     secure_read_access::SecureReadAccessError,
     secure_read_profile::{SecureReadProfile, SecureReadProfileConfig},
     secure_state::SecureStateError,
@@ -74,7 +76,7 @@ pub enum PublicActionError {
     Read(#[from] SecureReadAccessError),
     #[error("protected local identity or lifecycle does not match the replay")]
     LocalState,
-    #[error("action input or selected policy is invalid for native PUBLIC authoring")]
+    #[error("action input or selected policy is invalid for native authoring")]
     Input,
     #[error("OS entropy for a command ID is unavailable")]
     Entropy,
@@ -151,11 +153,22 @@ mod error_code_tests {
 
 pub struct SecurePublicActionAccess {
     config: SecureReadProfileConfig,
+    required_mode: &'static str,
 }
 
 impl SecurePublicActionAccess {
     pub fn new(config: SecureReadProfileConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            required_mode: "PUBLIC",
+        }
+    }
+
+    fn new_private(config: SecureReadProfileConfig) -> Self {
+        Self {
+            config,
+            required_mode: "PRIVATE",
+        }
     }
 
     pub fn list_pending_json(&self) -> Result<String, PublicActionError> {
@@ -188,6 +201,9 @@ impl SecurePublicActionAccess {
         )?;
         let mut rows = Vec::new();
         for row in journal.pending() {
+            if saved_pins(&journal, &row.intent_id)?.mode != self.required_mode {
+                continue;
+            }
             if row.workspace_id.as_deref() != Some(scope.workspace_id.as_str()) {
                 return Err(PublicActionError::LocalState);
             }
@@ -232,19 +248,48 @@ impl SecurePublicActionAccess {
             }
             let refs = input.exact_input_refs_json.as_deref().unwrap_or("[]");
             let allocations = input.allocations_json.as_deref().unwrap_or("null");
-            prepare_public_action_from_replay(
-                &mut journal,
-                &identity,
-                &lifecycle,
-                source,
-                &command_id,
-                &input.action_id,
-                &input.instance_id,
-                issued_at,
-                input.body_json.as_bytes(),
-                refs.as_bytes(),
-                allocations.as_bytes(),
-            )?;
+            let policy_wire = source
+                .signed_policy_by_hash(source.replay().policy_hash())
+                .ok_or(PublicActionError::Input)?;
+            let policy = parse_wire_json_bounded(policy_wire, 64, 16 * 1024 * 1024)
+                .map_err(|_| PublicActionError::Input)?;
+            let visibility = policy
+                .get("payload")
+                .and_then(|payload| payload.get("visibility"))
+                .and_then(WireValue::as_string)
+                .ok_or(PublicActionError::Input)?;
+            if visibility != self.required_mode {
+                return Err(PublicActionError::Input);
+            }
+            match visibility.as_str() {
+                "PUBLIC" => prepare_public_action_from_replay(
+                    &mut journal,
+                    &identity,
+                    &lifecycle,
+                    source,
+                    &command_id,
+                    &input.action_id,
+                    &input.instance_id,
+                    issued_at,
+                    input.body_json.as_bytes(),
+                    refs.as_bytes(),
+                    allocations.as_bytes(),
+                ),
+                "PRIVATE" => prepare_private_action_from_replay(
+                    &mut journal,
+                    &identity,
+                    &lifecycle,
+                    source,
+                    &command_id,
+                    &input.action_id,
+                    &input.instance_id,
+                    issued_at,
+                    input.body_json.as_bytes(),
+                    refs.as_bytes(),
+                    allocations.as_bytes(),
+                ),
+                _ => return Err(PublicActionError::Input),
+            }?;
             let saved = saved_pins(&journal, &command_id)?;
             let pins = saved.borrow();
             let runtime = Builder::new_current_thread()
@@ -294,6 +339,9 @@ impl SecurePublicActionAccess {
         let profile = SecureReadProfile::new(self.config.clone());
         let result = profile.with_latest_replay(cancel, |source| {
             let (identity, _lifecycle, mut journal, transport) = self.open_local(source)?;
+            if saved_pins(&journal, command_id)?.mode != self.required_mode {
+                return Err(PublicActionError::Input);
+            }
             match journal.accept_replayed_action(command_id, &identity, &transport, source) {
                 Ok(accepted) => {
                     return Ok(PublicActionResult {
@@ -347,6 +395,9 @@ impl SecurePublicActionAccess {
         let profile = SecureReadProfile::new(self.config.clone());
         let result = profile.with_latest_replay(cancel, |source| {
             let (identity, _lifecycle, mut journal, transport) = self.open_local(source)?;
+            if saved_pins(&journal, command_id)?.mode != self.required_mode {
+                return Err(PublicActionError::Input);
+            }
             match journal.accept_replayed_action(command_id, &identity, &transport, source) {
                 Ok(accepted) => Ok(PublicActionResult {
                     status: "ACCEPTED",
@@ -411,6 +462,68 @@ impl SecurePublicActionAccess {
         config.allow_loopback_http = self.config.allow_loopback_http;
         let transport = HttpTransport::new(config).map_err(|_| PublicActionError::Transport)?;
         Ok((identity, lifecycle, journal, transport))
+    }
+}
+
+/// PRIVATE action entry point. It shares exact packet persistence and signed
+/// receipt reconciliation with PUBLIC while requiring an active PRIVATE read
+/// and an epoch key selected from the protected lifecycle.
+pub struct SecurePrivateActionAccess {
+    inner: SecurePublicActionAccess,
+}
+
+impl SecurePrivateActionAccess {
+    pub fn new(config: SecureReadProfileConfig) -> Self {
+        Self {
+            inner: SecurePublicActionAccess::new_private(config),
+        }
+    }
+
+    pub fn submit_new_json(&self, input: PublicActionInput) -> Result<String, PublicActionError> {
+        self.inner.submit_new_json(input)
+    }
+
+    pub fn submit_new_json_with_cancel(
+        &self,
+        input: PublicActionInput,
+        cancel: &CancellationToken,
+    ) -> Result<String, PublicActionError> {
+        self.inner.submit_new_json_with_cancel(input, cancel)
+    }
+
+    pub fn reconcile_json(&self, command_id: &str) -> Result<String, PublicActionError> {
+        self.inner.reconcile_json(command_id)
+    }
+
+    pub fn reconcile_json_with_cancel(
+        &self,
+        command_id: &str,
+        cancel: &CancellationToken,
+    ) -> Result<String, PublicActionError> {
+        self.inner.reconcile_json_with_cancel(command_id, cancel)
+    }
+
+    pub fn retry_saved_json(&self, command_id: &str) -> Result<String, PublicActionError> {
+        self.inner.retry_saved_json(command_id)
+    }
+
+    pub fn retry_saved_json_with_cancel(
+        &self,
+        command_id: &str,
+        cancel: &CancellationToken,
+    ) -> Result<String, PublicActionError> {
+        self.inner.retry_saved_json_with_cancel(command_id, cancel)
+    }
+
+    pub fn list_pending_json(&self) -> Result<String, PublicActionError> {
+        self.inner.list_pending_json()
+    }
+
+    pub fn list_pending_json_with_cancel(
+        &self,
+        cancel: &CancellationToken,
+    ) -> Result<String, PublicActionError> {
+        self.inner.list_pending_json_with_cancel(cancel)
     }
 }
 
@@ -497,4 +610,181 @@ fn saved_pins(
             .then(|| number("protocol_format_ceiling"))
             .transpose()?,
     })
+}
+
+#[cfg(test)]
+mod private_action_tests {
+    use super::*;
+    use crate::{
+        secure_public_decision::{PublicDecisionConfig, SecurePublicDecision},
+        secure_recipient_state::RecipientState,
+    };
+    use std::{
+        fs,
+        io::{BufRead, BufReader},
+        process::{Child, Command, Stdio},
+    };
+
+    #[test]
+    fn actual_private_action_native_encrypted_effect_and_exact_retry() {
+        let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else {
+            return;
+        };
+        let node = std::env::var("PEERWORK_NODE_BIN").unwrap_or_else(|_| "node".into());
+        let temp = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let bridge = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/reference-kernel-server.mjs");
+        let child = Command::new(node)
+            .arg(bridge)
+            .env("PEERWORK_REFERENCE_ROOT", reference_root)
+            .env("PEERWORK_TEST_STATE", temp.path())
+            .env("PEERWORK_TEST_PRIVATE_ACTION", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        struct Stop(Child);
+        impl Drop for Stop {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut child = Stop(child);
+        let mut line = String::new();
+        BufReader::new(child.0.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        if line.is_empty() {
+            use std::io::Read;
+            let mut stderr = String::new();
+            child
+                .0
+                .stderr
+                .take()
+                .unwrap()
+                .read_to_string(&mut stderr)
+                .unwrap();
+            panic!("private action fixture failed before ready: {stderr}");
+        }
+        let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let fixture = &ready["private_grant"];
+        let origin = ready["origin"].as_str().unwrap().to_owned();
+        let state = temp.path().join("native-private-action-recipient");
+        fs::create_dir(&state).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let identity_path = state.join("identity.state");
+        let identity = KernelIdentity::import_pkcs8_pem_file(
+            &identity_path,
+            &temp.path().join("private-grant-recipient.pem"),
+        )
+        .unwrap();
+        RecipientState::import_unjoined_ts_state(
+            &state.join("recipient.state"),
+            &identity,
+            &temp.path().join("private-grant-recipient.json"),
+        )
+        .unwrap();
+        drop(identity);
+        let workspace_id = fixture["workspace_id"].as_str().unwrap().to_owned();
+        let owner_actor_id = fixture["owner_actor_id"].as_str().unwrap().to_owned();
+        let owner_key_id = fixture["owner_key_id"].as_str().unwrap().to_owned();
+        let authority = fixture["recipient_authority"].as_str().unwrap().to_owned();
+        let decision = SecurePublicDecision::new(PublicDecisionConfig {
+            origin: origin.clone(),
+            state_dir: state.clone(),
+            identity_path: identity_path.clone(),
+            workspace_id: workspace_id.clone(),
+            owner_actor_id: owner_actor_id.clone(),
+            owner_key_id: owner_key_id.clone(),
+            authority: authority.clone(),
+            allow_loopback_http: true,
+            required_features: vec![],
+            max_replay_artifact_bytes: 64 * 1024 * 1024,
+        });
+        let invite_id = fixture["invite_id"].as_str().unwrap();
+        let received: serde_json::Value =
+            serde_json::from_str(&decision.receive_json(invite_id).unwrap()).unwrap();
+        assert_eq!(received["status"], "PENDING");
+        let recovered: serde_json::Value =
+            serde_json::from_str(&decision.retry_receive_json(invite_id).unwrap()).unwrap();
+        assert_eq!(recovered["status"], "READY");
+        let profile = SecureReadProfileConfig {
+            origin: origin.clone(),
+            state_dir: state.clone(),
+            identity_path,
+            workspace_id: workspace_id.clone(),
+            owner_actor_id: Some(owner_actor_id),
+            owner_key_id: Some(owner_key_id),
+            authority: Some(authority),
+            required_features: vec![],
+            allow_loopback_http: true,
+            max_replay_artifact_bytes: 64 * 1024 * 1024,
+        };
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let response = reqwest::Client::new()
+                .post(format!("{origin}__test/drop-next-post"))
+                .send()
+                .await
+                .unwrap();
+            assert!(response.status().is_success());
+        });
+        let submitted: serde_json::Value = serde_json::from_str(
+            &SecurePrivateActionAccess::new(profile.clone())
+                .submit_new_json(PublicActionInput {
+                    action_id: "wiki.create".into(),
+                    instance_id: fixture["instance_id"].as_str().unwrap().into(),
+                    body_json:
+                        r#"{"title":"Native private action","body":"Encrypted native effect"}"#
+                            .into(),
+                    exact_input_refs_json: None,
+                    allocations_json: None,
+                    command_id: Some("z".repeat(43)),
+                    issued_at_ms: None,
+                })
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(submitted["status"], "PENDING");
+        let reopened = SecurePrivateActionAccess::new(profile.clone());
+        let accepted: serde_json::Value =
+            serde_json::from_str(&reopened.reconcile_json(&"z".repeat(43)).unwrap()).unwrap();
+        assert_eq!(accepted["status"], "ACCEPTED");
+        assert_eq!(accepted["sequence"], 4);
+        let receipt: serde_json::Value =
+            serde_json::from_str(accepted["receipt_canonical_json"].as_str().unwrap()).unwrap();
+        let effects = receipt["effects"].as_array().unwrap();
+        assert_eq!(effects.len(), 1);
+        let effect_record_id = effects[0]["record_id"].as_str().unwrap();
+        let retried: serde_json::Value =
+            serde_json::from_str(&reopened.retry_saved_json(&"z".repeat(43)).unwrap()).unwrap();
+        assert_eq!(retried["status"], "ACCEPTED");
+        assert_eq!(retried["commit_hash"], accepted["commit_hash"]);
+        let read: serde_json::Value =
+            serde_json::from_str(&SecureReadProfile::new(profile).read_latest_json().unwrap())
+                .unwrap();
+        let records = read["objects"].as_array().unwrap();
+        assert!(records.iter().any(|row| row["kind"] == "records"
+            && row["id"] == effect_record_id
+            && row["value"]["payload"]["title"] == "Native private action"
+            && row["value"]["payload"]["body"] == "Encrypted native effect"));
+        let counts: serde_json::Value = runtime.block_on(async {
+            let response = reqwest::get(format!("{origin}__test/secure-counts"))
+                .await
+                .unwrap();
+            serde_json::from_slice(&response.bytes().await.unwrap()).unwrap()
+        });
+        assert_eq!(counts["commits"], 4);
+    }
 }

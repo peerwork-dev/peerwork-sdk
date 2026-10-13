@@ -936,6 +936,162 @@ pub(crate) fn prepare_public_action_from_replay(
     )
 }
 
+/// Build, encrypt, sign and durably save a PRIVATE ACTION from the active
+/// complete replay. The latest signed policy supplies the epoch and format;
+/// only the protected lifecycle's active key can encrypt the operation.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_private_action_from_replay(
+    journal: &mut SecureIntentJournal,
+    identity: &KernelIdentity,
+    lifecycle: &SecureLifecycle,
+    source: &TransportReplayedJournal,
+    command_id: &str,
+    action_id: &str,
+    instance_id: &str,
+    issued_at: u64,
+    body_wire: &[u8],
+    exact_refs_wire: &[u8],
+    allocations_wire: &[u8],
+) -> Result<PendingSecureIntent, NativePrepareError> {
+    if issued_at > 9_007_199_254_740_991 {
+        return Err(NativePrepareError::Context);
+    }
+    source
+        .verified_read()
+        .map_err(|_| NativePrepareError::Context)?;
+    let policy_hash = source.replay().policy_hash();
+    let policy_wire = source
+        .signed_policy_by_hash(policy_hash)
+        .ok_or(NativePrepareError::Context)?;
+    let policy = parse_wire_json_bounded(policy_wire, 64, 16 * 1024 * 1024)
+        .map_err(|_| NativePrepareError::Context)?;
+    let payload = policy.get("payload").ok_or(NativePrepareError::Context)?;
+    let version = payload
+        .get("v")
+        .and_then(WireValue::as_number)
+        .filter(|value| matches!(*value, 1.0 | 2.0 | 3.0))
+        .ok_or(NativePrepareError::Context)? as u64;
+    if payload
+        .get("visibility")
+        .and_then(WireValue::as_string)
+        .as_deref()
+        != Some("PRIVATE")
+    {
+        return Err(NativePrepareError::Context);
+    }
+    let epoch = payload
+        .get("epoch")
+        .and_then(WireValue::as_number)
+        .filter(|value| value.is_finite() && *value >= 1.0 && value.fract() == 0.0)
+        .ok_or(NativePrepareError::Context)? as u64;
+    let ceiling = if version == 3 {
+        Some(
+            payload
+                .get("protocol_format_ceiling")
+                .and_then(WireValue::as_number)
+                .filter(|value| matches!(*value, 1.0 | 2.0))
+                .ok_or(NativePrepareError::Context)? as u64,
+        )
+    } else {
+        None
+    };
+    let sequence = source
+        .replay()
+        .sequence()
+        .checked_add(1)
+        .ok_or(NativePrepareError::Context)?;
+    let previous = source.replay().head();
+    let pins = SecureCommitRequestPins {
+        actor_id: identity.actor_id(),
+        signing_key: identity.key_id(),
+        workspace_id: lifecycle.workspace_id(),
+        policy_hash,
+        sequence,
+        previous,
+        epoch,
+        mode: "PRIVATE",
+        version,
+        protocol_format_ceiling: ceiling,
+    };
+    let mut context = serde_json::json!({
+        "v": version, "workspace_id": lifecycle.workspace_id(), "sequence": sequence,
+        "previous": previous, "policy_hash": policy_hash, "epoch": epoch,
+        "actor_id": identity.actor_id(), "signing_key": identity.key_id(),
+        "command_id": command_id, "action_id": action_id,
+        "instance_id": instance_id, "issued_at": issued_at, "delegation": null,
+    });
+    if let Some(ceiling) = ceiling {
+        context["protocol_format_ceiling"] = serde_json::json!(ceiling);
+    }
+    let parse = |wire: &[u8]| {
+        parse_wire_json_bounded(wire, 64, 16 * 1024 * 1024).map_err(|_| NativePrepareError::Context)
+    };
+    let body = parse(body_wire)?;
+    let refs = parse(exact_refs_wire)?;
+    let allocations = parse(allocations_wire)?;
+    if !matches!(refs, WireValue::Array(_))
+        || !matches!(allocations, WireValue::Array(_) | WireValue::Null)
+    {
+        return Err(NativePrepareError::Context);
+    }
+    let latest = source
+        .replay()
+        .objects()
+        .iter()
+        .filter(|object| {
+            object.get("kind").and_then(WireValue::as_string).as_deref() == Some("instances")
+                && object.get("id").and_then(WireValue::as_string).as_deref() == Some(instance_id)
+        })
+        .max_by_key(|object| {
+            object
+                .get("revision")
+                .and_then(WireValue::as_number)
+                .unwrap_or(0.0) as u64
+        })
+        .ok_or(NativePrepareError::Context)?;
+    let revision = latest
+        .get("value")
+        .and_then(|value| value.get("revision"))
+        .and_then(WireValue::as_number)
+        .filter(|value| value.is_finite() && *value >= 0.0 && value.fract() == 0.0)
+        .ok_or(NativePrepareError::Context)?;
+    let field = |name: &str, value: WireValue| (name.encode_utf16().collect(), value);
+    let input = WireValue::Object(vec![
+        field(
+            "instance_id",
+            WireValue::String(instance_id.encode_utf16().collect()),
+        ),
+        field("expected_instance_revision", WireValue::Number(revision)),
+        field(
+            "action_id",
+            WireValue::String(action_id.encode_utf16().collect()),
+        ),
+        field("body", body),
+        field("exact_input_refs", refs),
+        field("allocations", allocations),
+    ]);
+    let input_wire = canonical_wire_value(&input, CanonicalPath::SecureArtifact)
+        .map_err(|_| NativePrepareError::Context)?;
+    let context_wire = serde_json::to_vec(&context).map_err(|_| NativePrepareError::Context)?;
+    let built = build_prepared_action_with_context(
+        input_wire.as_bytes(),
+        &context_wire,
+        policy_wire,
+        source.replay().objects(),
+    )
+    .map_err(|_| NativePrepareError::Context)?;
+    prepare_new_private_commit_from_replay(
+        journal,
+        identity,
+        lifecycle,
+        source,
+        command_id,
+        built.context_wire(),
+        built.action().operation_wire(),
+        &pins,
+    )
+}
+
 fn prepare_new_private_commit_inner(
     journal: &mut SecureIntentJournal,
     identity: &KernelIdentity,

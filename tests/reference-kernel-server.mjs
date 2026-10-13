@@ -199,7 +199,7 @@ if (process.env.PEERWORK_TEST_ADMISSION === '1') {
   } finally { agent.close(); }
 }
 if (process.env.PEERWORK_TEST_PRIVATE_GRANT === '1' || process.env.PEERWORK_TEST_PRIVATE_INVITATION === '1' ||
-    process.env.PEERWORK_TEST_PRIVATE_HISTORICAL_INVITATION === '1') {
+    process.env.PEERWORK_TEST_PRIVATE_HISTORICAL_INVITATION === '1' || process.env.PEERWORK_TEST_PRIVATE_ACTION === '1') {
   const {generateKeyPairSync} = await import('node:crypto');
   const {SecureAgentClient} = await import(pathToFileURL(join(root, 'dist-workspace/src/workspace-secure-agent.js')).href);
   const ownerPrivate = generateKeyPairSync('ed25519').privateKey;
@@ -213,7 +213,9 @@ if (process.env.PEERWORK_TEST_PRIVATE_GRANT === '1' || process.env.PEERWORK_TEST
   try {
     const created = await owner.create('Native recipient private grant fixture','PRIVATE');
     await recipient.publishIdentity();
-    const offer = await owner.invite(created.workspaceId,recipient.state.certificate,[],'Native private grant retrieval');
+    const privateAction = process.env.PEERWORK_TEST_PRIVATE_ACTION === '1';
+    const actionScopes = privateAction ? [{instance_id:null,actions:['wiki.create'],protocol_roles:['EDITOR'],capabilities:['EDIT'],expires_at:null}] : [];
+    const offer = await owner.invite(created.workspaceId,recipient.state.certificate,actionScopes,'Native private grant retrieval');
     const decision = await recipient.decide(offer,{actorId:owner.identity.actorId,key:owner.identity.keyId},'ACCEPT');
     await owner.deliver(offer,decision);
     // The newly joined member's first grant is invitation-bound. The
@@ -247,7 +249,8 @@ if (process.env.PEERWORK_TEST_PRIVATE_GRANT === '1' || process.env.PEERWORK_TEST
       owner_key_id:owner.identity.keyId,recipient_actor_id:recipient.identity.actorId,
       recipient_key_id:recipient.identity.keyId,recipient_authority:recipient.transport.authority,
       sequence:journal.checkpoint.sequence,head:journal.checkpoint.head,
-      invite_id:offer.payload.invite_id,historical_invitation:historicalInvitation};
+      invite_id:offer.payload.invite_id,historical_invitation:historicalInvitation,
+      instance_id:wiki.id};
   } finally { owner.close(); recipient.close(); }
 }
 if (process.env.PEERWORK_TEST_BOOTSTRAP === '1') {
@@ -330,7 +333,7 @@ const proxy = createServer(async (request, response) => {
       return;
     }
     if (request.url === '/__test/drop-next-post' && request.method === 'POST') {
-      if (!publicReadFixture || dropFirstPost) throw new Error('public dropped-response fixture unavailable');
+      if (dropFirstPost) throw new Error('dropped-response fixture is already armed');
       dropFirstPost = true;
       response.writeHead(200, {'content-type':'application/json'});
       response.end(JSON.stringify({enabled:true}));
