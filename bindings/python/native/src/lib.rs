@@ -4,6 +4,7 @@ use peerwork_runtime::kernel_identity::KernelIdentity;
 use peerwork_runtime::secure_action_access::{PublicActionInput, SecurePublicActionAccess};
 use peerwork_runtime::secure_public_admission::{PublicOfferInput, SecurePublicAdmission};
 use peerwork_runtime::secure_public_decision::{PublicDecisionConfig, SecurePublicDecision};
+use peerwork_runtime::secure_identity_directory::{IdentityDirectoryConfig, SecureIdentityDirectory};
 use peerwork_runtime::secure_public_install::{
     PublicPackageInstallInput, SecurePublicPackageInstall,
 };
@@ -358,6 +359,40 @@ fn secure_recipient_enrollment_json(
 }
 
 #[pyfunction]
+#[pyo3(signature = (origin, state_dir, identity_path, target_actor_id, target_signing_key_id, allow_loopback_http=false, cancel_handle=None))]
+fn secure_identity_directory_json(
+    py: Python<'_>,
+    origin: &str,
+    state_dir: &str,
+    identity_path: &str,
+    target_actor_id: &str,
+    target_signing_key_id: &str,
+    allow_loopback_http: bool,
+    cancel_handle: Option<PyRef<'_, KernelCancelHandle>>,
+) -> PyResult<String> {
+    let config = IdentityDirectoryConfig {
+        origin: origin.to_owned(),
+        identity_path: Path::new(identity_path).to_path_buf(),
+        kernel_journal_path: Path::new(state_dir).join("kernel.sqlite"),
+        pins_path: Path::new(state_dir).join("identity-directory.state"),
+        allow_loopback_http,
+    };
+    let target_actor_id = target_actor_id.to_owned();
+    let target_signing_key_id = target_signing_key_id.to_owned();
+    let cancel = cancel_handle
+        .map(|handle| handle.token.clone())
+        .unwrap_or_default();
+    Ok(py.allow_threads(move || {
+        match SecureIdentityDirectory::new(config).lookup_certificate_with_cancel(
+            &target_actor_id, &target_signing_key_id, &cancel,
+        ) {
+            Ok(value) => serde_json::json!({"ok":true,"value":value}).to_string(),
+            Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
+        }
+    }))
+}
+
+#[pyfunction]
 #[pyo3(signature = (operation, config_json, input_json=None, invite_id=None, grant_id=None, cancel_handle=None))]
 fn secure_public_admission_json(
     py: Python<'_>,
@@ -448,6 +483,7 @@ fn _peerwork_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(secure_public_action_json, module)?)?;
     module.add_function(wrap_pyfunction!(secure_public_install_json, module)?)?;
     module.add_function(wrap_pyfunction!(secure_recipient_enrollment_json, module)?)?;
+    module.add_function(wrap_pyfunction!(secure_identity_directory_json, module)?)?;
     module.add_function(wrap_pyfunction!(secure_public_admission_json, module)?)?;
     module.add_function(wrap_pyfunction!(secure_public_decision_json, module)?)?;
     module.add_class::<KernelCancelHandle>()?;

@@ -175,6 +175,24 @@ export interface SecureRecipientEnrollmentSession {
 }
 export declare function openSecureRecipientEnrollment(options: RecipientEnrollmentOptions): SecureRecipientEnrollmentSession;
 
+export interface SecureIdentityDirectoryOptions extends RecipientEnrollmentOptions {
+  /** Protected reader identity; defaults to stateDir/identity.state. */
+  identityPath?: string;
+}
+export interface VerifiedIdentityCertificate {
+  actor_id: string;
+  signing_key_id: string;
+  directory_version: number;
+  directory_head: string;
+  /** Signed public certificate; this is not a membership grant. */
+  certificate_json: string;
+}
+export interface SecureIdentityDirectorySession {
+  /** Explicit peer actor/key pins are required before first contact. */
+  lookup(actorId: string, signingKeyId: string, options?: { signal?: AbortSignal }): Promise<VerifiedIdentityCertificate>;
+}
+export declare function openSecureIdentityDirectory(options: SecureIdentityDirectoryOptions): SecureIdentityDirectorySession;
+
 export interface PublicOfferResult {
   status: 'PENDING';
   invite_id: string;

@@ -31,6 +31,7 @@ const sdk=require('@peerwork/agent-sdk');
 const fs=require('node:fs');
 const arg=JSON.parse(fs.readFileSync(0,'utf8'));
 const session=arg.role==='owner' ? sdk.openSecurePublicAdmission(arg.config)
+  : arg.role==='directory' ? sdk.openSecureIdentityDirectory(arg.config)
   : sdk.openSecurePublicDecision(arg.config);
 (async()=>{
   let value;
@@ -40,6 +41,7 @@ const session=arg.role==='owner' ? sdk.openSecurePublicAdmission(arg.config)
   else if(arg.role==='recipient' && arg.operation==='retryDecision') value=await session.retryDecision(arg.values.inviteId);
   else if(arg.role==='recipient' && arg.operation==='retryReceive') value=await session.retryReceive(arg.values.inviteId);
   else if(arg.role==='recipient' && arg.operation==='pendingReceipts') value=await session.pendingReceipts();
+  else if(arg.role==='directory' && arg.operation==='lookup') value=await session.lookup(arg.values.actorId,arg.values.keyId);
   else throw Error('unsupported test operation');
   process.stdout.write(JSON.stringify(value));
 })().catch(error=>{process.stderr.write(JSON.stringify({code:error.code,message:error.message}));process.exitCode=1});
@@ -172,8 +174,45 @@ with tempfile.TemporaryDirectory(prefix="peerwork-native-admission-", dir=TEMP_R
             publication = recipient.publish()
         assert publication["status"] == "PUBLISHED", publication
         assert recipient.pending()["actor_id"] == local["actor_id"]
-        certificate = recipient.certificate_json()
-        assert json.loads(certificate)["payload"]["actor_id"] == local["actor_id"]
+        local_certificate = recipient.certificate_json()
+        assert json.loads(local_certificate)["payload"]["actor_id"] == local["actor_id"]
+        directory = peerwork.SecureIdentityDirectoryClient(origin, str(owner_dir),
+            str(owner_identity), allow_loopback_http=True)
+        with urllib.request.urlopen(urllib.request.Request(
+                origin + "__test/tamper-next-identity-directory", data=b"", method="POST"), timeout=5):
+            pass
+        try:
+            directory.lookup(local["actor_id"], local["signing_key_id"])
+        except peerwork.IdentityDirectoryError as error:
+            assert error.code == "DIRECTORY_INVALID", error.code
+        else:
+            raise AssertionError("altered signed directory entry was accepted")
+        verified = directory.lookup(local["actor_id"], local["signing_key_id"])
+        assert verified["actor_id"] == local["actor_id"]
+        assert verified["signing_key_id"] == local["signing_key_id"]
+        assert verified["directory_version"] == 1
+        assert verified["certificate_json"] == local_certificate
+        from_cli = cli("directory-lookup", f"--origin={origin}", f"--state-dir={owner_dir}",
+            f"--identity={owner_identity}", f"--actor={local['actor_id']}",
+            f"--key={local['signing_key_id']}", "--allow-loopback-http")
+        assert from_cli == verified
+        with urllib.request.urlopen(urllib.request.Request(
+                origin + "__test/serve-stale-identity-directory", data=b"", method="POST"), timeout=5):
+            pass
+        try:
+            directory.lookup(local["actor_id"], local["signing_key_id"])
+        except peerwork.IdentityDirectoryError as error:
+            assert error.code == "DIRECTORY_CONTINUITY", error.code
+        else:
+            raise AssertionError("signed directory rollback was accepted")
+        with urllib.request.urlopen(urllib.request.Request(
+                origin + "__test/restore-identity-directory", data=b"", method="POST"), timeout=5):
+            pass
+        from_node = node_call("directory", "lookup", dict(origin=origin,
+            stateDir=str(owner_dir), identityPath=str(owner_identity), allowLoopbackHttp=True),
+            actorId=local["actor_id"], keyId=local["signing_key_id"])
+        assert from_node == verified
+        certificate = from_node["certificate_json"]  # consumed by signed owner offer below
 
         asyncio.run(cancel_before_persist(origin, owner, certificate, service_state / "control.sqlite"))
 

@@ -63,6 +63,19 @@ pub enum IdentityDirectoryError {
     NotFound,
 }
 
+impl IdentityDirectoryError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Invalid => "DIRECTORY_INVALID",
+            Self::Continuity => "DIRECTORY_CONTINUITY",
+            Self::Local => "DIRECTORY_LOCAL_STATE",
+            Self::Transport => "DIRECTORY_TRANSPORT_FAILED",
+            Self::ServerRejected(_) => "DIRECTORY_SERVER_REJECTED",
+            Self::NotFound => "DIRECTORY_NOT_FOUND",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Pin {

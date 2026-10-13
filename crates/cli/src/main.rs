@@ -5,6 +5,7 @@ use peerwork_runtime::kernel_identity::KernelIdentity;
 use peerwork_runtime::secure_action_access::{PublicActionInput, SecurePublicActionAccess};
 use peerwork_runtime::secure_public_admission::{PublicOfferInput, SecurePublicAdmission};
 use peerwork_runtime::secure_public_decision::{PublicDecisionConfig, SecurePublicDecision};
+use peerwork_runtime::secure_identity_directory::{IdentityDirectoryConfig, SecureIdentityDirectory};
 use peerwork_runtime::secure_public_install::{
     PublicPackageInstallInput, SecurePublicPackageInstall,
 };
@@ -240,8 +241,11 @@ fn main() -> ExitCode {
                 }
             }
         }
+        [noun, verb, rest @ ..] if noun == "secure" && verb == "directory-lookup" => {
+            cli_result(secure_directory_lookup(rest))
+        }
         _ => {
-            eprintln!("{{\"code\":\"USAGE\",\"message\":\"peerwork version|capabilities|identity create PATH|identity info PATH|identity import-legacy-pem PATH PROTECTED_PEM_FILE|identity import-seed-file PATH PROTECTED_SEED_FILE|kernel open|prepare|pending|status|submit ORIGIN JOURNAL IDENTITY [COMMAND_FILE|COMMAND_ID] [--allow-loopback-http] [--authority=HEX] [--chunk-file=PATH|--chunk-stdin for prepare]; kernel migrate ORIGIN JOURNAL IDENTITY SOURCE BACKUP --trusted-signer=KEY_ID [--trusted-signer=KEY_ID ...]; secure read --origin=URL --state-dir=DIR --identity=PATH --workspace=ID [--owner-actor=ID --owner-key=ID] [--authority=HEX]; secure snapshot ORIGIN KERNEL_JOURNAL READ_STATE LIFECYCLE IDENTITY WORKSPACE AUTHORITY OWNER_ACTOR OWNER_KEY [--allow-loopback-http] [--max-replay-artifact-bytes=N]; secure action-submit|action-status|action-retry CONFIG_JSON_FILE ACTION_JSON_FILE|COMMAND_ID; secure action-pending CONFIG_JSON_FILE; secure install-begin CONFIG_JSON_FILE INPUT_JSON_FILE | install-continue CONFIG_JSON_FILE BEGIN_COMMAND_ID | install-pending CONFIG_JSON_FILE; secure recipient-create|recipient-publish|recipient-pending|recipient-certificate --origin=URL --state-dir=DIR [--allow-loopback-http]\"}}");
+            eprintln!("{{\"code\":\"USAGE\",\"message\":\"peerwork version|capabilities|identity create PATH|identity info PATH|identity import-legacy-pem PATH PROTECTED_PEM_FILE|identity import-seed-file PATH PROTECTED_SEED_FILE|kernel open|prepare|pending|status|submit ORIGIN JOURNAL IDENTITY [COMMAND_FILE|COMMAND_ID] [--allow-loopback-http] [--authority=HEX] [--chunk-file=PATH|--chunk-stdin for prepare]; kernel migrate ORIGIN JOURNAL IDENTITY SOURCE BACKUP --trusted-signer=KEY_ID [--trusted-signer=KEY_ID ...]; secure read --origin=URL --state-dir=DIR --identity=PATH --workspace=ID [--owner-actor=ID --owner-key=ID] [--authority=HEX]; secure snapshot ORIGIN KERNEL_JOURNAL READ_STATE LIFECYCLE IDENTITY WORKSPACE AUTHORITY OWNER_ACTOR OWNER_KEY [--allow-loopback-http] [--max-replay-artifact-bytes=N]; secure action-submit|action-status|action-retry CONFIG_JSON_FILE ACTION_JSON_FILE|COMMAND_ID; secure action-pending CONFIG_JSON_FILE; secure install-begin CONFIG_JSON_FILE INPUT_JSON_FILE | install-continue CONFIG_JSON_FILE BEGIN_COMMAND_ID | install-pending CONFIG_JSON_FILE; secure recipient-create|recipient-publish|recipient-pending|recipient-certificate --origin=URL --state-dir=DIR [--allow-loopback-http]; secure directory-lookup --origin=URL --state-dir=DIR --actor=ACTOR --key=KEY [--identity=PATH] [--allow-loopback-http]\"}}");
             ExitCode::FAILURE
         }
     }
@@ -296,6 +300,58 @@ fn secure_recipient_command(verb: &str, args: &[String]) -> Result<String, (&'st
             "recipient result encoding failed".to_owned(),
         )
     })
+}
+
+fn secure_directory_lookup(args: &[String]) -> Result<String, (&'static str, String)> {
+    let mut origin = None;
+    let mut state_dir = None;
+    let mut identity_path = None;
+    let mut actor_id = None;
+    let mut signing_key_id = None;
+    let mut allow_loopback_http = false;
+    for arg in args {
+        if let Some(value) = arg.strip_prefix("--origin=") {
+            origin = Some(value.to_owned());
+        } else if let Some(value) = arg.strip_prefix("--state-dir=") {
+            state_dir = Some(value.to_owned());
+        } else if let Some(value) = arg.strip_prefix("--identity=") {
+            identity_path = Some(value.to_owned());
+        } else if let Some(value) = arg.strip_prefix("--actor=") {
+            actor_id = Some(value.to_owned());
+        } else if let Some(value) = arg.strip_prefix("--key=") {
+            signing_key_id = Some(value.to_owned());
+        } else if arg == "--allow-loopback-http" {
+            allow_loopback_http = true;
+        } else {
+            return Err(("USAGE", "unknown directory lookup option".to_owned()));
+        }
+    }
+    let required = |value: Option<String>, flag: &'static str| {
+        value.filter(|v| !v.is_empty()).ok_or(("USAGE", format!("{flag} is required")))
+    };
+    let origin = required(origin, "--origin")?;
+    let state_dir = required(state_dir, "--state-dir")?;
+    let actor_id = required(actor_id, "--actor")?;
+    let signing_key_id = required(signing_key_id, "--key")?;
+    let identity_path = identity_path
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| Path::new(&state_dir).join("identity.state"));
+    let config = IdentityDirectoryConfig {
+        origin,
+        identity_path,
+        kernel_journal_path: Path::new(&state_dir).join("kernel.sqlite"),
+        pins_path: Path::new(&state_dir).join("identity-directory.state"),
+        allow_loopback_http,
+    };
+    let cancel = KernelCancellationToken::new();
+    let _interrupts = InterruptMonitor::start(cancel.clone())
+        .map_err(|_| ("INTERRUPT_HANDLER", "unable to install interrupt handler".to_owned()))?;
+    let value = SecureIdentityDirectory::new(config)
+        .lookup_certificate_with_cancel(&actor_id, &signing_key_id, &cancel)
+        .map_err(|error| (error.code(), error.to_string()))?;
+    serde_json::to_string(&value)
+        .map_err(|_| ("RESULT_ENCODING_FAILED", "directory result encoding failed".to_owned()))
 }
 
 fn cli_result(result: Result<String, (&'static str, String)>) -> ExitCode {

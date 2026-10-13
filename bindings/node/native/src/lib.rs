@@ -9,6 +9,7 @@ use peerwork_runtime::kernel_identity::KernelIdentity;
 use peerwork_runtime::secure_action_access::{PublicActionInput, SecurePublicActionAccess};
 use peerwork_runtime::secure_public_admission::{PublicOfferInput, SecurePublicAdmission};
 use peerwork_runtime::secure_public_decision::{PublicDecisionConfig, SecurePublicDecision};
+use peerwork_runtime::secure_identity_directory::{IdentityDirectoryConfig, SecureIdentityDirectory};
 use peerwork_runtime::secure_public_install::{
     PublicPackageInstallInput, SecurePublicPackageInstall,
 };
@@ -528,6 +529,62 @@ pub fn secure_recipient_enrollment_json(
         cancel: cancel_handle
             .map(|handle| handle.token.clone())
             .unwrap_or_default(),
+    })
+}
+
+pub struct SecureDirectoryTask {
+    origin: String,
+    state_dir: String,
+    identity_path: String,
+    target_actor_id: String,
+    target_signing_key_id: String,
+    allow_loopback_http: bool,
+    cancel: KernelCancellationToken,
+}
+
+impl Task for SecureDirectoryTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let config = IdentityDirectoryConfig {
+            origin: self.origin.clone(),
+            identity_path: Path::new(&self.identity_path).to_path_buf(),
+            kernel_journal_path: Path::new(&self.state_dir).join("kernel.sqlite"),
+            pins_path: Path::new(&self.state_dir).join("identity-directory.state"),
+            allow_loopback_http: self.allow_loopback_http,
+        };
+        Ok(match SecureIdentityDirectory::new(config).lookup_certificate_with_cancel(
+            &self.target_actor_id, &self.target_signing_key_id, &self.cancel,
+        ) {
+            Ok(value) => serde_json::json!({"ok":true,"value":value}).to_string(),
+            Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
+        })
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+#[napi]
+pub fn secure_identity_directory_json(
+    origin: String,
+    state_dir: String,
+    identity_path: String,
+    target_actor_id: String,
+    target_signing_key_id: String,
+    allow_loopback_http: bool,
+    cancel_handle: Option<ClassInstance<KernelCancelHandle>>,
+) -> AsyncTask<SecureDirectoryTask> {
+    AsyncTask::new(SecureDirectoryTask {
+        origin,
+        state_dir,
+        identity_path,
+        target_actor_id,
+        target_signing_key_id,
+        allow_loopback_http,
+        cancel: cancel_handle.map(|handle| handle.token.clone()).unwrap_or_default(),
     })
 }
 

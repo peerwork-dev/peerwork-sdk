@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Literal, TypedDict, cast
 from ._peerwork_native import (
     KernelCancelHandle,
@@ -16,6 +17,7 @@ from ._peerwork_native import (
     secure_public_action_json,
     secure_public_install_json,
     secure_recipient_enrollment_json,
+    secure_identity_directory_json,
     secure_public_admission_json,
     secure_public_decision_json,
     version,
@@ -796,6 +798,70 @@ class SecureRecipientEnrollmentClient:
             raise
 
 __all__ += ["SecureRecipientEnrollmentClient", "RecipientEnrollmentResult", "RecipientEnrollmentError"]
+
+
+class VerifiedIdentityCertificate(TypedDict):
+    actor_id: str
+    signing_key_id: str
+    directory_version: int
+    directory_head: str
+    certificate_json: str
+
+
+class IdentityDirectoryError(RuntimeError):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+class SecureIdentityDirectoryClient:
+    """Read a signed public certificate with explicit peer pins and protected continuity."""
+
+    def __init__(self, origin: str, state_dir: str, identity_path: str | None = None, *,
+                 allow_loopback_http: bool = False):
+        if not origin or not state_dir:
+            raise ValueError("origin and state directory are required")
+        self._origin = origin
+        self._state_dir = state_dir
+        self._identity_path = identity_path or str(Path(state_dir) / "identity.state")
+        self._allow_loopback_http = allow_loopback_http
+
+    def _lookup(self, actor_id: str, signing_key_id: str,
+                cancel_handle: KernelCancelHandle | None = None) -> VerifiedIdentityCertificate:
+        if not actor_id or not signing_key_id:
+            raise ValueError("explicit peer actor and signing key pins are required")
+        result = json.loads(secure_identity_directory_json(
+            self._origin, self._state_dir, self._identity_path,
+            actor_id, signing_key_id, self._allow_loopback_http, cancel_handle))
+        if result["ok"] is not True:
+            raise IdentityDirectoryError(result["code"], result["message"])
+        return cast(VerifiedIdentityCertificate, result["value"])
+
+    def lookup(self, actor_id: str, signing_key_id: str) -> VerifiedIdentityCertificate:
+        return self._lookup(actor_id, signing_key_id)
+
+    async def lookup_async(self, actor_id: str, signing_key_id: str) -> VerifiedIdentityCertificate:
+        handle = KernelCancelHandle()
+        worker = asyncio.create_task(asyncio.to_thread(self._lookup, actor_id, signing_key_id, handle))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            handle.cancel()
+            while not worker.done():
+                try:
+                    await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    handle.cancel()
+                except Exception:
+                    break
+            try:
+                worker.result()
+            except Exception:
+                pass
+            raise
+
+
+__all__ += ["SecureIdentityDirectoryClient", "VerifiedIdentityCertificate", "IdentityDirectoryError"]
 
 
 class PublicAdmissionError(RuntimeError):

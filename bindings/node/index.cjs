@@ -1,6 +1,7 @@
 'use strict';
 
 const { platform, arch } = process;
+const { join } = require('node:path');
 const { types: { isProxy } } = require('node:util');
 function libcFamily() {
   if (platform !== 'linux') return '';
@@ -337,6 +338,41 @@ exports.openSecureRecipientEnrollment = options => {
     publish: (options = {}) => invoke('publish', options.signal),
     pending: () => invoke('pending'),
     certificateJson: () => invoke('certificate'),
+  });
+};
+
+/** Signed public identity lookup with explicit peer actor/key pins and protected continuity. */
+exports.openSecureIdentityDirectory = options => {
+  if (!options || typeof options.origin !== 'string' || !options.origin ||
+      typeof options.stateDir !== 'string' || !options.stateDir) {
+    throw new TypeError('identity directory requires origin and stateDir');
+  }
+  const identityPath = options.identityPath ?? join(options.stateDir, 'identity.state');
+  if (typeof identityPath !== 'string' || !identityPath) throw new TypeError('identityPath must be a path');
+  return Object.freeze({
+    lookup: async (actorId, signingKeyId, { signal } = {}) => {
+      if (typeof actorId !== 'string' || !actorId || typeof signingKeyId !== 'string' || !signingKeyId) {
+        throw new TypeError('explicit peer actor and signing key pins are required');
+      }
+      const handle = new binding.KernelCancelHandle();
+      const onAbort = () => handle.cancel();
+      if (signal?.aborted) onAbort();
+      signal?.addEventListener?.('abort', onAbort, { once: true });
+      try {
+        const result = JSON.parse(await binding.secureIdentityDirectoryJson(
+          options.origin, options.stateDir, identityPath, actorId, signingKeyId,
+          options.allowLoopbackHttp ?? false, handle,
+        ));
+        if (result.ok !== true) {
+          const error = new Error(result.message);
+          error.code = result.code;
+          throw error;
+        }
+        return result.value;
+      } finally {
+        signal?.removeEventListener?.('abort', onAbort);
+      }
+    },
   });
 };
 
