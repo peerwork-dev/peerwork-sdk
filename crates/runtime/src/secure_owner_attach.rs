@@ -64,6 +64,16 @@ pub struct HistoricalOwnerAttachInput {
     /// throughout attach/resume; native locking does not lock the old client.
     #[serde(default)]
     pub recover_pending_action: bool,
+    /// Explicitly retain every pending kernel JWS signed for this workspace.
+    /// Attachment imports these exact packets but never submits them. A caller
+    /// must invoke per-command recovery separately after inspecting history.
+    #[serde(default)]
+    pub kernel_pending_command_ids: Vec<String>,
+    /// Bind selected IDs to the exact inspected SQLite intent snapshot,
+    /// including each signed JWS, command body, status, and saved response.
+    /// Required when kernel_pending_command_ids is nonempty.
+    #[serde(default)]
+    pub expected_kernel_intent_db_digest: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -77,6 +87,32 @@ pub struct HistoricalOwnerAttachResult {
     pub owner_key_id: String,
     pub sequence: Option<u64>,
     pub head: Option<String>,
+    pub selected_kernel_count: usize,
+    pub retained_other_kernel_count: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HistoricalKernelCommandStatus {
+    pub command_id: String,
+    pub intent_digest: String,
+    pub expires_at_ms: u64,
+    pub status: String,
+    pub last_http_status: Option<u16>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HistoricalKernelPendingInventory {
+    /// SHA-256 of the canonical protected SQLite intent snapshot, including
+    /// all rows. This does not hash the separate TS agent state or Owner PEM.
+    pub intent_db_digest: String,
+    /// All commands here are verified PENDING in the source database. Each
+    /// status is a local recovery advisory; EXPIRED_UNRESOLVED does not prove
+    /// the service rejected or never applied the original signed command.
+    pub commands: Vec<HistoricalKernelCommandStatus>,
+    pub retained_other_pending_count: usize,
+    pub retained_nonworkspace_pending_count: usize,
 }
 
 #[derive(Debug, Error)]
@@ -103,6 +139,8 @@ pub enum HistoricalOwnerAttachError {
     PendingActionRetry,
     #[error("saved historical ACTION no longer matches the current head")]
     PendingActionConflict,
+    #[error("selected historical kernel command is unresolved and retained")]
+    KernelCommandUnresolved,
 }
 
 impl HistoricalOwnerAttachError {
@@ -119,6 +157,7 @@ impl HistoricalOwnerAttachError {
             Self::Cancelled => "CANCELLED",
             Self::PendingActionRetry => "PENDING_ACTION_RETRY",
             Self::PendingActionConflict => "PENDING_ACTION_CONFLICT",
+            Self::KernelCommandUnresolved => "KERNEL_COMMAND_UNRESOLVED",
         }
     }
 }
@@ -143,6 +182,19 @@ struct SavedAttach {
     source_policy_hash: String,
     attached_sequence: Option<u64>,
     attached_head: Option<String>,
+    #[serde(default)]
+    kernel_import: Option<SavedKernelImport>,
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct SavedKernelImport {
+    backup_digest: String,
+    selected: Vec<crate::kernel_intents::SelectedKernelSourceRow>,
+    retained_other_pending_count: usize,
+    retained_nonworkspace_pending_count: usize,
+    #[serde(default)]
+    last_http_status: BTreeMap<String, u16>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -200,6 +252,99 @@ impl SecureHistoricalOwnerAttach {
         Self { config }
     }
 
+    /// Read-only verified selection inventory. The checked local backup may
+    /// be created, but no attach row, keyring, intent, or POST is produced.
+    /// The old client must stay quiescent through the subsequent attach.
+    pub fn inspect_kernel_pending(
+        &self,
+        input: &HistoricalOwnerAttachInput,
+        cancel: &CancellationToken,
+    ) -> Result<HistoricalKernelPendingInventory, HistoricalOwnerAttachError> {
+        validate_input(input)?;
+        let (_, _, _, digest) = self.inspect_sources(input)?;
+        let selected = self.preflight_kernel_source(input, cancel, None)?;
+        let current = crate::ts_migration::source_snapshot_digest_allow_pending(
+            &input.protected_ts_intent_db_path,
+        )
+        .map_err(|_| HistoricalOwnerAttachError::SourceChanged)?;
+        if current != digest {
+            return Err(HistoricalOwnerAttachError::SourceChanged);
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| HistoricalOwnerAttachError::Local)?
+            .as_millis() as u64;
+        Ok(HistoricalKernelPendingInventory {
+            intent_db_digest: digest,
+            commands: selected
+                .selected
+                .into_iter()
+                .map(|row| HistoricalKernelCommandStatus {
+                    command_id: row.command_id,
+                    intent_digest: row.intent_digest,
+                    expires_at_ms: row.expires_at_ms,
+                    status: if now >= row.expires_at_ms {
+                        "EXPIRED_UNRESOLVED"
+                    } else {
+                        "PENDING"
+                    }
+                    .into(),
+                    last_http_status: None,
+                })
+                .collect(),
+            retained_other_pending_count: selected.retained_other_pending_count,
+            retained_nonworkspace_pending_count: selected.retained_nonworkspace_pending_count,
+        })
+    }
+
+    fn preflight_kernel_source(
+        &self,
+        input: &HistoricalOwnerAttachInput,
+        cancel: &CancellationToken,
+        selected_ids: Option<&[String]>,
+    ) -> Result<crate::kernel_intents::SelectedKernelImport, HistoricalOwnerAttachError> {
+        if cancel.is_cancelled() {
+            return Err(HistoricalOwnerAttachError::Cancelled);
+        }
+        ensure_dir(&self.config.state_dir)?;
+        let directory = self.workspace_dir(&input.workspace_id);
+        ensure_dir(&directory)?;
+        let mut transport_config = TransportConfig::new(self.config.origin.clone());
+        transport_config.allow_loopback_http = self.config.allow_loopback_http;
+        let transport =
+            HttpTransport::new(transport_config).map_err(|_| HistoricalOwnerAttachError::Input)?;
+        let runtime = Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        let response = runtime
+            .block_on(transport.discovery(cancel))
+            .map_err(|_| HistoricalOwnerAttachError::Verification)?;
+        if !(200..300).contains(&response.status) {
+            return Err(HistoricalOwnerAttachError::Verification);
+        }
+        let discovery = peerwork_core::discovery::parse_discovery_wire(
+            &response.wire,
+            crate::transport::MAX_DISCOVERY_BYTES,
+        )
+        .map_err(|_| HistoricalOwnerAttachError::Verification)?;
+        crate::kernel_intents::inspect_ts_backup_selected(
+            &input.protected_ts_intent_db_path,
+            &directory.join("historical-ts-intents-backup.sqlite"),
+            &discovery,
+            &input.expected_owner_actor_id,
+            &input.expected_owner_key_id,
+            &input.workspace_id,
+            selected_ids,
+        )
+        .map_err(|error| match error {
+            crate::ts_migration::TsMigrationError::Unresolved => {
+                HistoricalOwnerAttachError::SourceUnresolved
+            }
+            _ => HistoricalOwnerAttachError::SourceChanged,
+        })
+    }
+
     pub fn attach(
         &self,
         input: HistoricalOwnerAttachInput,
@@ -210,6 +355,18 @@ impl SecureHistoricalOwnerAttach {
             return Err(HistoricalOwnerAttachError::Cancelled);
         }
         let (source, ts_digest, pem_digest, intent_digest) = self.inspect_sources(&input)?;
+        if !input.kernel_pending_command_ids.is_empty()
+            && input.expected_kernel_intent_db_digest.is_none()
+        {
+            return Err(HistoricalOwnerAttachError::Input);
+        }
+        if input
+            .expected_kernel_intent_db_digest
+            .as_deref()
+            .is_some_and(|expected| expected != intent_digest)
+        {
+            return Err(HistoricalOwnerAttachError::SourceChanged);
+        }
         let root = &self.config.state_dir;
         ensure_dir(root)?;
         let source_owner =
@@ -230,6 +387,17 @@ impl SecureHistoricalOwnerAttach {
             .map_err(|_| HistoricalOwnerAttachError::Conflict)?
         {
             return Err(HistoricalOwnerAttachError::Conflict);
+        }
+        // Validate the complete signed target selection before an immutable
+        // PREPARED row, pending ring, or optional secure ACTION can be written.
+        self.preflight_kernel_source(&input, cancel, Some(&input.kernel_pending_command_ids))?;
+        if crate::ts_migration::source_snapshot_digest_allow_pending(
+            &input.protected_ts_intent_db_path,
+        )
+        .map_err(|_| HistoricalOwnerAttachError::SourceChanged)?
+            != intent_digest
+        {
+            return Err(HistoricalOwnerAttachError::SourceChanged);
         }
         let store = SecureStateStore::open(&root.join("owner-attach.state"))
             .map_err(|_| HistoricalOwnerAttachError::Local)?;
@@ -270,6 +438,7 @@ impl SecureHistoricalOwnerAttach {
             source_policy_hash: source.policy_hash,
             attached_sequence: None,
             attached_head: None,
+            kernel_import: None,
         };
         history.rows.insert(id.clone(), row);
         save_history(&store, &history)?;
@@ -309,6 +478,13 @@ impl SecureHistoricalOwnerAttach {
             .clone();
         drop(history);
         drop(store);
+        if row.attached_sequence.is_some() && row.kernel_import.is_some() {
+            self.checked_kernel_commands(attach_id)?;
+            SecureReadProfile::new(self.profile_config(&row.input))
+                .read_latest_json_with_cancel(cancel)
+                .map_err(|_| HistoricalOwnerAttachError::Verification)?;
+            return Ok(summary(attach_id, &row));
+        }
         let (source, ts_digest, pem_digest, intent_digest) = self.inspect_sources(&row.input)?;
         if ts_digest != row.ts_state_sha256
             || source.visibility != row.visibility
@@ -455,6 +631,30 @@ impl SecureHistoricalOwnerAttach {
                 return Err(HistoricalOwnerAttachError::Cancelled);
             }
         }
+        let kernel_import = self.import_selected_kernel_source(&row, &owner, cancel)?;
+        {
+            let store = SecureStateStore::open(&self.history_path())
+                .map_err(|_| HistoricalOwnerAttachError::Local)?;
+            let mut history = read_history(&store, &self.config.origin)?;
+            let saved = history
+                .rows
+                .get_mut(attach_id)
+                .ok_or(HistoricalOwnerAttachError::NotFound)?;
+            if saved.input != row.input || saved.ts_intent_sha256 != row.ts_intent_sha256 {
+                return Err(HistoricalOwnerAttachError::Conflict);
+            }
+            if saved
+                .kernel_import
+                .as_ref()
+                .is_some_and(|old| old != &kernel_import)
+            {
+                return Err(HistoricalOwnerAttachError::Conflict);
+            }
+            if saved.kernel_import.is_none() {
+                saved.kernel_import = Some(kernel_import.clone());
+                save_history(&store, &history)?;
+            }
+        }
         if let Some(ring) = source.ring.as_ref() {
             let mut lifecycle = SecureLifecycle::open(
                 &directory.join("lifecycle.state"),
@@ -482,9 +682,7 @@ impl SecureHistoricalOwnerAttach {
                 HistoricalOwnerAttachError::Verification
             }
         })?;
-        if source.pending_action.is_some() {
-            self.assert_source_unchanged(&row)?;
-        }
+        self.assert_source_unchanged(&row)?;
         let store = SecureStateStore::open(&self.history_path())
             .map_err(|_| HistoricalOwnerAttachError::Local)?;
         let mut history = read_history(&store, &self.config.origin)?;
@@ -496,6 +694,7 @@ impl SecureHistoricalOwnerAttach {
             || saved.ts_state_sha256 != row.ts_state_sha256
             || saved.owner_pem_sha256 != row.owner_pem_sha256
             || saved.ts_intent_sha256 != row.ts_intent_sha256
+            || saved.kernel_import.as_ref() != Some(&kernel_import)
         {
             return Err(HistoricalOwnerAttachError::Conflict);
         }
@@ -504,6 +703,71 @@ impl SecureHistoricalOwnerAttach {
         let completed = saved.clone();
         save_history(&store, &history)?;
         Ok(summary(attach_id, &completed))
+    }
+
+    fn import_selected_kernel_source(
+        &self,
+        row: &SavedAttach,
+        owner: &KernelIdentity,
+        cancel: &CancellationToken,
+    ) -> Result<SavedKernelImport, HistoricalOwnerAttachError> {
+        let directory = self.workspace_dir(&row.input.workspace_id);
+        let access = crate::kernel_access::KernelAccess::new(
+            &self.config.origin,
+            directory.join("historical-kernel.sqlite"),
+            self.identity_path(),
+            &[],
+            self.config.allow_loopback_http,
+        );
+        let backup = directory.join("historical-ts-intents-backup.sqlite");
+        let imported = access
+            .migrate_ts_store_selected(
+                &row.input.protected_ts_intent_db_path,
+                &backup,
+                &row.input.workspace_id,
+                &row.input.kernel_pending_command_ids,
+                cancel,
+            )
+            .map_err(|error| match error {
+                crate::kernel_access::KernelAccessError::Client(
+                    crate::kernel_client::KernelClientError::Migration(
+                        crate::ts_migration::TsMigrationError::Unresolved,
+                    ),
+                ) => HistoricalOwnerAttachError::SourceUnresolved,
+                _ => HistoricalOwnerAttachError::SourceChanged,
+            })?;
+        if owner.actor_id() != row.input.expected_owner_actor_id
+            || owner.key_id() != row.input.expected_owner_key_id
+        {
+            return Err(HistoricalOwnerAttachError::Identity);
+        }
+        let backup_digest = crate::ts_migration::source_snapshot_digest_allow_pending(&backup)
+            .map_err(|_| HistoricalOwnerAttachError::SourceChanged)?;
+        if backup_digest != row.ts_intent_sha256 {
+            return Err(HistoricalOwnerAttachError::SourceChanged);
+        }
+        self.assert_source_unchanged(row)?;
+        let mut last_http_status = row
+            .kernel_import
+            .as_ref()
+            .map_or_else(BTreeMap::new, |saved| saved.last_http_status.clone());
+        last_http_status
+            .retain(|id, _| imported.selected.iter().any(|item| &item.command_id == id));
+        let result = SavedKernelImport {
+            backup_digest,
+            selected: imported.selected,
+            retained_other_pending_count: imported.retained_other_pending_count,
+            retained_nonworkspace_pending_count: imported.retained_nonworkspace_pending_count,
+            last_http_status,
+        };
+        if row
+            .kernel_import
+            .as_ref()
+            .is_some_and(|saved| saved != &result)
+        {
+            return Err(HistoricalOwnerAttachError::Conflict);
+        }
+        Ok(result)
     }
 
     fn recover_pending_action(
@@ -677,6 +941,193 @@ impl SecureHistoricalOwnerAttach {
         Ok(())
     }
 
+    fn checked_kernel_commands(
+        &self,
+        attach_id: &str,
+    ) -> Result<(SavedAttach, Vec<HistoricalKernelCommandStatus>), HistoricalOwnerAttachError> {
+        if !valid_history_config(&self.config) || !valid_token(attach_id) {
+            return Err(HistoricalOwnerAttachError::Input);
+        }
+        let store = SecureStateStore::open(&self.history_path())
+            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        let history = read_history(&store, &self.config.origin)?;
+        let row = history
+            .rows
+            .get(attach_id)
+            .ok_or(HistoricalOwnerAttachError::NotFound)?
+            .clone();
+        drop(history);
+        drop(store);
+        if row.attached_sequence.is_none() {
+            return Err(HistoricalOwnerAttachError::SourceUnresolved);
+        }
+        let kernel = row
+            .kernel_import
+            .as_ref()
+            .ok_or(HistoricalOwnerAttachError::Local)?;
+        let backup = self
+            .workspace_dir(&row.input.workspace_id)
+            .join("historical-ts-intents-backup.sqlite");
+        let digest = crate::ts_migration::source_snapshot_digest_allow_pending(&backup)
+            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        if digest != kernel.backup_digest || digest != row.ts_intent_sha256 {
+            return Err(HistoricalOwnerAttachError::Conflict);
+        }
+        let owner = KernelIdentity::open(&self.identity_path())
+            .map_err(|_| HistoricalOwnerAttachError::Identity)?;
+        if owner.actor_id() != row.input.expected_owner_actor_id
+            || owner.key_id() != row.input.expected_owner_key_id
+        {
+            return Err(HistoricalOwnerAttachError::Identity);
+        }
+        let journal = crate::kernel_intents::KernelIntentJournal::open(
+            &self
+                .workspace_dir(&row.input.workspace_id)
+                .join("historical-kernel.sqlite"),
+        )
+        .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| HistoricalOwnerAttachError::Local)?
+            .as_millis() as u64;
+        let mut statuses = Vec::with_capacity(kernel.selected.len());
+        for selected in &kernel.selected {
+            let local = journal
+                .locally_verified_status(&selected.command_id, owner.key_id(), &self.config.origin)
+                .map_err(|_| HistoricalOwnerAttachError::Local)?
+                .ok_or(HistoricalOwnerAttachError::Local)?;
+            if local.actor_id != owner.actor_id()
+                || local.workspace_id.as_deref() != Some(row.input.workspace_id.as_str())
+                || local.intent_digest != selected.intent_digest
+                || local.expires_at_ms != selected.expires_at_ms
+            {
+                return Err(HistoricalOwnerAttachError::Conflict);
+            }
+            let last_http_status = kernel.last_http_status.get(&selected.command_id).copied();
+            statuses.push(HistoricalKernelCommandStatus {
+                command_id: selected.command_id.clone(),
+                intent_digest: selected.intent_digest.clone(),
+                expires_at_ms: selected.expires_at_ms,
+                status: if local.accepted {
+                    "ACCEPTED"
+                } else if now >= selected.expires_at_ms {
+                    "EXPIRED_UNRESOLVED"
+                } else if last_http_status.is_some() {
+                    "RETAINED_UNRESOLVED"
+                } else {
+                    "PENDING"
+                }
+                .into(),
+                last_http_status,
+            });
+        }
+        Ok((row, statuses))
+    }
+
+    /// Read-only local history. No command is transmitted by listing status.
+    pub fn kernel_command_status(
+        &self,
+        attach_id: &str,
+    ) -> Result<Vec<HistoricalKernelCommandStatus>, HistoricalOwnerAttachError> {
+        Ok(self.checked_kernel_commands(attach_id)?.1)
+    }
+
+    /// Explicitly retry one selected original JWS. Rejection or expiry leaves
+    /// the protected packet intact and does not imply a signed terminal result.
+    pub fn recover_kernel_command(
+        &self,
+        attach_id: &str,
+        command_id: &str,
+        cancel: &CancellationToken,
+    ) -> Result<HistoricalKernelCommandStatus, HistoricalOwnerAttachError> {
+        if !valid_token(command_id) {
+            return Err(HistoricalOwnerAttachError::Input);
+        }
+        if cancel.is_cancelled() {
+            return Err(HistoricalOwnerAttachError::Cancelled);
+        }
+        let _recovery_lock =
+            SecureStateStore::open(&self.config.state_dir.join("owner-attach-recovery.state"))
+                .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        let (row, statuses) = self.checked_kernel_commands(attach_id)?;
+        let selected = statuses
+            .into_iter()
+            .find(|item| item.command_id == command_id)
+            .ok_or(HistoricalOwnerAttachError::NotFound)?;
+        if selected.status == "ACCEPTED" || selected.status == "EXPIRED_UNRESOLVED" {
+            return Ok(selected);
+        }
+        let replayed = SecureReadAccess::new(self.attach_read_config(&row.input))
+            .replay_checked_attach_generation(cancel)
+            .map_err(|_| HistoricalOwnerAttachError::Verification)?;
+        if !replayed.replay().contains_checkpoint(
+            row.source_sequence,
+            row.source_head.as_deref(),
+            &row.source_policy_hash,
+        ) || replayed.replay().sequence() < row.attached_sequence.unwrap_or(u64::MAX)
+        {
+            return Err(HistoricalOwnerAttachError::Verification);
+        }
+        SecureReadProfile::new(self.profile_config(&row.input))
+            .read_latest_json_with_cancel(cancel)
+            .map_err(|_| HistoricalOwnerAttachError::Verification)?;
+        let kernel_access = crate::kernel_access::KernelAccess::new(
+            &self.config.origin,
+            self.workspace_dir(&row.input.workspace_id)
+                .join("historical-kernel.sqlite"),
+            self.identity_path(),
+            &[],
+            self.config.allow_loopback_http,
+        );
+        let result = kernel_access.submit_saved_with_cancel(command_id, cancel);
+        let mut observed_http = None;
+        match result {
+            Ok(accepted)
+                if accepted.command_id == command_id
+                    && accepted.workspace_id.as_deref()
+                        == Some(row.input.workspace_id.as_str()) => {}
+            Ok(_) => return Err(HistoricalOwnerAttachError::Verification),
+            Err(crate::kernel_access::KernelAccessError::Client(
+                crate::kernel_client::KernelClientError::ServerRejected(status),
+            )) => observed_http = Some(status),
+            Err(_) => return Err(HistoricalOwnerAttachError::KernelCommandUnresolved),
+        }
+        if let Some(status) = observed_http {
+            let store = SecureStateStore::open(&self.history_path())
+                .map_err(|_| HistoricalOwnerAttachError::Local)?;
+            let mut history = read_history(&store, &self.config.origin)?;
+            let saved = history
+                .rows
+                .get_mut(attach_id)
+                .ok_or(HistoricalOwnerAttachError::NotFound)?;
+            if saved.input != row.input
+                || saved.ts_intent_sha256 != row.ts_intent_sha256
+                || saved
+                    .kernel_import
+                    .as_ref()
+                    .map(|kernel| kernel.backup_digest.as_str())
+                    != row
+                        .kernel_import
+                        .as_ref()
+                        .map(|kernel| kernel.backup_digest.as_str())
+            {
+                return Err(HistoricalOwnerAttachError::Conflict);
+            }
+            saved
+                .kernel_import
+                .as_mut()
+                .unwrap()
+                .last_http_status
+                .insert(command_id.into(), status);
+            save_history(&store, &history)?;
+        }
+        self.checked_kernel_commands(attach_id)?
+            .1
+            .into_iter()
+            .find(|item| item.command_id == command_id)
+            .ok_or(HistoricalOwnerAttachError::NotFound)
+    }
+
     pub fn attachments(
         &self,
     ) -> Result<Vec<HistoricalOwnerAttachResult>, HistoricalOwnerAttachError> {
@@ -793,14 +1244,15 @@ impl SecureHistoricalOwnerAttach {
             .map_err(|_| HistoricalOwnerAttachError::SourceChanged)?;
         let digest = sha256_hex(&state);
         let source = parse_legacy_source(&state, input)?;
-        let intent_digest =
-            crate::ts_migration::quiescent_source_digest(&input.protected_ts_intent_db_path)
-                .map_err(|error| match error {
-                    crate::ts_migration::TsMigrationError::Unresolved => {
-                        HistoricalOwnerAttachError::SourceUnresolved
-                    }
-                    _ => HistoricalOwnerAttachError::SourceChanged,
-                })?;
+        let intent_digest = crate::ts_migration::source_snapshot_digest_allow_pending(
+            &input.protected_ts_intent_db_path,
+        )
+        .map_err(|error| match error {
+            crate::ts_migration::TsMigrationError::Unresolved => {
+                HistoricalOwnerAttachError::SourceUnresolved
+            }
+            _ => HistoricalOwnerAttachError::SourceChanged,
+        })?;
         Ok((source, digest, pem_digest, intent_digest))
     }
 
@@ -874,6 +1326,13 @@ fn summary(id: &str, row: &SavedAttach) -> HistoricalOwnerAttachResult {
         owner_key_id: row.input.expected_owner_key_id.clone(),
         sequence: row.attached_sequence,
         head: row.attached_head.clone(),
+        selected_kernel_count: row
+            .kernel_import
+            .as_ref()
+            .map_or(0, |kernel| kernel.selected.len()),
+        retained_other_kernel_count: row.kernel_import.as_ref().map_or(0, |kernel| {
+            kernel.retained_other_pending_count + kernel.retained_nonworkspace_pending_count
+        }),
     }
 }
 
@@ -926,6 +1385,24 @@ fn save_history(
 }
 
 fn validate_input(input: &HistoricalOwnerAttachInput) -> Result<(), HistoricalOwnerAttachError> {
+    if input.kernel_pending_command_ids.len() > 4096
+        || input
+            .expected_kernel_intent_db_digest
+            .as_deref()
+            .is_some_and(|digest| !valid_digest(digest))
+        || input
+            .kernel_pending_command_ids
+            .iter()
+            .any(|id| !valid_token(id))
+        || input
+            .kernel_pending_command_ids
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+            != input.kernel_pending_command_ids.len()
+    {
+        return Err(HistoricalOwnerAttachError::Input);
+    }
     if !valid_token(&input.workspace_id)
         || !valid_token(&input.expected_owner_actor_id)
         || !valid_token(&input.expected_owner_key_id)
@@ -1761,6 +2238,8 @@ mod tests {
             expected_owner_actor_id: source["owner_actor_id"].as_str().unwrap().into(),
             expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
             recover_pending_action: false,
+            kernel_pending_command_ids: Vec::new(),
+            expected_kernel_intent_db_digest: None,
         };
         let cancel = CancellationToken::new();
         let bad_config = config("native-unfinished");
@@ -1930,6 +2409,8 @@ mod tests {
             expected_owner_actor_id: source["owner_actor_id"].as_str().unwrap().into(),
             expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
             recover_pending_action: recover,
+            kernel_pending_command_ids: Vec::new(),
+            expected_kernel_intent_db_digest: None,
         };
         let cancel = CancellationToken::new();
         let applied = setup("legacy-applied", "pending");
@@ -2126,6 +2607,8 @@ mod tests {
                 expected_owner_actor_id: source["owner_actor_id"].as_str().unwrap().into(),
                 expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
                 recover_pending_action: true,
+                kernel_pending_command_ids: Vec::new(),
+                expected_kernel_intent_db_digest: None,
             };
             if mode == "pending-public-structured-before-post" {
                 let signer =
@@ -2424,6 +2907,8 @@ mod tests {
                 expected_owner_actor_id: source["owner_actor_id"].as_str().unwrap().into(),
                 expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
                 recover_pending_action: true,
+                kernel_pending_command_ids: Vec::new(),
+                expected_kernel_intent_db_digest: None,
             };
             let owner = SecureHistoricalOwnerAttach::new(config.clone());
             let posts = TEST_IMPORTED_ACTION_POSTS.load(Ordering::SeqCst);
@@ -2843,6 +3328,260 @@ mod tests {
     }
 
     #[test]
+    fn actual_service_attaches_with_selected_kernel_jws_and_recovers_only_explicit_id() {
+        let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else {
+            return;
+        };
+        let node = std::env::var("PEERWORK_NODE_BIN").unwrap_or_else(|_| "node".into());
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let bridge =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/reference-kernel-server.mjs");
+        let child = Command::new(&node)
+            .arg(bridge)
+            .env("PEERWORK_REFERENCE_ROOT", &reference_root)
+            .env("PEERWORK_TEST_STATE", root.path())
+            .env("PEERWORK_TEST_FIRST_POST_MODE", "normal")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        struct StopSelectedKernel(Child);
+        impl Drop for StopSelectedKernel {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut child = StopSelectedKernel(child);
+        let line = BufReader::new(child.0.stdout.take().unwrap())
+            .lines()
+            .next()
+            .unwrap()
+            .unwrap();
+        assert!(!line.is_empty(), "pinned service exited before readiness");
+        let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let origin = ready["origin"].as_str().unwrap();
+        let helper = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/historical-kernel-pending-source.mjs");
+        let cancel = CancellationToken::new();
+        // A genuine old-client same-ID retry changes the SQLite source from
+        // PENDING to ACCEPTED. The earlier inspected snapshot cannot then
+        // authorize attachment, even though the command ID did not change.
+        let changed_dir = root.path().join("source-changed-snapshot");
+        let changed_output = Command::new(&node)
+            .arg(&helper)
+            .arg(origin)
+            .arg(&changed_dir)
+            .arg(&reference_root)
+            .arg("applied-loss-global")
+            .output()
+            .unwrap();
+        assert!(
+            changed_output.status.success(),
+            "source-change setup: {}",
+            String::from_utf8_lossy(&changed_output.stderr)
+        );
+        let changed: serde_json::Value = serde_json::from_slice(&changed_output.stdout).unwrap();
+        let changed_id = changed["selected_command_id"].as_str().unwrap();
+        let changed_owner = SecureHistoricalOwnerAttach::new(SecureOwnerCreateConfig {
+            origin: origin.into(),
+            state_dir: root.path().join("native-changed-snapshot"),
+            allow_loopback_http: true,
+            max_replay_artifact_bytes: 64 * 1024 * 1024,
+        });
+        let mut changed_input = HistoricalOwnerAttachInput {
+            workspace_id: changed["workspace_id"].as_str().unwrap().into(),
+            protected_ts_state_path: changed["state_path"].as_str().unwrap().into(),
+            protected_owner_pkcs8_path: changed["pem_path"].as_str().unwrap().into(),
+            protected_ts_intent_db_path: changed["intent_db_path"].as_str().unwrap().into(),
+            expected_owner_actor_id: changed["owner_actor_id"].as_str().unwrap().into(),
+            expected_owner_key_id: changed["owner_key_id"].as_str().unwrap().into(),
+            recover_pending_action: false,
+            kernel_pending_command_ids: vec![changed_id.into()],
+            expected_kernel_intent_db_digest: None,
+        };
+        let inspected = changed_owner
+            .inspect_kernel_pending(&changed_input, &cancel)
+            .unwrap();
+        assert_eq!(inspected.commands.len(), 1);
+        assert_eq!(inspected.commands[0].command_id, changed_id);
+        changed_input.expected_kernel_intent_db_digest = Some(inspected.intent_db_digest);
+        let resolved_output = Command::new(&node)
+            .arg(&helper)
+            .arg(origin)
+            .arg(&changed_dir)
+            .arg(&reference_root)
+            .arg("resolve-existing")
+            .arg(changed_id)
+            .output()
+            .unwrap();
+        assert!(
+            resolved_output.status.success(),
+            "source-change retry: {}",
+            String::from_utf8_lossy(&resolved_output.stderr)
+        );
+        let resolved: serde_json::Value = serde_json::from_slice(&resolved_output.stdout).unwrap();
+        assert_eq!(resolved["command_id"], changed_id);
+        assert_eq!(resolved["workspace_id"], changed["workspace_id"]);
+        assert!(matches!(
+            changed_owner.attach(changed_input, &cancel),
+            Err(HistoricalOwnerAttachError::SourceChanged)
+        ));
+        assert!(changed_owner.attachments().unwrap().is_empty());
+        for (mode, applied) in [("applied-loss-global", true), ("pre-send-global", false)] {
+            let source_dir = root.path().join(format!("source-{mode}"));
+            let output = Command::new(&node)
+                .arg(&helper)
+                .arg(origin)
+                .arg(&source_dir)
+                .arg(&reference_root)
+                .arg(mode)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "selected kernel source fixture: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let source: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(source["policy_v"], 1);
+            assert_eq!(source["policy_visibility"], "PUBLIC");
+            assert_eq!(source["pending_count"], 3);
+            assert_eq!(source["dropped_responses"], usize::from(applied));
+            let workspace = source["workspace_id"].as_str().unwrap();
+            let selected = source["selected_command_id"].as_str().unwrap();
+            let unrelated = source["unrelated_command_id"].as_str().unwrap();
+            let global = source["global_command_id"].as_str().unwrap();
+            assert_ne!(selected, unrelated);
+            assert_ne!(selected, global);
+            let oracle = rusqlite::Connection::open_with_flags(
+                root.path().join("control.sqlite"),
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .unwrap();
+            let target_effects = || -> i64 {
+                oracle
+                    .query_row(
+                        "SELECT count(*) FROM events WHERE workspace_id=?1 AND kind='admin.view.set'",
+                        [workspace],
+                        |row| row.get(0),
+                    )
+                    .unwrap()
+            };
+            let accepted_command_count = |id: &str| -> i64 {
+                oracle
+                    .query_row(
+                        "SELECT count(*) FROM commands WHERE command_id=?1",
+                        [id],
+                        |row| row.get(0),
+                    )
+                    .unwrap()
+            };
+            let prior_effects = i64::from(applied);
+            assert_eq!(target_effects(), prior_effects);
+            assert_eq!(accepted_command_count(selected), prior_effects);
+            assert_eq!(accepted_command_count(unrelated), 0);
+            assert_eq!(accepted_command_count(global), 0);
+            let config = SecureOwnerCreateConfig {
+                origin: origin.into(),
+                state_dir: root.path().join(format!("native-{mode}")),
+                allow_loopback_http: true,
+                max_replay_artifact_bytes: 64 * 1024 * 1024,
+            };
+            let owner = SecureHistoricalOwnerAttach::new(config.clone());
+            let mut input = HistoricalOwnerAttachInput {
+                workspace_id: workspace.into(),
+                protected_ts_state_path: PathBuf::from(source["state_path"].as_str().unwrap()),
+                protected_owner_pkcs8_path: PathBuf::from(source["pem_path"].as_str().unwrap()),
+                protected_ts_intent_db_path: PathBuf::from(
+                    source["intent_db_path"].as_str().unwrap(),
+                ),
+                expected_owner_actor_id: source["owner_actor_id"].as_str().unwrap().into(),
+                expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
+                recover_pending_action: false,
+                kernel_pending_command_ids: vec![selected.into()],
+                expected_kernel_intent_db_digest: None,
+            };
+            let inventory = owner.inspect_kernel_pending(&input, &cancel).unwrap();
+            assert_eq!(inventory.commands.len(), 1);
+            assert_eq!(inventory.commands[0].command_id, selected);
+            assert_eq!(
+                inventory.commands[0].intent_digest,
+                source["selected_intent_digest"]
+            );
+            assert_eq!(inventory.retained_other_pending_count, 1);
+            assert_eq!(inventory.retained_nonworkspace_pending_count, 1);
+            assert!(matches!(
+                owner.attach(input.clone(), &cancel),
+                Err(HistoricalOwnerAttachError::Input)
+            ));
+            input.expected_kernel_intent_db_digest = Some(inventory.intent_db_digest.clone());
+            let mut wrong_snapshot = input.clone();
+            wrong_snapshot.expected_kernel_intent_db_digest = Some("0".repeat(64));
+            assert!(matches!(
+                owner.attach(wrong_snapshot, &cancel),
+                Err(HistoricalOwnerAttachError::SourceChanged)
+            ));
+            let mut incomplete = input.clone();
+            incomplete.kernel_pending_command_ids.clear();
+            assert!(matches!(
+                owner.attach(incomplete, &cancel),
+                Err(HistoricalOwnerAttachError::SourceUnresolved)
+            ));
+            assert!(owner.attachments().unwrap().is_empty());
+            assert!(!config.state_dir.join("owner-attach.state").exists());
+            assert!(!config
+                .state_dir
+                .join("workspaces")
+                .join(workspace)
+                .join("lifecycle.state")
+                .exists());
+            assert_eq!(target_effects(), prior_effects);
+            let attached = owner.attach(input, &cancel).unwrap();
+            assert_eq!(attached.status, "ATTACHED");
+            assert_eq!(attached.selected_kernel_count, 1);
+            assert_eq!(attached.retained_other_kernel_count, 2);
+            assert_eq!(target_effects(), prior_effects);
+            assert_eq!(accepted_command_count(unrelated), 0);
+            assert_eq!(accepted_command_count(global), 0);
+            let local = owner.kernel_command_status(&attached.attach_id).unwrap();
+            assert_eq!(local.len(), 1);
+            assert_eq!(local[0].command_id, selected);
+            assert_eq!(local[0].intent_digest, source["selected_intent_digest"]);
+            assert_eq!(local[0].status, "PENDING");
+            std::fs::rename(&source_dir, root.path().join(format!("archived-{mode}"))).unwrap();
+            assert_eq!(
+                SecureHistoricalOwnerAttach::new(config.clone())
+                    .resume_attachment(&attached.attach_id, &cancel)
+                    .unwrap()
+                    .status,
+                "ATTACHED"
+            );
+            let recovered = SecureHistoricalOwnerAttach::new(config)
+                .recover_kernel_command(&attached.attach_id, selected, &cancel)
+                .unwrap();
+            assert_eq!(recovered.command_id, selected);
+            if applied {
+                assert_eq!(recovered.status, "ACCEPTED");
+                assert_eq!(recovered.last_http_status, None);
+                assert_eq!(accepted_command_count(selected), 1);
+            } else {
+                assert_eq!(recovered.status, "RETAINED_UNRESOLVED");
+                assert_eq!(recovered.last_http_status, Some(409));
+                assert_eq!(accepted_command_count(selected), 0);
+            }
+            assert_eq!(target_effects(), prior_effects);
+            assert_eq!(accepted_command_count(unrelated), 0);
+            assert_eq!(accepted_command_count(global), 0);
+        }
+    }
+
+    #[test]
     fn absent_attachment_history_is_empty_but_corrupt_existing_state_refuses() {
         let root = tempfile::tempdir().unwrap();
         let state_dir = root.path().join("native-owner");
@@ -2952,6 +3691,8 @@ mod tests {
                     expected_owner_actor_id: missing["owner_actor_id"].as_str().unwrap().into(),
                     expected_owner_key_id: missing["owner_key_id"].as_str().unwrap().into(),
                     recover_pending_action: false,
+                    kernel_pending_command_ids: Vec::new(),
+                    expected_kernel_intent_db_digest: None,
                 },
                 &cancel
             ),
@@ -3001,6 +3742,8 @@ mod tests {
                     expected_owner_actor_id: source["owner_actor_id"].as_str().unwrap().into(),
                     expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
                     recover_pending_action: false,
+                    kernel_pending_command_ids: Vec::new(),
+                    expected_kernel_intent_db_digest: None,
                 },
                 &cancel,
             )
@@ -3222,6 +3965,8 @@ mod tests {
                     expected_owner_actor_id: source["owner_actor_id"].as_str().unwrap().into(),
                     expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
                     recover_pending_action: false,
+                    kernel_pending_command_ids: Vec::new(),
+                    expected_kernel_intent_db_digest: None,
                 },
                 &cancel,
             )
@@ -3378,6 +4123,8 @@ mod tests {
                 expected_owner_actor_id: source["owner_actor_id"].as_str().unwrap().into(),
                 expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
                 recover_pending_action: false,
+                kernel_pending_command_ids: Vec::new(),
+                expected_kernel_intent_db_digest: None,
             };
             assert!(
                 matches!(
@@ -3420,6 +4167,8 @@ mod tests {
             expected_owner_actor_id: source["owner_actor_id"].as_str().unwrap().into(),
             expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
             recover_pending_action: false,
+            kernel_pending_command_ids: Vec::new(),
+            expected_kernel_intent_db_digest: None,
         };
         let mut wrong_owner = input.clone();
         wrong_owner.expected_owner_key_id = "z".repeat(43);

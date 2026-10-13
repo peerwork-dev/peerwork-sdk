@@ -361,6 +361,8 @@ pub struct VerifiedPreparedCommand {
     command_canonical_json: String,
     command_id: String,
     actor_id: String,
+    action_id: String,
+    expires_at_ms: u64,
     intent_digest: String,
     path: String,
     audience_utf16: Vec<u16>,
@@ -380,6 +382,12 @@ impl VerifiedPreparedCommand {
     }
     pub fn actor_id(&self) -> &str {
         &self.actor_id
+    }
+    pub fn action_id(&self) -> &str {
+        &self.action_id
+    }
+    pub fn expires_at_ms(&self) -> u64 {
+        self.expires_at_ms
     }
     pub fn intent_digest(&self) -> &str {
         &self.intent_digest
@@ -487,6 +495,11 @@ pub fn verify_prepared_command_wire(
         command_canonical_json: String::from_utf8(payload_bytes).map_err(|_| invalid())?,
         command_id,
         actor_id: expected_actor,
+        action_id: string(&payload, "action_id").ok_or_else(invalid)?,
+        expires_at_ms: payload
+            .get("expires_at")
+            .and_then(WireValue::as_number)
+            .ok_or_else(invalid)? as u64,
         intent_digest: sha256_hex(jws.as_bytes()),
         path,
         audience_utf16: pins.audience_utf16.to_vec(),

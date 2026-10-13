@@ -337,6 +337,26 @@ impl KernelClient {
         })
     }
 
+    pub(crate) fn migrate_ts_store_selected(
+        &mut self,
+        source_path: &Path,
+        backup_path: &Path,
+        owner_actor_id: &str,
+        owner_key_id: &str,
+        workspace_id: &str,
+        selected_pending_ids: &[String],
+    ) -> Result<crate::kernel_intents::SelectedKernelImport, KernelClientError> {
+        Ok(self.journal.import_ts_backup_selected(
+            source_path,
+            backup_path,
+            &self.discovery,
+            owner_actor_id,
+            owner_key_id,
+            workspace_id,
+            selected_pending_ids,
+        )?)
+    }
+
     pub async fn open(
         transport_config: TransportConfig,
         journal_path: &Path,

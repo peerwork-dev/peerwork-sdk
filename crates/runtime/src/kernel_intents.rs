@@ -8,6 +8,7 @@ use peerwork_core::prepared_command::{
 };
 use peerwork_core::receipt_wire::{verify_http_response_for_prepared, VerifiedCommandResponse};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -63,6 +64,121 @@ pub struct PendingKernelIntent {
     pub command_id: String,
     pub intent_digest: String,
     pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub(crate) struct SelectedKernelSourceRow {
+    pub command_id: String,
+    pub intent_digest: String,
+    pub expires_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SelectedKernelImport {
+    pub selected: Vec<SelectedKernelSourceRow>,
+    pub accepted_target_count: usize,
+    pub retained_other_pending_count: usize,
+    pub retained_nonworkspace_pending_count: usize,
+}
+
+/// Classify only fully verified source rows. This same classifier is used by
+/// pre-attach discovery and by the transactional importer, so an incomplete
+/// selection is refused before an Owner attach row or lifecycle state exists.
+fn classify_selected_ts_rows(
+    rows: Vec<crate::ts_migration::TsImportRow>,
+    owner_actor_id: &str,
+    owner_key_id: &str,
+    workspace_id: &str,
+    selected_pending_ids: Option<&[String]>,
+) -> Result<
+    (SelectedKernelImport, Vec<crate::ts_migration::TsImportRow>),
+    crate::ts_migration::TsMigrationError,
+> {
+    use crate::ts_migration::TsMigrationError;
+    let mut selected = Vec::new();
+    let mut target_rows = Vec::new();
+    let mut accepted_target_count = 0;
+    let mut retained_other_pending_count = 0;
+    let mut retained_nonworkspace_pending_count = 0;
+    for row in rows {
+        if row.actor_id != owner_actor_id || row.local_key_id != owner_key_id {
+            return Err(TsMigrationError::Incompatible);
+        }
+        match row.workspace_id.as_deref() {
+            Some(id) if id == workspace_id => {
+                if row.response.is_none() {
+                    selected.push(SelectedKernelSourceRow {
+                        command_id: row.command_id.clone(),
+                        intent_digest: sha256_hex(row.jws.as_bytes()),
+                        expires_at_ms: row.expires_at_ms,
+                    });
+                } else {
+                    accepted_target_count += 1;
+                }
+                target_rows.push(row);
+            }
+            Some(_) => retained_other_pending_count += usize::from(row.response.is_none()),
+            None if row.response.is_none() => {
+                if row.action_id != "identity.register" {
+                    return Err(TsMigrationError::Unresolved);
+                }
+                retained_nonworkspace_pending_count += 1;
+            }
+            None => (),
+        }
+    }
+    selected.sort_by(|a, b| a.command_id.cmp(&b.command_id));
+    if let Some(requested) = selected_pending_ids {
+        let ids: std::collections::HashSet<&str> = requested.iter().map(String::as_str).collect();
+        if ids.len() != requested.len()
+            || ids != selected.iter().map(|row| row.command_id.as_str()).collect()
+        {
+            return Err(TsMigrationError::Unresolved);
+        }
+    }
+    Ok((
+        SelectedKernelImport {
+            selected,
+            accepted_target_count,
+            retained_other_pending_count,
+            retained_nonworkspace_pending_count,
+        },
+        target_rows,
+    ))
+}
+
+pub(crate) fn inspect_ts_backup_selected(
+    source_path: &Path,
+    backup_path: &Path,
+    discovery: &ParsedDiscovery,
+    owner_actor_id: &str,
+    owner_key_id: &str,
+    workspace_id: &str,
+    selected_pending_ids: Option<&[String]>,
+) -> Result<SelectedKernelImport, crate::ts_migration::TsMigrationError> {
+    let rows = crate::ts_migration::backed_up_rows(
+        source_path,
+        backup_path,
+        discovery,
+        &[owner_key_id.to_owned()],
+    )?;
+    Ok(classify_selected_ts_rows(
+        rows,
+        owner_actor_id,
+        owner_key_id,
+        workspace_id,
+        selected_pending_ids,
+    )?
+    .0)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LocallyVerifiedKernelStatus {
+    pub actor_id: String,
+    pub workspace_id: Option<String>,
+    pub intent_digest: String,
+    pub expires_at_ms: u64,
+    pub accepted: bool,
 }
 
 /// Internal exact saved request plus a private-constructor core signature
@@ -230,6 +346,59 @@ impl KernelIntentJournal {
             discovery,
             trusted_local_key_ids,
         )?;
+        self.import_verified_ts_rows(rows, discovery)
+    }
+
+    /// Import only signed rows for one authenticated workspace. Other rows
+    /// stay in the checked full backup and are never exposed to this Owner
+    /// workspace journal or submitted by this path.
+    pub(crate) fn import_ts_backup_selected(
+        &mut self,
+        source_path: &Path,
+        backup_path: &Path,
+        discovery: &ParsedDiscovery,
+        owner_actor_id: &str,
+        owner_key_id: &str,
+        workspace_id: &str,
+        selected_pending_ids: &[String],
+    ) -> Result<SelectedKernelImport, crate::ts_migration::TsMigrationError> {
+        use crate::ts_migration::TsMigrationError;
+        if source_path == self._path
+            || backup_path == self._path
+            || std::fs::canonicalize(source_path)
+                .ok()
+                .zip(std::fs::canonicalize(&self._path).ok())
+                .is_some_and(|(source, native)| source == native)
+            || std::fs::canonicalize(backup_path)
+                .ok()
+                .zip(std::fs::canonicalize(&self._path).ok())
+                .is_some_and(|(backup, native)| backup == native)
+        {
+            return Err(TsMigrationError::BackupConflict);
+        }
+        let rows = crate::ts_migration::backed_up_rows(
+            source_path,
+            backup_path,
+            discovery,
+            &[owner_key_id.to_owned()],
+        )?;
+        let (selected, target_rows) = classify_selected_ts_rows(
+            rows,
+            owner_actor_id,
+            owner_key_id,
+            workspace_id,
+            Some(selected_pending_ids),
+        )?;
+        self.import_verified_ts_rows(target_rows, discovery)?;
+        Ok(selected)
+    }
+
+    fn import_verified_ts_rows(
+        &mut self,
+        rows: Vec<crate::ts_migration::TsImportRow>,
+        discovery: &ParsedDiscovery,
+    ) -> Result<(usize, usize), crate::ts_migration::TsMigrationError> {
+        use crate::ts_migration::TsMigrationError;
         let source_ids: std::collections::HashSet<&str> =
             rows.iter().map(|row| row.command_id.as_str()).collect();
         // Hold the write reservation through complete preflight and import.
@@ -441,6 +610,47 @@ impl KernelIntentJournal {
             return Err(JournalError::IncompatibleStore);
         }
         Ok(Some(VerifiedPendingCommand { proof, jws, body }))
+    }
+
+    /// Verify the protected local packet and, if present, its signed receipt
+    /// against the journal's pinned discovery without contacting the server.
+    pub(crate) fn locally_verified_status(
+        &self,
+        command_id: &str,
+        local_key_id: &str,
+        expected_origin: &str,
+    ) -> Result<Option<LocallyVerifiedKernelStatus>, JournalError> {
+        let context: Option<(String, Vec<u8>)> = self
+            .db
+            .query_row(
+                "SELECT origin,discovery_wire FROM pinned_discovery WHERE id=1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((origin, wire)) = context else {
+            return Err(JournalError::IncompatibleStore);
+        };
+        if origin != expected_origin {
+            return Err(JournalError::DiscoveryChanged);
+        }
+        let discovery = parse_discovery_wire(&wire, crate::transport::MAX_DISCOVERY_BYTES)
+            .map_err(|_| JournalError::IncompatibleStore)?;
+        let Some(saved) =
+            self.verified_pending(command_id, local_key_id, discovery.audience_utf16())?
+        else {
+            return Ok(None);
+        };
+        let accepted = self
+            .accepted_response(&saved, discovery.receipt_public_key())?
+            .is_some();
+        Ok(Some(LocallyVerifiedKernelStatus {
+            actor_id: saved.proof.actor_id().to_owned(),
+            workspace_id: saved.proof.workspace_id().map(str::to_owned),
+            intent_digest: saved.proof.intent_digest().to_owned(),
+            expires_at_ms: saved.proof.expires_at_ms(),
+            accepted,
+        }))
     }
 
     pub(crate) fn accepted_response(

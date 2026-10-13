@@ -68,6 +68,10 @@ struct TsSnapshot {
 pub(crate) struct TsImportRow {
     pub command_id: String,
     pub local_key_id: String,
+    pub actor_id: String,
+    pub workspace_id: Option<String>,
+    pub action_id: String,
+    pub expires_at_ms: u64,
     pub jws: String,
     pub body: Vec<u8>,
     pub path: crate::kernel_intents::KernelPath,
@@ -80,6 +84,19 @@ pub(crate) struct TsImportRow {
 /// unresolved signed command, and bind its exact stable snapshot for retries.
 /// Accepted rows remain in the untouched TypeScript source for rollback.
 pub(crate) fn quiescent_source_digest(path: &Path) -> Result<String, TsMigrationError> {
+    source_snapshot_digest(path, false)
+}
+
+/// Bind the full protected TS SQLite snapshot while allowing signed pending
+/// rows to be classified by the separate verified import path. This digest
+/// alone never authorizes a pending command or an Owner attachment.
+pub(crate) fn source_snapshot_digest_allow_pending(
+    path: &Path,
+) -> Result<String, TsMigrationError> {
+    source_snapshot_digest(path, true)
+}
+
+fn source_snapshot_digest(path: &Path, allow_pending: bool) -> Result<String, TsMigrationError> {
     if !path.is_absolute() {
         return Err(TsMigrationError::Protection);
     }
@@ -88,7 +105,7 @@ pub(crate) fn quiescent_source_digest(path: &Path) -> Result<String, TsMigration
     let db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     db.busy_timeout(Duration::from_secs(5))?;
     let first = read_snapshot(&db)?;
-    if first.rows.iter().any(|row| row.status == "PENDING") {
+    if !allow_pending && first.rows.iter().any(|row| row.status == "PENDING") {
         return Err(TsMigrationError::Unresolved);
     }
     let second = read_snapshot(&db)?;
@@ -400,6 +417,10 @@ fn prepare_row(
     Ok(TsImportRow {
         command_id: row.command_id.clone(),
         local_key_id,
+        actor_id: proof.actor_id().to_owned(),
+        workspace_id: proof.workspace_id().map(str::to_owned),
+        action_id: proof.action_id().to_owned(),
+        expires_at_ms: proof.expires_at_ms(),
         jws: row.jws.clone(),
         body,
         path,

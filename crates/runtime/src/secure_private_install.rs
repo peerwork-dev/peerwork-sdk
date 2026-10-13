@@ -145,6 +145,8 @@ mod historical_v1_direct_test {
                     expected_owner_actor_id: source["owner_actor_id"].as_str().unwrap().into(),
                     expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
                     recover_pending_action: false,
+                    kernel_pending_command_ids: Vec::new(),
+                    expected_kernel_intent_db_digest: None,
                 },
                 &token,
             )

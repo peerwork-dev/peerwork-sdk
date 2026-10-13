@@ -190,6 +190,27 @@ impl KernelAccess {
         Ok(client.migrate_ts_store(source_path, backup_path, trusted_signer_key_ids)?)
     }
 
+    pub(crate) fn migrate_ts_store_selected(
+        &self,
+        source_path: &Path,
+        backup_path: &Path,
+        workspace_id: &str,
+        selected_pending_ids: &[String],
+        cancel: &CancellationToken,
+    ) -> Result<crate::kernel_intents::SelectedKernelImport, KernelAccessError> {
+        let identity = self.identity()?;
+        let runtime = self.runtime()?;
+        let mut client = self.open_client(&runtime, cancel)?;
+        Ok(client.migrate_ts_store_selected(
+            source_path,
+            backup_path,
+            identity.actor_id(),
+            identity.key_id(),
+            workspace_id,
+            selected_pending_ids,
+        )?)
+    }
+
     pub fn pending_with_cancel(
         &self,
         cancel: &CancellationToken,
