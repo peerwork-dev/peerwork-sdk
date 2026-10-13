@@ -111,6 +111,10 @@ the guest consumer SHA-256 is
 They pin the f828 generated/compiler/runtime closure, map only three
 test-created protected source paths into the guest, and run installed SDK
 consumers against the host's same-network-namespace reference service.
-No host `/proc` bind, raw key/packet output, or local source-state inspection
-by the SDK consumer is involved. Successful business behavior and Agent
-workflow compliance remain unverified until the current run finishes.
+No host `/proc` bind or raw key/packet output is involved. The test fixture
+creates and reads its protected state, PEM, and SQLite source files and passes
+their exact paths; the installed native importer reads those caller-selected
+files. The test's SDK consumer does not inspect their bytes or hidden native
+state. The scripted business outcome is pending session `88384`. Natural
+Agent workflow compliance remains separately unverified and needs an Agent
+usability/acceptance run regardless of this script's result.
