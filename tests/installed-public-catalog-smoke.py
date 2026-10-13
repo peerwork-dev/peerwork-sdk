@@ -83,9 +83,6 @@ void (async () => {
         assert error.code == "CATALOG_RESOURCE_LIMIT", error.code
     else:
         raise AssertionError("oversize listing was accepted")
-    print(json.dumps(dict(status="PASS", anonymous_catalog=True, digests=digests,
-                          installed_interfaces=["Python", "Node", "CLI"],
-                          tampered_and_swapped_refused=True)))
 finally:
     server.terminate()
     try:
@@ -93,3 +90,96 @@ finally:
     except subprocess.TimeoutExpired:
         server.kill()
         server.wait(timeout=5)
+
+
+def fresh_catalog_server(label):
+    state = STATE / label
+    state.mkdir(mode=0o700)
+    env = dict(os.environ, PEERWORK_SDK_ROOT=str(SOURCE), PEERWORK_TEST_STATE=str(state))
+    process = subprocess.Popen([NODE, str(SOURCE / "tests/reference-catalog-server.mjs")],
+                               cwd=SOURCE, env=env, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, text=True)
+    line = process.stdout.readline()
+    assert line, f"{label} catalog fixture did not start: {process.stderr.read()[-800:]}"
+    ready = json.loads(line)
+    assert ready["bundles"] == 2
+    return process, ready["origin"]
+
+
+node_server, node_origin = fresh_catalog_server("node")
+try:
+    env = dict(os.environ, PEERWORK_TEST_CATALOG_ORIGIN=node_origin,
+               PEERWORK_TEST_CATALOG_DIGESTS=json.dumps(digests))
+    code = r'''
+void (async () => {
+  const sdk = require(process.env.PEERWORK_TEST_NODE_PACKAGE);
+  const digests = JSON.parse(process.env.PEERWORK_TEST_CATALOG_DIGESTS);
+  const catalog = sdk.openPublicCatalog({origin:process.env.PEERWORK_TEST_CATALOG_ORIGIN,allowLoopbackHttp:true});
+  const listing = await catalog.search('');
+  if(JSON.stringify(listing.listing.items.map(x=>x.bundle_digest).sort())!==JSON.stringify([...digests].sort())) throw Error('Node listing mismatch');
+  for(const digest of digests){
+    const found = await catalog.inspectExact(digest);
+    if(found.bundle_digest!==digest || found.summary.bundle_digest!==digest) throw Error('Node exact inspect mismatch');
+  }
+  async function refused(action, code){
+    try{await action();}catch(error){if(error.code===code)return;throw error;}
+    throw Error('Node accepted invalid catalog response');
+  }
+  await refused(()=>catalog.inspectExact(digests[0]),'CATALOG_DIGEST_MISMATCH');
+  await refused(()=>catalog.inspectExact(digests[0]),'CATALOG_DIGEST_MISMATCH');
+  await refused(()=>catalog.inspectExact(digests[0].toUpperCase()),'CATALOG_INPUT_INVALID');
+  const tiny = sdk.openPublicCatalog({origin:process.env.PEERWORK_TEST_CATALOG_ORIGIN,allowLoopbackHttp:true,maxListingBytes:1});
+  await refused(()=>tiny.search(''),'CATALOG_RESOURCE_LIMIT');
+  console.log(JSON.stringify({interface:'Node',status:'PASS'}));
+})().catch(error => { console.error(error); process.exitCode = 1; });
+'''
+    result = subprocess.run([NODE, "-e", code], env=env, capture_output=True, text=True, timeout=45)
+    assert result.returncode == 0, result.stderr[-1200:]
+    assert json.loads(result.stdout) == {"interface": "Node", "status": "PASS"}
+finally:
+    node_server.terminate()
+    try:
+        node_server.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        node_server.kill()
+        node_server.wait(timeout=5)
+
+
+cli_server, cli_origin = fresh_catalog_server("cli")
+try:
+    config = STATE / "cli-catalog.json"
+    config.write_text(json.dumps(dict(origin=cli_origin, allow_loopback_http=True)))
+
+    def command(verb, config_file, argument):
+        return subprocess.run([CLI, "secure", verb, str(config_file), argument],
+                              capture_output=True, text=True, timeout=30)
+
+    listing = command("catalog-search", config, "")
+    assert listing.returncode == 0, listing.stderr[-1000:]
+    assert {row["bundle_digest"] for row in json.loads(json.loads(listing.stdout)["listing_canonical_json"])["items"]} == set(digests)
+    for digest in digests:
+        inspected = command("catalog-inspect", config, digest)
+        assert inspected.returncode == 0, inspected.stderr[-1000:]
+        value = json.loads(inspected.stdout)
+        assert value["bundle_digest"] == digest
+        assert json.loads(value["summary_canonical_json"])["bundle_digest"] == digest
+    for _ in range(2):
+        refused = command("catalog-inspect", config, digests[0])
+        assert refused.returncode != 0 and json.loads(refused.stderr)["code"] == "CATALOG_DIGEST_MISMATCH", refused.stderr[-1000:]
+    refused = command("catalog-inspect", config, digests[0].upper())
+    assert refused.returncode != 0 and json.loads(refused.stderr)["code"] == "CATALOG_INPUT_INVALID", refused.stderr[-1000:]
+    tiny_config = STATE / "cli-catalog-tiny.json"
+    tiny_config.write_text(json.dumps(dict(origin=cli_origin, allow_loopback_http=True, max_listing_bytes=1)))
+    refused = command("catalog-search", tiny_config, "")
+    assert refused.returncode != 0 and json.loads(refused.stderr)["code"] == "CATALOG_RESOURCE_LIMIT", refused.stderr[-1000:]
+finally:
+    cli_server.terminate()
+    try:
+        cli_server.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        cli_server.kill()
+        cli_server.wait(timeout=5)
+
+print(json.dumps(dict(status="PASS", anonymous_catalog=True, digests=digests,
+                      installed_interfaces=["Python", "Node", "CLI"],
+                      per_interface_search_inspect_and_refusals=True)))
