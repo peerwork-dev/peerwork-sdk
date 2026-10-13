@@ -3,7 +3,7 @@
 import asyncio
 import json
 from pathlib import Path
-from typing import Literal, TypedDict, cast
+from typing import Literal, NotRequired, TypedDict, cast
 from ._peerwork_native import (
     KernelCancelHandle,
     capabilities_json,
@@ -1192,7 +1192,8 @@ class PrivatePackageInstallProgress(TypedDict):
 
 class SavedPrivatePackageInstall(TypedDict):
     begin_command_id: str
-    stage_id: str
+    source_kind: Literal["DIRECT", "STAGED"]
+    stage_id: NotRequired[str]
     workspace_id: str
     instance_id: str
     protocol_digest: str
@@ -1206,7 +1207,7 @@ class PrivatePackageInstallError(RuntimeError):
 
 
 class OwnerWorkspacePrivatePackageInstaller(OwnerWorkspacePrivatePackageStager):
-    """Install a staged PRIVATE package through signed BEGIN/PAGE/END replay.
+    """Install a staged or directly selected PRIVATE package through signed replay.
 
     ACCEPTED is a step result; only verified END and a later signed ACTIVE
     read prove the installed protocol is usable.
@@ -1231,6 +1232,18 @@ class OwnerWorkspacePrivatePackageInstaller(OwnerWorkspacePrivatePackageStager):
             grants_json=grants_json, command_id=command_id, issued_at_ms=issued_at_ms)
         return cast(PrivatePackageInstallProgress, self._install("begin", input_value=value))
 
+    def begin_direct(self, closure_json: str, expected_root_package_digest: str,
+                     expected_protocol_digest: str, instance_id: str, entrypoint: str, *,
+                     grants_json: str = "[]", command_id: str | None = None,
+                     issued_at_ms: int | None = None) -> PrivatePackageInstallProgress:
+        """Select raw package closure JSON directly; no source parts are staged."""
+        value = dict(closure_json=closure_json,
+            expected_root_package_digest=expected_root_package_digest,
+            expected_protocol_digest=expected_protocol_digest,
+            instance_id=instance_id, entrypoint=entrypoint, grants_json=grants_json,
+            command_id=command_id, issued_at_ms=issued_at_ms)
+        return cast(PrivatePackageInstallProgress, self._install("begin_direct", input_value=value))
+
     def continue_install(self, begin_command_id: str) -> PrivatePackageInstallProgress:
         return cast(PrivatePackageInstallProgress, self._install("continue", begin_command_id=begin_command_id))
 
@@ -1245,6 +1258,19 @@ class OwnerWorkspacePrivatePackageInstaller(OwnerWorkspacePrivatePackageStager):
             grants_json=grants_json, command_id=command_id, issued_at_ms=issued_at_ms)
         return cast(PrivatePackageInstallProgress, await _run_cancelled_async(self._install,
             "begin", input_value=value))
+
+    async def begin_direct_async(self, closure_json: str, expected_root_package_digest: str,
+                                 expected_protocol_digest: str, instance_id: str,
+                                 entrypoint: str, *, grants_json: str = "[]",
+                                 command_id: str | None = None,
+                                 issued_at_ms: int | None = None) -> PrivatePackageInstallProgress:
+        value = dict(closure_json=closure_json,
+            expected_root_package_digest=expected_root_package_digest,
+            expected_protocol_digest=expected_protocol_digest,
+            instance_id=instance_id, entrypoint=entrypoint, grants_json=grants_json,
+            command_id=command_id, issued_at_ms=issued_at_ms)
+        return cast(PrivatePackageInstallProgress, await _run_cancelled_async(self._install,
+            "begin_direct", input_value=value))
 
     async def continue_install_async(self, begin_command_id: str) -> PrivatePackageInstallProgress:
         return cast(PrivatePackageInstallProgress, await _run_cancelled_async(self._install,

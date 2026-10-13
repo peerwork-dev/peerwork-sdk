@@ -423,6 +423,14 @@ export interface PrivatePackageInstallSelection {
   entrypoint: string;
   grantsJson: string;
 }
+export interface PrivateDirectInstallSelection {
+  closureJson: string;
+  expectedRootPackageDigest: string;
+  expectedProtocolDigest: string;
+  instanceId: string;
+  entrypoint: string;
+  grantsJson: string;
+}
 export interface PrivatePackageInstallProgress {
   status: 'PENDING' | 'ACCEPTED';
   begin_command_id: string;
@@ -435,7 +443,8 @@ export interface PrivatePackageInstallProgress {
 }
 export interface SavedPrivatePackageInstall {
   begin_command_id: string;
-  stage_id: string;
+  source_kind: 'DIRECT' | 'STAGED';
+  stage_id?: string;
   workspace_id: string;
   instance_id: string;
   protocol_digest: string;
@@ -443,6 +452,9 @@ export interface SavedPrivatePackageInstall {
 }
 export interface SecurePrivatePackageInstaller {
   begin(selection: PrivatePackageInstallSelection,
+    options?: {commandId?: string; issuedAtMs?: number; signal?: AbortSignal}): Promise<PrivatePackageInstallProgress>;
+  /** Select raw package closure JSON directly; no source parts are staged. */
+  beginDirect(selection: PrivateDirectInstallSelection,
     options?: {commandId?: string; issuedAtMs?: number; signal?: AbortSignal}): Promise<PrivatePackageInstallProgress>;
   continueInstall(beginCommandId: string, options?: {signal?: AbortSignal}): Promise<PrivatePackageInstallProgress>;
   /** Local saved BEGIN IDs; listing does not establish service acceptance or ACTIVE status. */

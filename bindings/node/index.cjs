@@ -455,6 +455,26 @@ exports.openSecureOwnerWorkspaces = options => {
           issued_at_ms: options.issuedAtMs ?? null,
         }, undefined, options.signal);
       },
+      beginDirect: (selection, options = {}) => {
+        if (selection === null || typeof selection !== 'object' ||
+            typeof selection.closureJson !== 'string' ||
+            typeof selection.expectedRootPackageDigest !== 'string' ||
+            typeof selection.expectedProtocolDigest !== 'string' ||
+            typeof selection.instanceId !== 'string' ||
+            typeof selection.entrypoint !== 'string' || typeof selection.grantsJson !== 'string') {
+          throw new TypeError('PRIVATE direct install requires material, exact digests, instance, entrypoint and grantsJson');
+        }
+        return call('begin_direct', {
+          closure_json: selection.closureJson,
+          expected_root_package_digest: selection.expectedRootPackageDigest,
+          expected_protocol_digest: selection.expectedProtocolDigest,
+          instance_id: selection.instanceId,
+          entrypoint: selection.entrypoint,
+          grants_json: selection.grantsJson,
+          command_id: options.commandId ?? null,
+          issued_at_ms: options.issuedAtMs ?? null,
+        }, undefined, options.signal);
+      },
       continueInstall: (beginCommandId, options = {}) => call('continue', undefined, beginCommandId, options.signal),
       installs: (options = {}) => call('installs', undefined, undefined, options.signal),
     });
