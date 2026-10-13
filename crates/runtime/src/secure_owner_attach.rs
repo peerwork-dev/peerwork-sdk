@@ -2508,6 +2508,178 @@ mod tests {
     }
 
     #[test]
+    fn actual_service_preserves_legacy_pending_action_across_enforce_cutover() {
+        let _fault_guard = ATTACH_FAULT_TEST_LOCK.lock().unwrap();
+        let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else {
+            return;
+        };
+        let Ok(legacy_root) = std::env::var("PEERWORK_LEGACY_CLIENT_ROOT") else {
+            return;
+        };
+        let node = std::env::var("PEERWORK_NODE_BIN").unwrap_or_else(|_| "node".into());
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let bridge =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/reference-kernel-server.mjs");
+        let child = Command::new(&node)
+            .arg(bridge)
+            .env("PEERWORK_REFERENCE_ROOT", &reference_root)
+            .env("PEERWORK_TEST_STATE", root.path())
+            .env("PEERWORK_TEST_FIRST_POST_MODE", "normal")
+            .env("PEERWORK_TEST_OWNER_FORMAT", "1")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        struct StopEnforce(Child);
+        impl Drop for StopEnforce {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut child = StopEnforce(child);
+        let mut line = String::new();
+        BufReader::new(child.0.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        assert!(!line.is_empty(), "pinned service exited before readiness");
+        let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let origin = ready["origin"].as_str().unwrap();
+        let helper =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/legacy-owner-source.mjs");
+        let setup = |name: &str, mode: &str| {
+            let output = Command::new(&node)
+                .arg(&helper)
+                .arg(origin)
+                .arg(root.path().join(name))
+                .arg(&legacy_root)
+                .arg(mode)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "legacy ENFORCE setup: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let source: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(source["policy_v"], 1);
+            assert_eq!(source["pending_count"], 1);
+            source
+        };
+        let applied = setup("enforce-applied", "pending");
+        let unsent = setup("enforce-unsent", "pending-before-post");
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+        let activated = runtime
+            .block_on(
+                reqwest::Client::new()
+                    .post(format!("{origin}__test/activate-protocol-cutover"))
+                    .body("{}")
+                    .send(),
+            )
+            .unwrap();
+        assert_eq!(activated.status(), 200);
+        let phase: serde_json::Value =
+            serde_json::from_slice(&runtime.block_on(activated.bytes()).unwrap()).unwrap();
+        assert_eq!(phase["phase"], "ENFORCE");
+        let oracle = rusqlite::Connection::open_with_flags(
+            root.path().join("control.sqlite"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        let commit_count = |workspace: &str| -> i64 {
+            oracle
+                .query_row(
+                    "SELECT count(*) FROM secure_commits WHERE workspace_id=?1",
+                    [workspace],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        let config = |name: &str| SecureOwnerCreateConfig {
+            origin: origin.into(),
+            state_dir: root.path().join(name),
+            allow_loopback_http: true,
+            max_replay_artifact_bytes: 64 * 1024 * 1024,
+        };
+        let input = |source: &serde_json::Value| HistoricalOwnerAttachInput {
+            workspace_id: source["workspace_id"].as_str().unwrap().into(),
+            protected_ts_state_path: source["state_path"].as_str().unwrap().into(),
+            protected_owner_pkcs8_path: source["pem_path"].as_str().unwrap().into(),
+            protected_ts_intent_db_path: source["intent_db_path"].as_str().unwrap().into(),
+            expected_owner_actor_id: source["owner_actor_id"].as_str().unwrap().into(),
+            expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
+            recover_pending_action: true,
+            kernel_pending_command_ids: Vec::new(),
+            expected_kernel_intent_db_digest: None,
+        };
+        let cancel = CancellationToken::new();
+        let applied_id = applied["workspace_id"].as_str().unwrap();
+        let applied_before = commit_count(applied_id);
+        assert_eq!(applied_before, 2);
+        let posts = TEST_IMPORTED_ACTION_POSTS.load(Ordering::SeqCst);
+        let applied_config = config("native-enforce-applied");
+        let attached = SecureHistoricalOwnerAttach::new(applied_config.clone())
+            .attach(input(&applied), &cancel)
+            .unwrap();
+        assert_eq!(attached.status, "ATTACHED");
+        assert_eq!(TEST_IMPORTED_ACTION_POSTS.load(Ordering::SeqCst), posts);
+        assert_eq!(commit_count(applied_id), applied_before);
+        let reconciled: serde_json::Value = serde_json::from_str(
+            &SecureOwnerWorkspaceCreate::new(applied_config)
+                .private_action_access(applied_id)
+                .unwrap()
+                .reconcile_json(applied["pending_command_id"].as_str().unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(reconciled["status"], "ACCEPTED");
+        assert_eq!(reconciled["commit_hash"], applied["pending_commit_hash"]);
+
+        let unsent_id = unsent["workspace_id"].as_str().unwrap();
+        assert_eq!(commit_count(unsent_id), 1);
+        let unsent_config = config("native-enforce-unsent");
+        let unsent_owner = SecureHistoricalOwnerAttach::new(unsent_config.clone());
+        let unsent_input = input(&unsent);
+        let source_bytes =
+            read_private_file_bounded(&unsent_input.protected_ts_state_path, MAX_SOURCE).unwrap();
+        let source = parse_legacy_source(&source_bytes, &unsent_input).unwrap();
+        let original = source.pending_action.unwrap();
+        assert_eq!(original.command_id, unsent["pending_command_id"]);
+        assert!(matches!(
+            unsent_owner.attach(unsent_input, &cancel),
+            Err(HistoricalOwnerAttachError::PendingActionConflict)
+        ));
+        let history = unsent_owner.attachments().unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].status, "PREPARED");
+        assert_eq!(TEST_IMPORTED_ACTION_POSTS.load(Ordering::SeqCst), posts + 1);
+        assert_eq!(commit_count(unsent_id), 1);
+        let saved = SecureIntentJournal::open(
+            &unsent_config
+                .state_dir
+                .join("workspaces")
+                .join(unsent_id)
+                .join("action-intents.state"),
+            origin,
+            unsent["owner_actor_id"].as_str().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            saved.exact_request(&original.command_id).unwrap(),
+            original.request.as_slice()
+        );
+        assert!(matches!(
+            SecureOwnerWorkspaceCreate::new(unsent_config).private_action_access(unsent_id),
+            Err(_)
+        ));
+    }
+
+    #[test]
     fn actual_service_imports_old_structured_and_public_pending_actions() {
         let _fault_guard = ATTACH_FAULT_TEST_LOCK.lock().unwrap();
         let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else {

@@ -56,3 +56,17 @@ Luna reviewed the initial fixture and two test-only oracle successors; Rust offl
 First attempt `29120b8` failed before migration (chunk `ff9369`, 0.78 s) because the new helper mode still expected the old client's wire-v1 policy while calling current f828. The one-line mode fix `c5ec289` reached native import and confirmed two pending rows, then failed the accepted-count assertion (chunk `b046c2`, 1.04 s): two source-backed `identity.register` rows had been omitted from the test's expected count. `23aa845` asserts the exact three accepted rows and sorts both public pending lists before comparison. Neither failure is a product migration defect.
 
 This probe establishes the existing generic kernel importer/status behavior, not workspace-scoped Owner attachment or command recovery. Generic import retains all verified source rows, and the existing public pending/submit methods are signer/audience scoped; a future Owner bridge must select target commands from the verified JWS workspace ID, bind them to the authenticated Owner, retain unrelated pending rows without submitting them, and require explicit per-ID recovery. No Agent workflow, installed facade, macOS/Windows, or ENFORCE disposition result follows from this probe.
+
+## Legacy secure ACTION during ENFORCE (diagnostic)
+
+Frozen test-only source `cf5a44ef96495be587fe0cd294bf264004543ea1` adds `actual_service_preserves_legacy_pending_action_across_enforce_cutover` to `crates/runtime/src/secure_owner_attach.rs` (SHA256 `8a0d091467a6cd7f86dc3fdcc9f140caca93214688eef24dfbef2e4bcbe596a7`). It uses the same pinned f828 service and old client above. Genuine old-client PRIVATE wire-v1 ACTION packets are saved under the normal PREPARE phase: one is applied with its response lost, and one is saved before sending. The test then uses the reference fixture's official `/__test/activate-protocol-cutover` route and confirms ENFORCE. It does not edit the service database or change production cutover behavior.
+
+The Rust 1.89 offline no-run check passed in session `20516` (exit 0). The frozen actual-service test passed in session `48950` (exit 0, 1/1, 11.46 s). Reproduce with the environment and toolchain paths above:
+
+```sh
+/tmp/peerwork-rustup/toolchains/1.89.0-x86_64-unknown-linux-gnu/bin/cargo test -p peerwork-runtime secure_owner_attach::tests::actual_service_preserves_legacy_pending_action_across_enforce_cutover --offline --locked -- --exact --nocapture
+```
+
+For the applied but reply-lost packet, native attach reaches ATTACHED without another native submit-helper invocation or secure workspace commit. Native reconciliation returns ACCEPTED with the original signed commit hash. For the unsent packet, attach returns `PENDING_ACTION_CONFLICT`; one protected PREPARED history row and the exact original retry request bytes remain, while ordinary private action access is refused. The native submit-helper counter increases once and the service's secure commit count remains at the bootstrap value. That counter measures helper calls, not observed HTTP packets, and the refusal is not a signed rejection receipt or proof that the command can never be accepted. No explicit retained-unresolved handoff exists yet, so this is a diagnostic pass rather than a usable migration completion.
+
+This scripted Rust test does not establish Agent workflow compliance, installed facade behavior, platform parity, or safe concurrent writes by the old client. Those remain unverified or open as described above.
