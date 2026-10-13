@@ -175,7 +175,7 @@ export interface PublicInstallProgress {
   status: 'PENDING' | 'ACCEPTED';
   begin_command_id: string;
   step_command_id: string;
-  step_action_id: string;
+  step_action_id: 'secure.structure.begin' | 'secure.structure.page' | 'secure.structure.end';
   workspace_id: string;
   package_digest: string;
   protocol_digest: string;
@@ -185,7 +185,7 @@ export interface PublicInstallProgress {
 export interface PendingPublicInstall {
   begin_command_id: string;
   pending_step_id: string;
-  pending_action_id: string;
+  pending_action_id: 'secure.structure.begin' | 'secure.structure.page' | 'secure.structure.end';
   workspace_id: string;
   package_id: string;
   package_version: string;

@@ -607,7 +607,7 @@ class PublicInstallProgress(TypedDict):
     status: Literal["PENDING", "ACCEPTED"]
     begin_command_id: str
     step_command_id: str
-    step_action_id: str
+    step_action_id: Literal["secure.structure.begin", "secure.structure.page", "secure.structure.end"]
     workspace_id: str
     package_digest: str
     protocol_digest: str
@@ -618,7 +618,7 @@ class PublicInstallProgress(TypedDict):
 class PendingPublicInstall(TypedDict):
     begin_command_id: str
     pending_step_id: str
-    pending_action_id: str
+    pending_action_id: Literal["secure.structure.begin", "secure.structure.page", "secure.structure.end"]
     workspace_id: str
     package_id: str
     package_version: str

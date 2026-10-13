@@ -221,7 +221,7 @@ fn secure_install_command(verb: &str, args: &[String]) -> Result<String, (&'stat
         "install-pending" => access.list_pending_json_with_cancel(&cancel),
         _ => unreachable!(),
     }
-    .map_err(|e| ("INSTALL_FAILED", e.to_string()))
+    .map_err(|e| (e.code(), e.to_string()))
 }
 
 fn secure_action_command(verb: &str, args: &[String]) -> Result<String, (&'static str, String)> {

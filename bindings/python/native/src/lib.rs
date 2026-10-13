@@ -309,7 +309,7 @@ fn secure_public_install_json(
         };
         match result {
             Ok(value) => format!("{{\"ok\":true,\"value\":{value}}}"),
-            Err(error) => serde_json::json!({"ok":false,"code":"INSTALL_FAILED","message":error.to_string()}).to_string(),
+            Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
         }
     }))
 }
