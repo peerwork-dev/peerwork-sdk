@@ -287,6 +287,21 @@ impl SecureRecipientEnrollment {
     pub fn pending_key_updates(
         &self,
     ) -> Result<Vec<RecipientKeyUpdateResult>, RecipientEnrollmentError> {
+        self.saved_key_updates(false)
+    }
+
+    /// Redacted protected local history, including published update IDs.
+    /// This remains discoverable if a caller cancels after local promotion but
+    /// before its async wrapper can deliver the result. A published row was
+    /// promoted only after the exact signed directory head was verified.
+    pub fn key_updates(&self) -> Result<Vec<RecipientKeyUpdateResult>, RecipientEnrollmentError> {
+        self.saved_key_updates(true)
+    }
+
+    fn saved_key_updates(
+        &self,
+        include_published: bool,
+    ) -> Result<Vec<RecipientKeyUpdateResult>, RecipientEnrollmentError> {
         let identity = KernelIdentity::open(&self.config.identity_path)
             .map_err(|_| RecipientEnrollmentError::Local)?;
         let store = SecureStateStore::open(&self.config.enrollment_state_path)
@@ -297,7 +312,8 @@ impl SecureRecipientEnrollment {
             .ok_or(RecipientEnrollmentError::Invalid)?;
         let doc: EnrollmentDocument =
             serde_json::from_slice(&bytes).map_err(|_| RecipientEnrollmentError::Invalid)?;
-        if doc.origin != self.config.origin
+        if doc.v != 1
+            || doc.origin != self.config.origin
             || doc.actor_id != identity.actor_id()
             || doc.signing_key_id != identity.key_id()
         {
@@ -306,8 +322,17 @@ impl SecureRecipientEnrollment {
         Ok(doc
             .updates
             .iter()
-            .filter(|update| !update.published)
-            .map(|update| update_result(update, "PENDING"))
+            .filter(|update| include_published || !update.published)
+            .map(|update| {
+                update_result(
+                    update,
+                    if update.published {
+                        "PUBLISHED"
+                    } else {
+                        "PENDING"
+                    },
+                )
+            })
             .collect())
     }
 
@@ -1510,10 +1535,17 @@ mod tests {
             enrollment.pending_key_updates().unwrap()[0].update_id,
             pending_rotation.update_id
         );
+        assert_eq!(enrollment.key_updates().unwrap()[0].status, "PENDING");
         let recovered_rotation = SecureRecipientEnrollment::new(config.clone())
             .retry_key_update(&pending_rotation.update_id)
             .unwrap();
         assert_eq!(recovered_rotation.status, "PUBLISHED");
+        assert!(enrollment.pending_key_updates().unwrap().is_empty());
+        assert_eq!(
+            enrollment.key_updates().unwrap()[0].update_id,
+            pending_rotation.update_id
+        );
+        assert_eq!(enrollment.key_updates().unwrap()[0].status, "PUBLISHED");
         assert_eq!(
             recovered_rotation.directory_head,
             pending_rotation.directory_head
