@@ -56,21 +56,23 @@ identifies the host build's dependency origin, not a defect proven in an older
 glibc build. The existing workflow pins a manylinux 2.28 image digest and
 checks the emitted binaries' maximum GLIBC version, but that job has not run.
 
-The local container bundle includes Buildah 1.39.3 and a VFS image store, even
-though no Docker/Podman command is on PATH. A bounded read-only image list under
-approved local execution found no pinned manylinux digest. The first exact
-digest pull failed because the bundled `containers.conf` points to an old
-helper path; a task-local corrected config reached the next setup failure:
-Buildah could not find a signature policy at its system/user default paths.
-An existing policy copied to a task-local XDG config did not change that lookup.
-The bundled Buildah `pull --help` has a `--policy` pull-strategy flag, but no
-signature-policy path flag; `buildah --signature-policy ...` returned
-`unknown flag`. A bounded search of the bundled `containers.conf` and local
-containers-common configuration/docs found no documented task-local signature
-policy path setting. The sandbox also denies user-namespace setup, so an
-isolated mount route was not established.
-No system policy was modified and no registry/auth conclusion follows from
-these pre-network failures. The pinned glibc 2.28 build/install gate is still
-unverified; the practical next route is the configured CI container job or a
-task-local old-glibc sysroot/toolchain that recompiles all native dependencies
-and passes the same binary symbol and installed-consumer checks.
+The worktree already contains a native manylinux 2.28 rootfs under
+`.build-artifacts/glibc28/bundle/rootfs`. The earlier
+`docs/distribution-spike-20261012.md` checkpoint records full manifest/layer
+SHA checks against the exact workflow image digest and a passed installed
+Python/Node/CLI service gate on older SDK source `7831650` plus the separately
+tested GNU ICU PIC correction `6596631`. An approved local `unshare`/`chroot`
+probe of that rootfs again returned `glibc 2.28`. That prior success proves a
+usable local baseline route, but it does not transfer to the current `222859d`
+wheel or the newer Owner attachment APIs.
+
+Before locating the existing unpacked rootfs, a bounded Buildah image-list
+probe found no pinned image in its VFS store. An unnecessary exact-digest pull
+attempt first failed on a stale bundled helper path, then on absent signature
+policy at Buildah's system/user default paths. A task-local XDG policy copy was
+ignored; `buildah --signature-policy ...` returned `unknown flag`. No system
+policy was modified, no network pull was reached, and these setup failures do
+not negate the independently SHA-verified unpacked rootfs. The next relevant
+gate is one immutable current-source native build inside that rootfs, followed
+by binary symbol checks and installed consumers. The configured CI job also
+remains unrun.
