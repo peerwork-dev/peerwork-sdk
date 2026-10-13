@@ -198,7 +198,7 @@ if (process.env.PEERWORK_TEST_ADMISSION === '1') {
     publicAdmissionFixture={recipient_actor_id:agent.identity.actorId,recipient_key_id:agent.identity.keyId};
   } finally { agent.close(); }
 }
-if (process.env.PEERWORK_TEST_PRIVATE_GRANT === '1') {
+if (process.env.PEERWORK_TEST_PRIVATE_GRANT === '1' || process.env.PEERWORK_TEST_PRIVATE_INVITATION === '1') {
   const {generateKeyPairSync} = await import('node:crypto');
   const {SecureAgentClient} = await import(pathToFileURL(join(root, 'dist-workspace/src/workspace-secure-agent.js')).href);
   const ownerPrivate = generateKeyPairSync('ed25519').privateKey;
@@ -218,14 +218,15 @@ if (process.env.PEERWORK_TEST_PRIVATE_GRANT === '1') {
     // The newly joined member's first grant is invitation-bound. The
     // authenticated direct-grant retrieval branch starts after an owner epoch
     // rotation, which writes a separate direct grant for this member.
-    await owner.rotate(created.workspaceId);
+    const directEpoch = process.env.PEERWORK_TEST_PRIVATE_GRANT === '1';
+    if (directEpoch) await owner.rotate(created.workspaceId);
     let journal = await owner.journal(created.workspaceId);
     const wiki = journal.objects.find(object => object.kind === 'instances' && object.value?.origin_entrypoint === 'wiki');
     if (!wiki) throw new Error('private grant fixture lacks wiki action instance');
     journal = await owner.action(created.workspaceId,wiki.id,'wiki.create',
       {title:'Private native grant readback',body:'Encrypted record recovered through grant'});
-    if (journal.policy.payload.visibility !== 'PRIVATE' || journal.policy.payload.epoch !== 2 ||
-        journal.checkpoint.sequence !== 4 ||
+    if (journal.policy.payload.visibility !== 'PRIVATE' || journal.policy.payload.epoch !== (directEpoch ? 2 : 1) ||
+        journal.checkpoint.sequence !== (directEpoch ? 4 : 3) ||
         !journal.objects.some(object => object.kind === 'records' &&
           object.value?.payload?.title === 'Private native grant readback' &&
           object.value?.payload?.body === 'Encrypted record recovered through grant'))
@@ -233,7 +234,8 @@ if (process.env.PEERWORK_TEST_PRIVATE_GRANT === '1') {
     privateGrantFixture = {workspace_id:created.workspaceId,owner_actor_id:owner.identity.actorId,
       owner_key_id:owner.identity.keyId,recipient_actor_id:recipient.identity.actorId,
       recipient_key_id:recipient.identity.keyId,recipient_authority:recipient.transport.authority,
-      sequence:journal.checkpoint.sequence,head:journal.checkpoint.head};
+      sequence:journal.checkpoint.sequence,head:journal.checkpoint.head,
+      invite_id:offer.payload.invite_id};
   } finally { owner.close(); recipient.close(); }
 }
 if (process.env.PEERWORK_TEST_BOOTSTRAP === '1') {
@@ -256,6 +258,7 @@ let dropNextIdentityDirectory = false;
 let serveStaleIdentityDirectory = false;
 let tamperNextIdentityDirectory = false;
 let tamperNextPrivateGrant = false;
+let tamperNextPrivateInvitation = false;
 let rejectNextPostBeforeApply = false;
 let delayNextPostAfterApply = false;
 let delayedPostStarted = false;
@@ -359,6 +362,13 @@ const proxy = createServer(async (request, response) => {
       response.end(JSON.stringify({enabled:true}));
       return;
     }
+    if (request.url === '/__test/tamper-next-private-invitation' && request.method === 'POST') {
+      if (!privateGrantFixture || tamperNextPrivateInvitation) throw new Error('private invitation tamper fixture unavailable');
+      tamperNextPrivateInvitation = true;
+      response.writeHead(200, {'content-type':'application/json'});
+      response.end(JSON.stringify({enabled:true}));
+      return;
+    }
     if (request.url === '/__test/restore-identity-directory' && request.method === 'POST') {
       serveStaleIdentityDirectory = false;
       response.writeHead(200, {'content-type':'application/json'});
@@ -453,6 +463,14 @@ const proxy = createServer(async (request, response) => {
       const grant = value.grants?.[0];
       if (!grant) throw new Error('private grant tamper requires a grant');
       grant.signature = `${grant.signature[0] === 'A' ? 'B' : 'A'}${grant.signature.slice(1)}`;
+      bytes = Buffer.from(JSON.stringify(value));
+    }
+    if (request.method === 'GET' && request.url === `/api/workspace/v1/secure/invitations/${privateGrantFixture?.invite_id}`
+        && tamperNextPrivateInvitation && original.status === 200) {
+      tamperNextPrivateInvitation = false;
+      const value = JSON.parse(bytes.toString('utf8'));
+      if (!value.grant?.signature) throw new Error('private invitation tamper requires signed grant');
+      value.grant.signature = `${value.grant.signature[0] === 'A' ? 'B' : 'A'}${value.grant.signature.slice(1)}`;
       bytes = Buffer.from(JSON.stringify(value));
     }
     if (request.method === 'POST' && request.url === '/api/workspace/v1/secure/identity-keys'

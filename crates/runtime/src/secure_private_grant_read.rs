@@ -393,6 +393,7 @@ fn transport_or_cancel(cancel: &CancellationToken) -> SecurePrivateDirectGrantRe
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::secure_public_decision::{PublicDecisionConfig, SecurePublicDecision};
     use std::{
         fs,
         io::{BufRead, BufReader},
@@ -531,5 +532,162 @@ mod tests {
             })));
         let repeated = SecureReadAccess::new(read).read_json().unwrap();
         assert_eq!(repeated, output);
+    }
+
+    #[test]
+    fn actual_private_invitation_receive_receipt_and_read() {
+        let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else {
+            return;
+        };
+        let node = std::env::var("PEERWORK_NODE_BIN").unwrap_or_else(|_| "node".into());
+        let temp = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let bridge = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/reference-kernel-server.mjs");
+        let child = Command::new(node)
+            .arg(bridge)
+            .env("PEERWORK_REFERENCE_ROOT", reference_root)
+            .env("PEERWORK_TEST_STATE", temp.path())
+            .env("PEERWORK_TEST_PRIVATE_INVITATION", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        struct Stop(Child);
+        impl Drop for Stop {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut child = Stop(child);
+        let mut ready_line = String::new();
+        BufReader::new(child.0.stdout.take().unwrap())
+            .read_line(&mut ready_line)
+            .unwrap();
+        if ready_line.is_empty() {
+            use std::io::Read;
+            let mut stderr = String::new();
+            child
+                .0
+                .stderr
+                .take()
+                .unwrap()
+                .read_to_string(&mut stderr)
+                .unwrap();
+            panic!("reference fixture failed before ready: {stderr}");
+        }
+        let ready: serde_json::Value = serde_json::from_str(&ready_line).unwrap();
+        let fixture = &ready["private_grant"];
+        let state = temp.path().join("native-private-invitation-recipient");
+        fs::create_dir(&state).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let identity_path = state.join("identity.state");
+        let identity = KernelIdentity::import_pkcs8_pem_file(
+            &identity_path,
+            &temp.path().join("private-grant-recipient.pem"),
+        )
+        .unwrap();
+        RecipientState::import_unjoined_ts_state(
+            &state.join("recipient.state"),
+            &identity,
+            &temp.path().join("private-grant-recipient.json"),
+        )
+        .unwrap();
+        drop(identity);
+        let origin = ready["origin"].as_str().unwrap().to_owned();
+        let workspace_id = fixture["workspace_id"].as_str().unwrap().to_owned();
+        let owner_actor_id = fixture["owner_actor_id"].as_str().unwrap().to_owned();
+        let owner_key_id = fixture["owner_key_id"].as_str().unwrap().to_owned();
+        let authority = fixture["recipient_authority"].as_str().unwrap().to_owned();
+        let invite_id = fixture["invite_id"].as_str().unwrap();
+        let decision = SecurePublicDecision::new(PublicDecisionConfig {
+            origin: origin.clone(),
+            state_dir: state.clone(),
+            identity_path: identity_path.clone(),
+            workspace_id: workspace_id.clone(),
+            owner_actor_id: owner_actor_id.clone(),
+            owner_key_id: owner_key_id.clone(),
+            authority: authority.clone(),
+            allow_loopback_http: true,
+            required_features: vec![],
+            max_replay_artifact_bytes: 64 * 1024 * 1024,
+        });
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let response = reqwest::Client::new()
+                .post(format!("{}__test/tamper-next-private-invitation", origin))
+                .send()
+                .await
+                .unwrap();
+            assert!(response.status().is_success());
+        });
+        assert!(matches!(
+            decision.receive_json(invite_id),
+            Err(crate::secure_public_decision::PublicDecisionError::Grant)
+        ));
+        let untouched = SecureLifecycle::open(
+            &state.join("lifecycle.state"),
+            &origin,
+            fixture["recipient_actor_id"].as_str().unwrap(),
+            &workspace_id,
+            &owner_actor_id,
+            &owner_key_id,
+        )
+        .unwrap();
+        assert!(untouched.status().active_epochs.is_empty());
+        drop(untouched);
+        let received: serde_json::Value =
+            serde_json::from_str(&decision.receive_json(invite_id).unwrap()).unwrap();
+        assert_eq!(received["status"], "PENDING");
+        let reopened = SecurePublicDecision::new(PublicDecisionConfig {
+            origin: origin.clone(),
+            state_dir: state.clone(),
+            identity_path: identity_path.clone(),
+            workspace_id: workspace_id.clone(),
+            owner_actor_id: owner_actor_id.clone(),
+            owner_key_id: owner_key_id.clone(),
+            authority: authority.clone(),
+            allow_loopback_http: true,
+            required_features: vec![],
+            max_replay_artifact_bytes: 64 * 1024 * 1024,
+        });
+        let recovered: serde_json::Value =
+            serde_json::from_str(&reopened.retry_receive_json(invite_id).unwrap()).unwrap();
+        assert_eq!(recovered["status"], "READY");
+        let read = SecureReadConfig {
+            origin,
+            kernel_journal_path: state.join("kernel.sqlite"),
+            read_state_path: state.join("private-admission-pages.state"),
+            lifecycle_path: state.join("lifecycle.state"),
+            identity_path,
+            workspace_id,
+            authority,
+            owner_actor_id,
+            owner_key_id,
+            required_features: vec![],
+            allow_loopback_http: true,
+            max_replay_artifact_bytes: 64 * 1024 * 1024,
+        };
+        let output = SecureReadAccess::new(read).read_json().unwrap();
+        let value: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(value["sequence"], fixture["sequence"]);
+        assert_eq!(value["head"], fixture["head"]);
+        assert!(value["objects"]
+            .as_array()
+            .is_some_and(|rows| rows.iter().any(|row| {
+                row["kind"] == "records"
+                    && row["value"]["payload"]["title"] == "Private native grant readback"
+                    && row["value"]["payload"]["body"] == "Encrypted record recovered through grant"
+            })));
     }
 }

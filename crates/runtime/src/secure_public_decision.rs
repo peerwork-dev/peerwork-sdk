@@ -1,4 +1,4 @@
-//! Recipient consent for a signed PUBLIC invitation. An authenticated control
+//! Recipient consent for a signed invitation. An authenticated control
 //! GET and a locally pinned owner precede the exact saved decision POST.
 //! Consent alone does not grant workspace read or member authority.
 
@@ -7,12 +7,16 @@ use crate::{
     kernel_identity::KernelIdentity,
     secure_grant_pending::{GrantEvidence, SecureGrantPending},
     secure_intents::{SecureIntentError, SecureIntentJournal, SecurePacketInput},
-    secure_journal_read::sign_read_proof,
+    secure_journal_read::{sign_read_proof, SecureJournalRead},
     secure_lifecycle::{ReplayKeyringState, SecureLifecycle},
-    secure_read_access::SecureReadAccessError,
+    secure_read_access::{SecureReadAccessError, SecureReadConfig},
     secure_read_profile::{SecureReadProfile, SecureReadProfileConfig},
     secure_recipient_state::RecipientState,
     secure_state::{SecureStateError, SecureStateStore},
+    secure_verified_read::{
+        collect_unverified_artifacts, replay_authenticated_pages_with_grant,
+        SecureJournalReadBudget,
+    },
     transport::{TransportConfig, TransportError},
 };
 use peerwork_core::{
@@ -420,6 +424,29 @@ impl SecurePublicDecision {
             .ok_or(PublicDecisionError::Invalid)?;
         let cert_wire = canonical_wire_value(cert, CanonicalPath::SecureArtifact)
             .map_err(|_| PublicDecisionError::Invalid)?;
+        if policy
+            .get("payload")
+            .and_then(|payload| payload.get("visibility"))
+            .and_then(WireValue::as_string)
+            .as_deref()
+            == Some("PRIVATE")
+        {
+            return self.receive_private_invitation(
+                &runtime,
+                &client,
+                &identity,
+                &recipient,
+                invite_id,
+                &grant_id,
+                &policy_hash,
+                &offer_wire,
+                decision_wire.as_bytes(),
+                grant_wire.as_bytes(),
+                policy_wire.as_bytes(),
+                cert_wire.as_bytes(),
+                cancel,
+            );
+        }
         let profile = SecureReadProfileConfig {
             origin: self.config.origin.clone(),
             state_dir: self.config.state_dir.clone(),
@@ -536,6 +563,171 @@ impl SecurePublicDecision {
             })
             .map_err(|_| PublicDecisionError::Encoding)
         })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn receive_private_invitation(
+        &self,
+        runtime: &tokio::runtime::Runtime,
+        client: &KernelClient,
+        identity: &KernelIdentity,
+        recipient: &RecipientState,
+        invite_id: &str,
+        grant_id: &str,
+        policy_hash: &str,
+        offer_wire: &[u8],
+        decision_wire: &[u8],
+        grant_wire: &[u8],
+        policy_wire: &[u8],
+        cert_wire: &[u8],
+        cancel: &CancellationToken,
+    ) -> Result<String, PublicDecisionError> {
+        let config = SecureReadConfig {
+            origin: self.config.origin.clone(),
+            kernel_journal_path: self.config.state_dir.join("kernel.sqlite"),
+            read_state_path: self.config.state_dir.join("private-admission-pages.state"),
+            lifecycle_path: self.config.state_dir.join("lifecycle.state"),
+            identity_path: self.config.identity_path.clone(),
+            workspace_id: self.config.workspace_id.clone(),
+            authority: self.config.authority.clone(),
+            owner_actor_id: self.config.owner_actor_id.clone(),
+            owner_key_id: self.config.owner_key_id.clone(),
+            required_features: self.config.required_features.clone(),
+            allow_loopback_http: self.config.allow_loopback_http,
+            max_replay_artifact_bytes: self.config.max_replay_artifact_bytes,
+        };
+        let budget = SecureJournalReadBudget::new(config.max_replay_artifact_bytes)
+            .ok_or(PublicDecisionError::Grant)?;
+        let mut reader = SecureJournalRead::open(
+            &config.read_state_path,
+            client,
+            identity,
+            &config.workspace_id,
+            &config.authority,
+        )
+        .map_err(|_| PublicDecisionError::Grant)?;
+        if reader
+            .progress()
+            .map_err(|_| PublicDecisionError::Grant)?
+            .complete_transport
+        {
+            reader
+                .reset_inactive_generation()
+                .map_err(|_| PublicDecisionError::Grant)?;
+        }
+        while !reader
+            .progress()
+            .map_err(|_| PublicDecisionError::Grant)?
+            .complete_transport
+        {
+            runtime
+                .block_on(reader.fetch_next(client, identity, cancel))
+                .map_err(|_| PublicDecisionError::Transport)?;
+        }
+        let pages = reader
+            .authenticated_pages(client, identity)
+            .map_err(|_| PublicDecisionError::Grant)?;
+        let artifacts =
+            collect_unverified_artifacts(&pages, budget).map_err(|_| PublicDecisionError::Grant)?;
+        let last_policy = artifacts
+            .policy_wires
+            .last()
+            .ok_or(PublicDecisionError::Grant)?;
+        if last_policy.as_slice() != policy_wire || sha256_hex(last_policy) != policy_hash {
+            return Err(PublicDecisionError::Grant);
+        }
+        let policies = artifacts
+            .policy_wires
+            .iter()
+            .map(Vec::as_slice)
+            .collect::<Vec<_>>();
+        let commits = artifacts
+            .commit_wires
+            .iter()
+            .map(Vec::as_slice)
+            .collect::<Vec<_>>();
+        let mut pending = SecureGrantPending::open(
+            &self.config.state_dir.join("pending-grant.state"),
+            client.origin(),
+            &self.config.authority,
+            &self.config.workspace_id,
+            &self.config.owner_actor_id,
+            &self.config.owner_key_id,
+            identity,
+            recipient,
+            now_ms()?,
+        )
+        .map_err(|_| PublicDecisionError::Grant)?;
+        let grant = pending
+            .stage(
+                GrantEvidence {
+                    policies: &policies,
+                    commits: &commits,
+                    checkpoint: pages.checkpoint_canonical_json().as_bytes(),
+                    grant: grant_wire,
+                    certificate: cert_wire,
+                    invitation: Some((offer_wire, decision_wire)),
+                    delegation: None,
+                },
+                recipient,
+                now_ms()?,
+            )
+            .map_err(|_| PublicDecisionError::Grant)?;
+        let mut lifecycle = SecureLifecycle::open(
+            &config.lifecycle_path,
+            client.origin(),
+            identity.actor_id(),
+            &config.workspace_id,
+            &config.owner_actor_id,
+            &config.owner_key_id,
+        )
+        .map_err(|_| PublicDecisionError::Lifecycle)?;
+        let replay = replay_authenticated_pages_with_grant(&pages, &lifecycle, &grant, budget)
+            .map_err(|_| PublicDecisionError::Grant)?;
+        let activation = pending
+            .bind_to_replay(recipient, now_ms()?, &replay)
+            .map_err(|_| PublicDecisionError::Grant)?
+            .ok_or(PublicDecisionError::Grant)?;
+        let mut journal = self.open_journal(identity)?;
+        if journal.contains_id(grant_id) {
+            return Err(PublicDecisionError::Intent(SecureIntentError::Conflict));
+        }
+        let packet = prepare_public_receipt(
+            grant_wire,
+            pages.checkpoint_canonical_json().as_bytes(),
+            invite_id,
+            now_ms()?,
+            identity.signing_key(),
+        )?;
+        let receipt_path = format!("{}/receipt", control_path(invite_id)?);
+        journal.prepare(SecurePacketInput {
+            intent_id: grant_id,
+            path: &receipt_path,
+            action_id: "secure.invite.receipt",
+            workspace_id: Some(&self.config.workspace_id),
+            trusted_owner_key: Some(&self.config.owner_key_id),
+            intent_digest: packet.artifact_hash(),
+            exact_request: packet.request_wire(),
+        })?;
+        lifecycle
+            .activate_verified_grant(activation)
+            .map_err(|_| PublicDecisionError::Lifecycle)?;
+        self.send_saved_receipt(
+            runtime,
+            client,
+            identity,
+            &mut journal,
+            grant_id,
+            &receipt_path,
+            cancel,
+        )?;
+        serde_json::to_string(&PublicReceiveResult {
+            status: "PENDING".into(),
+            invite_id: invite_id.into(),
+            workspace_id: self.config.workspace_id.clone(),
+            receipt_hash: packet.artifact_hash().into(),
+        })
+        .map_err(|_| PublicDecisionError::Encoding)
     }
 
     fn send_saved_receipt(
