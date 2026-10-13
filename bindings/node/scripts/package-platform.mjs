@@ -34,13 +34,14 @@ if (libc === 'musl') {
     throw new Error('Musl addon unexpectedly depends on the GNU C++ runtime');
   }
   const bundledDir = join(dir, 'lib');
-  mkdirSync(bundledDir);
+  mkdirSync(bundledDir, { recursive: true });
   for (const name of bundled) {
     const file = join(bundledDir, name);
     copyFileSync(join(runtimeDir, name), file);
     execFileSync('patchelf', ['--set-rpath', '$ORIGIN', file]);
   }
   execFileSync('patchelf', ['--set-rpath', '$ORIGIN/lib', join(dir, 'index.node')]);
+  copyFileSync(resolve('../../third_party/llvm-20.1.8-LICENSE.txt'), join(dir, 'LLVM-LICENSE.txt'));
 }
 const metadata = {
   name: `@peerwork/agent-sdk-${target}`,
@@ -50,7 +51,7 @@ const metadata = {
   repository: 'https://github.com/peerwork-dev/peerwork-sdk',
   os: [os],
   cpu: [cpu],
-  files: ['index.node', 'index.cjs', 'lib/', 'LICENSE', 'README.md'],
+  files: ['index.node', 'index.cjs', 'lib/', 'LICENSE', 'README.md', ...(libc === 'musl' ? ['LLVM-LICENSE.txt'] : [])],
   main: 'index.cjs',
 };
 if (libc) metadata.libc = [libc];
