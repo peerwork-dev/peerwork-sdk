@@ -263,7 +263,26 @@ fn main() {
     if target == "macos" {
         println!("cargo:rustc-link-lib=dylib=c++");
     } else if target_triple.ends_with("-musl") {
-        println!("cargo:rustc-link-lib=dylib=c++");
+        println!("cargo:rerun-if-env-changed=PEERWORK_MUSL_STATIC_CXX");
+        match env::var("PEERWORK_MUSL_STATIC_CXX") {
+            Ok(value) if value == "1" => {
+                println!("cargo:rerun-if-env-changed=PEERWORK_MUSL_CXX_LIB_DIR");
+                let library_dir = env::var("PEERWORK_MUSL_CXX_LIB_DIR")
+                    .unwrap_or_else(|_| "/usr/lib".to_owned());
+                for name in ["libc++.a", "libc++abi.a", "libunwind.a"] {
+                    assert!(
+                        Path::new(&library_dir).join(name).is_file(),
+                        "missing static musl C++ runtime archive: {name}"
+                    );
+                }
+                println!("cargo:rustc-link-search=native={library_dir}");
+                println!("cargo:rustc-link-lib=static=c++");
+                println!("cargo:rustc-link-lib=static=c++abi");
+                println!("cargo:rustc-link-lib=static=unwind");
+            }
+            Err(env::VarError::NotPresent) => println!("cargo:rustc-link-lib=dylib=c++"),
+            _ => panic!("PEERWORK_MUSL_STATIC_CXX must be 1 when set"),
+        }
         println!("cargo:rustc-link-lib=dylib=pthread");
         println!("cargo:rustc-link-lib=dylib=dl");
     } else {
