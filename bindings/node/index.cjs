@@ -328,6 +328,123 @@ exports.openSecurePublicActions = options => {
   });
 };
 
+/** Prepare, reconcile and read Owner-created workspaces from one protected root. */
+exports.openSecureOwnerWorkspaces = options => {
+  if (!options || typeof options.origin !== 'string' || !options.origin ||
+      typeof options.stateDir !== 'string' || !options.stateDir) {
+    throw new TypeError('Owner workspaces require origin and stateDir');
+  }
+  const config = {
+    origin: options.origin,
+    state_dir: options.stateDir,
+    allow_loopback_http: options.allowLoopbackHttp ?? false,
+    max_replay_artifact_bytes: options.maxReplayArtifactBytes ?? 64 * 1024 * 1024,
+  };
+  const invoke = async (operation, input, commandId, workspaceId, signal) => {
+    const handle = new binding.KernelCancelHandle();
+    const onAbort = () => handle.cancel();
+    if (signal?.aborted) onAbort();
+    signal?.addEventListener?.('abort', onAbort, { once: true });
+    try {
+      const result = JSON.parse(await binding.secureOwnerCreateJson(
+        operation, strictCommandJson(config), input === undefined ? undefined : strictCommandJson(input),
+        commandId, workspaceId, handle,
+      ));
+      if (result.ok !== true) {
+        const error = new Error(result.message);
+        error.code = result.code;
+        throw error;
+      }
+      return result.value;
+    } finally {
+      signal?.removeEventListener?.('abort', onAbort);
+    }
+  };
+  const createInput = input => {
+    if (!input || typeof input.name !== 'string' || typeof input.visibility !== 'string') {
+      throw new TypeError('Owner name and visibility are required');
+    }
+    const hasSurrogate = /[\uD800-\uDFFF]/u.test(input.name);
+    const nameUtf16 = hasSurrogate
+      ? Array.from({ length: input.name.length }, (_, index) => input.name.charCodeAt(index))
+      : null;
+    return {
+      name: hasSurrogate ? '' : input.name, name_utf16: nameUtf16,
+      visibility: input.visibility,
+      structured: input.structured ?? false,
+      keep_encrypted_json: strictCommandJson(input.keepEncrypted ?? []),
+      coordination_version: input.coordinationVersion ?? null,
+    };
+  };
+  const consumer = (kind, workspaceId) => {
+    if (typeof workspaceId !== 'string' || !workspaceId) throw new TypeError('workspace ID is required');
+    const call = async (operation, input, commandId, signal) => {
+      const handle = new binding.KernelCancelHandle();
+      const onAbort = () => handle.cancel();
+      if (signal?.aborted) onAbort();
+      signal?.addEventListener?.('abort', onAbort, { once: true });
+      try {
+        const result = JSON.parse(await binding.secureOwnerConsumerJson(kind, operation,
+          strictCommandJson(config), workspaceId,
+          input === undefined ? undefined : strictCommandJson(input), commandId, handle));
+        if (result.ok !== true) {
+          const error = new Error(result.message);
+          error.code = result.code;
+          throw error;
+        }
+        const value = result.value;
+        if (kind === 'public_install' || operation === 'pending') return value;
+        const receipt = value.receipt_canonical_json === null ? null : JSON.parse(value.receipt_canonical_json);
+        delete value.receipt_canonical_json;
+        return { ...value, receipt };
+      } finally {
+        signal?.removeEventListener?.('abort', onAbort);
+      }
+    };
+    if (kind === 'public_install') return Object.freeze({
+      begin: (selection, options = {}) => {
+        if (selection === null || typeof selection !== 'object' ||
+            typeof selection.closureJson !== 'string' || typeof selection.grantsJson !== 'string') {
+          throw new TypeError('install selection requires exact closureJson and grantsJson text');
+        }
+        return call('begin', {
+          closure_json: selection.closureJson,
+          expected_package_id: selection.expectedPackageId,
+          expected_package_version: selection.expectedPackageVersion,
+          expected_package_digest: selection.expectedPackageDigest,
+          expected_protocol_digest: selection.expectedProtocolDigest,
+          instance_id: selection.instanceId, entrypoint: selection.entrypoint,
+          grants_json: selection.grantsJson,
+          command_id: options.commandId ?? null, issued_at_ms: options.issuedAtMs ?? null,
+        }, undefined, options.signal);
+      },
+      continueInstall: (beginCommandId, options = {}) => call('continue', undefined, beginCommandId, options.signal),
+      pending: (options = {}) => call('pending', undefined, undefined, options.signal),
+    });
+    return Object.freeze({
+      submit: (actionId, instanceId, body, options = {}) => call('submit', {
+        action_id: actionId, instance_id: instanceId, body_json: strictCommandJson(body),
+        exact_input_refs_json: options.exactInputRefs === undefined ? null : strictCommandJson(options.exactInputRefs),
+        allocations_json: options.allocations === undefined ? null : strictCommandJson(options.allocations),
+        command_id: options.commandId ?? null, issued_at_ms: options.issuedAtMs ?? null,
+      }, undefined, options.signal),
+      reconcile: (commandId, options = {}) => call('reconcile', undefined, commandId, options.signal),
+      retrySaved: (commandId, options = {}) => call('retry', undefined, commandId, options.signal),
+      pending: (options = {}) => call('pending', undefined, undefined, options.signal),
+    });
+  };
+  return Object.freeze({
+    prepare: (input, { signal } = {}) => invoke('prepare', createInput(input), undefined, undefined, signal),
+    create: (input, { signal } = {}) => invoke('create', createInput(input), undefined, undefined, signal),
+    resume: (commandId, { signal } = {}) => invoke('resume', undefined, commandId, undefined, signal),
+    operations: ({ signal } = {}) => invoke('operations', undefined, undefined, undefined, signal),
+    read: (workspaceId, { signal } = {}) => invoke('read', undefined, undefined, workspaceId, signal),
+    publicActions: workspaceId => consumer('public_action', workspaceId),
+    privateActions: workspaceId => consumer('private_action', workspaceId),
+    publicInstaller: workspaceId => consumer('public_install', workspaceId),
+  });
+};
+
 /** Create protected recipient keys and explicitly publish their signed directory entry. */
 exports.openSecureRecipientEnrollment = options => {
   if (!options || typeof options.origin !== 'string' || typeof options.stateDir !== 'string') {

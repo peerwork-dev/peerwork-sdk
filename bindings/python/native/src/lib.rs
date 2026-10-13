@@ -11,6 +11,9 @@ use peerwork_runtime::secure_public_install::{
 use peerwork_runtime::secure_read_access::{SecureReadAccess, SecureReadConfig};
 use peerwork_runtime::secure_read_profile::{SecureReadProfile, SecureReadProfileConfig};
 use peerwork_runtime::secure_private_read_access::SecurePrivateReadAccess;
+use peerwork_runtime::secure_owner_create::{
+    SecureOwnerCreateConfig, SecureOwnerCreateInput, SecureOwnerWorkspaceCreate,
+};
 use peerwork_runtime::secure_recipient_enrollment::{
     RecipientEnrollmentConfig, SecureRecipientEnrollment,
 };
@@ -348,6 +351,149 @@ fn secure_public_install_json(
 }
 
 #[pyfunction]
+#[pyo3(signature = (operation, config_json, input_json=None, command_id=None, workspace_id=None, cancel_handle=None))]
+fn secure_owner_create_json(
+    py: Python<'_>,
+    operation: &str,
+    config_json: &str,
+    input_json: Option<&str>,
+    command_id: Option<&str>,
+    workspace_id: Option<&str>,
+    cancel_handle: Option<PyRef<'_, KernelCancelHandle>>,
+) -> PyResult<String> {
+    let operation = operation.to_owned();
+    let config_json = config_json.to_owned();
+    let input_json = input_json.map(str::to_owned);
+    let command_id = command_id.map(str::to_owned);
+    let workspace_id = workspace_id.map(str::to_owned);
+    let cancel = cancel_handle.map(|handle| handle.token.clone()).unwrap_or_default();
+    Ok(py.allow_threads(move || {
+        let config: SecureOwnerCreateConfig = match serde_json::from_str(&config_json) {
+            Ok(value) => value,
+            Err(_) => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid Owner configuration"}).to_string(),
+        };
+        let access = SecureOwnerWorkspaceCreate::new(config);
+        let result = match operation.as_str() {
+            "prepare" | "create" => {
+                let input: SecureOwnerCreateInput = match input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {
+                    Some(value) => value,
+                    None => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid Owner creation input"}).to_string(),
+                };
+                if operation == "prepare" { access.prepare(input, &cancel) } else { access.create(input, &cancel) }
+                    .map(|value| serde_json::to_string(&value).expect("Owner result serializes"))
+            }
+            "resume" => match command_id.as_deref() {
+                Some(id) => access.resume(id, &cancel).map(|value| serde_json::to_string(&value).expect("Owner result serializes")),
+                None => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"command ID is required"}).to_string(),
+            },
+            "operations" => access.operations().map(|value| serde_json::to_string(&value).expect("Owner result serializes")),
+            "read" => match workspace_id.as_deref() {
+                Some(id) => access.read_workspace_json(id, &cancel),
+                None => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"workspace ID is required"}).to_string(),
+            },
+            _ => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"unsupported Owner operation"}).to_string(),
+        };
+        match result {
+            Ok(value) => format!("{{\"ok\":true,\"value\":{value}}}"),
+            Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
+        }
+    }))
+}
+
+#[pyfunction]
+#[pyo3(signature = (kind, operation, config_json, workspace_id, input_json=None, command_id=None, cancel_handle=None))]
+fn secure_owner_consumer_json(
+    py: Python<'_>, kind: &str, operation: &str, config_json: &str,
+    workspace_id: &str, input_json: Option<&str>, command_id: Option<&str>,
+    cancel_handle: Option<PyRef<'_, KernelCancelHandle>>,
+) -> PyResult<String> {
+    let kind = kind.to_owned();
+    let operation = operation.to_owned();
+    let config_json = config_json.to_owned();
+    let workspace_id = workspace_id.to_owned();
+    let input_json = input_json.map(str::to_owned);
+    let command_id = command_id.map(str::to_owned);
+    let cancel = cancel_handle.map(|handle| handle.token.clone()).unwrap_or_default();
+    Ok(py.allow_threads(move || {
+        let fail = |code: &str, message: &str| serde_json::json!({"ok":false,"code":code,"message":message}).to_string();
+        let config: SecureOwnerCreateConfig = match serde_json::from_str(&config_json) {
+            Ok(value) => value,
+            Err(_) => return fail("INPUT_INVALID", "invalid Owner configuration"),
+        };
+        let owner = SecureOwnerWorkspaceCreate::new(config);
+        let result = if kind == "public_action" {
+            let access = match owner.public_action_access(&workspace_id) {
+                Ok(value) => value,
+                Err(error) => return fail(error.code(), &error.to_string()),
+            };
+            match operation.as_str() {
+                "submit" => {
+                    let input: PublicActionInput = match input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {
+                        Some(value) => value,
+                        None => return fail("ACTION_INPUT_INVALID", "invalid Owner action input"),
+                    };
+                    access.submit_new_json_with_cancel(input, &cancel)
+                }
+                "reconcile" | "retry" => match command_id.as_deref() {
+                    Some(id) if operation == "reconcile" => access.reconcile_json_with_cancel(id, &cancel),
+                    Some(id) => access.retry_saved_json_with_cancel(id, &cancel),
+                    None => return fail("ACTION_INPUT_INVALID", "command ID is required"),
+                },
+                "pending" => access.list_pending_json_with_cancel(&cancel),
+                _ => return fail("ACTION_INPUT_INVALID", "unsupported Owner action operation"),
+            }.map_err(|error| (error.code(), error.to_string()))
+        } else if kind == "private_action" {
+            let access = match owner.private_action_access(&workspace_id) {
+                Ok(value) => value,
+                Err(error) => return fail(error.code(), &error.to_string()),
+            };
+            match operation.as_str() {
+                "submit" => {
+                    let input: PublicActionInput = match input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {
+                        Some(value) => value,
+                        None => return fail("ACTION_INPUT_INVALID", "invalid Owner action input"),
+                    };
+                    access.submit_new_json_with_cancel(input, &cancel)
+                }
+                "reconcile" | "retry" => match command_id.as_deref() {
+                    Some(id) if operation == "reconcile" => access.reconcile_json_with_cancel(id, &cancel),
+                    Some(id) => access.retry_saved_json_with_cancel(id, &cancel),
+                    None => return fail("ACTION_INPUT_INVALID", "command ID is required"),
+                },
+                "pending" => access.list_pending_json_with_cancel(&cancel),
+                _ => return fail("ACTION_INPUT_INVALID", "unsupported Owner action operation"),
+            }.map_err(|error| (error.code(), error.to_string()))
+        } else if kind == "public_install" {
+            let access = match owner.public_install_access(&workspace_id) {
+                Ok(value) => value,
+                Err(error) => return fail(error.code(), &error.to_string()),
+            };
+            match operation.as_str() {
+                "begin" => {
+                    let input: PublicPackageInstallInput = match input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {
+                        Some(value) => value,
+                        None => return fail("INSTALL_INPUT_INVALID", "invalid Owner package input"),
+                    };
+                    access.submit_begin_json_with_cancel(input, &cancel)
+                }
+                "continue" => match command_id.as_deref() {
+                    Some(id) => access.continue_install_json_with_cancel(id, &cancel),
+                    None => return fail("INSTALL_INPUT_INVALID", "begin command ID is required"),
+                },
+                "pending" => access.list_pending_json_with_cancel(&cancel),
+                _ => return fail("INSTALL_INPUT_INVALID", "unsupported Owner install operation"),
+            }.map_err(|error| (error.code(), error.to_string()))
+        } else {
+            return fail("INPUT_INVALID", "unsupported Owner consumer");
+        };
+        match result {
+            Ok(value) => format!("{{\"ok\":true,\"value\":{value}}}"),
+            Err((code, message)) => fail(code, &message),
+        }
+    }))
+}
+
+#[pyfunction]
 #[pyo3(signature = (operation, origin, state_dir, allow_loopback_http=false, cancel_handle=None, mode=None, expected_certificate_hash=None, update_id=None))]
 fn secure_recipient_enrollment_json(
     py: Python<'_>,
@@ -546,6 +692,8 @@ fn _peerwork_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(secure_private_read_json, module)?)?;
     module.add_function(wrap_pyfunction!(secure_public_action_json, module)?)?;
     module.add_function(wrap_pyfunction!(secure_public_install_json, module)?)?;
+    module.add_function(wrap_pyfunction!(secure_owner_create_json, module)?)?;
+    module.add_function(wrap_pyfunction!(secure_owner_consumer_json, module)?)?;
     module.add_function(wrap_pyfunction!(secure_recipient_enrollment_json, module)?)?;
     module.add_function(wrap_pyfunction!(secure_identity_directory_json, module)?)?;
     module.add_function(wrap_pyfunction!(secure_public_admission_json, module)?)?;

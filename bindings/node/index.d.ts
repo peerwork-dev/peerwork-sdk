@@ -112,6 +112,42 @@ export declare function readSecureWorkspace(options: SecureReadOptions): Promise
 /** Read verified PRIVATE state, recovering a protected direct grant when needed. */
 export declare function readSecurePrivateWorkspace(options: SecureReadOptions): Promise<VerifiedSecureWorkspace>;
 
+export interface SecureOwnerWorkspaceOptions {
+  origin: string;
+  stateDir: string;
+  allowLoopbackHttp?: boolean;
+  maxReplayArtifactBytes?: number;
+}
+export interface SecureOwnerWorkspaceInput {
+  name: string;
+  visibility: 'PUBLIC' | 'PRIVATE';
+  structured?: boolean;
+  keepEncrypted?: unknown[];
+  coordinationVersion?: 1 | 2;
+}
+export interface SecureOwnerWorkspaceResult {
+  status: 'PENDING' | 'CREATED_LOCAL' | 'CREATED';
+  command_id: string;
+  workspace_id: string;
+  visibility: 'PUBLIC' | 'PRIVATE';
+  sequence: number | null;
+  head: string | null;
+}
+export interface SecureOwnerWorkspaceSession {
+  prepare(input: SecureOwnerWorkspaceInput, options?: {signal?: AbortSignal}): Promise<SecureOwnerWorkspaceResult>;
+  create(input: SecureOwnerWorkspaceInput, options?: {signal?: AbortSignal}): Promise<SecureOwnerWorkspaceResult>;
+  resume(commandId: string, options?: {signal?: AbortSignal}): Promise<SecureOwnerWorkspaceResult>;
+  /** Protected local history; CREATED_LOCAL rows may be reconciled by resume. */
+  operations(options?: {signal?: AbortSignal}): Promise<SecureOwnerWorkspaceResult[]>;
+  read(workspaceId: string, options?: {signal?: AbortSignal}): Promise<VerifiedSecureWorkspace>;
+  /** Derive action authority and saved intent paths from protected created-workspace history. */
+  publicActions(workspaceId: string): SecurePublicActionSession;
+  privateActions(workspaceId: string): SecurePublicActionSession;
+  /** Install a caller-selected closure into a created PUBLIC workspace. */
+  publicInstaller(workspaceId: string): SecurePublicPackageInstaller;
+}
+export declare function openSecureOwnerWorkspaces(options: SecureOwnerWorkspaceOptions): SecureOwnerWorkspaceSession;
+
 export interface SecureActionReceipt {
   command_id: string;
   commit_hash: string;

@@ -16,6 +16,9 @@ use peerwork_runtime::secure_public_install::{
 use peerwork_runtime::secure_read_access::{SecureReadAccess, SecureReadConfig};
 use peerwork_runtime::secure_read_profile::{SecureReadProfile, SecureReadProfileConfig};
 use peerwork_runtime::secure_private_read_access::SecurePrivateReadAccess;
+use peerwork_runtime::secure_owner_create::{
+    SecureOwnerCreateConfig, SecureOwnerCreateInput, SecureOwnerWorkspaceCreate,
+};
 use peerwork_runtime::secure_recipient_enrollment::{
     RecipientEnrollmentConfig, SecureRecipientEnrollment,
 };
@@ -504,6 +507,182 @@ pub fn secure_public_install_json(
         cancel: cancel_handle
             .map(|handle| handle.token.clone())
             .unwrap_or_default(),
+    })
+}
+
+pub struct SecureOwnerCreateTask {
+    operation: String,
+    config_json: String,
+    input_json: Option<String>,
+    command_id: Option<String>,
+    workspace_id: Option<String>,
+    cancel: KernelCancellationToken,
+}
+
+impl Task for SecureOwnerCreateTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let config: SecureOwnerCreateConfig = match serde_json::from_str(&self.config_json) {
+            Ok(value) => value,
+            Err(_) => return Ok(serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid Owner configuration"}).to_string()),
+        };
+        let access = SecureOwnerWorkspaceCreate::new(config);
+        let result = match self.operation.as_str() {
+            "prepare" | "create" => {
+                let input: SecureOwnerCreateInput = match self.input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {
+                    Some(value) => value,
+                    None => return Ok(serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid Owner creation input"}).to_string()),
+                };
+                if self.operation == "prepare" { access.prepare(input, &self.cancel) } else { access.create(input, &self.cancel) }
+                    .map(|value| serde_json::to_string(&value).expect("Owner result serializes"))
+            }
+            "resume" => match self.command_id.as_deref() {
+                Some(id) => access.resume(id, &self.cancel).map(|value| serde_json::to_string(&value).expect("Owner result serializes")),
+                None => return Ok(serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"command ID is required"}).to_string()),
+            },
+            "operations" => access.operations().map(|value| serde_json::to_string(&value).expect("Owner result serializes")),
+            "read" => match self.workspace_id.as_deref() {
+                Some(id) => access.read_workspace_json(id, &self.cancel),
+                None => return Ok(serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"workspace ID is required"}).to_string()),
+            },
+            _ => return Ok(serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"unsupported Owner operation"}).to_string()),
+        };
+        Ok(match result {
+            Ok(value) => format!("{{\"ok\":true,\"value\":{value}}}"),
+            Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
+        })
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> { Ok(output) }
+}
+
+#[napi]
+pub fn secure_owner_create_json(
+    operation: String,
+    config_json: String,
+    input_json: Option<String>,
+    command_id: Option<String>,
+    workspace_id: Option<String>,
+    cancel_handle: Option<ClassInstance<KernelCancelHandle>>,
+) -> AsyncTask<SecureOwnerCreateTask> {
+    AsyncTask::new(SecureOwnerCreateTask {
+        operation, config_json, input_json, command_id, workspace_id,
+        cancel: cancel_handle.map(|handle| handle.token.clone()).unwrap_or_default(),
+    })
+}
+
+pub struct SecureOwnerConsumerTask {
+    kind: String,
+    operation: String,
+    config_json: String,
+    workspace_id: String,
+    input_json: Option<String>,
+    command_id: Option<String>,
+    cancel: KernelCancellationToken,
+}
+
+impl Task for SecureOwnerConsumerTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let fail = |code: &str, message: &str| serde_json::json!({"ok":false,"code":code,"message":message}).to_string();
+        let config: SecureOwnerCreateConfig = match serde_json::from_str(&self.config_json) {
+            Ok(value) => value,
+            Err(_) => return Ok(fail("INPUT_INVALID", "invalid Owner configuration")),
+        };
+        let owner = SecureOwnerWorkspaceCreate::new(config);
+        let result = if self.kind == "public_action" {
+            let access = match owner.public_action_access(&self.workspace_id) {
+                Ok(value) => value,
+                Err(error) => return Ok(fail(error.code(), &error.to_string())),
+            };
+            match self.operation.as_str() {
+                "submit" => {
+                    let input: PublicActionInput = match self.input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {
+                        Some(value) => value,
+                        None => return Ok(fail("ACTION_INPUT_INVALID", "invalid Owner action input")),
+                    };
+                    access.submit_new_json_with_cancel(input, &self.cancel)
+                }
+                "reconcile" => match self.command_id.as_deref() {
+                    Some(id) => access.reconcile_json_with_cancel(id, &self.cancel),
+                    None => return Ok(fail("ACTION_INPUT_INVALID", "command ID is required")),
+                },
+                "retry" => match self.command_id.as_deref() {
+                    Some(id) => access.retry_saved_json_with_cancel(id, &self.cancel),
+                    None => return Ok(fail("ACTION_INPUT_INVALID", "command ID is required")),
+                },
+                "pending" => access.list_pending_json_with_cancel(&self.cancel),
+                _ => return Ok(fail("ACTION_INPUT_INVALID", "unsupported Owner action operation")),
+            }.map_err(|error| (error.code(), error.to_string()))
+        } else if self.kind == "private_action" {
+            let access = match owner.private_action_access(&self.workspace_id) {
+                Ok(value) => value,
+                Err(error) => return Ok(fail(error.code(), &error.to_string())),
+            };
+            match self.operation.as_str() {
+                "submit" => {
+                    let input: PublicActionInput = match self.input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {
+                        Some(value) => value,
+                        None => return Ok(fail("ACTION_INPUT_INVALID", "invalid Owner action input")),
+                    };
+                    access.submit_new_json_with_cancel(input, &self.cancel)
+                }
+                "reconcile" => match self.command_id.as_deref() {
+                    Some(id) => access.reconcile_json_with_cancel(id, &self.cancel),
+                    None => return Ok(fail("ACTION_INPUT_INVALID", "command ID is required")),
+                },
+                "retry" => match self.command_id.as_deref() {
+                    Some(id) => access.retry_saved_json_with_cancel(id, &self.cancel),
+                    None => return Ok(fail("ACTION_INPUT_INVALID", "command ID is required")),
+                },
+                "pending" => access.list_pending_json_with_cancel(&self.cancel),
+                _ => return Ok(fail("ACTION_INPUT_INVALID", "unsupported Owner action operation")),
+            }.map_err(|error| (error.code(), error.to_string()))
+        } else if self.kind == "public_install" {
+            let access = match owner.public_install_access(&self.workspace_id) {
+                Ok(value) => value,
+                Err(error) => return Ok(fail(error.code(), &error.to_string())),
+            };
+            match self.operation.as_str() {
+                "begin" => {
+                    let input: PublicPackageInstallInput = match self.input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {
+                        Some(value) => value,
+                        None => return Ok(fail("INSTALL_INPUT_INVALID", "invalid Owner package input")),
+                    };
+                    access.submit_begin_json_with_cancel(input, &self.cancel)
+                }
+                "continue" => match self.command_id.as_deref() {
+                    Some(id) => access.continue_install_json_with_cancel(id, &self.cancel),
+                    None => return Ok(fail("INSTALL_INPUT_INVALID", "begin command ID is required")),
+                },
+                "pending" => access.list_pending_json_with_cancel(&self.cancel),
+                _ => return Ok(fail("INSTALL_INPUT_INVALID", "unsupported Owner install operation")),
+            }.map_err(|error| (error.code(), error.to_string()))
+        } else {
+            return Ok(fail("INPUT_INVALID", "unsupported Owner consumer"));
+        };
+        Ok(match result {
+            Ok(value) => format!("{{\"ok\":true,\"value\":{value}}}"),
+            Err((code, message)) => fail(code, &message),
+        })
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> { Ok(output) }
+}
+
+#[napi]
+pub fn secure_owner_consumer_json(
+    kind: String, operation: String, config_json: String, workspace_id: String,
+    input_json: Option<String>, command_id: Option<String>,
+    cancel_handle: Option<ClassInstance<KernelCancelHandle>>,
+) -> AsyncTask<SecureOwnerConsumerTask> {
+    AsyncTask::new(SecureOwnerConsumerTask {
+        kind, operation, config_json, workspace_id, input_json, command_id,
+        cancel: cancel_handle.map(|handle| handle.token.clone()).unwrap_or_default(),
     })
 }
 

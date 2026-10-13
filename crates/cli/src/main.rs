@@ -12,10 +12,15 @@ use peerwork_runtime::secure_public_install::{
 use peerwork_runtime::secure_read_access::{SecureReadAccess, SecureReadConfig};
 use peerwork_runtime::secure_read_profile::{SecureReadProfile, SecureReadProfileConfig};
 use peerwork_runtime::secure_private_read_access::SecurePrivateReadAccess;
+use peerwork_runtime::secure_owner_create::{
+    SecureOwnerCreateConfig, SecureOwnerCreateInput, SecureOwnerWorkspaceCreate,
+};
 use peerwork_runtime::secure_recipient_enrollment::{
     RecipientEnrollmentConfig, SecureRecipientEnrollment,
 };
 use peerwork_runtime::KernelCancellationToken;
+use peerwork_core::canonical::Path as CanonicalPath;
+use peerwork_core::wire_json::{canonical_wire_value, parse_wire_json_bounded, WireValue};
 use std::fs;
 use std::io::Read;
 use std::path::Path;
@@ -219,6 +224,27 @@ fn main() -> ExitCode {
         }
         [noun, verb, rest @ ..]
             if noun == "secure"
+                && (verb == "owner-prepare"
+                    || verb == "owner-create"
+                    || verb == "owner-resume"
+                    || verb == "owner-operations"
+                    || verb == "owner-read"
+                    || verb == "owner-action-submit"
+                    || verb == "owner-action-status"
+                    || verb == "owner-action-retry"
+                    || verb == "owner-action-pending"
+                    || verb == "owner-private-action-submit"
+                    || verb == "owner-private-action-status"
+                    || verb == "owner-private-action-retry"
+                    || verb == "owner-private-action-pending"
+                    || verb == "owner-install-begin"
+                    || verb == "owner-install-continue"
+                    || verb == "owner-install-pending") =>
+        {
+            cli_result(secure_owner_command(verb, rest))
+        }
+        [noun, verb, rest @ ..]
+            if noun == "secure"
                 && (verb == "recipient-create"
                     || verb == "recipient-publish"
                     || verb == "recipient-pending"
@@ -250,10 +276,138 @@ fn main() -> ExitCode {
             cli_result(secure_directory_lookup(rest))
         }
         _ => {
-            eprintln!("{{\"code\":\"USAGE\",\"message\":\"peerwork version|capabilities|identity create PATH|identity info PATH|identity import-legacy-pem PATH PROTECTED_PEM_FILE|identity import-seed-file PATH PROTECTED_SEED_FILE|kernel open|prepare|pending|status|submit ORIGIN JOURNAL IDENTITY [COMMAND_FILE|COMMAND_ID] [--allow-loopback-http] [--authority=HEX] [--chunk-file=PATH|--chunk-stdin for prepare]; kernel migrate ORIGIN JOURNAL IDENTITY SOURCE BACKUP --trusted-signer=KEY_ID [--trusted-signer=KEY_ID ...]; secure read|private-read --origin=URL --state-dir=DIR --identity=PATH --workspace=ID [--owner-actor=ID --owner-key=ID] [--authority=HEX]; secure snapshot ORIGIN KERNEL_JOURNAL READ_STATE LIFECYCLE IDENTITY WORKSPACE AUTHORITY OWNER_ACTOR OWNER_KEY [--allow-loopback-http] [--max-replay-artifact-bytes=N]; secure action-submit|action-status|action-retry CONFIG_JSON_FILE ACTION_JSON_FILE|COMMAND_ID; secure action-pending CONFIG_JSON_FILE; secure install-begin CONFIG_JSON_FILE INPUT_JSON_FILE | install-continue CONFIG_JSON_FILE BEGIN_COMMAND_ID | install-pending CONFIG_JSON_FILE; secure recipient-create|recipient-publish|recipient-pending|recipient-certificate|recipient-update|recipient-retry-update|recipient-pending-updates --origin=URL --state-dir=DIR [--mode=ROTATE|RENEW --expected-certificate-hash=HEX --update-id=ID] [--allow-loopback-http]; secure directory-lookup --origin=URL --state-dir=DIR --actor=ACTOR --key=KEY [--identity=PATH] [--allow-loopback-http]\"}}");
+            eprintln!("{{\"code\":\"USAGE\",\"message\":\"peerwork version|capabilities|identity create PATH|identity info PATH|identity import-legacy-pem PATH PROTECTED_PEM_FILE|identity import-seed-file PATH PROTECTED_SEED_FILE|kernel open|prepare|pending|status|submit ORIGIN JOURNAL IDENTITY [COMMAND_FILE|COMMAND_ID] [--allow-loopback-http] [--authority=HEX] [--chunk-file=PATH|--chunk-stdin for prepare]; kernel migrate ORIGIN JOURNAL IDENTITY SOURCE BACKUP --trusted-signer=KEY_ID [--trusted-signer=KEY_ID ...]; secure read|private-read --origin=URL --state-dir=DIR --identity=PATH --workspace=ID [--owner-actor=ID --owner-key=ID] [--authority=HEX]; secure snapshot ORIGIN KERNEL_JOURNAL READ_STATE LIFECYCLE IDENTITY WORKSPACE AUTHORITY OWNER_ACTOR OWNER_KEY [--allow-loopback-http] [--max-replay-artifact-bytes=N]; secure action-submit|action-status|action-retry CONFIG_JSON_FILE ACTION_JSON_FILE|COMMAND_ID; secure action-pending CONFIG_JSON_FILE; secure install-begin CONFIG_JSON_FILE INPUT_JSON_FILE | install-continue CONFIG_JSON_FILE BEGIN_COMMAND_ID | install-pending CONFIG_JSON_FILE; secure owner-prepare|owner-create CONFIG_JSON_FILE INPUT_JSON_FILE | owner-resume CONFIG_JSON_FILE COMMAND_ID | owner-operations CONFIG_JSON_FILE | owner-read CONFIG_JSON_FILE WORKSPACE_ID; secure recipient-create|recipient-publish|recipient-pending|recipient-certificate|recipient-update|recipient-retry-update|recipient-pending-updates --origin=URL --state-dir=DIR [--mode=ROTATE|RENEW --expected-certificate-hash=HEX --update-id=ID] [--allow-loopback-http]; secure directory-lookup --origin=URL --state-dir=DIR --actor=ACTOR --key=KEY [--identity=PATH] [--allow-loopback-http]\"}}");
             ExitCode::FAILURE
         }
     }
+}
+
+fn secure_owner_command(verb: &str, args: &[String]) -> Result<String, (&'static str, String)> {
+    if verb.starts_with("owner-action-") || verb.starts_with("owner-private-action-") || verb.starts_with("owner-install-") {
+        return secure_owner_consumer_command(verb, args);
+    }
+    if args.len() != if verb == "owner-operations" { 1 } else { 2 } {
+        return Err(("USAGE", "secure owner-prepare|owner-create CONFIG_JSON_FILE INPUT_JSON_FILE | owner-resume CONFIG_JSON_FILE COMMAND_ID | owner-operations CONFIG_JSON_FILE | owner-read CONFIG_JSON_FILE WORKSPACE_ID".to_owned()));
+    }
+    let config_bytes = fs::read(&args[0]).map_err(|e| ("CONFIG_FILE", e.to_string()))?;
+    let config: SecureOwnerCreateConfig = serde_json::from_slice(&config_bytes)
+        .map_err(|_| ("CONFIG_INVALID", "invalid Owner configuration".to_owned()))?;
+    let access = SecureOwnerWorkspaceCreate::new(config);
+    let cancel = KernelCancellationToken::new();
+    let _interrupts = InterruptMonitor::start(cancel.clone()).map_err(|_| {
+        ("INTERRUPT_HANDLER", "unable to install interrupt handler".to_owned())
+    })?;
+    let value = match verb {
+        "owner-prepare" | "owner-create" => {
+            let bytes = fs::read(&args[1]).map_err(|e| ("INPUT_FILE", e.to_string()))?;
+            let input = parse_owner_input(&bytes)?;
+            let result = if verb == "owner-prepare" {
+                access.prepare(input, &cancel)
+            } else {
+                access.create(input, &cancel)
+            }.map_err(|e| (e.code(), e.to_string()))?;
+            serde_json::to_string(&result)
+        }
+        "owner-resume" => {
+            let result = access.resume(&args[1], &cancel).map_err(|e| (e.code(), e.to_string()))?;
+            serde_json::to_string(&result)
+        }
+        "owner-operations" => {
+            let result = access.operations().map_err(|e| (e.code(), e.to_string()))?;
+            serde_json::to_string(&result)
+        }
+        "owner-read" => return access.read_workspace_json(&args[1], &cancel)
+            .map_err(|e| (e.code(), e.to_string())),
+        _ => unreachable!(),
+    };
+    value.map_err(|_| ("RESULT_ENCODING_FAILED", "Owner result encoding failed".to_owned()))
+}
+
+fn secure_owner_consumer_command(verb: &str, args: &[String]) -> Result<String, (&'static str, String)> {
+    let pending = verb.ends_with("-pending");
+    if args.len() != if pending { 2 } else { 3 } {
+        return Err(("USAGE", "secure owner-action-submit|owner-action-status|owner-action-retry|owner-action-pending|owner-install-begin|owner-install-continue|owner-install-pending CONFIG_JSON_FILE WORKSPACE_ID [INPUT_JSON_FILE|COMMAND_ID]".to_owned()));
+    }
+    let bytes = fs::read(&args[0]).map_err(|e| ("CONFIG_FILE", e.to_string()))?;
+    let config: SecureOwnerCreateConfig = serde_json::from_slice(&bytes)
+        .map_err(|_| ("CONFIG_INVALID", "invalid Owner configuration".to_owned()))?;
+    let owner = SecureOwnerWorkspaceCreate::new(config);
+    let cancel = KernelCancellationToken::new();
+    let _interrupts = InterruptMonitor::start(cancel.clone())
+        .map_err(|_| ("INTERRUPT_HANDLER", "unable to install interrupt handler".to_owned()))?;
+    let workspace_id = &args[1];
+    if verb.starts_with("owner-action-") || verb.starts_with("owner-private-action-") {
+        let private = verb.starts_with("owner-private-action-");
+        let suffix = if private { &verb["owner-private-action-".len()..] } else { &verb["owner-action-".len()..] };
+        if private {
+            let access = owner.private_action_access(workspace_id).map_err(|e| (e.code(), e.to_string()))?;
+            let result = match suffix {
+                "submit" => {
+                    let bytes = fs::read(&args[2]).map_err(|e| ("ACTION_FILE", e.to_string()))?;
+                    let input: PublicActionInput = serde_json::from_slice(&bytes)
+                        .map_err(|_| ("ACTION_INPUT_INVALID", "invalid Owner action input".to_owned()))?;
+                    access.submit_new_json_with_cancel(input, &cancel)
+                }
+                "status" => access.reconcile_json_with_cancel(&args[2], &cancel),
+                "retry" => access.retry_saved_json_with_cancel(&args[2], &cancel),
+                "pending" => access.list_pending_json_with_cancel(&cancel),
+                _ => unreachable!(),
+            };
+            return result.map_err(|e| (e.code(), e.to_string()));
+        }
+        let access = owner.public_action_access(workspace_id).map_err(|e| (e.code(), e.to_string()))?;
+        let result = match verb {
+            "owner-action-submit" => {
+                let bytes = fs::read(&args[2]).map_err(|e| ("ACTION_FILE", e.to_string()))?;
+                let input: PublicActionInput = serde_json::from_slice(&bytes)
+                    .map_err(|_| ("ACTION_INPUT_INVALID", "invalid Owner action input".to_owned()))?;
+                access.submit_new_json_with_cancel(input, &cancel)
+            }
+            "owner-action-status" => access.reconcile_json_with_cancel(&args[2], &cancel),
+            "owner-action-retry" => access.retry_saved_json_with_cancel(&args[2], &cancel),
+            "owner-action-pending" => access.list_pending_json_with_cancel(&cancel),
+            _ => unreachable!(),
+        };
+        return result.map_err(|e| (e.code(), e.to_string()));
+    }
+    let access = owner.public_install_access(workspace_id).map_err(|e| (e.code(), e.to_string()))?;
+    let result = match verb {
+        "owner-install-begin" => {
+            let bytes = fs::read(&args[2]).map_err(|e| ("INSTALL_FILE", e.to_string()))?;
+            let input: PublicPackageInstallInput = serde_json::from_slice(&bytes)
+                .map_err(|_| ("INSTALL_INPUT_INVALID", "invalid Owner package input".to_owned()))?;
+            access.submit_begin_json_with_cancel(input, &cancel)
+        }
+        "owner-install-continue" => access.continue_install_json_with_cancel(&args[2], &cancel),
+        "owner-install-pending" => access.list_pending_json_with_cancel(&cancel),
+        _ => unreachable!(),
+    };
+    result.map_err(|e| (e.code(), e.to_string()))
+}
+
+fn parse_owner_input(bytes: &[u8]) -> Result<SecureOwnerCreateInput, (&'static str, String)> {
+    if bytes.len() > 16 * 1024 {
+        return Err(("INPUT_INVALID", "Owner creation input exceeds local limit".to_owned()));
+    }
+    let mut wire = parse_wire_json_bounded(bytes, 12, 16 * 1024)
+        .map_err(|_| ("INPUT_INVALID", "invalid Owner creation JSON".to_owned()))?;
+    let name_units = wire.get("name").and_then(WireValue::as_utf16)
+        .ok_or(("INPUT_INVALID", "Owner name is required".to_owned()))?.to_vec();
+    if String::from_utf16(&name_units).is_err() {
+        let WireValue::Object(fields) = &mut wire else { unreachable!() };
+        if fields.iter().any(|(key, _)| key.iter().copied().eq("name_utf16".encode_utf16())) {
+            return Err(("INPUT_INVALID", "Owner name and UTF-16 sidecar conflict".to_owned()));
+        }
+        let (_, name) = fields.iter_mut().find(|(key, _)| key.iter().copied().eq("name".encode_utf16()))
+            .ok_or(("INPUT_INVALID", "Owner name is required".to_owned()))?;
+        *name = WireValue::String(Vec::new());
+        fields.push(("name_utf16".encode_utf16().collect(), WireValue::Array(
+            name_units.into_iter().map(|unit| WireValue::Number(f64::from(unit))).collect())));
+    }
+    let canonical = canonical_wire_value(&wire, CanonicalPath::SecureArtifact)
+        .map_err(|_| ("INPUT_INVALID", "invalid Owner creation value".to_owned()))?;
+    serde_json::from_str(&canonical)
+        .map_err(|_| ("INPUT_INVALID", "invalid Owner creation input".to_owned()))
 }
 
 fn secure_recipient_command(verb: &str, args: &[String]) -> Result<String, (&'static str, String)> {

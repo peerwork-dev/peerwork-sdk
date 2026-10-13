@@ -17,6 +17,7 @@ from ._peerwork_native import (
     secure_private_read_json,
     secure_public_action_json,
     secure_public_install_json,
+    secure_owner_create_json,
     secure_recipient_enrollment_json,
     secure_identity_directory_json,
     secure_public_admission_json,
@@ -905,6 +906,184 @@ class SecureRecipientEnrollmentClient:
 __all__ += ["SecureRecipientEnrollmentClient", "RecipientEnrollmentResult", "RecipientKeyUpdateResult", "RecipientEnrollmentError"]
 
 
+class OwnerWorkspaceResult(TypedDict):
+    status: Literal["PENDING", "CREATED_LOCAL", "CREATED"]
+    command_id: str
+    workspace_id: str
+    visibility: Literal["PUBLIC", "PRIVATE"]
+    sequence: int | None
+    head: str | None
+
+
+class OwnerWorkspaceError(RuntimeError):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+class SecureOwnerWorkspaceClient:
+    """Create and read workspaces from one protected Owner state directory.
+
+    Preparation saves the exact generated IDs and signed request locally before
+    any workspace POST. Recover a lost return ID with operations(), then resume.
+    """
+
+    def __init__(self, origin: str, state_dir: str, *, allow_loopback_http: bool = False,
+                 max_replay_artifact_bytes: int = 64 * 1024 * 1024):
+        self._config = dict(origin=origin, state_dir=state_dir,
+            allow_loopback_http=allow_loopback_http,
+            max_replay_artifact_bytes=max_replay_artifact_bytes)
+
+    def _owner(self, operation: str, *, input_value: dict | None = None,
+               command_id: str | None = None, workspace_id: str | None = None,
+               cancel_handle: KernelCancelHandle | None = None):
+        result = json.loads(secure_owner_create_json(operation,
+            json.dumps(self._config, ensure_ascii=True, separators=(",", ":")),
+            None if input_value is None else json.dumps(input_value, ensure_ascii=True, separators=(",", ":")),
+            command_id, workspace_id, cancel_handle))
+        if result["ok"] is not True:
+            raise OwnerWorkspaceError(result["code"], result["message"])
+        return result["value"]
+
+    @staticmethod
+    def _input(name: str, visibility: Literal["PUBLIC", "PRIVATE"], *,
+               structured: bool = False, keep_encrypted: list | None = None,
+               coordination_version: int | None = None) -> dict:
+        has_surrogate = False
+        index = 0
+        while index < len(name):
+            unit = ord(name[index])
+            if 0xD800 <= unit <= 0xDBFF:
+                if index + 1 < len(name) and 0xDC00 <= ord(name[index + 1]) <= 0xDFFF:
+                    index += 2
+                    continue
+                has_surrogate = True
+                break
+            if 0xDC00 <= unit <= 0xDFFF:
+                has_surrogate = True
+                break
+            index += 1
+        encoded = name.encode("utf-16-le", "surrogatepass") if has_surrogate else b""
+        units = [int.from_bytes(encoded[offset:offset + 2], "little")
+            for offset in range(0, len(encoded), 2)] if has_surrogate else None
+        return dict(name="" if has_surrogate else name, name_utf16=units,
+            visibility=visibility, structured=structured,
+            keep_encrypted_json=json.dumps(keep_encrypted if keep_encrypted is not None else [],
+                ensure_ascii=True, separators=(",", ":")),
+            coordination_version=coordination_version)
+
+    def prepare(self, name: str, visibility: Literal["PUBLIC", "PRIVATE"], *,
+                structured: bool = False, keep_encrypted: list | None = None,
+                coordination_version: int | None = None) -> OwnerWorkspaceResult:
+        return cast(OwnerWorkspaceResult, self._owner("prepare", input_value=self._input(name,
+            visibility, structured=structured, keep_encrypted=keep_encrypted,
+            coordination_version=coordination_version)))
+
+    def create(self, name: str, visibility: Literal["PUBLIC", "PRIVATE"], *,
+               structured: bool = False, keep_encrypted: list | None = None,
+               coordination_version: int | None = None) -> OwnerWorkspaceResult:
+        return cast(OwnerWorkspaceResult, self._owner("create", input_value=self._input(name,
+            visibility, structured=structured, keep_encrypted=keep_encrypted,
+            coordination_version=coordination_version)))
+
+    def resume(self, command_id: str) -> OwnerWorkspaceResult:
+        return cast(OwnerWorkspaceResult, self._owner("resume", command_id=command_id))
+
+    def operations(self) -> list[OwnerWorkspaceResult]:
+        """Local protected PENDING and CREATED history; no fresh service status."""
+        return cast(list[OwnerWorkspaceResult], self._owner("operations"))
+
+    def read(self, workspace_id: str) -> VerifiedSecureWorkspace:
+        return cast(VerifiedSecureWorkspace, self._owner("read", workspace_id=workspace_id))
+
+    def public_actions(self, workspace_id: str) -> "OwnerWorkspaceActionClient":
+        return OwnerWorkspaceActionClient(self._config, workspace_id, "public_action")
+
+    def private_actions(self, workspace_id: str) -> "OwnerWorkspaceActionClient":
+        return OwnerWorkspaceActionClient(self._config, workspace_id, "private_action")
+
+    def public_installer(self, workspace_id: str) -> "OwnerWorkspacePackageInstaller":
+        return OwnerWorkspacePackageInstaller(self._config, workspace_id)
+
+    async def prepare_async(self, name: str, visibility: Literal["PUBLIC", "PRIVATE"], *,
+                            structured: bool = False, keep_encrypted: list | None = None,
+                            coordination_version: int | None = None) -> OwnerWorkspaceResult:
+        value = self._input(name, visibility, structured=structured,
+            keep_encrypted=keep_encrypted, coordination_version=coordination_version)
+        return cast(OwnerWorkspaceResult, await _run_cancelled_async(self._owner,
+            "prepare", input_value=value))
+
+    async def create_async(self, name: str, visibility: Literal["PUBLIC", "PRIVATE"], *,
+                           structured: bool = False, keep_encrypted: list | None = None,
+                           coordination_version: int | None = None) -> OwnerWorkspaceResult:
+        value = self._input(name, visibility, structured=structured,
+            keep_encrypted=keep_encrypted, coordination_version=coordination_version)
+        return cast(OwnerWorkspaceResult, await _run_cancelled_async(self._owner,
+            "create", input_value=value))
+
+    async def resume_async(self, command_id: str) -> OwnerWorkspaceResult:
+        return cast(OwnerWorkspaceResult, await _run_cancelled_async(self._owner,
+            "resume", command_id=command_id))
+
+    async def operations_async(self) -> list[OwnerWorkspaceResult]:
+        return cast(list[OwnerWorkspaceResult], await _run_cancelled_async(self._owner,
+            "operations"))
+
+    async def read_async(self, workspace_id: str) -> VerifiedSecureWorkspace:
+        return cast(VerifiedSecureWorkspace, await _run_cancelled_async(self._owner,
+            "read", workspace_id=workspace_id))
+
+
+class OwnerWorkspaceActionClient(SecurePublicActionClient):
+    """Actions for a workspace selected from protected Owner creation history."""
+
+    def __init__(self, owner_config: dict, workspace_id: str, kind: str):
+        self._owner_config = owner_config
+        self._workspace_id = workspace_id
+        self._kind = kind
+
+    def _action(self, operation: str, *, input_value: dict | None = None,
+                command_id: str | None = None,
+                cancel_handle: KernelCancelHandle | None = None) -> SecureActionResult | list[PendingSecureAction]:
+        result = json.loads(secure_owner_consumer_json(self._kind, operation,
+            json.dumps(self._owner_config, ensure_ascii=True, allow_nan=False, separators=(",", ":")),
+            self._workspace_id,
+            None if input_value is None else json.dumps(input_value, ensure_ascii=True, allow_nan=False, separators=(",", ":")),
+            command_id, cancel_handle))
+        if result["ok"] is not True:
+            raise SecureActionError(result["code"], result["message"])
+        value = result["value"]
+        if operation == "pending":
+            return cast(list[PendingSecureAction], value)
+        receipt_json = value.pop("receipt_canonical_json")
+        value["receipt"] = None if receipt_json is None else json.loads(receipt_json)
+        return cast(SecureActionResult, value)
+
+
+class OwnerWorkspacePackageInstaller(SecurePublicPackageInstaller):
+    """Install a selected PUBLIC closure into an Owner-created workspace."""
+
+    def __init__(self, owner_config: dict, workspace_id: str):
+        self._owner_config = owner_config
+        self._workspace_id = workspace_id
+
+    def _install(self, operation: str, *, input_value: dict | None = None,
+                 begin_command_id: str | None = None,
+                 cancel_handle: KernelCancelHandle | None = None) -> PublicInstallBeginResult | PublicInstallProgress | list[PendingPublicInstall]:
+        result = json.loads(secure_owner_consumer_json("public_install", operation,
+            json.dumps(self._owner_config, ensure_ascii=True, allow_nan=False, separators=(",", ":")),
+            self._workspace_id,
+            None if input_value is None else json.dumps(input_value, ensure_ascii=True, allow_nan=False, separators=(",", ":")),
+            begin_command_id, cancel_handle))
+        if result["ok"] is not True:
+            raise PublicInstallError(result["code"], result["message"])
+        return cast(PublicInstallBeginResult | PublicInstallProgress | list[PendingPublicInstall], result["value"])
+
+
+__all__ += ["SecureOwnerWorkspaceClient", "OwnerWorkspaceResult", "OwnerWorkspaceError",
+            "OwnerWorkspaceActionClient", "OwnerWorkspacePackageInstaller"]
+
+
 class VerifiedIdentityCertificate(TypedDict):
     actor_id: str
     signing_key_id: str
@@ -1004,7 +1183,7 @@ class InvitationReceiveResult(TypedDict):
     receipt_hash: str
 
 
-async def _run_admission_async(method, operation: str, **kwargs):
+async def _run_cancelled_async(method, operation: str, **kwargs):
     cancel_handle = KernelCancelHandle()
     worker = asyncio.create_task(asyncio.to_thread(
         method, operation, cancel_handle=cancel_handle, **kwargs))
@@ -1061,14 +1240,14 @@ class SecurePublicAdmissionClient(SecureReadClient):
     async def offer_async(self, recipient_certificate_json: str, scopes_json: str, *, message: str = "",
                           invite_id: str | None = None, issued_at_ms: int | None = None,
                           expires_at_ms: int | None = None) -> PublicOfferResult:
-        return cast(PublicOfferResult, await _run_admission_async(self._admission, "offer", input_value=self._offer_input(
+        return cast(PublicOfferResult, await _run_cancelled_async(self._admission, "offer", input_value=self._offer_input(
             recipient_certificate_json, scopes_json, message, invite_id, issued_at_ms, expires_at_ms)))
 
     def retry_offer(self, invite_id: str) -> PublicOfferResult:
         return cast(PublicOfferResult, self._admission("retry_offer", invite_id=invite_id))
 
     async def retry_offer_async(self, invite_id: str) -> PublicOfferResult:
-        return cast(PublicOfferResult, await _run_admission_async(self._admission, "retry_offer", invite_id=invite_id))
+        return cast(PublicOfferResult, await _run_cancelled_async(self._admission, "retry_offer", invite_id=invite_id))
 
     def pending_offers(self) -> list[dict]:
         return cast(list[dict], self._admission("pending_offers"))
@@ -1077,13 +1256,13 @@ class SecurePublicAdmissionClient(SecureReadClient):
         return cast(PublicDeliveryResult, self._admission("deliver", invite_id=invite_id))
 
     async def deliver_async(self, invite_id: str) -> PublicDeliveryResult:
-        return cast(PublicDeliveryResult, await _run_admission_async(self._admission, "deliver", invite_id=invite_id))
+        return cast(PublicDeliveryResult, await _run_cancelled_async(self._admission, "deliver", invite_id=invite_id))
 
     def retry_delivery(self, grant_id: str) -> PublicDeliveryResult:
         return cast(PublicDeliveryResult, self._admission("retry_delivery", grant_id=grant_id))
 
     async def retry_delivery_async(self, grant_id: str) -> PublicDeliveryResult:
-        return cast(PublicDeliveryResult, await _run_admission_async(self._admission, "retry_delivery", grant_id=grant_id))
+        return cast(PublicDeliveryResult, await _run_cancelled_async(self._admission, "retry_delivery", grant_id=grant_id))
 
     def pending_deliveries(self) -> list[dict]:
         return cast(list[dict], self._admission("pending_deliveries"))
@@ -1125,13 +1304,13 @@ class SecureInvitationClient:
         return cast(InvitationDecisionResult, self._decision("decide", invite_id=invite_id, decision=decision))
 
     async def decide_async(self, invite_id: str, decision: Literal["ACCEPT", "DECLINE"]) -> InvitationDecisionResult:
-        return cast(InvitationDecisionResult, await _run_admission_async(self._decision, "decide", invite_id=invite_id, decision=decision))
+        return cast(InvitationDecisionResult, await _run_cancelled_async(self._decision, "decide", invite_id=invite_id, decision=decision))
 
     def retry_decision(self, invite_id: str) -> InvitationDecisionResult:
         return cast(InvitationDecisionResult, self._decision("retry_decision", invite_id=invite_id))
 
     async def retry_decision_async(self, invite_id: str) -> InvitationDecisionResult:
-        return cast(InvitationDecisionResult, await _run_admission_async(self._decision, "retry_decision", invite_id=invite_id))
+        return cast(InvitationDecisionResult, await _run_cancelled_async(self._decision, "retry_decision", invite_id=invite_id))
 
     def pending_decisions(self) -> list[dict]:
         return cast(list[dict], self._decision("pending_decisions"))
@@ -1140,13 +1319,13 @@ class SecureInvitationClient:
         return cast(InvitationReceiveResult, self._decision("receive", invite_id=invite_id))
 
     async def receive_async(self, invite_id: str) -> InvitationReceiveResult:
-        return cast(InvitationReceiveResult, await _run_admission_async(self._decision, "receive", invite_id=invite_id))
+        return cast(InvitationReceiveResult, await _run_cancelled_async(self._decision, "receive", invite_id=invite_id))
 
     def retry_receive(self, invite_id: str) -> InvitationReceiveResult:
         return cast(InvitationReceiveResult, self._decision("retry_receive", invite_id=invite_id))
 
     async def retry_receive_async(self, invite_id: str) -> InvitationReceiveResult:
-        return cast(InvitationReceiveResult, await _run_admission_async(self._decision, "retry_receive", invite_id=invite_id))
+        return cast(InvitationReceiveResult, await _run_cancelled_async(self._decision, "retry_receive", invite_id=invite_id))
 
     def pending_receipts(self) -> list[dict]:
         return cast(list[dict], self._decision("pending_receipts"))
