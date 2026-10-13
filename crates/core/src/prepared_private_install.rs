@@ -22,6 +22,8 @@ use thiserror::Error;
 use zeroize::Zeroizing;
 
 const MAX_SAFE: u64 = 9_007_199_254_740_991;
+/// The source compiler and verifier both limit one material to 128 parts.
+pub const MAX_PACKAGE_SOURCE_PARTS: usize = 128;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum PrivateInstallError {
@@ -33,34 +35,55 @@ pub enum PrivateInstallError {
     Author,
 }
 
-/// Reconstruct one complete package source from an authenticated signed part.
-/// The caller must separately bind the part to an origin-bound replayed stage
-/// commit and the source checkpoint to that replay. A multipart prefix is not
-/// a completed source and is refused here.
-pub fn verify_single_part_package_source(
-    signed_part: &WireValue,
+/// Reconstruct a complete package source from consecutive authenticated
+/// signed parts. The caller separately binds every part to an origin-bound
+/// replayed stage commit and the source checkpoint to that replay.
+pub fn verify_complete_package_source(
+    signed_parts: &[WireValue],
     source_checkpoint: &WireValue,
 ) -> Result<WireValue, PrivateInstallError> {
-    let text = signed_part
-        .get("value")
-        .and_then(|value| value.get("text"))
-        .and_then(WireValue::as_string)
-        .ok_or(PrivateInstallError::Invalid)?;
+    if signed_parts.is_empty() || signed_parts.len() > MAX_PACKAGE_SOURCE_PARTS {
+        return Err(PrivateInstallError::Invalid);
+    }
+    let mut text = String::new();
+    for part in signed_parts {
+        let piece = part
+            .get("value")
+            .and_then(|value| value.get("text"))
+            .and_then(WireValue::as_string)
+            .ok_or(PrivateInstallError::Invalid)?;
+        if text.len().checked_add(piece.len()).is_none_or(|size| size > 8 * 1024 * 1024) {
+            return Err(PrivateInstallError::Resource);
+        }
+        text.push_str(&piece);
+    }
     let source_wire = canonical_wire_value(source_checkpoint, Path::SecureArtifact)
         .map_err(|_| PrivateInstallError::Invalid)?;
     let prepared = prepare_package_source_wire(text.as_bytes(), source_wire.as_bytes())
         .map_err(|_| PrivateInstallError::Invalid)?;
-    if prepared.parts.len() != 1
-        || canonical_wire_value(&prepared.parts[0], Path::SecureArtifact)
-            .map_err(|_| PrivateInstallError::Invalid)?
-            != canonical_wire_value(signed_part, Path::SecureArtifact)
-                .map_err(|_| PrivateInstallError::Invalid)?
-    {
+    if prepared.parts.len() != signed_parts.len() {
         return Err(PrivateInstallError::Invalid);
     }
-    verify_protocol_package_source(&prepared.proof, std::slice::from_ref(signed_part))
+    for (expected, signed) in prepared.parts.iter().zip(signed_parts) {
+        if canonical_wire_value(expected, Path::SecureArtifact)
+            .map_err(|_| PrivateInstallError::Invalid)?
+            != canonical_wire_value(signed, Path::SecureArtifact)
+                .map_err(|_| PrivateInstallError::Invalid)?
+        {
+            return Err(PrivateInstallError::Invalid);
+        }
+    }
+    verify_protocol_package_source(&prepared.proof, signed_parts)
         .map_err(|_| PrivateInstallError::Invalid)?;
     Ok(prepared.proof)
+}
+
+/// Preserve the former one-part API for its existing callers.
+pub fn verify_single_part_package_source(
+    signed_part: &WireValue,
+    source_checkpoint: &WireValue,
+) -> Result<WireValue, PrivateInstallError> {
+    verify_complete_package_source(std::slice::from_ref(signed_part), source_checkpoint)
 }
 
 /// Check a local retained stage marker's source identity before creating any

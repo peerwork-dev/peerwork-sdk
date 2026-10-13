@@ -21,7 +21,7 @@ use peerwork_core::{
     prepared_secure_request::{
         verify_prepared_secure_commit_request_with_policy, SecureCommitRequestPins,
     },
-    prepared_private_install::{package_source_identity_matches, prepare_orphan_package_stage_material, verify_single_part_package_source},
+    prepared_private_install::{package_source_identity_matches, prepare_orphan_package_stage_material, verify_complete_package_source, MAX_PACKAGE_SOURCE_PARTS},
     replayed_secure_journal::StructureStatus,
     secure_keyring::SecretKeyring,
     wire_json::{canonical_wire_value, parse_wire_json_bounded, WireValue},
@@ -350,6 +350,7 @@ struct CompletedPackageStageMarker {
     source: WireValue,
     source_id: String,
     source_sha256: String,
+    part_index: usize,
 }
 
 struct LegacyPendingPackageStage {
@@ -1261,6 +1262,7 @@ impl SecureHistoricalOwnerAttach {
             source,
             source_id: orphan.source_id.clone(),
             source_sha256: orphan.source_sha256.clone(),
+            part_index: 0,
         };
         if !package_source_identity_matches(&marker.source, &marker.source_id, &marker.source_sha256) {
             return Err(HistoricalOwnerAttachError::Conflict);
@@ -1464,6 +1466,7 @@ impl SecureHistoricalOwnerAttach {
             marker: CompletedPackageStageMarker {
                 command_id: stage.command_id.clone(), source: source_wire,
                 source_id: stage.source_id.clone(), source_sha256: stage.source_sha256.clone(),
+                part_index: 0,
             },
             path: stage.path.clone(), request,
         };
@@ -3186,6 +3189,9 @@ fn completed_package_stage_marker(
     let source_sha256 = marker.get("source_sha256").and_then(WireValue::as_string);
     let command_id = marker.get("command_id").and_then(WireValue::as_string);
     let source = marker.get("source");
+    let part_index = exact_u64(marker.get("part_index"))
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
     let (Some(workspace), Some(source_id), Some(source_sha256), Some(command_id), Some(source)) =
         (workspace, source_id, source_sha256, command_id, source)
     else {
@@ -3200,7 +3206,7 @@ fn completed_package_stage_marker(
         || !valid_digest(&source_sha256)
         || !package_source_identity_matches(source, &source_id, &source_sha256)
         || !valid_token(&command_id)
-        || exact_u64(marker.get("part_index")) != Some(0)
+        || part_index >= MAX_PACKAGE_SOURCE_PARTS
         || source
             .get("workspace_id")
             .and_then(WireValue::as_string)
@@ -3224,6 +3230,7 @@ fn completed_package_stage_marker(
         source: source.clone(),
         source_id,
         source_sha256,
+        part_index,
     }))
 }
 
@@ -3240,6 +3247,12 @@ fn parse_pending_package_stage(
     };
     if rows.is_empty() {
         return Ok(None);
+    }
+    // The exact-packet importer still has a sole-part verifier. A later
+    // multipart pending packet requires the authenticated earlier prefix and
+    // caller-supplied complete material; never misclassify it as part zero.
+    if marker.part_index != 0 {
+        return Err(HistoricalOwnerAttachError::SourceUnresolved);
     }
     if rows.len() != 1 {
         return Err(HistoricalOwnerAttachError::SourceUnresolved);
@@ -3301,115 +3314,104 @@ fn verify_completed_package_stage(
     let invalid = || HistoricalOwnerAttachError::SourceUnresolved;
     let source = &marker.source;
     let base = exact_u64(source.get("sequence")).ok_or_else(invalid)?;
-    let head = source
-        .get("head")
-        .and_then(WireValue::as_string)
-        .ok_or_else(invalid)?;
-    let policy_hash = source
-        .get("policy_hash")
-        .and_then(WireValue::as_string)
-        .ok_or_else(invalid)?;
-    let sequence = base.checked_add(1).ok_or_else(invalid)?;
-    if !replayed
-        .replay()
-        .contains_checkpoint(base, Some(&head), &policy_hash)
+    let base_head = source.get("head").and_then(WireValue::as_string).ok_or_else(invalid)?;
+    let policy_hash = source.get("policy_hash")
+        .and_then(WireValue::as_string).ok_or_else(invalid)?;
+    let count = marker.part_index.checked_add(1).ok_or_else(invalid)?;
+    if count == 0 || count > MAX_PACKAGE_SOURCE_PARTS
+        || !replayed.replay().contains_checkpoint(base, Some(&base_head), &policy_hash)
     {
         return Err(invalid());
     }
-    let index = usize::try_from(base).map_err(|_| invalid())?;
-    let wire = replayed
-        .signed_commit_wires()
-        .get(index)
-        .ok_or_else(invalid)?;
-    let operation = replayed
-        .replay()
-        .operations()
-        .get(index)
-        .ok_or_else(invalid)?;
-    let commit = parse_wire_json_bounded(wire, 64, 262_144).map_err(|_| invalid())?;
-    let payload = commit.get("payload").ok_or_else(invalid)?;
-    let commit_hash = sha256_hex(wire);
-    let stage = operation
-        .get("input")
-        .and_then(|input| input.get("package_stage"))
-        .ok_or_else(invalid)?;
-    let WireValue::Array(objects) = operation.get("objects").ok_or_else(invalid)? else {
-        return Err(invalid());
-    };
-    if !replayed
-        .replay()
-        .contains_checkpoint(sequence, Some(&commit_hash), &policy_hash)
-        || payload
-            .get("command_id")
-            .and_then(WireValue::as_string)
-            .as_deref()
-            != Some(&marker.command_id)
-        || payload
-            .get("action_id")
-            .and_then(WireValue::as_string)
-            .as_deref()
-            != Some("secure.protocol-package.stage")
-        || payload
-            .get("actor_id")
-            .and_then(WireValue::as_string)
-            .as_deref()
-            != Some(&input.expected_owner_actor_id)
-        || payload
-            .get("signing_key")
-            .and_then(WireValue::as_string)
-            .as_deref()
-            != Some(&input.expected_owner_key_id)
-        || payload
-            .get("workspace_id")
-            .and_then(WireValue::as_string)
-            .as_deref()
-            != Some(&input.workspace_id)
-        || payload
-            .get("policy_hash")
-            .and_then(WireValue::as_string)
-            .as_deref()
-            != Some(&policy_hash)
-        || exact_u64(payload.get("sequence")) != Some(sequence)
-        || payload
-            .get("previous")
-            .and_then(WireValue::as_string)
-            .as_deref()
-            != Some(&head)
-        || operation
-            .get("kind")
-            .and_then(WireValue::as_string)
-            .as_deref()
-            != Some("ADMIN")
-        || objects.len() != 1
-        || stage
-            .get("source_id")
-            .and_then(WireValue::as_string)
-            .as_deref()
-            != Some(&marker.source_id)
-        || exact_u64(stage.get("part_index")) != Some(0)
-        || canonical_wire_value(
-            stage.get("source").ok_or_else(invalid)?,
-            CanonicalPath::SecureArtifact,
-        )
-        .map_err(|_| invalid())?
-            != canonical_wire_value(source, CanonicalPath::SecureArtifact).map_err(|_| invalid())?
+    let canonical_source = canonical_wire_value(source, CanonicalPath::SecureArtifact)
+        .map_err(|_| invalid())?;
+    let mut previous = base_head;
+    let mut signed_parts = Vec::with_capacity(count);
+    for part_index in 0..count {
+        let sequence = base.checked_add(part_index as u64 + 1).ok_or_else(invalid)?;
+        let replay_index = usize::try_from(sequence - 1).map_err(|_| invalid())?;
+        let wire = replayed.signed_commit_wires().get(replay_index).ok_or_else(invalid)?;
+        let operation = replayed.replay().operations().get(replay_index).ok_or_else(invalid)?;
+        let commit = parse_wire_json_bounded(wire, 64, 262_144).map_err(|_| invalid())?;
+        let payload = commit.get("payload").ok_or_else(invalid)?;
+        let commit_hash = sha256_hex(wire);
+        let stage = operation.get("input").and_then(|value| value.get("package_stage"))
+            .ok_or_else(invalid)?;
+        let WireValue::Array(objects) = operation.get("objects").ok_or_else(invalid)? else {
+            return Err(invalid());
+        };
+        if !replayed.replay().contains_checkpoint(sequence, Some(&commit_hash), &policy_hash)
+            || payload.get("action_id").and_then(WireValue::as_string).as_deref()
+                != Some("secure.protocol-package.stage")
+            || payload.get("actor_id").and_then(WireValue::as_string).as_deref()
+                != Some(input.expected_owner_actor_id.as_str())
+            || payload.get("signing_key").and_then(WireValue::as_string).as_deref()
+                != Some(input.expected_owner_key_id.as_str())
+            || payload.get("workspace_id").and_then(WireValue::as_string).as_deref()
+                != Some(input.workspace_id.as_str())
+            || payload.get("mode").and_then(WireValue::as_string).as_deref()
+                != Some("PRIVATE")
+            || payload.get("policy_hash").and_then(WireValue::as_string).as_deref()
+                != Some(policy_hash.as_str())
+            || exact_u64(payload.get("sequence")) != Some(sequence)
+            || payload.get("previous").and_then(WireValue::as_string).as_deref()
+                != Some(previous.as_str())
+            || (part_index + 1 == count
+                && payload.get("command_id").and_then(WireValue::as_string).as_deref()
+                    != Some(marker.command_id.as_str()))
+            || operation.get("kind").and_then(WireValue::as_string).as_deref()
+                != Some("ADMIN")
+            || objects.len() != 1
+            || stage.get("source_id").and_then(WireValue::as_string).as_deref()
+                != Some(marker.source_id.as_str())
+            || exact_u64(stage.get("part_index")) != Some(part_index as u64)
+            || canonical_wire_value(
+                stage.get("source").ok_or_else(invalid)?,
+                CanonicalPath::SecureArtifact,
+            ).map_err(|_| invalid())? != canonical_source
+        {
+            return Err(invalid());
+        }
+        signed_parts.push(objects[0].clone());
+        previous = commit_hash;
+    }
+    // Full replay authenticates each signed ADMIN DELTA and its ciphertext.
+    // Recompilation must reproduce every signed part and the complete source;
+    // a completed intermediate part cannot satisfy the full material hash.
+    let proof = verify_complete_package_source(&signed_parts, source).map_err(|_| invalid())?;
+    if proof.get("source_id").and_then(WireValue::as_string).as_deref()
+        != Some(marker.source_id.as_str())
+        || proof.get("source_sha256").and_then(WireValue::as_string).as_deref()
+            != Some(marker.source_sha256.as_str())
+        || proof.get("parts").and_then(|value| match value {
+            WireValue::Array(parts) => Some(parts.len()), _ => None,
+        }) != Some(count)
     {
         return Err(invalid());
     }
-    // Replay already validates the signed stage context, ADMIN DELTA shape,
-    // policy, ciphertext, and source ancestry. Recompile the entire material
-    // from its sole signed part; no incomplete multipart prefix can pass.
-    let proof = verify_single_part_package_source(&objects[0], source).map_err(|_| invalid())?;
-    if proof
-        .get("source_id")
-        .and_then(WireValue::as_string)
-        .as_deref()
-        != Some(&marker.source_id)
-        || proof
-            .get("source_sha256")
-            .and_then(WireValue::as_string)
-            .as_deref()
-            != Some(&marker.source_sha256)
+    // The signed stage prefix may precede later authorized history. Current
+    // Owner authority is independently checked here and by attach activation.
+    let current_policy = replayed.signed_policy_by_hash(replayed.replay().policy_hash())
+        .ok_or_else(invalid)?;
+    let current = parse_wire_json_bounded(current_policy, 64, 196_608).map_err(|_| invalid())?;
+    let current = current.get("payload").ok_or_else(invalid)?;
+    let owner_member = matches!(current.get("members"), Some(WireValue::Array(members))
+        if members.iter().any(|member| {
+            member.get("actor_id").and_then(WireValue::as_string).as_deref()
+                == Some(input.expected_owner_actor_id.as_str())
+                && member.get("role").and_then(WireValue::as_string).as_deref()
+                    == Some("OWNER")
+                && member.get("certificate").and_then(|value| value.get("payload"))
+                    .and_then(|value| value.get("signing_key"))
+                    .and_then(WireValue::as_string).as_deref()
+                    == Some(input.expected_owner_key_id.as_str())
+        }));
+    if replayed.replay().owner_actor_id() != input.expected_owner_actor_id
+        || replayed.replay().owner_signing_key() != input.expected_owner_key_id
+        || replayed.replay().structure_status() != StructureStatus::Active
+        || current.get("visibility").and_then(WireValue::as_string).as_deref()
+            != Some("PRIVATE")
+        || !owner_member
     {
         return Err(invalid());
     }
@@ -3422,6 +3424,9 @@ fn verify_orphan_package_stage(
     input: &HistoricalOwnerAttachInput,
 ) -> Result<(), HistoricalOwnerAttachError> {
     let invalid = || HistoricalOwnerAttachError::SourceUnresolved;
+    // Multipart orphan continuation has no original packet and needs full
+    // caller material plus an authenticated signed-prefix handoff.
+    if marker.part_index != 0 { return Err(invalid()); }
     let source = &marker.source;
     let sequence = exact_u64(source.get("sequence")).ok_or_else(invalid)?;
     let head = source.get("head").and_then(WireValue::as_string).ok_or_else(invalid)?;
@@ -5155,6 +5160,125 @@ mod tests {
                     .unwrap();
                 assert_eq!(after, 2);
             }
+        }
+    }
+
+    #[test]
+    fn actual_service_imports_only_complete_multipart_stage_prefix() {
+        let _fault_guard = ATTACH_FAULT_TEST_LOCK.lock().unwrap();
+        let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else { return; };
+        let node = std::env::var("PEERWORK_NODE_BIN").unwrap_or_else(|_| "node".into());
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)] {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let bridge = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/reference-kernel-server.mjs");
+        let child = Command::new(&node).arg(bridge)
+            .env("PEERWORK_REFERENCE_ROOT", &reference_root)
+            .env("PEERWORK_TEST_STATE", root.path())
+            .env("PEERWORK_TEST_FIRST_POST_MODE", "normal")
+            .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        struct StopMultipart(Child);
+        impl Drop for StopMultipart {
+            fn drop(&mut self) { let _ = self.0.kill(); let _ = self.0.wait(); }
+        }
+        let mut child = StopMultipart(child);
+        let mut line = String::new();
+        BufReader::new(child.0.stdout.take().unwrap()).read_line(&mut line).unwrap();
+        assert!(!line.is_empty(), "pinned service exited before readiness");
+        let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let origin = ready["origin"].as_str().unwrap();
+        let helper = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/legacy-owner-source.mjs");
+        let oracle = rusqlite::Connection::open_with_flags(
+            root.path().join("control.sqlite"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        ).unwrap();
+        for (name, mode, final_index, expected_sequence) in [
+            ("intermediate", "stage-marker-multipart-intermediate", false, 2),
+            ("final", "stage-marker-multipart-final", true, 3),
+            ("final-later", "stage-marker-multipart-final-later", true, 4),
+        ] {
+            let output = Command::new(&node).arg(&helper).arg(origin)
+                .arg(root.path().join(name)).arg(&reference_root).arg(mode)
+                .output().unwrap();
+            assert!(output.status.success(), "{name}: {}",
+                String::from_utf8_lossy(&output.stderr));
+            let source: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(source["policy_v"], 3, "{name}");
+            assert_eq!(source["visibility"], "PRIVATE", "{name}");
+            assert_eq!(source["structure_mode"], "STRUCTURED", "{name}");
+            assert_eq!(source["stage_part_count"], 2, "{name}");
+            assert_eq!(source["stage_parts"].as_array().unwrap().len(), 2, "{name}");
+            assert_eq!(source["pending_count"], 0, "{name}");
+            assert_eq!(source["stage_applied"], true, "{name}");
+            assert_eq!(source["sequence"], expected_sequence, "{name}");
+            let workspace = source["workspace_id"].as_str().unwrap();
+            let marker = &source["stage_marker"];
+            assert_eq!(marker["workspace_id"], workspace);
+            assert_eq!(marker["part_index"], if final_index { 1 } else { 0 });
+            assert_eq!(marker["command_id"], source["stage_signed_command_id"]);
+            let count = || -> i64 { oracle.query_row(
+                "SELECT count(*) FROM secure_commits WHERE workspace_id=?1", [workspace],
+                |row| row.get(0),
+            ).unwrap() };
+            assert_eq!(count(), expected_sequence, "{name}");
+            let config = SecureOwnerCreateConfig {
+                origin: origin.into(), state_dir: root.path().join(format!("native-{name}")),
+                allow_loopback_http: true, max_replay_artifact_bytes: 64 * 1024 * 1024,
+            };
+            let attach = SecureHistoricalOwnerAttach::new(config.clone());
+            let input = HistoricalOwnerAttachInput {
+                workspace_id: workspace.into(),
+                protected_ts_state_path: source["state_path"].as_str().unwrap().into(),
+                protected_owner_pkcs8_path: source["pem_path"].as_str().unwrap().into(),
+                protected_ts_intent_db_path: source["intent_db_path"].as_str().unwrap().into(),
+                expected_owner_actor_id: source["owner_actor_id"].as_str().unwrap().into(),
+                expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
+                recover_pending_action: false, retain_pending_action_command_id: None,
+                selected_pending_package_stage_command_id: None,
+                selected_orphan_package_stage_command_id: None,
+                expected_ts_state_digest: None,
+                kernel_pending_command_ids: Vec::new(), expected_kernel_intent_db_digest: None,
+            };
+            let cancel = CancellationToken::new();
+            if !final_index {
+                assert!(matches!(attach.attach(input, &cancel),
+                    Err(HistoricalOwnerAttachError::SourceUnresolved)));
+                assert!(attach.attachments().unwrap().is_empty());
+                assert!(!config.state_dir.join("workspaces").join(workspace)
+                    .join("lifecycle.state").exists());
+                assert_eq!(count(), expected_sequence);
+                continue;
+            }
+            let attached = attach.attach(input, &cancel).unwrap();
+            assert_eq!(attached.status, "ATTACHED");
+            assert_eq!(attached.sequence, Some(expected_sequence as u64));
+            let facade = SecureOwnerWorkspaceCreate::new(config.clone());
+            let read: serde_json::Value = serde_json::from_str(
+                &facade.read_workspace_json(workspace, &cancel).unwrap()).unwrap();
+            assert_eq!(read["sequence"], expected_sequence);
+            let parts: Vec<_> = read["objects"].as_array().unwrap().iter().filter(|row| {
+                row["kind"] == "protocol_package_part"
+                    && row["value"]["source_id"] == marker["source_id"]
+            }).collect();
+            assert_eq!(parts.len(), 2, "{name}");
+            for descriptor in source["stage_parts"].as_array().unwrap() {
+                assert!(parts.iter().any(|row| {
+                    row["id"] == descriptor["id"]
+                        && row["value"]["index"] == descriptor["index"]
+                        && row["value"]["sha256"] == descriptor["sha256"]
+                        && row["value"]["bytes"] == descriptor["bytes"]
+                }), "{name}");
+            }
+            std::fs::rename(root.path().join(name), root.path().join(format!("archived-{name}")))
+                .unwrap();
+            let reopened: serde_json::Value = serde_json::from_str(
+                &SecureOwnerWorkspaceCreate::new(config).read_workspace_json(workspace, &cancel)
+                    .unwrap()).unwrap();
+            assert_eq!(reopened["sequence"], expected_sequence);
+            assert_eq!(count(), expected_sequence);
         }
     }
 
