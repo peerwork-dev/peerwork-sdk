@@ -19,7 +19,7 @@ STATE = Path(os.environ["PEERWORK_TEST_STATE"])
 NODE = os.environ["PEERWORK_TEST_NODE"]
 NODE_PACKAGE = os.environ["PEERWORK_TEST_NODE_PACKAGE"]
 CLI = os.environ["PEERWORK_TEST_CLI"]
-EXPECTED_OWNER_HASH = "ef796c041f7321f1ed479bd5ab8676ff3389758d1b7318cd8422243a460164cd"
+EXPECTED_OWNER_HASH = os.environ["PEERWORK_TEST_OWNER_SOURCE_SHA256"]
 assert hashlib.sha256((SOURCE / "crates/runtime/src/secure_owner_create.rs").read_bytes()).hexdigest() == EXPECTED_OWNER_HASH
 STATE.mkdir(mode=0o700, parents=True, exist_ok=False)
 
