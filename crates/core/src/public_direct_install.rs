@@ -21,6 +21,10 @@ pub(crate) struct DirectInstallObjects {
     pub added: Vec<WireValue>,
     pub manifest: WireValue,
 }
+pub(crate) struct EmptySnapshotBegin {
+    pub operation: WireValue,
+    pub structure: WireValue,
+}
 
 fn entries(value: &WireValue) -> Result<&[(Vec<u16>, WireValue)], DirectInstallError> {
     if let WireValue::Object(fields) = value {
@@ -420,6 +424,69 @@ pub(crate) fn derive_direct_install_policy_payload(
     Ok(payload)
 }
 
+/// First-install narrow snapshot: only when authenticated prior structure has
+/// no records or heads. Other histories need projected snapshot paging.
+pub(crate) fn build_empty_direct_install_begin(
+    checkpoint: &WireValue,
+    added: &[WireValue],
+    instance_id: &str,
+    protocol_digest: &str,
+    entrypoint_name: &str,
+) -> Result<EmptySnapshotBegin, DirectInstallError> {
+    if !token(instance_id)
+        || !entrypoint(entrypoint_name)
+        || protocol_digest.len() != 64
+        || !protocol_digest
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
+        return Err(DirectInstallError::Invalid);
+    }
+    let empty_data = obj(vec![
+        ("records", WireValue::Array(vec![])),
+        ("heads", WireValue::Array(vec![])),
+    ]);
+    let root = sha256_hex(
+        canonical_wire_value(&empty_data, Path::SecureArtifact)
+            .map_err(|_| DirectInstallError::Invalid)?
+            .as_bytes(),
+    );
+    let snapshot = obj(vec![
+        ("source", checkpoint.clone()),
+        ("root", text(&root)),
+        ("records", WireValue::Number(0.0)),
+        ("heads", WireValue::Number(0.0)),
+        ("offset", WireValue::Number(0.0)),
+    ]);
+    let structure = obj(vec![
+        ("v", WireValue::Number(1.0)),
+        ("mode", text("SNAPSHOT_BEGIN")),
+        ("records", WireValue::Array(vec![])),
+        ("heads", WireValue::Array(vec![])),
+        ("snapshot", snapshot),
+    ]);
+    let operation = obj(vec![
+        ("v", WireValue::Number(1.0)),
+        ("kind", text("ADMIN")),
+        (
+            "input",
+            obj(vec![(
+                "install",
+                obj(vec![
+                    ("instance_id", text(instance_id)),
+                    ("protocol_digest", text(protocol_digest)),
+                    ("entrypoint", text(entrypoint_name)),
+                ]),
+            )]),
+        ),
+        ("objects", WireValue::Array(added.to_vec())),
+    ]);
+    Ok(EmptySnapshotBegin {
+        operation,
+        structure,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -505,6 +572,30 @@ mod tests {
             canonical_wire_value(&policy, Path::SecureArtifact).unwrap(),
             canonical_wire_value(fixture.get("policy_payload").unwrap(), Path::SecureArtifact)
                 .unwrap()
+        );
+        let begin = build_empty_direct_install_begin(
+            fixture.get("checkpoint").unwrap(),
+            &result.added,
+            &fixture.get("instance_id").unwrap().as_string().unwrap(),
+            &fixture.get("protocol_digest").unwrap().as_string().unwrap(),
+            &fixture.get("entrypoint").unwrap().as_string().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            canonical_wire_value(&begin.operation, Path::SecureArtifact).unwrap(),
+            canonical_wire_value(
+                fixture.get("begin_operation").unwrap(),
+                Path::SecureArtifact
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            canonical_wire_value(&begin.structure, Path::SecureArtifact).unwrap(),
+            canonical_wire_value(
+                fixture.get("begin_structure").unwrap(),
+                Path::SecureArtifact
+            )
+            .unwrap()
         );
         assert!(matches!(
             build_direct_install_objects(
