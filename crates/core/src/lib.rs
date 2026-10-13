@@ -35,8 +35,7 @@ mod protocol_composition;
 mod protocol_object_source;
 #[allow(dead_code)]
 mod protocol_package_source;
-#[allow(dead_code)]
-mod public_direct_install;
+pub mod public_direct_install;
 pub mod receipt;
 pub mod receipt_wire;
 pub mod replayed_secure_journal;

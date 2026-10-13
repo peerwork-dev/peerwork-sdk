@@ -4,17 +4,267 @@
 
 use crate::{
     canonical::Path,
-    crypto::sha256_hex,
+    crypto::{actor_id, base64url, sha256_hex, verify_secure_signed_wire},
     full_manifest::validate_full_manifest,
     genesis_structure_policy::derive_genesis_structure_policy_with_keep_encrypted,
+    package_closure::{compile_package_material, scan_package_closure},
+    structure_bindings::validate_object_bindings,
     wire_json::{canonical_wire_value, parse_wire_json_bounded, WireValue},
 };
+use ed25519_dalek::{Signer, SigningKey};
 use std::collections::HashSet;
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum DirectInstallError {
+pub enum DirectInstallError {
     Invalid,
     Resource,
+}
+pub struct PublicPackageCompilation {
+    package_digest: String,
+    package_id: String,
+    package_version: String,
+    protocol_digest: String,
+    manifest_wire: Vec<u8>,
+}
+impl PublicPackageCompilation {
+    pub fn package_digest(&self) -> &str {
+        &self.package_digest
+    }
+    pub fn package_id(&self) -> &str {
+        &self.package_id
+    }
+    pub fn package_version(&self) -> &str {
+        &self.package_version
+    }
+    pub fn protocol_digest(&self) -> &str {
+        &self.protocol_digest
+    }
+    pub fn manifest_wire(&self) -> &[u8] {
+        &self.manifest_wire
+    }
+}
+pub struct PreparedPublicPackageInstallBegin {
+    package_digest: String,
+    package_id: String,
+    package_version: String,
+    signed: SignedPublicInstallBegin,
+}
+impl PreparedPublicPackageInstallBegin {
+    pub fn package_digest(&self) -> &str {
+        &self.package_digest
+    }
+    pub fn package_id(&self) -> &str {
+        &self.package_id
+    }
+    pub fn package_version(&self) -> &str {
+        &self.package_version
+    }
+    pub fn protocol_digest(&self) -> &str {
+        self.signed.protocol_digest()
+    }
+    pub fn instance_id(&self) -> &str {
+        self.signed.instance_id()
+    }
+    pub fn policy_hash(&self) -> &str {
+        self.signed.policy_hash()
+    }
+    pub fn commit_hash(&self) -> &str {
+        self.signed.commit_hash()
+    }
+    pub fn request_wire(&self) -> &[u8] {
+        self.signed.request_wire()
+    }
+}
+
+/// Verify the exact locally selected package closure before PUBLIC direct
+/// install. The signed PUBLIC wire later carries only the resolved manifest;
+/// this package digest therefore remains protected local selection evidence.
+pub fn compile_public_package_closure(
+    closure_wire: &[u8],
+) -> Result<PublicPackageCompilation, DirectInstallError> {
+    if closure_wire.is_empty() || closure_wire.len() > 6 * 1024 * 1024 {
+        return Err(DirectInstallError::Resource);
+    }
+    let closure = parse_wire_json_bounded(closure_wire, 64, 6 * 1024 * 1024)
+        .map_err(|_| DirectInstallError::Invalid)?;
+    let scanned = scan_package_closure(&closure).map_err(|_| DirectInstallError::Invalid)?;
+    let root_bundle = scanned
+        .packages
+        .get(&scanned.root)
+        .ok_or(DirectInstallError::Invalid)?;
+    let metadata_text = root_bundle
+        .get("files")
+        .and_then(|files| files.get("package.json"))
+        .and_then(WireValue::as_string)
+        .ok_or(DirectInstallError::Invalid)?;
+    let metadata = parse_wire_json_bounded(metadata_text.as_bytes(), 16, 16 * 1024)
+        .map_err(|_| DirectInstallError::Invalid)?;
+    let package_id = metadata
+        .get("package_id")
+        .and_then(WireValue::as_string)
+        .ok_or(DirectInstallError::Invalid)?;
+    let package_version = metadata
+        .get("version")
+        .and_then(WireValue::as_string)
+        .ok_or(DirectInstallError::Invalid)?;
+    let compiled = compile_package_material(&scanned, &obj(vec![]))
+        .map_err(|_| DirectInstallError::Invalid)?;
+    let manifest_wire = canonical_wire_value(&compiled.manifest, Path::SecureArtifact)
+        .map_err(|_| DirectInstallError::Invalid)?
+        .into_bytes();
+    if compiled.manifest.get("format_version") == Some(&WireValue::Number(2.0))
+        || compiled.manifest.get("dependencies") != Some(&WireValue::Array(vec![]))
+        || compiled.manifest.get("constraints") != Some(&obj(vec![]))
+    {
+        return Err(DirectInstallError::Invalid);
+    }
+    Ok(PublicPackageCompilation {
+        package_digest: scanned.root,
+        package_id,
+        package_version,
+        protocol_digest: compiled.protocol_digest,
+        manifest_wire,
+    })
+}
+
+/// Keep the locally selected package digest adjacent to the signed packet;
+/// PUBLIC service wire has no package_source field. Runtime must obtain prior
+/// artifacts from HTTPS-bound complete replay before it may submit this.
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_public_package_install_begin(
+    closure_wire: &[u8],
+    expected_package_digest: &str,
+    expected_protocol_digest: &str,
+    prior_signed_policy_wire: &[u8],
+    prior_checkpoint_wire: &[u8],
+    prior_objects: &[WireValue],
+    grants_wire: &[u8],
+    instance_id: &str,
+    entrypoint_name: &str,
+    command_id: &str,
+    issued_at: u64,
+    signer: &SigningKey,
+) -> Result<PreparedPublicPackageInstallBegin, DirectInstallError> {
+    let compiled = compile_public_package_closure(closure_wire)?;
+    if compiled.package_digest() != expected_package_digest
+        || compiled.protocol_digest() != expected_protocol_digest
+    {
+        return Err(DirectInstallError::Invalid);
+    }
+    let signed = prepare_public_direct_install_begin(
+        compiled.manifest_wire(),
+        expected_protocol_digest,
+        prior_signed_policy_wire,
+        prior_checkpoint_wire,
+        prior_objects,
+        grants_wire,
+        instance_id,
+        entrypoint_name,
+        command_id,
+        issued_at,
+        signer,
+    )?;
+    Ok(PreparedPublicPackageInstallBegin {
+        package_digest: compiled.package_digest,
+        package_id: compiled.package_id,
+        package_version: compiled.package_version,
+        signed,
+    })
+}
+
+/// Compose the supported empty-history PUBLIC install into one exact signed
+/// pre-submit packet. This verifies the prior policy signature and checkpoint
+/// consistency, but only the runtime can prove HTTPS origin, complete replay,
+/// local package selection, active structure and prior-object provenance.
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_public_direct_install_begin(
+    manifest_wire: &[u8],
+    expected_protocol_digest: &str,
+    prior_signed_policy_wire: &[u8],
+    prior_checkpoint_wire: &[u8],
+    prior_objects: &[WireValue],
+    grants_wire: &[u8],
+    instance_id: &str,
+    entrypoint_name: &str,
+    command_id: &str,
+    issued_at: u64,
+    signer: &SigningKey,
+) -> Result<SignedPublicInstallBegin, DirectInstallError> {
+    let invalid = || DirectInstallError::Invalid;
+    let prior_policy =
+        parse_wire_json_bounded(prior_signed_policy_wire, 64, 196_608).map_err(|_| invalid())?;
+    let checkpoint =
+        parse_wire_json_bounded(prior_checkpoint_wire, 32, 8192).map_err(|_| invalid())?;
+    let grants = parse_wire_json_bounded(grants_wire, 32, 65_536).map_err(|_| invalid())?;
+    let objects = prior_objects;
+    let grant_rows = array(&grants)?;
+    let key_id = base64url(&signer.verifying_key().to_bytes());
+    let actor = actor_id(&signer.verifying_key().to_bytes());
+    let policy_wire =
+        canonical_wire_value(&prior_policy, Path::SecureArtifact).map_err(|_| invalid())?;
+    if !verify_secure_signed_wire(policy_wire.as_bytes(), "peerwork.secure.policy.v3", &key_id)
+        .map_err(|_| invalid())?
+        || required(&checkpoint, "policy_hash")?.as_string().as_deref()
+            != Some(&sha256_hex(policy_wire.as_bytes()))
+        || required(&checkpoint, "owner_id")?.as_string().as_deref() != Some(&actor)
+        || required(&checkpoint, "owner_key")?.as_string().as_deref() != Some(&key_id)
+        || required(required(&prior_policy, "payload")?, "workspace_id")?
+            != required(&checkpoint, "workspace_id")?
+        || objects.iter().any(|object| {
+            matches!(
+                object.get("kind").and_then(WireValue::as_string).as_deref(),
+                Some("records" | "entity_heads")
+            )
+        })
+        || objects.iter().any(|object| {
+            object.get("id").and_then(WireValue::as_string).as_deref() == Some(instance_id)
+        })
+    {
+        return Err(invalid());
+    }
+    let prior_structure = required(required(&prior_policy, "payload")?, "structure")?;
+    validate_object_bindings(prior_structure, objects).map_err(|_| invalid())?;
+    let workspace_id = required(&checkpoint, "workspace_id")?
+        .as_string()
+        .ok_or_else(invalid)?;
+    let built = build_direct_install_objects(
+        manifest_wire,
+        expected_protocol_digest,
+        &workspace_id,
+        instance_id,
+        entrypoint_name,
+        issued_at,
+    )?;
+    if objects.iter().any(|object| {
+        object.get("id").and_then(WireValue::as_string).as_deref() == Some(expected_protocol_digest)
+    }) {
+        return Err(invalid());
+    }
+    let structure = derive_direct_install_structure(
+        prior_structure,
+        objects,
+        &built.added,
+        expected_protocol_digest,
+        &built.manifest,
+    )?;
+    let sequence = safe_int(required(&checkpoint, "sequence")?)?;
+    let payload = derive_direct_install_policy_payload(
+        &prior_policy,
+        sequence,
+        &structure,
+        grant_rows,
+        &built.manifest,
+        instance_id,
+        issued_at,
+    )?;
+    let begin = build_empty_direct_install_begin(
+        &checkpoint,
+        &built.added,
+        instance_id,
+        expected_protocol_digest,
+        entrypoint_name,
+    )?;
+    sign_public_direct_install_begin(&payload, &checkpoint, &begin, command_id, issued_at, signer)
 }
 
 pub(crate) struct DirectInstallObjects {
@@ -24,6 +274,30 @@ pub(crate) struct DirectInstallObjects {
 pub(crate) struct EmptySnapshotBegin {
     pub operation: WireValue,
     pub structure: WireValue,
+}
+pub struct SignedPublicInstallBegin {
+    request_wire: Vec<u8>,
+    policy_hash: String,
+    commit_hash: String,
+    protocol_digest: String,
+    instance_id: String,
+}
+impl SignedPublicInstallBegin {
+    pub fn request_wire(&self) -> &[u8] {
+        &self.request_wire
+    }
+    pub fn policy_hash(&self) -> &str {
+        &self.policy_hash
+    }
+    pub fn commit_hash(&self) -> &str {
+        &self.commit_hash
+    }
+    pub fn protocol_digest(&self) -> &str {
+        &self.protocol_digest
+    }
+    pub fn instance_id(&self) -> &str {
+        &self.instance_id
+    }
 }
 
 fn entries(value: &WireValue) -> Result<&[(Vec<u16>, WireValue)], DirectInstallError> {
@@ -488,6 +762,146 @@ pub(crate) fn build_empty_direct_install_begin(
     })
 }
 
+fn sign_envelope(
+    payload: WireValue,
+    domain: &str,
+    signer: &SigningKey,
+) -> Result<WireValue, DirectInstallError> {
+    let canonical = canonical_wire_value(&payload, Path::SecureArtifact)
+        .map_err(|_| DirectInstallError::Invalid)?;
+    let mut message = Vec::with_capacity(domain.len() + 1 + canonical.len());
+    message.extend_from_slice(domain.as_bytes());
+    message.push(0);
+    message.extend_from_slice(canonical.as_bytes());
+    let signature = base64url(&signer.sign(&message).to_bytes());
+    Ok(obj(vec![
+        ("payload", payload),
+        ("signature", text(&signature)),
+    ]))
+}
+
+/// Sign the already-derived PUBLIC BEGIN packet. This low-level builder does
+/// not authenticate `prior_checkpoint` or the source of prior objects; runtime
+/// must derive both from complete HTTPS-bound replay and persist these exact
+/// request bytes before POST.
+pub(crate) fn sign_public_direct_install_begin(
+    policy_payload: &WireValue,
+    prior_checkpoint: &WireValue,
+    begin: &EmptySnapshotBegin,
+    command_id: &str,
+    issued_at: u64,
+    signer: &SigningKey,
+) -> Result<SignedPublicInstallBegin, DirectInstallError> {
+    let invalid = || DirectInstallError::Invalid;
+    if !token(command_id) || issued_at > 9_007_199_254_740_991 {
+        return Err(invalid());
+    }
+    let key_id = base64url(&signer.verifying_key().to_bytes());
+    let actor = actor_id(&signer.verifying_key().to_bytes());
+    if required(policy_payload, "v")? != &WireValue::Number(3.0)
+        || required(policy_payload, "visibility")?
+            .as_string()
+            .as_deref()
+            != Some("PUBLIC")
+        || required(policy_payload, "structure_mode")?
+            .as_string()
+            .as_deref()
+            != Some("STRUCTURED")
+        || required(policy_payload, "protocol_format_ceiling")? != &WireValue::Number(1.0)
+        || required(policy_payload, "owner_id")?.as_string().as_deref() != Some(&actor)
+        || required(policy_payload, "signing_key")?
+            .as_string()
+            .as_deref()
+            != Some(&key_id)
+        || required(policy_payload, "issued_at")? != &WireValue::Number(issued_at as f64)
+        || required(prior_checkpoint, "owner_id")?
+            .as_string()
+            .as_deref()
+            != Some(&actor)
+        || required(prior_checkpoint, "owner_key")?
+            .as_string()
+            .as_deref()
+            != Some(&key_id)
+        || required(prior_checkpoint, "workspace_id")? != required(policy_payload, "workspace_id")?
+    {
+        return Err(invalid());
+    }
+    let sequence = safe_int(required(prior_checkpoint, "sequence")?)?
+        .checked_add(1)
+        .ok_or_else(invalid)?;
+    if required(policy_payload, "effective_sequence")? != &WireValue::Number(sequence as f64) {
+        return Err(invalid());
+    }
+    if canonical_wire_value(
+        required(required(&begin.structure, "snapshot")?, "source")?,
+        Path::SecureArtifact,
+    )
+    .map_err(|_| invalid())?
+        != canonical_wire_value(prior_checkpoint, Path::SecureArtifact).map_err(|_| invalid())?
+    {
+        return Err(invalid());
+    }
+    let policy = sign_envelope(policy_payload.clone(), "peerwork.secure.policy.v3", signer)?;
+    let policy_wire = canonical_wire_value(&policy, Path::SecureArtifact).map_err(|_| invalid())?;
+    if !verify_secure_signed_wire(policy_wire.as_bytes(), "peerwork.secure.policy.v3", &key_id)
+        .map_err(|_| invalid())?
+    {
+        return Err(invalid());
+    }
+    let policy_hash = sha256_hex(policy_wire.as_bytes());
+    let payload = obj(vec![
+        ("v", WireValue::Number(3.0)),
+        (
+            "workspace_id",
+            required(policy_payload, "workspace_id")?.clone(),
+        ),
+        ("sequence", WireValue::Number(sequence as f64)),
+        ("previous", required(prior_checkpoint, "head")?.clone()),
+        ("policy_hash", text(&policy_hash)),
+        ("epoch", WireValue::Number(0.0)),
+        ("actor_id", text(&actor)),
+        ("signing_key", text(&key_id)),
+        ("command_id", text(command_id)),
+        ("action_id", text("secure.structure.begin")),
+        ("instance_id", WireValue::Null),
+        ("issued_at", WireValue::Number(issued_at as f64)),
+        ("delegation", WireValue::Null),
+        ("protocol_format_ceiling", WireValue::Number(1.0)),
+        ("structure", begin.structure.clone()),
+        ("mode", text("PUBLIC")),
+        ("body", begin.operation.clone()),
+    ]);
+    let commit = sign_envelope(payload, "peerwork.secure.commit.v3", signer)?;
+    let commit_wire = canonical_wire_value(&commit, Path::SecureArtifact).map_err(|_| invalid())?;
+    if !verify_secure_signed_wire(commit_wire.as_bytes(), "peerwork.secure.commit.v3", &key_id)
+        .map_err(|_| invalid())?
+    {
+        return Err(invalid());
+    }
+    let commit_hash = sha256_hex(commit_wire.as_bytes());
+    let request = obj(vec![("commit", commit), ("policy_update", policy)]);
+    let request_wire = canonical_wire_value(&request, Path::SecureArtifact)
+        .map_err(|_| invalid())?
+        .into_bytes();
+    if request_wire.len() > 220_000 {
+        return Err(DirectInstallError::Resource);
+    }
+    let install = required(required(&begin.operation, "input")?, "install")?;
+    let protocol_digest = required(install, "protocol_digest")?
+        .as_string()
+        .ok_or_else(invalid)?;
+    let instance_id = required(install, "instance_id")?
+        .as_string()
+        .ok_or_else(invalid)?;
+    Ok(SignedPublicInstallBegin {
+        request_wire,
+        policy_hash,
+        commit_hash,
+        protocol_digest,
+        instance_id,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -503,6 +917,27 @@ mod tests {
         let expected = fixture.get("added").unwrap();
         let manifest = fixture.get("options").unwrap().get("manifest").unwrap();
         let manifest_wire = canonical_wire_value(manifest, Path::SecureArtifact).unwrap();
+        let package_fixture = parse_wire_json_bounded(
+            include_bytes!("../../../conformance/public-package-vectors.json"),
+            64,
+            2_000_000,
+        )
+        .unwrap();
+        let closure_wire = canonical_wire_value(
+            package_fixture.get("closure").unwrap(),
+            Path::SecureArtifact,
+        )
+        .unwrap();
+        let compiled = compile_public_package_closure(closure_wire.as_bytes()).unwrap();
+        assert_eq!(
+            compiled.package_digest(),
+            fixture.get("package_digest").unwrap().as_string().unwrap()
+        );
+        assert_eq!(
+            compiled.protocol_digest(),
+            fixture.get("protocol_digest").unwrap().as_string().unwrap()
+        );
+        assert_eq!(compiled.manifest_wire(), manifest_wire.as_bytes());
         let result = build_direct_install_objects(
             manifest_wire.as_bytes(),
             &fixture.get("protocol_digest").unwrap().as_string().unwrap(),
@@ -598,6 +1033,49 @@ mod tests {
             )
             .unwrap()
         );
+        let signer = SigningKey::from_bytes(&[7u8; 32]);
+        let actor = actor_id(&signer.verifying_key().to_bytes());
+        let key_id = base64url(&signer.verifying_key().to_bytes());
+        let mut signing_policy = policy.clone();
+        put(&mut signing_policy, "owner_id", text(&actor)).unwrap();
+        put(&mut signing_policy, "signing_key", text(&key_id)).unwrap();
+        let mut signing_checkpoint = fixture.get("checkpoint").unwrap().clone();
+        put(&mut signing_checkpoint, "owner_id", text(&actor)).unwrap();
+        put(&mut signing_checkpoint, "owner_key", text(&key_id)).unwrap();
+        let signed_begin = build_empty_direct_install_begin(
+            &signing_checkpoint,
+            &result.added,
+            &fixture.get("instance_id").unwrap().as_string().unwrap(),
+            &fixture.get("protocol_digest").unwrap().as_string().unwrap(),
+            &fixture.get("entrypoint").unwrap().as_string().unwrap(),
+        )
+        .unwrap();
+        let authored = sign_public_direct_install_begin(
+            &signing_policy,
+            &signing_checkpoint,
+            &signed_begin,
+            &"c".repeat(43),
+            2,
+            &signer,
+        )
+        .unwrap();
+        let request = parse_wire_json_bounded(&authored.request_wire, 64, 220_000).unwrap();
+        assert_eq!(
+            sha256_hex(
+                canonical_wire_value(request.get("commit").unwrap(), Path::SecureArtifact)
+                    .unwrap()
+                    .as_bytes()
+            ),
+            authored.commit_hash
+        );
+        assert_eq!(
+            sha256_hex(
+                canonical_wire_value(request.get("policy_update").unwrap(), Path::SecureArtifact)
+                    .unwrap()
+                    .as_bytes()
+            ),
+            authored.policy_hash
+        );
         assert!(matches!(
             build_direct_install_objects(
                 manifest_wire.as_bytes(),
@@ -609,5 +1087,142 @@ mod tests {
             ),
             Err(DirectInstallError::Invalid)
         ));
+    }
+
+    #[test]
+    fn signed_begin_requires_exact_prior_owner_policy_and_checkpoint() {
+        let fixture = parse_wire_json_bounded(
+            include_bytes!("../../../conformance/public-direct-install-vectors.json"),
+            64,
+            500_000,
+        )
+        .unwrap();
+        let signer = SigningKey::from_bytes(&[7u8; 32]);
+        let actor = actor_id(&signer.verifying_key().to_bytes());
+        let key_id = base64url(&signer.verifying_key().to_bytes());
+        let mut payload = fixture
+            .get("prior_policy")
+            .unwrap()
+            .get("payload")
+            .unwrap()
+            .clone();
+        put(&mut payload, "owner_id", text(&actor)).unwrap();
+        put(&mut payload, "signing_key", text(&key_id)).unwrap();
+        let WireValue::Array(members) = required(&payload, "members").unwrap().clone() else {
+            panic!("members")
+        };
+        let mut members = members;
+        put(&mut members[0], "actor_id", text(&actor)).unwrap();
+        put(&mut payload, "members", WireValue::Array(members)).unwrap();
+        let old = sign_envelope(payload, "peerwork.secure.policy.v3", &signer).unwrap();
+        let old_wire = canonical_wire_value(&old, Path::SecureArtifact).unwrap();
+        let mut checkpoint = fixture.get("checkpoint").unwrap().clone();
+        put(&mut checkpoint, "owner_id", text(&actor)).unwrap();
+        put(&mut checkpoint, "owner_key", text(&key_id)).unwrap();
+        put(
+            &mut checkpoint,
+            "policy_hash",
+            text(&sha256_hex(old_wire.as_bytes())),
+        )
+        .unwrap();
+        let checkpoint_wire = canonical_wire_value(&checkpoint, Path::SecureArtifact).unwrap();
+        let WireValue::Array(prior_objects) = fixture.get("prior_objects").unwrap() else {
+            panic!("prior objects")
+        };
+        let mut grants = fixture
+            .get("options")
+            .unwrap()
+            .get("grants")
+            .unwrap()
+            .clone();
+        let WireValue::Array(rows) = &mut grants else {
+            panic!("grants")
+        };
+        put(&mut rows[0], "actor_id", text(&actor)).unwrap();
+        let grants_wire = ordered_json_for_test(&grants);
+        let manifest_wire =
+            ordered_json_for_test(fixture.get("options").unwrap().get("manifest").unwrap());
+        let args = || {
+            prepare_public_direct_install_begin(
+                manifest_wire.as_bytes(),
+                &fixture.get("protocol_digest").unwrap().as_string().unwrap(),
+                old_wire.as_bytes(),
+                checkpoint_wire.as_bytes(),
+                prior_objects,
+                grants_wire.as_bytes(),
+                &fixture.get("instance_id").unwrap().as_string().unwrap(),
+                &fixture.get("entrypoint").unwrap().as_string().unwrap(),
+                &"c".repeat(43),
+                2,
+                &signer,
+            )
+        };
+        let prepared = args().unwrap();
+        let package_fixture = parse_wire_json_bounded(
+            include_bytes!("../../../conformance/public-package-vectors.json"),
+            64,
+            2_000_000,
+        )
+        .unwrap();
+        let closure_wire = canonical_wire_value(
+            package_fixture.get("closure").unwrap(),
+            Path::SecureArtifact,
+        )
+        .unwrap();
+        let package_prepared = prepare_public_package_install_begin(
+            closure_wire.as_bytes(),
+            &fixture.get("package_digest").unwrap().as_string().unwrap(),
+            &fixture.get("protocol_digest").unwrap().as_string().unwrap(),
+            old_wire.as_bytes(),
+            checkpoint_wire.as_bytes(),
+            prior_objects,
+            grants_wire.as_bytes(),
+            &fixture.get("instance_id").unwrap().as_string().unwrap(),
+            &fixture.get("entrypoint").unwrap().as_string().unwrap(),
+            &"c".repeat(43),
+            2,
+            &signer,
+        )
+        .unwrap();
+        assert_eq!(
+            package_prepared.package_digest(),
+            fixture.get("package_digest").unwrap().as_string().unwrap()
+        );
+        assert_eq!(package_prepared.request_wire(), prepared.request_wire());
+        assert_eq!(
+            prepared.protocol_digest(),
+            fixture.get("protocol_digest").unwrap().as_string().unwrap()
+        );
+        assert_eq!(
+            prepared.instance_id(),
+            fixture.get("instance_id").unwrap().as_string().unwrap()
+        );
+        let request = parse_wire_json_bounded(prepared.request_wire(), 64, 220_000).unwrap();
+        assert!(request.get("policy_update").is_some());
+        assert!(request.get("commit").is_some());
+        let mut bad_checkpoint = checkpoint.clone();
+        put(&mut bad_checkpoint, "policy_hash", text(&"0".repeat(64))).unwrap();
+        let bad_wire = canonical_wire_value(&bad_checkpoint, Path::SecureArtifact).unwrap();
+        assert!(matches!(
+            prepare_public_direct_install_begin(
+                manifest_wire.as_bytes(),
+                &fixture.get("protocol_digest").unwrap().as_string().unwrap(),
+                old_wire.as_bytes(),
+                bad_wire.as_bytes(),
+                prior_objects,
+                grants_wire.as_bytes(),
+                &fixture.get("instance_id").unwrap().as_string().unwrap(),
+                &fixture.get("entrypoint").unwrap().as_string().unwrap(),
+                &"c".repeat(43),
+                2,
+                &signer
+            ),
+            Err(DirectInstallError::Invalid)
+        ));
+    }
+    fn ordered_json_for_test(value: &WireValue) -> String {
+        let mut out = String::new();
+        ordered_json(value, 0, &mut out).unwrap();
+        out
     }
 }
