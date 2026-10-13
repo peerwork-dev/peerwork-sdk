@@ -287,14 +287,16 @@ impl SecureLifecycle {
         if !reader.remaining.is_empty() {
             return Err(SecureLifecycleError::Invalid);
         }
-        // Both rings absent is an explicit persisted PUBLIC/first-open owner
-        // pin. Every ring that is present still needs a private epoch key.
-        if active
+        // A verified PUBLIC grant activates an empty epoch-zero ring. Pending
+        // rings and PRIVATE rotations still require actual epoch key material;
+        // full signed replay refuses PRIVATE content without its epoch key.
+        if pending
             .as_ref()
             .is_some_and(|ring| ring.epochs().next().is_none())
-            || pending
-                .as_ref()
-                .is_some_and(|ring| ring.epochs().next().is_none())
+            || (pending.is_some()
+                && active
+                    .as_ref()
+                    .is_some_and(|ring| ring.epochs().next().is_none()))
         {
             return Err(SecureLifecycleError::Invalid);
         }

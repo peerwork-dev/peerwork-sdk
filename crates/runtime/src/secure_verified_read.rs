@@ -74,6 +74,7 @@ pub(crate) struct TransportReplayedJournal {
     checkpoint_canonical_json: String,
     grant_keyring_sha256: Option<String>,
     signed_policy_wires: Vec<Vec<u8>>,
+    signed_commit_wires: Vec<Vec<u8>>,
     replay: ReplayedSecureJournal,
 }
 
@@ -177,6 +178,14 @@ impl TransportReplayedJournal {
             .iter()
             .find(|wire| sha256_hex(wire) == policy_hash)
             .map(Vec::as_slice)
+    }
+    /// Exact signed artifacts already consumed by complete origin-bound replay.
+    /// These bytes are only for composing a separately checked grant proof.
+    pub(crate) fn signed_policy_wires(&self) -> &[Vec<u8>] {
+        &self.signed_policy_wires
+    }
+    pub(crate) fn signed_commit_wires(&self) -> &[Vec<u8>] {
+        &self.signed_commit_wires
     }
     pub(crate) fn action_receipt(
         &self,
@@ -371,6 +380,7 @@ fn replay_authenticated_pages_with_material(
         checkpoint_canonical_json: pages.checkpoint_canonical_json().to_owned(),
         grant_keyring_sha256,
         signed_policy_wires: policy_wires,
+        signed_commit_wires: commit_wires,
         replay,
     })
 }

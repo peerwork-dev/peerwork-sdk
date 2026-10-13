@@ -1018,8 +1018,8 @@ mod tests {
             state_dir: temp.path().join("native-offer"),
             identity_path,
             workspace_id: workspace.clone(),
-            owner_actor_id: Some(owner_actor),
-            owner_key_id: Some(owner_key),
+            owner_actor_id: Some(owner_actor.clone()),
+            owner_key_id: Some(owner_key.clone()),
             authority: Some(authority.clone()),
             required_features: vec![],
             allow_loopback_http: true,
@@ -1183,6 +1183,17 @@ mod tests {
                 &CancellationToken::new(),
             ))
             .unwrap();
+        drop(recipient_client);
+        let mut refreshed_transport = TransportConfig::new(origin.clone());
+        refreshed_transport.allow_loopback_http = true;
+        let recipient_client = runtime
+            .block_on(KernelClient::open(
+                refreshed_transport,
+                &recipient_dir.join("kernel.sqlite"),
+                &[],
+                &CancellationToken::new(),
+            ))
+            .unwrap();
         let recipient_proof = sign_read_proof(
             &path,
             recipient_client.discovery(),
@@ -1312,5 +1323,126 @@ mod tests {
             journal.exact_request(&delivery.grant_id).unwrap(),
             saved_delivery
         );
+        drop(journal);
+        let recipient_proof = sign_read_proof(
+            &path,
+            recipient_client.discovery(),
+            &recipient_identity,
+            &recipient_config.authority,
+        )
+        .unwrap();
+        let authorized = runtime
+            .block_on(recipient_client.transport().get_secure_invitation_exact(
+                &path,
+                &recipient_proof,
+                &CancellationToken::new(),
+            ))
+            .unwrap();
+        assert_eq!(authorized.status, 200);
+        let authorized =
+            peerwork_core::wire_json::parse_wire_json_js_bounded(&authorized.wire, 80, 220_000)
+                .unwrap();
+        let recipient_profile = SecureReadProfileConfig {
+            origin: origin.clone(),
+            state_dir: recipient_dir.clone(),
+            identity_path: recipient_config.identity_path.clone(),
+            workspace_id: workspace.clone(),
+            owner_actor_id: Some(owner_actor.clone()),
+            owner_key_id: Some(owner_key.clone()),
+            authority: Some(recipient_config.authority.clone()),
+            required_features: vec![],
+            allow_loopback_http: true,
+            max_replay_artifact_bytes: 64 * 1024 * 1024,
+        };
+        SecureReadProfile::new(recipient_profile.clone())
+            .with_latest_replay(&CancellationToken::new(), |source| {
+                let local_recipient = crate::secure_recipient_state::RecipientState::open(
+                    &recipient_dir.join("recipient.state"),
+                    &recipient_identity,
+                )
+                .unwrap();
+                let mut pending = crate::secure_grant_pending::SecureGrantPending::open(
+                    &recipient_dir.join("pending-grant.state"),
+                    source.origin(),
+                    source.authority(),
+                    &workspace,
+                    &owner_actor,
+                    &owner_key,
+                    &recipient_identity,
+                    &local_recipient,
+                    now_ms().unwrap(),
+                )
+                .unwrap();
+                let policies = source
+                    .signed_policy_wires()
+                    .iter()
+                    .map(Vec::as_slice)
+                    .collect::<Vec<_>>();
+                let commits = source
+                    .signed_commit_wires()
+                    .iter()
+                    .map(Vec::as_slice)
+                    .collect::<Vec<_>>();
+                let canonical = |name: &str| {
+                    peerwork_core::wire_json::canonical_wire_value(
+                        authorized.get(name).unwrap(),
+                        peerwork_core::canonical::Path::SecureArtifact,
+                    )
+                    .unwrap()
+                };
+                let grant = canonical("grant");
+                let offer = canonical("offer");
+                let decision = canonical("decision");
+                let certificate = peerwork_core::wire_json::canonical_wire_value(
+                    authorized
+                        .get("offer")
+                        .unwrap()
+                        .get("payload")
+                        .unwrap()
+                        .get("recipient")
+                        .unwrap(),
+                    peerwork_core::canonical::Path::SecureArtifact,
+                )
+                .unwrap();
+                let material = pending
+                    .stage(
+                        crate::secure_grant_pending::GrantEvidence {
+                            policies: &policies,
+                            commits: &commits,
+                            checkpoint: source.checkpoint_canonical_json().as_bytes(),
+                            grant: grant.as_bytes(),
+                            certificate: certificate.as_bytes(),
+                            invitation: Some((offer.as_bytes(), decision.as_bytes())),
+                            delegation: None,
+                        },
+                        &local_recipient,
+                        now_ms().unwrap(),
+                    )
+                    .unwrap();
+                assert_eq!(material.epoch(), 0);
+                assert_eq!(material.keyring().epochs().count(), 0);
+                let activation = pending
+                    .bind_to_replay(&local_recipient, now_ms().unwrap(), source)
+                    .unwrap()
+                    .unwrap();
+                let mut lifecycle = SecureLifecycle::open(
+                    &recipient_dir.join("lifecycle.state"),
+                    source.origin(),
+                    recipient_identity.actor_id(),
+                    &workspace,
+                    &owner_actor,
+                    &owner_key,
+                )
+                .unwrap();
+                let activated = lifecycle.activate_verified_grant(activation).unwrap();
+                assert!(activated.active_epochs.is_empty());
+                Ok::<_, PublicAdmissionRuntimeError>(())
+            })
+            .unwrap();
+        let verified_read = SecureReadProfile::new(recipient_profile)
+            .read_latest_json()
+            .unwrap();
+        let verified: serde_json::Value = serde_json::from_str(&verified_read).unwrap();
+        assert_eq!(verified["sequence"], 2);
     }
 }

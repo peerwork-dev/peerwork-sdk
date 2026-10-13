@@ -145,6 +145,7 @@ pub fn verify_direct_key_grant(
         .recipient
         .verify_local_certificate(&cert, &recipient_actor, &recipient_key, issued)
         .map_err(|_| bad())?;
+    let visibility = string(selected_payload, "visibility")?;
     if unsigned(payload, "v")? != 1
         || !token(&string(payload, "grant_id")?)
         || string(payload, "workspace_id")? != input.workspace_id
@@ -156,7 +157,9 @@ pub fn verify_direct_key_grant(
         || string(selected_payload, "signing_key")? != input.trusted_owner_key
         || string(latest_payload, "owner_id")? != input.trusted_owner_actor
         || string(latest_payload, "signing_key")? != input.trusted_owner_key
-        || string(selected_payload, "visibility")? != "PRIVATE"
+        || !matches!(visibility.as_str(), "PRIVATE" | "PUBLIC")
+        || (visibility == "PUBLIC" && epoch != 0)
+        || (visibility == "PRIVATE" && epoch == 0)
         || issued > input.now
         || !same(payload.get("recipient").ok_or_else(bad)?, &recipient)?
     {
@@ -241,10 +244,12 @@ pub fn verify_direct_key_grant(
     let canonical = Zeroizing::new(canonical_result?);
     let keyring = SecretKeyring::parse_wire(canonical.as_bytes()).map_err(|_| bad())?;
     if keyring.workspace_id() != input.workspace_id
-        || keyring.epochs().next().is_none()
-        || keyring.epochs().count() > 1024
-        || keyring.epochs().any(|item| item > epoch)
-        || keyring.key_at(epoch).is_none()
+        || (visibility == "PUBLIC" && keyring.epochs().next().is_some())
+        || (visibility == "PRIVATE"
+            && (keyring.epochs().next().is_none()
+                || keyring.epochs().count() > 1024
+                || keyring.epochs().any(|item| item > epoch)
+                || keyring.key_at(epoch).is_none()))
     {
         return Err(bad());
     }

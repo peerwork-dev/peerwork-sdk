@@ -212,7 +212,16 @@ impl SecureGrantPending {
             .keyring()
             .canonical_wire()
             .map_err(|_| PendingGrantError::Invalid)?;
-        if replay.grant_keyring_sha256() != Some(sha256_hex(&ring_wire).as_str()) {
+        let public_empty = material.epoch() == 0 && material.keyring().epochs().next().is_none();
+        let replayed_keyring_matches = if public_empty {
+            // PUBLIC commits have no epoch ciphertext. Complete signed replay
+            // still binds the selected policy and checkpoint; the grant
+            // verifier separately proves the empty keyring and recipient.
+            replay.grant_keyring_sha256().is_none()
+        } else {
+            replay.grant_keyring_sha256() == Some(sha256_hex(&ring_wire).as_str())
+        };
+        if !replayed_keyring_matches {
             return Err(PendingGrantError::ReplayMismatch);
         }
         Ok(Some(GrantActivationProof {

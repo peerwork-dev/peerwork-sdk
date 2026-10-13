@@ -246,6 +246,7 @@ impl HttpTransport {
         let send = self
             .client
             .get(url)
+            .header("connection", "close")
             .header("X-Peerwork-Read", read_proof)
             .send();
         let response = tokio::select! {
