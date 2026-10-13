@@ -556,6 +556,7 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::secure_lifecycle::{SecureLifecycle, SecureLifecycleError};
     use peerwork_core::{
         canonical::{canonical, Path as CanonicalPath},
         crypto::{base64url, sha256_hex, sign_canonical},
@@ -664,6 +665,46 @@ mod tests {
         let proof = pending.stage(evidence, &recipient, now).unwrap();
         assert_eq!(proof.epoch(), 1);
         assert!(proof.keyring().key_at(1).is_some());
+        // This manually constructed test token exercises lifecycle custody
+        // only; production obtains it through exact completed replay binding.
+        let lifecycle_path = dir.path().join("lifecycle.state");
+        let mut lifecycle = SecureLifecycle::open(
+            &lifecycle_path,
+            origin,
+            identity.actor_id(),
+            &workspace,
+            identity.actor_id(),
+            identity.key_id(),
+        )
+        .unwrap();
+        lifecycle
+            .activate_verified_grant(GrantActivationProof {
+                material: proof,
+                origin: origin.into(),
+                workspace: workspace.clone(),
+                owner_actor: identity.actor_id().into(),
+                owner_key: identity.key_id().into(),
+                local_actor: identity.actor_id().into(),
+            })
+            .unwrap();
+        assert_eq!(lifecycle.status().active_epochs, vec![1]);
+        lifecycle.stage_rotation(3).unwrap();
+        let before_conflict = fs::read(&lifecycle_path).unwrap();
+        let old_grant = pending.verified_pending(&recipient, now).unwrap().unwrap();
+        assert!(matches!(
+            lifecycle.activate_verified_grant(GrantActivationProof {
+                material: old_grant,
+                origin: origin.into(),
+                workspace: workspace.clone(),
+                owner_actor: identity.actor_id().into(),
+                owner_key: identity.key_id().into(),
+                local_actor: identity.actor_id().into(),
+            }),
+            Err(SecureLifecycleError::PendingConflict)
+        ));
+        assert_eq!(fs::read(&lifecycle_path).unwrap(), before_conflict);
+        assert_eq!(lifecycle.status().active_epochs, vec![1]);
+        assert_eq!(lifecycle.status().pending_epochs, vec![1, 3]);
         let exact = GrantEvidence {
             policies: &policies,
             commits: &[],
