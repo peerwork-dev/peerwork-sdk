@@ -2,6 +2,7 @@
 // proposal → adoption → task acceptance test. It does not author actions.
 import assert from 'node:assert/strict';
 import {createRequire} from 'node:module';
+import {execFileSync} from 'node:child_process';
 import {mkdirSync} from 'node:fs';
 import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -14,6 +15,10 @@ const candidateId = process.env.PEERWORK_TEST_CANDIDATE_RECORD;
 const output = process.env.PEERWORK_TEST_BROWSER_OUTPUT;
 if (![reference,state,workspaceId,taskId,candidateId,output].every(Boolean))
   throw new Error('exact reference, state, workspace, record IDs and output are required');
+const referenceCommit=execFileSync('git',['-C',reference,'rev-parse','HEAD'],{encoding:'utf8'}).trim();
+if(process.env.PEERWORK_TEST_BROWSER_REFERENCE_COMMIT &&
+   referenceCommit!==process.env.PEERWORK_TEST_BROWSER_REFERENCE_COMMIT)
+  throw new Error('browser reference commit differs from expected UI overlay');
 for (const token of [workspaceId,taskId,candidateId])
   assert.match(token,/^[A-Za-z0-9_-]{43}$/);
 
@@ -59,7 +64,8 @@ try {
   }
   assert.deepEqual(errors,[]);
   console.log(JSON.stringify({task_record_verified:true,candidate_record_verified:true,
-    task_source_link_clicked:true,target_revision:1,viewports:[390,1280],no_horizontal_overflow:true}));
+    task_source_link_clicked:true,target_revision:1,viewports:[390,1280],no_horizontal_overflow:true,
+    browser_ui_commit:referenceCommit}));
 } finally {
   await browser?.close();
   if(server){server.closeAllConnections?.();await new Promise(resolve=>server.close(resolve));}

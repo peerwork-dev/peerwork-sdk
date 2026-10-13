@@ -300,6 +300,9 @@ with tempfile.TemporaryDirectory(prefix="peerwork-official-workflow-") as direct
                                PEERWORK_TEST_WORKSPACE=fixture["workspace_id"],
                                PEERWORK_TEST_TASK_RECORD=task_record_id,
                                PEERWORK_TEST_CANDIDATE_RECORD=candidate_id)
+            browser_env["PEERWORK_REFERENCE_ROOT"] = os.environ.get(
+                "PEERWORK_TEST_BROWSER_REFERENCE_ROOT", os.environ["PEERWORK_REFERENCE_ROOT"]
+            )
             browser = subprocess.run(
                 [NODE, str(Path(__file__).parent / "installed-official-composed-browser.mjs")],
                 env=browser_env, capture_output=True, text=True, timeout=90)
