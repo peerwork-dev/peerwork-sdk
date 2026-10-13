@@ -830,6 +830,7 @@ mod tests {
                     ),
                     expected_owner_actor_id: source["owner_actor_id"].as_str().unwrap().into(),
                     expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
+                    recover_pending_action: false,
                 },
                 &cancel,
             )
@@ -1454,6 +1455,7 @@ mod tests {
                     ),
                     expected_owner_actor_id: source["owner_actor_id"].as_str().unwrap().into(),
                     expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
+                    recover_pending_action: false,
                 },
                 &cancel,
             )

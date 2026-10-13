@@ -4,7 +4,7 @@
 
 use crate::{
     kernel_identity::KernelIdentity,
-    secure_lifecycle::SecureLifecycle,
+    secure_lifecycle::{ReplayKeyringState, SecureLifecycle},
     secure_state::{SecureStateError, SecureStateStore},
     secure_verified_read::TransportReplayedJournal,
     transport::{HttpTransport, TransportError},
@@ -234,6 +234,34 @@ impl SecureIntentJournal {
         self.prepare_with_selection(input, None)
     }
 
+    /// A migrated ACTION may already have an authenticated receipt after a
+    /// crash. Never replace that row, but require its complete saved packet
+    /// and authority metadata to match the re-proved historical source.
+    pub(crate) fn exact_imported_action_matches(
+        &self,
+        input: SecurePacketInput<'_>,
+    ) -> Result<(), SecureIntentError> {
+        let row = self
+            .document
+            .rows
+            .get(input.intent_id)
+            .ok_or(SecureIntentError::NotFound)?;
+        if row.path != input.path
+            || row.action_id != input.action_id
+            || row.workspace_id.as_deref() != input.workspace_id
+            || row.trusted_owner_key.as_deref() != input.trusted_owner_key
+            || row.intent_digest != input.intent_digest
+            || row.request_sha256 != sha256_hex(input.exact_request)
+            || row.public_install.is_some()
+            || row.accepted_install.is_some()
+            || row.accepted_install_step.is_some()
+            || self.exact_request(input.intent_id)? != input.exact_request
+        {
+            return Err(SecureIntentError::Conflict);
+        }
+        Ok(())
+    }
+
     pub(crate) fn prepare_public_install(
         &mut self,
         input: SecurePacketInput<'_>,
@@ -383,9 +411,31 @@ impl SecureIntentJournal {
         source: &TransportReplayedJournal,
         pins: &SecureCommitRequestPins<'_>,
     ) -> Result<(VerifiedPreparedSecureRequest, Vec<u8>), SecureIntentError> {
-        source
-            .verified_read()
-            .map_err(|_| SecureIntentError::ReplayMismatch)?;
+        self.verified_saved_commit_from_replay_inner(
+            intent_id, identity, transport, source, pins, false,
+        )
+    }
+
+    fn verified_saved_commit_from_replay_inner(
+        &self,
+        intent_id: &str,
+        identity: &KernelIdentity,
+        transport: &HttpTransport,
+        source: &TransportReplayedJournal,
+        pins: &SecureCommitRequestPins<'_>,
+        imported_owner: bool,
+    ) -> Result<(VerifiedPreparedSecureRequest, Vec<u8>), SecureIntentError> {
+        if imported_owner && source.keyring_state() == Some(ReplayKeyringState::Pending) {
+            if source.replay().structure_status()
+                == peerwork_core::replayed_secure_journal::StructureStatus::Seeding
+            {
+                return Err(SecureIntentError::ReplayMismatch);
+            }
+        } else {
+            source
+                .verified_read()
+                .map_err(|_| SecureIntentError::ReplayMismatch)?;
+        }
         if source.origin() != transport.trusted_origin()
             || source.source_actor_id() != identity.actor_id()
             || source.source_key_id() != identity.key_id()
@@ -472,9 +522,45 @@ impl SecureIntentJournal {
         transport: &HttpTransport,
         source: &TransportReplayedJournal,
     ) -> Result<AcceptedSecureAction, SecureIntentError> {
-        source
-            .verified_read()
-            .map_err(|_| SecureIntentError::ReplayMismatch)?;
+        self.accept_replayed_action_inner(intent_id, identity, transport, source, false)
+    }
+
+    /// Historical Owner import must bind an already-applied ACTION before its
+    /// fully replay-checked keyring can be promoted from PENDING to ACTIVE.
+    /// Only the attach flow calls this after proving the imported ring and
+    /// current signed Owner policy. All ordinary action readers retain the
+    /// ACTIVE requirement in `accept_replayed_action`.
+    pub(crate) fn accept_replayed_imported_owner_action(
+        &mut self,
+        intent_id: &str,
+        identity: &KernelIdentity,
+        transport: &HttpTransport,
+        source: &TransportReplayedJournal,
+    ) -> Result<AcceptedSecureAction, SecureIntentError> {
+        self.accept_replayed_action_inner(intent_id, identity, transport, source, true)
+    }
+
+    fn accept_replayed_action_inner(
+        &mut self,
+        intent_id: &str,
+        identity: &KernelIdentity,
+        transport: &HttpTransport,
+        source: &TransportReplayedJournal,
+        imported_owner: bool,
+    ) -> Result<AcceptedSecureAction, SecureIntentError> {
+        let pending_import =
+            imported_owner && source.keyring_state() == Some(ReplayKeyringState::Pending);
+        if pending_import {
+            if source.replay().structure_status()
+                == peerwork_core::replayed_secure_journal::StructureStatus::Seeding
+            {
+                return Err(SecureIntentError::ReplayMismatch);
+            }
+        } else {
+            source
+                .verified_read()
+                .map_err(|_| SecureIntentError::ReplayMismatch)?;
+        }
         if self.document.trusted_origin != transport.trusted_origin()
             || self.document.trusted_origin != source.origin()
             || self.document.actor_id != identity.actor_id()
@@ -493,10 +579,17 @@ impl SecureIntentJournal {
         {
             return Err(SecureIntentError::ReplayMismatch);
         }
-        let receipt = source
-            .action_receipt(intent_id)
-            .map_err(|_| SecureIntentError::ReplayMismatch)?
-            .ok_or(SecureIntentError::ReplayMismatch)?;
+        let receipt = if pending_import {
+            source
+                .replay()
+                .action_receipt(intent_id)
+                .map_err(|_| SecureIntentError::ReplayMismatch)?
+        } else {
+            source
+                .action_receipt(intent_id)
+                .map_err(|_| SecureIntentError::ReplayMismatch)?
+        }
+        .ok_or(SecureIntentError::ReplayMismatch)?;
         let request = self.exact_request(intent_id)?;
         let saved = parse_wire_json_bounded(&request, 64, MAX_PACKET)
             .map_err(|_| SecureIntentError::Incompatible)?;
@@ -627,8 +720,48 @@ impl SecureIntentJournal {
         pins: &SecureCommitRequestPins<'_>,
         cancel: &CancellationToken,
     ) -> Result<PendingSecureIntent, SecureIntentError> {
-        let (proof, request) =
-            self.verified_saved_commit_from_replay(intent_id, identity, transport, source, pins)?;
+        self.submit_saved_commit_from_replay_inner(
+            intent_id, identity, transport, source, pins, cancel, false,
+        )
+        .await
+    }
+
+    /// Explicit historical Owner recovery may submit its original saved
+    /// ACTION while the completely replay-checked imported ring is PENDING.
+    /// Ordinary action submissions still require an ACTIVE verified read.
+    pub(crate) async fn submit_saved_imported_owner_commit_from_replay(
+        &mut self,
+        intent_id: &str,
+        identity: &KernelIdentity,
+        transport: &HttpTransport,
+        source: &TransportReplayedJournal,
+        pins: &SecureCommitRequestPins<'_>,
+        cancel: &CancellationToken,
+    ) -> Result<PendingSecureIntent, SecureIntentError> {
+        self.submit_saved_commit_from_replay_inner(
+            intent_id, identity, transport, source, pins, cancel, true,
+        )
+        .await
+    }
+
+    async fn submit_saved_commit_from_replay_inner(
+        &mut self,
+        intent_id: &str,
+        identity: &KernelIdentity,
+        transport: &HttpTransport,
+        source: &TransportReplayedJournal,
+        pins: &SecureCommitRequestPins<'_>,
+        cancel: &CancellationToken,
+        imported_owner: bool,
+    ) -> Result<PendingSecureIntent, SecureIntentError> {
+        let (proof, request) = self.verified_saved_commit_from_replay_inner(
+            intent_id,
+            identity,
+            transport,
+            source,
+            pins,
+            imported_owner,
+        )?;
         let response = transport.post_exact(proof.path(), request, cancel).await?;
         if !response.wire.is_empty() {
             self.observe_response(intent_id, &response.wire)?;

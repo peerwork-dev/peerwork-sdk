@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 
 const [origin, sourceDir, legacyRoot, mode = 'clean'] = process.argv.slice(2);
 if (!origin || !sourceDir || !legacyRoot) throw new Error('LEGACY_TEST_INPUT_REQUIRED');
-if (!['clean', 'completed', 'legacy-record', 'pending', 'unknown-store', 'malformed-store', 'legacy-structured', 'legacy-public', 'legacy-public-structured', 'legacy-public-record', 'legacy-public-structured-record', 'private-missing-ring'].includes(mode)) throw new Error('LEGACY_TEST_MODE_INVALID');
+if (!['clean', 'completed', 'legacy-record', 'pending', 'pending-before-post', 'unknown-store', 'malformed-store', 'legacy-structured', 'legacy-public', 'legacy-public-structured', 'legacy-public-record', 'legacy-public-structured-record', 'private-missing-ring'].includes(mode)) throw new Error('LEGACY_TEST_MODE_INVALID');
 mkdirSync(sourceDir, { recursive: true, mode: 0o700 });
 const { privateKey } = generateKeyPairSync('ed25519');
 const pemPath = join(sourceDir, 'owner.pem');
@@ -27,16 +27,32 @@ try {
   if (journal.policy.payload.v !== (structured ? 2 : 1) || journal.policy.payload.visibility !== visibility) {
     throw new Error('LEGACY_EXPECTED_WIRE_NOT_CREATED');
   }
-  if (mode === 'pending') {
+  if (mode === 'pending' || mode === 'pending-before-post') {
     const wiki = journal.objects.find(row => row.kind === 'instances' && row.value.origin_entrypoint === 'wiki');
     if (!wiki) throw new Error('LEGACY_WIKI_MISSING');
-    const hook = await fetch(new URL('/__test/drop-next-post', origin), { method: 'POST', body: '{}' });
-    if (!hook.ok) throw new Error('LEGACY_DROP_HOOK_FAILED');
+    let stopped = false;
+    const originalRequest = agent.request.bind(agent);
+    if (mode === 'pending') {
+      const hook = await fetch(new URL('/__test/drop-next-post', origin), { method: 'POST', body: '{}' });
+      if (!hook.ok) throw new Error('LEGACY_DROP_HOOK_FAILED');
+    } else {
+      agent.request = async (path, options) => {
+        if (!stopped && path === `/api/workspace/v1/secure/workspaces/${created.workspaceId}/commits` && options?.method === 'POST') {
+          stopped = true;
+          throw new Error('TEST_STOP_BEFORE_ACTION_POST');
+        }
+        return originalRequest(path, options);
+      };
+    }
     try {
       await agent.action(created.workspaceId, wiki.id, 'wiki.create', {
         title: 'Pending legacy Owner action', body: 'Exact signed packet remains local',
       });
-    } catch { /* Expected response loss; the Agent's protected pending map is the evidence. */ }
+    } catch (error) {
+      if (mode === 'pending-before-post' && error?.message !== 'TEST_STOP_BEFORE_ACTION_POST') throw error;
+      /* The Agent's protected pending map is the durable evidence. */
+    } finally { agent.request = originalRequest; }
+    if (mode === 'pending-before-post' && !stopped) throw new Error('LEGACY_PRE_POST_STOP_NOT_REACHED');
     if (Object.keys(agent.state.pending).length !== 1) throw new Error('LEGACY_PENDING_NOT_SAVED');
   }
   if (mode === 'unknown-store') {
@@ -82,6 +98,9 @@ try {
     pem_path: pemPath,
     intent_db_path: intentDbPath,
     pending_count: Object.keys(agent.state.pending).length,
+    pending_command_id: Object.keys(agent.state.pending)[0] ?? null,
+    pending_commit_hash: Object.values(agent.state.pending)[0]?.body?.commit
+      ? await secureHash(Object.values(agent.state.pending)[0].body.commit) : null,
     completed_identity_updates: Object.values(agent.state.identity_key_intents ?? {}).filter(row => row.state === 'PUBLISHED').length,
     prior_record_id: priorRecordId,
     prior_record_title: priorRecordTitle,

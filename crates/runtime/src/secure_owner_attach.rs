@@ -5,16 +5,21 @@
 
 use crate::{
     kernel_identity::{KernelIdentity, KernelIdentityError},
+    secure_intents::{SecureIntentError, SecureIntentJournal, SecurePacketInput},
     secure_lifecycle::SecureLifecycle,
     secure_owner_create::{SecureOwnerCreateConfig, SecureOwnerWorkspaceCreate},
     secure_read_access::{SecureReadAccess, SecureReadConfig},
     secure_read_profile::{SecureReadProfile, SecureReadProfileConfig},
     secure_state::{read_private_file_bounded, SecureStateStore},
+    secure_verified_read::TransportReplayedJournal,
     transport::{HttpTransport, TransportConfig},
 };
 use peerwork_core::{
     canonical::Path as CanonicalPath,
     crypto::sha256_hex,
+    prepared_secure_request::{
+        verify_prepared_secure_commit_request_with_policy, SecureCommitRequestPins,
+    },
     replayed_secure_journal::StructureStatus,
     secure_keyring::SecretKeyring,
     wire_json::{canonical_wire_value, parse_wire_json_bounded, WireValue},
@@ -26,14 +31,19 @@ use std::{
     path::{Path, PathBuf},
 };
 use thiserror::Error;
+use tokio::runtime::Builder;
 use tokio_util::sync::CancellationToken;
 use zeroize::{Zeroize, Zeroizing};
 
 #[cfg(test)]
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 #[cfg(test)]
 static TEST_STOP_AFTER_ATTACH_ROW: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+static TEST_IMPORTED_ACTION_POSTS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static TEST_STOP_AFTER_IMPORTED_ACTION_ACCEPTED: AtomicBool = AtomicBool::new(false);
 
 const MAX_SOURCE: usize = 64 * 1024 * 1024;
 const MAX_HISTORY: usize = 4096;
@@ -48,6 +58,12 @@ pub struct HistoricalOwnerAttachInput {
     pub protected_ts_intent_db_path: PathBuf,
     pub expected_owner_actor_id: String,
     pub expected_owner_key_id: String,
+    /// Explicitly authorize exact recovery of one saved legacy Owner ACTION.
+    /// An attach without this opt-in refuses any pending signed packet.
+    /// Stop the old client and keep its state, key, and intent database unchanged
+    /// throughout attach/resume; native locking does not lock the old client.
+    #[serde(default)]
+    pub recover_pending_action: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -83,6 +99,10 @@ pub enum HistoricalOwnerAttachError {
     Verification,
     #[error("historical Owner attachment was cancelled")]
     Cancelled,
+    #[error("saved historical ACTION could not be retried yet")]
+    PendingActionRetry,
+    #[error("saved historical ACTION no longer matches the current head")]
+    PendingActionConflict,
 }
 
 impl HistoricalOwnerAttachError {
@@ -97,6 +117,8 @@ impl HistoricalOwnerAttachError {
             Self::Local => "LOCAL_STATE_FAILED",
             Self::Verification => "VERIFICATION_FAILED",
             Self::Cancelled => "CANCELLED",
+            Self::PendingActionRetry => "PENDING_ACTION_RETRY",
+            Self::PendingActionConflict => "PENDING_ACTION_CONFLICT",
         }
     }
 }
@@ -139,6 +161,18 @@ struct LegacySource {
     policy_hash: String,
     retained_member_commands: Vec<String>,
     retained_inbox_receipts: Vec<RetainedInboxReceipt>,
+    pending_action: Option<LegacyPendingAction>,
+}
+
+struct LegacyPendingAction {
+    command_id: String,
+    action_id: String,
+    path: String,
+    request: Zeroizing<Vec<u8>>,
+    sequence: u64,
+    previous: Option<String>,
+    policy_hash: String,
+    epoch: u64,
 }
 
 #[derive(Clone)]
@@ -256,6 +290,12 @@ impl SecureHistoricalOwnerAttach {
         if cancel.is_cancelled() {
             return Err(HistoricalOwnerAttachError::Cancelled);
         }
+        // Hold one root-scoped migration lock across history, action-intent,
+        // network and ATTACHED writes. Two resumes must not both observe an
+        // unapplied packet and submit it before either can persist the receipt.
+        let _recovery_lock =
+            SecureStateStore::open(&self.config.state_dir.join("owner-attach-recovery.state"))
+                .map_err(|_| HistoricalOwnerAttachError::Local)?;
         let store = SecureStateStore::open(&self.history_path())
             .map_err(|_| HistoricalOwnerAttachError::Local)?;
         let history = read_history(&store, &self.config.origin)?;
@@ -308,7 +348,7 @@ impl SecureHistoricalOwnerAttach {
                 .map_err(|_| HistoricalOwnerAttachError::Conflict)?;
         }
         let access = SecureReadAccess::new(self.attach_read_config(&row.input));
-        let replayed = access
+        let mut replayed = access
             .replay_checked_attach_generation(cancel)
             .map_err(|_| {
                 if cancel.is_cancelled() {
@@ -405,6 +445,13 @@ impl SecureHistoricalOwnerAttach {
                 return Err(HistoricalOwnerAttachError::Conflict);
             }
         }
+        if let Some(pending) = source.pending_action.as_ref() {
+            self.recover_pending_action(&row, pending, &owner, &access, &mut replayed, cancel)?;
+            #[cfg(test)]
+            if TEST_STOP_AFTER_IMPORTED_ACTION_ACCEPTED.swap(false, Ordering::SeqCst) {
+                return Err(HistoricalOwnerAttachError::Cancelled);
+            }
+        }
         if let Some(ring) = source.ring.as_ref() {
             let mut lifecycle = SecureLifecycle::open(
                 &directory.join("lifecycle.state"),
@@ -432,6 +479,9 @@ impl SecureHistoricalOwnerAttach {
                 HistoricalOwnerAttachError::Verification
             }
         })?;
+        if source.pending_action.is_some() {
+            self.assert_source_unchanged(&row)?;
+        }
         let store = SecureStateStore::open(&self.history_path())
             .map_err(|_| HistoricalOwnerAttachError::Local)?;
         let mut history = read_history(&store, &self.config.origin)?;
@@ -451,6 +501,177 @@ impl SecureHistoricalOwnerAttach {
         let completed = saved.clone();
         save_history(&store, &history)?;
         Ok(summary(attach_id, &completed))
+    }
+
+    fn recover_pending_action(
+        &self,
+        row: &SavedAttach,
+        pending: &LegacyPendingAction,
+        owner: &KernelIdentity,
+        access: &SecureReadAccess,
+        replayed: &mut TransportReplayedJournal,
+        cancel: &CancellationToken,
+    ) -> Result<(), HistoricalOwnerAttachError> {
+        if !row.input.recover_pending_action
+            || row.visibility != "PRIVATE"
+            || !replayed.replay().contains_checkpoint(
+                row.source_sequence,
+                row.source_head.as_deref(),
+                &row.source_policy_hash,
+            )
+        {
+            return Err(HistoricalOwnerAttachError::Verification);
+        }
+        let policy_wire = replayed
+            .signed_policy_by_hash(&pending.policy_hash)
+            .ok_or(HistoricalOwnerAttachError::Verification)?;
+        let pins = SecureCommitRequestPins {
+            actor_id: owner.actor_id(),
+            signing_key: owner.key_id(),
+            workspace_id: &row.input.workspace_id,
+            policy_hash: &pending.policy_hash,
+            sequence: pending.sequence,
+            previous: pending.previous.as_deref(),
+            epoch: pending.epoch,
+            mode: "PRIVATE",
+            version: 1,
+            protocol_format_ceiling: None,
+        };
+        let proof = verify_prepared_secure_commit_request_with_policy(
+            &pending.request,
+            &pending.path,
+            &pins,
+            policy_wire,
+            owner.key_id(),
+        )
+        .map_err(|_| HistoricalOwnerAttachError::Verification)?;
+        if proof.command_id() != pending.command_id
+            || proof.action_id() != pending.action_id
+            || proof.workspace_id() != row.input.workspace_id
+            || proof.actor_id() != owner.actor_id()
+            || proof.signing_key() != owner.key_id()
+        {
+            return Err(HistoricalOwnerAttachError::Verification);
+        }
+        let packet = || SecurePacketInput {
+            intent_id: &pending.command_id,
+            path: &pending.path,
+            action_id: &pending.action_id,
+            workspace_id: Some(&row.input.workspace_id),
+            trusted_owner_key: Some(owner.key_id()),
+            intent_digest: proof.commit_digest(),
+            exact_request: &pending.request,
+        };
+        let mut journal = SecureIntentJournal::open(
+            &self
+                .workspace_dir(&row.input.workspace_id)
+                .join("action-intents.state"),
+            &self.config.origin,
+            owner.actor_id(),
+        )
+        .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        if journal.contains_id(&pending.command_id) {
+            journal
+                .exact_imported_action_matches(packet())
+                .map_err(|_| HistoricalOwnerAttachError::Conflict)?;
+        } else {
+            journal
+                .prepare(packet())
+                .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        }
+        let mut transport_config = TransportConfig::new(self.config.origin.clone());
+        transport_config.allow_loopback_http = self.config.allow_loopback_http;
+        let transport = HttpTransport::new(transport_config)
+            .map_err(|_| HistoricalOwnerAttachError::Verification)?;
+        match journal.accept_replayed_imported_owner_action(
+            &pending.command_id,
+            owner,
+            &transport,
+            replayed,
+        ) {
+            Ok(_) => return Ok(()),
+            Err(SecureIntentError::ReplayMismatch) => (),
+            Err(_) => return Err(HistoricalOwnerAttachError::Verification),
+        }
+        if replayed.replay().sequence().checked_add(1) != Some(pending.sequence)
+            || replayed.replay().head() != pending.previous.as_deref()
+            || replayed.replay().policy_hash() != pending.policy_hash
+        {
+            return Err(HistoricalOwnerAttachError::PendingActionConflict);
+        }
+        self.assert_source_unchanged(row)?;
+        let runtime = Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        #[cfg(test)]
+        TEST_IMPORTED_ACTION_POSTS.fetch_add(1, Ordering::SeqCst);
+        let submitted = runtime.block_on(journal.submit_saved_imported_owner_commit_from_replay(
+            &pending.command_id,
+            owner,
+            &transport,
+            replayed,
+            &pins,
+            cancel,
+        ));
+        if cancel.is_cancelled() {
+            return Err(HistoricalOwnerAttachError::Cancelled);
+        }
+        let refreshed = access
+            .replay_checked_attach_generation(cancel)
+            .map_err(|_| HistoricalOwnerAttachError::PendingActionRetry)?;
+        if !refreshed.replay().contains_checkpoint(
+            row.source_sequence,
+            row.source_head.as_deref(),
+            &row.source_policy_hash,
+        ) {
+            return Err(HistoricalOwnerAttachError::Verification);
+        }
+        *replayed = refreshed;
+        match journal.accept_replayed_imported_owner_action(
+            &pending.command_id,
+            owner,
+            &transport,
+            replayed,
+        ) {
+            Ok(_) => Ok(()),
+            Err(SecureIntentError::ReplayMismatch) => {
+                if replayed.replay().sequence().checked_add(1) != Some(pending.sequence)
+                    || replayed.replay().head() != pending.previous.as_deref()
+                {
+                    Err(HistoricalOwnerAttachError::PendingActionConflict)
+                } else {
+                    match submitted {
+                        Ok(_)
+                        | Err(SecureIntentError::Transport(_))
+                        | Err(SecureIntentError::ServerRejected(500..=599)) => {
+                            Err(HistoricalOwnerAttachError::PendingActionRetry)
+                        }
+                        Err(SecureIntentError::ServerRejected(_))
+                        | Err(SecureIntentError::ReplayMismatch) => {
+                            Err(HistoricalOwnerAttachError::PendingActionConflict)
+                        }
+                        Err(_) => Err(HistoricalOwnerAttachError::Verification),
+                    }
+                }
+            }
+            Err(_) => Err(HistoricalOwnerAttachError::Verification),
+        }
+    }
+
+    fn assert_source_unchanged(&self, row: &SavedAttach) -> Result<(), HistoricalOwnerAttachError> {
+        let (source, state_digest, pem_digest, intent_digest) = self.inspect_sources(&row.input)?;
+        if state_digest != row.ts_state_sha256
+            || pem_digest != row.owner_pem_sha256
+            || intent_digest != row.ts_intent_sha256
+            || source.visibility != row.visibility
+            || source.sequence != row.source_sequence
+            || source.head != row.source_head
+            || source.policy_hash != row.source_policy_hash
+        {
+            return Err(HistoricalOwnerAttachError::SourceChanged);
+        }
+        Ok(())
     }
 
     pub fn attachments(
@@ -728,6 +949,106 @@ fn valid_digest(value: &str) -> bool {
         && value
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+fn parse_pending_owner_action(
+    value: Option<&WireValue>,
+    input: &HistoricalOwnerAttachInput,
+) -> Result<Option<LegacyPendingAction>, HistoricalOwnerAttachError> {
+    let Some(WireValue::Object(rows)) = value else {
+        return Err(HistoricalOwnerAttachError::SourceUnresolved);
+    };
+    if rows.is_empty() {
+        return Ok(None);
+    }
+    if !input.recover_pending_action || rows.len() != 1 {
+        return Err(HistoricalOwnerAttachError::SourceUnresolved);
+    }
+    let (id_units, row) = &rows[0];
+    let command_id =
+        String::from_utf16(id_units).map_err(|_| HistoricalOwnerAttachError::SourceUnresolved)?;
+    if !valid_token(&command_id) || row.object_len() != Some(2) {
+        return Err(HistoricalOwnerAttachError::SourceUnresolved);
+    }
+    let path = row
+        .get("path")
+        .and_then(WireValue::as_string)
+        .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+    if path
+        != format!(
+            "/api/workspace/v1/secure/workspaces/{}/commits",
+            input.workspace_id
+        )
+    {
+        return Err(HistoricalOwnerAttachError::SourceUnresolved);
+    }
+    let body = row
+        .get("body")
+        .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+    if body.object_len() != Some(1) {
+        return Err(HistoricalOwnerAttachError::SourceUnresolved);
+    }
+    let commit = body
+        .get("commit")
+        .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+    if commit.object_len() != Some(2)
+        || commit
+            .get("signature")
+            .and_then(WireValue::as_string)
+            .is_none()
+    {
+        return Err(HistoricalOwnerAttachError::SourceUnresolved);
+    }
+    let payload = commit
+        .get("payload")
+        .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+    let string = |key| {
+        payload
+            .get(key)
+            .and_then(WireValue::as_string)
+            .ok_or(HistoricalOwnerAttachError::SourceUnresolved)
+    };
+    let action_id = string("action_id")?;
+    let sequence =
+        exact_u64(payload.get("sequence")).ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+    let epoch =
+        exact_u64(payload.get("epoch")).ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+    let previous = payload
+        .get("previous")
+        .and_then(WireValue::as_string)
+        .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+    let policy_hash = string("policy_hash")?;
+    if action_id.is_empty()
+        || action_id.len() > 120
+        || string("workspace_id")? != input.workspace_id
+        || string("actor_id")? != input.expected_owner_actor_id
+        || string("signing_key")? != input.expected_owner_key_id
+        || string("command_id")? != command_id
+        || string("mode")? != "PRIVATE"
+        || exact_u64(payload.get("v")) != Some(1)
+        || !valid_token(&string("instance_id")?)
+        || !valid_digest(&previous)
+        || !valid_digest(&policy_hash)
+        || epoch == 0
+    {
+        return Err(HistoricalOwnerAttachError::SourceUnresolved);
+    }
+    let request = canonical_wire_value(body, CanonicalPath::SecureArtifact)
+        .map_err(|_| HistoricalOwnerAttachError::SourceUnresolved)?
+        .into_bytes();
+    if request.is_empty() || request.len() > 2 * 1024 * 1024 {
+        return Err(HistoricalOwnerAttachError::SourceUnresolved);
+    }
+    Ok(Some(LegacyPendingAction {
+        command_id,
+        action_id,
+        path,
+        request: Zeroizing::new(request),
+        sequence,
+        previous: Some(previous),
+        policy_hash,
+        epoch,
+    }))
 }
 
 fn parse_inbox_receipts(
@@ -1053,9 +1374,6 @@ fn parse_legacy_source(
         {
             return Err(HistoricalOwnerAttachError::SourceChanged);
         }
-        if !matches!(value.get("pending"), Some(WireValue::Object(fields)) if fields.is_empty()) {
-            return Err(HistoricalOwnerAttachError::SourceUnresolved);
-        }
         if !confirmed_browser_approvals(value.get("admission_browser_approvals"), input)
             || !completed_signed_cache(value.get("intake_closures"))
             || !completed_signed_cache(value.get("application_decisions"))
@@ -1250,6 +1568,16 @@ fn parse_legacy_source(
         } else {
             None
         };
+        let pending_action = parse_pending_owner_action(value.get("pending"), input)?;
+        if let Some(action) = pending_action.as_ref() {
+            if ring.is_none()
+                || sequence.checked_add(1) != Some(action.sequence)
+                || action.previous != head
+                || action.policy_hash != policy_hash
+            {
+                return Err(HistoricalOwnerAttachError::SourceUnresolved);
+            }
+        }
         Ok(LegacySource {
             visibility: if ring.is_some() { "PRIVATE" } else { "PUBLIC" }.into(),
             ring,
@@ -1258,6 +1586,7 @@ fn parse_legacy_source(
             policy_hash,
             retained_member_commands,
             retained_inbox_receipts,
+            pending_action,
         })
     })();
     scrub(&mut value);
@@ -1409,6 +1738,7 @@ mod tests {
             protected_owner_pkcs8_path: source["pem_path"].as_str().unwrap().into(),
             expected_owner_actor_id: source["owner_actor_id"].as_str().unwrap().into(),
             expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
+            recover_pending_action: false,
         };
         let cancel = CancellationToken::new();
         let bad_config = config("native-unfinished");
@@ -1497,6 +1827,180 @@ mod tests {
         .unwrap();
         assert_eq!(reopened["sequence"], before["sequence"]);
         assert_eq!(reopened["head"], before["head"]);
+    }
+
+    #[test]
+    fn actual_service_imports_one_explicit_private_pending_action_exactly_once() {
+        let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else {
+            return;
+        };
+        let Ok(legacy_root) = std::env::var("PEERWORK_LEGACY_CLIENT_ROOT") else {
+            return;
+        };
+        let node = std::env::var("PEERWORK_NODE_BIN").unwrap_or_else(|_| "node".into());
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let bridge =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/reference-kernel-server.mjs");
+        let child = Command::new(&node)
+            .arg(bridge)
+            .env("PEERWORK_REFERENCE_ROOT", reference_root)
+            .env("PEERWORK_TEST_STATE", root.path())
+            .env("PEERWORK_TEST_FIRST_POST_MODE", "normal")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        struct StopPending(Child);
+        impl Drop for StopPending {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut child = StopPending(child);
+        let mut line = String::new();
+        BufReader::new(child.0.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        assert!(!line.is_empty(), "pinned service exited before readiness");
+        let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let origin = ready["origin"].as_str().unwrap();
+        let helper =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/legacy-owner-source.mjs");
+        let setup = |directory: &str, mode: &str| {
+            let output = Command::new(&node)
+                .arg(&helper)
+                .arg(origin)
+                .arg(root.path().join(directory))
+                .arg(&legacy_root)
+                .arg(mode)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "legacy pending setup: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let source: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(source["policy_v"], 1);
+            assert_eq!(source["pending_count"], 1);
+            assert!(source["pending_command_id"].as_str().is_some());
+            assert!(source["pending_commit_hash"].as_str().is_some());
+            source
+        };
+        let config = |directory: &str| SecureOwnerCreateConfig {
+            origin: origin.into(),
+            state_dir: root.path().join(directory),
+            allow_loopback_http: true,
+            max_replay_artifact_bytes: 64 * 1024 * 1024,
+        };
+        let input = |source: &serde_json::Value, recover| HistoricalOwnerAttachInput {
+            workspace_id: source["workspace_id"].as_str().unwrap().into(),
+            protected_ts_state_path: source["state_path"].as_str().unwrap().into(),
+            protected_ts_intent_db_path: source["intent_db_path"].as_str().unwrap().into(),
+            protected_owner_pkcs8_path: source["pem_path"].as_str().unwrap().into(),
+            expected_owner_actor_id: source["owner_actor_id"].as_str().unwrap().into(),
+            expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
+            recover_pending_action: recover,
+        };
+        let cancel = CancellationToken::new();
+        let applied = setup("legacy-applied", "pending");
+        let refused = SecureHistoricalOwnerAttach::new(config("native-refused"));
+        assert!(matches!(
+            refused.attach(input(&applied, false), &cancel),
+            Err(HistoricalOwnerAttachError::SourceUnresolved)
+        ));
+        assert!(refused.attachments().unwrap().is_empty());
+        let applied_config = config("native-applied");
+        let applied_owner = SecureHistoricalOwnerAttach::new(applied_config.clone());
+        let posts = TEST_IMPORTED_ACTION_POSTS.load(Ordering::SeqCst);
+        let accepted = applied_owner
+            .attach(input(&applied, true), &cancel)
+            .unwrap();
+        assert_eq!(accepted.status, "ATTACHED");
+        assert_eq!(TEST_IMPORTED_ACTION_POSTS.load(Ordering::SeqCst), posts);
+        let applied_workspace = applied["workspace_id"].as_str().unwrap();
+        let applied_command = applied["pending_command_id"].as_str().unwrap();
+        let result: serde_json::Value = serde_json::from_str(
+            &SecureOwnerWorkspaceCreate::new(applied_config.clone())
+                .private_action_access(applied_workspace)
+                .unwrap()
+                .reconcile_json(applied_command)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(result["status"], "ACCEPTED");
+        assert_eq!(result["sequence"], 2);
+        assert_eq!(result["command_id"], applied_command);
+        assert_eq!(result["commit_hash"], applied["pending_commit_hash"]);
+        let read: serde_json::Value = serde_json::from_str(
+            &SecureOwnerWorkspaceCreate::new(applied_config)
+                .read_workspace_json(applied_workspace, &cancel)
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(read["objects"].as_array().unwrap().iter().any(|row| {
+            row["kind"] == "records"
+                && row["value"]["payload"]["title"] == "Pending legacy Owner action"
+                && row["value"]["payload"]["body"] == "Exact signed packet remains local"
+        }));
+
+        let unsent = setup("legacy-unsent", "pending-before-post");
+        let unsent_config = config("native-unsent");
+        let unsent_owner = SecureHistoricalOwnerAttach::new(unsent_config.clone());
+        TEST_STOP_AFTER_ATTACH_ROW.store(true, Ordering::SeqCst);
+        assert!(matches!(
+            unsent_owner.attach(input(&unsent, true), &cancel),
+            Err(HistoricalOwnerAttachError::Cancelled)
+        ));
+        let saved = unsent_owner.attachments().unwrap();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].status, "PREPARED");
+        assert_eq!(TEST_IMPORTED_ACTION_POSTS.load(Ordering::SeqCst), posts);
+        TEST_STOP_AFTER_IMPORTED_ACTION_ACCEPTED.store(true, Ordering::SeqCst);
+        assert!(matches!(
+            unsent_owner.resume_attachment(&saved[0].attach_id, &cancel),
+            Err(HistoricalOwnerAttachError::Cancelled)
+        ));
+        assert_eq!(TEST_IMPORTED_ACTION_POSTS.load(Ordering::SeqCst), posts + 1);
+        assert_eq!(unsent_owner.attachments().unwrap()[0].status, "PREPARED");
+        let completed = SecureHistoricalOwnerAttach::new(unsent_config.clone())
+            .resume_attachment(&saved[0].attach_id, &cancel)
+            .unwrap();
+        assert_eq!(completed.status, "ATTACHED");
+        assert_eq!(TEST_IMPORTED_ACTION_POSTS.load(Ordering::SeqCst), posts + 1);
+        let unsent_workspace = unsent["workspace_id"].as_str().unwrap();
+        let unsent_command = unsent["pending_command_id"].as_str().unwrap();
+        let action = SecureOwnerWorkspaceCreate::new(unsent_config.clone())
+            .private_action_access(unsent_workspace)
+            .unwrap();
+        let reconciled: serde_json::Value =
+            serde_json::from_str(&action.reconcile_json(unsent_command).unwrap()).unwrap();
+        assert_eq!(reconciled["status"], "ACCEPTED");
+        assert_eq!(reconciled["sequence"], 2);
+        assert_eq!(reconciled["commit_hash"], unsent["pending_commit_hash"]);
+        std::fs::rename(
+            root.path().join("legacy-unsent"),
+            root.path().join("legacy-unsent-archived"),
+        )
+        .unwrap();
+        let reopened: serde_json::Value = serde_json::from_str(
+            &SecureOwnerWorkspaceCreate::new(unsent_config)
+                .read_workspace_json(unsent_workspace, &cancel)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(reopened["sequence"], 2);
+        assert!(reopened["objects"].as_array().unwrap().iter().any(|row| {
+            row["kind"] == "records"
+                && row["value"]["payload"]["title"] == "Pending legacy Owner action"
+                && row["value"]["payload"]["body"] == "Exact signed packet remains local"
+        }));
     }
 
     #[test]
@@ -1608,6 +2112,7 @@ mod tests {
                     ),
                     expected_owner_actor_id: missing["owner_actor_id"].as_str().unwrap().into(),
                     expected_owner_key_id: missing["owner_key_id"].as_str().unwrap().into(),
+                    recover_pending_action: false,
                 },
                 &cancel
             ),
@@ -1656,6 +2161,7 @@ mod tests {
                     ),
                     expected_owner_actor_id: source["owner_actor_id"].as_str().unwrap().into(),
                     expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
+                    recover_pending_action: false,
                 },
                 &cancel,
             )
@@ -1876,6 +2382,7 @@ mod tests {
                     ),
                     expected_owner_actor_id: source["owner_actor_id"].as_str().unwrap().into(),
                     expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
+                    recover_pending_action: false,
                 },
                 &cancel,
             )
@@ -2030,6 +2537,7 @@ mod tests {
                 ),
                 expected_owner_actor_id: source["owner_actor_id"].as_str().unwrap().into(),
                 expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
+                recover_pending_action: false,
             };
             assert!(
                 matches!(
@@ -2071,6 +2579,7 @@ mod tests {
             protected_ts_intent_db_path: PathBuf::from(source["intent_db_path"].as_str().unwrap()),
             expected_owner_actor_id: source["owner_actor_id"].as_str().unwrap().into(),
             expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
+            recover_pending_action: false,
         };
         let mut wrong_owner = input.clone();
         wrong_owner.expected_owner_key_id = "z".repeat(43);
