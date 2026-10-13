@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import urllib.request
 import urllib.error
@@ -230,3 +231,5 @@ with tempfile.TemporaryDirectory(prefix="peerwork-native-private-", dir=TEMP_ROO
         except subprocess.TimeoutExpired:
             server.terminate()
             server.wait(timeout=5)
+        if sys.exc_info()[0] is not None:
+            print("tracked service stderr:", server.stderr.read()[-1200:], file=sys.stderr)
