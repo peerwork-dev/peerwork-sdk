@@ -172,7 +172,7 @@ try:
         selected_rows = [(row["schema"], row["fields"])
                          for row in policy["structure"]["disclosure"]
                          if row["protocol_digest"] == readable["protocol_digest"]]
-        assert selected_rows == ([("item", ["label"])] if selected else [])
+        assert selected_rows == [("item", ["label"] if selected else [])]
 
     # Python omitted STAGED selection keeps the source's E2EE/string default.
     default_workspace, default_actor = workspace("default staged")
