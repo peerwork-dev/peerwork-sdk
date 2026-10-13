@@ -35,6 +35,309 @@ pub struct PreparedAdmissionPacket {
     artifact_hash: String,
 }
 
+/// Exact owner delivery packet. The caller must obtain the current policy and
+/// checkpoint from complete authenticated replay and the offer/decision from
+/// authenticated control evidence before persisting and posting these bytes.
+pub struct PreparedPublicDelivery {
+    request_wire: Vec<u8>,
+    invite_id: String,
+    grant_id: String,
+    policy_hash: String,
+    grant_hash: String,
+    commit_hash: String,
+}
+
+impl PreparedPublicDelivery {
+    pub fn request_wire(&self) -> &[u8] {
+        &self.request_wire
+    }
+    pub fn invite_id(&self) -> &str {
+        &self.invite_id
+    }
+    pub fn grant_id(&self) -> &str {
+        &self.grant_id
+    }
+    pub fn policy_hash(&self) -> &str {
+        &self.policy_hash
+    }
+    pub fn grant_hash(&self) -> &str {
+        &self.grant_hash
+    }
+    pub fn commit_hash(&self) -> &str {
+        &self.commit_hash
+    }
+}
+
+/// Produce the pinned v3 PUBLIC owner delivery transition. This only authors
+/// cryptographic material; it is not a membership or server-acceptance proof.
+pub fn prepare_public_delivery(
+    current_policy_wire: &[u8],
+    prior_checkpoint_wire: &[u8],
+    offer_wire: &[u8],
+    decision_wire: &[u8],
+    issued_at: u64,
+    owner_signing_key: &SigningKey,
+) -> Result<PreparedPublicDelivery, PublicAdmissionError> {
+    let bad = || PublicAdmissionError::Invalid;
+    if issued_at > MAX_SAFE {
+        return Err(bad());
+    }
+    let owner_key = base64url(&owner_signing_key.verifying_key().to_bytes());
+    let owner_actor = actor_id(&owner_signing_key.verifying_key().to_bytes());
+    let current =
+        parse_wire_json_js_bounded(current_policy_wire, 64, 196_608).map_err(|_| bad())?;
+    let old = current.get("payload").ok_or_else(bad)?;
+    let workspace = string(old, "workspace_id")?;
+    if unsigned(old, "v")? != 3
+        || unsigned(old, "epoch")? != 0
+        || string(old, "visibility")? != "PUBLIC"
+        || string(old, "owner_id")? != owner_actor
+        || string(old, "signing_key")? != owner_key
+        || !verify_secure_signed_wire(current_policy_wire, "peerwork.secure.policy.v3", &owner_key)
+            .map_err(|_| bad())?
+    {
+        return Err(bad());
+    }
+    let current_wire = canonical_wire_value(&current, Path::SecureArtifact).map_err(|_| bad())?;
+    let current_hash = sha256_hex(current_wire.as_bytes());
+    let checkpoint =
+        parse_wire_json_js_bounded(prior_checkpoint_wire, 64, 16_384).map_err(|_| bad())?;
+    let sequence = unsigned(&checkpoint, "sequence")?;
+    let next_sequence = sequence
+        .checked_add(1)
+        .filter(|n| *n <= MAX_SAFE)
+        .ok_or_else(bad)?;
+    if string(&checkpoint, "workspace_id")? != workspace
+        || string(&checkpoint, "owner_id")? != owner_actor
+        || string(&checkpoint, "owner_key")? != owner_key
+        || string(&checkpoint, "policy_hash")? != current_hash
+    {
+        return Err(bad());
+    }
+    let previous = checkpoint.get("head").ok_or_else(bad)?.clone();
+    let offer = parse_wire_json_js_bounded(offer_wire, 64, 220_000).map_err(|_| bad())?;
+    let op = offer.get("payload").ok_or_else(bad)?;
+    let invite_id = string(op, "invite_id")?;
+    let recipient = op.get("recipient").ok_or_else(bad)?;
+    let rp = recipient.get("payload").ok_or_else(bad)?;
+    let recipient_actor = string(rp, "actor_id")?;
+    let recipient_key = string(rp, "signing_key")?;
+    let scopes = op.get("scopes").ok_or_else(bad)?.clone();
+    if !token(&invite_id)
+        || !valid_scopes(&scopes)
+        || string(op, "workspace_id")? != workspace
+        || string(op, "actor_id")? != owner_actor
+        || string(op, "signing_key")? != owner_key
+        || unsigned(op, "issued_at")? > issued_at
+        || unsigned(op, "expires_at")? <= issued_at
+        || !verify_secure_signed_wire(offer_wire, "peerwork.secure.invitation.v1", &owner_key)
+            .map_err(|_| bad())?
+    {
+        return Err(bad());
+    }
+    let recipient_jwk = verify_certificate(recipient, issued_at)?;
+    let decision = parse_wire_json_js_bounded(decision_wire, 64, 220_000).map_err(|_| bad())?;
+    let decision_request = format!(
+        "{{\"decision\":{}}}",
+        canonical_wire_value(&decision, Path::SecureArtifact).map_err(|_| bad())?
+    );
+    let checked = verify_saved_public_decision(
+        decision_request.as_bytes(),
+        offer_wire,
+        &owner_actor,
+        &owner_key,
+        &recipient_actor,
+        &recipient_key,
+        &workspace,
+    )?;
+    if string(decision.get("payload").ok_or_else(bad)?, "decision")? != "ACCEPT"
+        || unsigned(decision.get("payload").ok_or_else(bad)?, "issued_at")? > issued_at
+        || checked.id() != invite_id
+    {
+        return Err(bad());
+    }
+    let members = old.get("members").ok_or_else(bad)?;
+    let WireValue::Array(existing) = members else {
+        return Err(bad());
+    };
+    if existing.iter().any(|member| {
+        member
+            .get("actor_id")
+            .and_then(WireValue::as_string)
+            .as_deref()
+            == Some(&recipient_actor)
+    }) {
+        return Err(bad());
+    }
+    let mut new_members = existing.clone();
+    new_members.push(object(vec![
+        ("actor_id", s(&recipient_actor)),
+        ("certificate", recipient.clone()),
+        ("role", s("MEMBER")),
+        ("scopes", scopes),
+    ]));
+    let mut next_payload = old.clone();
+    set(
+        &mut next_payload,
+        "version",
+        WireValue::Number((unsigned(old, "version")?.checked_add(1).ok_or_else(bad)?) as f64),
+    )?;
+    set(&mut next_payload, "previous_policy", s(&current_hash))?;
+    set(
+        &mut next_payload,
+        "effective_sequence",
+        WireValue::Number(next_sequence as f64),
+    )?;
+    set(
+        &mut next_payload,
+        "issued_at",
+        WireValue::Number(issued_at as f64),
+    )?;
+    set(&mut next_payload, "members", WireValue::Array(new_members))?;
+    let policy = sign_payload(
+        next_payload.clone(),
+        "peerwork.secure.policy.v3",
+        owner_signing_key,
+    )?;
+    let policy_wire = canonical_wire_value(&policy, Path::SecureArtifact).map_err(|_| bad())?;
+    let policy_hash = sha256_hex(policy_wire.as_bytes());
+    let grant_id = random_token()?;
+    let grant_context = object(vec![
+        ("v", WireValue::Number(1.0)),
+        ("grant_id", s(&grant_id)),
+        ("workspace_id", s(&workspace)),
+        ("actor_id", s(&owner_actor)),
+        ("signing_key", s(&owner_key)),
+        ("recipient", recipient.clone()),
+        ("policy_hash", s(&policy_hash)),
+        ("epoch", WireValue::Number(0.0)),
+        ("invite_id", s(&invite_id)),
+        ("acceptance_hash", s(checked.artifact_hash())),
+        ("delegation", WireValue::Null),
+        ("issued_at", WireValue::Number(issued_at as f64)),
+    ]);
+    let keyring = object(vec![
+        ("v", WireValue::Number(1.0)),
+        ("workspace_id", s(&workspace)),
+        ("keys", WireValue::Array(vec![])),
+    ]);
+    let keyring_wire = canonical_wire_value(&keyring, Path::SecureArtifact).map_err(|_| bad())?;
+    let context_wire =
+        canonical_wire_value(&grant_context, Path::SecureArtifact).map_err(|_| bad())?;
+    let boxed = hpke_seal_wire(
+        &recipient_jwk,
+        keyring_wire.as_bytes(),
+        context_wire.as_bytes(),
+    )
+    .map_err(|_| PublicAdmissionError::Encryption)?;
+    let box_bytes = serde_json::to_vec(&boxed).map_err(|_| bad())?;
+    let box_value = parse_wire_json_js_bounded(&box_bytes, 16, 65_536).map_err(|_| bad())?;
+    let mut grant_payload = grant_context;
+    set(&mut grant_payload, "box", box_value)?;
+    let grant = sign_payload(
+        grant_payload,
+        "peerwork.secure.key-grant.v1",
+        owner_signing_key,
+    )?;
+    let grant_wire = canonical_wire_value(&grant, Path::SecureArtifact).map_err(|_| bad())?;
+    let grant_hash = sha256_hex(grant_wire.as_bytes());
+    let command_id = random_token()?;
+    let operation = object(vec![
+        ("v", WireValue::Number(1.0)),
+        ("kind", s("ADMIN")),
+        ("input", object(vec![("invite_id", s(&invite_id))])),
+        ("objects", WireValue::Array(vec![])),
+    ]);
+    let mut context_fields = vec![
+        ("v", WireValue::Number(3.0)),
+        ("workspace_id", s(&workspace)),
+        ("sequence", WireValue::Number(next_sequence as f64)),
+        ("previous", previous),
+        ("policy_hash", s(&policy_hash)),
+        ("epoch", WireValue::Number(0.0)),
+        ("actor_id", s(&owner_actor)),
+        ("signing_key", s(&owner_key)),
+        ("command_id", s(&command_id)),
+        ("action_id", s("secure.invite.finalize")),
+        ("instance_id", WireValue::Null),
+        ("issued_at", WireValue::Number(issued_at as f64)),
+        ("delegation", WireValue::Null),
+    ];
+    if let Some(ceiling) = next_payload.get("protocol_format_ceiling") {
+        context_fields.push(("protocol_format_ceiling", ceiling.clone()));
+    }
+    if next_payload
+        .get("structure_mode")
+        .and_then(WireValue::as_string)
+        .as_deref()
+        == Some("STRUCTURED")
+    {
+        context_fields.push((
+            "structure",
+            object(vec![
+                ("v", WireValue::Number(1.0)),
+                ("mode", s("DELTA")),
+                ("records", WireValue::Array(vec![])),
+                ("heads", WireValue::Array(vec![])),
+            ]),
+        ));
+    }
+    context_fields.push(("mode", s("PUBLIC")));
+    context_fields.push(("body", operation));
+    let commit = sign_payload(
+        object(context_fields),
+        "peerwork.secure.commit.v3",
+        owner_signing_key,
+    )?;
+    let commit_wire = canonical_wire_value(&commit, Path::SecureArtifact).map_err(|_| bad())?;
+    let commit_hash = sha256_hex(commit_wire.as_bytes());
+    let request = object(vec![
+        ("policy", policy),
+        ("grant", grant),
+        ("commit", commit),
+    ]);
+    let request_wire = canonical_wire_value(&request, Path::SecureArtifact)
+        .map_err(|_| bad())?
+        .into_bytes();
+    if request_wire.len() > 220_000 {
+        return Err(bad());
+    }
+    Ok(PreparedPublicDelivery {
+        request_wire,
+        invite_id,
+        grant_id,
+        policy_hash,
+        grant_hash,
+        commit_hash,
+    })
+}
+
+fn random_token() -> Result<String, PublicAdmissionError> {
+    let mut bytes = [0u8; 32];
+    OsRng
+        .try_fill_bytes(&mut bytes)
+        .map_err(|_| PublicAdmissionError::Entropy)?;
+    Ok(base64url(&bytes))
+}
+
+fn set(
+    value: &mut WireValue,
+    name: &str,
+    replacement: WireValue,
+) -> Result<(), PublicAdmissionError> {
+    let WireValue::Object(fields) = value else {
+        return Err(PublicAdmissionError::Invalid);
+    };
+    let key = name.encode_utf16().collect::<Vec<_>>();
+    let existing = fields.iter_mut().find(|(field, _)| *field == key);
+    if let Some((_, item)) = existing {
+        *item = replacement;
+    } else {
+        fields.push((key, replacement));
+    }
+    Ok(())
+}
+
 impl PreparedAdmissionPacket {
     pub fn request_wire(&self) -> &[u8] {
         &self.request_wire

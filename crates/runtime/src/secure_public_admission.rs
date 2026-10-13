@@ -13,7 +13,8 @@ use crate::{
 };
 use peerwork_core::{
     prepared_public_admission::{
-        prepare_public_offer_utf16, verify_saved_public_offer, PublicAdmissionError,
+        prepare_public_delivery, prepare_public_offer_utf16, verify_saved_public_offer,
+        PublicAdmissionError,
     },
     wire_json::{parse_wire_json_js_bounded, WireValue},
 };
@@ -24,6 +25,17 @@ use tokio::runtime::Builder;
 use tokio_util::sync::CancellationToken;
 
 const OFFER_PATH: &str = "/api/workspace/v1/secure/invitations";
+
+fn delivery_path(invite_id: &str) -> Result<String, PublicAdmissionRuntimeError> {
+    if invite_id.len() != 43
+        || !invite_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return Err(PublicAdmissionRuntimeError::Input);
+    }
+    Ok(format!("{OFFER_PATH}/{invite_id}/key-grants"))
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -60,6 +72,23 @@ pub struct PendingPublicOffer {
     pub observed_responses: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PublicDeliveryResult {
+    pub status: String,
+    pub invite_id: String,
+    pub grant_id: String,
+    pub workspace_id: String,
+    pub grant_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PendingPublicDelivery {
+    pub grant_id: String,
+    pub workspace_id: String,
+    pub grant_hash: String,
+    pub observed_responses: usize,
+}
+
 #[derive(Debug, Error)]
 pub enum PublicAdmissionRuntimeError {
     #[error(transparent)]
@@ -93,6 +122,576 @@ pub struct SecurePublicAdmission {
 impl SecurePublicAdmission {
     pub fn new(config: SecureReadProfileConfig) -> Self {
         Self { config }
+    }
+
+    /// Author and persist the owner delivery only after a fresh complete
+    /// replay and authenticated signed ACCEPT control record. The result is
+    /// transport-pending until signed journal and grant evidence is replayed.
+    pub fn deliver_accepted_json(
+        &self,
+        invite_id: &str,
+    ) -> Result<String, PublicAdmissionRuntimeError> {
+        self.deliver_accepted_json_with_cancel(invite_id, &CancellationToken::new())
+    }
+
+    pub fn deliver_accepted_json_with_cancel(
+        &self,
+        invite_id: &str,
+        cancel: &CancellationToken,
+    ) -> Result<String, PublicAdmissionRuntimeError> {
+        let path = delivery_path(invite_id)?;
+        SecureReadProfile::new(self.config.clone()).with_latest_replay(cancel, |source| {
+            let identity = KernelIdentity::open(&self.config.identity_path)
+                .map_err(|_| PublicAdmissionRuntimeError::Identity)?;
+            if source.origin() != self.config.origin
+                || source.replay().workspace_id() != self.config.workspace_id
+                || source.replay().owner_actor_id() != identity.actor_id()
+                || source.replay().owner_signing_key() != identity.key_id()
+            {
+                return Err(PublicAdmissionRuntimeError::Identity);
+            }
+            let control = self.read_owner_control(invite_id, &identity, cancel)?;
+            let offer = control
+                .get("offer")
+                .ok_or(PublicAdmissionRuntimeError::Input)?;
+            let decision = control
+                .get("decision")
+                .ok_or(PublicAdmissionRuntimeError::Input)?;
+            if !matches!(control.get("grant"), None | Some(WireValue::Null))
+                || control
+                    .get("offer_hash")
+                    .and_then(WireValue::as_string)
+                    .as_deref()
+                    != Some(
+                        peerwork_core::crypto::sha256_hex(
+                            peerwork_core::wire_json::canonical_wire_value(
+                                offer,
+                                peerwork_core::canonical::Path::SecureArtifact,
+                            )
+                            .map_err(|_| PublicAdmissionRuntimeError::Input)?
+                            .as_bytes(),
+                        )
+                        .as_str(),
+                    )
+            {
+                return Err(PublicAdmissionRuntimeError::Input);
+            }
+            let current_policy = source
+                .signed_policy_by_hash(source.replay().policy_hash())
+                .ok_or(PublicAdmissionRuntimeError::Input)?;
+            let offer_wire = peerwork_core::wire_json::canonical_wire_value(
+                offer,
+                peerwork_core::canonical::Path::SecureArtifact,
+            )
+            .map_err(|_| PublicAdmissionRuntimeError::Input)?;
+            let decision_wire = peerwork_core::wire_json::canonical_wire_value(
+                decision,
+                peerwork_core::canonical::Path::SecureArtifact,
+            )
+            .map_err(|_| PublicAdmissionRuntimeError::Input)?;
+            let prepared = prepare_public_delivery(
+                current_policy,
+                source.checkpoint_canonical_json().as_bytes(),
+                offer_wire.as_bytes(),
+                decision_wire.as_bytes(),
+                now_ms()?,
+                identity.signing_key(),
+            )?;
+            if prepared.invite_id() != invite_id {
+                return Err(PublicAdmissionRuntimeError::Input);
+            }
+            let mut journal = SecureIntentJournal::open(
+                &self.config.state_dir.join("admission-intents.state"),
+                source.origin(),
+                identity.actor_id(),
+            )?;
+            if journal.contains_id(prepared.grant_id()) {
+                return Err(PublicAdmissionRuntimeError::Intent(
+                    SecureIntentError::Conflict,
+                ));
+            }
+            journal.prepare(SecurePacketInput {
+                intent_id: prepared.grant_id(),
+                path: &path,
+                action_id: "secure.invite.finalize",
+                workspace_id: Some(&self.config.workspace_id),
+                trusted_owner_key: Some(identity.key_id()),
+                intent_digest: prepared.grant_hash(),
+                exact_request: prepared.request_wire(),
+            })?;
+            self.post_saved_delivery(&mut journal, prepared.grant_id(), &path, &identity, cancel)?;
+            serde_json::to_string(&PublicDeliveryResult {
+                status: "PENDING".into(),
+                invite_id: invite_id.into(),
+                grant_id: prepared.grant_id().into(),
+                workspace_id: self.config.workspace_id.clone(),
+                grant_hash: prepared.grant_hash().into(),
+            })
+            .map_err(|_| PublicAdmissionRuntimeError::Encoding)
+        })
+    }
+
+    pub fn pending_deliveries_json(&self) -> Result<String, PublicAdmissionRuntimeError> {
+        let scope = SecureReadProfile::new(self.config.clone()).local_pending_scope()?;
+        let identity = KernelIdentity::open(&self.config.identity_path)
+            .map_err(|_| PublicAdmissionRuntimeError::Identity)?;
+        if identity.actor_id() != scope.owner_actor_id || identity.key_id() != scope.owner_key_id {
+            return Err(PublicAdmissionRuntimeError::Identity);
+        }
+        let _lifecycle = SecureLifecycle::open(
+            &self.config.state_dir.join("lifecycle.state"),
+            &scope.origin,
+            identity.actor_id(),
+            &scope.workspace_id,
+            &scope.owner_actor_id,
+            &scope.owner_key_id,
+        )
+        .map_err(|_| PublicAdmissionRuntimeError::Identity)?;
+        let journal = SecureIntentJournal::open(
+            &self.config.state_dir.join("admission-intents.state"),
+            &scope.origin,
+            identity.actor_id(),
+        )?;
+        let mut rows = Vec::new();
+        for row in journal.pending() {
+            if row.action_id != "secure.invite.finalize" {
+                continue;
+            }
+            if row.workspace_id.as_deref() != Some(scope.workspace_id.as_str())
+                || !journal
+                    .path(&row.intent_id)?
+                    .starts_with("/api/workspace/v1/secure/invitations/")
+                || !journal.path(&row.intent_id)?.ends_with("/key-grants")
+            {
+                return Err(PublicAdmissionRuntimeError::Identity);
+            }
+            rows.push(PendingPublicDelivery {
+                grant_id: row.intent_id.clone(),
+                workspace_id: scope.workspace_id.clone(),
+                grant_hash: journal.intent_digest(&row.intent_id)?.into(),
+                observed_responses: row.observed_responses,
+            });
+        }
+        serde_json::to_string(&rows).map_err(|_| PublicAdmissionRuntimeError::Encoding)
+    }
+
+    /// Reconcile an uncertain delivery with a fresh complete signed journal.
+    /// If the signed transition is present, no packet is resubmitted. If it is
+    /// absent, only the exact saved bytes may be retried from the original
+    /// checkpoint. Neither an HTTP success nor a control state label suffices.
+    pub fn retry_delivery_json(
+        &self,
+        grant_id: &str,
+    ) -> Result<String, PublicAdmissionRuntimeError> {
+        self.retry_delivery_json_with_cancel(grant_id, &CancellationToken::new())
+    }
+
+    pub fn retry_delivery_json_with_cancel(
+        &self,
+        grant_id: &str,
+        cancel: &CancellationToken,
+    ) -> Result<String, PublicAdmissionRuntimeError> {
+        SecureReadProfile::new(self.config.clone()).with_latest_replay(cancel, |source| {
+            let identity = KernelIdentity::open(&self.config.identity_path)
+                .map_err(|_| PublicAdmissionRuntimeError::Identity)?;
+            if source.origin() != self.config.origin
+                || source.replay().workspace_id() != self.config.workspace_id
+                || source.replay().owner_actor_id() != identity.actor_id()
+                || source.replay().owner_signing_key() != identity.key_id()
+            {
+                return Err(PublicAdmissionRuntimeError::Identity);
+            }
+            let mut journal = SecureIntentJournal::open(
+                &self.config.state_dir.join("admission-intents.state"),
+                source.origin(),
+                identity.actor_id(),
+            )?;
+            let saved = journal.exact_request(grant_id)?;
+            let request = parse_wire_json_js_bounded(&saved, 80, 220_000)
+                .map_err(|_| PublicAdmissionRuntimeError::Input)?;
+            if request.object_len() != Some(3) {
+                return Err(PublicAdmissionRuntimeError::Input);
+            }
+            let policy = request
+                .get("policy")
+                .ok_or(PublicAdmissionRuntimeError::Input)?;
+            let grant = request
+                .get("grant")
+                .ok_or(PublicAdmissionRuntimeError::Input)?;
+            let commit = request
+                .get("commit")
+                .ok_or(PublicAdmissionRuntimeError::Input)?;
+            let pp = policy
+                .get("payload")
+                .ok_or(PublicAdmissionRuntimeError::Input)?;
+            let gp = grant
+                .get("payload")
+                .ok_or(PublicAdmissionRuntimeError::Input)?;
+            let cp = commit
+                .get("payload")
+                .ok_or(PublicAdmissionRuntimeError::Input)?;
+            let invite_id = gp
+                .get("invite_id")
+                .and_then(WireValue::as_string)
+                .ok_or(PublicAdmissionRuntimeError::Input)?;
+            let path = delivery_path(&invite_id)?;
+            if journal.path(grant_id)? != path
+                || gp.get("grant_id").and_then(WireValue::as_string).as_deref() != Some(grant_id)
+                || gp
+                    .get("workspace_id")
+                    .and_then(WireValue::as_string)
+                    .as_deref()
+                    != Some(&self.config.workspace_id)
+                || gp.get("actor_id").and_then(WireValue::as_string).as_deref()
+                    != Some(identity.actor_id())
+                || gp
+                    .get("signing_key")
+                    .and_then(WireValue::as_string)
+                    .as_deref()
+                    != Some(identity.key_id())
+                || cp
+                    .get("action_id")
+                    .and_then(WireValue::as_string)
+                    .as_deref()
+                    != Some("secure.invite.finalize")
+                || cp
+                    .get("workspace_id")
+                    .and_then(WireValue::as_string)
+                    .as_deref()
+                    != Some(&self.config.workspace_id)
+                || cp.get("actor_id").and_then(WireValue::as_string).as_deref()
+                    != Some(identity.actor_id())
+                || cp
+                    .get("signing_key")
+                    .and_then(WireValue::as_string)
+                    .as_deref()
+                    != Some(identity.key_id())
+                || pp.get("owner_id").and_then(WireValue::as_string).as_deref()
+                    != Some(identity.actor_id())
+                || pp
+                    .get("signing_key")
+                    .and_then(WireValue::as_string)
+                    .as_deref()
+                    != Some(identity.key_id())
+            {
+                return Err(PublicAdmissionRuntimeError::Input);
+            }
+            let policy_wire = peerwork_core::wire_json::canonical_wire_value(
+                policy,
+                peerwork_core::canonical::Path::SecureArtifact,
+            )
+            .map_err(|_| PublicAdmissionRuntimeError::Input)?;
+            let grant_wire = peerwork_core::wire_json::canonical_wire_value(
+                grant,
+                peerwork_core::canonical::Path::SecureArtifact,
+            )
+            .map_err(|_| PublicAdmissionRuntimeError::Input)?;
+            let commit_wire = peerwork_core::wire_json::canonical_wire_value(
+                commit,
+                peerwork_core::canonical::Path::SecureArtifact,
+            )
+            .map_err(|_| PublicAdmissionRuntimeError::Input)?;
+            let policy_hash = peerwork_core::crypto::sha256_hex(policy_wire.as_bytes());
+            let grant_hash = peerwork_core::crypto::sha256_hex(grant_wire.as_bytes());
+            let commit_hash = peerwork_core::crypto::sha256_hex(commit_wire.as_bytes());
+            let sequence = cp
+                .get("sequence")
+                .and_then(WireValue::as_number)
+                .filter(|n| n.fract() == 0.0 && *n >= 1.0 && *n <= 9_007_199_254_740_991.0)
+                .ok_or(PublicAdmissionRuntimeError::Input)? as u64;
+            if grant_hash != journal.intent_digest(grant_id)?
+                || gp
+                    .get("policy_hash")
+                    .and_then(WireValue::as_string)
+                    .as_deref()
+                    != Some(&policy_hash)
+                || cp
+                    .get("policy_hash")
+                    .and_then(WireValue::as_string)
+                    .as_deref()
+                    != Some(&policy_hash)
+                || pp.get("effective_sequence").and_then(WireValue::as_number)
+                    != Some(sequence as f64)
+                || gp
+                    .get("acceptance_hash")
+                    .and_then(WireValue::as_string)
+                    .is_none()
+                || cp
+                    .get("body")
+                    .and_then(|b| b.get("input"))
+                    .and_then(|i| i.get("invite_id"))
+                    .and_then(WireValue::as_string)
+                    .as_deref()
+                    != Some(&invite_id)
+                || !peerwork_core::crypto::verify_secure_signed_wire(
+                    policy_wire.as_bytes(),
+                    "peerwork.secure.policy.v3",
+                    identity.key_id(),
+                )
+                .map_err(|_| PublicAdmissionRuntimeError::Input)?
+                || !peerwork_core::crypto::verify_secure_signed_wire(
+                    grant_wire.as_bytes(),
+                    "peerwork.secure.key-grant.v1",
+                    identity.key_id(),
+                )
+                .map_err(|_| PublicAdmissionRuntimeError::Input)?
+                || !peerwork_core::crypto::verify_secure_signed_wire(
+                    commit_wire.as_bytes(),
+                    "peerwork.secure.commit.v3",
+                    identity.key_id(),
+                )
+                .map_err(|_| PublicAdmissionRuntimeError::Input)?
+            {
+                return Err(PublicAdmissionRuntimeError::Input);
+            }
+            let control = self.read_owner_control(&invite_id, &identity, cancel)?;
+            let offer = control
+                .get("offer")
+                .ok_or(PublicAdmissionRuntimeError::Input)?;
+            let decision = control
+                .get("decision")
+                .ok_or(PublicAdmissionRuntimeError::Input)?;
+            let recipient_actor = offer
+                .get("payload")
+                .and_then(|p| p.get("recipient"))
+                .and_then(|c| c.get("payload"))
+                .and_then(|p| p.get("actor_id"))
+                .and_then(WireValue::as_string)
+                .ok_or(PublicAdmissionRuntimeError::Input)?;
+            let recipient_key = offer
+                .get("payload")
+                .and_then(|p| p.get("recipient"))
+                .and_then(|c| c.get("payload"))
+                .and_then(|p| p.get("signing_key"))
+                .and_then(WireValue::as_string)
+                .ok_or(PublicAdmissionRuntimeError::Input)?;
+            let offer_wire = peerwork_core::wire_json::canonical_wire_value(
+                offer,
+                peerwork_core::canonical::Path::SecureArtifact,
+            )
+            .map_err(|_| PublicAdmissionRuntimeError::Input)?;
+            let decision_wire = peerwork_core::wire_json::canonical_wire_value(
+                decision,
+                peerwork_core::canonical::Path::SecureArtifact,
+            )
+            .map_err(|_| PublicAdmissionRuntimeError::Input)?;
+            let decision_request = format!("{{\"decision\":{decision_wire}}}");
+            let checked = peerwork_core::prepared_public_admission::verify_saved_public_decision(
+                decision_request.as_bytes(),
+                offer_wire.as_bytes(),
+                identity.actor_id(),
+                identity.key_id(),
+                &recipient_actor,
+                &recipient_key,
+                &self.config.workspace_id,
+            )?;
+            if checked.artifact_hash()
+                != gp
+                    .get("acceptance_hash")
+                    .and_then(WireValue::as_string)
+                    .unwrap_or_default()
+                || checked.id() != invite_id
+                || decision
+                    .get("payload")
+                    .and_then(|p| p.get("decision"))
+                    .and_then(WireValue::as_string)
+                    .as_deref()
+                    != Some("ACCEPT")
+            {
+                return Err(PublicAdmissionRuntimeError::Input);
+            }
+            if source
+                .replay()
+                .contains_checkpoint(sequence, Some(&commit_hash), &policy_hash)
+            {
+                let signed_policy = source
+                    .signed_policy_by_hash(&policy_hash)
+                    .ok_or(PublicAdmissionRuntimeError::Input)?;
+                if signed_policy != policy_wire.as_bytes()
+                    || control.get("grant").is_none_or(|g| {
+                        peerwork_core::wire_json::canonical_wire_value(
+                            g,
+                            peerwork_core::canonical::Path::SecureArtifact,
+                        )
+                        .map_or(true, |wire| wire != grant_wire)
+                    })
+                    || control.get("policy").is_none_or(|p| {
+                        peerwork_core::wire_json::canonical_wire_value(
+                            p,
+                            peerwork_core::canonical::Path::SecureArtifact,
+                        )
+                        .map_or(true, |wire| wire != policy_wire)
+                    })
+                {
+                    return Err(PublicAdmissionRuntimeError::Input);
+                }
+                return serde_json::to_string(&PublicDeliveryResult {
+                    status: "AUTHORIZED".into(),
+                    invite_id,
+                    grant_id: grant_id.into(),
+                    workspace_id: self.config.workspace_id.clone(),
+                    grant_hash,
+                })
+                .map_err(|_| PublicAdmissionRuntimeError::Encoding);
+            }
+            let current_policy_hash = source.replay().policy_hash();
+            if sequence != source.replay().sequence().saturating_add(1)
+                || cp.get("previous").and_then(WireValue::as_string).as_deref()
+                    != source.replay().head()
+                || pp
+                    .get("previous_policy")
+                    .and_then(WireValue::as_string)
+                    .as_deref()
+                    != Some(current_policy_hash)
+                || control
+                    .get("grant")
+                    .is_some_and(|g| !matches!(g, WireValue::Null))
+            {
+                return Err(PublicAdmissionRuntimeError::Input);
+            }
+            self.post_saved_delivery(&mut journal, grant_id, &path, &identity, cancel)?;
+            serde_json::to_string(&PublicDeliveryResult {
+                status: "PENDING".into(),
+                invite_id,
+                grant_id: grant_id.into(),
+                workspace_id: self.config.workspace_id.clone(),
+                grant_hash,
+            })
+            .map_err(|_| PublicAdmissionRuntimeError::Encoding)
+        })
+    }
+
+    fn post_saved_delivery(
+        &self,
+        journal: &mut SecureIntentJournal,
+        grant_id: &str,
+        path: &str,
+        identity: &KernelIdentity,
+        cancel: &CancellationToken,
+    ) -> Result<(), PublicAdmissionRuntimeError> {
+        if journal.path(grant_id)? != path {
+            return Err(PublicAdmissionRuntimeError::Input);
+        }
+        let saved = journal.exact_request(grant_id)?;
+        let parsed = parse_wire_json_js_bounded(&saved, 80, 220_000)
+            .map_err(|_| PublicAdmissionRuntimeError::Input)?;
+        if parsed.object_len() != Some(3)
+            || parsed
+                .get("grant")
+                .and_then(|g| g.get("payload"))
+                .and_then(|p| p.get("grant_id"))
+                .and_then(WireValue::as_string)
+                .as_deref()
+                != Some(grant_id)
+            || parsed.get("grant").is_none_or(|g| {
+                peerwork_core::wire_json::canonical_wire_value(
+                    g,
+                    peerwork_core::canonical::Path::SecureArtifact,
+                )
+                .map_or(true, |wire| {
+                    peerwork_core::crypto::sha256_hex(wire.as_bytes())
+                        != journal.intent_digest(grant_id).unwrap_or_default()
+                })
+            })
+        {
+            return Err(PublicAdmissionRuntimeError::Input);
+        }
+        let runtime = Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| PublicAdmissionRuntimeError::Runtime)?;
+        let mut transport = TransportConfig::new(self.config.origin.clone());
+        transport.allow_loopback_http = self.config.allow_loopback_http;
+        let features = self
+            .config
+            .required_features
+            .iter()
+            .map(|s| s.encode_utf16().collect())
+            .collect::<Vec<Vec<u16>>>();
+        let client = runtime
+            .block_on(KernelClient::open(
+                transport,
+                &self.config.state_dir.join("kernel.sqlite"),
+                &features,
+                cancel,
+            ))
+            .map_err(|_| PublicAdmissionRuntimeError::Transport)?;
+        let proof = sign_read_proof(
+            path,
+            client.discovery(),
+            identity,
+            &self.config.authority.clone().unwrap_or_else(|| {
+                peerwork_core::crypto::sha256_hex(identity.actor_id().as_bytes())
+            }),
+        )
+        .map_err(|_| PublicAdmissionRuntimeError::ReadProof)?;
+        match runtime.block_on(
+            client
+                .transport()
+                .post_secure_admission_exact(path, saved, &proof, cancel),
+        ) {
+            Ok(response) => {
+                if !response.wire.is_empty() {
+                    journal.observe_response(grant_id, &response.wire)?;
+                }
+                if !(200..300).contains(&response.status) {
+                    return Err(PublicAdmissionRuntimeError::ServerRejected(response.status));
+                }
+            }
+            Err(TransportError::SubmittedUncertain) => {}
+            Err(_) => return Err(PublicAdmissionRuntimeError::Transport),
+        }
+        Ok(())
+    }
+
+    fn read_owner_control(
+        &self,
+        invite_id: &str,
+        identity: &KernelIdentity,
+        cancel: &CancellationToken,
+    ) -> Result<WireValue, PublicAdmissionRuntimeError> {
+        let path = format!("{OFFER_PATH}/{invite_id}");
+        let runtime = Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| PublicAdmissionRuntimeError::Runtime)?;
+        let mut transport = TransportConfig::new(self.config.origin.clone());
+        transport.allow_loopback_http = self.config.allow_loopback_http;
+        let features = self
+            .config
+            .required_features
+            .iter()
+            .map(|s| s.encode_utf16().collect())
+            .collect::<Vec<Vec<u16>>>();
+        let client = runtime
+            .block_on(KernelClient::open(
+                transport,
+                &self.config.state_dir.join("kernel.sqlite"),
+                &features,
+                cancel,
+            ))
+            .map_err(|_| PublicAdmissionRuntimeError::Transport)?;
+        let proof = sign_read_proof(
+            &path,
+            client.discovery(),
+            identity,
+            &self.config.authority.clone().unwrap_or_else(|| {
+                peerwork_core::crypto::sha256_hex(identity.actor_id().as_bytes())
+            }),
+        )
+        .map_err(|_| PublicAdmissionRuntimeError::ReadProof)?;
+        let response = runtime
+            .block_on(
+                client
+                    .transport()
+                    .get_secure_invitation_exact(&path, &proof, cancel),
+            )
+            .map_err(|_| PublicAdmissionRuntimeError::Transport)?;
+        if response.status != 200 {
+            return Err(PublicAdmissionRuntimeError::ServerRejected(response.status));
+        }
+        parse_wire_json_js_bounded(&response.wire, 80, 220_000)
+            .map_err(|_| PublicAdmissionRuntimeError::Input)
     }
 
     /// Local protected ID discovery, usable while offline after cancellation.
@@ -458,7 +1057,7 @@ mod tests {
         assert_eq!(pending[0].invite_id, first.invite_id);
         assert_eq!(pending[0].offer_hash, first.offer_hash);
         let repeated: PublicOfferResult = serde_json::from_str(
-            &SecurePublicAdmission::new(config)
+            &SecurePublicAdmission::new(config.clone())
                 .retry_offer_json(&first.invite_id)
                 .unwrap(),
         )
@@ -466,6 +1065,7 @@ mod tests {
         assert_eq!(repeated, first);
         let journal = SecureIntentJournal::open(&protected, &origin, identity.actor_id()).unwrap();
         assert_eq!(journal.exact_request(&first.invite_id).unwrap(), exact);
+        drop(journal);
         let runtime = Builder::new_current_thread().enable_all().build().unwrap();
         let mut transport = TransportConfig::new(origin.clone());
         transport.allow_loopback_http = true;
@@ -620,6 +1220,97 @@ mod tests {
         assert_eq!(
             peerwork_core::crypto::sha256_hex(decision_wire.as_bytes()),
             first_decision.decision_hash
+        );
+        SecureReadProfile::new(config.clone())
+            .with_latest_replay(&CancellationToken::new(), |source| {
+                let signed_policy = source
+                    .signed_policy_by_hash(source.replay().policy_hash())
+                    .unwrap();
+                let delivery = peerwork_core::prepared_public_admission::prepare_public_delivery(
+                    signed_policy,
+                    source.checkpoint_canonical_json().as_bytes(),
+                    peerwork_core::wire_json::canonical_wire_value(
+                        accepted_wire.get("offer").unwrap(),
+                        peerwork_core::canonical::Path::SecureArtifact,
+                    )
+                    .unwrap()
+                    .as_bytes(),
+                    decision_wire.as_bytes(),
+                    now_ms().unwrap(),
+                    identity.signing_key(),
+                )
+                .unwrap();
+                assert_eq!(delivery.invite_id(), first.invite_id);
+                let value: serde_json::Value =
+                    serde_json::from_slice(delivery.request_wire()).unwrap();
+                assert_eq!(
+                    value["policy"]["payload"]["members"]
+                        .as_array()
+                        .unwrap()
+                        .len(),
+                    2
+                );
+                assert_eq!(
+                    value["grant"]["payload"]["box"]["suite"],
+                    "DHKEM-P256-HKDF-SHA256/HKDF-SHA256/A256GCM"
+                );
+                assert_eq!(
+                    value["commit"]["payload"]["action_id"],
+                    "secure.invite.finalize"
+                );
+                Ok::<_, PublicAdmissionRuntimeError>(())
+            })
+            .unwrap();
+        let drop_result = runtime
+            .block_on(
+                reqwest::Client::new()
+                    .post(format!("{origin}__test/drop-next-post"))
+                    .send(),
+            )
+            .unwrap();
+        assert_eq!(drop_result.status().as_u16(), 200);
+        let delivery: PublicDeliveryResult = serde_json::from_str(
+            &SecurePublicAdmission::new(config.clone())
+                .deliver_accepted_json(&first.invite_id)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(delivery.status, "PENDING");
+        let delivery_journal = SecureIntentJournal::open(
+            &config.state_dir.join("admission-intents.state"),
+            &origin,
+            identity.actor_id(),
+        )
+        .unwrap();
+        let saved_delivery = delivery_journal.exact_request(&delivery.grant_id).unwrap();
+        drop(delivery_journal);
+        let pending_delivery: Vec<PendingPublicDelivery> = serde_json::from_str(
+            &SecurePublicAdmission::new(config.clone())
+                .pending_deliveries_json()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(pending_delivery.len(), 1);
+        assert_eq!(pending_delivery[0].grant_id, delivery.grant_id);
+        let parsed: serde_json::Value = serde_json::from_slice(&saved_delivery).unwrap();
+        assert_eq!(parsed["grant"]["payload"]["grant_id"], delivery.grant_id);
+        let replayed: PublicDeliveryResult = serde_json::from_str(
+            &SecurePublicAdmission::new(config.clone())
+                .retry_delivery_json(&delivery.grant_id)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(replayed.status, "AUTHORIZED");
+        assert_eq!(replayed.grant_hash, delivery.grant_hash);
+        let journal = SecureIntentJournal::open(
+            &config.state_dir.join("admission-intents.state"),
+            &origin,
+            identity.actor_id(),
+        )
+        .unwrap();
+        assert_eq!(
+            journal.exact_request(&delivery.grant_id).unwrap(),
+            saved_delivery
         );
     }
 }
