@@ -18,6 +18,7 @@ from ._peerwork_native import (
     secure_public_action_json,
     secure_public_install_json,
     secure_owner_create_json,
+    secure_owner_consumer_json,
     secure_recipient_enrollment_json,
     secure_identity_directory_json,
     secure_public_admission_json,

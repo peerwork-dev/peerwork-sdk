@@ -112,6 +112,8 @@ try:
     installer = reopened.public_installer(workspace_id)
     begin = installer.begin(**selection)
     assert begin["status"] == "PENDING"
+    assert begin["package_digest"] == vector["root_package_digest"]
+    assert begin["protocol_digest"] == vector["protocol_digest"]
     node_config = dict(origin=origin, stateDir=str(owner_dir), allowLoopbackHttp=True)
     progress = node_call(node_config, "install", workspace_id, "continue", begin["command_id"])
     steps = [progress["step_action_id"]]
@@ -121,6 +123,8 @@ try:
         progress = installer.continue_install(begin["command_id"])
         steps.append(progress["step_action_id"])
     assert progress["status"] == "ACCEPTED", progress
+    assert progress["package_digest"] == vector["root_package_digest"]
+    assert progress["protocol_digest"] == vector["protocol_digest"]
     assert "secure.structure.page" in steps and "secure.structure.end" in steps, steps
     active = reopened.read(workspace_id)
     assert active["structure_status"] == "ACTIVE"
