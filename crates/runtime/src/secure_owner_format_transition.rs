@@ -613,7 +613,10 @@ mod tests {
     use crate::{
         secure_owner_attach::{HistoricalOwnerAttachInput, SecureHistoricalOwnerAttach},
         secure_owner_create::{SecureOwnerCreateConfig, SecureOwnerWorkspaceCreate},
-        secure_private_install::PrivateDirectInstallBeginInput,
+        secure_private_install::{
+            PrivateDirectInstallBeginInput, PrivatePackageInstallBeginInput,
+            PrivatePackageStageInput,
+        },
     };
     use std::{
         io::{BufRead, BufReader},
@@ -871,5 +874,103 @@ mod tests {
         assert_eq!(raised_policy["payload"]["structure_mode"], "STRUCTURED");
         assert_eq!(raised_policy["payload"]["protocol_format_ceiling"], 2);
         assert_eq!(counts()["commits"], before_raise + 1);
+
+        // The raw package material comes from the pinned format-two source
+        // fixture. Native staging compiles and authenticates both source parts.
+        let material_helper =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/format-two-material.mjs");
+        let built = Command::new(&node)
+            .arg(material_helper)
+            .arg(std::env::var("PEERWORK_REFERENCE_ROOT").unwrap())
+            .output()
+            .unwrap();
+        assert!(
+            built.status.success(),
+            "typed material: {}",
+            String::from_utf8_lossy(&built.stderr)
+        );
+        let typed: serde_json::Value = serde_json::from_slice(&built.stdout).unwrap();
+        assert_eq!(
+            typed["material"]["closure"]["packages"]
+                .as_object()
+                .unwrap()
+                .len(),
+            2
+        );
+        let stage = owner.private_install_access(&workspace_id).unwrap();
+        let before_stage = counts()["commits"].as_u64().unwrap();
+        let mut staged: serde_json::Value = serde_json::from_str(
+            &stage
+                .stage_package_json(PrivatePackageStageInput {
+                    material_json: typed["material"].to_string(),
+                    expected_root_package_digest: typed["root_package_digest"]
+                        .as_str()
+                        .unwrap()
+                        .into(),
+                    expected_protocol_digest: typed["protocol_digest"].as_str().unwrap().into(),
+                    stage_id: None,
+                    command_id: None,
+                    issued_at_ms: None,
+                })
+                .unwrap(),
+        )
+        .unwrap();
+        let stage_id = staged["stage_id"].as_str().unwrap().to_owned();
+        let part_count = staged["part_count"].as_u64().unwrap();
+        assert!(part_count >= 1);
+        for _ in 0..4 {
+            if staged["status"] == "STAGED" {
+                break;
+            }
+            staged = serde_json::from_str(&stage.continue_stage_json(&stage_id).unwrap()).unwrap();
+        }
+        assert_eq!(staged["status"], "STAGED");
+        assert_eq!(staged["applied_parts"], part_count);
+        assert_eq!(counts()["commits"], before_stage + part_count);
+        let typed_instance = random_id().unwrap();
+        let mut installed: serde_json::Value = serde_json::from_str(
+            &stage
+                .submit_begin_json(PrivatePackageInstallBeginInput {
+                    stage_id,
+                    instance_id: typed_instance.clone(),
+                    entrypoint: "typedPackage".into(),
+                    grants_json: serde_json::json!([{
+                        "actor_id":source["owner_actor_id"],
+                        "actions":["lib.replace","lib.produce"],
+                        "protocol_roles":[],"capabilities":[]
+                    }])
+                    .to_string(),
+                    command_id: None,
+                    issued_at_ms: None,
+                })
+                .unwrap(),
+        )
+        .unwrap();
+        let typed_begin_id = installed["begin_command_id"].as_str().unwrap().to_owned();
+        for _ in 0..12 {
+            if installed["status"] == "ACCEPTED" {
+                break;
+            }
+            installed =
+                serde_json::from_str(&stage.continue_install_json(&typed_begin_id).unwrap())
+                    .unwrap();
+        }
+        assert_eq!(installed["status"], "ACCEPTED");
+        let after_typed = counts()["commits"].as_u64().unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(
+                &fresh.resume_json_with_cancel(id, &cancel).unwrap()
+            )
+            .unwrap()["status"],
+            "ACCEPTED"
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(
+                &fresh.resume_json_with_cancel(raise_id, &cancel).unwrap()
+            )
+            .unwrap()["status"],
+            "ACCEPTED"
+        );
+        assert_eq!(counts()["commits"], after_typed);
     }
 }
