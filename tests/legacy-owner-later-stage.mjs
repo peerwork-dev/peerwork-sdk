@@ -2,7 +2,7 @@
 // The original client is closed before copying its protected local files;
 // the immutable copy is selected for native import after the writer stops.
 import { createPrivateKey } from 'node:crypto';
-import { copyFileSync, mkdirSync, readFileSync, statSync } from 'node:fs';
+import { chmodSync, copyFileSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -32,6 +32,7 @@ const selected = {
 };
 for (const [key, target] of Object.entries(selected)) {
   copyFileSync(initial[key], target);
+  chmodSync(target, 0o600);
   if ((statSync(target).mode & 0o077) !== 0) throw new Error('LATER_STAGE_SNAPSHOT_MODE');
 }
 const { SecureAgentClient } = await import(pathToFileURL(join(referenceRoot, 'dist-workspace/src/workspace-secure-agent.js')).href);
