@@ -368,6 +368,23 @@ fn canonical_array(values: &[WireValue]) -> Result<String, SecureReadAccessError
 }
 
 fn map_read_error(error: JournalReadError) -> SecureReadAccessError {
+    #[cfg(test)]
+    if std::env::var_os("PEERWORK_DIAG_LATER_STAGE_READ").is_some() {
+        let class = match &error {
+            JournalReadError::Store(_) => "store",
+            JournalReadError::Transport(TransportError::Timeout) => "transport-timeout",
+            JournalReadError::Transport(TransportError::Network) => "transport-network",
+            JournalReadError::Transport(TransportError::Cancelled) => "transport-cancelled",
+            JournalReadError::Transport(TransportError::ResponseTooLarge) => "transport-size",
+            JournalReadError::Transport(_) => "transport-other",
+            JournalReadError::Incompatible => "incompatible",
+            JournalReadError::TooLarge => "too-large",
+            JournalReadError::ServerRejected(_) => "server-rejected",
+            JournalReadError::Entropy => "entropy",
+            JournalReadError::Clock => "clock",
+        };
+        eprintln!("later-stage read failure class: {class}");
+    }
     match error {
         JournalReadError::Transport(TransportError::Cancelled) => SecureReadAccessError::Cancelled,
         JournalReadError::Transport(TransportError::ResponseTooLarge)

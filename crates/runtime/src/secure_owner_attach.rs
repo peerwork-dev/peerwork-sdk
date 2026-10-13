@@ -7289,6 +7289,9 @@ mod tests {
             root.path().join("control.sqlite"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         ).unwrap();
         for mode in ["complete-action", "complete-ceiling2", "incomplete-stale"] {
+            if std::env::var("PEERWORK_DIAG_LATER_STAGE_MODE").is_ok_and(|selected| selected != mode) {
+                continue;
+            }
             let output = Command::new(&node).arg(&helper).arg(origin)
                 .arg(root.path().join(mode)).arg(&reference_root).arg(mode)
                 .output().unwrap();
