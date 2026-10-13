@@ -234,10 +234,8 @@ void (async () => {
                 expectedProtocolDigest=selection["expected_protocol_digest"],
                 instanceId=selection["instance_id"], entrypoint=selection["entrypoint"],
                 grantsJson=selection["grants_json"])))
-        cli_selection = dict(selection)
-        cli_selection["bindings_json"] = json.dumps(cli_selection.pop("bindings"), separators=(",", ":"))
         return self.cli("owner-private-install-begin-direct", workspace_id,
-                        self.file("install-input.json", cli_selection))
+                        self.file("install-input.json", selection))
 
     def install_pending(self, workspace_id):
         if self.kind == "python":
