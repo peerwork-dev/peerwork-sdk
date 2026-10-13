@@ -194,6 +194,8 @@ try:
             wiki = next(row["id"] for row in before_read["objects"]
                         if row["kind"] == "instances"
                         and row["value"]["origin_entrypoint"] == "wiki")
+            # The Owner selector runs before BEGIN's stage-ID lookup; this
+            # token-shaped ID is not a claim that native staging completed.
             for attempt, error_type in (
                 (lambda: owner.private_actions(workspace).submit(
                     "wiki.create", wiki, {"title": "Blocked", "body": "No stale write"}),
@@ -207,11 +209,22 @@ try:
                 try:
                     attempt()
                 except error_type as error:
-                    assert error.code == "VERIFICATION_FAILED"
+                    assert error.code == "PENDING_PACKAGE_STAGE_UNRESOLVED"
                 else:
                     raise AssertionError("restricted attachment permitted a signed operation")
                 assert count_workspace(database, workspace) == before_restricted
                 assert owner.attachments() == [result]
+            absent = "z" * 43
+            assert absent != workspace
+            try:
+                owner.private_actions(absent).submit(
+                    "wiki.create", wiki, {"title": "Absent", "body": "No workspace"})
+            except peerwork.SecureActionError as error:
+                assert error.code == "NOT_FOUND"
+            else:
+                raise AssertionError("absent workspace unexpectedly selected an Owner")
+            assert count_workspace(database, workspace) == before_restricted
+            assert owner.attachments() == [result]
 
         archived = STATE / ("archived-" + name)
         shutil.move(str(old_dir), str(archived))
