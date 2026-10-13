@@ -41,7 +41,7 @@ if (libc === 'musl') {
     execFileSync('patchelf', ['--set-rpath', '$ORIGIN', file]);
   }
   execFileSync('patchelf', ['--set-rpath', '$ORIGIN/lib', join(dir, 'index.node')]);
-  copyFileSync(resolve('../../third_party/llvm-20.1.8-LICENSE.txt'), join(dir, 'LLVM-LICENSE.txt'));
+  copyFileSync(new URL('../../../third_party/llvm-20.1.8-LICENSE.txt', import.meta.url), join(dir, 'LLVM-LICENSE.txt'));
 }
 const metadata = {
   name: `@peerwork/agent-sdk-${target}`,
@@ -58,5 +58,5 @@ if (libc) metadata.libc = [libc];
 writeFileSync(join(dir, 'package.json'), `${JSON.stringify(metadata, null, 2)}\n`);
 writeFileSync(join(dir, 'index.cjs'), "'use strict';\nmodule.exports = require('./index.node');\n");
 writeFileSync(join(dir, 'README.md'), `# ${metadata.name}\n\nExperimental platform binary. No verified operations yet.\n`);
-copyFileSync(resolve('LICENSE'), join(dir, 'LICENSE'));
+copyFileSync(new URL('../LICENSE', import.meta.url), join(dir, 'LICENSE'));
 console.log(`${metadata.name}: ${basename(library)} -> ${dir}`);

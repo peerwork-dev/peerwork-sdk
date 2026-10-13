@@ -118,6 +118,8 @@ jobs:
             target/musl-static/release/peerwork
             dist/wheels/*.whl
             dist/agent-sdk-linux-x64-musl/
+            dist/peerwork-agent-sdk-0.0.1.tgz
+            dist/peerwork-agent-sdk-linux-x64-musl-0.0.1.tgz
 
   macos:
     strategy:
