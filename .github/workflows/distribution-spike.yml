@@ -54,6 +54,9 @@ jobs:
           python -m venv /tmp/peerwork-wheel-consumer
           /tmp/peerwork-wheel-consumer/bin/pip install --no-index --no-deps dist/wheels/*.whl
           /tmp/peerwork-wheel-consumer/bin/python -c 'import peerwork; assert peerwork.version() == "0.0.1"; assert peerwork.capabilities()["version"] == "0.0.1"'
+          python -m pip install 'mypy==1.18.2'
+          python tests/verify-installed-python-types.py \
+            --python /tmp/peerwork-wheel-consumer/bin/python --mypy "$(command -v mypy)"
           env -i PATH=/usr/bin:/bin ./target/release/peerwork version
           state_dir="$(cd "$RUNNER_TEMP" && pwd -P)/peerwork state Ω with spaces"
           mkdir -m 700 "$state_dir"
