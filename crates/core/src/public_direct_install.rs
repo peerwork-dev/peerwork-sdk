@@ -222,8 +222,24 @@ pub fn prepare_public_direct_install_begin(
     {
         return Err(invalid());
     }
-    let prior_structure = required(required(&prior_policy, "payload")?, "structure")?;
-    validate_object_bindings(prior_structure, objects).map_err(|_| invalid())?;
+    let prior_payload = required(&prior_policy, "payload")?;
+    let prior_structure = if let Some(structure) = prior_payload.get("structure") {
+        structure.clone()
+    } else if required(prior_payload, "structure_mode")?
+        .as_string()
+        .as_deref()
+        == Some("NONE")
+    {
+        let mut prior_wire = String::new();
+        ordered_json(&WireValue::Array(objects.to_vec()), 0, &mut prior_wire)?;
+        let derived =
+            derive_genesis_structure_policy_with_keep_encrypted(prior_wire.as_bytes(), b"[]")
+                .map_err(|_| invalid())?;
+        parse_wire_json_bounded(derived.as_bytes(), 64, 2_000_000).map_err(|_| invalid())?
+    } else {
+        return Err(invalid());
+    };
+    validate_object_bindings(&prior_structure, objects).map_err(|_| invalid())?;
     let workspace_id = required(&checkpoint, "workspace_id")?
         .as_string()
         .ok_or_else(invalid)?;
@@ -241,7 +257,7 @@ pub fn prepare_public_direct_install_begin(
         return Err(invalid());
     }
     let structure = derive_direct_install_structure(
-        prior_structure,
+        &prior_structure,
         objects,
         &built.added,
         expected_protocol_digest,
@@ -596,9 +612,14 @@ pub(crate) fn derive_direct_install_policy_payload(
     let old = required(prior_signed_policy, "payload")?;
     if required(old, "v")? != &WireValue::Number(3.0)
         || required(old, "visibility")?.as_string().as_deref() != Some("PUBLIC")
-        || required(old, "structure_mode")?.as_string().as_deref() != Some("STRUCTURED")
+        || !matches!(
+            required(old, "structure_mode")?.as_string().as_deref(),
+            Some("STRUCTURED" | "NONE")
+        )
         || required(old, "protocol_format_ceiling")? != &WireValue::Number(1.0)
-        || required(old, "structure")?.object_len().is_none()
+        || old
+            .get("structure")
+            .is_some_and(|value| value.object_len().is_none())
         || prior_signed_policy
             .get("signature")
             .and_then(WireValue::as_string)
@@ -682,6 +703,7 @@ pub(crate) fn derive_direct_install_policy_payload(
     }
     let mut payload = old.clone();
     put(&mut payload, "structure", structure.clone())?;
+    put(&mut payload, "structure_mode", text("STRUCTURED"))?;
     put(&mut payload, "members", WireValue::Array(members))?;
     put(&mut payload, "version", WireValue::Number(version as f64))?;
     put(&mut payload, "previous_policy", text(&previous))?;

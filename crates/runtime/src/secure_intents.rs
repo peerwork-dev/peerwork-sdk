@@ -84,6 +84,29 @@ struct Entry {
     response_b64: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     accepted_receipt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    public_install: Option<PublicInstallSelection>,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PublicInstallSelection {
+    pub package_id: String,
+    pub package_version: String,
+    pub package_digest: String,
+    pub protocol_digest: String,
+    pub instance_id: String,
+    pub entrypoint: String,
+    pub closure_sha256: String,
+    pub closure_b64: String,
+    pub prior_checkpoint_json: String,
+    pub grants_json: String,
+}
+
+impl PublicInstallSelection {
+    pub(crate) fn closure_wire(&self) -> Result<Vec<u8>, SecureIntentError> {
+        decode_base64url(&self.closure_b64).map_err(|_| SecureIntentError::Incompatible)
+    }
 }
 
 /// Unauthenticated local preparation context. Only a future core verified
@@ -177,6 +200,28 @@ impl SecureIntentJournal {
         &mut self,
         input: SecurePacketInput<'_>,
     ) -> Result<PendingSecureIntent, SecureIntentError> {
+        self.prepare_with_selection(input, None)
+    }
+
+    pub(crate) fn prepare_public_install(
+        &mut self,
+        input: SecurePacketInput<'_>,
+        selection: PublicInstallSelection,
+    ) -> Result<PendingSecureIntent, SecureIntentError> {
+        if input.action_id != "secure.structure.begin"
+            || input.workspace_id.is_none()
+            || !valid_public_install_selection(&selection)
+        {
+            return Err(SecureIntentError::Invalid);
+        }
+        self.prepare_with_selection(input, Some(selection))
+    }
+
+    fn prepare_with_selection(
+        &mut self,
+        input: SecurePacketInput<'_>,
+        selection: Option<PublicInstallSelection>,
+    ) -> Result<PendingSecureIntent, SecureIntentError> {
         if !valid_id(input.intent_id)
             || !valid_secure_path(input.path)
             || !valid_action(input.action_id)
@@ -198,6 +243,7 @@ impl SecureIntentJournal {
             request_b64: base64url(input.exact_request),
             response_b64: Vec::new(),
             accepted_receipt: None,
+            public_install: selection,
         };
         if let Some(existing) = self.document.rows.get(input.intent_id) {
             if existing.accepted_receipt.is_some() {
@@ -785,6 +831,28 @@ impl SecureIntentJournal {
             .as_deref())
     }
 
+    pub(crate) fn public_install_selection(
+        &self,
+        intent_id: &str,
+    ) -> Result<&PublicInstallSelection, SecureIntentError> {
+        self.document
+            .rows
+            .get(intent_id)
+            .ok_or(SecureIntentError::NotFound)?
+            .public_install
+            .as_ref()
+            .ok_or(SecureIntentError::Invalid)
+    }
+
+    pub(crate) fn intent_digest(&self, intent_id: &str) -> Result<&str, SecureIntentError> {
+        Ok(&self
+            .document
+            .rows
+            .get(intent_id)
+            .ok_or(SecureIntentError::NotFound)?
+            .intent_digest)
+    }
+
     fn persist(&mut self, next: Document) -> Result<(), SecureIntentError> {
         let bytes = serde_json::to_vec(&next).map_err(|_| SecureIntentError::Incompatible)?;
         if bytes.len() > MAX_DOCUMENT {
@@ -875,6 +943,42 @@ fn valid_action(value: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
 }
+fn valid_public_install_selection(value: &PublicInstallSelection) -> bool {
+    if value.package_id.is_empty()
+        || value.package_id.len() > 80
+        || value.package_version.is_empty()
+        || value.package_version.len() > 80
+        || !valid_digest(&value.package_digest)
+        || !valid_digest(&value.protocol_digest)
+        || !valid_token(&value.instance_id)
+        || value.entrypoint.is_empty()
+        || value.entrypoint.len() > 120
+        || !valid_digest(&value.closure_sha256)
+        || value.prior_checkpoint_json.len() > 8192
+        || value.grants_json.len() > 65_536
+    {
+        return false;
+    }
+    let Ok(closure) = decode_base64url(&value.closure_b64) else {
+        return false;
+    };
+    if closure.is_empty()
+        || closure.len() > 6 * 1024 * 1024
+        || sha256_hex(&closure) != value.closure_sha256
+        || base64url(&closure) != value.closure_b64
+    {
+        return false;
+    }
+    let canonical_json = |text: &str, depth: usize, max: usize| {
+        parse_wire_json_bounded(text.as_bytes(), depth, max)
+            .ok()
+            .and_then(|value| canonical_wire_value(&value, CanonicalPath::SecureArtifact).ok())
+            .as_deref()
+            == Some(text)
+    };
+    canonical_json(&value.prior_checkpoint_json, 32, 8192)
+        && canonical_json(&value.grants_json, 32, 65_536)
+}
 fn valid_secure_path(value: &str) -> bool {
     value.starts_with("/api/workspace/v1/secure/")
         && value.len() <= 256
@@ -898,6 +1002,15 @@ fn valid_row(id: &str, row: &Entry, actor_id: &str) -> bool {
         || !valid_digest(&row.intent_digest)
         || !valid_digest(&row.request_sha256)
         || row.response_b64.len() > MAX_OBSERVATIONS
+        || row
+            .public_install
+            .as_ref()
+            .is_some_and(|selection| !valid_public_install_selection(selection))
+        || row.public_install.is_some()
+            && (row.action_id != "secure.structure.begin"
+                || row.workspace_id.is_none()
+                || row.trusted_owner_key.is_none()
+                || row.accepted_receipt.is_some())
     {
         return false;
     }
