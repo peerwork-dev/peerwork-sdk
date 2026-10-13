@@ -695,6 +695,63 @@ mod tests {
     };
 
     #[test]
+    fn old_private_saved_history_without_visibility_keeps_pending_packet() {
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let identity_path = root.path().join("identity.state");
+        let identity = KernelIdentity::create(&identity_path).unwrap();
+        let workspace_id = base64url(&[3; 32]);
+        let command_id = base64url(&[4; 32]);
+        let exact_packet = b"legacy exact saved request";
+        let config = SecureReadProfileConfig {
+            origin: "https://example.invalid/".into(),
+            state_dir: root.path().into(),
+            identity_path,
+            workspace_id: workspace_id.clone(),
+            owner_actor_id: Some(identity.actor_id().into()),
+            owner_key_id: Some(identity.key_id().into()),
+            authority: None,
+            required_features: vec![],
+            allow_loopback_http: false,
+            max_replay_artifact_bytes: 64 * 1024 * 1024,
+        };
+        let store = SecureStateStore::open(&root.path().join("owner-format.state")).unwrap();
+        let mut rows = serde_json::Map::new();
+        rows.insert(
+            command_id.clone(),
+            serde_json::json!({
+                "transition":"UPGRADE_WIRE_V3","issued_at_ms":2000,
+                "source_sequence":2,"source_head":"a".repeat(64),
+                "source_policy_hash":"b".repeat(64),"request_b64":base64url(exact_packet),
+                "commit_hash":"c".repeat(64),"next_policy_hash":"d".repeat(64),
+                "accepted_sequence":null,
+            }),
+        );
+        let old = serde_json::json!({
+            "version":1,"origin":config.origin,"workspace_id":workspace_id,
+            "actor_id":identity.actor_id(),"owner_key_id":identity.key_id(),
+            "rows":rows,
+        });
+        store
+            .write_exact(serde_json::to_vec(&old).unwrap().as_slice())
+            .unwrap();
+        let restored = TransitionHistory::open(&store, &config, &identity, "PRIVATE").unwrap();
+        assert_eq!(restored.visibility, "PRIVATE");
+        let row = restored.rows.get(&command_id).unwrap();
+        assert_eq!(row.visibility, "PRIVATE");
+        assert_eq!(row.accepted_sequence, None);
+        assert_eq!(decode_base64url(&row.request_b64).unwrap(), exact_packet);
+        assert!(matches!(
+            TransitionHistory::open(&store, &config, &identity, "PUBLIC"),
+            Err(OwnerFormatTransitionError::Local)
+        ));
+    }
+
+    #[test]
     fn actual_service_enforced_legacy_private_owner_upgrade_and_raise() {
         let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else {
             return;
