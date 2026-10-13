@@ -169,7 +169,8 @@ export interface HistoricalOwnerAttachmentResult {
   pending_action_command_id: string | null;
   pending_action_status: 'RETAINED_UNRESOLVED' | 'ACCEPTED' | null;
   pending_package_stage_command_id: string | null;
-  pending_package_stage_status: 'PENDING_UNRESOLVED' | 'ACCEPTED' | null;
+  pending_package_stage_status: 'PENDING_UNRESOLVED' | 'PART_ACCEPTED_CONTINUATION_PENDING' | 'ACCEPTED' | null;
+  pending_package_stage_id: string | null;
   orphan_package_stage_command_id: string | null;
   orphan_package_stage_status: 'ORPHAN_NO_PACKET' | 'REPLAN_SELECTED_UNVERIFIED' | 'ORPHAN_REPLANNED' | null;
   orphan_replan_stage_id: string | null;
@@ -181,6 +182,9 @@ export interface HistoricalPackageStagePendingInventory {
   source_id: string;
   source_sha256: string;
   source_sequence: number;
+  part_index: number;
+  part_count: number | null;
+  original_commit_hash: string | null;
   status: 'PENDING_UNRESOLVED' | 'APPLIED_IN_SIGNED_REPLAY';
 }
 export interface HistoricalPackageStageOrphanInventory {
@@ -230,6 +234,10 @@ export interface SecureOwnerWorkspaceSession {
   inspectKernelPending(input: HistoricalOwnerAttachmentInput, options?: {signal?: AbortSignal}): Promise<HistoricalKernelPendingInventory>;
   /** Read-only inspection; no attach row or package-stage POST. */
   inspectPendingPackageStage(input: HistoricalOwnerAttachmentInput, options?: {signal?: AbortSignal}): Promise<HistoricalPackageStagePendingInventory>;
+  /** Verify complete source material for a saved nonzero part; no attach row or POST. */
+  inspectPendingMultipartPackageStage(input: HistoricalOwnerAttachmentInput, materialJson: string, options?: {signal?: AbortSignal}): Promise<HistoricalPackageStagePendingInventory>;
+  /** Import one inspected multipart stage without POST; use its returned stage ID after signed completion. */
+  attachPendingMultipartPackageStage(input: HistoricalOwnerAttachmentInput, materialJson: string, options?: {signal?: AbortSignal}): Promise<HistoricalOwnerAttachmentResult>;
   /** Explicit recovery of one selected original ADMIN stage packet. */
   recoverPendingPackageStage(attachId: string, expectedCommandId: string, options?: {signal?: AbortSignal}): Promise<HistoricalOwnerAttachmentResult>;
   /** Read-only verification of an original stage marker without a signed packet. */

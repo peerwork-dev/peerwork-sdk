@@ -29,6 +29,16 @@ use peerwork_runtime::secure_recipient_enrollment::{
 use peerwork_runtime::KernelCancellationToken;
 use std::path::Path;
 
+fn multipart_stage_request(wire: Option<&str>) -> Option<(HistoricalOwnerAttachInput, String)> {
+    let value: serde_json::Value = serde_json::from_str(wire?).ok()?;
+    let object = value.as_object()?;
+    if object.len() != 2 { return None; }
+    let input = serde_json::from_value(object.get("attachment_input")?.clone()).ok()?;
+    let material = object.get("material_json")?.as_str()?.to_owned();
+    if material.is_empty() { return None; }
+    Some((input, material))
+}
+
 #[napi]
 pub fn version() -> &'static str {
     peerwork_core::version()
@@ -532,7 +542,7 @@ impl Task for SecureOwnerCreateTask {
             Ok(value) => value,
             Err(_) => return Ok(serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid Owner configuration"}).to_string()),
         };
-        if matches!(self.operation.as_str(), "attach" | "resume_attachment" | "retain_pending_action" | "attachments" | "kernel_inspect" | "kernel_status" | "kernel_recover" | "stage_inspect" | "stage_recover" | "orphan_inspect" | "orphan_replan") {
+        if matches!(self.operation.as_str(), "attach" | "resume_attachment" | "retain_pending_action" | "attachments" | "kernel_inspect" | "kernel_status" | "kernel_recover" | "stage_inspect" | "stage_multipart_inspect" | "stage_multipart_attach" | "stage_recover" | "orphan_inspect" | "orphan_replan") {
             let access = SecureHistoricalOwnerAttach::new(config);
             let result = match self.operation.as_str() {
                 "attach" => {
@@ -572,6 +582,22 @@ impl Task for SecureOwnerCreateTask {
                         None => return Ok(serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid package stage inspection input"}).to_string()),
                     };
                     access.inspect_pending_package_stage(&input, &self.cancel).map(|value| serde_json::to_string(&value).expect("package stage inventory serializes"))
+                },
+                "stage_multipart_inspect" => {
+                    let (input, material) = match multipart_stage_request(self.input_json.as_deref()) {
+                        Some(value) => value,
+                        None => return Ok(serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid multipart stage inspection input"}).to_string()),
+                    };
+                    access.inspect_pending_package_stage_with_material(&input, &material, &self.cancel)
+                        .map(|value| serde_json::to_string(&value).expect("package stage inventory serializes"))
+                },
+                "stage_multipart_attach" => {
+                    let (input, material) = match multipart_stage_request(self.input_json.as_deref()) {
+                        Some(value) => value,
+                        None => return Ok(serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid multipart stage attachment input"}).to_string()),
+                    };
+                    access.attach_pending_package_stage_with_material(input, &material, &self.cancel)
+                        .map(|value| serde_json::to_string(&value).expect("attachment result serializes"))
                 },
                 "stage_recover" => match (self.workspace_id.as_deref(), self.command_id.as_deref()) {
                     (Some(attach_id), Some(id)) => access.recover_pending_package_stage(attach_id, id, &self.cancel).map(|value| serde_json::to_string(&value).expect("attachment result serializes")),

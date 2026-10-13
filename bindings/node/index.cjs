@@ -452,6 +452,26 @@ exports.openSecureOwnerWorkspaces = options => {
       expected_ts_state_digest: stateDigest ?? null,
     };
   };
+  const multipartStageRequest = (input, materialJson, attach) => {
+    const allowed = new Set([
+      'workspaceId', 'protectedTsStatePath', 'protectedTsIntentDbPath',
+      'protectedOwnerPkcs8Path', 'expectedOwnerActorId', 'expectedOwnerKeyId',
+      'recoverPendingAction', 'retainPendingActionCommandId',
+      'kernelPendingCommandIds', 'expectedKernelIntentDbDigest',
+      'selectedPendingPackageStageCommandId', 'selectedOrphanPackageStageCommandId',
+      'expectedTsStateDigest',
+    ]);
+    if (!input || typeof input !== 'object' || Object.keys(input).some(key => !allowed.has(key)) ||
+        typeof materialJson !== 'string' || !materialJson) {
+      throw new TypeError('multipart stage requires exact attachment fields and nonempty materialJson');
+    }
+    if (attach ? !input.selectedPendingPackageStageCommandId || !input.expectedTsStateDigest :
+        input.selectedPendingPackageStageCommandId != null || input.selectedOrphanPackageStageCommandId != null ||
+        input.expectedTsStateDigest != null) {
+      throw new TypeError('multipart attach requires one inspected pending command and TS state digest');
+    }
+    return { attachment_input: attachmentInput(input), material_json: materialJson };
+  };
   const formatTransitionInput = input => {
     if (!input || typeof input.workspaceId !== 'string' || !input.workspaceId ||
         !['UPGRADE_WIRE_V3', 'RAISE_PRIVATE_CEILING_TWO'].includes(input.transition)) {
@@ -617,6 +637,10 @@ exports.openSecureOwnerWorkspaces = options => {
     attach: (input, { signal } = {}) => invoke('attach', attachmentInput(input), undefined, undefined, signal),
     inspectKernelPending: (input, { signal } = {}) => invoke('kernel_inspect', attachmentInput(input), undefined, undefined, signal),
     inspectPendingPackageStage: (input, { signal } = {}) => invoke('stage_inspect', attachmentInput(input), undefined, undefined, signal),
+    inspectPendingMultipartPackageStage: (input, materialJson, { signal } = {}) => invoke(
+      'stage_multipart_inspect', multipartStageRequest(input, materialJson, false), undefined, undefined, signal),
+    attachPendingMultipartPackageStage: (input, materialJson, { signal } = {}) => invoke(
+      'stage_multipart_attach', multipartStageRequest(input, materialJson, true), undefined, undefined, signal),
     recoverPendingPackageStage: (attachId, expectedCommandId, { signal } = {}) => invoke('stage_recover', undefined, expectedCommandId, attachId, signal),
     inspectOrphanPackageStage: (input, { signal } = {}) => invoke('orphan_inspect', attachmentInput(input), undefined, undefined, signal),
     replanOrphanPackageStage: (attachId, originalCommandId, materialJson, { signal } = {}) => {

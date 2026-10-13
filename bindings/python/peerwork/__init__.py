@@ -954,7 +954,8 @@ class HistoricalOwnerAttachmentResult(TypedDict):
     pending_action_command_id: str | None
     pending_action_status: Literal["RETAINED_UNRESOLVED", "ACCEPTED"] | None
     pending_package_stage_command_id: str | None
-    pending_package_stage_status: Literal["PENDING_UNRESOLVED", "ACCEPTED"] | None
+    pending_package_stage_status: Literal["PENDING_UNRESOLVED", "PART_ACCEPTED_CONTINUATION_PENDING", "ACCEPTED"] | None
+    pending_package_stage_id: str | None
     orphan_package_stage_command_id: str | None
     orphan_package_stage_status: Literal["ORPHAN_NO_PACKET", "REPLAN_SELECTED_UNVERIFIED", "ORPHAN_REPLANNED"] | None
     orphan_replan_stage_id: str | None
@@ -967,6 +968,9 @@ class HistoricalPackageStagePendingInventory(TypedDict):
     source_id: str
     source_sha256: str
     source_sequence: int
+    part_index: int
+    part_count: int | None
+    original_commit_hash: str | None
     status: Literal["PENDING_UNRESOLVED", "APPLIED_IN_SIGNED_REPLAY"]
 
 
@@ -1179,6 +1183,38 @@ class SecureOwnerWorkspaceClient:
         return cast(HistoricalPackageStagePendingInventory,
             self._owner("stage_inspect", input_value=value))
 
+    @staticmethod
+    def _multipart_stage_request(attachment_input: dict, material_json: str) -> dict:
+        if not isinstance(material_json, str) or not material_json:
+            raise TypeError("material_json must be a nonempty JSON string")
+        return {"attachment_input": attachment_input, "material_json": material_json}
+
+    def inspect_pending_multipart_package_stage(self, workspace_id: str,
+            protected_ts_state_path: str, protected_ts_intent_db_path: str,
+            protected_owner_pkcs8_path: str, expected_owner_actor_id: str,
+            expected_owner_key_id: str, material_json: str) -> HistoricalPackageStagePendingInventory:
+        """Verify the full material and saved nonzero part; no attach row or POST."""
+        value = self._attachment_input(workspace_id, protected_ts_state_path,
+            protected_ts_intent_db_path, protected_owner_pkcs8_path,
+            expected_owner_actor_id, expected_owner_key_id)
+        return cast(HistoricalPackageStagePendingInventory, self._owner(
+            "stage_multipart_inspect", input_value=self._multipart_stage_request(value, material_json)))
+
+    def attach_pending_multipart_package_stage(self, workspace_id: str,
+            protected_ts_state_path: str, protected_ts_intent_db_path: str,
+            protected_owner_pkcs8_path: str, expected_owner_actor_id: str,
+            expected_owner_key_id: str, material_json: str, *,
+            selected_pending_package_stage_command_id: str,
+            expected_ts_state_digest: str) -> HistoricalOwnerAttachmentResult:
+        """Import one inspected multipart stage without POST; recovery remains explicit."""
+        value = self._attachment_input(workspace_id, protected_ts_state_path,
+            protected_ts_intent_db_path, protected_owner_pkcs8_path,
+            expected_owner_actor_id, expected_owner_key_id,
+            selected_pending_package_stage_command_id=selected_pending_package_stage_command_id,
+            expected_ts_state_digest=expected_ts_state_digest)
+        return cast(HistoricalOwnerAttachmentResult, self._owner(
+            "stage_multipart_attach", input_value=self._multipart_stage_request(value, material_json)))
+
     def recover_pending_package_stage(self, attach_id: str,
                                       expected_command_id: str) -> HistoricalOwnerAttachmentResult:
         """Explicitly reconcile or submit one retained original ADMIN stage packet."""
@@ -1340,6 +1376,32 @@ class SecureOwnerWorkspaceClient:
             expected_owner_actor_id, expected_owner_key_id)
         return cast(HistoricalPackageStagePendingInventory, await _run_cancelled_async(
             self._owner, "stage_inspect", input_value=value))
+
+    async def inspect_pending_multipart_package_stage_async(self, workspace_id: str,
+            protected_ts_state_path: str, protected_ts_intent_db_path: str,
+            protected_owner_pkcs8_path: str, expected_owner_actor_id: str,
+            expected_owner_key_id: str, material_json: str) -> HistoricalPackageStagePendingInventory:
+        value = self._attachment_input(workspace_id, protected_ts_state_path,
+            protected_ts_intent_db_path, protected_owner_pkcs8_path,
+            expected_owner_actor_id, expected_owner_key_id)
+        return cast(HistoricalPackageStagePendingInventory, await _run_cancelled_async(
+            self._owner, "stage_multipart_inspect",
+            input_value=self._multipart_stage_request(value, material_json)))
+
+    async def attach_pending_multipart_package_stage_async(self, workspace_id: str,
+            protected_ts_state_path: str, protected_ts_intent_db_path: str,
+            protected_owner_pkcs8_path: str, expected_owner_actor_id: str,
+            expected_owner_key_id: str, material_json: str, *,
+            selected_pending_package_stage_command_id: str,
+            expected_ts_state_digest: str) -> HistoricalOwnerAttachmentResult:
+        value = self._attachment_input(workspace_id, protected_ts_state_path,
+            protected_ts_intent_db_path, protected_owner_pkcs8_path,
+            expected_owner_actor_id, expected_owner_key_id,
+            selected_pending_package_stage_command_id=selected_pending_package_stage_command_id,
+            expected_ts_state_digest=expected_ts_state_digest)
+        return cast(HistoricalOwnerAttachmentResult, await _run_cancelled_async(
+            self._owner, "stage_multipart_attach",
+            input_value=self._multipart_stage_request(value, material_json)))
 
     async def recover_pending_package_stage_async(self, attach_id: str,
             expected_command_id: str) -> HistoricalOwnerAttachmentResult:
