@@ -150,12 +150,6 @@ with tempfile.TemporaryDirectory(prefix="peerwork-native-private-", dir=TEMP_ROO
         initial = reader.read()
         assert initial["workspace_id"] == workspace["workspace_id"]
         assert initial["sequence"] > workspace["sequence"]
-        authority = hashlib.sha256(local["actor_id"].encode()).hexdigest()
-        saved = peerwork.SecureSnapshotClient(origin, str(recipient_dir / "kernel.sqlite"),
-            str(recipient_dir / "read-0.state"), str(recipient_dir / "lifecycle.state"),
-            str(recipient_dir / "identity.state"), workspace["workspace_id"], authority,
-            workspace["owner_actor_id"], workspace["owner_key_id"], allow_loopback_http=True)
-        assert saved.read()["sequence"] == initial["sequence"]
         initial_checkpoint = (initial["sequence"], initial["head"], initial["policy_hash"])
         protected_before_failure = protected_current_generation(recipient_dir)
         assert protected_before_failure[1]["sequence"] == initial_checkpoint[0]
@@ -191,6 +185,10 @@ with tempfile.TemporaryDirectory(prefix="peerwork-native-private-", dir=TEMP_ROO
         assert contains_record(latest, advanced["record_id"], "Native private admission readback")
         assert exact_record(latest, advanced["record_id"])["value"]["payload"]["body"] == \
             "Encrypted record after owner epoch advance"
+        current_floor = protected_current_generation(recipient_dir)[1]
+        assert (current_floor["sequence"], current_floor["head"],
+            current_floor["policy_hash"]) == (latest["sequence"], latest["head"],
+            latest["policy_hash"])
         assert reader.read()["sequence"] == latest["sequence"]
         node_read = node_call("read", dict(origin=origin, stateDir=str(recipient_dir),
             identityPath=str(recipient_dir / "identity.state"),
@@ -198,7 +196,6 @@ with tempfile.TemporaryDirectory(prefix="peerwork-native-private-", dir=TEMP_ROO
             ownerKeyId=workspace["owner_key_id"], allowLoopbackHttp=True))
         assert node_read["sequence"] == latest["sequence"]
         assert cli_private_read(origin, recipient_dir, workspace)["sequence"] == latest["sequence"]
-        assert saved.read()["sequence"] == initial["sequence"]
 
         # PRIVATE historical recipient key: owner delivers a grant encrypted
         # to v1 before the recipient rotates, then native receipt decrypts it
