@@ -9,6 +9,7 @@ use crate::{
     secure_native_prepare::{prepare_public_action_from_replay, NativePrepareError},
     secure_read_access::SecureReadAccessError,
     secure_read_profile::{SecureReadProfile, SecureReadProfileConfig},
+    secure_state::SecureStateError,
     secure_verified_read::TransportReplayedJournal,
     transport::{HttpTransport, TransportConfig},
 };
@@ -97,7 +98,22 @@ impl PublicActionError {
             Self::Input => "ACTION_INPUT_INVALID",
             Self::Entropy => "ENTROPY_UNAVAILABLE",
             Self::Prepare => "ACTION_PREPARE_FAILED",
-            Self::Intent(_) => "INTENT_FAILED",
+            Self::Intent(error) => match error {
+                SecureIntentError::Conflict => "INTENT_CONFLICT",
+                SecureIntentError::NotFound => "INTENT_NOT_FOUND",
+                SecureIntentError::TooLarge
+                | SecureIntentError::Store(SecureStateError::TooLarge) => "RESOURCE_LIMIT",
+                SecureIntentError::Store(SecureStateError::Busy) => "STATE_BUSY",
+                SecureIntentError::Store(_)
+                | SecureIntentError::Incompatible
+                | SecureIntentError::Invalid => "INTENT_STATE",
+                SecureIntentError::Proof(_) | SecureIntentError::BootstrapProof(_) => {
+                    "INTENT_PROOF_FAILED"
+                }
+                SecureIntentError::Transport(_) => "TRANSPORT_FAILED",
+                SecureIntentError::ServerRejected(_) => "SERVER_REJECTED",
+                SecureIntentError::ReplayMismatch => "VERIFICATION_FAILED",
+            },
             Self::Transport => "TRANSPORT_FAILED",
             Self::Runtime => "RUNTIME_FAILED",
             Self::ResultEncoding => "RESULT_ENCODING_FAILED",
@@ -108,6 +124,28 @@ impl PublicActionError {
 impl From<NativePrepareError> for PublicActionError {
     fn from(_: NativePrepareError) -> Self {
         Self::Prepare
+    }
+}
+
+#[cfg(test)]
+mod error_code_tests {
+    use super::*;
+
+    #[test]
+    fn protected_intent_refusals_have_recoverable_public_codes() {
+        for (source, expected) in [
+            (SecureIntentError::Conflict, "INTENT_CONFLICT"),
+            (SecureIntentError::NotFound, "INTENT_NOT_FOUND"),
+            (SecureIntentError::TooLarge, "RESOURCE_LIMIT"),
+            (
+                SecureIntentError::Store(SecureStateError::Busy),
+                "STATE_BUSY",
+            ),
+            (SecureIntentError::ServerRejected(503), "SERVER_REJECTED"),
+            (SecureIntentError::ReplayMismatch, "VERIFICATION_FAILED"),
+        ] {
+            assert_eq!(PublicActionError::Intent(source).code(), expected);
+        }
     }
 }
 

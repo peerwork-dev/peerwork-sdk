@@ -89,6 +89,18 @@ void (async () => {
                                 capture_output=True, text=True, timeout=60)
         assert result.returncode == 0, result.stderr[-1000:]
         first_record = require_accepted(json.loads(result.stdout), first, 2)
+        for operation, expected_code in (
+            (lambda: client.reconcile("u" * 43), "INTENT_NOT_FOUND"),
+            (lambda: client.submit("discussion.post", fixture["instance_id"],
+                                   {"message": "duplicate ID"}, command_id=first), "INTENT_CONFLICT"),
+        ):
+            try:
+                operation()
+            except peerwork.SecureActionError as error:
+                assert error.code == expected_code, error.code
+            else:
+                raise AssertionError(f"expected {expected_code}")
+        assert counts(origin)["commits"] == 2
 
         config_file = state / "action-config.json"
         config_file.write_text(json.dumps({
