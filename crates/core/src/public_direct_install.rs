@@ -6,7 +6,7 @@ use crate::{
     canonical::Path,
     crypto::{actor_id, base64url, sha256_hex, verify_secure_signed_wire},
     full_manifest::validate_full_manifest,
-    genesis_structure_policy::derive_genesis_structure_policy_with_keep_encrypted,
+    genesis_structure_policy::derive_install_structure_policy_with_keep_encrypted,
     package_closure::{compile_package_material, scan_package_closure},
     secure_replay::project_structure_data,
     structure_bindings::validate_object_bindings,
@@ -174,7 +174,7 @@ pub fn prepare_public_package_install_begin(
     })
 }
 
-/// Compose the supported empty-history PUBLIC install into one exact signed
+/// Compose a PUBLIC direct-install BEGIN into one exact signed
 /// pre-submit packet. This verifies the prior policy signature and checkpoint
 /// consistency, but only the runtime can prove HTTPS origin, complete replay,
 /// local package selection, active structure and prior-object provenance.
@@ -227,9 +227,13 @@ pub fn prepare_public_direct_install_begin(
         == Some("NONE")
     {
         let mut prior_wire = String::new();
-        ordered_json(&WireValue::Array(objects.to_vec()), 0, &mut prior_wire)?;
+        ordered_json(
+            &WireValue::Array(adoption_objects(objects)?),
+            0,
+            &mut prior_wire,
+        )?;
         let derived =
-            derive_genesis_structure_policy_with_keep_encrypted(prior_wire.as_bytes(), b"[]")
+            derive_install_structure_policy_with_keep_encrypted(prior_wire.as_bytes(), b"[]")
                 .map_err(|_| invalid())?;
         parse_wire_json_bounded(derived.as_bytes(), 64, 2_000_000).map_err(|_| invalid())?
     } else {
@@ -670,6 +674,33 @@ fn ordered_json(
     Ok(())
 }
 
+/// `structurePolicyFromObjects` selects latest protocol and instance rows;
+/// historical records/heads are projected into the snapshot separately.
+fn adoption_objects(objects: &[WireValue]) -> Result<Vec<WireValue>, DirectInstallError> {
+    let mut selected: Vec<WireValue> = Vec::new();
+    for object in objects {
+        let kind = required(object, "kind")?
+            .as_string()
+            .ok_or(DirectInstallError::Invalid)?;
+        if kind != "protocols" && kind != "instances" {
+            continue;
+        }
+        let id = required(object, "id")?;
+        let revision = safe_int(required(object, "revision")?)?;
+        if let Some(old) = selected
+            .iter_mut()
+            .find(|old| old.get("kind") == object.get("kind") && old.get("id") == Some(id))
+        {
+            if safe_int(required(old, "revision")?)? < revision {
+                *old = object.clone();
+            }
+        } else {
+            selected.push(object.clone());
+        }
+    }
+    Ok(selected)
+}
+
 fn key(value: &str) -> Vec<u16> {
     value.encode_utf16().collect()
 }
@@ -831,12 +862,18 @@ pub(crate) fn derive_direct_install_structure(
             ]));
         }
     }
-    let all = WireValue::Array(prior_objects.iter().chain(added).cloned().collect());
+    let all = WireValue::Array(adoption_objects(
+        &prior_objects
+            .iter()
+            .chain(added)
+            .cloned()
+            .collect::<Vec<_>>(),
+    )?);
     let mut all_wire = String::new();
     ordered_json(&all, 0, &mut all_wire)?;
     let mut choice_wire = String::new();
     ordered_json(&WireValue::Array(choices), 0, &mut choice_wire)?;
-    let projected = derive_genesis_structure_policy_with_keep_encrypted(
+    let projected = derive_install_structure_policy_with_keep_encrypted(
         all_wire.as_bytes(),
         choice_wire.as_bytes(),
     )

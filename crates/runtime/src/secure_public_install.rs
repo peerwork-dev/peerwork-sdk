@@ -173,18 +173,11 @@ impl SecurePublicPackageInstall {
                 continue;
             }
             let selection = journal.public_install_selection(&pending.intent_id)?;
-            let end_id = base64url(&sha256(
-                format!("peerwork.public.install.end.v1:{}", pending.intent_id).as_bytes(),
-            ));
-            let has_end = journal.contains_id(&end_id);
+            let (step_id, step_action) = pending_install_step(&journal, &pending.intent_id)?;
             rows.push(PendingPublicPackageInstall {
                 begin_command_id: pending.intent_id.clone(),
-                pending_step_id: if has_end { end_id } else { pending.intent_id },
-                pending_action_id: if has_end {
-                    "secure.structure.end"
-                } else {
-                    "secure.structure.begin"
-                },
+                pending_step_id: step_id,
+                pending_action_id: step_action,
                 workspace_id: scope.workspace_id.clone(),
                 package_id: selection.package_id.clone(),
                 package_version: selection.package_version.clone(),
@@ -316,9 +309,6 @@ impl SecurePublicPackageInstall {
             {
                 return Err(PublicPackageInstallError::Input);
             }
-            // PAGE continuation is not yet available. Refuse before saving or
-            // posting a BEGIN that would leave an existing history in SEEDING.
-            ensure_empty_install_snapshot(prepared.request_wire())?;
             let selection = PublicInstallSelection {
                 package_id: prepared.package_id().to_owned(),
                 package_version: prepared.package_version().to_owned(),
@@ -695,6 +685,41 @@ fn install_step_id(begin_id: &str, offset: usize, done: bool) -> String {
     base64url(&sha256(domain.as_bytes()))
 }
 
+fn pending_install_step(
+    journal: &SecureIntentJournal,
+    begin_id: &str,
+) -> Result<(String, &'static str), PublicPackageInstallError> {
+    let end_id = install_step_id(begin_id, 0, true);
+    if journal.contains_id(&end_id) {
+        return Ok((end_id, "secure.structure.end"));
+    }
+    let mut latest: Option<(usize, String)> = None;
+    for row in journal.pending() {
+        if row.action_id != "secure.structure.page" {
+            continue;
+        }
+        let saved = journal.exact_request(&row.intent_id)?;
+        let wire = parse_wire_json_bounded(&saved, 64, 262_144)
+            .map_err(|_| PublicPackageInstallError::Input)?;
+        let snapshot = wire
+            .get("commit")
+            .and_then(|commit| commit.get("payload"))
+            .and_then(|payload| payload.get("structure"))
+            .and_then(|structure| structure.get("snapshot"))
+            .ok_or(PublicPackageInstallError::Input)?;
+        let offset = snapshot_offset(snapshot)?;
+        if row.intent_id == install_step_id(begin_id, offset, false)
+            && latest.as_ref().is_none_or(|(old, _)| offset > *old)
+        {
+            latest = Some((offset, row.intent_id));
+        }
+    }
+    Ok(match latest {
+        Some((_, id)) => (id, "secure.structure.page"),
+        None => (begin_id.to_owned(), "secure.structure.begin"),
+    })
+}
+
 fn prove_snapshot_plan(
     prior: &TransportReplayedJournal,
     signed_policy_wire: &[u8],
@@ -1032,29 +1057,6 @@ fn accept_completed_install(
     })
 }
 
-fn ensure_empty_install_snapshot(request: &[u8]) -> Result<(), PublicPackageInstallError> {
-    let request = parse_wire_json_bounded(request, 64, 262_144)
-        .map_err(|_| PublicPackageInstallError::Input)?;
-    let snapshot = request
-        .get("commit")
-        .and_then(|commit| commit.get("payload"))
-        .and_then(|payload| payload.get("structure"))
-        .and_then(|structure| structure.get("snapshot"))
-        .ok_or(PublicPackageInstallError::Input)?;
-    if snapshot.get("records") != Some(&WireValue::Number(0.0))
-        || snapshot.get("heads") != Some(&WireValue::Number(0.0))
-        || snapshot.get("offset") != Some(&WireValue::Number(0.0))
-        || snapshot
-            .get("root")
-            .and_then(WireValue::as_string)
-            .as_deref()
-            != Some("5df677702279081de975c0b78651baa9fd6d5987ab205898154fd9ed3bafc9ff")
-    {
-        return Err(PublicPackageInstallError::Input);
-    }
-    Ok(())
-}
-
 fn random_id() -> Result<String, PublicPackageInstallError> {
     let mut bytes = [0u8; 32];
     OsRng
@@ -1079,22 +1081,6 @@ mod tests {
         path::Path,
         process::{Child, Command, Stdio},
     };
-
-    #[test]
-    fn nonempty_begin_is_refused_before_persistence() {
-        let packet = |records| {
-            serde_json::json!({"commit":{"payload":{"structure":{"snapshot":{
-                "records":records,"heads":0,"offset":0,
-                "root":"5df677702279081de975c0b78651baa9fd6d5987ab205898154fd9ed3bafc9ff"
-            }}}}})
-            .to_string()
-        };
-        assert!(ensure_empty_install_snapshot(packet(0).as_bytes()).is_ok());
-        assert!(matches!(
-            ensure_empty_install_snapshot(packet(1).as_bytes()),
-            Err(PublicPackageInstallError::Input)
-        ));
-    }
 
     #[tokio::test]
     async fn actual_service_public_install_begin_is_saved_before_uncertain_reply() {
@@ -1457,5 +1443,230 @@ mod tests {
         assert_eq!(offline.as_array().unwrap().len(), 1);
         assert_eq!(offline[0]["begin_command_id"], offline_id);
         assert_eq!(offline[0]["workspace_id"], fixture["workspace_id"]);
+    }
+
+    #[tokio::test]
+    async fn actual_service_public_install_pages_resume_after_uncertain_reply() {
+        let (Ok(reference_root), Ok(_)) = (
+            std::env::var("PEERWORK_REFERENCE_ROOT"),
+            std::env::var("PEERWORK_TEST_NONEMPTY_INSTALL"),
+        ) else {
+            return;
+        };
+        let node = std::env::var("PEERWORK_NODE_BIN").unwrap_or_else(|_| "node".into());
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let bridge =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/reference-kernel-server.mjs");
+        let child = Command::new(node)
+            .arg(bridge)
+            .env("PEERWORK_REFERENCE_ROOT", reference_root)
+            .env("PEERWORK_TEST_STATE", root.path())
+            .env("PEERWORK_TEST_PUBLIC_READ", "1")
+            .env("PEERWORK_TEST_PUBLIC_INSTALL_PAGES", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        struct Stop(Child);
+        impl Drop for Stop {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut child = Stop(child);
+        let mut line = String::new();
+        BufReader::new(child.0.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        assert!(!line.is_empty(), "nonempty reference fixture did not start");
+        let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let origin = ready["origin"].as_str().unwrap().to_owned();
+        let fixture = &ready["public_read"];
+        assert_eq!(fixture["seeded_records"], 51);
+        assert_eq!(fixture["seeded_heads"], 51);
+        let identity_path = root.path().join("owner.state");
+        let identity = KernelIdentity::import_pkcs8_pem_file(
+            &identity_path,
+            &root.path().join("synthetic-public-read-owner.pem"),
+        )
+        .unwrap();
+        let config = SecureReadProfileConfig {
+            origin: origin.clone(),
+            state_dir: root.path().join("profile"),
+            identity_path,
+            workspace_id: fixture["workspace_id"].as_str().unwrap().into(),
+            authority: Some(fixture["authority"].as_str().unwrap().into()),
+            owner_actor_id: Some(identity.actor_id().into()),
+            owner_key_id: Some(identity.key_id().into()),
+            required_features: vec![],
+            allow_loopback_http: true,
+            max_replay_artifact_bytes: 64 * 1024 * 1024,
+        };
+        drop(identity);
+        let initial_config = config.clone();
+        let initial = tokio::task::spawn_blocking(move || {
+            SecureReadProfile::new(initial_config).read_latest_json()
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        let initial: serde_json::Value = serde_json::from_str(&initial).unwrap();
+        assert_eq!(initial["sequence"], 52);
+        let ids_for = |value: &serde_json::Value, kind: &str| {
+            let mut ids = value["objects"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|object| object["kind"] == kind)
+                .map(|object| object["id"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>();
+            ids.sort();
+            ids
+        };
+        let original_record_ids = ids_for(&initial, "records");
+        let original_head_ids = ids_for(&initial, "entity_heads");
+        assert_eq!(original_record_ids.len(), 51);
+        assert_eq!(original_head_ids.len(), 51);
+        let vectors: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../conformance/public-package-vectors.json"
+        ))
+        .unwrap();
+        let submit_config = config.clone();
+        let submitted = tokio::task::spawn_blocking(move || {
+            SecurePublicPackageInstall::new(submit_config).submit_begin_json(
+                PublicPackageInstallInput {
+                    closure_json: vectors["closure"].to_string(),
+                    expected_package_id: "peerwork-proposal-adoption".into(),
+                    expected_package_version: "1.0.0".into(),
+                    expected_package_digest: vectors["package_digest"].as_str().unwrap().into(),
+                    expected_protocol_digest: vectors["protocol_digest"].as_str().unwrap().into(),
+                    instance_id: "z".repeat(43),
+                    entrypoint: "proposalAdoption".into(),
+                    grants_json: "[]".into(),
+                    command_id: Some("b".repeat(43)),
+                    issued_at_ms: None,
+                },
+            )
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        let submitted: serde_json::Value = serde_json::from_str(&submitted).unwrap();
+        assert_eq!(submitted["status"], "PENDING");
+        let reject = reqwest::Client::new()
+            .post(format!("{origin}__test/reject-next-post-before-apply"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(reject.status(), reqwest::StatusCode::OK);
+        let retry_config = config.clone();
+        let first = tokio::task::spawn_blocking(move || {
+            SecurePublicPackageInstall::new(retry_config).continue_install_json(&"b".repeat(43))
+        })
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert!(matches!(
+            first,
+            PublicPackageInstallError::ServerRejected(503)
+        ));
+        let pending = SecurePublicPackageInstall::new(config.clone())
+            .list_pending_json()
+            .unwrap();
+        let pending: serde_json::Value = serde_json::from_str(&pending).unwrap();
+        assert_eq!(pending[0]["pending_action_id"], "secure.structure.page");
+        let first_page_id = pending[0]["pending_step_id"].as_str().unwrap().to_owned();
+        let retry_config = config.clone();
+        let retried = tokio::task::spawn_blocking(move || {
+            SecurePublicPackageInstall::new(retry_config).continue_install_json(&"b".repeat(43))
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        let retried: serde_json::Value = serde_json::from_str(&retried).unwrap();
+        assert_eq!(retried["step_command_id"], first_page_id);
+        assert_eq!(retried["step_action_id"], "secure.structure.page");
+        let drop_reply = reqwest::Client::new()
+            .post(format!("{origin}__test/drop-next-post"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(drop_reply.status(), reqwest::StatusCode::OK);
+        let mut steps = Vec::new();
+        for _ in 0..4 {
+            let next_config = config.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                SecurePublicPackageInstall::new(next_config).continue_install_json(&"b".repeat(43))
+            })
+            .await
+            .unwrap()
+            .unwrap();
+            let result: serde_json::Value = serde_json::from_str(&result).unwrap();
+            steps.push(result);
+        }
+        assert_eq!(
+            steps
+                .iter()
+                .filter(|step| step["step_action_id"] == "secure.structure.page")
+                .count(),
+            3
+        );
+        assert_eq!(
+            steps.last().unwrap()["step_action_id"],
+            "secure.structure.end"
+        );
+        let accept_config = config.clone();
+        let accepted = tokio::task::spawn_blocking(move || {
+            SecurePublicPackageInstall::new(accept_config).continue_install_json(&"b".repeat(43))
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        let accepted: serde_json::Value = serde_json::from_str(&accepted).unwrap();
+        assert_eq!(accepted["status"], "ACCEPTED");
+        let read_config = config.clone();
+        let readback = tokio::task::spawn_blocking(move || {
+            SecureReadProfile::new(read_config).read_latest_json()
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        let readback: serde_json::Value = serde_json::from_str(&readback).unwrap();
+        assert_eq!(readback["sequence"], 58);
+        assert_eq!(readback["structure_status"], "ACTIVE");
+        assert_eq!(ids_for(&readback, "records"), original_record_ids);
+        assert_eq!(ids_for(&readback, "entity_heads"), original_head_ids);
+        let repeat_config = config.clone();
+        let repeated = tokio::task::spawn_blocking(move || {
+            SecurePublicPackageInstall::new(repeat_config).continue_install_json(&"b".repeat(43))
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        let repeated: serde_json::Value = serde_json::from_str(&repeated).unwrap();
+        assert_eq!(repeated["status"], "ACCEPTED");
+        assert_eq!(repeated["commit_hash"], accepted["commit_hash"]);
+        let pending = SecurePublicPackageInstall::new(config.clone())
+            .list_pending_json()
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&pending).unwrap(),
+            serde_json::json!([])
+        );
+        let counts = reqwest::get(format!("{origin}__test/secure-counts"))
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        let counts: serde_json::Value = serde_json::from_slice(&counts).unwrap();
+        assert_eq!(counts["head_sequence"], 58);
     }
 }

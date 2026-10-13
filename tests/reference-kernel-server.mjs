@@ -157,15 +157,27 @@ if (process.env.PEERWORK_TEST_PUBLIC_READ === '1') {
     intentDbPath:join(state,'synthetic-public-read-agent-intents.sqlite')});
   try {
     const created = await agent.create('Synthetic public read workspace', 'PUBLIC');
-    const journal = await agent.journal(created.workspaceId);
+    let journal = await agent.journal(created.workspaceId);
     if (journal.checkpoint.sequence !== 1) throw new Error('public read fixture did not create a one-commit journal');
     const discussion = journal.objects.find(object => object.kind === 'instances' && object.value?.origin_entrypoint === 'discussion');
     if (!discussion) throw new Error('public read fixture lacks discussion instance');
+    if (process.env.PEERWORK_TEST_PUBLIC_INSTALL_PAGES === '1') {
+      const wiki = journal.objects.find(object => object.kind === 'instances' && object.value?.origin_entrypoint === 'wiki');
+      if (!wiki) throw new Error('public install page fixture lacks wiki instance');
+      for (let index = 0; index < 51; index++) {
+        journal = await agent.action(created.workspaceId, wiki.id, 'wiki.create',
+          {title:`Seed ${index}`,body:`Page boundary ${index}`});
+      }
+      if (journal.objects.filter(object => object.kind === 'records').length !== 51 ||
+          journal.objects.filter(object => object.kind === 'entity_heads').length !== 51)
+        throw new Error('public install page fixture did not write 51 record/head pairs');
+    }
     publicReadInstance = discussion.id;
     publicReadFixture = {workspace_id:created.workspaceId, instance_id:publicReadInstance,
       actor_id:agent.identity.actorId,
       signing_key:agent.identity.keyId, authority:agent.transport.authority,
-      head:journal.checkpoint.head};
+      head:journal.checkpoint.head,
+      ...(process.env.PEERWORK_TEST_PUBLIC_INSTALL_PAGES === '1' ? {seeded_records:51,seeded_heads:51} : {})};
   } finally { agent.close(); }
 }
 if (process.env.PEERWORK_TEST_BOOTSTRAP === '1') {

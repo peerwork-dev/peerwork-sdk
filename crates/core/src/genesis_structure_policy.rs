@@ -116,6 +116,24 @@ pub fn derive_genesis_structure_policy_with_keep_encrypted(
     objects_wire: &[u8],
     keep_encrypted_wire: &[u8],
 ) -> Result<String, GenesisStructureError> {
+    derive_structure_policy_from_objects(objects_wire, keep_encrypted_wire, 128)
+}
+
+/// Installation consumes the latest protocol and instance rows from an
+/// established workspace. The signed structure schema permits 64 protocols
+/// plus 128 instances; genesis object count limits do not apply here.
+pub(crate) fn derive_install_structure_policy_with_keep_encrypted(
+    objects_wire: &[u8],
+    keep_encrypted_wire: &[u8],
+) -> Result<String, GenesisStructureError> {
+    derive_structure_policy_from_objects(objects_wire, keep_encrypted_wire, 192)
+}
+
+fn derive_structure_policy_from_objects(
+    objects_wire: &[u8],
+    keep_encrypted_wire: &[u8],
+    max_objects: usize,
+) -> Result<String, GenesisStructureError> {
     let bad = || GenesisStructureError::Invalid;
     let choices = choices(keep_encrypted_wire)?;
     let mut matched = vec![false; choices.len()];
@@ -123,7 +141,7 @@ pub fn derive_genesis_structure_policy_with_keep_encrypted(
     let WireValue::Array(objects) = parsed else {
         return Err(bad());
     };
-    if objects.len() > 128 {
+    if objects.len() > max_objects {
         return Err(bad());
     }
     let mut protocols = Vec::new();
