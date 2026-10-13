@@ -213,6 +213,18 @@ impl SecureOwnerWorkspaceCreate {
         ))
     }
 
+    /// Select PRIVATE package installation through a protected CREATED
+    /// workspace row. Staging and install continuation perform their own
+    /// complete replay, active-key, and exact saved-command checks.
+    pub fn private_install_access(
+        &self,
+        workspace_id: &str,
+    ) -> Result<crate::secure_private_install::SecurePrivatePackageInstall, SecureOwnerCreateError> {
+        Ok(crate::secure_private_install::SecurePrivatePackageInstall::new(
+            self.created_profile_config(workspace_id, "PRIVATE")?,
+        ))
+    }
+
     /// Invite and deliver for an Owner-created PUBLIC workspace using the
     /// verified, protected Owner profile selected by its public workspace ID.
     /// Recipient identity and consent remain separate admission checks.

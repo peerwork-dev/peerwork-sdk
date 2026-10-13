@@ -32,6 +32,7 @@ pub struct PreparedPrivatePackageStage {
     commit_hash: String,
     source_id: String,
     protocol_digest: String,
+    root_package_digest: String,
     part_count: usize,
     part_index: usize,
 }
@@ -41,6 +42,7 @@ struct StagePlan {
     operation: WireValue,
     source_id: String,
     protocol_digest: String,
+    root_package_digest: String,
     part_count: usize,
 }
 
@@ -56,6 +58,9 @@ impl PreparedPrivatePackageStage {
     }
     pub fn protocol_digest(&self) -> &str {
         &self.protocol_digest
+    }
+    pub fn root_package_digest(&self) -> &str {
+        &self.root_package_digest
     }
     pub fn part_count(&self) -> usize {
         self.part_count
@@ -147,6 +152,7 @@ fn plan_stage(
     let policy_hash = sha256_hex(policy_wire.as_bytes());
     let source_id = string(&prepared.proof, "source_id")?;
     let protocol_digest = string(&prepared.proof, "protocol_digest")?;
+    let root_package_digest = string(&prepared.proof, "root_package_digest")?;
     if !matches!(version, 2 | 3)
         || epoch == 0
         || policy.get("structure").is_none()
@@ -220,6 +226,7 @@ fn plan_stage(
         operation,
         source_id,
         protocol_digest,
+        root_package_digest,
         part_count: prepared.parts.len(),
     })
 }
@@ -293,6 +300,7 @@ pub fn prepare_private_package_stage(
         commit_hash: sha256_hex(commit.as_bytes()),
         source_id: plan.source_id,
         protocol_digest: plan.protocol_digest,
+        root_package_digest: plan.root_package_digest,
         part_count: plan.part_count,
         part_index,
     })
@@ -389,6 +397,7 @@ pub fn verify_saved_private_package_stage(
         commit_hash: sha256_hex(commit_wire.as_bytes()),
         source_id: plan.source_id,
         protocol_digest: plan.protocol_digest,
+        root_package_digest: plan.root_package_digest,
         part_count: plan.part_count,
         part_index,
     })

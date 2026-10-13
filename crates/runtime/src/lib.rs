@@ -28,6 +28,7 @@ pub mod secure_owner_create;
 mod secure_package_pending;
 pub mod secure_private_grant_read;
 pub mod secure_private_read_access;
+pub mod secure_private_install;
 pub mod secure_public_admission;
 pub mod secure_public_decision;
 pub mod secure_public_install;
