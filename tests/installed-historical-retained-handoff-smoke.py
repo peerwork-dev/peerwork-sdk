@@ -95,6 +95,7 @@ try:
     assert source_run.returncode == 0, source_run.stderr[-800:]
     source = json.loads(source_run.stdout)
     assert source["policy_v"] == 1 and source["sequence"] == 1
+    assert source["visibility"] == "PRIVATE" and source["structured"] is False
     assert source["pending_count"] == 1 and source["pending_command_id"]
     for name in ("state_path", "pem_path", "intent_db_path"):
         assert Path(source[name]).is_absolute() and Path(source[name]).is_file()
