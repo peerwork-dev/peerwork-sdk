@@ -20,6 +20,14 @@ for(const relative of ['src/workspace-catalog-http.ts','src/workspace-catalog.ts
  const source=join(root,relative),built=join(root,'dist-workspace',relative.replace(/\.ts$/,'.js'));
  if(statSync(built).mtimeMs<statSync(source).mtimeMs)throw new Error(`stale reference build ${relative}`);
 }
+for(const [relative,expected] of Object.entries({
+ 'workspace-catalog-http.js':'e244fc3ab9922dd9fda2127bc4cfa6416633a56d80c93206c63191f7def1b890',
+ 'workspace-catalog.js':'6cab714a6783cd43fa159b59447bec80e4539bc54e52c3cc5bece1079e205865',
+ 'protocol-package.js':'c864257535bd3f63128d4c943356fa36f84381244ca980531727abee3b60466a',
+ })){
+ const actual=createHash('sha256').update(readFileSync(join(root,'dist-workspace/src',relative))).digest('hex');
+ if(actual!==expected)throw new Error(`compiled catalog source changed: ${relative}`);
+}
 const requireReference=createRequire(join(root,'package.json'));
 const {Hono}=await import(pathToFileURL(requireReference.resolve('hono')).href);
 const {serve}=await import(pathToFileURL(requireReference.resolve('@hono/node-server')).href);
@@ -31,12 +39,14 @@ initializeProtocolCatalog(databasePath);
 const db=new DatabaseSync(databasePath);
 const fixtures=['public-package-vectors.json','public-package-v2-vectors.json'];
 let sequence=0;
+const artifacts=new Map();
 for(const filename of fixtures){
  const vector=JSON.parse(readFileSync(join(sdk,'conformance',filename),'utf8'));
  const bytes=canonicalProtocolPackageBytes(vector.bundle),parsed=parseProtocolPackageBytes(bytes);
  if(parsed.packageDigest!==vector.package_digest)throw new Error(`TS package digest changed: ${filename}`);
  const digest=createHash('sha256').update(bytes).digest('hex');
  if(digest!==vector.package_digest)throw new Error(`source vector hash changed: ${filename}`);
+ artifacts.set(digest,Buffer.from(bytes));
  const index=++sequence;
  db.prepare('INSERT INTO catalog_packages VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)').run(
   `fixture-owner-${index}`,parsed.metadata.package_id,parsed.metadata.version,digest,
@@ -60,6 +70,11 @@ const server=serve({hostname:'127.0.0.1',port:0,fetch:async request=>{
  if(url.pathname.includes('/by-digest/')&&response.status===200&&++packageGets===3){
   const bytes=Buffer.concat([Buffer.from(await response.arrayBuffer()),Buffer.from(' ')]);
   return new Response(bytes,{status:200,headers:{'content-type':'application/vnd.peerwork.protocol-package+json'}});
+ }
+ if(url.pathname.includes('/by-digest/')&&response.status===200&&packageGets===4){
+  const selected=url.pathname.split('/').at(-1),other=[...artifacts.entries()].find(([digest])=>digest!==selected)?.[1];
+  if(!other)throw new Error('missing alternate canonical package');
+  return new Response(other,{status:200,headers:{'content-type':'application/vnd.peerwork.protocol-package+json'}});
  }
  return response;
 }});

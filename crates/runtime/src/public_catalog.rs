@@ -338,6 +338,12 @@ mod tests {
                 catalog.inspect_exact(digest, &cancel),
                 Err(PublicCatalogError::DigestMismatch)
             ));
+            // The fourth response is a different source-valid, canonical
+            // package. It isolates selected-digest binding from canonicality.
+            assert!(matches!(
+                catalog.inspect_exact(digest, &cancel),
+                Err(PublicCatalogError::DigestMismatch)
+            ));
             assert!(matches!(
                 catalog.inspect_exact(&digest.to_uppercase(), &cancel),
                 Err(PublicCatalogError::Input)
