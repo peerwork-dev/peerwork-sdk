@@ -116,6 +116,42 @@ impl HttpTransport {
         read_bounded(response, MAX_DISCOVERY_BYTES, cancel).await
     }
 
+    /// Anonymous public catalog GET. A caller must validate projected listing
+    /// fields separately and re-hash exact package bytes before selection.
+    pub(crate) async fn get_public_catalog(
+        &self,
+        path: &str,
+        query: &[(&str, &str)],
+        max_response_bytes: usize,
+        cancel: &CancellationToken,
+    ) -> Result<ExactHttpResponse, TransportError> {
+        if !matches!(path, "/api/protocol-catalog/v1/packages")
+            && !path
+                .strip_prefix("/api/protocol-catalog/v1/packages/by-digest/")
+                .is_some_and(|digest| {
+                    digest.len() == 64
+                        && digest
+                            .bytes()
+                            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+                })
+        {
+            return Err(TransportError::InvalidOrigin);
+        }
+        let mut url = self.endpoint(path)?;
+        if !query.is_empty() {
+            if path != "/api/protocol-catalog/v1/packages" {
+                return Err(TransportError::InvalidOrigin);
+            }
+            url.query_pairs_mut().extend_pairs(query.iter().copied());
+        }
+        let send = self.client.get(url).send();
+        let response = tokio::select! {
+            _ = cancel.cancelled() => return Err(TransportError::Cancelled),
+            result = send => result.map_err(map_network_error)?,
+        };
+        read_bounded(response, max_response_bytes, cancel).await
+    }
+
     /// Internal primitive only. The caller must first bind a core-authenticated
     /// prepared command to the exact pending SQLite row and pinned discovery.
     pub(crate) async fn post_exact(

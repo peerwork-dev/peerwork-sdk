@@ -36,6 +36,7 @@ mod protocol_composition;
 mod protocol_object_source;
 #[allow(dead_code)]
 mod protocol_package_source;
+pub mod public_catalog_package;
 pub mod public_direct_install;
 pub mod receipt;
 pub mod receipt_wire;

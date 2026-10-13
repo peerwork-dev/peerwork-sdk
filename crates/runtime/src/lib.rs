@@ -8,6 +8,7 @@ pub mod kernel_access;
 pub mod kernel_client;
 pub mod kernel_identity;
 pub mod kernel_intents;
+pub mod public_catalog;
 // Prepared secure-packet proof is not public yet; this pending-only module is
 // staged internally until the complete core verifier can authorize submits.
 pub mod secure_action_access;

@@ -367,6 +367,54 @@ fn bundle_bytes(bundle: &WireValue) -> Result<Vec<u8>, ClosureError> {
     }
     Ok(result.into_bytes())
 }
+
+pub(crate) fn inspect_exact_public_bundle(
+    bytes: &[u8],
+    expected_digest: &str,
+) -> Result<(WireValue, WireValue), ClosureError> {
+    if !digest(expected_digest) {
+        return Err(ClosureError::Invalid);
+    }
+    if bytes.is_empty() || bytes.len() > 1024 * 1024 {
+        return Err(ClosureError::Resource);
+    }
+    let bundle =
+        parse_wire_json_bounded(bytes, 32, 1024 * 1024).map_err(|_| ClosureError::Invalid)?;
+    if bundle_bytes(&bundle)? != bytes || sha256_hex(bytes) != expected_digest {
+        return Err(ClosureError::Mismatch);
+    }
+    let files = field(&bundle, "files")?;
+    let metadata = json_file(files, "package.json")?;
+    let source = source_file(files)?;
+    let imports = field(&source, "imports")?.clone();
+    let fixture_ids = match files {
+        WireValue::Object(entries) => entries
+            .iter()
+            .filter_map(|(name, _)| {
+                let path = String::from_utf16(name).ok()?;
+                (path.starts_with("fixtures/") && path.ends_with(".json")).then_some(path)
+            })
+            .map(|path| {
+                let fixture = fixture_file(files, &path)?;
+                Ok(field(&fixture, "id")?.clone())
+            })
+            .collect::<Result<Vec<_>, ClosureError>>()?,
+        _ => return Err(ClosureError::Invalid),
+    };
+    let summary = WireValue::Object(vec![
+        (
+            "bundle_digest".encode_utf16().collect(),
+            WireValue::String(expected_digest.encode_utf16().collect()),
+        ),
+        ("metadata".encode_utf16().collect(), metadata),
+        ("imports".encode_utf16().collect(), imports),
+        (
+            "fixture_ids".encode_utf16().collect(),
+            WireValue::Array(fixture_ids),
+        ),
+    ]);
+    Ok((bundle, summary))
+}
 /// First compiler slice: no imports, parameters, derivations or interfaces.
 /// A caller must never turn this subset into a general publishability proof.
 pub(crate) struct SimpleCompilation {
