@@ -1445,5 +1445,11 @@ mod tests {
         let retry: serde_json::Value =
             serde_json::from_str(&access.resume_json_with_cancel(id, &cancel).unwrap()).unwrap();
         assert_eq!(retry, accepted);
+        let retry_sequence = SecureReadProfile::new(access.config.clone())
+            .with_latest_replay(&cancel, |source| {
+                Ok::<_, OwnerFormatTransitionError>(source.replay().sequence())
+            })
+            .unwrap();
+        assert_eq!(retry_sequence, after.2);
     }
 }
