@@ -142,6 +142,7 @@ with tempfile.TemporaryDirectory(prefix="peerwork-official-workflow-") as direct
         adopter_scope = [dict(actor_id="a" * 43,
                               actions=["proposal.proposal.adopt"], protocol_roles=["proposal.ADOPTER"],
                               capabilities=["proposal.ADOPT"], expires_at=None)]
+        assert adopter_scope[0]["actor_id"] != owner["actor_id"]
         try:
             installer.begin(**selection, grants_json=json.dumps(adopter_scope))
         except peerwork.PublicInstallError as error:
@@ -225,6 +226,13 @@ with tempfile.TemporaryDirectory(prefix="peerwork-official-workflow-") as direct
         assert counts(origin)["head_sequence"] == 6
         adopted_read = member_actions.read()
         assert adopted_read["sequence"] == 6
+        instances = [obj for obj in adopted_read["objects"]
+                     if obj.get("kind") == "instances" and obj.get("id") == selection["instance_id"]]
+        assert instances
+        current_instance = max(instances, key=lambda obj: obj["revision"])
+        proposal_state = current_instance["value"]["state"]["proposal"]
+        assert proposal_state["adopted"] is True
+        assert proposal_state["adopted_ref"] == exact_candidate
         adoption_operation = next(
             item for item in adopted_read["operations"]
             if item.get("kind") == "ACTION"
