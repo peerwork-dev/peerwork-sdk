@@ -14,9 +14,11 @@ const actions = sdk.openSecurePublicActions({
   origin, stateDir, identityPath, workspaceId, ownerActorId, ownerKeyId,
 });
 const pending = await actions.submit('discussion.post', instanceId, {message:'Hello'});
-let result = await actions.reconcile(pending.command_id);
-if (result.status === 'PENDING') result = await actions.retrySaved(pending.command_id);
+const commandId = pending.command_id;
+let result = await actions.reconcile(commandId);
+if (result.status === 'PENDING') result = await actions.retrySaved(commandId);
 if (result.status === 'ACCEPTED') console.log(result.receipt.effects);
+else console.log(`Still unresolved: retain command ID ${commandId} and resume with reconcile or retrySaved`);
 ```
 
 The native journal saves the exact signed packet and allocation tokens before
@@ -24,6 +26,10 @@ POST. HTTP success alone remains `PENDING`; only matching signed replay yields
 an `ACCEPTED` result. The action API covers supported PUBLIC actions; PRIVATE
 onboarding and some structured/delegated families remain incomplete. This is
 not yet a production Agent SDK.
+If reconciliation and one exact saved retry still return `PENDING`, retain the
+command ID and hand off that unresolved responsibility. On resumption, reconcile
+that ID or retry its saved packet; do not create a new submit for the same
+uncertain action. Do not treat an HTTP success as acceptance.
 The command actor/audience must match the key/discovery, and authority must
 match the configured digest (default SHA-256 of the local actor ID).
 For a catalog chunk command, pass `{uploadChunk: Buffer | Uint8Array}` to

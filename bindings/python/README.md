@@ -19,16 +19,23 @@ a protected state directory. `SecurePublicActionClient` uses the same profile:
 client = peerwork.SecurePublicActionClient(origin, state_dir, identity_path, workspace_id,
     owner_actor_id=owner_actor_id, owner_key_id=owner_key_id)
 pending = client.submit("discussion.post", instance_id, {"message": "Hello"})
-result = client.reconcile(pending["command_id"])
+command_id = pending["command_id"]
+result = client.reconcile(command_id)
 if result["status"] == "PENDING":
-    result = client.retry_saved(pending["command_id"])
+    result = client.retry_saved(command_id)
 if result["status"] == "ACCEPTED":
     effects = result["receipt"]["effects"]
+else:
+    print(f"Still unresolved: retain command ID {command_id} and resume with reconcile or retry_saved")
 ```
 
 The action packet and OS-random allocation tokens are saved before POST;
 `retry_saved` reuses those exact bytes. A successful HTTP response still
 returns `PENDING` until fresh signed replay proves the matching effect.
+If reconciliation and one exact saved retry still return `PENDING`, retain the
+command ID and hand off that unresolved responsibility. On resumption, reconcile
+that ID or retry its saved packet; do not create a new submit for the same
+uncertain action. Do not treat an HTTP success as acceptance.
 The action API currently covers supported PUBLIC actions; PRIVATE onboarding,
 some structured/delegated action families, and general Agent workflow remain
 incomplete.
