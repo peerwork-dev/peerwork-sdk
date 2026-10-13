@@ -11,8 +11,8 @@ use crate::{
     protocol_package_source::verify_protocol_package_source,
     public_direct_install::{
         build_direct_install_begin, build_direct_install_objects_with_composition_at_ceiling,
-        compile_package_closure_at_ceiling, derive_direct_install_structure,
-        derive_direct_install_structure_with_disclosure, plan_public_install_snapshot,
+        compile_package_closure_with_bindings_at_ceiling,
+        derive_direct_install_structure_with_options, plan_public_install_snapshot,
         PublicInstallSnapshotPlan,
     },
     wire_json::{canonical_wire_value, parse_wire_json_bounded, WireValue},
@@ -607,6 +607,29 @@ pub fn prepare_private_package_install_begin(
     signing_key: &SigningKey,
     epoch_key: &[u8; 32],
 ) -> Result<PreparedPrivatePackageInstallBegin, PrivateInstallError> {
+    prepare_private_package_install_begin_with_disclosure(
+        material_wire, source_checkpoint_wire, stage_end_checkpoint_wire,
+        signed_policy_wire, prior_objects, grants_wire, b"[]", instance_id,
+        entrypoint, command_id, issued_at, signing_key, epoch_key,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_private_package_install_begin_with_disclosure(
+    material_wire: &[u8],
+    source_checkpoint_wire: &[u8],
+    stage_end_checkpoint_wire: &[u8],
+    signed_policy_wire: &[u8],
+    prior_objects: &[WireValue],
+    grants_wire: &[u8],
+    disclose_wire: &[u8],
+    instance_id: &str,
+    entrypoint: &str,
+    command_id: &str,
+    issued_at: u64,
+    signing_key: &SigningKey,
+    epoch_key: &[u8; 32],
+) -> Result<PreparedPrivatePackageInstallBegin, PrivateInstallError> {
     let bad = || PrivateInstallError::Invalid;
     if !token(instance_id)
         || !token(command_id)
@@ -739,12 +762,16 @@ pub fn prepare_private_package_install_begin(
         vec![protocol, instance]
     };
     let old_structure = policy.get("structure").ok_or_else(bad)?;
-    let structure = derive_direct_install_structure(
-        old_structure,
+    let disclose = parse_wire_json_bounded(disclose_wire, 32, 65_536).map_err(|_| bad())?;
+    let WireValue::Array(disclose) = disclose else { return Err(bad()); };
+    let structure = derive_direct_install_structure_with_options(
+        Some(old_structure),
         prior_objects,
         &added,
         &digest,
         &verified.manifest,
+        false,
+        &disclose,
     )
     .map_err(|_| bad())?;
     let snapshot = plan_public_install_snapshot(prior_objects, &structure, &end)
@@ -881,6 +908,32 @@ pub fn prepare_private_direct_install_begin(
     signing_key: &SigningKey,
     epoch_key: &[u8; 32],
 ) -> Result<PreparedPrivatePackageInstallBegin, PrivateInstallError> {
+    prepare_private_direct_install_begin_with_options(
+        material_wire, b"{}", expected_root_package_digest,
+        expected_protocol_digest, current_checkpoint_wire, signed_policy_wire,
+        prior_objects, grants_wire, b"[]", instance_id, entrypoint, command_id,
+        issued_at, signing_key, epoch_key,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_private_direct_install_begin_with_options(
+    material_wire: &[u8],
+    bindings_wire: &[u8],
+    expected_root_package_digest: &str,
+    expected_protocol_digest: &str,
+    current_checkpoint_wire: &[u8],
+    signed_policy_wire: &[u8],
+    prior_objects: &[WireValue],
+    grants_wire: &[u8],
+    disclose_wire: &[u8],
+    instance_id: &str,
+    entrypoint: &str,
+    command_id: &str,
+    issued_at: u64,
+    signing_key: &SigningKey,
+    epoch_key: &[u8; 32],
+) -> Result<PreparedPrivatePackageInstallBegin, PrivateInstallError> {
     let bad = || PrivateInstallError::Invalid;
     if !token(instance_id)
         || !token(command_id)
@@ -944,7 +997,8 @@ pub fn prepare_private_direct_install_begin(
     } else {
         1
     };
-    let compiled = compile_package_closure_at_ceiling(material_wire, direct_format_ceiling)
+    let bindings = parse_wire_json_bounded(bindings_wire, 32, 65_536).map_err(|_| bad())?;
+    let compiled = compile_package_closure_with_bindings_at_ceiling(material_wire, &bindings, direct_format_ceiling)
         .map_err(|_| bad())?;
     if compiled.package_digest() != expected_root_package_digest
         || compiled.protocol_digest() != expected_protocol_digest
@@ -985,13 +1039,16 @@ pub fn prepare_private_direct_install_begin(
         added.remove(0);
     }
     let undisclosed = version == 1 || (version == 3 && structure_mode.as_deref() == Some("NONE"));
-    let structure = derive_direct_install_structure_with_disclosure(
+    let disclose = parse_wire_json_bounded(disclose_wire, 32, 65_536).map_err(|_| bad())?;
+    let WireValue::Array(disclose) = disclose else { return Err(bad()); };
+    let structure = derive_direct_install_structure_with_options(
         policy.get("structure"),
         prior_objects,
         &added,
         expected_protocol_digest,
         &built.manifest,
         undisclosed,
+        &disclose,
     )
     .map_err(|_| bad())?;
     let snapshot = plan_public_install_snapshot(prior_objects, &structure, &current)
@@ -1142,17 +1199,43 @@ pub fn verify_saved_private_package_install_begin(
     signing_key: &SigningKey,
     epoch_key: &[u8; 32],
 ) -> Result<PreparedPrivatePackageInstallBegin, PrivateInstallError> {
+    verify_saved_private_package_install_begin_with_disclosure(
+        saved_request_wire, material_wire, source_checkpoint_wire,
+        stage_end_checkpoint_wire, signed_policy_wire, prior_objects,
+        grants_wire, b"[]", instance_id, entrypoint, command_id, issued_at,
+        signing_key, epoch_key,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn verify_saved_private_package_install_begin_with_disclosure(
+    saved_request_wire: &[u8],
+    material_wire: &[u8],
+    source_checkpoint_wire: &[u8],
+    stage_end_checkpoint_wire: &[u8],
+    signed_policy_wire: &[u8],
+    prior_objects: &[WireValue],
+    grants_wire: &[u8],
+    disclose_wire: &[u8],
+    instance_id: &str,
+    entrypoint: &str,
+    command_id: &str,
+    issued_at: u64,
+    signing_key: &SigningKey,
+    epoch_key: &[u8; 32],
+) -> Result<PreparedPrivatePackageInstallBegin, PrivateInstallError> {
     let bad = || PrivateInstallError::Invalid;
     if saved_request_wire.is_empty() || saved_request_wire.len() > 220_000 {
         return Err(bad());
     }
-    let expected = prepare_private_package_install_begin(
+    let expected = prepare_private_package_install_begin_with_disclosure(
         material_wire,
         source_checkpoint_wire,
         stage_end_checkpoint_wire,
         signed_policy_wire,
         prior_objects,
         grants_wire,
+        disclose_wire,
         instance_id,
         entrypoint,
         command_id,
@@ -1180,14 +1263,43 @@ pub fn verify_saved_private_direct_install_begin(
     signing_key: &SigningKey,
     epoch_key: &[u8; 32],
 ) -> Result<PreparedPrivatePackageInstallBegin, PrivateInstallError> {
-    let expected = prepare_private_direct_install_begin(
+    verify_saved_private_direct_install_begin_with_options(
+        saved_request_wire, material_wire, b"{}", expected_root_package_digest,
+        expected_protocol_digest, current_checkpoint_wire, signed_policy_wire,
+        prior_objects, grants_wire, b"[]", instance_id, entrypoint, command_id,
+        issued_at, signing_key, epoch_key,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn verify_saved_private_direct_install_begin_with_options(
+    saved_request_wire: &[u8],
+    material_wire: &[u8],
+    bindings_wire: &[u8],
+    expected_root_package_digest: &str,
+    expected_protocol_digest: &str,
+    current_checkpoint_wire: &[u8],
+    signed_policy_wire: &[u8],
+    prior_objects: &[WireValue],
+    grants_wire: &[u8],
+    disclose_wire: &[u8],
+    instance_id: &str,
+    entrypoint: &str,
+    command_id: &str,
+    issued_at: u64,
+    signing_key: &SigningKey,
+    epoch_key: &[u8; 32],
+) -> Result<PreparedPrivatePackageInstallBegin, PrivateInstallError> {
+    let expected = prepare_private_direct_install_begin_with_options(
         material_wire,
+        bindings_wire,
         expected_root_package_digest,
         expected_protocol_digest,
         current_checkpoint_wire,
         signed_policy_wire,
         prior_objects,
         grants_wire,
+        disclose_wire,
         instance_id,
         entrypoint,
         command_id,

@@ -21,8 +21,8 @@ use peerwork_core::{
     canonical::Path as CanonicalPath,
     crypto::{base64url, sha256, sha256_hex},
     public_direct_install::{
-        compile_public_package_closure, plan_public_install_snapshot,
-        prepare_public_package_install_begin, sign_public_install_step, DirectInstallError,
+        compile_public_package_closure_with_bindings, plan_public_install_snapshot,
+        prepare_public_package_install_begin_with_bindings, sign_public_install_step, DirectInstallError,
         PublicInstallSnapshotPlan,
     },
     replayed_secure_journal::StructureStatus,
@@ -41,6 +41,8 @@ pub struct PublicPackageInstallInput {
     /// Canonical package-closure JSON. Its exact selected digest and version
     /// remain protected locally because PUBLIC install wire has no source.
     pub closure_json: String,
+    #[serde(default)]
+    pub bindings_json: Option<String>,
     pub expected_package_id: String,
     pub expected_package_version: String,
     pub expected_package_digest: String,
@@ -323,8 +325,17 @@ impl SecurePublicPackageInstall {
                 .map_err(|_| PublicPackageInstallError::Input)?;
             let grants_json = canonical_wire_value(&grants, CanonicalPath::SecureArtifact)
                 .map_err(|_| PublicPackageInstallError::Input)?;
-            let prepared = prepare_public_package_install_begin(
+            let bindings = parse_wire_json_bounded(
+                input.bindings_json.as_deref().unwrap_or("{}").as_bytes(), 32, 65_536,
+            ).map_err(|_| PublicPackageInstallError::Input)?;
+            if bindings.object_len().is_none() {
+                return Err(PublicPackageInstallError::Input);
+            }
+            let bindings_json = canonical_wire_value(&bindings, CanonicalPath::SecureArtifact)
+                .map_err(|_| PublicPackageInstallError::Input)?;
+            let prepared = prepare_public_package_install_begin_with_bindings(
                 input.closure_json.as_bytes(),
+                bindings_json.as_bytes(),
                 &input.expected_package_digest,
                 &input.expected_protocol_digest,
                 prior_policy,
@@ -351,6 +362,7 @@ impl SecurePublicPackageInstall {
                 entrypoint: input.entrypoint.clone(),
                 closure_sha256: sha256_hex(input.closure_json.as_bytes()),
                 closure_b64: base64url(input.closure_json.as_bytes()),
+                bindings_json: Some(bindings_json),
                 prior_checkpoint_json: source.checkpoint_canonical_json().to_owned(),
                 grants_json,
             };
@@ -801,8 +813,9 @@ fn prove_saved_begin(
         .filter(|value| value.is_finite() && *value >= 0.0 && value.fract() == 0.0)
         .map(|value| value as u64)
         .ok_or(PublicPackageInstallError::Input)?;
-    let regenerated = prepare_public_package_install_begin(
+    let regenerated = prepare_public_package_install_begin_with_bindings(
         &closure,
+        selection.bindings_json.as_deref().unwrap_or("{}").as_bytes(),
         &selection.package_digest,
         &selection.protocol_digest,
         prior_policy,
@@ -929,7 +942,10 @@ fn accept_completed_install(
         return Err(PublicPackageInstallError::Input);
     }
     let closure = selection.closure_wire()?;
-    let compiled = compile_public_package_closure(&closure)?;
+    let compiled = compile_public_package_closure_with_bindings(
+        &closure,
+        selection.bindings_json.as_deref().unwrap_or("{}").as_bytes(),
+    )?;
     if compiled.package_id() != selection.package_id
         || compiled.package_version() != selection.package_version
         || compiled.package_digest() != selection.package_digest
@@ -1192,6 +1208,7 @@ mod tests {
             SecurePublicPackageInstall::new(submit_config).submit_begin_json(
                 PublicPackageInstallInput {
                     closure_json: closure,
+                    bindings_json: None,
                     expected_package_id: "peerwork-proposal-adoption".into(),
                     expected_package_version: "1.0.0".into(),
                     expected_package_digest: package_digest,
@@ -1574,6 +1591,7 @@ mod tests {
             SecurePublicPackageInstall::new(submit_config).submit_begin_json(
                 PublicPackageInstallInput {
                     closure_json: vectors["closure"].to_string(),
+                    bindings_json: None,
                     expected_package_id: "peerwork-proposal-adoption".into(),
                     expected_package_version: "1.0.0".into(),
                     expected_package_digest: vectors["package_digest"].as_str().unwrap().into(),

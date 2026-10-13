@@ -80,6 +80,23 @@ function strictCommandJson(input) {
   return JSON.stringify(visit(input, 0));
 }
 
+function selectedBindingsJson(selection) {
+  if (!Object.hasOwn(selection, 'bindings')) return null;
+  const bindings = selection.bindings;
+  if (bindings === null || typeof bindings !== 'object' || Array.isArray(bindings)) {
+    throw new TypeError('bindings must be a JSON object');
+  }
+  return strictCommandJson(bindings);
+}
+
+function selectedDisclosure(selection) {
+  if (!Object.hasOwn(selection, 'disclose')) return null;
+  if (!Array.isArray(selection.disclose)) {
+    throw new TypeError('disclose must be an array of schema/fields selections');
+  }
+  return selection.disclose;
+}
+
 /** An explicit origin and protected local paths anchor every operation. */
 exports.openKernel = async options => {
   const { origin, journalPath, identityPath, requiredFeatures = [], allowLoopbackHttp = false, authority, signal } = options;
@@ -383,6 +400,9 @@ exports.openSecureOwnerWorkspaces = options => {
           .some(key => typeof input[key] !== 'string' || !input[key])) {
       throw new TypeError('attachment requires workspace, protected source paths and exact Owner actor/key pins');
     }
+    if (input.recoverPendingAction !== undefined && typeof input.recoverPendingAction !== 'boolean') {
+      throw new TypeError('recoverPendingAction must be a boolean');
+    }
     return {
       workspace_id: input.workspaceId,
       protected_ts_state_path: input.protectedTsStatePath,
@@ -390,6 +410,7 @@ exports.openSecureOwnerWorkspaces = options => {
       protected_owner_pkcs8_path: input.protectedOwnerPkcs8Path,
       expected_owner_actor_id: input.expectedOwnerActorId,
       expected_owner_key_id: input.expectedOwnerKeyId,
+      recover_pending_action: input.recoverPendingAction ?? false,
     };
   };
   const formatTransitionInput = input => {
@@ -439,6 +460,9 @@ exports.openSecureOwnerWorkspaces = options => {
             typeof selection.closureJson !== 'string' || typeof selection.grantsJson !== 'string') {
           throw new TypeError('install selection requires exact closureJson and grantsJson text');
         }
+        if (Object.hasOwn(selection, 'disclose')) {
+          throw new TypeError('PUBLIC install does not accept private field disclosure');
+        }
         return call('begin', {
           closure_json: selection.closureJson,
           expected_package_id: selection.expectedPackageId,
@@ -447,6 +471,7 @@ exports.openSecureOwnerWorkspaces = options => {
           expected_protocol_digest: selection.expectedProtocolDigest,
           instance_id: selection.instanceId, entrypoint: selection.entrypoint,
           grants_json: selection.grantsJson,
+          bindings_json: selectedBindingsJson(selection),
           command_id: options.commandId ?? null, issued_at_ms: options.issuedAtMs ?? null,
         }, undefined, options.signal);
       },
@@ -483,6 +508,7 @@ exports.openSecureOwnerWorkspaces = options => {
           instance_id: selection.instanceId,
           entrypoint: selection.entrypoint,
           grants_json: selection.grantsJson,
+          disclose: selectedDisclosure(selection),
           command_id: options.commandId ?? null,
           issued_at_ms: options.issuedAtMs ?? null,
         }, undefined, options.signal);
@@ -498,11 +524,13 @@ exports.openSecureOwnerWorkspaces = options => {
         }
         return call('begin_direct', {
           closure_json: selection.closureJson,
+          bindings_json: selectedBindingsJson(selection),
           expected_root_package_digest: selection.expectedRootPackageDigest,
           expected_protocol_digest: selection.expectedProtocolDigest,
           instance_id: selection.instanceId,
           entrypoint: selection.entrypoint,
           grants_json: selection.grantsJson,
+          disclose: selectedDisclosure(selection),
           command_id: options.commandId ?? null,
           issued_at_ms: options.issuedAtMs ?? null,
         }, undefined, options.signal);
@@ -784,8 +812,12 @@ exports.openSecurePublicPackageInstaller = options => {
           typeof selection.closureJson !== 'string' || typeof selection.grantsJson !== 'string') {
         throw new TypeError('install selection requires exact closureJson and grantsJson text');
       }
+      if (Object.hasOwn(selection, 'disclose')) {
+        throw new TypeError('PUBLIC install does not accept private field disclosure');
+      }
       const input = {
         closure_json: selection.closureJson,
+        bindings_json: selectedBindingsJson(selection),
         expected_package_id: selection.expectedPackageId,
         expected_package_version: selection.expectedPackageVersion,
         expected_package_digest: selection.expectedPackageDigest,

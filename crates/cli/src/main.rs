@@ -399,6 +399,28 @@ fn secure_owner_command(verb: &str, args: &[String]) -> Result<String, (&'static
     value.map_err(|_| ("RESULT_ENCODING_FAILED", "Owner result encoding failed".to_owned()))
 }
 
+fn install_input_bindings(bytes: &[u8]) -> Result<Vec<u8>, (&'static str, String)> {
+    let mut input: serde_json::Value = serde_json::from_slice(bytes)
+        .map_err(|_| ("INSTALL_INPUT_INVALID", "invalid install input JSON".to_owned()))?;
+    let object = input.as_object_mut().ok_or((
+        "INSTALL_INPUT_INVALID", "install input must be a JSON object".to_owned(),
+    ))?;
+    if object.contains_key("bindings_json") {
+        return Err(("INSTALL_INPUT_INVALID", "use the bindings JSON object in CLI input".to_owned()));
+    }
+    if object.get("disclose").is_some_and(|value| !value.is_array()) {
+        return Err(("INSTALL_INPUT_INVALID", "disclose must be an array".to_owned()));
+    }
+    if let Some(bindings) = object.remove("bindings") {
+        if !bindings.is_object() {
+            return Err(("INSTALL_INPUT_INVALID", "bindings must be a JSON object".to_owned()));
+        }
+        object.insert("bindings_json".into(), serde_json::Value::String(bindings.to_string()));
+    }
+    serde_json::to_vec(&input)
+        .map_err(|_| ("INSTALL_INPUT_INVALID", "install input encoding failed".to_owned()))
+}
+
 fn secure_owner_consumer_command(verb: &str, args: &[String]) -> Result<String, (&'static str, String)> {
     let pending = verb.ends_with("-pending") || verb.ends_with("-pending-offers") || verb.ends_with("-pending-deliveries") || verb == "owner-private-stage-list" || verb == "owner-private-install-list";
     if args.len() != if pending { 2 } else { 3 } {
@@ -432,13 +454,15 @@ fn secure_owner_consumer_command(verb: &str, args: &[String]) -> Result<String, 
         let result = match verb {
             "owner-private-install-begin" => {
                 let bytes = fs::read(&args[2]).map_err(|e| ("INSTALL_FILE", e.to_string()))?;
-                let input: PrivatePackageInstallBeginInput = serde_json::from_slice(&bytes)
+                let normalized = install_input_bindings(&bytes)?;
+                let input: PrivatePackageInstallBeginInput = serde_json::from_slice(&normalized)
                     .map_err(|_| ("INSTALL_INPUT_INVALID", "invalid PRIVATE install input".to_owned()))?;
                 access.submit_begin_json_with_cancel(input, &cancel)
             }
             "owner-private-install-begin-direct" => {
                 let bytes = fs::read(&args[2]).map_err(|e| ("INSTALL_FILE", e.to_string()))?;
-                let input: PrivateDirectInstallBeginInput = serde_json::from_slice(&bytes)
+                let normalized = install_input_bindings(&bytes)?;
+                let input: PrivateDirectInstallBeginInput = serde_json::from_slice(&normalized)
                     .map_err(|_| ("INSTALL_INPUT_INVALID", "invalid PRIVATE direct install input".to_owned()))?;
                 access.submit_direct_begin_json_with_cancel(input, &cancel)
             }
@@ -522,7 +546,8 @@ fn secure_owner_consumer_command(verb: &str, args: &[String]) -> Result<String, 
     let result = match verb {
         "owner-install-begin" => {
             let bytes = fs::read(&args[2]).map_err(|e| ("INSTALL_FILE", e.to_string()))?;
-            let input: PublicPackageInstallInput = serde_json::from_slice(&bytes)
+            let normalized = install_input_bindings(&bytes)?;
+            let input: PublicPackageInstallInput = serde_json::from_slice(&normalized)
                 .map_err(|_| ("INSTALL_INPUT_INVALID", "invalid Owner package input".to_owned()))?;
             access.submit_begin_json_with_cancel(input, &cancel)
         }
@@ -870,7 +895,8 @@ fn secure_install_command(verb: &str, args: &[String]) -> Result<String, (&'stat
     match verb {
         "install-begin" => {
             let bytes = fs::read(&args[1]).map_err(|e| ("INSTALL_FILE", e.to_string()))?;
-            let input: PublicPackageInstallInput = serde_json::from_slice(&bytes)
+            let normalized = install_input_bindings(&bytes)?;
+            let input: PublicPackageInstallInput = serde_json::from_slice(&normalized)
                 .map_err(|e| ("INSTALL_INPUT_INVALID", e.to_string()))?;
             access.submit_begin_json_with_cancel(input, &cancel)
         }

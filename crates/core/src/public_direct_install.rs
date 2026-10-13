@@ -93,10 +93,27 @@ pub fn compile_public_package_closure(
     compile_package_closure_at_ceiling(closure_wire, 1)
 }
 
+pub fn compile_public_package_closure_with_bindings(
+    closure_wire: &[u8],
+    bindings_wire: &[u8],
+) -> Result<PublicPackageCompilation, DirectInstallError> {
+    let bindings = parse_wire_json_bounded(bindings_wire, 32, 65_536)
+        .map_err(|_| DirectInstallError::Invalid)?;
+    compile_package_closure_with_bindings_at_ceiling(closure_wire, &bindings, 1)
+}
+
 /// The authenticated PRIVATE policy may raise the format ceiling to two.
 /// PUBLIC callers retain the ceiling-one wrapper above.
 pub(crate) fn compile_package_closure_at_ceiling(
     closure_wire: &[u8],
+    format_ceiling: u64,
+) -> Result<PublicPackageCompilation, DirectInstallError> {
+    compile_package_closure_with_bindings_at_ceiling(closure_wire, &obj(vec![]), format_ceiling)
+}
+
+pub(crate) fn compile_package_closure_with_bindings_at_ceiling(
+    closure_wire: &[u8],
+    bindings: &WireValue,
     format_ceiling: u64,
 ) -> Result<PublicPackageCompilation, DirectInstallError> {
     if !matches!(format_ceiling, 1 | 2) {
@@ -127,7 +144,10 @@ pub(crate) fn compile_package_closure_at_ceiling(
         .get("version")
         .and_then(WireValue::as_string)
         .ok_or(DirectInstallError::Invalid)?;
-    let compiled = compile_package_material(&scanned, &obj(vec![]))
+    if bindings.object_len().is_none() {
+        return Err(DirectInstallError::Invalid);
+    }
+    let compiled = compile_package_material(&scanned, bindings)
         .map_err(|_| DirectInstallError::Invalid)?;
     let manifest_wire = canonical_wire_value(&compiled.manifest, Path::SecureArtifact)
         .map_err(|_| DirectInstallError::Invalid)?
@@ -177,7 +197,30 @@ pub fn prepare_public_package_install_begin(
     issued_at: u64,
     signer: &SigningKey,
 ) -> Result<PreparedPublicPackageInstallBegin, DirectInstallError> {
-    let compiled = compile_public_package_closure(closure_wire)?;
+    prepare_public_package_install_begin_with_bindings(
+        closure_wire, b"{}", expected_package_digest, expected_protocol_digest,
+        prior_signed_policy_wire, prior_checkpoint_wire, prior_objects, grants_wire,
+        instance_id, entrypoint_name, command_id, issued_at, signer,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_public_package_install_begin_with_bindings(
+    closure_wire: &[u8],
+    bindings_wire: &[u8],
+    expected_package_digest: &str,
+    expected_protocol_digest: &str,
+    prior_signed_policy_wire: &[u8],
+    prior_checkpoint_wire: &[u8],
+    prior_objects: &[WireValue],
+    grants_wire: &[u8],
+    instance_id: &str,
+    entrypoint_name: &str,
+    command_id: &str,
+    issued_at: u64,
+    signer: &SigningKey,
+) -> Result<PreparedPublicPackageInstallBegin, DirectInstallError> {
+    let compiled = compile_public_package_closure_with_bindings(closure_wire, bindings_wire)?;
     if compiled.package_digest() != expected_package_digest
         || compiled.protocol_digest() != expected_protocol_digest
     {
@@ -968,6 +1011,70 @@ pub(crate) fn derive_direct_install_structure_with_disclosure(
     manifest: &WireValue,
     undisclosed: bool,
 ) -> Result<WireValue, DirectInstallError> {
+    derive_direct_install_structure_with_options(
+        prior_structure,
+        prior_objects,
+        added,
+        protocol_digest,
+        manifest,
+        undisclosed,
+        &[],
+    )
+}
+
+pub(crate) fn derive_direct_install_structure_with_options(
+    prior_structure: Option<&WireValue>,
+    prior_objects: &[WireValue],
+    added: &[WireValue],
+    protocol_digest: &str,
+    manifest: &WireValue,
+    undisclosed: bool,
+    disclose: &[WireValue],
+) -> Result<WireValue, DirectInstallError> {
+    let all = WireValue::Array(adoption_objects(
+        &prior_objects.iter().chain(added).cloned().collect::<Vec<_>>(),
+    )?);
+    let mut all_wire = String::new();
+    ordered_json(&all, 0, &mut all_wire)?;
+    let maximum_wire = derive_install_structure_policy_with_keep_encrypted(
+        all_wire.as_bytes(), b"[]",
+    ).map_err(|_| DirectInstallError::Invalid)?;
+    let maximum = parse_wire_json_bounded(maximum_wire.as_bytes(), 64, 2_000_000)
+        .map_err(|_| DirectInstallError::Invalid)?;
+    let mut approved = HashSet::new();
+    if disclose.len() > 64 {
+        return Err(DirectInstallError::Invalid);
+    }
+    for choice in disclose {
+        if choice.object_len() != Some(2) {
+            return Err(DirectInstallError::Invalid);
+        }
+        let schema = required(choice, "schema")?
+            .as_string()
+            .ok_or(DirectInstallError::Invalid)?;
+        let fields = array(required(choice, "fields")?)?;
+        if fields.is_empty() || fields.len() > 64 {
+            return Err(DirectInstallError::Invalid);
+        }
+        for field in fields {
+            let field = field.as_string().ok_or(DirectInstallError::Invalid)?;
+            let declared = array(required(&maximum, "protocols")?)?
+                .iter()
+                .find(|p| p.get("protocol_digest").and_then(WireValue::as_string).as_deref()
+                    == Some(protocol_digest))
+                .and_then(|p| p.get("schemas"))
+                .and_then(|schemas| schemas.get(&schema))
+                .and_then(|definition| definition.get("fields"))
+                .and_then(|fields| fields.get(&field))
+                .ok_or(DirectInstallError::Invalid)?;
+            if required(declared, "protection")?.as_string().as_deref()
+                != Some("server_readable")
+                || !approved.insert((schema.clone(), field))
+            {
+                return Err(DirectInstallError::Invalid);
+            }
+        }
+    }
     let derived_prior;
     let prior_structure = match prior_structure {
         Some(value) => value,
@@ -1017,10 +1124,13 @@ pub(crate) fn derive_direct_install_structure_with_disclosure(
         })
     {
         for (schema, definition) in entries(required(manifest, "record_schemas")?)? {
-            let fields = entries(required(definition, "fields")?)?
-                .iter()
-                .map(|(field, _)| WireValue::String(field.clone()))
-                .collect::<Vec<_>>();
+            let schema_name = name(schema)?;
+            let mut fields = Vec::new();
+            for (field, _) in entries(required(definition, "fields")?)? {
+                if !approved.contains(&(schema_name.clone(), name(field)?)) {
+                    fields.push(WireValue::String(field.clone()));
+                }
+            }
             if !fields.is_empty() {
                 choices.push(obj(vec![
                     ("protocol_digest", text(protocol_digest)),
@@ -1029,16 +1139,26 @@ pub(crate) fn derive_direct_install_structure_with_disclosure(
                 ]));
             }
         }
+    } else if !approved.is_empty() {
+        let mut existing = HashSet::new();
+        if let Some(rows) = prior_structure.get("disclosure") {
+            for row in array(rows)? {
+                if row.get("protocol_digest").and_then(WireValue::as_string).as_deref()
+                    == Some(protocol_digest)
+                {
+                    let schema = required(row, "schema")?.as_string()
+                        .ok_or(DirectInstallError::Invalid)?;
+                    for field in array(required(row, "fields")?)? {
+                        existing.insert((schema.clone(), field.as_string()
+                            .ok_or(DirectInstallError::Invalid)?));
+                    }
+                }
+            }
+        }
+        if existing != approved {
+            return Err(DirectInstallError::Invalid);
+        }
     }
-    let all = WireValue::Array(adoption_objects(
-        &prior_objects
-            .iter()
-            .chain(added)
-            .cloned()
-            .collect::<Vec<_>>(),
-    )?);
-    let mut all_wire = String::new();
-    ordered_json(&all, 0, &mut all_wire)?;
     let mut choice_wire = String::new();
     ordered_json(&WireValue::Array(choices), 0, &mut choice_wire)?;
     let projected = derive_install_structure_policy_with_keep_encrypted(
@@ -1408,6 +1528,88 @@ pub(crate) fn sign_public_direct_install_begin(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reference_selected_binding_changes_compiled_digest_without_raising_public_ceiling() {
+        let fixture = parse_wire_json_bounded(
+            include_bytes!("../../../conformance/private-package-options-reference.json"),
+            64, 2_000_000,
+        ).unwrap();
+        let binding = fixture.get("binding").unwrap();
+        let closure = canonical_wire_value(binding.get("closure").unwrap(), Path::SecureArtifact).unwrap();
+        let default = compile_public_package_closure(closure.as_bytes()).unwrap();
+        let selected = compile_public_package_closure_with_bindings(
+            closure.as_bytes(), br#"{"selectedRole":"AUTHOR"}"#,
+        ).unwrap();
+        assert_eq!(default.package_digest(), selected.package_digest());
+        assert_eq!(default.protocol_digest(), binding.get("default_protocol_digest").unwrap().as_string().unwrap());
+        assert_eq!(selected.protocol_digest(), binding.get("selected_protocol_digest").unwrap().as_string().unwrap());
+        assert_ne!(default.manifest_wire(), selected.manifest_wire());
+        assert!(compile_public_package_closure_with_bindings(closure.as_bytes(), b"[]").is_err());
+        assert!(compile_public_package_closure_with_bindings(closure.as_bytes(), br#"{"unknown":true}"#).is_err());
+    }
+
+    #[test]
+    fn reference_private_disclosure_requires_declared_readable_field() {
+        let fixture = parse_wire_json_bounded(
+            include_bytes!("../../../conformance/private-package-options-reference.json"),
+            64, 2_000_000,
+        ).unwrap();
+        let readable = fixture.get("readable").unwrap();
+        let closure = canonical_wire_value(readable.get("material").unwrap().get("closure").unwrap(), Path::SecureArtifact).unwrap();
+        assert!(compile_public_package_closure(closure.as_bytes()).is_err());
+        let compiled = compile_package_closure_at_ceiling(closure.as_bytes(), 2).unwrap();
+        assert_eq!(compiled.protocol_digest(), readable.get("protocol_digest").unwrap().as_string().unwrap());
+        let built = build_direct_install_objects_with_composition_at_ceiling(
+            compiled.manifest_wire(), compiled.composition(), compiled.protocol_digest(),
+            &"w".repeat(43), &"i".repeat(43), "readable", 1_700_000_000_000, 2,
+        ).unwrap();
+        let prior = parse_wire_json_bounded(
+            br#"{"v":1,"protocols":[],"instances":[],"disclosure":[]}"#, 16, 1024,
+        ).unwrap();
+        let default = derive_direct_install_structure_with_options(
+            Some(&prior), &[], &built.added, compiled.protocol_digest(), &built.manifest,
+            false, &[],
+        ).unwrap();
+        let choice = parse_wire_json_bounded(
+            br#"[{"schema":"item","fields":["label"]}]"#, 16, 1024,
+        ).unwrap();
+        let disclosed = derive_direct_install_structure_with_options(
+            Some(&prior), &[], &built.added, compiled.protocol_digest(), &built.manifest,
+            false, array(&choice).unwrap(),
+        ).unwrap();
+        assert_ne!(default, disclosed);
+        let field = |structure: &WireValue| {
+            array(structure.get("protocols").unwrap()).unwrap()[0]
+                .get("schemas").unwrap().get("item").unwrap()
+                .get("fields").unwrap().get("label").unwrap().clone()
+        };
+        assert_eq!(field(&default).get("protection").unwrap().as_string().as_deref(), Some("e2ee"));
+        assert_eq!(field(&disclosed).get("protection").unwrap().as_string().as_deref(), Some("server_readable"));
+        assert_eq!(field(&default).get("type").unwrap().as_string().as_deref(), Some("string"));
+        assert_eq!(field(&disclosed).get("type").unwrap().as_string().as_deref(), Some("opaque"));
+        let private = parse_wire_json_bounded(
+            br#"[{"schema":"item","fields":["missing"]}]"#, 16, 1024,
+        ).unwrap();
+        assert!(derive_direct_install_structure_with_options(
+            Some(&prior), &[], &built.added, compiled.protocol_digest(), &built.manifest,
+            false, array(&private).unwrap(),
+        ).is_err());
+        let mut protocol: serde_json::Value = serde_json::from_str(
+            &canonical_wire_value(&built.added[0], Path::SecureArtifact).unwrap(),
+        ).unwrap();
+        protocol["value"]["manifest"]["record_schemas"]["item"]["protection"]["fields"]["label"] =
+            serde_json::json!({"protection":"e2ee","type":"string"});
+        protocol["value"]["resolved_manifest"]["record_schemas"]["item"]["protection"]["fields"]["label"] =
+            serde_json::json!({"protection":"e2ee","type":"string"});
+        let changed = parse_wire_json_bounded(protocol.to_string().as_bytes(), 64, 2_000_000).unwrap();
+        let mut added = built.added.clone();
+        added[0] = changed;
+        assert!(derive_direct_install_structure_with_options(
+            Some(&prior), &[], &added, compiled.protocol_digest(), &built.manifest,
+            false, array(&choice).unwrap(),
+        ).is_err());
+    }
 
     #[test]
     fn typed_composed_closure_requires_ceiling_two_for_direct_objects() {

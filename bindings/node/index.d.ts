@@ -140,6 +140,8 @@ export interface HistoricalOwnerAttachmentInput {
   protectedOwnerPkcs8Path: string;
   expectedOwnerActorId: string;
   expectedOwnerKeyId: string;
+  /** Opt in to exact recovery of one saved legacy Owner ACTION; stop the old client first. */
+  recoverPendingAction?: boolean;
 }
 export interface HistoricalOwnerAttachmentResult {
   attach_id: string;
@@ -379,8 +381,11 @@ export interface SecureInvitationSession {
 export declare function openSecureInvitation(options: SecureInvitationOptions): SecureInvitationSession;
 
 /** Exact locally selected package closure; digest validation does not prove publisher origin. */
+export type PackageJsonValue = null | boolean | number | string | PackageJsonValue[] | { [key: string]: PackageJsonValue };
 export interface PublicPackageInstallSelection {
   closureJson: string;
+  /** Explicit compiler parameters; omission retains package defaults. */
+  bindings?: Record<string, PackageJsonValue>;
   expectedPackageId: string;
   expectedPackageVersion: string;
   expectedPackageDigest: string;
@@ -463,9 +468,16 @@ export interface PrivatePackageInstallSelection {
   instanceId: string;
   entrypoint: string;
   grantsJson: string;
+  disclose?: PrivateFieldDisclosure[];
+}
+export interface PrivateFieldDisclosure {
+  schema: string;
+  fields: string[];
 }
 export interface PrivateDirectInstallSelection {
   closureJson: string;
+  bindings?: Record<string, PackageJsonValue>;
+  disclose?: PrivateFieldDisclosure[];
   expectedRootPackageDigest: string;
   expectedProtocolDigest: string;
   instanceId: string;

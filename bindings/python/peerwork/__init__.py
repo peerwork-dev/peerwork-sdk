@@ -2,8 +2,19 @@
 
 import asyncio
 import json
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Literal, NotRequired, TypedDict, cast
+from typing import Literal, NotRequired, TypeAlias, TypedDict, cast
+
+JSONValue: TypeAlias = "None | bool | int | float | str | list[JSONValue] | dict[str, JSONValue]"
+
+class _OmittedInstallOption:
+    pass
+
+
+_OMITTED_BINDINGS = _OmittedInstallOption()
+_OMITTED_DISCLOSURE = _OmittedInstallOption()
+
 from ._peerwork_native import (
     KernelCancelHandle,
     capabilities_json,
@@ -694,7 +705,8 @@ class SecurePublicPackageInstaller(SecureReadClient):
               expected_package_version: str, expected_package_digest: str,
               expected_protocol_digest: str, instance_id: str, entrypoint: str,
               grants_json: str = "[]", command_id: str | None = None,
-              issued_at_ms: int | None = None) -> PublicInstallBeginResult:
+              issued_at_ms: int | None = None,
+              bindings: Mapping[str, JSONValue] | _OmittedInstallOption = _OMITTED_BINDINGS) -> PublicInstallBeginResult:
         """Persist exact BEGIN before POST; the returned status remains PENDING."""
         value = dict(closure_json=closure_json, expected_package_id=expected_package_id,
                      expected_package_version=expected_package_version,
@@ -702,6 +714,11 @@ class SecurePublicPackageInstaller(SecureReadClient):
                      expected_protocol_digest=expected_protocol_digest,
                      instance_id=instance_id, entrypoint=entrypoint, grants_json=grants_json,
                      command_id=command_id, issued_at_ms=issued_at_ms)
+        if bindings is not _OMITTED_BINDINGS:
+            if not isinstance(bindings, Mapping):
+                raise TypeError("bindings must be a JSON object")
+            value["bindings_json"] = json.dumps(dict(bindings), ensure_ascii=True,
+                allow_nan=False, separators=(",", ":"))
         return cast(PublicInstallBeginResult, self._install("begin", input_value=value))
 
     def continue_install(self, begin_command_id: str) -> PublicInstallProgress:
@@ -739,13 +756,19 @@ class SecurePublicPackageInstaller(SecureReadClient):
                           expected_package_version: str, expected_package_digest: str,
                           expected_protocol_digest: str, instance_id: str, entrypoint: str,
                           grants_json: str = "[]", command_id: str | None = None,
-                          issued_at_ms: int | None = None) -> PublicInstallBeginResult:
+                          issued_at_ms: int | None = None,
+                          bindings: Mapping[str, JSONValue] | _OmittedInstallOption = _OMITTED_BINDINGS) -> PublicInstallBeginResult:
         value = dict(closure_json=closure_json, expected_package_id=expected_package_id,
                      expected_package_version=expected_package_version,
                      expected_package_digest=expected_package_digest,
                      expected_protocol_digest=expected_protocol_digest,
                      instance_id=instance_id, entrypoint=entrypoint, grants_json=grants_json,
                      command_id=command_id, issued_at_ms=issued_at_ms)
+        if bindings is not _OMITTED_BINDINGS:
+            if not isinstance(bindings, Mapping):
+                raise TypeError("bindings must be a JSON object")
+            value["bindings_json"] = json.dumps(dict(bindings), ensure_ascii=True,
+                allow_nan=False, separators=(",", ":"))
         return cast(PublicInstallBeginResult, await self._install_async("begin", input_value=value))
 
     async def continue_install_async(self, begin_command_id: str) -> PublicInstallProgress:
@@ -1018,14 +1041,18 @@ class SecureOwnerWorkspaceClient:
     def attach(self, workspace_id: str, protected_ts_state_path: str,
                protected_ts_intent_db_path: str, protected_owner_pkcs8_path: str,
                expected_owner_actor_id: str,
-               expected_owner_key_id: str) -> HistoricalOwnerAttachmentResult:
-        """Attach an existing Owner after protected source and remote proof checks."""
+               expected_owner_key_id: str, *,
+               recover_pending_action: bool = False) -> HistoricalOwnerAttachmentResult:
+        """Attach a stopped Owner; opt in to exact recovery of one saved ACTION."""
+        if type(recover_pending_action) is not bool:
+            raise TypeError("recover_pending_action must be a bool")
         value = dict(workspace_id=workspace_id,
             protected_ts_state_path=protected_ts_state_path,
             protected_ts_intent_db_path=protected_ts_intent_db_path,
             protected_owner_pkcs8_path=protected_owner_pkcs8_path,
             expected_owner_actor_id=expected_owner_actor_id,
-            expected_owner_key_id=expected_owner_key_id)
+            expected_owner_key_id=expected_owner_key_id,
+            recover_pending_action=recover_pending_action)
         return cast(HistoricalOwnerAttachmentResult, self._owner("attach", input_value=value))
 
     def resume_attachment(self, attach_id: str) -> HistoricalOwnerAttachmentResult:
@@ -1104,13 +1131,17 @@ class SecureOwnerWorkspaceClient:
     async def attach_async(self, workspace_id: str, protected_ts_state_path: str,
                            protected_ts_intent_db_path: str,
                            protected_owner_pkcs8_path: str, expected_owner_actor_id: str,
-                           expected_owner_key_id: str) -> HistoricalOwnerAttachmentResult:
+                           expected_owner_key_id: str, *,
+                           recover_pending_action: bool = False) -> HistoricalOwnerAttachmentResult:
+        if type(recover_pending_action) is not bool:
+            raise TypeError("recover_pending_action must be a bool")
         value = dict(workspace_id=workspace_id,
             protected_ts_state_path=protected_ts_state_path,
             protected_ts_intent_db_path=protected_ts_intent_db_path,
             protected_owner_pkcs8_path=protected_owner_pkcs8_path,
             expected_owner_actor_id=expected_owner_actor_id,
-            expected_owner_key_id=expected_owner_key_id)
+            expected_owner_key_id=expected_owner_key_id,
+            recover_pending_action=recover_pending_action)
         return cast(HistoricalOwnerAttachmentResult, await _run_cancelled_async(
             self._owner, "attach", input_value=value))
 
@@ -1296,6 +1327,23 @@ class SavedPrivatePackageInstall(TypedDict):
     locally_saved: bool
 
 
+class PrivateFieldDisclosure(TypedDict):
+    schema: str
+    fields: list[str]
+
+
+def _selected_disclosure(value: object) -> list[PrivateFieldDisclosure]:
+    if not isinstance(value, list) or any(
+        not isinstance(row, dict) or set(row) != {"schema", "fields"}
+        or not isinstance(row["schema"], str)
+        or not isinstance(row["fields"], list)
+        or any(not isinstance(field, str) for field in row["fields"])
+        for row in value
+    ):
+        raise TypeError("disclose must be a list of {schema, fields} selections")
+    return cast(list[PrivateFieldDisclosure], value)
+
+
 class PrivatePackageInstallError(RuntimeError):
     def __init__(self, code: str, message: str):
         super().__init__(message)
@@ -1323,21 +1371,33 @@ class OwnerWorkspacePrivatePackageInstaller(OwnerWorkspacePrivatePackageStager):
 
     def begin(self, stage_id: str, instance_id: str, entrypoint: str, *,
               grants_json: str = "[]", command_id: str | None = None,
-              issued_at_ms: int | None = None) -> PrivatePackageInstallProgress:
+              issued_at_ms: int | None = None,
+              disclose: list[PrivateFieldDisclosure] | _OmittedInstallOption = _OMITTED_DISCLOSURE) -> PrivatePackageInstallProgress:
         value = dict(stage_id=stage_id, instance_id=instance_id, entrypoint=entrypoint,
             grants_json=grants_json, command_id=command_id, issued_at_ms=issued_at_ms)
+        if disclose is not _OMITTED_DISCLOSURE:
+            value["disclose"] = _selected_disclosure(disclose)
         return cast(PrivatePackageInstallProgress, self._install("begin", input_value=value))
 
     def begin_direct(self, closure_json: str, expected_root_package_digest: str,
                      expected_protocol_digest: str, instance_id: str, entrypoint: str, *,
                      grants_json: str = "[]", command_id: str | None = None,
-                     issued_at_ms: int | None = None) -> PrivatePackageInstallProgress:
+                     issued_at_ms: int | None = None,
+                     bindings: Mapping[str, JSONValue] | _OmittedInstallOption = _OMITTED_BINDINGS,
+                     disclose: list[PrivateFieldDisclosure] | _OmittedInstallOption = _OMITTED_DISCLOSURE) -> PrivatePackageInstallProgress:
         """Select raw package closure JSON directly; no source parts are staged."""
         value = dict(closure_json=closure_json,
             expected_root_package_digest=expected_root_package_digest,
             expected_protocol_digest=expected_protocol_digest,
             instance_id=instance_id, entrypoint=entrypoint, grants_json=grants_json,
             command_id=command_id, issued_at_ms=issued_at_ms)
+        if bindings is not _OMITTED_BINDINGS:
+            if not isinstance(bindings, Mapping):
+                raise TypeError("bindings must be a JSON object")
+            value["bindings_json"] = json.dumps(dict(bindings), ensure_ascii=True,
+                allow_nan=False, separators=(",", ":"))
+        if disclose is not _OMITTED_DISCLOSURE:
+            value["disclose"] = _selected_disclosure(disclose)
         return cast(PrivatePackageInstallProgress, self._install("begin_direct", input_value=value))
 
     def continue_install(self, begin_command_id: str) -> PrivatePackageInstallProgress:
@@ -1349,9 +1409,12 @@ class OwnerWorkspacePrivatePackageInstaller(OwnerWorkspacePrivatePackageStager):
 
     async def begin_async(self, stage_id: str, instance_id: str, entrypoint: str, *,
                           grants_json: str = "[]", command_id: str | None = None,
-                          issued_at_ms: int | None = None) -> PrivatePackageInstallProgress:
+                          issued_at_ms: int | None = None,
+                          disclose: list[PrivateFieldDisclosure] | _OmittedInstallOption = _OMITTED_DISCLOSURE) -> PrivatePackageInstallProgress:
         value = dict(stage_id=stage_id, instance_id=instance_id, entrypoint=entrypoint,
             grants_json=grants_json, command_id=command_id, issued_at_ms=issued_at_ms)
+        if disclose is not _OMITTED_DISCLOSURE:
+            value["disclose"] = _selected_disclosure(disclose)
         return cast(PrivatePackageInstallProgress, await _run_cancelled_async(self._install,
             "begin", input_value=value))
 
@@ -1359,12 +1422,21 @@ class OwnerWorkspacePrivatePackageInstaller(OwnerWorkspacePrivatePackageStager):
                                  expected_protocol_digest: str, instance_id: str,
                                  entrypoint: str, *, grants_json: str = "[]",
                                  command_id: str | None = None,
-                                 issued_at_ms: int | None = None) -> PrivatePackageInstallProgress:
+                                 issued_at_ms: int | None = None,
+                                 bindings: Mapping[str, JSONValue] | _OmittedInstallOption = _OMITTED_BINDINGS,
+                                 disclose: list[PrivateFieldDisclosure] | _OmittedInstallOption = _OMITTED_DISCLOSURE) -> PrivatePackageInstallProgress:
         value = dict(closure_json=closure_json,
             expected_root_package_digest=expected_root_package_digest,
             expected_protocol_digest=expected_protocol_digest,
             instance_id=instance_id, entrypoint=entrypoint, grants_json=grants_json,
             command_id=command_id, issued_at_ms=issued_at_ms)
+        if bindings is not _OMITTED_BINDINGS:
+            if not isinstance(bindings, Mapping):
+                raise TypeError("bindings must be a JSON object")
+            value["bindings_json"] = json.dumps(dict(bindings), ensure_ascii=True,
+                allow_nan=False, separators=(",", ":"))
+        if disclose is not _OMITTED_DISCLOSURE:
+            value["disclose"] = _selected_disclosure(disclose)
         return cast(PrivatePackageInstallProgress, await _run_cancelled_async(self._install,
             "begin_direct", input_value=value))
 
@@ -1382,7 +1454,7 @@ __all__ += ["SecureOwnerWorkspaceClient", "OwnerWorkspaceResult", "HistoricalOwn
             "OwnerWorkspacePrivatePackageStager", "PrivatePackageStageResult",
             "SavedPrivatePackageStage", "PrivatePackageStageError",
             "OwnerWorkspacePrivatePackageInstaller", "PrivatePackageInstallProgress",
-            "SavedPrivatePackageInstall", "PrivatePackageInstallError"]
+            "SavedPrivatePackageInstall", "PrivateFieldDisclosure", "PrivatePackageInstallError"]
 
 
 class VerifiedIdentityCertificate(TypedDict):

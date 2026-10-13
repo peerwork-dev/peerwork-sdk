@@ -941,11 +941,13 @@ mod tests {
         let install = owner.private_install_access(&workspace_id).unwrap();
         let begin:serde_json::Value=serde_json::from_str(&install.submit_direct_begin_json(PrivateDirectInstallBeginInput{
             closure_json:vector["closure"].to_string(),
+            bindings_json:None,
             expected_root_package_digest:vector["closure"]["root_package_digest"].as_str().unwrap().into(),
             expected_protocol_digest:vector["protocol_digest"].as_str().unwrap().into(),
             instance_id:random_id().unwrap(),entrypoint:"proposal".into(),
             grants_json:serde_json::json!([{"actor_id":source["owner_actor_id"],
                 "actions":["proposal.propose"],"protocol_roles":["AUTHOR"],"capabilities":["PROPOSE"]}]).to_string(),
+            disclose:None,
             command_id:None,issued_at_ms:None}).unwrap()).unwrap();
         let begin_id = begin["begin_command_id"].as_str().unwrap();
         let mut step: serde_json::Value =
@@ -1069,6 +1071,7 @@ mod tests {
                         "protocol_roles":[],"capabilities":[]
                     }])
                     .to_string(),
+                    disclose: None,
                     command_id: None,
                     issued_at_ms: None,
                 })
