@@ -2519,6 +2519,7 @@ fn parse_legacy_source(
             "application_decision_intents",
             "field_policy_intents",
             "protocol_install_intents",
+            "package_stage_intents",
             "protocol_object_stage_intents",
             "coordination_intents",
             "inbox_receipts",
@@ -2623,7 +2624,6 @@ fn parse_legacy_source(
         // never silently discard them during a one-workspace attach.
         for key in [
             "protocol_install_intents",
-            "package_stage_intents",
             "protocol_object_stage_intents",
             "coordination_intents",
             "field_policy_intents",
@@ -3833,6 +3833,7 @@ mod tests {
         for (name, mode, pending_count) in [
             ("completed", "stage-marker-completed", 0),
             ("pending", "stage-marker-pending", 1),
+            ("mismatch", "stage-marker-mismatch", 0),
         ] {
             let output = Command::new(&node)
                 .arg(&helper)
@@ -3899,12 +3900,20 @@ mod tests {
                 expected_kernel_intent_db_digest: None,
             };
             let cancel = CancellationToken::new();
-            if name == "pending" {
+            if name != "completed" {
                 assert!(matches!(
                     attach.attach(input, &cancel),
                     Err(HistoricalOwnerAttachError::SourceUnresolved)
                 ));
                 assert!(attach.attachments().unwrap().is_empty());
+                let after: i64 = oracle
+                    .query_row(
+                        "SELECT count(*) FROM secure_commits WHERE workspace_id=?1",
+                        [workspace],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(after, 2);
             } else {
                 let attached = attach.attach(input.clone(), &cancel).unwrap();
                 assert_eq!(attached.status, "ATTACHED");

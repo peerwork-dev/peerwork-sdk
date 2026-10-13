@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 
 const [origin, sourceDir, legacyRoot, mode = 'clean'] = process.argv.slice(2);
 if (!origin || !sourceDir || !legacyRoot) throw new Error('LEGACY_TEST_INPUT_REQUIRED');
-if (!['clean', 'completed', 'legacy-record', 'pending', 'pending-before-post', 'pending-private-structured', 'pending-private-structured-before-post', 'pending-public', 'pending-public-before-post', 'pending-public-structured', 'pending-public-structured-before-post', 'pending-current-private', 'pending-current-private-before-post', 'pending-current-private-structured', 'pending-current-private-structured-before-post', 'pending-current-private-structured-ceiling2', 'pending-current-private-structured-ceiling2-before-post', 'pending-current-public', 'pending-current-public-before-post', 'pending-current-public-structured', 'pending-current-public-structured-before-post', 'stage-marker-completed', 'stage-marker-pending', 'kernel-jws-source', 'unknown-store', 'malformed-store', 'legacy-structured', 'legacy-public', 'legacy-public-structured', 'legacy-public-record', 'legacy-public-structured-record', 'private-missing-ring'].includes(mode)) throw new Error('LEGACY_TEST_MODE_INVALID');
+if (!['clean', 'completed', 'legacy-record', 'pending', 'pending-before-post', 'pending-private-structured', 'pending-private-structured-before-post', 'pending-public', 'pending-public-before-post', 'pending-public-structured', 'pending-public-structured-before-post', 'pending-current-private', 'pending-current-private-before-post', 'pending-current-private-structured', 'pending-current-private-structured-before-post', 'pending-current-private-structured-ceiling2', 'pending-current-private-structured-ceiling2-before-post', 'pending-current-public', 'pending-current-public-before-post', 'pending-current-public-structured', 'pending-current-public-structured-before-post', 'stage-marker-completed', 'stage-marker-pending', 'stage-marker-mismatch', 'kernel-jws-source', 'unknown-store', 'malformed-store', 'legacy-structured', 'legacy-public', 'legacy-public-structured', 'legacy-public-record', 'legacy-public-structured-record', 'private-missing-ring'].includes(mode)) throw new Error('LEGACY_TEST_MODE_INVALID');
 mkdirSync(sourceDir, { recursive: true, mode: 0o700 });
 const { privateKey } = generateKeyPairSync('ed25519');
 const pemPath = join(sourceDir, 'owner.pem');
@@ -91,7 +91,7 @@ try {
         command_id: args[2], action_id: args[1]?.commit?.payload?.action_id,
       };
       const result = await originalPost(...args);
-      if (mode === 'stage-marker-completed' && !stopped) {
+      if ((mode === 'stage-marker-completed' || mode === 'stage-marker-mismatch') && !stopped) {
         stopped = true;
         throw new Error('TEST_STOP_AFTER_STAGE_POST');
       }
@@ -105,10 +105,10 @@ try {
       await agent.stagePackageMaterial(created.workspaceId, material, journal.checkpoint);
       throw new Error('TEST_STAGE_DID_NOT_INTERRUPT');
     } catch (error) {
-      if (mode === 'stage-marker-completed' && error?.message !== 'TEST_STOP_AFTER_STAGE_POST') throw error;
+      if ((mode === 'stage-marker-completed' || mode === 'stage-marker-mismatch') && error?.message !== 'TEST_STOP_AFTER_STAGE_POST') throw error;
       if (mode === 'stage-marker-pending' && error?.message === 'TEST_STAGE_DID_NOT_INTERRUPT') throw error;
     } finally { agent.post = originalPost; }
-    if (mode === 'stage-marker-completed' && !stopped) throw new Error('TEST_STAGE_COMPLETED_STOP_NOT_REACHED');
+    if ((mode === 'stage-marker-completed' || mode === 'stage-marker-mismatch') && !stopped) throw new Error('TEST_STAGE_COMPLETED_STOP_NOT_REACHED');
     const markers = Object.values(agent.state.package_stage_intents ?? {});
     if (markers.length !== 1) throw new Error('TEST_STAGE_MARKER_MISSING');
     stageMarker = markers[0];
@@ -132,6 +132,11 @@ try {
       || stagedPart.value?.source_id !== stageMarker.source_id
       || stagedPart.value?.sha256 !== staged.proof.parts[0].sha256) throw new Error('TEST_STAGE_SIGNED_PART_MISMATCH');
     verifyStagedPackageCheckpoint(journal, staged.proof);
+    if (mode === 'stage-marker-mismatch') {
+      // Test-created local marker tamper only; the signed stage stays intact.
+      stageMarker.source_sha256 = '0'.repeat(64);
+      agent.save();
+    }
   }
   let kernelSource = null;
   if (mode === 'kernel-jws-source') {
