@@ -1,0 +1,42 @@
+# Installed Owner format transition checkpoint (2026-10-13)
+
+The scripted Linux x64 installed test `66293` exited 0 on immutable SDK archive commit `395f2199ab4b35580c53b9c5189a3859f30591ba`. It used a fresh offline-installed Python wheel, Node facade plus GNU x64 addon tarballs, and native CLI. The archive at `.build-artifacts/format-transition-395f219/build/sdk-395f219.tar` has SHA-256 `1d04562e5242d3a1a054f9bba6a603f343d9b833ed3cd46e6747ad1559155f14`; its extracted source is `.build-artifacts/format-transition-395f219/build/source`. The archive contains the reviewed ENFORCE runtime transfer `25fd270`, signed-readback test-only successor `4e14e41`, and the explicit-workspace Python/Node/CLI selector correction `395f219`. No later member-consume work entered these artifacts.
+
+| Artifact under `.build-artifacts/format-transition-395f219/` | SHA-256 |
+| --- | --- |
+| `build/target/release/peerwork` | `ebc583feacfaa89a8c990b2cbac4249880e5e73368c7f8f56a9817480fbf0852` |
+| `build/wheels/peerwork_sdk-0.0.1-cp311-abi3-manylinux_2_38_x86_64.whl` | `e341aec9a3fa9e04921c6fa1a81949fe4d50f74ddd12aa1f6971591fab9312a0` |
+| `build/peerwork-agent-sdk-0.0.1.tgz` | `db78746d9183f913c7a8eae9f1abf7886d0d9c2e394f49df6c0d0ab881b70c6b` |
+| `build/peerwork-agent-sdk-linux-x64-gnu-0.0.1.tgz` | `f8fbc446f340e2b968c8b9acf4ee60f0bc5ab58786adbfe349b68d877a313890` |
+| `build/platform/agent-sdk-linux-x64-gnu/index.node` and `install/node/node_modules/@peerwork/agent-sdk-linux-x64-gnu/index.node` | `74c7d5e4cc970149477a79f83bf94a531d03e91b3a25c8eadb312e7952f89c2c` |
+
+The externally supplied expected source hashes matched the extracted archive: `secure_owner_format_transition.rs` `f85f7bae8bed584689ec9ca7291983c4213e894d6e4049e044c2a197151bd46d`, `secure_owner_attach.rs` `73dcffb6d5670d0277c77c45cd3e70260253c5c098ed53619d0ecd51c1356e22`, `secure_owner_create.rs` `839339bc4975b76beb814215da5b302bf083ca76c0b886b3f13ddc75922bed4b`, `tests/legacy-owner-source.mjs` `3fdb8b9187369cce9824110fe3c438a615c16f2777da4f136a0d3bda53c51cf1`, `tests/reference-kernel-server.mjs` `50168d56f654e51d5d3696815e8cae7590e0a002721ca076ec636bf47d2769b0`, and installed test `tests/installed-owner-format-transition-smoke.py` `f714bd3afe1e08213525fa584e90408315d4f0df03d5786dd22277925aecf7ef`. The tracked reference service HEAD was `f828b6c50a0a58d1e718af90f653b214adcc3328`; the separate legacy TypeScript Owner source HEAD was `ae5d1151c2a1e72bc599eb4022291cf8496beba3`.
+
+Rust 1.89 locked-offline four-crate check (`peerwork-runtime`, Python native, Node native, CLI) passed on the final source in session `53663`. Python syntax, Node syntax and strict TypeScript consumer checks passed. Release CLI/Node build `97273`, Maturin wheel build `1084`, fresh offline Python install/import `57680`, and fresh offline Node two-tarball install/import exited 0. All eight hashed wheel RECORD entries matched their hashes and sizes. The build used the extracted archive, task-local Cargo target/cache and `TMPDIR`; the commands were `cargo build --release -p peerwork-cli -p peerwork-node-native --offline --locked` from `build/source`, `maturin build --release --offline --locked --out .../build/wheels` from `build/source/bindings/python`, `npm pack .` from the Node facade and generated GNU platform package directories, then `pip install --no-index --no-deps` and `npm install --offline --ignore-scripts --no-audit --no-fund --no-package-lock` into fresh task-local consumers.
+
+The installed test was invoked from the extracted `build/source` with this command (the first attempt used `transition-state-1`; the passing attempt used fresh `transition-state-2`):
+
+```sh
+artifact_root=/root/workdir/message/.worktrees/peerwork-sdk-native-20261012/.build-artifacts/format-transition-395f219
+PEERWORK_TEST_SDK_ROOT="$artifact_root/build/source" \
+PEERWORK_TEST_STATE="$artifact_root/build/transition-state-2" \
+PEERWORK_TEST_LEGACY_ROOT=/root/workdir/message/.worktrees/peerwork-legacy-owner-client-20261013 \
+PEERWORK_TEST_NODE=/root/workdir/message/.tools/node-v24.20.0-linux-x64/bin/node \
+PEERWORK_TEST_NODE_PACKAGE="$artifact_root/install/node/node_modules/@peerwork/agent-sdk" \
+PEERWORK_TEST_CLI="$artifact_root/build/target/release/peerwork" \
+PEERWORK_TEST_TRANSITION_SOURCE_SHA256=f85f7bae8bed584689ec9ca7291983c4213e894d6e4049e044c2a197151bd46d \
+PEERWORK_TEST_ATTACH_SOURCE_SHA256=73dcffb6d5670d0277c77c45cd3e70260253c5c098ed53619d0ecd51c1356e22 \
+PEERWORK_TEST_OWNER_SOURCE_SHA256=839339bc4975b76beb814215da5b302bf083ca76c0b886b3f13ddc75922bed4b \
+PEERWORK_TEST_LEGACY_HELPER_SHA256=3fdb8b9187369cce9824110fe3c438a615c16f2777da4f136a0d3bda53c51cf1 \
+PEERWORK_TEST_REFERENCE_FIXTURE_SHA256=50168d56f654e51d5d3696815e8cae7590e0a002721ca076ec636bf47d2769b0 \
+PEERWORK_TEST_LEGACY_COMMIT=ae5d1151c2a1e72bc599eb4022291cf8496beba3 \
+PEERWORK_REFERENCE_ROOT=/root/workdir/message/.worktrees/e2ee-main-integration-20261006 \
+TMPDIR="$artifact_root/build/tmp" \
+"$artifact_root/install/venv/bin/python" tests/installed-owner-format-transition-smoke.py
+```
+
+The test created an actual legacy wire-v1 PRIVATE Owner from the pinned old client, explicitly attached its caller-paired protected source paths through the public native Owner client, authored an encrypted wiki record, then armed the test-only post-apply reply drop. A child Node caller submitted `UPGRADE_WIRE_V3` but withheld its generated command ID. A fresh Python Owner client discovered the exact `PENDING` ID `wJZQK1BRjYCB9oMSGTNIJZ2mTAqt3wez_PahjWgVMJo` in workspace-scoped local history; wrong nonexistent workspace selection returned `NOT_FOUND` without effect. CLI resumed the saved ID to `ACCEPTED`; Python exact retry added no commit. Python submitted `RAISE_PRIVATE_CEILING_TWO` under distinct ID `xecn7lFSD4geqZOyEYTdytgiJWf6jcX0NZOpeNy73-s`; Node and Python exact retries added no commit. Native verified read ended at sequence 4, and its decrypted record `j7oqdZGTye8uUrGiLl44ZhOpw-x21x9GfdSIwviPvPs` retained exact title/body. The test compares both signed policy lineages and retained Owner actor/key, epoch, complete members/certificates/scopes and structure fields, while the requested wire format/ceiling fields change. After service shutdown, Python, Node and CLI returned equal two-row local `ACCEPTED` histories for the selected workspace. The service commit counter increased exactly twice for the two transitions.
+
+The test-only SQLite policy oracle hashes canonical policy and commit artifacts and binds those hashes, effective sequence and head to native verified reads. It checks signature-field presence but does not independently verify signatures; authenticated native replay/read is the verification authority. The wrong-workspace check uses a nonexistent ID, not a second existing Owner workspace. The Node child withholding the generated ID and the dropped response are deliberate fixture events, not async cancellation. This one mixed-interface scripted Linux flow does not prove independent complete flows in all three interfaces, installed format-2 package use, distinct-member consume, natural Agent workflow compliance, macOS/Windows execution, or a lower-glibc dependency-closed release.
+
+The first four-crate check on the initial facade source failed `E0308`: Python native, Node native and CLI passed `SecureOwnerCreateConfig` to a per-workspace `SecureReadProfileConfig` constructor. The seven-path `395f219` correction requires explicit workspace ID for public resume/history and selects the protected CREATED/ATTACHED Owner profile. The first installed attempt failed before service startup because fixture `spawnSync git rev-parse` returned sandbox `EPERM`; log `build/installed-try1.log` SHA-256 `6946f17114923dc0ca373b9ca3cea905aa480c33d9af36cf59f524f7f1e603ca`. The unchanged artifacts/test ran once with approved local execution and fresh state, session `66293` exit 0; log `build/installed-try2.log` SHA-256 `530b40a44ab2a07cb22cf28028c35b45e0d2ece242424935cac455c91f5816c4`. `npm pack` initially failed writing the default `/root/.npm/_logs` before packaging; a task-local npm cache made the same facade pack succeed. The first Node install process could not start because its requested consumer cwd did not yet exist; creating that directory allowed the unchanged two-tarball offline install to pass. TypeScript's first direct CLI attempts reported TS5112, TS2835 and TS5108 from incompatible invocation flags; `--ignoreConfig --module preserve --moduleResolution bundler` passed without source changes.
