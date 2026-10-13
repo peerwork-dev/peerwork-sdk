@@ -291,7 +291,10 @@ fn unsigned(value: &WireValue, name: &str) -> Result<u64, GrantError> {
     Ok(number as u64)
 }
 fn token(value: &str) -> bool {
-    value.len() == 43 && decode_base64url(value).is_ok_and(|bytes| bytes.len() == 32)
+    value.len() == 43
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
 }
 fn hex_digest(value: &str) -> bool {
     value.len() == 64
@@ -543,6 +546,15 @@ mod tests {
     use super::*;
     use serde_json::Value;
     use std::fs;
+
+    #[test]
+    fn opaque_scope_ids_follow_pinned_token_syntax() {
+        // A source-valid installed composed instance uses a noncanonical
+        // base64url suffix. Opaque IDs are regex tokens, not key material.
+        assert!(token(&"z".repeat(43)));
+        assert!(!token(&"z".repeat(42)));
+        assert!(!token(&format!("{}+", "z".repeat(42))));
+    }
 
     #[test]
     fn direct_ts_owner_grant_vector() {
