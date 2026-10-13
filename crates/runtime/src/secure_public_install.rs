@@ -1862,7 +1862,53 @@ mod selected_binding_service_test {
         assert_eq!(serde_json::from_str::<serde_json::Value>(
             &install.continue_install_json(&begin_id).unwrap()).unwrap(), progress);
         assert_eq!(counts(), before_retry);
+        // The same package without the selected binding guards vote with
+        // REVIEWER. This Owner has only an instance AUTHOR grant, so the
+        // source's default variant must be rejected without a secure commit.
+        let default_instance_id = random_id().unwrap();
+        let default_begin: serde_json::Value = serde_json::from_str(
+            &install.submit_begin_json(PublicPackageInstallInput {
+                closure_json: binding["closure"].to_string(),
+                bindings_json: None,
+                expected_package_id: "binding-option".into(),
+                expected_package_version: "1.0.0".into(),
+                expected_package_digest: binding["root_package_digest"].as_str().unwrap().into(),
+                expected_protocol_digest: binding["default_protocol_digest"].as_str().unwrap().into(),
+                instance_id: default_instance_id.clone(),
+                entrypoint: "binding".into(),
+                grants_json: serde_json::json!([{
+                    "actor_id": actor,
+                    "actions": ["vote"],
+                    "protocol_roles": ["AUTHOR"],
+                    "capabilities": []
+                }]).to_string(),
+                command_id: None,
+                issued_at_ms: None,
+            }).unwrap(),
+        ).unwrap();
+        let default_id = default_begin["begin_command_id"].as_str().unwrap().to_owned();
+        let mut default_progress = default_begin;
+        for _ in 0..8 {
+            if default_progress["status"] == "ACCEPTED" { break; }
+            default_progress = serde_json::from_str(
+                &install.continue_install_json(&default_id).unwrap()).unwrap();
+        }
+        assert_eq!(default_progress["status"], "ACCEPTED");
         let action = owner.public_action_access(&created.workspace_id).unwrap();
+        let before_rejected_vote = counts();
+        let rejected = action.submit_new_json(PublicActionInput {
+            action_id: "vote".into(),
+            instance_id: default_instance_id,
+            body_json: "{}".into(),
+            exact_input_refs_json: None,
+            allocations_json: None,
+            command_id: None,
+            issued_at_ms: None,
+        });
+        assert!(matches!(rejected,
+            Err(crate::secure_action_access::PublicActionError::Intent(
+                SecureIntentError::ServerRejected(409)))));
+        assert_eq!(counts(), before_rejected_vote);
         let submitted: serde_json::Value = serde_json::from_str(
             &action.submit_new_json(PublicActionInput {
                 action_id: "vote".into(),
@@ -1879,7 +1925,7 @@ mod selected_binding_service_test {
             &action.retry_saved_json(action_id).unwrap(),
         ).unwrap();
         assert_eq!(accepted["status"], "ACCEPTED");
-        assert_eq!(counts(), before_retry + 1);
+        assert_eq!(counts(), before_rejected_vote + 1);
         let read: serde_json::Value = serde_json::from_str(
             &owner.read_workspace_json(&created.workspace_id, &token).unwrap(),
         ).unwrap();
