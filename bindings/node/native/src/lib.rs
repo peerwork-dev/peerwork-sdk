@@ -498,7 +498,7 @@ impl Task for SecureEnrollmentTask {
         }
         if self.operation == "update_key" {
             return Ok(match (self.mode.as_deref(), self.expected_certificate_hash.as_deref()) {
-                (Some(mode), Some(hash)) => match access.update_key(mode, hash, self.update_id.as_deref()) {
+                (Some(mode), Some(hash)) => match access.update_key_with_cancel(mode, hash, self.update_id.as_deref(), &self.cancel) {
                     Ok(value) => serde_json::json!({"ok":true,"value":value}).to_string(),
                     Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
                 },
@@ -507,7 +507,7 @@ impl Task for SecureEnrollmentTask {
         }
         if self.operation == "retry_key_update" {
             return Ok(match self.update_id.as_deref() {
-                Some(id) => match access.retry_key_update(id) {
+                Some(id) => match access.retry_key_update_with_cancel(id, &self.cancel) {
                     Ok(value) => serde_json::json!({"ok":true,"value":value}).to_string(),
                     Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
                 },

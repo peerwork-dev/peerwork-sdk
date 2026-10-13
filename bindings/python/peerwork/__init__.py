@@ -805,16 +805,18 @@ class SecureRecipientEnrollmentClient:
     async def update_key_async(self, mode: Literal["ROTATE", "RENEW"],
                                expected_certificate_hash: str, *,
                                update_id: str | None = None) -> RecipientKeyUpdateResult:
-        worker = asyncio.create_task(asyncio.to_thread(self.update_key, mode,
-            expected_certificate_hash, update_id=update_id))
+        handle = KernelCancelHandle()
+        worker = asyncio.create_task(asyncio.to_thread(self._enroll, "update_key", handle,
+            mode=mode, expected_certificate_hash=expected_certificate_hash, update_id=update_id))
         try:
-            return await asyncio.shield(worker)
+            return cast(RecipientKeyUpdateResult, await asyncio.shield(worker))
         except asyncio.CancelledError:
+            handle.cancel()
             while not worker.done():
                 try:
                     await asyncio.shield(worker)
                 except asyncio.CancelledError:
-                    pass
+                    handle.cancel()
                 except Exception:
                     break
             try:
@@ -824,15 +826,18 @@ class SecureRecipientEnrollmentClient:
             raise
 
     async def retry_key_update_async(self, update_id: str) -> RecipientKeyUpdateResult:
-        worker = asyncio.create_task(asyncio.to_thread(self.retry_key_update, update_id))
+        handle = KernelCancelHandle()
+        worker = asyncio.create_task(asyncio.to_thread(self._enroll, "retry_key_update", handle,
+            update_id=update_id))
         try:
-            return await asyncio.shield(worker)
+            return cast(RecipientKeyUpdateResult, await asyncio.shield(worker))
         except asyncio.CancelledError:
+            handle.cancel()
             while not worker.done():
                 try:
                     await asyncio.shield(worker)
                 except asyncio.CancelledError:
-                    pass
+                    handle.cancel()
                 except Exception:
                     break
             try:

@@ -338,9 +338,10 @@ exports.openSecureRecipientEnrollment = options => {
     publish: (options = {}) => invoke('publish', options.signal),
     pending: () => invoke('pending'),
     certificateJson: () => invoke('certificate'),
-    updateKey: (mode, expectedCertificateHash, options = {}) => invoke('update_key', undefined,
+    updateKey: (mode, expectedCertificateHash, options = {}) => invoke('update_key', options.signal,
       mode, expectedCertificateHash, options.updateId),
-    retryKeyUpdate: updateId => invoke('retry_key_update', undefined, undefined, undefined, updateId),
+    retryKeyUpdate: (updateId, options = {}) => invoke('retry_key_update', options.signal,
+      undefined, undefined, updateId),
     pendingKeyUpdates: () => invoke('pending_key_updates'),
   });
 };

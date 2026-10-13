@@ -182,8 +182,8 @@ export interface SecureRecipientEnrollmentSession {
   /** Exact signed public certificate; this alone does not prove publication. */
   certificateJson(): Promise<string>;
   /** Exact successor key/entry is protected before POST; an omitted ID is locally discoverable. */
-  updateKey(mode: 'ROTATE' | 'RENEW', expectedCertificateHash: string, options?: { updateId?: string }): Promise<RecipientKeyUpdateResult>;
-  retryKeyUpdate(updateId: string): Promise<RecipientKeyUpdateResult>;
+  updateKey(mode: 'ROTATE' | 'RENEW', expectedCertificateHash: string, options?: { updateId?: string; signal?: AbortSignal }): Promise<RecipientKeyUpdateResult>;
+  retryKeyUpdate(updateId: string, options?: { signal?: AbortSignal }): Promise<RecipientKeyUpdateResult>;
   /** Protected local IDs; PENDING is not directory publication. */
   pendingKeyUpdates(): Promise<RecipientKeyUpdateResult[]>;
 }

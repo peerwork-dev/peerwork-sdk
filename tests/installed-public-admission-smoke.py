@@ -134,6 +134,32 @@ async def cancel_after_persist(origin, owner, reopen_kwargs, certificate, databa
         assert connection.execute("SELECT count(*) FROM secure_invitations").fetchone()[0] == before_count + 1
 
 
+async def cancel_key_update_after_apply(origin, recipient, expected_certificate_hash):
+    with urllib.request.urlopen(urllib.request.Request(
+            origin + "__test/delay-next-identity-directory-post", data=b"", method="POST"), timeout=5):
+        pass
+    task = asyncio.create_task(recipient.update_key_async("ROTATE", expected_certificate_hash))
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        if task.done():
+            await task  # surface an early producer error, rather than claiming cancellation
+            raise AssertionError("key update returned before the applied-response delay")
+        with urllib.request.urlopen(origin + "__test/identity-directory-post-delay-status", timeout=5) as response:
+            if json.load(response)["applied"]:
+                break
+        await asyncio.sleep(0.05)
+    else:
+        raise AssertionError("signed directory POST was not observed after service application")
+    task.cancel()
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    else:
+        raise AssertionError("post-persistence key-update cancellation was not observed")
+
+
 with tempfile.TemporaryDirectory(prefix="peerwork-native-admission-", dir=TEMP_ROOT) as temporary:
     state = Path(temporary)
     state.chmod(0o700)
@@ -237,17 +263,18 @@ with tempfile.TemporaryDirectory(prefix="peerwork-native-admission-", dir=TEMP_R
 
         # The accepted invitation below was encrypted for the original v1
         # certificate. Updating the recipient key must retain that history.
-        with urllib.request.urlopen(urllib.request.Request(
-                origin + "__test/drop-next-identity-directory", data=b"", method="POST"), timeout=5):
-            pass
-        rotation = recipient.update_key("ROTATE", local["certificate_digest"])
-        assert rotation["status"] == "PENDING" and rotation["directory_version"] == 2
+        asyncio.run(cancel_key_update_after_apply(origin, recipient, local["certificate_digest"]))
         reopened_recipient = peerwork.SecureRecipientEnrollmentClient(origin, str(recipient_dir),
             allow_loopback_http=True)
         pending_updates = reopened_recipient.pending_key_updates()
-        assert len(pending_updates) == 1 and pending_updates[0] == rotation
+        assert len(pending_updates) == 1
+        rotation = pending_updates[0]
+        assert rotation["status"] == "PENDING" and rotation["mode"] == "ROTATE"
+        assert rotation["directory_version"] == 2
         assert cli("recipient-pending-updates", f"--origin={origin}",
             f"--state-dir={recipient_dir}", "--allow-loopback-http") == pending_updates
+        applied = directory.lookup(local["actor_id"], local["signing_key_id"])
+        assert applied["directory_head"] == rotation["directory_head"]
         published_rotation = cli("recipient-retry-update", f"--origin={origin}",
             f"--state-dir={recipient_dir}", f"--update-id={rotation['update_id']}",
             "--allow-loopback-http")

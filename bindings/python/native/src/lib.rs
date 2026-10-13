@@ -353,7 +353,7 @@ fn secure_recipient_enrollment_json(
         }
         if operation == "update_key" {
             return match (mode.as_deref(), expected_certificate_hash.as_deref()) {
-                (Some(mode), Some(hash)) => match access.update_key(mode, hash, update_id.as_deref()) {
+                (Some(mode), Some(hash)) => match access.update_key_with_cancel(mode, hash, update_id.as_deref(), &cancel) {
                     Ok(value) => serde_json::json!({"ok":true,"value":value}).to_string(),
                     Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
                 },
@@ -362,7 +362,7 @@ fn secure_recipient_enrollment_json(
         }
         if operation == "retry_key_update" {
             return match update_id.as_deref() {
-                Some(id) => match access.retry_key_update(id) {
+                Some(id) => match access.retry_key_update_with_cancel(id, &cancel) {
                     Ok(value) => serde_json::json!({"ok":true,"value":value}).to_string(),
                     Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
                 },

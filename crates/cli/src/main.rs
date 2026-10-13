@@ -304,7 +304,7 @@ fn secure_recipient_command(verb: &str, args: &[String]) -> Result<String, (&'st
             .ok_or(("USAGE", "--mode is required".to_owned()))?;
         let expected = expected_certificate_hash.filter(|value: &String| !value.is_empty())
             .ok_or(("USAGE", "--expected-certificate-hash is required".to_owned()))?;
-        let value = access.update_key(&mode, &expected, update_id.as_deref())
+        let value = access.update_key_with_cancel(&mode, &expected, update_id.as_deref(), &cancel)
             .map_err(|error| (error.code(), error.to_string()))?;
         return serde_json::to_string(&value)
             .map_err(|_| ("RESULT_ENCODING_FAILED", "recipient update encoding failed".to_owned()));
@@ -312,7 +312,7 @@ fn secure_recipient_command(verb: &str, args: &[String]) -> Result<String, (&'st
     if verb == "recipient-retry-update" {
         let update_id = update_id.filter(|value: &String| !value.is_empty())
             .ok_or(("USAGE", "--update-id is required".to_owned()))?;
-        let value = access.retry_key_update(&update_id)
+        let value = access.retry_key_update_with_cancel(&update_id, &cancel)
             .map_err(|error| (error.code(), error.to_string()))?;
         return serde_json::to_string(&value)
             .map_err(|_| ("RESULT_ENCODING_FAILED", "recipient update encoding failed".to_owned()));
