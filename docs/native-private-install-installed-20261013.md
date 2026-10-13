@@ -42,3 +42,32 @@ TMPDIR="$artifact_root/build/tmp" \
 ```
 
 The public test observed PAGE, PAGE, END, END progress for the exact composed closure, then native distinct-actor offer/consent/delivery/receipt, proposal, adoption and task effects with final verified sequence 10 and duplicate-free retries. It printed Owner `AQ7M9XJt5cCv_WbBGPwoiK_rjlMbESZG5wsQxq3fX3g`, recipient `eaULsErdLFnIlWRF8GDlnQIe0PQzMtOmh61Hnbk8ncY`, candidate `qY6L9M9yu77G3GGM-J__xPMjFr_WzYKrUEu0cyctm0c`, and task `SYyr6QN34KFoBZtGnmV4pKGp2CXRdVNGyiykj4eLvGY`. This rerun demonstrates that the corrected strict replay validator still accepts a legitimate PUBLIC composed nonempty snapshot on installed artifacts. It does not exercise PRIVATE nonempty PAGE or supply an independent installed tamper-negative test.
+
+## PRIVATE composed two-part and nonempty PAGE follow-up
+
+The optional composed mode was committed separately at `05d2966` (`tests/installed-private-package-install-smoke.py`, SHA-256 `fa7cd7f70344135930a91224a556fa478354d9fc42856bd1b0c1b70ca7a3d705`), after the original one-part result above. It used the **same installed b81 wheel/npm/CLI artifacts** and a fresh `private-composed-state-1`; session `36454` exited 0. The test required the same external installer/replay source hashes plus official composed vector SHA-256 `ea072b766172a211f1f413ea61c5166e10a660bd46a1adc422cd2dddac2c12dc`, root package digest `2891b2dd0ab0f5229917a3b9917ef08bed4ac60539ff6c296b445ba7e89bf669`, protocol digest `4bbc29376d4c509319f5f825a4d36a627d83a54153d5cefb8762b6d23bcaa9c0`, and vector source digest `c6ae98e80955fe38dbdac4ae5ccc823cd80c2027f4b3c9f34246527494cfc6a6` before starting the service.
+
+Native Owner created the PRIVATE structured workspace and an encrypted wiki record before staging. Signed read at sequence 2 verified its record ID `0NQopA_I29D7kkeI4A4vRGZTiYfWYNI0lBtBWCmTsKg` and exact title/body. The committed official composed closure staged as two applied source parts, with root/protocol digests matching the vector. Node BEGIN received an applied-but-dropped response and withheld its generated ID from the supervising caller; fresh Python `installs()` recovered BEGIN `efj4pZ2aVduLklJo0p_zs98WWRG4an-EXIf9detZrck`. The first CLI continuation authored `secure.structure.page` and its POST applied with a dropped reply. Subsequent Node continuation observed a second PAGE and END; the three distinct step IDs were `4TDTvUBYHFEzQ12pGYtkON00Wep3mh5S_JOC6wl_lvc`, `Ro7-aplJFYWo7y-mwcDJ2FGz1CR5QJj_TO0u4EHpnYM`, and `K8YELR3xWu9Bpyb0nerEB3a-f2zskhdg7hTl4rMGJQU`. Exact saved continuation reached ACCEPTED without duplicate commits. Signed ACTIVE read preserved the old record's ID/title/body and installed the expected protocol/instance. Node authored encrypted `proposal.proposal.propose`; signed receipt/readback verified one candidate record `VRuOick_h-6nC73G9GWpv_9c3HJdKLbFGAcxcuPciVs`, exact title/body/Owner author, and the old record again. CLI repeated saved action/install retries without another commit. Final verified sequence was 9; after service shutdown, Python/Node/CLI local installs rows matched on the BEGIN ID.
+
+The observed staged `source_id` was `664a127a00192b89d96a3b29829b6c5a0e16b80512105a562472c6cab44e2d48`. It is not the vector's `source_digest` and is not expected to equal the earlier two-part stage-only run's source ID `8605a84aa3c735644f520fef426eab02d1c1f250ef359ace6392913a687de75b`: `package_source_id` hashes the exact workspace source checkpoint together with the canonical material hash. The material/vector digests above identify the selected package; the source ID binds this particular staging origin and prefix. The full affected invocation from the SDK worktree was:
+
+```sh
+artifact_root="$PWD/.build-artifacts/private-install-b81f9ed"
+PEERWORK_TEST_SDK_ROOT="$artifact_root/source" \
+PEERWORK_TEST_STATE="$artifact_root/build/private-composed-state-1" \
+PEERWORK_TEST_NODE=/root/workdir/message/.tools/node-v24.20.0-linux-x64/bin/node \
+PEERWORK_TEST_NODE_PACKAGE="$artifact_root/install/node/node_modules/@peerwork/agent-sdk" \
+PEERWORK_TEST_CLI="$artifact_root/build/target/release/peerwork" \
+PEERWORK_TEST_INSTALL_SOURCE_SHA256=c261e0f90e98d39910040f72988502b02d6abbd65f5f6d657816d6d231c6c5d0 \
+PEERWORK_TEST_REPLAY_SOURCE_SHA256=e4b440272d0daf1c08d9e83fa98477cf3a804fda67cd6b286990d472e62c5800 \
+PEERWORK_TEST_PRIVATE_COMPOSED=1 \
+PEERWORK_TEST_VECTOR_SHA256=ea072b766172a211f1f413ea61c5166e10a660bd46a1adc422cd2dddac2c12dc \
+PEERWORK_TEST_ROOT_DIGEST=2891b2dd0ab0f5229917a3b9917ef08bed4ac60539ff6c296b445ba7e89bf669 \
+PEERWORK_TEST_PROTOCOL_DIGEST=4bbc29376d4c509319f5f825a4d36a627d83a54153d5cefb8762b6d23bcaa9c0 \
+PEERWORK_TEST_SOURCE_DIGEST=c6ae98e80955fe38dbdac4ae5ccc823cd80c2027f4b3c9f34246527494cfc6a6 \
+PEERWORK_REFERENCE_ROOT=/root/workdir/message/.worktrees/e2ee-main-integration-20261006 \
+TMPDIR="$artifact_root/build/tmp" \
+"$artifact_root/install/venv/bin/python" "$PWD/tests/installed-private-package-install-smoke.py"
+```
+
+This follow-up proves one existing encrypted record, two committed source parts and two observed PRIVATE PAGE steps before END on installed Linux x64 packages. It is distinct from the core's separate 51-record/four-PAGE boundary work and does not establish all package families, cancellation semantics, other operating systems, or natural Agent workflow compliance.
