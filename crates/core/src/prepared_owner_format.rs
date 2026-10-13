@@ -415,10 +415,285 @@ pub fn verify_saved_owner_private_format_transition(
     })
 }
 
+/// PUBLIC Owner wire upgrade. The plaintext ADMIN operation is part of the
+/// signed commit and is re-proved byte-for-byte before a saved retry. The
+/// caller still must supply current complete origin-bound replay evidence.
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_owner_public_format_upgrade(
+    signed_policy_wire: &[u8],
+    checkpoint_wire: &[u8],
+    prior_objects: &[WireValue],
+    signer: &SigningKey,
+    command_id: &str,
+    issued_at_ms: u64,
+) -> Result<PreparedOwnerFormatTransition, OwnerFormatPrepareError> {
+    let bad = || OwnerFormatPrepareError::Invalid;
+    assert_protocol_format_ceiling(prior_objects, 1).map_err(|_| bad())?;
+    if !token(command_id) || issued_at_ms > 9_007_199_254_740_991 {
+        return Err(bad());
+    }
+    let signed = parse_wire_json_bounded(signed_policy_wire, 64, 196_608).map_err(|_| bad())?;
+    let checkpoint = parse_wire_json_bounded(checkpoint_wire, 32, 8192).map_err(|_| bad())?;
+    let policy = signed.get("payload").ok_or_else(bad)?;
+    let policy_wire = canonical_wire_value(&signed, Path::SecureArtifact).map_err(|_| bad())?;
+    let owner_key = base64url(&signer.verifying_key().to_bytes());
+    let owner_actor = actor_id(&signer.verifying_key().to_bytes());
+    let workspace_id = string(policy, "workspace_id")?;
+    let old_v = number(policy, "v")?;
+    let sequence = number(&checkpoint, "sequence")?
+        .checked_add(1)
+        .ok_or_else(bad)?;
+    let old_policy_hash = sha256_hex(policy_wire.as_bytes());
+    let old_head = string(&checkpoint, "head")?;
+    if !verify_secure_signed_wire(
+        policy_wire.as_bytes(),
+        "peerwork.secure.policy.v1",
+        &owner_key,
+    )
+    .map_err(|_| bad())?
+        || string(policy, "visibility")? != "PUBLIC"
+        || string(policy, "owner_id")? != owner_actor
+        || string(policy, "signing_key")? != owner_key
+        || !matches!(old_v, 1 | 2)
+        || number(policy, "epoch")? != 0
+        || string(&checkpoint, "workspace_id")? != workspace_id
+        || string(&checkpoint, "owner_id")? != owner_actor
+        || string(&checkpoint, "owner_key")? != owner_key
+        || string(&checkpoint, "policy_hash")? != old_policy_hash
+        || number(&checkpoint, "v")? != 1
+        || !token(&workspace_id)
+        || old_head.len() != 64
+        || !old_head
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
+        return Err(bad());
+    }
+    let mut next_policy = policy.clone();
+    set(&mut next_policy, "v", WireValue::Number(3.0))?;
+    set(
+        &mut next_policy,
+        "protocol_format_ceiling",
+        WireValue::Number(1.0),
+    )?;
+    let structured = old_v == 2;
+    set(
+        &mut next_policy,
+        "structure_mode",
+        s(if structured { "STRUCTURED" } else { "NONE" }),
+    )?;
+    set(
+        &mut next_policy,
+        "version",
+        WireValue::Number(number(policy, "version")?.checked_add(1).ok_or_else(bad)? as f64),
+    )?;
+    set(&mut next_policy, "previous_policy", s(&old_policy_hash))?;
+    set(
+        &mut next_policy,
+        "effective_sequence",
+        WireValue::Number(sequence as f64),
+    )?;
+    set(
+        &mut next_policy,
+        "issued_at",
+        WireValue::Number(issued_at_ms as f64),
+    )?;
+    let payload_wire =
+        canonical_wire_value(&next_policy, Path::SecureArtifact).map_err(|_| bad())?;
+    let mut policy_message = Zeroizing::new(Vec::with_capacity(payload_wire.len() + 32));
+    policy_message.extend_from_slice(b"peerwork.secure.policy.v3\0");
+    policy_message.extend_from_slice(payload_wire.as_bytes());
+    let next_signed_policy = obj(vec![
+        ("payload", next_policy),
+        (
+            "signature",
+            s(&base64url(&signer.sign(&policy_message).to_bytes())),
+        ),
+    ]);
+    let next_policy_wire =
+        canonical_wire_value(&next_signed_policy, Path::SecureArtifact).map_err(|_| bad())?;
+    let next_policy_hash = sha256_hex(next_policy_wire.as_bytes());
+    let operation = obj(vec![
+        ("v", WireValue::Number(1.0)),
+        ("kind", s("ADMIN")),
+        ("input", obj(vec![])),
+        ("objects", WireValue::Array(vec![])),
+    ]);
+    let mut payload_fields = vec![
+        ("v", WireValue::Number(3.0)),
+        ("workspace_id", s(&workspace_id)),
+        ("sequence", WireValue::Number(sequence as f64)),
+        ("previous", s(&old_head)),
+        ("policy_hash", s(&next_policy_hash)),
+        ("epoch", WireValue::Number(0.0)),
+        ("actor_id", s(&owner_actor)),
+        ("signing_key", s(&owner_key)),
+        ("command_id", s(command_id)),
+        ("action_id", s("secure.protocol-format.upgrade")),
+        ("instance_id", WireValue::Null),
+        ("issued_at", WireValue::Number(issued_at_ms as f64)),
+        ("delegation", WireValue::Null),
+        ("protocol_format_ceiling", WireValue::Number(1.0)),
+    ];
+    if structured {
+        payload_fields.push((
+            "structure",
+            obj(vec![
+                ("v", WireValue::Number(1.0)),
+                ("mode", s("DELTA")),
+                ("records", WireValue::Array(vec![])),
+                ("heads", WireValue::Array(vec![])),
+            ]),
+        ));
+    }
+    payload_fields.push(("mode", s("PUBLIC")));
+    payload_fields.push(("body", operation));
+    let commit_payload = obj(payload_fields);
+    let commit_payload_wire =
+        canonical_wire_value(&commit_payload, Path::SecureArtifact).map_err(|_| bad())?;
+    let mut commit_message = Zeroizing::new(Vec::with_capacity(commit_payload_wire.len() + 32));
+    commit_message.extend_from_slice(b"peerwork.secure.commit.v3\0");
+    commit_message.extend_from_slice(commit_payload_wire.as_bytes());
+    let commit = obj(vec![
+        ("payload", commit_payload),
+        (
+            "signature",
+            s(&base64url(&signer.sign(&commit_message).to_bytes())),
+        ),
+    ]);
+    let commit_wire = canonical_wire_value(&commit, Path::SecureArtifact).map_err(|_| bad())?;
+    let commit_hash = sha256_hex(commit_wire.as_bytes());
+    let request_wire =
+        format!("{{\"commit\":{commit_wire},\"policy_update\":{next_policy_wire}}}").into_bytes();
+    if request_wire.len() > 220_000 {
+        return Err(OwnerFormatPrepareError::Resource);
+    }
+    Ok(PreparedOwnerFormatTransition {
+        request_wire,
+        commit_hash,
+        policy_hash: next_policy_hash,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn verify_saved_owner_public_format_upgrade(
+    saved_request_wire: &[u8],
+    signed_policy_wire: &[u8],
+    checkpoint_wire: &[u8],
+    prior_objects: &[WireValue],
+    signer: &SigningKey,
+    command_id: &str,
+    issued_at_ms: u64,
+) -> Result<PreparedOwnerFormatTransition, OwnerFormatPrepareError> {
+    let expected = prepare_owner_public_format_upgrade(
+        signed_policy_wire,
+        checkpoint_wire,
+        prior_objects,
+        signer,
+        command_id,
+        issued_at_ms,
+    )?;
+    if saved_request_wire != expected.request_wire() {
+        return Err(OwnerFormatPrepareError::Invalid);
+    }
+    Ok(expected)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::crypto::sign_canonical;
+
+    #[test]
+    fn public_upgrade_is_cleartext_exact_and_refuses_private_source() {
+        let signer = SigningKey::from_bytes(&[9; 32]);
+        let actor = actor_id(&signer.verifying_key().to_bytes());
+        let key = base64url(&signer.verifying_key().to_bytes());
+        let workspace = base64url(&[3; 32]);
+        let command = base64url(&[4; 32]);
+        let old = serde_json::json!({"v":1,"workspace_id":workspace,"owner_id":actor,
+            "signing_key":key,"visibility":"PUBLIC","epoch":0,"version":1,
+            "issued_at":1000,"members":[],"previous_policy":null,"effective_sequence":1});
+        let signed = serde_json::json!({"payload":old,
+            "signature":sign_canonical("peerwork.secure.policy.v1", &old, &signer).unwrap()});
+        let policy_wire = crate::canonical::canonical(&signed, Path::SecureArtifact).unwrap();
+        let checkpoint = serde_json::json!({"v":1,"workspace_id":workspace,"owner_id":actor,
+            "owner_key":key,"sequence":2,"head":"a".repeat(64),
+            "policy_hash":sha256_hex(policy_wire.as_bytes())});
+        let checkpoint_wire =
+            crate::canonical::canonical(&checkpoint, Path::SecureArtifact).unwrap();
+        let prepared = prepare_owner_public_format_upgrade(
+            policy_wire.as_bytes(),
+            checkpoint_wire.as_bytes(),
+            &[],
+            &signer,
+            &command,
+            2000,
+        )
+        .unwrap();
+        let request: serde_json::Value = serde_json::from_slice(prepared.request_wire()).unwrap();
+        assert_eq!(request["commit"]["payload"]["mode"], "PUBLIC");
+        assert_eq!(request["commit"]["payload"]["epoch"], 0);
+        assert_eq!(
+            request["commit"]["payload"]["body"],
+            serde_json::json!({"v":1,"kind":"ADMIN","input":{},"objects":[]})
+        );
+        assert_eq!(request["policy_update"]["payload"]["visibility"], "PUBLIC");
+        assert_eq!(
+            request["policy_update"]["payload"]["protocol_format_ceiling"],
+            1
+        );
+        assert_eq!(
+            request["policy_update"]["payload"]["structure_mode"],
+            "NONE"
+        );
+        assert_eq!(
+            verify_saved_owner_public_format_upgrade(
+                prepared.request_wire(),
+                policy_wire.as_bytes(),
+                checkpoint_wire.as_bytes(),
+                &[],
+                &signer,
+                &command,
+                2000
+            )
+            .unwrap()
+            .commit_hash(),
+            prepared.commit_hash()
+        );
+        let mut altered = prepared.request_wire().to_vec();
+        altered.push(b' ');
+        assert!(matches!(
+            verify_saved_owner_public_format_upgrade(
+                &altered,
+                policy_wire.as_bytes(),
+                checkpoint_wire.as_bytes(),
+                &[],
+                &signer,
+                &command,
+                2000
+            ),
+            Err(OwnerFormatPrepareError::Invalid)
+        ));
+        let mut private = old.clone();
+        private["visibility"] = serde_json::json!("PRIVATE");
+        private["epoch"] = serde_json::json!(1);
+        let signed_private = serde_json::json!({"payload":private,
+            "signature":sign_canonical("peerwork.secure.policy.v1", &private, &signer).unwrap()});
+        let private_wire =
+            crate::canonical::canonical(&signed_private, Path::SecureArtifact).unwrap();
+        assert!(matches!(
+            prepare_owner_public_format_upgrade(
+                private_wire.as_bytes(),
+                checkpoint_wire.as_bytes(),
+                &[],
+                &signer,
+                &command,
+                2000
+            ),
+            Err(OwnerFormatPrepareError::Invalid)
+        ));
+    }
 
     #[test]
     fn old_private_policy_upgrade_and_saved_packet_are_exact() {

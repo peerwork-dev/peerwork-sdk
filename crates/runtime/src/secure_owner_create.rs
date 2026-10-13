@@ -266,6 +266,29 @@ impl SecureOwnerWorkspaceCreate {
         ))
     }
 
+    /// Select Owner format transitions from a protected CREATED or ATTACHED
+    /// workspace binding. The selected visibility is never caller supplied.
+    pub fn format_transition_access(
+        &self,
+        workspace_id: &str,
+    ) -> Result<SecureOwnerFormatTransition, SecureOwnerCreateError> {
+        let private = self.created_profile_config(workspace_id, "PRIVATE");
+        let public = self.created_profile_config(workspace_id, "PUBLIC");
+        match (private, public) {
+            (Ok(_), Ok(_)) => Err(SecureOwnerCreateError::Invalid),
+            (Ok(config), Err(SecureOwnerCreateError::NotFound)) => {
+                Ok(SecureOwnerFormatTransition::new(config))
+            }
+            (Err(SecureOwnerCreateError::NotFound), Ok(config)) => {
+                Ok(SecureOwnerFormatTransition::new_public(config))
+            }
+            (Err(SecureOwnerCreateError::NotFound), Err(SecureOwnerCreateError::NotFound)) => {
+                Err(SecureOwnerCreateError::NotFound)
+            }
+            (Err(error), _) | (_, Err(error)) => Err(error),
+        }
+    }
+
     /// Invite and deliver for an Owner-created PUBLIC workspace using the
     /// verified, protected Owner profile selected by its public workspace ID.
     /// Recipient identity and consent remain separate admission checks.

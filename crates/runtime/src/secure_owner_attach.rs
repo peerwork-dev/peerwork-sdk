@@ -1348,6 +1348,127 @@ mod tests {
         )
         .unwrap();
         assert_eq!(read["workspace_id"], workspace_id);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let activated = rt
+            .block_on(
+                reqwest::Client::new()
+                    .post(format!("{origin}__test/activate-protocol-cutover"))
+                    .body("{}")
+                    .send(),
+            )
+            .unwrap();
+        assert_eq!(activated.status(), 200);
+        let phase: serde_json::Value =
+            serde_json::from_slice(&rt.block_on(activated.bytes()).unwrap()).unwrap();
+        assert_eq!(phase["phase"], "ENFORCE");
+        let owner = SecureOwnerWorkspaceCreate::new(SecureOwnerCreateConfig {
+            origin: origin.into(),
+            state_dir: root.path().join("native-owner"),
+            allow_loopback_http: true,
+            max_replay_artifact_bytes: 64 * 1024 * 1024,
+        });
+        let access = owner.format_transition_access(workspace_id).unwrap();
+        let before = SecureReadProfile::new(access.profile_config().clone()).with_latest_replay(&cancel, |source| {
+            let wire=source.signed_policy_by_hash(source.replay().policy_hash())
+                .ok_or(crate::secure_owner_format_transition::OwnerFormatTransitionError::Verification)?;
+            let policy:serde_json::Value=serde_json::from_slice(wire)
+                .map_err(|_|crate::secure_owner_format_transition::OwnerFormatTransitionError::Verification)?;
+            Ok::<_,crate::secure_owner_format_transition::OwnerFormatTransitionError>((policy,source.replay().policy_hash().to_owned(),source.replay().sequence()))
+        }).unwrap();
+        assert_eq!(before.0["payload"]["v"], 1);
+        assert_eq!(before.0["payload"]["visibility"], "PUBLIC");
+        assert_eq!(before.0["payload"]["epoch"], 0);
+        assert_eq!(
+            rt.block_on(
+                reqwest::Client::new()
+                    .post(format!("{origin}__test/drop-next-post"))
+                    .body("{}")
+                    .send()
+            )
+            .unwrap()
+            .status(),
+            200
+        );
+        let input = crate::secure_owner_format_transition::OwnerFormatTransitionInput {
+            workspace_id: workspace_id.into(),
+            transition: crate::secure_owner_format_transition::OwnerFormatTransition::UpgradeWireV3,
+            command_id: None,
+            issued_at_ms: None,
+        };
+        let first: serde_json::Value =
+            serde_json::from_str(&access.submit_json_with_cancel(input, &cancel).unwrap()).unwrap();
+        assert_eq!(first["status"], "PENDING");
+        let command_id = first["command_id"].as_str().unwrap();
+        let fresh = owner.format_transition_access(workspace_id).unwrap();
+        let history: serde_json::Value =
+            serde_json::from_str(&fresh.history_json().unwrap()).unwrap();
+        assert_eq!(history[0]["command_id"], command_id);
+        let accepted: serde_json::Value =
+            serde_json::from_str(&fresh.resume_json_with_cancel(command_id, &cancel).unwrap())
+                .unwrap();
+        assert_eq!(accepted["status"], "ACCEPTED");
+        let after = SecureReadProfile::new(fresh.profile_config().clone()).with_latest_replay(&cancel, |source| {
+            let wire=source.signed_policy_by_hash(source.replay().policy_hash())
+                .ok_or(crate::secure_owner_format_transition::OwnerFormatTransitionError::Verification)?;
+            let policy:serde_json::Value=serde_json::from_slice(wire)
+                .map_err(|_|crate::secure_owner_format_transition::OwnerFormatTransitionError::Verification)?;
+            Ok::<_,crate::secure_owner_format_transition::OwnerFormatTransitionError>((policy,source.replay().policy_hash().to_owned(),source.replay().sequence()))
+        }).unwrap();
+        assert_eq!(after.0["payload"]["v"], 3);
+        assert_eq!(after.0["payload"]["visibility"], "PUBLIC");
+        assert_eq!(after.0["payload"]["epoch"], 0);
+        assert_eq!(after.0["payload"]["protocol_format_ceiling"], 1);
+        assert_eq!(after.0["payload"]["structure_mode"], "NONE");
+        for field in ["workspace_id", "owner_id", "signing_key", "members"] {
+            assert_eq!(after.0["payload"][field], before.0["payload"][field]);
+        }
+        assert_eq!(after.0["payload"]["previous_policy"], before.1);
+        assert_eq!(
+            after.0["payload"]["effective_sequence"].as_u64(),
+            Some(before.2 + 1)
+        );
+        assert_eq!(after.1, accepted["policy_hash"]);
+        assert_eq!(after.2, before.2 + 1);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(
+                &fresh.resume_json_with_cancel(command_id, &cancel).unwrap()
+            )
+            .unwrap(),
+            accepted
+        );
+        let final_sequence = SecureReadProfile::new(fresh.profile_config().clone())
+            .with_latest_replay(&cancel, |source| {
+                Ok::<_, crate::secure_owner_format_transition::OwnerFormatTransitionError>(
+                    source.replay().sequence(),
+                )
+            })
+            .unwrap();
+        assert_eq!(final_sequence, after.2);
+        let forbidden = crate::secure_owner_format_transition::OwnerFormatTransitionInput {
+            workspace_id: workspace_id.into(),
+            transition:
+                crate::secure_owner_format_transition::OwnerFormatTransition::RaisePrivateCeilingTwo,
+            command_id: None,
+            issued_at_ms: None,
+        };
+        assert!(matches!(
+            fresh.submit_json_with_cancel(forbidden, &cancel),
+            Err(crate::secure_owner_format_transition::OwnerFormatTransitionError::Input)
+        ));
+        assert_eq!(
+            SecureReadProfile::new(fresh.profile_config().clone())
+                .with_latest_replay(&cancel, |source| Ok::<
+                    _,
+                    crate::secure_owner_format_transition::OwnerFormatTransitionError,
+                >(
+                    source.replay().sequence()
+                ))
+                .unwrap(),
+            after.2
+        );
     }
 
     #[test]

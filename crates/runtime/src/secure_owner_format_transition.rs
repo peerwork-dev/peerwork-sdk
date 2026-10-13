@@ -13,7 +13,8 @@ use crate::{
 use peerwork_core::{
     crypto::{base64url, decode_base64url},
     prepared_owner_format::{
-        prepare_owner_private_format_transition, verify_saved_owner_private_format_transition,
+        prepare_owner_private_format_transition, prepare_owner_public_format_upgrade,
+        verify_saved_owner_private_format_transition, verify_saved_owner_public_format_upgrade,
         OwnerFormatPrepareError, OwnerFormatTransitionKind,
     },
     replayed_secure_journal::{replay_secure_journal_exact, JournalReplayInput, StructureStatus},
@@ -146,6 +147,8 @@ impl From<OwnerFormatPrepareError> for OwnerFormatTransitionError {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SavedTransition {
+    #[serde(default = "private_visibility")]
+    visibility: String,
     transition: OwnerFormatTransition,
     issued_at_ms: u64,
     source_sequence: u64,
@@ -164,6 +167,8 @@ struct TransitionHistory {
     workspace_id: String,
     actor_id: String,
     owner_key_id: String,
+    #[serde(default = "private_visibility")]
+    visibility: String,
     rows: BTreeMap<String, SavedTransition>,
 }
 impl TransitionHistory {
@@ -171,6 +176,7 @@ impl TransitionHistory {
         store: &SecureStateStore,
         config: &SecureReadProfileConfig,
         identity: &KernelIdentity,
+        visibility: &str,
     ) -> Result<Self, OwnerFormatTransitionError> {
         let document = if let Some(bytes) = store.read_exact()? {
             if bytes.len() > MAX_DOCUMENT {
@@ -184,6 +190,7 @@ impl TransitionHistory {
                 workspace_id: config.workspace_id.clone(),
                 actor_id: identity.actor_id().into(),
                 owner_key_id: identity.key_id().into(),
+                visibility: visibility.into(),
                 rows: BTreeMap::new(),
             }
         };
@@ -192,9 +199,11 @@ impl TransitionHistory {
             || document.workspace_id != config.workspace_id
             || document.actor_id != identity.actor_id()
             || document.owner_key_id != identity.key_id()
+            || document.visibility != visibility
             || document.rows.len() > MAX_ROWS
             || document.rows.iter().any(|(id, row)| {
-                !token(id)
+                row.visibility != visibility
+                    || !token(id)
                     || !digest(&row.source_head)
                     || !digest(&row.source_policy_hash)
                     || !digest(&row.commit_hash)
@@ -219,6 +228,9 @@ impl TransitionHistory {
         store.write_exact(&bytes)?;
         Ok(())
     }
+}
+fn private_visibility() -> String {
+    "PRIVATE".into()
 }
 fn token(v: &str) -> bool {
     v.len() == 43
@@ -282,7 +294,7 @@ fn result(
 /// ancestor; this second replay authenticates its historical object set.
 fn source_objects_at_saved(
     source: &crate::secure_verified_read::TransportReplayedJournal,
-    lifecycle: &SecureLifecycle,
+    lifecycle: Option<&SecureLifecycle>,
     row: &SavedTransition,
     checkpoint_wire: &[u8],
 ) -> Result<Vec<WireValue>, OwnerFormatTransitionError> {
@@ -304,12 +316,17 @@ fn source_objects_at_saved(
             policy_refs.push(wire.as_slice());
         }
     }
-    let ring = lifecycle
-        .active_keyring_without_pending()
-        .ok_or(OwnerFormatTransitionError::Conflict)?;
-    let ring_wire = ring
-        .canonical_wire()
-        .map_err(|_| OwnerFormatTransitionError::Identity)?;
+    let ring_wire = if let Some(lifecycle) = lifecycle {
+        Some(
+            lifecycle
+                .active_keyring_without_pending()
+                .ok_or(OwnerFormatTransitionError::Conflict)?
+                .canonical_wire()
+                .map_err(|_| OwnerFormatTransitionError::Identity)?,
+        )
+    } else {
+        None
+    };
     let replay = replay_secure_journal_exact(JournalReplayInput {
         policy_wires: &policy_refs,
         commit_wires: &commit_refs,
@@ -320,7 +337,7 @@ fn source_objects_at_saved(
         final_sequence: row.source_sequence,
         final_head: Some(&row.source_head),
         final_policy_hash: &row.source_policy_hash,
-        keyring_wire: Some(&ring_wire),
+        keyring_wire: ring_wire.as_deref().map(Vec::as_slice),
     })
     .map_err(|_| OwnerFormatTransitionError::Verification)?;
     Ok(replay.objects().to_vec())
@@ -328,10 +345,23 @@ fn source_objects_at_saved(
 
 pub struct SecureOwnerFormatTransition {
     config: SecureReadProfileConfig,
+    visibility: &'static str,
 }
 impl SecureOwnerFormatTransition {
+    pub(crate) fn profile_config(&self) -> &SecureReadProfileConfig {
+        &self.config
+    }
     pub fn new(config: SecureReadProfileConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            visibility: "PRIVATE",
+        }
+    }
+    pub fn new_public(config: SecureReadProfileConfig) -> Self {
+        Self {
+            config,
+            visibility: "PUBLIC",
+        }
     }
     fn history_path(&self) -> std::path::PathBuf {
         self.config.state_dir.join("owner-format.state")
@@ -394,7 +424,7 @@ impl SecureOwnerFormatTransition {
         let identity = KernelIdentity::open(&self.config.identity_path)
             .map_err(|_| OwnerFormatTransitionError::Identity)?;
         let store = SecureStateStore::open(&self.history_path())?;
-        let doc = TransitionHistory::open(&store, &self.config, &identity)?;
+        let doc = TransitionHistory::open(&store, &self.config, &identity, self.visibility)?;
         let rows: Vec<_> = doc
             .rows
             .iter()
@@ -411,6 +441,8 @@ impl SecureOwnerFormatTransition {
         if input.workspace_id != self.config.workspace_id
             || !token(&input.workspace_id)
             || input.command_id.as_deref().is_some_and(|id| !token(id))
+            || (self.visibility == "PUBLIC"
+                && input.transition != OwnerFormatTransition::UpgradeWireV3)
         {
             return Err(OwnerFormatTransitionError::Input);
         }
@@ -434,45 +466,63 @@ impl SecureOwnerFormatTransition {
                 {
                     return Err(OwnerFormatTransitionError::Identity);
                 }
-                let lifecycle = SecureLifecycle::open(
-                    &self.config.state_dir.join("lifecycle.state"),
-                    source.origin(),
-                    identity.actor_id(),
-                    source.replay().workspace_id(),
-                    source.replay().owner_actor_id(),
-                    source.replay().owner_signing_key(),
-                )
-                .map_err(|_| OwnerFormatTransitionError::Identity)?;
-                if lifecycle.active_keyring_without_pending().is_none() {
-                    return Err(OwnerFormatTransitionError::Conflict);
-                }
                 let policy_wire = source
                     .signed_policy_by_hash(source.replay().policy_hash())
                     .ok_or(OwnerFormatTransitionError::Verification)?;
                 let policy: WireValue =
                     peerwork_core::wire_json::parse_wire_json_bounded(policy_wire, 64, 196_608)
                         .map_err(|_| OwnerFormatTransitionError::Verification)?;
-                let epoch = number(
-                    policy
-                        .get("payload")
-                        .ok_or(OwnerFormatTransitionError::Verification)?,
-                    "epoch",
-                )?;
-                let key = lifecycle
-                    .active_key(epoch)
-                    .ok_or(OwnerFormatTransitionError::Identity)?;
-                let prepared = prepare_owner_private_format_transition(
-                    input.transition.kind(),
-                    policy_wire,
-                    source.checkpoint_canonical_json().as_bytes(),
-                    source.replay().objects(),
-                    key,
-                    identity.signing_key(),
-                    &id,
-                    issued,
-                )?;
+                let payload = policy
+                    .get("payload")
+                    .ok_or(OwnerFormatTransitionError::Verification)?;
+                if payload
+                    .get("visibility")
+                    .and_then(WireValue::as_string)
+                    .as_deref()
+                    != Some(self.visibility)
+                {
+                    return Err(OwnerFormatTransitionError::Verification);
+                }
+                let prepared = if self.visibility == "PRIVATE" {
+                    let lifecycle = SecureLifecycle::open(
+                        &self.config.state_dir.join("lifecycle.state"),
+                        source.origin(),
+                        identity.actor_id(),
+                        source.replay().workspace_id(),
+                        source.replay().owner_actor_id(),
+                        source.replay().owner_signing_key(),
+                    )
+                    .map_err(|_| OwnerFormatTransitionError::Identity)?;
+                    if lifecycle.active_keyring_without_pending().is_none() {
+                        return Err(OwnerFormatTransitionError::Conflict);
+                    }
+                    let epoch = number(payload, "epoch")?;
+                    let key = lifecycle
+                        .active_key(epoch)
+                        .ok_or(OwnerFormatTransitionError::Identity)?;
+                    prepare_owner_private_format_transition(
+                        input.transition.kind(),
+                        policy_wire,
+                        source.checkpoint_canonical_json().as_bytes(),
+                        source.replay().objects(),
+                        key,
+                        identity.signing_key(),
+                        &id,
+                        issued,
+                    )?
+                } else {
+                    prepare_owner_public_format_upgrade(
+                        policy_wire,
+                        source.checkpoint_canonical_json().as_bytes(),
+                        source.replay().objects(),
+                        identity.signing_key(),
+                        &id,
+                        issued,
+                    )?
+                };
                 let store = SecureStateStore::open(&self.history_path())?;
-                let mut doc = TransitionHistory::open(&store, &self.config, &identity)?;
+                let mut doc =
+                    TransitionHistory::open(&store, &self.config, &identity, self.visibility)?;
                 if doc.rows.len() >= MAX_ROWS
                     || doc.rows.contains_key(&id)
                     || doc.rows.values().any(|row| row.accepted_sequence.is_none())
@@ -480,6 +530,7 @@ impl SecureOwnerFormatTransition {
                     return Err(OwnerFormatTransitionError::Conflict);
                 }
                 let row = SavedTransition {
+                    visibility: self.visibility.into(),
                     transition: input.transition,
                     issued_at_ms: issued,
                     source_sequence: source.replay().sequence(),
@@ -559,28 +610,43 @@ impl SecureOwnerFormatTransition {
                 || source.replay().owner_signing_key()!=identity.key_id()
             { return Err(OwnerFormatTransitionError::Identity); }
             let store=SecureStateStore::open(&self.history_path())?;
-            let mut doc=TransitionHistory::open(&store,&self.config,&identity)?;
+            let mut doc=TransitionHistory::open(&store,&self.config,&identity,self.visibility)?;
             let row=doc.rows.get(id).cloned().ok_or(OwnerFormatTransitionError::NotFound)?;
             if !source.replay().contains_checkpoint(row.source_sequence,Some(&row.source_head),&row.source_policy_hash)
             { return Err(OwnerFormatTransitionError::Verification); }
             let old_policy=source.signed_policy_by_hash(&row.source_policy_hash).ok_or(OwnerFormatTransitionError::Verification)?;
             let old:WireValue=peerwork_core::wire_json::parse_wire_json_bounded(old_policy,64,196_608)
                 .map_err(|_|OwnerFormatTransitionError::Verification)?;
-            let epoch=number(old.get("payload").ok_or(OwnerFormatTransitionError::Verification)?,"epoch")?;
-            let lifecycle=SecureLifecycle::open(&self.config.state_dir.join("lifecycle.state"),source.origin(),
-                identity.actor_id(),source.replay().workspace_id(),source.replay().owner_actor_id(),source.replay().owner_signing_key())
-                .map_err(|_|OwnerFormatTransitionError::Identity)?;
-            if lifecycle.active_keyring_without_pending().is_none() { return Err(OwnerFormatTransitionError::Conflict); }
-            let key=lifecycle.active_key(epoch).ok_or(OwnerFormatTransitionError::Identity)?;
+            let old_payload=old.get("payload").ok_or(OwnerFormatTransitionError::Verification)?;
+            if old_payload.get("visibility").and_then(WireValue::as_string).as_deref()!=Some(self.visibility) {
+                return Err(OwnerFormatTransitionError::Verification);
+            }
+            let lifecycle=if self.visibility=="PRIVATE" {
+                let state=SecureLifecycle::open(&self.config.state_dir.join("lifecycle.state"),source.origin(),
+                    identity.actor_id(),source.replay().workspace_id(),source.replay().owner_actor_id(),source.replay().owner_signing_key())
+                    .map_err(|_|OwnerFormatTransitionError::Identity)?;
+                if state.active_keyring_without_pending().is_none() { return Err(OwnerFormatTransitionError::Conflict); }
+                Some(state)
+            } else { None };
             let checkpoint=serde_json::json!({"v":1,"workspace_id":self.config.workspace_id,
                 "owner_id":identity.actor_id(),"owner_key":identity.key_id(),"sequence":row.source_sequence,
                 "head":row.source_head,"policy_hash":row.source_policy_hash});
             let checkpoint=peerwork_core::canonical::canonical(&checkpoint,peerwork_core::canonical::Path::SecureArtifact)
                 .map_err(|_|OwnerFormatTransitionError::Packet)?;
             let packet=decode_base64url(&row.request_b64).map_err(|_|OwnerFormatTransitionError::Packet)?;
-            let historical_objects=source_objects_at_saved(source,&lifecycle,&row,checkpoint.as_bytes())?;
-            let proof=verify_saved_owner_private_format_transition(&packet,row.transition.kind(),old_policy,
-                checkpoint.as_bytes(),&historical_objects,key,identity.signing_key(),id,row.issued_at_ms)?;
+            let historical_objects=source_objects_at_saved(source,lifecycle.as_ref(),&row,checkpoint.as_bytes())?;
+            let proof=if let Some(lifecycle)=lifecycle.as_ref() {
+                let epoch=number(old_payload,"epoch")?;
+                let key=lifecycle.active_key(epoch).ok_or(OwnerFormatTransitionError::Identity)?;
+                verify_saved_owner_private_format_transition(&packet,row.transition.kind(),old_policy,
+                    checkpoint.as_bytes(),&historical_objects,key,identity.signing_key(),id,row.issued_at_ms)?
+            } else {
+                if row.transition!=OwnerFormatTransition::UpgradeWireV3 || number(old_payload,"epoch")?!=0 {
+                    return Err(OwnerFormatTransitionError::Packet);
+                }
+                verify_saved_owner_public_format_upgrade(&packet,old_policy,
+                    checkpoint.as_bytes(),&historical_objects,identity.signing_key(),id,row.issued_at_ms)?
+            };
             if proof.commit_hash()!=row.commit_hash || proof.policy_hash()!=row.next_policy_hash
             { return Err(OwnerFormatTransitionError::Packet); }
             let mut journal=SecureIntentJournal::open(&self.journal_path(),source.origin(),identity.actor_id())?;
