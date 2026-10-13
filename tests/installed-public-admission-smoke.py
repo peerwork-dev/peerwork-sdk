@@ -11,6 +11,7 @@ from pathlib import Path
 import sqlite3
 import subprocess
 import tempfile
+import threading
 import time
 import urllib.request
 
@@ -46,6 +47,7 @@ const session=arg.role==='owner' ? sdk.openSecurePublicAdmission(arg.config)
   else if(arg.role==='enrollment' && arg.operation==='updateKey') value=await session.updateKey(arg.values.mode,arg.values.expectedCertificateHash);
   else if(arg.role==='enrollment' && arg.operation==='retryKeyUpdate') value=await session.retryKeyUpdate(arg.values.updateId);
   else if(arg.role==='enrollment' && arg.operation==='pendingKeyUpdates') value=await session.pendingKeyUpdates();
+  else if(arg.role==='enrollment' && arg.operation==='keyUpdates') value=await session.keyUpdates();
   else throw Error('unsupported test operation');
   process.stdout.write(JSON.stringify(value));
 })().catch(error=>{process.stderr.write(JSON.stringify({code:error.code,message:error.message}));process.exitCode=1});
@@ -158,6 +160,44 @@ async def cancel_key_update_after_apply(origin, recipient, expected_certificate_
         pass
     else:
         raise AssertionError("post-persistence key-update cancellation was not observed")
+
+
+async def cancel_key_update_after_publication(recipient, expected_certificate_hash):
+    """Hold event-loop delivery after the real native worker returns PUBLISHED."""
+    before = {row["update_id"] for row in recipient.key_updates()}
+    original = recipient._enroll
+    finished = threading.Event()
+    returned = []
+
+    def observe_native_return(*args, **kwargs):
+        result = original(*args, **kwargs)
+        returned.append(result)
+        finished.set()
+        return result
+
+    recipient._enroll = observe_native_return
+    task = asyncio.create_task(recipient.update_key_async("RENEW", expected_certificate_hash))
+    await asyncio.sleep(0)  # start the async wrapper and its native worker
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline and not finished.is_set():
+        time.sleep(0.01)  # deliberately withhold event-loop result delivery
+    assert finished.is_set() and len(returned) == 1, "native worker did not return"
+    published = returned[0]
+    assert published["status"] == "PUBLISHED", published
+    assert not task.done(), "wrapper result was delivered before cancellation"
+    task.cancel()
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    else:
+        raise AssertionError("late cancellation did not hide the generated-ID result")
+    finally:
+        recipient._enroll = original
+    newer = [row for row in recipient.key_updates() if row["update_id"] not in before]
+    assert newer == [published]
+    return published
 
 
 with tempfile.TemporaryDirectory(prefix="peerwork-native-admission-", dir=TEMP_ROOT) as temporary:
@@ -343,11 +383,70 @@ with tempfile.TemporaryDirectory(prefix="peerwork-native-admission-", dir=TEMP_R
             owner_actor_id=workspace["actor_id"], owner_key_id=workspace["signing_key"],
             allow_loopback_http=True)
         assert recipient_read.read()["workspace_id"] == workspace["workspace_id"]
+        late = asyncio.run(cancel_key_update_after_publication(reopened_recipient,
+            renewal["certificate_digest"]))
+        assert late["mode"] == "RENEW" and late["directory_version"] == 4
+        late_reopen = peerwork.SecureRecipientEnrollmentClient(origin, str(recipient_dir),
+            allow_loopback_http=True)
+        history = late_reopen.key_updates()
+        assert history[-1] == late and late_reopen.pending_key_updates() == []
+        assert node_call("enrollment", "keyUpdates", enrollment_config) == history
+        assert cli("recipient-key-updates", f"--origin={origin}",
+            f"--state-dir={recipient_dir}", "--allow-loopback-http") == history
+        assert late_reopen.retry_key_update(late["update_id"]) == late
+        assert directory.lookup(local["actor_id"], local["signing_key_id"])["directory_version"] == 4
+        # A different recipient's v1 invitation is delivered while v1 is
+        # current. Only then rotate/renew its directory key, and receive the
+        # already-issued ciphertext with protected historical key material.
+        historical_dir = state / "historical-recipient"
+        historical = peerwork.SecureRecipientEnrollmentClient(origin, str(historical_dir),
+            allow_loopback_http=True)
+        historical_local = historical.create_local()
+        historical_publish = historical.publish()
+        if historical_publish["status"] != "PUBLISHED":
+            historical_publish = historical.publish()
+        assert historical_publish["status"] == "PUBLISHED"
+        historical_cert = directory.lookup(historical_local["actor_id"],
+            historical_local["signing_key_id"])
+        assert historical_cert["directory_version"] == 1
+        old_offer = owner.offer(historical_cert["certificate_json"], "[]",
+            message="delivered before directory rotation")
+        historical_decision = peerwork.SecurePublicDecisionClient(origin, str(historical_dir),
+            workspace["workspace_id"], workspace["actor_id"], workspace["signing_key"],
+            allow_loopback_http=True)
+        old_consent = historical_decision.decide(old_offer["invite_id"], "ACCEPT")
+        assert old_consent["invite_id"] == old_offer["invite_id"]
+        old_delivery = owner.deliver(old_offer["invite_id"])
+        assert old_delivery["invite_id"] == old_offer["invite_id"]
+        historical_rotate = historical.update_key("ROTATE", historical_local["certificate_digest"])
+        if historical_rotate["status"] == "PENDING":
+            historical_rotate = historical.retry_key_update(historical_rotate["update_id"])
+        assert historical_rotate["status"] == "PUBLISHED" and historical_rotate["directory_version"] == 2
+        historical_renew = historical.update_key("RENEW", historical_rotate["certificate_digest"])
+        if historical_renew["status"] == "PENDING":
+            historical_renew = historical.retry_key_update(historical_renew["update_id"])
+        assert historical_renew["status"] == "PUBLISHED" and historical_renew["directory_version"] == 3
+        assert directory.lookup(historical_local["actor_id"],
+            historical_local["signing_key_id"])["certificate_json"] != historical_cert["certificate_json"]
+        reopened_historical = peerwork.SecurePublicDecisionClient(origin, str(historical_dir),
+            workspace["workspace_id"], workspace["actor_id"], workspace["signing_key"],
+            allow_loopback_http=True)
+        old_received = reopened_historical.receive(old_offer["invite_id"])
+        if old_received["status"] == "PENDING":
+            old_received = reopened_historical.retry_receive(old_offer["invite_id"])
+        assert old_received["status"] == "READY"
+        assert owner.retry_delivery(old_delivery["grant_id"])["status"] == "AUTHORIZED"
+        historical_read = peerwork.SecureReadClient(origin, str(historical_dir),
+            str(historical_dir / "identity.state"), workspace["workspace_id"],
+            owner_actor_id=workspace["actor_id"], owner_key_id=workspace["signing_key"],
+            allow_loopback_http=True)
+        assert historical_read.read()["workspace_id"] == workspace["workspace_id"]
         print(json.dumps(dict(source="installed", recipient_actor=local["actor_id"],
             owner_actor=workspace["actor_id"], offers=5, stale_invite=high["invite_id"],
             accepted_invite=current_offer["invite_id"],
             delivery_status=delivery["status"], recipient_status=received["status"],
-            directory_version=latest["directory_version"])))
+            directory_version=4, late_update_status=late["status"],
+            historical_received=old_received["status"])))
     finally:
         server.stdin.close()
         try:
