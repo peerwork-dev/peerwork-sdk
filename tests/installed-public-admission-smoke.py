@@ -166,10 +166,12 @@ async def cancel_key_update_after_publication(recipient, expected_certificate_ha
     """Hold event-loop delivery after the real native worker returns PUBLISHED."""
     before = {row["update_id"] for row in recipient.key_updates()}
     original = recipient._enroll
+    started = threading.Event()
     finished = threading.Event()
     returned = []
 
     def observe_native_return(*args, **kwargs):
+        started.set()
         result = original(*args, **kwargs)
         returned.append(result)
         finished.set()
@@ -177,7 +179,10 @@ async def cancel_key_update_after_publication(recipient, expected_certificate_ha
 
     recipient._enroll = observe_native_return
     task = asyncio.create_task(recipient.update_key_async("RENEW", expected_certificate_hash))
-    await asyncio.sleep(0)  # start the async wrapper and its native worker
+    start_deadline = time.monotonic() + 5
+    while not started.is_set() and time.monotonic() < start_deadline:
+        await asyncio.sleep(0.01)
+    assert started.is_set(), "native worker did not start"
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline and not finished.is_set():
         time.sleep(0.01)  # deliberately withhold event-loop result delivery
