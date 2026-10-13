@@ -258,3 +258,100 @@ The first root-cwd `node -e` probe failed JavaScript shell quoting, then an
 equivalent file-based import passed. This source correction was not exercised
 by a GitHub runner and did not change the earlier installed wheel or tarball
 binary evidence.
+
+### Native manylinux 2.28 installed interface checkpoint (2026-10-13)
+
+The official `quay.io/pypa/manylinux_2_28_x86_64` image was selected by its
+Docker v2 manifest SHA-256
+`4131ddd7acb9c6c966af02fe7e71edc51e078c2d41f475966697676430bfa2ae`
+(23 layer descriptors, 21 unique blobs, about 0.56 GiB compressed). Every
+config and layer blob was checked against the manifest's size and SHA-256.
+The Docker media-type descriptors were converted to OCI descriptors only
+(converted manifest SHA-256
+`bfaf98c6a5140fde2a56b13b846f5e236514525df2781f3e77d3289b566046c8`);
+the verified layer and config bytes were unchanged. Task-local `umoci`
+0.4.7+ds-4+b10 was extracted from the Debian package with SHA-256
+`d6c837c39304a646e3cd3ee1ec329a5ab936bbe1e22538edc950b72e32eca9cc`
+and unpacked the rootfs. A native user namespace and `chroot` reported glibc
+2.28 and Python 3.11.17. The image's default `gcc` is 8.5.0, while SDK
+build commands selected the image's GCC Toolset 14 using `/opt/rh/gcc-toolset-14/root/usr/bin`
+in `PATH`. The official Node 24.20.0 GNU tarball SHA-256 was
+`2f2c0da162318f0de47665410c7c8c2ed3d36c8f3105de4bbc61176c70a7cbf2`;
+its highest required glibc symbol is 2.28 and it ran inside this rootfs.
+
+The build used immutable `git archive
+7831650565ee4056e7b54c2f59d64b7e1154a4e7` under `/work/sdk` plus only
+the byte-identical, separately committed GNU ICU PIC correction `6596631`
+(`crates/core/build.rs` SHA-256
+`813fe2032bc0fc33b87f9c0b5e9fbbdf6fe2ce8e854f570bde8c671196dec303`).
+The vendored ICU source archive still matched its pinned SHA-256
+`3a2e7a47604ba702f345878308e6fefeca612ee895cf4a5f222e7955fabfe0c0`.
+Official Rust 1.89.0 GNU archives were checked against their published
+SHA-256 sidecars: `rustc` `b42c254e1349df86bd40bc28fdf386172a1a46f2eeabe3c7a08a75cf1fb60e27`,
+`cargo` `99fc10be2aeedf2c23a484f217bfa76458494495a0eee33e280d3616bb08282d`,
+and `rust-std` `2719470dcd78b3f97d78b978c8f85a1a58d84ff11b62558294621c01bca34d49`.
+The official Rustup GNU installer was SHA-checked too
+(`dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71`),
+but could not start because this user namespace denied mounting `/proc` and
+Rustup requires `/proc/self/exe`. The verified component archives were
+installed directly under `/opt/rust`. Its `rustc` needed
+`LD_LIBRARY_PATH=/opt/rust/lib` in the **build** environment; no installed
+Python, Node, or CLI consumer process used that variable.
+
+The first native core test failed at the GNU linker: ICU's static `ucol.ao`
+contained a non-PIC `R_X86_64_32` relocation, invalid in the Rust PIE.
+Task-local `CFLAGS=-fPIC CXXFLAGS=-fPIC` made the pinned Node/ICU collation
+test pass 1/1. Commit `6596631` appends `-fPIC` to inherited C and C++ flags
+for GNU Linux ICU configure and make only, tracking both environment inputs;
+it leaves the musl and Windows selections unchanged. The affected native
+core test passed 1/1 again with **no external PIC flag override**. This is
+the tested source correction, not an untested environment workaround.
+
+Pinned `maturin==1.15.0` was installed offline from the previously verified
+static wheel (SHA-256
+`653020a63525bb224e5ab0adf02e17a2e08bc86dbea7fc1399c9a56d7529b99e`).
+Its native manylinux build produced
+`peerwork_sdk-0.0.1-cp311-abi3-manylinux_2_28_x86_64.whl` SHA-256
+`e1aa24249faa8ce7fd4cfde56858e6f04336aaa4d270b173f10a7b780668d0db`.
+An offline install into a fresh Python target loaded `peerwork` from that
+target. The extension's highest required versions were `GLIBC_2.28`,
+`GLIBCXX_3.4.11`, and `CXXABI_1.3.8`; its dependencies included baseline
+`libstdc++`, `libgcc_s`, and glibc, with no bundled C++ DSO. The native
+Node addon and CLI release build passed. Packed offline npm tarballs were
+the facade SHA-256
+`5411f265ebb19ba5a24e8551102dc0f79e6c9a774d78da9bba134508dc51ad0d`
+and GNU platform SHA-256
+`d5247b71f730c62e754c8ae976786f411472764801ac6f57175ead53a394f8b7`.
+Their clean offline install loaded the addon on Node 24.20 without the
+toolchain library path. The CLI SHA-256 was
+`99e67f8da2b9beeb4b60f61a70acf1cbb78d314fddde2ef44598a9d69dbf1fa7`;
+its highest required glibc symbol was 2.28, and `version` ran in the same
+rootfs without a build environment. The first Node archive extraction tried
+to restore archived uid 1000 and emitted ownership errors in the namespace;
+`tar --no-same-owner` corrected extraction. The first npm consumer probe
+also wrote malformed `package.json` through shell quoting; writing the exact
+JSON file corrected that test fixture.
+
+An opt-in, fresh synthetic actual-service test used
+`7831650:tests/reference-kernel-server.mjs` (SHA-256
+`cd85cbf1a7a31b954609690bc4ef4cb8245112ff66beca28eb5509812879b637`)
+and its guarded TypeScript reference checkout
+`f828b6c50a0a58d1e718af90f653b214adcc3328`. The tracked service
+fixture ran on the host with pinned Node 24.20; **all installed SDK
+consumers ran natively inside the glibc 2.28 rootfs** without
+`LD_LIBRARY_PATH`. The task-local orchestration SHA-256 was
+`51d6d6c1e065f4ba7b4b38e8f7c68ffe38cb690ed533bc29b324e20e6136b804`.
+It observed a PUBLIC bootstrap at sequence 1, Python's verified read and
+native ACTION submit with a lost HTTP reply (`PENDING`) at sequence 2, Node's
+verified read and exact command reconciliation (`ACCEPTED`, one effect),
+CLI's exact retry (`ACCEPTED`, no extra commit), and Python's final verified
+record readback. Service commit counts were 1 → 2 → 2. The five synthetic
+stage offsets from fixture start were 1,320, 3,465, 6,680, 8,285, and
+10,879 ms; they are not user acquisition or general install timings. The
+owned service was intentionally terminated after the run (exit `-15`). This
+establishes the specified installed business path on glibc 2.28; it does
+not establish Agent instruction-following. No Agent tool-call trace was
+collected, so workflow compliance remains **unverified**.
+
+This local native run does not establish a GitHub workflow run, macOS/Windows
+execution, ARM64, every supported signed history, or a release candidate.
