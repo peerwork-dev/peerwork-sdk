@@ -2351,6 +2351,172 @@ mod tests {
                 && object["id"] == effect_id
                 && object["value"]["payload"]["title"] == "PRIVATE installed wiki"
                 && object["value"]["payload"]["body"] == "Encrypted after install"));
+
+        // The prior protocol keeps its first package-source provenance. A
+        // second instance needs a freshly staged proof at the current policy.
+        let identity = KernelIdentity::open(&stage.config.identity_path).unwrap();
+        let stage_store =
+            SecureStateStore::open(&stage.config.state_dir.join("private-install.state")).unwrap();
+        let first_stage_doc = StageDocument::open(
+            &stage_store,
+            &stage.config,
+            identity.actor_id(),
+            identity.actor_id(),
+            identity.key_id(),
+        )
+        .unwrap();
+        let first_stage_row = first_stage_doc.rows.get(stage_id).unwrap().clone();
+        drop(stage_store);
+        let current_stage_scope = SecureReadProfile::new(stage.config.clone())
+            .with_latest_replay(&token, |source| {
+                Ok::<_, PrivatePackageInstallError>((
+                    source.replay().policy_hash().to_owned(),
+                    source.checkpoint_canonical_json().to_owned(),
+                ))
+            })
+            .unwrap();
+        let second_stage: serde_json::Value = serde_json::from_str(
+            &stage
+                .stage_package_json(PrivatePackageStageInput {
+                    material_json: material.to_string(),
+                    expected_root_package_digest: vector["closure"]["root_package_digest"]
+                        .as_str()
+                        .unwrap()
+                        .into(),
+                    expected_protocol_digest: vector["protocol_digest"].as_str().unwrap().into(),
+                    stage_id: None,
+                    command_id: None,
+                    issued_at_ms: None,
+                })
+                .unwrap(),
+        )
+        .unwrap();
+        let second_stage_id = second_stage["stage_id"].as_str().unwrap().to_owned();
+        assert_ne!(second_stage_id, stage_id);
+        let mut second_stage_progress = second_stage;
+        for _ in 0..8 {
+            if second_stage_progress["status"] == "STAGED" {
+                break;
+            }
+            second_stage_progress =
+                serde_json::from_str(&stage.continue_stage_json(&second_stage_id).unwrap())
+                    .unwrap();
+        }
+        assert_eq!(second_stage_progress["status"], "STAGED");
+        let stage_store =
+            SecureStateStore::open(&stage.config.state_dir.join("private-install.state")).unwrap();
+        let second_stage_doc = StageDocument::open(
+            &stage_store,
+            &stage.config,
+            identity.actor_id(),
+            identity.actor_id(),
+            identity.key_id(),
+        )
+        .unwrap();
+        let second_stage_row = second_stage_doc.rows.get(&second_stage_id).unwrap();
+        assert_ne!(second_stage_row.policy_hash, first_stage_row.policy_hash);
+        assert_ne!(
+            second_stage_row.source_checkpoint_json,
+            first_stage_row.source_checkpoint_json
+        );
+        assert_eq!(second_stage_row.policy_hash, current_stage_scope.0);
+        assert_eq!(
+            second_stage_row.source_checkpoint_json,
+            current_stage_scope.1
+        );
+        drop(stage_store);
+        let second_instance_id = random_id().unwrap();
+        let second_begin: serde_json::Value = serde_json::from_str(
+            &stage
+                .submit_begin_json(PrivatePackageInstallBeginInput {
+                    stage_id: second_stage_id.clone(),
+                    instance_id: second_instance_id.clone(),
+                    entrypoint: "proposal".into(),
+                    grants_json: serde_json::json!([{
+                        "actor_id": owner_actor,
+                        "actions": ["proposal.propose"],
+                        "protocol_roles": ["AUTHOR"],
+                        "capabilities": ["PROPOSE"]
+                    }])
+                    .to_string(),
+                    command_id: None,
+                    issued_at_ms: None,
+                })
+                .unwrap(),
+        )
+        .unwrap();
+        let second_begin_id = second_begin["begin_command_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let mut second_progress = second_begin;
+        for _ in 0..12 {
+            if second_progress["status"] == "ACCEPTED" {
+                break;
+            }
+            second_progress =
+                serde_json::from_str(&stage.continue_install_json(&second_begin_id).unwrap())
+                    .unwrap();
+        }
+        assert_eq!(second_progress["status"], "ACCEPTED");
+        let before_repeat = counts()["commits"].as_u64().unwrap();
+        let repeat: serde_json::Value =
+            serde_json::from_str(&stage.continue_install_json(&second_begin_id).unwrap()).unwrap();
+        assert_eq!(repeat["status"], "ACCEPTED");
+        assert_eq!(counts()["commits"], before_repeat);
+        let both: serde_json::Value =
+            serde_json::from_str(&stage.installs_json().unwrap()).unwrap();
+        assert_eq!(both.as_array().unwrap().len(), 2);
+        let final_read: serde_json::Value = serde_json::from_str(
+            &reopened
+                .read_workspace_json(&created.workspace_id, &token)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            final_read["objects"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|object| {
+                    object["kind"] == "protocols" && object["id"] == vector["protocol_digest"]
+                })
+                .count(),
+            1
+        );
+        let instance_ids: std::collections::BTreeSet<_> = final_read["objects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|object| {
+                object["kind"] == "instances"
+                    && object["value"]["protocol_digest"] == vector["protocol_digest"]
+            })
+            .map(|object| object["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(instance_ids.len(), 2);
+        assert!(instance_ids.contains(first["instance_id"].as_str().unwrap()));
+        assert!(instance_ids.contains(second_instance_id.as_str()));
+        assert!(final_read["objects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|object| {
+                object["kind"] == "instances"
+                    && object["id"] == second_instance_id
+                    && object["value"]["protocol_digest"] == vector["protocol_digest"]
+                    && object["value"]["package_source"].is_object()
+            }));
+        assert!(final_read["objects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|object| {
+                object["kind"] == "records"
+                    && object["id"] == effect_id
+                    && object["value"]["payload"]["title"] == "PRIVATE installed wiki"
+                    && object["value"]["payload"]["body"] == "Encrypted after install"
+            }));
     }
 
     #[test]
