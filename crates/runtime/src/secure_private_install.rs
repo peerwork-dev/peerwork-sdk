@@ -408,6 +408,226 @@ mod historical_v1_direct_test {
     }
 }
 
+#[cfg(test)]
+mod format_two_direct_test {
+    use super::*;
+    use crate::{
+        secure_action_access::PublicActionInput,
+        secure_owner_create::{SecureOwnerCreateConfig, SecureOwnerCreateInput, SecureOwnerWorkspaceCreate},
+        secure_owner_format_transition::{
+            OwnerFormatTransition, OwnerFormatTransitionInput,
+        },
+    };
+    use std::{
+        io::{BufRead, BufReader},
+        path::Path,
+        process::{Child, Command, Stdio},
+    };
+
+    #[test]
+    fn actual_service_private_ceiling_two_direct_typed_install_and_retry() {
+        let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else {
+            return;
+        };
+        let node = std::env::var("PEERWORK_NODE_BIN").unwrap_or_else(|_| "node".into());
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let bridge =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/reference-kernel-server.mjs");
+        let child = Command::new(&node)
+            .arg(bridge)
+            .env("PEERWORK_REFERENCE_ROOT", reference_root)
+            .env("PEERWORK_TEST_STATE", root.path())
+            .env("PEERWORK_TEST_FIRST_POST_MODE", "normal")
+            .env("PEERWORK_TEST_OWNER_FORMAT", "1")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        struct Stop(Child);
+        impl Drop for Stop {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut child = Stop(child);
+        let mut line = String::new();
+        BufReader::new(child.0.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        assert!(!line.is_empty(), "pinned service exited before readiness");
+        let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let origin = ready["origin"].as_str().unwrap().to_owned();
+        let config = SecureOwnerCreateConfig {
+            origin: origin.clone(),
+            state_dir: root.path().join("native-owner"),
+            allow_loopback_http: true,
+            max_replay_artifact_bytes: 64 * 1024 * 1024,
+        };
+        let token = CancellationToken::new();
+        let owner = SecureOwnerWorkspaceCreate::new(config.clone());
+        let created = owner
+            .prepare(
+                SecureOwnerCreateInput {
+                    name: "Native PRIVATE typed direct".into(),
+                    name_utf16: None,
+                    visibility: "PRIVATE".into(),
+                    structured: true,
+                    keep_encrypted_json: "[]".into(),
+                    coordination_version: None,
+                },
+                &token,
+            )
+            .unwrap();
+        assert_eq!(owner.resume(&created.command_id, &token).unwrap().status, "CREATED");
+        let rt = Builder::new_current_thread().enable_all().build().unwrap();
+        let post = |path: &str| {
+            rt.block_on(async {
+                reqwest::Client::new()
+                    .post(format!("{origin}{path}"))
+                    .body("{}")
+                    .send()
+                    .await
+                    .unwrap()
+            })
+        };
+        let counts = || {
+            rt.block_on(async {
+                let bytes = reqwest::get(format!("{origin}__test/secure-counts"))
+                    .await
+                    .unwrap()
+                    .bytes()
+                    .await
+                    .unwrap();
+                serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()
+            })
+        };
+        assert_eq!(post("__test/activate-protocol-cutover").status(), 200);
+        let policy = |owner: &SecureOwnerWorkspaceCreate| -> serde_json::Value {
+            let install = owner.private_install_access(&created.workspace_id).unwrap();
+            SecureReadProfile::new(install.config.clone())
+                .with_latest_replay(&token, |source| {
+                    let wire = source
+                        .signed_policy_by_hash(source.replay().policy_hash())
+                        .ok_or(PrivatePackageInstallError::Plan)?;
+                    serde_json::from_slice::<serde_json::Value>(wire)
+                        .map_err(|_| PrivatePackageInstallError::Plan)
+                })
+                .unwrap()
+        };
+        let before_raise = policy(&owner);
+        assert_eq!(before_raise["payload"]["v"], 3);
+        assert_eq!(before_raise["payload"]["structure_mode"], "STRUCTURED");
+        assert_eq!(before_raise["payload"]["protocol_format_ceiling"], 1);
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../conformance/private-direct-format-two.json"
+        ))
+        .unwrap();
+        assert_eq!(fixture["root_package_digest"], "3e14bcad26a11c7f9a09ce3099bdf4043f6d6ea50bac2463638cc3a79baf691c");
+        assert_eq!(fixture["protocol_digest"], "a95f5fb783ad9e5bd04ef85e7b3f3cd7f084f19db07f287075210ce729cf9b72");
+        let actor_id = KernelIdentity::open(
+            &owner.private_install_access(&created.workspace_id).unwrap().config.identity_path,
+        )
+        .unwrap()
+        .actor_id()
+        .to_owned();
+        let input = PrivateDirectInstallBeginInput {
+            closure_json: fixture["closure"].to_string(),
+            expected_root_package_digest: fixture["root_package_digest"].as_str().unwrap().into(),
+            expected_protocol_digest: fixture["protocol_digest"].as_str().unwrap().into(),
+            instance_id: random_id().unwrap(),
+            entrypoint: "typedPackage".into(),
+            grants_json: serde_json::json!([{"actor_id": actor_id,
+                "actions": ["lib.replace", "lib.produce"],
+                "protocol_roles": [], "capabilities": []}]).to_string(),
+            command_id: None,
+            issued_at_ms: None,
+        };
+        let install = owner.private_install_access(&created.workspace_id).unwrap();
+        let before_invalid = counts()["commits"].as_u64().unwrap();
+        assert!(matches!(
+            install.submit_direct_begin_json(input.clone()),
+            Err(PrivatePackageInstallError::Plan)
+        ));
+        assert_eq!(counts()["commits"], before_invalid);
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&install.installs_json().unwrap()).unwrap(), serde_json::json!([]));
+        drop(install);
+        let format = owner.private_format_transition_access(&created.workspace_id).unwrap();
+        let raised: serde_json::Value = serde_json::from_str(
+            &format.submit_json_with_cancel(OwnerFormatTransitionInput {
+                workspace_id: created.workspace_id.clone(),
+                transition: OwnerFormatTransition::RaisePrivateCeilingTwo,
+                command_id: None,
+                issued_at_ms: None,
+            }, &token).unwrap(),
+        ).unwrap();
+        let raise_id = raised["command_id"].as_str().unwrap();
+        let raised: serde_json::Value = serde_json::from_str(
+            &format.resume_json_with_cancel(raise_id, &token).unwrap()
+        ).unwrap();
+        assert_eq!(raised["status"], "ACCEPTED");
+        let raised_policy = policy(&owner);
+        assert_eq!(raised_policy["payload"]["v"], 3);
+        assert_eq!(raised_policy["payload"]["structure_mode"], "STRUCTURED");
+        assert_eq!(raised_policy["payload"]["protocol_format_ceiling"], 2);
+        let install = owner.private_install_access(&created.workspace_id).unwrap();
+        assert_eq!(post("__test/drop-next-post").status(), 200);
+        let before_install = counts()["commits"].as_u64().unwrap();
+        let first: serde_json::Value = serde_json::from_str(&install.submit_direct_begin_json(input).unwrap()).unwrap();
+        assert_eq!(first["status"], "PENDING");
+        let begin_id = first["begin_command_id"].as_str().unwrap().to_owned();
+        assert_eq!(counts()["commits"], before_install + 1);
+        drop(install);
+        drop(owner);
+        let reopened = SecureOwnerWorkspaceCreate::new(config);
+        let install = reopened.private_install_access(&created.workspace_id).unwrap();
+        let history: serde_json::Value = serde_json::from_str(&install.installs_json().unwrap()).unwrap();
+        assert_eq!(history[0]["begin_command_id"], begin_id);
+        assert_eq!(history[0]["source_kind"], "DIRECT");
+        let mut progress: serde_json::Value = serde_json::from_str(&install.continue_install_json(&begin_id).unwrap()).unwrap();
+        for _ in 0..12 {
+            if progress["status"] == "ACCEPTED" { break; }
+            progress = serde_json::from_str(&install.continue_install_json(&begin_id).unwrap()).unwrap();
+        }
+        assert_eq!(progress["status"], "ACCEPTED");
+        let after_install = counts()["commits"].as_u64().unwrap();
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&install.continue_install_json(&begin_id).unwrap()).unwrap()["status"], "ACCEPTED");
+        assert_eq!(counts()["commits"], after_install);
+        let read: serde_json::Value = serde_json::from_str(&reopened.read_workspace_json(&created.workspace_id, &token).unwrap()).unwrap();
+        let objects = read["objects"].as_array().unwrap();
+        assert!(objects.iter().any(|object| object["kind"] == "protocols"
+            && object["id"] == fixture["protocol_digest"]
+            && object["value"]["manifest"]["format_version"] == 2
+            && object["value"]["composition"]["source_digest"] == fixture["root_package_digest"]));
+        assert!(objects.iter().any(|object| object["kind"] == "instances"
+            && object["id"] == progress["instance_id"]
+            && object["value"]["protocol_digest"] == fixture["protocol_digest"]));
+        let action = reopened.private_action_access(&created.workspace_id).unwrap();
+        let submitted: serde_json::Value = serde_json::from_str(&action.submit_new_json(PublicActionInput {
+            action_id: "lib.replace".into(),
+            instance_id: progress["instance_id"].as_str().unwrap().into(),
+            body_json: r#"{"value":[{"label":"typed direct"},true]}"#.into(),
+            exact_input_refs_json: None,
+            allocations_json: None,
+            command_id: None,
+            issued_at_ms: None,
+        }).unwrap()).unwrap();
+        let accepted: serde_json::Value = serde_json::from_str(&action.retry_saved_json(submitted["command_id"].as_str().unwrap()).unwrap()).unwrap();
+        assert_eq!(accepted["status"], "ACCEPTED");
+        let final_read: serde_json::Value = serde_json::from_str(&reopened.read_workspace_json(&created.workspace_id, &token).unwrap()).unwrap();
+        assert!(final_read["objects"].as_array().unwrap().iter().rev().any(|object|
+            object["kind"] == "instances"
+                && object["id"] == progress["instance_id"]
+                && object["value"]["state"]["lib"]["data"] == serde_json::json!([{"label":"typed direct"}, true])
+        ));
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum PrivatePackageInstallError {
     #[error("complete PRIVATE Owner journal read failed: {0}")]
