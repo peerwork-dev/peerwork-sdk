@@ -3,6 +3,8 @@
 
 use crate::{
     kernel_identity::KernelIdentity,
+    secure_owner_attach::SecureHistoricalOwnerAttach,
+    secure_owner_create::SecureOwnerCreateConfig,
     secure_intents::{SecureIntentError, SecureIntentJournal, SecurePacketInput},
     secure_lifecycle::SecureLifecycle,
     secure_read_access::SecureReadAccessError,
@@ -29,6 +31,11 @@ use std::{
 use thiserror::Error;
 use tokio::runtime::Builder;
 use tokio_util::sync::CancellationToken;
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
+
+#[cfg(test)]
+pub(crate) static TEST_STOP_AFTER_RESTRICTED_UPGRADE_ACCEPTED: AtomicBool = AtomicBool::new(false);
 
 const MAX_ROWS: usize = 128;
 const MAX_DOCUMENT: usize = 4 * 1024 * 1024;
@@ -346,6 +353,7 @@ fn source_objects_at_saved(
 pub struct SecureOwnerFormatTransition {
     config: SecureReadProfileConfig,
     visibility: &'static str,
+    restricted: Option<(SecureOwnerCreateConfig, String)>,
 }
 impl SecureOwnerFormatTransition {
     #[cfg(test)]
@@ -356,13 +364,63 @@ impl SecureOwnerFormatTransition {
         Self {
             config,
             visibility: "PRIVATE",
+            restricted: None,
         }
     }
     pub fn new_public(config: SecureReadProfileConfig) -> Self {
         Self {
             config,
             visibility: "PUBLIC",
+            restricted: None,
         }
+    }
+    pub(crate) fn new_restricted(
+        config: SecureReadProfileConfig,
+        visibility: &'static str,
+        owner_config: SecureOwnerCreateConfig,
+        attach_id: String,
+    ) -> Self {
+        Self {
+            config,
+            visibility,
+            restricted: Some((owner_config, attach_id)),
+        }
+    }
+    fn restricted_lock(&self) -> Result<Option<SecureStateStore>, OwnerFormatTransitionError> {
+        self.restricted
+            .as_ref()
+            .map(|(owner, _)| {
+                SecureStateStore::open(&owner.state_dir.join("owner-attach-recovery.state"))
+                    .map_err(|_| OwnerFormatTransitionError::Local)
+            })
+            .transpose()
+    }
+    fn finalize_restricted_accepted(
+        &self,
+        id: &str,
+        cancel: &CancellationToken,
+    ) -> Result<(), OwnerFormatTransitionError> {
+        let Some((config, attach_id)) = self.restricted.as_ref() else {
+            return Ok(());
+        };
+        let identity = KernelIdentity::open(&self.config.identity_path)
+            .map_err(|_| OwnerFormatTransitionError::Identity)?;
+        let store = SecureStateStore::open(&self.history_path())?;
+        let history = TransitionHistory::open(&store, &self.config, &identity, self.visibility)?;
+        let row = history.rows.get(id).ok_or(OwnerFormatTransitionError::NotFound)?;
+        if row.transition != OwnerFormatTransition::UpgradeWireV3 {
+            return Err(OwnerFormatTransitionError::Conflict);
+        }
+        let sequence = row.accepted_sequence.ok_or(OwnerFormatTransitionError::Conflict)?;
+        SecureHistoricalOwnerAttach::new(config.clone())
+            .finalize_restricted_upgrade(
+                attach_id,
+                sequence,
+                &row.commit_hash,
+                &row.next_policy_hash,
+                cancel,
+            )
+            .map_err(|_| OwnerFormatTransitionError::Verification)
     }
     fn history_path(&self) -> std::path::PathBuf {
         self.config.state_dir.join("owner-format.state")
@@ -444,8 +502,16 @@ impl SecureOwnerFormatTransition {
             || input.command_id.as_deref().is_some_and(|id| !token(id))
             || (self.visibility == "PUBLIC"
                 && input.transition != OwnerFormatTransition::UpgradeWireV3)
+            || (self.restricted.is_some()
+                && input.transition != OwnerFormatTransition::UpgradeWireV3)
         {
             return Err(OwnerFormatTransitionError::Input);
+        }
+        let _recovery_lock = self.restricted_lock()?;
+        if let Some((config, attach_id)) = self.restricted.as_ref() {
+            SecureHistoricalOwnerAttach::new(config.clone())
+                .verify_restricted_before_upgrade(attach_id, cancel)
+                .map_err(|_| OwnerFormatTransitionError::Conflict)?;
         }
         let id = input.command_id.clone().map(Ok).unwrap_or_else(random_id)?;
         let issued = input.issued_at_ms.map(Ok).unwrap_or_else(now_ms)?;
@@ -603,6 +669,7 @@ impl SecureOwnerFormatTransition {
         if !token(id) {
             return Err(OwnerFormatTransitionError::Input);
         }
+        let _recovery_lock = self.restricted_lock()?;
         let selected=SecureReadProfile::new(self.config.clone()).with_latest_replay(cancel,|source| {
             source.verified_read().map_err(|_| OwnerFormatTransitionError::Verification)?;
             let identity=KernelIdentity::open(&self.config.identity_path).map_err(|_| OwnerFormatTransitionError::Identity)?;
@@ -670,6 +737,15 @@ impl SecureOwnerFormatTransition {
             self.post(&mut journal,id,packet,cancel)?;
             Ok(result(id,&self.config,&row))
         })?;
+        if selected.status == "ACCEPTED" {
+            #[cfg(test)]
+            if self.restricted.is_some()
+                && TEST_STOP_AFTER_RESTRICTED_UPGRADE_ACCEPTED.swap(false, Ordering::SeqCst)
+            {
+                return Err(OwnerFormatTransitionError::Cancelled);
+            }
+            self.finalize_restricted_accepted(id, cancel)?;
+        }
         serde_json::to_string(&selected).map_err(|_| OwnerFormatTransitionError::Local)
     }
 }
@@ -831,6 +907,7 @@ mod tests {
                     expected_owner_actor_id: source["owner_actor_id"].as_str().unwrap().into(),
                     expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
                     recover_pending_action: false,
+                    retain_pending_action_command_id: None,
                     kernel_pending_command_ids: Vec::new(),
                     expected_kernel_intent_db_digest: None,
                 },
@@ -943,13 +1020,11 @@ mod tests {
         let install = owner.private_install_access(&workspace_id).unwrap();
         let begin:serde_json::Value=serde_json::from_str(&install.submit_direct_begin_json(PrivateDirectInstallBeginInput{
             closure_json:vector["closure"].to_string(),
-            bindings_json:None,
             expected_root_package_digest:vector["closure"]["root_package_digest"].as_str().unwrap().into(),
             expected_protocol_digest:vector["protocol_digest"].as_str().unwrap().into(),
             instance_id:random_id().unwrap(),entrypoint:"proposal".into(),
             grants_json:serde_json::json!([{"actor_id":source["owner_actor_id"],
                 "actions":["proposal.propose"],"protocol_roles":["AUTHOR"],"capabilities":["PROPOSE"]}]).to_string(),
-            disclose:None,
             command_id:None,issued_at_ms:None}).unwrap()).unwrap();
         let begin_id = begin["begin_command_id"].as_str().unwrap();
         let mut step: serde_json::Value =
@@ -1073,7 +1148,6 @@ mod tests {
                         "protocol_roles":[],"capabilities":[]
                     }])
                     .to_string(),
-                    disclose: None,
                     command_id: None,
                     issued_at_ms: None,
                 })
@@ -1461,6 +1535,7 @@ mod tests {
                     expected_owner_actor_id: source["owner_actor_id"].as_str().unwrap().into(),
                     expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
                     recover_pending_action: false,
+                    retain_pending_action_command_id: None,
                     kernel_pending_command_ids: Vec::new(),
                     expected_kernel_intent_db_digest: None,
                 },

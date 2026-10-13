@@ -283,7 +283,32 @@ impl SecureOwnerWorkspaceCreate {
                 Ok(SecureOwnerFormatTransition::new_public(config))
             }
             (Err(SecureOwnerCreateError::NotFound), Err(SecureOwnerCreateError::NotFound)) => {
-                Err(SecureOwnerCreateError::NotFound)
+                let attached = SecureHistoricalOwnerAttach::new(self.config.clone());
+                let private = attached.restricted_format_profile_config(workspace_id, "PRIVATE");
+                let public = attached.restricted_format_profile_config(workspace_id, "PUBLIC");
+                match (private, public) {
+                    (Ok(_), Ok(_)) => Err(SecureOwnerCreateError::Invalid),
+                    (Ok((config, id)), Err(HistoricalOwnerAttachError::NotFound)) => {
+                        Ok(SecureOwnerFormatTransition::new_restricted(
+                            config,
+                            "PRIVATE",
+                            self.config.clone(),
+                            id,
+                        ))
+                    }
+                    (Err(HistoricalOwnerAttachError::NotFound), Ok((config, id))) => {
+                        Ok(SecureOwnerFormatTransition::new_restricted(
+                            config,
+                            "PUBLIC",
+                            self.config.clone(),
+                            id,
+                        ))
+                    }
+                    (Err(HistoricalOwnerAttachError::NotFound), Err(HistoricalOwnerAttachError::NotFound)) => {
+                        Err(SecureOwnerCreateError::NotFound)
+                    }
+                    (Err(error), _) | (_, Err(error)) => Err(map_attach_error(error)),
+                }
             }
             (Err(error), _) | (_, Err(error)) => Err(error),
         }
