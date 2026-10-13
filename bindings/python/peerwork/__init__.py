@@ -23,6 +23,7 @@ class CapabilityManifest(TypedDict):
     wire_canonicalization: bool
     signed_artifact_verification: bool
     receipt_verification: bool
+    verified_public_workspace_reads: bool
     verified_workspace_reads: bool
     safe_actions: bool
     durable_recovery: bool

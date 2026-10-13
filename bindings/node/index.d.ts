@@ -1,6 +1,17 @@
 /** Experimental native kernel command client; secure-agent replay remains incomplete. */
 export declare function version(): string;
-export declare function capabilities(): Record<string, unknown>;
+export interface CapabilityManifest {
+  version: string;
+  status: string;
+  wire_canonicalization: boolean;
+  signed_artifact_verification: boolean;
+  receipt_verification: boolean;
+  verified_public_workspace_reads: boolean;
+  verified_workspace_reads: boolean;
+  safe_actions: boolean;
+  durable_recovery: boolean;
+}
+export declare function capabilities(): CapabilityManifest;
 export interface IdentityInfo { actor_id: string; key_id: string }
 /** Creates protected local identity state without service enrollment. */
 export declare function createIdentity(path: string): Promise<IdentityInfo>;
