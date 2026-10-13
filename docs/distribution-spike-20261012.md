@@ -599,7 +599,8 @@ from source `08f0963a1fac7932829423a9f76944d192cce163` had SHA-256
 `ed67bc57e2b37eafd0c31bba72d6f9ecb23cce6d07427549008642eb160d2592`.
 The task-local orchestration script SHA-256 was
 `f12d04d714af40ccb19fbc8d730de79d578f7d4f1eca4074b2fe40e3fb989067`;
-it pins both inputs and creates only a fresh mode-0700 workspace state dir.
+it remains at `.build-artifacts/arm64/cli-service-smoke.py`, pins both inputs,
+and creates only a fresh mode-0700 workspace state dir.
 The tracked TypeScript fixture creates the initial PUBLIC workspace and
 supplies the owner PEM/pins; Rust CLI imports that protected PEM, fetches and
 verifies signed sequence 1, authors `discussion.post`, and submits the exact
