@@ -25,3 +25,20 @@ TMPDIR="$artifact_root/build/tmp" \
 ```
 
 This covers the official one-part/empty-history PRIVATE install path and one encrypted record effect. PRIVATE PAGE/nonempty history, package-family parity, other operating systems, and Agent instruction-following remain separate acceptance work.
+
+The same installed artifact set also passed the existing **PUBLIC composed Owner/adopter consumer regression** in session `30695` (exit 0). Its committed test `tests/installed-native-owner-adopter-workflow.py` had SHA-256 `41a16bb63d72c0e03d6fce04050d02e14fd71ad52e5bb1b9346ce2c29deae58c`, the composed vector SHA-256 was `ea072b766172a211f1f413ea61c5166e10a660bd46a1adc422cd2dddac2c12dc`, and its externally supplied Owner runtime source hash was `a5968ec17d07355a256c47fc6ab5996ec3f7a216965c76da1493e25de0c3b9ac`. Using fresh `owner-adopter-state-1`, the affected invocation from the SDK worktree was:
+
+```sh
+artifact_root="$PWD/.build-artifacts/private-install-b81f9ed"
+PEERWORK_TEST_SDK_ROOT="$artifact_root/source" \
+PEERWORK_TEST_STATE="$artifact_root/build/owner-adopter-state-1" \
+PEERWORK_TEST_NODE=/root/workdir/message/.tools/node-v24.20.0-linux-x64/bin/node \
+PEERWORK_TEST_NODE_PACKAGE="$artifact_root/install/node/node_modules/@peerwork/agent-sdk" \
+PEERWORK_TEST_CLI="$artifact_root/build/target/release/peerwork" \
+PEERWORK_TEST_OWNER_SOURCE_SHA256=a5968ec17d07355a256c47fc6ab5996ec3f7a216965c76da1493e25de0c3b9ac \
+PEERWORK_REFERENCE_ROOT=/root/workdir/message/.worktrees/e2ee-main-integration-20261006 \
+TMPDIR="$artifact_root/build/tmp" \
+"$artifact_root/install/venv/bin/python" "$artifact_root/source/tests/installed-native-owner-adopter-workflow.py"
+```
+
+The public test observed PAGE, PAGE, END, END progress for the exact composed closure, then native distinct-actor offer/consent/delivery/receipt, proposal, adoption and task effects with final verified sequence 10 and duplicate-free retries. It printed Owner `AQ7M9XJt5cCv_WbBGPwoiK_rjlMbESZG5wsQxq3fX3g`, recipient `eaULsErdLFnIlWRF8GDlnQIe0PQzMtOmh61Hnbk8ncY`, candidate `qY6L9M9yu77G3GGM-J__xPMjFr_WzYKrUEu0cyctm0c`, and task `SYyr6QN34KFoBZtGnmV4pKGp2CXRdVNGyiykj4eLvGY`. This rerun demonstrates that the corrected strict replay validator still accepts a legitimate PUBLIC composed nonempty snapshot on installed artifacts. It does not exercise PRIVATE nonempty PAGE or supply an independent installed tamper-negative test.
