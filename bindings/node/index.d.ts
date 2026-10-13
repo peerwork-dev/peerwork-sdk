@@ -122,6 +122,15 @@ export interface SecureActionReceipt {
 export type SecureActionResult =
   | { status: 'PENDING'; command_id: string; workspace_id: string; action_id: string; sequence: null; commit_hash: null; receipt: null }
   | { status: 'ACCEPTED'; command_id: string; workspace_id: string; action_id: string; sequence: number; commit_hash: string; receipt: SecureActionReceipt };
+export interface PendingSecureAction {
+  command_id: string;
+  actor_id: string;
+  origin: string;
+  workspace_id: string;
+  action_id: string;
+  request_sha256: string;
+  commit_hash: string;
+}
 export interface SecureActionOptions {
   exactInputRefs?: unknown[];
   /** Advanced deterministic allocation control; omission uses native OS randomness. */
@@ -134,6 +143,8 @@ export interface SecurePublicActionSession {
   submit(actionId: string, instanceId: string, body: unknown, options?: SecureActionOptions): Promise<SecureActionResult>;
   reconcile(commandId: string, options?: { signal?: AbortSignal }): Promise<SecureActionResult>;
   retrySaved(commandId: string, options?: { signal?: AbortSignal }): Promise<SecureActionResult>;
+  /** Recover generated command IDs from protected local state without a journal GET. */
+  pending(options?: { signal?: AbortSignal }): Promise<PendingSecureAction[]>;
 }
 /** Uses a protected latest-read profile; an uncertain POST stays PENDING until signed replay. */
 export declare function openSecurePublicActions(options: SecureReadOptions): SecurePublicActionSession;

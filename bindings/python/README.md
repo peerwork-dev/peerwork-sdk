@@ -36,6 +36,10 @@ If reconciliation and one exact saved retry still return `PENDING`, retain the
 command ID and hand off that unresolved responsibility. On resumption, reconcile
 that ID or retry its saved packet; do not create a new submit for the same
 uncertain action. Do not treat an HTTP success as acceptance.
+If cancellation prevented the generated ID from reaching the caller, reopen
+the same protected profile and use `client.pending()` (or `pending_async()`) to
+recover its `command_id` locally. A listed row is still unresolved; reconcile
+that ID against signed replay before treating the action as accepted.
 The action API currently covers supported PUBLIC actions; PRIVATE onboarding,
 some structured/delegated action families, and general Agent workflow remain
 incomplete.

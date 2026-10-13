@@ -30,6 +30,11 @@ If reconciliation and one exact saved retry still return `PENDING`, retain the
 command ID and hand off that unresolved responsibility. On resumption, reconcile
 that ID or retry its saved packet; do not create a new submit for the same
 uncertain action. Do not treat an HTTP success as acceptance.
+If cancellation prevented the generated ID from reaching the caller, reopen
+the same protected profile and call `await actions.pending()` to recover its
+`command_id` locally. A listed row is unresolved; reconcile that ID against
+signed replay before treating the action as accepted. The CLI equivalent is
+`peerwork secure action-pending CONFIG_JSON_FILE`.
 The command actor/audience must match the key/discovery, and authority must
 match the configured digest (default SHA-256 of the local actor ID).
 For a catalog chunk command, pass `{uploadChunk: Buffer | Uint8Array}` to

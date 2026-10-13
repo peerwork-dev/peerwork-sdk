@@ -258,6 +258,7 @@ fn secure_public_action_json(
                 Some(id) => access.retry_saved_json_with_cancel(id, &cancel),
                 None => return serde_json::json!({"ok":false,"code":"ACTION_INPUT_INVALID","message":"command ID is required"}).to_string(),
             },
+            "pending" => access.list_pending_json_with_cancel(&cancel),
             _ => return serde_json::json!({"ok":false,"code":"ACTION_INPUT_INVALID","message":"unsupported secure action operation"}).to_string(),
         };
         match result {

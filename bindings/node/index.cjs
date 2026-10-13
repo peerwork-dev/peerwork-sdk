@@ -279,6 +279,7 @@ exports.openSecurePublicActions = options => {
         throw error;
       }
       const value = result.value;
+      if (operation === 'pending') return value;
       const receipt = value.receipt_canonical_json === null ? null : JSON.parse(value.receipt_canonical_json);
       delete value.receipt_canonical_json;
       return { ...value, receipt };
@@ -302,5 +303,6 @@ exports.openSecurePublicActions = options => {
     },
     reconcile: (commandId, options = {}) => invoke('reconcile', undefined, commandId, options.signal),
     retrySaved: (commandId, options = {}) => invoke('retry', undefined, commandId, options.signal),
+    pending: (options = {}) => invoke('pending', undefined, undefined, options.signal),
   });
 };

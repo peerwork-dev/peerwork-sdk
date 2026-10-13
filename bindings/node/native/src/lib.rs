@@ -344,6 +344,7 @@ impl Task for SecureActionTask {
                     .ok_or_else(|| napi::Error::from_reason("command ID is required"))?,
                 &self.cancel,
             ),
+            "pending" => access.list_pending_json_with_cancel(&self.cancel),
             _ => {
                 return Err(napi::Error::from_reason(
                     "unsupported secure action operation",

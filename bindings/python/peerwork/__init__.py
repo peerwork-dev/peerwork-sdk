@@ -164,6 +164,18 @@ class SecureActionAccepted(TypedDict):
 SecureActionResult = SecureActionPending | SecureActionAccepted
 
 
+class PendingSecureAction(TypedDict):
+    """Redacted local intent for recovering an unreturned command ID."""
+
+    command_id: str
+    actor_id: str
+    origin: str
+    workspace_id: str
+    action_id: str
+    request_sha256: str
+    commit_hash: str
+
+
 class SecureActionError(RuntimeError):
     def __init__(self, code: str, message: str):
         super().__init__(message)
@@ -485,13 +497,15 @@ class SecurePublicActionClient(SecureReadClient):
 
     def _action(self, operation: str, *, input_value: dict | None = None,
                 command_id: str | None = None,
-                cancel_handle: KernelCancelHandle | None = None) -> SecureActionResult:
+                cancel_handle: KernelCancelHandle | None = None) -> SecureActionResult | list[PendingSecureAction]:
         config_json = json.dumps(self._config, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
         input_json = None if input_value is None else json.dumps(input_value, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
         result = json.loads(secure_public_action_json(operation, config_json, input_json, command_id, cancel_handle))
         if result["ok"] is not True:
             raise SecureActionError(result["code"], result["message"])
         value = result["value"]
+        if operation == "pending":
+            return cast(list[PendingSecureAction], value)
         receipt_json = value.pop("receipt_canonical_json")
         value["receipt"] = None if receipt_json is None else json.loads(receipt_json)
         return cast(SecureActionResult, value)
@@ -511,16 +525,20 @@ class SecurePublicActionClient(SecureReadClient):
             "command_id": command_id,
             "issued_at_ms": issued_at_ms,
         }
-        return self._action("submit", input_value=value)
+        return cast(SecureActionResult, self._action("submit", input_value=value))
 
     def reconcile(self, command_id: str) -> SecureActionResult:
-        return self._action("reconcile", command_id=command_id)
+        return cast(SecureActionResult, self._action("reconcile", command_id=command_id))
 
     def retry_saved(self, command_id: str) -> SecureActionResult:
-        return self._action("retry", command_id=command_id)
+        return cast(SecureActionResult, self._action("retry", command_id=command_id))
+
+    def pending(self) -> list[PendingSecureAction]:
+        """List protected pending IDs locally, including IDs lost to cancellation."""
+        return cast(list[PendingSecureAction], self._action("pending"))
 
     async def _action_async(self, operation: str, *, input_value: dict | None = None,
-                            command_id: str | None = None) -> SecureActionResult:
+                            command_id: str | None = None) -> SecureActionResult | list[PendingSecureAction]:
         cancel_handle = KernelCancelHandle()
         worker = asyncio.create_task(asyncio.to_thread(
             self._action, operation, input_value=input_value,
@@ -543,7 +561,7 @@ class SecurePublicActionClient(SecureReadClient):
             raise
 
     async def reconcile_async(self, command_id: str) -> SecureActionResult:
-        return await self._action_async("reconcile", command_id=command_id)
+        return cast(SecureActionResult, await self._action_async("reconcile", command_id=command_id))
 
     async def submit_async(self, action_id: str, instance_id: str, body: object, *,
                            exact_input_refs: list[object] | None = None,
@@ -559,10 +577,14 @@ class SecurePublicActionClient(SecureReadClient):
             "command_id": command_id,
             "issued_at_ms": issued_at_ms,
         }
-        return await self._action_async("submit", input_value=value)
+        return cast(SecureActionResult, await self._action_async("submit", input_value=value))
 
     async def retry_saved_async(self, command_id: str) -> SecureActionResult:
-        return await self._action_async("retry", command_id=command_id)
+        return cast(SecureActionResult, await self._action_async("retry", command_id=command_id))
+
+    async def pending_async(self) -> list[PendingSecureAction]:
+        """List protected pending IDs without a network read."""
+        return cast(list[PendingSecureAction], await self._action_async("pending"))
 
 
-__all__ += ["SecurePublicActionClient", "SecureActionResult", "SecureActionReceipt", "SecureActionError"]
+__all__ += ["SecurePublicActionClient", "SecureActionResult", "SecureActionReceipt", "PendingSecureAction", "SecureActionError"]

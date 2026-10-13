@@ -195,6 +195,7 @@ if (!Number.isSafeInteger(firstJournalDelayMs) || firstJournalDelayMs < 0 || fir
   throw new Error('invalid journal delay fixture');
 let delayFirstJournal = firstJournalDelayMs > 0;
 let journalDelayStarted = false;
+let journalGetCount = 0;
 const proxy = createServer(async (request, response) => {
   try {
     if (request.url === '/__test/append-public' && request.method === 'POST') {
@@ -288,6 +289,7 @@ const proxy = createServer(async (request, response) => {
         commits: db.prepare('SELECT count(*) n FROM secure_commits').get().n,
         head_sequence: db.prepare('SELECT head_sequence FROM secure_workspaces LIMIT 1').get()?.head_sequence ?? null,
         head_hash: db.prepare('SELECT head_hash FROM secure_workspaces LIMIT 1').get()?.head_hash ?? null,
+        journal_gets: journalGetCount,
       };
       response.writeHead(200, {'content-type': 'application/json'});
       response.end(JSON.stringify(totals));
@@ -295,6 +297,7 @@ const proxy = createServer(async (request, response) => {
     }
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
+    if (request.method === 'GET' && request.url?.includes('/journal?')) journalGetCount++;
     if (rejectNextPostBeforeApply && request.method === 'POST') {
       rejectNextPostBeforeApply = false;
       response.writeHead(503, {'content-type': 'application/json'});

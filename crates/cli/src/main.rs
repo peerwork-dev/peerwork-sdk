@@ -140,7 +140,8 @@ fn main() -> ExitCode {
             if noun == "secure"
                 && (verb == "action-submit"
                     || verb == "action-status"
-                    || verb == "action-retry") =>
+                    || verb == "action-retry"
+                    || verb == "action-pending") =>
         {
             match secure_action_command(verb, rest) {
                 Ok(value) => {
@@ -161,15 +162,15 @@ fn main() -> ExitCode {
             }
         }
         _ => {
-            eprintln!("{{\"code\":\"USAGE\",\"message\":\"peerwork version|capabilities|identity create PATH|identity info PATH|identity import-legacy-pem PATH PROTECTED_PEM_FILE|identity import-seed-file PATH PROTECTED_SEED_FILE|kernel open|prepare|pending|status|submit ORIGIN JOURNAL IDENTITY [COMMAND_FILE|COMMAND_ID] [--allow-loopback-http] [--authority=HEX] [--chunk-file=PATH|--chunk-stdin for prepare]; kernel migrate ORIGIN JOURNAL IDENTITY SOURCE BACKUP --trusted-signer=KEY_ID [--trusted-signer=KEY_ID ...]; secure read --origin=URL --state-dir=DIR --identity=PATH --workspace=ID [--owner-actor=ID --owner-key=ID] [--authority=HEX]; secure snapshot ORIGIN KERNEL_JOURNAL READ_STATE LIFECYCLE IDENTITY WORKSPACE AUTHORITY OWNER_ACTOR OWNER_KEY [--allow-loopback-http] [--max-replay-artifact-bytes=N]; secure action-submit|action-status|action-retry CONFIG_JSON_FILE ACTION_JSON_FILE|COMMAND_ID\"}}");
+            eprintln!("{{\"code\":\"USAGE\",\"message\":\"peerwork version|capabilities|identity create PATH|identity info PATH|identity import-legacy-pem PATH PROTECTED_PEM_FILE|identity import-seed-file PATH PROTECTED_SEED_FILE|kernel open|prepare|pending|status|submit ORIGIN JOURNAL IDENTITY [COMMAND_FILE|COMMAND_ID] [--allow-loopback-http] [--authority=HEX] [--chunk-file=PATH|--chunk-stdin for prepare]; kernel migrate ORIGIN JOURNAL IDENTITY SOURCE BACKUP --trusted-signer=KEY_ID [--trusted-signer=KEY_ID ...]; secure read --origin=URL --state-dir=DIR --identity=PATH --workspace=ID [--owner-actor=ID --owner-key=ID] [--authority=HEX]; secure snapshot ORIGIN KERNEL_JOURNAL READ_STATE LIFECYCLE IDENTITY WORKSPACE AUTHORITY OWNER_ACTOR OWNER_KEY [--allow-loopback-http] [--max-replay-artifact-bytes=N]; secure action-submit|action-status|action-retry CONFIG_JSON_FILE ACTION_JSON_FILE|COMMAND_ID; secure action-pending CONFIG_JSON_FILE\"}}");
             ExitCode::FAILURE
         }
     }
 }
 
 fn secure_action_command(verb: &str, args: &[String]) -> Result<String, (&'static str, String)> {
-    if args.len() != 2 {
-        return Err(("USAGE", "secure action-submit|action-status|action-retry CONFIG_JSON_FILE ACTION_JSON_FILE|COMMAND_ID".to_owned()));
+    if args.len() != if verb == "action-pending" { 1 } else { 2 } {
+        return Err(("USAGE", "secure action-submit|action-status|action-retry CONFIG_JSON_FILE ACTION_JSON_FILE|COMMAND_ID; secure action-pending CONFIG_JSON_FILE".to_owned()));
     }
     let config_bytes = fs::read(&args[0]).map_err(|e| ("CONFIG_FILE", e.to_string()))?;
     let config: SecureReadProfileConfig =
@@ -191,9 +192,13 @@ fn secure_action_command(verb: &str, args: &[String]) -> Result<String, (&'stati
         }
         "action-status" => access.reconcile_json_with_cancel(&args[1], &cancel),
         "action-retry" => access.retry_saved_json_with_cancel(&args[1], &cancel),
+        "action-pending" => access.list_pending_json_with_cancel(&cancel),
         _ => unreachable!(),
     }
     .map_err(|e| (e.code(), e.to_string()))?;
+    if verb == "action-pending" {
+        return Ok(result);
+    }
     // The receipt is canonical verified JSON. Embed it as a JSON value so CLI
     // consumers can inspect effect records without parsing an internal string.
     let mut envelope: serde_json::Value = serde_json::from_str(&result)
