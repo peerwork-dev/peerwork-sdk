@@ -277,13 +277,13 @@ export interface SecureIdentityDirectorySession {
 }
 export declare function openSecureIdentityDirectory(options: SecureIdentityDirectoryOptions): SecureIdentityDirectorySession;
 
-export interface PublicOfferResult {
+export interface AdmissionOfferResult {
   status: 'PENDING';
   invite_id: string;
   workspace_id: string;
   offer_hash: string;
 }
-export interface PublicDeliveryResult {
+export interface AdmissionDeliveryResult {
   status: 'PENDING' | 'AUTHORIZED';
   invite_id: string;
   grant_id: string;
@@ -302,17 +302,17 @@ export interface InvitationReceiveResult {
   workspace_id: string;
   receipt_hash: string;
 }
-export interface PendingPublicOffer { invite_id: string; workspace_id: string; offer_hash: string; observed_responses: number }
-export interface PendingPublicDelivery { grant_id: string; workspace_id: string; grant_hash: string; observed_responses: number }
+export interface PendingAdmissionOffer { invite_id: string; workspace_id: string; offer_hash: string; observed_responses: number }
+export interface PendingAdmissionDelivery { grant_id: string; workspace_id: string; grant_hash: string; observed_responses: number }
 export interface PendingInvitationDecision { invite_id: string; workspace_id: string; decision_hash: string; observed_responses: number }
 export interface PendingInvitationReceipt { invite_id: string; grant_id: string; workspace_id: string; receipt_hash: string; observed_responses: number }
 export interface SecureOwnerAdmissionSession {
-  offer(recipientCertificateJson: string, scopes: unknown[], options?: { message?: string; inviteId?: string; issuedAtMs?: number; expiresAtMs?: number; signal?: AbortSignal }): Promise<PublicOfferResult>;
-  retryOffer(inviteId: string, options?: { signal?: AbortSignal }): Promise<PublicOfferResult>;
-  pendingOffers(): Promise<PendingPublicOffer[]>;
-  deliver(inviteId: string, options?: { signal?: AbortSignal }): Promise<PublicDeliveryResult>;
-  retryDelivery(grantId: string, options?: { signal?: AbortSignal }): Promise<PublicDeliveryResult>;
-  pendingDeliveries(): Promise<PendingPublicDelivery[]>;
+  offer(recipientCertificateJson: string, scopes: unknown[], options?: { message?: string; inviteId?: string; issuedAtMs?: number; expiresAtMs?: number; signal?: AbortSignal }): Promise<AdmissionOfferResult>;
+  retryOffer(inviteId: string, options?: { signal?: AbortSignal }): Promise<AdmissionOfferResult>;
+  pendingOffers(): Promise<PendingAdmissionOffer[]>;
+  deliver(inviteId: string, options?: { signal?: AbortSignal }): Promise<AdmissionDeliveryResult>;
+  retryDelivery(grantId: string, options?: { signal?: AbortSignal }): Promise<AdmissionDeliveryResult>;
+  pendingDeliveries(): Promise<PendingAdmissionDelivery[]>;
 }
 export declare function openSecurePublicAdmission(options: SecureReadOptions): SecureOwnerAdmissionSession;
 export interface SecureInvitationOptions extends RecipientEnrollmentOptions {
