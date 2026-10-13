@@ -92,6 +92,25 @@ def contains_record(readback, record_id, title):
         for row in readback["objects"])
 
 
+def protected_current_generation(state_dir):
+    """Observe protected current-slot custody; the staged slot may change."""
+    prefix = b"PEERWORK-NATIVE-SECURE-STATE\n1\n"
+    profile_wire = (state_dir / "read.profile").read_bytes()
+    assert profile_wire.startswith(prefix)
+    profile = json.loads(profile_wire[len(prefix):])
+    assert profile["current"] in (0, 1) and profile["floor"] is not None
+    current_path = state_dir / f"read-{profile['current']}.state"
+    return (profile["current"], profile["floor"],
+        hashlib.sha256(current_path.read_bytes()).hexdigest())
+
+
+def exact_record(readback, record_id):
+    matches = [row for row in readback["objects"]
+               if row.get("kind") == "records" and row.get("id") == record_id]
+    assert len(matches) == 1
+    return matches[0]
+
+
 with tempfile.TemporaryDirectory(prefix="peerwork-native-private-", dir=TEMP_ROOT) as temporary:
     state = Path(temporary)
     state.chmod(0o700)
@@ -131,6 +150,11 @@ with tempfile.TemporaryDirectory(prefix="peerwork-native-private-", dir=TEMP_ROO
             str(recipient_dir / "identity.state"), workspace["workspace_id"], authority,
             workspace["owner_actor_id"], workspace["owner_key_id"], allow_loopback_http=True)
         assert saved.read()["sequence"] == initial["sequence"]
+        initial_checkpoint = (initial["sequence"], initial["head"], initial["policy_hash"])
+        protected_before_failure = protected_current_generation(recipient_dir)
+        assert protected_before_failure[1]["sequence"] == initial_checkpoint[0]
+        assert protected_before_failure[1]["head"] == initial_checkpoint[1]
+        assert protected_before_failure[1]["policy_hash"] == initial_checkpoint[2]
         advanced = test_post(origin, "rotate")
         assert advanced["epoch"] > 1
         with urllib.request.urlopen(urllib.request.Request(
@@ -142,10 +166,14 @@ with tempfile.TemporaryDirectory(prefix="peerwork-native-private-", dir=TEMP_ROO
             assert error.code in ("VERIFICATION_FAILED", "GRANT_INVALID")
         else:
             raise AssertionError("altered signed direct grant authorized PRIVATE read")
-        assert saved.read()["sequence"] == initial["sequence"]
+        # Compare custody before any restorative service read. A fresh snapshot
+        # fetch here could mask a damaged current slot by refilling it.
+        assert protected_current_generation(recipient_dir) == protected_before_failure
         latest = reader.read_private()
         assert latest["sequence"] == advanced["sequence"]
         assert contains_record(latest, advanced["record_id"], "Native private admission readback")
+        assert exact_record(latest, advanced["record_id"])["value"]["payload"]["body"] == \
+            "Encrypted record after owner epoch advance"
         assert reader.read()["sequence"] == latest["sequence"]
         node_read = node_call("read", dict(origin=origin, stateDir=str(recipient_dir),
             identityPath=str(recipient_dir / "identity.state"),
@@ -185,6 +213,8 @@ with tempfile.TemporaryDirectory(prefix="peerwork-native-private-", dir=TEMP_ROO
         historical_read = read_client(origin, historical_dir, workspace).read_private()
         assert contains_record(historical_read, advanced["record_id"],
             "Native private admission readback")
+        assert exact_record(historical_read, advanced["record_id"])["value"]["payload"]["body"] == \
+            "Encrypted record after owner epoch advance"
         print(json.dumps(dict(source="installed", visibility="PRIVATE",
             native_decision=consent["status"], native_receipt=received["status"],
             direct_grant_sequence=latest["sequence"], historical_receipt=old_received["status"],
