@@ -1933,6 +1933,7 @@ mod selected_binding_service_test {
             .find(|row| row["kind"] == "instances" && row["id"] == instance_id)
             .unwrap();
         assert_eq!(instance["value"]["protocol_digest"], selected_digest);
+        assert_eq!(instance["value"]["state"]["count"], 1);
         let before_action_retry = counts();
         assert_eq!(serde_json::from_str::<serde_json::Value>(
             &action.retry_saved_json(action_id).unwrap()).unwrap(), accepted);
