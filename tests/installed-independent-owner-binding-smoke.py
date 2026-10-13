@@ -219,8 +219,11 @@ try:
     line = server.stdout.readline()
     assert line, f"service did not start: {server.stderr.read()[-800:]}"
     origin = json.loads(line)["origin"]
+    selected_interface = os.environ.get("PEERWORK_TEST_INTERFACE", "all")
+    assert selected_interface in ("all", "cli")
+    interfaces = ("python", "node", "cli") if selected_interface == "all" else ("cli",)
     summaries = []
-    for kind in ("python", "node", "cli"):
+    for kind in interfaces:
         api = Interface(kind, origin)
         prepared = api.prepare()
         assert prepared["status"] == "PENDING"
@@ -292,7 +295,7 @@ try:
         assert latest["value"]["state"]["count"] == 1
         summaries.append(dict(interface=kind, workspace_id=workspace_id,
             begin_id=begin_id, action_id=command_id, final_sequence=final["sequence"]))
-    assert len({row["workspace_id"] for row in summaries}) == 3
+    assert len({row["workspace_id"] for row in summaries}) == len(interfaces)
     print(json.dumps(dict(status="PASS", source_mode="pinned_vector_no_catalog",
                           selected_protocol_digest=binding["selected_protocol_digest"],
                           interfaces=summaries)))
