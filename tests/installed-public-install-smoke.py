@@ -172,6 +172,10 @@ with tempfile.TemporaryDirectory(prefix="peerwork-installed-install-") as direct
                 break
         assert steps[-1]["status"] == "ACCEPTED"
         assert counts(ready["origin"])["head_sequence"] == 3
+        python_repeat = client.continue_install(begin_id)
+        assert python_repeat["status"] == "ACCEPTED"
+        assert python_repeat["commit_hash"] == steps[-1]["commit_hash"]
+        assert counts(ready["origin"])["head_sequence"] == 3
         assert client.pending() == []
         latest = client.read()
         assert latest["sequence"] == 3 and latest["structure_status"] == "ACTIVE"
