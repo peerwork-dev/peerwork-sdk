@@ -2,13 +2,13 @@
 // a genuine PRIVATE wire-v1 workspace on the current service's PREPARE path.
 // Public IDs only leave this process; PEM/state/SQLite remain mode-protected.
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { join, relative, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const [origin, sourceDir, legacyRoot, mode = 'clean'] = process.argv.slice(2);
 if (!origin || !sourceDir || !legacyRoot) throw new Error('LEGACY_TEST_INPUT_REQUIRED');
-if (!['clean', 'completed', 'legacy-record', 'pending', 'pending-before-post', 'pending-private-structured', 'pending-private-structured-before-post', 'pending-public', 'pending-public-before-post', 'pending-public-structured', 'pending-public-structured-before-post', 'pending-current-private', 'pending-current-private-before-post', 'pending-current-private-structured', 'pending-current-private-structured-before-post', 'pending-current-private-structured-ceiling2', 'pending-current-private-structured-ceiling2-before-post', 'pending-current-public', 'pending-current-public-before-post', 'pending-current-public-structured', 'pending-current-public-structured-before-post', 'kernel-jws-source', 'unknown-store', 'malformed-store', 'legacy-structured', 'legacy-public', 'legacy-public-structured', 'legacy-public-record', 'legacy-public-structured-record', 'private-missing-ring'].includes(mode)) throw new Error('LEGACY_TEST_MODE_INVALID');
+if (!['clean', 'completed', 'legacy-record', 'pending', 'pending-before-post', 'pending-private-structured', 'pending-private-structured-before-post', 'pending-public', 'pending-public-before-post', 'pending-public-structured', 'pending-public-structured-before-post', 'pending-current-private', 'pending-current-private-before-post', 'pending-current-private-structured', 'pending-current-private-structured-before-post', 'pending-current-private-structured-ceiling2', 'pending-current-private-structured-ceiling2-before-post', 'pending-current-public', 'pending-current-public-before-post', 'pending-current-public-structured', 'pending-current-public-structured-before-post', 'stage-marker-completed', 'stage-marker-pending', 'kernel-jws-source', 'unknown-store', 'malformed-store', 'legacy-structured', 'legacy-public', 'legacy-public-structured', 'legacy-public-record', 'legacy-public-structured-record', 'private-missing-ring'].includes(mode)) throw new Error('LEGACY_TEST_MODE_INVALID');
 mkdirSync(sourceDir, { recursive: true, mode: 0o700 });
 const { privateKey } = generateKeyPairSync('ed25519');
 const pemPath = join(sourceDir, 'owner.pem');
@@ -21,8 +21,8 @@ const { secureHash } = await import(pathToFileURL(join(legacyRoot, 'dist-workspa
 const agent = await SecureAgentClient.open({ baseUrl: new URL(origin).origin, privateKey, statePath, intentDbPath });
 try {
   const visibility = mode.includes('public') ? 'PUBLIC' : 'PRIVATE';
-  const structured = mode.includes('structured');
-  const currentClient = mode.startsWith('pending-current') || mode === 'kernel-jws-source';
+  const structured = mode.includes('structured') || mode.startsWith('stage-marker-');
+  const currentClient = mode.startsWith('pending-current') || mode.startsWith('stage-marker-') || mode === 'kernel-jws-source';
   const created = await agent.create('Legacy native attach proof', visibility, { structure: structured });
   let journal = await agent.journal(created.workspaceId);
   if (mode.includes('ceiling2')) journal = await agent.enableFormatTwo(created.workspaceId);
@@ -57,6 +57,64 @@ try {
     } finally { agent.request = originalRequest; }
     if (beforePost && !stopped) throw new Error('LEGACY_PRE_POST_STOP_NOT_REACHED');
     if (Object.keys(agent.state.pending).length !== 1) throw new Error('LEGACY_PENDING_NOT_SAVED');
+  }
+  let stageMarker = null;
+  let stagePartCount = null;
+  if (mode.startsWith('stage-marker-')) {
+    const { parseProtocolPackage, PROTOCOL_PACKAGE_FORMAT } = await import(pathToFileURL(join(legacyRoot, 'dist-workspace/src/protocol-package.js')).href);
+    const { createProtocolPackageClosure } = await import(pathToFileURL(join(legacyRoot, 'dist-workspace/src/protocol-package-closure.js')).href);
+    const { createProtocolPackageSource } = await import(pathToFileURL(join(legacyRoot, 'dist-workspace/src/workspace-protocol-package-source.js')).href);
+    const directory = join(legacyRoot, 'protocols/discussion');
+    const files = {};
+    const walk = at => {
+      for (const entry of readdirSync(at, { withFileTypes: true })) {
+        const path = join(at, entry.name);
+        if (entry.isDirectory()) walk(path);
+        else files[relative(directory, path).split(sep).join('/')] = readFileSync(path, 'utf8');
+      }
+    };
+    walk(directory);
+    const bundle = parseProtocolPackage({ format: PROTOCOL_PACKAGE_FORMAT, files });
+    const material = { v: 1, closure: createProtocolPackageClosure(bundle, []), bindings: {} };
+    const staged = createProtocolPackageSource(material, journal.checkpoint);
+    if (staged.parts.length !== 1) throw new Error('TEST_STAGE_PART_COUNT_UNEXPECTED');
+    stagePartCount = staged.parts.length;
+    const originalPost = agent.post.bind(agent);
+    let stopped = false;
+    if (mode === 'stage-marker-completed') {
+      agent.post = async (...args) => {
+        const result = await originalPost(...args);
+        if (!stopped) {
+          stopped = true;
+          throw new Error('TEST_STOP_AFTER_STAGE_POST');
+        }
+        return result;
+      };
+    } else {
+      const hook = await fetch(new URL('/__test/drop-next-post', origin), { method: 'POST', body: '{}' });
+      if (!hook.ok) throw new Error('TEST_STAGE_DROP_HOOK_FAILED');
+    }
+    try {
+      await agent.stagePackageMaterial(created.workspaceId, material, journal.checkpoint);
+      throw new Error('TEST_STAGE_DID_NOT_INTERRUPT');
+    } catch (error) {
+      if (mode === 'stage-marker-completed' && error?.message !== 'TEST_STOP_AFTER_STAGE_POST') throw error;
+      if (mode === 'stage-marker-pending' && error?.message === 'TEST_STAGE_DID_NOT_INTERRUPT') throw error;
+    } finally { agent.post = originalPost; }
+    if (mode === 'stage-marker-completed' && !stopped) throw new Error('TEST_STAGE_COMPLETED_STOP_NOT_REACHED');
+    const markers = Object.values(agent.state.package_stage_intents ?? {});
+    if (markers.length !== 1) throw new Error('TEST_STAGE_MARKER_MISSING');
+    stageMarker = markers[0];
+    const expectedPending = mode === 'stage-marker-pending' ? 1 : 0;
+    if (Object.keys(agent.state.pending).length !== expectedPending) throw new Error('TEST_STAGE_PENDING_CLASS_MISMATCH');
+    journal = await agent.journal(created.workspaceId);
+    if (journal.checkpoint.sequence !== staged.proof.source.sequence + 1) throw new Error('TEST_STAGE_SIGNED_COMMIT_MISSING');
+    const stageOperation = journal.operations.at(-1);
+    if (stageOperation?.input?.package_stage?.source_id !== stageMarker.source_id
+      || stageOperation.input.package_stage.part_index !== stageMarker.part_index
+      || await secureHash(stageOperation.input.package_stage.source) !== await secureHash(stageMarker.source)) {
+      throw new Error('TEST_STAGE_SIGNED_OPERATION_MISMATCH');
+    }
   }
   let kernelSource = null;
   if (mode === 'kernel-jws-source') {
@@ -140,6 +198,15 @@ try {
     pending_command_id: Object.keys(agent.state.pending)[0] ?? null,
     pending_commit_hash: Object.values(agent.state.pending)[0]?.body?.commit
       ? await secureHash(Object.values(agent.state.pending)[0].body.commit) : null,
+    stage_marker: stageMarker ? {
+      command_id: stageMarker.command_id,
+      workspace_id: stageMarker.workspace_id,
+      source_id: stageMarker.source_id,
+      source_sha256: stageMarker.source_sha256,
+      part_index: stageMarker.part_index,
+      source: stageMarker.source,
+    } : null,
+    stage_part_count: stagePartCount,
     kernel_source: kernelSource,
     completed_identity_updates: Object.values(agent.state.identity_key_intents ?? {}).filter(row => row.state === 'PUBLISHED').length,
     prior_record_id: priorRecordId,

@@ -3586,6 +3586,126 @@ mod tests {
     }
 
     #[test]
+    fn actual_service_creates_completed_and_pending_package_stage_markers() {
+        let _fault_guard = ATTACH_FAULT_TEST_LOCK.lock().unwrap();
+        let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else {
+            return;
+        };
+        let node = std::env::var("PEERWORK_NODE_BIN").unwrap_or_else(|_| "node".into());
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let bridge =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/reference-kernel-server.mjs");
+        let child = Command::new(&node)
+            .arg(bridge)
+            .env("PEERWORK_REFERENCE_ROOT", &reference_root)
+            .env("PEERWORK_TEST_STATE", root.path())
+            .env("PEERWORK_TEST_FIRST_POST_MODE", "normal")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        struct StopStage(Child);
+        impl Drop for StopStage {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut child = StopStage(child);
+        let mut line = String::new();
+        BufReader::new(child.0.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        assert!(!line.is_empty(), "pinned service exited before readiness");
+        let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let origin = ready["origin"].as_str().unwrap();
+        let helper =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/legacy-owner-source.mjs");
+        let oracle = rusqlite::Connection::open_with_flags(
+            root.path().join("control.sqlite"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        for (name, mode, pending_count) in [
+            ("completed", "stage-marker-completed", 0),
+            ("pending", "stage-marker-pending", 1),
+        ] {
+            let output = Command::new(&node)
+                .arg(&helper)
+                .arg(origin)
+                .arg(root.path().join(name))
+                .arg(&reference_root)
+                .arg(mode)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "source-generated stage marker {name}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let source: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(source["policy_v"], 3);
+            assert_eq!(source["visibility"], "PRIVATE");
+            assert_eq!(source["structured"], true);
+            assert_eq!(source["structure_mode"], "STRUCTURED");
+            assert_eq!(source["stage_part_count"], 1);
+            assert_eq!(source["pending_count"], pending_count);
+            let workspace = source["workspace_id"].as_str().unwrap();
+            let marker = &source["stage_marker"];
+            assert_eq!(marker["workspace_id"], workspace);
+            assert_eq!(marker["part_index"], 0);
+            assert!(marker["source_id"].as_str().is_some());
+            assert!(marker["source_sha256"].as_str().is_some());
+            let command = marker["command_id"].as_str().unwrap();
+            let committed: i64 = oracle
+                .query_row(
+                    "SELECT count(*) FROM secure_commits WHERE workspace_id=?1 AND command_id=?2",
+                    [workspace, command],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(committed, 1, "{name}");
+            let total: i64 = oracle
+                .query_row(
+                    "SELECT count(*) FROM secure_commits WHERE workspace_id=?1",
+                    [workspace],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(total, 2, "{name}");
+            let config = SecureOwnerCreateConfig {
+                origin: origin.into(),
+                state_dir: root.path().join(format!("native-{name}")),
+                allow_loopback_http: true,
+                max_replay_artifact_bytes: 64 * 1024 * 1024,
+            };
+            let attach = SecureHistoricalOwnerAttach::new(config);
+            let input = HistoricalOwnerAttachInput {
+                workspace_id: workspace.into(),
+                protected_ts_state_path: source["state_path"].as_str().unwrap().into(),
+                protected_owner_pkcs8_path: source["pem_path"].as_str().unwrap().into(),
+                protected_ts_intent_db_path: source["intent_db_path"].as_str().unwrap().into(),
+                expected_owner_actor_id: source["owner_actor_id"].as_str().unwrap().into(),
+                expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
+                recover_pending_action: false,
+                retain_pending_action_command_id: None,
+                kernel_pending_command_ids: Vec::new(),
+                expected_kernel_intent_db_digest: None,
+            };
+            assert!(matches!(
+                attach.attach(input, &CancellationToken::new()),
+                Err(HistoricalOwnerAttachError::SourceUnresolved)
+            ));
+            assert!(attach.attachments().unwrap().is_empty());
+        }
+    }
+
+    #[test]
     fn actual_service_imports_old_structured_and_public_pending_actions() {
         let _fault_guard = ATTACH_FAULT_TEST_LOCK.lock().unwrap();
         let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else {
