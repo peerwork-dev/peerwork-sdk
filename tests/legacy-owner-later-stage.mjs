@@ -37,6 +37,11 @@ for (const [key, target] of Object.entries(selected)) {
 }
 const { SecureAgentClient } = await import(pathToFileURL(join(referenceRoot, 'dist-workspace/src/workspace-secure-agent.js')).href);
 const { secureHash } = await import(pathToFileURL(join(referenceRoot, 'dist-workspace/src/workspace-secure-client.js')).href);
+const { createProtocolPackageSource } = await import(pathToFileURL(join(referenceRoot, 'dist-workspace/src/workspace-protocol-package-source.js')).href);
+const originalProof = createProtocolPackageSource(
+  JSON.parse(initial.pending_stage_material_json), initial.stage_marker.source,
+).proof;
+if (originalProof.source_id !== initial.stage_marker.source_id) throw new Error('LATER_STAGE_SOURCE_PROOF_MISMATCH');
 const privateKey = createPrivateKey(readFileSync(initial.pem_path));
 const agent = await SecureAgentClient.open({
   baseUrl: new URL(origin).origin, privateKey,
@@ -93,6 +98,8 @@ try {
     latest_sequence: journal.checkpoint.sequence,
     latest_policy_hash: await secureHash(journal.policy),
     latest_ceiling: journal.policy.payload.protocol_format_ceiling,
+    root_package_digest: originalProof.root_package_digest,
+    protocol_digest: originalProof.protocol_digest,
     later_history_signed: true,
   }) + '\n');
 } finally {

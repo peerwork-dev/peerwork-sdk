@@ -2017,10 +2017,13 @@ impl SecureHistoricalOwnerAttach {
             )?;
             let source_wire = canonical_wire_value(&pending.marker.source, CanonicalPath::SecureArtifact)
                 .map_err(|_| HistoricalOwnerAttachError::SourceUnresolved)?;
+            let historical_policy_hash = pending.marker.source.get("policy_hash")
+                .and_then(WireValue::as_string)
+                .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
             SecurePrivatePackageInstall::new(self.profile_config(&row.input))
                 .save_imported_stage_row_for_attach(
                     attach_id, &plan.manifest.stage_id, &plan.material,
-                    &source_wire, &row.source_policy_hash, &saved.source_id,
+                    &source_wire, &historical_policy_hash, &saved.source_id,
                     &plan.manifest.root_package_digest, &plan.manifest.protocol_digest,
                     saved.part_count, steps,
                 ).map_err(|_| HistoricalOwnerAttachError::Conflict)?;
@@ -2723,8 +2726,11 @@ impl SecureHistoricalOwnerAttach {
             .ok_or(HistoricalOwnerAttachError::Conflict)?
             .checked_add(stage.part_count as u64)
             .ok_or(HistoricalOwnerAttachError::Conflict)?;
+        let historical_policy_hash = completed_marker.source.get("policy_hash")
+            .and_then(WireValue::as_string)
+            .ok_or(HistoricalOwnerAttachError::Conflict)?;
         if !completed_replay.replay().contains_checkpoint(
-            final_sequence, Some(&final_commit_hash), &row.source_policy_hash,
+            final_sequence, Some(&final_commit_hash), &historical_policy_hash,
         ) {
             return Err(HistoricalOwnerAttachError::Conflict);
         }
@@ -7330,6 +7336,8 @@ mod tests {
                     input, material, &cancel,
                 ), Err(HistoricalOwnerAttachError::SourceUnresolved)));
                 assert!(attach.attachments().unwrap().is_empty());
+                assert!(!config.state_dir.join("workspaces").join(workspace).join("lifecycle.state").exists(),
+                    "stale source must not activate an Owner profile");
                 assert_eq!(count(), latest);
                 assert_eq!(TEST_IMPORTED_PACKAGE_STAGE_POSTS.load(Ordering::SeqCst), posts_before);
                 assert_eq!(sha256_hex(&std::fs::read(source["state_path"].as_str().unwrap()).unwrap()),
@@ -7360,9 +7368,40 @@ mod tests {
             let facade = SecureOwnerWorkspaceCreate::new(config.clone());
             let installer = facade.private_install_access(workspace).unwrap();
             let actor = source["owner_actor_id"].as_str().unwrap();
+            let old_stage_id = stage_id.to_owned();
+            assert!(matches!(installer.submit_begin_json(
+                crate::secure_private_install::PrivatePackageInstallBeginInput {
+                    stage_id: old_stage_id.clone(), instance_id: random_token().unwrap(),
+                    entrypoint: "later-history-import".into(),
+                    grants_json: serde_json::json!([{"actor_id":actor,
+                        "actions":["discussion.post"],
+                        "protocol_roles":["CONTRIBUTOR"],"capabilities":["POST"]}]).to_string(),
+                    disclose: None, command_id: None, issued_at_ms: None,
+                },
+            ), Err(crate::secure_private_install::PrivatePackageInstallError::Plan)));
+            assert_eq!(count(), latest, "{mode}: historical source cannot satisfy current BEGIN");
+            assert_eq!(installer.installs_json().unwrap(), "[]");
+            let stage_wire = installer.stage_package_json(
+                crate::secure_private_install::PrivatePackageStageInput {
+                    material_json: material.to_owned(),
+                    expected_root_package_digest: source["root_package_digest"].as_str().unwrap().into(),
+                    expected_protocol_digest: source["protocol_digest"].as_str().unwrap().into(),
+                    stage_id: None, command_id: None, issued_at_ms: None,
+                },
+            ).unwrap();
+            let mut fresh_stage: serde_json::Value = serde_json::from_str(&stage_wire).unwrap();
+            let fresh_stage_id = fresh_stage["stage_id"].as_str().unwrap().to_owned();
+            assert_ne!(fresh_stage_id, old_stage_id);
+            assert_ne!(fresh_stage["source_id"], source["stage_marker"]["source_id"]);
+            for _ in 0..8 {
+                if fresh_stage["status"] == "STAGED" { break; }
+                fresh_stage = serde_json::from_str(&installer.continue_stage_json(&fresh_stage_id).unwrap()).unwrap();
+            }
+            assert_eq!(fresh_stage["status"], "STAGED", "{mode}: newly authorized source");
+            assert_eq!(count(), latest + source["stage_part_count"].as_i64().unwrap());
             let begin_wire = installer.submit_begin_json(
                 crate::secure_private_install::PrivatePackageInstallBeginInput {
-                    stage_id: stage_id.to_owned(), instance_id: random_token().unwrap(),
+                    stage_id: fresh_stage_id.clone(), instance_id: random_token().unwrap(),
                     entrypoint: "later-history-import".into(),
                     grants_json: serde_json::json!([{"actor_id":actor,
                         "actions":["discussion.post"],
@@ -7373,7 +7412,7 @@ mod tests {
             let begin: serde_json::Value = serde_json::from_str(&begin_wire).unwrap();
             let begin_id = begin["begin_command_id"].as_str().unwrap();
             let installs: serde_json::Value = serde_json::from_str(&installer.installs_json().unwrap()).unwrap();
-            assert_eq!(installs[0]["stage_id"], stage_id);
+            assert_eq!(installs[0]["stage_id"], fresh_stage_id);
             assert_eq!(installs[0]["begin_command_id"], begin_id);
             let mut installed = begin.clone();
             for _ in 0..8 {
@@ -7391,6 +7430,10 @@ mod tests {
                 && object["id"] == installed["instance_id"]
                 && object["value"]["protocol_digest"] == installed["protocol_digest"]
                 && object["value"]["origin_entrypoint"] == "later-history-import"), "{mode}");
+            let retained = attach.attachments().unwrap();
+            assert_eq!(retained.len(), 1);
+            assert_eq!(retained[0].pending_package_stage_id.as_deref(), Some(old_stage_id.as_str()));
+            assert_eq!(retained[0].pending_package_stage_status.as_deref(), Some("ACCEPTED"));
         }
     }
 
