@@ -92,6 +92,42 @@ async def cancel_before_persist(origin, owner, certificate, database):
         assert connection.execute("SELECT count(*) FROM secure_invitations").fetchone()[0] == 0
 
 
+async def cancel_after_persist(origin, owner, reopen_kwargs, certificate, database, recipient_actor):
+    before_ids = {row["invite_id"] for row in owner.pending_offers()}
+    with sqlite3.connect(database) as connection:
+        before_count = connection.execute("SELECT count(*) FROM secure_invitations").fetchone()[0]
+    with urllib.request.urlopen(urllib.request.Request(
+            origin + "__test/delay-next-post", data=b"", method="POST"), timeout=5):
+        pass
+    task = asyncio.create_task(owner.offer_async(certificate, "[]", message="applied before cancel"))
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        with urllib.request.urlopen(origin + "__test/post-delay-status", timeout=5) as response:
+            if json.load(response)["started"]:
+                break
+        await asyncio.sleep(0.05)
+    else:
+        raise AssertionError("POST was not observed after tracked service application")
+    task.cancel()
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    else:
+        raise AssertionError("post-persist cancellation was not observed")
+    reopened = peerwork.SecurePublicAdmissionClient(**reopen_kwargs)
+    after = {row["invite_id"]: row for row in reopened.pending_offers()}
+    new_ids = set(after) - before_ids
+    assert len(new_ids) == 1, (before_ids, after)
+    invite_id = next(iter(new_ids))
+    assert stored_offer(database, invite_id) == (after[invite_id]["offer_hash"], recipient_actor)
+    retried = reopened.retry_offer(invite_id)
+    assert retried["invite_id"] == invite_id and retried["offer_hash"] == after[invite_id]["offer_hash"]
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT count(*) FROM secure_invitations").fetchone()[0] == before_count + 1
+
+
 with tempfile.TemporaryDirectory(prefix="peerwork-native-admission-", dir=TEMP_ROOT) as temporary:
     state = Path(temporary)
     state.chmod(0o700)
@@ -117,6 +153,10 @@ with tempfile.TemporaryDirectory(prefix="peerwork-native-admission-", dir=TEMP_R
             workspace["workspace_id"], owner_actor_id=workspace["actor_id"],
             owner_key_id=workspace["signing_key"], authority=workspace["authority"],
             allow_loopback_http=True)
+        owner_reopen_kwargs = dict(origin=origin, state_dir=str(owner_dir),
+            identity_path=str(owner_identity), workspace_id=workspace["workspace_id"],
+            owner_actor_id=workspace["actor_id"], owner_key_id=workspace["signing_key"],
+            authority=workspace["authority"], allow_loopback_http=True)
         assert owner.read()["sequence"] == 1
 
         recipient_dir = state / "recipient"
@@ -189,8 +229,10 @@ with tempfile.TemporaryDirectory(prefix="peerwork-native-admission-", dir=TEMP_R
             owner_actor_id=workspace["actor_id"], owner_key_id=workspace["signing_key"],
             allow_loopback_http=True)
         assert recipient_read.read()["workspace_id"] == workspace["workspace_id"]
+        asyncio.run(cancel_after_persist(origin, owner, owner_reopen_kwargs, certificate,
+            service_state / "control.sqlite", local["actor_id"]))
         print(json.dumps(dict(source="installed", recipient_actor=local["actor_id"],
-            owner_actor=workspace["actor_id"], offers=3, accepted_invite=high["invite_id"],
+            owner_actor=workspace["actor_id"], offers=4, accepted_invite=high["invite_id"],
             delivery_status=delivery["status"], recipient_status=received["status"])))
     finally:
         server.stdin.close()

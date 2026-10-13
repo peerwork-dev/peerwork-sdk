@@ -217,6 +217,8 @@ let dropNextIdentityDirectory = false;
 let serveStaleIdentityDirectory = false;
 let tamperNextIdentityDirectory = false;
 let rejectNextPostBeforeApply = false;
+let delayNextPostAfterApply = false;
+let delayedPostStarted = false;
 let alterFirstChunk = process.env.PEERWORK_TEST_WRONG_CHUNK_STATE === '1';
 const firstPostMode = process.env.PEERWORK_TEST_FIRST_POST_MODE || 'drop';
 const firstPostDelayMs = Number(process.env.PEERWORK_TEST_FIRST_POST_DELAY_MS || 0);
@@ -275,6 +277,18 @@ const proxy = createServer(async (request, response) => {
       dropFirstPost = true;
       response.writeHead(200, {'content-type':'application/json'});
       response.end(JSON.stringify({enabled:true}));
+      return;
+    }
+    if (request.url === '/__test/delay-next-post' && request.method === 'POST') {
+      if (delayNextPostAfterApply) throw new Error('POST delay already armed');
+      delayNextPostAfterApply = true;
+      response.writeHead(200, {'content-type':'application/json'});
+      response.end(JSON.stringify({enabled:true}));
+      return;
+    }
+    if (request.url === '/__test/post-delay-status' && request.method === 'GET') {
+      response.writeHead(200, {'content-type':'application/json'});
+      response.end(JSON.stringify({started:delayedPostStarted}));
       return;
     }
     if (request.url === '/__test/drop-next-identity-directory' && request.method === 'POST') {
@@ -412,6 +426,13 @@ const proxy = createServer(async (request, response) => {
       }
       // Hold the committed real response for an in-flight client abort test.
       await new Promise(resolve => setTimeout(resolve, firstPostDelayMs));
+      if (response.destroyed) return;
+    }
+    if (request.method === 'POST' && delayNextPostAfterApply && original.status >= 200 && original.status < 300) {
+      delayNextPostAfterApply = false;
+      delayedPostStarted = true; // The tracked service has already applied and replied.
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      delayedPostStarted = false;
       if (response.destroyed) return;
     }
     if (request.method === 'GET' && request.url?.includes('/journal?') && delayFirstJournal) {
