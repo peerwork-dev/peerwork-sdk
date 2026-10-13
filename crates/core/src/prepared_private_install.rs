@@ -74,6 +74,36 @@ pub fn package_source_identity_matches(
     package_source_id(source, source_sha256).is_ok_and(|expected| expected == source_id)
 }
 
+/// Compile caller-supplied material at an authenticated source checkpoint and
+/// bind the complete one-part proof to a retained marker. This does not sign
+/// or submit a replacement for the marker's missing original packet.
+pub fn prepare_orphan_package_stage_material(
+    material_wire: &[u8],
+    source_checkpoint_wire: &[u8],
+    expected_source_id: &str,
+    expected_source_sha256: &str,
+) -> Result<(String, String, String), PrivateInstallError> {
+    let prepared = prepare_package_source_wire(material_wire, source_checkpoint_wire)
+        .map_err(|_| PrivateInstallError::Invalid)?;
+    if prepared.parts.len() != 1
+        || prepared.proof.get("source_id").and_then(WireValue::as_string).as_deref()
+            != Some(expected_source_id)
+        || prepared.proof.get("source_sha256").and_then(WireValue::as_string).as_deref()
+            != Some(expected_source_sha256)
+    {
+        return Err(PrivateInstallError::Invalid);
+    }
+    verify_protocol_package_source(&prepared.proof, &prepared.parts)
+        .map_err(|_| PrivateInstallError::Invalid)?;
+    let root = prepared.proof.get("root_package_digest").and_then(WireValue::as_string)
+        .ok_or(PrivateInstallError::Invalid)?;
+    let protocol = prepared.proof.get("protocol_digest").and_then(WireValue::as_string)
+        .ok_or(PrivateInstallError::Invalid)?;
+    let proof_wire = canonical_wire_value(&prepared.proof, Path::SecureArtifact)
+        .map_err(|_| PrivateInstallError::Invalid)?;
+    Ok((root, protocol, sha256_hex(proof_wire.as_bytes())))
+}
+
 /// Exact encrypted packet plus the source-derived material proof. Persist the
 /// packet and chosen source before POST; never re-encrypt an uncertain step.
 pub struct PreparedPrivatePackageStage {

@@ -63,6 +63,7 @@ try {
   let stagePartId = null;
   let stagePartSha = null;
   let stageSignedCommandId = null;
+  let orphanStageMaterialJson = null;
   if (mode.startsWith('stage-marker-')) {
     const { parseProtocolPackage, PROTOCOL_PACKAGE_FORMAT } = await import(pathToFileURL(join(legacyRoot, 'dist-workspace/src/protocol-package.js')).href);
     const { createProtocolPackageClosure } = await import(pathToFileURL(join(legacyRoot, 'dist-workspace/src/protocol-package-closure.js')).href);
@@ -79,6 +80,7 @@ try {
     walk(directory);
     const bundle = parseProtocolPackage({ format: PROTOCOL_PACKAGE_FORMAT, files });
     const material = { v: 1, closure: createProtocolPackageClosure(bundle, []), bindings: {} };
+    if (mode === 'stage-marker-orphan') orphanStageMaterialJson = JSON.stringify(material);
     const staged = createProtocolPackageSource(material, journal.checkpoint);
     if (staged.parts.length !== 1) throw new Error('TEST_STAGE_PART_COUNT_UNEXPECTED');
     stagePartCount = staged.parts.length;
@@ -262,6 +264,7 @@ try {
     stage_part_count: stagePartCount,
     stage_applied: mode.startsWith('stage-marker-') ? !['stage-marker-before-post', 'stage-marker-orphan'].includes(mode) : null,
     stage_signed_command_id: stageSignedCommandId,
+    orphan_stage_material_json: orphanStageMaterialJson,
     kernel_source: kernelSource,
     completed_identity_updates: Object.values(agent.state.identity_key_intents ?? {}).filter(row => row.state === 'PUBLISHED').length,
     prior_record_id: priorRecordId,

@@ -112,6 +112,8 @@ pub enum SecureOwnerCreateError {
     NotFound,
     #[error("attached Owner package stage requires explicit saved-command recovery")]
     PendingPackageStageUnresolved,
+    #[error("attached Owner orphan package stage requires explicit material replan")]
+    OrphanStageUnresolved,
     #[error("owner-create local resource limit exceeded")]
     ResourceLimit,
     #[error("owner-create local state failed")]
@@ -137,6 +139,7 @@ impl SecureOwnerCreateError {
             Self::Identity => "IDENTITY_CHANGED",
             Self::NotFound => "NOT_FOUND",
             Self::PendingPackageStageUnresolved => "PENDING_PACKAGE_STAGE_UNRESOLVED",
+            Self::OrphanStageUnresolved => "ORPHAN_STAGE_UNRESOLVED",
             Self::ResourceLimit => "RESOURCE_LIMIT",
             Self::Local => "LOCAL_STATE_FAILED",
             Self::Enrollment => "ENROLLMENT_FAILED",
@@ -160,6 +163,8 @@ fn map_attach_error(error: HistoricalOwnerAttachError) -> SecureOwnerCreateError
         HistoricalOwnerAttachError::NotFound => SecureOwnerCreateError::NotFound,
         HistoricalOwnerAttachError::PendingPackageStageUnresolved =>
             SecureOwnerCreateError::PendingPackageStageUnresolved,
+        HistoricalOwnerAttachError::OrphanStageUnresolved =>
+            SecureOwnerCreateError::OrphanStageUnresolved,
         HistoricalOwnerAttachError::Identity => SecureOwnerCreateError::Identity,
         HistoricalOwnerAttachError::Cancelled => SecureOwnerCreateError::Cancelled,
         HistoricalOwnerAttachError::Local => SecureOwnerCreateError::Local,

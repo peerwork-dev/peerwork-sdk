@@ -8,6 +8,7 @@ use crate::{
     secure_intents::{SecureIntentError, SecureIntentJournal, SecurePacketInput},
     secure_lifecycle::SecureLifecycle,
     secure_owner_create::{SecureOwnerCreateConfig, SecureOwnerWorkspaceCreate},
+    secure_private_install::{PrivatePackageStageInput, SecurePrivatePackageInstall},
     secure_read_access::{SecureReadAccess, SecureReadConfig},
     secure_read_profile::{SecureReadProfile, SecureReadProfileConfig},
     secure_state::{read_private_file_bounded, SecureStateStore},
@@ -20,7 +21,7 @@ use peerwork_core::{
     prepared_secure_request::{
         verify_prepared_secure_commit_request_with_policy, SecureCommitRequestPins,
     },
-    prepared_private_install::{package_source_identity_matches, verify_single_part_package_source},
+    prepared_private_install::{package_source_identity_matches, prepare_orphan_package_stage_material, verify_single_part_package_source},
     replayed_secure_journal::StructureStatus,
     secure_keyring::SecretKeyring,
     wire_json::{canonical_wire_value, parse_wire_json_bounded, WireValue},
@@ -49,6 +50,8 @@ static TEST_IMPORTED_PACKAGE_STAGE_POSTS: AtomicUsize = AtomicUsize::new(0);
 static TEST_STOP_AFTER_IMPORTED_ACTION_ACCEPTED: AtomicBool = AtomicBool::new(false);
 #[cfg(test)]
 static TEST_STOP_AFTER_RETAINED_ACTION_INTENT: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+static TEST_STOP_AFTER_ORPHAN_REPLAN_INTENT: AtomicBool = AtomicBool::new(false);
 
 const MAX_SOURCE: usize = 64 * 1024 * 1024;
 const MAX_HISTORY: usize = 4096;
@@ -78,6 +81,10 @@ pub struct HistoricalOwnerAttachInput {
     /// The selected source-state digest must come from read-only inspection.
     #[serde(default)]
     pub selected_pending_package_stage_command_id: Option<String>,
+    /// Explicitly import a marker whose old client saved no signed packet.
+    /// This authorizes only a restricted handoff, never a retry or new POST.
+    #[serde(default)]
+    pub selected_orphan_package_stage_command_id: Option<String>,
     #[serde(default)]
     pub expected_ts_state_digest: Option<String>,
     /// Explicitly retain every pending kernel JWS signed for this workspace.
@@ -111,6 +118,14 @@ pub struct HistoricalOwnerAttachResult {
     pub pending_package_stage_command_id: Option<String>,
     #[serde(default)]
     pub pending_package_stage_status: Option<String>,
+    #[serde(default)]
+    pub orphan_package_stage_command_id: Option<String>,
+    #[serde(default)]
+    pub orphan_package_stage_status: Option<String>,
+    #[serde(default)]
+    pub orphan_replan_stage_id: Option<String>,
+    #[serde(default)]
+    pub orphan_replan_command_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -152,6 +167,18 @@ pub struct HistoricalPackageStagePendingInventory {
     pub status: String,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HistoricalPackageStageOrphanInventory {
+    pub ts_state_digest: String,
+    pub command_id: String,
+    pub source_id: String,
+    pub source_sha256: String,
+    pub source_sequence: u64,
+    /// Local classification after full replay, not a signed server receipt.
+    pub status: String,
+}
+
 #[derive(Debug, Error)]
 pub enum HistoricalOwnerAttachError {
     #[error("historical Owner attachment input is invalid")]
@@ -180,6 +207,10 @@ pub enum HistoricalOwnerAttachError {
     KernelCommandUnresolved,
     #[error("saved historical package stage is unresolved and retained")]
     PendingPackageStageUnresolved,
+    #[error("full package material is required for orphan stage replan")]
+    OrphanMaterialRequired,
+    #[error("orphan package stage replan remains unresolved")]
+    OrphanStageUnresolved,
 }
 
 impl HistoricalOwnerAttachError {
@@ -198,6 +229,8 @@ impl HistoricalOwnerAttachError {
             Self::PendingActionConflict => "PENDING_ACTION_CONFLICT",
             Self::KernelCommandUnresolved => "KERNEL_COMMAND_UNRESOLVED",
             Self::PendingPackageStageUnresolved => "PENDING_PACKAGE_STAGE_UNRESOLVED",
+            Self::OrphanMaterialRequired => "ORPHAN_MATERIAL_REQUIRED",
+            Self::OrphanStageUnresolved => "ORPHAN_STAGE_UNRESOLVED",
         }
     }
 }
@@ -238,6 +271,33 @@ struct SavedAttach {
     retained_action_accepted: bool,
     #[serde(default)]
     pending_package_stage: Option<SavedPendingPackageStage>,
+    #[serde(default)]
+    orphan_package_stage: Option<SavedOrphanPackageStage>,
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct SavedOrphanPackageStage {
+    original_command_id: String,
+    source_wire: String,
+    source_id: String,
+    source_sha256: String,
+    #[serde(default)]
+    replan: Option<SavedOrphanReplan>,
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct SavedOrphanReplan {
+    stage_id: String,
+    command_id: String,
+    issued_at_ms: u64,
+    material_sha256: String,
+    proof_sha256: String,
+    root_package_digest: String,
+    protocol_digest: String,
+    #[serde(default)]
+    accepted_in_signed_replay: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -472,6 +532,19 @@ impl SecureHistoricalOwnerAttach {
         })
     }
 
+    fn preflight_orphan_package_stage(
+        &self,
+        input: &HistoricalOwnerAttachInput,
+        source: &LegacySource,
+        cancel: &CancellationToken,
+    ) -> Result<(), HistoricalOwnerAttachError> {
+        let marker = source.completed_package_stage.as_ref()
+            .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+        self.with_preflight_replay(input, source, cancel, |replayed, _| {
+            verify_orphan_package_stage(marker, replayed, input)
+        })
+    }
+
     /// Reprove the original saved ADMIN packet against the source checkpoint
     /// and full origin-bound replay before persisting an attach selection.
     /// This never submits the packet. A later signed stage may be reconciled,
@@ -521,6 +594,40 @@ impl SecureHistoricalOwnerAttach {
             source_sequence: exact_u64(pending.marker.source.get("sequence"))
                 .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?,
             status: if applied { "APPLIED_IN_SIGNED_REPLAY" } else { "PENDING_UNRESOLVED" }.into(),
+        })
+    }
+
+    /// Inspect a marker with no saved packet only after proving the signed
+    /// journal is still at its original source checkpoint. No POST occurs.
+    pub fn inspect_orphan_package_stage(
+        &self,
+        input: &HistoricalOwnerAttachInput,
+        cancel: &CancellationToken,
+    ) -> Result<HistoricalPackageStageOrphanInventory, HistoricalOwnerAttachError> {
+        validate_input(input)?;
+        if cancel.is_cancelled() { return Err(HistoricalOwnerAttachError::Cancelled); }
+        let (source, digest, pem_digest, intent_digest) = self.inspect_sources(input)?;
+        if source.pending_package_stage.is_some() || source.pending_action.is_some() {
+            return Err(HistoricalOwnerAttachError::SourceUnresolved);
+        }
+        let marker = source.completed_package_stage.as_ref()
+            .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+        ensure_dir(&self.config.state_dir)?;
+        let _lock = SecureStateStore::open(&self.config.state_dir.join("owner-attach-recovery.state"))
+            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        self.preflight_orphan_package_stage(input, &source, cancel)?;
+        let (_, state_after, pem_after, intent_after) = self.inspect_sources(input)?;
+        if (state_after, pem_after, intent_after) != (digest.clone(), pem_digest, intent_digest) {
+            return Err(HistoricalOwnerAttachError::SourceChanged);
+        }
+        Ok(HistoricalPackageStageOrphanInventory {
+            ts_state_digest: digest,
+            command_id: marker.command_id.clone(),
+            source_id: marker.source_id.clone(),
+            source_sha256: marker.source_sha256.clone(),
+            source_sequence: exact_u64(marker.source.get("sequence"))
+                .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?,
+            status: "ORPHAN_NO_PACKET".into(),
         })
     }
 
@@ -620,17 +727,29 @@ impl SecureHistoricalOwnerAttach {
             return Err(HistoricalOwnerAttachError::Cancelled);
         }
         let (source, ts_digest, pem_digest, intent_digest) = self.inspect_sources(&input)?;
-        match (
-            input.selected_pending_package_stage_command_id.as_deref(),
-            source.pending_package_stage.as_ref(),
-        ) {
-            (Some(selected), Some(pending)) if selected == pending.marker.command_id => {
-                if input.expected_ts_state_digest.as_deref() != Some(ts_digest.as_str()) {
-                    return Err(HistoricalOwnerAttachError::SourceChanged);
-                }
+        if let Some(selected) = input.selected_orphan_package_stage_command_id.as_deref() {
+            if source.pending_package_stage.is_some()
+                || source.completed_package_stage.as_ref().map(|marker| marker.command_id.as_str())
+                    != Some(selected)
+            {
+                return Err(HistoricalOwnerAttachError::SourceUnresolved);
             }
-            (None, None) => (),
-            _ => return Err(HistoricalOwnerAttachError::SourceUnresolved),
+            if input.expected_ts_state_digest.as_deref() != Some(ts_digest.as_str()) {
+                return Err(HistoricalOwnerAttachError::SourceChanged);
+            }
+        } else {
+            match (
+                input.selected_pending_package_stage_command_id.as_deref(),
+                source.pending_package_stage.as_ref(),
+            ) {
+                (Some(selected), Some(pending)) if selected == pending.marker.command_id => {
+                    if input.expected_ts_state_digest.as_deref() != Some(ts_digest.as_str()) {
+                        return Err(HistoricalOwnerAttachError::SourceChanged);
+                    }
+                }
+                (None, None) => (),
+                _ => return Err(HistoricalOwnerAttachError::SourceUnresolved),
+            }
         }
         if !input.kernel_pending_command_ids.is_empty()
             && input.expected_kernel_intent_db_digest.is_none()
@@ -673,7 +792,11 @@ impl SecureHistoricalOwnerAttach {
             let lock = SecureStateStore::open(&root.join("owner-attach-recovery.state"))
                 .map_err(|_| HistoricalOwnerAttachError::Local)?;
             if source.completed_package_stage.is_some() {
-                self.preflight_completed_package_stage(&input, &source, cancel)?;
+                if input.selected_orphan_package_stage_command_id.is_some() {
+                    self.preflight_orphan_package_stage(&input, &source, cancel)?;
+                } else {
+                    self.preflight_completed_package_stage(&input, &source, cancel)?;
+                }
             } else {
                 self.preflight_pending_package_stage(&input, &source, cancel)?;
             }
@@ -743,6 +866,7 @@ impl SecureHistoricalOwnerAttach {
             retained_upgrade_accepted: false,
             retained_action_accepted: false,
             pending_package_stage: None,
+            orphan_package_stage: None,
         };
         history.rows.insert(id.clone(), row);
         save_history(&store, &history)?;
@@ -871,7 +995,11 @@ impl SecureHistoricalOwnerAttach {
             }
         }
         if let Some(marker) = source.completed_package_stage.as_ref() {
-            verify_completed_package_stage(marker, &replayed, &row.input)?;
+            if row.input.selected_orphan_package_stage_command_id.is_some() {
+                verify_orphan_package_stage(marker, &replayed, &row.input)?;
+            } else {
+                verify_completed_package_stage(marker, &replayed, &row.input)?;
+            }
         }
         let policy_wire = replayed
             .signed_policy_by_hash(replayed.replay().policy_hash())
@@ -977,6 +1105,18 @@ impl SecureHistoricalOwnerAttach {
                 accepted_in_signed_replay: applied,
             })
         } else { None };
+        let saved_orphan = if row.input.selected_orphan_package_stage_command_id.is_some() {
+            let marker = source.completed_package_stage.as_ref()
+                .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+            Some(SavedOrphanPackageStage {
+                original_command_id: marker.command_id.clone(),
+                source_wire: canonical_wire_value(&marker.source, CanonicalPath::SecureArtifact)
+                    .map_err(|_| HistoricalOwnerAttachError::SourceUnresolved)?,
+                source_id: marker.source_id.clone(),
+                source_sha256: marker.source_sha256.clone(),
+                replan: None,
+            })
+        } else { None };
         let kernel_import = self.import_selected_kernel_source(&row, &owner, cancel)?;
         {
             let store = SecureStateStore::open(&self.history_path())
@@ -1000,13 +1140,30 @@ impl SecureHistoricalOwnerAttach {
                 saved.kernel_import = Some(kernel_import.clone());
                 save_history(&store, &history)?;
             }
-            let saved = history.rows.get_mut(attach_id).ok_or(HistoricalOwnerAttachError::NotFound)?;
-            if saved.pending_package_stage.as_ref().is_some_and(|old| Some(old) != saved_package_stage.as_ref()) {
-                return Err(HistoricalOwnerAttachError::Conflict);
+            {
+                let saved = history.rows.get_mut(attach_id).ok_or(HistoricalOwnerAttachError::NotFound)?;
+                if saved.pending_package_stage.as_ref().is_some_and(|old| Some(old) != saved_package_stage.as_ref()) {
+                    return Err(HistoricalOwnerAttachError::Conflict);
+                }
+                if saved.pending_package_stage.is_none() && saved_package_stage.is_some() {
+                    saved.pending_package_stage = saved_package_stage;
+                }
             }
-            if saved.pending_package_stage.is_none() && saved_package_stage.is_some() {
-                saved.pending_package_stage = saved_package_stage;
-                save_history(&store, &history)?;
+            save_history(&store, &history)?;
+            if let Some(expected) = saved_orphan.as_ref() {
+                let saved = history.rows.get_mut(attach_id).ok_or(HistoricalOwnerAttachError::NotFound)?;
+                if saved.orphan_package_stage.as_ref().is_some_and(|old| {
+                    old.original_command_id != expected.original_command_id
+                        || old.source_wire != expected.source_wire
+                        || old.source_id != expected.source_id
+                        || old.source_sha256 != expected.source_sha256
+                }) {
+                    return Err(HistoricalOwnerAttachError::Conflict);
+                }
+                if saved.orphan_package_stage.is_none() {
+                    saved.orphan_package_stage = Some(expected.clone());
+                    save_history(&store, &history)?;
+                }
             }
         }
         if let Some(ring) = source.ring.as_ref() {
@@ -1052,6 +1209,188 @@ impl SecureHistoricalOwnerAttach {
         {
             return Err(HistoricalOwnerAttachError::Conflict);
         }
+        saved.attached_sequence = Some(replayed.replay().sequence());
+        saved.attached_head = replayed.replay().head().map(str::to_owned);
+        let completed = saved.clone();
+        save_history(&store, &history)?;
+        Ok(summary(attach_id, &completed))
+    }
+
+    /// Authorize one *new* stage for an orphan marker that has no original
+    /// signed packet. A repeated call uses the protected new stage identity;
+    /// an empty material value can resume only after that stage was persisted.
+    /// The old marker and its uncertainty remain in attachment history.
+    pub fn replan_orphan_package_stage(
+        &self,
+        attach_id: &str,
+        expected_original_command_id: &str,
+        material_json: Option<&str>,
+        cancel: &CancellationToken,
+    ) -> Result<HistoricalOwnerAttachResult, HistoricalOwnerAttachError> {
+        if !valid_token(attach_id) || !valid_token(expected_original_command_id) {
+            return Err(HistoricalOwnerAttachError::Input);
+        }
+        if cancel.is_cancelled() { return Err(HistoricalOwnerAttachError::Cancelled); }
+        let _lock = SecureStateStore::open(&self.config.state_dir.join("owner-attach-recovery.state"))
+            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        let store = SecureStateStore::open(&self.history_path())
+            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        let history = read_history(&store, &self.config.origin)?;
+        let row = history.rows.get(attach_id).ok_or(HistoricalOwnerAttachError::NotFound)?.clone();
+        drop(history);
+        drop(store);
+        let orphan = row.orphan_package_stage.as_ref()
+            .ok_or(HistoricalOwnerAttachError::NotFound)?;
+        if row.attached_sequence.is_none()
+            || orphan.original_command_id != expected_original_command_id
+            || row.pending_package_stage.is_some()
+        {
+            return Err(HistoricalOwnerAttachError::Conflict);
+        }
+        let owner = KernelIdentity::open(&self.identity_path())
+            .map_err(|_| HistoricalOwnerAttachError::Identity)?;
+        if owner.actor_id() != row.input.expected_owner_actor_id
+            || owner.key_id() != row.input.expected_owner_key_id
+        {
+            return Err(HistoricalOwnerAttachError::Identity);
+        }
+        let source = parse_wire_json_bounded(orphan.source_wire.as_bytes(), 32, 8192)
+            .map_err(|_| HistoricalOwnerAttachError::Conflict)?;
+        let marker = CompletedPackageStageMarker {
+            command_id: orphan.original_command_id.clone(),
+            source,
+            source_id: orphan.source_id.clone(),
+            source_sha256: orphan.source_sha256.clone(),
+        };
+        if !package_source_identity_matches(&marker.source, &marker.source_id, &marker.source_sha256) {
+            return Err(HistoricalOwnerAttachError::Conflict);
+        }
+        let access = SecureReadAccess::new(self.attach_read_config(&row.input));
+        let replayed = access.replay_checked_attach_generation(cancel)
+            .map_err(|_| HistoricalOwnerAttachError::Verification)?;
+        if !replayed.replay().contains_checkpoint(
+            row.source_sequence, row.source_head.as_deref(), &row.source_policy_hash,
+        ) || replayed.replay().structure_status() != StructureStatus::Active {
+            return Err(HistoricalOwnerAttachError::Verification);
+        }
+        if orphan.replan.is_none() {
+            verify_orphan_package_stage(&marker, &replayed, &row.input)?;
+        }
+        let supplied = material_json.filter(|wire| !wire.is_empty());
+        let source_wire = canonical_wire_value(&marker.source, CanonicalPath::SecureArtifact)
+            .map_err(|_| HistoricalOwnerAttachError::Conflict)?;
+        let compiled = supplied.map(|wire| {
+            prepare_orphan_package_stage_material(
+                wire.as_bytes(), source_wire.as_bytes(),
+                &marker.source_id, &marker.source_sha256,
+            ).map_err(|_| HistoricalOwnerAttachError::SourceUnresolved)
+        }).transpose()?;
+        let replan = if let Some(saved) = orphan.replan.as_ref() {
+            if let Some(wire) = supplied {
+                let Some((root, protocol, proof)) = compiled.as_ref() else {
+                    return Err(HistoricalOwnerAttachError::SourceUnresolved);
+                };
+                if sha256_hex(wire.as_bytes()) != saved.material_sha256
+                    || root != &saved.root_package_digest
+                    || protocol != &saved.protocol_digest
+                    || proof != &saved.proof_sha256
+                {
+                    return Err(HistoricalOwnerAttachError::Conflict);
+                }
+            }
+            saved.clone()
+        } else {
+            let wire = supplied.ok_or(HistoricalOwnerAttachError::OrphanMaterialRequired)?;
+            let (root, protocol, proof) = compiled
+                .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+            let issued_at_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| HistoricalOwnerAttachError::Local)?
+                .as_millis() as u64;
+            let selected = SavedOrphanReplan {
+                stage_id: random_token()?,
+                command_id: random_token()?,
+                issued_at_ms,
+                material_sha256: sha256_hex(wire.as_bytes()),
+                proof_sha256: proof,
+                root_package_digest: root,
+                protocol_digest: protocol,
+                accepted_in_signed_replay: false,
+            };
+            // Persist distinct new IDs and full compiler-proof digest before
+            // the producer can save a packet or issue any request.
+            let store = SecureStateStore::open(&self.history_path())
+                .map_err(|_| HistoricalOwnerAttachError::Local)?;
+            let mut history = read_history(&store, &self.config.origin)?;
+            let saved = history.rows.get_mut(attach_id)
+                .ok_or(HistoricalOwnerAttachError::NotFound)?;
+            if saved.input != row.input || saved.orphan_package_stage.as_ref() != Some(orphan) {
+                return Err(HistoricalOwnerAttachError::Conflict);
+            }
+            saved.orphan_package_stage.as_mut()
+                .ok_or(HistoricalOwnerAttachError::Conflict)?.replan = Some(selected.clone());
+            save_history(&store, &history)?;
+            selected
+        };
+        #[cfg(test)]
+        if TEST_STOP_AFTER_ORPHAN_REPLAN_INTENT.swap(false, Ordering::SeqCst) {
+            return Err(HistoricalOwnerAttachError::Cancelled);
+        }
+        if cancel.is_cancelled() { return Err(HistoricalOwnerAttachError::Cancelled); }
+        let producer = SecurePrivatePackageInstall::new(self.profile_config(&row.input));
+        let resumed = producer.continue_exact_orphan_stage_json_with_cancel(
+            &replan.stage_id, &replan.command_id, replan.issued_at_ms,
+            &replan.material_sha256, &orphan.source_id,
+            &replan.root_package_digest, &replan.protocol_digest, cancel,
+        ).map_err(|_| HistoricalOwnerAttachError::OrphanStageUnresolved)?;
+        let result_wire = if let Some(saved) = resumed {
+            Ok(saved)
+        } else {
+            let wire = supplied.ok_or(HistoricalOwnerAttachError::OrphanMaterialRequired)?;
+            producer.stage_exact_orphan_json_with_cancel(PrivatePackageStageInput {
+                material_json: wire.to_owned(),
+                expected_root_package_digest: replan.root_package_digest.clone(),
+                expected_protocol_digest: replan.protocol_digest.clone(),
+                stage_id: Some(replan.stage_id.clone()),
+                command_id: Some(replan.command_id.clone()),
+                issued_at_ms: Some(replan.issued_at_ms),
+            }, &orphan.source_id, cancel)
+        }.map_err(|_| {
+            if cancel.is_cancelled() { HistoricalOwnerAttachError::Cancelled }
+            else { HistoricalOwnerAttachError::OrphanStageUnresolved }
+        })?;
+        let result: serde_json::Value = serde_json::from_str(&result_wire)
+            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        if result.get("stage_id").and_then(serde_json::Value::as_str) != Some(replan.stage_id.as_str())
+            || result.get("source_id").and_then(serde_json::Value::as_str) != Some(orphan.source_id.as_str())
+            || result.get("part_count").and_then(serde_json::Value::as_u64) != Some(1)
+        {
+            return Err(HistoricalOwnerAttachError::Conflict);
+        }
+        if result.get("status").and_then(serde_json::Value::as_str) != Some("STAGED") {
+            return Err(HistoricalOwnerAttachError::OrphanStageUnresolved);
+        }
+        let replayed = access.replay_checked_attach_generation(cancel)
+            .map_err(|_| HistoricalOwnerAttachError::OrphanStageUnresolved)?;
+        let signed_marker = CompletedPackageStageMarker {
+            command_id: replan.command_id.clone(), ..marker
+        };
+        verify_completed_package_stage(&signed_marker, &replayed, &row.input)
+            .map_err(|_| HistoricalOwnerAttachError::OrphanStageUnresolved)?;
+        let store = SecureStateStore::open(&self.history_path())
+            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        let mut history = read_history(&store, &self.config.origin)?;
+        let saved = history.rows.get_mut(attach_id).ok_or(HistoricalOwnerAttachError::NotFound)?;
+        let saved_orphan = saved.orphan_package_stage.as_mut()
+            .ok_or(HistoricalOwnerAttachError::Conflict)?;
+        if saved.input != row.input
+            || saved_orphan.original_command_id != orphan.original_command_id
+            || saved_orphan.replan.as_ref() != Some(&replan)
+        {
+            return Err(HistoricalOwnerAttachError::Conflict);
+        }
+        saved_orphan.replan.as_mut().ok_or(HistoricalOwnerAttachError::Conflict)?
+            .accepted_in_signed_replay = true;
         saved.attached_sequence = Some(replayed.replay().sequence());
         saved.attached_head = replayed.replay().head().map(str::to_owned);
         let completed = saved.clone();
@@ -2076,6 +2415,12 @@ impl SecureHistoricalOwnerAttach {
         {
             return Err(HistoricalOwnerAttachError::PendingPackageStageUnresolved);
         }
+        if row.orphan_package_stage.as_ref()
+            .is_some_and(|stage| !stage.replan.as_ref()
+                .is_some_and(|replan| replan.accepted_in_signed_replay))
+        {
+            return Err(HistoricalOwnerAttachError::OrphanStageUnresolved);
+        }
         if row.retained_action_commit_hash.is_none()
             || row.retained_upgrade_accepted
             || row.retained_action_accepted
@@ -2114,6 +2459,12 @@ impl SecureHistoricalOwnerAttach {
             .is_some_and(|stage| !stage.accepted_in_signed_replay)
         {
             return Err(HistoricalOwnerAttachError::PendingPackageStageUnresolved);
+        }
+        if !allow_restricted && row.orphan_package_stage.as_ref()
+            .is_some_and(|stage| !stage.replan.as_ref()
+                .is_some_and(|replan| replan.accepted_in_signed_replay))
+        {
+            return Err(HistoricalOwnerAttachError::OrphanStageUnresolved);
         }
         if !allow_restricted
             && row.retained_action_commit_hash.is_some()
@@ -2255,11 +2606,14 @@ fn summary(id: &str, row: &SavedAttach) -> HistoricalOwnerAttachResult {
     let retained = row.retained_action_commit_hash.is_some();
     let stage_unresolved = row.pending_package_stage.as_ref()
         .is_some_and(|stage| !stage.accepted_in_signed_replay);
+    let orphan_unresolved = row.orphan_package_stage.as_ref()
+        .is_some_and(|stage| !stage.replan.as_ref()
+            .is_some_and(|replan| replan.accepted_in_signed_replay));
     HistoricalOwnerAttachResult {
         attach_id: id.into(),
         workspace_id: row.input.workspace_id.clone(),
         provenance: "HISTORICAL_TS_OWNER".into(),
-        status: if row.attached_sequence.is_some() && stage_unresolved {
+        status: if row.attached_sequence.is_some() && (stage_unresolved || orphan_unresolved) {
             "ATTACHED_RESTRICTED"
         } else if row.attached_sequence.is_some()
             && retained
@@ -2297,6 +2651,21 @@ fn summary(id: &str, row: &SavedAttach) -> HistoricalOwnerAttachResult {
         pending_package_stage_status: row.pending_package_stage.as_ref().map(|stage| {
             if stage.accepted_in_signed_replay { "ACCEPTED" } else { "PENDING_UNRESOLVED" }.into()
         }),
+        orphan_package_stage_command_id: row.orphan_package_stage.as_ref()
+            .map(|stage| stage.original_command_id.clone()),
+        orphan_package_stage_status: row.orphan_package_stage.as_ref().map(|stage| {
+            if stage.replan.as_ref().is_some_and(|replan| replan.accepted_in_signed_replay) {
+                "ORPHAN_REPLANNED"
+            } else if stage.replan.is_some() {
+                "REPLAN_SELECTED_UNVERIFIED"
+            } else {
+                "ORPHAN_NO_PACKET"
+            }.into()
+        }),
+        orphan_replan_stage_id: row.orphan_package_stage.as_ref()
+            .and_then(|stage| stage.replan.as_ref().map(|replan| replan.stage_id.clone())),
+        orphan_replan_command_id: row.orphan_package_stage.as_ref()
+            .and_then(|stage| stage.replan.as_ref().map(|replan| replan.command_id.clone())),
     }
 }
 
@@ -2349,14 +2718,18 @@ fn save_history(
 }
 
 fn validate_input(input: &HistoricalOwnerAttachInput) -> Result<(), HistoricalOwnerAttachError> {
+    let selected_stage = input.selected_pending_package_stage_command_id.is_some();
+    let selected_orphan = input.selected_orphan_package_stage_command_id.is_some();
     if input.kernel_pending_command_ids.len() > 4096
-        || input.selected_pending_package_stage_command_id.is_some()
-            != input.expected_ts_state_digest.is_some()
+        || (selected_stage && selected_orphan)
+        || (selected_stage || selected_orphan) != input.expected_ts_state_digest.is_some()
         || input.selected_pending_package_stage_command_id.as_deref()
+            .is_some_and(|id| !valid_token(id))
+        || input.selected_orphan_package_stage_command_id.as_deref()
             .is_some_and(|id| !valid_token(id))
         || input.expected_ts_state_digest.as_deref()
             .is_some_and(|digest| !valid_digest(digest))
-        || (input.selected_pending_package_stage_command_id.is_some()
+        || ((selected_stage || selected_orphan)
             && (input.recover_pending_action || input.retain_pending_action_command_id.is_some()))
         || input
             .retain_pending_action_command_id
@@ -3043,6 +3416,41 @@ fn verify_completed_package_stage(
     Ok(())
 }
 
+fn verify_orphan_package_stage(
+    marker: &CompletedPackageStageMarker,
+    replayed: &TransportReplayedJournal,
+    input: &HistoricalOwnerAttachInput,
+) -> Result<(), HistoricalOwnerAttachError> {
+    let invalid = || HistoricalOwnerAttachError::SourceUnresolved;
+    let source = &marker.source;
+    let sequence = exact_u64(source.get("sequence")).ok_or_else(invalid)?;
+    let head = source.get("head").and_then(WireValue::as_string).ok_or_else(invalid)?;
+    let policy_hash = source.get("policy_hash").and_then(WireValue::as_string).ok_or_else(invalid)?;
+    let policy_wire = replayed.signed_policy_by_hash(&policy_hash).ok_or_else(invalid)?;
+    let policy = parse_wire_json_bounded(policy_wire, 64, 196_608).map_err(|_| invalid())?;
+    let payload = policy.get("payload").ok_or_else(invalid)?;
+    let owner_member = matches!(payload.get("members"), Some(WireValue::Array(members)) if members.iter().any(|member| {
+        member.get("actor_id").and_then(WireValue::as_string).as_deref()
+            == Some(input.expected_owner_actor_id.as_str())
+            && member.get("role").and_then(WireValue::as_string).as_deref() == Some("OWNER")
+            && member.get("certificate").and_then(|v| v.get("payload"))
+                .and_then(|v| v.get("signing_key")).and_then(WireValue::as_string).as_deref()
+                == Some(input.expected_owner_key_id.as_str())
+    }));
+    if replayed.replay().sequence() != sequence
+        || replayed.replay().head() != Some(head.as_str())
+        || replayed.replay().policy_hash() != policy_hash
+        || replayed.replay().owner_actor_id() != input.expected_owner_actor_id
+        || replayed.replay().owner_signing_key() != input.expected_owner_key_id
+        || replayed.replay().structure_status() != StructureStatus::Active
+        || payload.get("visibility").and_then(WireValue::as_string).as_deref() != Some("PRIVATE")
+        || !owner_member
+    {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
 fn verify_pending_package_stage(
     pending: &LegacyPendingPackageStage,
     ring: &SecretKeyring,
@@ -3535,6 +3943,7 @@ mod tests {
             recover_pending_action: false,
             retain_pending_action_command_id: None,
             selected_pending_package_stage_command_id: None,
+            selected_orphan_package_stage_command_id: None,
             expected_ts_state_digest: None,
             kernel_pending_command_ids: Vec::new(),
             expected_kernel_intent_db_digest: None,
@@ -3709,6 +4118,7 @@ mod tests {
             recover_pending_action: recover,
             retain_pending_action_command_id: None,
             selected_pending_package_stage_command_id: None,
+            selected_orphan_package_stage_command_id: None,
             expected_ts_state_digest: None,
             kernel_pending_command_ids: Vec::new(),
             expected_kernel_intent_db_digest: None,
@@ -3917,6 +4327,7 @@ mod tests {
             recover_pending_action: true,
             retain_pending_action_command_id: None,
             selected_pending_package_stage_command_id: None,
+            selected_orphan_package_stage_command_id: None,
             expected_ts_state_digest: None,
             kernel_pending_command_ids: Vec::new(),
             expected_kernel_intent_db_digest: None,
@@ -4206,6 +4617,7 @@ mod tests {
                 recover_pending_action: true,
                 retain_pending_action_command_id: Some(pending_id.into()),
                 selected_pending_package_stage_command_id: None,
+                selected_orphan_package_stage_command_id: None,
                 expected_ts_state_digest: None,
                 kernel_pending_command_ids: Vec::new(),
                 expected_kernel_intent_db_digest: None,
@@ -4399,6 +4811,172 @@ mod tests {
     }
 
     #[test]
+    fn actual_service_replans_one_orphan_package_stage_with_saved_new_id() {
+        let _fault_guard = ATTACH_FAULT_TEST_LOCK.lock().unwrap();
+        let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else { return; };
+        let node = std::env::var("PEERWORK_NODE_BIN").unwrap_or_else(|_| "node".into());
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)] {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let bridge = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/reference-kernel-server.mjs");
+        let child = Command::new(&node).arg(bridge)
+            .env("PEERWORK_REFERENCE_ROOT", &reference_root)
+            .env("PEERWORK_TEST_STATE", root.path())
+            .env("PEERWORK_TEST_FIRST_POST_MODE", "normal")
+            .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        struct StopOrphan(Child);
+        impl Drop for StopOrphan {
+            fn drop(&mut self) { let _ = self.0.kill(); let _ = self.0.wait(); }
+        }
+        let mut child = StopOrphan(child);
+        let mut line = String::new();
+        BufReader::new(child.0.stdout.take().unwrap()).read_line(&mut line).unwrap();
+        assert!(!line.is_empty(), "pinned service exited before readiness");
+        let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let origin = ready["origin"].as_str().unwrap();
+        let helper = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/legacy-owner-source.mjs");
+        let output = Command::new(&node).arg(helper).arg(origin)
+            .arg(root.path().join("legacy-orphan"))
+            .arg(&reference_root).arg("stage-marker-orphan").output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let source: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(source["policy_v"], 3);
+        assert_eq!(source["visibility"], "PRIVATE");
+        assert_eq!(source["structure_mode"], "STRUCTURED");
+        assert_eq!(source["stage_part_count"], 1);
+        assert_eq!(source["pending_count"], 0);
+        assert_eq!(source["stage_applied"], false);
+        let workspace = source["workspace_id"].as_str().unwrap();
+        let original = source["stage_marker"]["command_id"].as_str().unwrap();
+        let material = source["orphan_stage_material_json"].as_str().unwrap();
+        let oracle = rusqlite::Connection::open_with_flags(
+            root.path().join("control.sqlite"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        ).unwrap();
+        let count = || -> i64 { oracle.query_row(
+            "SELECT count(*) FROM secure_commits WHERE workspace_id=?1", [workspace],
+            |row| row.get(0),
+        ).unwrap() };
+        assert_eq!(count(), 1);
+        let config = SecureOwnerCreateConfig {
+            origin: origin.into(), state_dir: root.path().join("native-orphan"),
+            allow_loopback_http: true, max_replay_artifact_bytes: 64 * 1024 * 1024,
+        };
+        let attach = SecureHistoricalOwnerAttach::new(config.clone());
+        let mut input = HistoricalOwnerAttachInput {
+            workspace_id: workspace.into(),
+            protected_ts_state_path: source["state_path"].as_str().unwrap().into(),
+            protected_owner_pkcs8_path: source["pem_path"].as_str().unwrap().into(),
+            protected_ts_intent_db_path: source["intent_db_path"].as_str().unwrap().into(),
+            expected_owner_actor_id: source["owner_actor_id"].as_str().unwrap().into(),
+            expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
+            recover_pending_action: false, retain_pending_action_command_id: None,
+            selected_pending_package_stage_command_id: None,
+            selected_orphan_package_stage_command_id: None,
+            expected_ts_state_digest: None,
+            kernel_pending_command_ids: Vec::new(), expected_kernel_intent_db_digest: None,
+        };
+        let cancel = CancellationToken::new();
+        let inspected = attach.inspect_orphan_package_stage(&input, &cancel).unwrap();
+        assert_eq!(inspected.command_id, original);
+        assert_eq!(inspected.source_id, source["stage_marker"]["source_id"].as_str().unwrap());
+        assert_eq!(inspected.status, "ORPHAN_NO_PACKET");
+        input.expected_ts_state_digest = Some(inspected.ts_state_digest);
+        input.selected_orphan_package_stage_command_id = Some(random_token().unwrap());
+        assert!(matches!(attach.attach(input.clone(), &cancel),
+            Err(HistoricalOwnerAttachError::SourceUnresolved)));
+        assert!(attach.attachments().unwrap().is_empty());
+        assert!(!config.state_dir.join("workspaces").join(workspace)
+            .join("lifecycle.state").exists());
+        assert_eq!(count(), 1);
+        input.selected_orphan_package_stage_command_id = Some(original.into());
+        let restricted = attach.attach(input, &cancel).unwrap();
+        assert_eq!(restricted.status, "ATTACHED_RESTRICTED");
+        assert_eq!(restricted.orphan_package_stage_status.as_deref(), Some("ORPHAN_NO_PACKET"));
+        assert_eq!(restricted.sequence, Some(1));
+        let facade = SecureOwnerWorkspaceCreate::new(config.clone());
+        assert!(matches!(facade.private_action_access(workspace),
+            Err(crate::secure_owner_create::SecureOwnerCreateError::OrphanStageUnresolved)));
+        assert!(matches!(facade.private_install_access(workspace),
+            Err(crate::secure_owner_create::SecureOwnerCreateError::OrphanStageUnresolved)));
+        assert!(matches!(facade.format_transition_access(workspace),
+            Err(crate::secure_owner_create::SecureOwnerCreateError::OrphanStageUnresolved)));
+        assert!(matches!(facade.private_action_access("absent-owner-workspace"),
+            Err(crate::secure_owner_create::SecureOwnerCreateError::NotFound)));
+        assert_eq!(serde_json::from_str::<serde_json::Value>(
+            &facade.read_workspace_json(workspace, &cancel).unwrap()).unwrap()["sequence"], 1);
+        assert!(matches!(attach.replan_orphan_package_stage(
+            &restricted.attach_id, original, Some("{}"), &cancel),
+            Err(HistoricalOwnerAttachError::SourceUnresolved)));
+        assert_eq!(attach.attachments().unwrap()[0].orphan_package_stage_status.as_deref(),
+            Some("ORPHAN_NO_PACKET"));
+        assert_eq!(count(), 1);
+        std::fs::rename(root.path().join("legacy-orphan"), root.path().join("archived-orphan"))
+            .unwrap();
+        TEST_STOP_AFTER_ORPHAN_REPLAN_INTENT.store(true, Ordering::SeqCst);
+        assert!(matches!(attach.replan_orphan_package_stage(
+            &restricted.attach_id, original, Some(material), &cancel),
+            Err(HistoricalOwnerAttachError::Cancelled)));
+        assert_eq!(count(), 1);
+        let prepared = SecureHistoricalOwnerAttach::new(config.clone());
+        let saved_replan = prepared.attachments().unwrap()[0].clone();
+        assert_eq!(saved_replan.orphan_package_stage_status.as_deref(),
+            Some("REPLAN_SELECTED_UNVERIFIED"));
+        let new_stage_id = saved_replan.orphan_replan_stage_id.as_deref().unwrap();
+        let new_command_id = saved_replan.orphan_replan_command_id.as_deref().unwrap();
+        assert_ne!(new_command_id, original);
+        assert!(matches!(prepared.replan_orphan_package_stage(
+            &restricted.attach_id, original, None, &cancel),
+            Err(HistoricalOwnerAttachError::OrphanMaterialRequired)));
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        assert_eq!(rt.block_on(reqwest::Client::new()
+            .post(format!("{origin}__test/drop-next-post"))
+            .body("{}").send()).unwrap().status(), 200);
+        assert!(matches!(prepared.replan_orphan_package_stage(
+            &restricted.attach_id, original, Some(material), &cancel),
+            Err(HistoricalOwnerAttachError::OrphanStageUnresolved)));
+        assert_eq!(count(), 2, "the one new stage was applied despite its lost reply");
+        let reopened = SecureHistoricalOwnerAttach::new(config);
+        let accepted = reopened.replan_orphan_package_stage(
+            &restricted.attach_id, original, None, &cancel).unwrap();
+        assert_eq!(accepted.status, "ATTACHED");
+        assert_eq!(accepted.orphan_package_stage_status.as_deref(), Some("ORPHAN_REPLANNED"));
+        assert_eq!(accepted.orphan_replan_stage_id.as_deref(), Some(new_stage_id));
+        assert_eq!(accepted.orphan_replan_command_id.as_deref(), Some(new_command_id));
+        assert_eq!(accepted.sequence, Some(2));
+        assert_eq!(count(), 2);
+        let committed_new: i64 = oracle.query_row(
+            "SELECT count(*) FROM secure_commits WHERE workspace_id=?1 AND command_id=?2",
+            [workspace, new_command_id], |row| row.get(0),
+        ).unwrap();
+        let committed_old: i64 = oracle.query_row(
+            "SELECT count(*) FROM secure_commits WHERE workspace_id=?1 AND command_id=?2",
+            [workspace, original], |row| row.get(0),
+        ).unwrap();
+        assert_eq!((committed_new, committed_old), (1, 0));
+        let read: serde_json::Value = serde_json::from_str(
+            &facade.read_workspace_json(workspace, &cancel).unwrap()).unwrap();
+        assert_eq!(read["sequence"], 2);
+        assert!(read["objects"].as_array().unwrap().iter().any(|row| {
+            row["kind"] == "protocol_package_part"
+                && row["id"] == source["stage_marker"]["part_id"]
+                && row["value"]["source_id"] == source["stage_marker"]["source_id"]
+                && row["value"]["sha256"] == source["stage_marker"]["part_sha256"]
+        }));
+        assert_eq!(reopened.replan_orphan_package_stage(
+            &restricted.attach_id, original, None, &cancel).unwrap(), accepted);
+        let wrong_original = random_token().unwrap();
+        assert_ne!(wrong_original, original);
+        assert!(matches!(reopened.replan_orphan_package_stage(
+            &restricted.attach_id, &wrong_original, None, &cancel),
+            Err(HistoricalOwnerAttachError::Conflict)));
+        assert_eq!(count(), 2);
+    }
+
+    #[test]
     fn actual_service_imports_only_signed_complete_one_part_package_stage_marker() {
         let _fault_guard = ATTACH_FAULT_TEST_LOCK.lock().unwrap();
         let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else {
@@ -4512,6 +5090,7 @@ mod tests {
                 recover_pending_action: false,
                 retain_pending_action_command_id: None,
                 selected_pending_package_stage_command_id: None,
+                selected_orphan_package_stage_command_id: None,
                 expected_ts_state_digest: None,
                 kernel_pending_command_ids: Vec::new(),
                 expected_kernel_intent_db_digest: None,
@@ -4649,6 +5228,7 @@ mod tests {
                 recover_pending_action: false,
                 retain_pending_action_command_id: None,
                 selected_pending_package_stage_command_id: None,
+                selected_orphan_package_stage_command_id: None,
                 expected_ts_state_digest: None,
                 kernel_pending_command_ids: Vec::new(),
                 expected_kernel_intent_db_digest: None,
@@ -4963,6 +5543,7 @@ mod tests {
                 recover_pending_action: true,
                 retain_pending_action_command_id: None,
                 selected_pending_package_stage_command_id: None,
+                selected_orphan_package_stage_command_id: None,
                 expected_ts_state_digest: None,
                 kernel_pending_command_ids: Vec::new(),
                 expected_kernel_intent_db_digest: None,
@@ -5266,6 +5847,7 @@ mod tests {
                 recover_pending_action: true,
                 retain_pending_action_command_id: None,
                 selected_pending_package_stage_command_id: None,
+                selected_orphan_package_stage_command_id: None,
                 expected_ts_state_digest: None,
                 kernel_pending_command_ids: Vec::new(),
                 expected_kernel_intent_db_digest: None,
@@ -5764,6 +6346,7 @@ mod tests {
             recover_pending_action: false,
             retain_pending_action_command_id: None,
             selected_pending_package_stage_command_id: None,
+            selected_orphan_package_stage_command_id: None,
             expected_ts_state_digest: None,
             kernel_pending_command_ids: vec![changed_id.into()],
             expected_kernel_intent_db_digest: None,
@@ -5873,6 +6456,7 @@ mod tests {
                 recover_pending_action: false,
                 retain_pending_action_command_id: None,
                 selected_pending_package_stage_command_id: None,
+                selected_orphan_package_stage_command_id: None,
                 expected_ts_state_digest: None,
                 kernel_pending_command_ids: vec![selected.into()],
                 expected_kernel_intent_db_digest: None,
@@ -6082,6 +6666,7 @@ mod tests {
                     recover_pending_action: false,
                     retain_pending_action_command_id: None,
                     selected_pending_package_stage_command_id: None,
+                    selected_orphan_package_stage_command_id: None,
                     expected_ts_state_digest: None,
                     kernel_pending_command_ids: Vec::new(),
                     expected_kernel_intent_db_digest: None,
@@ -6136,6 +6721,7 @@ mod tests {
                     recover_pending_action: false,
                     retain_pending_action_command_id: None,
                     selected_pending_package_stage_command_id: None,
+                    selected_orphan_package_stage_command_id: None,
                     expected_ts_state_digest: None,
                     kernel_pending_command_ids: Vec::new(),
                     expected_kernel_intent_db_digest: None,
@@ -6362,6 +6948,7 @@ mod tests {
                     recover_pending_action: false,
                     retain_pending_action_command_id: None,
                     selected_pending_package_stage_command_id: None,
+                    selected_orphan_package_stage_command_id: None,
                     expected_ts_state_digest: None,
                     kernel_pending_command_ids: Vec::new(),
                     expected_kernel_intent_db_digest: None,
@@ -6523,6 +7110,7 @@ mod tests {
                 recover_pending_action: false,
                 retain_pending_action_command_id: None,
                 selected_pending_package_stage_command_id: None,
+                selected_orphan_package_stage_command_id: None,
                 expected_ts_state_digest: None,
                 kernel_pending_command_ids: Vec::new(),
                 expected_kernel_intent_db_digest: None,
@@ -6570,6 +7158,7 @@ mod tests {
             recover_pending_action: false,
             retain_pending_action_command_id: None,
             selected_pending_package_stage_command_id: None,
+            selected_orphan_package_stage_command_id: None,
             expected_ts_state_digest: None,
             kernel_pending_command_ids: Vec::new(),
             expected_kernel_intent_db_digest: None,

@@ -147,6 +147,7 @@ mod historical_v1_direct_test {
                     recover_pending_action: false,
                     retain_pending_action_command_id: None,
                     selected_pending_package_stage_command_id: None,
+                    selected_orphan_package_stage_command_id: None,
                     expected_ts_state_digest: None,
                     kernel_pending_command_ids: Vec::new(),
                     expected_kernel_intent_db_digest: None,
@@ -2243,6 +2244,25 @@ impl SecurePrivatePackageInstall {
         input: PrivatePackageStageInput,
         cancel: &CancellationToken,
     ) -> Result<String, PrivatePackageInstallError> {
+        self.stage_package_json_with_expected_source(input, None, cancel)
+    }
+
+    pub(crate) fn stage_exact_orphan_json_with_cancel(
+        &self,
+        input: PrivatePackageStageInput,
+        expected_source_id: &str,
+        cancel: &CancellationToken,
+    ) -> Result<String, PrivatePackageInstallError> {
+        if !digest(expected_source_id) { return Err(PrivatePackageInstallError::Input); }
+        self.stage_package_json_with_expected_source(input, Some(expected_source_id), cancel)
+    }
+
+    fn stage_package_json_with_expected_source(
+        &self,
+        input: PrivatePackageStageInput,
+        expected_source_id: Option<&str>,
+        cancel: &CancellationToken,
+    ) -> Result<String, PrivatePackageInstallError> {
         if !digest(&input.expected_root_package_digest)
             || !digest(&input.expected_protocol_digest)
             || input.material_json.is_empty()
@@ -2257,7 +2277,7 @@ impl SecurePrivatePackageInstall {
         let issued_at = input.issued_at_ms.map(Ok).unwrap_or_else(now_ms)?;
         let result =
             SecureReadProfile::new(self.config.clone()).with_latest_replay(cancel, |source| {
-                self.stage_from_replay(source, &input, &stage_id, &command_id, issued_at, cancel)
+                self.stage_from_replay(source, &input, &stage_id, &command_id, issued_at, expected_source_id, cancel)
             })?;
         serde_json::to_string(&result).map_err(|_| PrivatePackageInstallError::Encoding)
     }
@@ -2315,9 +2335,77 @@ impl SecurePrivatePackageInstall {
         drop(store);
         let result = SecureReadProfile::new(self.config.clone())
             .with_latest_replay(cancel, |source| {
-                self.stage_from_replay(source, &input, stage_id, stage_id, 0, cancel)
+                self.stage_from_replay(source, &input, stage_id, stage_id, 0, None, cancel)
             })?;
         serde_json::to_string(&result).map_err(|_| PrivatePackageInstallError::Encoding)
+    }
+
+    /// Internal restricted Owner handoff: return None only when the producer
+    /// has not yet saved its first packet. A saved stage must retain the exact
+    /// command/time/material chosen in the prior protected attach mapping.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn continue_exact_orphan_stage_json_with_cancel(
+        &self,
+        stage_id: &str,
+        command_id: &str,
+        issued_at_ms: u64,
+        material_sha256: &str,
+        source_id: &str,
+        root_package_digest: &str,
+        protocol_digest: &str,
+        cancel: &CancellationToken,
+    ) -> Result<Option<String>, PrivatePackageInstallError> {
+        if !token(stage_id) || !token(command_id) || !digest(material_sha256)
+            || !digest(source_id) || !digest(root_package_digest) || !digest(protocol_digest)
+        {
+            return Err(PrivatePackageInstallError::Input);
+        }
+        let scope = SecureReadProfile::new(self.config.clone()).local_pending_scope()?;
+        let identity = KernelIdentity::open(&self.config.identity_path)
+            .map_err(|_| PrivatePackageInstallError::Identity)?;
+        if scope.origin != self.config.origin
+            || scope.workspace_id != self.config.workspace_id
+            || scope.owner_actor_id != identity.actor_id()
+            || scope.owner_key_id != identity.key_id()
+        {
+            return Err(PrivatePackageInstallError::Identity);
+        }
+        let store = SecureStateStore::open(&self.config.state_dir.join("private-install.state"))?;
+        let doc = StageDocument::open(
+            &store, &self.config, identity.actor_id(),
+            &scope.owner_actor_id, &scope.owner_key_id,
+        )?;
+        let Some(row) = doc.rows.get(stage_id) else { return Ok(None); };
+        let material = decode_base64url(&row.material_b64)
+            .map_err(|_| PrivatePackageInstallError::Identity)?;
+        if sha256_hex(&material) != material_sha256
+            || row.source_id != source_id
+            || row.root_package_digest != root_package_digest
+            || row.protocol_digest != protocol_digest
+            || row.part_count != 1
+            || row.steps.len() != 1
+            || row.steps[0].command_id != command_id
+            || row.steps[0].issued_at_ms != issued_at_ms
+        {
+            return Err(PrivatePackageInstallError::Plan);
+        }
+        let input = PrivatePackageStageInput {
+            material_json: String::from_utf8(material)
+                .map_err(|_| PrivatePackageInstallError::Identity)?,
+            expected_root_package_digest: root_package_digest.to_owned(),
+            expected_protocol_digest: protocol_digest.to_owned(),
+            stage_id: Some(stage_id.to_owned()),
+            command_id: Some(command_id.to_owned()),
+            issued_at_ms: Some(issued_at_ms),
+        };
+        drop(doc);
+        drop(store);
+        let result = SecureReadProfile::new(self.config.clone())
+            .with_latest_replay(cancel, |source| {
+                self.stage_from_replay(source, &input, stage_id, command_id, issued_at_ms, Some(source_id), cancel)
+            })?;
+        Ok(Some(serde_json::to_string(&result)
+            .map_err(|_| PrivatePackageInstallError::Encoding)?))
     }
 
     fn stage_from_replay(
@@ -2327,6 +2415,7 @@ impl SecurePrivatePackageInstall {
         stage_id: &str,
         command_id: &str,
         issued_at: u64,
+        expected_source_id: Option<&str>,
         cancel: &CancellationToken,
     ) -> Result<PrivatePackageStageResult, PrivatePackageInstallError> {
         source
@@ -2403,6 +2492,7 @@ impl SecurePrivatePackageInstall {
             )?;
             if prepared.root_package_digest() != input.expected_root_package_digest
                 || prepared.protocol_digest() != input.expected_protocol_digest
+                || expected_source_id.is_some_and(|source_id| prepared.source_id() != source_id)
             {
                 return Err(PrivatePackageInstallError::Input);
             };
@@ -2430,12 +2520,18 @@ impl SecurePrivatePackageInstall {
             .get(stage_id)
             .cloned()
             .ok_or(PrivatePackageInstallError::Identity)?;
+        if input.command_id.is_some() && row.steps.first().map(|step| step.command_id.as_str()) != Some(command_id)
+            || input.issued_at_ms.is_some() && row.steps.first().map(|step| step.issued_at_ms) != Some(issued_at)
+        {
+            return Err(PrivatePackageInstallError::Plan);
+        }
         if sha256_hex(
             &decode_base64url(&row.material_b64)
                 .map_err(|_| PrivatePackageInstallError::Identity)?,
         ) != sha256_hex(input.material_json.as_bytes())
             || row.root_package_digest != input.expected_root_package_digest
             || row.protocol_digest != input.expected_protocol_digest
+            || expected_source_id.is_some_and(|source_id| row.source_id != source_id)
         {
             return Err(PrivatePackageInstallError::Input);
         };
