@@ -29,9 +29,13 @@ for relative, name in (
     ("tests/reference-kernel-server.mjs", "PEERWORK_TEST_REFERENCE_FIXTURE_SHA256"),
 ):
     assert hashlib.sha256((SOURCE / relative).read_bytes()).hexdigest() == os.environ[name]
-assert subprocess.check_output(["git", "-C", str(LEGACY), "rev-parse", "HEAD"], text=True).strip() == os.environ["PEERWORK_TEST_LEGACY_COMMIT"]
-assert subprocess.run(["git", "-C", str(LEGACY), "diff", "--quiet", "HEAD", "--", "src", "package.json", "package-lock.json"], check=False).returncode == 0
-STATE.mkdir(mode=0o700, parents=True, exist_ok=False)
+host_fixture = os.environ.get("PEERWORK_TEST_HOST_FIXTURE_JSON")
+if host_fixture is None:
+    assert subprocess.check_output(["git", "-C", str(LEGACY), "rev-parse", "HEAD"], text=True).strip() == os.environ["PEERWORK_TEST_LEGACY_COMMIT"]
+    assert subprocess.run(["git", "-C", str(LEGACY), "diff", "--quiet", "HEAD", "--", "src", "package.json", "package-lock.json"], check=False).returncode == 0
+    STATE.mkdir(mode=0o700, parents=True, exist_ok=False)
+else:
+    assert STATE.is_dir() and STATE.stat().st_mode & 0o077 == 0
 
 
 def node_call(config, operation, **values):
@@ -103,21 +107,28 @@ def count_workspace(database, workspace):
             (workspace,)).fetchone()[0]
 
 
-server = subprocess.Popen([NODE, str(SOURCE / "tests/reference-kernel-server.mjs")],
+server = None if host_fixture else subprocess.Popen(
+    [NODE, str(SOURCE / "tests/reference-kernel-server.mjs")],
     cwd=SOURCE, env=dict(os.environ, PEERWORK_TEST_STATE=str(STATE),
                          PEERWORK_TEST_FIRST_POST_MODE="normal"),
     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 try:
-    line = server.stdout.readline()
-    assert line, f"service did not start: {server.stderr.read()[-800:]}"
-    origin = json.loads(line)["origin"]
+    if server is None:
+        fixture = json.loads(Path(host_fixture).read_text())
+        origin = fixture["origin"]
+        source = fixture["source"]
+    else:
+        line = server.stdout.readline()
+        assert line, f"service did not start: {server.stderr.read()[-800:]}"
+        origin = json.loads(line)["origin"]
     database = STATE / "control.sqlite"
     old_dir = STATE / "legacy-orphan"
-    produced = subprocess.run([NODE, str(SOURCE / "tests/legacy-owner-source.mjs"),
-                               origin, str(old_dir), str(LEGACY), "stage-marker-orphan"],
-                              cwd=SOURCE, capture_output=True, text=True, timeout=120)
-    assert produced.returncode == 0, produced.stderr[-800:]
-    source = json.loads(produced.stdout)
+    if server is not None:
+        produced = subprocess.run([NODE, str(SOURCE / "tests/legacy-owner-source.mjs"),
+                                   origin, str(old_dir), str(LEGACY), "stage-marker-orphan"],
+                                  cwd=SOURCE, capture_output=True, text=True, timeout=120)
+        assert produced.returncode == 0, produced.stderr[-800:]
+        source = json.loads(produced.stdout)
     assert source["policy_v"] == 3 and source["visibility"] == "PRIVATE"
     assert source["structure_mode"] == "STRUCTURED" and source["stage_part_count"] == 1
     assert source["pending_count"] == 0 and source["stage_applied"] is False
@@ -260,5 +271,6 @@ try:
         original_command_id=command, new_command_id=new_id, source_id=marker["source_id"],
         stage_id=stage_id, sequence=read["sequence"], commits=2)), flush=True)
 finally:
-    server.terminate()
-    server.wait(timeout=10)
+    if server is not None:
+        server.terminate()
+        server.wait(timeout=10)
