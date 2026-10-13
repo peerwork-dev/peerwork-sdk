@@ -96,6 +96,13 @@ def count_command(database, workspace, command):
             (workspace, command)).fetchone()[0]
 
 
+def count_workspace(database, workspace):
+    with sqlite3.connect(f"file:{database}?mode=ro", uri=True) as connection:
+        return connection.execute(
+            "SELECT count(*) FROM secure_commits WHERE workspace_id=?",
+            (workspace,)).fetchone()[0]
+
+
 server = subprocess.Popen([NODE, str(SOURCE / "tests/reference-kernel-server.mjs")],
     cwd=SOURCE, env=dict(os.environ, PEERWORK_TEST_STATE=str(STATE),
                          PEERWORK_TEST_FIRST_POST_MODE="normal"),
@@ -182,6 +189,29 @@ try:
         assert owner.attachments() == [result]
         before_read = owner.read(workspace)
         assert before_read["sequence"] == (2 if applied else 1)
+        if not applied:
+            before_restricted = count_workspace(database, workspace)
+            wiki = next(row["id"] for row in before_read["objects"]
+                        if row["kind"] == "instances"
+                        and row["value"]["origin_entrypoint"] == "wiki")
+            for attempt, error_type in (
+                (lambda: owner.private_actions(workspace).submit(
+                    "wiki.create", wiki, {"title": "Blocked", "body": "No stale write"}),
+                 peerwork.SecureActionError),
+                (lambda: owner.private_package_installer(workspace).begin(
+                    command, "z" * 43, "wiki", grants_json="[]"),
+                 peerwork.PrivatePackageInstallError),
+                (lambda: owner.submit_format_transition(workspace, "RAISE_PRIVATE_CEILING_TWO"),
+                 peerwork.OwnerWorkspaceError),
+            ):
+                try:
+                    attempt()
+                except error_type as error:
+                    assert error.code == "VERIFICATION_FAILED"
+                else:
+                    raise AssertionError("restricted attachment permitted a signed operation")
+                assert count_workspace(database, workspace) == before_restricted
+                assert owner.attachments() == [result]
 
         archived = STATE / ("archived-" + name)
         shutil.move(str(old_dir), str(archived))
