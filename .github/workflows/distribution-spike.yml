@@ -38,6 +38,7 @@ jobs:
           cd bindings/python
           maturin build --release --locked --out ../../dist/wheels
           cd ../..
+          python tests/verify-typed-wheel.py dist/wheels/*.whl
       - name: Package Node binary and test local offline installs
         run: |
           target='${{ matrix.target }}'
@@ -100,6 +101,7 @@ jobs:
             cargo build --release --locked -p peerwork-node-native -p peerwork-cli
             python -m pip install "maturin==1.15.0"
             (cd bindings/python && maturin build --release --locked --compatibility manylinux_2_28 --out ../../dist/wheels)
+            python tests/verify-typed-wheel.py dist/wheels/*.whl
             node bindings/node/scripts/package-platform.mjs linux-x64-gnu target/release/libpeerwork_node_native.so dist
             npm pack ./bindings/node --pack-destination dist --offline
             npm pack ./dist/agent-sdk-linux-x64-gnu --pack-destination dist --offline
@@ -161,6 +163,7 @@ jobs:
             cd bindings/python
             /tmp/maturin-tools/bin/maturin build --release --locked --compatibility musllinux_1_2 --interpreter python3 --out ../../dist/wheels
             cd ../..
+            python3 tests/verify-typed-wheel.py dist/wheels/*.whl
             PEERWORK_MUSL_CXX_LIB_DIR=/usr/lib node bindings/node/scripts/package-platform.mjs linux-x64-musl target/musl-shared/release/libpeerwork_node_native.so dist
             npm pack ./bindings/node --pack-destination dist --offline
             npm pack ./dist/agent-sdk-linux-x64-musl --pack-destination dist --offline
@@ -219,6 +222,7 @@ jobs:
           cd bindings/python
           maturin build --release --locked --out ../../dist/wheels
           cd ../..
+          python tests/verify-typed-wheel.py dist/wheels/*.whl
           target='${{ matrix.target }}'
           test "$(node -p 'process.arch')" = "${target#darwin-}"
           node bindings/node/scripts/package-platform.mjs "$target" target/release/libpeerwork_node_native.dylib dist
@@ -284,6 +288,7 @@ jobs:
           node bindings/node/scripts/offline-smoke.mjs dist/node-consumer
           python -m venv "$env:RUNNER_TEMP\peerwork-wheel-consumer"
           $wheel = (Get-ChildItem dist/wheels/*.whl | Select-Object -First 1).FullName
+          python tests/verify-typed-wheel.py $wheel
           & "$env:RUNNER_TEMP\peerwork-wheel-consumer\Scripts\pip.exe" install --no-index --no-deps $wheel
           & "$env:RUNNER_TEMP\peerwork-wheel-consumer\Scripts\python.exe" -c 'import peerwork; assert peerwork.version() == "0.0.1"; assert peerwork.capabilities()["version"] == "0.0.1"'
           ./target/release/peerwork.exe version
