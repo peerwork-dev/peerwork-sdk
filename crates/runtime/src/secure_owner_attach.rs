@@ -138,6 +138,16 @@ struct LegacySource {
     head: Option<String>,
     policy_hash: String,
     retained_member_commands: Vec<String>,
+    retained_inbox_receipts: Vec<RetainedInboxReceipt>,
+}
+
+#[derive(Clone)]
+struct RetainedInboxReceipt {
+    item_id: String,
+    workspace_id: String,
+    source_record_id: String,
+    source_revision: u64,
+    source_hash: String,
 }
 
 fn private_visibility() -> String {
@@ -314,6 +324,23 @@ impl SecureHistoricalOwnerAttach {
                     .and_then(|commit| commit.get("payload")?.get("command_id")?.as_string())
                     .as_deref()
                     == Some(command.as_str())
+            });
+            if !completed {
+                return Err(HistoricalOwnerAttachError::SourceUnresolved);
+            }
+        }
+        for receipt in &source.retained_inbox_receipts {
+            let completed = replayed.signed_commit_wires().iter().any(|wire| {
+                parse_wire_json_bounded(wire, 64, 262_144)
+                    .ok()
+                    .is_some_and(|commit| {
+                        signed_owner_ack_matches(
+                            &commit,
+                            receipt,
+                            &row.input.expected_owner_actor_id,
+                            &row.input.expected_owner_key_id,
+                        )
+                    })
             });
             if !completed {
                 return Err(HistoricalOwnerAttachError::SourceUnresolved);
@@ -696,6 +723,139 @@ fn valid_token(value: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
+fn valid_digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+fn parse_inbox_receipts(
+    value: Option<&WireValue>,
+    input: &HistoricalOwnerAttachInput,
+) -> Result<Vec<RetainedInboxReceipt>, HistoricalOwnerAttachError> {
+    let rows = match value {
+        None => return Ok(Vec::new()),
+        Some(WireValue::Object(rows)) => rows,
+        _ => return Err(HistoricalOwnerAttachError::SourceUnresolved),
+    };
+    rows.iter()
+        .map(|(id, row)| {
+            let item_id =
+                String::from_utf16(id).map_err(|_| HistoricalOwnerAttachError::SourceUnresolved)?;
+            let workspace_id = row
+                .get("workspace_id")
+                .and_then(WireValue::as_string)
+                .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+            let source = row
+                .get("source")
+                .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+            let source_record_id = source
+                .get("record_id")
+                .and_then(WireValue::as_string)
+                .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+            let source_revision = exact_u64(source.get("revision"))
+                .filter(|revision| *revision > 0)
+                .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+            let source_hash = row
+                .get("source_hash")
+                .and_then(WireValue::as_string)
+                .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+            if row.object_len() != Some(3)
+                || source.object_len() != Some(2)
+                || workspace_id != input.workspace_id
+                || !valid_token(&source_record_id)
+                || !valid_digest(&source_hash)
+                || item_id
+                    != format!(
+                        "{}.{}.{}",
+                        workspace_id, source_record_id, input.expected_owner_actor_id
+                    )
+            {
+                return Err(HistoricalOwnerAttachError::SourceUnresolved);
+            }
+            Ok(RetainedInboxReceipt {
+                item_id,
+                workspace_id,
+                source_record_id,
+                source_revision,
+                source_hash,
+            })
+        })
+        .collect()
+}
+
+fn signed_owner_ack_matches(
+    commit: &WireValue,
+    receipt: &RetainedInboxReceipt,
+    owner_actor_id: &str,
+    owner_key_id: &str,
+) -> bool {
+    let Some(payload) = commit.get("payload") else {
+        return false;
+    };
+    if payload
+        .get("workspace_id")
+        .and_then(WireValue::as_string)
+        .as_deref()
+        != Some(&receipt.workspace_id)
+        || payload
+            .get("action_id")
+            .and_then(WireValue::as_string)
+            .as_deref()
+            != Some("coordination.ack")
+        || payload
+            .get("actor_id")
+            .and_then(WireValue::as_string)
+            .as_deref()
+            != Some(owner_actor_id)
+        || payload
+            .get("signing_key")
+            .and_then(WireValue::as_string)
+            .as_deref()
+            != Some(owner_key_id)
+    {
+        return false;
+    }
+    let Some(WireValue::Array(records)) = payload.get("structure").and_then(|s| s.get("records"))
+    else {
+        return false;
+    };
+    records.iter().any(|record| {
+        let Some(fields) = record.get("fields") else {
+            return false;
+        };
+        let Some(source) = fields.get("source_ref") else {
+            return false;
+        };
+        record
+            .get("schema_ref")
+            .and_then(WireValue::as_string)
+            .as_deref()
+            == Some("coordination.ack")
+            && fields
+                .get("author")
+                .and_then(WireValue::as_string)
+                .as_deref()
+                == Some(owner_actor_id)
+            && fields
+                .get("item_id")
+                .and_then(WireValue::as_string)
+                .as_deref()
+                == Some(&receipt.item_id)
+            && fields
+                .get("source_hash")
+                .and_then(WireValue::as_string)
+                .as_deref()
+                == Some(&receipt.source_hash)
+            && source
+                .get("record_id")
+                .and_then(WireValue::as_string)
+                .as_deref()
+                == Some(&receipt.source_record_id)
+            && exact_u64(source.get("revision")) == Some(receipt.source_revision)
+    })
+}
 fn exact_u64(value: Option<&WireValue>) -> Option<u64> {
     value?
         .as_number()
@@ -903,10 +1063,10 @@ fn parse_legacy_source(
         {
             return Err(HistoricalOwnerAttachError::SourceUnresolved);
         }
+        let retained_inbox_receipts = parse_inbox_receipts(value.get("inbox_receipts"), input)?;
         for key in [
             "admission_browser_revocations",
             "configuration_receipts",
-            "inbox_receipts",
             "wire_upgrade_observations",
         ] {
             if !empty_optional_map(value.get(key)) {
@@ -1097,6 +1257,7 @@ fn parse_legacy_source(
             head,
             policy_hash,
             retained_member_commands,
+            retained_inbox_receipts,
         })
     })();
     scrub(&mut value);
@@ -1172,6 +1333,171 @@ mod tests {
         io::{BufRead, BufReader},
         process::{Child, Command, Stdio},
     };
+
+    #[test]
+    fn actual_service_completed_inbox_marker_requires_exact_owner_ack() {
+        let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else {
+            return;
+        };
+        let Ok(legacy_root) = std::env::var("PEERWORK_LEGACY_CLIENT_ROOT") else {
+            return;
+        };
+        let node = std::env::var("PEERWORK_NODE_BIN").unwrap_or_else(|_| "node".into());
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let bridge =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/reference-kernel-server.mjs");
+        let child = Command::new(&node)
+            .arg(bridge)
+            .env("PEERWORK_REFERENCE_ROOT", reference_root)
+            .env("PEERWORK_TEST_STATE", root.path())
+            .env("PEERWORK_TEST_FIRST_POST_MODE", "normal")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        struct StopInbox(Child);
+        impl Drop for StopInbox {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut child = StopInbox(child);
+        let mut line = String::new();
+        BufReader::new(child.0.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        assert!(!line.is_empty(), "pinned service exited before readiness");
+        let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let origin = ready["origin"].as_str().unwrap();
+        let helper = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/legacy-completed-inbox-source.mjs");
+        let setup = |mode: &str| {
+            let output = Command::new(&node)
+                .arg(&helper)
+                .arg(origin)
+                .arg(root.path().join(mode))
+                .arg(&legacy_root)
+                .arg(mode)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "legacy inbox setup: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()
+        };
+        let unfinished = setup("before-ack");
+        assert_eq!(unfinished["policy_v"], 2);
+        assert_eq!(unfinished["signed_ack"], false);
+        let config = |name: &str| SecureOwnerCreateConfig {
+            origin: origin.into(),
+            state_dir: root.path().join(name),
+            allow_loopback_http: true,
+            max_replay_artifact_bytes: 64 * 1024 * 1024,
+        };
+        let input = |source: &serde_json::Value| HistoricalOwnerAttachInput {
+            workspace_id: source["workspace_id"].as_str().unwrap().into(),
+            protected_ts_state_path: source["state_path"].as_str().unwrap().into(),
+            protected_ts_intent_db_path: source["intent_db_path"].as_str().unwrap().into(),
+            protected_owner_pkcs8_path: source["pem_path"].as_str().unwrap().into(),
+            expected_owner_actor_id: source["owner_actor_id"].as_str().unwrap().into(),
+            expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
+        };
+        let cancel = CancellationToken::new();
+        let bad_config = config("native-unfinished");
+        let bad = SecureHistoricalOwnerAttach::new(bad_config.clone());
+        assert!(matches!(
+            bad.attach(input(&unfinished), &cancel),
+            Err(HistoricalOwnerAttachError::SourceUnresolved)
+        ));
+        assert!(bad
+            .attachments()
+            .unwrap()
+            .iter()
+            .all(|row| row.status != "ATTACHED"));
+        assert!(SecureOwnerWorkspaceCreate::new(bad_config)
+            .private_action_access(unfinished["workspace_id"].as_str().unwrap())
+            .is_err());
+        let completed = setup("complete");
+        assert_eq!(completed["policy_v"], 2);
+        assert_eq!(completed["signed_ack"], true);
+        let good_config = config("native-completed");
+        let good = SecureHistoricalOwnerAttach::new(good_config.clone());
+        let attached = good.attach(input(&completed), &cancel).unwrap();
+        assert_eq!(attached.status, "ATTACHED");
+        let workspace = completed["workspace_id"].as_str().unwrap();
+        let access = SecureReadAccess::new(good.attach_read_config(&input(&completed)));
+        let replayed = access.replay_checked_attach_generation(&cancel).unwrap();
+        let marker = RetainedInboxReceipt {
+            item_id: completed["item_id"].as_str().unwrap().into(),
+            workspace_id: workspace.into(),
+            source_record_id: completed["source"]["record_id"].as_str().unwrap().into(),
+            source_revision: completed["source"]["revision"].as_u64().unwrap(),
+            source_hash: completed["source_hash"].as_str().unwrap().into(),
+        };
+        let ack = replayed
+            .signed_commit_wires()
+            .iter()
+            .find_map(|wire| {
+                let commit = parse_wire_json_bounded(wire, 64, 262_144).ok()?;
+                signed_owner_ack_matches(
+                    &commit,
+                    &marker,
+                    completed["owner_actor_id"].as_str().unwrap(),
+                    completed["owner_key_id"].as_str().unwrap(),
+                )
+                .then_some(commit)
+            })
+            .expect("complete signed Owner ACK");
+        let owner_actor = completed["owner_actor_id"].as_str().unwrap();
+        let owner_key = completed["owner_key_id"].as_str().unwrap();
+        let mut wrong = marker.clone();
+        wrong.source_hash = "0".repeat(64);
+        assert!(!signed_owner_ack_matches(
+            &ack,
+            &wrong,
+            owner_actor,
+            owner_key
+        ));
+        wrong = marker.clone();
+        wrong.item_id = "z".repeat(43);
+        assert!(!signed_owner_ack_matches(
+            &ack,
+            &wrong,
+            owner_actor,
+            owner_key
+        ));
+        assert!(!signed_owner_ack_matches(
+            &ack,
+            &marker,
+            &"y".repeat(43),
+            owner_key
+        ));
+        let owner = SecureOwnerWorkspaceCreate::new(good_config.clone());
+        let before: serde_json::Value =
+            serde_json::from_str(&owner.read_workspace_json(workspace, &cancel).unwrap()).unwrap();
+        assert_eq!(before["sequence"], completed["sequence"]);
+        std::fs::rename(
+            root.path().join("complete"),
+            root.path().join("complete-archived"),
+        )
+        .unwrap();
+        let reopened: serde_json::Value = serde_json::from_str(
+            &SecureOwnerWorkspaceCreate::new(good_config)
+                .read_workspace_json(workspace, &cancel)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(reopened["sequence"], before["sequence"]);
+        assert_eq!(reopened["head"], before["head"]);
+    }
 
     #[test]
     fn absent_attachment_history_is_empty_but_corrupt_existing_state_refuses() {
