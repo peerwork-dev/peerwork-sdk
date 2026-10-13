@@ -98,7 +98,7 @@ jobs:
             npm pack ./bindings/node --pack-destination dist --offline
             npm pack ./dist/agent-sdk-linux-x64-gnu --pack-destination dist --offline
             mkdir -p dist/node-consumer
-            printf '%s\n' '{"name":"peerwork-offline-consumer","version":"0.0.0","private":true}' > dist/node-consumer/package.json
+            printf "%s\n" "{\"name\":\"peerwork-offline-consumer\",\"version\":\"0.0.0\",\"private\":true}" > dist/node-consumer/package.json
             npm install --prefix dist/node-consumer --offline --ignore-scripts --no-audit --no-fund --no-save ./dist/peerwork-agent-sdk-0.0.1.tgz ./dist/peerwork-agent-sdk-linux-x64-gnu-0.0.1.tgz
             python -m pip install --no-index --no-deps --target dist/wheel-consumer dist/wheels/*.whl
             unset LD_LIBRARY_PATH
@@ -159,7 +159,7 @@ jobs:
             npm pack ./bindings/node --pack-destination dist --offline
             npm pack ./dist/agent-sdk-linux-x64-musl --pack-destination dist --offline
             mkdir -p dist/node-consumer
-            printf '%s\n' '{"name":"peerwork-offline-consumer","version":"0.0.0","private":true}' > dist/node-consumer/package.json
+            printf "%s\n" "{\"name\":\"peerwork-offline-consumer\",\"version\":\"0.0.0\",\"private\":true}" > dist/node-consumer/package.json
             npm install --prefix dist/node-consumer --offline --ignore-scripts --no-audit --no-fund --omit=optional ./dist/peerwork-agent-sdk-0.0.1.tgz ./dist/peerwork-agent-sdk-linux-x64-musl-0.0.1.tgz
             node bindings/node/scripts/offline-smoke.mjs dist/node-consumer
             python3 -m pip install --no-deps --target dist/wheel-consumer dist/wheels/*.whl
