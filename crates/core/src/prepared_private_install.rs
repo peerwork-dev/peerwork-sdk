@@ -134,6 +134,7 @@ pub fn prepare_orphan_package_stage_material(
 pub struct VerifiedMultipartOrphanMaterial {
     pub canonical_material: Zeroizing<String>,
     pub part_count: usize,
+    pub selected_part: WireValue,
     pub root_package_digest: String,
     pub protocol_digest: String,
     pub proof_sha256: String,
@@ -180,6 +181,7 @@ pub fn prepare_multipart_orphan_package_stage_material(
     Ok(VerifiedMultipartOrphanMaterial {
         canonical_material: Zeroizing::new(prepared.canonical_material),
         part_count: prepared.parts.len(),
+        selected_part: prepared.parts[marker_part_index].clone(),
         root_package_digest,
         protocol_digest,
         proof_sha256: sha256_hex(proof_wire.as_bytes()),

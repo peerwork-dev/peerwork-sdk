@@ -21,7 +21,7 @@ use peerwork_core::{
     prepared_secure_request::{
         verify_prepared_secure_commit_request_with_policy, SecureCommitRequestPins,
     },
-    prepared_private_install::{package_source_identity_matches, prepare_orphan_package_stage_material, verify_complete_package_source, MAX_PACKAGE_SOURCE_PARTS},
+    prepared_private_install::{package_source_identity_matches, prepare_multipart_orphan_package_stage_material, prepare_orphan_package_stage_material, verify_complete_package_source, VerifiedMultipartOrphanMaterial, MAX_PACKAGE_SOURCE_PARTS},
     replayed_secure_journal::StructureStatus,
     secure_keyring::SecretKeyring,
     wire_json::{canonical_wire_value, parse_wire_json_bounded, WireValue},
@@ -185,6 +185,10 @@ pub struct HistoricalPackageStageOrphanInventory {
     pub source_id: String,
     pub source_sha256: String,
     pub source_sequence: u64,
+    #[serde(default)]
+    pub part_index: usize,
+    #[serde(default)]
+    pub part_count: Option<usize>,
     /// Local classification after full replay, not a signed server receipt.
     pub status: String,
 }
@@ -1004,7 +1008,53 @@ impl SecureHistoricalOwnerAttach {
             source_sha256: marker.source_sha256.clone(),
             source_sequence: exact_u64(marker.source.get("sequence"))
                 .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?,
+            part_index: 0,
+            part_count: Some(1),
             status: "ORPHAN_NO_PACKET".into(),
+        })
+    }
+
+    /// Read-only inventory for a multipart marker with no saved packet. The
+    /// caller supplies complete material; the signed prefix and marker source
+    /// are proved before any attachment row or stage producer can run.
+    pub fn inspect_multipart_orphan_package_stage_with_material(
+        &self,
+        input: &HistoricalOwnerAttachInput,
+        material_json: &str,
+        cancel: &CancellationToken,
+    ) -> Result<HistoricalPackageStageOrphanInventory, HistoricalOwnerAttachError> {
+        validate_input(input)?;
+        if material_json.is_empty() || material_json.len() > 8 * 1024 * 1024 {
+            return Err(HistoricalOwnerAttachError::Input);
+        }
+        if cancel.is_cancelled() { return Err(HistoricalOwnerAttachError::Cancelled); }
+        let (source, digest, pem_digest, intent_digest) = self.inspect_sources(input)?;
+        if source.pending_package_stage.is_some() || source.pending_action.is_some() {
+            return Err(HistoricalOwnerAttachError::SourceUnresolved);
+        }
+        let marker = source.completed_package_stage.as_ref()
+            .filter(|marker| marker.part_index > 0)
+            .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+        ensure_dir(&self.config.state_dir)?;
+        let _lock = SecureStateStore::open(&self.config.state_dir.join("owner-attach-recovery.state"))
+            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        let (prepared, applied) = self.with_preflight_replay(input, &source, cancel, |replayed, _| {
+            verify_multipart_orphan_package_stage(marker, material_json.as_bytes(), replayed, input)
+        })?;
+        let (_, state_after, pem_after, intent_after) = self.inspect_sources(input)?;
+        if (state_after, pem_after, intent_after) != (digest.clone(), pem_digest, intent_digest) {
+            return Err(HistoricalOwnerAttachError::SourceChanged);
+        }
+        Ok(HistoricalPackageStageOrphanInventory {
+            ts_state_digest: digest,
+            command_id: marker.command_id.clone(),
+            source_id: marker.source_id.clone(),
+            source_sha256: marker.source_sha256.clone(),
+            source_sequence: exact_u64(marker.source.get("sequence"))
+                .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?,
+            part_index: marker.part_index,
+            part_count: Some(prepared.part_count),
+            status: if applied { "APPLIED_IN_SIGNED_REPLAY" } else { "ORPHAN_NO_PACKET" }.into(),
         })
     }
 
@@ -4064,6 +4114,152 @@ fn verify_orphan_package_stage(
         return Err(invalid());
     }
     Ok(())
+}
+
+/// Authenticate the signed prefix independently of the marker's missing
+/// packet, then compare it to the complete caller-supplied material. A local
+/// missing packet never proves that its command was not accepted remotely.
+fn verify_multipart_orphan_package_stage(
+    marker: &CompletedPackageStageMarker,
+    material: &[u8],
+    replayed: &TransportReplayedJournal,
+    input: &HistoricalOwnerAttachInput,
+) -> Result<(VerifiedMultipartOrphanMaterial, bool), HistoricalOwnerAttachError> {
+    let invalid = || HistoricalOwnerAttachError::SourceUnresolved;
+    let source = &marker.source;
+    let base = exact_u64(source.get("sequence")).ok_or_else(invalid)?;
+    let base_head = source.get("head").and_then(WireValue::as_string).ok_or_else(invalid)?;
+    let policy_hash = source.get("policy_hash").and_then(WireValue::as_string).ok_or_else(invalid)?;
+    let index = marker.part_index;
+    if index == 0 || index >= MAX_PACKAGE_SOURCE_PARTS
+        || !replayed.replay().contains_checkpoint(base, Some(&base_head), &policy_hash)
+        || replayed.replay().structure_status() != StructureStatus::Active
+        || replayed.replay().owner_actor_id() != input.expected_owner_actor_id
+        || replayed.replay().owner_signing_key() != input.expected_owner_key_id
+    {
+        return Err(invalid());
+    }
+    let policy_wire = replayed.signed_policy_by_hash(&policy_hash).ok_or_else(invalid)?;
+    let policy = parse_wire_json_bounded(policy_wire, 64, 196_608).map_err(|_| invalid())?;
+    let policy_payload = policy.get("payload").ok_or_else(invalid)?;
+    let owner_member = matches!(policy_payload.get("members"), Some(WireValue::Array(members))
+        if members.iter().any(|member| {
+            member.get("actor_id").and_then(WireValue::as_string).as_deref()
+                == Some(input.expected_owner_actor_id.as_str())
+                && member.get("role").and_then(WireValue::as_string).as_deref() == Some("OWNER")
+                && member.get("certificate").and_then(|value| value.get("payload"))
+                    .and_then(|value| value.get("signing_key"))
+                    .and_then(WireValue::as_string).as_deref()
+                    == Some(input.expected_owner_key_id.as_str())
+        }));
+    if policy_payload.get("visibility").and_then(WireValue::as_string).as_deref() != Some("PRIVATE")
+        || !owner_member
+    {
+        return Err(invalid());
+    }
+    let source_wire = canonical_wire_value(source, CanonicalPath::SecureArtifact)
+        .map_err(|_| invalid())?;
+    let mut prefix = Vec::with_capacity(index);
+    let mut predecessor = base_head;
+    for part_index in 0..index {
+        let sequence = base.checked_add(part_index as u64 + 1).ok_or_else(invalid)?;
+        let replay_index = usize::try_from(sequence - 1).map_err(|_| invalid())?;
+        let signed = replayed.signed_commit_wires().get(replay_index).ok_or_else(invalid)?;
+        let operation = replayed.replay().operations().get(replay_index).ok_or_else(invalid)?;
+        let commit = parse_wire_json_bounded(signed, 64, 262_144).map_err(|_| invalid())?;
+        let payload = commit.get("payload").ok_or_else(invalid)?;
+        let signed_hash = sha256_hex(signed);
+        let stage = operation.get("input").and_then(|value| value.get("package_stage"))
+            .ok_or_else(invalid)?;
+        let WireValue::Array(objects) = operation.get("objects").ok_or_else(invalid)? else {
+            return Err(invalid());
+        };
+        if !replayed.replay().contains_checkpoint(sequence, Some(&signed_hash), &policy_hash)
+            || payload.get("action_id").and_then(WireValue::as_string).as_deref()
+                != Some("secure.protocol-package.stage")
+            || payload.get("actor_id").and_then(WireValue::as_string).as_deref()
+                != Some(input.expected_owner_actor_id.as_str())
+            || payload.get("signing_key").and_then(WireValue::as_string).as_deref()
+                != Some(input.expected_owner_key_id.as_str())
+            || payload.get("workspace_id").and_then(WireValue::as_string).as_deref()
+                != Some(input.workspace_id.as_str())
+            || payload.get("mode").and_then(WireValue::as_string).as_deref() != Some("PRIVATE")
+            || payload.get("policy_hash").and_then(WireValue::as_string).as_deref()
+                != Some(policy_hash.as_str())
+            || payload.get("previous").and_then(WireValue::as_string).as_deref()
+                != Some(predecessor.as_str())
+            || exact_u64(payload.get("sequence")) != Some(sequence)
+            || operation.get("kind").and_then(WireValue::as_string).as_deref() != Some("ADMIN")
+            || objects.len() != 1
+            || stage.get("source_id").and_then(WireValue::as_string).as_deref()
+                != Some(marker.source_id.as_str())
+            || exact_u64(stage.get("part_index")) != Some(part_index as u64)
+            || canonical_wire_value(stage.get("source").ok_or_else(invalid)?, CanonicalPath::SecureArtifact)
+                .map_err(|_| invalid())? != source_wire
+        {
+            return Err(invalid());
+        }
+        prefix.push(objects[0].clone());
+        predecessor = signed_hash;
+    }
+    let prepared = prepare_multipart_orphan_package_stage_material(
+        material, source_wire.as_bytes(), &marker.source_id, &marker.source_sha256,
+        index, &prefix,
+    ).map_err(|_| invalid())?;
+    let selected_sequence = base.checked_add(index as u64 + 1).ok_or_else(invalid)?;
+    let predecessor_sequence = selected_sequence - 1;
+    if replayed.replay().sequence() == predecessor_sequence
+        && replayed.replay().head() == Some(predecessor.as_str())
+        && replayed.replay().policy_hash() == policy_hash
+    {
+        return Ok((prepared, false));
+    }
+    // A signed selected command is evidence of application even though the
+    // old client lost its packet. An unrelated later head is not.
+    let replay_index = usize::try_from(selected_sequence - 1).map_err(|_| invalid())?;
+    let signed = replayed.signed_commit_wires().get(replay_index).ok_or_else(invalid)?;
+    let operation = replayed.replay().operations().get(replay_index).ok_or_else(invalid)?;
+    let commit = parse_wire_json_bounded(signed, 64, 262_144).map_err(|_| invalid())?;
+    let payload = commit.get("payload").ok_or_else(invalid)?;
+    let stage = operation.get("input").and_then(|value| value.get("package_stage"))
+        .ok_or_else(invalid)?;
+    let WireValue::Array(objects) = operation.get("objects").ok_or_else(invalid)? else {
+        return Err(invalid());
+    };
+    if replayed.replay().sequence() != selected_sequence
+        || payload.get("command_id").and_then(WireValue::as_string).as_deref()
+            != Some(marker.command_id.as_str())
+        || payload.get("action_id").and_then(WireValue::as_string).as_deref()
+            != Some("secure.protocol-package.stage")
+        || payload.get("actor_id").and_then(WireValue::as_string).as_deref()
+            != Some(input.expected_owner_actor_id.as_str())
+        || payload.get("signing_key").and_then(WireValue::as_string).as_deref()
+            != Some(input.expected_owner_key_id.as_str())
+        || payload.get("workspace_id").and_then(WireValue::as_string).as_deref()
+            != Some(input.workspace_id.as_str())
+        || payload.get("mode").and_then(WireValue::as_string).as_deref() != Some("PRIVATE")
+        || payload.get("policy_hash").and_then(WireValue::as_string).as_deref()
+            != Some(policy_hash.as_str())
+        || payload.get("previous").and_then(WireValue::as_string).as_deref()
+            != Some(predecessor.as_str())
+        || exact_u64(payload.get("sequence")) != Some(selected_sequence)
+        || !replayed.replay().contains_checkpoint(
+            selected_sequence, Some(&sha256_hex(signed)), &policy_hash,
+        )
+        || operation.get("kind").and_then(WireValue::as_string).as_deref() != Some("ADMIN")
+        || objects.len() != 1
+        || stage.get("source_id").and_then(WireValue::as_string).as_deref()
+            != Some(marker.source_id.as_str())
+        || exact_u64(stage.get("part_index")) != Some(index as u64)
+        || canonical_wire_value(stage.get("source").ok_or_else(invalid)?, CanonicalPath::SecureArtifact)
+            .map_err(|_| invalid())? != source_wire
+        || canonical_wire_value(&objects[0], CanonicalPath::SecureArtifact).map_err(|_| invalid())?
+            != canonical_wire_value(&prepared.selected_part, CanonicalPath::SecureArtifact)
+                .map_err(|_| invalid())?
+    {
+        return Err(invalid());
+    }
+    Ok((prepared, true))
 }
 
 fn verify_pending_package_stage(
