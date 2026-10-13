@@ -1556,6 +1556,15 @@ mod tests {
 
     #[test]
     fn actual_service_private_package_stage_install_action_recovers_lost_replies() {
+        run_actual_service_private_package_install(false);
+    }
+
+    #[test]
+    fn actual_service_private_package_install_preserves_nonempty_pages_after_lost_reply() {
+        run_actual_service_private_package_install(true);
+    }
+
+    fn run_actual_service_private_package_install(nonempty: bool) {
         let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else {
             return;
         };
@@ -1633,6 +1642,92 @@ mod tests {
                     .unwrap();
                 serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()
             })
+        };
+        let prior_record = if nonempty {
+            let read: serde_json::Value = serde_json::from_str(
+                &owner
+                    .read_workspace_json(&created.workspace_id, &token)
+                    .unwrap(),
+            )
+            .unwrap();
+            let objects = read["objects"].as_array().unwrap();
+            let wiki_digest = objects
+                .iter()
+                .find(|object| {
+                    object["kind"] == "protocols"
+                        && object["value"]["manifest"]["name"] == "peerwork.wiki.v1"
+                })
+                .unwrap()["id"]
+                .as_str()
+                .unwrap();
+            let wiki_instance = objects
+                .iter()
+                .find(|object| {
+                    object["kind"] == "instances"
+                        && object["value"]["protocol_digest"] == wiki_digest
+                })
+                .unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            let action = owner.private_action_access(&created.workspace_id).unwrap();
+            let mut first_record = None;
+            for index in 0..51 {
+                let title = format!("Prior encrypted wiki {index}");
+                let body = format!("Encrypted source history {index}");
+                let submitted: serde_json::Value = serde_json::from_str(
+                    &action
+                        .submit_new_json(PublicActionInput {
+                            action_id: "wiki.create".into(),
+                            instance_id: wiki_instance.clone(),
+                            body_json: serde_json::json!({"title":title,"body":body}).to_string(),
+                            exact_input_refs_json: None,
+                            allocations_json: None,
+                            command_id: None,
+                            issued_at_ms: None,
+                        })
+                        .unwrap(),
+                )
+                .unwrap();
+                let accepted: serde_json::Value = serde_json::from_str(
+                    &action
+                        .retry_saved_json(submitted["command_id"].as_str().unwrap())
+                        .unwrap(),
+                )
+                .unwrap();
+                assert_eq!(accepted["status"], "ACCEPTED");
+                let receipt: serde_json::Value =
+                    serde_json::from_str(accepted["receipt_canonical_json"].as_str().unwrap())
+                        .unwrap();
+                if index == 0 {
+                    first_record = Some((
+                        receipt["effects"][0]["record_id"]
+                            .as_str()
+                            .unwrap()
+                            .to_owned(),
+                        title,
+                        body,
+                    ));
+                }
+            }
+            let read: serde_json::Value = serde_json::from_str(
+                &owner
+                    .read_workspace_json(&created.workspace_id, &token)
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                read["objects"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|object| object["kind"] == "records")
+                    .count(),
+                51
+            );
+            first_record
+        } else {
+            None
         };
         let before = counts()["commits"].as_u64().unwrap();
         runtime.block_on(async {
@@ -1757,19 +1852,62 @@ mod tests {
         let mut progress: serde_json::Value =
             serde_json::from_str(&stage.continue_install_json(begin_id).unwrap()).unwrap();
         assert_eq!(progress["status"], "PENDING");
-        assert_eq!(progress["step_action_id"], "secure.structure.end");
+        assert_eq!(
+            progress["step_action_id"],
+            if nonempty {
+                "secure.structure.page"
+            } else {
+                "secure.structure.end"
+            }
+        );
         assert_eq!(
             counts()["commits"],
             before + next["part_count"].as_u64().unwrap() + 2
         );
-        for _ in 0..5 {
+        // Reopen again after the first PAGE was applied but its POST reply was
+        // lost. The protected BEGIN ID and exact saved PAGE must suffice.
+        let (reopened, stage) = if nonempty {
+            drop(stage);
+            drop(reopened);
+            let reopened = SecureOwnerWorkspaceCreate::new(SecureOwnerCreateConfig {
+                origin: origin.clone(),
+                state_dir: root.path().join("sdk-state"),
+                allow_loopback_http: true,
+                max_replay_artifact_bytes: 64 * 1024 * 1024,
+            });
+            let stage = reopened
+                .private_install_access(&created.workspace_id)
+                .unwrap();
+            let saved: serde_json::Value =
+                serde_json::from_str(&stage.installs_json().unwrap()).unwrap();
+            assert_eq!(saved[0]["begin_command_id"], begin_id);
+            (reopened, stage)
+        } else {
+            (reopened, stage)
+        };
+        let mut page_ids = std::collections::BTreeSet::new();
+        if nonempty {
+            page_ids.insert(progress["step_command_id"].as_str().unwrap().to_owned());
+        }
+        for _ in 0..8 {
             if progress["status"] == "ACCEPTED" {
                 break;
             }
             progress =
                 serde_json::from_str(&stage.continue_install_json(begin_id).unwrap()).unwrap();
+            if progress["step_action_id"] == "secure.structure.page" {
+                page_ids.insert(progress["step_command_id"].as_str().unwrap().to_owned());
+            }
         }
         assert_eq!(progress["status"], "ACCEPTED");
+        if nonempty {
+            assert_eq!(page_ids.len(), 4, "51 records and 51 heads need four PAGEs");
+            assert_eq!(
+                counts()["commits"],
+                before + next["part_count"].as_u64().unwrap() + 6,
+                "one BEGIN, four PAGEs, one END; retries add no commits"
+            );
+        }
         let read: serde_json::Value = serde_json::from_str(
             &reopened
                 .read_workspace_json(&created.workspace_id, &token)
@@ -1783,6 +1921,14 @@ mod tests {
             .any(|object| object["kind"] == "instances"
                 && object["id"] == begin["instance_id"]
                 && object["value"]["protocol_digest"] == begin["protocol_digest"]));
+        if let Some((record_id, title, body)) = &prior_record {
+            assert!(read["objects"].as_array().unwrap().iter().any(|object| {
+                object["kind"] == "records"
+                    && object["id"] == *record_id
+                    && object["value"]["payload"]["title"] == *title
+                    && object["value"]["payload"]["body"] == *body
+            }));
+        }
         let repeat: serde_json::Value =
             serde_json::from_str(&stage.continue_install_json(begin_id).unwrap()).unwrap();
         assert_eq!(repeat["status"], "ACCEPTED");
