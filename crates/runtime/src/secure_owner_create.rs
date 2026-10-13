@@ -24,7 +24,14 @@ use crate::{
     transport::{HttpTransport, TransportConfig, TransportError},
 };
 use peerwork_core::{
+    bootstrap_objects::{
+        owner_bootstrap_objects_with_coordination, owner_bootstrap_objects_with_visibility,
+    },
     crypto::{base64url, sha256_hex},
+    genesis_structure_policy::{
+        derive_genesis_structure_policy_with_coordination_and_keep_encrypted,
+        derive_genesis_structure_policy_with_keep_encrypted,
+    },
     prepared_secure_bootstrap::{verify_prepared_owner_bootstrap, BootstrapPins},
     replayed_secure_journal::StructureStatus,
 };
@@ -233,6 +240,10 @@ impl SecureOwnerWorkspaceCreate {
             created_sequence: None,
             created_head: None,
         };
+        // Reject malformed structure/field selections before they become a
+        // permanent protected PENDING ID. The same generated IDs and preset
+        // builder are used again when saving the signed request.
+        validate_plan(&row, identity.actor_id())?;
         history.rows.insert(command.clone(), row.clone());
         write_history(&store, &history)?;
         drop(history);
@@ -758,6 +769,57 @@ fn validate_input(input: &SecureOwnerCreateInput) -> Result<(), SecureOwnerCreat
     Ok(())
 }
 
+fn validate_plan(row: &SavedCreate, owner_actor: &str) -> Result<(), SecureOwnerCreateError> {
+    let six: [String; 6] = std::array::from_fn(|i| row.instance_ids[i].clone());
+    let built = if let Some(version) = row.input.coordination_version {
+        let seven: [String; 7] = std::array::from_fn(|i| row.instance_ids[i].clone());
+        owner_bootstrap_objects_with_coordination(
+            &row.input.name,
+            &row.workspace_id,
+            owner_actor,
+            row.created,
+            &seven,
+            &row.input.visibility,
+            version,
+        )
+    } else {
+        owner_bootstrap_objects_with_visibility(
+            &row.input.name,
+            &row.workspace_id,
+            owner_actor,
+            row.created,
+            &six,
+            &row.input.visibility,
+        )
+    }
+    .map_err(|_| SecureOwnerCreateError::Invalid)?;
+    if row.input.structured {
+        let objects = serde_json::to_vec(&built.operation()["objects"])
+            .map_err(|_| SecureOwnerCreateError::Invalid)?;
+        if let Some(version) = row.input.coordination_version {
+            let digest = built.operation()["objects"][13]["id"]
+                .as_str()
+                .ok_or(SecureOwnerCreateError::Invalid)?;
+            derive_genesis_structure_policy_with_coordination_and_keep_encrypted(
+                &objects,
+                row.input.keep_encrypted_json.as_bytes(),
+                &row.instance_ids[6],
+                digest,
+                owner_actor,
+                version,
+            )
+            .map_err(|_| SecureOwnerCreateError::Invalid)?;
+        } else {
+            derive_genesis_structure_policy_with_keep_encrypted(
+                &objects,
+                row.input.keep_encrypted_json.as_bytes(),
+            )
+            .map_err(|_| SecureOwnerCreateError::Invalid)?;
+        }
+    }
+    Ok(())
+}
+
 fn read_history(
     store: &SecureStateStore,
     config: &SecureOwnerCreateConfig,
@@ -1038,11 +1100,97 @@ mod tests {
             assert_eq!(read["objects"].as_array().unwrap().len(), 13);
         }
         assert_eq!(
-            SecureOwnerWorkspaceCreate::new(config)
+            SecureOwnerWorkspaceCreate::new(config.clone())
                 .operations()
                 .unwrap()
                 .len(),
             2
         );
+
+        // The high-level dispatcher must consume all pinned preset/structure
+        // choices with its protected generated IDs, not merely accept a DTO.
+        let selector = r#"[{"schema":"discussion.message","fields":["author"]}]"#;
+        let variants = [
+            ("PUBLIC", true, None, "[]", 6),
+            ("PRIVATE", true, None, "[]", 6),
+            ("PUBLIC", true, Some(1), "[]", 7),
+            ("PRIVATE", true, Some(1), "[]", 7),
+            ("PUBLIC", true, Some(2), selector, 7),
+            ("PRIVATE", true, Some(2), selector, 7),
+        ];
+        for (visibility, structured, coordination_version, keep, protocol_count) in variants {
+            let access = SecureOwnerWorkspaceCreate::new(config.clone());
+            let result = access
+                .prepare(
+                    SecureOwnerCreateInput {
+                        name: format!("Option matrix {visibility} {coordination_version:?}"),
+                        visibility: visibility.into(),
+                        structured,
+                        keep_encrypted_json: keep.into(),
+                        coordination_version,
+                    },
+                    &token,
+                )
+                .unwrap();
+            assert_eq!(result.status, "PENDING");
+            let identity = KernelIdentity::open(&config.state_dir.join("identity.state")).unwrap();
+            let journal = SecureIntentJournal::open(
+                &config.state_dir.join("secure-intents.state"),
+                &config.origin,
+                identity.actor_id(),
+            )
+            .unwrap();
+            let request: serde_json::Value =
+                serde_json::from_slice(&journal.exact_request(&result.command_id).unwrap())
+                    .unwrap();
+            let policy = &request["policy"]["payload"];
+            assert_eq!(policy["visibility"], visibility);
+            assert_eq!(policy["structure_mode"], "STRUCTURED");
+            assert_eq!(
+                policy["structure"]["protocols"].as_array().unwrap().len(),
+                protocol_count
+            );
+            if let Some(version) = coordination_version {
+                assert_eq!(policy["structure"]["coordination"]["v"], version);
+            } else {
+                assert!(policy["structure"]["coordination"].is_null());
+            }
+            if keep != "[]" {
+                assert!(policy["structure"].to_string().contains("author"));
+            }
+        }
+        assert_eq!(counts()["commits"], 2, "preparation must not POST genesis");
+        let access = SecureOwnerWorkspaceCreate::new(config.clone());
+        let before_invalid = access.operations().unwrap().len();
+        for input in [
+            SecureOwnerCreateInput {
+                name: "Bad version".into(),
+                visibility: "PUBLIC".into(),
+                structured: true,
+                keep_encrypted_json: "[]".into(),
+                coordination_version: Some(3),
+            },
+            SecureOwnerCreateInput {
+                name: "Coordination without structure".into(),
+                visibility: "PRIVATE".into(),
+                structured: false,
+                keep_encrypted_json: "[]".into(),
+                coordination_version: Some(1),
+            },
+            SecureOwnerCreateInput {
+                name: "Unknown protected field".into(),
+                visibility: "PUBLIC".into(),
+                structured: true,
+                keep_encrypted_json:
+                    r#"[{"schema":"discussion.message","fields":["not_a_field"]}]"#.into(),
+                coordination_version: None,
+            },
+        ] {
+            assert!(matches!(
+                access.prepare(input, &token),
+                Err(SecureOwnerCreateError::Invalid)
+            ));
+            assert_eq!(access.operations().unwrap().len(), before_invalid);
+        }
     }
 }
