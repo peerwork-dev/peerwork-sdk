@@ -22,12 +22,16 @@ use peerwork_core::{
         derive_genesis_structure_policy_with_coordination_and_keep_encrypted,
         derive_genesis_structure_policy_with_keep_encrypted,
     },
-    prepared_secure_action::{validate_prepared_action_operation, ValidatedPreparedAction},
+    prepared_secure_action::{
+        build_prepared_action_operation, validate_prepared_action_operation,
+        ValidatedPreparedAction,
+    },
     prepared_secure_author::{
         author_private_bootstrap, author_private_commit, author_private_validated_action,
         author_public_bootstrap, author_public_validated_action, SecureAuthorError,
     },
     prepared_secure_request::SecureCommitRequestPins,
+    wire_json::{canonical_wire_value, parse_wire_json_bounded, WireValue},
 };
 use serde_json::json;
 use thiserror::Error;
@@ -705,6 +709,226 @@ pub(crate) fn prepare_new_public_action_from_replay(
         intent_digest: proof.commit_digest(),
         exact_request: authored.request_wire(),
     })?)
+}
+
+/// Build the ACTION operation natively from its input, then author and save
+/// the exact PUBLIC packet against the same authenticated replay.
+pub(crate) fn prepare_new_public_action_input_from_replay(
+    journal: &mut SecureIntentJournal,
+    identity: &KernelIdentity,
+    lifecycle: &SecureLifecycle,
+    source: &TransportReplayedJournal,
+    intent_id: &str,
+    context_wire: &[u8],
+    action_input_wire: &[u8],
+    pins: &SecureCommitRequestPins<'_>,
+) -> Result<PendingSecureIntent, NativePrepareError> {
+    source
+        .verified_read()
+        .map_err(|_| NativePrepareError::Context)?;
+    let policy_wire = source
+        .signed_policy_by_hash(pins.policy_hash)
+        .ok_or(NativePrepareError::Context)?;
+    let operation = build_prepared_action_operation(
+        action_input_wire,
+        context_wire,
+        policy_wire,
+        source.replay().objects(),
+    )
+    .map_err(|_| NativePrepareError::Context)?;
+    prepare_new_public_action_from_replay(
+        journal,
+        identity,
+        lifecycle,
+        source,
+        intent_id,
+        context_wire,
+        operation.operation_wire(),
+        pins,
+    )
+}
+
+/// The caller supplies action values and allocation tokens, while the
+/// expected instance revision is taken from the authenticated replay.
+pub(crate) fn prepare_new_public_action_values_from_replay(
+    journal: &mut SecureIntentJournal,
+    identity: &KernelIdentity,
+    lifecycle: &SecureLifecycle,
+    source: &TransportReplayedJournal,
+    intent_id: &str,
+    context_wire: &[u8],
+    action_id: &str,
+    instance_id: &str,
+    body_wire: &[u8],
+    exact_refs_wire: &[u8],
+    allocations_wire: &[u8],
+    pins: &SecureCommitRequestPins<'_>,
+) -> Result<PendingSecureIntent, NativePrepareError> {
+    let parse = |wire: &[u8]| {
+        parse_wire_json_bounded(wire, 64, 16 * 1024 * 1024).map_err(|_| NativePrepareError::Context)
+    };
+    let body = parse(body_wire)?;
+    let refs = parse(exact_refs_wire)?;
+    let allocations = parse(allocations_wire)?;
+    if !matches!(refs, WireValue::Array(_)) || !matches!(allocations, WireValue::Array(_)) {
+        return Err(NativePrepareError::Context);
+    }
+    let latest = source
+        .replay()
+        .objects()
+        .iter()
+        .filter(|object| {
+            object.get("kind").and_then(WireValue::as_string).as_deref() == Some("instances")
+                && object.get("id").and_then(WireValue::as_string).as_deref() == Some(instance_id)
+        })
+        .max_by_key(|object| {
+            object
+                .get("revision")
+                .and_then(WireValue::as_number)
+                .unwrap_or(0.0) as u64
+        })
+        .ok_or(NativePrepareError::Context)?;
+    let revision = latest
+        .get("value")
+        .and_then(|value| value.get("revision"))
+        .and_then(WireValue::as_number)
+        .filter(|value| value.is_finite() && *value >= 0.0 && value.fract() == 0.0)
+        .ok_or(NativePrepareError::Context)?;
+    let field = |name: &str, value: WireValue| (name.encode_utf16().collect(), value);
+    let input = WireValue::Object(vec![
+        field(
+            "instance_id",
+            WireValue::String(instance_id.encode_utf16().collect()),
+        ),
+        field("expected_instance_revision", WireValue::Number(revision)),
+        field(
+            "action_id",
+            WireValue::String(action_id.encode_utf16().collect()),
+        ),
+        field("body", body),
+        field("exact_input_refs", refs),
+        field("allocations", allocations),
+    ]);
+    let input_wire = canonical_wire_value(&input, CanonicalPath::SecureArtifact)
+        .map_err(|_| NativePrepareError::Context)?;
+    prepare_new_public_action_input_from_replay(
+        journal,
+        identity,
+        lifecycle,
+        source,
+        intent_id,
+        context_wire,
+        input_wire.as_bytes(),
+        pins,
+    )
+}
+
+/// Author a PUBLIC v3 unstructured action from the current verified checkpoint
+/// and action values. Context and instance revision are derived locally;
+/// allocation tokens are supplied explicitly and saved before the first POST.
+pub(crate) fn prepare_public_action_from_replay(
+    journal: &mut SecureIntentJournal,
+    identity: &KernelIdentity,
+    lifecycle: &SecureLifecycle,
+    source: &TransportReplayedJournal,
+    command_id: &str,
+    action_id: &str,
+    instance_id: &str,
+    issued_at: u64,
+    body_wire: &[u8],
+    exact_refs_wire: &[u8],
+    allocations_wire: &[u8],
+) -> Result<PendingSecureIntent, NativePrepareError> {
+    if issued_at > 9_007_199_254_740_991 {
+        return Err(NativePrepareError::Context);
+    }
+    source
+        .verified_read()
+        .map_err(|_| NativePrepareError::Context)?;
+    let policy_hash = source.replay().policy_hash();
+    let policy_wire = source
+        .signed_policy_by_hash(policy_hash)
+        .ok_or(NativePrepareError::Context)?;
+    let policy = parse_wire_json_bounded(policy_wire, 64, 16 * 1024 * 1024)
+        .map_err(|_| NativePrepareError::Context)?;
+    let payload = policy.get("payload").ok_or(NativePrepareError::Context)?;
+    let version = payload
+        .get("v")
+        .and_then(WireValue::as_number)
+        .ok_or(NativePrepareError::Context)?;
+    if version != 3.0
+        || payload
+            .get("visibility")
+            .and_then(WireValue::as_string)
+            .as_deref()
+            != Some("PUBLIC")
+        || payload
+            .get("structure_mode")
+            .and_then(WireValue::as_string)
+            .as_deref()
+            == Some("STRUCTURED")
+    {
+        return Err(NativePrepareError::Context);
+    }
+    let epoch = payload
+        .get("epoch")
+        .and_then(WireValue::as_number)
+        .filter(|value| *value == 0.0)
+        .ok_or(NativePrepareError::Context)? as u64;
+    let ceiling = payload
+        .get("protocol_format_ceiling")
+        .and_then(WireValue::as_number)
+        .filter(|value| value.is_finite() && *value >= 1.0 && value.fract() == 0.0)
+        .ok_or(NativePrepareError::Context)? as u64;
+    let sequence = source
+        .replay()
+        .sequence()
+        .checked_add(1)
+        .ok_or(NativePrepareError::Context)?;
+    let previous = source.replay().head();
+    let pins = SecureCommitRequestPins {
+        actor_id: identity.actor_id(),
+        signing_key: identity.key_id(),
+        workspace_id: lifecycle.workspace_id(),
+        policy_hash,
+        sequence,
+        previous,
+        epoch,
+        mode: "PUBLIC",
+        version: 3,
+        protocol_format_ceiling: Some(ceiling),
+    };
+    let context = serde_json::json!({
+        "v": 3,
+        "workspace_id": lifecycle.workspace_id(),
+        "sequence": sequence,
+        "previous": previous,
+        "policy_hash": policy_hash,
+        "epoch": epoch,
+        "actor_id": identity.actor_id(),
+        "signing_key": identity.key_id(),
+        "command_id": command_id,
+        "action_id": action_id,
+        "instance_id": instance_id,
+        "issued_at": issued_at,
+        "delegation": null,
+        "protocol_format_ceiling": ceiling,
+    });
+    let context_wire = serde_json::to_vec(&context).map_err(|_| NativePrepareError::Context)?;
+    prepare_new_public_action_values_from_replay(
+        journal,
+        identity,
+        lifecycle,
+        source,
+        command_id,
+        &context_wire,
+        action_id,
+        instance_id,
+        body_wire,
+        exact_refs_wire,
+        allocations_wire,
+        &pins,
+    )
 }
 
 fn prepare_new_private_commit_inner(
@@ -2512,71 +2736,74 @@ mod tests {
         let source =
             crate::secure_verified_read::replay_authenticated_pages(&pages, &lifecycle).unwrap();
         assert_eq!(source.replay().sequence(), 1);
-        let prepared: serde_json::Value = serde_json::from_slice(
-            &reqwest::get(format!("{origin}__test/prepare-public-action"))
-                .await
-                .unwrap()
-                .bytes()
-                .await
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(prepared["checkpoint"]["sequence"], 1);
-        let context = &prepared["context"];
-        let previous = context["previous"].as_str();
+        let instance_id = fixture["instance_id"].as_str().unwrap();
+        let previous = source.replay().head();
         let pins = SecureCommitRequestPins {
             actor_id: identity.actor_id(),
             signing_key: identity.key_id(),
             workspace_id: &workspace,
-            policy_hash: context["policy_hash"].as_str().unwrap(),
-            sequence: context["sequence"].as_u64().unwrap(),
+            policy_hash: source.replay().policy_hash(),
+            sequence: source.replay().sequence() + 1,
             previous,
-            epoch: context["epoch"].as_u64().unwrap(),
+            epoch: 0,
             mode: "PUBLIC",
-            version: context["v"].as_u64().unwrap(),
-            protocol_format_ceiling: context["protocol_format_ceiling"].as_u64(),
+            version: 3,
+            protocol_format_ceiling: Some(1),
         };
-        let intent_id = context["command_id"].as_str().unwrap();
-        let context_wire = serde_json::to_vec(context).unwrap();
-        let operation_wire = serde_json::to_vec(&prepared["operation"]).unwrap();
-        let mut wrong_operation = prepared["operation"].clone();
-        wrong_operation["objects"][0]["id"] = json!("z".repeat(43));
+        let intent_id = "p".repeat(43);
+        let issued_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let body_wire =
+            serde_json::to_vec(&json!({"message":"native public authored action"})).unwrap();
+        let refs_wire = b"[]";
+        let allocations_wire = serde_json::to_vec(&json!([{
+            "record_id":"r".repeat(43),"entity_id":"e".repeat(43)
+        }]))
+        .unwrap();
         let mut journal = SecureIntentJournal::open(
             &root.path().join("native-public-action.state"),
             &origin,
             identity.actor_id(),
         )
         .unwrap();
-        assert!(prepare_new_public_action_from_replay(
+        assert!(prepare_public_action_from_replay(
             &mut journal,
             &identity,
             &lifecycle,
             &source,
-            intent_id,
-            &context_wire,
-            &serde_json::to_vec(&wrong_operation).unwrap(),
-            &pins,
+            &intent_id,
+            "discussion.wrong",
+            instance_id,
+            issued_at,
+            &body_wire,
+            refs_wire,
+            &allocations_wire,
         )
         .is_err());
         assert!(journal.pending().is_empty());
-        prepare_new_public_action_from_replay(
+        prepare_public_action_from_replay(
             &mut journal,
             &identity,
             &lifecycle,
             &source,
-            intent_id,
-            &context_wire,
-            &operation_wire,
-            &pins,
+            &intent_id,
+            "discussion.post",
+            instance_id,
+            issued_at,
+            &body_wire,
+            refs_wire,
+            &allocations_wire,
         )
         .unwrap();
         let transport = HttpTransport::new(config).unwrap();
         journal
-            .verified_saved_commit_from_replay(intent_id, &identity, &transport, &source, &pins)
+            .verified_saved_commit_from_replay(&intent_id, &identity, &transport, &source, &pins)
             .unwrap();
         let sent = journal
             .submit_saved_commit_from_replay(
-                intent_id,
+                &intent_id,
                 &identity,
                 &transport,
                 &source,
@@ -2621,7 +2848,7 @@ mod tests {
             crate::secure_verified_read::replay_authenticated_pages(&after_pages, &lifecycle)
                 .unwrap();
         let accepted = journal
-            .accept_replayed_action(intent_id, &identity, &transport, &verified)
+            .accept_replayed_action(&intent_id, &identity, &transport, &verified)
             .unwrap();
         assert_eq!(accepted.sequence, 2);
         assert!(journal.pending().is_empty());

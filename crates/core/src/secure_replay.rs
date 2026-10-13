@@ -2424,6 +2424,24 @@ pub(crate) fn validate_action_state_slice(
         return Err("PROTOCOL_OUTPUT_MISMATCH");
     }
     let input = operation.get("input").ok_or("ACTION_CONTEXT_MISMATCH")?;
+    let expected = compute_action_objects(input, context, policy, prior)?;
+    let actual = operation.get("objects").ok_or("PROTOCOL_OUTPUT_MISMATCH")?;
+    if canonical_wire_value(&expected, Path::SecureArtifact)
+        .map_err(|_| "PROTOCOL_OUTPUT_MISMATCH")?
+        != canonical_wire_value(actual, Path::SecureArtifact)
+            .map_err(|_| "PROTOCOL_OUTPUT_MISMATCH")?
+    {
+        return Err("PROTOCOL_OUTPUT_MISMATCH");
+    }
+    Ok(())
+}
+
+pub(crate) fn compute_action_objects(
+    input: &WireValue,
+    context: &WireValue,
+    policy: &WireValue,
+    prior: &[WireValue],
+) -> Result<WireValue, &'static str> {
     if !exact_fields(
         input,
         &[
@@ -2913,16 +2931,7 @@ pub(crate) fn validate_action_state_slice(
             WireValue::String("AUTHOR_SIGNED".encode_utf16().collect()),
         ),
     ]));
-    let expected = WireValue::Array(expected_objects);
-    let actual = operation.get("objects").ok_or("PROTOCOL_OUTPUT_MISMATCH")?;
-    if canonical_wire_value(&expected, Path::SecureArtifact)
-        .map_err(|_| "PROTOCOL_OUTPUT_MISMATCH")?
-        != canonical_wire_value(actual, Path::SecureArtifact)
-            .map_err(|_| "PROTOCOL_OUTPUT_MISMATCH")?
-    {
-        return Err("PROTOCOL_OUTPUT_MISMATCH");
-    }
-    Ok(())
+    Ok(WireValue::Array(expected_objects))
 }
 #[derive(Clone)]
 struct WorkflowValues {

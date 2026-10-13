@@ -5,7 +5,7 @@
 use crate::{
     canonical::Path,
     crypto::sha256_hex,
-    secure_replay::{project_structure_data, validate_action_state_slice},
+    secure_replay::{compute_action_objects, project_structure_data, validate_action_state_slice},
     structure_delta::validate_projection_page,
     wire_json::{canonical_wire_value, parse_wire_json_bounded, WireValue},
 };
@@ -52,6 +52,48 @@ fn same(left: &WireValue, right: &WireValue) -> Result<bool, PreparedActionError
         .map_err(|_| PreparedActionError::Invalid)?
         == canonical_wire_value(right, Path::SecureArtifact)
             .map_err(|_| PreparedActionError::Invalid)?)
+}
+
+/// Produce the exact ACTION operation from an action input and authenticated
+/// context. Allocation tokens belong to the action input, as in the tracked
+/// writer; the caller must generate them before this function is invoked.
+pub fn build_prepared_action_operation(
+    action_input_wire: &[u8],
+    context_wire: &[u8],
+    signed_policy_wire: &[u8],
+    authenticated_prior_objects: &[WireValue],
+) -> Result<ValidatedPreparedAction, PreparedActionError> {
+    let parse = |wire: &[u8]| {
+        parse_wire_json_bounded(wire, 64, MAX_WIRE).map_err(|_| PreparedActionError::Invalid)
+    };
+    let input = parse(action_input_wire)?;
+    let context = parse(context_wire)?;
+    let policy = parse(signed_policy_wire)?;
+    let objects = compute_action_objects(&input, &context, &policy, authenticated_prior_objects)
+        .map_err(|code| {
+            if code == "UNSUPPORTED" {
+                PreparedActionError::Unsupported
+            } else {
+                PreparedActionError::Invalid
+            }
+        })?;
+    let operation = WireValue::Object(vec![
+        ("v".encode_utf16().collect(), WireValue::Number(1.0)),
+        (
+            "kind".encode_utf16().collect(),
+            WireValue::String("ACTION".encode_utf16().collect()),
+        ),
+        ("input".encode_utf16().collect(), input),
+        ("objects".encode_utf16().collect(), objects),
+    ]);
+    let operation_wire = canonical_wire_value(&operation, Path::SecureArtifact)
+        .map_err(|_| PreparedActionError::Invalid)?;
+    validate_prepared_action_operation(
+        operation_wire.as_bytes(),
+        context_wire,
+        signed_policy_wire,
+        authenticated_prior_objects,
+    )
 }
 
 pub fn validate_prepared_action_operation(
@@ -175,12 +217,20 @@ mod tests {
         else {
             panic!("prior objects must be an array")
         };
-        validate_prepared_action_operation(
+        let proof = validate_prepared_action_operation(
             &serde_json::to_vec(&operations[1]).unwrap(),
             &serde_json::to_vec(&context).unwrap(),
             &serde_json::to_vec(policy).unwrap(),
             &prior,
-        )
+        )?;
+        let produced = build_prepared_action_operation(
+            &serde_json::to_vec(&operations[1]["input"]).unwrap(),
+            &serde_json::to_vec(&context).unwrap(),
+            &serde_json::to_vec(policy).unwrap(),
+            &prior,
+        )?;
+        assert_eq!(produced.operation_wire(), proof.operation_wire());
+        Ok(proof)
     }
 
     #[test]
