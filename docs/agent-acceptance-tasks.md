@@ -1,0 +1,54 @@
+# Native SDK phase-6 Agent acceptance tasks
+
+**Status: NOT RUN; NOT FROZEN.** These are draft task templates, not trial evidence or approval to start a run. Freeze only after the public Python, Node, and CLI entrypoints and release artifacts satisfy the phase-4/5 gates, actual-service scripted behavior is verified, and the task/runtime/environment pins below are filled and reviewed. The currently reviewed SDK checkpoint has a Rust action facade but no installed Python/Node/CLI action wrapper, and current OS/service smoke tests are not natural-Agent trials.
+
+## Task scenario and participant setup
+
+Use one isolated workspace per trial. Before an Agent starts, the test operator provisions its assigned proposer identity, a distinct reviewer identity, and a task-owner identity only through supported public service APIs. The selected active protocol must permit proposal creation, independent adoption, and task creation. The reviewer is a separately operated human or Agent participant using its own assigned identity and the ordinary public workflow; its review/adoption is observable and is never scripted into existence or performed by the proposer. The workspace should contain enough legitimate context for the proposal to cite an existing public source. Configure one hidden, deterministic lost-response event on a write request through the test service proxy; keep all fault injection and fixture setup outside the Agent prompt. Do not grant an identity broader authority than this scenario requires. Record operator setup and participant source artifacts separately from the target Agent events.
+
+Run each template against an equivalent fresh workspace and corresponding identities. The only interface difference is the installed public entrypoint named in the template. Do not expose source checkout paths, harness commands, expected IDs, internal endpoints, or recovery hints to the Agent. Follow the installed release's own entry instructions and applicable workspace protocol. Do not retry the trial to obtain a pass; preserve the first attempt and record any later independent run separately.
+
+## Frozen-prompt templates (draft)
+
+### Python Agent
+
+> Use the installed Peerwork Python entrypoint and the available workspace to address this need: prepare a proposal for a one-page onboarding guide that links the workspace's current official setup material and helps a new collaborator find the active protocol and make a first contribution. Make the proposal specific, cite the relevant existing source, and include a measurable acceptance criterion. Submit it for independent review by **{reviewer display name}**. If it is adopted, create one implementation task assigned to **{task-owner display name}**, with the guide's source links and a clear completion test. Finish by reporting what the verified workspace state shows and who owns any remaining step. Do not report an unverified proposal, adoption, or task as complete.
+
+### Node Agent
+
+> Use the installed Peerwork Node entrypoint and the available workspace to address this need: prepare a proposal for a one-page onboarding guide that links the workspace's current official setup material and helps a new collaborator find the active protocol and make a first contribution. Make the proposal specific, cite the relevant existing source, and include a measurable acceptance criterion. Submit it for independent review by **{reviewer display name}**. If it is adopted, create one implementation task assigned to **{task-owner display name}**, with the guide's source links and a clear completion test. Finish by reporting what the verified workspace state shows and who owns any remaining step. Do not report an unverified proposal, adoption, or task as complete.
+
+### Shell-only Agent (native CLI)
+
+> Use only the installed Peerwork native CLI entrypoint and the available workspace to address this need: prepare a proposal for a one-page onboarding guide that links the workspace's current official setup material and helps a new collaborator find the active protocol and make a first contribution. Make the proposal specific, cite the relevant existing source, and include a measurable acceptance criterion. Submit it for independent review by **{reviewer display name}**. If it is adopted, create one implementation task assigned to **{task-owner display name}**, with the guide's source links and a clear completion test. Finish by reporting what the verified workspace state shows and who owns any remaining step. Do not report an unverified proposal, adoption, or task as complete.
+
+The reviewer must use the distinct reviewer identity and the ordinary public workflow; the proposer must not impersonate or self-approve that identity. If the reviewer has not completed a decision by the task's frozen deadline, the outcome is a waiting handoff, not a failed adoption represented as success. The task-owner identity is distinct where the protocol requires it. These role rules are fixture/acceptance controls, not hidden credentials or extra permissions.
+
+## Acceptance record for each run
+
+Capture one record per Agent attempt, with business correctness and workflow compliance scored separately. Retain the first attempt, any timeout or tool/runtime failure, subsequent recovery, and final handoff as distinct events.
+
+| Area | Required evidence |
+| --- | --- |
+| Frozen task | Template ID/revision and prompt hash; public entry instructions/version/hash shown to the Agent; allowed interface and stopping/deadline rule. |
+| Release/environment | Exact SDK release, package/artifact hashes and source commit; OS, architecture, libc/platform details, Python or Node version (or CLI-only runtime absence), dependency/install method, and actual import/invocation result. |
+| Service/source | Service build/source pin and origin; workspace ID; selected protocol name, version and digest; source records/links cited; discovery and policy/checkpoint hashes used. Keep production or synthetic cohort explicit. |
+| Identity/authority | Actor and public key IDs for proposer, reviewer, and task owner; which identity/source the Agent selected; authorized scopes and operator provisioning steps. Never record private keys, seed material, or protected state bytes. |
+| Observable workflow | Timestamped entry-instruction reads, source and identity selection, public SDK/CLI calls and returned statuses, waiting/reopen/reconcile behavior, retries, tool/runtime errors, and final handoff. Preserve raw observation logs only in the protected test record and redact secrets before reporting. |
+| Persisted business effects | Command/intent IDs, signed result/receipt digests, sequence/head/policy pins, proposal and adoption record IDs/status, implementation task ID/status/assignee, exact source links, and independent readback through the accepted public view. Record before/after counts and verify no duplicate effect after the dropped response. |
+| Workflow compliance | Whether the Agent followed the public entry instructions and applicable protocol; selected the intended configured identity/source; reused an existing result before retrying; avoided direct database/service or secret access; did not overstate uncertain effects; and completed or clearly handed off waiting responsibility. Mark unobserved behavior **unknown**, not compliant. |
+| Business correctness | Whether the proposal is relevant and source-grounded; adoption came from the independent authorized reviewer; the task has the requested owner and testable completion condition; signed state confirms each claimed effect; and no unauthorized or duplicate write occurred. Record partial completion and refusal reasons. |
+| Measurement | Installation success, time from entry to install, protocol discovery, proposal, adoption, task creation and first verified action; stage counts/denominators; failure categories; unresolved-operation count; and repeat-use follow-up window. A first verified action is a command-bound accepted effect, counted once even if recovered after timeout. |
+| Audit | Independent auditor, audit date, source/artifact pin, evidence hashes, deviations, first failure and correction attribution, and gaps. Separate business outcome from instruction/tool/workflow compliance. |
+
+## Freeze and reporting gates
+
+Before freezing these tasks, bind each template to a tested public release and its exact Python/Node/CLI instructions; verify the corresponding installed invocation with the other language runtimes absent. Complete equivalent actual-HTTP proposal/adoption/task and lost-response scenarios for all three interfaces, then independently read back the relevant public records/source links through the established browser acceptance gate. Pin target OS/architecture/runtime for each run and use a process supervisor that actually supports that target; the inventoried Agent supervisor is Linux-only and the prepared old TypeScript prompts are not suitable substitutes for these native public-entry tasks.
+
+No task is frozen until role permissions, reviewer response timing, failure injection point, timeout budget, completion/handoff deadline, service/source, supported protocol and expected effect predicates are fixed from supported public APIs and reviewed without disclosing those predicates to the Agent. Operator setup, proxy behavior, and expected outputs belong in the sealed test plan, not the prompt. The prompt must not be augmented with in-run hints after launch.
+
+Report synthetic test workspaces separately from consented or publicly evidenced external acquisition. Do not count synthetic installs or trial identities as external adoption, people, or repeat users. Missing telemetry or tool-call observation is unknown. Preserve first-attempt evidence even if an operator later restores service state or helps a subsequent independent run.
+
+## Current harness reuse and limits
+
+The previously inventoried experiment runner is `tests/harness/workspace-agent-experiment-launch.mjs`, with its supervisor and ledger at tracked integration source `f828b6c`; it records JSON events/tool calls and supports independent audit evidence. The companion preflight, delayed-response service proxy, retry, and effects fixtures support operator-controlled setup/fault injection. That runner is Linux-only and the prepared prompt set targets the old TypeScript workflow. Reuse its observation/ledger concepts only after adapting it to installed release entrypoints and target-specific supervision; do not treat its deterministic fixtures as Agent compliance evidence. The SDK's installed smoke scripts and reference kernel server currently provide scripted service/package checks, not natural Agent acceptance. No Agent task, service run, or acceptance measurement was performed while preparing this document.
