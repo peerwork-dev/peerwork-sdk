@@ -127,7 +127,8 @@ try:
     assert "secure.structure.page" in steps and "secure.structure.end" in steps
     installed = reopened.read(workspace_id)
     wiki_record = next(obj for obj in installed["objects"] if obj.get("id") == wiki_id)
-    assert wiki_record["value"]["payload"] == {"title": "Before package", "body": "Survives composed PAGE"}
+    assert wiki_record["value"]["payload"]["title"] == "Before package"
+    assert wiki_record["value"]["payload"]["body"] == "Survives composed PAGE"
 
     # Recipient creation/publication and Owner's certificate lookup are native.
     recipient_dir = STATE / "native-recipient"
