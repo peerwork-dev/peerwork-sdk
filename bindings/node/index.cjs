@@ -423,12 +423,17 @@ exports.openSecureOwnerWorkspaces = options => {
       throw new TypeError('expectedKernelIntentDbDigest must be a string');
     }
     const stageId = input.selectedPendingPackageStageCommandId;
+    const orphanId = input.selectedOrphanPackageStageCommandId;
     const stateDigest = input.expectedTsStateDigest;
-    if ((stageId == null) !== (stateDigest == null)) {
+    if (stageId != null && orphanId != null) {
+      throw new TypeError('select one pending or orphan package stage');
+    }
+    const selectedStageId = stageId ?? orphanId;
+    if ((selectedStageId == null) !== (stateDigest == null)) {
       throw new TypeError('selected package stage requires the inspected TS state digest');
     }
-    if (stageId != null &&
-        (typeof stageId !== 'string' || !stageId || typeof stateDigest !== 'string' || !stateDigest)) {
+    if (selectedStageId != null &&
+        (typeof selectedStageId !== 'string' || !selectedStageId || typeof stateDigest !== 'string' || !stateDigest)) {
       throw new TypeError('selected package stage ID and TS state digest must be nonempty strings');
     }
     return {
@@ -443,6 +448,7 @@ exports.openSecureOwnerWorkspaces = options => {
       kernel_pending_command_ids: kernelIds,
       expected_kernel_intent_db_digest: input.expectedKernelIntentDbDigest ?? null,
       selected_pending_package_stage_command_id: stageId ?? null,
+      selected_orphan_package_stage_command_id: orphanId ?? null,
       expected_ts_state_digest: stateDigest ?? null,
     };
   };
@@ -612,6 +618,13 @@ exports.openSecureOwnerWorkspaces = options => {
     inspectKernelPending: (input, { signal } = {}) => invoke('kernel_inspect', attachmentInput(input), undefined, undefined, signal),
     inspectPendingPackageStage: (input, { signal } = {}) => invoke('stage_inspect', attachmentInput(input), undefined, undefined, signal),
     recoverPendingPackageStage: (attachId, expectedCommandId, { signal } = {}) => invoke('stage_recover', undefined, expectedCommandId, attachId, signal),
+    inspectOrphanPackageStage: (input, { signal } = {}) => invoke('orphan_inspect', attachmentInput(input), undefined, undefined, signal),
+    replanOrphanPackageStage: (attachId, originalCommandId, materialJson, { signal } = {}) => {
+      if (materialJson != null && (typeof materialJson !== 'string' || !materialJson)) {
+        throw new TypeError('materialJson must be a nonempty JSON string when supplied');
+      }
+      return invoke('orphan_replan', materialJson ?? undefined, originalCommandId, attachId, signal);
+    },
     kernelCommandStatus: (attachId, { signal } = {}) => invoke('kernel_status', undefined, attachId, undefined, signal),
     recoverKernelCommand: (attachId, commandId, { signal } = {}) => invoke('kernel_recover', undefined, commandId, attachId, signal),
     resumeAttachment: (attachId, { signal } = {}) => invoke('resume_attachment', undefined, attachId, undefined, signal),

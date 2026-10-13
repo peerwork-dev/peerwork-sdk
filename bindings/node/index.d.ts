@@ -150,7 +150,9 @@ export interface HistoricalOwnerAttachmentInput {
   expectedKernelIntentDbDigest?: string;
   /** Select one inspected saved package-stage command; attach does not POST it. */
   selectedPendingPackageStageCommandId?: string;
-  /** Required with selectedPendingPackageStageCommandId; digest of the whole TS state file. */
+  /** Select an inspected original stage marker with no saved signed packet. */
+  selectedOrphanPackageStageCommandId?: string;
+  /** Required with either selected stage ID; digest of the whole TS state file. */
   expectedTsStateDigest?: string;
 }
 export interface HistoricalOwnerAttachmentResult {
@@ -168,6 +170,10 @@ export interface HistoricalOwnerAttachmentResult {
   pending_action_status: 'RETAINED_UNRESOLVED' | 'ACCEPTED' | null;
   pending_package_stage_command_id: string | null;
   pending_package_stage_status: 'PENDING_UNRESOLVED' | 'ACCEPTED' | null;
+  orphan_package_stage_command_id: string | null;
+  orphan_package_stage_status: 'ORPHAN_NO_PACKET' | 'REPLAN_SELECTED_UNVERIFIED' | 'ORPHAN_REPLANNED' | null;
+  orphan_replan_stage_id: string | null;
+  orphan_replan_command_id: string | null;
 }
 export interface HistoricalPackageStagePendingInventory {
   ts_state_digest: string;
@@ -176,6 +182,14 @@ export interface HistoricalPackageStagePendingInventory {
   source_sha256: string;
   source_sequence: number;
   status: 'PENDING_UNRESOLVED' | 'APPLIED_IN_SIGNED_REPLAY';
+}
+export interface HistoricalPackageStageOrphanInventory {
+  ts_state_digest: string;
+  command_id: string;
+  source_id: string;
+  source_sha256: string;
+  source_sequence: number;
+  status: 'ORPHAN_NO_PACKET';
 }
 export interface HistoricalKernelCommandStatus {
   command_id: string;
@@ -218,6 +232,10 @@ export interface SecureOwnerWorkspaceSession {
   inspectPendingPackageStage(input: HistoricalOwnerAttachmentInput, options?: {signal?: AbortSignal}): Promise<HistoricalPackageStagePendingInventory>;
   /** Explicit recovery of one selected original ADMIN stage packet. */
   recoverPendingPackageStage(attachId: string, expectedCommandId: string, options?: {signal?: AbortSignal}): Promise<HistoricalOwnerAttachmentResult>;
+  /** Read-only verification of an original stage marker without a signed packet. */
+  inspectOrphanPackageStage(input: HistoricalOwnerAttachmentInput, options?: {signal?: AbortSignal}): Promise<HistoricalPackageStageOrphanInventory>;
+  /** Explicitly plan one new stage; omit material only to resume a saved replan. */
+  replanOrphanPackageStage(attachId: string, originalCommandId: string, materialJson?: string, options?: {signal?: AbortSignal}): Promise<HistoricalOwnerAttachmentResult>;
   /** Protected local status only. */
   kernelCommandStatus(attachId: string, options?: {signal?: AbortSignal}): Promise<HistoricalKernelCommandStatus[]>;
   /** Explicit retry of one retained original signed JWS. */

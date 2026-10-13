@@ -955,6 +955,10 @@ class HistoricalOwnerAttachmentResult(TypedDict):
     pending_action_status: Literal["RETAINED_UNRESOLVED", "ACCEPTED"] | None
     pending_package_stage_command_id: str | None
     pending_package_stage_status: Literal["PENDING_UNRESOLVED", "ACCEPTED"] | None
+    orphan_package_stage_command_id: str | None
+    orphan_package_stage_status: Literal["ORPHAN_NO_PACKET", "REPLAN_SELECTED_UNVERIFIED", "ORPHAN_REPLANNED"] | None
+    orphan_replan_stage_id: str | None
+    orphan_replan_command_id: str | None
 
 
 class HistoricalPackageStagePendingInventory(TypedDict):
@@ -964,6 +968,15 @@ class HistoricalPackageStagePendingInventory(TypedDict):
     source_sha256: str
     source_sequence: int
     status: Literal["PENDING_UNRESOLVED", "APPLIED_IN_SIGNED_REPLAY"]
+
+
+class HistoricalPackageStageOrphanInventory(TypedDict):
+    ts_state_digest: str
+    command_id: str
+    source_id: str
+    source_sha256: str
+    source_sequence: int
+    status: Literal["ORPHAN_NO_PACKET"]
 
 
 class HistoricalKernelCommandStatus(TypedDict):
@@ -1009,7 +1022,7 @@ class SecureOwnerWorkspaceClient:
             allow_loopback_http=allow_loopback_http,
             max_replay_artifact_bytes=max_replay_artifact_bytes)
 
-    def _owner(self, operation: str, *, input_value: dict | None = None,
+    def _owner(self, operation: str, *, input_value: dict | str | None = None,
                command_id: str | None = None, workspace_id: str | None = None,
                cancel_handle: KernelCancelHandle | None = None):
         result = json.loads(secure_owner_create_json(operation,
@@ -1030,6 +1043,7 @@ class SecureOwnerWorkspaceClient:
                           kernel_pending_command_ids: list[str] | None = None,
                           expected_kernel_intent_db_digest: str | None = None,
                           selected_pending_package_stage_command_id: str | None = None,
+                          selected_orphan_package_stage_command_id: str | None = None,
                           expected_ts_state_digest: str | None = None) -> dict:
         if type(recover_pending_action) is not bool:
             raise TypeError("recover_pending_action must be a bool")
@@ -1043,11 +1057,17 @@ class SecureOwnerWorkspaceClient:
             raise TypeError("kernel_pending_command_ids must be a list of nonempty strings")
         if ids and not expected_kernel_intent_db_digest:
             raise ValueError("selected kernel commands require the inspected intent DB digest")
-        if (selected_pending_package_stage_command_id is None) != (expected_ts_state_digest is None):
+        if (selected_pending_package_stage_command_id is not None and
+                selected_orphan_package_stage_command_id is not None):
+            raise ValueError("select one pending or orphan package stage")
+        selected_stage_id = (selected_pending_package_stage_command_id if
+            selected_pending_package_stage_command_id is not None else
+            selected_orphan_package_stage_command_id)
+        if (selected_stage_id is None) != (expected_ts_state_digest is None):
             raise ValueError("selected package stage requires the inspected TS state digest")
-        if selected_pending_package_stage_command_id is not None and (
-            not isinstance(selected_pending_package_stage_command_id, str)
-            or not selected_pending_package_stage_command_id
+        if selected_stage_id is not None and (
+            not isinstance(selected_stage_id, str)
+            or not selected_stage_id
             or not isinstance(expected_ts_state_digest, str)
             or not expected_ts_state_digest
         ):
@@ -1063,6 +1083,7 @@ class SecureOwnerWorkspaceClient:
             kernel_pending_command_ids=ids,
             expected_kernel_intent_db_digest=expected_kernel_intent_db_digest,
             selected_pending_package_stage_command_id=selected_pending_package_stage_command_id,
+            selected_orphan_package_stage_command_id=selected_orphan_package_stage_command_id,
             expected_ts_state_digest=expected_ts_state_digest)
 
     @staticmethod
@@ -1122,6 +1143,7 @@ class SecureOwnerWorkspaceClient:
                kernel_pending_command_ids: list[str] | None = None,
                expected_kernel_intent_db_digest: str | None = None,
                selected_pending_package_stage_command_id: str | None = None,
+               selected_orphan_package_stage_command_id: str | None = None,
                expected_ts_state_digest: str | None = None) -> HistoricalOwnerAttachmentResult:
         """Attach a stopped Owner; selected kernel packets stay local until explicit recovery."""
         value = self._attachment_input(workspace_id, protected_ts_state_path,
@@ -1129,7 +1151,8 @@ class SecureOwnerWorkspaceClient:
             expected_owner_actor_id, expected_owner_key_id, recover_pending_action,
             retain_pending_action_command_id, kernel_pending_command_ids,
             expected_kernel_intent_db_digest,
-            selected_pending_package_stage_command_id, expected_ts_state_digest)
+            selected_pending_package_stage_command_id,
+            selected_orphan_package_stage_command_id, expected_ts_state_digest)
         return cast(HistoricalOwnerAttachmentResult, self._owner("attach", input_value=value))
 
     def inspect_kernel_pending(self, workspace_id: str, protected_ts_state_path: str,
@@ -1162,6 +1185,28 @@ class SecureOwnerWorkspaceClient:
         return cast(HistoricalOwnerAttachmentResult,
             self._owner("stage_recover", command_id=expected_command_id,
                         workspace_id=attach_id))
+
+    def inspect_orphan_package_stage(self, workspace_id: str, protected_ts_state_path: str,
+                                     protected_ts_intent_db_path: str,
+                                     protected_owner_pkcs8_path: str,
+                                     expected_owner_actor_id: str,
+                                     expected_owner_key_id: str) -> HistoricalPackageStageOrphanInventory:
+        """Inspect an original stage marker with no saved signed packet; no POST."""
+        value = self._attachment_input(workspace_id, protected_ts_state_path,
+            protected_ts_intent_db_path, protected_owner_pkcs8_path,
+            expected_owner_actor_id, expected_owner_key_id)
+        return cast(HistoricalPackageStageOrphanInventory,
+            self._owner("orphan_inspect", input_value=value))
+
+    def replan_orphan_package_stage(self, attach_id: str,
+                                    original_command_id: str,
+                                    material_json: str | None = None) -> HistoricalOwnerAttachmentResult:
+        """Select one new stage; omit material only to resume a saved replan."""
+        if material_json is not None and (not isinstance(material_json, str) or not material_json):
+            raise TypeError("material_json must be a nonempty JSON string when supplied")
+        return cast(HistoricalOwnerAttachmentResult, self._owner("orphan_replan",
+            input_value=material_json,
+            command_id=original_command_id, workspace_id=attach_id))
 
     def kernel_command_status(self, attach_id: str) -> list[HistoricalKernelCommandStatus]:
         """Read local status for selected commands; this does not contact the service."""
@@ -1262,13 +1307,15 @@ class SecureOwnerWorkspaceClient:
                            kernel_pending_command_ids: list[str] | None = None,
                            expected_kernel_intent_db_digest: str | None = None,
                            selected_pending_package_stage_command_id: str | None = None,
+                           selected_orphan_package_stage_command_id: str | None = None,
                            expected_ts_state_digest: str | None = None) -> HistoricalOwnerAttachmentResult:
         value = self._attachment_input(workspace_id, protected_ts_state_path,
             protected_ts_intent_db_path, protected_owner_pkcs8_path,
             expected_owner_actor_id, expected_owner_key_id, recover_pending_action,
             retain_pending_action_command_id, kernel_pending_command_ids,
             expected_kernel_intent_db_digest,
-            selected_pending_package_stage_command_id, expected_ts_state_digest)
+            selected_pending_package_stage_command_id,
+            selected_orphan_package_stage_command_id, expected_ts_state_digest)
         return cast(HistoricalOwnerAttachmentResult, await _run_cancelled_async(
             self._owner, "attach", input_value=value))
 
@@ -1299,6 +1346,26 @@ class SecureOwnerWorkspaceClient:
         return cast(HistoricalOwnerAttachmentResult, await _run_cancelled_async(
             self._owner, "stage_recover", command_id=expected_command_id,
             workspace_id=attach_id))
+
+    async def inspect_orphan_package_stage_async(self, workspace_id: str,
+            protected_ts_state_path: str, protected_ts_intent_db_path: str,
+            protected_owner_pkcs8_path: str, expected_owner_actor_id: str,
+            expected_owner_key_id: str) -> HistoricalPackageStageOrphanInventory:
+        value = self._attachment_input(workspace_id, protected_ts_state_path,
+            protected_ts_intent_db_path, protected_owner_pkcs8_path,
+            expected_owner_actor_id, expected_owner_key_id)
+        return cast(HistoricalPackageStageOrphanInventory, await _run_cancelled_async(
+            self._owner, "orphan_inspect", input_value=value))
+
+    async def replan_orphan_package_stage_async(self, attach_id: str,
+            original_command_id: str,
+            material_json: str | None = None) -> HistoricalOwnerAttachmentResult:
+        if material_json is not None and (not isinstance(material_json, str) or not material_json):
+            raise TypeError("material_json must be a nonempty JSON string when supplied")
+        return cast(HistoricalOwnerAttachmentResult, await _run_cancelled_async(
+            self._owner, "orphan_replan",
+            input_value=material_json,
+            command_id=original_command_id, workspace_id=attach_id))
 
     async def kernel_command_status_async(self, attach_id: str) -> list[HistoricalKernelCommandStatus]:
         return cast(list[HistoricalKernelCommandStatus], await _run_cancelled_async(

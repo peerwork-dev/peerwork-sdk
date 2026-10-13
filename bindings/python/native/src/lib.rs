@@ -376,7 +376,7 @@ fn secure_owner_create_json(
             Ok(value) => value,
             Err(_) => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid Owner configuration"}).to_string(),
         };
-        if matches!(operation.as_str(), "attach" | "resume_attachment" | "retain_pending_action" | "attachments" | "kernel_inspect" | "kernel_status" | "kernel_recover" | "stage_inspect" | "stage_recover") {
+        if matches!(operation.as_str(), "attach" | "resume_attachment" | "retain_pending_action" | "attachments" | "kernel_inspect" | "kernel_status" | "kernel_recover" | "stage_inspect" | "stage_recover" | "orphan_inspect" | "orphan_replan") {
             let access = SecureHistoricalOwnerAttach::new(config);
             let result = match operation.as_str() {
                 "attach" => {
@@ -420,6 +420,26 @@ fn secure_owner_create_json(
                 "stage_recover" => match (workspace_id.as_deref(), command_id.as_deref()) {
                     (Some(attach_id), Some(id)) => access.recover_pending_package_stage(attach_id, id, &cancel).map(|value| serde_json::to_string(&value).expect("attachment result serializes")),
                     _ => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"attachment and package stage command IDs are required"}).to_string(),
+                },
+                "orphan_inspect" => {
+                    let input: HistoricalOwnerAttachInput = match input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {
+                        Some(value) => value,
+                        None => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid orphan stage inspection input"}).to_string(),
+                    };
+                    access.inspect_orphan_package_stage(&input, &cancel).map(|value| serde_json::to_string(&value).expect("orphan stage inventory serializes"))
+                },
+                "orphan_replan" => match (workspace_id.as_deref(), command_id.as_deref()) {
+                    (Some(attach_id), Some(id)) => {
+                        let material: Option<String> = match input_json.as_deref() {
+                            Some(wire) => match serde_json::from_str::<String>(wire) {
+                                Ok(value) if !value.is_empty() => Some(value),
+                                _ => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid orphan replan material"}).to_string(),
+                            },
+                            None => None,
+                        };
+                        access.replan_orphan_package_stage(attach_id, id, material.as_deref(), &cancel).map(|value| serde_json::to_string(&value).expect("attachment result serializes"))
+                    }
+                    _ => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"attachment and original stage command IDs are required"}).to_string(),
                 },
                 _ => unreachable!(),
             };
