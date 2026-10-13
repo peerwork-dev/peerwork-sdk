@@ -524,9 +524,66 @@ The consumer binary SHA-256 is
 `libunwind` runtime dependencies. This one-pair smoke establishes actual
 ICU link/load/use under emulation, not the full pinned collation vector suite.
 
-The next step is a reproducible opt-in core build-script cross branch that
+The next step was a reproducible opt-in core build-script cross branch that
 rebuilds host tools and target ICU from the verified archive, then a consumed
-ARM64 SDK CLI/extension artifact and emulated installed checks. The current
-native `build.rs` intentionally refuses `HOST!=TARGET`; this scratch result
-does not bypass that production gate. ARM64 package dependency closure,
-installer wiring, real ARM hardware and macOS/Windows execution remain open.
+ARM64 SDK artifact. That continuation is recorded below. ARM64 package
+dependency closure, installer wiring, real ARM hardware and macOS/Windows
+execution remain open.
+
+### ARM64 SDK CLI consumed under QEMU, 2026-10-13
+
+SDK `crates/core/build.rs` commit `dbda343` (file SHA-256
+`75ad09695c5c8ba8a05bc4a453669bdcd78f67bfba82852500fb6c077f8f164b`)
+adds an opt-in `HOST!=TARGET` branch only for
+`aarch64-unknown-linux-musl`. It still verifies the pinned ICU archive and
+filtered data SHA before extraction, builds native host tools from that
+archive, then uses `PEERWORK_ICU_ARM64_CC/CXX` absolute task-owned wrapper
+paths for a static ARM ICU build with `--with-cross-build=<host-build>`.
+The existing native Linux build path passed Rust 1.89 offline locked
+`cargo check -p peerwork-core` on the shared source. A target check with the
+verified Rust 1.89 ARM standard-library archive SHA-256
+`611633874e2000fd84807be65d82a6dfb7735c728969f5c8f62cad66702e6681`,
+task-local sysroot, target linker wrappers, `--offline --locked`, and
+`--target aarch64-unknown-linux-musl` completed in session `70944`, exit 0
+after 5m25s. This was a compilation check, not an executable run.
+
+The first full `cargo build -p peerwork-cli --target
+aarch64-unknown-linux-musl --offline --locked` in session `25618` exited
+101: `libsqlite3-sys` could not find its default
+`aarch64-linux-musl-gcc`. That failure is separate from the successful ICU
+cross-build. Supplying `CC_aarch64_unknown_linux_musl` and
+`CXX_aarch64_unknown_linux_musl` as the verified task-local Clang wrappers,
+with task-local CMake 4.4.4 already present in the earlier manylinux bundle,
+made the corrected build pass in session `69728` (27.74s). The final build
+used `-C target-feature=-crt-static` for a dynamically linked executable
+and `CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER` set to the ARM Clang++
+wrapper. It used the same Rust 1.89 host compiler, task-local ARM standard
+library, pinned ICU source/data, offline Cargo lock and workspace `TMPDIR`.
+The source HEAD for the successful consumed build was
+`08f0963a1fac7932829423a9f76944d192cce163`, including the committed
+build-script branch; unrelated admission source changed between the first
+failed and corrected runs, so the failed run is a toolchain diagnostic rather
+than an exact-source product regression.
+
+The resulting task-local debug `peerwork` CLI SHA-256 is
+`c5e2408f2f81823079a5454d1d435f4c68ddffc72bc040df1eb441f8a7986128`.
+`file` identifies a PIE ARM aarch64 ELF using `/lib/ld-musl-aarch64.so.1`;
+`readelf -d` lists `libc++.so.1`, `libc++abi.so.1`, `libunwind.so.1`, and
+`libc.musl-aarch64.so.1`. Direct task-local QEMU with the verified ARM
+sysroot and `/usr/lib` guest search path ran `peerwork version` and
+`peerwork capabilities`, both exit 0, returning experimental version 0.0.1
+and the expected redacted capability flags. The first `--version` call
+returned usage exit 1 because the CLI accepts the `version` subcommand;
+no SDK failure was hidden by that corrected invocation.
+
+For an actual consumed ICU check, a task-local QEMU Cargo runner SHA-256
+`c79f2cc8d42fc5fad5c5b38199e3a06ff9bd4e0c69dc6b5e049b3b3f85022c25`
+ran the ARM64 `peerwork-core` test binary. The first filter with `--exact`
+selected **zero** tests; the corrected
+`pinned_node_locale_compare_vectors` filter ran
+`js_locale::tests::pinned_node_locale_compare_vectors` and passed 1/1 under
+QEMU, exercising the SDK's pinned ICU collation path. This is cross-built
+SDK CLI code and a core test executed by **emulation**, not a native ARM
+machine, release package, installed HTTP workflow, Python/Node extension,
+or dependency-closed distribution artifact. Those acceptance gates remain
+open, along with actual Windows and macOS runs.
