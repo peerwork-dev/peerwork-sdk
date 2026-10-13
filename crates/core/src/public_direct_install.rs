@@ -965,17 +965,28 @@ pub(crate) fn derive_direct_install_structure_with_disclosure(
             }
         }
     }
-    for (schema, definition) in entries(required(manifest, "record_schemas")?)? {
-        let fields = entries(required(definition, "fields")?)?
-            .iter()
-            .map(|(field, _)| WireValue::String(field.clone()))
-            .collect::<Vec<_>>();
-        if !fields.is_empty() {
-            choices.push(obj(vec![
-                ("protocol_digest", text(protocol_digest)),
-                ("schema", text(&name(schema)?)),
-                ("fields", WireValue::Array(fields)),
-            ]));
+    if !array(required(prior_structure, "protocols")?)?
+        .iter()
+        .any(|protocol| {
+            protocol
+                .get("protocol_digest")
+                .and_then(WireValue::as_string)
+                .as_deref()
+                == Some(protocol_digest)
+        })
+    {
+        for (schema, definition) in entries(required(manifest, "record_schemas")?)? {
+            let fields = entries(required(definition, "fields")?)?
+                .iter()
+                .map(|(field, _)| WireValue::String(field.clone()))
+                .collect::<Vec<_>>();
+            if !fields.is_empty() {
+                choices.push(obj(vec![
+                    ("protocol_digest", text(protocol_digest)),
+                    ("schema", text(&name(schema)?)),
+                    ("fields", WireValue::Array(fields)),
+                ]));
+            }
         }
     }
     let all = WireValue::Array(adoption_objects(

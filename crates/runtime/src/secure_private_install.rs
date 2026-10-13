@@ -37,6 +37,18 @@ use thiserror::Error;
 use tokio::runtime::Builder;
 use tokio_util::sync::CancellationToken;
 
+#[cfg(test)]
+static TEST_CRASH_AFTER_BEGIN_ROW: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+fn test_crash_after_begin_row() -> Result<(), PrivatePackageInstallError> {
+    #[cfg(test)]
+    if TEST_CRASH_AFTER_BEGIN_ROW.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        return Err(PrivatePackageInstallError::Runtime);
+    }
+    Ok(())
+}
+
 #[derive(Debug, Error)]
 pub enum PrivatePackageInstallError {
     #[error("complete PRIVATE Owner journal read failed: {0}")]
@@ -703,7 +715,10 @@ impl SecurePrivatePackageInstall {
                     identity.key_id(),
                 )?;
                 if doc.rows.len() >= 16
-                    || !doc.rows.is_empty()
+                    || doc
+                        .rows
+                        .values()
+                        .any(|existing| existing.accepted.is_none())
                     || doc.rows.contains_key(&command_id)
                 {
                     return Err(PrivatePackageInstallError::Input);
@@ -731,6 +746,7 @@ impl SecurePrivatePackageInstall {
                 };
                 doc.rows.insert(command_id.clone(), row);
                 doc.save(&store)?;
+                test_crash_after_begin_row()?;
                 let mut journal = SecureIntentJournal::open(
                     &self.config.state_dir.join("private-install-intents.state"),
                     source.origin(),
@@ -899,7 +915,10 @@ impl SecurePrivatePackageInstall {
                     identity.key_id(),
                 )?;
                 if doc.rows.len() >= 16
-                    || !doc.rows.is_empty()
+                    || doc
+                        .rows
+                        .values()
+                        .any(|existing| existing.accepted.is_none())
                     || doc.rows.contains_key(&command_id)
                 {
                     return Err(PrivatePackageInstallError::Input);
@@ -929,6 +948,7 @@ impl SecurePrivatePackageInstall {
                 };
                 doc.rows.insert(command_id.clone(), row);
                 doc.save(&store)?;
+                test_crash_after_begin_row()?;
                 let mut journal = SecureIntentJournal::open(
                     &self.config.state_dir.join("private-install-intents.state"),
                     source.origin(),
@@ -1225,6 +1245,23 @@ impl SecurePrivatePackageInstall {
                 prior.origin(),
                 identity.actor_id(),
             )?;
+            // The operation row is saved first so a crash before journal
+            // preparation cannot lose a generated BEGIN ID. Reconstruct only
+            // this already re-proved exact packet. prepare is idempotent for
+            // an exact existing entry and refuses any mismatched metadata.
+            let path = format!(
+                "/api/workspace/v1/secure/workspaces/{}/commits",
+                self.config.workspace_id
+            );
+            journal.prepare(SecurePacketInput {
+                intent_id: begin_id,
+                path: &path,
+                action_id: "secure.structure.begin",
+                workspace_id: Some(&self.config.workspace_id),
+                trusted_owner_key: Some(identity.key_id()),
+                intent_digest: &row.commit_hash,
+                exact_request: &exact_begin,
+            })?;
             if journal.exact_request(begin_id)? != exact_begin
                 || journal.intent_digest(begin_id)? != row.commit_hash
             {
@@ -2127,39 +2164,27 @@ mod tests {
             counts()["commits"],
             before + next["part_count"].as_u64().unwrap()
         );
-        // BEGIN is saved before its stage-specific response-loss POST.
-        runtime.block_on(async {
-            let response = reqwest::Client::new()
-                .post(format!("{origin}__test/drop-next-post"))
-                .body("{}")
-                .send()
-                .await
-                .unwrap();
-            assert!(response.status().is_success());
-        });
+        // Lose the process after the saved row and before journal.prepare.
         let owner_actor = KernelIdentity::open(&stage.config.identity_path)
             .unwrap()
             .actor_id()
             .to_owned();
         let grants_json=serde_json::json!([{"actor_id":owner_actor,"actions":["proposal.propose"],"protocol_roles":["AUTHOR"],"capabilities":["PROPOSE"]}]).to_string();
-        let begin: serde_json::Value = serde_json::from_str(
-            &stage
-                .submit_begin_json(PrivatePackageInstallBeginInput {
-                    stage_id: stage_id.to_owned(),
-                    instance_id: random_id().unwrap(),
-                    entrypoint: "proposal".into(),
-                    grants_json,
-                    command_id: None,
-                    issued_at_ms: None,
-                })
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(begin["status"], "PENDING");
-        assert_eq!(begin["step_action_id"], "secure.structure.begin");
+        TEST_CRASH_AFTER_BEGIN_ROW.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(matches!(
+            stage.submit_begin_json(PrivatePackageInstallBeginInput {
+                stage_id: stage_id.to_owned(),
+                instance_id: random_id().unwrap(),
+                entrypoint: "proposal".into(),
+                grants_json,
+                command_id: None,
+                issued_at_ms: None,
+            }),
+            Err(PrivatePackageInstallError::Runtime)
+        ));
         assert_eq!(
             counts()["commits"],
-            before + next["part_count"].as_u64().unwrap() + 1
+            before + next["part_count"].as_u64().unwrap()
         );
         drop(stage);
         drop(reopened);
@@ -2175,9 +2200,13 @@ mod tests {
         let installs: serde_json::Value =
             serde_json::from_str(&stage.installs_json().unwrap()).unwrap();
         assert_eq!(installs.as_array().unwrap().len(), 1);
-        assert_eq!(installs[0]["begin_command_id"], begin["begin_command_id"]);
         assert_eq!(installs[0]["stage_id"], stage_id);
-        let begin_id = begin["begin_command_id"].as_str().unwrap();
+        let begin_id = installs[0]["begin_command_id"].as_str().unwrap();
+        assert_eq!(installs[0]["source_kind"], "STAGED");
+        assert_eq!(
+            counts()["commits"],
+            before + next["part_count"].as_u64().unwrap()
+        );
         runtime.block_on(async {
             let response = reqwest::Client::new()
                 .post(format!("{origin}__test/drop-next-post"))
@@ -2187,6 +2216,14 @@ mod tests {
                 .unwrap();
             assert!(response.status().is_success());
         });
+        let first: serde_json::Value =
+            serde_json::from_str(&stage.continue_install_json(begin_id).unwrap()).unwrap();
+        assert_eq!(first["status"], "PENDING");
+        assert_eq!(first["step_action_id"], "secure.structure.begin");
+        assert_eq!(
+            counts()["commits"],
+            before + next["part_count"].as_u64().unwrap() + 1
+        );
         let mut progress: serde_json::Value =
             serde_json::from_str(&stage.continue_install_json(begin_id).unwrap()).unwrap();
         assert_eq!(progress["status"], "PENDING");
@@ -2257,8 +2294,8 @@ mod tests {
             .unwrap()
             .iter()
             .any(|object| object["kind"] == "instances"
-                && object["id"] == begin["instance_id"]
-                && object["value"]["protocol_digest"] == begin["protocol_digest"]));
+                && object["id"] == first["instance_id"]
+                && object["value"]["protocol_digest"] == first["protocol_digest"]));
         if let Some((record_id, title, body)) = &prior_record {
             assert!(read["objects"].as_array().unwrap().iter().any(|object| {
                 object["kind"] == "records"
@@ -2272,7 +2309,7 @@ mod tests {
         assert_eq!(repeat["status"], "ACCEPTED");
         let action = PublicActionInput {
             action_id: "proposal.propose".into(),
-            instance_id: begin["instance_id"].as_str().unwrap().into(),
+            instance_id: first["instance_id"].as_str().unwrap().into(),
             body_json: r#"{"title":"PRIVATE installed wiki","body":"Encrypted after install"}"#
                 .into(),
             exact_input_refs_json: None,
@@ -2484,6 +2521,100 @@ mod tests {
             })
         };
         let before = counts()["commits"].as_u64().unwrap();
+        TEST_CRASH_AFTER_BEGIN_ROW.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(matches!(
+            install.submit_direct_begin_json(PrivateDirectInstallBeginInput {
+                closure_json: material.to_string(),
+                expected_root_package_digest: vector["closure"]["root_package_digest"]
+                    .as_str()
+                    .unwrap()
+                    .into(),
+                expected_protocol_digest: vector["protocol_digest"].as_str().unwrap().into(),
+                instance_id: random_id().unwrap(),
+                entrypoint: "proposal".into(),
+                grants_json,
+                command_id: None,
+                issued_at_ms: None,
+            }),
+            Err(PrivatePackageInstallError::Runtime)
+        ));
+        assert_eq!(counts()["commits"], before);
+        drop(install);
+        drop(owner);
+        let reopened = SecureOwnerWorkspaceCreate::new(config);
+        let install = reopened
+            .private_install_access(&created.workspace_id)
+            .unwrap();
+        let rows: serde_json::Value =
+            serde_json::from_str(&install.installs_json().unwrap()).unwrap();
+        assert_eq!(rows.as_array().unwrap().len(), 1);
+        assert_eq!(rows[0]["source_kind"], "DIRECT");
+        assert!(rows[0].get("stage_id").is_none());
+        let begin_id = rows[0]["begin_command_id"].as_str().unwrap();
+        let identity = KernelIdentity::open(&install.config.identity_path).unwrap();
+        let operation_store = SecureStateStore::open(
+            &install
+                .config
+                .state_dir
+                .join("private-install-operations.state"),
+        )
+        .unwrap();
+        let saved = InstallDocument::open(
+            &operation_store,
+            &install.config,
+            identity.actor_id(),
+            identity.key_id(),
+        )
+        .unwrap();
+        let saved_row = saved.rows.get(begin_id).unwrap();
+        let exact_begin = decode_base64url(&saved_row.request_b64).unwrap();
+        let commit_hash = saved_row.commit_hash.clone();
+        drop(operation_store);
+        let journal_path = install
+            .config
+            .state_dir
+            .join("private-install-intents.state");
+        let mut conflicting =
+            SecureIntentJournal::open(&journal_path, &origin, identity.actor_id()).unwrap();
+        let path = format!(
+            "/api/workspace/v1/secure/workspaces/{}/commits",
+            created.workspace_id
+        );
+        conflicting
+            .prepare(SecurePacketInput {
+                intent_id: begin_id,
+                path: &path,
+                action_id: "wiki.create",
+                workspace_id: Some(&created.workspace_id),
+                trusted_owner_key: Some(identity.key_id()),
+                intent_digest: &commit_hash,
+                exact_request: &exact_begin,
+            })
+            .unwrap();
+        drop(conflicting);
+        assert!(matches!(
+            install.continue_install_json(begin_id),
+            Err(PrivatePackageInstallError::Intent(
+                SecureIntentError::Conflict
+            ))
+        ));
+        assert_eq!(counts()["commits"], before);
+        std::fs::remove_file(&journal_path).unwrap();
+        std::fs::write(&journal_path, b"{").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&journal_path, std::fs::Permissions::from_mode(0o600))
+                .unwrap();
+        }
+        assert!(matches!(
+            install.continue_install_json(begin_id),
+            Err(PrivatePackageInstallError::Intent(
+                SecureIntentError::Store(SecureStateError::MigrationRequired)
+            ))
+        ));
+        assert_eq!(counts()["commits"], before);
+        std::fs::remove_file(&journal_path).unwrap();
         runtime.block_on(async {
             assert!(reqwest::Client::new()
                 .post(format!("{origin}__test/drop-next-post"))
@@ -2494,38 +2625,11 @@ mod tests {
                 .status()
                 .is_success());
         });
-        let first: serde_json::Value = serde_json::from_str(
-            &install
-                .submit_direct_begin_json(PrivateDirectInstallBeginInput {
-                    closure_json: material.to_string(),
-                    expected_root_package_digest: vector["closure"]["root_package_digest"]
-                        .as_str()
-                        .unwrap()
-                        .into(),
-                    expected_protocol_digest: vector["protocol_digest"].as_str().unwrap().into(),
-                    instance_id: random_id().unwrap(),
-                    entrypoint: "proposal".into(),
-                    grants_json,
-                    command_id: None,
-                    issued_at_ms: None,
-                })
-                .unwrap(),
-        )
-        .unwrap();
+        let first: serde_json::Value =
+            serde_json::from_str(&install.continue_install_json(begin_id).unwrap()).unwrap();
         assert_eq!(first["status"], "PENDING");
+        assert_eq!(first["step_action_id"], "secure.structure.begin");
         assert_eq!(counts()["commits"], before + 1);
-        drop(install);
-        drop(owner);
-        let reopened = SecureOwnerWorkspaceCreate::new(config);
-        let install = reopened
-            .private_install_access(&created.workspace_id)
-            .unwrap();
-        let rows: serde_json::Value =
-            serde_json::from_str(&install.installs_json().unwrap()).unwrap();
-        assert_eq!(rows[0]["begin_command_id"], first["begin_command_id"]);
-        assert_eq!(rows[0]["source_kind"], "DIRECT");
-        assert!(rows[0].get("stage_id").is_none());
-        let begin_id = first["begin_command_id"].as_str().unwrap();
         runtime.block_on(async {
             assert!(reqwest::Client::new()
                 .post(format!("{origin}__test/drop-next-post"))
@@ -2649,5 +2753,81 @@ mod tests {
                 .contains("\"ACCEPTED\""),
             true
         );
+        // A completed row stays discoverable while the same signed protocol
+        // is installed as a second instance. The new BEGIN adds one instance
+        // and reuses the existing protocol object.
+        let second_instance_id = random_id().unwrap();
+        let second: serde_json::Value = serde_json::from_str(
+            &install
+                .submit_direct_begin_json(PrivateDirectInstallBeginInput {
+                    closure_json: material.to_string(),
+                    expected_root_package_digest: vector["closure"]["root_package_digest"]
+                        .as_str()
+                        .unwrap()
+                        .into(),
+                    expected_protocol_digest: vector["protocol_digest"].as_str().unwrap().into(),
+                    instance_id: second_instance_id.clone(),
+                    entrypoint: "proposal".into(),
+                    grants_json: serde_json::json!([{
+                        "actor_id": owner_actor,
+                        "actions": ["proposal.propose"],
+                        "protocol_roles": ["AUTHOR"],
+                        "capabilities": ["PROPOSE"]
+                    }])
+                    .to_string(),
+                    command_id: None,
+                    issued_at_ms: None,
+                })
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(second["status"], "PENDING");
+        let second_begin_id = second["begin_command_id"].as_str().unwrap().to_owned();
+        assert_ne!(second_begin_id, begin_id);
+        let mut second_progress = second;
+        for _ in 0..12 {
+            if second_progress["status"] == "ACCEPTED" {
+                break;
+            }
+            second_progress =
+                serde_json::from_str(&install.continue_install_json(&second_begin_id).unwrap())
+                    .unwrap();
+        }
+        assert_eq!(second_progress["status"], "ACCEPTED");
+        let all_installs: serde_json::Value =
+            serde_json::from_str(&install.installs_json().unwrap()).unwrap();
+        assert_eq!(all_installs.as_array().unwrap().len(), 2);
+        assert!(all_installs
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["begin_command_id"] == begin_id));
+        assert!(all_installs
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["begin_command_id"] == second_begin_id));
+        let before_retries = counts()["commits"].as_u64().unwrap();
+        for id in [begin_id, second_begin_id.as_str()] {
+            let repeat: serde_json::Value =
+                serde_json::from_str(&install.continue_install_json(id).unwrap()).unwrap();
+            assert_eq!(repeat["status"], "ACCEPTED");
+        }
+        assert_eq!(counts()["commits"], before_retries);
+        let final_read: serde_json::Value = serde_json::from_str(
+            &reopened
+                .read_workspace_json(&created.workspace_id, &token)
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(final_read["objects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|object| {
+                object["kind"] == "instances"
+                    && object["id"] == second_instance_id
+                    && object["value"]["protocol_digest"] == vector["protocol_digest"]
+            }));
     }
 }

@@ -954,19 +954,29 @@ pub fn prepare_private_direct_install_begin(
         issued_at,
     )
     .map_err(|_| bad())?;
-    // The first direct producer handles a new protocol. Existing matching
-    // protocol reuse and explicit disclosure are distinct source families.
-    if prior_objects.iter().any(|object| {
+    let mut added = built.added;
+    let prior_protocol = prior_objects.iter().find(|object| {
         object.get("kind").and_then(WireValue::as_string).as_deref() == Some("protocols")
             && object.get("id") == Some(&s(expected_protocol_digest))
-    }) {
-        return Err(bad());
+    });
+    if let Some(existing) = prior_protocol {
+        // A matching previously authored direct protocol can be reused for a
+        // distinct instance. The old protocol object and its provenance never
+        // change as a side effect of this install.
+        let old_value = existing.get("value").ok_or_else(bad)?;
+        let compiled_value = added[0].get("value").ok_or_else(bad)?;
+        if canonical_wire_value(old_value, Path::SecureArtifact).map_err(|_| bad())?
+            != canonical_wire_value(compiled_value, Path::SecureArtifact).map_err(|_| bad())?
+        {
+            return Err(bad());
+        }
+        added.remove(0);
     }
     let undisclosed = version == 1 || (version == 3 && structure_mode.as_deref() == Some("NONE"));
     let structure = derive_direct_install_structure_with_disclosure(
         policy.get("structure"),
         prior_objects,
-        &built.added,
+        &added,
         expected_protocol_digest,
         &built.manifest,
         undisclosed,
@@ -978,7 +988,7 @@ pub fn prepare_private_direct_install_begin(
         .clone();
     let begin = build_direct_install_begin(
         &current,
-        &built.added,
+        &added,
         instance_id,
         expected_protocol_digest,
         entrypoint,
