@@ -348,6 +348,7 @@ pub struct SecureOwnerFormatTransition {
     visibility: &'static str,
 }
 impl SecureOwnerFormatTransition {
+    #[cfg(test)]
     pub(crate) fn profile_config(&self) -> &SecureReadProfileConfig {
         &self.config
     }

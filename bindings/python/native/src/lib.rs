@@ -411,7 +411,7 @@ fn secure_owner_create_json(
                 return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"workspace ID is required"}).to_string();
             };
             let access = match SecureOwnerWorkspaceCreate::new(config)
-                .private_format_transition_access(selected_workspace) {
+                .format_transition_access(selected_workspace) {
                 Ok(value) => value,
                 Err(error) => return serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
             };

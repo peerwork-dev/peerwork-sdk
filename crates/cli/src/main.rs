@@ -361,7 +361,7 @@ fn secure_owner_command(verb: &str, args: &[String]) -> Result<String, (&'static
         let selected_workspace = input.as_ref().map(|value| value.workspace_id.as_str())
             .unwrap_or(&args[1]);
         let access = SecureOwnerWorkspaceCreate::new(config)
-            .private_format_transition_access(selected_workspace)
+            .format_transition_access(selected_workspace)
             .map_err(|e| (e.code(), e.to_string()))?;
         return match verb {
             "owner-format-submit" => access.submit_json_with_cancel(input.expect("submit input parsed"), &cancel)
