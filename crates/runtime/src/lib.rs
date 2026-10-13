@@ -26,6 +26,7 @@ mod secure_package_pending;
 pub mod secure_public_admission;
 pub mod secure_public_decision;
 pub mod secure_public_install;
+pub mod secure_recipient_enrollment;
 pub mod secure_read_access;
 pub mod secure_read_profile;
 #[allow(dead_code)]

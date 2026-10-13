@@ -256,11 +256,71 @@ impl HttpTransport {
         read_bounded(response, 220_000, cancel).await
     }
 
+    /// Exact authenticated identity-directory read. A directory response is
+    /// still untrusted until its signed chain and local continuity pin verify.
+    pub(crate) async fn get_secure_identity_keys_exact(
+        &self,
+        path: &str,
+        read_proof: &str,
+        cancel: &CancellationToken,
+    ) -> Result<ExactHttpResponse, TransportError> {
+        let actor = path.strip_prefix("/api/workspace/v1/secure/identity-keys/");
+        if !actor.is_some_and(valid_identity_token)
+            || read_proof.is_empty()
+            || read_proof.len() > 12_000
+        {
+            return Err(TransportError::InvalidOrigin);
+        }
+        let response = tokio::select! {
+            _ = cancel.cancelled() => return Err(TransportError::Cancelled),
+            result = self.client.get(self.endpoint(path)?)
+                .header("X-Peerwork-Read", read_proof).send() =>
+                result.map_err(map_network_error)?,
+        };
+        read_bounded(response, 64 * 1024, cancel).await
+    }
+
+    /// Submit a previously protected exact signed v1 directory entry.
+    /// Failure after sending begins leaves its outcome uncertain.
+    pub(crate) async fn post_secure_identity_key_exact(
+        &self,
+        body: Vec<u8>,
+        read_proof: &str,
+        cancel: &CancellationToken,
+    ) -> Result<ExactHttpResponse, TransportError> {
+        if body.is_empty()
+            || body.len() > 8_192
+            || read_proof.is_empty()
+            || read_proof.len() > 12_000
+        {
+            return Err(TransportError::InvalidOrigin);
+        }
+        let path = "/api/workspace/v1/secure/identity-keys";
+        let response = tokio::select! {
+            _ = cancel.cancelled() => return Err(TransportError::SubmittedUncertain),
+            result = self.client.post(self.endpoint(path)?)
+                .header("content-type", "application/json")
+                .header("X-Peerwork-Read", read_proof)
+                .body(body).send() =>
+                result.map_err(|_| TransportError::SubmittedUncertain)?,
+        };
+        read_bounded(response, MAX_COMMAND_RESPONSE_BYTES, cancel)
+            .await
+            .map_err(|_| TransportError::SubmittedUncertain)
+    }
+
     fn endpoint(&self, path: &str) -> Result<Url, TransportError> {
         self.origin
             .join(path)
             .map_err(|_| TransportError::InvalidOrigin)
     }
+}
+
+fn valid_identity_token(value: &str) -> bool {
+    value.len() == 43
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 fn valid_command_path(path: &str) -> bool {

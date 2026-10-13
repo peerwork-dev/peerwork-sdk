@@ -213,6 +213,7 @@ if (process.env.PEERWORK_TEST_BOOTSTRAP === '1') {
   } finally { agent.close(); }
 }
 let dropFirstPost = true;
+let dropNextIdentityDirectory = false;
 let rejectNextPostBeforeApply = false;
 let alterFirstChunk = process.env.PEERWORK_TEST_WRONG_CHUNK_STATE === '1';
 const firstPostMode = process.env.PEERWORK_TEST_FIRST_POST_MODE || 'drop';
@@ -270,6 +271,13 @@ const proxy = createServer(async (request, response) => {
     if (request.url === '/__test/drop-next-post' && request.method === 'POST') {
       if (!publicReadFixture || dropFirstPost) throw new Error('public dropped-response fixture unavailable');
       dropFirstPost = true;
+      response.writeHead(200, {'content-type':'application/json'});
+      response.end(JSON.stringify({enabled:true}));
+      return;
+    }
+    if (request.url === '/__test/drop-next-identity-directory' && request.method === 'POST') {
+      if (!publicReadFixture || dropNextIdentityDirectory) throw new Error('identity directory drop fixture unavailable');
+      dropNextIdentityDirectory = true;
       response.writeHead(200, {'content-type':'application/json'});
       response.end(JSON.stringify({enabled:true}));
       return;
@@ -341,6 +349,12 @@ const proxy = createServer(async (request, response) => {
       body: request.method === 'GET' ? undefined : Buffer.concat(chunks),
     });
     let bytes = Buffer.from(await original.arrayBuffer());
+    if (request.method === 'POST' && request.url === '/api/workspace/v1/secure/identity-keys'
+        && dropNextIdentityDirectory && original.status === 201) {
+      dropNextIdentityDirectory = false;
+      response.destroy();
+      return;
+    }
     if (publicReadFixture && request.method === 'GET' && request.url?.includes('/journal?') && original.status === 200) {
       if (!publicReadFirstPage) publicReadFirstPage = Buffer.from(bytes);
       if (serveStalePublicPage) bytes = Buffer.from(publicReadFirstPage);
