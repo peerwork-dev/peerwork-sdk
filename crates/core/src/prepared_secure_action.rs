@@ -32,6 +32,24 @@ pub struct ValidatedPreparedAction {
     policy_sha256: String,
 }
 
+/// A native ACTION plan with the exact context needed for its generated
+/// structure projection. The caller still must authenticate prior state and
+/// the selected policy before signing or submitting the packet.
+pub struct BuiltPreparedAction {
+    context_wire: Vec<u8>,
+    action: ValidatedPreparedAction,
+}
+
+impl BuiltPreparedAction {
+    pub fn context_wire(&self) -> &[u8] {
+        &self.context_wire
+    }
+
+    pub fn action(&self) -> &ValidatedPreparedAction {
+        &self.action
+    }
+}
+
 impl ValidatedPreparedAction {
     pub fn operation_wire(&self) -> &[u8] {
         &self.canonical_operation
@@ -68,6 +86,104 @@ pub fn build_prepared_action_operation(
     signed_policy_wire: &[u8],
     authenticated_prior_objects: &[WireValue],
 ) -> Result<ValidatedPreparedAction, PreparedActionError> {
+    let (operation, _, _) = compute_operation(
+        action_input_wire,
+        context_wire,
+        signed_policy_wire,
+        authenticated_prior_objects,
+    )?;
+    let operation_wire = canonical_wire_value(&operation, Path::SecureArtifact)
+        .map_err(|_| PreparedActionError::Invalid)?;
+    validate_prepared_action_operation(
+        operation_wire.as_bytes(),
+        context_wire,
+        signed_policy_wire,
+        authenticated_prior_objects,
+    )
+}
+
+/// Build from action values and derive the exact signed DELTA for a selected
+/// structured policy. The same produced objects supply both the ACTION body
+/// and its server-readable structure projection, so they cannot diverge.
+pub fn build_prepared_action_with_context(
+    action_input_wire: &[u8],
+    context_wire: &[u8],
+    signed_policy_wire: &[u8],
+    authenticated_prior_objects: &[WireValue],
+) -> Result<BuiltPreparedAction, PreparedActionError> {
+    let (operation, mut context, policy) = compute_operation(
+        action_input_wire,
+        context_wire,
+        signed_policy_wire,
+        authenticated_prior_objects,
+    )?;
+    let payload = policy.get("payload").ok_or(PreparedActionError::Invalid)?;
+    let structured = payload.get("v").and_then(WireValue::as_number) == Some(2.0)
+        || payload.get("v").and_then(WireValue::as_number) == Some(3.0)
+            && payload
+                .get("structure_mode")
+                .and_then(WireValue::as_string)
+                .as_deref()
+                == Some("STRUCTURED");
+    if structured {
+        if context.get("structure").is_some() {
+            return Err(PreparedActionError::Invalid);
+        }
+        let contract = payload
+            .get("structure")
+            .ok_or(PreparedActionError::Invalid)?;
+        let WireValue::Array(objects) = operation
+            .get("objects")
+            .ok_or(PreparedActionError::Invalid)?
+        else {
+            return Err(PreparedActionError::Invalid);
+        };
+        let (records, heads) =
+            project_structure_data(objects, contract).map_err(|_| PreparedActionError::Invalid)?;
+        let WireValue::Object(fields) = &mut context else {
+            return Err(PreparedActionError::Invalid);
+        };
+        fields.push((
+            "structure".encode_utf16().collect(),
+            WireValue::Object(vec![
+                ("v".encode_utf16().collect(), WireValue::Number(1.0)),
+                (
+                    "mode".encode_utf16().collect(),
+                    WireValue::String("DELTA".encode_utf16().collect()),
+                ),
+                (
+                    "records".encode_utf16().collect(),
+                    WireValue::Array(records),
+                ),
+                ("heads".encode_utf16().collect(), WireValue::Array(heads)),
+            ]),
+        ));
+    } else if context.get("structure").is_some() {
+        return Err(PreparedActionError::Invalid);
+    }
+    let context_wire = canonical_wire_value(&context, Path::SecureArtifact)
+        .map_err(|_| PreparedActionError::Invalid)?
+        .into_bytes();
+    let operation_wire = canonical_wire_value(&operation, Path::SecureArtifact)
+        .map_err(|_| PreparedActionError::Invalid)?;
+    let action = validate_prepared_action_operation(
+        operation_wire.as_bytes(),
+        &context_wire,
+        signed_policy_wire,
+        authenticated_prior_objects,
+    )?;
+    Ok(BuiltPreparedAction {
+        context_wire,
+        action,
+    })
+}
+
+fn compute_operation(
+    action_input_wire: &[u8],
+    context_wire: &[u8],
+    signed_policy_wire: &[u8],
+    authenticated_prior_objects: &[WireValue],
+) -> Result<(WireValue, WireValue, WireValue), PreparedActionError> {
     let parse = |wire: &[u8]| {
         parse_wire_json_bounded(wire, 64, MAX_WIRE).map_err(|_| PreparedActionError::Invalid)
     };
@@ -120,14 +236,7 @@ pub fn build_prepared_action_operation(
         ("input".encode_utf16().collect(), input),
         ("objects".encode_utf16().collect(), objects),
     ]);
-    let operation_wire = canonical_wire_value(&operation, Path::SecureArtifact)
-        .map_err(|_| PreparedActionError::Invalid)?;
-    validate_prepared_action_operation(
-        operation_wire.as_bytes(),
-        context_wire,
-        signed_policy_wire,
-        authenticated_prior_objects,
-    )
+    Ok((operation, context, policy))
 }
 
 pub fn validate_prepared_action_operation(
@@ -297,6 +406,31 @@ mod tests {
         )
         .unwrap();
         assert!(!proof.operation_wire().is_empty());
+        let mut expected_context = delegated["commits"][1]["payload"].clone();
+        expected_context.as_object_mut().unwrap().remove("mode");
+        expected_context.as_object_mut().unwrap().remove("body");
+        let mut input_context = expected_context.clone();
+        input_context.as_object_mut().unwrap().remove("structure");
+        let WireValue::Array(prior) = parse_wire_json_bounded(
+            &serde_json::to_vec(&delegated["operations"][0]["objects"]).unwrap(),
+            64,
+            MAX_WIRE,
+        )
+        .unwrap() else {
+            panic!("prior objects must be an array")
+        };
+        let built = build_prepared_action_with_context(
+            &serde_json::to_vec(&delegated["operations"][1]["input"]).unwrap(),
+            &serde_json::to_vec(&input_context).unwrap(),
+            &serde_json::to_vec(&delegated["policy"]).unwrap(),
+            &prior,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(built.context_wire()).unwrap(),
+            expected_context
+        );
+        assert_eq!(built.action().operation_wire(), proof.operation_wire());
         let mut wrong_structure = delegated["commits"].clone();
         wrong_structure[1]["payload"]["structure"]["heads"] = json!([]);
         assert!(check_case(

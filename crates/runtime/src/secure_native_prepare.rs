@@ -23,7 +23,7 @@ use peerwork_core::{
         derive_genesis_structure_policy_with_keep_encrypted,
     },
     prepared_secure_action::{
-        build_prepared_action_operation, validate_prepared_action_operation,
+        build_prepared_action_with_context, validate_prepared_action_operation,
         ValidatedPreparedAction,
     },
     prepared_secure_author::{
@@ -729,7 +729,7 @@ pub(crate) fn prepare_new_public_action_input_from_replay(
     let policy_wire = source
         .signed_policy_by_hash(pins.policy_hash)
         .ok_or(NativePrepareError::Context)?;
-    let operation = build_prepared_action_operation(
+    let operation = build_prepared_action_with_context(
         action_input_wire,
         context_wire,
         policy_wire,
@@ -742,8 +742,8 @@ pub(crate) fn prepare_new_public_action_input_from_replay(
         lifecycle,
         source,
         intent_id,
-        context_wire,
-        operation.operation_wire(),
+        operation.context_wire(),
+        operation.action().operation_wire(),
         pins,
     )
 }
@@ -825,7 +825,7 @@ pub(crate) fn prepare_new_public_action_values_from_replay(
     )
 }
 
-/// Author a PUBLIC v3 unstructured action from the current verified checkpoint
+/// Author a PUBLIC v3 action from the current verified checkpoint
 /// and action values. Context and instance revision are derived locally;
 /// allocation tokens may be supplied or generated once before the first POST
 /// and retained in the exact saved request.
@@ -865,11 +865,13 @@ pub(crate) fn prepare_public_action_from_replay(
             .and_then(WireValue::as_string)
             .as_deref()
             != Some("PUBLIC")
-        || payload
-            .get("structure_mode")
-            .and_then(WireValue::as_string)
-            .as_deref()
-            == Some("STRUCTURED")
+        || !matches!(
+            payload
+                .get("structure_mode")
+                .and_then(WireValue::as_string)
+                .as_deref(),
+            Some("NONE" | "STRUCTURED")
+        )
     {
         return Err(NativePrepareError::Context);
     }

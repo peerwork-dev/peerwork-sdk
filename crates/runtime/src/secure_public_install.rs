@@ -825,6 +825,7 @@ fn current_time_ms() -> Result<u64, PublicPackageInstallError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::secure_action_access::{PublicActionInput, SecurePublicActionAccess};
     use std::{
         io::{BufRead, BufReader},
         path::Path,
@@ -1065,11 +1066,13 @@ mod tests {
         .unwrap();
         let pending: serde_json::Value = serde_json::from_str(&pending).unwrap();
         assert!(pending.as_array().unwrap().is_empty());
-        let finished =
-            tokio::task::spawn_blocking(move || SecureReadProfile::new(config).read_latest_json())
-                .await
-                .unwrap()
-                .unwrap();
+        let finished_config = config.clone();
+        let finished = tokio::task::spawn_blocking(move || {
+            SecureReadProfile::new(finished_config).read_latest_json()
+        })
+        .await
+        .unwrap()
+        .unwrap();
         let finished: serde_json::Value = serde_json::from_str(&finished).unwrap();
         assert_eq!(finished["sequence"], 3);
         assert_eq!(finished["structure_status"], "ACTIVE");
@@ -1078,5 +1081,63 @@ mod tests {
             .unwrap()
             .iter()
             .any(|object| object["kind"] == "instances" && object["id"] == "z".repeat(43)));
+
+        // The installed STRUCTURED policy must remain usable by the public
+        // native ACTION producer, including its exact server-readable DELTA.
+        let action_config = config.clone();
+        let preset_instance = fixture["instance_id"].as_str().unwrap().to_owned();
+        let submitted = tokio::task::spawn_blocking(move || {
+            SecurePublicActionAccess::new(action_config).submit_new_json(PublicActionInput {
+                action_id: "discussion.post".into(),
+                instance_id: preset_instance,
+                body_json: r#"{"message":"structured public action after install"}"#.into(),
+                exact_input_refs_json: None,
+                allocations_json: None,
+                command_id: Some("s".repeat(43)),
+                issued_at_ms: None,
+            })
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        let submitted: serde_json::Value = serde_json::from_str(&submitted).unwrap();
+        assert_eq!(submitted["status"], "PENDING");
+        let action_config = config.clone();
+        let reconciled = tokio::task::spawn_blocking(move || {
+            SecurePublicActionAccess::new(action_config).reconcile_json(&"s".repeat(43))
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        let reconciled: serde_json::Value = serde_json::from_str(&reconciled).unwrap();
+        assert_eq!(reconciled["status"], "ACCEPTED");
+        assert_eq!(reconciled["sequence"], 4);
+        let receipt: serde_json::Value =
+            serde_json::from_str(reconciled["receipt_canonical_json"].as_str().unwrap()).unwrap();
+        let effects = receipt["effects"].as_array().unwrap();
+        assert_eq!(effects.len(), 1);
+        let record_id = effects[0]["record_id"].as_str().unwrap();
+        let readback_config = config.clone();
+        let readback = tokio::task::spawn_blocking(move || {
+            SecureReadProfile::new(readback_config).read_latest_json()
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        let readback: serde_json::Value = serde_json::from_str(&readback).unwrap();
+        assert_eq!(readback["sequence"], 4);
+        assert!(readback["objects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|object| object["kind"] == "records" && object["id"] == record_id));
+        let counts = reqwest::get(format!("{origin}__test/secure-counts"))
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        let counts: serde_json::Value = serde_json::from_slice(&counts).unwrap();
+        assert_eq!(counts["head_sequence"], 4);
     }
 }
