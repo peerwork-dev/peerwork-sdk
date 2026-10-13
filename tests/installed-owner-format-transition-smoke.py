@@ -178,6 +178,12 @@ try:
     assert first_policy["v"] == 3 and first_policy["protocol_format_ceiling"] == 1
     assert first_policy["visibility"] == before_policy["visibility"] == "PRIVATE"
     assert first_policy["workspace_id"] == before_policy["workspace_id"] == workspace_id
+    assert first_policy["structure_mode"] == "NONE" and "structure" not in first_policy
+    for key in ("owner_id", "signing_key", "epoch", "members"):
+        assert first_policy[key] == prior_policy[key], key
+    assert first_policy["version"] == prior_policy["version"] + 1
+    assert first_policy["previous_policy"] == prior["policy_hash"]
+    assert first_policy["effective_sequence"] == first_read["sequence"]
     assert first["sequence"] == first_read["sequence"] and first["policy_hash"] == first_read["policy_hash"]
     assert fresh.resume_format_transition(first_id) == first
     assert counts(origin) == baseline_commits + 1
@@ -196,6 +202,12 @@ try:
     assert final_policy["v"] == 3 and final_policy["protocol_format_ceiling"] == 2
     assert final_policy["visibility"] == first_policy["visibility"] == "PRIVATE"
     assert final_policy["workspace_id"] == workspace_id
+    for key in ("owner_id", "signing_key", "epoch", "members", "structure_mode"):
+        assert final_policy[key] == first_policy[key], key
+    assert final_policy.get("structure") == first_policy.get("structure")
+    assert final_policy["version"] == first_policy["version"] + 1
+    assert final_policy["previous_policy"] == first_read["policy_hash"]
+    assert final_policy["effective_sequence"] == final["sequence"]
     assert second["sequence"] == final["sequence"] and second["policy_hash"] == final["policy_hash"]
     record = next(row for row in final["objects"] if row.get("id") == record_id)
     assert record["value"]["payload"]["title"] == title

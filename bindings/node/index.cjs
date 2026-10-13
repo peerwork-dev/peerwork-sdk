@@ -397,6 +397,12 @@ exports.openSecureOwnerWorkspaces = options => {
         !['UPGRADE_WIRE_V3', 'RAISE_PRIVATE_CEILING_TWO'].includes(input.transition)) {
       throw new TypeError('format transition requires workspace ID and supported transition');
     }
+    const allowed = new Set(['workspaceId', 'transition', 'commandId', 'issuedAtMs']);
+    if (Object.keys(input).some(key => !allowed.has(key)) ||
+        (input.commandId != null && (typeof input.commandId !== 'string' || !input.commandId)) ||
+        (input.issuedAtMs != null && (!Number.isSafeInteger(input.issuedAtMs) || input.issuedAtMs < 0))) {
+      throw new TypeError('invalid format transition option');
+    }
     return {
       workspace_id: input.workspaceId, transition: input.transition,
       command_id: input.commandId ?? null, issued_at_ms: input.issuedAtMs ?? null,
