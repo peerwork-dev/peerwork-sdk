@@ -9,6 +9,7 @@ use crate::{
     secure_intents::{SecureIntentError, SecureIntentJournal, SecurePacketInput},
     secure_journal_read::{sign_read_proof, SecureJournalRead},
     secure_lifecycle::{ReplayKeyringState, SecureLifecycle},
+    secure_private_grant_read::{select_direct_grant, select_member},
     secure_read_access::{SecureReadAccessError, SecureReadConfig},
     secure_read_profile::{SecureReadProfile, SecureReadProfileConfig},
     secure_recipient_state::RecipientState,
@@ -633,7 +634,18 @@ impl SecurePublicDecision {
             .policy_wires
             .last()
             .ok_or(PublicDecisionError::Grant)?;
-        if last_policy.as_slice() != policy_wire || sha256_hex(last_policy) != policy_hash {
+        let historical = last_policy.as_slice() != policy_wire;
+        let (historical_policy_count, historical_commit_count, historical_checkpoint) =
+            historical_grant_prefix(
+                &artifacts.policy_wires,
+                &artifacts.commit_wires,
+                policy_wire,
+                policy_hash,
+                &self.config.workspace_id,
+                &self.config.owner_actor_id,
+                &self.config.owner_key_id,
+            )?;
+        if !historical && sha256_hex(last_policy) != policy_hash {
             return Err(PublicDecisionError::Grant);
         }
         let policies = artifacts
@@ -647,7 +659,11 @@ impl SecurePublicDecision {
             .map(Vec::as_slice)
             .collect::<Vec<_>>();
         let mut pending = SecureGrantPending::open(
-            &self.config.state_dir.join("pending-grant.state"),
+            &self.config.state_dir.join(if historical {
+                "pending-grant-historical.state"
+            } else {
+                "pending-grant.state"
+            }),
             client.origin(),
             &self.config.authority,
             &self.config.workspace_id,
@@ -661,9 +677,13 @@ impl SecurePublicDecision {
         let grant = pending
             .stage(
                 GrantEvidence {
-                    policies: &policies,
-                    commits: &commits,
-                    checkpoint: pages.checkpoint_canonical_json().as_bytes(),
+                    policies: &policies[..historical_policy_count],
+                    commits: &commits[..historical_commit_count],
+                    checkpoint: if historical {
+                        &historical_checkpoint
+                    } else {
+                        pages.checkpoint_canonical_json().as_bytes()
+                    },
                     grant: grant_wire,
                     certificate: cert_wire,
                     invitation: Some((offer_wire, decision_wire)),
@@ -682,9 +702,88 @@ impl SecurePublicDecision {
             &config.owner_key_id,
         )
         .map_err(|_| PublicDecisionError::Lifecycle)?;
-        let replay = replay_authenticated_pages_with_grant(&pages, &lifecycle, &grant, budget)
+        let (replay_grant, activation_pending) = if historical {
+            let audience = String::from_utf16(client.discovery().audience_utf16())
+                .map_err(|_| PublicDecisionError::Grant)?;
+            let selection = select_member(&artifacts.policy_wires, identity, &config, audience)
+                .map_err(|_| PublicDecisionError::Grant)?;
+            let path = format!(
+                "/api/workspace/v1/secure/workspaces/{}/key-grants",
+                config.workspace_id
+            );
+            let proof =
+                sign_read_proof(&path, client.discovery(), identity, &self.config.authority)
+                    .map_err(|_| PublicDecisionError::Grant)?;
+            let response = runtime
+                .block_on(
+                    client
+                        .transport()
+                        .get_secure_key_grants_exact(&path, &proof, cancel),
+                )
+                .map_err(|_| PublicDecisionError::Transport)?;
+            if response.status != 200 || response.wire.len() > 2 * 1024 * 1024 {
+                return Err(PublicDecisionError::Grant);
+            }
+            let current_grant = select_direct_grant(&response.wire, &selection, &config)
+                .map_err(|_| PublicDecisionError::Grant)?;
+            let mut current = SecureGrantPending::open(
+                &self.config.state_dir.join("pending-grant-current.state"),
+                client.origin(),
+                &self.config.authority,
+                &self.config.workspace_id,
+                &self.config.owner_actor_id,
+                &self.config.owner_key_id,
+                identity,
+                recipient,
+                now_ms()?,
+            )
             .map_err(|_| PublicDecisionError::Grant)?;
-        let activation = pending
+            let current_material = current
+                .stage(
+                    GrantEvidence {
+                        policies: &policies,
+                        commits: &commits,
+                        checkpoint: pages.checkpoint_canonical_json().as_bytes(),
+                        grant: &current_grant,
+                        certificate: &selection.certificate_wire,
+                        invitation: None,
+                        delegation: None,
+                    },
+                    recipient,
+                    now_ms()?,
+                )
+                .map_err(|_| PublicDecisionError::Grant)?;
+            if current_material.keyring().key_at(grant.epoch())
+                != grant.keyring().key_at(grant.epoch())
+            {
+                return Err(PublicDecisionError::Grant);
+            }
+            (current_material, Some(current))
+        } else {
+            (grant, None)
+        };
+        let replay =
+            replay_authenticated_pages_with_grant(&pages, &lifecycle, &replay_grant, budget)
+                .map_err(|_| PublicDecisionError::Grant)?;
+        let historical_head = if historical_commit_count == 0 {
+            None
+        } else {
+            Some(sha256_hex(
+                &artifacts.commit_wires[historical_commit_count - 1],
+            ))
+        };
+        if historical
+            && !replay.replay().contains_checkpoint(
+                historical_commit_count as u64,
+                historical_head.as_deref(),
+                policy_hash,
+            )
+        {
+            return Err(PublicDecisionError::Grant);
+        }
+        let activation = activation_pending
+            .as_ref()
+            .unwrap_or(&pending)
             .bind_to_replay(recipient, now_ms()?, &replay)
             .map_err(|_| PublicDecisionError::Grant)?
             .ok_or(PublicDecisionError::Grant)?;
@@ -795,6 +894,11 @@ impl SecurePublicDecision {
         let grant = control.get("grant").ok_or(PublicDecisionError::Invalid)?;
         let grant_wire = canonical_wire_value(grant, CanonicalPath::SecureArtifact)
             .map_err(|_| PublicDecisionError::Invalid)?;
+        let policy_wire = canonical_wire_value(
+            control.get("policy").ok_or(PublicDecisionError::Invalid)?,
+            CanonicalPath::SecureArtifact,
+        )
+        .map_err(|_| PublicDecisionError::Invalid)?;
         let grant_id = grant
             .get("payload")
             .and_then(|p| p.get("grant_id"))
@@ -871,8 +975,18 @@ impl SecurePublicDecision {
             {
                 return Err(PublicDecisionError::Invalid);
             }
+            let old_policy_hash = grant
+                .get("payload")
+                .and_then(|p| p.get("policy_hash"))
+                .and_then(WireValue::as_string)
+                .ok_or(PublicDecisionError::Invalid)?;
+            let historical = source.replay().policy_hash() != old_policy_hash;
             let pending = SecureGrantPending::open(
-                &self.config.state_dir.join("pending-grant.state"),
+                &self.config.state_dir.join(if historical {
+                    "pending-grant-historical.state"
+                } else {
+                    "pending-grant.state"
+                }),
                 source.origin(),
                 source.authority(),
                 &self.config.workspace_id,
@@ -891,16 +1005,65 @@ impl SecurePublicDecision {
                 .saved_grant_hash()
                 .map_err(|_| PublicDecisionError::Grant)?
                 != Some(sha256_hex(grant_wire.as_bytes()))
-                || material.policy_hash()
-                    != grant
-                        .get("payload")
-                        .and_then(|p| p.get("policy_hash"))
-                        .and_then(WireValue::as_string)
-                        .as_deref()
-                        .unwrap_or_default()
+                || material.policy_hash() != old_policy_hash
             {
                 return Err(PublicDecisionError::Grant);
             }
+            let current = if historical {
+                let (policy_count, commit_count, _) = historical_grant_prefix(
+                    source.signed_policy_wires(),
+                    source.signed_commit_wires(),
+                    policy_wire.as_bytes(),
+                    &old_policy_hash,
+                    &self.config.workspace_id,
+                    &self.config.owner_actor_id,
+                    &self.config.owner_key_id,
+                )?;
+                let old_head = commit_count
+                    .checked_sub(1)
+                    .map(|index| sha256_hex(&source.signed_commit_wires()[index]));
+                if policy_count == source.signed_policy_wires().len()
+                    || !source.replay().contains_checkpoint(
+                        commit_count as u64,
+                        old_head.as_deref(),
+                        &old_policy_hash,
+                    )
+                {
+                    return Err(PublicDecisionError::Grant);
+                }
+                Some(
+                    SecureGrantPending::open(
+                        &self.config.state_dir.join("pending-grant-current.state"),
+                        source.origin(),
+                        source.authority(),
+                        &self.config.workspace_id,
+                        &self.config.owner_actor_id,
+                        &self.config.owner_key_id,
+                        &identity,
+                        &recipient,
+                        now_ms()?,
+                    )
+                    .map_err(|_| PublicDecisionError::Grant)?,
+                )
+            } else {
+                None
+            };
+            let binding = current.as_ref().unwrap_or(&pending);
+            let current_material = if historical {
+                let current_material = binding
+                    .verified_pending(&recipient, now_ms()?)
+                    .map_err(|_| PublicDecisionError::Grant)?
+                    .ok_or(PublicDecisionError::Grant)?;
+                if material.keyring().key_at(material.epoch()).is_none()
+                    || current_material.keyring().key_at(material.epoch())
+                        != material.keyring().key_at(material.epoch())
+                {
+                    return Err(PublicDecisionError::Grant);
+                }
+                current_material
+            } else {
+                material
+            };
             let mut lifecycle = SecureLifecycle::open(
                 &self.config.state_dir.join("lifecycle.state"),
                 source.origin(),
@@ -914,7 +1077,7 @@ impl SecurePublicDecision {
                 // A crash may occur after the receipt packet is saved and
                 // before the grant proof is promoted. Rebuild that proof from
                 // the same complete journal, never from the saved packet.
-                let activation = pending
+                let activation = binding
                     .bind_to_replay(&recipient, now_ms()?, source)
                     .map_err(|_| PublicDecisionError::Grant)?
                     .ok_or(PublicDecisionError::Grant)?;
@@ -930,7 +1093,7 @@ impl SecurePublicDecision {
                     .ring
                     .canonical_wire()
                     .map_err(|_| PublicDecisionError::Lifecycle)?
-                    != material
+                    != current_material
                         .keyring()
                         .canonical_wire()
                         .map_err(|_| PublicDecisionError::Lifecycle)?
@@ -1177,6 +1340,53 @@ impl SecurePublicDecision {
         }
         Ok(())
     }
+}
+
+/// Select the last checkpoint at which the invitation policy was current.
+/// These bytes are only grant-verifier input until the complete, origin-bound
+/// replay proves the checkpoint is its ancestor.
+fn historical_grant_prefix(
+    policies: &[Vec<u8>],
+    commits: &[Vec<u8>],
+    policy_wire: &[u8],
+    policy_hash: &str,
+    workspace_id: &str,
+    owner_id: &str,
+    owner_key: &str,
+) -> Result<(usize, usize, Vec<u8>), PublicDecisionError> {
+    let index = policies
+        .iter()
+        .position(|wire| wire == policy_wire && sha256_hex(wire) == policy_hash)
+        .ok_or(PublicDecisionError::Grant)?;
+    let count = index + 1;
+    let commit_count = if let Some(next) = policies.get(count) {
+        let value = parse_wire_json_js_bounded(next, 64, 256 * 1024)
+            .map_err(|_| PublicDecisionError::Grant)?;
+        let effective = value
+            .get("payload")
+            .and_then(|p| p.get("effective_sequence"))
+            .and_then(WireValue::as_number)
+            .filter(|n| n.fract() == 0.0 && *n >= 1.0 && *n <= 9_007_199_254_740_991.0)
+            .ok_or(PublicDecisionError::Grant)? as u64;
+        usize::try_from(effective - 1).map_err(|_| PublicDecisionError::Grant)?
+    } else {
+        commits.len()
+    };
+    if commit_count > commits.len() {
+        return Err(PublicDecisionError::Grant);
+    }
+    let head = commit_count.checked_sub(1).map(|i| sha256_hex(&commits[i]));
+    let checkpoint = serde_json::to_vec(&serde_json::json!({
+        "v": 1,
+        "workspace_id": workspace_id,
+        "owner_id": owner_id,
+        "owner_key": owner_key,
+        "sequence": commit_count,
+        "head": head,
+        "policy_hash": policy_hash,
+    }))
+    .map_err(|_| PublicDecisionError::Encoding)?;
+    Ok((count, commit_count, checkpoint))
 }
 
 fn control_path(invite_id: &str) -> Result<String, PublicDecisionError> {

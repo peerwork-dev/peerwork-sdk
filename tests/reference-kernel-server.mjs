@@ -198,7 +198,8 @@ if (process.env.PEERWORK_TEST_ADMISSION === '1') {
     publicAdmissionFixture={recipient_actor_id:agent.identity.actorId,recipient_key_id:agent.identity.keyId};
   } finally { agent.close(); }
 }
-if (process.env.PEERWORK_TEST_PRIVATE_GRANT === '1' || process.env.PEERWORK_TEST_PRIVATE_INVITATION === '1') {
+if (process.env.PEERWORK_TEST_PRIVATE_GRANT === '1' || process.env.PEERWORK_TEST_PRIVATE_INVITATION === '1' ||
+    process.env.PEERWORK_TEST_PRIVATE_HISTORICAL_INVITATION === '1') {
   const {generateKeyPairSync} = await import('node:crypto');
   const {SecureAgentClient} = await import(pathToFileURL(join(root, 'dist-workspace/src/workspace-secure-agent.js')).href);
   const ownerPrivate = generateKeyPairSync('ed25519').privateKey;
@@ -219,14 +220,25 @@ if (process.env.PEERWORK_TEST_PRIVATE_GRANT === '1' || process.env.PEERWORK_TEST
     // authenticated direct-grant retrieval branch starts after an owner epoch
     // rotation, which writes a separate direct grant for this member.
     const directEpoch = process.env.PEERWORK_TEST_PRIVATE_GRANT === '1';
-    if (directEpoch) await owner.rotate(created.workspaceId);
+    const historicalInvitation = process.env.PEERWORK_TEST_PRIVATE_HISTORICAL_INVITATION === '1';
+    if (historicalInvitation) {
+      const before = await owner.journal(created.workspaceId);
+      const beforeWiki = before.objects.find(object => object.kind === 'instances' && object.value?.origin_entrypoint === 'wiki');
+      if (!beforeWiki) throw new Error('private historical fixture lacks wiki instance');
+      await owner.action(created.workspaceId,beforeWiki.id,'wiki.create',
+        {title:'Private before epoch advance',body:'Encrypted record from invitation epoch'});
+    }
+    if (directEpoch || historicalInvitation) await owner.rotate(created.workspaceId);
     let journal = await owner.journal(created.workspaceId);
     const wiki = journal.objects.find(object => object.kind === 'instances' && object.value?.origin_entrypoint === 'wiki');
     if (!wiki) throw new Error('private grant fixture lacks wiki action instance');
     journal = await owner.action(created.workspaceId,wiki.id,'wiki.create',
       {title:'Private native grant readback',body:'Encrypted record recovered through grant'});
-    if (journal.policy.payload.visibility !== 'PRIVATE' || journal.policy.payload.epoch !== (directEpoch ? 2 : 1) ||
-        journal.checkpoint.sequence !== (directEpoch ? 4 : 3) ||
+    if (journal.policy.payload.visibility !== 'PRIVATE' || journal.policy.payload.epoch !== (directEpoch || historicalInvitation ? 2 : 1) ||
+        journal.checkpoint.sequence !== (historicalInvitation ? 5 : directEpoch ? 4 : 3) ||
+        (historicalInvitation && !journal.objects.some(object => object.kind === 'records' &&
+          object.value?.payload?.title === 'Private before epoch advance' &&
+          object.value?.payload?.body === 'Encrypted record from invitation epoch')) ||
         !journal.objects.some(object => object.kind === 'records' &&
           object.value?.payload?.title === 'Private native grant readback' &&
           object.value?.payload?.body === 'Encrypted record recovered through grant'))
@@ -235,7 +247,7 @@ if (process.env.PEERWORK_TEST_PRIVATE_GRANT === '1' || process.env.PEERWORK_TEST
       owner_key_id:owner.identity.keyId,recipient_actor_id:recipient.identity.actorId,
       recipient_key_id:recipient.identity.keyId,recipient_authority:recipient.transport.authority,
       sequence:journal.checkpoint.sequence,head:journal.checkpoint.head,
-      invite_id:offer.payload.invite_id};
+      invite_id:offer.payload.invite_id,historical_invitation:historicalInvitation};
   } finally { owner.close(); recipient.close(); }
 }
 if (process.env.PEERWORK_TEST_BOOTSTRAP === '1') {
