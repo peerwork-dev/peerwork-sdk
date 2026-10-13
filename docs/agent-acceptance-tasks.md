@@ -1,6 +1,6 @@
 # Native SDK phase-6 Agent acceptance tasks
 
-**Status: NOT RUN; NOT FROZEN.** These are draft task templates, not trial evidence or approval to start a run. Freeze only after the public Python, Node, and CLI entrypoints and release artifacts satisfy the phase-4/5 gates, actual-service scripted behavior is verified, and the task/runtime/environment pins below are filled and reviewed. The currently reviewed SDK checkpoint has a Rust action facade but no installed Python/Node/CLI action wrapper, and current OS/service smoke tests are not natural-Agent trials.
+**Status: NOT RUN; NOT FROZEN.** These are draft task templates, not trial evidence or approval to start a run. Freeze only after the public Python, Node, and CLI entrypoints and release artifacts satisfy the phase-4/5 gates, actual-service scripted behavior is verified, and the task/runtime/environment pins below are filled and reviewed. Installed Python, Node, and CLI action wrappers now have scripted actual-service evidence, including the PRIVATE staged install and encrypted action/read case in [the installed report](native-private-install-installed-20261013.md). That evidence does not establish a public release, independent Agent use through each entrypoint, browser source-link acceptance, or actual macOS/Windows package execution. No current OS/service smoke is a natural-Agent trial.
 
 ## Task scenario and participant setup
 
