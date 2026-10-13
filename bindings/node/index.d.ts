@@ -145,8 +145,36 @@ export interface SecureOwnerWorkspaceSession {
   privateActions(workspaceId: string): SecurePublicActionSession;
   /** Install a caller-selected closure into a created PUBLIC workspace. */
   publicInstaller(workspaceId: string): SecurePublicPackageInstaller;
+  publicAdmission(workspaceId: string): SecurePublicAdmissionSession;
 }
 export declare function openSecureOwnerWorkspaces(options: SecureOwnerWorkspaceOptions): SecureOwnerWorkspaceSession;
+
+export interface PublicCatalogOptions {
+  origin: string;
+  allowLoopbackHttp?: boolean;
+  /** Advisory listing response budget; default 8 MiB. */
+  maxListingBytes?: number;
+}
+export interface PublicCatalogListing {
+  catalog_origin: string;
+  listing_canonical_json: string;
+  listing: unknown;
+}
+export interface InspectedPublicPackage {
+  catalog_origin: string;
+  bundle_digest: string;
+  summary_canonical_json: string;
+  bundle_canonical_json: string;
+  summary: unknown;
+  bundle: unknown;
+}
+export interface PublicCatalogSession {
+  /** Advisory search metadata; select and inspect an exact digest before use. */
+  search(query: string, options?: {after?: string; limit?: number; signal?: AbortSignal}): Promise<PublicCatalogListing>;
+  /** Checks package schema and exact digest, not external publisher trust. */
+  inspectExact(digest: string, options?: {signal?: AbortSignal}): Promise<InspectedPublicPackage>;
+}
+export declare function openPublicCatalog(options: PublicCatalogOptions): PublicCatalogSession;
 
 export interface SecureActionReceipt {
   command_id: string;

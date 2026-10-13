@@ -19,6 +19,7 @@ from ._peerwork_native import (
     secure_public_install_json,
     secure_owner_create_json,
     secure_owner_consumer_json,
+    public_catalog_json,
     secure_recipient_enrollment_json,
     secure_identity_directory_json,
     secure_public_admission_json,
@@ -1006,6 +1007,9 @@ class SecureOwnerWorkspaceClient:
     def public_installer(self, workspace_id: str) -> "OwnerWorkspacePackageInstaller":
         return OwnerWorkspacePackageInstaller(self._config, workspace_id)
 
+    def public_admission(self, workspace_id: str) -> "OwnerWorkspaceAdmissionClient":
+        return OwnerWorkspaceAdmissionClient(self._config, workspace_id)
+
     async def prepare_async(self, name: str, visibility: Literal["PUBLIC", "PRIVATE"], *,
                             structured: bool = False, keep_encrypted: list | None = None,
                             coordination_version: int | None = None) -> OwnerWorkspaceResult:
@@ -1267,6 +1271,97 @@ class SecurePublicAdmissionClient(SecureReadClient):
 
     def pending_deliveries(self) -> list[dict]:
         return cast(list[dict], self._admission("pending_deliveries"))
+
+
+class OwnerWorkspaceAdmissionClient(SecurePublicAdmissionClient):
+    """Owner invitation and delivery for a PUBLIC workspace in protected creation history."""
+
+    def __init__(self, owner_config: dict, workspace_id: str):
+        self._owner_config = owner_config
+        self._workspace_id = workspace_id
+
+    def _admission(self, operation: str, *, input_value: dict | None = None,
+                   invite_id: str | None = None, grant_id: str | None = None,
+                   cancel_handle: KernelCancelHandle | None = None) -> dict | list[dict]:
+        command_id = grant_id if operation == "retry_delivery" else invite_id
+        result = json.loads(secure_owner_consumer_json("public_admission", operation,
+            json.dumps(self._owner_config, ensure_ascii=True, allow_nan=False, separators=(",", ":")),
+            self._workspace_id,
+            None if input_value is None else json.dumps(input_value, ensure_ascii=True, allow_nan=False, separators=(",", ":")),
+            command_id, cancel_handle))
+        if result["ok"] is not True:
+            raise PublicAdmissionError(result["code"], result["message"])
+        return cast(dict | list[dict], result["value"])
+
+
+class PublicCatalogError(RuntimeError):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+class PublicCatalogListing(TypedDict):
+    catalog_origin: str
+    listing_canonical_json: str
+    listing: object
+
+
+class InspectedPublicPackage(TypedDict):
+    catalog_origin: str
+    bundle_digest: str
+    summary_canonical_json: str
+    bundle_canonical_json: str
+    summary: object
+    bundle: object
+
+
+class PublicCatalogClient:
+    """Anonymous advisory search and exact-digest public package inspection.
+
+    A matching digest proves package byte identity; it does not authenticate a
+    publisher or grant authority to install it.
+    """
+
+    def __init__(self, origin: str, *, allow_loopback_http: bool = False,
+                 max_listing_bytes: int | None = None):
+        self._config = dict(origin=origin, allow_loopback_http=allow_loopback_http,
+                            max_listing_bytes=max_listing_bytes)
+
+    def _call(self, operation: str, *, query: str | None = None, after: str | None = None,
+              limit: int | None = None, digest: str | None = None,
+              cancel_handle: KernelCancelHandle | None = None) -> dict:
+        result = json.loads(public_catalog_json(operation,
+            json.dumps(self._config, ensure_ascii=True, allow_nan=False, separators=(",", ":")),
+            query, after, limit, digest, cancel_handle))
+        if result["ok"] is not True:
+            raise PublicCatalogError(result["code"], result["message"])
+        return cast(dict, result["value"])
+
+    def search(self, query: str, *, after: str | None = None, limit: int = 20) -> PublicCatalogListing:
+        value = self._call("search", query=query, after=after, limit=limit)
+        value["listing"] = json.loads(value["listing_canonical_json"])
+        return cast(PublicCatalogListing, value)
+
+    async def search_async(self, query: str, *, after: str | None = None, limit: int = 20) -> PublicCatalogListing:
+        value = await _run_cancelled_async(self._call, "search", query=query, after=after, limit=limit)
+        value["listing"] = json.loads(value["listing_canonical_json"])
+        return cast(PublicCatalogListing, value)
+
+    def inspect_exact(self, digest: str) -> InspectedPublicPackage:
+        value = self._call("inspect", digest=digest)
+        value["summary"] = json.loads(value["summary_canonical_json"])
+        value["bundle"] = json.loads(value["bundle_canonical_json"])
+        return cast(InspectedPublicPackage, value)
+
+    async def inspect_exact_async(self, digest: str) -> InspectedPublicPackage:
+        value = await _run_cancelled_async(self._call, "inspect", digest=digest)
+        value["summary"] = json.loads(value["summary_canonical_json"])
+        value["bundle"] = json.loads(value["bundle_canonical_json"])
+        return cast(InspectedPublicPackage, value)
+
+
+__all__ += ["OwnerWorkspaceAdmissionClient", "PublicCatalogClient", "PublicCatalogError",
+            "PublicCatalogListing", "InspectedPublicPackage"]
 
 
 class SecureInvitationClient:

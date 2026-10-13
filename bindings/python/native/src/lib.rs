@@ -14,6 +14,7 @@ use peerwork_runtime::secure_private_read_access::SecurePrivateReadAccess;
 use peerwork_runtime::secure_owner_create::{
     SecureOwnerCreateConfig, SecureOwnerCreateInput, SecureOwnerWorkspaceCreate,
 };
+use peerwork_runtime::public_catalog::{PublicCatalog, PublicCatalogConfig};
 use peerwork_runtime::secure_recipient_enrollment::{
     RecipientEnrollmentConfig, SecureRecipientEnrollment,
 };
@@ -483,12 +484,71 @@ fn secure_owner_consumer_json(
                 "pending" => access.list_pending_json_with_cancel(&cancel),
                 _ => return fail("INSTALL_INPUT_INVALID", "unsupported Owner install operation"),
             }.map_err(|error| (error.code(), error.to_string()))
+        } else if kind == "public_admission" {
+            let access = match owner.public_admission_access(&workspace_id) {
+                Ok(value) => value,
+                Err(error) => return fail(error.code(), &error.to_string()),
+            };
+            match operation.as_str() {
+                "offer" => {
+                    let input: PublicOfferInput = match input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {
+                        Some(value) => value,
+                        None => return fail("ADMISSION_INPUT_INVALID", "invalid Owner offer input"),
+                    };
+                    access.submit_offer_json_with_cancel(input, &cancel)
+                }
+                "retry_offer" => match command_id.as_deref() {
+                    Some(id) => access.retry_offer_json_with_cancel(id, &cancel),
+                    None => return fail("ADMISSION_INPUT_INVALID", "invite ID is required"),
+                },
+                "pending_offers" => access.pending_offers_json(),
+                "deliver" => match command_id.as_deref() {
+                    Some(id) => access.deliver_accepted_json_with_cancel(id, &cancel),
+                    None => return fail("ADMISSION_INPUT_INVALID", "invite ID is required"),
+                },
+                "retry_delivery" => match command_id.as_deref() {
+                    Some(id) => access.retry_delivery_json_with_cancel(id, &cancel),
+                    None => return fail("ADMISSION_INPUT_INVALID", "grant ID is required"),
+                },
+                "pending_deliveries" => access.pending_deliveries_json(),
+                _ => return fail("ADMISSION_INPUT_INVALID", "unsupported Owner admission operation"),
+            }.map_err(|error| (error.code(), error.to_string()))
         } else {
             return fail("INPUT_INVALID", "unsupported Owner consumer");
         };
         match result {
             Ok(value) => format!("{{\"ok\":true,\"value\":{value}}}"),
             Err((code, message)) => fail(code, &message),
+        }
+    }))
+}
+
+#[pyfunction]
+#[pyo3(signature = (operation, config_json, query=None, after=None, limit=None, digest=None, cancel_handle=None))]
+fn public_catalog_json(
+    py: Python<'_>, operation: &str, config_json: &str,
+    query: Option<&str>, after: Option<&str>, limit: Option<u8>, digest: Option<&str>,
+    cancel_handle: Option<PyRef<'_, KernelCancelHandle>>,
+) -> PyResult<String> {
+    let config: PublicCatalogConfig = serde_json::from_str(config_json)
+        .map_err(|_| pyo3::exceptions::PyValueError::new_err("invalid catalog configuration"))?;
+    let operation = operation.to_owned();
+    let query = query.map(str::to_owned);
+    let after = after.map(str::to_owned);
+    let digest = digest.map(str::to_owned);
+    let cancel = cancel_handle.map(|handle| handle.token.clone()).unwrap_or_default();
+    Ok(py.allow_threads(move || {
+        let catalog = PublicCatalog::new(config);
+        let result = match operation.as_str() {
+            "search" => catalog.search(query.as_deref().unwrap_or(""), after.as_deref(), limit.unwrap_or(20), &cancel)
+                .map(|value| serde_json::to_string(&value).expect("catalog result serializes")),
+            "inspect" => catalog.inspect_exact(digest.as_deref().unwrap_or(""), &cancel)
+                .map(|value| serde_json::to_string(&value).expect("catalog result serializes")),
+            _ => return serde_json::json!({"ok":false,"code":"CATALOG_INPUT_INVALID","message":"unsupported catalog operation"}).to_string(),
+        };
+        match result {
+            Ok(value) => format!("{{\"ok\":true,\"value\":{value}}}"),
+            Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
         }
     }))
 }
@@ -694,6 +754,7 @@ fn _peerwork_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(secure_public_install_json, module)?)?;
     module.add_function(wrap_pyfunction!(secure_owner_create_json, module)?)?;
     module.add_function(wrap_pyfunction!(secure_owner_consumer_json, module)?)?;
+    module.add_function(wrap_pyfunction!(public_catalog_json, module)?)?;
     module.add_function(wrap_pyfunction!(secure_recipient_enrollment_json, module)?)?;
     module.add_function(wrap_pyfunction!(secure_identity_directory_json, module)?)?;
     module.add_function(wrap_pyfunction!(secure_public_admission_json, module)?)?;

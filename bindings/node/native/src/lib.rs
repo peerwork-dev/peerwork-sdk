@@ -19,6 +19,7 @@ use peerwork_runtime::secure_private_read_access::SecurePrivateReadAccess;
 use peerwork_runtime::secure_owner_create::{
     SecureOwnerCreateConfig, SecureOwnerCreateInput, SecureOwnerWorkspaceCreate,
 };
+use peerwork_runtime::public_catalog::{PublicCatalog, PublicCatalogConfig};
 use peerwork_runtime::secure_recipient_enrollment::{
     RecipientEnrollmentConfig, SecureRecipientEnrollment,
 };
@@ -662,6 +663,26 @@ impl Task for SecureOwnerConsumerTask {
                 "pending" => access.list_pending_json_with_cancel(&self.cancel),
                 _ => return Ok(fail("INSTALL_INPUT_INVALID", "unsupported Owner install operation")),
             }.map_err(|error| (error.code(), error.to_string()))
+        } else if self.kind == "public_admission" {
+            let access = match owner.public_admission_access(&self.workspace_id) {
+                Ok(value) => value,
+                Err(error) => return Ok(fail(error.code(), &error.to_string())),
+            };
+            match self.operation.as_str() {
+                "offer" => {
+                    let input: PublicOfferInput = match self.input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {
+                        Some(value) => value,
+                        None => return Ok(fail("ADMISSION_INPUT_INVALID", "invalid Owner offer input")),
+                    };
+                    access.submit_offer_json_with_cancel(input, &self.cancel)
+                }
+                "retry_offer" => access.retry_offer_json_with_cancel(self.command_id.as_deref().unwrap_or(""), &self.cancel),
+                "pending_offers" => access.pending_offers_json(),
+                "deliver" => access.deliver_accepted_json_with_cancel(self.command_id.as_deref().unwrap_or(""), &self.cancel),
+                "retry_delivery" => access.retry_delivery_json_with_cancel(self.command_id.as_deref().unwrap_or(""), &self.cancel),
+                "pending_deliveries" => access.pending_deliveries_json(),
+                _ => return Ok(fail("ADMISSION_INPUT_INVALID", "unsupported Owner admission operation")),
+            }.map_err(|error| (error.code(), error.to_string()))
         } else {
             return Ok(fail("INPUT_INVALID", "unsupported Owner consumer"));
         };
@@ -672,6 +693,53 @@ impl Task for SecureOwnerConsumerTask {
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> { Ok(output) }
+}
+
+pub struct PublicCatalogTask {
+    operation: String,
+    config_json: String,
+    query: Option<String>,
+    after: Option<String>,
+    limit: Option<u8>,
+    digest: Option<String>,
+    cancel: KernelCancellationToken,
+}
+
+impl Task for PublicCatalogTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let config: PublicCatalogConfig = match serde_json::from_str(&self.config_json) {
+            Ok(value) => value,
+            Err(_) => return Ok(serde_json::json!({"ok":false,"code":"CATALOG_INPUT_INVALID","message":"invalid catalog configuration"}).to_string()),
+        };
+        let catalog = PublicCatalog::new(config);
+        let result = match self.operation.as_str() {
+            "search" => catalog.search(self.query.as_deref().unwrap_or(""), self.after.as_deref(), self.limit.unwrap_or(20), &self.cancel)
+                .map(|value| serde_json::to_string(&value).expect("catalog result serializes")),
+            "inspect" => catalog.inspect_exact(self.digest.as_deref().unwrap_or(""), &self.cancel)
+                .map(|value| serde_json::to_string(&value).expect("catalog result serializes")),
+            _ => return Ok(serde_json::json!({"ok":false,"code":"CATALOG_INPUT_INVALID","message":"unsupported catalog operation"}).to_string()),
+        };
+        Ok(match result {
+            Ok(value) => format!("{{\"ok\":true,\"value\":{value}}}"),
+            Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
+        })
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> { Ok(output) }
+}
+
+#[napi]
+pub fn public_catalog_json(
+    operation: String, config_json: String, query: Option<String>, after: Option<String>,
+    limit: Option<u8>, digest: Option<String>, cancel_handle: Option<ClassInstance<KernelCancelHandle>>,
+) -> AsyncTask<PublicCatalogTask> {
+    AsyncTask::new(PublicCatalogTask {
+        operation, config_json, query, after, limit, digest,
+        cancel: cancel_handle.map(|handle| handle.token.clone()).unwrap_or_default(),
+    })
 }
 
 #[napi]

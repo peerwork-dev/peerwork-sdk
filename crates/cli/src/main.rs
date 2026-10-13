@@ -15,6 +15,7 @@ use peerwork_runtime::secure_private_read_access::SecurePrivateReadAccess;
 use peerwork_runtime::secure_owner_create::{
     SecureOwnerCreateConfig, SecureOwnerCreateInput, SecureOwnerWorkspaceCreate,
 };
+use peerwork_runtime::public_catalog::{PublicCatalog, PublicCatalogConfig};
 use peerwork_runtime::secure_recipient_enrollment::{
     RecipientEnrollmentConfig, SecureRecipientEnrollment,
 };
@@ -239,7 +240,13 @@ fn main() -> ExitCode {
                     || verb == "owner-private-action-pending"
                     || verb == "owner-install-begin"
                     || verb == "owner-install-continue"
-                    || verb == "owner-install-pending") =>
+                    || verb == "owner-install-pending"
+                    || verb == "owner-admit-offer"
+                    || verb == "owner-admit-retry-offer"
+                    || verb == "owner-admit-pending-offers"
+                    || verb == "owner-admit-deliver"
+                    || verb == "owner-admit-retry-delivery"
+                    || verb == "owner-admit-pending-deliveries") =>
         {
             cli_result(secure_owner_command(verb, rest))
         }
@@ -275,15 +282,18 @@ fn main() -> ExitCode {
         [noun, verb, rest @ ..] if noun == "secure" && verb == "directory-lookup" => {
             cli_result(secure_directory_lookup(rest))
         }
+        [noun, verb, rest @ ..] if noun == "secure" && (verb == "catalog-search" || verb == "catalog-inspect") => {
+            cli_result(public_catalog_command(verb, rest))
+        }
         _ => {
-            eprintln!("{{\"code\":\"USAGE\",\"message\":\"peerwork version|capabilities|identity create PATH|identity info PATH|identity import-legacy-pem PATH PROTECTED_PEM_FILE|identity import-seed-file PATH PROTECTED_SEED_FILE|kernel open|prepare|pending|status|submit ORIGIN JOURNAL IDENTITY [COMMAND_FILE|COMMAND_ID] [--allow-loopback-http] [--authority=HEX] [--chunk-file=PATH|--chunk-stdin for prepare]; kernel migrate ORIGIN JOURNAL IDENTITY SOURCE BACKUP --trusted-signer=KEY_ID [--trusted-signer=KEY_ID ...]; secure read|private-read --origin=URL --state-dir=DIR --identity=PATH --workspace=ID [--owner-actor=ID --owner-key=ID] [--authority=HEX]; secure snapshot ORIGIN KERNEL_JOURNAL READ_STATE LIFECYCLE IDENTITY WORKSPACE AUTHORITY OWNER_ACTOR OWNER_KEY [--allow-loopback-http] [--max-replay-artifact-bytes=N]; secure action-submit|action-status|action-retry CONFIG_JSON_FILE ACTION_JSON_FILE|COMMAND_ID; secure action-pending CONFIG_JSON_FILE; secure install-begin CONFIG_JSON_FILE INPUT_JSON_FILE | install-continue CONFIG_JSON_FILE BEGIN_COMMAND_ID | install-pending CONFIG_JSON_FILE; secure owner-prepare|owner-create CONFIG_JSON_FILE INPUT_JSON_FILE | owner-resume CONFIG_JSON_FILE COMMAND_ID | owner-operations CONFIG_JSON_FILE | owner-read CONFIG_JSON_FILE WORKSPACE_ID | owner-action-submit|owner-action-status|owner-action-retry|owner-action-pending|owner-private-action-submit|owner-private-action-status|owner-private-action-retry|owner-private-action-pending|owner-install-begin|owner-install-continue|owner-install-pending CONFIG_JSON_FILE WORKSPACE_ID [INPUT_JSON_FILE|COMMAND_ID]; secure recipient-create|recipient-publish|recipient-pending|recipient-certificate|recipient-update|recipient-retry-update|recipient-pending-updates --origin=URL --state-dir=DIR [--mode=ROTATE|RENEW --expected-certificate-hash=HEX --update-id=ID] [--allow-loopback-http]; secure directory-lookup --origin=URL --state-dir=DIR --actor=ACTOR --key=KEY [--identity=PATH] [--allow-loopback-http]\"}}");
+            eprintln!("{{\"code\":\"USAGE\",\"message\":\"peerwork version|capabilities|identity create PATH|identity info PATH|identity import-legacy-pem PATH PROTECTED_PEM_FILE|identity import-seed-file PATH PROTECTED_SEED_FILE|kernel open|prepare|pending|status|submit ORIGIN JOURNAL IDENTITY [COMMAND_FILE|COMMAND_ID] [--allow-loopback-http] [--authority=HEX] [--chunk-file=PATH|--chunk-stdin for prepare]; kernel migrate ORIGIN JOURNAL IDENTITY SOURCE BACKUP --trusted-signer=KEY_ID [--trusted-signer=KEY_ID ...]; secure read|private-read --origin=URL --state-dir=DIR --identity=PATH --workspace=ID [--owner-actor=ID --owner-key=ID] [--authority=HEX]; secure snapshot ORIGIN KERNEL_JOURNAL READ_STATE LIFECYCLE IDENTITY WORKSPACE AUTHORITY OWNER_ACTOR OWNER_KEY [--allow-loopback-http] [--max-replay-artifact-bytes=N]; secure action-submit|action-status|action-retry CONFIG_JSON_FILE ACTION_JSON_FILE|COMMAND_ID; secure action-pending CONFIG_JSON_FILE; secure install-begin CONFIG_JSON_FILE INPUT_JSON_FILE | install-continue CONFIG_JSON_FILE BEGIN_COMMAND_ID | install-pending CONFIG_JSON_FILE; secure owner-prepare|owner-create CONFIG_JSON_FILE INPUT_JSON_FILE | owner-resume CONFIG_JSON_FILE COMMAND_ID | owner-operations CONFIG_JSON_FILE | owner-read CONFIG_JSON_FILE WORKSPACE_ID | owner-action-submit|owner-action-status|owner-action-retry|owner-action-pending|owner-private-action-submit|owner-private-action-status|owner-private-action-retry|owner-private-action-pending|owner-install-begin|owner-install-continue|owner-install-pending|owner-admit-offer|owner-admit-retry-offer|owner-admit-pending-offers|owner-admit-deliver|owner-admit-retry-delivery|owner-admit-pending-deliveries CONFIG_JSON_FILE WORKSPACE_ID [INPUT_JSON_FILE|COMMAND_ID]; secure catalog-search CONFIG_JSON_FILE QUERY [AFTER] [LIMIT] | catalog-inspect CONFIG_JSON_FILE LOWERCASE_DIGEST; secure recipient-create|recipient-publish|recipient-pending|recipient-certificate|recipient-update|recipient-retry-update|recipient-pending-updates --origin=URL --state-dir=DIR [--mode=ROTATE|RENEW --expected-certificate-hash=HEX --update-id=ID] [--allow-loopback-http]; secure directory-lookup --origin=URL --state-dir=DIR --actor=ACTOR --key=KEY [--identity=PATH] [--allow-loopback-http]\"}}");
             ExitCode::FAILURE
         }
     }
 }
 
 fn secure_owner_command(verb: &str, args: &[String]) -> Result<String, (&'static str, String)> {
-    if verb.starts_with("owner-action-") || verb.starts_with("owner-private-action-") || verb.starts_with("owner-install-") {
+    if verb.starts_with("owner-action-") || verb.starts_with("owner-private-action-") || verb.starts_with("owner-install-") || verb.starts_with("owner-admit-") {
         return secure_owner_consumer_command(verb, args);
     }
     if args.len() != if verb == "owner-operations" { 1 } else { 2 } {
@@ -324,9 +334,9 @@ fn secure_owner_command(verb: &str, args: &[String]) -> Result<String, (&'static
 }
 
 fn secure_owner_consumer_command(verb: &str, args: &[String]) -> Result<String, (&'static str, String)> {
-    let pending = verb.ends_with("-pending");
+    let pending = verb.ends_with("-pending") || verb.ends_with("-pending-offers") || verb.ends_with("-pending-deliveries");
     if args.len() != if pending { 2 } else { 3 } {
-        return Err(("USAGE", "secure owner-action-submit|owner-action-status|owner-action-retry|owner-action-pending|owner-private-action-submit|owner-private-action-status|owner-private-action-retry|owner-private-action-pending|owner-install-begin|owner-install-continue|owner-install-pending CONFIG_JSON_FILE WORKSPACE_ID [INPUT_JSON_FILE|COMMAND_ID]".to_owned()));
+        return Err(("USAGE", "secure owner-action-submit|owner-action-status|owner-action-retry|owner-action-pending|owner-private-action-submit|owner-private-action-status|owner-private-action-retry|owner-private-action-pending|owner-install-begin|owner-install-continue|owner-install-pending|owner-admit-offer|owner-admit-retry-offer|owner-admit-pending-offers|owner-admit-deliver|owner-admit-retry-delivery|owner-admit-pending-deliveries CONFIG_JSON_FILE WORKSPACE_ID [INPUT_JSON_FILE|COMMAND_ID]".to_owned()));
     }
     let bytes = fs::read(&args[0]).map_err(|e| ("CONFIG_FILE", e.to_string()))?;
     let config: SecureOwnerCreateConfig = serde_json::from_slice(&bytes)
@@ -336,6 +346,24 @@ fn secure_owner_consumer_command(verb: &str, args: &[String]) -> Result<String, 
     let _interrupts = InterruptMonitor::start(cancel.clone())
         .map_err(|_| ("INTERRUPT_HANDLER", "unable to install interrupt handler".to_owned()))?;
     let workspace_id = &args[1];
+    if verb.starts_with("owner-admit-") {
+        let access = owner.public_admission_access(workspace_id).map_err(|e| (e.code(), e.to_string()))?;
+        let result = match verb {
+            "owner-admit-offer" => {
+                let bytes = fs::read(&args[2]).map_err(|e| ("OFFER_FILE", e.to_string()))?;
+                let input: PublicOfferInput = serde_json::from_slice(&bytes)
+                    .map_err(|_| ("ADMISSION_INPUT_INVALID", "invalid Owner offer input".to_owned()))?;
+                access.submit_offer_json_with_cancel(input, &cancel)
+            }
+            "owner-admit-retry-offer" => access.retry_offer_json_with_cancel(&args[2], &cancel),
+            "owner-admit-pending-offers" => access.pending_offers_json(),
+            "owner-admit-deliver" => access.deliver_accepted_json_with_cancel(&args[2], &cancel),
+            "owner-admit-retry-delivery" => access.retry_delivery_json_with_cancel(&args[2], &cancel),
+            "owner-admit-pending-deliveries" => access.pending_deliveries_json(),
+            _ => unreachable!(),
+        };
+        return result.map_err(|e| (e.code(), e.to_string()));
+    }
     if verb.starts_with("owner-action-") || verb.starts_with("owner-private-action-") {
         let private = verb.starts_with("owner-private-action-");
         let suffix = if private { &verb["owner-private-action-".len()..] } else { &verb["owner-action-".len()..] };
@@ -383,6 +411,32 @@ fn secure_owner_consumer_command(verb: &str, args: &[String]) -> Result<String, 
         _ => unreachable!(),
     };
     result.map_err(|e| (e.code(), e.to_string()))
+}
+
+fn public_catalog_command(verb: &str, args: &[String]) -> Result<String, (&'static str, String)> {
+    if (verb == "catalog-search" && !(2..=4).contains(&args.len()))
+        || (verb == "catalog-inspect" && args.len() != 2) {
+        return Err(("USAGE", "secure catalog-search CONFIG_JSON_FILE QUERY [AFTER] [LIMIT] | catalog-inspect CONFIG_JSON_FILE LOWERCASE_DIGEST".to_owned()));
+    }
+    let bytes = fs::read(&args[0]).map_err(|e| ("CONFIG_FILE", e.to_string()))?;
+    let config: PublicCatalogConfig = serde_json::from_slice(&bytes)
+        .map_err(|_| ("CATALOG_INPUT_INVALID", "invalid catalog configuration".to_owned()))?;
+    let catalog = PublicCatalog::new(config);
+    let cancel = KernelCancellationToken::new();
+    let _interrupts = InterruptMonitor::start(cancel.clone())
+        .map_err(|_| ("INTERRUPT_HANDLER", "unable to install interrupt handler".to_owned()))?;
+    if verb == "catalog-search" {
+        let limit = args.get(3).map(|value| value.parse::<u8>())
+            .transpose().map_err(|_| ("CATALOG_INPUT_INVALID", "invalid catalog limit".to_owned()))?
+            .unwrap_or(20);
+        let result = catalog.search(&args[1], args.get(2).map(String::as_str), limit, &cancel)
+            .map_err(|e| (e.code(), e.to_string()))?;
+        serde_json::to_string(&result).map_err(|_| ("RESULT_ENCODING_FAILED", "catalog result encoding failed".to_owned()))
+    } else {
+        let result = catalog.inspect_exact(&args[1], &cancel)
+            .map_err(|e| (e.code(), e.to_string()))?;
+        serde_json::to_string(&result).map_err(|_| ("RESULT_ENCODING_FAILED", "catalog result encoding failed".to_owned()))
+    }
 }
 
 fn parse_owner_input(bytes: &[u8]) -> Result<SecureOwnerCreateInput, (&'static str, String)> {

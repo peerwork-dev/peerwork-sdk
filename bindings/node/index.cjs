@@ -393,7 +393,7 @@ exports.openSecureOwnerWorkspaces = options => {
           throw error;
         }
         const value = result.value;
-        if (kind === 'public_install' || operation === 'pending') return value;
+        if (kind === 'public_install' || kind === 'public_admission' || operation === 'pending') return value;
         const receipt = value.receipt_canonical_json === null ? null : JSON.parse(value.receipt_canonical_json);
         delete value.receipt_canonical_json;
         return { ...value, receipt };
@@ -421,6 +421,26 @@ exports.openSecureOwnerWorkspaces = options => {
       continueInstall: (beginCommandId, options = {}) => call('continue', undefined, beginCommandId, options.signal),
       pending: (options = {}) => call('pending', undefined, undefined, options.signal),
     });
+    if (kind === 'public_admission') return Object.freeze({
+      offer: (recipientCertificateJson, scopes, options = {}) => {
+        const message = options.message ?? '';
+        if (typeof message !== 'string') throw new TypeError('offer message must be a string');
+        const messageUtf16 = Array.from({ length: message.length }, (_, index) => message.charCodeAt(index));
+        return call('offer', {
+          recipient_certificate_json: recipientCertificateJson,
+          scopes_json: strictCommandJson(scopes),
+          message: '', message_utf16: messageUtf16,
+          invite_id: options.inviteId ?? null,
+          issued_at_ms: options.issuedAtMs ?? null,
+          expires_at_ms: options.expiresAtMs ?? null,
+        }, undefined, options.signal);
+      },
+      retryOffer: (inviteId, options = {}) => call('retry_offer', undefined, inviteId, options.signal),
+      pendingOffers: (options = {}) => call('pending_offers', undefined, undefined, options.signal),
+      deliver: (inviteId, options = {}) => call('deliver', undefined, inviteId, options.signal),
+      retryDelivery: (grantId, options = {}) => call('retry_delivery', undefined, grantId, options.signal),
+      pendingDeliveries: (options = {}) => call('pending_deliveries', undefined, undefined, options.signal),
+    });
     return Object.freeze({
       submit: (actionId, instanceId, body, options = {}) => call('submit', {
         action_id: actionId, instance_id: instanceId, body_json: strictCommandJson(body),
@@ -442,6 +462,48 @@ exports.openSecureOwnerWorkspaces = options => {
     publicActions: workspaceId => consumer('public_action', workspaceId),
     privateActions: workspaceId => consumer('private_action', workspaceId),
     publicInstaller: workspaceId => consumer('public_install', workspaceId),
+    publicAdmission: workspaceId => consumer('public_admission', workspaceId),
+  });
+};
+
+/** Anonymous catalog metadata is advisory; exact digest inspection checks bytes, not publisher trust. */
+exports.openPublicCatalog = options => {
+  if (!options || typeof options.origin !== 'string' || !options.origin) {
+    throw new TypeError('catalog origin is required');
+  }
+  const config = {
+    origin: options.origin,
+    allow_loopback_http: options.allowLoopbackHttp ?? false,
+    max_listing_bytes: options.maxListingBytes ?? null,
+  };
+  const call = async (operation, query, after, limit, digest, signal) => {
+    const handle = new binding.KernelCancelHandle();
+    const onAbort = () => handle.cancel();
+    if (signal?.aborted) onAbort();
+    signal?.addEventListener?.('abort', onAbort, { once: true });
+    try {
+      const result = JSON.parse(await binding.publicCatalogJson(
+        operation, strictCommandJson(config), query, after, limit, digest, handle,
+      ));
+      if (result.ok !== true) {
+        const error = new Error(result.message);
+        error.code = result.code;
+        throw error;
+      }
+      const value = result.value;
+      if (operation === 'search') value.listing = JSON.parse(value.listing_canonical_json);
+      else {
+        value.summary = JSON.parse(value.summary_canonical_json);
+        value.bundle = JSON.parse(value.bundle_canonical_json);
+      }
+      return value;
+    } finally {
+      signal?.removeEventListener?.('abort', onAbort);
+    }
+  };
+  return Object.freeze({
+    search: (query, options = {}) => call('search', query, options.after, options.limit ?? 20, undefined, options.signal),
+    inspectExact: (digest, options = {}) => call('inspect', undefined, undefined, undefined, digest, options.signal),
   });
 };
 
