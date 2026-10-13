@@ -446,3 +446,87 @@ then need ARM64 Python/Node extension packaging, dependency closure, and
 emulated installed API tests. No duration or package size is claimed from
 this tiny probe; the work spans toolchain, ICU, two extensions, CLI and
 installed-service validation rather than a single rerun of x64 jobs.
+
+### ARM64 ICU cross-build follow-up, 2026-10-13
+
+The task-local cross-toolchain now built the **pinned ICU4C 78.3 ARM64 static
+archives** and executed an ICU collation consumer under direct QEMU. This is
+cross compilation plus emulation on x86-64, **not** native ARM hardware and
+not yet an SDK wheel/addon/CLI build. All new inputs/output are under ignored
+`.build-artifacts/arm64`; build temporaries used workspace-owned `TMPDIR`.
+The ICU source archive SHA-256 remained the code-pinned
+`3a2e7a47604ba702f345878308e6fefeca612ee895cf4a5f222e7955fabfe0c0`,
+and filtered data SHA-256 remained
+`790a1d07c4a9e4d7de4eab025cc97b54e0097de2ad94408d190ea55c37fcd7e5`.
+
+Alpine x64 Clang 20.1.8 from the earlier verified native rootfs was copied
+and patched only in task storage with that rootfs's musl interpreter and
+relative-library search path; copy SHA-256 is
+`f66ab1ab13459df8bd0e800f15020ce64548369d63eec36fc455e8a062dd64ed`.
+This lets Clang run its own `-cc1` child without host binfmt. The ARM sysroot
+starts from the previously verified official Alpine 3.22.6 aarch64 rootfs and
+repository index. The downloaded target `.apk` files passed Alpine's `apk
+verify` without host installation: `musl-dev` SHA-256
+`576f4aabcfa01d10d6baa2d5d87de436b76e58ae76eedf9db7627051365e1fe3`,
+`gcc` startup objects
+`0224b985a055ef90324dee9a65c5683f28499f0798db23cae90b40ebba620772`,
+`compiler-rt`
+`9dd65d86b36b824202b4d5e6eec3da7b922f74adee585a6824c659669c8a6875`,
+`libc++` `4afc81da0a024a27bee4a703fd5a8c16bd7f2c5d869b1243a33930715bfe0194`,
+`libc++-dev`
+`cc8122215fd85ddc1a700fd0e93359c37763a5375efbe6f5c31b13bddc8602a4`,
+`llvm-libunwind`
+`9604c7b55ed77b8d243801fb9d39e74617671f5cf1f7e2018fd98482f6929f81`,
+and `llvm-libunwind-dev`
+`d5b584b1b281883a418d529818799923249d7f6f4b4855353d63c57e7d57345a`.
+The signed packages were extracted into a separate scratch sysroot; no system
+package database or operator state changed. Wrapper SHA-256 values are
+`91d6d839bd3391e7fcd1a39ab478c41b22f99263b541435ed4691ab4d218fe66`
+(C) and `474fcd49f097dabb4208520bbd750a2794a4add1f95bd819cc25faf5ba1208c1`
+(C++). They select `--target=aarch64-alpine-linux-musl`, the scratch sysroot,
+Clang's pinned resource directory, and the existing QEMU guest `rust-lld`
+wrapper.
+
+The first package-manager simulation could not open uncached online indexes;
+the package names/versions were instead read from the previously downloaded
+official index, fetched by exact URL, and signature-verified. The first C++
+link missed `crtbeginS.o`/`libgcc`, then linked against the wrong GNU
+`libunwind` and failed under QEMU because Alpine `libc++` needs LLVM
+`libunwind.so.1`. A clean LLVM-libunwind sysroot corrected that. Calling the
+unpatched Clang through the musl loader also failed when it tried to spawn
+`-cc1`; the task-local ELF interpreter patch corrected self-execution. The
+first combined compile/link invocation used `--resource-dir`, which Clang
+rejected; its supported `-resource-dir` option passed. A C++ string binary
+then compiled, linked, and ran under direct QEMU with exit 0.
+
+ICU was configured out of source with `runConfigureICU Linux
+--host=aarch64-alpine-linux-musl --enable-static --disable-shared
+--with-data-packaging=archive --with-library-suffix=peerwork
+--with-cross-build=<existing pinned x64 ICU host-tool build>`, `CC`/`CXX`
+set to those wrappers, and `CFLAGS`/`CXXFLAGS=-fPIC`. This follows the
+[ICU project's cross-build procedure](https://unicode-org.github.io/icu/userguide/icu4c/build.html).
+Configure exited 0 and identified build=x86_64, host=aarch64;
+`make -j4` exited 0 in session `84613`. Compile-only stages emitted benign
+unused-linker-option warnings. `ar p | file -` identified ARM aarch64 ELF
+members in the output archives: `libicui18npeerwork.a` SHA-256
+`6b43112393b706ce449ff4e914584c53a2540026daabda565c9736f45a97f542`
+(10 MiB), `libicuucpeerwork.a`
+`c2251f42db2b29364c174ff022f1a98cf19896b9cf1116da78cbaf74d88856bc`
+(4.9 MiB), and `libicudatapeerwork.a`
+`efc4214727f60092aedd1e0b8ae2d752ed33ef7596b30d4447619770f3f33d8f`.
+An actual ARM64 program linked against these three archives, loaded the same
+pinned filtered `.dat` through `udata_setCommonData`, and used `ucol_strcoll`
+for `a-1` versus `a_1`. Direct QEMU exit was 0 and comparison result `1`,
+matching pinned Node 24 `Math.sign('a-1'.localeCompare('a_1','en-US')) == 1`.
+The consumer binary SHA-256 is
+`a031cd1d604617720c460299abf4ed9e013a157ecb36bfdb1cf9cc985a318607`;
+`readelf` reports ARM64 musl plus `libc++`, `libc++abi`, and LLVM
+`libunwind` runtime dependencies. This one-pair smoke establishes actual
+ICU link/load/use under emulation, not the full pinned collation vector suite.
+
+The next step is a reproducible opt-in core build-script cross branch that
+rebuilds host tools and target ICU from the verified archive, then a consumed
+ARM64 SDK CLI/extension artifact and emulated installed checks. The current
+native `build.rs` intentionally refuses `HOST!=TARGET`; this scratch result
+does not bypass that production gate. ARM64 package dependency closure,
+installer wiring, real ARM hardware and macOS/Windows execution remain open.
