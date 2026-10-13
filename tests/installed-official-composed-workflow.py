@@ -145,7 +145,7 @@ with tempfile.TemporaryDirectory(prefix="peerwork-official-workflow-") as direct
         try:
             installer.begin(**selection, grants_json=json.dumps(adopter_scope))
         except peerwork.PublicInstallError as error:
-            assert error.code == "INSTALL_FAILED", error.code
+            assert error.code == "INSTALL_PLAN_FAILED", error.code
         else:
             raise AssertionError("PUBLIC install unexpectedly granted an actor absent from signed policy")
         after_refusal = counts(origin)
