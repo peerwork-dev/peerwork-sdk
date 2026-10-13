@@ -329,9 +329,22 @@ impl SecureReadProfile {
         Ok((store, saved))
     }
 
+    /// Return source and owner pins only from the protected profile. A direct
+    /// PRIVATE grant may use the staged page slot, but it must not choose a
+    /// new authority or owner from a key-grant response.
+    pub(crate) fn private_grant_read_config(&self) -> Result<SecureReadConfig, SecureReadAccessError> {
+        let (_, saved) = self.open_local_profile()?;
+        let slot = saved.staged.or(saved.current).unwrap_or(0);
+        Ok(self.read_config(&saved, slot))
+    }
+
     fn access(&self, profile: &ProfileDocument, slot: u8) -> SecureReadAccess {
+        SecureReadAccess::new(self.read_config(profile, slot))
+    }
+
+    fn read_config(&self, profile: &ProfileDocument, slot: u8) -> SecureReadConfig {
         let state_dir = &self.config.state_dir;
-        SecureReadAccess::new(SecureReadConfig {
+        SecureReadConfig {
             origin: profile.origin.clone(),
             kernel_journal_path: state_dir.join("kernel.sqlite"),
             read_state_path: state_dir.join(format!("read-{slot}.state")),
@@ -344,7 +357,7 @@ impl SecureReadProfile {
             required_features: profile.required_features.clone(),
             allow_loopback_http: profile.allow_loopback_http,
             max_replay_artifact_bytes: self.config.max_replay_artifact_bytes,
-        })
+        }
     }
 }
 
