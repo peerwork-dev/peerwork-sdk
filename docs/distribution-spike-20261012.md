@@ -362,3 +362,48 @@ and an ELF `GLIBC_2.28` ceiling check. Its shell block passed `bash -n`
 after extraction from the workflow. That job has **not** run on GitHub;
 the guarded reference checkout is unavailable there, so the job does not
 claim the actual-service action test above.
+
+### ARM64 emulation feasibility, 2026-10-13
+
+This is a **QEMU-emulated** aarch64 runtime and Rust compiler probe on an
+x86-64 host, not native ARM hardware, an SDK build, a linked executable, or
+an installed SDK acceptance test. No global binfmt registration, host kernel
+change, or operator-state mount was used. All inputs and outputs are under
+ignored task-local `.build-artifacts/arm64`.
+
+The Debian repository's `qemu-user` 10.0.13+ds-0+deb13u1 amd64 package was
+downloaded without installation; its SHA-256
+`ca6ede739327a20ae5a3498230c8a3a9a072c586e131bc6bcc1201eb1725e336`
+matched `apt-cache show` repository metadata. The extracted static-pie
+`qemu-aarch64` SHA-256 is
+`73cc2584f119f9e74c85c0a8549dbb6fd104ae3897a06a7500797f9e5b4d0943`.
+The official Alpine 3.22.6 aarch64 minirootfs archive SHA-256
+`821565fa8f3953eefd12497b166b4b50add2f7c57fb312e75862f5867e06fefe`
+matched its published `.sha256` sidecar. The first local sidecar command
+failed because it ran from the SDK root instead of the download directory;
+running `sha256sum -c` inside that directory passed. Running the extracted
+BusyBox via `qemu-aarch64 -L <rootfs> <rootfs>/bin/busybox uname -m` exited
+0 and printed `aarch64`.
+
+The official Rust 1.89.0 aarch64-musl `rustc` archive SHA-256
+`9f463709166a6cce04d218160a6d85a5ce262b00e0a69101509a518a16f9102e`
+and matching `rust-std` SHA-256
+`611633874e2000fd84807be65d82a6dfb7735c728969f5c8f62cad66702e6681`
+both matched their published Rust `.sha256` sidecars. The first `rustc
+--version` attempt failed at guest loading because the minimal rootfs lacks
+`libgcc_s.so.1`. The official Alpine v3.22 main/aarch64 index (downloaded
+archive SHA-256
+`90cb1d2d05e01cb5467946403a6e240e5a2899ad80c0a6167f35b1bac40901cf`)
+identified `libgcc` 14.2.0-r6. Its downloaded `.apk` SHA-256 was
+`ba1835eec3ad8a120efd3d5020e561d53553a0513763a08f509e3ce6d4baa9ca`;
+Alpine `apk verify` reported `OK`. After extracting only its guest library,
+`qemu-aarch64 -L <rootfs> <rustc>/bin/rustc --version` exited 0 and printed
+`rustc 1.89.0 (29483883e 2025-08-04)`. A first tiny compile failed with
+`E0463` because `rust-std` is a separate component. Adding the verified
+standard library and rerunning `rustc --emit=llvm-ir hello.rs -o hello.ll`
+exited 0, emitting 7,822 bytes of LLVM IR with target triple
+`aarch64-unknown-linux-musl` (output SHA-256
+`c556a4ac4c680a2f143c06748e53ccfd51cb1c7822b868cbac834c948757dfab`).
+This validates guest loader and compiler execution only. Guest subprocess
+translation, linking, executing an ARM64 binary, SDK build, and dependency
+closure remain to be tested.
