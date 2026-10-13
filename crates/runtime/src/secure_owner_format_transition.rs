@@ -1162,6 +1162,10 @@ mod tests {
                 break;
             }
             assert_eq!(received["status"], "PENDING");
+            // The receipt POST and signed control projection are separate
+            // service steps; keep the same saved ID and wait briefly for the
+            // control observation, with an explicit four-attempt bound.
+            std::thread::sleep(std::time::Duration::from_millis(150));
             received =
                 serde_json::from_str(&decision.retry_receive_json(invite_id).unwrap()).unwrap();
             assert_eq!(received["receipt_hash"], receipt_hash);
