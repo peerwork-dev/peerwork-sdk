@@ -76,3 +76,34 @@ not negate the independently SHA-verified unpacked rootfs. The next relevant
 gate is one immutable current-source native build inside that rootfs, followed
 by binary symbol checks and installed consumers. The configured CI job also
 remains unrun.
+
+## Local static consumer follow-up
+
+The earlier `No matching distribution found for mypy` result was caused by
+the filesystem sandbox's DNS failure to reach `pypi.org`, observed explicitly
+as `Name or service not known` before any package-index response. An approved
+task-local public-PyPI check listed `mypy`, and `mypy==1.18.2` (the version
+pinned in `.github/workflows/distribution-spike.yml`) installed into
+`.build-artifacts/typed-python-2ad7ff1/typecheck-venv` in session `89954`
+(exit 0). Its package freeze is
+`.build-artifacts/orphan-glibc28-1fbe859/static-checker-freeze.txt` (SHA-256
+`444cff272ddcb23444bab40868677c787e0998c0866b1542ba76c4e0ffe00fd6`).
+No package runtime dependency changed.
+
+A fresh task-local venv installed the unchanged current glibc 2.28 wheel
+`.build-artifacts/glibc28/bundle/rootfs/work/sdk-orphan-1fbe859/dist/wheels/peerwork_sdk-0.0.1-cp311-abi3-manylinux_2_28_x86_64.whl`
+(SHA-256 `1cc86214748a838e29b9ae378dc54a9d42f912fae16a43bc277a4e65f4564706`)
+using `pip install --no-index --no-deps` in session `80412` (exit 0), with
+`peerwork/py.typed` present. The actual static check command was
+`python3 tests/verify-installed-python-types.py --python .build-artifacts/orphan-glibc28-1fbe859/type-consumer-venv/bin/python --mypy .build-artifacts/typed-python-2ad7ff1/typecheck-venv/bin/mypy`.
+It exited 0 in session `38640`; log
+`.build-artifacts/orphan-glibc28-1fbe859/static-consumer.log` has SHA-256
+`6a269353c3524e3a5661a51746c8875521c3d5690ac26e84ea29700ac03a73fdc`.
+The fixture SHA-256 is
+`2a9afd7b32d36dea4a9a1c7724379ad8f2c8366212651b9a40066c30642a913b`:
+strict mypy reports a non-`Any` public `create_identity` type in the positive
+case and rejects an integer where `create_identity` requires `str` in the
+negative case. This is one installed Linux x64 wheel consumer check; the
+configured CI arm64/macOS/Windows jobs remain unrun. The earlier 2.38 typed
+overlay wheel also passed the same fixture locally in session `97582`, without
+changing the current glibc 2.28 artifact.
