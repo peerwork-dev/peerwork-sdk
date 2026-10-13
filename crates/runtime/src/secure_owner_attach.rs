@@ -1683,6 +1683,8 @@ mod tests {
         process::{Child, Command, Stdio},
     };
 
+    static ATTACH_FAULT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn actual_service_completed_inbox_marker_requires_exact_owner_ack() {
         let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else {
@@ -1851,6 +1853,7 @@ mod tests {
 
     #[test]
     fn actual_service_imports_one_explicit_private_pending_action_exactly_once() {
+        let _fault_guard = ATTACH_FAULT_TEST_LOCK.lock().unwrap();
         let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else {
             return;
         };
@@ -2025,6 +2028,7 @@ mod tests {
 
     #[test]
     fn actual_service_imports_old_structured_and_public_pending_actions() {
+        let _fault_guard = ATTACH_FAULT_TEST_LOCK.lock().unwrap();
         let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else {
             return;
         };
@@ -2260,6 +2264,223 @@ mod tests {
                 serde_json::from_str(&facade.read_workspace_json(workspace, &cancel).unwrap())
                     .unwrap();
             assert_eq!(read["sequence"], 2);
+            assert!(read["objects"].as_array().unwrap().iter().any(|row| {
+                row["kind"] == "records"
+                    && row["value"]["payload"]["title"] == "Pending legacy Owner action"
+                    && row["value"]["payload"]["body"] == "Exact signed packet remains local"
+            }));
+        }
+    }
+
+    #[test]
+    fn actual_service_imports_current_wire_v3_pending_actions() {
+        let _fault_guard = ATTACH_FAULT_TEST_LOCK.lock().unwrap();
+        let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else {
+            return;
+        };
+        let node = std::env::var("PEERWORK_NODE_BIN").unwrap_or_else(|_| "node".into());
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let bridge =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/reference-kernel-server.mjs");
+        let child = Command::new(&node)
+            .arg(bridge)
+            .env("PEERWORK_REFERENCE_ROOT", &reference_root)
+            .env("PEERWORK_TEST_STATE", root.path())
+            .env("PEERWORK_TEST_FIRST_POST_MODE", "normal")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        struct StopPending(Child);
+        impl Drop for StopPending {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut child = StopPending(child);
+        let mut lines = BufReader::new(child.0.stdout.take().unwrap()).lines();
+        let line = lines.next().unwrap().unwrap();
+        assert!(!line.is_empty(), "pinned service exited before readiness");
+        let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let origin = ready["origin"].as_str().unwrap();
+        let helper =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/legacy-owner-source.mjs");
+        let cancel = CancellationToken::new();
+        for (index, mode, visibility, structure_mode, ceiling, source_sequence, before_post) in [
+            (0, "pending-current-private", "PRIVATE", "NONE", 1, 1, false),
+            (
+                1,
+                "pending-current-private-before-post",
+                "PRIVATE",
+                "NONE",
+                1,
+                1,
+                true,
+            ),
+            (
+                2,
+                "pending-current-private-structured",
+                "PRIVATE",
+                "STRUCTURED",
+                1,
+                1,
+                false,
+            ),
+            (
+                3,
+                "pending-current-private-structured-before-post",
+                "PRIVATE",
+                "STRUCTURED",
+                1,
+                1,
+                true,
+            ),
+            (
+                4,
+                "pending-current-private-structured-ceiling2",
+                "PRIVATE",
+                "STRUCTURED",
+                2,
+                2,
+                false,
+            ),
+            (
+                5,
+                "pending-current-private-structured-ceiling2-before-post",
+                "PRIVATE",
+                "STRUCTURED",
+                2,
+                2,
+                true,
+            ),
+            (6, "pending-current-public", "PUBLIC", "NONE", 1, 1, false),
+            (
+                7,
+                "pending-current-public-before-post",
+                "PUBLIC",
+                "NONE",
+                1,
+                1,
+                true,
+            ),
+            (
+                8,
+                "pending-current-public-structured",
+                "PUBLIC",
+                "STRUCTURED",
+                1,
+                1,
+                false,
+            ),
+            (
+                9,
+                "pending-current-public-structured-before-post",
+                "PUBLIC",
+                "STRUCTURED",
+                1,
+                1,
+                true,
+            ),
+        ] {
+            let output = Command::new(&node)
+                .arg(&helper)
+                .arg(origin)
+                .arg(root.path().join(format!("current-v3-{index}")))
+                .arg(&reference_root)
+                .arg(mode)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "current v3 source setup: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let source: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(source["policy_v"], 3);
+            assert_eq!(source["visibility"], visibility);
+            assert_eq!(source["structure_mode"], structure_mode);
+            assert_eq!(source["protocol_format_ceiling"], ceiling);
+            assert_eq!(source["sequence"], source_sequence);
+            assert_eq!(source["pending_count"], 1);
+            let workspace = source["workspace_id"].as_str().unwrap();
+            let command = source["pending_command_id"].as_str().unwrap();
+            let config = SecureOwnerCreateConfig {
+                origin: origin.into(),
+                state_dir: root.path().join(format!("native-current-v3-{index}")),
+                allow_loopback_http: true,
+                max_replay_artifact_bytes: 64 * 1024 * 1024,
+            };
+            let input = HistoricalOwnerAttachInput {
+                workspace_id: workspace.into(),
+                protected_ts_state_path: source["state_path"].as_str().unwrap().into(),
+                protected_ts_intent_db_path: source["intent_db_path"].as_str().unwrap().into(),
+                protected_owner_pkcs8_path: source["pem_path"].as_str().unwrap().into(),
+                expected_owner_actor_id: source["owner_actor_id"].as_str().unwrap().into(),
+                expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
+                recover_pending_action: true,
+            };
+            let owner = SecureHistoricalOwnerAttach::new(config.clone());
+            let posts = TEST_IMPORTED_ACTION_POSTS.load(Ordering::SeqCst);
+            let completed = if before_post {
+                TEST_STOP_AFTER_ATTACH_ROW.store(true, Ordering::SeqCst);
+                assert!(matches!(
+                    owner.attach(input, &cancel),
+                    Err(HistoricalOwnerAttachError::Cancelled)
+                ));
+                let saved = owner.attachments().unwrap();
+                assert_eq!(saved.len(), 1);
+                assert_eq!(saved[0].status, "PREPARED");
+                assert_eq!(TEST_IMPORTED_ACTION_POSTS.load(Ordering::SeqCst), posts);
+                let completed = owner
+                    .resume_attachment(&saved[0].attach_id, &cancel)
+                    .unwrap();
+                assert_eq!(TEST_IMPORTED_ACTION_POSTS.load(Ordering::SeqCst), posts + 1);
+                completed
+            } else {
+                let completed = owner.attach(input, &cancel).unwrap();
+                assert_eq!(TEST_IMPORTED_ACTION_POSTS.load(Ordering::SeqCst), posts);
+                completed
+            };
+            assert_eq!(completed.status, "ATTACHED");
+            assert_eq!(completed.sequence, Some(source_sequence + 1));
+            assert_eq!(
+                owner
+                    .resume_attachment(&completed.attach_id, &cancel)
+                    .unwrap(),
+                completed
+            );
+            assert_eq!(
+                TEST_IMPORTED_ACTION_POSTS.load(Ordering::SeqCst),
+                posts + usize::from(before_post)
+            );
+            let facade = SecureOwnerWorkspaceCreate::new(config);
+            let reconciled = if visibility == "PUBLIC" {
+                facade
+                    .public_action_access(workspace)
+                    .unwrap()
+                    .reconcile_json(command)
+                    .unwrap()
+            } else {
+                facade
+                    .private_action_access(workspace)
+                    .unwrap()
+                    .reconcile_json(command)
+                    .unwrap()
+            };
+            let action: serde_json::Value = serde_json::from_str(&reconciled).unwrap();
+            assert_eq!(action["status"], "ACCEPTED");
+            assert_eq!(action["sequence"], source_sequence + 1);
+            assert_eq!(action["commit_hash"], source["pending_commit_hash"]);
+            let read: serde_json::Value =
+                serde_json::from_str(&facade.read_workspace_json(workspace, &cancel).unwrap())
+                    .unwrap();
+            assert_eq!(read["sequence"], source_sequence + 1);
             assert!(read["objects"].as_array().unwrap().iter().any(|row| {
                 row["kind"] == "records"
                     && row["value"]["payload"]["title"] == "Pending legacy Owner action"
@@ -2723,6 +2944,7 @@ mod tests {
 
     #[test]
     fn actual_service_legacy_private_owner_attach_then_native_action() {
+        let _fault_guard = ATTACH_FAULT_TEST_LOCK.lock().unwrap();
         let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else {
             return;
         };

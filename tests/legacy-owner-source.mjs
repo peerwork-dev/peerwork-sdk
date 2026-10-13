@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 
 const [origin, sourceDir, legacyRoot, mode = 'clean'] = process.argv.slice(2);
 if (!origin || !sourceDir || !legacyRoot) throw new Error('LEGACY_TEST_INPUT_REQUIRED');
-if (!['clean', 'completed', 'legacy-record', 'pending', 'pending-before-post', 'pending-private-structured', 'pending-private-structured-before-post', 'pending-public', 'pending-public-before-post', 'pending-public-structured', 'pending-public-structured-before-post', 'unknown-store', 'malformed-store', 'legacy-structured', 'legacy-public', 'legacy-public-structured', 'legacy-public-record', 'legacy-public-structured-record', 'private-missing-ring'].includes(mode)) throw new Error('LEGACY_TEST_MODE_INVALID');
+if (!['clean', 'completed', 'legacy-record', 'pending', 'pending-before-post', 'pending-private-structured', 'pending-private-structured-before-post', 'pending-public', 'pending-public-before-post', 'pending-public-structured', 'pending-public-structured-before-post', 'pending-current-private', 'pending-current-private-before-post', 'pending-current-private-structured', 'pending-current-private-structured-before-post', 'pending-current-private-structured-ceiling2', 'pending-current-private-structured-ceiling2-before-post', 'pending-current-public', 'pending-current-public-before-post', 'pending-current-public-structured', 'pending-current-public-structured-before-post', 'unknown-store', 'malformed-store', 'legacy-structured', 'legacy-public', 'legacy-public-structured', 'legacy-public-record', 'legacy-public-structured-record', 'private-missing-ring'].includes(mode)) throw new Error('LEGACY_TEST_MODE_INVALID');
 mkdirSync(sourceDir, { recursive: true, mode: 0o700 });
 const { privateKey } = generateKeyPairSync('ed25519');
 const pemPath = join(sourceDir, 'owner.pem');
@@ -20,11 +20,13 @@ const { SecureAgentClient } = await import(pathToFileURL(modulePath).href);
 const { secureHash } = await import(pathToFileURL(join(legacyRoot, 'dist-workspace/src/workspace-secure-client.js')).href);
 const agent = await SecureAgentClient.open({ baseUrl: new URL(origin).origin, privateKey, statePath, intentDbPath });
 try {
-  const visibility = mode.startsWith('legacy-public') || mode.startsWith('pending-public') ? 'PUBLIC' : 'PRIVATE';
-  const structured = mode === 'legacy-structured' || mode === 'legacy-public-structured' || mode === 'legacy-public-structured-record' || mode.startsWith('pending-private-structured') || mode.startsWith('pending-public-structured');
+  const visibility = mode.includes('public') ? 'PUBLIC' : 'PRIVATE';
+  const structured = mode.includes('structured');
+  const currentClient = mode.startsWith('pending-current');
   const created = await agent.create('Legacy native attach proof', visibility, { structure: structured });
-  const journal = await agent.journal(created.workspaceId);
-  if (journal.policy.payload.v !== (structured ? 2 : 1) || journal.policy.payload.visibility !== visibility) {
+  let journal = await agent.journal(created.workspaceId);
+  if (mode.includes('ceiling2')) journal = await agent.enableFormatTwo(created.workspaceId);
+  if (journal.policy.payload.v !== (currentClient ? 3 : structured ? 2 : 1) || journal.policy.payload.visibility !== visibility) {
     throw new Error('LEGACY_EXPECTED_WIRE_NOT_CREATED');
   }
   if (mode.startsWith('pending')) {
@@ -94,6 +96,8 @@ try {
     owner_actor_id: agent.identity.actorId,
     owner_key_id: agent.identity.keyId,
     policy_v: journal.policy.payload.v,
+    protocol_format_ceiling: journal.policy.payload.protocol_format_ceiling ?? null,
+    structure_mode: journal.policy.payload.structure_mode ?? null,
     visibility,
     structured,
     sequence: journal.checkpoint.sequence,
