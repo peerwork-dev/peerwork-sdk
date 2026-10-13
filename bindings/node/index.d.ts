@@ -144,7 +144,7 @@ export interface HistoricalOwnerAttachmentInput {
 export interface HistoricalOwnerAttachmentResult {
   attach_id: string;
   workspace_id: string;
-  provenance: 'ATTACHED';
+  provenance: 'HISTORICAL_TS_OWNER';
   status: 'PREPARED' | 'ATTACHED';
   owner_actor_id: string;
   owner_key_id: string;

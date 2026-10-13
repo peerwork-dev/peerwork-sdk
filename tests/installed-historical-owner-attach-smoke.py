@@ -27,6 +27,7 @@ for relative, variable in (
     ("crates/runtime/src/secure_owner_attach.rs", "PEERWORK_TEST_ATTACH_SOURCE_SHA256"),
     ("crates/runtime/src/secure_owner_create.rs", "PEERWORK_TEST_OWNER_SOURCE_SHA256"),
     ("tests/legacy-owner-source.mjs", "PEERWORK_TEST_LEGACY_HELPER_SHA256"),
+    ("tests/reference-kernel-server.mjs", "PEERWORK_TEST_REFERENCE_FIXTURE_SHA256"),
 ):
     assert hashlib.sha256((SOURCE / relative).read_bytes()).hexdigest() == os.environ[variable]
 head = subprocess.check_output(["git", "-C", str(LEGACY), "rev-parse", "HEAD"], text=True).strip()
@@ -213,7 +214,7 @@ try:
     asyncio.run(cancel_prepared_attach())
     prepared = owner.attachments()
     assert len(prepared) == 1 and prepared[0]["status"] == "PREPARED"
-    assert prepared[0]["provenance"] == "ATTACHED"
+    assert prepared[0]["provenance"] == "HISTORICAL_TS_OWNER"
     assert prepared[0]["workspace_id"] == clean["workspace_id"]
     assert prepared[0]["sequence"] is None and prepared[0]["head"] is None
     assert node_call(config, "attachments") == dict(ok=True, value=prepared)
@@ -223,7 +224,7 @@ try:
     attached = node_call(config, "resume", attachId=attach_id)
     assert attached["ok"] is True
     result = attached["value"]
-    assert result["provenance"] == "ATTACHED" and result["status"] == "ATTACHED"
+    assert result["provenance"] == "HISTORICAL_TS_OWNER" and result["status"] == "ATTACHED"
     assert result["workspace_id"] == clean["workspace_id"]
     assert result["owner_actor_id"] == clean["owner_actor_id"]
     assert result["owner_key_id"] == clean["owner_key_id"]
@@ -268,7 +269,7 @@ try:
     assert owner.attachments() == node_call(config, "attachments")["value"]
     assert cli(config_file, "owner-attachments")["value"] == owner.attachments()
     print(json.dumps(dict(status="PASS", workspace_id=clean["workspace_id"],
-        attach_id=attach_id, provenance="ATTACHED", source_policy_v=1,
+        attach_id=attach_id, provenance="HISTORICAL_TS_OWNER", source_policy_v=1,
         source_unresolved_cases=3, wrong_owner_refused=True,
         prepared_recovered_after_cancellation=True,
         source_files_unavailable_after_attach=True, record_id=record_id,

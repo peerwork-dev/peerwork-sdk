@@ -920,7 +920,7 @@ class OwnerWorkspaceResult(TypedDict):
 class HistoricalOwnerAttachmentResult(TypedDict):
     attach_id: str
     workspace_id: str
-    provenance: Literal["ATTACHED"]
+    provenance: Literal["HISTORICAL_TS_OWNER"]
     status: Literal["PREPARED", "ATTACHED"]
     owner_actor_id: str
     owner_key_id: str
