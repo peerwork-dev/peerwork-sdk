@@ -928,6 +928,15 @@ class HistoricalOwnerAttachmentResult(TypedDict):
     head: str | None
 
 
+class OwnerFormatTransitionResult(TypedDict):
+    command_id: str
+    workspace_id: str
+    transition: Literal["UPGRADE_WIRE_V3", "RAISE_PRIVATE_CEILING_TWO"]
+    status: Literal["PENDING", "ACCEPTED"]
+    sequence: int | None
+    policy_hash: str | None
+
+
 class OwnerWorkspaceError(RuntimeError):
     def __init__(self, code: str, message: str):
         super().__init__(message)
@@ -1027,6 +1036,23 @@ class SecureOwnerWorkspaceClient:
         """Protected local attachment history; PREPARED is not remote acceptance."""
         return cast(list[HistoricalOwnerAttachmentResult], self._owner("attachments"))
 
+    def submit_format_transition(self, workspace_id: str,
+                                 transition: Literal["UPGRADE_WIRE_V3", "RAISE_PRIVATE_CEILING_TWO"],
+                                 *, command_id: str | None = None,
+                                 issued_at_ms: int | None = None) -> OwnerFormatTransitionResult:
+        value = dict(workspace_id=workspace_id, transition=transition,
+                     command_id=command_id, issued_at_ms=issued_at_ms)
+        return cast(OwnerFormatTransitionResult,
+                    self._owner("format_submit", input_value=value))
+
+    def resume_format_transition(self, command_id: str) -> OwnerFormatTransitionResult:
+        return cast(OwnerFormatTransitionResult,
+                    self._owner("format_resume", command_id=command_id))
+
+    def format_transitions(self) -> list[OwnerFormatTransitionResult]:
+        """Protected local PENDING/ACCEPTED history; PENDING is not remote acceptance."""
+        return cast(list[OwnerFormatTransitionResult], self._owner("format_history"))
+
     def read(self, workspace_id: str) -> VerifiedSecureWorkspace:
         return cast(VerifiedSecureWorkspace, self._owner("read", workspace_id=workspace_id))
 
@@ -1095,6 +1121,23 @@ class SecureOwnerWorkspaceClient:
     async def attachments_async(self) -> list[HistoricalOwnerAttachmentResult]:
         return cast(list[HistoricalOwnerAttachmentResult], await _run_cancelled_async(
             self._owner, "attachments"))
+
+    async def submit_format_transition_async(self, workspace_id: str,
+                                              transition: Literal["UPGRADE_WIRE_V3", "RAISE_PRIVATE_CEILING_TWO"],
+                                              *, command_id: str | None = None,
+                                              issued_at_ms: int | None = None) -> OwnerFormatTransitionResult:
+        value = dict(workspace_id=workspace_id, transition=transition,
+                     command_id=command_id, issued_at_ms=issued_at_ms)
+        return cast(OwnerFormatTransitionResult, await _run_cancelled_async(
+            self._owner, "format_submit", input_value=value))
+
+    async def resume_format_transition_async(self, command_id: str) -> OwnerFormatTransitionResult:
+        return cast(OwnerFormatTransitionResult, await _run_cancelled_async(
+            self._owner, "format_resume", command_id=command_id))
+
+    async def format_transitions_async(self) -> list[OwnerFormatTransitionResult]:
+        return cast(list[OwnerFormatTransitionResult], await _run_cancelled_async(
+            self._owner, "format_history"))
 
     async def read_async(self, workspace_id: str) -> VerifiedSecureWorkspace:
         return cast(VerifiedSecureWorkspace, await _run_cancelled_async(self._owner,
@@ -1334,7 +1377,7 @@ class OwnerWorkspacePrivatePackageInstaller(OwnerWorkspacePrivatePackageStager):
             "installs"))
 
 
-__all__ += ["SecureOwnerWorkspaceClient", "OwnerWorkspaceResult", "HistoricalOwnerAttachmentResult", "OwnerWorkspaceError",
+__all__ += ["SecureOwnerWorkspaceClient", "OwnerWorkspaceResult", "HistoricalOwnerAttachmentResult", "OwnerFormatTransitionResult", "OwnerWorkspaceError",
             "OwnerWorkspaceActionClient", "OwnerWorkspacePackageInstaller",
             "OwnerWorkspacePrivatePackageStager", "PrivatePackageStageResult",
             "SavedPrivatePackageStage", "PrivatePackageStageError",

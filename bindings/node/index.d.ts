@@ -151,6 +151,20 @@ export interface HistoricalOwnerAttachmentResult {
   sequence: number | null;
   head: string | null;
 }
+export interface OwnerFormatTransitionInput {
+  workspaceId: string;
+  transition: 'UPGRADE_WIRE_V3' | 'RAISE_PRIVATE_CEILING_TWO';
+  commandId?: string;
+  issuedAtMs?: number;
+}
+export interface OwnerFormatTransitionResult {
+  command_id: string;
+  workspace_id: string;
+  transition: 'UPGRADE_WIRE_V3' | 'RAISE_PRIVATE_CEILING_TWO';
+  status: 'PENDING' | 'ACCEPTED';
+  sequence: number | null;
+  policy_hash: string | null;
+}
 export interface SecureOwnerWorkspaceSession {
   prepare(input: SecureOwnerWorkspaceInput, options?: {signal?: AbortSignal}): Promise<SecureOwnerWorkspaceResult>;
   create(input: SecureOwnerWorkspaceInput, options?: {signal?: AbortSignal}): Promise<SecureOwnerWorkspaceResult>;
@@ -162,6 +176,10 @@ export interface SecureOwnerWorkspaceSession {
   resumeAttachment(attachId: string, options?: {signal?: AbortSignal}): Promise<HistoricalOwnerAttachmentResult>;
   /** Protected local PREPARED/ATTACHED history; PREPARED is not accepted. */
   attachments(options?: {signal?: AbortSignal}): Promise<HistoricalOwnerAttachmentResult[]>;
+  submitFormatTransition(input: OwnerFormatTransitionInput, options?: {signal?: AbortSignal}): Promise<OwnerFormatTransitionResult>;
+  resumeFormatTransition(commandId: string, options?: {signal?: AbortSignal}): Promise<OwnerFormatTransitionResult>;
+  /** Protected local PENDING/ACCEPTED history; PENDING is not accepted. */
+  formatTransitions(options?: {signal?: AbortSignal}): Promise<OwnerFormatTransitionResult[]>;
   read(workspaceId: string, options?: {signal?: AbortSignal}): Promise<VerifiedSecureWorkspace>;
   /** Derive action authority and saved intent paths from verified protected Owner history. */
   publicActions(workspaceId: string): SecurePublicActionSession;

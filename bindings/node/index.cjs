@@ -392,6 +392,16 @@ exports.openSecureOwnerWorkspaces = options => {
       expected_owner_key_id: input.expectedOwnerKeyId,
     };
   };
+  const formatTransitionInput = input => {
+    if (!input || typeof input.workspaceId !== 'string' || !input.workspaceId ||
+        !['UPGRADE_WIRE_V3', 'RAISE_PRIVATE_CEILING_TWO'].includes(input.transition)) {
+      throw new TypeError('format transition requires workspace ID and supported transition');
+    }
+    return {
+      workspace_id: input.workspaceId, transition: input.transition,
+      command_id: input.commandId ?? null, issued_at_ms: input.issuedAtMs ?? null,
+    };
+  };
   const consumer = (kind, workspaceId) => {
     if (typeof workspaceId !== 'string' || !workspaceId) throw new TypeError('workspace ID is required');
     const call = async (operation, input, commandId, signal) => {
@@ -534,6 +544,9 @@ exports.openSecureOwnerWorkspaces = options => {
     attach: (input, { signal } = {}) => invoke('attach', attachmentInput(input), undefined, undefined, signal),
     resumeAttachment: (attachId, { signal } = {}) => invoke('resume_attachment', undefined, attachId, undefined, signal),
     attachments: ({ signal } = {}) => invoke('attachments', undefined, undefined, undefined, signal),
+    submitFormatTransition: (input, { signal } = {}) => invoke('format_submit', formatTransitionInput(input), undefined, undefined, signal),
+    resumeFormatTransition: (commandId, { signal } = {}) => invoke('format_resume', undefined, commandId, undefined, signal),
+    formatTransitions: ({ signal } = {}) => invoke('format_history', undefined, undefined, undefined, signal),
     read: (workspaceId, { signal } = {}) => invoke('read', undefined, undefined, workspaceId, signal),
     publicActions: workspaceId => consumer('public_action', workspaceId),
     privateActions: workspaceId => consumer('private_action', workspaceId),

@@ -16,6 +16,7 @@ use peerwork_runtime::secure_owner_create::{
     SecureOwnerCreateConfig, SecureOwnerCreateInput, SecureOwnerWorkspaceCreate,
 };
 use peerwork_runtime::secure_owner_attach::{HistoricalOwnerAttachInput, SecureHistoricalOwnerAttach};
+use peerwork_runtime::secure_owner_format_transition::{OwnerFormatTransitionInput, SecureOwnerFormatTransition};
 use peerwork_runtime::public_catalog::{PublicCatalog, PublicCatalogConfig};
 use peerwork_runtime::secure_recipient_enrollment::{
     RecipientEnrollmentConfig, SecureRecipientEnrollment,
@@ -390,6 +391,28 @@ fn secure_owner_create_json(
                     None => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"attachment ID is required"}).to_string(),
                 },
                 "attachments" => access.attachments().map(|value| serde_json::to_string(&value).expect("attachment history serializes")),
+                _ => unreachable!(),
+            };
+            return match result {
+                Ok(value) => format!("{{\"ok\":true,\"value\":{value}}}"),
+                Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
+            };
+        }
+        if matches!(operation.as_str(), "format_submit" | "format_resume" | "format_history") {
+            let access = SecureOwnerFormatTransition::new(config);
+            let result = match operation.as_str() {
+                "format_submit" => {
+                    let input: OwnerFormatTransitionInput = match input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {
+                        Some(value) => value,
+                        None => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid Owner format transition input"}).to_string(),
+                    };
+                    access.submit_json_with_cancel(input, &cancel)
+                }
+                "format_resume" => match command_id.as_deref() {
+                    Some(id) => access.resume_json_with_cancel(id, &cancel),
+                    None => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"transition command ID is required"}).to_string(),
+                },
+                "format_history" => access.history_json(),
                 _ => unreachable!(),
             };
             return match result {
