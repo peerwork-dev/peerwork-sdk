@@ -222,14 +222,42 @@ mod tests {
     use super::*;
     use ed25519_dalek::pkcs8::EncodePrivateKey;
     use std::fs;
+    use std::path::PathBuf;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
+    struct ProtectedTestDir {
+        _root: tempfile::TempDir,
+        path: PathBuf,
+    }
+
+    impl ProtectedTestDir {
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    fn protected_test_dir() -> ProtectedTestDir {
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        let path = {
+            fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+            root.path().to_owned()
+        };
+        #[cfg(windows)]
+        let path = {
+            let path = root.path().join("state");
+            crate::windows_fs::create_private_directory(&path).unwrap();
+            path
+        };
+        #[cfg(not(any(unix, windows)))]
+        let path = root.path().to_owned();
+        ProtectedTestDir { _root: root, path }
+    }
+
     #[test]
     fn explicit_create_reopen_and_incompatible_refusal() {
-        let dir = tempfile::tempdir().unwrap();
-        #[cfg(unix)]
-        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let dir = protected_test_dir();
         let path = dir.path().join("identity.state");
         assert!(matches!(
             KernelIdentity::open(&path),
@@ -264,9 +292,7 @@ mod tests {
 
     #[test]
     fn protected_seed_import_preserves_source_and_refuses_overwrite() {
-        let dir = tempfile::tempdir().unwrap();
-        #[cfg(unix)]
-        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let dir = protected_test_dir();
         let source_path = dir.path().join("legacy-seed.bin");
         let target_path = dir.path().join("identity.state");
         let seed = [7u8; 32];
@@ -294,9 +320,7 @@ mod tests {
 
     #[test]
     fn protected_pkcs8_pem_import_preserves_source_and_refuses_bad_input() {
-        let dir = tempfile::tempdir().unwrap();
-        #[cfg(unix)]
-        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let dir = protected_test_dir();
         let source_path = dir.path().join("legacy.pem");
         let target_path = dir.path().join("identity.state");
         let expected = SigningKey::from_bytes(&[9u8; 32]);
