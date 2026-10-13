@@ -163,6 +163,15 @@ export interface RecipientEnrollmentResult {
   registration_command_id: string | null;
   directory_entry_hash: string | null;
 }
+export interface RecipientKeyUpdateResult {
+  status: 'PENDING' | 'PUBLISHED';
+  update_id: string;
+  mode: 'ROTATE' | 'RENEW';
+  previous_certificate_hash: string;
+  certificate_digest: string;
+  directory_version: number;
+  directory_head: string;
+}
 export interface SecureRecipientEnrollmentSession {
   /** Protected local key creation only; no network or membership grant. */
   createLocal(): Promise<RecipientEnrollmentResult>;
@@ -172,6 +181,11 @@ export interface SecureRecipientEnrollmentSession {
   pending(): Promise<RecipientEnrollmentResult | null>;
   /** Exact signed public certificate; this alone does not prove publication. */
   certificateJson(): Promise<string>;
+  /** Exact successor key/entry is protected before POST; an omitted ID is locally discoverable. */
+  updateKey(mode: 'ROTATE' | 'RENEW', expectedCertificateHash: string, options?: { updateId?: string }): Promise<RecipientKeyUpdateResult>;
+  retryKeyUpdate(updateId: string): Promise<RecipientKeyUpdateResult>;
+  /** Protected local IDs; PENDING is not directory publication. */
+  pendingKeyUpdates(): Promise<RecipientKeyUpdateResult[]>;
 }
 export declare function openSecureRecipientEnrollment(options: RecipientEnrollmentOptions): SecureRecipientEnrollmentSession;
 

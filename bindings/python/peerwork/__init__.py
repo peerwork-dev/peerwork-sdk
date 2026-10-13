@@ -733,6 +733,16 @@ class RecipientEnrollmentResult(TypedDict):
     directory_entry_hash: str | None
 
 
+class RecipientKeyUpdateResult(TypedDict):
+    status: Literal["PENDING", "PUBLISHED"]
+    update_id: str
+    mode: Literal["ROTATE", "RENEW"]
+    previous_certificate_hash: str
+    certificate_digest: str
+    directory_version: int
+    directory_head: str
+
+
 class RecipientEnrollmentError(RuntimeError):
     def __init__(self, code: str, message: str):
         super().__init__(message)
@@ -753,13 +763,15 @@ class SecureRecipientEnrollmentClient:
         self._allow_loopback_http = allow_loopback_http
 
     def _enroll(self, operation: str,
-                cancel_handle: KernelCancelHandle | None = None) -> RecipientEnrollmentResult | None:
+                cancel_handle: KernelCancelHandle | None = None, *,
+                mode: str | None = None, expected_certificate_hash: str | None = None,
+                update_id: str | None = None) -> RecipientEnrollmentResult | RecipientKeyUpdateResult | list[RecipientKeyUpdateResult] | str | None:
         result = json.loads(secure_recipient_enrollment_json(
             operation, self._origin, self._state_dir,
-            self._allow_loopback_http, cancel_handle))
+            self._allow_loopback_http, cancel_handle, mode, expected_certificate_hash, update_id))
         if result["ok"] is not True:
             raise RecipientEnrollmentError(result["code"], result["message"])
-        return cast(RecipientEnrollmentResult | None, result["value"])
+        return cast(RecipientEnrollmentResult | RecipientKeyUpdateResult | list[RecipientKeyUpdateResult] | str | None, result["value"])
 
     def create_local(self) -> RecipientEnrollmentResult:
         """Create or reopen protected signing and recipient keys offline."""
@@ -776,6 +788,58 @@ class SecureRecipientEnrollmentClient:
     def certificate_json(self) -> str:
         """Export the exact signed public certificate; publication is separate."""
         return cast(str, self._enroll("certificate"))
+
+    def update_key(self, mode: Literal["ROTATE", "RENEW"], expected_certificate_hash: str,
+                   *, update_id: str | None = None) -> RecipientKeyUpdateResult:
+        """Save a successor key/entry before POST; use pending updates after lost replies."""
+        return cast(RecipientKeyUpdateResult, self._enroll("update_key", mode=mode,
+            expected_certificate_hash=expected_certificate_hash, update_id=update_id))
+
+    def retry_key_update(self, update_id: str) -> RecipientKeyUpdateResult:
+        return cast(RecipientKeyUpdateResult, self._enroll("retry_key_update", update_id=update_id))
+
+    def pending_key_updates(self) -> list[RecipientKeyUpdateResult]:
+        """Read protected local update IDs; listed rows are not publication proof."""
+        return cast(list[RecipientKeyUpdateResult], self._enroll("pending_key_updates"))
+
+    async def update_key_async(self, mode: Literal["ROTATE", "RENEW"],
+                               expected_certificate_hash: str, *,
+                               update_id: str | None = None) -> RecipientKeyUpdateResult:
+        worker = asyncio.create_task(asyncio.to_thread(self.update_key, mode,
+            expected_certificate_hash, update_id=update_id))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            while not worker.done():
+                try:
+                    await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    break
+            try:
+                worker.result()
+            except Exception:
+                pass
+            raise
+
+    async def retry_key_update_async(self, update_id: str) -> RecipientKeyUpdateResult:
+        worker = asyncio.create_task(asyncio.to_thread(self.retry_key_update, update_id))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            while not worker.done():
+                try:
+                    await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    break
+            try:
+                worker.result()
+            except Exception:
+                pass
+            raise
 
     async def publish_async(self) -> RecipientEnrollmentResult:
         cancel_handle = KernelCancelHandle()
@@ -797,7 +861,7 @@ class SecureRecipientEnrollmentClient:
                 pass
             raise
 
-__all__ += ["SecureRecipientEnrollmentClient", "RecipientEnrollmentResult", "RecipientEnrollmentError"]
+__all__ += ["SecureRecipientEnrollmentClient", "RecipientEnrollmentResult", "RecipientKeyUpdateResult", "RecipientEnrollmentError"]
 
 
 class VerifiedIdentityCertificate(TypedDict):

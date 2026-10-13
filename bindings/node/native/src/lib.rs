@@ -470,6 +470,9 @@ pub struct SecureEnrollmentTask {
     origin: String,
     state_dir: String,
     allow_loopback_http: bool,
+    mode: Option<String>,
+    expected_certificate_hash: Option<String>,
+    update_id: Option<String>,
     cancel: KernelCancellationToken,
 }
 
@@ -491,6 +494,30 @@ impl Task for SecureEnrollmentTask {
                     serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()})
                         .to_string()
                 }
+            });
+        }
+        if self.operation == "update_key" {
+            return Ok(match (self.mode.as_deref(), self.expected_certificate_hash.as_deref()) {
+                (Some(mode), Some(hash)) => match access.update_key(mode, hash, self.update_id.as_deref()) {
+                    Ok(value) => serde_json::json!({"ok":true,"value":value}).to_string(),
+                    Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
+                },
+                _ => serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"mode and expected certificate hash are required"}).to_string(),
+            });
+        }
+        if self.operation == "retry_key_update" {
+            return Ok(match self.update_id.as_deref() {
+                Some(id) => match access.retry_key_update(id) {
+                    Ok(value) => serde_json::json!({"ok":true,"value":value}).to_string(),
+                    Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
+                },
+                None => serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"update ID is required"}).to_string(),
+            });
+        }
+        if self.operation == "pending_key_updates" {
+            return Ok(match access.pending_key_updates() {
+                Ok(value) => serde_json::json!({"ok":true,"value":value}).to_string(),
+                Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
             });
         }
         let result = match self.operation.as_str() {
@@ -520,12 +547,18 @@ pub fn secure_recipient_enrollment_json(
     state_dir: String,
     allow_loopback_http: bool,
     cancel_handle: Option<ClassInstance<KernelCancelHandle>>,
+    mode: Option<String>,
+    expected_certificate_hash: Option<String>,
+    update_id: Option<String>,
 ) -> AsyncTask<SecureEnrollmentTask> {
     AsyncTask::new(SecureEnrollmentTask {
         operation,
         origin,
         state_dir,
         allow_loopback_http,
+        mode,
+        expected_certificate_hash,
+        update_id,
         cancel: cancel_handle
             .map(|handle| handle.token.clone())
             .unwrap_or_default(),

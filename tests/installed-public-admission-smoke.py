@@ -32,6 +32,7 @@ const fs=require('node:fs');
 const arg=JSON.parse(fs.readFileSync(0,'utf8'));
 const session=arg.role==='owner' ? sdk.openSecurePublicAdmission(arg.config)
   : arg.role==='directory' ? sdk.openSecureIdentityDirectory(arg.config)
+  : arg.role==='enrollment' ? sdk.openSecureRecipientEnrollment(arg.config)
   : sdk.openSecurePublicDecision(arg.config);
 (async()=>{
   let value;
@@ -42,6 +43,9 @@ const session=arg.role==='owner' ? sdk.openSecurePublicAdmission(arg.config)
   else if(arg.role==='recipient' && arg.operation==='retryReceive') value=await session.retryReceive(arg.values.inviteId);
   else if(arg.role==='recipient' && arg.operation==='pendingReceipts') value=await session.pendingReceipts();
   else if(arg.role==='directory' && arg.operation==='lookup') value=await session.lookup(arg.values.actorId,arg.values.keyId);
+  else if(arg.role==='enrollment' && arg.operation==='updateKey') value=await session.updateKey(arg.values.mode,arg.values.expectedCertificateHash);
+  else if(arg.role==='enrollment' && arg.operation==='retryKeyUpdate') value=await session.retryKeyUpdate(arg.values.updateId);
+  else if(arg.role==='enrollment' && arg.operation==='pendingKeyUpdates') value=await session.pendingKeyUpdates();
   else throw Error('unsupported test operation');
   process.stdout.write(JSON.stringify(value));
 })().catch(error=>{process.stderr.write(JSON.stringify({code:error.code,message:error.message}));process.exitCode=1});
@@ -231,6 +235,37 @@ with tempfile.TemporaryDirectory(prefix="peerwork-native-admission-", dir=TEMP_R
         asyncio.run(cancel_after_persist(origin, owner, owner_reopen_kwargs, certificate,
             service_state / "control.sqlite", local["actor_id"]))
 
+        # The accepted invitation below was encrypted for the original v1
+        # certificate. Updating the recipient key must retain that history.
+        with urllib.request.urlopen(urllib.request.Request(
+                origin + "__test/drop-next-identity-directory", data=b"", method="POST"), timeout=5):
+            pass
+        rotation = recipient.update_key("ROTATE", local["certificate_digest"])
+        assert rotation["status"] == "PENDING" and rotation["directory_version"] == 2
+        reopened_recipient = peerwork.SecureRecipientEnrollmentClient(origin, str(recipient_dir),
+            allow_loopback_http=True)
+        pending_updates = reopened_recipient.pending_key_updates()
+        assert len(pending_updates) == 1 and pending_updates[0] == rotation
+        assert cli("recipient-pending-updates", f"--origin={origin}",
+            f"--state-dir={recipient_dir}", "--allow-loopback-http") == pending_updates
+        published_rotation = cli("recipient-retry-update", f"--origin={origin}",
+            f"--state-dir={recipient_dir}", f"--update-id={rotation['update_id']}",
+            "--allow-loopback-http")
+        assert published_rotation["status"] == "PUBLISHED"
+        assert published_rotation["directory_head"] == rotation["directory_head"]
+        enrollment_config = dict(origin=origin, stateDir=str(recipient_dir), allowLoopbackHttp=True)
+        assert node_call("enrollment", "pendingKeyUpdates", enrollment_config) == []
+        renewal = node_call("enrollment", "updateKey", enrollment_config,
+            mode="RENEW", expectedCertificateHash=published_rotation["certificate_digest"])
+        if renewal["status"] == "PENDING":
+            renewal = node_call("enrollment", "retryKeyUpdate", enrollment_config,
+                updateId=renewal["update_id"])
+        assert renewal["status"] == "PUBLISHED" and renewal["directory_version"] == 3
+        latest = directory.lookup(local["actor_id"], local["signing_key_id"])
+        assert latest["directory_version"] == 3 and latest["directory_head"] == renewal["directory_head"]
+        assert latest["certificate_json"] == reopened_recipient.certificate_json()
+        assert latest["certificate_json"] != certificate
+
         recipient_config = dict(origin=origin, state_dir=str(recipient_dir),
             workspace_id=workspace["workspace_id"], owner_actor_id=workspace["actor_id"],
             owner_key_id=workspace["signing_key"],
@@ -272,7 +307,8 @@ with tempfile.TemporaryDirectory(prefix="peerwork-native-admission-", dir=TEMP_R
         assert recipient_read.read()["workspace_id"] == workspace["workspace_id"]
         print(json.dumps(dict(source="installed", recipient_actor=local["actor_id"],
             owner_actor=workspace["actor_id"], offers=4, accepted_invite=high["invite_id"],
-            delivery_status=delivery["status"], recipient_status=received["status"])))
+            delivery_status=delivery["status"], recipient_status=received["status"],
+            directory_version=latest["directory_version"])))
     finally:
         server.stdin.close()
         try:

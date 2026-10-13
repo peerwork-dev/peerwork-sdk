@@ -313,7 +313,7 @@ exports.openSecureRecipientEnrollment = options => {
   if (!options || typeof options.origin !== 'string' || typeof options.stateDir !== 'string') {
     throw new TypeError('recipient enrollment requires origin and stateDir');
   }
-  const invoke = async (operation, signal) => {
+  const invoke = async (operation, signal, mode, expectedCertificateHash, updateId) => {
     const handle = new binding.KernelCancelHandle();
     const onAbort = () => handle.cancel();
     if (signal?.aborted) onAbort();
@@ -321,7 +321,7 @@ exports.openSecureRecipientEnrollment = options => {
     try {
       const result = JSON.parse(await binding.secureRecipientEnrollmentJson(
         operation, options.origin, options.stateDir,
-        options.allowLoopbackHttp ?? false, handle,
+        options.allowLoopbackHttp ?? false, handle, mode, expectedCertificateHash, updateId,
       ));
       if (result.ok !== true) {
         const error = new Error(result.message);
@@ -338,6 +338,10 @@ exports.openSecureRecipientEnrollment = options => {
     publish: (options = {}) => invoke('publish', options.signal),
     pending: () => invoke('pending'),
     certificateJson: () => invoke('certificate'),
+    updateKey: (mode, expectedCertificateHash, options = {}) => invoke('update_key', undefined,
+      mode, expectedCertificateHash, options.updateId),
+    retryKeyUpdate: updateId => invoke('retry_key_update', undefined, undefined, undefined, updateId),
+    pendingKeyUpdates: () => invoke('pending_key_updates'),
   });
 };
 

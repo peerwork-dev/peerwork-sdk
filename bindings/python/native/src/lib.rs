@@ -321,7 +321,7 @@ fn secure_public_install_json(
 }
 
 #[pyfunction]
-#[pyo3(signature = (operation, origin, state_dir, allow_loopback_http=false, cancel_handle=None))]
+#[pyo3(signature = (operation, origin, state_dir, allow_loopback_http=false, cancel_handle=None, mode=None, expected_certificate_hash=None, update_id=None))]
 fn secure_recipient_enrollment_json(
     py: Python<'_>,
     operation: &str,
@@ -329,11 +329,17 @@ fn secure_recipient_enrollment_json(
     state_dir: &str,
     allow_loopback_http: bool,
     cancel_handle: Option<PyRef<'_, KernelCancelHandle>>,
+    mode: Option<&str>,
+    expected_certificate_hash: Option<&str>,
+    update_id: Option<&str>,
 ) -> PyResult<String> {
     let mut config =
         RecipientEnrollmentConfig::for_state_dir(origin.to_owned(), Path::new(state_dir));
     config.allow_loopback_http = allow_loopback_http;
     let operation = operation.to_owned();
+    let mode = mode.map(str::to_owned);
+    let expected_certificate_hash = expected_certificate_hash.map(str::to_owned);
+    let update_id = update_id.map(str::to_owned);
     let cancel = cancel_handle
         .map(|handle| handle.token.clone())
         .unwrap_or_default();
@@ -341,6 +347,30 @@ fn secure_recipient_enrollment_json(
         let access = SecureRecipientEnrollment::new(config);
         if operation == "certificate" {
             return match access.certificate_json() {
+                Ok(value) => serde_json::json!({"ok":true,"value":value}).to_string(),
+                Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
+            };
+        }
+        if operation == "update_key" {
+            return match (mode.as_deref(), expected_certificate_hash.as_deref()) {
+                (Some(mode), Some(hash)) => match access.update_key(mode, hash, update_id.as_deref()) {
+                    Ok(value) => serde_json::json!({"ok":true,"value":value}).to_string(),
+                    Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
+                },
+                _ => serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"mode and expected certificate hash are required"}).to_string(),
+            };
+        }
+        if operation == "retry_key_update" {
+            return match update_id.as_deref() {
+                Some(id) => match access.retry_key_update(id) {
+                    Ok(value) => serde_json::json!({"ok":true,"value":value}).to_string(),
+                    Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
+                },
+                None => serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"update ID is required"}).to_string(),
+            };
+        }
+        if operation == "pending_key_updates" {
+            return match access.pending_key_updates() {
                 Ok(value) => serde_json::json!({"ok":true,"value":value}).to_string(),
                 Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
             };

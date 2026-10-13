@@ -221,7 +221,10 @@ fn main() -> ExitCode {
                 && (verb == "recipient-create"
                     || verb == "recipient-publish"
                     || verb == "recipient-pending"
-                    || verb == "recipient-certificate") =>
+                    || verb == "recipient-certificate"
+                    || verb == "recipient-update"
+                    || verb == "recipient-retry-update"
+                    || verb == "recipient-pending-updates") =>
         {
             match secure_recipient_command(verb, rest) {
                 Ok(value) => {
@@ -245,7 +248,7 @@ fn main() -> ExitCode {
             cli_result(secure_directory_lookup(rest))
         }
         _ => {
-            eprintln!("{{\"code\":\"USAGE\",\"message\":\"peerwork version|capabilities|identity create PATH|identity info PATH|identity import-legacy-pem PATH PROTECTED_PEM_FILE|identity import-seed-file PATH PROTECTED_SEED_FILE|kernel open|prepare|pending|status|submit ORIGIN JOURNAL IDENTITY [COMMAND_FILE|COMMAND_ID] [--allow-loopback-http] [--authority=HEX] [--chunk-file=PATH|--chunk-stdin for prepare]; kernel migrate ORIGIN JOURNAL IDENTITY SOURCE BACKUP --trusted-signer=KEY_ID [--trusted-signer=KEY_ID ...]; secure read --origin=URL --state-dir=DIR --identity=PATH --workspace=ID [--owner-actor=ID --owner-key=ID] [--authority=HEX]; secure snapshot ORIGIN KERNEL_JOURNAL READ_STATE LIFECYCLE IDENTITY WORKSPACE AUTHORITY OWNER_ACTOR OWNER_KEY [--allow-loopback-http] [--max-replay-artifact-bytes=N]; secure action-submit|action-status|action-retry CONFIG_JSON_FILE ACTION_JSON_FILE|COMMAND_ID; secure action-pending CONFIG_JSON_FILE; secure install-begin CONFIG_JSON_FILE INPUT_JSON_FILE | install-continue CONFIG_JSON_FILE BEGIN_COMMAND_ID | install-pending CONFIG_JSON_FILE; secure recipient-create|recipient-publish|recipient-pending|recipient-certificate --origin=URL --state-dir=DIR [--allow-loopback-http]; secure directory-lookup --origin=URL --state-dir=DIR --actor=ACTOR --key=KEY [--identity=PATH] [--allow-loopback-http]\"}}");
+            eprintln!("{{\"code\":\"USAGE\",\"message\":\"peerwork version|capabilities|identity create PATH|identity info PATH|identity import-legacy-pem PATH PROTECTED_PEM_FILE|identity import-seed-file PATH PROTECTED_SEED_FILE|kernel open|prepare|pending|status|submit ORIGIN JOURNAL IDENTITY [COMMAND_FILE|COMMAND_ID] [--allow-loopback-http] [--authority=HEX] [--chunk-file=PATH|--chunk-stdin for prepare]; kernel migrate ORIGIN JOURNAL IDENTITY SOURCE BACKUP --trusted-signer=KEY_ID [--trusted-signer=KEY_ID ...]; secure read --origin=URL --state-dir=DIR --identity=PATH --workspace=ID [--owner-actor=ID --owner-key=ID] [--authority=HEX]; secure snapshot ORIGIN KERNEL_JOURNAL READ_STATE LIFECYCLE IDENTITY WORKSPACE AUTHORITY OWNER_ACTOR OWNER_KEY [--allow-loopback-http] [--max-replay-artifact-bytes=N]; secure action-submit|action-status|action-retry CONFIG_JSON_FILE ACTION_JSON_FILE|COMMAND_ID; secure action-pending CONFIG_JSON_FILE; secure install-begin CONFIG_JSON_FILE INPUT_JSON_FILE | install-continue CONFIG_JSON_FILE BEGIN_COMMAND_ID | install-pending CONFIG_JSON_FILE; secure recipient-create|recipient-publish|recipient-pending|recipient-certificate|recipient-update|recipient-retry-update|recipient-pending-updates --origin=URL --state-dir=DIR [--mode=ROTATE|RENEW --expected-certificate-hash=HEX --update-id=ID] [--allow-loopback-http]; secure directory-lookup --origin=URL --state-dir=DIR --actor=ACTOR --key=KEY [--identity=PATH] [--allow-loopback-http]\"}}");
             ExitCode::FAILURE
         }
     }
@@ -254,12 +257,21 @@ fn main() -> ExitCode {
 fn secure_recipient_command(verb: &str, args: &[String]) -> Result<String, (&'static str, String)> {
     let mut origin = None;
     let mut state_dir = None;
+    let mut mode = None;
+    let mut expected_certificate_hash = None;
+    let mut update_id = None;
     let mut allow_loopback_http = false;
     for arg in args {
         if let Some(value) = arg.strip_prefix("--origin=") {
             origin = Some(value.to_owned());
         } else if let Some(value) = arg.strip_prefix("--state-dir=") {
             state_dir = Some(value.to_owned());
+        } else if let Some(value) = arg.strip_prefix("--mode=") {
+            mode = Some(value.to_owned());
+        } else if let Some(value) = arg.strip_prefix("--expected-certificate-hash=") {
+            expected_certificate_hash = Some(value.to_owned());
+        } else if let Some(value) = arg.strip_prefix("--update-id=") {
+            update_id = Some(value.to_owned());
         } else if arg == "--allow-loopback-http" {
             allow_loopback_http = true;
         } else {
@@ -287,6 +299,30 @@ fn secure_recipient_command(verb: &str, args: &[String]) -> Result<String, (&'st
             "unable to install interrupt handler".to_owned(),
         )
     })?;
+    if verb == "recipient-update" {
+        let mode = mode.filter(|value: &String| !value.is_empty())
+            .ok_or(("USAGE", "--mode is required".to_owned()))?;
+        let expected = expected_certificate_hash.filter(|value: &String| !value.is_empty())
+            .ok_or(("USAGE", "--expected-certificate-hash is required".to_owned()))?;
+        let value = access.update_key(&mode, &expected, update_id.as_deref())
+            .map_err(|error| (error.code(), error.to_string()))?;
+        return serde_json::to_string(&value)
+            .map_err(|_| ("RESULT_ENCODING_FAILED", "recipient update encoding failed".to_owned()));
+    }
+    if verb == "recipient-retry-update" {
+        let update_id = update_id.filter(|value: &String| !value.is_empty())
+            .ok_or(("USAGE", "--update-id is required".to_owned()))?;
+        let value = access.retry_key_update(&update_id)
+            .map_err(|error| (error.code(), error.to_string()))?;
+        return serde_json::to_string(&value)
+            .map_err(|_| ("RESULT_ENCODING_FAILED", "recipient update encoding failed".to_owned()));
+    }
+    if verb == "recipient-pending-updates" {
+        let value = access.pending_key_updates()
+            .map_err(|error| (error.code(), error.to_string()))?;
+        return serde_json::to_string(&value)
+            .map_err(|_| ("RESULT_ENCODING_FAILED", "recipient update encoding failed".to_owned()));
+    }
     let result = match verb {
         "recipient-create" => access.create_local().map(Some),
         "recipient-publish" => access.publish_with_cancel(&cancel).map(Some),
