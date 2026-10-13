@@ -153,8 +153,8 @@ try:
                               expected_kernel_intent_db_digest=inventory["intent_db_digest"])
         try:
             owner.attach(**dict(base, kernel_pending_command_ids=[selected]))
-        except (peerwork.OwnerWorkspaceError, ValueError):
-            pass
+        except ValueError as error:
+            assert "inspected intent DB digest" in str(error)
         else:
             raise AssertionError("selected command lacked the inspected snapshot digest")
         wrong = dict(selected_input, expected_kernel_intent_db_digest="0" * 64)
