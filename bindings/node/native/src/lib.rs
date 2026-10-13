@@ -683,6 +683,26 @@ impl Task for SecureOwnerConsumerTask {
                 "pending_deliveries" => access.pending_deliveries_json(),
                 _ => return Ok(fail("ADMISSION_INPUT_INVALID", "unsupported Owner admission operation")),
             }.map_err(|error| (error.code(), error.to_string()))
+        } else if self.kind == "private_admission" {
+            let access = match owner.private_admission_access(&self.workspace_id) {
+                Ok(value) => value,
+                Err(error) => return Ok(fail(error.code(), &error.to_string())),
+            };
+            match self.operation.as_str() {
+                "offer" => {
+                    let input: PublicOfferInput = match self.input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {
+                        Some(value) => value,
+                        None => return Ok(fail("ADMISSION_INPUT_INVALID", "invalid Owner offer input")),
+                    };
+                    access.submit_offer_json_with_cancel(input, &self.cancel)
+                }
+                "retry_offer" => access.retry_offer_json_with_cancel(self.command_id.as_deref().unwrap_or(""), &self.cancel),
+                "pending_offers" => access.pending_offers_json(),
+                "deliver" => access.deliver_accepted_json_with_cancel(self.command_id.as_deref().unwrap_or(""), &self.cancel),
+                "retry_delivery" => access.retry_delivery_json_with_cancel(self.command_id.as_deref().unwrap_or(""), &self.cancel),
+                "pending_deliveries" => access.pending_deliveries_json(),
+                _ => return Ok(fail("ADMISSION_INPUT_INVALID", "unsupported Owner admission operation")),
+            }.map_err(|error| (error.code(), error.to_string()))
         } else {
             return Ok(fail("INPUT_INVALID", "unsupported Owner consumer"));
         };

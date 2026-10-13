@@ -513,6 +513,35 @@ fn secure_owner_consumer_json(
                 "pending_deliveries" => access.pending_deliveries_json(),
                 _ => return fail("ADMISSION_INPUT_INVALID", "unsupported Owner admission operation"),
             }.map_err(|error| (error.code(), error.to_string()))
+        } else if kind == "private_admission" {
+            let access = match owner.private_admission_access(&workspace_id) {
+                Ok(value) => value,
+                Err(error) => return fail(error.code(), &error.to_string()),
+            };
+            match operation.as_str() {
+                "offer" => {
+                    let input: PublicOfferInput = match input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {
+                        Some(value) => value,
+                        None => return fail("ADMISSION_INPUT_INVALID", "invalid Owner offer input"),
+                    };
+                    access.submit_offer_json_with_cancel(input, &cancel)
+                }
+                "retry_offer" => match command_id.as_deref() {
+                    Some(id) => access.retry_offer_json_with_cancel(id, &cancel),
+                    None => return fail("ADMISSION_INPUT_INVALID", "invite ID is required"),
+                },
+                "pending_offers" => access.pending_offers_json(),
+                "deliver" => match command_id.as_deref() {
+                    Some(id) => access.deliver_accepted_json_with_cancel(id, &cancel),
+                    None => return fail("ADMISSION_INPUT_INVALID", "invite ID is required"),
+                },
+                "retry_delivery" => match command_id.as_deref() {
+                    Some(id) => access.retry_delivery_json_with_cancel(id, &cancel),
+                    None => return fail("ADMISSION_INPUT_INVALID", "grant ID is required"),
+                },
+                "pending_deliveries" => access.pending_deliveries_json(),
+                _ => return fail("ADMISSION_INPUT_INVALID", "unsupported Owner admission operation"),
+            }.map_err(|error| (error.code(), error.to_string()))
         } else {
             return fail("INPUT_INVALID", "unsupported Owner consumer");
         };

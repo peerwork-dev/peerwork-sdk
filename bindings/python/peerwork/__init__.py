@@ -1010,6 +1010,9 @@ class SecureOwnerWorkspaceClient:
     def public_admission(self, workspace_id: str) -> "OwnerWorkspaceAdmissionClient":
         return OwnerWorkspaceAdmissionClient(self._config, workspace_id)
 
+    def private_admission(self, workspace_id: str) -> "OwnerWorkspacePrivateAdmissionClient":
+        return OwnerWorkspacePrivateAdmissionClient(self._config, workspace_id)
+
     async def prepare_async(self, name: str, visibility: Literal["PUBLIC", "PRIVATE"], *,
                             structured: bool = False, keep_encrypted: list | None = None,
                             coordination_version: int | None = None) -> OwnerWorkspaceResult:
@@ -1276,6 +1279,8 @@ class SecurePublicAdmissionClient(SecureReadClient):
 class OwnerWorkspaceAdmissionClient(SecurePublicAdmissionClient):
     """Owner invitation and delivery for a PUBLIC workspace in protected creation history."""
 
+    _kind = "public_admission"
+
     def __init__(self, owner_config: dict, workspace_id: str):
         self._owner_config = owner_config
         self._workspace_id = workspace_id
@@ -1284,7 +1289,7 @@ class OwnerWorkspaceAdmissionClient(SecurePublicAdmissionClient):
                    invite_id: str | None = None, grant_id: str | None = None,
                    cancel_handle: KernelCancelHandle | None = None) -> dict | list[dict]:
         command_id = grant_id if operation == "retry_delivery" else invite_id
-        result = json.loads(secure_owner_consumer_json("public_admission", operation,
+        result = json.loads(secure_owner_consumer_json(self._kind, operation,
             json.dumps(self._owner_config, ensure_ascii=True, allow_nan=False, separators=(",", ":")),
             self._workspace_id,
             None if input_value is None else json.dumps(input_value, ensure_ascii=True, allow_nan=False, separators=(",", ":")),
@@ -1292,6 +1297,12 @@ class OwnerWorkspaceAdmissionClient(SecurePublicAdmissionClient):
         if result["ok"] is not True:
             raise PublicAdmissionError(result["code"], result["message"])
         return cast(dict | list[dict], result["value"])
+
+
+class OwnerWorkspacePrivateAdmissionClient(OwnerWorkspaceAdmissionClient):
+    """Owner invitation and delivery for a PRIVATE workspace in protected creation history."""
+
+    _kind = "private_admission"
 
 
 class PublicCatalogError(RuntimeError):
@@ -1360,7 +1371,8 @@ class PublicCatalogClient:
         return cast(InspectedPublicPackage, value)
 
 
-__all__ += ["OwnerWorkspaceAdmissionClient", "PublicCatalogClient", "PublicCatalogError",
+__all__ += ["OwnerWorkspaceAdmissionClient", "OwnerWorkspacePrivateAdmissionClient",
+            "PublicCatalogClient", "PublicCatalogError",
             "PublicCatalogListing", "InspectedPublicPackage"]
 
 

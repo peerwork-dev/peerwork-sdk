@@ -393,7 +393,7 @@ exports.openSecureOwnerWorkspaces = options => {
           throw error;
         }
         const value = result.value;
-        if (kind === 'public_install' || kind === 'public_admission' || operation === 'pending') return value;
+        if (kind === 'public_install' || kind === 'public_admission' || kind === 'private_admission' || operation === 'pending') return value;
         const receipt = value.receipt_canonical_json === null ? null : JSON.parse(value.receipt_canonical_json);
         delete value.receipt_canonical_json;
         return { ...value, receipt };
@@ -421,7 +421,7 @@ exports.openSecureOwnerWorkspaces = options => {
       continueInstall: (beginCommandId, options = {}) => call('continue', undefined, beginCommandId, options.signal),
       pending: (options = {}) => call('pending', undefined, undefined, options.signal),
     });
-    if (kind === 'public_admission') return Object.freeze({
+    if (kind === 'public_admission' || kind === 'private_admission') return Object.freeze({
       offer: (recipientCertificateJson, scopes, options = {}) => {
         const message = options.message ?? '';
         if (typeof message !== 'string') throw new TypeError('offer message must be a string');
@@ -463,6 +463,7 @@ exports.openSecureOwnerWorkspaces = options => {
     privateActions: workspaceId => consumer('private_action', workspaceId),
     publicInstaller: workspaceId => consumer('public_install', workspaceId),
     publicAdmission: workspaceId => consumer('public_admission', workspaceId),
+    privateAdmission: workspaceId => consumer('private_admission', workspaceId),
   });
 };
 

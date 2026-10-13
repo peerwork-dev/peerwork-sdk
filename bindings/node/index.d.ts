@@ -145,7 +145,9 @@ export interface SecureOwnerWorkspaceSession {
   privateActions(workspaceId: string): SecurePublicActionSession;
   /** Install a caller-selected closure into a created PUBLIC workspace. */
   publicInstaller(workspaceId: string): SecurePublicPackageInstaller;
-  publicAdmission(workspaceId: string): SecurePublicAdmissionSession;
+  publicAdmission(workspaceId: string): SecureOwnerAdmissionSession;
+  /** PRIVATE Owner admission derives protected workspace keys and paths from creation history. */
+  privateAdmission(workspaceId: string): SecureOwnerAdmissionSession;
 }
 export declare function openSecureOwnerWorkspaces(options: SecureOwnerWorkspaceOptions): SecureOwnerWorkspaceSession;
 
@@ -304,7 +306,7 @@ export interface PendingPublicOffer { invite_id: string; workspace_id: string; o
 export interface PendingPublicDelivery { grant_id: string; workspace_id: string; grant_hash: string; observed_responses: number }
 export interface PendingInvitationDecision { invite_id: string; workspace_id: string; decision_hash: string; observed_responses: number }
 export interface PendingInvitationReceipt { invite_id: string; grant_id: string; workspace_id: string; receipt_hash: string; observed_responses: number }
-export interface SecurePublicAdmissionSession {
+export interface SecureOwnerAdmissionSession {
   offer(recipientCertificateJson: string, scopes: unknown[], options?: { message?: string; inviteId?: string; issuedAtMs?: number; expiresAtMs?: number; signal?: AbortSignal }): Promise<PublicOfferResult>;
   retryOffer(inviteId: string, options?: { signal?: AbortSignal }): Promise<PublicOfferResult>;
   pendingOffers(): Promise<PendingPublicOffer[]>;
@@ -312,7 +314,7 @@ export interface SecurePublicAdmissionSession {
   retryDelivery(grantId: string, options?: { signal?: AbortSignal }): Promise<PublicDeliveryResult>;
   pendingDeliveries(): Promise<PendingPublicDelivery[]>;
 }
-export declare function openSecurePublicAdmission(options: SecureReadOptions): SecurePublicAdmissionSession;
+export declare function openSecurePublicAdmission(options: SecureReadOptions): SecureOwnerAdmissionSession;
 export interface SecureInvitationOptions extends RecipientEnrollmentOptions {
   workspaceId: string;
   ownerActorId: string;
