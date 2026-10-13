@@ -27,6 +27,8 @@ const INTENTS_SQL: &str = "CREATE TABLE client_intents(command_id TEXT PRIMARY K
 pub enum TsMigrationError {
     #[error("TypeScript source or backup schema, rows, or pins are incompatible")]
     Incompatible,
+    #[error("TypeScript source has unresolved signed client operations")]
+    Unresolved,
     #[error("TypeScript operation signer {0} is not in the trusted public-key allowlist")]
     MissingSigner(String),
     #[error("backup path and source path conflict")]
@@ -71,6 +73,60 @@ pub(crate) struct TsImportRow {
     pub path: crate::kernel_intents::KernelPath,
     pub response: Option<Vec<u8>>,
     pub created: i64,
+}
+
+/// A historical Owner attach does not import WorkspaceClient commands. It
+/// must nevertheless prove the separate protected client journal has no
+/// unresolved signed command, and bind its exact stable snapshot for retries.
+/// Accepted rows remain in the untouched TypeScript source for rollback.
+pub(crate) fn quiescent_source_digest(path: &Path) -> Result<String, TsMigrationError> {
+    if !path.is_absolute() {
+        return Err(TsMigrationError::Protection);
+    }
+    check_source(path)?;
+    check_sidecars(path)?;
+    let db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    db.busy_timeout(Duration::from_secs(5))?;
+    let first = read_snapshot(&db)?;
+    if first.rows.iter().any(|row| row.status == "PENDING") {
+        return Err(TsMigrationError::Unresolved);
+    }
+    let second = read_snapshot(&db)?;
+    check_sidecars(path)?;
+    if first != second {
+        return Err(TsMigrationError::Incompatible);
+    }
+    let mut bytes = Vec::new();
+    for field in [&first.context]
+        .into_iter()
+        .chain(first.rows.iter().flat_map(|row| {
+            [
+                &row.command_id,
+                &row.jws,
+                &row.intent_digest,
+                &row.command,
+                &row.status,
+            ]
+        }))
+    {
+        bytes.extend_from_slice(&(field.len() as u64).to_be_bytes());
+        bytes.extend_from_slice(field.as_bytes());
+    }
+    for row in &first.rows {
+        if let Some(response) = &row.response {
+            bytes.push(1);
+            bytes.extend_from_slice(&(response.len() as u64).to_be_bytes());
+            bytes.extend_from_slice(response.as_bytes());
+        } else {
+            bytes.push(0);
+        }
+        bytes.extend_from_slice(&row.created.to_be_bytes());
+        bytes.extend_from_slice(&row.updated.to_be_bytes());
+    }
+    if bytes.len() > MAX_TOTAL_BYTES {
+        return Err(TsMigrationError::TooLarge);
+    }
+    Ok(sha256_hex(&bytes))
 }
 
 pub(crate) fn backed_up_rows(

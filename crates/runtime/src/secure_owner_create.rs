@@ -16,6 +16,7 @@ use crate::{
         prepare_owner_workspace_with_utf16_name, prepare_private_owner_workspace_with_options,
         prepare_public_owner_workspace_with_options, NativePrepareError,
     },
+    secure_owner_attach::{HistoricalOwnerAttachError, SecureHistoricalOwnerAttach},
     secure_public_admission::{SecurePrivateAdmission, SecurePublicAdmission},
     secure_public_install::SecurePublicPackageInstall,
     secure_read_access::SecureReadAccessError,
@@ -150,6 +151,16 @@ impl From<SecureReadAccessError> for SecureOwnerCreateError {
     }
 }
 
+fn map_attach_error(error: HistoricalOwnerAttachError) -> SecureOwnerCreateError {
+    match error {
+        HistoricalOwnerAttachError::NotFound => SecureOwnerCreateError::NotFound,
+        HistoricalOwnerAttachError::Identity => SecureOwnerCreateError::Identity,
+        HistoricalOwnerAttachError::Cancelled => SecureOwnerCreateError::Cancelled,
+        HistoricalOwnerAttachError::Local => SecureOwnerCreateError::Local,
+        _ => SecureOwnerCreateError::Verification,
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SavedCreate {
@@ -178,6 +189,20 @@ pub struct SecureOwnerWorkspaceCreate {
 impl SecureOwnerWorkspaceCreate {
     pub fn new(config: SecureOwnerCreateConfig) -> Self {
         Self { config }
+    }
+
+    pub(crate) fn has_saved_workspace_for_attach(
+        &self,
+        workspace_id: &str,
+        identity: &KernelIdentity,
+    ) -> Result<bool, SecureOwnerCreateError> {
+        let store = SecureStateStore::open(&self.history_path())
+            .map_err(|_| SecureOwnerCreateError::Local)?;
+        let history = read_history(&store, &self.config, identity)?;
+        Ok(history
+            .rows
+            .values()
+            .any(|row| row.workspace_id == workspace_id))
     }
 
     /// Reuse the saved Owner identity and per-workspace verified profile for
@@ -258,14 +283,29 @@ impl SecureOwnerWorkspaceCreate {
         let store = SecureStateStore::open(&self.history_path())
             .map_err(|_| SecureOwnerCreateError::Local)?;
         let history = read_history(&store, &self.config, &identity)?;
-        if !history.rows.values().any(|row| {
+        if history.rows.values().any(|row| {
             row.workspace_id == workspace_id
                 && row.input.visibility == visibility
                 && row.created_sequence.is_some()
         }) {
+            return Ok(self.profile_config(workspace_id, identity.actor_id(), identity.key_id()));
+        }
+        if history
+            .rows
+            .values()
+            .any(|row| row.workspace_id == workspace_id)
+        {
             return Err(SecureOwnerCreateError::NotFound);
         }
-        Ok(self.profile_config(workspace_id, identity.actor_id(), identity.key_id()))
+        drop(history);
+        drop(store);
+        drop(identity);
+        if visibility != "PRIVATE" {
+            return Err(SecureOwnerCreateError::NotFound);
+        }
+        SecureHistoricalOwnerAttach::new(self.config.clone())
+            .attached_profile_config(workspace_id)
+            .map_err(map_attach_error)
     }
 
     /// Explicit local preparation also performs the previously requested
@@ -376,13 +416,26 @@ impl SecureOwnerWorkspaceCreate {
         let store = SecureStateStore::open(&self.history_path())
             .map_err(|_| SecureOwnerCreateError::Local)?;
         let history = read_history(&store, &self.config, &identity)?;
-        let (command, row) = history
+        let selected = history
             .rows
             .iter()
             .find(|(_, row)| row.workspace_id == workspace_id && row.created_sequence.is_some())
-            .ok_or(SecureOwnerCreateError::NotFound)?;
-        let command = command.clone();
-        let row = row.clone();
+            .map(|(command, row)| (command.clone(), row.clone()));
+        let Some((command, row)) = selected else {
+            let pending_create = history
+                .rows
+                .values()
+                .any(|row| row.workspace_id == workspace_id);
+            drop(history);
+            drop(store);
+            drop(identity);
+            if pending_create {
+                return Err(SecureOwnerCreateError::NotFound);
+            }
+            return SecureHistoricalOwnerAttach::new(self.config.clone())
+                .read_workspace_json(workspace_id, cancel)
+                .map_err(map_attach_error);
+        };
         drop(history);
         drop(store);
         let journal = SecureIntentJournal::open(

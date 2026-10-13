@@ -234,6 +234,94 @@ impl SecureLifecycle {
         Ok(self.status())
     }
 
+    /// Stage a protected legacy Owner ring for provisional full replay. The
+    /// caller binds a protected source snapshot first; neither this method nor
+    /// the pending ring authorizes an action, grant, or read.
+    pub(crate) fn stage_historical_owner_ring(
+        &mut self,
+        imported: &SecretKeyring,
+    ) -> Result<KeyringStatus, SecureLifecycleError> {
+        if self.actor_id != self.owner_actor_id
+            || imported.workspace_id() != self.workspace_id
+            || imported.epochs().next().is_none()
+        {
+            return Err(SecureLifecycleError::Invalid);
+        }
+        let wire = imported.canonical_wire()?;
+        if let Some(active) = &self.active {
+            return if self.pending.is_none()
+                && active.canonical_wire()?.as_slice() == wire.as_slice()
+            {
+                Ok(self.status())
+            } else {
+                Err(SecureLifecycleError::PendingConflict)
+            };
+        }
+        if let Some(pending) = &self.pending {
+            return if pending.canonical_wire()?.as_slice() == wire.as_slice() {
+                Ok(self.status())
+            } else {
+                Err(SecureLifecycleError::PendingConflict)
+            };
+        }
+        let pending = SecretKeyring::parse_wire(&wire)?;
+        self.save_with(None, Some(&pending))?;
+        self.pending = Some(pending);
+        Ok(self.status())
+    }
+
+    /// Promote only after the imported Owner ring has decrypted and verified
+    /// a complete origin-bound history whose protected source checkpoint is
+    /// an ancestor. A crash after promotion is an exact-ring no-op on retry.
+    pub(crate) fn activate_verified_historical_owner(
+        &mut self,
+        imported: &SecretKeyring,
+        source: &TransportReplayedJournal,
+        old_sequence: u64,
+        old_head: Option<&str>,
+        old_policy_hash: &str,
+    ) -> Result<KeyringStatus, SecureLifecycleError> {
+        if source.origin() != self.origin
+            || source.source_actor_id() != self.actor_id
+            || source.source_key_id() != self.owner_key_id
+            || self.actor_id != self.owner_actor_id
+            || source.replay().workspace_id() != self.workspace_id
+            || source.replay().owner_actor_id() != self.owner_actor_id
+            || source.replay().owner_signing_key() != self.owner_key_id
+            || source.replay().structure_status() == StructureStatus::Seeding
+            || !source
+                .replay()
+                .contains_checkpoint(old_sequence, old_head, old_policy_hash)
+        {
+            return Err(SecureLifecycleError::BootstrapProof);
+        }
+        let wire = imported.canonical_wire()?;
+        if let Some(active) = &self.active {
+            return if self.pending.is_none()
+                && source.keyring_state() == Some(ReplayKeyringState::Active)
+                && active.canonical_wire()?.as_slice() == wire.as_slice()
+            {
+                Ok(self.status())
+            } else {
+                Err(SecureLifecycleError::BootstrapProof)
+            };
+        }
+        let pending = self
+            .pending
+            .as_ref()
+            .ok_or(SecureLifecycleError::BootstrapProof)?;
+        if source.keyring_state() != Some(ReplayKeyringState::Pending)
+            || pending.canonical_wire()?.as_slice() != wire.as_slice()
+        {
+            return Err(SecureLifecycleError::BootstrapProof);
+        }
+        let active = SecretKeyring::parse_wire(&wire)?;
+        self.save_with(Some(&active), None)?;
+        self.active = Some(active);
+        self.pending = None;
+        Ok(self.status())
+    }
+
     /// Promote only a signed grant reverified against the exact completed
     /// origin-bound journal replay. A staged local transition, if present,
     /// must contain precisely the same protected key material. A recipient

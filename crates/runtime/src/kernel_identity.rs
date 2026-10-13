@@ -40,6 +40,17 @@ pub struct KernelIdentity {
 }
 
 impl KernelIdentity {
+    /// Inspect an exportable protected legacy Owner key without creating any
+    /// native identity state. Historical attachment uses this before saving
+    /// its PREPARED source binding; the source file is never modified.
+    pub(crate) fn inspect_pkcs8_pem_file(source_path: &Path) -> Result<Self, KernelIdentityError> {
+        let bytes = read_private_file_bounded(source_path, 2048)?;
+        let pem = std::str::from_utf8(&bytes).map_err(|_| KernelIdentityError::InvalidPemSource)?;
+        validate_single_private_pem(pem)?;
+        let parsed =
+            SigningKey::from_pkcs8_pem(pem).map_err(|_| KernelIdentityError::InvalidPemSource)?;
+        Ok(Self::from_signing_key(parsed))
+    }
     /// Import the exact protected PKCS#8 PEM format written by the legacy
     /// TypeScript agent initializer. Other algorithms, extra PEM objects,
     /// changed bytes, and trailing data fail closed. The source is untouched.

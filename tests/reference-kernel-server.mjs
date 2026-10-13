@@ -413,8 +413,8 @@ const proxy = createServer(async (request, response) => {
       return;
     }
     if (request.url === '/__test/delay-next-journal' && request.method === 'POST') {
-      if (!publicReadFixture || firstJournalDelayMs !== 0) throw new Error('journal delay fixture unavailable');
-      firstJournalDelayMs = 2000;
+      if (!(publicReadFixture || process.env.PEERWORK_TEST_HISTORICAL_ATTACH === '1') || firstJournalDelayMs !== 0) throw new Error('journal delay fixture unavailable');
+      firstJournalDelayMs = process.env.PEERWORK_TEST_HISTORICAL_ATTACH === '1' ? 3000 : 2000;
       delayFirstJournal = true;
       response.writeHead(200, {'content-type':'application/json'});
       response.end(JSON.stringify({enabled:true}));

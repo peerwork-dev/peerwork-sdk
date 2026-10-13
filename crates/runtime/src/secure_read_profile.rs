@@ -84,6 +84,41 @@ impl SecureReadProfile {
         Self { config }
     }
 
+    /// Observe an existing profile without creating or refreshing it. Owner
+    /// attachment checks these exact pins and floor against provisional full
+    /// replay before any imported ring becomes active.
+    pub(crate) fn existing_floor_for_attach(
+        &self,
+    ) -> Result<Option<VerifiedReadFloor>, SecureReadAccessError> {
+        ensure_private_directory(&self.config.state_dir)?;
+        let store = SecureStateStore::open(&self.config.state_dir.join("read.profile"))
+            .map_err(|_| SecureReadAccessError::Profile)?;
+        let Some(wire) = store
+            .read_exact()
+            .map_err(|_| SecureReadAccessError::Profile)?
+        else {
+            return Ok(None);
+        };
+        if wire.len() > 16 * 1024 {
+            return Err(SecureReadAccessError::Profile);
+        }
+        let saved: ProfileDocument =
+            serde_json::from_slice(&wire).map_err(|_| SecureReadAccessError::Profile)?;
+        if !saved.valid()
+            || saved.origin != self.config.origin
+            || saved.identity_path != self.config.identity_path
+            || saved.workspace_id != self.config.workspace_id
+            || saved.required_features != self.config.required_features
+            || saved.allow_loopback_http != self.config.allow_loopback_http
+            || self.config.owner_actor_id.as_deref() != Some(saved.owner_actor_id.as_str())
+            || self.config.owner_key_id.as_deref() != Some(saved.owner_key_id.as_str())
+            || self.config.authority.as_deref() != Some(saved.authority.as_str())
+        {
+            return Err(SecureReadAccessError::Profile);
+        }
+        Ok(saved.floor)
+    }
+
     pub fn read_latest_json(&self) -> Result<String, SecureReadAccessError> {
         self.read_latest_json_with_cancel(&CancellationToken::new())
     }
@@ -332,7 +367,9 @@ impl SecureReadProfile {
     /// Return source and owner pins only from the protected profile. PRIVATE
     /// grant acquisition uses its own pages, leaving both verified and staged
     /// profile generations untouched until a later full verified refresh.
-    pub(crate) fn private_grant_read_config(&self) -> Result<SecureReadConfig, SecureReadAccessError> {
+    pub(crate) fn private_grant_read_config(
+        &self,
+    ) -> Result<SecureReadConfig, SecureReadAccessError> {
         let (_, saved) = self.open_local_profile()?;
         let mut config = self.read_config(&saved, 0);
         config.read_state_path = self.config.state_dir.join("private-grant-pages.state");

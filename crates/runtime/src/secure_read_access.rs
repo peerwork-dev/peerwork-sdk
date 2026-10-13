@@ -243,6 +243,17 @@ impl SecureReadAccess {
         self.replay_checked_generation_inner(cancel, Some(floor), true, false)
     }
 
+    /// Historical Owner import uses a protected pending ring to verify the
+    /// complete signed history before lifecycle promotion. The result cannot
+    /// be exposed through `verified_read` while that ring is pending.
+    pub(crate) fn replay_checked_attach_generation(
+        &self,
+        cancel: &CancellationToken,
+    ) -> Result<TransportReplayedJournal, SecureReadAccessError> {
+        self.replay_checked_generation_inner(cancel, None, true, false)
+            .map(|(replayed, _)| replayed)
+    }
+
     fn replay_checked_generation_inner(
         &self,
         cancel: &CancellationToken,
