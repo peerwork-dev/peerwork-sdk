@@ -156,6 +156,11 @@ with tempfile.TemporaryDirectory(prefix="peerwork-native-admission-", dir=TEMP_R
             allow_loopback_http=True)
         recipient_config_file = state / "recipient-config.json"
         recipient_config_file.write_text(json.dumps(recipient_config))
+        empty_authority_file = state / "recipient-empty-authority.json"
+        empty_authority_file.write_text(json.dumps(dict(recipient_config, authority="")))
+        invalid = subprocess.run([CLI, "secure", "consent", str(empty_authority_file),
+            high["invite_id"], "ACCEPT"], text=True, capture_output=True, timeout=10)
+        assert invalid.returncode != 0 and json.loads(invalid.stderr)["code"] == "CONFIG_INVALID"
         consent = cli("consent", str(recipient_config_file), high["invite_id"], "ACCEPT")
         assert consent["status"] == "PENDING" and consent["invite_id"] == high["invite_id"]
         native_recipient = peerwork.SecurePublicDecisionClient(origin, str(recipient_dir),

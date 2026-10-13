@@ -369,6 +369,16 @@ fn secure_decision_command(verb: &str, args: &[String]) -> Result<String, (&'sta
     let bytes = fs::read(&args[0]).map_err(|e| ("CONFIG_FILE", e.to_string()))?;
     let mut config_value: serde_json::Value =
         serde_json::from_slice(&bytes).map_err(|e| ("CONFIG_INVALID", e.to_string()))?;
+    if config_value
+        .get("authority")
+        .and_then(serde_json::Value::as_str)
+        == Some("")
+    {
+        return Err((
+            "CONFIG_INVALID",
+            "explicit authority must be nonempty".to_owned(),
+        ));
+    }
     let state_dir = config_value
         .get("state_dir")
         .and_then(serde_json::Value::as_str)
