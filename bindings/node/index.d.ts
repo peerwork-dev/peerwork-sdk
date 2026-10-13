@@ -175,6 +175,62 @@ export interface SecureRecipientEnrollmentSession {
 }
 export declare function openSecureRecipientEnrollment(options: RecipientEnrollmentOptions): SecureRecipientEnrollmentSession;
 
+export interface PublicOfferResult {
+  status: 'PENDING';
+  invite_id: string;
+  workspace_id: string;
+  offer_hash: string;
+}
+export interface PublicDeliveryResult {
+  status: 'PENDING' | 'AUTHORIZED';
+  invite_id: string;
+  grant_id: string;
+  workspace_id: string;
+  grant_hash: string;
+}
+export interface PublicDecisionResult {
+  status: 'PENDING';
+  invite_id: string;
+  workspace_id: string;
+  decision_hash: string;
+}
+export interface PublicReceiveResult {
+  status: 'PENDING' | 'READY';
+  invite_id: string;
+  workspace_id: string;
+  receipt_hash: string;
+}
+export interface PendingPublicOffer { invite_id: string; workspace_id: string; offer_hash: string; observed_responses: number }
+export interface PendingPublicDelivery { grant_id: string; workspace_id: string; grant_hash: string; observed_responses: number }
+export interface PendingPublicDecision { invite_id: string; workspace_id: string; decision_hash: string; observed_responses: number }
+export interface PendingPublicReceipt { invite_id: string; grant_id: string; workspace_id: string; receipt_hash: string; observed_responses: number }
+export interface SecurePublicAdmissionSession {
+  offer(recipientCertificateJson: string, scopes: unknown[], options?: { message?: string; inviteId?: string; issuedAtMs?: number; expiresAtMs?: number; signal?: AbortSignal }): Promise<PublicOfferResult>;
+  retryOffer(inviteId: string, options?: { signal?: AbortSignal }): Promise<PublicOfferResult>;
+  pendingOffers(): Promise<PendingPublicOffer[]>;
+  deliver(inviteId: string, options?: { signal?: AbortSignal }): Promise<PublicDeliveryResult>;
+  retryDelivery(grantId: string, options?: { signal?: AbortSignal }): Promise<PublicDeliveryResult>;
+  pendingDeliveries(): Promise<PendingPublicDelivery[]>;
+}
+export declare function openSecurePublicAdmission(options: SecureReadOptions): SecurePublicAdmissionSession;
+export interface SecurePublicDecisionOptions extends RecipientEnrollmentOptions {
+  workspaceId: string;
+  ownerActorId: string;
+  ownerKeyId: string;
+  authority: string;
+  requiredFeatures?: string[];
+  maxReplayArtifactBytes?: number;
+}
+export interface SecurePublicDecisionSession {
+  decide(inviteId: string, decision: 'ACCEPT' | 'DECLINE', options?: { signal?: AbortSignal }): Promise<PublicDecisionResult>;
+  retryDecision(inviteId: string, options?: { signal?: AbortSignal }): Promise<PublicDecisionResult>;
+  pendingDecisions(): Promise<PendingPublicDecision[]>;
+  receive(inviteId: string, options?: { signal?: AbortSignal }): Promise<PublicReceiveResult>;
+  retryReceive(inviteId: string, options?: { signal?: AbortSignal }): Promise<PublicReceiveResult>;
+  pendingReceipts(): Promise<PendingPublicReceipt[]>;
+}
+export declare function openSecurePublicDecision(options: SecurePublicDecisionOptions): SecurePublicDecisionSession;
+
 /** Exact locally selected package closure; digest validation does not prove publisher origin. */
 export interface PublicPackageInstallSelection {
   closureJson: string;

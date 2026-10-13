@@ -340,6 +340,76 @@ exports.openSecureRecipientEnrollment = options => {
   });
 };
 
+const admissionCall = (role, config) => async (operation, input, inviteId, grantId, decision, signal) => {
+  const handle = new binding.KernelCancelHandle();
+  const onAbort = () => handle.cancel();
+  if (signal?.aborted) onAbort();
+  signal?.addEventListener?.('abort', onAbort, { once: true });
+  try {
+    const result = JSON.parse(await binding.securePublicAdmissionJson(
+      role, operation, strictCommandJson(config),
+      input === undefined ? undefined : strictCommandJson(input),
+      inviteId, grantId, decision, handle,
+    ));
+    if (result.ok !== true) {
+      const error = new Error(result.message);
+      error.code = result.code;
+      throw error;
+    }
+    return result.value;
+  } finally {
+    signal?.removeEventListener?.('abort', onAbort);
+  }
+};
+
+/** Owner-signed PUBLIC offer and delivery from the protected latest profile. */
+exports.openSecurePublicAdmission = options => {
+  const { config } = secureProfileOptions(options);
+  const call = admissionCall('owner', config);
+  return Object.freeze({
+    offer: (recipientCertificateJson, scopes, options = {}) => call('offer', {
+      recipient_certificate_json: recipientCertificateJson,
+      scopes_json: strictCommandJson(scopes),
+      message: options.message ?? '', message_utf16: null,
+      invite_id: options.inviteId ?? null,
+      issued_at_ms: options.issuedAtMs ?? null,
+      expires_at_ms: options.expiresAtMs ?? null,
+    }, undefined, undefined, undefined, options.signal),
+    retryOffer: (inviteId, options = {}) => call('retry_offer', undefined, inviteId, undefined, undefined, options.signal),
+    pendingOffers: () => call('pending_offers'),
+    deliver: (inviteId, options = {}) => call('deliver', undefined, inviteId, undefined, undefined, options.signal),
+    retryDelivery: (grantId, options = {}) => call('retry_delivery', undefined, undefined, grantId, undefined, options.signal),
+    pendingDeliveries: () => call('pending_deliveries'),
+  });
+};
+
+/** Recipient consent/receipt with explicit owner and authority pins. */
+exports.openSecurePublicDecision = options => {
+  if (!options || typeof options.origin !== 'string' || typeof options.stateDir !== 'string' ||
+      typeof options.workspaceId !== 'string' || typeof options.ownerActorId !== 'string' ||
+      typeof options.ownerKeyId !== 'string' || typeof options.authority !== 'string') {
+    throw new TypeError('recipient decision requires origin, stateDir, workspaceId and owner/authority pins');
+  }
+  const config = {
+    origin: options.origin, state_dir: options.stateDir,
+    identity_path: require('node:path').join(options.stateDir, 'identity.state'),
+    workspace_id: options.workspaceId, owner_actor_id: options.ownerActorId,
+    owner_key_id: options.ownerKeyId, authority: options.authority,
+    allow_loopback_http: options.allowLoopbackHttp ?? false,
+    required_features: options.requiredFeatures ?? [],
+    max_replay_artifact_bytes: options.maxReplayArtifactBytes ?? 64 * 1024 * 1024,
+  };
+  const call = admissionCall('recipient', config);
+  return Object.freeze({
+    decide: (inviteId, decision, options = {}) => call('decide', undefined, inviteId, undefined, decision, options.signal),
+    retryDecision: (inviteId, options = {}) => call('retry_decision', undefined, inviteId, undefined, undefined, options.signal),
+    pendingDecisions: () => call('pending_decisions'),
+    receive: (inviteId, options = {}) => call('receive', undefined, inviteId, undefined, undefined, options.signal),
+    retryReceive: (inviteId, options = {}) => call('retry_receive', undefined, inviteId, undefined, undefined, options.signal),
+    pendingReceipts: () => call('pending_receipts'),
+  });
+};
+
 /** Begin and continue a PUBLIC direct install through protected local state. */
 exports.openSecurePublicPackageInstaller = options => {
   const { config } = secureProfileOptions(options);

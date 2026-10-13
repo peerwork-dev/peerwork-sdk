@@ -3,6 +3,8 @@ use peerwork_runtime::kernel_access::KernelAccess;
 use peerwork_runtime::kernel_client::{KernelAcceptedResult, KernelOperationStatus};
 use peerwork_runtime::kernel_identity::KernelIdentity;
 use peerwork_runtime::secure_action_access::{PublicActionInput, SecurePublicActionAccess};
+use peerwork_runtime::secure_public_admission::{PublicOfferInput, SecurePublicAdmission};
+use peerwork_runtime::secure_public_decision::{PublicDecisionConfig, SecurePublicDecision};
 use peerwork_runtime::secure_public_install::{
     PublicPackageInstallInput, SecurePublicPackageInstall,
 };
@@ -193,6 +195,28 @@ fn main() -> ExitCode {
         }
         [noun, verb, rest @ ..]
             if noun == "secure"
+                && (verb == "admit-offer"
+                    || verb == "admit-retry-offer"
+                    || verb == "admit-pending-offers"
+                    || verb == "admit-deliver"
+                    || verb == "admit-retry-delivery"
+                    || verb == "admit-pending-deliveries") =>
+        {
+            cli_result(secure_admission_command(verb, rest))
+        }
+        [noun, verb, rest @ ..]
+            if noun == "secure"
+                && (verb == "consent"
+                    || verb == "consent-retry"
+                    || verb == "consent-pending"
+                    || verb == "receive"
+                    || verb == "receive-retry"
+                    || verb == "receive-pending") =>
+        {
+            cli_result(secure_decision_command(verb, rest))
+        }
+        [noun, verb, rest @ ..]
+            if noun == "secure"
                 && (verb == "recipient-create"
                     || verb == "recipient-publish"
                     || verb == "recipient-pending"
@@ -272,6 +296,114 @@ fn secure_recipient_command(verb: &str, args: &[String]) -> Result<String, (&'st
             "recipient result encoding failed".to_owned(),
         )
     })
+}
+
+fn cli_result(result: Result<String, (&'static str, String)>) -> ExitCode {
+    match result {
+        Ok(value) => {
+            println!("{value}");
+            ExitCode::SUCCESS
+        }
+        Err((code, message)) => {
+            eprintln!(
+                "{}",
+                serde_json::json!({"code": if InterruptMonitor::interrupted() { "INTERRUPTED" } else { code }, "message":message})
+            );
+            if InterruptMonitor::interrupted() {
+                ExitCode::from(130)
+            } else {
+                ExitCode::FAILURE
+            }
+        }
+    }
+}
+
+fn secure_admission_command(verb: &str, args: &[String]) -> Result<String, (&'static str, String)> {
+    let pending = verb == "admit-pending-offers" || verb == "admit-pending-deliveries";
+    if args.len() != if pending { 1 } else { 2 } {
+        return Err((
+            "USAGE",
+            "secure admit-* PROFILE_JSON_FILE [OFFER_JSON_FILE|INVITE_ID|GRANT_ID]".to_owned(),
+        ));
+    }
+    let bytes = fs::read(&args[0]).map_err(|e| ("CONFIG_FILE", e.to_string()))?;
+    let config: SecureReadProfileConfig =
+        serde_json::from_slice(&bytes).map_err(|e| ("CONFIG_INVALID", e.to_string()))?;
+    let access = SecurePublicAdmission::new(config);
+    let cancel = KernelCancellationToken::new();
+    let _interrupts = InterruptMonitor::start(cancel.clone()).map_err(|_| {
+        (
+            "INTERRUPT_HANDLER",
+            "unable to install interrupt handler".to_owned(),
+        )
+    })?;
+    match verb {
+        "admit-offer" => {
+            let bytes = fs::read(&args[1]).map_err(|e| ("OFFER_FILE", e.to_string()))?;
+            let input: PublicOfferInput = serde_json::from_slice(&bytes)
+                .map_err(|e| ("ADMISSION_INPUT_INVALID", e.to_string()))?;
+            access.submit_offer_json_with_cancel(input, &cancel)
+        }
+        "admit-retry-offer" => access.retry_offer_json_with_cancel(&args[1], &cancel),
+        "admit-pending-offers" => access.pending_offers_json(),
+        "admit-deliver" => access.deliver_accepted_json_with_cancel(&args[1], &cancel),
+        "admit-retry-delivery" => access.retry_delivery_json_with_cancel(&args[1], &cancel),
+        "admit-pending-deliveries" => access.pending_deliveries_json(),
+        _ => unreachable!(),
+    }
+    .map_err(|e| (e.code(), e.to_string()))
+}
+
+fn secure_decision_command(verb: &str, args: &[String]) -> Result<String, (&'static str, String)> {
+    let pending = verb == "consent-pending" || verb == "receive-pending";
+    let expected = if pending {
+        1
+    } else if verb == "consent" {
+        3
+    } else {
+        2
+    };
+    if args.len() != expected {
+        return Err(("USAGE", "secure consent|consent-retry|consent-pending|receive|receive-retry|receive-pending RECIPIENT_JSON_FILE [INVITE_ID [ACCEPT|DECLINE]]".to_owned()));
+    }
+    let bytes = fs::read(&args[0]).map_err(|e| ("CONFIG_FILE", e.to_string()))?;
+    let mut config_value: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|e| ("CONFIG_INVALID", e.to_string()))?;
+    let state_dir = config_value
+        .get("state_dir")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(("CONFIG_INVALID", "state_dir is required".to_owned()))?;
+    let identity_path = Path::new(state_dir).join("identity.state");
+    config_value
+        .as_object_mut()
+        .ok_or((
+            "CONFIG_INVALID",
+            "configuration must be an object".to_owned(),
+        ))?
+        .insert(
+            "identity_path".to_owned(),
+            serde_json::Value::String(identity_path.to_string_lossy().into_owned()),
+        );
+    let config: PublicDecisionConfig =
+        serde_json::from_value(config_value).map_err(|e| ("CONFIG_INVALID", e.to_string()))?;
+    let access = SecurePublicDecision::new(config);
+    let cancel = KernelCancellationToken::new();
+    let _interrupts = InterruptMonitor::start(cancel.clone()).map_err(|_| {
+        (
+            "INTERRUPT_HANDLER",
+            "unable to install interrupt handler".to_owned(),
+        )
+    })?;
+    match verb {
+        "consent" => access.decide_json_with_cancel(&args[1], &args[2], &cancel),
+        "consent-retry" => access.retry_json_with_cancel(&args[1], &cancel),
+        "consent-pending" => access.pending_json(),
+        "receive" => access.receive_json_with_cancel(&args[1], &cancel),
+        "receive-retry" => access.retry_receive_json_with_cancel(&args[1], &cancel),
+        "receive-pending" => access.pending_receipts_json(),
+        _ => unreachable!(),
+    }
+    .map_err(|e| (e.code(), e.to_string()))
 }
 
 fn secure_install_command(verb: &str, args: &[String]) -> Result<String, (&'static str, String)> {

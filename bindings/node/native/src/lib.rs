@@ -7,6 +7,8 @@ use peerwork_runtime::kernel_access::KernelAccess;
 use peerwork_runtime::kernel_client::{KernelAcceptedResult, KernelOperationStatus};
 use peerwork_runtime::kernel_identity::KernelIdentity;
 use peerwork_runtime::secure_action_access::{PublicActionInput, SecurePublicActionAccess};
+use peerwork_runtime::secure_public_admission::{PublicOfferInput, SecurePublicAdmission};
+use peerwork_runtime::secure_public_decision::{PublicDecisionConfig, SecurePublicDecision};
 use peerwork_runtime::secure_public_install::{
     PublicPackageInstallInput, SecurePublicPackageInstall,
 };
@@ -526,5 +528,142 @@ pub fn secure_recipient_enrollment_json(
         cancel: cancel_handle
             .map(|handle| handle.token.clone())
             .unwrap_or_default(),
+    })
+}
+
+pub struct SecureAdmissionTask {
+    role: String,
+    operation: String,
+    config_json: String,
+    input_json: Option<String>,
+    invite_id: Option<String>,
+    grant_id: Option<String>,
+    decision: Option<String>,
+    cancel: KernelCancellationToken,
+}
+
+impl Task for SecureAdmissionTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let result = if self.role == "owner" {
+            let config: SecureReadProfileConfig = serde_json::from_str(&self.config_json)
+                .map_err(|_| napi::Error::from_reason("invalid PUBLIC admission configuration"))?;
+            let access = SecurePublicAdmission::new(config);
+            match self.operation.as_str() {
+                "offer" => {
+                    let input: PublicOfferInput = serde_json::from_str(
+                        self.input_json
+                            .as_deref()
+                            .ok_or_else(|| napi::Error::from_reason("offer input required"))?,
+                    )
+                    .map_err(|_| napi::Error::from_reason("invalid PUBLIC offer input"))?;
+                    access
+                        .submit_offer_json_with_cancel(input, &self.cancel)
+                        .map_err(|e| (e.code(), e.to_string()))
+                }
+                "retry_offer" => access
+                    .retry_offer_json_with_cancel(
+                        self.invite_id.as_deref().unwrap_or(""),
+                        &self.cancel,
+                    )
+                    .map_err(|e| (e.code(), e.to_string())),
+                "pending_offers" => access
+                    .pending_offers_json()
+                    .map_err(|e| (e.code(), e.to_string())),
+                "deliver" => access
+                    .deliver_accepted_json_with_cancel(
+                        self.invite_id.as_deref().unwrap_or(""),
+                        &self.cancel,
+                    )
+                    .map_err(|e| (e.code(), e.to_string())),
+                "retry_delivery" => access
+                    .retry_delivery_json_with_cancel(
+                        self.grant_id.as_deref().unwrap_or(""),
+                        &self.cancel,
+                    )
+                    .map_err(|e| (e.code(), e.to_string())),
+                "pending_deliveries" => access
+                    .pending_deliveries_json()
+                    .map_err(|e| (e.code(), e.to_string())),
+                _ => {
+                    return Err(napi::Error::from_reason(
+                        "unsupported PUBLIC admission operation",
+                    ))
+                }
+            }
+        } else if self.role == "recipient" {
+            let config: PublicDecisionConfig = serde_json::from_str(&self.config_json)
+                .map_err(|_| napi::Error::from_reason("invalid PUBLIC decision configuration"))?;
+            let access = SecurePublicDecision::new(config);
+            match self.operation.as_str() {
+                "decide" => access
+                    .decide_json_with_cancel(
+                        self.invite_id.as_deref().unwrap_or(""),
+                        self.decision.as_deref().unwrap_or(""),
+                        &self.cancel,
+                    )
+                    .map_err(|e| (e.code(), e.to_string())),
+                "retry_decision" => access
+                    .retry_json_with_cancel(self.invite_id.as_deref().unwrap_or(""), &self.cancel)
+                    .map_err(|e| (e.code(), e.to_string())),
+                "pending_decisions" => access.pending_json().map_err(|e| (e.code(), e.to_string())),
+                "receive" => access
+                    .receive_json_with_cancel(self.invite_id.as_deref().unwrap_or(""), &self.cancel)
+                    .map_err(|e| (e.code(), e.to_string())),
+                "retry_receive" => access
+                    .retry_receive_json_with_cancel(
+                        self.invite_id.as_deref().unwrap_or(""),
+                        &self.cancel,
+                    )
+                    .map_err(|e| (e.code(), e.to_string())),
+                "pending_receipts" => access
+                    .pending_receipts_json()
+                    .map_err(|e| (e.code(), e.to_string())),
+                _ => {
+                    return Err(napi::Error::from_reason(
+                        "unsupported PUBLIC decision operation",
+                    ))
+                }
+            }
+        } else {
+            return Err(napi::Error::from_reason(
+                "unsupported PUBLIC admission role",
+            ));
+        };
+        Ok(match result {
+            Ok(value) => format!("{{\"ok\":true,\"value\":{value}}}"),
+            Err((code, message)) => {
+                serde_json::json!({"ok":false,"code":code,"message":message}).to_string()
+            }
+        })
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+#[napi]
+pub fn secure_public_admission_json(
+    role: String,
+    operation: String,
+    config_json: String,
+    input_json: Option<String>,
+    invite_id: Option<String>,
+    grant_id: Option<String>,
+    decision: Option<String>,
+    cancel_handle: Option<ClassInstance<KernelCancelHandle>>,
+) -> AsyncTask<SecureAdmissionTask> {
+    AsyncTask::new(SecureAdmissionTask {
+        role,
+        operation,
+        config_json,
+        input_json,
+        invite_id,
+        grant_id,
+        decision,
+        cancel: cancel_handle.map(|h| h.token.clone()).unwrap_or_default(),
     })
 }

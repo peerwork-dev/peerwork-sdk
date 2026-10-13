@@ -2,6 +2,8 @@ use peerwork_runtime::kernel_access::KernelAccess;
 use peerwork_runtime::kernel_client::{KernelAcceptedResult, KernelOperationStatus};
 use peerwork_runtime::kernel_identity::KernelIdentity;
 use peerwork_runtime::secure_action_access::{PublicActionInput, SecurePublicActionAccess};
+use peerwork_runtime::secure_public_admission::{PublicOfferInput, SecurePublicAdmission};
+use peerwork_runtime::secure_public_decision::{PublicDecisionConfig, SecurePublicDecision};
 use peerwork_runtime::secure_public_install::{
     PublicPackageInstallInput, SecurePublicPackageInstall,
 };
@@ -355,6 +357,79 @@ fn secure_recipient_enrollment_json(
     }))
 }
 
+#[pyfunction]
+#[pyo3(signature = (operation, config_json, input_json=None, invite_id=None, grant_id=None, cancel_handle=None))]
+fn secure_public_admission_json(
+    py: Python<'_>,
+    operation: &str,
+    config_json: &str,
+    input_json: Option<&str>,
+    invite_id: Option<&str>,
+    grant_id: Option<&str>,
+    cancel_handle: Option<PyRef<'_, KernelCancelHandle>>,
+) -> PyResult<String> {
+    let config: SecureReadProfileConfig = serde_json::from_str(config_json).map_err(|_| {
+        pyo3::exceptions::PyValueError::new_err("invalid PUBLIC admission configuration")
+    })?;
+    let input: Option<PublicOfferInput> = input_json
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|_| pyo3::exceptions::PyValueError::new_err("invalid PUBLIC offer input"))?;
+    let operation = operation.to_owned();
+    let invite_id = invite_id.map(str::to_owned);
+    let grant_id = grant_id.map(str::to_owned);
+    let cancel = cancel_handle
+        .map(|handle| handle.token.clone())
+        .unwrap_or_default();
+    Ok(py.allow_threads(move || {
+        let access = SecurePublicAdmission::new(config);
+        let result = match operation.as_str() {
+            "offer" => match input { Some(value) => access.submit_offer_json_with_cancel(value, &cancel), None => return serde_json::json!({"ok":false,"code":"ADMISSION_INPUT_INVALID","message":"offer input is required"}).to_string() },
+            "retry_offer" => match invite_id.as_deref() { Some(id) => access.retry_offer_json_with_cancel(id, &cancel), None => return serde_json::json!({"ok":false,"code":"ADMISSION_INPUT_INVALID","message":"invite ID is required"}).to_string() },
+            "pending_offers" => access.pending_offers_json(),
+            "deliver" => match invite_id.as_deref() { Some(id) => access.deliver_accepted_json_with_cancel(id, &cancel), None => return serde_json::json!({"ok":false,"code":"ADMISSION_INPUT_INVALID","message":"invite ID is required"}).to_string() },
+            "retry_delivery" => match grant_id.as_deref() { Some(id) => access.retry_delivery_json_with_cancel(id, &cancel), None => return serde_json::json!({"ok":false,"code":"ADMISSION_INPUT_INVALID","message":"grant ID is required"}).to_string() },
+            "pending_deliveries" => access.pending_deliveries_json(),
+            _ => return serde_json::json!({"ok":false,"code":"ADMISSION_INPUT_INVALID","message":"unsupported PUBLIC admission operation"}).to_string(),
+        };
+        match result { Ok(value) => format!("{{\"ok\":true,\"value\":{value}}}"), Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string() }
+    }))
+}
+
+#[pyfunction]
+#[pyo3(signature = (operation, config_json, invite_id=None, decision=None, cancel_handle=None))]
+fn secure_public_decision_json(
+    py: Python<'_>,
+    operation: &str,
+    config_json: &str,
+    invite_id: Option<&str>,
+    decision: Option<&str>,
+    cancel_handle: Option<PyRef<'_, KernelCancelHandle>>,
+) -> PyResult<String> {
+    let config: PublicDecisionConfig = serde_json::from_str(config_json).map_err(|_| {
+        pyo3::exceptions::PyValueError::new_err("invalid PUBLIC decision configuration")
+    })?;
+    let operation = operation.to_owned();
+    let invite_id = invite_id.map(str::to_owned);
+    let decision = decision.map(str::to_owned);
+    let cancel = cancel_handle
+        .map(|handle| handle.token.clone())
+        .unwrap_or_default();
+    Ok(py.allow_threads(move || {
+        let access = SecurePublicDecision::new(config);
+        let result = match operation.as_str() {
+            "decide" => match (invite_id.as_deref(), decision.as_deref()) { (Some(id), Some(value)) => access.decide_json_with_cancel(id, value, &cancel), _ => return serde_json::json!({"ok":false,"code":"DECISION_INVALID","message":"invite ID and decision are required"}).to_string() },
+            "retry_decision" => match invite_id.as_deref() { Some(id) => access.retry_json_with_cancel(id, &cancel), None => return serde_json::json!({"ok":false,"code":"DECISION_INVALID","message":"invite ID is required"}).to_string() },
+            "pending_decisions" => access.pending_json(),
+            "receive" => match invite_id.as_deref() { Some(id) => access.receive_json_with_cancel(id, &cancel), None => return serde_json::json!({"ok":false,"code":"DECISION_INVALID","message":"invite ID is required"}).to_string() },
+            "retry_receive" => match invite_id.as_deref() { Some(id) => access.retry_receive_json_with_cancel(id, &cancel), None => return serde_json::json!({"ok":false,"code":"DECISION_INVALID","message":"invite ID is required"}).to_string() },
+            "pending_receipts" => access.pending_receipts_json(),
+            _ => return serde_json::json!({"ok":false,"code":"DECISION_INVALID","message":"unsupported PUBLIC decision operation"}).to_string(),
+        };
+        match result { Ok(value) => format!("{{\"ok\":true,\"value\":{value}}}"), Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string() }
+    }))
+}
+
 #[pymodule]
 fn _peerwork_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(version, module)?)?;
@@ -369,6 +444,8 @@ fn _peerwork_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(secure_public_action_json, module)?)?;
     module.add_function(wrap_pyfunction!(secure_public_install_json, module)?)?;
     module.add_function(wrap_pyfunction!(secure_recipient_enrollment_json, module)?)?;
+    module.add_function(wrap_pyfunction!(secure_public_admission_json, module)?)?;
+    module.add_function(wrap_pyfunction!(secure_public_decision_json, module)?)?;
     module.add_class::<KernelCancelHandle>()?;
     Ok(())
 }
