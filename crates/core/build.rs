@@ -39,6 +39,14 @@ fn run(mut command: Command, label: &str) {
     }
 }
 
+fn with_pic_flag(name: &str) -> String {
+    let existing = env::var(name).unwrap_or_else(|error| match error {
+        env::VarError::NotPresent => String::new(),
+        env::VarError::NotUnicode(_) => panic!("{name} must be UTF-8"),
+    });
+    format!("{existing} -fPIC")
+}
+
 fn replace_once(source: String, old: &str, new: &str, label: &str) -> String {
     assert_eq!(
         source.matches(old).count(),
@@ -219,9 +227,18 @@ fn main() {
         build_msvc(&source, &target_triple);
         return;
     }
+    let gnu_linux_pic = target == "linux" && !target_triple.ends_with("-musl");
+    let pic_flags = gnu_linux_pic.then(|| {
+        println!("cargo:rerun-if-env-changed=CFLAGS");
+        println!("cargo:rerun-if-env-changed=CXXFLAGS");
+        (with_pic_flag("CFLAGS"), with_pic_flag("CXXFLAGS"))
+    });
     run(
         {
             let mut command = Command::new(source.join("icu/source/runConfigureICU"));
+            if let Some((cflags, cxxflags)) = &pic_flags {
+                command.env("CFLAGS", cflags).env("CXXFLAGS", cxxflags);
+            }
             if target_triple.ends_with("-musl") {
                 // Alpine's libstdc++ has initial-exec TLS and cannot be loaded
                 // with a Python extension after interpreter startup. libc++
@@ -243,6 +260,9 @@ fn main() {
     run(
         {
             let mut command = Command::new("make");
+            if let Some((cflags, cxxflags)) = &pic_flags {
+                command.env("CFLAGS", cflags).env("CXXFLAGS", cxxflags);
+            }
             command.current_dir(&build).arg("-j4");
             command
         },
