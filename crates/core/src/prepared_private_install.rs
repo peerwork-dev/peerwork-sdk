@@ -10,8 +10,8 @@ use crate::{
     prepared_secure_author::sign_private_commit,
     protocol_package_source::verify_protocol_package_source,
     public_direct_install::{
-        build_direct_install_begin, build_direct_install_objects_with_composition,
-        compile_public_package_closure, derive_direct_install_structure,
+        build_direct_install_begin, build_direct_install_objects_with_composition_at_ceiling,
+        compile_package_closure_at_ceiling, derive_direct_install_structure,
         derive_direct_install_structure_with_disclosure, plan_public_install_snapshot,
         PublicInstallSnapshotPlan,
     },
@@ -934,7 +934,18 @@ pub fn prepare_private_direct_install_begin(
     {
         return Err(bad());
     }
-    let compiled = compile_public_package_closure(material_wire).map_err(|_| bad())?;
+    // Only a signed, authenticated PRIVATE-v3 structured policy with its
+    // format ceiling raised to two may select format-two package material.
+    let direct_format_ceiling = if version == 3
+        && structure_mode.as_deref() == Some("STRUCTURED")
+        && number(policy, "protocol_format_ceiling")? == 2
+    {
+        2
+    } else {
+        1
+    };
+    let compiled = compile_package_closure_at_ceiling(material_wire, direct_format_ceiling)
+        .map_err(|_| bad())?;
     if compiled.package_digest() != expected_root_package_digest
         || compiled.protocol_digest() != expected_protocol_digest
         || prior_objects.iter().any(|object| {
@@ -944,7 +955,7 @@ pub fn prepare_private_direct_install_begin(
     {
         return Err(bad());
     }
-    let built = build_direct_install_objects_with_composition(
+    let built = build_direct_install_objects_with_composition_at_ceiling(
         compiled.manifest_wire(),
         compiled.composition(),
         expected_protocol_digest,
@@ -952,6 +963,7 @@ pub fn prepare_private_direct_install_begin(
         instance_id,
         entrypoint,
         issued_at,
+        direct_format_ceiling,
     )
     .map_err(|_| bad())?;
     let mut added = built.added;

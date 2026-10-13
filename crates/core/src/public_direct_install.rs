@@ -90,6 +90,18 @@ impl PreparedPublicPackageInstallBegin {
 pub fn compile_public_package_closure(
     closure_wire: &[u8],
 ) -> Result<PublicPackageCompilation, DirectInstallError> {
+    compile_package_closure_at_ceiling(closure_wire, 1)
+}
+
+/// The authenticated PRIVATE policy may raise the format ceiling to two.
+/// PUBLIC callers retain the ceiling-one wrapper above.
+pub(crate) fn compile_package_closure_at_ceiling(
+    closure_wire: &[u8],
+    format_ceiling: u64,
+) -> Result<PublicPackageCompilation, DirectInstallError> {
+    if !matches!(format_ceiling, 1 | 2) {
+        return Err(DirectInstallError::Invalid);
+    }
     if closure_wire.is_empty() || closure_wire.len() > 6 * 1024 * 1024 {
         return Err(DirectInstallError::Resource);
     }
@@ -120,8 +132,8 @@ pub fn compile_public_package_closure(
     let manifest_wire = canonical_wire_value(&compiled.manifest, Path::SecureArtifact)
         .map_err(|_| DirectInstallError::Invalid)?
         .into_bytes();
-    if compiled.manifest.get("format_version") == Some(&WireValue::Number(2.0))
-        || compiled.manifest.get("constraints") != Some(&obj(vec![]))
+    if compiled.manifest.get("format_version").is_some() && format_ceiling != 2
+        || compiled.manifest.get("constraints") != Some(&obj(vec![])) && format_ceiling != 2
     {
         return Err(DirectInstallError::Invalid);
     }
@@ -131,7 +143,7 @@ pub fn compile_public_package_closure(
             &compiled.manifest,
             &compiled.manifest,
             &compiled.protocol_digest,
-            1,
+            format_ceiling,
         )
         .map_err(|_| DirectInstallError::Invalid)?;
     } else if compiled.manifest.get("dependencies") != Some(&WireValue::Array(vec![])) {
@@ -812,7 +824,35 @@ pub(crate) fn build_direct_install_objects_with_composition(
     origin_entrypoint: &str,
     issued_at: u64,
 ) -> Result<DirectInstallObjects, DirectInstallError> {
+    build_direct_install_objects_with_composition_at_ceiling(
+        manifest_wire,
+        composition,
+        expected_digest,
+        workspace_id,
+        instance_id,
+        origin_entrypoint,
+        issued_at,
+        1,
+    )
+}
+
+/// Retain the PUBLIC ceiling-one gate while allowing an authenticated
+/// PRIVATE-v3/ceiling-two caller to construct the same signed object shape.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_direct_install_objects_with_composition_at_ceiling(
+    manifest_wire: &[u8],
+    composition: Option<&WireValue>,
+    expected_digest: &str,
+    workspace_id: &str,
+    instance_id: &str,
+    origin_entrypoint: &str,
+    issued_at: u64,
+    format_ceiling: u64,
+) -> Result<DirectInstallObjects, DirectInstallError> {
     let bad = || DirectInstallError::Invalid;
+    if !matches!(format_ceiling, 1 | 2) {
+        return Err(bad());
+    }
     if manifest_wire.is_empty() || manifest_wire.len() > 2_000_000 {
         return Err(DirectInstallError::Resource);
     }
@@ -834,8 +874,8 @@ pub(crate) fn build_direct_install_objects_with_composition(
     // The selected package compiler may provide an exact dependency proof.
     // The service verifies the composition from this signed object itself;
     // package selection remains protected local provenance.
-    if manifest.get("format_version") == Some(&WireValue::Number(2.0))
-        || manifest.get("constraints") != Some(&obj(vec![]))
+    if manifest.get("format_version").is_some() && format_ceiling != 2
+        || manifest.get("constraints") != Some(&obj(vec![])) && format_ceiling != 2
     {
         return Err(bad());
     }
@@ -843,7 +883,8 @@ pub(crate) fn build_direct_install_objects_with_composition(
         return Err(bad());
     }
     if let Some(proof) = composition {
-        verify_composition(proof, &manifest, &manifest, expected_digest, 1).map_err(|_| bad())?;
+        verify_composition(proof, &manifest, &manifest, expected_digest, format_ceiling)
+            .map_err(|_| bad())?;
     } else if manifest.get("dependencies") != Some(&WireValue::Array(vec![])) {
         return Err(bad());
     }
@@ -1367,6 +1408,67 @@ pub(crate) fn sign_public_direct_install_begin(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typed_composed_closure_requires_ceiling_two_for_direct_objects() {
+        let fixture = parse_wire_json_bounded(
+            include_bytes!("../../../conformance/private-direct-format-two.json"),
+            64,
+            2_000_000,
+        )
+        .unwrap();
+        let closure =
+            canonical_wire_value(fixture.get("closure").unwrap(), Path::SecureArtifact).unwrap();
+        assert!(compile_public_package_closure(closure.as_bytes()).is_err());
+        assert!(compile_package_closure_at_ceiling(closure.as_bytes(), 1).is_err());
+        let compiled = compile_package_closure_at_ceiling(closure.as_bytes(), 2).unwrap();
+        assert_eq!(
+            compiled.package_digest(),
+            fixture
+                .get("root_package_digest")
+                .unwrap()
+                .as_string()
+                .unwrap()
+        );
+        assert_eq!(
+            compiled.protocol_digest(),
+            fixture.get("protocol_digest").unwrap().as_string().unwrap()
+        );
+        let manifest = parse_wire_json_bounded(compiled.manifest_wire(), 64, 2_000_000).unwrap();
+        assert_eq!(
+            manifest.get("format_version"),
+            Some(&WireValue::Number(2.0))
+        );
+        assert!(compiled.composition().is_some());
+        let workspace_id = "w".repeat(43);
+        let instance_id = "z".repeat(43);
+        assert!(build_direct_install_objects_with_composition(
+            compiled.manifest_wire(),
+            compiled.composition(),
+            compiled.protocol_digest(),
+            &workspace_id,
+            &instance_id,
+            "typedRoot",
+            1_700_000_000_000,
+        )
+        .is_err());
+        let built = build_direct_install_objects_with_composition_at_ceiling(
+            compiled.manifest_wire(),
+            compiled.composition(),
+            compiled.protocol_digest(),
+            &workspace_id,
+            &instance_id,
+            "typedRoot",
+            1_700_000_000_000,
+            2,
+        )
+        .unwrap();
+        assert_eq!(built.added.len(), 2);
+        assert_eq!(
+            built.added[0].get("value").unwrap().get("composition"),
+            compiled.composition()
+        );
+    }
 
     #[test]
     fn official_connected_proposal_task_closure_has_exact_composition_proof() {
