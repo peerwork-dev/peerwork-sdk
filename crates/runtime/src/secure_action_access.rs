@@ -13,7 +13,7 @@ use crate::{
     transport::{HttpTransport, TransportConfig},
 };
 use peerwork_core::{
-    crypto::base64url,
+    crypto::{base64url, sha256_hex},
     prepared_secure_request::SecureCommitRequestPins,
     wire_json::{parse_wire_json_bounded, WireValue},
 };
@@ -52,6 +52,19 @@ pub struct PublicActionResult {
     pub sequence: Option<u64>,
     pub commit_hash: Option<String>,
     pub receipt_canonical_json: Option<String>,
+}
+
+/// Redacted protected state for recovering a generated command ID after the
+/// caller exits or an async wrapper is cancelled before returning a result.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct PendingPublicAction {
+    pub command_id: String,
+    pub actor_id: String,
+    pub origin: String,
+    pub workspace_id: String,
+    pub action_id: String,
+    pub request_sha256: String,
+    pub commit_hash: String,
 }
 
 #[derive(Debug, Error)]
@@ -105,6 +118,52 @@ pub struct SecurePublicActionAccess {
 impl SecurePublicActionAccess {
     pub fn new(config: SecureReadProfileConfig) -> Self {
         Self { config }
+    }
+
+    pub fn list_pending_json(&self) -> Result<String, PublicActionError> {
+        self.list_pending_json_with_cancel(&CancellationToken::new())
+    }
+
+    pub fn list_pending_json_with_cancel(
+        &self,
+        cancel: &CancellationToken,
+    ) -> Result<String, PublicActionError> {
+        if cancel.is_cancelled() {
+            return Err(PublicActionError::Read(SecureReadAccessError::Cancelled));
+        }
+        let scope = SecureReadProfile::new(self.config.clone()).local_pending_scope()?;
+        let identity = KernelIdentity::open(&self.config.identity_path)
+            .map_err(|_| PublicActionError::LocalState)?;
+        let _lifecycle = SecureLifecycle::open(
+            &self.config.state_dir.join("lifecycle.state"),
+            &scope.origin,
+            identity.actor_id(),
+            &scope.workspace_id,
+            &scope.owner_actor_id,
+            &scope.owner_key_id,
+        )
+        .map_err(|_| PublicActionError::LocalState)?;
+        let journal = SecureIntentJournal::open(
+            &self.config.state_dir.join("action-intents.state"),
+            &scope.origin,
+            identity.actor_id(),
+        )?;
+        let mut rows = Vec::new();
+        for row in journal.pending() {
+            if row.workspace_id.as_deref() != Some(scope.workspace_id.as_str()) {
+                return Err(PublicActionError::LocalState);
+            }
+            rows.push(PendingPublicAction {
+                request_sha256: sha256_hex(&journal.exact_request(&row.intent_id)?),
+                commit_hash: journal.intent_digest(&row.intent_id)?.to_owned(),
+                command_id: row.intent_id,
+                actor_id: journal.actor_id().to_owned(),
+                origin: journal.trusted_origin().to_owned(),
+                workspace_id: scope.workspace_id.clone(),
+                action_id: row.action_id,
+            });
+        }
+        serde_json::to_string(&rows).map_err(|_| PublicActionError::ResultEncoding)
     }
 
     pub fn submit_new_json(&self, input: PublicActionInput) -> Result<String, PublicActionError> {

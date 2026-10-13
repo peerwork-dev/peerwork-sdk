@@ -57,6 +57,13 @@ struct ProfileDocument {
     floor: Option<VerifiedReadFloor>,
 }
 
+pub(crate) struct ProtectedPendingScope {
+    pub origin: String,
+    pub workspace_id: String,
+    pub owner_actor_id: String,
+    pub owner_key_id: String,
+}
+
 impl ProfileDocument {
     fn valid(&self) -> bool {
         self.version == 1
@@ -246,17 +253,55 @@ impl SecureReadProfile {
         if cancel.is_cancelled() {
             return Err(E::from(SecureReadAccessError::Cancelled));
         }
-        let store = SecureStateStore::open(&self.config.state_dir.join("read.profile"))
-            .map_err(|_| E::from(SecureReadAccessError::Profile))?;
-        let wire = store
-            .read_exact()
-            .map_err(|_| E::from(SecureReadAccessError::Profile))?
+        let (_store, saved) = self.open_local_profile().map_err(E::from)?;
+        let slot = saved
+            .current
             .ok_or_else(|| E::from(SecureReadAccessError::Profile))?;
-        if wire.len() > 16 * 1024 {
+        let floor = saved
+            .floor
+            .as_ref()
+            .ok_or_else(|| E::from(SecureReadAccessError::Profile))?;
+        let access = self.access(&saved, slot);
+        let (replayed, checked) = access
+            .replay_checked_generation(cancel, Some(floor), false)
+            .map_err(E::from)?;
+        if &checked != floor {
             return Err(E::from(SecureReadAccessError::Profile));
         }
+        consume(&replayed)
+    }
+
+    /// Protected local identity/scope continuity for redacted pending-ID
+    /// discovery. This does not replay a journal or authorize an effect.
+    pub(crate) fn local_pending_scope(
+        &self,
+    ) -> Result<ProtectedPendingScope, SecureReadAccessError> {
+        let (_store, saved) = self.open_local_profile()?;
+        if saved.current.is_none() || saved.floor.is_none() {
+            return Err(SecureReadAccessError::Profile);
+        }
+        Ok(ProtectedPendingScope {
+            origin: saved.origin,
+            workspace_id: saved.workspace_id,
+            owner_actor_id: saved.owner_actor_id,
+            owner_key_id: saved.owner_key_id,
+        })
+    }
+
+    fn open_local_profile(
+        &self,
+    ) -> Result<(SecureStateStore, ProfileDocument), SecureReadAccessError> {
+        let store = SecureStateStore::open(&self.config.state_dir.join("read.profile"))
+            .map_err(|_| SecureReadAccessError::Profile)?;
+        let wire = store
+            .read_exact()
+            .map_err(|_| SecureReadAccessError::Profile)?
+            .ok_or(SecureReadAccessError::Profile)?;
+        if wire.len() > 16 * 1024 {
+            return Err(SecureReadAccessError::Profile);
+        }
         let saved: ProfileDocument =
-            serde_json::from_slice(&wire).map_err(|_| E::from(SecureReadAccessError::Profile))?;
+            serde_json::from_slice(&wire).map_err(|_| SecureReadAccessError::Profile)?;
         if !saved.valid()
             || saved.origin != self.config.origin
             || saved.identity_path != self.config.identity_path
@@ -279,23 +324,9 @@ impl SecureReadProfile {
                 .as_deref()
                 .is_some_and(|value| value != saved.authority)
         {
-            return Err(E::from(SecureReadAccessError::Profile));
+            return Err(SecureReadAccessError::Profile);
         }
-        let slot = saved
-            .current
-            .ok_or_else(|| E::from(SecureReadAccessError::Profile))?;
-        let floor = saved
-            .floor
-            .as_ref()
-            .ok_or_else(|| E::from(SecureReadAccessError::Profile))?;
-        let access = self.access(&saved, slot);
-        let (replayed, checked) = access
-            .replay_checked_generation(cancel, Some(floor), false)
-            .map_err(E::from)?;
-        if &checked != floor {
-            return Err(E::from(SecureReadAccessError::Profile));
-        }
-        consume(&replayed)
+        Ok((store, saved))
     }
 
     fn access(&self, profile: &ProfileDocument, slot: u8) -> SecureReadAccess {
@@ -356,6 +387,9 @@ fn ensure_private_directory(path: &Path) -> Result<(), SecureReadAccessError> {
 mod tests {
     use super::*;
     use crate::kernel_identity::KernelIdentity;
+    use crate::secure_action_access::SecurePublicActionAccess;
+    use crate::secure_intents::{SecureIntentJournal, SecurePacketInput};
+    use peerwork_core::crypto::sha256_hex;
     use std::io::{BufRead, BufReader};
     use std::process::{Child, Command, Stdio};
 
@@ -579,5 +613,53 @@ mod tests {
         let counts: serde_json::Value = serde_json::from_slice(&counts).unwrap();
         assert_eq!(counts["commits"], 2);
         assert_eq!(counts["head_sequence"], 2);
+
+        // A cancelled wrapper may have lost a generated ID after the native
+        // packet was durably saved. Discovery uses only the protected profile
+        // and journal, even when the service is no longer reachable.
+        let mut action_journal = SecureIntentJournal::open(
+            &config.state_dir.join("action-intents.state"),
+            &origin,
+            identity.actor_id(),
+        )
+        .unwrap();
+        let request = br#"{"synthetic":"secret-packet"}"#;
+        let command_id = "q".repeat(43);
+        let commit_hash = "a".repeat(64);
+        action_journal
+            .prepare(SecurePacketInput {
+                intent_id: &command_id,
+                path: &format!(
+                    "/api/workspace/v1/secure/workspaces/{}/commits",
+                    config.workspace_id
+                ),
+                action_id: "discussion.post",
+                workspace_id: Some(&config.workspace_id),
+                trusted_owner_key: Some(identity.key_id()),
+                intent_digest: &commit_hash,
+                exact_request: request,
+            })
+            .unwrap();
+        drop(action_journal);
+        child.0.kill().unwrap();
+        child.0.wait().unwrap();
+        let pending_config = reopened.clone();
+        let pending = tokio::task::spawn_blocking(move || {
+            SecurePublicActionAccess::new(pending_config).list_pending_json()
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(!pending.contains("secret-packet"));
+        assert!(!pending.contains("request_b64"));
+        let pending: serde_json::Value = serde_json::from_str(&pending).unwrap();
+        assert_eq!(pending.as_array().unwrap().len(), 1);
+        assert_eq!(pending[0]["command_id"], command_id);
+        assert_eq!(pending[0]["actor_id"], identity.actor_id());
+        assert_eq!(pending[0]["origin"], origin);
+        assert_eq!(pending[0]["workspace_id"], config.workspace_id);
+        assert_eq!(pending[0]["action_id"], "discussion.post");
+        assert_eq!(pending[0]["request_sha256"], sha256_hex(request));
+        assert_eq!(pending[0]["commit_hash"], commit_hash);
     }
 }
