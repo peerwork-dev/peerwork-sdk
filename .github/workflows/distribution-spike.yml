@@ -238,6 +238,9 @@ jobs:
           python -m venv /tmp/peerwork-wheel-consumer
           /tmp/peerwork-wheel-consumer/bin/pip install --no-index --no-deps dist/wheels/*.whl
           /tmp/peerwork-wheel-consumer/bin/python -c 'import peerwork; assert peerwork.version() == "0.0.1"; assert peerwork.capabilities()["version"] == "0.0.1"'
+          python -m pip install 'mypy==1.18.2'
+          python tests/verify-installed-python-types.py \
+            --python /tmp/peerwork-wheel-consumer/bin/python --mypy "$(command -v mypy)"
           ./target/release/peerwork version
           state_dir="$(cd "$RUNNER_TEMP" && pwd -P)/peerwork state Ω with spaces"
           mkdir -m 700 "$state_dir"
@@ -294,6 +297,11 @@ jobs:
           python tests/verify-typed-wheel.py $wheel
           & "$env:RUNNER_TEMP\peerwork-wheel-consumer\Scripts\pip.exe" install --no-index --no-deps $wheel
           & "$env:RUNNER_TEMP\peerwork-wheel-consumer\Scripts\python.exe" -c 'import peerwork; assert peerwork.version() == "0.0.1"; assert peerwork.capabilities()["version"] == "0.0.1"'
+          python -m pip install 'mypy==1.18.2'
+          $mypy = (Get-Command mypy -ErrorAction Stop).Source
+          python tests/verify-installed-python-types.py `
+            --python "$env:RUNNER_TEMP\peerwork-wheel-consumer\Scripts\python.exe" `
+            --mypy $mypy
           ./target/release/peerwork.exe version
           $stateDir = Join-Path $env:RUNNER_TEMP 'peerwork state Ω with spaces'
           [void][System.IO.Directory]::CreateDirectory($stateDir)
