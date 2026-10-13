@@ -144,6 +144,7 @@ if (process.env.PEERWORK_TEST_SECURE === '1') {
 let bootstrapFixture;
 let publicReadFixture;
 let publicAdmissionFixture;
+let privateGrantFixture;
 let publicReadInstance;
 let publicReadAppended = false;
 let publicReadFirstPage;
@@ -197,6 +198,44 @@ if (process.env.PEERWORK_TEST_ADMISSION === '1') {
     publicAdmissionFixture={recipient_actor_id:agent.identity.actorId,recipient_key_id:agent.identity.keyId};
   } finally { agent.close(); }
 }
+if (process.env.PEERWORK_TEST_PRIVATE_GRANT === '1') {
+  const {generateKeyPairSync} = await import('node:crypto');
+  const {SecureAgentClient} = await import(pathToFileURL(join(root, 'dist-workspace/src/workspace-secure-agent.js')).href);
+  const ownerPrivate = generateKeyPairSync('ed25519').privateKey;
+  const recipientPrivate = generateKeyPairSync('ed25519').privateKey;
+  writeFileSync(join(state,'private-grant-owner.pem'),ownerPrivate.export({format:'pem',type:'pkcs8'}),{mode:0o600,flag:'wx'});
+  writeFileSync(join(state,'private-grant-recipient.pem'),recipientPrivate.export({format:'pem',type:'pkcs8'}),{mode:0o600,flag:'wx'});
+  const owner = await SecureAgentClient.open({baseUrl:realOrigin,privateKey:ownerPrivate,
+    statePath:join(state,'private-grant-owner.json'),intentDbPath:join(state,'private-grant-owner-intents.sqlite')});
+  const recipient = await SecureAgentClient.open({baseUrl:realOrigin,privateKey:recipientPrivate,
+    statePath:join(state,'private-grant-recipient.json'),intentDbPath:join(state,'private-grant-recipient-intents.sqlite')});
+  try {
+    const created = await owner.create('Native recipient private grant fixture','PRIVATE');
+    await recipient.publishIdentity();
+    const offer = await owner.invite(created.workspaceId,recipient.state.certificate,[],'Native private grant retrieval');
+    const decision = await recipient.decide(offer,{actorId:owner.identity.actorId,key:owner.identity.keyId},'ACCEPT');
+    await owner.deliver(offer,decision);
+    // The newly joined member's first grant is invitation-bound. The
+    // authenticated direct-grant retrieval branch starts after an owner epoch
+    // rotation, which writes a separate direct grant for this member.
+    await owner.rotate(created.workspaceId);
+    let journal = await owner.journal(created.workspaceId);
+    const wiki = journal.objects.find(object => object.kind === 'instances' && object.value?.origin_entrypoint === 'wiki');
+    if (!wiki) throw new Error('private grant fixture lacks wiki action instance');
+    journal = await owner.action(created.workspaceId,wiki.id,'wiki.create',
+      {title:'Private native grant readback',body:'Encrypted record recovered through grant'});
+    if (journal.policy.payload.visibility !== 'PRIVATE' || journal.policy.payload.epoch !== 2 ||
+        journal.checkpoint.sequence !== 4 ||
+        !journal.objects.some(object => object.kind === 'records' &&
+          object.value?.payload?.title === 'Private native grant readback' &&
+          object.value?.payload?.body === 'Encrypted record recovered through grant'))
+      throw new Error('private grant fixture did not reach signed encrypted record');
+    privateGrantFixture = {workspace_id:created.workspaceId,owner_actor_id:owner.identity.actorId,
+      owner_key_id:owner.identity.keyId,recipient_actor_id:recipient.identity.actorId,
+      recipient_key_id:recipient.identity.keyId,recipient_authority:recipient.transport.authority,
+      sequence:journal.checkpoint.sequence,head:journal.checkpoint.head};
+  } finally { owner.close(); recipient.close(); }
+}
 if (process.env.PEERWORK_TEST_BOOTSTRAP === '1') {
   const {generateKeyPairSync} = await import('node:crypto');
   const {SecureAgentClient} = await import(pathToFileURL(join(root, 'dist-workspace/src/workspace-secure-agent.js')).href);
@@ -216,6 +255,7 @@ let dropFirstPost = true;
 let dropNextIdentityDirectory = false;
 let serveStaleIdentityDirectory = false;
 let tamperNextIdentityDirectory = false;
+let tamperNextPrivateGrant = false;
 let rejectNextPostBeforeApply = false;
 let delayNextPostAfterApply = false;
 let delayedPostStarted = false;
@@ -312,6 +352,13 @@ const proxy = createServer(async (request, response) => {
       response.end(JSON.stringify({enabled:true}));
       return;
     }
+    if (request.url === '/__test/tamper-next-private-grant' && request.method === 'POST') {
+      if (!privateGrantFixture || tamperNextPrivateGrant) throw new Error('private grant tamper fixture unavailable');
+      tamperNextPrivateGrant = true;
+      response.writeHead(200, {'content-type':'application/json'});
+      response.end(JSON.stringify({enabled:true}));
+      return;
+    }
     if (request.url === '/__test/restore-identity-directory' && request.method === 'POST') {
       serveStaleIdentityDirectory = false;
       response.writeHead(200, {'content-type':'application/json'});
@@ -399,6 +446,15 @@ const proxy = createServer(async (request, response) => {
       entry.signature = `${entry.signature[0] === 'A' ? 'B' : 'A'}${entry.signature.slice(1)}`;
       bytes = Buffer.from(JSON.stringify(value));
     }
+    if (request.method === 'GET' && request.url?.endsWith('/key-grants')
+        && tamperNextPrivateGrant && original.status === 200) {
+      tamperNextPrivateGrant = false;
+      const value = JSON.parse(bytes.toString('utf8'));
+      const grant = value.grants?.[0];
+      if (!grant) throw new Error('private grant tamper requires a grant');
+      grant.signature = `${grant.signature[0] === 'A' ? 'B' : 'A'}${grant.signature.slice(1)}`;
+      bytes = Buffer.from(JSON.stringify(value));
+    }
     if (request.method === 'POST' && request.url === '/api/workspace/v1/secure/identity-keys'
         && dropNextIdentityDirectory && original.status === 201) {
       dropNextIdentityDirectory = false;
@@ -455,6 +511,7 @@ process.stdout.write(JSON.stringify({origin: `http://127.0.0.1:${proxy.address()
   ...(secureFixture ? {secure:secureFixture} : {}),
   ...(publicReadFixture ? {public_read:publicReadFixture} : {}),
   ...(publicAdmissionFixture ? {public_admission:publicAdmissionFixture} : {}),
+  ...(privateGrantFixture ? {private_grant:privateGrantFixture} : {}),
   ...(bootstrapFixture ? {bootstrap:bootstrapFixture} : {})}) + '\n');
 const shutdown = () => {
   proxy.closeAllConnections();

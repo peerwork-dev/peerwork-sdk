@@ -282,6 +282,33 @@ impl HttpTransport {
         read_bounded(response, 2 * 1024 * 1024, cancel).await
     }
 
+    /// Authenticated recipient-scoped grant list. The response remains
+    /// untrusted until every selected signed grant, policy, and journal
+    /// checkpoint is reverified by the private activation consumer.
+    pub(crate) async fn get_secure_key_grants_exact(
+        &self,
+        path: &str,
+        read_proof: &str,
+        cancel: &CancellationToken,
+    ) -> Result<ExactHttpResponse, TransportError> {
+        let workspace = path
+            .strip_prefix("/api/workspace/v1/secure/workspaces/")
+            .and_then(|tail| tail.strip_suffix("/key-grants"));
+        if !workspace.is_some_and(valid_identity_token)
+            || read_proof.is_empty()
+            || read_proof.len() > 12_000
+        {
+            return Err(TransportError::InvalidOrigin);
+        }
+        let response = tokio::select! {
+            _ = cancel.cancelled() => return Err(TransportError::Cancelled),
+            result = self.client.get(self.endpoint(path)?)
+                .header("X-Peerwork-Read", read_proof).send() =>
+                result.map_err(map_network_error)?,
+        };
+        read_bounded(response, 2 * 1024 * 1024, cancel).await
+    }
+
     /// Submit a previously protected exact signed v1 directory entry.
     /// Failure after sending begins leaves its outcome uncertain.
     pub(crate) async fn post_secure_identity_key_exact(

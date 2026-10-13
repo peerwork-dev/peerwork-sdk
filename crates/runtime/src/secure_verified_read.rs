@@ -22,6 +22,13 @@ const MAX_PAGE: usize = 64 * 1024 * 1024;
 const DEFAULT_REPLAY_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_POLICIES: usize = 1024;
 
+/// Bounded canonical artifacts from exact transport pages. This is only an
+/// input to signed grant and journal verification, never an authority token.
+pub(crate) struct UnverifiedSignedArtifacts {
+    pub policy_wires: Vec<Vec<u8>>,
+    pub commit_wires: Vec<Vec<u8>>,
+}
+
 /// Client memory budget for canonical policy and commit wires retained during
 /// signed replay. Larger valid conversion histories may require a larger
 /// caller-selected value. This does not bound the decoded replay graph.
@@ -264,67 +271,16 @@ fn replay_authenticated_pages_with_material(
     grant_keyring_sha256: Option<String>,
     budget: SecureJournalReadBudget,
 ) -> Result<TransportReplayedJournal, VerifiedReadError> {
-    let max_artifact_bytes = usize::try_from(budget.max_replay_artifact_bytes)
-        .ok()
-        .filter(|limit| *limit > 0)
-        .ok_or(VerifiedReadError::ResourceLimit)?;
     if pages.origin() != lifecycle.origin()
         || pages.workspace_id() != lifecycle.workspace_id()
         || pages.actor_id() != lifecycle.actor_id()
     {
         return Err(VerifiedReadError::Identity);
     }
-    let mut policy_wires = Vec::<Vec<u8>>::new();
-    let mut commit_wires = Vec::<Vec<u8>>::new();
-    let mut total_bytes = 0usize;
-    let mut first = true;
-    pages
-        .for_each_exact_page(|wire| {
-            let page = parse_wire_json_bounded(wire, 64, MAX_PAGE)
-                .map_err(|_| JournalReadError::Incompatible)?;
-            if first {
-                let WireValue::Array(policies) =
-                    page.get("policies").ok_or(JournalReadError::Incompatible)?
-                else {
-                    return Err(JournalReadError::Incompatible);
-                };
-                for policy in policies {
-                    let encoded = canonical_wire_value(policy, Path::SecureArtifact)
-                        .map_err(|_| JournalReadError::Incompatible)?
-                        .into_bytes();
-                    push_bounded(
-                        &mut policy_wires,
-                        encoded,
-                        &mut total_bytes,
-                        MAX_POLICIES,
-                        max_artifact_bytes,
-                    )?;
-                }
-                first = false;
-            }
-            let WireValue::Array(commits) =
-                page.get("commits").ok_or(JournalReadError::Incompatible)?
-            else {
-                return Err(JournalReadError::Incompatible);
-            };
-            for commit in commits {
-                let encoded = canonical_wire_value(commit, Path::SecureArtifact)
-                    .map_err(|_| JournalReadError::Incompatible)?
-                    .into_bytes();
-                push_bounded(
-                    &mut commit_wires,
-                    encoded,
-                    &mut total_bytes,
-                    usize::MAX,
-                    max_artifact_bytes,
-                )?;
-            }
-            Ok(())
-        })
-        .map_err(|error| match error {
-            JournalReadError::TooLarge => VerifiedReadError::ResourceLimit,
-            other => VerifiedReadError::Page(other),
-        })?;
+    let UnverifiedSignedArtifacts {
+        policy_wires,
+        commit_wires,
+    } = collect_unverified_artifacts(pages, budget)?;
     let checkpoint_wire = pages.checkpoint_canonical_json().as_bytes();
     let checkpoint = parse_wire_json_bounded(checkpoint_wire, 8, 4096)
         .map_err(|_| VerifiedReadError::Content)?;
@@ -382,6 +338,71 @@ fn replay_authenticated_pages_with_material(
         signed_policy_wires: policy_wires,
         signed_commit_wires: commit_wires,
         replay,
+    })
+}
+
+pub(crate) fn collect_unverified_artifacts(
+    pages: &AuthenticatedJournalPages<'_>,
+    budget: SecureJournalReadBudget,
+) -> Result<UnverifiedSignedArtifacts, VerifiedReadError> {
+    let max_artifact_bytes = usize::try_from(budget.max_replay_artifact_bytes)
+        .ok()
+        .filter(|limit| *limit > 0)
+        .ok_or(VerifiedReadError::ResourceLimit)?;
+    let mut policy_wires = Vec::<Vec<u8>>::new();
+    let mut commit_wires = Vec::<Vec<u8>>::new();
+    let mut total_bytes = 0usize;
+    let mut first = true;
+    pages
+        .for_each_exact_page(|wire| {
+            let page = parse_wire_json_bounded(wire, 64, MAX_PAGE)
+                .map_err(|_| JournalReadError::Incompatible)?;
+            if first {
+                let WireValue::Array(policies) =
+                    page.get("policies").ok_or(JournalReadError::Incompatible)?
+                else {
+                    return Err(JournalReadError::Incompatible);
+                };
+                for policy in policies {
+                    let encoded = canonical_wire_value(policy, Path::SecureArtifact)
+                        .map_err(|_| JournalReadError::Incompatible)?
+                        .into_bytes();
+                    push_bounded(
+                        &mut policy_wires,
+                        encoded,
+                        &mut total_bytes,
+                        MAX_POLICIES,
+                        max_artifact_bytes,
+                    )?;
+                }
+                first = false;
+            }
+            let WireValue::Array(commits) =
+                page.get("commits").ok_or(JournalReadError::Incompatible)?
+            else {
+                return Err(JournalReadError::Incompatible);
+            };
+            for commit in commits {
+                let encoded = canonical_wire_value(commit, Path::SecureArtifact)
+                    .map_err(|_| JournalReadError::Incompatible)?
+                    .into_bytes();
+                push_bounded(
+                    &mut commit_wires,
+                    encoded,
+                    &mut total_bytes,
+                    usize::MAX,
+                    max_artifact_bytes,
+                )?;
+            }
+            Ok(())
+        })
+        .map_err(|error| match error {
+            JournalReadError::TooLarge => VerifiedReadError::ResourceLimit,
+            other => VerifiedReadError::Page(other),
+        })?;
+    Ok(UnverifiedSignedArtifacts {
+        policy_wires,
+        commit_wires,
     })
 }
 
