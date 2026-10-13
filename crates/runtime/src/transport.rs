@@ -298,6 +298,7 @@ fn valid_admission_post_path(path: &str) -> bool {
         .and_then(|tail| {
             tail.strip_suffix("/decision")
                 .or_else(|| tail.strip_suffix("/key-grants"))
+                .or_else(|| tail.strip_suffix("/receipt"))
         })
         .is_some_and(|id| {
             id.len() == 43
@@ -473,12 +474,13 @@ mod tests {
             "/api/workspace/v1/secure/invitations".to_owned(),
             format!("/api/workspace/v1/secure/invitations/{id}/decision"),
             format!("/api/workspace/v1/secure/invitations/{id}/key-grants"),
+            format!("/api/workspace/v1/secure/invitations/{id}/receipt"),
         ] {
             assert!(valid_admission_post_path(&path));
             assert!(!valid_command_path(&path));
         }
         for path in [
-            format!("/api/workspace/v1/secure/invitations/{id}/receipt"),
+            format!("/api/workspace/v1/secure/invitations/{id}/receipt?x=1"),
             format!("/api/workspace/v1/secure/invitations/{id}/decision?x=1"),
             "/api/workspace/v1/secure/invitations/short/decision".to_owned(),
         ] {

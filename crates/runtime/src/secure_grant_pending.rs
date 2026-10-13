@@ -175,6 +175,16 @@ impl SecureGrantPending {
             .transpose()
     }
 
+    pub(crate) fn saved_grant_hash(&self) -> Result<Option<String>, PendingGrantError> {
+        self.saved
+            .as_ref()
+            .map(|saved| {
+                let (.., grant, _, _, _, _) = decode(saved)?;
+                Ok(sha256_hex(grant))
+            })
+            .transpose()
+    }
+
     /// A saved grant's own signed chain must end at precisely the same
     /// checkpoint as the origin-bound, fully replayed transport history. The
     /// replay must have used exactly the reverified grant keyring and must be

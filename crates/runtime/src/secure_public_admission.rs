@@ -1131,6 +1131,7 @@ mod tests {
             authority: peerwork_core::crypto::sha256_hex(recipient_identity.actor_id().as_bytes()),
             allow_loopback_http: true,
             required_features: vec![],
+            max_replay_artifact_bytes: 64 * 1024 * 1024,
         };
         let drop_url = format!("{origin}__test/drop-next-post");
         let drop_result = runtime
@@ -1342,6 +1343,94 @@ mod tests {
         let authorized =
             peerwork_core::wire_json::parse_wire_json_js_bounded(&authorized.wire, 80, 220_000)
                 .unwrap();
+        assert!(authorized.get("grant").is_some());
+        let reject_receipt = runtime
+            .block_on(
+                reqwest::Client::new()
+                    .post(format!("{origin}__test/reject-next-post-before-apply"))
+                    .send(),
+            )
+            .unwrap();
+        assert_eq!(reject_receipt.status().as_u16(), 200);
+        assert!(matches!(
+            crate::secure_public_decision::SecurePublicDecision::new(recipient_config.clone())
+                .receive_json(&first.invite_id),
+            Err(crate::secure_public_decision::PublicDecisionError::ServerRejected(503))
+        ));
+        let receipt_journal = SecureIntentJournal::open(
+            &recipient_dir.join("admission-intents.state"),
+            &origin,
+            recipient_identity.actor_id(),
+        )
+        .unwrap();
+        let saved_receipt = receipt_journal.exact_request(&delivery.grant_id).unwrap();
+        let saved_receipt_hash = receipt_journal
+            .intent_digest(&delivery.grant_id)
+            .unwrap()
+            .to_owned();
+        assert!(saved_receipt.len() <= 4096);
+        let grant_wire = peerwork_core::wire_json::canonical_wire_value(
+            authorized.get("grant").unwrap(),
+            peerwork_core::canonical::Path::SecureArtifact,
+        )
+        .unwrap();
+        let mut altered_receipt = saved_receipt.clone();
+        let prefix = b"grant_hash\":\"";
+        let hash_start = altered_receipt
+            .windows(prefix.len())
+            .position(|window| window == prefix)
+            .unwrap()
+            + prefix.len();
+        altered_receipt[hash_start] = if altered_receipt[hash_start] == b'a' {
+            b'b'
+        } else {
+            b'a'
+        };
+        assert!(
+            peerwork_core::prepared_public_admission::verify_saved_public_receipt(
+                &altered_receipt,
+                grant_wire.as_bytes(),
+                &first.invite_id,
+                recipient_identity.signing_key(),
+            )
+            .is_err()
+        );
+        drop(receipt_journal);
+        let drop_receipt = runtime
+            .block_on(
+                reqwest::Client::new()
+                    .post(format!("{origin}__test/drop-next-post"))
+                    .send(),
+            )
+            .unwrap();
+        assert_eq!(drop_receipt.status().as_u16(), 200);
+        let uncertain: crate::secure_public_decision::PublicReceiveResult = serde_json::from_str(
+            &crate::secure_public_decision::SecurePublicDecision::new(recipient_config.clone())
+                .retry_receive_json(&first.invite_id)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(uncertain.status, "PENDING");
+        assert_eq!(uncertain.receipt_hash, saved_receipt_hash);
+        let ready: crate::secure_public_decision::PublicReceiveResult = serde_json::from_str(
+            &crate::secure_public_decision::SecurePublicDecision::new(recipient_config.clone())
+                .retry_receive_json(&first.invite_id)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(ready.status, "READY");
+        assert_eq!(ready.receipt_hash, saved_receipt_hash);
+        let receipt_journal = SecureIntentJournal::open(
+            &recipient_dir.join("admission-intents.state"),
+            &origin,
+            recipient_identity.actor_id(),
+        )
+        .unwrap();
+        assert_eq!(
+            receipt_journal.exact_request(&delivery.grant_id).unwrap(),
+            saved_receipt
+        );
+        drop(receipt_journal);
         let recipient_profile = SecureReadProfileConfig {
             origin: origin.clone(),
             state_dir: recipient_dir.clone(),
@@ -1354,95 +1443,37 @@ mod tests {
             allow_loopback_http: true,
             max_replay_artifact_bytes: 64 * 1024 * 1024,
         };
-        SecureReadProfile::new(recipient_profile.clone())
-            .with_latest_replay(&CancellationToken::new(), |source| {
-                let local_recipient = crate::secure_recipient_state::RecipientState::open(
-                    &recipient_dir.join("recipient.state"),
-                    &recipient_identity,
-                )
-                .unwrap();
-                let mut pending = crate::secure_grant_pending::SecureGrantPending::open(
-                    &recipient_dir.join("pending-grant.state"),
-                    source.origin(),
-                    source.authority(),
-                    &workspace,
-                    &owner_actor,
-                    &owner_key,
-                    &recipient_identity,
-                    &local_recipient,
-                    now_ms().unwrap(),
-                )
-                .unwrap();
-                let policies = source
-                    .signed_policy_wires()
-                    .iter()
-                    .map(Vec::as_slice)
-                    .collect::<Vec<_>>();
-                let commits = source
-                    .signed_commit_wires()
-                    .iter()
-                    .map(Vec::as_slice)
-                    .collect::<Vec<_>>();
-                let canonical = |name: &str| {
-                    peerwork_core::wire_json::canonical_wire_value(
-                        authorized.get(name).unwrap(),
-                        peerwork_core::canonical::Path::SecureArtifact,
-                    )
-                    .unwrap()
-                };
-                let grant = canonical("grant");
-                let offer = canonical("offer");
-                let decision = canonical("decision");
-                let certificate = peerwork_core::wire_json::canonical_wire_value(
-                    authorized
-                        .get("offer")
-                        .unwrap()
-                        .get("payload")
-                        .unwrap()
-                        .get("recipient")
-                        .unwrap(),
-                    peerwork_core::canonical::Path::SecureArtifact,
-                )
-                .unwrap();
-                let material = pending
-                    .stage(
-                        crate::secure_grant_pending::GrantEvidence {
-                            policies: &policies,
-                            commits: &commits,
-                            checkpoint: source.checkpoint_canonical_json().as_bytes(),
-                            grant: grant.as_bytes(),
-                            certificate: certificate.as_bytes(),
-                            invitation: Some((offer.as_bytes(), decision.as_bytes())),
-                            delegation: None,
-                        },
-                        &local_recipient,
-                        now_ms().unwrap(),
-                    )
-                    .unwrap();
-                assert_eq!(material.epoch(), 0);
-                assert_eq!(material.keyring().epochs().count(), 0);
-                let activation = pending
-                    .bind_to_replay(&local_recipient, now_ms().unwrap(), source)
-                    .unwrap()
-                    .unwrap();
-                let mut lifecycle = SecureLifecycle::open(
-                    &recipient_dir.join("lifecycle.state"),
-                    source.origin(),
-                    recipient_identity.actor_id(),
-                    &workspace,
-                    &owner_actor,
-                    &owner_key,
-                )
-                .unwrap();
-                let activated = lifecycle.activate_verified_grant(activation).unwrap();
-                assert!(activated.active_epochs.is_empty());
-                Ok::<_, PublicAdmissionRuntimeError>(())
-            })
-            .unwrap();
+        let lifecycle = SecureLifecycle::open(
+            &recipient_dir.join("lifecycle.state"),
+            &origin,
+            recipient_identity.actor_id(),
+            &workspace,
+            &owner_actor,
+            &owner_key,
+        )
+        .unwrap();
+        assert_eq!(lifecycle.status().active_epochs, Vec::<u64>::new());
+        assert_eq!(
+            lifecycle.replay_keyring_candidate().unwrap().state,
+            crate::secure_lifecycle::ReplayKeyringState::Active
+        );
+        drop(lifecycle);
         let verified_read = SecureReadProfile::new(recipient_profile)
             .read_latest_json()
             .unwrap();
         let verified: serde_json::Value = serde_json::from_str(&verified_read).unwrap();
         assert_eq!(verified["sequence"], 2);
+        child.0.kill().unwrap();
+        child.0.wait().unwrap();
+        let pending_receipts: Vec<crate::secure_public_decision::PendingPublicReceipt> =
+            serde_json::from_str(
+                &crate::secure_public_decision::SecurePublicDecision::new(recipient_config)
+                    .pending_receipts_json()
+                    .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(pending_receipts.len(), 1);
+        assert_eq!(pending_receipts[0].grant_id, delivery.grant_id);
+        assert_eq!(pending_receipts[0].receipt_hash, ready.receipt_hash);
     }
 }

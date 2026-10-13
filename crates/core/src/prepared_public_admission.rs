@@ -35,6 +35,126 @@ pub struct PreparedAdmissionPacket {
     artifact_hash: String,
 }
 
+/// A recipient acknowledgement of an already verified grant and complete
+/// signed checkpoint. This packet alone never proves membership or read
+/// authority; the caller must bind both inputs to authenticated replay.
+pub fn prepare_public_receipt(
+    grant_wire: &[u8],
+    checkpoint_wire: &[u8],
+    invite_id: &str,
+    issued_at: u64,
+    recipient_signing_key: &SigningKey,
+) -> Result<PreparedAdmissionPacket, PublicAdmissionError> {
+    let bad = || PublicAdmissionError::Invalid;
+    if !token(invite_id) || issued_at > MAX_SAFE {
+        return Err(bad());
+    }
+    let grant = parse_wire_json_js_bounded(grant_wire, 64, 220_000).map_err(|_| bad())?;
+    let gp = grant.get("payload").ok_or_else(bad)?;
+    let checkpoint = parse_wire_json_js_bounded(checkpoint_wire, 8, 4096).map_err(|_| bad())?;
+    let recipient_key = base64url(&recipient_signing_key.verifying_key().to_bytes());
+    let recipient_actor = actor_id(&recipient_signing_key.verifying_key().to_bytes());
+    let workspace = string(gp, "workspace_id")?;
+    let policy_hash = string(gp, "policy_hash")?;
+    let epoch = unsigned(gp, "epoch")?;
+    if unsigned(gp, "v")? != 1
+        || string(gp, "invite_id")? != invite_id
+        || gp
+            .get("recipient")
+            .and_then(|v| v.get("payload"))
+            .and_then(|v| v.get("actor_id"))
+            .and_then(WireValue::as_string)
+            .as_deref()
+            != Some(recipient_actor.as_str())
+        || gp
+            .get("recipient")
+            .and_then(|v| v.get("payload"))
+            .and_then(|v| v.get("signing_key"))
+            .and_then(WireValue::as_string)
+            .as_deref()
+            != Some(recipient_key.as_str())
+        || !hex_digest(&policy_hash)
+        || unsigned(gp, "issued_at")? > issued_at
+        || checkpoint.object_len() != Some(7)
+        || unsigned(&checkpoint, "v")? != 1
+        || string(&checkpoint, "workspace_id")? != workspace
+        || unsigned(&checkpoint, "sequence")? < 1
+        || !hex_digest(&string(&checkpoint, "policy_hash")?)
+    {
+        return Err(bad());
+    }
+    let grant_canonical = canonical_wire_value(&grant, Path::SecureArtifact).map_err(|_| bad())?;
+    let payload = object(vec![
+        ("v", WireValue::Number(1.0)),
+        ("workspace_id", s(&workspace)),
+        ("invite_id", s(invite_id)),
+        ("actor_id", s(&recipient_actor)),
+        ("signing_key", s(&recipient_key)),
+        ("grant_hash", s(&sha256_hex(grant_canonical.as_bytes()))),
+        ("policy_hash", s(&policy_hash)),
+        ("epoch", WireValue::Number(epoch as f64)),
+        ("checkpoint", checkpoint),
+        ("issued_at", WireValue::Number(issued_at as f64)),
+    ]);
+    let artifact = sign_payload(
+        payload,
+        "peerwork.secure.admission-receipt.v1",
+        recipient_signing_key,
+    )?;
+    let artifact_wire = canonical_wire_value(&artifact, Path::SecureArtifact)
+        .map_err(|_| bad())?
+        .into_bytes();
+    let request_wire = format!(
+        "{{\"receipt\":{}}}",
+        String::from_utf8_lossy(&artifact_wire)
+    )
+    .into_bytes();
+    if request_wire.len() > 4096 {
+        return Err(bad());
+    }
+    Ok(PreparedAdmissionPacket {
+        artifact_hash: sha256_hex(&artifact_wire),
+        request_wire,
+        artifact_wire,
+        id: invite_id.into(),
+    })
+}
+
+/// Re-author the saved deterministic Ed25519 packet from its exact signed
+/// checkpoint. The runtime must separately prove this checkpoint lies in the
+/// authenticated current journal and that the grant is the control artifact.
+pub fn verify_saved_public_receipt(
+    request_wire: &[u8],
+    grant_wire: &[u8],
+    invite_id: &str,
+    recipient_signing_key: &SigningKey,
+) -> Result<PreparedAdmissionPacket, PublicAdmissionError> {
+    let bad = || PublicAdmissionError::Invalid;
+    let request = parse_wire_json_js_bounded(request_wire, 16, 4096).map_err(|_| bad())?;
+    if request.object_len() != Some(1) {
+        return Err(bad());
+    }
+    let receipt = request.get("receipt").ok_or_else(bad)?;
+    let payload = receipt.get("payload").ok_or_else(bad)?;
+    if payload.object_len() != Some(10) {
+        return Err(bad());
+    }
+    let checkpoint = payload.get("checkpoint").ok_or_else(bad)?;
+    let checkpoint_wire =
+        canonical_wire_value(checkpoint, Path::SecureArtifact).map_err(|_| bad())?;
+    let expected = prepare_public_receipt(
+        grant_wire,
+        checkpoint_wire.as_bytes(),
+        invite_id,
+        unsigned(payload, "issued_at")?,
+        recipient_signing_key,
+    )?;
+    if expected.request_wire() != request_wire {
+        return Err(bad());
+    }
+    Ok(expected)
+}
+
 /// Exact owner delivery packet. The caller must obtain the current policy and
 /// checkpoint from complete authenticated replay and the offer/decision from
 /// authenticated control evidence before persisting and posting these bytes.
