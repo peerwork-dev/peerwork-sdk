@@ -139,6 +139,11 @@ try:
         assert policy["v"] == expected_v and policy["visibility"] == "PUBLIC"
         assert policy["epoch"] == 0 and "structure_mode" not in policy
         assert bool(policy.get("structure")) == (expected_v == 2)
+        old_record_id = source["prior_record_id"]
+        assert old_record_id
+        old_record = next(row for row in before["objects"] if row.get("id") == old_record_id)
+        assert old_record["value"]["payload"]["title"] == source["prior_record_title"]
+        assert old_record["value"]["payload"]["body"] == source["prior_record_body"]
         config = dict(origin=origin, stateDir=str(root), allowLoopbackHttp=True)
         config_file = STATE / (mode + "-config.json")
         config_file.write_text(json.dumps(dict(origin=origin, state_dir=str(root),
@@ -187,6 +192,9 @@ try:
         assert upgraded["effective_sequence"] == after["sequence"]
         assert accepted["sequence"] == after["sequence"]
         assert accepted["policy_hash"] == after["policy_hash"]
+        old_record = next(row for row in after["objects"] if row.get("id") == source["prior_record_id"])
+        assert old_record["value"]["payload"]["title"] == source["prior_record_title"]
+        assert old_record["value"]["payload"]["body"] == source["prior_record_body"]
         assert fresh.resume_format_transition(workspace_id, command_id) == accepted
         assert node_call(config, "resume", workspaceId=workspace_id,
                          commandId=command_id) == accepted
@@ -199,19 +207,42 @@ try:
             raise AssertionError("PUBLIC ceiling raise must be refused")
         assert commit_count(origin) == baseline + 1
         assert fresh.read(workspace_id)["sequence"] == after["sequence"]
-        results.append((workspace_id, command_id, after["sequence"], config, config_file, fresh))
+        wiki_instance = next(row["id"] for row in after["objects"]
+                             if row.get("kind") == "instances"
+                             and row.get("value", {}).get("origin_entrypoint") == "wiki")
+        title = "After PUBLIC upgrade " + mode
+        body = "Native authored effect remains readable"
+        submitted = fresh.public_actions(workspace_id).submit(
+            "wiki.create", wiki_instance, {"title": title, "body": body})
+        action_id = submitted["command_id"]
+        action = fresh.public_actions(workspace_id).reconcile(action_id)
+        assert action["status"] == "ACCEPTED"
+        assert action["receipt"]["effects"] and action["sequence"] == after["sequence"] + 1
+        new_record_id = action["receipt"]["effects"][0]["record_id"]
+        used = fresh.read(workspace_id)
+        assert used["sequence"] == after["sequence"] + 1
+        assert signed_policy(workspace_id, used) == upgraded
+        new_record = next(row for row in used["objects"] if row.get("id") == new_record_id)
+        assert new_record["value"]["payload"]["title"] == title
+        assert new_record["value"]["payload"]["body"] == body
+        assert fresh.public_actions(workspace_id).retry_saved(action_id) == action
+        assert commit_count(origin) == baseline + 2
+        assert fresh.read(workspace_id)["sequence"] == used["sequence"]
+        results.append((workspace_id, command_id, after["sequence"], config, config_file, fresh,
+                        source["prior_record_id"], new_record_id))
 
     server.terminate()
     server.wait(timeout=5)
-    for workspace_id, command_id, sequence, config, config_file, owner in results:
+    for workspace_id, command_id, sequence, config, config_file, owner, _, _ in results:
         expected = owner.format_transitions(workspace_id)
         assert len(expected) == 1 and expected[0]["command_id"] == command_id
         assert expected[0]["status"] == "ACCEPTED" and expected[0]["sequence"] == sequence
         assert node_call(config, "history", workspaceId=workspace_id) == expected
         assert cli(config_file, "owner-format-history", workspace_id) == expected
     print(json.dumps(dict(status="PASS", sources=[
-        dict(workspace_id=workspace_id, command_id=command_id, final_sequence=sequence)
-        for workspace_id, command_id, sequence, _, _, _ in results])))
+        dict(workspace_id=workspace_id, command_id=command_id, upgrade_sequence=sequence,
+             prior_record_id=old_record_id, new_record_id=new_record_id)
+        for workspace_id, command_id, sequence, _, _, _, old_record_id, new_record_id in results])))
 finally:
     if server.poll() is None:
         server.terminate()

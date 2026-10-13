@@ -58,13 +58,17 @@ try {
     if (update.state !== 'PUBLISHED') throw new Error('LEGACY_COMPLETED_UPDATE_MISSING');
   }
   let priorRecordId = null;
-  if (mode === 'legacy-record' || mode === 'legacy-structured') {
+  let priorRecordTitle = null;
+  let priorRecordBody = null;
+  if (mode === 'legacy-record' || mode === 'legacy-structured' || mode === 'legacy-public' || mode === 'legacy-public-structured') {
     const wiki = journal.objects.find(row => row.kind === 'instances' && row.value.origin_entrypoint === 'wiki');
     if (!wiki) throw new Error('LEGACY_WIKI_MISSING');
+    priorRecordTitle = visibility === 'PUBLIC' ? 'Legacy public record' : 'Legacy encrypted record';
+    priorRecordBody = visibility === 'PUBLIC' ? 'Old PUBLIC wire content' : 'Old wire-v1 encrypted body';
     const advanced = await agent.action(created.workspaceId, wiki.id, 'wiki.create', {
-      title: 'Legacy encrypted record', body: 'Old wire-v1 encrypted body',
+      title: priorRecordTitle, body: priorRecordBody,
     });
-    const record = advanced.objects.find(row => row.kind === 'records' && row.value?.payload?.title === 'Legacy encrypted record');
+    const record = advanced.objects.find(row => row.kind === 'records' && row.value?.payload?.title === priorRecordTitle);
     if (!record) throw new Error('LEGACY_RECORD_MISSING');
     priorRecordId = record.id;
   }
@@ -80,6 +84,8 @@ try {
     pending_count: Object.keys(agent.state.pending).length,
     completed_identity_updates: Object.values(agent.state.identity_key_intents ?? {}).filter(row => row.state === 'PUBLISHED').length,
     prior_record_id: priorRecordId,
+    prior_record_title: priorRecordTitle,
+    prior_record_body: priorRecordBody,
   }) + '\n');
 } finally {
   agent.close();
