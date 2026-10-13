@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 
 const [origin, sourceDir, legacyRoot, mode = 'clean'] = process.argv.slice(2);
 if (!origin || !sourceDir || !legacyRoot) throw new Error('LEGACY_TEST_INPUT_REQUIRED');
-if (!['clean', 'completed', 'legacy-record', 'pending', 'pending-before-post', 'pending-private-structured', 'pending-private-structured-before-post', 'pending-public', 'pending-public-before-post', 'pending-public-structured', 'pending-public-structured-before-post', 'pending-current-private', 'pending-current-private-before-post', 'pending-current-private-structured', 'pending-current-private-structured-before-post', 'pending-current-private-structured-ceiling2', 'pending-current-private-structured-ceiling2-before-post', 'pending-current-public', 'pending-current-public-before-post', 'pending-current-public-structured', 'pending-current-public-structured-before-post', 'unknown-store', 'malformed-store', 'legacy-structured', 'legacy-public', 'legacy-public-structured', 'legacy-public-record', 'legacy-public-structured-record', 'private-missing-ring'].includes(mode)) throw new Error('LEGACY_TEST_MODE_INVALID');
+if (!['clean', 'completed', 'legacy-record', 'pending', 'pending-before-post', 'pending-private-structured', 'pending-private-structured-before-post', 'pending-public', 'pending-public-before-post', 'pending-public-structured', 'pending-public-structured-before-post', 'pending-current-private', 'pending-current-private-before-post', 'pending-current-private-structured', 'pending-current-private-structured-before-post', 'pending-current-private-structured-ceiling2', 'pending-current-private-structured-ceiling2-before-post', 'pending-current-public', 'pending-current-public-before-post', 'pending-current-public-structured', 'pending-current-public-structured-before-post', 'kernel-jws-source', 'unknown-store', 'malformed-store', 'legacy-structured', 'legacy-public', 'legacy-public-structured', 'legacy-public-record', 'legacy-public-structured-record', 'private-missing-ring'].includes(mode)) throw new Error('LEGACY_TEST_MODE_INVALID');
 mkdirSync(sourceDir, { recursive: true, mode: 0o700 });
 const { privateKey } = generateKeyPairSync('ed25519');
 const pemPath = join(sourceDir, 'owner.pem');
@@ -22,7 +22,7 @@ const agent = await SecureAgentClient.open({ baseUrl: new URL(origin).origin, pr
 try {
   const visibility = mode.includes('public') ? 'PUBLIC' : 'PRIVATE';
   const structured = mode.includes('structured');
-  const currentClient = mode.startsWith('pending-current');
+  const currentClient = mode.startsWith('pending-current') || mode === 'kernel-jws-source';
   const created = await agent.create('Legacy native attach proof', visibility, { structure: structured });
   let journal = await agent.journal(created.workspaceId);
   if (mode.includes('ceiling2')) journal = await agent.enableFormatTwo(created.workspaceId);
@@ -57,6 +57,38 @@ try {
     } finally { agent.request = originalRequest; }
     if (beforePost && !stopped) throw new Error('LEGACY_PRE_POST_STOP_NOT_REACHED');
     if (Object.keys(agent.state.pending).length !== 1) throw new Error('LEGACY_PENDING_NOT_SAVED');
+  }
+  let kernelSource = null;
+  if (mode === 'kernel-jws-source') {
+    const unrelated = await agent.create('Unrelated signed-command scope', 'PRIVATE');
+    const targetWiki = journal.objects.find(row => row.kind === 'instances' && row.value.origin_entrypoint === 'wiki');
+    const unrelatedJournal = await agent.journal(unrelated.workspaceId);
+    const unrelatedWiki = unrelatedJournal.objects.find(row => row.kind === 'instances' && row.value.origin_entrypoint === 'wiki');
+    if (!targetWiki || !unrelatedWiki) throw new Error('KERNEL_WIKI_MISSING');
+    const accepted = await agent.transport.submit({
+      workspace_id: null, instance_id: null, protocol_digest: null, action_id: 'workspace.create',
+      expected_workspace_revision: null, expected_instance_revision: null, exact_input_refs: [],
+      body: { name: 'Accepted kernel source row', visibility: 'PUBLIC' },
+    });
+    const prepareWiki = (workspaceId, wiki, title) => agent.transport.prepare({
+      workspace_id: workspaceId, instance_id: wiki.id, protocol_digest: wiki.value.protocol_digest,
+      action_id: 'wiki.create', expected_workspace_revision: null, expected_instance_revision: null,
+      exact_input_refs: [], body: { title, body: 'Signed but not submitted' },
+    });
+    const selected = prepareWiki(created.workspaceId, targetWiki, 'Selected Owner kernel intent');
+    const other = prepareWiki(unrelated.workspaceId, unrelatedWiki, 'Unrelated Owner kernel intent');
+    kernelSource = {
+      audience: agent.transport.discovery.audience,
+      accepted_command_id: accepted.command_id,
+      accepted_intent_digest: accepted.verifiedReceipt.intent_digest,
+      accepted_workspace_id: accepted.result.workspace_id,
+      selected_command_id: selected.commandId,
+      selected_intent_digest: selected.intentDigest,
+      unrelated_workspace_id: unrelated.workspaceId,
+      unrelated_command_id: other.commandId,
+      unrelated_intent_digest: other.intentDigest,
+      pending_ids: agent.transport.pending(),
+    };
   }
   if (mode === 'unknown-store') {
     agent.state.future_signed_intents = { probe: { path: '/test-only', body: {} } };
@@ -108,6 +140,7 @@ try {
     pending_command_id: Object.keys(agent.state.pending)[0] ?? null,
     pending_commit_hash: Object.values(agent.state.pending)[0]?.body?.commit
       ? await secureHash(Object.values(agent.state.pending)[0].body.commit) : null,
+    kernel_source: kernelSource,
     completed_identity_updates: Object.values(agent.state.identity_key_intents ?? {}).filter(row => row.state === 'PUBLISHED').length,
     prior_record_id: priorRecordId,
     prior_record_title: priorRecordTitle,

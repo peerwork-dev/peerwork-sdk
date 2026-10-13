@@ -2490,6 +2490,178 @@ mod tests {
     }
 
     #[test]
+    fn actual_service_imports_distinct_kernel_jws_rows_without_submitting_them() {
+        let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else {
+            return;
+        };
+        let node = std::env::var("PEERWORK_NODE_BIN").unwrap_or_else(|_| "node".into());
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let bridge =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/reference-kernel-server.mjs");
+        let child = Command::new(&node)
+            .arg(bridge)
+            .env("PEERWORK_REFERENCE_ROOT", &reference_root)
+            .env("PEERWORK_TEST_STATE", root.path())
+            .env("PEERWORK_TEST_FIRST_POST_MODE", "normal")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        struct StopKernelSource(Child);
+        impl Drop for StopKernelSource {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut child = StopKernelSource(child);
+        let mut lines = BufReader::new(child.0.stdout.take().unwrap()).lines();
+        let line = lines.next().unwrap().unwrap();
+        assert!(!line.is_empty(), "pinned service exited before readiness");
+        let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let origin = ready["origin"].as_str().unwrap();
+        let helper =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/legacy-owner-source.mjs");
+        let output = Command::new(&node)
+            .arg(helper)
+            .arg(origin)
+            .arg(root.path().join("kernel-jws-source"))
+            .arg(&reference_root)
+            .arg("kernel-jws-source")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "current WorkspaceClient fixture: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let source: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(source["policy_v"], 3);
+        assert_ne!(
+            source["workspace_id"],
+            source["kernel_source"]["unrelated_workspace_id"]
+        );
+        let selected = source["kernel_source"]["selected_command_id"]
+            .as_str()
+            .unwrap();
+        let other = source["kernel_source"]["unrelated_command_id"]
+            .as_str()
+            .unwrap();
+        let accepted = source["kernel_source"]["accepted_command_id"]
+            .as_str()
+            .unwrap();
+        assert_ne!(selected, other);
+        assert_eq!(
+            source["kernel_source"]["pending_ids"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        let native = root.path().join("native-kernel");
+        std::fs::create_dir(&native).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&native, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let identity_path = native.join("identity.state");
+        let identity = crate::kernel_identity::KernelIdentity::import_pkcs8_pem_file(
+            &identity_path,
+            Path::new(source["pem_path"].as_str().unwrap()),
+        )
+        .unwrap();
+        assert_eq!(identity.actor_id(), source["owner_actor_id"]);
+        assert_eq!(identity.key_id(), source["owner_key_id"]);
+        let access = crate::kernel_access::KernelAccess::new(
+            origin,
+            native.join("kernel-intents.sqlite"),
+            &identity_path,
+            &[],
+            true,
+        );
+        let cancel = CancellationToken::new();
+        let report = access
+            .migrate_ts_store(
+                Path::new(source["intent_db_path"].as_str().unwrap()),
+                &native.join("source-backup.sqlite"),
+                &[source["owner_key_id"].as_str().unwrap().into()],
+                &cancel,
+            )
+            .unwrap();
+        assert_eq!(report.pending_count, 2);
+        // Each secure create first registers the Owner through WorkspaceClient.
+        assert_eq!(report.accepted_count, 3);
+        let mut pending = access.pending().unwrap();
+        pending.sort_by(|a, b| a.command_id.cmp(&b.command_id));
+        assert_eq!(pending.len(), 2);
+        assert!(pending.iter().any(|row| {
+            row.command_id == selected
+                && row.intent_digest
+                    == source["kernel_source"]["selected_intent_digest"]
+                        .as_str()
+                        .unwrap()
+        }));
+        assert!(pending.iter().any(|row| {
+            row.command_id == other
+                && row.intent_digest
+                    == source["kernel_source"]["unrelated_intent_digest"]
+                        .as_str()
+                        .unwrap()
+        }));
+        assert!(matches!(
+            access.status(selected).unwrap(),
+            Some(crate::kernel_client::KernelOperationStatus::Pending)
+        ));
+        assert!(matches!(
+            access.status(other).unwrap(),
+            Some(crate::kernel_client::KernelOperationStatus::Pending)
+        ));
+        let Some(crate::kernel_client::KernelOperationStatus::Accepted(result)) =
+            access.status(accepted).unwrap()
+        else {
+            panic!("signed old-client receipt was not imported");
+        };
+        assert_eq!(result.command_id, accepted);
+        assert_eq!(
+            result.workspace_id.as_deref(),
+            source["kernel_source"]["accepted_workspace_id"].as_str()
+        );
+        let journal =
+            crate::kernel_intents::KernelIntentJournal::open(&native.join("kernel-intents.sqlite"))
+                .unwrap();
+        let audience: Vec<u16> = source["kernel_source"]["audience"]
+            .as_str()
+            .unwrap()
+            .encode_utf16()
+            .collect();
+        let saved = journal
+            .verified_pending(accepted, identity.key_id(), &audience)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            saved.proof.intent_digest(),
+            source["kernel_source"]["accepted_intent_digest"]
+                .as_str()
+                .unwrap()
+        );
+        assert!(matches!(
+            crate::ts_migration::quiescent_source_digest(Path::new(
+                source["intent_db_path"].as_str().unwrap()
+            )),
+            Err(crate::ts_migration::TsMigrationError::Unresolved)
+        ));
+        let mut reopened_pending = access.pending().unwrap();
+        reopened_pending.sort_by(|a, b| a.command_id.cmp(&b.command_id));
+        assert_eq!(reopened_pending, pending);
+    }
+
+    #[test]
     fn absent_attachment_history_is_empty_but_corrupt_existing_state_refuses() {
         let root = tempfile::tempdir().unwrap();
         let state_dir = root.path().join("native-owner");
