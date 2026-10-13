@@ -187,8 +187,7 @@ exports.readSecureSnapshot = async options => {
   }
 };
 
-/** Fetch a fresh verified PUBLIC checkpoint using one protected state directory. */
-exports.readSecureWorkspace = async options => {
+function secureProfileOptions(options) {
   if (!options || isProxy(options) ||
       (Object.getPrototypeOf(options) !== Object.prototype && Object.getPrototypeOf(options) !== null)) {
     throw new TypeError('secure read options must be a plain object');
@@ -238,8 +237,13 @@ exports.readSecureWorkspace = async options => {
     allow_loopback_http: input.allowLoopbackHttp ?? false,
     max_replay_artifact_bytes: limit,
   };
+  return { config, signal: input.signal };
+}
+
+/** Fetch a fresh verified PUBLIC checkpoint using one protected state directory. */
+exports.readSecureWorkspace = async options => {
+  const { config, signal } = secureProfileOptions(options);
   const handle = new binding.KernelCancelHandle();
-  const signal = input.signal;
   const onAbort = () => handle.cancel();
   if (signal?.aborted) onAbort();
   signal?.addEventListener?.('abort', onAbort, { once: true });
@@ -254,4 +258,49 @@ exports.readSecureWorkspace = async options => {
   } finally {
     signal?.removeEventListener?.('abort', onAbort);
   }
+};
+
+/** Prepare PUBLIC actions and reconcile exact saved commands against signed replay. */
+exports.openSecurePublicActions = options => {
+  const { config } = secureProfileOptions(options);
+  const invoke = async (operation, input, commandId, signal) => {
+    const handle = new binding.KernelCancelHandle();
+    const onAbort = () => handle.cancel();
+    if (signal?.aborted) onAbort();
+    signal?.addEventListener?.('abort', onAbort, { once: true });
+    try {
+      const result = JSON.parse(await binding.securePublicActionJson(
+        operation, strictCommandJson(config), input === undefined ? undefined : strictCommandJson(input),
+        commandId, handle,
+      ));
+      if (result.ok !== true) {
+        const error = new Error(result.message);
+        error.code = result.code;
+        throw error;
+      }
+      const value = result.value;
+      const receipt = value.receipt_canonical_json === null ? null : JSON.parse(value.receipt_canonical_json);
+      delete value.receipt_canonical_json;
+      return { ...value, receipt };
+    } finally {
+      signal?.removeEventListener?.('abort', onAbort);
+    }
+  };
+  return Object.freeze({
+    submit: (actionId, instanceId, body, options = {}) => {
+      if (typeof actionId !== 'string' || typeof instanceId !== 'string') throw new TypeError('action and instance IDs are required');
+      const input = {
+        action_id: actionId,
+        instance_id: instanceId,
+        body_json: strictCommandJson(body),
+        exact_input_refs_json: options.exactInputRefs === undefined ? null : strictCommandJson(options.exactInputRefs),
+        allocations_json: options.allocations === undefined ? null : strictCommandJson(options.allocations),
+        command_id: options.commandId ?? null,
+        issued_at_ms: options.issuedAtMs ?? null,
+      };
+      return invoke('submit', input, undefined, options.signal);
+    },
+    reconcile: (commandId, options = {}) => invoke('reconcile', undefined, commandId, options.signal),
+    retrySaved: (commandId, options = {}) => invoke('retry', undefined, commandId, options.signal),
+  });
 };

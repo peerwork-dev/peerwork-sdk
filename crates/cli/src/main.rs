@@ -2,6 +2,7 @@ use peerwork_runtime::interrupts::InterruptMonitor;
 use peerwork_runtime::kernel_access::KernelAccess;
 use peerwork_runtime::kernel_client::{KernelAcceptedResult, KernelOperationStatus};
 use peerwork_runtime::kernel_identity::KernelIdentity;
+use peerwork_runtime::secure_action_access::{PublicActionInput, SecurePublicActionAccess};
 use peerwork_runtime::secure_read_access::{SecureReadAccess, SecureReadConfig};
 use peerwork_runtime::secure_read_profile::{SecureReadProfile, SecureReadProfileConfig};
 use peerwork_runtime::KernelCancellationToken;
@@ -135,11 +136,87 @@ fn main() -> ExitCode {
                 }
             }
         }
+        [noun, verb, rest @ ..]
+            if noun == "secure"
+                && (verb == "action-submit"
+                    || verb == "action-status"
+                    || verb == "action-retry") =>
+        {
+            match secure_action_command(verb, rest) {
+                Ok(value) => {
+                    println!("{value}");
+                    ExitCode::SUCCESS
+                }
+                Err((code, message)) => {
+                    eprintln!(
+                        "{}",
+                        serde_json::json!({"code": if InterruptMonitor::interrupted() {"INTERRUPTED"} else {code}, "message":message})
+                    );
+                    if InterruptMonitor::interrupted() {
+                        ExitCode::from(130)
+                    } else {
+                        ExitCode::FAILURE
+                    }
+                }
+            }
+        }
         _ => {
-            eprintln!("{{\"code\":\"USAGE\",\"message\":\"peerwork version|capabilities|identity create PATH|identity info PATH|identity import-legacy-pem PATH PROTECTED_PEM_FILE|identity import-seed-file PATH PROTECTED_SEED_FILE|kernel open|prepare|pending|status|submit ORIGIN JOURNAL IDENTITY [COMMAND_FILE|COMMAND_ID] [--allow-loopback-http] [--authority=HEX] [--chunk-file=PATH|--chunk-stdin for prepare]; kernel migrate ORIGIN JOURNAL IDENTITY SOURCE BACKUP --trusted-signer=KEY_ID [--trusted-signer=KEY_ID ...]; secure read --origin=URL --state-dir=DIR --identity=PATH --workspace=ID [--owner-actor=ID --owner-key=ID] [--authority=HEX]; secure snapshot ORIGIN KERNEL_JOURNAL READ_STATE LIFECYCLE IDENTITY WORKSPACE AUTHORITY OWNER_ACTOR OWNER_KEY [--allow-loopback-http] [--max-replay-artifact-bytes=N]\"}}");
+            eprintln!("{{\"code\":\"USAGE\",\"message\":\"peerwork version|capabilities|identity create PATH|identity info PATH|identity import-legacy-pem PATH PROTECTED_PEM_FILE|identity import-seed-file PATH PROTECTED_SEED_FILE|kernel open|prepare|pending|status|submit ORIGIN JOURNAL IDENTITY [COMMAND_FILE|COMMAND_ID] [--allow-loopback-http] [--authority=HEX] [--chunk-file=PATH|--chunk-stdin for prepare]; kernel migrate ORIGIN JOURNAL IDENTITY SOURCE BACKUP --trusted-signer=KEY_ID [--trusted-signer=KEY_ID ...]; secure read --origin=URL --state-dir=DIR --identity=PATH --workspace=ID [--owner-actor=ID --owner-key=ID] [--authority=HEX]; secure snapshot ORIGIN KERNEL_JOURNAL READ_STATE LIFECYCLE IDENTITY WORKSPACE AUTHORITY OWNER_ACTOR OWNER_KEY [--allow-loopback-http] [--max-replay-artifact-bytes=N]; secure action-submit|action-status|action-retry CONFIG_JSON_FILE ACTION_JSON_FILE|COMMAND_ID\"}}");
             ExitCode::FAILURE
         }
     }
+}
+
+fn secure_action_command(verb: &str, args: &[String]) -> Result<String, (&'static str, String)> {
+    if args.len() != 2 {
+        return Err(("USAGE", "secure action-submit|action-status|action-retry CONFIG_JSON_FILE ACTION_JSON_FILE|COMMAND_ID".to_owned()));
+    }
+    let config_bytes = fs::read(&args[0]).map_err(|e| ("CONFIG_FILE", e.to_string()))?;
+    let config: SecureReadProfileConfig =
+        serde_json::from_slice(&config_bytes).map_err(|e| ("CONFIG_INVALID", e.to_string()))?;
+    let access = SecurePublicActionAccess::new(config);
+    let cancel = KernelCancellationToken::new();
+    let _interrupts = InterruptMonitor::start(cancel.clone()).map_err(|_| {
+        (
+            "INTERRUPT_HANDLER",
+            "unable to install interrupt handler".to_owned(),
+        )
+    })?;
+    let result = match verb {
+        "action-submit" => {
+            let bytes = fs::read(&args[1]).map_err(|e| ("ACTION_FILE", e.to_string()))?;
+            let input: PublicActionInput = serde_json::from_slice(&bytes)
+                .map_err(|e| ("ACTION_INPUT_INVALID", e.to_string()))?;
+            access.submit_new_json_with_cancel(input, &cancel)
+        }
+        "action-status" => access.reconcile_json_with_cancel(&args[1], &cancel),
+        "action-retry" => access.retry_saved_json_with_cancel(&args[1], &cancel),
+        _ => unreachable!(),
+    }
+    .map_err(|e| (e.code(), e.to_string()))?;
+    // The receipt is canonical verified JSON. Embed it as a JSON value so CLI
+    // consumers can inspect effect records without parsing an internal string.
+    let mut envelope: serde_json::Value = serde_json::from_str(&result)
+        .map_err(|_| ("RESULT_ENCODING_FAILED", "invalid action result".to_owned()))?;
+    let receipt = envelope
+        .get("receipt_canonical_json")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    envelope
+        .as_object_mut()
+        .ok_or(("RESULT_ENCODING_FAILED", "invalid result object".to_owned()))?
+        .remove("receipt_canonical_json");
+    let prefix = serde_json::to_string(&envelope).map_err(|_| {
+        (
+            "RESULT_ENCODING_FAILED",
+            "result encoding failed".to_owned(),
+        )
+    })?;
+    let receipt = receipt.unwrap_or_else(|| "null".to_owned());
+    Ok(format!(
+        "{},\"receipt\":{receipt}}}",
+        prefix.trim_end_matches('}')
+    ))
 }
 
 fn secure_read_profile_command(args: &[String]) -> Result<String, (&'static str, String)> {

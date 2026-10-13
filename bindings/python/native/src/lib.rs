@@ -1,6 +1,7 @@
 use peerwork_runtime::kernel_access::KernelAccess;
 use peerwork_runtime::kernel_client::{KernelAcceptedResult, KernelOperationStatus};
 use peerwork_runtime::kernel_identity::KernelIdentity;
+use peerwork_runtime::secure_action_access::{PublicActionInput, SecurePublicActionAccess};
 use peerwork_runtime::secure_read_access::{SecureReadAccess, SecureReadConfig};
 use peerwork_runtime::secure_read_profile::{SecureReadProfile, SecureReadProfileConfig};
 use peerwork_runtime::KernelCancellationToken;
@@ -220,6 +221,52 @@ fn secure_read_profile_json(
     }))
 }
 
+#[pyfunction]
+#[pyo3(signature = (operation, config_json, input_json=None, command_id=None, cancel_handle=None))]
+fn secure_public_action_json(
+    py: Python<'_>,
+    operation: &str,
+    config_json: &str,
+    input_json: Option<&str>,
+    command_id: Option<&str>,
+    cancel_handle: Option<PyRef<'_, KernelCancelHandle>>,
+) -> PyResult<String> {
+    let config: SecureReadProfileConfig = serde_json::from_str(config_json).map_err(|_| {
+        pyo3::exceptions::PyValueError::new_err("invalid secure action configuration")
+    })?;
+    let input: Option<PublicActionInput> = input_json
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|_| pyo3::exceptions::PyValueError::new_err("invalid secure action input"))?;
+    let operation = operation.to_owned();
+    let command_id = command_id.map(str::to_owned);
+    let cancel = cancel_handle
+        .map(|handle| handle.token.clone())
+        .unwrap_or_default();
+    Ok(py.allow_threads(move || {
+        let access = SecurePublicActionAccess::new(config);
+        let result = match operation.as_str() {
+            "submit" => match input {
+                Some(value) => access.submit_new_json_with_cancel(value, &cancel),
+                None => return serde_json::json!({"ok":false,"code":"ACTION_INPUT_INVALID","message":"action input is required"}).to_string(),
+            },
+            "reconcile" => match command_id.as_deref() {
+                Some(id) => access.reconcile_json_with_cancel(id, &cancel),
+                None => return serde_json::json!({"ok":false,"code":"ACTION_INPUT_INVALID","message":"command ID is required"}).to_string(),
+            },
+            "retry" => match command_id.as_deref() {
+                Some(id) => access.retry_saved_json_with_cancel(id, &cancel),
+                None => return serde_json::json!({"ok":false,"code":"ACTION_INPUT_INVALID","message":"command ID is required"}).to_string(),
+            },
+            _ => return serde_json::json!({"ok":false,"code":"ACTION_INPUT_INVALID","message":"unsupported secure action operation"}).to_string(),
+        };
+        match result {
+            Ok(value) => format!("{{\"ok\":true,\"value\":{value}}}"),
+            Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
+        }
+    }))
+}
+
 #[pymodule]
 fn _peerwork_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(version, module)?)?;
@@ -231,6 +278,7 @@ fn _peerwork_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(kernel_json, module)?)?;
     module.add_function(wrap_pyfunction!(secure_read_json, module)?)?;
     module.add_function(wrap_pyfunction!(secure_read_profile_json, module)?)?;
+    module.add_function(wrap_pyfunction!(secure_public_action_json, module)?)?;
     module.add_class::<KernelCancelHandle>()?;
     Ok(())
 }

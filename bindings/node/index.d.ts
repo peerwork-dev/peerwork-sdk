@@ -109,3 +109,31 @@ export interface SecureReadOptions {
 }
 /** Fetches the latest verified supported active history; failed refresh rejects. */
 export declare function readSecureWorkspace(options: SecureReadOptions): Promise<VerifiedSecureWorkspace>;
+
+export interface SecureActionReceipt {
+  command_id: string;
+  commit_hash: string;
+  sequence: number;
+  actor_id: string;
+  instance_id: string;
+  action_id: string;
+  effects: unknown[];
+}
+export type SecureActionResult =
+  | { status: 'PENDING'; command_id: string; workspace_id: string; action_id: string; sequence: null; commit_hash: null; receipt: null }
+  | { status: 'ACCEPTED'; command_id: string; workspace_id: string; action_id: string; sequence: number; commit_hash: string; receipt: SecureActionReceipt };
+export interface SecureActionOptions {
+  exactInputRefs?: unknown[];
+  /** Advanced deterministic allocation control; omission uses native OS randomness. */
+  allocations?: unknown[];
+  commandId?: string;
+  issuedAtMs?: number;
+  signal?: AbortSignal;
+}
+export interface SecurePublicActionSession {
+  submit(actionId: string, instanceId: string, body: unknown, options?: SecureActionOptions): Promise<SecureActionResult>;
+  reconcile(commandId: string, options?: { signal?: AbortSignal }): Promise<SecureActionResult>;
+  retrySaved(commandId: string, options?: { signal?: AbortSignal }): Promise<SecureActionResult>;
+}
+/** Uses a protected latest-read profile; an uncertain POST stays PENDING until signed replay. */
+export declare function openSecurePublicActions(options: SecureReadOptions): SecurePublicActionSession;

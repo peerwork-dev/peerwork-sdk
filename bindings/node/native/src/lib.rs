@@ -6,6 +6,7 @@ use napi_derive::napi;
 use peerwork_runtime::kernel_access::KernelAccess;
 use peerwork_runtime::kernel_client::{KernelAcceptedResult, KernelOperationStatus};
 use peerwork_runtime::kernel_identity::KernelIdentity;
+use peerwork_runtime::secure_action_access::{PublicActionInput, SecurePublicActionAccess};
 use peerwork_runtime::secure_read_access::{SecureReadAccess, SecureReadConfig};
 use peerwork_runtime::secure_read_profile::{SecureReadProfile, SecureReadProfileConfig};
 use peerwork_runtime::KernelCancellationToken;
@@ -299,6 +300,83 @@ pub fn secure_read_profile_json(
     AsyncTask::new(SecureReadTask {
         config_json,
         profile: true,
+        cancel: cancel_handle
+            .map(|handle| handle.token.clone())
+            .unwrap_or_default(),
+    })
+}
+
+pub struct SecureActionTask {
+    operation: String,
+    config_json: String,
+    input_json: Option<String>,
+    command_id: Option<String>,
+    cancel: KernelCancellationToken,
+}
+
+impl Task for SecureActionTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let config: SecureReadProfileConfig = serde_json::from_str(&self.config_json)
+            .map_err(|_| napi::Error::from_reason("invalid secure action configuration"))?;
+        let access = SecurePublicActionAccess::new(config);
+        let result = match self.operation.as_str() {
+            "submit" => {
+                let input: PublicActionInput = serde_json::from_str(
+                    self.input_json
+                        .as_deref()
+                        .ok_or_else(|| napi::Error::from_reason("action input is required"))?,
+                )
+                .map_err(|_| napi::Error::from_reason("invalid secure action input"))?;
+                access.submit_new_json_with_cancel(input, &self.cancel)
+            }
+            "reconcile" => access.reconcile_json_with_cancel(
+                self.command_id
+                    .as_deref()
+                    .ok_or_else(|| napi::Error::from_reason("command ID is required"))?,
+                &self.cancel,
+            ),
+            "retry" => access.retry_saved_json_with_cancel(
+                self.command_id
+                    .as_deref()
+                    .ok_or_else(|| napi::Error::from_reason("command ID is required"))?,
+                &self.cancel,
+            ),
+            _ => {
+                return Err(napi::Error::from_reason(
+                    "unsupported secure action operation",
+                ))
+            }
+        };
+        Ok(match result {
+            Ok(value) => format!("{{\"ok\":true,\"value\":{value}}}"),
+            Err(error) => {
+                serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()})
+                    .to_string()
+            }
+        })
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+#[napi]
+pub fn secure_public_action_json(
+    operation: String,
+    config_json: String,
+    input_json: Option<String>,
+    command_id: Option<String>,
+    cancel_handle: Option<ClassInstance<KernelCancelHandle>>,
+) -> AsyncTask<SecureActionTask> {
+    AsyncTask::new(SecureActionTask {
+        operation,
+        config_json,
+        input_json,
+        command_id,
         cancel: cancel_handle
             .map(|handle| handle.token.clone())
             .unwrap_or_default(),
