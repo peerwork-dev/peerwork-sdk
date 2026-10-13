@@ -8,8 +8,10 @@ BEGIN/progress/pending results, and use the runtime's protected exact packet
 and signed replay. A digest/compiler match does not authenticate a remote
 publisher. Local pending discovery does not establish service acceptance.
 The runtime generic continuation and local-only pending-list seam is
-`fe579fe`; its first offline regression failed because the borrowed replay
-opened discovery, then the corrected stopped-service test passed. The
+`fe579fe`. A source trace found that its earlier borrowed replay would open
+network discovery; the corrected stopped-service test passed. The first
+observed offline `Read(Discovery)` failure belonged to the separate ACTION
+pending-list path, not this install regression. The
 runtime's later `64a195e` interim guard refuses nonempty BEGIN before save or
 POST; it is absent from the immutable binding artifacts below. PAGE/END for
 nonempty snapshots remained open at this checkpoint.
