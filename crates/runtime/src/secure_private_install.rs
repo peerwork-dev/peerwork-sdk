@@ -603,7 +603,20 @@ mod format_two_direct_test {
         assert!(objects.iter().any(|object| object["kind"] == "protocols"
             && object["id"] == fixture["protocol_digest"]
             && object["value"]["manifest"]["format_version"] == 2
-            && object["value"]["composition"]["source_digest"] == fixture["root_package_digest"]));
+            && object["value"]["composition"]["v"] == 1
+            && object["value"]["composition"]["dependencies"].as_array().is_some_and(|parts| parts.len() == 1)));
+        let protocol = objects.iter().find(|object|
+            object["kind"] == "protocols" && object["id"] == fixture["protocol_digest"]
+        ).unwrap();
+        let composition = &protocol["value"]["composition"];
+        let source_wrapper = serde_json::json!({
+            "semantics": "peerwork.kernel.v1",
+            "manifest": composition["source_manifest"],
+        });
+        let source_wire = parse_wire_json_bounded(source_wrapper.to_string().as_bytes(), 64, 2_000_000).unwrap();
+        let source_canonical = canonical_wire_value(&source_wire, CanonicalPath::STRUCTURED).unwrap();
+        assert_eq!(composition["source_digest"], "59e87a16c5cb2b8c2c764a4d173554e5b2fd809ccfaa5969d257e993acbb9f6c");
+        assert_eq!(composition["source_digest"], sha256_hex(source_canonical.as_bytes()));
         assert!(objects.iter().any(|object| object["kind"] == "instances"
             && object["id"] == progress["instance_id"]
             && object["value"]["protocol_digest"] == fixture["protocol_digest"]));
