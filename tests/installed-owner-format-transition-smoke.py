@@ -4,12 +4,14 @@ The pinned service SQLite policy query below is a test-only oracle, bound to
 native verified read; it is not a public SDK policy export or signature verifier.
 """
 
+import asyncio
 import hashlib
 import json
 import os
 from pathlib import Path
 import sqlite3
 import subprocess
+import time
 import urllib.request
 
 import peerwork
@@ -21,6 +23,7 @@ LEGACY = Path(os.environ["PEERWORK_TEST_LEGACY_ROOT"])
 NODE = os.environ["PEERWORK_TEST_NODE"]
 NODE_PACKAGE = os.environ["PEERWORK_TEST_NODE_PACKAGE"]
 CLI = os.environ["PEERWORK_TEST_CLI"]
+ASYNC_CANCEL = os.environ.get("PEERWORK_TEST_ASYNC_CANCEL") == "1"
 for relative, variable in (
     ("crates/runtime/src/secure_owner_format_transition.rs", "PEERWORK_TEST_TRANSITION_SOURCE_SHA256"),
     ("crates/runtime/src/secure_owner_attach.rs", "PEERWORK_TEST_ATTACH_SOURCE_SHA256"),
@@ -45,6 +48,11 @@ def post(origin, route):
 def counts(origin):
     with urllib.request.urlopen(origin + "__test/secure-counts", timeout=10) as response:
         return json.load(response)["commits"]
+
+
+def post_delay_started(origin):
+    with urllib.request.urlopen(origin + "__test/post-delay-status", timeout=10) as response:
+        return json.load(response)["started"] is True
 
 
 def policy_oracle(workspace_id, verified):
@@ -158,10 +166,33 @@ try:
     assert prior_policy == before_policy
     baseline_commits = counts(origin)
 
-    assert post(origin, "__test/drop-next-post")["enabled"] is True
-    withheld = node_call(config, "submit", input=dict(workspaceId=workspace_id,
-        transition="UPGRADE_WIRE_V3"))
-    assert withheld == {"status": "PENDING"}
+    if ASYNC_CANCEL:
+        assert post(origin, "__test/delay-next-post")["enabled"] is True
+
+        async def cancel_after_applied_post():
+            task = asyncio.create_task(owner.submit_format_transition_async(
+                workspace_id, "UPGRADE_WIRE_V3"))
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                if await asyncio.to_thread(post_delay_started, origin):
+                    break
+                await asyncio.sleep(0.05)
+            else:
+                raise AssertionError("applied POST delay was not observed")
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                return
+            raise AssertionError("cancelled caller received a transition result")
+
+        asyncio.run(cancel_after_applied_post())
+        assert counts(origin) == baseline_commits + 1
+    else:
+        assert post(origin, "__test/drop-next-post")["enabled"] is True
+        withheld = node_call(config, "submit", input=dict(workspaceId=workspace_id,
+            transition="UPGRADE_WIRE_V3"))
+        assert withheld == {"status": "PENDING"}
     fresh = peerwork.SecureOwnerWorkspaceClient(origin, str(root), allow_loopback_http=True)
     saved = fresh.format_transitions(workspace_id)
     assert len(saved) == 1 and saved[0]["transition"] == "UPGRADE_WIRE_V3"
@@ -231,6 +262,7 @@ try:
     assert node_call(config, "history", workspaceId=workspace_id) == expected
     assert cli(config_file, "owner-format-history", workspace_id) == expected
     print(json.dumps(dict(status="PASS", workspace_id=workspace_id, source_policy_v=1,
+        cancellation_observed=ASYNC_CANCEL,
         first_command_id=first_id, second_command_id=second_id,
         record_id=record_id, final_sequence=final["sequence"])))
 finally:
