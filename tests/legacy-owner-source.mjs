@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 
 const [origin, sourceDir, legacyRoot, mode = 'clean'] = process.argv.slice(2);
 if (!origin || !sourceDir || !legacyRoot) throw new Error('LEGACY_TEST_INPUT_REQUIRED');
-if (!['clean', 'completed', 'legacy-record', 'pending', 'unknown-store', 'malformed-store', 'legacy-structured'].includes(mode)) throw new Error('LEGACY_TEST_MODE_INVALID');
+if (!['clean', 'completed', 'legacy-record', 'pending', 'unknown-store', 'malformed-store', 'legacy-structured', 'legacy-public'].includes(mode)) throw new Error('LEGACY_TEST_MODE_INVALID');
 mkdirSync(sourceDir, { recursive: true, mode: 0o700 });
 const { privateKey } = generateKeyPairSync('ed25519');
 const pemPath = join(sourceDir, 'owner.pem');
@@ -20,9 +20,10 @@ const { SecureAgentClient } = await import(pathToFileURL(modulePath).href);
 const { secureHash } = await import(pathToFileURL(join(legacyRoot, 'dist-workspace/src/workspace-secure-client.js')).href);
 const agent = await SecureAgentClient.open({ baseUrl: new URL(origin).origin, privateKey, statePath, intentDbPath });
 try {
-  const created = await agent.create('Legacy native attach proof', 'PRIVATE', { structure: mode === 'legacy-structured' });
+  const visibility = mode === 'legacy-public' ? 'PUBLIC' : 'PRIVATE';
+  const created = await agent.create('Legacy native attach proof', visibility, { structure: mode === 'legacy-structured' });
   const journal = await agent.journal(created.workspaceId);
-  if (journal.policy.payload.v !== (mode === 'legacy-structured' ? 2 : 1) || journal.policy.payload.visibility !== 'PRIVATE') {
+  if (journal.policy.payload.v !== (mode === 'legacy-structured' ? 2 : 1) || journal.policy.payload.visibility !== visibility) {
     throw new Error('LEGACY_EXPECTED_WIRE_NOT_CREATED');
   }
   if (mode === 'pending') {

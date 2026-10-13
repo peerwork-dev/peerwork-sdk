@@ -111,6 +111,8 @@ impl From<crate::secure_read_access::SecureReadAccessError> for HistoricalOwnerA
 #[serde(deny_unknown_fields)]
 struct SavedAttach {
     input: HistoricalOwnerAttachInput,
+    #[serde(default = "private_visibility")]
+    visibility: String,
     ts_state_sha256: String,
     owner_pem_sha256: String,
     ts_intent_sha256: String,
@@ -130,11 +132,16 @@ struct AttachHistory {
 }
 
 struct LegacySource {
-    ring: SecretKeyring,
+    visibility: String,
+    ring: Option<SecretKeyring>,
     sequence: u64,
     head: Option<String>,
     policy_hash: String,
     retained_member_commands: Vec<String>,
+}
+
+fn private_visibility() -> String {
+    "PRIVATE".into()
 }
 
 pub struct SecureHistoricalOwnerAttach {
@@ -186,6 +193,7 @@ impl SecureHistoricalOwnerAttach {
             .find(|(_, row)| row.input.workspace_id == input.workspace_id)
         {
             if row.input != input
+                || row.visibility != source.visibility
                 || row.ts_state_sha256 != ts_digest
                 || row.owner_pem_sha256 != pem_digest
                 || row.ts_intent_sha256 != intent_digest
@@ -206,6 +214,7 @@ impl SecureHistoricalOwnerAttach {
         let id = random_token()?;
         let row = SavedAttach {
             input,
+            visibility: source.visibility,
             ts_state_sha256: ts_digest,
             owner_pem_sha256: pem_digest,
             ts_intent_sha256: intent_digest,
@@ -249,6 +258,7 @@ impl SecureHistoricalOwnerAttach {
         drop(store);
         let (source, ts_digest, pem_digest, intent_digest) = self.inspect_sources(&row.input)?;
         if ts_digest != row.ts_state_sha256
+            || source.visibility != row.visibility
             || pem_digest != row.owner_pem_sha256
             || intent_digest != row.ts_intent_sha256
             || source.sequence != row.source_sequence
@@ -273,19 +283,20 @@ impl SecureHistoricalOwnerAttach {
         }
         let directory = self.workspace_dir(&row.input.workspace_id);
         ensure_dir(&directory)?;
-        let mut lifecycle = SecureLifecycle::open(
-            &directory.join("lifecycle.state"),
-            &self.config.origin,
-            owner.actor_id(),
-            &row.input.workspace_id,
-            owner.actor_id(),
-            owner.key_id(),
-        )
-        .map_err(|_| HistoricalOwnerAttachError::Local)?;
-        lifecycle
-            .stage_historical_owner_ring(&source.ring)
-            .map_err(|_| HistoricalOwnerAttachError::Conflict)?;
-        drop(lifecycle);
+        if let Some(ring) = source.ring.as_ref() {
+            let mut lifecycle = SecureLifecycle::open(
+                &directory.join("lifecycle.state"),
+                &self.config.origin,
+                owner.actor_id(),
+                &row.input.workspace_id,
+                owner.actor_id(),
+                owner.key_id(),
+            )
+            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+            lifecycle
+                .stage_historical_owner_ring(ring)
+                .map_err(|_| HistoricalOwnerAttachError::Conflict)?;
+        }
         let access = SecureReadAccess::new(self.attach_read_config(&row.input));
         let replayed = access
             .replay_checked_attach_generation(cancel)
@@ -340,9 +351,11 @@ impl SecureHistoricalOwnerAttach {
             .get("visibility")
             .and_then(WireValue::as_string)
             .as_deref()
-            != Some("PRIVATE")
+            != Some(row.visibility.as_str())
             || !owner_member
-            || source.ring.epochs().last() != Some(epoch)
+            || (row.visibility == "PRIVATE"
+                && source.ring.as_ref().and_then(|ring| ring.epochs().last()) != Some(epoch))
+            || (row.visibility == "PUBLIC" && (epoch != 0 || source.ring.is_some()))
             || replayed.replay().structure_status() == StructureStatus::Seeding
             || !replayed.replay().contains_checkpoint(
                 row.source_sequence,
@@ -365,25 +378,26 @@ impl SecureHistoricalOwnerAttach {
                 return Err(HistoricalOwnerAttachError::Conflict);
             }
         }
-        let mut lifecycle = SecureLifecycle::open(
-            &directory.join("lifecycle.state"),
-            &self.config.origin,
-            owner.actor_id(),
-            &row.input.workspace_id,
-            owner.actor_id(),
-            owner.key_id(),
-        )
-        .map_err(|_| HistoricalOwnerAttachError::Local)?;
-        lifecycle
-            .activate_verified_historical_owner(
-                &source.ring,
-                &replayed,
-                row.source_sequence,
-                row.source_head.as_deref(),
-                &row.source_policy_hash,
+        if let Some(ring) = source.ring.as_ref() {
+            let mut lifecycle = SecureLifecycle::open(
+                &directory.join("lifecycle.state"),
+                &self.config.origin,
+                owner.actor_id(),
+                &row.input.workspace_id,
+                owner.actor_id(),
+                owner.key_id(),
             )
-            .map_err(|_| HistoricalOwnerAttachError::Verification)?;
-        drop(lifecycle);
+            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+            lifecycle
+                .activate_verified_historical_owner(
+                    ring,
+                    &replayed,
+                    row.source_sequence,
+                    row.source_head.as_deref(),
+                    &row.source_policy_hash,
+                )
+                .map_err(|_| HistoricalOwnerAttachError::Verification)?;
+        }
         profile.read_latest_json_with_cancel(cancel).map_err(|_| {
             if cancel.is_cancelled() {
                 HistoricalOwnerAttachError::Cancelled
@@ -445,6 +459,7 @@ impl SecureHistoricalOwnerAttach {
     pub(crate) fn attached_profile_config(
         &self,
         workspace_id: &str,
+        visibility: &str,
     ) -> Result<SecureReadProfileConfig, HistoricalOwnerAttachError> {
         let owner = KernelIdentity::open(&self.identity_path())
             .map_err(|_| HistoricalOwnerAttachError::Identity)?;
@@ -454,7 +469,11 @@ impl SecureHistoricalOwnerAttach {
         let row = history
             .rows
             .values()
-            .find(|row| row.input.workspace_id == workspace_id && row.attached_sequence.is_some())
+            .find(|row| {
+                row.input.workspace_id == workspace_id
+                    && row.visibility == visibility
+                    && row.attached_sequence.is_some()
+            })
             .ok_or(HistoricalOwnerAttachError::NotFound)?;
         if owner.actor_id() != row.input.expected_owner_actor_id
             || owner.key_id() != row.input.expected_owner_key_id
@@ -469,7 +488,6 @@ impl SecureHistoricalOwnerAttach {
         workspace_id: &str,
         cancel: &CancellationToken,
     ) -> Result<String, HistoricalOwnerAttachError> {
-        let config = self.attached_profile_config(workspace_id)?;
         let store = SecureStateStore::open(&self.history_path())
             .map_err(|_| HistoricalOwnerAttachError::Local)?;
         let history = read_history(&store, &self.config.origin)?;
@@ -481,6 +499,7 @@ impl SecureHistoricalOwnerAttach {
             .clone();
         drop(history);
         drop(store);
+        let config = self.attached_profile_config(workspace_id, &row.visibility)?;
         let profile = SecureReadProfile::new(config);
         let json = profile.read_latest_json_with_cancel(cancel).map_err(|_| {
             if cancel.is_cancelled() {
@@ -631,10 +650,11 @@ fn read_history(
     if doc.version != 1
         || doc.origin != origin
         || doc.rows.len() > MAX_HISTORY
-        || doc
-            .rows
-            .iter()
-            .any(|(id, row)| !valid_token(id) || validate_input(&row.input).is_err())
+        || doc.rows.iter().any(|(id, row)| {
+            !valid_token(id)
+                || validate_input(&row.input).is_err()
+                || !matches!(row.visibility.as_str(), "PRIVATE" | "PUBLIC")
+        })
     {
         return Err(HistoricalOwnerAttachError::Conflict);
     }
@@ -1056,19 +1076,22 @@ fn parse_legacy_source(
             .and_then(WireValue::as_string)
             .filter(|p| p.len() == 64)
             .ok_or(HistoricalOwnerAttachError::SourceChanged)?;
-        let ring_value = local
-            .get("keyring")
-            .ok_or(HistoricalOwnerAttachError::SourceChanged)?;
-        let ring_wire = Zeroizing::new(
-            canonical_wire_value(ring_value, CanonicalPath::SecureArtifact)
-                .map_err(|_| HistoricalOwnerAttachError::SourceChanged)?,
-        );
-        let ring = SecretKeyring::parse_wire(ring_wire.as_bytes())
-            .map_err(|_| HistoricalOwnerAttachError::SourceChanged)?;
-        if ring.workspace_id() != input.workspace_id {
-            return Err(HistoricalOwnerAttachError::SourceChanged);
-        }
+        let ring = if let Some(ring_value) = local.get("keyring") {
+            let ring_wire = Zeroizing::new(
+                canonical_wire_value(ring_value, CanonicalPath::SecureArtifact)
+                    .map_err(|_| HistoricalOwnerAttachError::SourceChanged)?,
+            );
+            let ring = SecretKeyring::parse_wire(ring_wire.as_bytes())
+                .map_err(|_| HistoricalOwnerAttachError::SourceChanged)?;
+            if ring.workspace_id() != input.workspace_id {
+                return Err(HistoricalOwnerAttachError::SourceChanged);
+            }
+            Some(ring)
+        } else {
+            None
+        };
         Ok(LegacySource {
+            visibility: if ring.is_some() { "PRIVATE" } else { "PUBLIC" }.into(),
             ring,
             sequence,
             head,
@@ -1174,6 +1197,105 @@ mod tests {
             attach.attachments(),
             Err(HistoricalOwnerAttachError::Local)
         ));
+    }
+
+    #[test]
+    fn actual_service_legacy_public_owner_attach_and_read() {
+        let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else {
+            return;
+        };
+        let Ok(legacy_root) = std::env::var("PEERWORK_LEGACY_CLIENT_ROOT") else {
+            return;
+        };
+        let node = std::env::var("PEERWORK_NODE_BIN").unwrap_or_else(|_| "node".into());
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let bridge =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/reference-kernel-server.mjs");
+        let child = Command::new(&node)
+            .arg(bridge)
+            .env("PEERWORK_REFERENCE_ROOT", reference_root)
+            .env("PEERWORK_TEST_STATE", root.path())
+            .env("PEERWORK_TEST_FIRST_POST_MODE", "normal")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        struct StopPublic(Child);
+        impl Drop for StopPublic {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut child = StopPublic(child);
+        let mut line = String::new();
+        BufReader::new(child.0.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        assert!(!line.is_empty(), "pinned service exited before readiness");
+        let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let origin = ready["origin"].as_str().unwrap();
+        let helper =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/legacy-owner-source.mjs");
+        let setup = Command::new(&node)
+            .arg(helper)
+            .arg(origin)
+            .arg(root.path().join("legacy-public"))
+            .arg(legacy_root)
+            .arg("legacy-public")
+            .output()
+            .unwrap();
+        assert!(
+            setup.status.success(),
+            "legacy public setup: {}",
+            String::from_utf8_lossy(&setup.stderr)
+        );
+        let source: serde_json::Value = serde_json::from_slice(&setup.stdout).unwrap();
+        assert_eq!(source["policy_v"], 1);
+        let workspace_id = source["workspace_id"].as_str().unwrap();
+        let config = SecureOwnerCreateConfig {
+            origin: origin.into(),
+            state_dir: root.path().join("native-owner"),
+            allow_loopback_http: true,
+            max_replay_artifact_bytes: 64 * 1024 * 1024,
+        };
+        let cancel = CancellationToken::new();
+        let attach = SecureHistoricalOwnerAttach::new(config.clone());
+        let attached = attach
+            .attach(
+                HistoricalOwnerAttachInput {
+                    workspace_id: workspace_id.into(),
+                    protected_ts_state_path: PathBuf::from(source["state_path"].as_str().unwrap()),
+                    protected_owner_pkcs8_path: PathBuf::from(source["pem_path"].as_str().unwrap()),
+                    protected_ts_intent_db_path: PathBuf::from(
+                        source["intent_db_path"].as_str().unwrap(),
+                    ),
+                    expected_owner_actor_id: source["owner_actor_id"].as_str().unwrap().into(),
+                    expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
+                },
+                &cancel,
+            )
+            .unwrap();
+        assert_eq!(attached.status, "ATTACHED");
+        assert!(SecureOwnerWorkspaceCreate::new(config.clone())
+            .public_action_access(workspace_id)
+            .is_ok());
+        assert!(matches!(
+            SecureOwnerWorkspaceCreate::new(config.clone()).private_action_access(workspace_id),
+            Err(_)
+        ));
+        let read: serde_json::Value = serde_json::from_str(
+            &SecureOwnerWorkspaceCreate::new(config)
+                .read_workspace_json(workspace_id, &cancel)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(read["workspace_id"], workspace_id);
     }
 
     #[test]

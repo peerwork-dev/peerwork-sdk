@@ -245,10 +245,13 @@ impl SecureOwnerWorkspaceCreate {
     pub fn private_install_access(
         &self,
         workspace_id: &str,
-    ) -> Result<crate::secure_private_install::SecurePrivatePackageInstall, SecureOwnerCreateError> {
-        Ok(crate::secure_private_install::SecurePrivatePackageInstall::new(
-            self.created_profile_config(workspace_id, "PRIVATE")?,
-        ))
+    ) -> Result<crate::secure_private_install::SecurePrivatePackageInstall, SecureOwnerCreateError>
+    {
+        Ok(
+            crate::secure_private_install::SecurePrivatePackageInstall::new(
+                self.created_profile_config(workspace_id, "PRIVATE")?,
+            ),
+        )
     }
 
     /// Select a protected PRIVATE Owner workspace for an explicit signed
@@ -313,11 +316,8 @@ impl SecureOwnerWorkspaceCreate {
         drop(history);
         drop(store);
         drop(identity);
-        if visibility != "PRIVATE" {
-            return Err(SecureOwnerCreateError::NotFound);
-        }
         SecureHistoricalOwnerAttach::new(self.config.clone())
-            .attached_profile_config(workspace_id)
+            .attached_profile_config(workspace_id, visibility)
             .map_err(map_attach_error)
     }
 
