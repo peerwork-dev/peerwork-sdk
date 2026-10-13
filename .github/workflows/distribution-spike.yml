@@ -59,6 +59,7 @@ jobs:
             target/release/peerwork
             dist/wheels/*.whl
             dist/agent-sdk-*/
+            dist/peerwork-agent-sdk-*.tgz
 
   linux_gnu_2_28_x64:
     runs-on: ubuntu-24.04
@@ -226,6 +227,7 @@ jobs:
             target/release/peerwork
             dist/wheels/*.whl
             dist/agent-sdk-*/
+            dist/peerwork-agent-sdk-*.tgz
 
   windows:
     runs-on: windows-2022
@@ -294,3 +296,4 @@ jobs:
             target/release/peerwork.exe
             dist/wheels/*.whl
             dist/agent-sdk-win32-x64-msvc/
+            dist/peerwork-agent-sdk-*.tgz
