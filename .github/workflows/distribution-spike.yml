@@ -54,6 +54,12 @@ jobs:
           /tmp/peerwork-wheel-consumer/bin/pip install --no-index --no-deps dist/wheels/*.whl
           /tmp/peerwork-wheel-consumer/bin/python -c 'import peerwork; assert peerwork.version() == "0.0.1"; assert peerwork.capabilities()["version"] == "0.0.1"'
           env -i PATH=/usr/bin:/bin ./target/release/peerwork version
+          state_dir="$(cd "$RUNNER_TEMP" && pwd -P)/peerwork state Ω with spaces"
+          mkdir -m 700 "$state_dir"
+          python tests/installed-protected-identity-smoke.py \
+            --python /tmp/peerwork-wheel-consumer/bin/python \
+            --node "$(command -v node)" --node-consumer "$PWD/dist/node-consumer" \
+            --cli "$PWD/target/release/peerwork" --state-dir "$state_dir"
       - uses: actions/upload-artifact@v4
         with:
           name: experimental-${{ matrix.target }}
@@ -226,6 +232,12 @@ jobs:
           /tmp/peerwork-wheel-consumer/bin/pip install --no-index --no-deps dist/wheels/*.whl
           /tmp/peerwork-wheel-consumer/bin/python -c 'import peerwork; assert peerwork.version() == "0.0.1"; assert peerwork.capabilities()["version"] == "0.0.1"'
           ./target/release/peerwork version
+          state_dir="$(cd "$RUNNER_TEMP" && pwd -P)/peerwork state Ω with spaces"
+          mkdir -m 700 "$state_dir"
+          python tests/installed-protected-identity-smoke.py \
+            --python /tmp/peerwork-wheel-consumer/bin/python \
+            --node "$(command -v node)" --node-consumer "$PWD/dist/node-consumer" \
+            --cli "$PWD/target/release/peerwork" --state-dir "$state_dir"
       - uses: actions/upload-artifact@v4
         with:
           name: experimental-${{ matrix.target }}
@@ -275,6 +287,16 @@ jobs:
           & "$env:RUNNER_TEMP\peerwork-wheel-consumer\Scripts\pip.exe" install --no-index --no-deps $wheel
           & "$env:RUNNER_TEMP\peerwork-wheel-consumer\Scripts\python.exe" -c 'import peerwork; assert peerwork.version() == "0.0.1"; assert peerwork.capabilities()["version"] == "0.0.1"'
           ./target/release/peerwork.exe version
+          $stateDir = Join-Path $env:RUNNER_TEMP 'peerwork state Ω with spaces'
+          [void][System.IO.Directory]::CreateDirectory($stateDir)
+          $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          $acl = New-Object System.Security.AccessControl.DirectorySecurity
+          $acl.SetSecurityDescriptorSddlForm("D:P(A;OICI;FA;;;$sid)")
+          Set-Acl -LiteralPath $stateDir -AclObject $acl -ErrorAction Stop
+          python tests/installed-protected-identity-smoke.py `
+            --python "$env:RUNNER_TEMP\peerwork-wheel-consumer\Scripts\python.exe" `
+            --node (Get-Command node).Source --node-consumer (Join-Path $PWD 'dist/node-consumer') `
+            --cli (Join-Path $PWD 'target/release/peerwork.exe') --state-dir $stateDir
       - name: Inspect Windows artifact dependencies and Node Intl import isolation
         shell: pwsh
         run: |
