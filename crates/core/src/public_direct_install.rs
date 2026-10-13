@@ -803,7 +803,7 @@ pub(crate) fn build_direct_install_objects(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn build_direct_install_objects_with_composition(
+pub(crate) fn build_direct_install_objects_with_composition(
     manifest_wire: &[u8],
     composition: Option<&WireValue>,
     expected_digest: &str,
@@ -906,6 +906,42 @@ pub(crate) fn derive_direct_install_structure(
     protocol_digest: &str,
     manifest: &WireValue,
 ) -> Result<WireValue, DirectInstallError> {
+    derive_direct_install_structure_with_disclosure(
+        Some(prior_structure),
+        prior_objects,
+        added,
+        protocol_digest,
+        manifest,
+        false,
+    )
+}
+
+/// A v1 or PRIVATE-v3 NONE policy has no signed structure yet. The first
+/// direct install derives its prior schema from the authenticated objects,
+/// then retains every formerly undisclosed field as encrypted.
+pub(crate) fn derive_direct_install_structure_with_disclosure(
+    prior_structure: Option<&WireValue>,
+    prior_objects: &[WireValue],
+    added: &[WireValue],
+    protocol_digest: &str,
+    manifest: &WireValue,
+    undisclosed: bool,
+) -> Result<WireValue, DirectInstallError> {
+    let derived_prior;
+    let prior_structure = match prior_structure {
+        Some(value) => value,
+        None => {
+            let all = WireValue::Array(adoption_objects(prior_objects)?);
+            let mut all_wire = String::new();
+            ordered_json(&all, 0, &mut all_wire)?;
+            let projected =
+                derive_install_structure_policy_with_keep_encrypted(all_wire.as_bytes(), b"[]")
+                    .map_err(|_| DirectInstallError::Invalid)?;
+            derived_prior = parse_wire_json_bounded(projected.as_bytes(), 64, 2_000_000)
+                .map_err(|_| DirectInstallError::Invalid)?;
+            &derived_prior
+        }
+    };
     let mut choices = Vec::new();
     for protocol in array(required(prior_structure, "protocols")?)? {
         let digest = required(protocol, "protocol_digest")?
@@ -914,7 +950,9 @@ pub(crate) fn derive_direct_install_structure(
         for (schema, definition) in entries(required(protocol, "schemas")?)? {
             let mut fields = Vec::new();
             for (field, details) in entries(required(definition, "fields")?)? {
-                if required(details, "protection")?.as_string().as_deref() == Some("e2ee") {
+                if undisclosed
+                    || required(details, "protection")?.as_string().as_deref() == Some("e2ee")
+                {
                     fields.push(WireValue::String(field.clone()));
                 }
             }
