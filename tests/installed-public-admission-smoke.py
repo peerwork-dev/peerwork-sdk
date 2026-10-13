@@ -189,6 +189,8 @@ with tempfile.TemporaryDirectory(prefix="peerwork-native-admission-", dir=TEMP_R
         assert ordinary["status"] == "PENDING" and stored_offer(service_state / "control.sqlite", ordinary["invite_id"]) == (ordinary["offer_hash"], local["actor_id"])
         assert high["invite_id"] in {row["invite_id"] for row in node_call("owner", "pendingOffers", owner_config)}
         assert node_call("owner", "retryOffer", owner_config, inviteId=high["invite_id"])["offer_hash"] == high["offer_hash"]
+        asyncio.run(cancel_after_persist(origin, owner, owner_reopen_kwargs, certificate,
+            service_state / "control.sqlite", local["actor_id"]))
 
         recipient_config = dict(origin=origin, state_dir=str(recipient_dir),
             workspace_id=workspace["workspace_id"], owner_actor_id=workspace["actor_id"],
@@ -229,8 +231,6 @@ with tempfile.TemporaryDirectory(prefix="peerwork-native-admission-", dir=TEMP_R
             owner_actor_id=workspace["actor_id"], owner_key_id=workspace["signing_key"],
             allow_loopback_http=True)
         assert recipient_read.read()["workspace_id"] == workspace["workspace_id"]
-        asyncio.run(cancel_after_persist(origin, owner, owner_reopen_kwargs, certificate,
-            service_state / "control.sqlite", local["actor_id"]))
         print(json.dumps(dict(source="installed", recipient_actor=local["actor_id"],
             owner_actor=workspace["actor_id"], offers=4, accepted_invite=high["invite_id"],
             delivery_status=delivery["status"], recipient_status=received["status"])))
