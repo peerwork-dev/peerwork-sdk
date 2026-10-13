@@ -85,8 +85,9 @@ try {
     const pendingMultipart = mode.startsWith('stage-marker-multipart-pending-');
     const orphanMultipart = mode === 'stage-marker-multipart-orphan-index1';
     // Documentation is package material but not a protocol behavior change.
-    // This remains within the pinned package file budget and makes two real
-    // source parts under the f828 64 KiB per-part limit.
+    // This remains within the pinned package file budget. The selected
+    // pending/orphan index-1 modes make at least three real source parts;
+    // other multipart modes make two under the f828 64 KiB per-part limit.
     if (multipart) files['README.md'] += '\n' + 'A'.repeat(pendingMultipart || orphanMultipart ? 150000 : 70000);
     const bundle = parseProtocolPackage({ format: PROTOCOL_PACKAGE_FORMAT, files });
     const material = { v: 1, closure: createProtocolPackageClosure(bundle, []), bindings: {} };
