@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 
 const [origin, sourceDir, legacyRoot, mode = 'clean'] = process.argv.slice(2);
 if (!origin || !sourceDir || !legacyRoot) throw new Error('LEGACY_TEST_INPUT_REQUIRED');
-if (!['clean', 'completed', 'legacy-record', 'pending', 'pending-before-post', 'unknown-store', 'malformed-store', 'legacy-structured', 'legacy-public', 'legacy-public-structured', 'legacy-public-record', 'legacy-public-structured-record', 'private-missing-ring'].includes(mode)) throw new Error('LEGACY_TEST_MODE_INVALID');
+if (!['clean', 'completed', 'legacy-record', 'pending', 'pending-before-post', 'pending-private-structured', 'pending-private-structured-before-post', 'pending-public', 'pending-public-before-post', 'pending-public-structured', 'pending-public-structured-before-post', 'unknown-store', 'malformed-store', 'legacy-structured', 'legacy-public', 'legacy-public-structured', 'legacy-public-record', 'legacy-public-structured-record', 'private-missing-ring'].includes(mode)) throw new Error('LEGACY_TEST_MODE_INVALID');
 mkdirSync(sourceDir, { recursive: true, mode: 0o700 });
 const { privateKey } = generateKeyPairSync('ed25519');
 const pemPath = join(sourceDir, 'owner.pem');
@@ -20,19 +20,20 @@ const { SecureAgentClient } = await import(pathToFileURL(modulePath).href);
 const { secureHash } = await import(pathToFileURL(join(legacyRoot, 'dist-workspace/src/workspace-secure-client.js')).href);
 const agent = await SecureAgentClient.open({ baseUrl: new URL(origin).origin, privateKey, statePath, intentDbPath });
 try {
-  const visibility = mode.startsWith('legacy-public') ? 'PUBLIC' : 'PRIVATE';
-  const structured = mode === 'legacy-structured' || mode === 'legacy-public-structured' || mode === 'legacy-public-structured-record';
+  const visibility = mode.startsWith('legacy-public') || mode.startsWith('pending-public') ? 'PUBLIC' : 'PRIVATE';
+  const structured = mode === 'legacy-structured' || mode === 'legacy-public-structured' || mode === 'legacy-public-structured-record' || mode.startsWith('pending-private-structured') || mode.startsWith('pending-public-structured');
   const created = await agent.create('Legacy native attach proof', visibility, { structure: structured });
   const journal = await agent.journal(created.workspaceId);
   if (journal.policy.payload.v !== (structured ? 2 : 1) || journal.policy.payload.visibility !== visibility) {
     throw new Error('LEGACY_EXPECTED_WIRE_NOT_CREATED');
   }
-  if (mode === 'pending' || mode === 'pending-before-post') {
+  if (mode.startsWith('pending')) {
     const wiki = journal.objects.find(row => row.kind === 'instances' && row.value.origin_entrypoint === 'wiki');
     if (!wiki) throw new Error('LEGACY_WIKI_MISSING');
     let stopped = false;
     const originalRequest = agent.request.bind(agent);
-    if (mode === 'pending') {
+    const beforePost = mode.endsWith('before-post');
+    if (!beforePost) {
       const hook = await fetch(new URL('/__test/drop-next-post', origin), { method: 'POST', body: '{}' });
       if (!hook.ok) throw new Error('LEGACY_DROP_HOOK_FAILED');
     } else {
@@ -49,10 +50,10 @@ try {
         title: 'Pending legacy Owner action', body: 'Exact signed packet remains local',
       });
     } catch (error) {
-      if (mode === 'pending-before-post' && error?.message !== 'TEST_STOP_BEFORE_ACTION_POST') throw error;
+      if (beforePost && error?.message !== 'TEST_STOP_BEFORE_ACTION_POST') throw error;
       /* The Agent's protected pending map is the durable evidence. */
     } finally { agent.request = originalRequest; }
-    if (mode === 'pending-before-post' && !stopped) throw new Error('LEGACY_PRE_POST_STOP_NOT_REACHED');
+    if (beforePost && !stopped) throw new Error('LEGACY_PRE_POST_STOP_NOT_REACHED');
     if (Object.keys(agent.state.pending).length !== 1) throw new Error('LEGACY_PENDING_NOT_SAVED');
   }
   if (mode === 'unknown-store') {
@@ -93,6 +94,8 @@ try {
     owner_actor_id: agent.identity.actorId,
     owner_key_id: agent.identity.keyId,
     policy_v: journal.policy.payload.v,
+    visibility,
+    structured,
     sequence: journal.checkpoint.sequence,
     state_path: statePath,
     pem_path: pemPath,

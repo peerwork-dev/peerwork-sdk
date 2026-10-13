@@ -173,6 +173,9 @@ struct LegacyPendingAction {
     previous: Option<String>,
     policy_hash: String,
     epoch: u64,
+    visibility: String,
+    version: u64,
+    protocol_format_ceiling: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -513,7 +516,7 @@ impl SecureHistoricalOwnerAttach {
         cancel: &CancellationToken,
     ) -> Result<(), HistoricalOwnerAttachError> {
         if !row.input.recover_pending_action
-            || row.visibility != "PRIVATE"
+            || row.visibility != pending.visibility
             || !replayed.replay().contains_checkpoint(
                 row.source_sequence,
                 row.source_head.as_deref(),
@@ -533,9 +536,9 @@ impl SecureHistoricalOwnerAttach {
             sequence: pending.sequence,
             previous: pending.previous.as_deref(),
             epoch: pending.epoch,
-            mode: "PRIVATE",
-            version: 1,
-            protocol_format_ceiling: None,
+            mode: &pending.visibility,
+            version: pending.version,
+            protocol_format_ceiling: pending.protocol_format_ceiling,
         };
         let proof = verify_prepared_secure_commit_request_with_policy(
             &pending.request,
@@ -1018,18 +1021,32 @@ fn parse_pending_owner_action(
         .and_then(WireValue::as_string)
         .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
     let policy_hash = string("policy_hash")?;
+    let visibility = string("mode")?;
+    let version =
+        exact_u64(payload.get("v")).ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+    let protocol_format_ceiling = if version == 3 {
+        Some(
+            exact_u64(payload.get("protocol_format_ceiling"))
+                .filter(|ceiling| matches!(ceiling, 1 | 2))
+                .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?,
+        )
+    } else {
+        None
+    };
     if action_id.is_empty()
         || action_id.len() > 120
         || string("workspace_id")? != input.workspace_id
         || string("actor_id")? != input.expected_owner_actor_id
         || string("signing_key")? != input.expected_owner_key_id
         || string("command_id")? != command_id
-        || string("mode")? != "PRIVATE"
-        || exact_u64(payload.get("v")) != Some(1)
+        || !matches!(visibility.as_str(), "PRIVATE" | "PUBLIC")
+        || !matches!(version, 1 | 2 | 3)
+        || (visibility == "PRIVATE" && epoch == 0)
+        || (visibility == "PUBLIC" && epoch != 0)
+        || (version != 3 && payload.get("protocol_format_ceiling").is_some())
         || !valid_token(&string("instance_id")?)
         || !valid_digest(&previous)
         || !valid_digest(&policy_hash)
-        || epoch == 0
     {
         return Err(HistoricalOwnerAttachError::SourceUnresolved);
     }
@@ -1048,6 +1065,9 @@ fn parse_pending_owner_action(
         previous: Some(previous),
         policy_hash,
         epoch,
+        visibility,
+        version,
+        protocol_format_ceiling,
     }))
 }
 
@@ -1570,7 +1590,7 @@ fn parse_legacy_source(
         };
         let pending_action = parse_pending_owner_action(value.get("pending"), input)?;
         if let Some(action) = pending_action.as_ref() {
-            if ring.is_none()
+            if action.visibility != if ring.is_some() { "PRIVATE" } else { "PUBLIC" }
                 || sequence.checked_add(1) != Some(action.sequence)
                 || action.previous != head
                 || action.policy_hash != policy_hash
@@ -2001,6 +2021,251 @@ mod tests {
                 && row["value"]["payload"]["title"] == "Pending legacy Owner action"
                 && row["value"]["payload"]["body"] == "Exact signed packet remains local"
         }));
+    }
+
+    #[test]
+    fn actual_service_imports_old_structured_and_public_pending_actions() {
+        let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else {
+            return;
+        };
+        let Ok(legacy_root) = std::env::var("PEERWORK_LEGACY_CLIENT_ROOT") else {
+            return;
+        };
+        let node = std::env::var("PEERWORK_NODE_BIN").unwrap_or_else(|_| "node".into());
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let bridge =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/reference-kernel-server.mjs");
+        let child = Command::new(&node)
+            .arg(bridge)
+            .env("PEERWORK_REFERENCE_ROOT", reference_root)
+            .env("PEERWORK_TEST_STATE", root.path())
+            .env("PEERWORK_TEST_FIRST_POST_MODE", "normal")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        struct StopPending(Child);
+        impl Drop for StopPending {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut child = StopPending(child);
+        let mut lines = BufReader::new(child.0.stdout.take().unwrap()).lines();
+        let line = lines.next().unwrap().unwrap();
+        assert!(!line.is_empty(), "pinned service exited before readiness");
+        let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let origin = ready["origin"].as_str().unwrap();
+        let helper =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/legacy-owner-source.mjs");
+        let cancel = CancellationToken::new();
+        for (index, mode, visibility, version, structured, before_post) in [
+            (0, "pending-private-structured", "PRIVATE", 2, true, false),
+            (
+                1,
+                "pending-private-structured-before-post",
+                "PRIVATE",
+                2,
+                true,
+                true,
+            ),
+            (2, "pending-public", "PUBLIC", 1, false, false),
+            (3, "pending-public-before-post", "PUBLIC", 1, false, true),
+            (4, "pending-public-structured", "PUBLIC", 2, true, false),
+            (
+                5,
+                "pending-public-structured-before-post",
+                "PUBLIC",
+                2,
+                true,
+                true,
+            ),
+        ] {
+            let output = Command::new(&node)
+                .arg(&helper)
+                .arg(origin)
+                .arg(root.path().join(format!("legacy-family-{index}")))
+                .arg(&legacy_root)
+                .arg(mode)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "legacy family setup: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let source: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(source["policy_v"], version);
+            assert_eq!(source["visibility"], visibility);
+            assert_eq!(source["structured"], structured);
+            assert_eq!(source["sequence"], 1);
+            assert_eq!(source["pending_count"], 1);
+            let workspace = source["workspace_id"].as_str().unwrap();
+            let command = source["pending_command_id"].as_str().unwrap();
+            let config = SecureOwnerCreateConfig {
+                origin: origin.into(),
+                state_dir: root.path().join(format!("native-family-{index}")),
+                allow_loopback_http: true,
+                max_replay_artifact_bytes: 64 * 1024 * 1024,
+            };
+            let input = HistoricalOwnerAttachInput {
+                workspace_id: workspace.into(),
+                protected_ts_state_path: source["state_path"].as_str().unwrap().into(),
+                protected_ts_intent_db_path: source["intent_db_path"].as_str().unwrap().into(),
+                protected_owner_pkcs8_path: source["pem_path"].as_str().unwrap().into(),
+                expected_owner_actor_id: source["owner_actor_id"].as_str().unwrap().into(),
+                expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
+                recover_pending_action: true,
+            };
+            if mode == "pending-public-structured-before-post" {
+                let signer =
+                    KernelIdentity::inspect_pkcs8_pem_file(&input.protected_owner_pkcs8_path)
+                        .unwrap();
+                let original: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(&input.protected_ts_state_path).unwrap())
+                        .unwrap();
+                for (negative_index, expected) in [
+                    HistoricalOwnerAttachError::SourceUnresolved,
+                    HistoricalOwnerAttachError::SourceUnresolved,
+                    HistoricalOwnerAttachError::Verification,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let mut altered = original.clone();
+                    let signed = &mut altered["pending"][command]["body"]["commit"];
+                    match negative_index {
+                        0 => {
+                            signed["payload"]["mode"] = serde_json::json!("PRIVATE");
+                            signed["payload"]["epoch"] = serde_json::json!(1);
+                        }
+                        1 => signed["payload"]["epoch"] = serde_json::json!(1),
+                        2 => {
+                            signed["payload"]["structure"]["mode"] =
+                                serde_json::json!("SNAPSHOT_BEGIN");
+                        }
+                        _ => unreachable!(),
+                    }
+                    let payload = signed["payload"].clone();
+                    let domain = peerwork_core::crypto::secure_artifact_domain(
+                        "peerwork.secure.commit.v1",
+                        &payload,
+                    );
+                    signed["signature"] = serde_json::json!(peerwork_core::crypto::sign_canonical(
+                        &domain,
+                        &payload,
+                        signer.signing_key(),
+                    )
+                    .unwrap());
+                    let path = root
+                        .path()
+                        .join(format!("altered-public-structured-{negative_index}.state"));
+                    std::fs::write(&path, serde_json::to_vec(&altered).unwrap()).unwrap();
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+                            .unwrap();
+                    }
+                    let mut negative_input = input.clone();
+                    negative_input.protected_ts_state_path = path;
+                    let negative = SecureHistoricalOwnerAttach::new(SecureOwnerCreateConfig {
+                        state_dir: root
+                            .path()
+                            .join(format!("negative-family-{negative_index}")),
+                        ..config.clone()
+                    });
+                    let before_negative_posts = TEST_IMPORTED_ACTION_POSTS.load(Ordering::SeqCst);
+                    let result = negative.attach(negative_input, &cancel);
+                    assert!(matches!(
+                        (&result, &expected),
+                        (
+                            Err(HistoricalOwnerAttachError::SourceUnresolved),
+                            HistoricalOwnerAttachError::SourceUnresolved
+                        ) | (
+                            Err(HistoricalOwnerAttachError::Verification),
+                            HistoricalOwnerAttachError::Verification
+                        )
+                    ));
+                    assert!(negative
+                        .attachments()
+                        .unwrap()
+                        .iter()
+                        .all(|row| row.status != "ATTACHED"));
+                    assert_eq!(
+                        TEST_IMPORTED_ACTION_POSTS.load(Ordering::SeqCst),
+                        before_negative_posts
+                    );
+                }
+            }
+            let owner = SecureHistoricalOwnerAttach::new(config.clone());
+            let posts = TEST_IMPORTED_ACTION_POSTS.load(Ordering::SeqCst);
+            let completed = if before_post {
+                TEST_STOP_AFTER_ATTACH_ROW.store(true, Ordering::SeqCst);
+                assert!(matches!(
+                    owner.attach(input.clone(), &cancel),
+                    Err(HistoricalOwnerAttachError::Cancelled)
+                ));
+                let saved = owner.attachments().unwrap();
+                assert_eq!(saved.len(), 1);
+                assert_eq!(saved[0].status, "PREPARED");
+                assert_eq!(TEST_IMPORTED_ACTION_POSTS.load(Ordering::SeqCst), posts);
+                let completed = owner
+                    .resume_attachment(&saved[0].attach_id, &cancel)
+                    .unwrap();
+                assert_eq!(TEST_IMPORTED_ACTION_POSTS.load(Ordering::SeqCst), posts + 1);
+                completed
+            } else {
+                let completed = owner.attach(input.clone(), &cancel).unwrap();
+                assert_eq!(TEST_IMPORTED_ACTION_POSTS.load(Ordering::SeqCst), posts);
+                completed
+            };
+            assert_eq!(completed.status, "ATTACHED");
+            assert_eq!(completed.sequence, Some(2));
+            assert_eq!(
+                owner
+                    .resume_attachment(&completed.attach_id, &cancel)
+                    .unwrap(),
+                completed
+            );
+            assert_eq!(
+                TEST_IMPORTED_ACTION_POSTS.load(Ordering::SeqCst),
+                posts + usize::from(before_post)
+            );
+            let facade = SecureOwnerWorkspaceCreate::new(config);
+            let reconciled = if visibility == "PUBLIC" {
+                facade
+                    .public_action_access(workspace)
+                    .unwrap()
+                    .reconcile_json(command)
+                    .unwrap()
+            } else {
+                facade
+                    .private_action_access(workspace)
+                    .unwrap()
+                    .reconcile_json(command)
+                    .unwrap()
+            };
+            let action: serde_json::Value = serde_json::from_str(&reconciled).unwrap();
+            assert_eq!(action["status"], "ACCEPTED");
+            assert_eq!(action["sequence"], 2);
+            assert_eq!(action["commit_hash"], source["pending_commit_hash"]);
+            let read: serde_json::Value =
+                serde_json::from_str(&facade.read_workspace_json(workspace, &cancel).unwrap())
+                    .unwrap();
+            assert_eq!(read["sequence"], 2);
+            assert!(read["objects"].as_array().unwrap().iter().any(|row| {
+                row["kind"] == "records"
+                    && row["value"]["payload"]["title"] == "Pending legacy Owner action"
+                    && row["value"]["payload"]["body"] == "Exact signed packet remains local"
+            }));
+        }
     }
 
     #[test]
