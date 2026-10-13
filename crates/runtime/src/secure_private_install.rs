@@ -411,6 +411,8 @@ mod historical_v1_direct_test {
         );
         assert_eq!(counts()["commits"], count_after);
     }
+
+
 }
 
 #[cfg(test)]
@@ -3973,6 +3975,253 @@ mod tests {
                 &reopened.read_workspace_json(&created.workspace_id, &token).unwrap()).unwrap();
             assert!(read["objects"].as_array().unwrap().iter().any(|object|
                 object["kind"] == "protocols" && object["id"] == binding["selected_protocol_digest"]));
+        }
+    }
+    #[test]
+    fn actual_service_private_staged_disclosure_changes_fresh_signed_policy() {
+        if std::env::var("PEERWORK_TEST_PRIVATE_STAGED_DISCLOSURE").as_deref() != Ok("1") {
+            return;
+        }
+        let reference_root = std::env::var("PEERWORK_REFERENCE_ROOT").unwrap();
+        let node = std::env::var("PEERWORK_NODE_BIN").unwrap_or_else(|_| "node".into());
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let bridge = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/reference-kernel-server.mjs");
+        let child = Command::new(node)
+            .arg(bridge)
+            .env("PEERWORK_REFERENCE_ROOT", reference_root)
+            .env("PEERWORK_TEST_STATE", root.path())
+            .env("PEERWORK_TEST_FIRST_POST_MODE", "normal")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        struct Stop(Child);
+        impl Drop for Stop {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut child = Stop(child);
+        let mut line = String::new();
+        BufReader::new(child.0.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        assert!(!line.is_empty(), "pinned service exited before readiness");
+        let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let origin = ready["origin"].as_str().unwrap().to_owned();
+        let owner = SecureOwnerWorkspaceCreate::new(SecureOwnerCreateConfig {
+            origin: origin.clone(),
+            state_dir: root.path().join("sdk-state"),
+            allow_loopback_http: true,
+            max_replay_artifact_bytes: 64 * 1024 * 1024,
+        });
+        let token = CancellationToken::new();
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+        let counts = || {
+            runtime.block_on(async {
+                let bytes = reqwest::get(format!("{origin}__test/secure-counts"))
+                    .await
+                    .unwrap()
+                    .bytes()
+                    .await
+                    .unwrap();
+                serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()
+            })
+        };
+        let options: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../conformance/private-package-options-reference.json"
+        ))
+        .unwrap();
+        let readable = &options["readable"];
+        let expected_protocol = readable["protocol_digest"].as_str().unwrap();
+        let signed_policy = |install: &SecurePrivatePackageInstall| -> serde_json::Value {
+            SecureReadProfile::new(install.config.clone())
+                .with_latest_replay(&token, |source| {
+                    source
+                        .verified_read()
+                        .map_err(|_| PrivatePackageInstallError::Identity)?;
+                    let wire = source
+                        .signed_policy_by_hash(source.replay().policy_hash())
+                        .ok_or(PrivatePackageInstallError::Identity)?;
+                    serde_json::from_slice(wire).map_err(|_| PrivatePackageInstallError::Input)
+                })
+                .unwrap()
+        };
+
+        for (label, selected) in [("omitted", false), ("explicit", true)] {
+            let created = owner
+                .prepare(
+                    SecureOwnerCreateInput {
+                        name: format!("Native staged disclosure {label}"),
+                        name_utf16: None,
+                        visibility: "PRIVATE".into(),
+                        structured: true,
+                        keep_encrypted_json: "[]".into(),
+                        coordination_version: None,
+                    },
+                    &token,
+                )
+                .unwrap();
+            assert_eq!(
+                owner.resume(&created.command_id, &token).unwrap().status,
+                "CREATED"
+            );
+            let mut install = owner.private_install_access(&created.workspace_id).unwrap();
+            let initial = signed_policy(&install);
+            assert_eq!(initial["payload"]["v"], 3);
+            assert_eq!(initial["payload"]["structure_mode"], "STRUCTURED");
+            assert_eq!(initial["payload"]["protocol_format_ceiling"], 1);
+            assert!(!initial["payload"]["structure"]["protocols"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p["protocol_digest"] == expected_protocol));
+            drop(install);
+            let format = owner
+                .private_format_transition_access(&created.workspace_id)
+                .unwrap();
+            let raised: serde_json::Value = serde_json::from_str(
+                &format
+                    .submit_json_with_cancel(
+                        OwnerFormatTransitionInput {
+                            workspace_id: created.workspace_id.clone(),
+                            transition: OwnerFormatTransition::RaisePrivateCeilingTwo,
+                            command_id: None,
+                            issued_at_ms: None,
+                        },
+                        &token,
+                    )
+                    .unwrap(),
+            )
+            .unwrap();
+            let raised: serde_json::Value = serde_json::from_str(
+                &format
+                    .resume_json_with_cancel(raised["command_id"].as_str().unwrap(), &token)
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(raised["status"], "ACCEPTED");
+            drop(format);
+            install = owner.private_install_access(&created.workspace_id).unwrap();
+            let before = signed_policy(&install);
+            assert_eq!(before["payload"]["protocol_format_ceiling"], 2);
+            assert!(!before["payload"]["structure"]["protocols"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p["protocol_digest"] == expected_protocol));
+
+            let stage: serde_json::Value = serde_json::from_str(
+                &install
+                    .stage_package_json(PrivatePackageStageInput {
+                        material_json: readable["material"].to_string(),
+                        expected_root_package_digest: readable["root_package_digest"]
+                            .as_str()
+                            .unwrap()
+                            .into(),
+                        expected_protocol_digest: expected_protocol.into(),
+                        stage_id: None,
+                        command_id: None,
+                        issued_at_ms: None,
+                    })
+                    .unwrap(),
+            )
+            .unwrap();
+            let stage_id = stage["stage_id"].as_str().unwrap().to_owned();
+            let mut staged = stage;
+            for _ in 0..8 {
+                if staged["status"] == "STAGED" {
+                    break;
+                }
+                staged = serde_json::from_str(&install.continue_stage_json(&stage_id).unwrap())
+                    .unwrap();
+            }
+            assert_eq!(staged["status"], "STAGED");
+            let still_absent = signed_policy(&install);
+            assert!(!still_absent["payload"]["structure"]["protocols"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p["protocol_digest"] == expected_protocol));
+
+            let actor = KernelIdentity::open(&install.config.identity_path)
+                .unwrap()
+                .actor_id()
+                .to_owned();
+            let begin: serde_json::Value = serde_json::from_str(
+                &install
+                    .submit_begin_json(PrivatePackageInstallBeginInput {
+                        stage_id,
+                        instance_id: random_id().unwrap(),
+                        entrypoint: "readable".into(),
+                        grants_json: serde_json::json!([{
+                            "actor_id": actor,
+                            "actions": ["set"],
+                            "protocol_roles": [],
+                            "capabilities": []
+                        }])
+                        .to_string(),
+                        disclose: selected.then(|| {
+                            vec![PrivateInstallDisclosure {
+                                schema: "item".into(),
+                                fields: vec!["label".into()],
+                            }]
+                        }),
+                        command_id: None,
+                        issued_at_ms: None,
+                    })
+                    .unwrap(),
+            )
+            .unwrap();
+            let begin_id = begin["begin_command_id"].as_str().unwrap().to_owned();
+            let mut progress = begin;
+            for _ in 0..8 {
+                if progress["status"] == "ACCEPTED" {
+                    break;
+                }
+                progress = serde_json::from_str(&install.continue_install_json(&begin_id).unwrap())
+                    .unwrap();
+            }
+            assert_eq!(progress["status"], "ACCEPTED");
+            let after = signed_policy(&install);
+            let protocol = after["payload"]["structure"]["protocols"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|p| p["protocol_digest"] == expected_protocol)
+                .unwrap();
+            let field = &protocol["schemas"]["item"]["fields"]["label"];
+            assert_eq!(
+                field["protection"],
+                if selected { "server_readable" } else { "e2ee" }
+            );
+            assert_eq!(field["type"], if selected { "opaque" } else { "string" });
+            let disclosure = after["payload"]["structure"]["disclosure"]
+                .as_array()
+                .unwrap();
+            assert_eq!(
+                disclosure.iter().any(|row| {
+                    row["protocol_digest"] == expected_protocol
+                        && row["schema"] == "item"
+                        && row["fields"] == serde_json::json!(["label"])
+                }),
+                selected
+            );
+            let before_retry = counts()["commits"].as_u64().unwrap();
+            let repeat: serde_json::Value = serde_json::from_str(
+                &install.continue_install_json(&begin_id).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(repeat, progress);
+            assert_eq!(counts()["commits"], before_retry);
         }
     }
 }
