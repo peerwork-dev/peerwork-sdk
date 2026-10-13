@@ -6332,6 +6332,7 @@
       "epoch": 0,
       "issued_at": 1,
       "structure_mode": "STRUCTURED",
+      "protocol_format_ceiling": 1,
       "members": [
         {
           "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -8865,12 +8866,13 @@
     "owner_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "signing_key": "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
     "version": 2,
-    "previous_policy": "8cd915152ef533db8312639d4148ed8afdf5bb363b5418aaa1e417890d5353c4",
+    "previous_policy": "4df3bbab4ebb38965e7cd62e08111529fca471e7e62f36ce4733f93244cd8feb",
     "effective_sequence": 2,
     "visibility": "PUBLIC",
     "epoch": 0,
     "issued_at": 2,
     "structure_mode": "STRUCTURED",
+    "protocol_format_ceiling": 1,
     "members": [
       {
         "actor_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

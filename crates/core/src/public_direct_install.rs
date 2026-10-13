@@ -323,6 +323,7 @@ pub(crate) fn derive_direct_install_policy_payload(
     if required(old, "v")? != &WireValue::Number(3.0)
         || required(old, "visibility")?.as_string().as_deref() != Some("PUBLIC")
         || required(old, "structure_mode")?.as_string().as_deref() != Some("STRUCTURED")
+        || required(old, "protocol_format_ceiling")? != &WireValue::Number(1.0)
         || required(old, "structure")?.object_len().is_none()
         || prior_signed_policy
             .get("signature")
