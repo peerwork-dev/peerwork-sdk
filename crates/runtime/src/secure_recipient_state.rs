@@ -3,12 +3,13 @@
 
 use crate::{
     kernel_identity::KernelIdentity,
-    secure_state::{SecureStateError, SecureStateStore},
+    secure_state::{read_private_file_bounded, SecureStateError, SecureStateStore},
 };
+use peerwork_core::crypto::decode_base64url;
 use peerwork_core::secure_recipient::{RecipientCertificate, RecipientError, SecretRecipient};
 use std::path::Path;
 use thiserror::Error;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 const MAGIC: &[u8] = b"PEERWORK-NATIVE-RECIPIENT\n1\n";
 const MAX_CERT: usize = 16_384;
@@ -36,6 +37,77 @@ pub(crate) struct RecipientState {
 }
 
 impl RecipientState {
+    /// Import a fresh, separately protected tracked TS recipient state. Only
+    /// an unjoined identity can cross this boundary; existing workspace or
+    /// pending state must be migrated by the full journal/state workflow.
+    /// The source file is never rewritten or deleted.
+    pub(crate) fn import_unjoined_ts_state(
+        path: &Path,
+        identity: &KernelIdentity,
+        source_path: &Path,
+    ) -> Result<Self, RecipientStateError> {
+        if path == source_path {
+            return Err(RecipientStateError::Invalid);
+        }
+        let mut raw = read_private_file_bounded(source_path, 2 * 1024 * 1024)?;
+        let parsed = serde_json::from_slice::<serde_json::Value>(&raw);
+        raw.zeroize();
+        let mut source = parsed.map_err(|_| RecipientStateError::Invalid)?;
+        let encoded = source
+            .get("encryption_private_key")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(RecipientStateError::Invalid)?;
+        let decoded = decode_base64url(encoded);
+        if let Some(serde_json::Value::String(secret)) = source.get_mut("encryption_private_key") {
+            secret.zeroize();
+        }
+        let decoded = Zeroizing::new(decoded.map_err(|_| RecipientStateError::Invalid)?);
+        if decoded.len() != 32
+            || source.get("v").and_then(serde_json::Value::as_u64) != Some(1)
+            || source.get("actor_id").and_then(serde_json::Value::as_str)
+                != Some(identity.actor_id())
+            || source
+                .get("workspaces")
+                .and_then(serde_json::Value::as_object)
+                .is_none_or(|rows| !rows.is_empty())
+            || source
+                .get("pending")
+                .and_then(serde_json::Value::as_object)
+                .is_none_or(|rows| !rows.is_empty())
+        {
+            return Err(RecipientStateError::Invalid);
+        }
+        let certificate: RecipientCertificate = serde_json::from_value(
+            source
+                .get("certificate")
+                .cloned()
+                .ok_or(RecipientStateError::Invalid)?,
+        )
+        .map_err(|_| RecipientStateError::Invalid)?;
+        let mut private = Zeroizing::new([0u8; 32]);
+        private.copy_from_slice(&decoded);
+        let recipient = SecretRecipient::from_private(private)?;
+        let at = certificate.payload["issued_at"]
+            .as_u64()
+            .ok_or(RecipientStateError::Invalid)?;
+        recipient.verify_local_certificate(
+            &certificate,
+            identity.actor_id(),
+            identity.key_id(),
+            at,
+        )?;
+        let store = SecureStateStore::open(path)?;
+        if store.read_exact_secret()?.is_some() {
+            return Err(RecipientStateError::AlreadyExists);
+        }
+        let bytes = encode(identity, &recipient, &certificate)?;
+        store.write_exact(&bytes)?;
+        Ok(Self {
+            _store: store,
+            recipient,
+            certificate,
+        })
+    }
     /// Offline create; preserves an existing target and never publishes the
     /// self-certificate. Caller owns the signing identity's protected path.
     pub(crate) fn create(

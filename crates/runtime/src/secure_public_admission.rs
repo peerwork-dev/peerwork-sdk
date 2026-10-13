@@ -497,5 +497,129 @@ mod tests {
             Some(first.invite_id.as_str())
         );
         assert!(observed["decision"].is_null());
+        let recipient_identity_path = temp.path().join("native-recipient-identity.state");
+        let recipient_identity = KernelIdentity::import_pkcs8_pem_file(
+            &recipient_identity_path,
+            &temp.path().join("synthetic-admission-recipient.pem"),
+        )
+        .unwrap();
+        let recipient_dir = temp.path().join("native-recipient");
+        fs::create_dir(&recipient_dir).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&recipient_dir, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let imported = crate::secure_recipient_state::RecipientState::import_unjoined_ts_state(
+            &recipient_dir.join("recipient.state"),
+            &recipient_identity,
+            &temp.path().join("synthetic-admission-recipient.json"),
+        )
+        .unwrap();
+        assert_eq!(
+            imported.certificate().payload["actor_id"].as_str(),
+            Some(recipient_identity.actor_id())
+        );
+        drop(imported);
+        let recipient_config = crate::secure_public_decision::PublicDecisionConfig {
+            origin: origin.clone(),
+            state_dir: recipient_dir.clone(),
+            identity_path: recipient_identity_path,
+            workspace_id: workspace.clone(),
+            owner_actor_id: identity.actor_id().into(),
+            owner_key_id: identity.key_id().into(),
+            authority: peerwork_core::crypto::sha256_hex(recipient_identity.actor_id().as_bytes()),
+            allow_loopback_http: true,
+            required_features: vec![],
+        };
+        let drop_url = format!("{origin}__test/drop-next-post");
+        let drop_result = runtime
+            .block_on(reqwest::Client::new().post(drop_url).send())
+            .unwrap();
+        assert_eq!(drop_result.status().as_u16(), 200);
+        let recipient_access =
+            crate::secure_public_decision::SecurePublicDecision::new(recipient_config.clone());
+        let first_decision: crate::secure_public_decision::PublicDecisionResult =
+            serde_json::from_str(
+                &recipient_access
+                    .decide_json(&first.invite_id, "ACCEPT")
+                    .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(first_decision.status, "PENDING");
+        let decision_journal = SecureIntentJournal::open(
+            &recipient_dir.join("admission-intents.state"),
+            &origin,
+            recipient_identity.actor_id(),
+        )
+        .unwrap();
+        let decision_packet = decision_journal.exact_request(&first.invite_id).unwrap();
+        drop(decision_journal);
+        let pending_decisions: Vec<crate::secure_public_decision::PendingPublicDecision> =
+            serde_json::from_str(&recipient_access.pending_json().unwrap()).unwrap();
+        assert_eq!(pending_decisions.len(), 1);
+        assert_eq!(pending_decisions[0].invite_id, first.invite_id);
+        let repeated_decision: crate::secure_public_decision::PublicDecisionResult =
+            serde_json::from_str(&recipient_access.retry_json(&first.invite_id).unwrap()).unwrap();
+        assert_eq!(repeated_decision, first_decision);
+        let decision_journal = SecureIntentJournal::open(
+            &recipient_dir.join("admission-intents.state"),
+            &origin,
+            recipient_identity.actor_id(),
+        )
+        .unwrap();
+        assert_eq!(
+            decision_journal.exact_request(&first.invite_id).unwrap(),
+            decision_packet
+        );
+        drop(decision_journal);
+        let mut recipient_transport = TransportConfig::new(origin.clone());
+        recipient_transport.allow_loopback_http = true;
+        let recipient_client = runtime
+            .block_on(KernelClient::open(
+                recipient_transport,
+                &recipient_dir.join("kernel.sqlite"),
+                &[],
+                &CancellationToken::new(),
+            ))
+            .unwrap();
+        let recipient_proof = sign_read_proof(
+            &path,
+            recipient_client.discovery(),
+            &recipient_identity,
+            &recipient_config.authority,
+        )
+        .unwrap();
+        let accepted = runtime
+            .block_on(recipient_client.transport().get_secure_invitation_exact(
+                &path,
+                &recipient_proof,
+                &CancellationToken::new(),
+            ))
+            .unwrap();
+        assert_eq!(accepted.status, 200);
+        let accepted_wire =
+            peerwork_core::wire_json::parse_wire_json_js_bounded(&accepted.wire, 80, 220_000)
+                .unwrap();
+        assert_eq!(
+            accepted_wire
+                .get("decision")
+                .unwrap()
+                .get("payload")
+                .unwrap()
+                .get("decision")
+                .and_then(WireValue::as_string)
+                .as_deref(),
+            Some("ACCEPT")
+        );
+        let decision_wire = peerwork_core::wire_json::canonical_wire_value(
+            accepted_wire.get("decision").unwrap(),
+            peerwork_core::canonical::Path::SecureArtifact,
+        )
+        .unwrap();
+        assert_eq!(
+            peerwork_core::crypto::sha256_hex(decision_wire.as_bytes()),
+            first_decision.decision_hash
+        );
     }
 }

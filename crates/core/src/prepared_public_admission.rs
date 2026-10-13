@@ -338,6 +338,101 @@ pub fn prepare_public_decision(
     })
 }
 
+/// Reprove an exact saved recipient decision against the signed owner offer.
+/// The surrounding authenticated control read is the runtime's responsibility.
+pub fn verify_saved_public_decision(
+    request_wire: &[u8],
+    offer_wire: &[u8],
+    owner_actor: &str,
+    owner_key: &str,
+    recipient_actor: &str,
+    recipient_key: &str,
+    workspace_id: &str,
+) -> Result<PreparedAdmissionPacket, PublicAdmissionError> {
+    let bad = || PublicAdmissionError::Invalid;
+    let request = parse_wire_json_js_bounded(request_wire, 64, 220_000).map_err(|_| bad())?;
+    if request.object_len() != Some(1) {
+        return Err(bad());
+    }
+    let artifact = request.get("decision").ok_or_else(bad)?;
+    let artifact_wire = canonical_wire_value(artifact, Path::SecureArtifact)
+        .map_err(|_| bad())?
+        .into_bytes();
+    let offer = parse_wire_json_js_bounded(offer_wire, 64, 220_000).map_err(|_| bad())?;
+    let op = offer.get("payload").ok_or_else(bad)?;
+    let id = string(op, "invite_id")?;
+    let recipient = op.get("recipient").ok_or_else(bad)?;
+    let rp = recipient.get("payload").ok_or_else(bad)?;
+    let issued_at = unsigned(op, "issued_at")?;
+    let expires_at = unsigned(op, "expires_at")?;
+    if !token(&id)
+        || string(op, "workspace_id")? != workspace_id
+        || string(op, "actor_id")? != owner_actor
+        || string(op, "signing_key")? != owner_key
+        || string(rp, "actor_id")? != recipient_actor
+        || string(rp, "signing_key")? != recipient_key
+        || expires_at <= issued_at
+        || !verify_secure_signed_wire(offer_wire, "peerwork.secure.invitation.v1", owner_key)
+            .map_err(|_| bad())?
+    {
+        return Err(bad());
+    }
+    let payload = artifact.get("payload").ok_or_else(bad)?;
+    let WireValue::Object(fields) = payload else {
+        return Err(bad());
+    };
+    if fields.len() != 8
+        || ![
+            "v",
+            "invite_id",
+            "workspace_id",
+            "actor_id",
+            "signing_key",
+            "offer_hash",
+            "decision",
+            "issued_at",
+        ]
+        .iter()
+        .all(|name| payload.get(name).is_some())
+        || unsigned(payload, "v")? != 1
+        || string(payload, "invite_id")? != id
+        || string(payload, "workspace_id")? != workspace_id
+        || string(payload, "actor_id")? != recipient_actor
+        || string(payload, "signing_key")? != recipient_key
+        || !matches!(string(payload, "decision")?.as_str(), "ACCEPT" | "DECLINE")
+        || unsigned(payload, "issued_at")? < issued_at
+        || unsigned(payload, "issued_at")? >= expires_at
+        || string(payload, "offer_hash")?
+            != sha256_hex(
+                canonical_wire_value(&offer, Path::SecureArtifact)
+                    .map_err(|_| bad())?
+                    .as_bytes(),
+            )
+        || !verify_secure_signed_wire(
+            &artifact_wire,
+            "peerwork.secure.invite-decision.v1",
+            recipient_key,
+        )
+        .map_err(|_| bad())?
+    {
+        return Err(bad());
+    }
+    let canonical_request = format!(
+        "{{\"decision\":{}}}",
+        String::from_utf8_lossy(&artifact_wire)
+    )
+    .into_bytes();
+    if canonical_request != request_wire {
+        return Err(bad());
+    }
+    Ok(PreparedAdmissionPacket {
+        artifact_hash: sha256_hex(&artifact_wire),
+        request_wire: canonical_request,
+        artifact_wire,
+        id,
+    })
+}
+
 fn verify_certificate(
     certificate: &WireValue,
     at: u64,

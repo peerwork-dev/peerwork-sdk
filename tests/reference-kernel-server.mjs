@@ -186,11 +186,12 @@ if (process.env.PEERWORK_TEST_ADMISSION === '1') {
   const {generateKeyPairSync} = await import('node:crypto');
   const {SecureAgentClient} = await import(pathToFileURL(join(root, 'dist-workspace/src/workspace-secure-agent.js')).href);
   const privateKey = generateKeyPairSync('ed25519').privateKey;
+  writeFileSync(join(state,'synthetic-admission-recipient.pem'),privateKey.export({format:'pem',type:'pkcs8'}),{mode:0o600,flag:'wx'});
   const agent = await SecureAgentClient.open({baseUrl:realOrigin,privateKey,
     statePath:join(state,'synthetic-admission-recipient.json'),
     intentDbPath:join(state,'synthetic-admission-recipient-intents.sqlite')});
   try {
-    await agent.register();
+    await agent.publishIdentity();
     const certificate = agent.state.certificate;
     writeFileSync(join(state,'synthetic-admission-recipient-certificate.json'),JSON.stringify(certificate),{mode:0o600,flag:'wx'});
     publicAdmissionFixture={recipient_actor_id:agent.identity.actorId,recipient_key_id:agent.identity.keyId};
