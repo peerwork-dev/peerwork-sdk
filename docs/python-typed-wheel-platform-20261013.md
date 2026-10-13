@@ -63,6 +63,12 @@ digest pull failed because the bundled `containers.conf` points to an old
 helper path; a task-local corrected config reached the next setup failure:
 Buildah could not find a signature policy at its system/user default paths.
 An existing policy copied to a task-local XDG config did not change that lookup.
+The bundled Buildah `pull --help` has a `--policy` pull-strategy flag, but no
+signature-policy path flag; `buildah --signature-policy ...` returned
+`unknown flag`. A bounded search of the bundled `containers.conf` and local
+containers-common configuration/docs found no documented task-local signature
+policy path setting. The sandbox also denies user-namespace setup, so an
+isolated mount route was not established.
 No system policy was modified and no registry/auth conclusion follows from
 these pre-network failures. The pinned glibc 2.28 build/install gate is still
 unverified; the practical next route is the configured CI container job or a
