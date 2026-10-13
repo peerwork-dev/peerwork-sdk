@@ -11,6 +11,7 @@ use peerwork_runtime::secure_public_install::{
 };
 use peerwork_runtime::secure_read_access::{SecureReadAccess, SecureReadConfig};
 use peerwork_runtime::secure_read_profile::{SecureReadProfile, SecureReadProfileConfig};
+use peerwork_runtime::secure_private_read_access::SecurePrivateReadAccess;
 use peerwork_runtime::secure_recipient_enrollment::{
     RecipientEnrollmentConfig, SecureRecipientEnrollment,
 };
@@ -121,9 +122,9 @@ fn main() -> ExitCode {
                 }
             }
         },
-        [noun, verb, rest @ ..] if noun == "secure" && (verb == "read" || verb == "snapshot") => {
-            let result = if verb == "read" {
-                secure_read_profile_command(rest)
+        [noun, verb, rest @ ..] if noun == "secure" && (verb == "read" || verb == "private-read" || verb == "snapshot") => {
+            let result = if verb == "read" || verb == "private-read" {
+                secure_read_profile_command(rest, verb == "private-read")
             } else {
                 secure_read_command(rest)
             };
@@ -249,7 +250,7 @@ fn main() -> ExitCode {
             cli_result(secure_directory_lookup(rest))
         }
         _ => {
-            eprintln!("{{\"code\":\"USAGE\",\"message\":\"peerwork version|capabilities|identity create PATH|identity info PATH|identity import-legacy-pem PATH PROTECTED_PEM_FILE|identity import-seed-file PATH PROTECTED_SEED_FILE|kernel open|prepare|pending|status|submit ORIGIN JOURNAL IDENTITY [COMMAND_FILE|COMMAND_ID] [--allow-loopback-http] [--authority=HEX] [--chunk-file=PATH|--chunk-stdin for prepare]; kernel migrate ORIGIN JOURNAL IDENTITY SOURCE BACKUP --trusted-signer=KEY_ID [--trusted-signer=KEY_ID ...]; secure read --origin=URL --state-dir=DIR --identity=PATH --workspace=ID [--owner-actor=ID --owner-key=ID] [--authority=HEX]; secure snapshot ORIGIN KERNEL_JOURNAL READ_STATE LIFECYCLE IDENTITY WORKSPACE AUTHORITY OWNER_ACTOR OWNER_KEY [--allow-loopback-http] [--max-replay-artifact-bytes=N]; secure action-submit|action-status|action-retry CONFIG_JSON_FILE ACTION_JSON_FILE|COMMAND_ID; secure action-pending CONFIG_JSON_FILE; secure install-begin CONFIG_JSON_FILE INPUT_JSON_FILE | install-continue CONFIG_JSON_FILE BEGIN_COMMAND_ID | install-pending CONFIG_JSON_FILE; secure recipient-create|recipient-publish|recipient-pending|recipient-certificate|recipient-update|recipient-retry-update|recipient-pending-updates --origin=URL --state-dir=DIR [--mode=ROTATE|RENEW --expected-certificate-hash=HEX --update-id=ID] [--allow-loopback-http]; secure directory-lookup --origin=URL --state-dir=DIR --actor=ACTOR --key=KEY [--identity=PATH] [--allow-loopback-http]\"}}");
+            eprintln!("{{\"code\":\"USAGE\",\"message\":\"peerwork version|capabilities|identity create PATH|identity info PATH|identity import-legacy-pem PATH PROTECTED_PEM_FILE|identity import-seed-file PATH PROTECTED_SEED_FILE|kernel open|prepare|pending|status|submit ORIGIN JOURNAL IDENTITY [COMMAND_FILE|COMMAND_ID] [--allow-loopback-http] [--authority=HEX] [--chunk-file=PATH|--chunk-stdin for prepare]; kernel migrate ORIGIN JOURNAL IDENTITY SOURCE BACKUP --trusted-signer=KEY_ID [--trusted-signer=KEY_ID ...]; secure read|private-read --origin=URL --state-dir=DIR --identity=PATH --workspace=ID [--owner-actor=ID --owner-key=ID] [--authority=HEX]; secure snapshot ORIGIN KERNEL_JOURNAL READ_STATE LIFECYCLE IDENTITY WORKSPACE AUTHORITY OWNER_ACTOR OWNER_KEY [--allow-loopback-http] [--max-replay-artifact-bytes=N]; secure action-submit|action-status|action-retry CONFIG_JSON_FILE ACTION_JSON_FILE|COMMAND_ID; secure action-pending CONFIG_JSON_FILE; secure install-begin CONFIG_JSON_FILE INPUT_JSON_FILE | install-continue CONFIG_JSON_FILE BEGIN_COMMAND_ID | install-pending CONFIG_JSON_FILE; secure recipient-create|recipient-publish|recipient-pending|recipient-certificate|recipient-update|recipient-retry-update|recipient-pending-updates --origin=URL --state-dir=DIR [--mode=ROTATE|RENEW --expected-certificate-hash=HEX --update-id=ID] [--allow-loopback-http]; secure directory-lookup --origin=URL --state-dir=DIR --actor=ACTOR --key=KEY [--identity=PATH] [--allow-loopback-http]\"}}");
             ExitCode::FAILURE
         }
     }
@@ -608,7 +609,7 @@ fn secure_action_command(verb: &str, args: &[String]) -> Result<String, (&'stati
     ))
 }
 
-fn secure_read_profile_command(args: &[String]) -> Result<String, (&'static str, String)> {
+fn secure_read_profile_command(args: &[String], private_grant: bool) -> Result<String, (&'static str, String)> {
     let mut origin = None;
     let mut state_dir = None;
     let mut identity_path = None;
@@ -683,9 +684,15 @@ fn secure_read_profile_command(args: &[String]) -> Result<String, (&'static str,
             "unable to install interrupt handler".to_owned(),
         )
     })?;
-    SecureReadProfile::new(config)
-        .read_latest_json_with_cancel(&cancel)
-        .map_err(|error| (error.code(), error.to_string()))
+    if private_grant {
+        SecurePrivateReadAccess::new(config)
+            .activate_and_read_json_with_cancel(&cancel)
+            .map_err(|error| (error.code(), error.to_string()))
+    } else {
+        SecureReadProfile::new(config)
+            .read_latest_json_with_cancel(&cancel)
+            .map_err(|error| (error.code(), error.to_string()))
+    }
 }
 
 fn secure_read_command(args: &[String]) -> Result<String, (&'static str, String)> {

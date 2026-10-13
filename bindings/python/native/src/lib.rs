@@ -10,6 +10,7 @@ use peerwork_runtime::secure_public_install::{
 };
 use peerwork_runtime::secure_read_access::{SecureReadAccess, SecureReadConfig};
 use peerwork_runtime::secure_read_profile::{SecureReadProfile, SecureReadProfileConfig};
+use peerwork_runtime::secure_private_read_access::SecurePrivateReadAccess;
 use peerwork_runtime::secure_recipient_enrollment::{
     RecipientEnrollmentConfig, SecureRecipientEnrollment,
 };
@@ -219,6 +220,32 @@ fn secure_read_profile_json(
         .unwrap_or_default();
     Ok(py.allow_threads(move || {
         match SecureReadProfile::new(config).read_latest_json_with_cancel(&cancel) {
+            Ok(value) => format!("{{\"ok\":true,\"value\":{value}}}"),
+            Err(error) => serde_json::json!({
+                "ok": false,
+                "code": error.code(),
+                "message": error.to_string(),
+            })
+            .to_string(),
+        }
+    }))
+}
+
+#[pyfunction]
+#[pyo3(signature = (config_json, cancel_handle=None))]
+fn secure_private_read_json(
+    py: Python<'_>,
+    config_json: &str,
+    cancel_handle: Option<PyRef<'_, KernelCancelHandle>>,
+) -> PyResult<String> {
+    let config: SecureReadProfileConfig = serde_json::from_str(config_json).map_err(|_| {
+        pyo3::exceptions::PyValueError::new_err("invalid secure private read configuration")
+    })?;
+    let cancel = cancel_handle
+        .map(|handle| handle.token.clone())
+        .unwrap_or_default();
+    Ok(py.allow_threads(move || {
+        match SecurePrivateReadAccess::new(config).activate_and_read_json_with_cancel(&cancel) {
             Ok(value) => format!("{{\"ok\":true,\"value\":{value}}}"),
             Err(error) => serde_json::json!({
                 "ok": false,
@@ -516,6 +543,7 @@ fn _peerwork_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(kernel_json, module)?)?;
     module.add_function(wrap_pyfunction!(secure_read_json, module)?)?;
     module.add_function(wrap_pyfunction!(secure_read_profile_json, module)?)?;
+    module.add_function(wrap_pyfunction!(secure_private_read_json, module)?)?;
     module.add_function(wrap_pyfunction!(secure_public_action_json, module)?)?;
     module.add_function(wrap_pyfunction!(secure_public_install_json, module)?)?;
     module.add_function(wrap_pyfunction!(secure_recipient_enrollment_json, module)?)?;

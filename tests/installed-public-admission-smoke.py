@@ -34,7 +34,7 @@ const arg=JSON.parse(fs.readFileSync(0,'utf8'));
 const session=arg.role==='owner' ? sdk.openSecurePublicAdmission(arg.config)
   : arg.role==='directory' ? sdk.openSecureIdentityDirectory(arg.config)
   : arg.role==='enrollment' ? sdk.openSecureRecipientEnrollment(arg.config)
-  : sdk.openSecurePublicDecision(arg.config);
+  : sdk.openSecureInvitation(arg.config);
 (async()=>{
   let value;
   if(arg.role==='owner' && arg.operation==='offer') value=await session.offer(arg.values.certificate,arg.values.scopes,{message:arg.values.message});
@@ -351,7 +351,7 @@ with tempfile.TemporaryDirectory(prefix="peerwork-native-admission-", dir=TEMP_R
         assert invalid.returncode != 0 and json.loads(invalid.stderr)["code"] == "CONFIG_INVALID"
         consent = cli("consent", str(recipient_config_file), high["invite_id"], "ACCEPT")
         assert consent["status"] == "PENDING" and consent["invite_id"] == high["invite_id"]
-        native_recipient = peerwork.SecurePublicDecisionClient(origin, str(recipient_dir),
+        native_recipient = peerwork.SecureInvitationClient(origin, str(recipient_dir),
             workspace["workspace_id"], workspace["actor_id"], workspace["signing_key"],
             allow_loopback_http=True)
         assert native_recipient.retry_decision(high["invite_id"])["decision_hash"] == consent["decision_hash"]
@@ -416,7 +416,7 @@ with tempfile.TemporaryDirectory(prefix="peerwork-native-admission-", dir=TEMP_R
         assert historical_cert["directory_version"] == 1
         old_offer = owner.offer(historical_cert["certificate_json"], "[]",
             message="delivered before directory rotation")
-        historical_decision = peerwork.SecurePublicDecisionClient(origin, str(historical_dir),
+        historical_decision = peerwork.SecureInvitationClient(origin, str(historical_dir),
             workspace["workspace_id"], workspace["actor_id"], workspace["signing_key"],
             allow_loopback_http=True)
         old_consent = historical_decision.decide(old_offer["invite_id"], "ACCEPT")
@@ -433,7 +433,7 @@ with tempfile.TemporaryDirectory(prefix="peerwork-native-admission-", dir=TEMP_R
         assert historical_renew["status"] == "PUBLISHED" and historical_renew["directory_version"] == 3
         assert directory.lookup(historical_local["actor_id"],
             historical_local["signing_key_id"])["certificate_json"] != historical_cert["certificate_json"]
-        reopened_historical = peerwork.SecurePublicDecisionClient(origin, str(historical_dir),
+        reopened_historical = peerwork.SecureInvitationClient(origin, str(historical_dir),
             workspace["workspace_id"], workspace["actor_id"], workspace["signing_key"],
             allow_loopback_http=True)
         old_received = reopened_historical.receive(old_offer["invite_id"])

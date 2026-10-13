@@ -15,6 +15,7 @@ use peerwork_runtime::secure_public_install::{
 };
 use peerwork_runtime::secure_read_access::{SecureReadAccess, SecureReadConfig};
 use peerwork_runtime::secure_read_profile::{SecureReadProfile, SecureReadProfileConfig};
+use peerwork_runtime::secure_private_read_access::SecurePrivateReadAccess;
 use peerwork_runtime::secure_recipient_enrollment::{
     RecipientEnrollmentConfig, SecureRecipientEnrollment,
 };
@@ -309,6 +310,47 @@ pub fn secure_read_profile_json(
     AsyncTask::new(SecureReadTask {
         config_json,
         profile: true,
+        cancel: cancel_handle
+            .map(|handle| handle.token.clone())
+            .unwrap_or_default(),
+    })
+}
+
+pub struct SecurePrivateReadTask {
+    config_json: String,
+    cancel: KernelCancellationToken,
+}
+
+impl Task for SecurePrivateReadTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let config: SecureReadProfileConfig = serde_json::from_str(&self.config_json)
+            .map_err(|_| napi::Error::from_reason("invalid secure private read configuration"))?;
+        Ok(match SecurePrivateReadAccess::new(config).activate_and_read_json_with_cancel(&self.cancel) {
+            Ok(value) => format!("{{\"ok\":true,\"value\":{value}}}"),
+            Err(error) => serde_json::json!({
+                "ok": false,
+                "code": error.code(),
+                "message": error.to_string(),
+            })
+            .to_string(),
+        })
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+#[napi]
+pub fn secure_private_read_json(
+    config_json: String,
+    cancel_handle: Option<ClassInstance<KernelCancelHandle>>,
+) -> AsyncTask<SecurePrivateReadTask> {
+    AsyncTask::new(SecurePrivateReadTask {
+        config_json,
         cancel: cancel_handle
             .map(|handle| handle.token.clone())
             .unwrap_or_default(),

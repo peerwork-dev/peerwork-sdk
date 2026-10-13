@@ -109,6 +109,8 @@ export interface SecureReadOptions {
 }
 /** Fetches the latest verified supported active history; failed refresh rejects. */
 export declare function readSecureWorkspace(options: SecureReadOptions): Promise<VerifiedSecureWorkspace>;
+/** Acquire a signed direct PRIVATE grant using protected recipient/profile state. */
+export declare function activatePrivateRead(options: SecureReadOptions): Promise<VerifiedSecureWorkspace>;
 
 export interface SecureActionReceipt {
   command_id: string;
@@ -222,13 +224,13 @@ export interface PublicDeliveryResult {
   workspace_id: string;
   grant_hash: string;
 }
-export interface PublicDecisionResult {
+export interface InvitationDecisionResult {
   status: 'PENDING';
   invite_id: string;
   workspace_id: string;
   decision_hash: string;
 }
-export interface PublicReceiveResult {
+export interface InvitationReceiveResult {
   status: 'PENDING' | 'READY';
   invite_id: string;
   workspace_id: string;
@@ -236,8 +238,8 @@ export interface PublicReceiveResult {
 }
 export interface PendingPublicOffer { invite_id: string; workspace_id: string; offer_hash: string; observed_responses: number }
 export interface PendingPublicDelivery { grant_id: string; workspace_id: string; grant_hash: string; observed_responses: number }
-export interface PendingPublicDecision { invite_id: string; workspace_id: string; decision_hash: string; observed_responses: number }
-export interface PendingPublicReceipt { invite_id: string; grant_id: string; workspace_id: string; receipt_hash: string; observed_responses: number }
+export interface PendingInvitationDecision { invite_id: string; workspace_id: string; decision_hash: string; observed_responses: number }
+export interface PendingInvitationReceipt { invite_id: string; grant_id: string; workspace_id: string; receipt_hash: string; observed_responses: number }
 export interface SecurePublicAdmissionSession {
   offer(recipientCertificateJson: string, scopes: unknown[], options?: { message?: string; inviteId?: string; issuedAtMs?: number; expiresAtMs?: number; signal?: AbortSignal }): Promise<PublicOfferResult>;
   retryOffer(inviteId: string, options?: { signal?: AbortSignal }): Promise<PublicOfferResult>;
@@ -247,7 +249,7 @@ export interface SecurePublicAdmissionSession {
   pendingDeliveries(): Promise<PendingPublicDelivery[]>;
 }
 export declare function openSecurePublicAdmission(options: SecureReadOptions): SecurePublicAdmissionSession;
-export interface SecurePublicDecisionOptions extends RecipientEnrollmentOptions {
+export interface SecureInvitationOptions extends RecipientEnrollmentOptions {
   workspaceId: string;
   ownerActorId: string;
   ownerKeyId: string;
@@ -255,15 +257,15 @@ export interface SecurePublicDecisionOptions extends RecipientEnrollmentOptions 
   requiredFeatures?: string[];
   maxReplayArtifactBytes?: number;
 }
-export interface SecurePublicDecisionSession {
-  decide(inviteId: string, decision: 'ACCEPT' | 'DECLINE', options?: { signal?: AbortSignal }): Promise<PublicDecisionResult>;
-  retryDecision(inviteId: string, options?: { signal?: AbortSignal }): Promise<PublicDecisionResult>;
-  pendingDecisions(): Promise<PendingPublicDecision[]>;
-  receive(inviteId: string, options?: { signal?: AbortSignal }): Promise<PublicReceiveResult>;
-  retryReceive(inviteId: string, options?: { signal?: AbortSignal }): Promise<PublicReceiveResult>;
-  pendingReceipts(): Promise<PendingPublicReceipt[]>;
+export interface SecureInvitationSession {
+  decide(inviteId: string, decision: 'ACCEPT' | 'DECLINE', options?: { signal?: AbortSignal }): Promise<InvitationDecisionResult>;
+  retryDecision(inviteId: string, options?: { signal?: AbortSignal }): Promise<InvitationDecisionResult>;
+  pendingDecisions(): Promise<PendingInvitationDecision[]>;
+  receive(inviteId: string, options?: { signal?: AbortSignal }): Promise<InvitationReceiveResult>;
+  retryReceive(inviteId: string, options?: { signal?: AbortSignal }): Promise<InvitationReceiveResult>;
+  pendingReceipts(): Promise<PendingInvitationReceipt[]>;
 }
-export declare function openSecurePublicDecision(options: SecurePublicDecisionOptions): SecurePublicDecisionSession;
+export declare function openSecureInvitation(options: SecureInvitationOptions): SecureInvitationSession;
 
 /** Exact locally selected package closure; digest validation does not prove publisher origin. */
 export interface PublicPackageInstallSelection {

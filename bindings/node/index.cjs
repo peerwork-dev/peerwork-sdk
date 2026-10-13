@@ -241,7 +241,7 @@ function secureProfileOptions(options) {
   return { config, signal: input.signal };
 }
 
-/** Fetch a fresh verified PUBLIC checkpoint using one protected state directory. */
+/** Fetch a fresh verified checkpoint using one protected state directory. */
 exports.readSecureWorkspace = async options => {
   const { config, signal } = secureProfileOptions(options);
   const handle = new binding.KernelCancelHandle();
@@ -250,6 +250,26 @@ exports.readSecureWorkspace = async options => {
   signal?.addEventListener?.('abort', onAbort, { once: true });
   try {
     const result = JSON.parse(await binding.secureReadProfileJson(strictCommandJson(config), handle));
+    if (result.ok !== true) {
+      const error = new Error(result.message);
+      error.code = result.code;
+      throw error;
+    }
+    return result.value;
+  } finally {
+    signal?.removeEventListener?.('abort', onAbort);
+  }
+};
+
+/** Acquire an authenticated direct PRIVATE grant and persist a verified read floor. */
+exports.activatePrivateRead = async options => {
+  const { config, signal } = secureProfileOptions(options);
+  const handle = new binding.KernelCancelHandle();
+  const onAbort = () => handle.cancel();
+  if (signal?.aborted) onAbort();
+  signal?.addEventListener?.('abort', onAbort, { once: true });
+  try {
+    const result = JSON.parse(await binding.securePrivateReadJson(strictCommandJson(config), handle));
     if (result.ok !== true) {
       const error = new Error(result.message);
       error.code = result.code;
@@ -431,7 +451,7 @@ exports.openSecurePublicAdmission = options => {
 };
 
 /** Recipient consent/receipt with explicit owner and authority pins. */
-exports.openSecurePublicDecision = options => {
+exports.openSecureInvitation = options => {
   if (!options || typeof options.origin !== 'string' || typeof options.stateDir !== 'string' ||
       typeof options.workspaceId !== 'string' || typeof options.ownerActorId !== 'string' ||
       typeof options.ownerKeyId !== 'string' ||

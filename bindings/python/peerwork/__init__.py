@@ -14,6 +14,7 @@ from ._peerwork_native import (
     kernel_json,
     secure_read_json,
     secure_read_profile_json,
+    secure_private_read_json,
     secure_public_action_json,
     secure_public_install_json,
     secure_recipient_enrollment_json,
@@ -430,7 +431,7 @@ __all__ += ["SecureReadClient", "SecureReadError", "VerifiedSecureWorkspace"]
 
 
 class SecureReadClient:
-    """Read the latest verified PUBLIC workspace using a protected state directory.
+    """Read the latest verified workspace using a protected state directory.
 
     Owner actor/key pins are required on first contact. Reopens may omit them;
     the stored pins remain mandatory. A failed refresh keeps the last good
@@ -473,6 +474,37 @@ class SecureReadClient:
     async def read_async(self) -> VerifiedSecureWorkspace:
         cancel_handle = KernelCancelHandle()
         worker = asyncio.create_task(asyncio.to_thread(self._read, cancel_handle))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            cancel_handle.cancel()
+            while not worker.done():
+                try:
+                    await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    cancel_handle.cancel()
+                except Exception:
+                    break
+            try:
+                worker.result()
+            except Exception:
+                pass
+            raise
+
+    def _activate_private(self, cancel_handle: KernelCancelHandle | None = None) -> VerifiedSecureWorkspace:
+        config_json = json.dumps(self._config, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
+        result = json.loads(secure_private_read_json(config_json, cancel_handle))
+        if result["ok"] is not True:
+            raise SecureReadError(result["code"], result["message"])
+        return cast(VerifiedSecureWorkspace, result["value"])
+
+    def activate_private(self) -> VerifiedSecureWorkspace:
+        """Acquire an authenticated direct PRIVATE grant, then save a verified read floor."""
+        return self._activate_private()
+
+    async def activate_private_async(self) -> VerifiedSecureWorkspace:
+        cancel_handle = KernelCancelHandle()
+        worker = asyncio.create_task(asyncio.to_thread(self._activate_private, cancel_handle))
         try:
             return await asyncio.shield(worker)
         except asyncio.CancelledError:
@@ -958,14 +990,14 @@ class PublicDeliveryResult(TypedDict):
     grant_hash: str
 
 
-class PublicDecisionResult(TypedDict):
+class InvitationDecisionResult(TypedDict):
     status: Literal["PENDING"]
     invite_id: str
     workspace_id: str
     decision_hash: str
 
 
-class PublicReceiveResult(TypedDict):
+class InvitationReceiveResult(TypedDict):
     status: Literal["PENDING", "READY"]
     invite_id: str
     workspace_id: str
@@ -1057,7 +1089,7 @@ class SecurePublicAdmissionClient(SecureReadClient):
         return cast(list[dict], self._admission("pending_deliveries"))
 
 
-class SecurePublicDecisionClient:
+class SecureInvitationClient:
     """Recipient consent and receipt with explicit immutable owner and authority pins."""
 
     def __init__(self, origin: str, state_dir: str, workspace_id: str,
@@ -1089,36 +1121,36 @@ class SecurePublicDecisionClient:
             raise PublicAdmissionError(result["code"], result["message"])
         return cast(dict | list[dict], result["value"])
 
-    def decide(self, invite_id: str, decision: Literal["ACCEPT", "DECLINE"]) -> PublicDecisionResult:
-        return cast(PublicDecisionResult, self._decision("decide", invite_id=invite_id, decision=decision))
+    def decide(self, invite_id: str, decision: Literal["ACCEPT", "DECLINE"]) -> InvitationDecisionResult:
+        return cast(InvitationDecisionResult, self._decision("decide", invite_id=invite_id, decision=decision))
 
-    async def decide_async(self, invite_id: str, decision: Literal["ACCEPT", "DECLINE"]) -> PublicDecisionResult:
-        return cast(PublicDecisionResult, await _run_admission_async(self._decision, "decide", invite_id=invite_id, decision=decision))
+    async def decide_async(self, invite_id: str, decision: Literal["ACCEPT", "DECLINE"]) -> InvitationDecisionResult:
+        return cast(InvitationDecisionResult, await _run_admission_async(self._decision, "decide", invite_id=invite_id, decision=decision))
 
-    def retry_decision(self, invite_id: str) -> PublicDecisionResult:
-        return cast(PublicDecisionResult, self._decision("retry_decision", invite_id=invite_id))
+    def retry_decision(self, invite_id: str) -> InvitationDecisionResult:
+        return cast(InvitationDecisionResult, self._decision("retry_decision", invite_id=invite_id))
 
-    async def retry_decision_async(self, invite_id: str) -> PublicDecisionResult:
-        return cast(PublicDecisionResult, await _run_admission_async(self._decision, "retry_decision", invite_id=invite_id))
+    async def retry_decision_async(self, invite_id: str) -> InvitationDecisionResult:
+        return cast(InvitationDecisionResult, await _run_admission_async(self._decision, "retry_decision", invite_id=invite_id))
 
     def pending_decisions(self) -> list[dict]:
         return cast(list[dict], self._decision("pending_decisions"))
 
-    def receive(self, invite_id: str) -> PublicReceiveResult:
-        return cast(PublicReceiveResult, self._decision("receive", invite_id=invite_id))
+    def receive(self, invite_id: str) -> InvitationReceiveResult:
+        return cast(InvitationReceiveResult, self._decision("receive", invite_id=invite_id))
 
-    async def receive_async(self, invite_id: str) -> PublicReceiveResult:
-        return cast(PublicReceiveResult, await _run_admission_async(self._decision, "receive", invite_id=invite_id))
+    async def receive_async(self, invite_id: str) -> InvitationReceiveResult:
+        return cast(InvitationReceiveResult, await _run_admission_async(self._decision, "receive", invite_id=invite_id))
 
-    def retry_receive(self, invite_id: str) -> PublicReceiveResult:
-        return cast(PublicReceiveResult, self._decision("retry_receive", invite_id=invite_id))
+    def retry_receive(self, invite_id: str) -> InvitationReceiveResult:
+        return cast(InvitationReceiveResult, self._decision("retry_receive", invite_id=invite_id))
 
-    async def retry_receive_async(self, invite_id: str) -> PublicReceiveResult:
-        return cast(PublicReceiveResult, await _run_admission_async(self._decision, "retry_receive", invite_id=invite_id))
+    async def retry_receive_async(self, invite_id: str) -> InvitationReceiveResult:
+        return cast(InvitationReceiveResult, await _run_admission_async(self._decision, "retry_receive", invite_id=invite_id))
 
     def pending_receipts(self) -> list[dict]:
         return cast(list[dict], self._decision("pending_receipts"))
 
 
-__all__ += ["SecurePublicAdmissionClient", "SecurePublicDecisionClient", "PublicAdmissionError",
-            "PublicOfferResult", "PublicDeliveryResult", "PublicDecisionResult", "PublicReceiveResult"]
+__all__ += ["SecurePublicAdmissionClient", "SecureInvitationClient", "PublicAdmissionError",
+            "PublicOfferResult", "PublicDeliveryResult", "InvitationDecisionResult", "InvitationReceiveResult"]
