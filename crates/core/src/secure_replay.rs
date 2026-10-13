@@ -1968,8 +1968,20 @@ fn replay_basic_content_depth(
                     }
                 }
             }
-            if !package_stage
+            // An ACTION revision or an ordinary ADMIN/DELTA update can retain
+            // an installed instance's package_source as provenance. The TS
+            // replay invokes install validation for nonempty snapshot ADMIN
+            // operations; the validator itself rejects a malformed PAGE/END,
+            // action ID, instance or delegation instead of skipping it.
+            if kind == "ADMIN"
+                && !package_stage
                 && !object_stage
+                && payload
+                    .get("structure")
+                    .and_then(|structure| structure.get("mode"))
+                    .and_then(WireValue::as_string)
+                    .as_deref()
+                    != Some("DELTA")
                 && objects.iter().any(|object| {
                     object
                         .get("value")
@@ -4844,6 +4856,34 @@ mod tests {
             .object_count,
             3,
         );
+        // A later snapshot ADMIN cannot carry a package-sourced instance
+        // revision as if it were a fresh install. The strict BEGIN validator
+        // must still run for a nonempty snapshot operation.
+        let mut carried_instance = install_operation["objects"][1].clone();
+        carried_instance["revision"] = json!(2);
+        carried_instance["value"]["revision"] = json!(1);
+        let wrong_end_with_object = make_commit(
+            4,
+            Some(&hash(&install)),
+            "secure.structure.end",
+            end_envelope.clone(),
+            json!({"v":1,"kind":"ADMIN","input":{},"objects":[carried_instance]}),
+            &policy2_hash,
+        );
+        let wrong_end_with_object_checkpoint = serde_json::to_vec(&json!({"v":1,
+            "workspace_id":workspace,"owner_id":owner_id,"owner_key":owner_key,
+            "sequence":4,"head":hash(&wrong_end_with_object),"policy_hash":policy2_hash}))
+        .unwrap();
+        assert!(replay_basic_content(
+            &[&policy, &policy2],
+            &[&bootstrap, &stage, &install, &wrong_end_with_object],
+            &wrong_end_with_object_checkpoint,
+            &workspace,
+            Some(&owner_pin),
+            None,
+            Some(&keyring),
+        )
+        .is_err());
         end_envelope["snapshot"]["offset"] = json!(1);
         let wrong_end = make_commit(
             4,

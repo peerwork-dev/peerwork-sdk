@@ -8,9 +8,14 @@ use crate::{
     e2ee::{open_content_wire, SealedContent},
     prepared_package_source::prepare_package_source_wire,
     prepared_secure_author::sign_private_commit,
+    protocol_package_source::verify_protocol_package_source,
+    public_direct_install::{
+        build_direct_install_begin, derive_direct_install_structure, plan_public_install_snapshot,
+        PublicInstallSnapshotPlan,
+    },
     wire_json::{canonical_wire_value, parse_wire_json_bounded, WireValue},
 };
-use ed25519_dalek::SigningKey;
+use ed25519_dalek::{Signer, SigningKey};
 use thiserror::Error;
 
 const MAX_SAFE: u64 = 9_007_199_254_740_991;
@@ -35,6 +40,54 @@ pub struct PreparedPrivatePackageStage {
     root_package_digest: String,
     part_count: usize,
     part_index: usize,
+}
+
+/// Signed policy update and encrypted BEGIN packet for an already staged
+/// package. The runtime must prove the complete staged source range before
+/// calling this author and persist the exact packet before POST.
+pub struct PreparedPrivatePackageInstallBegin {
+    request_wire: Vec<u8>,
+    commit_hash: String,
+    policy_hash: String,
+    snapshot: WireValue,
+    protocol_digest: String,
+    instance_id: String,
+}
+pub struct PreparedPrivatePackageInstallStep {
+    request_wire: Vec<u8>,
+    commit_hash: String,
+    action_id: &'static str,
+}
+impl PreparedPrivatePackageInstallStep {
+    pub fn request_wire(&self) -> &[u8] {
+        &self.request_wire
+    }
+    pub fn commit_hash(&self) -> &str {
+        &self.commit_hash
+    }
+    pub fn action_id(&self) -> &'static str {
+        self.action_id
+    }
+}
+impl PreparedPrivatePackageInstallBegin {
+    pub fn request_wire(&self) -> &[u8] {
+        &self.request_wire
+    }
+    pub fn commit_hash(&self) -> &str {
+        &self.commit_hash
+    }
+    pub fn policy_hash(&self) -> &str {
+        &self.policy_hash
+    }
+    pub fn snapshot(&self) -> &WireValue {
+        &self.snapshot
+    }
+    pub fn protocol_digest(&self) -> &str {
+        &self.protocol_digest
+    }
+    pub fn instance_id(&self) -> &str {
+        &self.instance_id
+    }
 }
 
 struct StagePlan {
@@ -400,6 +453,771 @@ pub fn verify_saved_private_package_stage(
         root_package_digest: plan.root_package_digest,
         part_count: plan.part_count,
         part_index,
+    })
+}
+
+fn replace(value: &mut WireValue, field: &str, item: WireValue) -> Result<(), PrivateInstallError> {
+    let WireValue::Object(fields) = value else {
+        return Err(PrivateInstallError::Invalid);
+    };
+    let Some((_, slot)) = fields
+        .iter_mut()
+        .find(|(name, _)| name.iter().copied().eq(field.encode_utf16()))
+    else {
+        return Err(PrivateInstallError::Invalid);
+    };
+    *slot = item;
+    Ok(())
+}
+
+fn apply_install_grants(
+    policy: &mut WireValue,
+    grants_wire: &[u8],
+    manifest: &WireValue,
+    instance_id: &str,
+) -> Result<(), PrivateInstallError> {
+    let bad = || PrivateInstallError::Invalid;
+    let grants = parse_wire_json_bounded(grants_wire, 32, 65_536).map_err(|_| bad())?;
+    let WireValue::Array(grants) = grants else {
+        return Err(bad());
+    };
+    if grants.len() > 128 {
+        return Err(PrivateInstallError::Resource);
+    }
+    let mut members = match policy.get("members").ok_or_else(bad)? {
+        WireValue::Array(rows) => rows.clone(),
+        _ => return Err(bad()),
+    };
+    let mut seen = std::collections::HashSet::new();
+    for grant in grants {
+        let WireValue::Object(fields) = &grant else {
+            return Err(bad());
+        };
+        if fields.iter().any(|(name, _)| {
+            String::from_utf16(name).map_or(true, |name| {
+                !matches!(
+                    name.as_str(),
+                    "actor_id" | "actions" | "protocol_roles" | "capabilities" | "expires_at"
+                )
+            })
+        }) {
+            return Err(bad());
+        }
+        let actor = string(&grant, "actor_id")?;
+        if !token(&actor)
+            || !seen.insert(actor.clone())
+            || grant.object_len().is_none_or(|n| n < 4 || n > 5)
+        {
+            return Err(bad());
+        }
+        let member = members
+            .iter_mut()
+            .find(|m| m.get("actor_id") == Some(&s(&actor)))
+            .ok_or_else(bad)?;
+        let mut scope_fields = Vec::new();
+        for (field, manifest_field) in [
+            ("actions", "actions"),
+            ("protocol_roles", "protocol_roles"),
+            ("capabilities", "capabilities"),
+        ] {
+            let values = match grant.get(field).ok_or_else(bad)? {
+                WireValue::Array(values) => values,
+                _ => return Err(bad()),
+            };
+            let declared = match manifest.get(manifest_field).ok_or_else(bad)? {
+                WireValue::Array(values) => values,
+                _ => return Err(bad()),
+            };
+            if values.len() > 64 {
+                return Err(PrivateInstallError::Resource);
+            }
+            let mut unique = std::collections::HashSet::new();
+            for value in values {
+                let name = value.as_string().ok_or_else(bad)?;
+                if name.is_empty()
+                    || name.len() > 120
+                    || !unique.insert(name)
+                    || !declared.iter().any(|item| {
+                        if field == "actions" {
+                            item.get("id") == Some(value)
+                        } else {
+                            item == value
+                        }
+                    })
+                {
+                    return Err(bad());
+                }
+            }
+            scope_fields.push((field, WireValue::Array(values.clone())));
+        }
+        if let Some(expires) = grant.get("expires_at") {
+            if !matches!(expires, WireValue::Null)
+                && !expires.as_number().is_some_and(|at| {
+                    at.fract() == 0.0 && at >= 1.0 && at <= 9_007_199_254_740_991.0
+                })
+            {
+                return Err(bad());
+            }
+            scope_fields.push(("expires_at", expires.clone()));
+        }
+        scope_fields.push(("instance_id", s(instance_id)));
+        let mut scopes = match member.get("scopes").ok_or_else(bad)? {
+            WireValue::Array(rows) => rows.clone(),
+            _ => return Err(bad()),
+        };
+        scopes.push(obj(scope_fields));
+        replace(member, "scopes", WireValue::Array(scopes))?;
+    }
+    replace(policy, "members", WireValue::Array(members))?;
+    Ok(())
+}
+
+/// Build the first encrypted install command from an authenticated stage-end
+/// checkpoint and its complete prior objects. This only authors the packet:
+/// runtime must bind `prior_objects` and stage operations to signed replay.
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_private_package_install_begin(
+    material_wire: &[u8],
+    source_checkpoint_wire: &[u8],
+    stage_end_checkpoint_wire: &[u8],
+    signed_policy_wire: &[u8],
+    prior_objects: &[WireValue],
+    grants_wire: &[u8],
+    instance_id: &str,
+    entrypoint: &str,
+    command_id: &str,
+    issued_at: u64,
+    signing_key: &SigningKey,
+    epoch_key: &[u8; 32],
+) -> Result<PreparedPrivatePackageInstallBegin, PrivateInstallError> {
+    let bad = || PrivateInstallError::Invalid;
+    if !token(instance_id)
+        || !token(command_id)
+        || issued_at > MAX_SAFE
+        || entrypoint.is_empty()
+        || entrypoint.len() > 64
+        || !entrypoint.as_bytes()[0].is_ascii_alphabetic()
+        || !entrypoint
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        || entrypoint == "coordination"
+    {
+        return Err(bad());
+    }
+    let source = parse_wire_json_bounded(source_checkpoint_wire, 32, 8192).map_err(|_| bad())?;
+    let end = parse_wire_json_bounded(stage_end_checkpoint_wire, 32, 8192).map_err(|_| bad())?;
+    let signed_policy =
+        parse_wire_json_bounded(signed_policy_wire, 64, 196_608).map_err(|_| bad())?;
+    let policy = signed_policy.get("payload").ok_or_else(bad)?;
+    let version = number(policy, "v")?;
+    let epoch = number(policy, "epoch")?;
+    let signer_key = base64url(&signing_key.verifying_key().to_bytes());
+    let actor = actor_id(&signing_key.verifying_key().to_bytes());
+    let policy_wire =
+        canonical_wire_value(&signed_policy, Path::SecureArtifact).map_err(|_| bad())?;
+    if !matches!(version, 2 | 3)
+        || epoch == 0
+        || string(policy, "visibility")? != "PRIVATE"
+        || string(policy, "owner_id")? != actor
+        || string(policy, "signing_key")? != signer_key
+        || string(&source, "owner_id")? != actor
+        || string(&source, "owner_key")? != signer_key
+        || string(&end, "owner_id")? != actor
+        || string(&end, "owner_key")? != signer_key
+        || string(policy, "workspace_id")? != string(&end, "workspace_id")?
+        || string(&source, "workspace_id")? != string(&end, "workspace_id")?
+        || string(&source, "policy_hash")? != string(&end, "policy_hash")?
+        || string(&end, "policy_hash")? != sha256_hex(policy_wire.as_bytes())
+        || !verify_secure_signed_wire(
+            policy_wire.as_bytes(),
+            "peerwork.secure.policy.v1",
+            &signer_key,
+        )
+        .map_err(|_| bad())?
+        || number(policy, "issued_at")? > issued_at
+        || policy.get("structure").is_none()
+        || (version == 3 && string(policy, "structure_mode")? != "STRUCTURED")
+    {
+        return Err(bad());
+    }
+    let prepared =
+        prepare_package_source_wire(material_wire, source_checkpoint_wire).map_err(|error| {
+            match error {
+                crate::prepared_package_source::PreparePackageSourceError::Resource => {
+                    PrivateInstallError::Resource
+                }
+                _ => bad(),
+            }
+        })?;
+    let stage_count = prepared.parts.len() as u64;
+    if number(&source, "sequence")?.checked_add(stage_count) != Some(number(&end, "sequence")?)
+        || prior_objects.iter().any(|o| {
+            o.get("kind").and_then(WireValue::as_string).as_deref() == Some("instances")
+                && o.get("id") == Some(&s(instance_id))
+        })
+    {
+        return Err(bad());
+    }
+    let verified =
+        verify_protocol_package_source(&prepared.proof, prior_objects).map_err(|_| bad())?;
+    let digest = verified.protocol_digest;
+    if verified.part_count != prepared.parts.len()
+        || (verified.manifest.get("format_version").is_some()
+            && (version != 3 || number(policy, "protocol_format_ceiling")? != 2))
+    {
+        return Err(bad());
+    }
+    let workspace = string(&end, "workspace_id")?;
+    let protocol_exists = prior_objects.iter().any(|o| {
+        o.get("kind").and_then(WireValue::as_string).as_deref() == Some("protocols")
+            && o.get("id") == Some(&s(&digest))
+    });
+    let protocol = obj(vec![
+        ("kind", s("protocols")),
+        ("id", s(&digest)),
+        ("revision", WireValue::Number(1.0)),
+        ("provenance", s("AUTHOR_SIGNED")),
+        (
+            "value",
+            obj(vec![
+                ("workspace_id", s(&workspace)),
+                ("digest", s(&digest)),
+                ("manifest", verified.manifest.clone()),
+                ("resolved_manifest", verified.manifest.clone()),
+                ("package_source", prepared.proof.clone()),
+            ]),
+        ),
+    ]);
+    let instance = obj(vec![
+        ("kind", s("instances")),
+        ("id", s(instance_id)),
+        ("revision", WireValue::Number(1.0)),
+        ("provenance", s("AUTHOR_SIGNED")),
+        (
+            "value",
+            obj(vec![
+                ("id", s(instance_id)),
+                ("workspace_id", s(&workspace)),
+                ("protocol_digest", s(&digest)),
+                ("origin_entrypoint", s(entrypoint)),
+                ("semantics", s("peerwork.kernel.v1")),
+                (
+                    "state",
+                    verified
+                        .manifest
+                        .get("initial_state")
+                        .ok_or_else(bad)?
+                        .clone(),
+                ),
+                ("revision", WireValue::Number(0.0)),
+                ("event_revision", WireValue::Number(0.0)),
+                ("created", WireValue::Number(issued_at as f64)),
+                ("package_source", prepared.proof.clone()),
+            ]),
+        ),
+    ]);
+    let added = if protocol_exists {
+        vec![instance]
+    } else {
+        vec![protocol, instance]
+    };
+    let old_structure = policy.get("structure").ok_or_else(bad)?;
+    let structure = derive_direct_install_structure(
+        old_structure,
+        prior_objects,
+        &added,
+        &digest,
+        &verified.manifest,
+    )
+    .map_err(|_| bad())?;
+    let snapshot = plan_public_install_snapshot(prior_objects, &structure, &end)
+        .map_err(|_| bad())?
+        .snapshot()
+        .clone();
+    let begin =
+        build_direct_install_begin(&end, &added, instance_id, &digest, entrypoint, &snapshot)
+            .map_err(|_| bad())?;
+    let mut next_policy = policy.clone();
+    replace(&mut next_policy, "structure", structure)?;
+    apply_install_grants(
+        &mut next_policy,
+        grants_wire,
+        &verified.manifest,
+        instance_id,
+    )?;
+    replace(
+        &mut next_policy,
+        "version",
+        WireValue::Number((number(policy, "version")?.checked_add(1).ok_or_else(bad)?) as f64),
+    )?;
+    replace(
+        &mut next_policy,
+        "previous_policy",
+        s(&sha256_hex(policy_wire.as_bytes())),
+    )?;
+    replace(
+        &mut next_policy,
+        "effective_sequence",
+        WireValue::Number((number(&end, "sequence")?.checked_add(1).ok_or_else(bad)?) as f64),
+    )?;
+    replace(
+        &mut next_policy,
+        "issued_at",
+        WireValue::Number(issued_at as f64),
+    )?;
+    let payload_wire =
+        canonical_wire_value(&next_policy, Path::SecureArtifact).map_err(|_| bad())?;
+    let domain = format!("peerwork.secure.policy.v{version}");
+    let mut message = Vec::with_capacity(domain.len() + 1 + payload_wire.len());
+    message.extend_from_slice(domain.as_bytes());
+    message.push(0);
+    message.extend_from_slice(payload_wire.as_bytes());
+    let signed_new_policy = obj(vec![
+        ("payload", next_policy),
+        (
+            "signature",
+            s(&base64url(&signing_key.sign(&message).to_bytes())),
+        ),
+    ]);
+    let signed_new_policy_wire =
+        canonical_wire_value(&signed_new_policy, Path::SecureArtifact).map_err(|_| bad())?;
+    let new_policy_hash = sha256_hex(signed_new_policy_wire.as_bytes());
+    let sequence = number(&end, "sequence")?.checked_add(1).ok_or_else(bad)?;
+    let mut context_fields = vec![
+        ("v", WireValue::Number(version as f64)),
+        ("workspace_id", s(&workspace)),
+        ("sequence", WireValue::Number(sequence as f64)),
+        ("previous", s(&string(&end, "head")?)),
+        ("policy_hash", s(&new_policy_hash)),
+        ("epoch", WireValue::Number(epoch as f64)),
+        ("actor_id", s(&actor)),
+        ("signing_key", s(&signer_key)),
+        ("command_id", s(command_id)),
+        ("action_id", s("secure.structure.begin")),
+        ("instance_id", WireValue::Null),
+        ("issued_at", WireValue::Number(issued_at as f64)),
+        ("delegation", WireValue::Null),
+        ("structure", begin.structure),
+    ];
+    let ceiling = if version == 3 {
+        let n = number(policy, "protocol_format_ceiling")?;
+        context_fields.push(("protocol_format_ceiling", WireValue::Number(n as f64)));
+        Some(n)
+    } else {
+        None
+    };
+    let context = obj(context_fields);
+    let operation_wire =
+        canonical_wire_value(&begin.operation, Path::SecureArtifact).map_err(|_| bad())?;
+    let commit = sign_private_commit(
+        &context,
+        operation_wire.as_bytes(),
+        epoch_key,
+        signing_key,
+        &crate::prepared_secure_request::SecureCommitRequestPins {
+            actor_id: &actor,
+            signing_key: &signer_key,
+            workspace_id: &workspace,
+            policy_hash: &new_policy_hash,
+            sequence,
+            previous: Some(&string(&end, "head")?),
+            epoch,
+            mode: "PRIVATE",
+            version,
+            protocol_format_ceiling: ceiling,
+        },
+    )
+    .map_err(|_| PrivateInstallError::Author)?;
+    let commit_hash = sha256_hex(commit.as_bytes());
+    let request_wire =
+        format!("{{\"commit\":{commit},\"policy_update\":{signed_new_policy_wire}}}").into_bytes();
+    if request_wire.len() > 220_000 {
+        return Err(PrivateInstallError::Resource);
+    }
+    Ok(PreparedPrivatePackageInstallBegin {
+        request_wire,
+        commit_hash,
+        policy_hash: new_policy_hash,
+        snapshot,
+        protocol_digest: digest,
+        instance_id: instance_id.to_owned(),
+    })
+}
+
+/// Reconstruct every deterministic BEGIN field and decrypt the saved packet
+/// before uncertain-reply retry. The nonce and ciphertext themselves remain
+/// the original protected bytes; this function never returns a new packet.
+#[allow(clippy::too_many_arguments)]
+pub fn verify_saved_private_package_install_begin(
+    saved_request_wire: &[u8],
+    material_wire: &[u8],
+    source_checkpoint_wire: &[u8],
+    stage_end_checkpoint_wire: &[u8],
+    signed_policy_wire: &[u8],
+    prior_objects: &[WireValue],
+    grants_wire: &[u8],
+    instance_id: &str,
+    entrypoint: &str,
+    command_id: &str,
+    issued_at: u64,
+    signing_key: &SigningKey,
+    epoch_key: &[u8; 32],
+) -> Result<PreparedPrivatePackageInstallBegin, PrivateInstallError> {
+    let bad = || PrivateInstallError::Invalid;
+    if saved_request_wire.is_empty() || saved_request_wire.len() > 220_000 {
+        return Err(bad());
+    }
+    let expected = prepare_private_package_install_begin(
+        material_wire,
+        source_checkpoint_wire,
+        stage_end_checkpoint_wire,
+        signed_policy_wire,
+        prior_objects,
+        grants_wire,
+        instance_id,
+        entrypoint,
+        command_id,
+        issued_at,
+        signing_key,
+        epoch_key,
+    )?;
+    let saved = parse_wire_json_bounded(saved_request_wire, 64, 220_000).map_err(|_| bad())?;
+    let fresh = parse_wire_json_bounded(expected.request_wire(), 64, 220_000).map_err(|_| bad())?;
+    if saved.object_len() != Some(2)
+        || canonical_wire_value(
+            saved.get("policy_update").ok_or_else(bad)?,
+            Path::SecureArtifact,
+        )
+        .map_err(|_| bad())?
+            != canonical_wire_value(
+                fresh.get("policy_update").ok_or_else(bad)?,
+                Path::SecureArtifact,
+            )
+            .map_err(|_| bad())?
+    {
+        return Err(bad());
+    }
+    let saved_commit = saved.get("commit").ok_or_else(bad)?;
+    let fresh_commit = fresh.get("commit").ok_or_else(bad)?;
+    let saved_commit_wire =
+        canonical_wire_value(saved_commit, Path::SecureArtifact).map_err(|_| bad())?;
+    let key_id = base64url(&signing_key.verifying_key().to_bytes());
+    if !verify_secure_signed_wire(
+        saved_commit_wire.as_bytes(),
+        "peerwork.secure.commit.v1",
+        &key_id,
+    )
+    .map_err(|_| bad())?
+    {
+        return Err(bad());
+    }
+    let saved_payload = saved_commit.get("payload").ok_or_else(bad)?;
+    let fresh_payload = fresh_commit.get("payload").ok_or_else(bad)?;
+    fn context(value: &WireValue) -> Result<WireValue, PrivateInstallError> {
+        let WireValue::Object(fields) = value else {
+            return Err(PrivateInstallError::Invalid);
+        };
+        Ok(WireValue::Object(
+            fields
+                .iter()
+                .filter(|(name, _)| {
+                    !name.iter().copied().eq("body".encode_utf16())
+                        && !name.iter().copied().eq("mode".encode_utf16())
+                })
+                .cloned()
+                .collect(),
+        ))
+    }
+    if saved_payload.get("mode") != Some(&s("PRIVATE"))
+        || saved_payload.get("body").is_none()
+        || canonical_wire_value(&context(saved_payload)?, Path::SecureArtifact)
+            .map_err(|_| bad())?
+            != canonical_wire_value(&context(fresh_payload)?, Path::SecureArtifact)
+                .map_err(|_| bad())?
+    {
+        return Err(bad());
+    }
+    let saved_body = canonical_wire_value(
+        saved_payload.get("body").ok_or_else(bad)?,
+        Path::SecureArtifact,
+    )
+    .map_err(|_| bad())?;
+    let fresh_body = canonical_wire_value(
+        fresh_payload.get("body").ok_or_else(bad)?,
+        Path::SecureArtifact,
+    )
+    .map_err(|_| bad())?;
+    let saved_sealed: SealedContent = serde_json::from_str(&saved_body).map_err(|_| bad())?;
+    let fresh_sealed: SealedContent = serde_json::from_str(&fresh_body).map_err(|_| bad())?;
+    let context_wire =
+        canonical_wire_value(&context(saved_payload)?, Path::SecureArtifact).map_err(|_| bad())?;
+    let saved_plain =
+        open_content_wire(epoch_key, &saved_sealed, context_wire.as_bytes()).map_err(|_| bad())?;
+    let fresh_plain =
+        open_content_wire(epoch_key, &fresh_sealed, context_wire.as_bytes()).map_err(|_| bad())?;
+    if saved_plain != fresh_plain
+        || canonical_wire_value(&saved, Path::SecureArtifact)
+            .map_err(|_| bad())?
+            .as_bytes()
+            != saved_request_wire
+    {
+        return Err(bad());
+    }
+    Ok(PreparedPrivatePackageInstallBegin {
+        request_wire: saved_request_wire.to_vec(),
+        commit_hash: sha256_hex(saved_commit_wire.as_bytes()),
+        policy_hash: expected.policy_hash,
+        snapshot: expected.snapshot,
+        protocol_digest: expected.protocol_digest,
+        instance_id: expected.instance_id,
+    })
+}
+
+/// Author one encrypted PAGE or END from a signed SEEDING snapshot. Runtime
+/// must derive `plan` from the authenticated source objects and BEGIN policy,
+/// then persist/reprove these exact bytes before network submission.
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_private_package_install_step(
+    signed_policy_wire: &[u8],
+    current_checkpoint_wire: &[u8],
+    signed_snapshot: &WireValue,
+    plan: &PublicInstallSnapshotPlan,
+    command_id: &str,
+    issued_at: u64,
+    signing_key: &SigningKey,
+    epoch_key: &[u8; 32],
+) -> Result<PreparedPrivatePackageInstallStep, PrivateInstallError> {
+    let bad = || PrivateInstallError::Invalid;
+    if !token(command_id) || issued_at > MAX_SAFE {
+        return Err(bad());
+    }
+    let policy = parse_wire_json_bounded(signed_policy_wire, 64, 196_608).map_err(|_| bad())?;
+    let payload = policy.get("payload").ok_or_else(bad)?;
+    let checkpoint =
+        parse_wire_json_bounded(current_checkpoint_wire, 32, 8192).map_err(|_| bad())?;
+    let policy_wire = canonical_wire_value(&policy, Path::SecureArtifact).map_err(|_| bad())?;
+    let version = number(payload, "v")?;
+    let epoch = number(payload, "epoch")?;
+    let actor = actor_id(&signing_key.verifying_key().to_bytes());
+    let key_id = base64url(&signing_key.verifying_key().to_bytes());
+    if !matches!(version, 2 | 3)
+        || epoch == 0
+        || string(payload, "visibility")? != "PRIVATE"
+        || string(payload, "owner_id")? != actor
+        || string(payload, "signing_key")? != key_id
+        || string(&checkpoint, "owner_id")? != actor
+        || string(&checkpoint, "owner_key")? != key_id
+        || string(payload, "workspace_id")? != string(&checkpoint, "workspace_id")?
+        || string(&checkpoint, "policy_hash")? != sha256_hex(policy_wire.as_bytes())
+        || number(payload, "issued_at")? > issued_at
+        || !verify_secure_signed_wire(policy_wire.as_bytes(), "peerwork.secure.policy.v1", &key_id)
+            .map_err(|_| bad())?
+        || (version == 3 && string(payload, "structure_mode")? != "STRUCTURED")
+    {
+        return Err(bad());
+    }
+    for field in ["source", "root", "records", "heads"] {
+        if signed_snapshot.get(field) != plan.snapshot().get(field) {
+            return Err(bad());
+        }
+    }
+    let offset = usize::try_from(number(signed_snapshot, "offset")?).map_err(|_| bad())?;
+    let records = plan.records();
+    let heads = plan.heads();
+    let total = records.len().checked_add(heads.len()).ok_or_else(bad)?;
+    if offset > total {
+        return Err(bad());
+    }
+    let done = offset == total;
+    let (action_id, mode, page_records, page_heads) = if done {
+        (
+            "secure.structure.end",
+            "SNAPSHOT_END",
+            Vec::new(),
+            Vec::new(),
+        )
+    } else if offset < records.len() {
+        let end = offset.saturating_add(50).min(records.len());
+        (
+            "secure.structure.page",
+            "SNAPSHOT_PAGE",
+            records[offset..end].to_vec(),
+            Vec::new(),
+        )
+    } else {
+        let start = offset - records.len();
+        let end = start.saturating_add(50).min(heads.len());
+        (
+            "secure.structure.page",
+            "SNAPSHOT_PAGE",
+            Vec::new(),
+            heads[start..end].to_vec(),
+        )
+    };
+    let structure = obj(vec![
+        ("v", WireValue::Number(1.0)),
+        ("mode", s(mode)),
+        ("snapshot", signed_snapshot.clone()),
+        ("records", WireValue::Array(page_records)),
+        ("heads", WireValue::Array(page_heads)),
+    ]);
+    let operation = obj(vec![
+        ("v", WireValue::Number(1.0)),
+        ("kind", s("ADMIN")),
+        ("input", obj(vec![])),
+        ("objects", WireValue::Array(vec![])),
+    ]);
+    let sequence = number(&checkpoint, "sequence")?
+        .checked_add(1)
+        .ok_or_else(bad)?;
+    let workspace = string(&checkpoint, "workspace_id")?;
+    let previous = string(&checkpoint, "head")?;
+    let policy_hash = string(&checkpoint, "policy_hash")?;
+    let mut fields = vec![
+        ("v", WireValue::Number(version as f64)),
+        ("workspace_id", s(&workspace)),
+        ("sequence", WireValue::Number(sequence as f64)),
+        ("previous", s(&previous)),
+        ("policy_hash", s(&policy_hash)),
+        ("epoch", WireValue::Number(epoch as f64)),
+        ("actor_id", s(&actor)),
+        ("signing_key", s(&key_id)),
+        ("command_id", s(command_id)),
+        ("action_id", s(action_id)),
+        ("instance_id", WireValue::Null),
+        ("issued_at", WireValue::Number(issued_at as f64)),
+        ("delegation", WireValue::Null),
+        ("structure", structure),
+    ];
+    let ceiling = if version == 3 {
+        let n = number(payload, "protocol_format_ceiling")?;
+        fields.push(("protocol_format_ceiling", WireValue::Number(n as f64)));
+        Some(n)
+    } else {
+        None
+    };
+    let context = obj(fields);
+    let operation_wire =
+        canonical_wire_value(&operation, Path::SecureArtifact).map_err(|_| bad())?;
+    let commit = sign_private_commit(
+        &context,
+        operation_wire.as_bytes(),
+        epoch_key,
+        signing_key,
+        &crate::prepared_secure_request::SecureCommitRequestPins {
+            actor_id: &actor,
+            signing_key: &key_id,
+            workspace_id: &workspace,
+            policy_hash: &policy_hash,
+            sequence,
+            previous: Some(&previous),
+            epoch,
+            mode: "PRIVATE",
+            version,
+            protocol_format_ceiling: ceiling,
+        },
+    )
+    .map_err(|_| PrivateInstallError::Author)?;
+    let request_wire = format!("{{\"commit\":{commit}}}").into_bytes();
+    if request_wire.len() > 220_000 {
+        return Err(PrivateInstallError::Resource);
+    }
+    Ok(PreparedPrivatePackageInstallStep {
+        request_wire,
+        commit_hash: sha256_hex(commit.as_bytes()),
+        action_id,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn verify_saved_private_package_install_step(
+    saved_request_wire: &[u8],
+    signed_policy_wire: &[u8],
+    current_checkpoint_wire: &[u8],
+    signed_snapshot: &WireValue,
+    plan: &PublicInstallSnapshotPlan,
+    command_id: &str,
+    issued_at: u64,
+    signing_key: &SigningKey,
+    epoch_key: &[u8; 32],
+) -> Result<PreparedPrivatePackageInstallStep, PrivateInstallError> {
+    let bad = || PrivateInstallError::Invalid;
+    if saved_request_wire.is_empty() || saved_request_wire.len() > 220_000 {
+        return Err(bad());
+    }
+    let expected = prepare_private_package_install_step(
+        signed_policy_wire,
+        current_checkpoint_wire,
+        signed_snapshot,
+        plan,
+        command_id,
+        issued_at,
+        signing_key,
+        epoch_key,
+    )?;
+    let saved = parse_wire_json_bounded(saved_request_wire, 64, 220_000).map_err(|_| bad())?;
+    let fresh = parse_wire_json_bounded(expected.request_wire(), 64, 220_000).map_err(|_| bad())?;
+    if saved.object_len() != Some(1) {
+        return Err(bad());
+    }
+    let saved_commit = saved.get("commit").ok_or_else(bad)?;
+    let fresh_commit = fresh.get("commit").ok_or_else(bad)?;
+    let saved_commit_wire =
+        canonical_wire_value(saved_commit, Path::SecureArtifact).map_err(|_| bad())?;
+    if !verify_secure_signed_wire(
+        saved_commit_wire.as_bytes(),
+        "peerwork.secure.commit.v1",
+        &base64url(&signing_key.verifying_key().to_bytes()),
+    )
+    .map_err(|_| bad())?
+    {
+        return Err(bad());
+    }
+    let saved_payload = saved_commit.get("payload").ok_or_else(bad)?;
+    let fresh_payload = fresh_commit.get("payload").ok_or_else(bad)?;
+    let context = |value: &WireValue| -> Result<WireValue, PrivateInstallError> {
+        let WireValue::Object(fields) = value else {
+            return Err(bad());
+        };
+        Ok(WireValue::Object(
+            fields
+                .iter()
+                .filter(|(name, _)| {
+                    !name.iter().copied().eq("body".encode_utf16())
+                        && !name.iter().copied().eq("mode".encode_utf16())
+                })
+                .cloned()
+                .collect(),
+        ))
+    };
+    let saved_context = context(saved_payload)?;
+    if saved_payload.get("mode") != Some(&s("PRIVATE"))
+        || canonical_wire_value(&saved_context, Path::SecureArtifact).map_err(|_| bad())?
+            != canonical_wire_value(&context(fresh_payload)?, Path::SecureArtifact)
+                .map_err(|_| bad())?
+    {
+        return Err(bad());
+    }
+    let open = |payload: &WireValue| -> Result<Vec<u8>, PrivateInstallError> {
+        let body = canonical_wire_value(payload.get("body").ok_or_else(bad)?, Path::SecureArtifact)
+            .map_err(|_| bad())?;
+        let sealed: SealedContent = serde_json::from_str(&body).map_err(|_| bad())?;
+        let context_wire =
+            canonical_wire_value(&saved_context, Path::SecureArtifact).map_err(|_| bad())?;
+        open_content_wire(epoch_key, &sealed, context_wire.as_bytes()).map_err(|_| bad())
+    };
+    if open(saved_payload)? != open(fresh_payload)?
+        || canonical_wire_value(&saved, Path::SecureArtifact)
+            .map_err(|_| bad())?
+            .as_bytes()
+            != saved_request_wire
+    {
+        return Err(bad());
+    }
+    Ok(PreparedPrivatePackageInstallStep {
+        request_wire: saved_request_wire.to_vec(),
+        commit_hash: sha256_hex(saved_commit_wire.as_bytes()),
+        action_id: expected.action_id,
     })
 }
 

@@ -5,19 +5,26 @@ use crate::{
     kernel_identity::KernelIdentity,
     secure_intents::{SecureIntentError, SecureIntentJournal, SecurePacketInput},
     secure_lifecycle::SecureLifecycle,
-    secure_read_access::SecureReadAccessError,
+    secure_read_access::{
+        SecureReadAccess, SecureReadAccessError, SecureReadConfig, VerifiedReadFloor,
+    },
     secure_read_profile::{SecureReadProfile, SecureReadProfileConfig},
     secure_state::{SecureStateError, SecureStateStore},
     secure_verified_read::TransportReplayedJournal,
     transport::{HttpTransport, TransportConfig, TransportError},
 };
 use peerwork_core::{
-    crypto::{base64url, decode_base64url, sha256_hex},
+    canonical::Path as CanonicalPath,
+    crypto::{base64url, decode_base64url, sha256, sha256_hex},
     prepared_private_install::{
-        prepare_private_package_stage, verify_saved_private_package_stage, PrivateInstallError,
+        prepare_private_package_install_begin, prepare_private_package_install_step,
+        prepare_private_package_stage, verify_saved_private_package_install_begin,
+        verify_saved_private_package_install_step, verify_saved_private_package_stage,
+        PrivateInstallError,
     },
+    public_direct_install::plan_public_install_snapshot,
     replayed_secure_journal::StructureStatus,
-    wire_json::{parse_wire_json_bounded, WireValue},
+    wire_json::{canonical_wire_value, parse_wire_json_bounded, WireValue},
 };
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
@@ -107,6 +114,114 @@ pub struct PrivatePackageStageResult {
     pub part_count: usize,
     pub applied_parts: usize,
     pub pending_command_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PrivatePackageInstallBeginInput {
+    pub stage_id: String,
+    pub instance_id: String,
+    pub entrypoint: String,
+    pub grants_json: String,
+    #[serde(default)]
+    pub command_id: Option<String>,
+    #[serde(default)]
+    pub issued_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PrivatePackageInstallProgress {
+    pub status: &'static str,
+    pub begin_command_id: String,
+    pub step_command_id: String,
+    pub step_action_id: &'static str,
+    pub workspace_id: String,
+    pub protocol_digest: String,
+    pub instance_id: String,
+    pub commit_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InstallRow {
+    stage_id: String,
+    instance_id: String,
+    entrypoint: String,
+    grants_json: String,
+    issued_at_ms: u64,
+    request_b64: String,
+    commit_hash: String,
+    policy_hash: String,
+    snapshot_json: String,
+    protocol_digest: String,
+    #[serde(default)]
+    steps: Vec<InstallStep>,
+    #[serde(default)]
+    accepted: Option<AcceptedInstall>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InstallStep {
+    command_id: String,
+    issued_at_ms: u64,
+    request_b64: String,
+    commit_hash: String,
+    action_id: String,
+    offset: usize,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AcceptedInstall {
+    sequence: u64,
+    head: String,
+    policy_hash: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InstallDocument {
+    v: u8,
+    origin: String,
+    actor_id: String,
+    workspace_id: String,
+    owner_key_id: String,
+    rows: BTreeMap<String, InstallRow>,
+}
+impl InstallDocument {
+    fn open(
+        store: &SecureStateStore,
+        config: &SecureReadProfileConfig,
+        actor: &str,
+        key: &str,
+    ) -> Result<Self, PrivatePackageInstallError> {
+        let doc = match store.read_exact_secret()? {
+            Some(bytes) => serde_json::from_slice::<Self>(&bytes)
+                .map_err(|_| PrivatePackageInstallError::Identity)?,
+            None => Self {
+                v: 1,
+                origin: config.origin.clone(),
+                actor_id: actor.into(),
+                workspace_id: config.workspace_id.clone(),
+                owner_key_id: key.into(),
+                rows: BTreeMap::new(),
+            },
+        };
+        if doc.v != 1
+            || doc.origin != config.origin
+            || doc.actor_id != actor
+            || doc.workspace_id != config.workspace_id
+            || doc.owner_key_id != key
+            || doc.rows.len() > 16
+        {
+            return Err(PrivatePackageInstallError::Identity);
+        }
+        Ok(doc)
+    }
+    fn save(&self, store: &SecureStateStore) -> Result<(), PrivatePackageInstallError> {
+        store.write_exact(
+            &serde_json::to_vec(self).map_err(|_| PrivatePackageInstallError::Encoding)?,
+        )?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -235,12 +350,788 @@ fn checkpoint_json(
     serde_json::to_string(&value).map_err(|_| PrivatePackageInstallError::Encoding)
 }
 
+fn install_step_id(begin_id: &str, offset: usize, done: bool) -> String {
+    let domain = if done {
+        format!("peerwork.private.install.end.v1:{begin_id}")
+    } else {
+        format!("peerwork.private.install.page.v1:{begin_id}:{offset}")
+    };
+    base64url(&sha256(domain.as_bytes()))
+}
+fn same_snapshot(left: &WireValue, right: &WireValue) -> bool {
+    ["source", "root", "records", "heads"]
+        .iter()
+        .all(|field| left.get(field).is_some() && left.get(field) == right.get(field))
+}
+fn post_saved_private(
+    config: &SecureReadProfileConfig,
+    origin: &str,
+    journal: &mut SecureIntentJournal,
+    id: &str,
+    packet: Vec<u8>,
+    cancel: &CancellationToken,
+) -> Result<(), PrivatePackageInstallError> {
+    let path = format!(
+        "/api/workspace/v1/secure/workspaces/{}/commits",
+        config.workspace_id
+    );
+    let mut transport_config = TransportConfig::new(config.origin.clone());
+    transport_config.allow_loopback_http = config.allow_loopback_http;
+    let transport =
+        HttpTransport::new(transport_config).map_err(|_| PrivatePackageInstallError::Transport)?;
+    if transport.trusted_origin() != origin {
+        return Err(PrivatePackageInstallError::Transport);
+    }
+    let runtime = Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| PrivatePackageInstallError::Runtime)?;
+    match runtime.block_on(transport.post_exact(&path, packet, cancel)) {
+        Ok(response) => {
+            if !response.wire.is_empty() {
+                journal.observe_response(id, &response.wire)?
+            }
+            if !(200..300).contains(&response.status) {
+                return Err(PrivatePackageInstallError::ServerRejected(response.status));
+            }
+        }
+        Err(TransportError::SubmittedUncertain) => {}
+        Err(_) => return Err(PrivatePackageInstallError::Transport),
+    }
+    Ok(())
+}
+
 pub struct SecurePrivatePackageInstall {
     config: SecureReadProfileConfig,
 }
 impl SecurePrivatePackageInstall {
     pub fn new(config: SecureReadProfileConfig) -> Self {
         Self { config }
+    }
+
+    /// Fetch a complete signed SEEDING candidate while retaining the last
+    /// verified ACTIVE profile floor. Candidate bytes cannot authorize a
+    /// normal read or replace the protected active generation.
+    fn with_install_replay<T, F>(
+        &self,
+        cancel: &CancellationToken,
+        consume: F,
+    ) -> Result<T, PrivatePackageInstallError>
+    where
+        F: FnOnce(
+            &TransportReplayedJournal,
+            &TransportReplayedJournal,
+        ) -> Result<T, PrivatePackageInstallError>,
+    {
+        SecureReadProfile::new(self.config.clone()).with_pinned_replay(cancel, |prior| {
+            let floor = VerifiedReadFloor {
+                sequence: prior.replay().sequence(),
+                head: prior.replay().head().map(str::to_owned),
+                policy_hash: prior.replay().policy_hash().to_owned(),
+            };
+            let access = SecureReadAccess::new(SecureReadConfig {
+                origin: prior.origin().to_owned(),
+                kernel_journal_path: self.config.state_dir.join("kernel.sqlite"),
+                read_state_path: self.config.state_dir.join("private-install-read.state"),
+                lifecycle_path: self.config.state_dir.join("lifecycle.state"),
+                identity_path: self.config.identity_path.clone(),
+                workspace_id: prior.replay().workspace_id().to_owned(),
+                authority: prior.authority().to_owned(),
+                owner_actor_id: prior.replay().owner_actor_id().to_owned(),
+                owner_key_id: prior.replay().owner_signing_key().to_owned(),
+                required_features: self.config.required_features.clone(),
+                allow_loopback_http: self.config.allow_loopback_http,
+                max_replay_artifact_bytes: self.config.max_replay_artifact_bytes,
+            });
+            let (fresh, _) = access.replay_checked_install_generation(cancel, &floor)?;
+            if fresh.origin() != prior.origin()
+                || fresh.authority() != prior.authority()
+                || fresh.replay().workspace_id() != prior.replay().workspace_id()
+                || fresh.replay().owner_actor_id() != prior.replay().owner_actor_id()
+                || fresh.replay().owner_signing_key() != prior.replay().owner_signing_key()
+            {
+                return Err(PrivatePackageInstallError::Identity);
+            }
+            consume(prior, &fresh)
+        })
+    }
+
+    /// Discover protected generated BEGIN IDs without a network request.
+    /// A row is an intent, never evidence that installation was accepted.
+    pub fn installs_json(&self) -> Result<String, PrivatePackageInstallError> {
+        let scope = SecureReadProfile::new(self.config.clone()).local_pending_scope()?;
+        let identity = KernelIdentity::open(&self.config.identity_path)
+            .map_err(|_| PrivatePackageInstallError::Identity)?;
+        if scope.origin != self.config.origin
+            || scope.workspace_id != self.config.workspace_id
+            || scope.owner_actor_id != identity.actor_id()
+            || scope.owner_key_id != identity.key_id()
+        {
+            return Err(PrivatePackageInstallError::Identity);
+        }
+        let store = SecureStateStore::open(
+            &self
+                .config
+                .state_dir
+                .join("private-install-operations.state"),
+        )?;
+        let doc =
+            InstallDocument::open(&store, &self.config, identity.actor_id(), identity.key_id())?;
+        let rows:Vec<_>=doc.rows.iter().map(|(id,row)|serde_json::json!({"begin_command_id":id,"stage_id":row.stage_id,"workspace_id":doc.workspace_id,"instance_id":row.instance_id,"protocol_digest":row.protocol_digest,"locally_saved":true})).collect();
+        serde_json::to_string(&rows).map_err(|_| PrivatePackageInstallError::Encoding)
+    }
+
+    pub fn submit_begin_json(
+        &self,
+        input: PrivatePackageInstallBeginInput,
+    ) -> Result<String, PrivatePackageInstallError> {
+        self.submit_begin_json_with_cancel(input, &CancellationToken::new())
+    }
+    pub fn submit_begin_json_with_cancel(
+        &self,
+        input: PrivatePackageInstallBeginInput,
+        cancel: &CancellationToken,
+    ) -> Result<String, PrivatePackageInstallError> {
+        if !token(&input.stage_id)
+            || !token(&input.instance_id)
+            || input.command_id.as_deref().is_some_and(|id| !token(id))
+            || input.entrypoint.is_empty()
+            || input.entrypoint.len() > 64
+            || !input.entrypoint.as_bytes()[0].is_ascii_alphabetic()
+            || !input
+                .entrypoint
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            || input.entrypoint == "coordination"
+        {
+            return Err(PrivatePackageInstallError::Input);
+        }
+        let command_id = input.command_id.clone().map(Ok).unwrap_or_else(random_id)?;
+        let issued_at = input.issued_at_ms.map(Ok).unwrap_or_else(now_ms)?;
+        let result =
+            SecureReadProfile::new(self.config.clone()).with_latest_replay(cancel, |source| {
+                source
+                    .verified_read()
+                    .map_err(|_| PrivatePackageInstallError::Identity)?;
+                let identity = KernelIdentity::open(&self.config.identity_path)
+                    .map_err(|_| PrivatePackageInstallError::Identity)?;
+                if source.origin() != self.config.origin
+                    || source.source_actor_id() != identity.actor_id()
+                    || source.source_key_id() != identity.key_id()
+                    || source.replay().owner_actor_id() != identity.actor_id()
+                    || source.replay().owner_signing_key() != identity.key_id()
+                    || source.replay().workspace_id() != self.config.workspace_id
+                    || source.replay().structure_status() != StructureStatus::Active
+                {
+                    return Err(PrivatePackageInstallError::Identity);
+                }
+                let stage_store =
+                    SecureStateStore::open(&self.config.state_dir.join("private-install.state"))?;
+                let stage_doc = StageDocument::open(
+                    &stage_store,
+                    &self.config,
+                    identity.actor_id(),
+                    identity.actor_id(),
+                    identity.key_id(),
+                )?;
+                let stage = stage_doc
+                    .rows
+                    .get(&input.stage_id)
+                    .ok_or(PrivatePackageInstallError::Input)?
+                    .clone();
+                drop(stage_doc);
+                drop(stage_store);
+                let base =
+                    parse_wire_json_bounded(stage.source_checkpoint_json.as_bytes(), 32, 8192)
+                        .map_err(|_| PrivatePackageInstallError::Input)?;
+                let base_sequence = number(&base, "sequence")?;
+                let base_head = scalar(&base, "head")?;
+                if !stage.completed
+                    || stage.steps.len() != stage.part_count
+                    || source.replay().sequence() != base_sequence + stage.part_count as u64
+                    || source.replay().policy_hash() != stage.policy_hash
+                    || !source.replay().contains_checkpoint(
+                        base_sequence,
+                        Some(&base_head),
+                        &stage.policy_hash,
+                    )
+                {
+                    return Err(PrivatePackageInstallError::Plan);
+                }
+                for (offset, step) in stage.steps.iter().enumerate() {
+                    if !source.replay().contains_checkpoint(
+                        base_sequence + offset as u64 + 1,
+                        Some(&step.commit_hash),
+                        &stage.policy_hash,
+                    ) {
+                        return Err(PrivatePackageInstallError::Plan);
+                    }
+                }
+                let lifecycle = SecureLifecycle::open(
+                    &self.config.state_dir.join("lifecycle.state"),
+                    source.origin(),
+                    identity.actor_id(),
+                    source.replay().workspace_id(),
+                    source.replay().owner_actor_id(),
+                    source.replay().owner_signing_key(),
+                )
+                .map_err(|_| PrivatePackageInstallError::Identity)?;
+                if lifecycle.active_keyring_without_pending().is_none() {
+                    return Err(PrivatePackageInstallError::Identity);
+                }
+                let policy_wire = source
+                    .signed_policy_by_hash(source.replay().policy_hash())
+                    .ok_or(PrivatePackageInstallError::Identity)?;
+                let policy = parse_wire_json_bounded(policy_wire, 64, 196_608)
+                    .map_err(|_| PrivatePackageInstallError::Input)?;
+                let epoch = number(
+                    policy
+                        .get("payload")
+                        .ok_or(PrivatePackageInstallError::Input)?,
+                    "epoch",
+                )?;
+                let key = lifecycle
+                    .active_key(epoch)
+                    .ok_or(PrivatePackageInstallError::Identity)?;
+                let material = decode_base64url(&stage.material_b64)
+                    .map_err(|_| PrivatePackageInstallError::Identity)?;
+                let prepared = prepare_private_package_install_begin(
+                    &material,
+                    stage.source_checkpoint_json.as_bytes(),
+                    source.checkpoint_canonical_json().as_bytes(),
+                    policy_wire,
+                    source.replay().objects(),
+                    input.grants_json.as_bytes(),
+                    &input.instance_id,
+                    &input.entrypoint,
+                    &command_id,
+                    issued_at,
+                    identity.signing_key(),
+                    key,
+                )?;
+                if prepared.protocol_digest() != stage.protocol_digest {
+                    return Err(PrivatePackageInstallError::Plan);
+                }
+                let store = SecureStateStore::open(
+                    &self
+                        .config
+                        .state_dir
+                        .join("private-install-operations.state"),
+                )?;
+                let mut doc = InstallDocument::open(
+                    &store,
+                    &self.config,
+                    identity.actor_id(),
+                    identity.key_id(),
+                )?;
+                if doc.rows.len() >= 16
+                    || !doc.rows.is_empty()
+                    || doc.rows.contains_key(&command_id)
+                {
+                    return Err(PrivatePackageInstallError::Input);
+                }
+                let snapshot_json = peerwork_core::wire_json::canonical_wire_value(
+                    prepared.snapshot(),
+                    peerwork_core::canonical::Path::SecureArtifact,
+                )
+                .map_err(|_| PrivatePackageInstallError::Plan)?;
+                let row = InstallRow {
+                    stage_id: input.stage_id.clone(),
+                    instance_id: input.instance_id.clone(),
+                    entrypoint: input.entrypoint.clone(),
+                    grants_json: input.grants_json.clone(),
+                    issued_at_ms: issued_at,
+                    request_b64: base64url(prepared.request_wire()),
+                    commit_hash: prepared.commit_hash().to_owned(),
+                    policy_hash: prepared.policy_hash().to_owned(),
+                    snapshot_json,
+                    protocol_digest: prepared.protocol_digest().to_owned(),
+                    steps: Vec::new(),
+                    accepted: None,
+                };
+                doc.rows.insert(command_id.clone(), row);
+                doc.save(&store)?;
+                let mut journal = SecureIntentJournal::open(
+                    &self.config.state_dir.join("private-install-intents.state"),
+                    source.origin(),
+                    identity.actor_id(),
+                )?;
+                let path = format!(
+                    "/api/workspace/v1/secure/workspaces/{}/commits",
+                    self.config.workspace_id
+                );
+                journal.prepare(SecurePacketInput {
+                    intent_id: &command_id,
+                    path: &path,
+                    action_id: "secure.structure.begin",
+                    workspace_id: Some(&self.config.workspace_id),
+                    trusted_owner_key: Some(identity.key_id()),
+                    intent_digest: prepared.commit_hash(),
+                    exact_request: prepared.request_wire(),
+                })?;
+                if journal.exact_request(&command_id)? != prepared.request_wire()
+                    || journal.intent_digest(&command_id)? != prepared.commit_hash()
+                {
+                    return Err(PrivatePackageInstallError::Plan);
+                }
+                let mut transport_config = TransportConfig::new(self.config.origin.clone());
+                transport_config.allow_loopback_http = self.config.allow_loopback_http;
+                let transport = HttpTransport::new(transport_config)
+                    .map_err(|_| PrivatePackageInstallError::Transport)?;
+                if transport.trusted_origin() != source.origin() {
+                    return Err(PrivatePackageInstallError::Transport);
+                }
+                let runtime = Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|_| PrivatePackageInstallError::Runtime)?;
+                match runtime.block_on(transport.post_exact(
+                    &path,
+                    prepared.request_wire().to_vec(),
+                    cancel,
+                )) {
+                    Ok(response) => {
+                        if !response.wire.is_empty() {
+                            journal.observe_response(&command_id, &response.wire)?
+                        }
+                        if !(200..300).contains(&response.status) {
+                            return Err(PrivatePackageInstallError::ServerRejected(
+                                response.status,
+                            ));
+                        }
+                    }
+                    Err(TransportError::SubmittedUncertain) => {}
+                    Err(_) => return Err(PrivatePackageInstallError::Transport),
+                }
+                Ok(PrivatePackageInstallProgress {
+                    status: "PENDING",
+                    begin_command_id: command_id.clone(),
+                    step_command_id: command_id,
+                    step_action_id: "secure.structure.begin",
+                    workspace_id: self.config.workspace_id.clone(),
+                    protocol_digest: prepared.protocol_digest().to_owned(),
+                    instance_id: prepared.instance_id().to_owned(),
+                    commit_hash: prepared.commit_hash().to_owned(),
+                })
+            })?;
+        serde_json::to_string(&result).map_err(|_| PrivatePackageInstallError::Encoding)
+    }
+
+    pub fn continue_install_json(
+        &self,
+        begin_id: &str,
+    ) -> Result<String, PrivatePackageInstallError> {
+        self.continue_install_json_with_cancel(begin_id, &CancellationToken::new())
+    }
+    pub fn continue_install_json_with_cancel(
+        &self,
+        begin_id: &str,
+        cancel: &CancellationToken,
+    ) -> Result<String, PrivatePackageInstallError> {
+        if !token(begin_id) {
+            return Err(PrivatePackageInstallError::Input);
+        }
+        let result = self.with_install_replay(cancel, |prior, fresh| {
+            let identity = KernelIdentity::open(&self.config.identity_path)
+                .map_err(|_| PrivatePackageInstallError::Identity)?;
+            if identity.actor_id() != prior.replay().owner_actor_id()
+                || identity.key_id() != prior.replay().owner_signing_key()
+            {
+                return Err(PrivatePackageInstallError::Identity);
+            }
+            let store = SecureStateStore::open(
+                &self
+                    .config
+                    .state_dir
+                    .join("private-install-operations.state"),
+            )?;
+            let mut doc = InstallDocument::open(
+                &store,
+                &self.config,
+                identity.actor_id(),
+                identity.key_id(),
+            )?;
+            let mut row = doc
+                .rows
+                .get(begin_id)
+                .cloned()
+                .ok_or(PrivatePackageInstallError::Input)?;
+            if let Some(accepted) = &row.accepted {
+                if !prior.replay().contains_checkpoint(
+                    accepted.sequence,
+                    Some(&accepted.head),
+                    &accepted.policy_hash,
+                ) && !fresh.replay().contains_checkpoint(
+                    accepted.sequence,
+                    Some(&accepted.head),
+                    &accepted.policy_hash,
+                ) {
+                    return Err(PrivatePackageInstallError::Plan);
+                }
+                return Ok(PrivatePackageInstallProgress {
+                    status: "ACCEPTED",
+                    begin_command_id: begin_id.into(),
+                    step_command_id: row
+                        .steps
+                        .last()
+                        .map(|s| s.command_id.clone())
+                        .unwrap_or_else(|| begin_id.into()),
+                    step_action_id: "secure.structure.end",
+                    workspace_id: self.config.workspace_id.clone(),
+                    protocol_digest: row.protocol_digest,
+                    instance_id: row.instance_id,
+                    commit_hash: row
+                        .steps
+                        .last()
+                        .map(|s| s.commit_hash.clone())
+                        .unwrap_or(row.commit_hash),
+                });
+            }
+            let stage_store =
+                SecureStateStore::open(&self.config.state_dir.join("private-install.state"))?;
+            let stage_doc = StageDocument::open(
+                &stage_store,
+                &self.config,
+                identity.actor_id(),
+                identity.actor_id(),
+                identity.key_id(),
+            )?;
+            let stage = stage_doc
+                .rows
+                .get(&row.stage_id)
+                .cloned()
+                .ok_or(PrivatePackageInstallError::Identity)?;
+            drop(stage_doc);
+            drop(stage_store);
+            let base = parse_wire_json_bounded(stage.source_checkpoint_json.as_bytes(), 32, 8192)
+                .map_err(|_| PrivatePackageInstallError::Input)?;
+            let base_sequence = number(&base, "sequence")?;
+            let base_head = scalar(&base, "head")?;
+            if !stage.completed
+                || stage.steps.len() != stage.part_count
+                || prior.replay().sequence() != base_sequence + stage.part_count as u64
+                || prior.replay().policy_hash() != stage.policy_hash
+                || !prior.replay().contains_checkpoint(
+                    base_sequence,
+                    Some(&base_head),
+                    &stage.policy_hash,
+                )
+            {
+                return Err(PrivatePackageInstallError::Plan);
+            }
+            for (offset, step) in stage.steps.iter().enumerate() {
+                if !prior.replay().contains_checkpoint(
+                    base_sequence + offset as u64 + 1,
+                    Some(&step.commit_hash),
+                    &stage.policy_hash,
+                ) {
+                    return Err(PrivatePackageInstallError::Plan);
+                }
+            }
+            let lifecycle = SecureLifecycle::open(
+                &self.config.state_dir.join("lifecycle.state"),
+                prior.origin(),
+                identity.actor_id(),
+                prior.replay().workspace_id(),
+                prior.replay().owner_actor_id(),
+                prior.replay().owner_signing_key(),
+            )
+            .map_err(|_| PrivatePackageInstallError::Identity)?;
+            if lifecycle.active_keyring_without_pending().is_none() {
+                return Err(PrivatePackageInstallError::Identity);
+            }
+            let prior_policy = prior
+                .signed_policy_by_hash(prior.replay().policy_hash())
+                .ok_or(PrivatePackageInstallError::Identity)?;
+            let prior_policy_value = parse_wire_json_bounded(prior_policy, 64, 196_608)
+                .map_err(|_| PrivatePackageInstallError::Input)?;
+            let prior_epoch = number(
+                prior_policy_value
+                    .get("payload")
+                    .ok_or(PrivatePackageInstallError::Input)?,
+                "epoch",
+            )?;
+            let key = lifecycle
+                .active_key(prior_epoch)
+                .ok_or(PrivatePackageInstallError::Identity)?;
+            let material = decode_base64url(&stage.material_b64)
+                .map_err(|_| PrivatePackageInstallError::Identity)?;
+            let exact_begin = decode_base64url(&row.request_b64)
+                .map_err(|_| PrivatePackageInstallError::Identity)?;
+            let checked = verify_saved_private_package_install_begin(
+                &exact_begin,
+                &material,
+                stage.source_checkpoint_json.as_bytes(),
+                prior.checkpoint_canonical_json().as_bytes(),
+                prior_policy,
+                prior.replay().objects(),
+                row.grants_json.as_bytes(),
+                &row.instance_id,
+                &row.entrypoint,
+                begin_id,
+                row.issued_at_ms,
+                identity.signing_key(),
+                key,
+            )?;
+            if checked.commit_hash() != row.commit_hash
+                || checked.policy_hash() != row.policy_hash
+                || checked.protocol_digest() != row.protocol_digest
+                || canonical_wire_value(checked.snapshot(), CanonicalPath::SecureArtifact)
+                    .map_err(|_| PrivatePackageInstallError::Plan)?
+                    != row.snapshot_json
+            {
+                return Err(PrivatePackageInstallError::Plan);
+            }
+            let mut journal = SecureIntentJournal::open(
+                &self.config.state_dir.join("private-install-intents.state"),
+                prior.origin(),
+                identity.actor_id(),
+            )?;
+            if journal.exact_request(begin_id)? != exact_begin
+                || journal.intent_digest(begin_id)? != row.commit_hash
+            {
+                return Err(PrivatePackageInstallError::Plan);
+            }
+            if fresh.replay().sequence() == prior.replay().sequence()
+                && fresh.replay().head() == prior.replay().head()
+                && fresh.replay().policy_hash() == prior.replay().policy_hash()
+            {
+                post_saved_private(
+                    &self.config,
+                    prior.origin(),
+                    &mut journal,
+                    begin_id,
+                    exact_begin,
+                    cancel,
+                )?;
+                return Ok(PrivatePackageInstallProgress {
+                    status: "PENDING",
+                    begin_command_id: begin_id.into(),
+                    step_command_id: begin_id.into(),
+                    step_action_id: "secure.structure.begin",
+                    workspace_id: self.config.workspace_id.clone(),
+                    protocol_digest: row.protocol_digest,
+                    instance_id: row.instance_id,
+                    commit_hash: row.commit_hash,
+                });
+            }
+            if !fresh.replay().contains_checkpoint(
+                prior.replay().sequence() + 1,
+                Some(&row.commit_hash),
+                &row.policy_hash,
+            ) || fresh.replay().policy_hash() != row.policy_hash
+            {
+                return Err(PrivatePackageInstallError::Plan);
+            }
+            for (index, step) in row.steps.iter().enumerate() {
+                let sequence = prior.replay().sequence() + 2 + index as u64;
+                if fresh.replay().sequence() >= sequence
+                    && !fresh.replay().contains_checkpoint(
+                        sequence,
+                        Some(&step.commit_hash),
+                        &row.policy_hash,
+                    )
+                {
+                    return Err(PrivatePackageInstallError::Plan);
+                }
+            }
+            if fresh.replay().structure_status() == StructureStatus::Active {
+                let end = row.steps.last().ok_or(PrivatePackageInstallError::Plan)?;
+                if end.action_id != "secure.structure.end"
+                    || !fresh.replay().contains_checkpoint(
+                        prior.replay().sequence() + 1 + row.steps.len() as u64,
+                        Some(&end.commit_hash),
+                        &row.policy_hash,
+                    )
+                {
+                    return Err(PrivatePackageInstallError::Plan);
+                }
+                fresh
+                    .verified_read()
+                    .map_err(|_| PrivatePackageInstallError::Plan)?;
+                let found = fresh.replay().objects().iter().any(|object| {
+                    object.get("kind").and_then(WireValue::as_string).as_deref()
+                        == Some("instances")
+                        && object.get("id").and_then(WireValue::as_string).as_deref()
+                            == Some(&row.instance_id)
+                        && object
+                            .get("value")
+                            .and_then(|value| value.get("protocol_digest"))
+                            .and_then(WireValue::as_string)
+                            .as_deref()
+                            == Some(&row.protocol_digest)
+                });
+                if !found {
+                    return Err(PrivatePackageInstallError::Plan);
+                }
+                row.accepted = Some(AcceptedInstall {
+                    sequence: fresh.replay().sequence(),
+                    head: fresh
+                        .replay()
+                        .head()
+                        .ok_or(PrivatePackageInstallError::Plan)?
+                        .into(),
+                    policy_hash: fresh.replay().policy_hash().into(),
+                });
+                doc.rows.insert(begin_id.into(), row.clone());
+                doc.save(&store)?;
+                return Ok(PrivatePackageInstallProgress {
+                    status: "ACCEPTED",
+                    begin_command_id: begin_id.into(),
+                    step_command_id: end.command_id.clone(),
+                    step_action_id: "secure.structure.end",
+                    workspace_id: self.config.workspace_id.clone(),
+                    protocol_digest: row.protocol_digest,
+                    instance_id: row.instance_id,
+                    commit_hash: end.commit_hash.clone(),
+                });
+            }
+            if fresh.replay().structure_status() != StructureStatus::Seeding {
+                return Err(PrivatePackageInstallError::Plan);
+            }
+            let signed_snapshot = fresh
+                .replay()
+                .structure_snapshot()
+                .ok_or(PrivatePackageInstallError::Plan)?;
+            let beginning = parse_wire_json_bounded(row.snapshot_json.as_bytes(), 32, 8192)
+                .map_err(|_| PrivatePackageInstallError::Plan)?;
+            if !same_snapshot(signed_snapshot, &beginning) {
+                return Err(PrivatePackageInstallError::Plan);
+            }
+            let signed_policy = fresh
+                .signed_policy_by_hash(&row.policy_hash)
+                .ok_or(PrivatePackageInstallError::Plan)?;
+            let policy = parse_wire_json_bounded(signed_policy, 64, 196_608)
+                .map_err(|_| PrivatePackageInstallError::Plan)?;
+            let structure = policy
+                .get("payload")
+                .and_then(|p| p.get("structure"))
+                .ok_or(PrivatePackageInstallError::Plan)?;
+            let plan = plan_public_install_snapshot(
+                prior.replay().objects(),
+                structure,
+                &parse_wire_json_bounded(prior.checkpoint_canonical_json().as_bytes(), 32, 8192)
+                    .map_err(|_| PrivatePackageInstallError::Plan)?,
+            )
+            .map_err(|_| PrivatePackageInstallError::Plan)?;
+            if !same_snapshot(plan.snapshot(), &beginning) {
+                return Err(PrivatePackageInstallError::Plan);
+            }
+            let offset = usize::try_from(number(signed_snapshot, "offset")?)
+                .map_err(|_| PrivatePackageInstallError::Plan)?;
+            let total = plan
+                .records()
+                .len()
+                .checked_add(plan.heads().len())
+                .ok_or(PrivatePackageInstallError::Plan)?;
+            if offset > total {
+                return Err(PrivatePackageInstallError::Plan);
+            }
+            let done = offset == total;
+            let step_id = install_step_id(begin_id, offset, done);
+            let existing = row
+                .steps
+                .iter()
+                .find(|step| step.command_id == step_id)
+                .cloned();
+            let issued_at = existing
+                .as_ref()
+                .map(|step| step.issued_at_ms)
+                .unwrap_or(now_ms()?);
+            let signed = if let Some(step) = &existing {
+                if step.offset != offset
+                    || step.action_id
+                        != if done {
+                            "secure.structure.end"
+                        } else {
+                            "secure.structure.page"
+                        }
+                {
+                    return Err(PrivatePackageInstallError::Plan);
+                }
+                let saved = decode_base64url(&step.request_b64)
+                    .map_err(|_| PrivatePackageInstallError::Identity)?;
+                let verified = verify_saved_private_package_install_step(
+                    &saved,
+                    signed_policy,
+                    fresh.checkpoint_canonical_json().as_bytes(),
+                    signed_snapshot,
+                    &plan,
+                    &step_id,
+                    issued_at,
+                    identity.signing_key(),
+                    key,
+                )?;
+                if verified.commit_hash() != step.commit_hash {
+                    return Err(PrivatePackageInstallError::Plan);
+                }
+                verified
+            } else {
+                if fresh.replay().sequence()
+                    != prior.replay().sequence() + 1 + row.steps.len() as u64
+                {
+                    return Err(PrivatePackageInstallError::Plan);
+                }
+                let authored = prepare_private_package_install_step(
+                    signed_policy,
+                    fresh.checkpoint_canonical_json().as_bytes(),
+                    signed_snapshot,
+                    &plan,
+                    &step_id,
+                    issued_at,
+                    identity.signing_key(),
+                    key,
+                )?;
+                row.steps.push(InstallStep {
+                    command_id: step_id.clone(),
+                    issued_at_ms: issued_at,
+                    request_b64: base64url(authored.request_wire()),
+                    commit_hash: authored.commit_hash().into(),
+                    action_id: authored.action_id().into(),
+                    offset,
+                });
+                doc.rows.insert(begin_id.into(), row.clone());
+                doc.save(&store)?;
+                authored
+            };
+            let path = format!(
+                "/api/workspace/v1/secure/workspaces/{}/commits",
+                self.config.workspace_id
+            );
+            journal.prepare(SecurePacketInput {
+                intent_id: &step_id,
+                path: &path,
+                action_id: signed.action_id(),
+                workspace_id: Some(&self.config.workspace_id),
+                trusted_owner_key: Some(identity.key_id()),
+                intent_digest: signed.commit_hash(),
+                exact_request: signed.request_wire(),
+            })?;
+            if journal.exact_request(&step_id)? != signed.request_wire()
+                || journal.intent_digest(&step_id)? != signed.commit_hash()
+            {
+                return Err(PrivatePackageInstallError::Plan);
+            }
+            post_saved_private(
+                &self.config,
+                fresh.origin(),
+                &mut journal,
+                &step_id,
+                signed.request_wire().to_vec(),
+                cancel,
+            )?;
+            Ok(PrivatePackageInstallProgress {
+                status: "PENDING",
+                begin_command_id: begin_id.into(),
+                step_command_id: step_id,
+                step_action_id: signed.action_id(),
+                workspace_id: self.config.workspace_id.clone(),
+                protocol_digest: row.protocol_digest,
+                instance_id: row.instance_id,
+                commit_hash: signed.commit_hash().into(),
+            })
+        })?;
+        serde_json::to_string(&result).map_err(|_| PrivatePackageInstallError::Encoding)
     }
 
     /// Local protected discovery, including completed stage IDs. This does
@@ -652,6 +1543,7 @@ impl SecurePrivatePackageInstall {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::secure_action_access::PublicActionInput;
     use crate::secure_owner_create::{
         SecureOwnerCreateConfig, SecureOwnerCreateInput, SecureOwnerWorkspaceCreate,
     };
@@ -663,7 +1555,7 @@ mod tests {
     };
 
     #[test]
-    fn actual_service_native_private_stage_recovers_exact_lost_reply() {
+    fn actual_service_private_package_stage_install_action_recovers_lost_replies() {
         let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else {
             return;
         };
@@ -802,5 +1694,141 @@ mod tests {
             counts()["commits"],
             before + next["part_count"].as_u64().unwrap()
         );
+        // BEGIN is saved before its stage-specific response-loss POST.
+        runtime.block_on(async {
+            let response = reqwest::Client::new()
+                .post(format!("{origin}__test/drop-next-post"))
+                .body("{}")
+                .send()
+                .await
+                .unwrap();
+            assert!(response.status().is_success());
+        });
+        let owner_actor = KernelIdentity::open(&stage.config.identity_path)
+            .unwrap()
+            .actor_id()
+            .to_owned();
+        let grants_json=serde_json::json!([{"actor_id":owner_actor,"actions":["proposal.propose"],"protocol_roles":["AUTHOR"],"capabilities":["PROPOSE"]}]).to_string();
+        let begin: serde_json::Value = serde_json::from_str(
+            &stage
+                .submit_begin_json(PrivatePackageInstallBeginInput {
+                    stage_id: stage_id.to_owned(),
+                    instance_id: random_id().unwrap(),
+                    entrypoint: "proposal".into(),
+                    grants_json,
+                    command_id: None,
+                    issued_at_ms: None,
+                })
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(begin["status"], "PENDING");
+        assert_eq!(begin["step_action_id"], "secure.structure.begin");
+        assert_eq!(
+            counts()["commits"],
+            before + next["part_count"].as_u64().unwrap() + 1
+        );
+        drop(stage);
+        drop(reopened);
+        let reopened = SecureOwnerWorkspaceCreate::new(SecureOwnerCreateConfig {
+            origin: origin.clone(),
+            state_dir: root.path().join("sdk-state"),
+            allow_loopback_http: true,
+            max_replay_artifact_bytes: 64 * 1024 * 1024,
+        });
+        let stage = reopened
+            .private_install_access(&created.workspace_id)
+            .unwrap();
+        let installs: serde_json::Value =
+            serde_json::from_str(&stage.installs_json().unwrap()).unwrap();
+        assert_eq!(installs.as_array().unwrap().len(), 1);
+        assert_eq!(installs[0]["begin_command_id"], begin["begin_command_id"]);
+        assert_eq!(installs[0]["stage_id"], stage_id);
+        let begin_id = begin["begin_command_id"].as_str().unwrap();
+        runtime.block_on(async {
+            let response = reqwest::Client::new()
+                .post(format!("{origin}__test/drop-next-post"))
+                .body("{}")
+                .send()
+                .await
+                .unwrap();
+            assert!(response.status().is_success());
+        });
+        let mut progress: serde_json::Value =
+            serde_json::from_str(&stage.continue_install_json(begin_id).unwrap()).unwrap();
+        assert_eq!(progress["status"], "PENDING");
+        assert_eq!(progress["step_action_id"], "secure.structure.end");
+        assert_eq!(
+            counts()["commits"],
+            before + next["part_count"].as_u64().unwrap() + 2
+        );
+        for _ in 0..5 {
+            if progress["status"] == "ACCEPTED" {
+                break;
+            }
+            progress =
+                serde_json::from_str(&stage.continue_install_json(begin_id).unwrap()).unwrap();
+        }
+        assert_eq!(progress["status"], "ACCEPTED");
+        let read: serde_json::Value = serde_json::from_str(
+            &reopened
+                .read_workspace_json(&created.workspace_id, &token)
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(read["objects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|object| object["kind"] == "instances"
+                && object["id"] == begin["instance_id"]
+                && object["value"]["protocol_digest"] == begin["protocol_digest"]));
+        let repeat: serde_json::Value =
+            serde_json::from_str(&stage.continue_install_json(begin_id).unwrap()).unwrap();
+        assert_eq!(repeat["status"], "ACCEPTED");
+        let action = PublicActionInput {
+            action_id: "proposal.propose".into(),
+            instance_id: begin["instance_id"].as_str().unwrap().into(),
+            body_json: r#"{"title":"PRIVATE installed wiki","body":"Encrypted after install"}"#
+                .into(),
+            exact_input_refs_json: None,
+            allocations_json: None,
+            command_id: None,
+            issued_at_ms: None,
+        };
+        let submitted: serde_json::Value = serde_json::from_str(
+            &reopened
+                .private_action_access(&created.workspace_id)
+                .unwrap()
+                .submit_new_json(action)
+                .unwrap(),
+        )
+        .unwrap();
+        let accepted: serde_json::Value = serde_json::from_str(
+            &reopened
+                .private_action_access(&created.workspace_id)
+                .unwrap()
+                .retry_saved_json(submitted["command_id"].as_str().unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(accepted["status"], "ACCEPTED");
+        let receipt: serde_json::Value =
+            serde_json::from_str(accepted["receipt_canonical_json"].as_str().unwrap()).unwrap();
+        let effect_id = receipt["effects"][0]["record_id"].as_str().unwrap();
+        let read: serde_json::Value = serde_json::from_str(
+            &reopened
+                .read_workspace_json(&created.workspace_id, &token)
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(read["objects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|object| object["kind"] == "records"
+                && object["id"] == effect_id
+                && object["value"]["payload"]["title"] == "PRIVATE installed wiki"
+                && object["value"]["payload"]["body"] == "Encrypted after install"));
     }
 }
