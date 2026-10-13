@@ -1003,6 +1003,73 @@ fn validate_signed_package_install(
     };
     let value = protocol.get("value").ok_or(ReplayError::Invalid)?;
     let instance_value = instance.get("value").ok_or(ReplayError::Invalid)?;
+    // Direct and composed installs have no package_source on the instance.
+    // They still require the same exact install shape and initial instance
+    // value as a staged package-source install. The source-specific proof
+    // below only applies when that field is actually present.
+    if instance_value.get("package_source").is_none() {
+        if value.get("package_source").is_some() {
+            return Err(ReplayError::Invalid);
+        }
+        let format_ceiling = if integer(context, "v")? == 3 {
+            integer(context, "protocol_format_ceiling")?
+        } else {
+            1
+        };
+        validate_authored_protocol_in_history(
+            protocol,
+            workspace_id,
+            format_ceiling,
+            prior_objects,
+        )?;
+        let expected_fields = if value.get("composition").is_some() {
+            vec![
+                "composition",
+                "digest",
+                "manifest",
+                "resolved_manifest",
+                "workspace_id",
+            ]
+        } else {
+            vec!["digest", "manifest", "resolved_manifest", "workspace_id"]
+        };
+        if added.len() == 1 && !exact_fields(value, &expected_fields) {
+            return Err(ReplayError::Invalid);
+        }
+        let manifest = decoded_value(value.get("manifest").ok_or(ReplayError::Invalid)?)
+            .map_err(|_| ReplayError::Invalid)?;
+        let expected_instance = fields_object(vec![
+            ("id", string_value(&instance_id)),
+            ("workspace_id", string_value(workspace_id)),
+            ("protocol_digest", string_value(&digest)),
+            ("origin_entrypoint", string_value(&entrypoint)),
+            ("semantics", string_value("peerwork.kernel.v1")),
+            (
+                "state",
+                manifest
+                    .get("initial_state")
+                    .ok_or(ReplayError::Invalid)?
+                    .clone(),
+            ),
+            ("revision", WireValue::Number(0.0)),
+            ("event_revision", WireValue::Number(0.0)),
+            (
+                "created",
+                context
+                    .get("issued_at")
+                    .ok_or(ReplayError::Invalid)?
+                    .clone(),
+            ),
+        ]);
+        if string(instance, "id")? != instance_id
+            || integer(instance, "revision")? != 1
+            || string(instance, "provenance")? != "AUTHOR_SIGNED"
+            || !same_wire(instance_value, &expected_instance)?
+        {
+            return Err(ReplayError::Invalid);
+        }
+        return Ok(());
+    }
     let proof = instance_value
         .get("package_source")
         .ok_or(ReplayError::Invalid)?;
@@ -1969,25 +2036,17 @@ fn replay_basic_content_depth(
                 }
             }
             // An ACTION revision or an ordinary ADMIN/DELTA update can retain
-            // an installed instance's package_source as provenance. The TS
-            // replay invokes install validation for nonempty snapshot ADMIN
-            // operations; the validator itself rejects a malformed PAGE/END,
-            // action ID, instance or delegation instead of skipping it.
+            // installed protocol provenance. The TS replay invokes strict
+            // install validation for every nonempty snapshot ADMIN operation;
+            // direct/composed installs need the same exact instance reproof.
             if kind == "ADMIN"
-                && !package_stage
-                && !object_stage
+                && !objects.is_empty()
                 && payload
                     .get("structure")
                     .and_then(|structure| structure.get("mode"))
                     .and_then(WireValue::as_string)
                     .as_deref()
                     != Some("DELTA")
-                && objects.iter().any(|object| {
-                    object
-                        .get("value")
-                        .and_then(|value| value.get("package_source"))
-                        .is_some()
-                })
             {
                 validate_signed_package_install(
                     &operation,
@@ -4802,6 +4861,52 @@ mod tests {
             check_with_policy(&policy2, bootstrap, stage, install)
         };
         assert_eq!(check(&bootstrap, &stage, &install).unwrap().object_count, 3);
+        // A direct install omits package_source entirely. It must still
+        // reprove the exact initial instance, including fields that generic
+        // object/structure binding does not constrain.
+        let mut direct_operation = install_operation.clone();
+        direct_operation["objects"][0]["value"]
+            .as_object_mut()
+            .unwrap()
+            .remove("package_source");
+        direct_operation["objects"][1]["value"]
+            .as_object_mut()
+            .unwrap()
+            .remove("package_source");
+        let direct_install = make_commit(
+            3,
+            Some(&hash(&stage)),
+            "secure.structure.begin",
+            snapshot.clone(),
+            direct_operation.clone(),
+            &policy2_hash,
+        );
+        assert_eq!(
+            check(&bootstrap, &stage, &direct_install)
+                .unwrap()
+                .object_count,
+            3
+        );
+        for field in ["state", "origin_entrypoint", "created"] {
+            let mut altered = direct_operation.clone();
+            altered["objects"][1]["value"][field] = match field {
+                "state" => json!({"tampered":true}),
+                "origin_entrypoint" => json!("other"),
+                _ => json!(999),
+            };
+            let signed_altered = make_commit(
+                3,
+                Some(&hash(&stage)),
+                "secure.structure.begin",
+                snapshot.clone(),
+                altered,
+                &policy2_hash,
+            );
+            assert!(
+                check(&bootstrap, &stage, &signed_altered).is_err(),
+                "{field}"
+            );
+        }
         let missing_upgrade_snapshot = make_commit(
             3,
             Some(&hash(&stage)),
@@ -4947,6 +5052,62 @@ mod tests {
             None,
         )
         .is_ok());
+        let composition_vectors: Value = serde_json::from_str(include_str!(
+            "../../../conformance/protocol-composition-vectors.json"
+        ))
+        .unwrap();
+        let composed = composition_vectors
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|case| case["name"] == "action_dependency")
+            .unwrap();
+        let mut composed_operation = install_operation.clone();
+        let composed_digest = composed["result"]["digest"].clone();
+        let composed_manifest = composed["result"]["manifest"].clone();
+        composed_operation["input"]["install"]["protocol_digest"] = composed_digest.clone();
+        composed_operation["objects"][0]["id"] = composed_digest.clone();
+        composed_operation["objects"][0]["value"]["digest"] = composed_digest.clone();
+        composed_operation["objects"][0]["value"]["manifest"] = composed_manifest.clone();
+        composed_operation["objects"][0]["value"]["resolved_manifest"] = composed_manifest.clone();
+        composed_operation["objects"][0]["value"]["composition"] =
+            composed["result"]["composition"].clone();
+        composed_operation["objects"][0]["value"]
+            .as_object_mut()
+            .unwrap()
+            .remove("package_source");
+        composed_operation["objects"][1]["value"]["protocol_digest"] = composed_digest;
+        composed_operation["objects"][1]["value"]["state"] =
+            composed_manifest["initial_state"].clone();
+        composed_operation["objects"][1]["value"]
+            .as_object_mut()
+            .unwrap()
+            .remove("package_source");
+        let check_composed = |operation: &Value| {
+            let wire =
+                parse_wire_json_js_bounded(&serde_json::to_vec(operation).unwrap(), 64, 196_608)
+                    .unwrap();
+            validate_signed_package_install(
+                &wire,
+                install_commit.get("payload").unwrap(),
+                prior_parts,
+                &[signed_stage.clone()],
+                &chain,
+                &[&bootstrap, &stage, &install],
+                &workspace,
+                None,
+            )
+        };
+        assert!(check_composed(&composed_operation).is_ok());
+        for field in ["state", "origin_entrypoint", "created"] {
+            let mut altered = composed_operation.clone();
+            altered["objects"][1]["value"][field] = match field {
+                "state" => json!({"tampered":true}),
+                "origin_entrypoint" => json!("other"),
+                _ => json!(999),
+            };
+            assert!(check_composed(&altered).is_err(), "composed {field}");
+        }
         let mut wrong_snapshot = snapshot.clone();
         wrong_snapshot["snapshot"]["root"] = json!("a".repeat(64));
         let wrong_install = make_commit(
