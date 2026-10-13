@@ -8,6 +8,7 @@ use crate::{
         AcceptedPublicInstall, PublicInstallSelection, SecureIntentError, SecureIntentJournal,
         SecurePacketInput,
     },
+    secure_lifecycle::SecureLifecycle,
     secure_read_access::{
         SecureReadAccess, SecureReadAccessError, SecureReadConfig, VerifiedReadFloor,
     },
@@ -140,48 +141,57 @@ impl SecurePublicPackageInstall {
         &self,
         cancel: &CancellationToken,
     ) -> Result<String, PublicPackageInstallError> {
-        let rows =
-            SecureReadProfile::new(self.config.clone()).with_pinned_replay(cancel, |prior| {
-                let identity = KernelIdentity::open(&self.config.identity_path)
-                    .map_err(|_| PublicPackageInstallError::Identity)?;
-                if identity.actor_id() != prior.source_actor_id()
-                    || prior.origin() != self.config.origin
-                {
-                    return Err(PublicPackageInstallError::Identity);
-                }
-                let journal = SecureIntentJournal::open(
-                    &self.config.state_dir.join("install-intents.state"),
-                    prior.origin(),
-                    identity.actor_id(),
-                )?;
-                let mut rows = Vec::new();
-                for pending in journal.pending() {
-                    if pending.action_id != "secure.structure.begin" {
-                        continue;
-                    }
-                    let selection = journal.public_install_selection(&pending.intent_id)?;
-                    let end_id = base64url(&sha256(
-                        format!("peerwork.public.install.end.v1:{}", pending.intent_id).as_bytes(),
-                    ));
-                    let has_end = journal.contains_id(&end_id);
-                    rows.push(PendingPublicPackageInstall {
-                        begin_command_id: pending.intent_id.clone(),
-                        pending_step_id: if has_end { end_id } else { pending.intent_id },
-                        pending_action_id: if has_end {
-                            "secure.structure.end"
-                        } else {
-                            "secure.structure.begin"
-                        },
-                        workspace_id: prior.replay().workspace_id().to_owned(),
-                        package_id: selection.package_id.clone(),
-                        package_version: selection.package_version.clone(),
-                        package_digest: selection.package_digest.clone(),
-                        protocol_digest: selection.protocol_digest.clone(),
-                        instance_id: selection.instance_id.clone(),
-                    });
-                }
-                Ok(rows)
-            })?;
+        if cancel.is_cancelled() {
+            return Err(PublicPackageInstallError::Read(
+                SecureReadAccessError::Cancelled,
+            ));
+        }
+        let scope = SecureReadProfile::new(self.config.clone()).local_pending_scope()?;
+        let identity = KernelIdentity::open(&self.config.identity_path)
+            .map_err(|_| PublicPackageInstallError::Identity)?;
+        let _lifecycle = SecureLifecycle::open(
+            &self.config.state_dir.join("lifecycle.state"),
+            &scope.origin,
+            identity.actor_id(),
+            &scope.workspace_id,
+            &scope.owner_actor_id,
+            &scope.owner_key_id,
+        )
+        .map_err(|_| PublicPackageInstallError::Identity)?;
+        let journal = SecureIntentJournal::open(
+            &self.config.state_dir.join("install-intents.state"),
+            &scope.origin,
+            identity.actor_id(),
+        )?;
+        let mut rows = Vec::new();
+        for pending in journal.pending() {
+            if pending.workspace_id.as_deref() != Some(scope.workspace_id.as_str()) {
+                return Err(PublicPackageInstallError::Identity);
+            }
+            if pending.action_id != "secure.structure.begin" {
+                continue;
+            }
+            let selection = journal.public_install_selection(&pending.intent_id)?;
+            let end_id = base64url(&sha256(
+                format!("peerwork.public.install.end.v1:{}", pending.intent_id).as_bytes(),
+            ));
+            let has_end = journal.contains_id(&end_id);
+            rows.push(PendingPublicPackageInstall {
+                begin_command_id: pending.intent_id.clone(),
+                pending_step_id: if has_end { end_id } else { pending.intent_id },
+                pending_action_id: if has_end {
+                    "secure.structure.end"
+                } else {
+                    "secure.structure.begin"
+                },
+                workspace_id: scope.workspace_id.clone(),
+                package_id: selection.package_id.clone(),
+                package_version: selection.package_version.clone(),
+                package_digest: selection.package_digest.clone(),
+                protocol_digest: selection.protocol_digest.clone(),
+                instance_id: selection.instance_id.clone(),
+            });
+        }
         serde_json::to_string(&rows).map_err(|_| PublicPackageInstallError::ResultEncoding)
     }
 
@@ -381,10 +391,29 @@ impl SecurePublicPackageInstall {
         &self,
         begin_command_id: &str,
     ) -> Result<String, PublicPackageInstallError> {
-        self.continue_empty_snapshot_json_with_cancel(begin_command_id, &CancellationToken::new())
+        self.continue_install_json(begin_command_id)
+    }
+
+    /// Resume a protected PUBLIC install by its BEGIN command ID. The saved
+    /// packet is reused after an uncertain reply; this currently advances an
+    /// empty snapshot and refuses other snapshot shapes until PAGE support is
+    /// integrated.
+    pub fn continue_install_json(
+        &self,
+        begin_command_id: &str,
+    ) -> Result<String, PublicPackageInstallError> {
+        self.continue_install_json_with_cancel(begin_command_id, &CancellationToken::new())
     }
 
     pub fn continue_empty_snapshot_json_with_cancel(
+        &self,
+        begin_command_id: &str,
+        cancel: &CancellationToken,
+    ) -> Result<String, PublicPackageInstallError> {
+        self.continue_install_json_with_cancel(begin_command_id, cancel)
+    }
+
+    pub fn continue_install_json_with_cancel(
         &self,
         begin_command_id: &str,
         cancel: &CancellationToken,
@@ -1139,5 +1168,48 @@ mod tests {
             .unwrap();
         let counts: serde_json::Value = serde_json::from_slice(&counts).unwrap();
         assert_eq!(counts["head_sequence"], 4);
+
+        // A local pending ID remains discoverable when the service is gone.
+        // The packet is synthetic because listing confers no acceptance.
+        let identity = KernelIdentity::open(&config.identity_path).unwrap();
+        let mut journal = SecureIntentJournal::open(
+            &config.state_dir.join("install-intents.state"),
+            &origin,
+            identity.actor_id(),
+        )
+        .unwrap();
+        let selection = journal
+            .public_install_selection(&"c".repeat(43))
+            .unwrap()
+            .clone();
+        let offline_id = "u".repeat(43);
+        journal
+            .prepare_public_install(
+                SecurePacketInput {
+                    intent_id: &offline_id,
+                    path: &format!(
+                        "/api/workspace/v1/secure/workspaces/{}/commits",
+                        config.workspace_id
+                    ),
+                    action_id: "secure.structure.begin",
+                    workspace_id: Some(&config.workspace_id),
+                    trusted_owner_key: Some(identity.key_id()),
+                    intent_digest: &"a".repeat(64),
+                    exact_request: br#"{"synthetic":"secret-install-packet"}"#,
+                },
+                selection,
+            )
+            .unwrap();
+        drop(journal);
+        child.0.kill().unwrap();
+        child.0.wait().unwrap();
+        let offline = SecurePublicPackageInstall::new(config)
+            .list_pending_json()
+            .unwrap();
+        assert!(!offline.contains("secret-install-packet"));
+        let offline: serde_json::Value = serde_json::from_str(&offline).unwrap();
+        assert_eq!(offline.as_array().unwrap().len(), 1);
+        assert_eq!(offline[0]["begin_command_id"], offline_id);
+        assert_eq!(offline[0]["workspace_id"], fixture["workspace_id"]);
     }
 }
