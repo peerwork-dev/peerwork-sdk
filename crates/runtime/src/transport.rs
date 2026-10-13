@@ -277,7 +277,9 @@ impl HttpTransport {
                 .header("X-Peerwork-Read", read_proof).send() =>
                 result.map_err(map_network_error)?,
         };
-        read_bounded(response, 64 * 1024, cancel).await
+        // A valid 128-entry history can exceed a single small control item.
+        // Each published entry is capped at 8 KiB by the service route.
+        read_bounded(response, 2 * 1024 * 1024, cancel).await
     }
 
     /// Submit a previously protected exact signed v1 directory entry.

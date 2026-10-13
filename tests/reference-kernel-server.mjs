@@ -214,6 +214,8 @@ if (process.env.PEERWORK_TEST_BOOTSTRAP === '1') {
 }
 let dropFirstPost = true;
 let dropNextIdentityDirectory = false;
+let serveStaleIdentityDirectory = false;
+let tamperNextIdentityDirectory = false;
 let rejectNextPostBeforeApply = false;
 let alterFirstChunk = process.env.PEERWORK_TEST_WRONG_CHUNK_STATE === '1';
 const firstPostMode = process.env.PEERWORK_TEST_FIRST_POST_MODE || 'drop';
@@ -278,6 +280,26 @@ const proxy = createServer(async (request, response) => {
     if (request.url === '/__test/drop-next-identity-directory' && request.method === 'POST') {
       if (!publicReadFixture || dropNextIdentityDirectory) throw new Error('identity directory drop fixture unavailable');
       dropNextIdentityDirectory = true;
+      response.writeHead(200, {'content-type':'application/json'});
+      response.end(JSON.stringify({enabled:true}));
+      return;
+    }
+    if (request.url === '/__test/serve-stale-identity-directory' && request.method === 'POST') {
+      if (!publicReadFixture) throw new Error('identity directory fixture unavailable');
+      serveStaleIdentityDirectory = true;
+      response.writeHead(200, {'content-type':'application/json'});
+      response.end(JSON.stringify({enabled:true}));
+      return;
+    }
+    if (request.url === '/__test/tamper-next-identity-directory' && request.method === 'POST') {
+      if (!publicReadFixture || tamperNextIdentityDirectory) throw new Error('identity directory tamper fixture unavailable');
+      tamperNextIdentityDirectory = true;
+      response.writeHead(200, {'content-type':'application/json'});
+      response.end(JSON.stringify({enabled:true}));
+      return;
+    }
+    if (request.url === '/__test/restore-identity-directory' && request.method === 'POST') {
+      serveStaleIdentityDirectory = false;
       response.writeHead(200, {'content-type':'application/json'});
       response.end(JSON.stringify({enabled:true}));
       return;
@@ -349,6 +371,20 @@ const proxy = createServer(async (request, response) => {
       body: request.method === 'GET' ? undefined : Buffer.concat(chunks),
     });
     let bytes = Buffer.from(await original.arrayBuffer());
+    if (request.method === 'GET' && request.url?.startsWith('/api/workspace/v1/secure/identity-keys/')
+        && serveStaleIdentityDirectory && original.status === 200) {
+      const value = JSON.parse(bytes.toString('utf8'));
+      bytes = Buffer.from(JSON.stringify({actor_id:value.actor_id,entries:[]}));
+    }
+    if (request.method === 'GET' && request.url?.startsWith('/api/workspace/v1/secure/identity-keys/')
+        && tamperNextIdentityDirectory && original.status === 200) {
+      tamperNextIdentityDirectory = false;
+      const value = JSON.parse(bytes.toString('utf8'));
+      const entry = value.entries.at(-1);
+      if (!entry) throw new Error('identity directory tamper requires an entry');
+      entry.signature = `${entry.signature[0] === 'A' ? 'B' : 'A'}${entry.signature.slice(1)}`;
+      bytes = Buffer.from(JSON.stringify(value));
+    }
     if (request.method === 'POST' && request.url === '/api/workspace/v1/secure/identity-keys'
         && dropNextIdentityDirectory && original.status === 201) {
       dropNextIdentityDirectory = false;
