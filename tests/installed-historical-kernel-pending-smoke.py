@@ -157,6 +157,7 @@ try:
             assert "inspected intent DB digest" in str(error)
         else:
             raise AssertionError("selected command lacked the inspected snapshot digest")
+        assert owner.attachments() == []
         wrong = dict(selected_input, expected_kernel_intent_db_digest="0" * 64)
         try:
             owner.attach(**wrong)
