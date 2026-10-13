@@ -153,6 +153,15 @@ impl SecureLifecycle {
         self.active.as_ref()?.key_at(epoch)
     }
 
+    /// Full active owner ring for an authenticated PRIVATE delivery. A staged
+    /// epoch must not be sent to a recipient before its signed transition.
+    pub(crate) fn active_keyring_without_pending(&self) -> Option<&SecretKeyring> {
+        if self.pending.is_some() {
+            return None;
+        }
+        self.active.as_ref()
+    }
+
     /// The pending ring may decrypt a candidate journal during verification,
     /// but its presence does not authorize key promotion, reads, or actions.
     /// A staged rotation contains the active prefix and its pending epoch.

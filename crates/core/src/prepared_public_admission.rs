@@ -5,7 +5,8 @@
 use crate::{
     canonical::Path,
     crypto::{actor_id, base64url, decode_base64url, sha256_hex, verify_secure_signed_wire},
-    e2ee::{encryption_key_id, hpke_seal_wire, RecipientPublicJwk},
+    e2ee::{encryption_key_id, hpke_seal_wire, seal_content_wire, RecipientPublicJwk},
+    secure_keyring::SecretKeyring,
     wire_json::{canonical_wire_value, parse_wire_json_js_bounded, WireValue},
 };
 use ed25519_dalek::{Signer, SigningKey};
@@ -198,6 +199,48 @@ pub fn prepare_public_delivery(
     issued_at: u64,
     owner_signing_key: &SigningKey,
 ) -> Result<PreparedPublicDelivery, PublicAdmissionError> {
+    prepare_delivery(
+        current_policy_wire,
+        prior_checkpoint_wire,
+        offer_wire,
+        decision_wire,
+        issued_at,
+        owner_signing_key,
+        None,
+    )
+}
+
+/// Author a PRIVATE admission transition using the complete active owner
+/// keyring. The caller must prove that ring against the current full replay.
+pub fn prepare_private_delivery(
+    current_policy_wire: &[u8],
+    prior_checkpoint_wire: &[u8],
+    offer_wire: &[u8],
+    decision_wire: &[u8],
+    issued_at: u64,
+    owner_signing_key: &SigningKey,
+    active_keyring: &SecretKeyring,
+) -> Result<PreparedPublicDelivery, PublicAdmissionError> {
+    prepare_delivery(
+        current_policy_wire,
+        prior_checkpoint_wire,
+        offer_wire,
+        decision_wire,
+        issued_at,
+        owner_signing_key,
+        Some(active_keyring),
+    )
+}
+
+fn prepare_delivery(
+    current_policy_wire: &[u8],
+    prior_checkpoint_wire: &[u8],
+    offer_wire: &[u8],
+    decision_wire: &[u8],
+    issued_at: u64,
+    owner_signing_key: &SigningKey,
+    active_keyring: Option<&SecretKeyring>,
+) -> Result<PreparedPublicDelivery, PublicAdmissionError> {
     let bad = || PublicAdmissionError::Invalid;
     if issued_at > MAX_SAFE {
         return Err(bad());
@@ -208,9 +251,19 @@ pub fn prepare_public_delivery(
         parse_wire_json_js_bounded(current_policy_wire, 64, 196_608).map_err(|_| bad())?;
     let old = current.get("payload").ok_or_else(bad)?;
     let workspace = string(old, "workspace_id")?;
+    let visibility = string(old, "visibility")?;
+    let epoch = unsigned(old, "epoch")?;
     if unsigned(old, "v")? != 3
-        || unsigned(old, "epoch")? != 0
-        || string(old, "visibility")? != "PUBLIC"
+        || !match (visibility.as_str(), active_keyring) {
+            ("PUBLIC", None) => epoch == 0,
+            ("PRIVATE", Some(ring)) => {
+                epoch >= 1
+                    && ring.workspace_id() == workspace
+                    && ring.key_at(epoch).is_some()
+                    && ring.epochs().all(|key_epoch| key_epoch <= epoch)
+            }
+            _ => false,
+        }
         || string(old, "owner_id")? != owner_actor
         || string(old, "signing_key")? != owner_key
         || !verify_secure_signed_wire(current_policy_wire, "peerwork.secure.policy.v3", &owner_key)
@@ -330,26 +383,32 @@ pub fn prepare_public_delivery(
         ("signing_key", s(&owner_key)),
         ("recipient", recipient.clone()),
         ("policy_hash", s(&policy_hash)),
-        ("epoch", WireValue::Number(0.0)),
+        ("epoch", WireValue::Number(epoch as f64)),
         ("invite_id", s(&invite_id)),
         ("acceptance_hash", s(checked.artifact_hash())),
         ("delegation", WireValue::Null),
         ("issued_at", WireValue::Number(issued_at as f64)),
     ]);
-    let keyring = object(vec![
-        ("v", WireValue::Number(1.0)),
-        ("workspace_id", s(&workspace)),
-        ("keys", WireValue::Array(vec![])),
-    ]);
-    let keyring_wire = canonical_wire_value(&keyring, Path::SecureArtifact).map_err(|_| bad())?;
     let context_wire =
         canonical_wire_value(&grant_context, Path::SecureArtifact).map_err(|_| bad())?;
-    let boxed = hpke_seal_wire(
-        &recipient_jwk,
-        keyring_wire.as_bytes(),
-        context_wire.as_bytes(),
-    )
-    .map_err(|_| PublicAdmissionError::Encryption)?;
+    let boxed = if let Some(ring) = active_keyring {
+        ring.seal_to(&recipient_jwk, context_wire.as_bytes())
+            .map_err(|_| PublicAdmissionError::Encryption)?
+    } else {
+        let keyring = object(vec![
+            ("v", WireValue::Number(1.0)),
+            ("workspace_id", s(&workspace)),
+            ("keys", WireValue::Array(vec![])),
+        ]);
+        let keyring_wire =
+            canonical_wire_value(&keyring, Path::SecureArtifact).map_err(|_| bad())?;
+        hpke_seal_wire(
+            &recipient_jwk,
+            keyring_wire.as_bytes(),
+            context_wire.as_bytes(),
+        )
+        .map_err(|_| PublicAdmissionError::Encryption)?
+    };
     let box_bytes = serde_json::to_vec(&boxed).map_err(|_| bad())?;
     let box_value = parse_wire_json_js_bounded(&box_bytes, 16, 65_536).map_err(|_| bad())?;
     let mut grant_payload = grant_context;
@@ -374,7 +433,7 @@ pub fn prepare_public_delivery(
         ("sequence", WireValue::Number(next_sequence as f64)),
         ("previous", previous),
         ("policy_hash", s(&policy_hash)),
-        ("epoch", WireValue::Number(0.0)),
+        ("epoch", WireValue::Number(epoch as f64)),
         ("actor_id", s(&owner_actor)),
         ("signing_key", s(&owner_key)),
         ("command_id", s(&command_id)),
@@ -402,8 +461,26 @@ pub fn prepare_public_delivery(
             ]),
         ));
     }
-    context_fields.push(("mode", s("PUBLIC")));
-    context_fields.push(("body", operation));
+    if let Some(ring) = active_keyring {
+        let context = object(context_fields.clone());
+        let context_wire =
+            canonical_wire_value(&context, Path::SecureArtifact).map_err(|_| bad())?;
+        let operation_wire =
+            canonical_wire_value(&operation, Path::SecureArtifact).map_err(|_| bad())?;
+        let sealed = seal_content_wire(
+            ring.key_at(epoch).ok_or_else(bad)?,
+            operation_wire.as_bytes(),
+            context_wire.as_bytes(),
+        )
+        .map_err(|_| PublicAdmissionError::Encryption)?;
+        let sealed_wire = serde_json::to_vec(&sealed).map_err(|_| bad())?;
+        let body = parse_wire_json_js_bounded(&sealed_wire, 32, 196_608).map_err(|_| bad())?;
+        context_fields.push(("mode", s("PRIVATE")));
+        context_fields.push(("body", body));
+    } else {
+        context_fields.push(("mode", s("PUBLIC")));
+        context_fields.push(("body", operation));
+    }
     let commit = sign_payload(
         object(context_fields),
         "peerwork.secure.commit.v3",
@@ -482,6 +559,41 @@ pub fn verify_saved_public_offer(
     owner_key: &str,
     workspace_id: &str,
 ) -> Result<PreparedAdmissionPacket, PublicAdmissionError> {
+    verify_saved_offer(
+        request_wire,
+        signed_policy_wire,
+        owner_actor,
+        owner_key,
+        workspace_id,
+        "PUBLIC",
+    )
+}
+
+pub fn verify_saved_private_offer(
+    request_wire: &[u8],
+    signed_policy_wire: &[u8],
+    owner_actor: &str,
+    owner_key: &str,
+    workspace_id: &str,
+) -> Result<PreparedAdmissionPacket, PublicAdmissionError> {
+    verify_saved_offer(
+        request_wire,
+        signed_policy_wire,
+        owner_actor,
+        owner_key,
+        workspace_id,
+        "PRIVATE",
+    )
+}
+
+fn verify_saved_offer(
+    request_wire: &[u8],
+    signed_policy_wire: &[u8],
+    owner_actor: &str,
+    owner_key: &str,
+    workspace_id: &str,
+    visibility: &str,
+) -> Result<PreparedAdmissionPacket, PublicAdmissionError> {
     let bad = || PublicAdmissionError::Invalid;
     let request = parse_wire_json_js_bounded(request_wire, 64, 220_000).map_err(|_| bad())?;
     if request.object_len() != Some(1) {
@@ -520,10 +632,23 @@ pub fn verify_saved_public_offer(
     if string(pp, "workspace_id")? != workspace_id
         || string(pp, "owner_id")? != owner_actor
         || string(pp, "signing_key")? != owner_key
-        || string(pp, "visibility")? != "PUBLIC"
-        || unsigned(pp, "epoch")? != 0
-        || !verify_secure_signed_wire(signed_policy_wire, "peerwork.secure.policy.v1", owner_key)
-            .map_err(|_| bad())?
+        || string(pp, "visibility")? != visibility
+        || !match visibility {
+            "PUBLIC" => unsigned(pp, "epoch")? == 0,
+            "PRIVATE" => unsigned(pp, "epoch")? >= 1,
+            _ => false,
+        }
+        || !matches!(unsigned(pp, "v")?, 1 | 3)
+        || !verify_secure_signed_wire(
+            signed_policy_wire,
+            if unsigned(pp, "v")? == 3 {
+                "peerwork.secure.policy.v3"
+            } else {
+                "peerwork.secure.policy.v1"
+            },
+            owner_key,
+        )
+        .map_err(|_| bad())?
     {
         return Err(bad());
     }
@@ -587,6 +712,53 @@ pub fn prepare_public_offer_utf16(
     expires_at: u64,
     owner_signing_key: &SigningKey,
 ) -> Result<PreparedAdmissionPacket, PublicAdmissionError> {
+    prepare_offer_utf16(
+        signed_policy_wire,
+        recipient_certificate_wire,
+        scopes_wire,
+        message,
+        invite_id,
+        issued_at,
+        expires_at,
+        owner_signing_key,
+        "PUBLIC",
+    )
+}
+
+pub fn prepare_private_offer_utf16(
+    signed_policy_wire: &[u8],
+    recipient_certificate_wire: &[u8],
+    scopes_wire: &[u8],
+    message: &[u16],
+    invite_id: Option<&str>,
+    issued_at: u64,
+    expires_at: u64,
+    owner_signing_key: &SigningKey,
+) -> Result<PreparedAdmissionPacket, PublicAdmissionError> {
+    prepare_offer_utf16(
+        signed_policy_wire,
+        recipient_certificate_wire,
+        scopes_wire,
+        message,
+        invite_id,
+        issued_at,
+        expires_at,
+        owner_signing_key,
+        "PRIVATE",
+    )
+}
+
+fn prepare_offer_utf16(
+    signed_policy_wire: &[u8],
+    recipient_certificate_wire: &[u8],
+    scopes_wire: &[u8],
+    message: &[u16],
+    invite_id: Option<&str>,
+    issued_at: u64,
+    expires_at: u64,
+    owner_signing_key: &SigningKey,
+    visibility: &str,
+) -> Result<PreparedAdmissionPacket, PublicAdmissionError> {
     let bad = || PublicAdmissionError::Invalid;
     if String::from_utf16_lossy(message).len() > 8192
         || issued_at > MAX_SAFE
@@ -603,10 +775,23 @@ pub fn prepare_public_offer_utf16(
     let workspace = string(p, "workspace_id")?;
     if string(p, "owner_id")? != owner_actor
         || string(p, "signing_key")? != owner_key
-        || string(p, "visibility")? != "PUBLIC"
-        || unsigned(p, "epoch")? != 0
-        || !verify_secure_signed_wire(signed_policy_wire, "peerwork.secure.policy.v1", &owner_key)
-            .map_err(|_| bad())?
+        || string(p, "visibility")? != visibility
+        || !match visibility {
+            "PUBLIC" => unsigned(p, "epoch")? == 0,
+            "PRIVATE" => unsigned(p, "epoch")? >= 1,
+            _ => false,
+        }
+        || !matches!(unsigned(p, "v")?, 1 | 3)
+        || !verify_secure_signed_wire(
+            signed_policy_wire,
+            if unsigned(p, "v")? == 3 {
+                "peerwork.secure.policy.v3"
+            } else {
+                "peerwork.secure.policy.v1"
+            },
+            &owner_key,
+        )
+        .map_err(|_| bad())?
     {
         return Err(bad());
     }

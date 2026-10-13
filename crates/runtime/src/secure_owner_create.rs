@@ -16,7 +16,7 @@ use crate::{
         prepare_owner_workspace_with_utf16_name, prepare_private_owner_workspace_with_options,
         prepare_public_owner_workspace_with_options, NativePrepareError,
     },
-    secure_public_admission::SecurePublicAdmission,
+    secure_public_admission::{SecurePrivateAdmission, SecurePublicAdmission},
     secure_public_install::SecurePublicPackageInstall,
     secure_read_access::SecureReadAccessError,
     secure_read_profile::{SecureReadProfile, SecureReadProfileConfig},
@@ -222,6 +222,17 @@ impl SecureOwnerWorkspaceCreate {
     ) -> Result<SecurePublicAdmission, SecureOwnerCreateError> {
         Ok(SecurePublicAdmission::new(
             self.created_profile_config(workspace_id, "PUBLIC")?,
+        ))
+    }
+
+    /// Select PRIVATE Owner admission through the protected CREATED workspace
+    /// row. No caller-supplied local key or internal profile path is accepted.
+    pub fn private_admission_access(
+        &self,
+        workspace_id: &str,
+    ) -> Result<SecurePrivateAdmission, SecureOwnerCreateError> {
+        Ok(SecurePrivateAdmission::new(
+            self.created_profile_config(workspace_id, "PRIVATE")?,
         ))
     }
 
