@@ -33,27 +33,33 @@ try {
   await new Promise(resolve=>server.once('listening',resolve));
   const origin=`http://127.0.0.1:${server.address().port}`;
   browser=await chromium.launch({headless:true});
-  const page=await browser.newPage({viewport:{width:390,height:844}});
   const errors=[];
-  page.on('pageerror',error=>errors.push(error.message));
-  await page.goto(`${origin}/workspaces/${workspaceId}/records/${taskId}`);
-  await page.waitForFunction(()=>document.querySelector('[data-secure-public-workspace]')?.dataset.secureIntegrity==='verified',undefined,{timeout:20000});
-  const task=page.locator(`[data-record-id="${taskId}"]`);
-  await task.waitFor();
-  assert.match(await task.innerText(),/Execute adopted proposal/);
-  const sourceLinkPresent=await task.locator(`a[href$="/records/${candidateId}"]`).count()>0;
-  const noHorizontalOverflow=await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth);
-  assert.equal(noHorizontalOverflow,true);
   mkdirSync(output,{recursive:true});
-  await page.screenshot({path:join(output,'composed-task-record-390.png'),fullPage:true});
-  await page.goto(`${origin}/workspaces/${workspaceId}/records/${candidateId}`);
-  await page.waitForFunction(()=>document.querySelector('[data-secure-public-workspace]')?.dataset.secureIntegrity==='verified',undefined,{timeout:20000});
-  const candidate=page.locator(`[data-record-id="${candidateId}"]`);
-  await candidate.waitFor();
-  assert.match(await candidate.innerText(),/Turn decision into task/);
+  for(const width of [390,1280]){
+    const page=await browser.newPage({viewport:{width,height:844}});
+    page.on('pageerror',error=>errors.push(error.message));
+    await page.goto(`${origin}/workspaces/${workspaceId}/records/${taskId}`);
+    await page.waitForFunction(()=>document.querySelector('[data-secure-public-workspace]')?.dataset.secureIntegrity==='verified',undefined,{timeout:20000});
+    const task=page.locator(`[data-record-id="${taskId}"]`);
+    await task.waitFor();
+    assert.match(await task.innerText(),/Execute adopted proposal/);
+    const source=task.locator(`a[data-relation-kind="tasks.based_on_candidate"][href$="/records/${candidateId}"]`);
+    assert.equal(await source.count(),1);
+    assert.equal(await source.getAttribute('data-target-revision'),'1');
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+    await page.screenshot({path:join(output,`composed-task-record-${width}.png`),fullPage:true});
+    await source.click();
+    assert.equal(new URL(page.url()).pathname,`/workspaces/${workspaceId}/records/${candidateId}`);
+    await page.waitForFunction(()=>document.querySelector('[data-secure-public-workspace]')?.dataset.secureIntegrity==='verified',undefined,{timeout:20000});
+    const candidate=page.locator(`[data-record-id="${candidateId}"]`);
+    await candidate.waitFor();
+    assert.match(await candidate.innerText(),/Turn decision into task/);
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+    await page.close();
+  }
   assert.deepEqual(errors,[]);
   console.log(JSON.stringify({task_record_verified:true,candidate_record_verified:true,
-    task_source_link_present:sourceLinkPresent,no_horizontal_overflow:noHorizontalOverflow}));
+    task_source_link_clicked:true,target_revision:1,viewports:[390,1280],no_horizontal_overflow:true}));
 } finally {
   await browser?.close();
   if(server){server.closeAllConnections?.();await new Promise(resolve=>server.close(resolve));}

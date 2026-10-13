@@ -18,6 +18,9 @@ import peerwork
 
 SDK_ROOT = Path(os.environ["PEERWORK_TEST_SDK_ROOT"])
 SOURCE_COMMIT = os.environ["PEERWORK_TEST_SOURCE_COMMIT"]
+REFERENCE_COMMIT = subprocess.check_output(
+    ["git", "rev-parse", "HEAD"], cwd=os.environ["PEERWORK_REFERENCE_ROOT"], text=True
+).strip()
 NODE = os.environ["PEERWORK_TEST_NODE"]
 NODE_PACKAGE = os.environ["PEERWORK_TEST_NODE_PACKAGE"]
 CLI = os.environ["PEERWORK_TEST_CLI"]
@@ -303,7 +306,7 @@ with tempfile.TemporaryDirectory(prefix="peerwork-official-workflow-") as direct
             assert browser.returncode == 0, browser.stderr[-1800:]
             browser_result = json.loads(browser.stdout)
         print(json.dumps({"source_commit": SOURCE_COMMIT,
-                          "reference_commit": "f828b6c50a0a58d1e718af90f653b214adcc3328",
+                          "reference_commit": REFERENCE_COMMIT,
                           "adopter_grant_refused_before_post": True,
                           "installed_interfaces": ["Python", "Node", "CLI"],
                           "proposal_sequence": 5, "adoption_sequence": 6, "task_sequence": 7,
