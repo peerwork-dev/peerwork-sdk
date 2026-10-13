@@ -128,7 +128,9 @@ try:
     assert "secure.structure.page" in steps and "secure.structure.end" in steps, steps
     active = reopened.read(workspace_id)
     assert active["structure_status"] == "ACTIVE"
-    assert any(row.get("id") == wiki_record_id for row in active["objects"])
+    wiki_record = next(row for row in active["objects"] if row.get("id") == wiki_record_id)
+    assert wiki_record["value"]["payload"]["title"] == "Before composed install"
+    assert wiki_record["value"]["payload"]["body"] == "Preserved by PAGE"
 
     proposal_id = "p" * 43
     submitted = reopened.public_actions(workspace_id).submit(
@@ -138,11 +140,14 @@ try:
     assert submitted["status"] == "PENDING"
     accepted = node_call(node_config, "action", workspace_id, "reconcile", proposal_id)
     assert accepted["status"] == "ACCEPTED" and len(accepted["receipt"]["effects"]) == 1
+    assert accepted["receipt"]["actor_id"] == actor_id
     candidate_id = accepted["receipt"]["effects"][0]["record_id"]
     final = reopened.read(workspace_id)
     candidate = next(row for row in final["objects"] if row.get("id") == candidate_id)
     assert candidate["value"]["schema_ref"] == "proposal.proposal.candidate"
     assert candidate["value"]["payload"]["author"] == actor_id
+    assert candidate["value"]["payload"]["title"] == "Native Owner proposal"
+    assert candidate["value"]["payload"]["body"] == "Composed package authority"
     config_file = STATE / "owner-config.json"
     config_file.write_text(json.dumps(dict(origin=origin, state_dir=str(owner_dir),
                                          allow_loopback_http=True,
