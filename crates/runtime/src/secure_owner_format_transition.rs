@@ -611,6 +611,7 @@ impl SecureOwnerFormatTransition {
 mod tests {
     use super::*;
     use crate::{
+        secure_action_access::PublicActionInput,
         secure_owner_attach::{HistoricalOwnerAttachInput, SecureHistoricalOwnerAttach},
         secure_owner_create::{SecureOwnerCreateConfig, SecureOwnerWorkspaceCreate},
         secure_private_install::{
@@ -956,6 +957,8 @@ mod tests {
                     .unwrap();
         }
         assert_eq!(installed["status"], "ACCEPTED");
+        assert_eq!(installed["protocol_digest"], typed["protocol_digest"]);
+        assert_eq!(installed["instance_id"], typed_instance);
         let after_typed = counts()["commits"].as_u64().unwrap();
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(
@@ -972,5 +975,109 @@ mod tests {
             "ACCEPTED"
         );
         assert_eq!(counts()["commits"], after_typed);
+
+        let installed_read: serde_json::Value =
+            serde_json::from_str(&owner.read_workspace_json(&workspace_id, &cancel).unwrap())
+                .unwrap();
+        let objects = installed_read["objects"].as_array().unwrap();
+        assert!(objects.iter().any(|object| {
+            object["kind"] == "protocols"
+                && object["id"] == typed["protocol_digest"]
+                && object["value"]["manifest"]["format_version"] == 2
+                && object["value"]["package_source"]["root_package_digest"]
+                    == typed["root_package_digest"]
+        }));
+        assert!(objects.iter().any(|object| {
+            object["kind"] == "instances"
+                && object["id"] == typed_instance
+                && object["value"]["protocol_digest"] == typed["protocol_digest"]
+                && object["value"]["package_source"]["root_package_digest"]
+                    == typed["root_package_digest"]
+        }));
+
+        let action = owner.private_action_access(&workspace_id).unwrap();
+        let replace: serde_json::Value = serde_json::from_str(
+            &action
+                .submit_new_json(PublicActionInput {
+                    action_id: "lib.replace".into(),
+                    instance_id: typed_instance.clone(),
+                    body_json: r#"{"value":[{"label":"native typed data"},true]}"#.into(),
+                    exact_input_refs_json: None,
+                    allocations_json: None,
+                    command_id: None,
+                    issued_at_ms: None,
+                })
+                .unwrap(),
+        )
+        .unwrap();
+        let replaced: serde_json::Value = serde_json::from_str(
+            &action
+                .retry_saved_json(replace["command_id"].as_str().unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(replaced["status"], "ACCEPTED");
+        let after_replace: serde_json::Value =
+            serde_json::from_str(&owner.read_workspace_json(&workspace_id, &cancel).unwrap())
+                .unwrap();
+        let instance = after_replace["objects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|object| object["kind"] == "instances" && object["id"] == typed_instance)
+            .unwrap();
+        assert_eq!(
+            instance["value"]["state"]["lib"]["data"],
+            serde_json::json!([{"label":"native typed data"}, true])
+        );
+
+        let produce: serde_json::Value = serde_json::from_str(
+            &action
+                .submit_new_json(PublicActionInput {
+                    action_id: "lib.produce".into(),
+                    instance_id: typed_instance.clone(),
+                    body_json: "{}".into(),
+                    exact_input_refs_json: None,
+                    allocations_json: None,
+                    command_id: None,
+                    issued_at_ms: None,
+                })
+                .unwrap(),
+        )
+        .unwrap();
+        let produced: serde_json::Value = serde_json::from_str(
+            &action
+                .retry_saved_json(produce["command_id"].as_str().unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(produced["status"], "ACCEPTED");
+        let receipt: serde_json::Value =
+            serde_json::from_str(produced["receipt_canonical_json"].as_str().unwrap()).unwrap();
+        let produced_id = receipt["effects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|effect| effect["record_id"].as_str())
+            .unwrap();
+        let after_produce: serde_json::Value =
+            serde_json::from_str(&owner.read_workspace_json(&workspace_id, &cancel).unwrap())
+                .unwrap();
+        let objects = after_produce["objects"].as_array().unwrap();
+        assert!(objects.iter().any(|object| {
+            object["kind"] == "records"
+                && object["id"] == produced_id
+                && object["value"]["payload"]["label"] == "private typed record"
+        }));
+        let instance = objects
+            .iter()
+            .rev()
+            .find(|object| object["kind"] == "instances" && object["id"] == typed_instance)
+            .unwrap();
+        assert_eq!(
+            instance["value"]["state"]["lib"]["refs"],
+            serde_json::json!([{"record_id":produced_id,"revision":1}])
+        );
     }
 }
