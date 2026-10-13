@@ -638,17 +638,9 @@ fn verify_saved_offer(
             "PRIVATE" => unsigned(pp, "epoch")? >= 1,
             _ => false,
         }
-        || !matches!(unsigned(pp, "v")?, 1 | 3)
-        || !verify_secure_signed_wire(
-            signed_policy_wire,
-            if unsigned(pp, "v")? == 3 {
-                "peerwork.secure.policy.v3"
-            } else {
-                "peerwork.secure.policy.v1"
-            },
-            owner_key,
-        )
-        .map_err(|_| bad())?
+        || !matches!(unsigned(pp, "v")?, 1 | 2 | 3)
+        || !verify_secure_signed_wire(signed_policy_wire, "peerwork.secure.policy.v1", owner_key)
+            .map_err(|_| bad())?
     {
         return Err(bad());
     }
@@ -781,17 +773,9 @@ fn prepare_offer_utf16(
             "PRIVATE" => unsigned(p, "epoch")? >= 1,
             _ => false,
         }
-        || !matches!(unsigned(p, "v")?, 1 | 3)
-        || !verify_secure_signed_wire(
-            signed_policy_wire,
-            if unsigned(p, "v")? == 3 {
-                "peerwork.secure.policy.v3"
-            } else {
-                "peerwork.secure.policy.v1"
-            },
-            &owner_key,
-        )
-        .map_err(|_| bad())?
+        || !matches!(unsigned(p, "v")?, 1 | 2 | 3)
+        || !verify_secure_signed_wire(signed_policy_wire, "peerwork.secure.policy.v1", &owner_key)
+            .map_err(|_| bad())?
     {
         return Err(bad());
     }
