@@ -25,6 +25,10 @@ pub struct PublicCatalogConfig {
     pub origin: String,
     #[serde(default)]
     pub allow_loopback_http: bool,
+    /// Optional client resource budget for one advisory search response.
+    /// The default is 8 MiB; exact package bytes retain the source 1 MiB cap.
+    #[serde(default)]
+    pub max_listing_bytes: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -97,6 +101,10 @@ impl PublicCatalog {
         {
             return Err(PublicCatalogError::Input);
         }
+        let list_budget = self.config.max_listing_bytes.unwrap_or(MAX_LIST_BYTES);
+        if !(1..=64 * 1024 * 1024).contains(&list_budget) {
+            return Err(PublicCatalogError::Input);
+        }
         let transport = self.transport()?;
         let limit_text = limit.to_string();
         let mut query_pairs = vec![("q", query), ("limit", limit_text.as_str())];
@@ -106,13 +114,13 @@ impl PublicCatalog {
         let response = block_on(transport.get_public_catalog(
             "/api/protocol-catalog/v1/packages",
             &query_pairs,
-            MAX_LIST_BYTES,
+            list_budget,
             cancel,
         ))?;
         if response.status != 200 {
             return Err(PublicCatalogError::ServerRejected(response.status));
         }
-        let wire = parse_wire_json_bounded(&response.wire, 32, MAX_LIST_BYTES)
+        let wire = parse_wire_json_bounded(&response.wire, 32, list_budget)
             .map_err(|_| PublicCatalogError::InvalidResponse)?;
         validate_listing(&wire, limit)?;
         let listing_canonical_json = canonical_wire_value(&wire, Path::SecureArtifact)
@@ -273,12 +281,25 @@ mod tests {
         let catalog = PublicCatalog::new(PublicCatalogConfig {
             origin,
             allow_loopback_http: true,
+            max_listing_bytes: None,
         });
         let cancel = CancellationToken::new();
         let result = (|| {
             let listed = catalog.search("", None, 50, &cancel)?;
             let initial_cursor = catalog.search("", Some(""), 50, &cancel)?;
-            assert_eq!(listed.listing_canonical_json, initial_cursor.listing_canonical_json);
+            assert_eq!(
+                listed.listing_canonical_json,
+                initial_cursor.listing_canonical_json
+            );
+            let constrained = PublicCatalog::new(PublicCatalogConfig {
+                origin: listed.catalog_origin.clone(),
+                allow_loopback_http: true,
+                max_listing_bytes: Some(1),
+            });
+            assert!(matches!(
+                constrained.search("", None, 50, &cancel),
+                Err(PublicCatalogError::ResourceLimit)
+            ));
             let rows: serde_json::Value =
                 serde_json::from_str(&listed.listing_canonical_json).unwrap();
             assert_eq!(rows["items"].as_array().unwrap().len(), 2);
