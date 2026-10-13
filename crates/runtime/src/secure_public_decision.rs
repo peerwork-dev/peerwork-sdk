@@ -329,8 +329,11 @@ impl SecurePublicDecision {
         let offered_cert = payload
             .get("recipient")
             .ok_or(PublicDecisionError::Invalid)?;
-        if canonical_wire_value(&cert, CanonicalPath::SecureArtifact).ok()
-            != canonical_wire_value(offered_cert, CanonicalPath::SecureArtifact).ok()
+        let local_cert = canonical_wire_value(&cert, CanonicalPath::SecureArtifact)
+            .map_err(|_| PublicDecisionError::Invalid)?;
+        let signed_cert = canonical_wire_value(offered_cert, CanonicalPath::SecureArtifact)
+            .map_err(|_| PublicDecisionError::Invalid)?;
+        if local_cert != signed_cert
             || cert
                 .get("payload")
                 .and_then(|v| v.get("actor_id"))
