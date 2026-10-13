@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 
 const [origin, sourceDir, legacyRoot, mode = 'clean'] = process.argv.slice(2);
 if (!origin || !sourceDir || !legacyRoot) throw new Error('LEGACY_TEST_INPUT_REQUIRED');
-if (!['clean', 'completed', 'legacy-record', 'pending', 'pending-before-post', 'pending-private-structured', 'pending-private-structured-before-post', 'pending-public', 'pending-public-before-post', 'pending-public-structured', 'pending-public-structured-before-post', 'pending-current-private', 'pending-current-private-before-post', 'pending-current-private-structured', 'pending-current-private-structured-before-post', 'pending-current-private-structured-ceiling2', 'pending-current-private-structured-ceiling2-before-post', 'pending-current-public', 'pending-current-public-before-post', 'pending-current-public-structured', 'pending-current-public-structured-before-post', 'stage-marker-completed', 'stage-marker-pending', 'stage-marker-mismatch', 'stage-marker-command-mismatch', 'stage-marker-before-post', 'stage-marker-orphan', 'stage-marker-multipart-final', 'stage-marker-multipart-intermediate', 'stage-marker-multipart-final-later', 'stage-marker-multipart-pending-applied-index1', 'stage-marker-multipart-pending-before-post-index1', 'kernel-jws-source', 'unknown-store', 'malformed-store', 'legacy-structured', 'legacy-public', 'legacy-public-structured', 'legacy-public-record', 'legacy-public-structured-record', 'private-missing-ring'].includes(mode)) throw new Error('LEGACY_TEST_MODE_INVALID');
+if (!['clean', 'completed', 'legacy-record', 'pending', 'pending-before-post', 'pending-private-structured', 'pending-private-structured-before-post', 'pending-public', 'pending-public-before-post', 'pending-public-structured', 'pending-public-structured-before-post', 'pending-current-private', 'pending-current-private-before-post', 'pending-current-private-structured', 'pending-current-private-structured-before-post', 'pending-current-private-structured-ceiling2', 'pending-current-private-structured-ceiling2-before-post', 'pending-current-public', 'pending-current-public-before-post', 'pending-current-public-structured', 'pending-current-public-structured-before-post', 'stage-marker-completed', 'stage-marker-pending', 'stage-marker-mismatch', 'stage-marker-command-mismatch', 'stage-marker-before-post', 'stage-marker-orphan', 'stage-marker-multipart-final', 'stage-marker-multipart-intermediate', 'stage-marker-multipart-final-later', 'stage-marker-multipart-pending-applied-index1', 'stage-marker-multipart-pending-before-post-index1', 'stage-marker-multipart-orphan-index1', 'kernel-jws-source', 'unknown-store', 'malformed-store', 'legacy-structured', 'legacy-public', 'legacy-public-structured', 'legacy-public-record', 'legacy-public-structured-record', 'private-missing-ring'].includes(mode)) throw new Error('LEGACY_TEST_MODE_INVALID');
 mkdirSync(sourceDir, { recursive: true, mode: 0o700 });
 const { privateKey } = generateKeyPairSync('ed25519');
 const pemPath = join(sourceDir, 'owner.pem');
@@ -83,13 +83,14 @@ try {
     walk(directory);
     const multipart = mode.startsWith('stage-marker-multipart-');
     const pendingMultipart = mode.startsWith('stage-marker-multipart-pending-');
+    const orphanMultipart = mode === 'stage-marker-multipart-orphan-index1';
     // Documentation is package material but not a protocol behavior change.
     // This remains within the pinned package file budget and makes two real
     // source parts under the f828 64 KiB per-part limit.
-    if (multipart) files['README.md'] += '\n' + 'A'.repeat(pendingMultipart ? 150000 : 70000);
+    if (multipart) files['README.md'] += '\n' + 'A'.repeat(pendingMultipart || orphanMultipart ? 150000 : 70000);
     const bundle = parseProtocolPackage({ format: PROTOCOL_PACKAGE_FORMAT, files });
     const material = { v: 1, closure: createProtocolPackageClosure(bundle, []), bindings: {} };
-    if (mode === 'stage-marker-orphan') orphanStageMaterialJson = JSON.stringify(material);
+    if (mode === 'stage-marker-orphan' || orphanMultipart) orphanStageMaterialJson = JSON.stringify(material);
     if (pendingMultipart) {
       pendingStageMaterialJson = JSON.stringify(material);
       const wrongBundle = parseProtocolPackage({
@@ -107,13 +108,13 @@ try {
         throw new Error('TEST_ALTERNATE_STAGE_MATERIAL_NOT_DISTINCT');
       }
     }
-    if (pendingMultipart ? staged.parts.length < 3 : staged.parts.length !== (multipart ? 2 : 1)) throw new Error('TEST_STAGE_PART_COUNT_UNEXPECTED');
+    if (pendingMultipart || orphanMultipart ? staged.parts.length < 3 : staged.parts.length !== (multipart ? 2 : 1)) throw new Error('TEST_STAGE_PART_COUNT_UNEXPECTED');
     stagePartCount = staged.parts.length;
     stageParts = staged.proof.parts;
     const originalPost = agent.post.bind(agent);
     const originalRequest = agent.request.bind(agent);
     const beforePost = mode === 'stage-marker-before-post' || mode === 'stage-marker-multipart-pending-before-post-index1';
-    const orphan = mode === 'stage-marker-orphan';
+    const orphan = mode === 'stage-marker-orphan' || orphanMultipart;
     const applied = !beforePost && !orphan;
     const stopAt = multipart && mode !== 'stage-marker-multipart-intermediate' ? 2 : 1;
     let stopped = false;
@@ -125,7 +126,7 @@ try {
       submittedCommand = {
         command_id: args[2], action_id: args[1]?.commit?.payload?.action_id,
       };
-      if (orphan && !stopped) {
+      if (orphan && !stopped && (!orphanMultipart || stagePosts === 2)) {
         stopped = true;
         throw new Error('TEST_STOP_AFTER_STAGE_MARKER_SAVE');
       }
@@ -167,7 +168,7 @@ try {
     const markers = Object.values(agent.state.package_stage_intents ?? {});
     if (markers.length !== 1) throw new Error('TEST_STAGE_MARKER_MISSING');
     stageMarker = markers[0];
-    if (pendingMultipart && (stagePosts !== 2 || stageMarker.part_index !== 1 || (mode.endsWith('applied-index1') && !dropArmed))) {
+    if ((pendingMultipart || orphanMultipart) && (stagePosts !== 2 || stageMarker.part_index !== 1 || (mode.endsWith('applied-index1') && !dropArmed))) {
       throw new Error('TEST_STAGE_PENDING_INDEX1_NOT_REACHED');
     }
     stagePartId = staged.proof.parts[stageMarker.part_index]?.id;
@@ -179,9 +180,9 @@ try {
     if (Object.keys(agent.state.pending).length !== expectedPending) throw new Error('TEST_STAGE_PENDING_CLASS_MISMATCH');
     if (expectedPending && Object.keys(agent.state.pending)[0] !== stageMarker.command_id) throw new Error('TEST_STAGE_SAVED_ID_MISMATCH');
     journal = await agent.journal(created.workspaceId);
-    const expectedAppliedParts = pendingMultipart ? (beforePost ? 1 : 2) : (applied ? stopAt : 0);
+    const expectedAppliedParts = pendingMultipart ? (beforePost ? 1 : 2) : orphanMultipart ? 1 : (applied ? stopAt : 0);
     if (journal.checkpoint.sequence !== staged.proof.source.sequence + expectedAppliedParts) throw new Error('TEST_STAGE_SIGNED_COMMIT_CLASS_MISMATCH');
-    if (pendingMultipart) {
+    if (pendingMultipart || orphanMultipart) {
       verifyStagedPackageCheckpoint(journal, staged.proof);
       const signedPrefix = journal.operations.slice(-expectedAppliedParts);
       for (let index = 0; index < expectedAppliedParts; index++) {
@@ -324,7 +325,7 @@ try {
     } : null,
     stage_part_count: stagePartCount,
     stage_parts: stageParts,
-    stage_applied: mode.startsWith('stage-marker-') ? !['stage-marker-before-post', 'stage-marker-orphan', 'stage-marker-multipart-pending-before-post-index1'].includes(mode) : null,
+    stage_applied: mode.startsWith('stage-marker-') ? !['stage-marker-before-post', 'stage-marker-orphan', 'stage-marker-multipart-orphan-index1', 'stage-marker-multipart-pending-before-post-index1'].includes(mode) : null,
     stage_signed_command_id: stageSignedCommandId,
     orphan_stage_material_json: orphanStageMaterialJson,
     pending_stage_material_json: pendingStageMaterialJson,
