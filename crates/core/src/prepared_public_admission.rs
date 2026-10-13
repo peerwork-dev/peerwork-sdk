@@ -1,0 +1,537 @@
+//! Low-level PUBLIC invitation and consent packets. A caller must bind the
+//! signed policy/offer to authenticated HTTPS control state before sending.
+//! Persist each exact request before POST; neither result grants membership.
+
+use crate::{
+    canonical::Path,
+    crypto::{actor_id, base64url, decode_base64url, sha256_hex, verify_secure_signed_wire},
+    e2ee::{encryption_key_id, hpke_seal_wire, RecipientPublicJwk},
+    wire_json::{canonical_wire_value, parse_wire_json_js_bounded, WireValue},
+};
+use ed25519_dalek::{Signer, SigningKey};
+use rand_core::{OsRng, RngCore};
+use std::collections::HashSet;
+use thiserror::Error;
+use zeroize::Zeroizing;
+
+const MAX_SAFE: u64 = 9_007_199_254_740_991;
+const INVITATION_LIFETIME: u64 = 7 * 86_400_000;
+const CERTIFICATE_LIFETIME: u64 = 366 * 86_400_000;
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum PublicAdmissionError {
+    #[error("signed PUBLIC admission input or identity is invalid")]
+    Invalid,
+    #[error("OS entropy for invitation ID or HPKE box is unavailable")]
+    Entropy,
+    #[error("recipient invitation message could not be encrypted")]
+    Encryption,
+}
+
+pub struct PreparedAdmissionPacket {
+    request_wire: Vec<u8>,
+    artifact_wire: Vec<u8>,
+    id: String,
+    artifact_hash: String,
+}
+
+impl PreparedAdmissionPacket {
+    pub fn request_wire(&self) -> &[u8] {
+        &self.request_wire
+    }
+    pub fn artifact_wire(&self) -> &[u8] {
+        &self.artifact_wire
+    }
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+    pub fn artifact_hash(&self) -> &str {
+        &self.artifact_hash
+    }
+}
+
+/// Construct the owner-signed offer and its exact POST body. The caller must
+/// supply the latest policy from a complete origin-bound replay and check the
+/// recipient certificate against current directory state before sending.
+pub fn prepare_public_offer(
+    signed_policy_wire: &[u8],
+    recipient_certificate_wire: &[u8],
+    scopes_wire: &[u8],
+    message: &str,
+    invite_id: Option<&str>,
+    issued_at: u64,
+    expires_at: u64,
+    owner_signing_key: &SigningKey,
+) -> Result<PreparedAdmissionPacket, PublicAdmissionError> {
+    let bad = || PublicAdmissionError::Invalid;
+    if message.len() > 8192
+        || issued_at > MAX_SAFE
+        || expires_at > MAX_SAFE
+        || expires_at <= issued_at
+        || expires_at - issued_at > INVITATION_LIFETIME
+    {
+        return Err(bad());
+    }
+    let owner_key = base64url(&owner_signing_key.verifying_key().to_bytes());
+    let owner_actor = actor_id(&owner_signing_key.verifying_key().to_bytes());
+    let policy = parse_wire_json_js_bounded(signed_policy_wire, 64, 196_608).map_err(|_| bad())?;
+    let p = policy.get("payload").ok_or_else(bad)?;
+    let workspace = string(p, "workspace_id")?;
+    if string(p, "owner_id")? != owner_actor
+        || string(p, "signing_key")? != owner_key
+        || string(p, "visibility")? != "PUBLIC"
+        || unsigned(p, "epoch")? != 0
+        || !verify_secure_signed_wire(signed_policy_wire, "peerwork.secure.policy.v1", &owner_key)
+            .map_err(|_| bad())?
+    {
+        return Err(bad());
+    }
+    let policy_hash = sha256_hex(
+        canonical_wire_value(&policy, Path::SecureArtifact)
+            .map_err(|_| bad())?
+            .as_bytes(),
+    );
+    let certificate =
+        parse_wire_json_js_bounded(recipient_certificate_wire, 64, 8192).map_err(|_| bad())?;
+    let recipient_jwk = verify_certificate(&certificate, issued_at)?;
+    let scopes = parse_wire_json_js_bounded(scopes_wire, 32, 65_536).map_err(|_| bad())?;
+    if !valid_scopes(&scopes) {
+        return Err(bad());
+    }
+    let id = match invite_id {
+        Some(id) if token(id) => id.to_owned(),
+        Some(_) => return Err(bad()),
+        None => {
+            let mut bytes = [0u8; 32];
+            OsRng
+                .try_fill_bytes(&mut bytes)
+                .map_err(|_| PublicAdmissionError::Entropy)?;
+            base64url(&bytes)
+        }
+    };
+    let context = object(vec![
+        ("v", WireValue::Number(1.0)),
+        ("invite_id", s(&id)),
+        ("workspace_id", s(&workspace)),
+        ("actor_id", s(&owner_actor)),
+        ("signing_key", s(&owner_key)),
+        ("recipient", certificate),
+        ("policy_hash", s(&policy_hash)),
+        ("scopes", scopes),
+        ("issued_at", WireValue::Number(issued_at as f64)),
+        ("expires_at", WireValue::Number(expires_at as f64)),
+    ]);
+    let plaintext = object(vec![("message", s(message))]);
+    let box_value = hpke_seal_wire(
+        &recipient_jwk,
+        canonical_wire_value(&plaintext, Path::SecureArtifact)
+            .map_err(|_| bad())?
+            .as_bytes(),
+        canonical_wire_value(&context, Path::SecureArtifact)
+            .map_err(|_| bad())?
+            .as_bytes(),
+    )
+    .map_err(|_| PublicAdmissionError::Encryption)?;
+    let box_wire = serde_json::to_vec(&box_value).map_err(|_| bad())?;
+    let box_value = parse_wire_json_js_bounded(&box_wire, 32, 196_608).map_err(|_| bad())?;
+    let WireValue::Object(mut fields) = context else {
+        return Err(bad());
+    };
+    fields.push(("message".encode_utf16().collect(), box_value));
+    let artifact = sign_payload(
+        WireValue::Object(fields),
+        "peerwork.secure.invitation.v1",
+        owner_signing_key,
+    )?;
+    let artifact_wire = canonical_wire_value(&artifact, Path::SecureArtifact)
+        .map_err(|_| bad())?
+        .into_bytes();
+    let request_wire =
+        format!("{{\"offer\":{}}}", String::from_utf8_lossy(&artifact_wire)).into_bytes();
+    Ok(PreparedAdmissionPacket {
+        artifact_hash: sha256_hex(&artifact_wire),
+        request_wire,
+        artifact_wire,
+        id,
+    })
+}
+
+/// Sign consent to an exact owner offer. The recipient actor and certificate
+/// must match the local signing identity. Transport and directory proof remain
+/// runtime responsibilities.
+pub fn prepare_public_decision(
+    offer_wire: &[u8],
+    owner_actor: &str,
+    owner_key: &str,
+    recipient_signing_key: &SigningKey,
+    decision: &str,
+    issued_at: u64,
+) -> Result<PreparedAdmissionPacket, PublicAdmissionError> {
+    let bad = || PublicAdmissionError::Invalid;
+    if !matches!(decision, "ACCEPT" | "DECLINE") || issued_at > MAX_SAFE {
+        return Err(bad());
+    }
+    let offer = parse_wire_json_js_bounded(offer_wire, 64, 220_000).map_err(|_| bad())?;
+    let op = offer.get("payload").ok_or_else(bad)?;
+    let id = string(op, "invite_id")?;
+    let workspace = string(op, "workspace_id")?;
+    let recipient = op.get("recipient").ok_or_else(bad)?;
+    let rp = recipient.get("payload").ok_or_else(bad)?;
+    let actor = actor_id(&recipient_signing_key.verifying_key().to_bytes());
+    let key = base64url(&recipient_signing_key.verifying_key().to_bytes());
+    let offered_at = unsigned(op, "issued_at")?;
+    let expires_at = unsigned(op, "expires_at")?;
+    if unsigned(op, "v")? != 1
+        || !token(&id)
+        || !token(&workspace)
+        || !token(owner_actor)
+        || !token(owner_key)
+        || string(op, "actor_id")? != owner_actor
+        || string(op, "signing_key")? != owner_key
+        || !hex_digest(&string(op, "policy_hash")?)
+        || !op.get("scopes").is_some_and(valid_scopes)
+        || string(rp, "actor_id")? != actor
+        || string(rp, "signing_key")? != key
+        || offered_at > issued_at
+        || expires_at <= issued_at
+        || expires_at - offered_at > INVITATION_LIFETIME
+        || !verify_secure_signed_wire(offer_wire, "peerwork.secure.invitation.v1", owner_key)
+            .map_err(|_| bad())?
+    {
+        return Err(bad());
+    }
+    verify_certificate(recipient, issued_at)?;
+    let offer_hash = sha256_hex(
+        canonical_wire_value(&offer, Path::SecureArtifact)
+            .map_err(|_| bad())?
+            .as_bytes(),
+    );
+    let payload = object(vec![
+        ("v", WireValue::Number(1.0)),
+        ("invite_id", s(&id)),
+        ("workspace_id", s(&workspace)),
+        ("actor_id", s(&actor)),
+        ("signing_key", s(&key)),
+        ("offer_hash", s(&offer_hash)),
+        ("decision", s(decision)),
+        ("issued_at", WireValue::Number(issued_at as f64)),
+    ]);
+    let artifact = sign_payload(
+        payload,
+        "peerwork.secure.invite-decision.v1",
+        recipient_signing_key,
+    )?;
+    let artifact_wire = canonical_wire_value(&artifact, Path::SecureArtifact)
+        .map_err(|_| bad())?
+        .into_bytes();
+    let request_wire = format!(
+        "{{\"decision\":{}}}",
+        String::from_utf8_lossy(&artifact_wire)
+    )
+    .into_bytes();
+    Ok(PreparedAdmissionPacket {
+        artifact_hash: sha256_hex(&artifact_wire),
+        request_wire,
+        artifact_wire,
+        id,
+    })
+}
+
+fn verify_certificate(
+    certificate: &WireValue,
+    at: u64,
+) -> Result<RecipientPublicJwk, PublicAdmissionError> {
+    let bad = || PublicAdmissionError::Invalid;
+    let payload = certificate.get("payload").ok_or_else(bad)?;
+    let actor = string(payload, "actor_id")?;
+    let key = string(payload, "signing_key")?;
+    let issued = unsigned(payload, "issued_at")?;
+    let expiry = unsigned(payload, "expires_at")?;
+    let raw: [u8; 32] = decode_base64url(&key)
+        .map_err(|_| bad())?
+        .try_into()
+        .map_err(|_| bad())?;
+    if unsigned(payload, "v")? != 1
+        || actor_id(&raw) != actor
+        || !token(&actor)
+        || issued > at
+        || expiry <= at
+        || expiry - issued > CERTIFICATE_LIFETIME
+    {
+        return Err(bad());
+    }
+    let jwk_value = payload.get("encryption_key").ok_or_else(bad)?;
+    if jwk_value.object_len() != Some(4) {
+        return Err(bad());
+    }
+    let jwk_wire = canonical_wire_value(jwk_value, Path::SecureArtifact).map_err(|_| bad())?;
+    let jwk: RecipientPublicJwk = serde_json::from_str(&jwk_wire).map_err(|_| bad())?;
+    if string(payload, "encryption_key_id")? != encryption_key_id(&jwk).map_err(|_| bad())? {
+        return Err(bad());
+    }
+    let cert_wire = canonical_wire_value(certificate, Path::SecureArtifact).map_err(|_| bad())?;
+    if !verify_secure_signed_wire(
+        cert_wire.as_bytes(),
+        "peerwork.secure.key-certificate.v1",
+        &key,
+    )
+    .map_err(|_| bad())?
+    {
+        return Err(bad());
+    }
+    Ok(jwk)
+}
+
+fn sign_payload(
+    payload: WireValue,
+    domain: &str,
+    signing_key: &SigningKey,
+) -> Result<WireValue, PublicAdmissionError> {
+    let canonical = canonical_wire_value(&payload, Path::SecureArtifact)
+        .map_err(|_| PublicAdmissionError::Invalid)?;
+    let mut message = Zeroizing::new(Vec::with_capacity(domain.len() + 1 + canonical.len()));
+    message.extend_from_slice(domain.as_bytes());
+    message.push(0);
+    message.extend_from_slice(canonical.as_bytes());
+    let signature = base64url(&signing_key.sign(&message).to_bytes());
+    Ok(object(vec![
+        ("payload", payload),
+        ("signature", s(&signature)),
+    ]))
+}
+
+fn valid_scopes(value: &WireValue) -> bool {
+    let WireValue::Array(scopes) = value else {
+        return false;
+    };
+    if scopes.len() > 128 {
+        return false;
+    }
+    for scope in scopes {
+        let WireValue::Object(fields) = scope else {
+            return false;
+        };
+        if fields.iter().any(|(name, _)| {
+            ![
+                "instance_id",
+                "actions",
+                "protocol_roles",
+                "capabilities",
+                "expires_at",
+            ]
+            .iter()
+            .any(|allowed| name.iter().copied().eq(allowed.encode_utf16()))
+        }) || !matches!(scope.get("instance_id"), Some(WireValue::Null))
+            && !scope
+                .get("instance_id")
+                .and_then(WireValue::as_string)
+                .is_some_and(|id| token(&id))
+        {
+            return false;
+        }
+        if scope.get("expires_at").is_some_and(|expiry| {
+            !matches!(expiry, WireValue::Null)
+                && !expiry
+                    .as_number()
+                    .is_some_and(|n| n >= 1.0 && n <= MAX_SAFE as f64 && n.fract() == 0.0)
+        }) {
+            return false;
+        }
+        for field in ["actions", "protocol_roles", "capabilities"] {
+            let Some(WireValue::Array(values)) = scope.get(field) else {
+                return false;
+            };
+            if values.len() > 64 {
+                return false;
+            }
+            let mut seen = HashSet::new();
+            for value in values {
+                let Some(units) = value.as_utf16() else {
+                    return false;
+                };
+                if units.is_empty() || units.len() > 120 || !seen.insert(units.to_vec()) {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+fn object(fields: Vec<(&str, WireValue)>) -> WireValue {
+    WireValue::Object(
+        fields
+            .into_iter()
+            .map(|(name, value)| (name.encode_utf16().collect(), value))
+            .collect(),
+    )
+}
+fn s(value: &str) -> WireValue {
+    WireValue::String(value.encode_utf16().collect())
+}
+fn string(value: &WireValue, name: &str) -> Result<String, PublicAdmissionError> {
+    value
+        .get(name)
+        .and_then(WireValue::as_string)
+        .ok_or(PublicAdmissionError::Invalid)
+}
+fn unsigned(value: &WireValue, name: &str) -> Result<u64, PublicAdmissionError> {
+    let number = value
+        .get(name)
+        .and_then(WireValue::as_number)
+        .ok_or(PublicAdmissionError::Invalid)?;
+    if !number.is_finite() || number < 0.0 || number > MAX_SAFE as f64 || number.fract() != 0.0 {
+        return Err(PublicAdmissionError::Invalid);
+    }
+    Ok(number as u64)
+}
+fn token(value: &str) -> bool {
+    value.len() == 43
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+        && decode_base64url(value).is_ok_and(|decoded| decoded.len() == 32)
+}
+fn hex_digest(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        e2ee::{hpke_open_wire, KeyBox},
+        secure_recipient::SecretRecipient,
+    };
+
+    #[test]
+    fn public_offer_and_recipient_consent_bind_exact_signed_artifacts() {
+        let now = 1_700_000_000_000;
+        let owner = SigningKey::from_bytes(&[17; 32]);
+        let recipient = SigningKey::from_bytes(&[19; 32]);
+        let recipient_secret = SecretRecipient::generate().unwrap();
+        let cert = recipient_secret.certify(&recipient, now).unwrap();
+        let certificate_wire = serde_json::to_vec(&cert).unwrap();
+        let workspace = base64url(&[13; 32]);
+        let owner_key = base64url(&owner.verifying_key().to_bytes());
+        let owner_actor = actor_id(&owner.verifying_key().to_bytes());
+        let policy = sign_payload(
+            object(vec![
+                ("v", WireValue::Number(1.0)),
+                ("workspace_id", s(&workspace)),
+                ("owner_id", s(&owner_actor)),
+                ("signing_key", s(&owner_key)),
+                ("version", WireValue::Number(1.0)),
+                ("previous_policy", WireValue::Null),
+                ("effective_sequence", WireValue::Number(1.0)),
+                ("visibility", s("PUBLIC")),
+                ("epoch", WireValue::Number(0.0)),
+                ("members", WireValue::Array(Vec::new())),
+                ("issued_at", WireValue::Number(now as f64)),
+            ]),
+            "peerwork.secure.policy.v1",
+            &owner,
+        )
+        .unwrap();
+        let policy_wire = canonical_wire_value(&policy, Path::SecureArtifact).unwrap();
+        let scopes_wire = br#"[{"instance_id":null,"actions":["proposal.adopt"],"protocol_roles":["ADOPTER"],"capabilities":[]}]"#;
+        let offer = prepare_public_offer(
+            policy_wire.as_bytes(),
+            &certificate_wire,
+            scopes_wire,
+            "consent message",
+            Some(&base64url(&[14; 32])),
+            now + 1,
+            now + 86_400_000,
+            &owner,
+        )
+        .unwrap();
+        assert!(verify_secure_signed_wire(
+            offer.artifact_wire(),
+            "peerwork.secure.invitation.v1",
+            &owner_key
+        )
+        .unwrap());
+        let offer_value = parse_wire_json_js_bounded(offer.artifact_wire(), 64, 220_000).unwrap();
+        let WireValue::Object(fields) = offer_value.get("payload").unwrap().clone() else {
+            panic!("offer payload");
+        };
+        let box_value = fields
+            .iter()
+            .find(|(name, _)| name.iter().copied().eq("message".encode_utf16()))
+            .unwrap()
+            .1
+            .clone();
+        let context = WireValue::Object(
+            fields
+                .into_iter()
+                .filter(|(name, _)| !name.iter().copied().eq("message".encode_utf16()))
+                .collect(),
+        );
+        let box_wire = canonical_wire_value(&box_value, Path::SecureArtifact).unwrap();
+        let key_box: KeyBox = serde_json::from_str(&box_wire).unwrap();
+        let context_wire = canonical_wire_value(&context, Path::SecureArtifact).unwrap();
+        let opened = hpke_open_wire(
+            recipient_secret.private_bytes(),
+            &key_box,
+            context_wire.as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(
+            opened
+                .get("message")
+                .and_then(WireValue::as_string)
+                .as_deref(),
+            Some("consent message")
+        );
+        let decision = prepare_public_decision(
+            offer.artifact_wire(),
+            &owner_actor,
+            &owner_key,
+            &recipient,
+            "ACCEPT",
+            now + 2,
+        )
+        .unwrap();
+        assert!(verify_secure_signed_wire(
+            decision.artifact_wire(),
+            "peerwork.secure.invite-decision.v1",
+            &base64url(&recipient.verifying_key().to_bytes())
+        )
+        .unwrap());
+        let decision_value =
+            parse_wire_json_js_bounded(decision.artifact_wire(), 32, 8192).unwrap();
+        assert_eq!(
+            decision_value
+                .get("payload")
+                .unwrap()
+                .get("offer_hash")
+                .and_then(WireValue::as_string)
+                .as_deref(),
+            Some(offer.artifact_hash())
+        );
+        assert_eq!(decision.id(), offer.id());
+        let wrong = SigningKey::from_bytes(&[21; 32]);
+        assert!(prepare_public_decision(
+            offer.artifact_wire(),
+            &owner_actor,
+            &owner_key,
+            &wrong,
+            "ACCEPT",
+            now + 2,
+        )
+        .is_err());
+        if let Ok(path) = std::env::var("PEERWORK_ADMISSION_VECTOR") {
+            let public_vector = serde_json::json!({
+                "offer":serde_json::from_slice::<serde_json::Value>(offer.artifact_wire()).unwrap(),
+                "decision":serde_json::from_slice::<serde_json::Value>(decision.artifact_wire()).unwrap(),
+                "owner_actor":owner_actor,
+                "owner_key":owner_key,
+                "recipient_actor":actor_id(&recipient.verifying_key().to_bytes()),
+                "recipient_key":base64url(&recipient.verifying_key().to_bytes()),
+                "now":now+2,
+            });
+            std::fs::write(path, serde_json::to_vec(&public_vector).unwrap()).unwrap();
+        }
+    }
+}
