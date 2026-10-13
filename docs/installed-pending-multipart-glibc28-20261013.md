@@ -1,8 +1,8 @@
 # Pending multipart Owner attachment: installed Linux artifact gate — 2026-10-13
 
 This report records the immutable Linux x64 glibc 2.28 SDK package cohort and
-the installed multipart acceptance run. The package gate is complete; the
-business run on test-only overlay `eb1bb6c` is still live as session `88384`.
+the installed multipart acceptance run. The package gate and scripted business
+run on test-only overlay `eb1bb6c` both passed.
 This is a scripted, mixed Python/Node/CLI scenario, not a natural Agent
 workflow or an independent full flow in each interface.
 
@@ -100,10 +100,12 @@ uses the original path. Full 399-file overlay manifest
 it differs from the immutable source manifest in exactly that test file and
 verifies all entries. Luna reviewed the exact delta before the new run.
 
-The current business command is
+The passing business command was
 `/usr/local/bin/python3 rootfs-v2/work/sdk-pending-multipart/tests/run-installed-historical-pending-multipart-host.py rootfs-v2`,
 again with both paths beneath the task artifact directory. Session `88384`
-and `installed-v2-stdin.log` are still active at this report version. The
+exited 0; `installed-v2-stdin.log` SHA-256 is
+`485c28cb47d621f64b10680ccf81692dc35d39386b7bb6a236f0476c0755c3e9`.
+The
 guarded host runner SHA-256 is
 `38166a79467b88fc31fa610894a0eb5ebf9edd60512b1f4823d4b1f2ba59b847`;
 the guest consumer SHA-256 is
@@ -115,6 +117,22 @@ No host `/proc` bind or raw key/packet output is involved. The test fixture
 creates and reads its protected state, PEM, and SQLite source files and passes
 their exact paths; the installed native importer reads those caller-selected
 files. The test's SDK consumer does not inspect their bytes or hidden native
-state. The scripted business outcome is pending session `88384`. Natural
-Agent workflow compliance remains separately unverified and needs an Agent
-usability/acceptance run regardless of this script's result.
+state. Both source modes reached `ATTACHED_RESTRICTED`, refused action,
+package install, and format transition with exact typed error and no commit,
+then reached `ATTACHED` through exact original-command recovery. The applied
+mode had one original command commit before attach; the pre-send mode had zero
+until explicit recovery. Each recovered full signed SOURCE had four parts;
+the test matched every signed part ID, index, source ID, and SHA-256 to the
+f828 fixture, required the original command to appear exactly once, and
+required exact same-ID recovery to add no commit. The test moved the old
+source directory away before recovery/read, used the returned historical
+stage ID for native private staged install, and authenticated an installed
+protocol and instance readback. Both modes ended at signed sequence 7.
+
+This proves the selected installed multipart handoff and Linux x64 baseline
+only. The test uses scripted mixed Python/Node/CLI calls and caller-selected
+source pairing; it does not prove independent per-interface completeness,
+catalog/publisher discovery, natural Agent instruction compliance, or
+macOS/Windows execution. Agent workflow compliance remains separately
+unverified and needs an Agent usability/acceptance run regardless of this
+business result.
