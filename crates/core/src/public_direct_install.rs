@@ -1440,6 +1440,29 @@ mod tests {
             Some(&WireValue::Number(2.0))
         );
         assert!(compiled.composition().is_some());
+        let composition = compiled.composition().unwrap();
+        let source = composition.get("source_manifest").unwrap().clone();
+        let source_wrapper = obj(vec![
+            ("semantics", text("peerwork.kernel.v1")),
+            ("manifest", source),
+        ]);
+        let source_canonical = canonical_wire_value(&source_wrapper, Path::STRUCTURED).unwrap();
+        assert_eq!(
+            composition
+                .get("source_digest")
+                .unwrap()
+                .as_string()
+                .unwrap(),
+            "b792d58a1c33218f121d7c742ca85bf63c411ab3aa5733ff88cc8b919f05496a"
+        );
+        assert_eq!(
+            composition
+                .get("source_digest")
+                .unwrap()
+                .as_string()
+                .unwrap(),
+            sha256_hex(source_canonical.as_bytes())
+        );
         let workspace_id = "w".repeat(43);
         let instance_id = "z".repeat(43);
         assert!(build_direct_install_objects_with_composition(
