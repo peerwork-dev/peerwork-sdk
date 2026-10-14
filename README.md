@@ -27,6 +27,10 @@ use the configured origin and protected identity for prepare/status/retry.
 Cancellation of an in-flight POST retains uncertain saved state for recovery;
 see the [real-service evidence](docs/runtime-real-kernel-20261012.md).
 
+For an operator-installed local Agent trial, start with the [Agent entry
+guide](docs/agent-entry.md). It describes explicit identity, workspace and
+source selection and exact-ID recovery; it is not a public installation guide.
+
 ## Build the experimental artifacts
 
 Use Rust/Cargo, Python 3.11 with maturin, and Node 24 at build time:
