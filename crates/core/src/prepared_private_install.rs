@@ -127,6 +127,20 @@ pub fn prepare_orphan_package_stage_material(
     Ok((root, protocol, sha256_hex(proof_wire.as_bytes())))
 }
 
+/// Normalize caller material with the same bounded package-source compiler
+/// used when an Owner stage was selected. A retry may use different JSON
+/// whitespace or key order, but still has to compile to the selected source.
+pub fn canonical_package_source_material(
+    material_wire: &[u8],
+    source_checkpoint_wire: &[u8],
+) -> Result<Zeroizing<String>, PrivateInstallError> {
+    let prepared = prepare_package_source_wire(material_wire, source_checkpoint_wire)
+        .map_err(|_| PrivateInstallError::Invalid)?;
+    verify_protocol_package_source(&prepared.proof, &prepared.parts)
+        .map_err(|_| PrivateInstallError::Invalid)?;
+    Ok(Zeroizing::new(prepared.canonical_material))
+}
+
 /// Compile all caller-supplied material for a marker whose original packet
 /// was never saved. `signed_prefix` must already have been selected from a
 /// complete authenticated replay by the runtime; this helper compares every
@@ -2175,5 +2189,44 @@ mod tests {
             &[19; 32]
         )
         .is_err());
+    }
+
+    #[test]
+    fn selected_material_normalization_preserves_compiled_identity() {
+        let cases = parse_wire_json_bounded(
+            include_bytes!("../../../conformance/protocol-package-source-vectors.json"),
+            64,
+            2_000_000,
+        ).unwrap();
+        let WireValue::Array(cases) = cases else { panic!("source cases") };
+        let source = cases[0].get("proof").unwrap().get("source").unwrap();
+        let source_wire = canonical_wire_value(source, Path::SecureArtifact).unwrap();
+        let public = parse_wire_json_bounded(
+            include_bytes!("../../../conformance/public-package-vectors.json"),
+            64,
+            2_000_000,
+        ).unwrap();
+        let material = obj(vec![
+            ("v", WireValue::Number(1.0)),
+            ("closure", public.get("closure").unwrap().clone()),
+            ("bindings", obj(vec![])),
+        ]);
+        let selected = canonical_wire_value(&material, Path::SecureArtifact).unwrap();
+        let formatted = serde_json::to_string_pretty(
+            &serde_json::from_str::<serde_json::Value>(&selected).unwrap(),
+        ).unwrap();
+        assert_ne!(sha256_hex(selected.as_bytes()), sha256_hex(formatted.as_bytes()));
+        let canonical = canonical_package_source_material(
+            selected.as_bytes(), source_wire.as_bytes(),
+        ).unwrap();
+        let equivalent = canonical_package_source_material(
+            formatted.as_bytes(), source_wire.as_bytes(),
+        ).unwrap();
+        assert_eq!(canonical, equivalent);
+        let mut changed = serde_json::from_str::<serde_json::Value>(&selected).unwrap();
+        changed["v"] = serde_json::json!(2);
+        assert!(canonical_package_source_material(
+            serde_json::to_string(&changed).unwrap().as_bytes(), source_wire.as_bytes(),
+        ).is_err());
     }
 }

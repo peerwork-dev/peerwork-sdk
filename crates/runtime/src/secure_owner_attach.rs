@@ -21,7 +21,7 @@ use peerwork_core::{
     prepared_secure_request::{
         verify_prepared_secure_commit_request_with_policy, SecureCommitRequestPins,
     },
-    prepared_private_install::{package_source_identity_matches, prepare_multipart_orphan_package_stage_material, prepare_orphan_package_stage_material, verify_complete_package_source, VerifiedMultipartOrphanMaterial, MAX_PACKAGE_SOURCE_PARTS},
+    prepared_private_install::{canonical_package_source_material, package_source_identity_matches, prepare_multipart_orphan_package_stage_material, prepare_orphan_package_stage_material, verify_complete_package_source, VerifiedMultipartOrphanMaterial, MAX_PACKAGE_SOURCE_PARTS},
     replayed_secure_journal::StructureStatus,
     secure_keyring::SecretKeyring,
     wire_json::{canonical_wire_value, parse_wire_json_bounded, WireValue},
@@ -2168,17 +2168,24 @@ impl SecureHistoricalOwnerAttach {
         let source_wire = canonical_wire_value(&marker.source, CanonicalPath::SecureArtifact)
             .map_err(|_| HistoricalOwnerAttachError::Conflict)?;
         let compiled = supplied.map(|wire| {
-            prepare_orphan_package_stage_material(
+            let (root, protocol, proof) = prepare_orphan_package_stage_material(
                 wire.as_bytes(), source_wire.as_bytes(),
                 &marker.source_id, &marker.source_sha256,
-            ).map_err(|_| HistoricalOwnerAttachError::SourceUnresolved)
+            ).map_err(|_| HistoricalOwnerAttachError::SourceUnresolved)?;
+            let canonical = canonical_package_source_material(
+                wire.as_bytes(), source_wire.as_bytes(),
+            ).map_err(|_| HistoricalOwnerAttachError::SourceUnresolved)?;
+            Ok::<_, HistoricalOwnerAttachError>((root, protocol, proof, canonical))
         }).transpose()?;
         let replan = if let Some(saved) = orphan.replan.as_ref() {
             if let Some(wire) = supplied {
-                let Some((root, protocol, proof)) = compiled.as_ref() else {
+                let Some((root, protocol, proof, canonical)) = compiled.as_ref() else {
                     return Err(HistoricalOwnerAttachError::SourceUnresolved);
                 };
-                if sha256_hex(wire.as_bytes()) != saved.material_sha256
+                // Older one-part rows pinned the caller's raw bytes; newer
+                // rows pin the selected canonical material.
+                if (sha256_hex(canonical.as_bytes()) != saved.material_sha256
+                    && sha256_hex(wire.as_bytes()) != saved.material_sha256)
                     || root != &saved.root_package_digest
                     || protocol != &saved.protocol_digest
                     || proof != &saved.proof_sha256
@@ -2188,8 +2195,8 @@ impl SecureHistoricalOwnerAttach {
             }
             saved.clone()
         } else {
-            let wire = supplied.ok_or(HistoricalOwnerAttachError::OrphanMaterialRequired)?;
-            let (root, protocol, proof) = compiled
+            supplied.ok_or(HistoricalOwnerAttachError::OrphanMaterialRequired)?;
+            let (root, protocol, proof, canonical) = compiled
                 .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
             let issued_at_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -2199,7 +2206,7 @@ impl SecureHistoricalOwnerAttach {
                 stage_id: random_token()?,
                 command_id: random_token()?,
                 issued_at_ms,
-                material_sha256: sha256_hex(wire.as_bytes()),
+                material_sha256: sha256_hex(canonical.as_bytes()),
                 proof_sha256: proof,
                 root_package_digest: root,
                 protocol_digest: protocol,
@@ -2307,13 +2314,18 @@ impl SecureHistoricalOwnerAttach {
         {
             return Err(HistoricalOwnerAttachError::Conflict);
         }
-        if material_json.filter(|wire| !wire.is_empty())
-            .is_some_and(|wire| sha256_hex(wire.as_bytes()) != plan.manifest.material_sha256)
-        {
-            return Err(HistoricalOwnerAttachError::Conflict);
-        }
         let old_marker = plan.source.completed_package_stage.as_ref()
             .ok_or(HistoricalOwnerAttachError::Conflict)?;
+        if let Some(wire) = material_json.filter(|wire| !wire.is_empty()) {
+            let source_wire = canonical_wire_value(&old_marker.source, CanonicalPath::SecureArtifact)
+                .map_err(|_| HistoricalOwnerAttachError::Conflict)?;
+            let canonical = canonical_package_source_material(
+                wire.as_bytes(), source_wire.as_bytes(),
+            ).map_err(|_| HistoricalOwnerAttachError::Conflict)?;
+            if sha256_hex(canonical.as_bytes()) != plan.manifest.material_sha256 {
+                return Err(HistoricalOwnerAttachError::Conflict);
+            }
+        }
         let access = SecureReadAccess::new(self.attach_read_config(&row.input));
         let replayed = access.replay_checked_attach_generation(cancel)
             .map_err(|_| HistoricalOwnerAttachError::Verification)?;
@@ -5693,9 +5705,32 @@ mod tests {
         let facade = SecureOwnerWorkspaceCreate::new(config.clone());
         assert!(matches!(facade.private_install_access(workspace),
             Err(crate::secure_owner_create::SecureOwnerCreateError::OrphanStageUnresolved)));
+        let public = parse_wire_json_bounded(
+            include_bytes!("../../../conformance/public-package-vectors.json"),
+            64, 2_000_000,
+        ).unwrap();
+        let alternate_closure = canonical_wire_value(public.get("closure").unwrap(), CanonicalPath::SecureArtifact).unwrap();
+        let changed_material = serde_json::json!({
+            "v": 1,
+            "closure": serde_json::from_str::<serde_json::Value>(&alternate_closure).unwrap(),
+            "bindings": {},
+        }).to_string();
+        let source_wire = serde_json::to_string(&source["stage_marker"]["source"]).unwrap();
+        let selected = canonical_package_source_material(material.as_bytes(), source_wire.as_bytes()).unwrap();
+        let changed = canonical_package_source_material(changed_material.as_bytes(), source_wire.as_bytes()).unwrap();
+        assert_ne!(sha256_hex(selected.as_bytes()), sha256_hex(changed.as_bytes()));
+        assert!(matches!(reopened.replan_orphan_package_stage(
+            &restricted.attach_id, original, Some(&changed_material), &cancel,
+        ), Err(HistoricalOwnerAttachError::Conflict)));
+        assert_eq!(count(), 2, "changed material must not save an intent or POST");
+        assert!(reopened.attachments().unwrap()[0].orphan_replan_stage_id.is_none());
+        let formatted_material = serde_json::to_string_pretty(
+            &serde_json::from_str::<serde_json::Value>(material).unwrap(),
+        ).unwrap();
+        assert_ne!(sha256_hex(material.as_bytes()), sha256_hex(formatted_material.as_bytes()));
         TEST_STOP_AFTER_ORPHAN_REPLAN_INTENT.store(true, Ordering::SeqCst);
         assert!(matches!(reopened.replan_orphan_package_stage(
-            &restricted.attach_id, original, None, &cancel,
+            &restricted.attach_id, original, Some(material), &cancel,
         ), Err(HistoricalOwnerAttachError::Cancelled)));
         assert_eq!(count(), 2);
         let chosen = reopened.attachments().unwrap()[0].clone();
@@ -5706,7 +5741,7 @@ mod tests {
             .store(true, Ordering::SeqCst);
         let resumed = SecureHistoricalOwnerAttach::new(config.clone());
         assert!(matches!(resumed.replan_orphan_package_stage(
-            &restricted.attach_id, original, None, &cancel,
+            &restricted.attach_id, original, Some(&formatted_material), &cancel,
         ), Err(HistoricalOwnerAttachError::OrphanStageUnresolved)));
         assert_eq!(count(), 3, "only new part zero applied before later packet save");
         let stager = SecurePrivatePackageInstall::new(resumed.profile_config(&HistoricalOwnerAttachInput {
@@ -5742,7 +5777,7 @@ mod tests {
         ).unwrap(), saved_step);
         let final_handle = SecureHistoricalOwnerAttach::new(config.clone());
         let accepted = final_handle.replan_orphan_package_stage(
-            &restricted.attach_id, original, None, &cancel,
+            &restricted.attach_id, original, Some(&formatted_material), &cancel,
         ).unwrap();
         assert_eq!(accepted, after_loss);
         assert_eq!(accepted.status, "ATTACHED");
