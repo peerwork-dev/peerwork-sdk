@@ -18,7 +18,8 @@ use peerwork_runtime::secure_read_access::{SecureReadAccess, SecureReadConfig};
 use peerwork_runtime::secure_read_profile::{SecureReadProfile, SecureReadProfileConfig};
 use peerwork_runtime::secure_private_read_access::SecurePrivateReadAccess;
 use peerwork_runtime::secure_owner_create::{
-    SecureOwnerCreateConfig, SecureOwnerCreateInput, SecureOwnerWorkspaceCreate,
+    import_legacy_owner_identity, SecureOwnerCreateConfig, SecureOwnerCreateInput,
+    SecureOwnerWorkspaceCreate,
 };
 use peerwork_runtime::secure_owner_attach::{HistoricalOwnerAttachInput, SecureHistoricalOwnerAttach};
 use peerwork_runtime::secure_owner_format_transition::OwnerFormatTransitionInput;
@@ -99,6 +100,33 @@ impl Task for IdentityTask {
     fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
         Ok(output)
     }
+}
+
+pub struct OwnerIdentityImportTask { config_file: String, pem_file: String }
+
+impl Task for OwnerIdentityImportTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let config_bytes = std::fs::read(&self.config_file)
+            .map_err(|_| napi::Error::from_reason("Owner config could not be read"))?;
+        let config: SecureOwnerCreateConfig = serde_json::from_slice(&config_bytes)
+            .map_err(|_| napi::Error::from_reason("invalid Owner configuration"))?;
+        let identity = import_legacy_owner_identity(&config, Path::new(&self.pem_file))
+            .map_err(|error| napi::Error::from_reason(error.to_string()))?;
+        Ok(format!(
+            "{{\"actor_id\":\"{}\",\"key_id\":\"{}\"}}",
+            identity.actor_id(), identity.key_id()
+        ))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> { Ok(output) }
+}
+
+#[napi]
+pub fn identity_import_owner_pem_json(config_file: String, pem_file: String) -> AsyncTask<OwnerIdentityImportTask> {
+    AsyncTask::new(OwnerIdentityImportTask { config_file, pem_file })
 }
 
 #[napi]

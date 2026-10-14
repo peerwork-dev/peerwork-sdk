@@ -37,6 +37,8 @@ exports.createIdentity = async path => JSON.parse(await binding.identityCreateJs
 exports.openIdentity = async path => JSON.parse(await binding.identityOpenJson(path));
 exports.importIdentitySeedFile = async (path, seedFile) => JSON.parse(await binding.identityImportSeedJson(path, seedFile));
 exports.importLegacyIdentityPem = async (path, pemFile) => JSON.parse(await binding.identityImportPkcs8PemJson(path, pemFile));
+/** Import a legacy Owner PEM into identity.state under the supplied Owner config. */
+exports.importLegacyOwnerIdentity = async (configFile, pemFile) => JSON.parse(await binding.identityImportOwnerPemJson(configFile, pemFile));
 
 function strictCommandJson(input) {
   const seen = new WeakSet();

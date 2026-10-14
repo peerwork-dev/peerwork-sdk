@@ -22,6 +22,7 @@ from ._peerwork_native import (
     identity_open_json,
     identity_import_seed_json,
     identity_import_pkcs8_pem_json,
+    identity_import_owner_pem_json,
     kernel_json,
     secure_read_json,
     secure_read_profile_json,
@@ -231,6 +232,11 @@ def import_legacy_identity_pem(path: str, pem_file: str) -> IdentityInfo:
     return cast(IdentityInfo, json.loads(identity_import_pkcs8_pem_json(path, pem_file)))
 
 
+def import_legacy_owner_identity(config_file: str, pem_file: str) -> IdentityInfo:
+    """Import the selected legacy Owner PEM into identity.state from its Owner config."""
+    return cast(IdentityInfo, json.loads(identity_import_owner_pem_json(config_file, pem_file)))
+
+
 async def create_identity_async(path: str) -> IdentityInfo:
     return cast(IdentityInfo, await asyncio.to_thread(create_identity, path))
 
@@ -245,6 +251,10 @@ async def import_identity_seed_file_async(path: str, seed_file: str) -> Identity
 
 async def import_legacy_identity_pem_async(path: str, pem_file: str) -> IdentityInfo:
     return cast(IdentityInfo, await asyncio.to_thread(import_legacy_identity_pem, path, pem_file))
+
+
+async def import_legacy_owner_identity_async(config_file: str, pem_file: str) -> IdentityInfo:
+    return cast(IdentityInfo, await asyncio.to_thread(import_legacy_owner_identity, config_file, pem_file))
 
 
 class KernelClient:
@@ -440,7 +450,8 @@ __all__ = ["version", "capabilities", "create_identity", "open_identity",
            "PackagePublishResult", "CatalogAcceptedResult", "AcceptedResult",
            "StatusNotFound", "StatusPending", "StatusAccepted", "KernelStatus",
            "TsMigrationReport"]
-__all__ += ["import_legacy_identity_pem", "import_legacy_identity_pem_async"]
+__all__ += ["import_legacy_identity_pem", "import_legacy_identity_pem_async",
+            "import_legacy_owner_identity", "import_legacy_owner_identity_async"]
 __all__ += ["SecureReadClient", "SecureReadError", "VerifiedSecureWorkspace"]
 
 

@@ -24,7 +24,10 @@ use crate::{
     secure_read_profile::{SecureReadProfile, SecureReadProfileConfig},
     secure_recipient_enrollment::{RecipientEnrollmentConfig, SecureRecipientEnrollment},
     secure_recipient_state::RecipientState,
-    secure_state::{missing_in_private_parent, SecureStateStore},
+    secure_state::{
+        create_private_state_directory, missing_in_private_parent, read_private_file_bounded,
+        SecureStateStore,
+    },
     secure_verified_read::{replay_authenticated_pages_with_budget, SecureJournalReadBudget},
     transport::{HttpTransport, TransportConfig, TransportError},
 };
@@ -64,6 +67,23 @@ pub struct SecureOwnerCreateConfig {
     pub allow_loopback_http: bool,
     #[serde(default = "default_budget")]
     pub max_replay_artifact_bytes: u64,
+}
+
+/// Explicitly bootstrap the native identity for one configured Owner profile.
+/// Only the final state directory is created; its existing parent must already
+/// satisfy the platform's protected-directory checks. Generic path-based
+/// identity imports and reads remain non-creating.
+pub fn import_legacy_owner_identity(
+    config: &SecureOwnerCreateConfig,
+    pem_path: &Path,
+) -> Result<KernelIdentity, KernelIdentityError> {
+    // Validate and snapshot the caller-selected protected source before any
+    // target-side effect. Import repeats strict PEM validation on these bytes.
+    let pem = read_private_file_bounded(pem_path, 2048)?;
+    KernelIdentity::inspect_pkcs8_pem_bytes(&pem)?;
+    create_private_state_directory(&config.state_dir)
+        .map_err(KernelIdentityError::Store)?;
+    KernelIdentity::import_pkcs8_pem_bytes(&config.identity_path(), &pem)
 }
 
 impl SecureOwnerCreateConfig {
@@ -1259,11 +1279,79 @@ fn ensure_private_dir(path: &Path) -> Result<(), SecureOwnerCreateError> {
 mod tests {
     use super::*;
     use crate::secure_action_access::PublicActionInput;
+    use ed25519_dalek::{pkcs8::EncodePrivateKey, SigningKey};
+    use peerwork_core::crypto::base64url;
     use peerwork_core::wire_json::{parse_wire_json_bounded, WireValue};
     use std::{
         io::{BufRead, BufReader},
         process::{Child, Command, Stdio},
     };
+
+    #[test]
+    fn config_aware_identity_import_creates_only_the_configured_private_directory() {
+        let root = crate::test_support::protected_test_dir();
+        let state_dir = root.path().join("native-state");
+        let config = SecureOwnerCreateConfig {
+            origin: "http://127.0.0.1:1/".into(),
+            state_dir: state_dir.clone(),
+            allow_loopback_http: true,
+            max_replay_artifact_bytes: 64 * 1024 * 1024,
+        };
+
+        // Read-only Owner identity lookup must not bootstrap an absent profile.
+        let missing = SecureOwnerWorkspaceCreate::new(config.clone()).operations().unwrap_err();
+        assert!(matches!(missing, SecureOwnerCreateError::IdentityMissing));
+        assert!(!state_dir.exists());
+
+        let legacy = SigningKey::from_bytes(&[23u8; 32]);
+        let der = legacy.to_pkcs8_der().unwrap();
+        let mut encoded = base64url(der.as_bytes()).replace('-', "+").replace('_', "/");
+        while encoded.len() % 4 != 0 { encoded.push('='); }
+        let wrapped = encoded.as_bytes().chunks(64)
+            .map(|line| std::str::from_utf8(line).unwrap()).collect::<Vec<_>>().join("\n");
+        let pem = format!("-----BEGIN PRIVATE KEY-----\n{wrapped}\n-----END PRIVATE KEY-----\n");
+        let source = root.path().join("legacy-owner.pem");
+        fs::write(&source, pem.as_bytes()).unwrap();
+        #[cfg(unix)] {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&source, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
+        assert!(KernelIdentity::open(&config.identity_path()).is_err());
+        assert!(KernelIdentity::import_pkcs8_pem_file(&config.identity_path(), &source).is_err());
+        assert!(!state_dir.exists());
+
+        let imported = import_legacy_owner_identity(&config, &source).unwrap();
+        assert_eq!(imported.key_id(), KernelIdentity::inspect_pkcs8_pem_file(&source).unwrap().key_id());
+        assert!(state_dir.is_dir());
+        #[cfg(unix)] {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(fs::symlink_metadata(&state_dir).unwrap().mode() & 0o777, 0o700);
+        }
+        assert!(config.identity_path().is_file());
+        assert_eq!(KernelIdentity::open(&config.identity_path()).unwrap().actor_id(), imported.actor_id());
+        assert!(matches!(import_legacy_owner_identity(&config, &source), Err(KernelIdentityError::AlreadyExists)));
+
+        let unsafe_parent = root.path().join("unsafe");
+        fs::create_dir(&unsafe_parent).unwrap();
+        #[cfg(unix)] {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&unsafe_parent, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let refused = SecureOwnerCreateConfig { state_dir: unsafe_parent.join("state"), ..config.clone() };
+        assert!(import_legacy_owner_identity(&refused, &source).is_err());
+        assert!(!refused.state_dir.exists());
+
+        #[cfg(unix)] {
+            let target = root.path().join("symlink-target");
+            fs::create_dir(&target).unwrap();
+            let alias = root.path().join("state-alias");
+            std::os::unix::fs::symlink(&target, &alias).unwrap();
+            let refused = SecureOwnerCreateConfig { state_dir: alias, ..config };
+            assert!(import_legacy_owner_identity(&refused, &source).is_err());
+            assert!(!target.join("identity.state").exists());
+        }
+    }
 
     #[test]
     fn owner_missing_identity_is_distinct_from_saved_identity_mismatch() {

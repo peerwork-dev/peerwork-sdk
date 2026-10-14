@@ -132,31 +132,47 @@ jobs:
             dist/peerwork-agent-sdk-0.0.1.tgz
             dist/peerwork-agent-sdk-linux-x64-gnu-0.0.1.tgz
 
-  linux_musl_x64:
-    runs-on: ubuntu-24.04
+  linux_musl:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: linux-x64-musl
+            arch: x86_64
+            rust_target: x86_64-unknown-linux-musl
+            rootfs_sha256: 27694aaa55fd7a9e3ef596e0ad4eb66802308bb20172b17030cd5f4d8ae9bac2
+            rustup_sha256: 331228566cc931f32cd684f9bebc5956a5e5d7394c8d5de595f196a658ab98e6
+          - runner: ubuntu-24.04-arm
+            target: linux-arm64-musl
+            arch: aarch64
+            rust_target: aarch64-unknown-linux-musl
+            rootfs_sha256: 821565fa8f3953eefd12497b166b4b50add2f7c57fb312e75862f5867e06fefe
+            rustup_sha256: 1ddf36182ac5d1782dbeefcb9bea7f5f9412d88f4a0d5047b1564a223624e8c6
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - name: Verify native Alpine and Rust bootstrap inputs
         shell: bash
         run: |
           mkdir -p dist
-          curl -fL --retry 3 https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/x86_64/alpine-minirootfs-3.22.6-x86_64.tar.gz -o dist/alpine-minirootfs.tar.gz
-          echo '27694aaa55fd7a9e3ef596e0ad4eb66802308bb20172b17030cd5f4d8ae9bac2  dist/alpine-minirootfs.tar.gz' | sha256sum -c -
-          curl -fL --retry 3 https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-musl/rustup-init -o dist/rustup-init
-          echo '331228566cc931f32cd684f9bebc5956a5e5d7394c8d5de595f196a658ab98e6  dist/rustup-init' | sha256sum -c -
+          curl -fL --retry 3 https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/${{ matrix.arch }}/alpine-minirootfs-3.22.6-${{ matrix.arch }}.tar.gz -o dist/alpine-minirootfs.tar.gz
+          echo '${{ matrix.rootfs_sha256 }}  dist/alpine-minirootfs.tar.gz' | sha256sum -c -
+          curl -fL --retry 3 https://static.rust-lang.org/rustup/dist/${{ matrix.rust_target }}/rustup-init -o dist/rustup-init
+          echo '${{ matrix.rustup_sha256 }}  dist/rustup-init' | sha256sum -c -
           chmod 755 dist/rustup-init
-          docker import dist/alpine-minirootfs.tar.gz peerwork-alpine:3.22.6
+          docker import dist/alpine-minirootfs.tar.gz peerwork-alpine:3.22.6-${{ matrix.arch }}
       - name: Build and install native musllinux interfaces
         shell: bash
         run: |
-          docker run --rm -v "$PWD:/work/sdk" -w /work/sdk peerwork-alpine:3.22.6 /bin/sh -ec '
+          docker run --rm -e PEERWORK_MUSL_RUST_TARGET="${{ matrix.rust_target }}" -e PEERWORK_NODE_PLATFORM_TARGET="${{ matrix.target }}" -v "$PWD:/work/sdk" -w /work/sdk peerwork-alpine:3.22.6-${{ matrix.arch }} /bin/sh -ec '
             apk add --no-cache build-base cmake perl python3 py3-pip nodejs npm git curl ca-certificates openssl-dev pkgconf binutils clang20 libc++ libc++-dev libc++-static llvm-libunwind-dev llvm-libunwind-static patchelf
             export RUSTUP_HOME=/tmp/peerwork-rustup CARGO_HOME=/tmp/peerwork-cargo
             /work/sdk/dist/rustup-init -y --no-modify-path --default-toolchain 1.89.0 --profile minimal
-            export PATH="$RUSTUP_HOME/toolchains/1.89.0-x86_64-unknown-linux-musl/bin:$PATH"
-            export RUSTC="$RUSTUP_HOME/toolchains/1.89.0-x86_64-unknown-linux-musl/bin/rustc"
-            export RUSTDOC="$RUSTUP_HOME/toolchains/1.89.0-x86_64-unknown-linux-musl/bin/rustdoc"
-            export LD_LIBRARY_PATH="$RUSTUP_HOME/toolchains/1.89.0-x86_64-unknown-linux-musl/lib"
+            export PATH="$RUSTUP_HOME/toolchains/1.89.0-$PEERWORK_MUSL_RUST_TARGET/bin:$PATH"
+            export RUSTC="$RUSTUP_HOME/toolchains/1.89.0-$PEERWORK_MUSL_RUST_TARGET/bin/rustc"
+            export RUSTDOC="$RUSTUP_HOME/toolchains/1.89.0-$PEERWORK_MUSL_RUST_TARGET/bin/rustdoc"
+            export LD_LIBRARY_PATH="$RUSTUP_HOME/toolchains/1.89.0-$PEERWORK_MUSL_RUST_TARGET/lib"
             export CARGO_TARGET_DIR=/work/sdk/target/musl-shared
             export RUSTFLAGS="-C target-feature=-crt-static"
             cargo test --locked -p peerwork-core js_locale::tests::pinned_node_locale_compare_vectors -- --exact
@@ -167,12 +183,15 @@ jobs:
             /tmp/maturin-tools/bin/maturin build --release --locked --compatibility musllinux_1_2 --interpreter python3 --out ../../dist/wheels
             cd ../..
             python3 tests/verify-typed-wheel.py dist/wheels/*.whl
-            PEERWORK_MUSL_CXX_LIB_DIR=/usr/lib node bindings/node/scripts/package-platform.mjs linux-x64-musl target/musl-shared/release/libpeerwork_node_native.so dist
+            node_arch=${PEERWORK_NODE_PLATFORM_TARGET#linux-}
+            test "$(node -p "process.arch")" = "${node_arch%-musl}"
+            test "$(rustc -vV | sed -n "s/^host: //p")" = "$PEERWORK_MUSL_RUST_TARGET"
+            PEERWORK_MUSL_CXX_LIB_DIR=/usr/lib node bindings/node/scripts/package-platform.mjs "$PEERWORK_NODE_PLATFORM_TARGET" target/musl-shared/release/libpeerwork_node_native.so dist
             npm pack ./bindings/node --pack-destination dist --offline
-            npm pack ./dist/agent-sdk-linux-x64-musl --pack-destination dist --offline
+            npm pack ./dist/agent-sdk-$PEERWORK_NODE_PLATFORM_TARGET --pack-destination dist --offline
             mkdir -p dist/node-consumer
             printf "%s\n" "{\"name\":\"peerwork-offline-consumer\",\"version\":\"0.0.0\",\"private\":true}" > dist/node-consumer/package.json
-            npm install --prefix dist/node-consumer --offline --ignore-scripts --no-audit --no-fund --omit=optional ./dist/peerwork-agent-sdk-0.0.1.tgz ./dist/peerwork-agent-sdk-linux-x64-musl-0.0.1.tgz
+            npm install --prefix dist/node-consumer --offline --ignore-scripts --no-audit --no-fund --omit=optional ./dist/peerwork-agent-sdk-0.0.1.tgz ./dist/peerwork-agent-sdk-$PEERWORK_NODE_PLATFORM_TARGET-0.0.1.tgz
             node bindings/node/scripts/offline-smoke.mjs dist/node-consumer
             python3 -m pip install --no-deps --target dist/wheel-consumer dist/wheels/*.whl
             PYTHONPATH=dist/wheel-consumer python3 -c "import peerwork; assert peerwork.version() == \"0.0.1\""
@@ -185,15 +204,45 @@ jobs:
             target/musl-static/release/peerwork version
           '
           ./target/musl-static/release/peerwork version
+      - name: Inspect artifacts and consume in a clean runtime container
+        shell: bash
+        run: |
+          docker run --rm -e PEERWORK_MUSL_ARCH="${{ matrix.arch }}" -e PEERWORK_NODE_PLATFORM_TARGET="${{ matrix.target }}" -v "$PWD:/work/sdk:ro" -w /work/sdk peerwork-alpine:3.22.6-${{ matrix.arch }} /bin/sh -ec '
+            apk add --no-cache python3 py3-pip nodejs binutils
+            test "$(uname -m)" = "$PEERWORK_MUSL_ARCH"
+            test ! -e /usr/lib/libc++.so.1
+            test ! -e /usr/lib/libc++abi.so.1
+            test ! -e /usr/lib/libunwind.so.1
+            unset LD_LIBRARY_PATH PYTHONPATH PYTHONHOME
+            python3 -m venv --without-pip /tmp/peerwork-wheel-consumer
+            site_packages=$(/tmp/peerwork-wheel-consumer/bin/python -I -c "import sysconfig; print(sysconfig.get_path(\"purelib\"))")
+            python3 -m pip install --no-index --no-deps --target "$site_packages" dist/wheels/*.whl
+            /tmp/peerwork-wheel-consumer/bin/python -I -c "import peerwork; assert peerwork.version() == \"0.0.1\"; assert peerwork.capabilities()[\"verified_public_workspace_reads\"]"
+            node bindings/node/scripts/offline-smoke.mjs dist/node-consumer
+            target/musl-static/release/peerwork version
+            python3 -c "import glob,zipfile; zipfile.ZipFile(glob.glob(\"dist/wheels/*.whl\")[0]).extractall(\"/tmp/wheel-inspect\")"
+            for binary in target/musl-static/release/peerwork dist/agent-sdk-$PEERWORK_NODE_PLATFORM_TARGET/index.node $(find /tmp/wheel-inspect -name "*.so*"); do
+              readelf -h "$binary"
+              readelf -d "$binary"
+            done
+            if readelf -d target/musl-static/release/peerwork | grep -q NEEDED; then exit 1; fi
+            if readelf -l target/musl-static/release/peerwork | grep -q INTERP; then exit 1; fi
+            state_dir="/tmp/protected identity Ω with spaces"
+            mkdir -m 700 "$state_dir"
+            python3 tests/installed-protected-identity-smoke.py \
+              --python /tmp/peerwork-wheel-consumer/bin/python \
+              --node "$(command -v node)" --node-consumer "$PWD/dist/node-consumer" \
+              --cli "$PWD/target/musl-static/release/peerwork" --state-dir "$state_dir"
+          '
       - uses: actions/upload-artifact@v4
         with:
-          name: experimental-linux-x64-musl
+          name: experimental-${{ matrix.target }}
           path: |
             target/musl-static/release/peerwork
             dist/wheels/*.whl
-            dist/agent-sdk-linux-x64-musl/
+            dist/agent-sdk-${{ matrix.target }}/
             dist/peerwork-agent-sdk-0.0.1.tgz
-            dist/peerwork-agent-sdk-linux-x64-musl-0.0.1.tgz
+            dist/peerwork-agent-sdk-${{ matrix.target }}-0.0.1.tgz
 
   macos:
     strategy:

@@ -21,6 +21,8 @@ export declare function openIdentity(path: string): Promise<IdentityInfo>;
 export declare function importIdentitySeedFile(path: string, seedFile: string): Promise<IdentityInfo>;
 /** Imports a PKCS#8 Ed25519 PEM file into new protected identity state. */
 export declare function importLegacyIdentityPem(path: string, pemFile: string): Promise<IdentityInfo>;
+/** Import a legacy Owner PEM into identity.state selected by an Owner config. */
+export declare function importLegacyOwnerIdentity(configFile: string, pemFile: string): Promise<IdentityInfo>;
 export interface KernelAccessOptions {
   origin: string;
   journalPath: string;
