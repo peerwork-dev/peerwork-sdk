@@ -15,6 +15,8 @@ if not args:
 script = Path(args[0]).name
 if script == "reference-kernel-server.mjs":
     command = [node, "--require", str(Path(__file__).with_name("staged-install-request-observer.cjs")), *args]
+    # Preserve the server PID so the original Rust Drop guard kills/waits it.
+    os.execv(node, command)
 else:
     command = [node, *args]
 result = subprocess.run(command, check=False)
