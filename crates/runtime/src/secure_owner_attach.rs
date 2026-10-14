@@ -430,6 +430,36 @@ struct LoadedOrphanPlan {
     intent_backup_path: PathBuf,
 }
 
+/// Inert original direct-BEGIN selection. The attach ID and future InstallRow
+/// command ID are fixed before PREPARED; only the matching attachment may
+/// activate an imported row or submit the original saved request.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct QuarantinedDirectInstallPlan {
+    version: u8,
+    origin: String,
+    plan_id: String,
+    attach_id: String,
+    workspace_id: String,
+    owner_actor_id: String,
+    owner_key_id: String,
+    command_id: String,
+    instance_id: String,
+    intent_hash: String,
+    path: String,
+    original_commit_hash: String,
+    request_sha256: String,
+    source_sequence: u64,
+    source_head: Option<String>,
+    source_policy_hash: String,
+    source_epoch: u64,
+    ts_state_sha256: String,
+    owner_pem_sha256: String,
+    ts_intent_sha256: String,
+    options_sha256: String,
+    material_sha256: String,
+}
+
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct SavedKernelImport {
@@ -846,6 +876,162 @@ impl SecureHistoricalOwnerAttach {
             original_commit_hash,
             status: if applied { "APPLIED_IN_SIGNED_REPLAY" } else { "PENDING_UNRESOLVED" }.into(),
         })
+    }
+
+    /// Persist only an inert manifest-last selection. The caller holds the
+    /// Owner root recovery lock and has completed origin-bound packet proof;
+    /// a matching PREPARED row must be saved before any imported InstallRow.
+    #[allow(clippy::too_many_arguments)]
+    fn save_quarantined_direct_install_plan(
+        &self,
+        input: &HistoricalOwnerAttachInput,
+        source: &LegacySource,
+        ts_digest: &str,
+        pem_digest: &str,
+        intent_digest: &str,
+        pending: &LegacyPendingInstallBegin,
+        options_json: &str,
+        material_json: &str,
+        original_commit_hash: &str,
+    ) -> Result<QuarantinedDirectInstallPlan, HistoricalOwnerAttachError> {
+        let invalid = || HistoricalOwnerAttachError::SourceUnresolved;
+        if !valid_digest(ts_digest) || !valid_digest(pem_digest)
+            || !valid_digest(intent_digest) || !valid_digest(original_commit_hash)
+            || source.visibility != "PRIVATE" || source.head.is_none()
+            || source.pending_install_begin.as_ref().map(|row| row.command_id.as_str())
+                != Some(pending.command_id.as_str())
+        { return Err(invalid()); }
+        let options = parse_wire_json_bounded(options_json.as_bytes(), 64, 2 * 1024 * 1024)
+            .map_err(|_| invalid())?;
+        let options_wire = canonical_wire_value(&options, CanonicalPath::SecureArtifact)
+            .map_err(|_| invalid())?;
+        if sha256_hex(options_wire.as_bytes()) != pending.intent_hash { return Err(invalid()); }
+        let material = parse_wire_json_bounded(material_json.as_bytes(), 64, 8 * 1024 * 1024)
+            .map_err(|_| invalid())?;
+        let material_wire = canonical_wire_value(&material, CanonicalPath::SecureArtifact)
+            .map_err(|_| invalid())?;
+        if material_wire.len() > 8 * 1024 * 1024 { return Err(invalid()); }
+        let options_sha256 = sha256_hex(options_wire.as_bytes());
+        let material_sha256 = sha256_hex(material_wire.as_bytes());
+        let request_sha256 = sha256_hex(&pending.request);
+        let source_epoch = source.ring.as_ref().and_then(|ring| ring.epochs().last())
+            .ok_or_else(invalid)?;
+        let selection = serde_json::to_vec(&(
+            "peerwork.owner.direct-install-plan.v1", &self.config.origin,
+            &input.workspace_id, ts_digest, &pending.command_id,
+            &options_sha256, &material_sha256,
+        )).map_err(|_| HistoricalOwnerAttachError::Local)?;
+        let plan_id = base64url(&sha256(&selection));
+        let attach_id = base64url(&sha256(format!(
+            "peerwork.owner.direct-install-attach.v1:{plan_id}"
+        ).as_bytes()));
+        let manifest = QuarantinedDirectInstallPlan {
+            version: 1, origin: self.config.origin.clone(), plan_id: plan_id.clone(), attach_id,
+            workspace_id: input.workspace_id.clone(),
+            owner_actor_id: input.expected_owner_actor_id.clone(),
+            owner_key_id: input.expected_owner_key_id.clone(),
+            command_id: pending.command_id.clone(), instance_id: pending.instance_id.clone(),
+            intent_hash: pending.intent_hash.clone(), path: pending.path.clone(),
+            original_commit_hash: original_commit_hash.into(), request_sha256,
+            source_sequence: source.sequence, source_head: source.head.clone(),
+            source_policy_hash: source.policy_hash.clone(), source_epoch,
+            ts_state_sha256: ts_digest.into(), owner_pem_sha256: pem_digest.into(),
+            ts_intent_sha256: intent_digest.into(), options_sha256, material_sha256,
+        };
+        let plans_root = self.config.state_dir.join("owner-direct-install-plans");
+        ensure_dir(&plans_root)?;
+        clear_owned_direct_install_staging(&plans_root)?;
+        let final_directory = plans_root.join(&plan_id);
+        let existed = match std::fs::symlink_metadata(&final_directory) {
+            Ok(_) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(_) => return Err(HistoricalOwnerAttachError::Local),
+        };
+        let staging = if existed { None } else {
+            Some(new_direct_install_plan_staging(&plans_root)?)
+        };
+        let directory = staging.as_ref().map_or(final_directory.as_path(), |tmp| tmp.path());
+        ensure_dir(directory)?;
+        let marker_wire = format!("peerwork.owner.direct-install-plan.v1:{plan_id}\n");
+        let marker_store = SecureStateStore::open(&directory.join("plan-marker.state"))
+            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        match marker_store.read_exact_secret().map_err(|_| HistoricalOwnerAttachError::Local)? {
+            Some(saved) if saved.as_slice() == marker_wire.as_bytes() => (),
+            Some(_) => return Err(HistoricalOwnerAttachError::Conflict),
+            None if existed => return Err(HistoricalOwnerAttachError::Local),
+            None => marker_store.write_exact(marker_wire.as_bytes())
+                .map_err(|_| HistoricalOwnerAttachError::Local)?,
+        }
+        drop(marker_store);
+        let state = read_private_file_bounded(&input.protected_ts_state_path, MAX_SOURCE)
+            .map_err(|_| HistoricalOwnerAttachError::SourceChanged)?;
+        let pem = read_private_file_bounded(&input.protected_owner_pkcs8_path, 2048)
+            .map_err(|_| HistoricalOwnerAttachError::SourceChanged)?;
+        if sha256_hex(&state) != ts_digest || sha256_hex(&pem) != pem_digest {
+            return Err(HistoricalOwnerAttachError::SourceChanged);
+        }
+        let manifest_store = SecureStateStore::open(&directory.join("plan-manifest.state"))
+            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        if let Some(saved) = manifest_store.read_exact_secret()
+            .map_err(|_| HistoricalOwnerAttachError::Local)? {
+            let old: QuarantinedDirectInstallPlan = serde_json::from_slice(&saved)
+                .map_err(|_| HistoricalOwnerAttachError::Local)?;
+            if old != manifest { return Err(HistoricalOwnerAttachError::Conflict); }
+            for (name, expected) in [
+                ("source-state.state", ts_digest), ("owner-pem.state", pem_digest),
+                ("options.state", manifest.options_sha256.as_str()),
+                ("material.state", manifest.material_sha256.as_str()),
+            ] {
+                let bytes = SecureStateStore::open(&directory.join(name))
+                    .map_err(|_| HistoricalOwnerAttachError::Local)?
+                    .read_exact_secret().map_err(|_| HistoricalOwnerAttachError::Local)?
+                    .ok_or(HistoricalOwnerAttachError::Local)?;
+                if sha256_hex(&bytes) != expected { return Err(HistoricalOwnerAttachError::Conflict); }
+            }
+        } else {
+            for (name, bytes) in [
+                ("source-state.state", state.as_slice()),
+                ("owner-pem.state", pem.as_slice()),
+                ("options.state", options_wire.as_bytes()),
+                ("material.state", material_wire.as_bytes()),
+            ] {
+                SecureStateStore::open(&directory.join(name))
+                    .map_err(|_| HistoricalOwnerAttachError::Local)?
+                    .write_exact(bytes).map_err(|_| HistoricalOwnerAttachError::Local)?;
+            }
+        }
+        let backup_path = directory.join("source-intents.sqlite");
+        let backup_digest = crate::ts_migration::checked_backup_snapshot_allow_pending(
+            &input.protected_ts_intent_db_path, &backup_path,
+        ).map_err(|_| HistoricalOwnerAttachError::SourceChanged)?;
+        if backup_digest != intent_digest { return Err(HistoricalOwnerAttachError::SourceChanged); }
+        let db_size = std::fs::metadata(&backup_path)
+            .map_err(|_| HistoricalOwnerAttachError::Local)?.len();
+        let total = u64::try_from(state.len()).ok()
+            .and_then(|n| n.checked_add(pem.len() as u64))
+            .and_then(|n| n.checked_add(options_wire.len() as u64))
+            .and_then(|n| n.checked_add(material_wire.len() as u64))
+            .and_then(|n| n.checked_add(db_size))
+            .ok_or(HistoricalOwnerAttachError::Local)?;
+        if total > MAX_SOURCE as u64 + 2048 + 2 * 1024 * 1024 + 8 * 1024 * 1024 + 256 * 1024 * 1024 {
+            return Err(HistoricalOwnerAttachError::Local);
+        }
+        let (_, state_after, pem_after, intent_after) =
+            self.inspect_sources_selected_install(input, Some(&pending.command_id))?;
+        if (state_after, pem_after, intent_after) !=
+            (ts_digest.into(), pem_digest.into(), intent_digest.into()) {
+            return Err(HistoricalOwnerAttachError::SourceChanged);
+        }
+        if manifest_store.read_exact_secret().map_err(|_| HistoricalOwnerAttachError::Local)?.is_none() {
+            manifest_store.write_exact(&serde_json::to_vec(&manifest)
+                .map_err(|_| HistoricalOwnerAttachError::Local)?)
+                .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        }
+        drop(manifest_store);
+        if let Some(staging) = staging.as_ref() {
+            publish_orphan_plan_staging(staging, &final_directory, &plans_root)?;
+        }
+        Ok(manifest)
     }
 
     /// Persist an inert, source-bound recovery plan after complete replay and
@@ -4085,6 +4271,47 @@ fn new_orphan_plan_staging(root: &Path) -> Result<tempfile::TempDir, HistoricalO
     let staging = builder.tempdir_in(root).map_err(|_| HistoricalOwnerAttachError::Local)?;
     ensure_dir(staging.path())?;
     Ok(staging)
+}
+
+fn new_direct_install_plan_staging(root: &Path) -> Result<tempfile::TempDir, HistoricalOwnerAttachError> {
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(".owner-direct-install-staging-");
+    #[cfg(unix)] {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(std::fs::Permissions::from_mode(0o700));
+    }
+    let staging = builder.tempdir_in(root).map_err(|_| HistoricalOwnerAttachError::Local)?;
+    ensure_dir(staging.path())?;
+    Ok(staging)
+}
+
+/// Remove only protected, ownership-marked, unreferenced random staging from
+/// this dedicated plan root. An unmarked directory is never adopted/deleted.
+fn clear_owned_direct_install_staging(root: &Path) -> Result<(), HistoricalOwnerAttachError> {
+    let mut unmarked = 0usize;
+    for entry in std::fs::read_dir(root).map_err(|_| HistoricalOwnerAttachError::Local)? {
+        let entry = entry.map_err(|_| HistoricalOwnerAttachError::Local)?;
+        let name = entry.file_name();
+        if !name.to_string_lossy().starts_with(".owner-direct-install-staging-") { continue; }
+        let path = entry.path();
+        if ensure_dir(&path).is_err() { unmarked += 1; continue; }
+        let marker_path = path.join("plan-marker.state");
+        if std::fs::symlink_metadata(&marker_path).is_err() { unmarked += 1; continue; }
+        let marker = SecureStateStore::open(&marker_path)
+            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        let saved = marker.read_exact_secret().map_err(|_| HistoricalOwnerAttachError::Local)?;
+        drop(marker);
+        let Some(saved) = saved else { unmarked += 1; continue; };
+        let Ok(text) = std::str::from_utf8(&saved) else { unmarked += 1; continue; };
+        let Some(id) = text.strip_prefix("peerwork.owner.direct-install-plan.v1:")
+            .and_then(|value| value.strip_suffix('\n')) else {
+            unmarked += 1; continue;
+        };
+        if !valid_token(id) { unmarked += 1; continue; }
+        std::fs::remove_dir_all(&path).map_err(|_| HistoricalOwnerAttachError::Local)?;
+    }
+    if unmarked > 16 { return Err(HistoricalOwnerAttachError::OrphanPlanResidue); }
+    Ok(())
 }
 
 /// Called only while the Owner recovery root lock is held. A marked random
