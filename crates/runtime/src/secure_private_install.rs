@@ -1239,6 +1239,88 @@ impl SecurePrivatePackageInstall {
         })
     }
 
+    /// Attach-tagged BEGINs pin their historical ACTIVE predecessor from the
+    /// complete current signed replay. No ordinary profile floor is advanced
+    /// while the journal is SEEDING, and no caller-supplied checkpoint alone
+    /// can authorize a retry or a newly signed PAGE/END.
+    fn with_imported_install_replay<T, F>(
+        &self,
+        begin_id: &str,
+        attach_id: &str,
+        cancel: &CancellationToken,
+        consume: F,
+    ) -> Result<T, PrivatePackageInstallError>
+    where
+        F: FnOnce(&TransportReplayedJournal, &TransportReplayedJournal)
+            -> Result<T, PrivatePackageInstallError>,
+    {
+        let identity = KernelIdentity::open(&self.config.identity_path)
+            .map_err(|_| PrivatePackageInstallError::Identity)?;
+        let store = SecureStateStore::open(
+            &self.config.state_dir.join("private-install-operations.state"),
+        )?;
+        let doc = InstallDocument::open(
+            &store, &self.config, identity.actor_id(), identity.key_id(),
+        )?;
+        let row = doc.rows.get(begin_id).ok_or(PrivatePackageInstallError::Input)?;
+        if row.import_attach_id.as_deref() != Some(attach_id)
+            || row.source_kind()? != InstallSourceKind::Direct
+        { return Err(PrivatePackageInstallError::Plan); }
+        let source = row.direct_source.as_ref().ok_or(PrivatePackageInstallError::Plan)?;
+        let source_checkpoint = source.source_checkpoint_json.clone();
+        drop(doc);
+        drop(store);
+        let lifecycle = SecureLifecycle::open(
+            &self.config.state_dir.join("lifecycle.state"), &self.config.origin,
+            identity.actor_id(), &self.config.workspace_id,
+            identity.actor_id(), identity.key_id(),
+        ).map_err(|_| PrivatePackageInstallError::Identity)?;
+        let ring = lifecycle.active_keyring_without_pending()
+            .ok_or(PrivatePackageInstallError::Identity)?;
+        let access = SecureReadAccess::new(SecureReadConfig {
+            origin: self.config.origin.clone(),
+            kernel_journal_path: self.config.state_dir.join("kernel.sqlite"),
+            read_state_path: self.config.state_dir.join("private-install-imported-read.state"),
+            lifecycle_path: self.config.state_dir.join("lifecycle.state"),
+            identity_path: self.config.identity_path.clone(),
+            workspace_id: self.config.workspace_id.clone(),
+            authority: self.config.authority.clone()
+                .ok_or(PrivatePackageInstallError::Identity)?,
+            owner_actor_id: identity.actor_id().to_owned(),
+            owner_key_id: identity.key_id().to_owned(),
+            required_features: self.config.required_features.clone(),
+            allow_loopback_http: self.config.allow_loopback_http,
+            max_replay_artifact_bytes: self.config.max_replay_artifact_bytes,
+        });
+        let fresh = access.replay_checked_attach_generation(cancel)?;
+        if fresh.replay().owner_actor_id() != identity.actor_id()
+            || fresh.replay().owner_signing_key() != identity.key_id()
+        { return Err(PrivatePackageInstallError::Identity); }
+        let current_policy = fresh.signed_policy_by_hash(fresh.replay().policy_hash())
+            .ok_or(PrivatePackageInstallError::Plan)?;
+        let current = parse_wire_json_bounded(current_policy, 64, 196_608)
+            .map_err(|_| PrivatePackageInstallError::Plan)?;
+        let payload = current.get("payload").ok_or(PrivatePackageInstallError::Plan)?;
+        let current_epoch = number(payload, "epoch")?;
+        let owner_current = matches!(payload.get("members"), Some(WireValue::Array(members))
+            if members.iter().any(|member| {
+                member.get("actor_id").and_then(WireValue::as_string).as_deref()
+                    == Some(identity.actor_id())
+                    && member.get("role").and_then(WireValue::as_string).as_deref()
+                        == Some("OWNER")
+                    && member.get("certificate").and_then(|cert| cert.get("payload"))
+                        .and_then(|cert| cert.get("signing_key"))
+                        .and_then(WireValue::as_string).as_deref() == Some(identity.key_id())
+            }));
+        if !owner_current || payload.get("visibility")
+            .and_then(WireValue::as_string).as_deref() != Some("PRIVATE")
+            || ring.epochs().last() != Some(current_epoch)
+        { return Err(PrivatePackageInstallError::Plan); }
+        let prior = fresh.authenticated_active_prefix(source_checkpoint.as_bytes(), ring)
+            .map_err(|_| PrivatePackageInstallError::Plan)?;
+        consume(&prior, &fresh)
+    }
+
     /// Discover protected generated BEGIN IDs without a network request.
     /// A row is an intent, never evidence that installation was accepted.
     pub fn installs_json(&self) -> Result<String, PrivatePackageInstallError> {
@@ -1864,7 +1946,7 @@ impl SecurePrivatePackageInstall {
         if !token(begin_id) {
             return Err(PrivatePackageInstallError::Input);
         }
-        let result = self.with_install_replay(cancel, |prior, fresh| {
+        let consume = |prior: &TransportReplayedJournal, fresh: &TransportReplayedJournal| {
             let identity = KernelIdentity::open(&self.config.identity_path)
                 .map_err(|_| PrivatePackageInstallError::Identity)?;
             if identity.actor_id() != prior.replay().owner_actor_id()
@@ -2346,7 +2428,12 @@ impl SecurePrivatePackageInstall {
                 instance_id: row.instance_id,
                 commit_hash: signed.commit_hash().into(),
             })
-        })?;
+        };
+        let result = if let Some(attach_id) = expected_import_attach_id {
+            self.with_imported_install_replay(begin_id, attach_id, cancel, consume)?
+        } else {
+            self.with_install_replay(cancel, consume)?
+        };
         serde_json::to_string(&result).map_err(|_| PrivatePackageInstallError::Encoding)
     }
 

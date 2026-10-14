@@ -2739,9 +2739,11 @@ impl SecureHistoricalOwnerAttach {
             ).map_err(|_| HistoricalOwnerAttachError::Verification)?;
         }
         drop(lifecycle);
-        SecureReadProfile::new(self.profile_config(&row.input))
-            .read_latest_json_with_cancel(cancel)
-            .map_err(|_| HistoricalOwnerAttachError::Verification)?;
+        if !verified.applied {
+            SecureReadProfile::new(self.profile_config(&row.input))
+                .read_latest_json_with_cancel(cancel)
+                .map_err(|_| HistoricalOwnerAttachError::Verification)?;
+        }
         let store = SecureStateStore::open(&self.history_path())
             .map_err(|_| HistoricalOwnerAttachError::Local)?;
         let mut history = read_history(&store, &self.config.origin)?;
@@ -2758,6 +2760,108 @@ impl SecureHistoricalOwnerAttach {
         let completed = saved.clone();
         save_history(&store, &history)?;
         Ok(summary(attach_id, &completed))
+    }
+
+    /// Advance exactly one saved imported direct-install step. Every call
+    /// reloads the protected old selection and a fresh complete signed replay;
+    /// the installer persists each later PAGE/END packet before any POST.
+    /// A PENDING result retains restriction and can be retried by the same ID.
+    pub fn recover_pending_direct_install_begin(
+        &self,
+        attach_id: &str,
+        expected_command_id: &str,
+        cancel: &CancellationToken,
+    ) -> Result<HistoricalOwnerAttachResult, HistoricalOwnerAttachError> {
+        if !valid_token(attach_id) || !valid_token(expected_command_id) {
+            return Err(HistoricalOwnerAttachError::Input);
+        }
+        if cancel.is_cancelled() { return Err(HistoricalOwnerAttachError::Cancelled); }
+        let _lock = SecureStateStore::open(&self.config.state_dir.join("owner-attach-recovery.state"))
+            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        let store = SecureStateStore::open(&self.history_path())
+            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        let history = read_history(&store, &self.config.origin)?;
+        let row = history.rows.get(attach_id)
+            .ok_or(HistoricalOwnerAttachError::NotFound)?.clone();
+        drop(history);
+        drop(store);
+        if row.attached_sequence.is_none() || row.kernel_import.is_none()
+            || row.pending_direct_install_command_id.as_deref() != Some(expected_command_id)
+        { return Err(HistoricalOwnerAttachError::Conflict); }
+        let plan = self.load_quarantined_direct_install_plan(attach_id, &row)?;
+        if plan.manifest.command_id != expected_command_id {
+            return Err(HistoricalOwnerAttachError::Conflict);
+        }
+        let owner = KernelIdentity::open(&self.identity_path())
+            .map_err(|_| HistoricalOwnerAttachError::Identity)?;
+        let pending = plan.source.pending_install_begin.as_ref()
+            .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+        let ring = plan.source.ring.as_ref()
+            .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+        let replayed = SecureReadAccess::new(self.attach_read_config(&row.input))
+            .replay_checked_attach_generation(cancel)
+            .map_err(|_| if cancel.is_cancelled() {
+                HistoricalOwnerAttachError::Cancelled
+            } else { HistoricalOwnerAttachError::Verification })?;
+        let verified = verify_pending_direct_install_begin(
+            pending, &plan.options, &plan.material, ring, &replayed, &owner, &row.input,
+        )?;
+        if verified.commit_hash != plan.manifest.original_commit_hash {
+            return Err(HistoricalOwnerAttachError::Conflict);
+        }
+        // The imported installer separately pins current Owner, PRIVATE ring,
+        // exact historical ACTIVE predecessor and signed BEGIN before POST.
+        let progress_wire = SecurePrivatePackageInstall::new(self.profile_config(&row.input))
+            .continue_imported_install_json_with_cancel(
+                expected_command_id, attach_id, cancel,
+            ).map_err(|_| HistoricalOwnerAttachError::PendingDirectInstallUnresolved)?;
+        let progress: serde_json::Value = serde_json::from_str(&progress_wire)
+            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        if progress.get("begin_command_id").and_then(serde_json::Value::as_str)
+            != Some(expected_command_id)
+            || progress.get("instance_id").and_then(serde_json::Value::as_str)
+                != Some(plan.manifest.instance_id.as_str())
+        { return Err(HistoricalOwnerAttachError::Conflict); }
+        let accepted = progress.get("status").and_then(serde_json::Value::as_str)
+            == Some("ACCEPTED");
+        if !accepted && progress.get("status").and_then(serde_json::Value::as_str)
+            != Some("PENDING") {
+            return Err(HistoricalOwnerAttachError::Conflict);
+        }
+        let final_replay = if accepted {
+            Some(SecureReadAccess::new(self.attach_read_config(&row.input))
+                .replay_checked_attach_generation(cancel)
+                .map_err(|_| HistoricalOwnerAttachError::Verification)?)
+        } else { None };
+        if let Some(replayed) = final_replay.as_ref() {
+            if replayed.replay().structure_status() != StructureStatus::Active
+                || !replayed.replay().contains_checkpoint(
+                    row.source_sequence, row.source_head.as_deref(), &row.source_policy_hash,
+                )
+            { return Err(HistoricalOwnerAttachError::Verification); }
+            replayed.verified_read().map_err(|_| HistoricalOwnerAttachError::Verification)?;
+            SecureReadProfile::new(self.profile_config(&row.input))
+                .read_latest_json_with_cancel(cancel)
+                .map_err(|_| HistoricalOwnerAttachError::Verification)?;
+        }
+        let store = SecureStateStore::open(&self.history_path())
+            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        let mut history = read_history(&store, &self.config.origin)?;
+        let saved = history.rows.get_mut(attach_id)
+            .ok_or(HistoricalOwnerAttachError::NotFound)?;
+        if saved.pending_direct_install_plan_id != row.pending_direct_install_plan_id
+            || saved.pending_direct_install_command_id != row.pending_direct_install_command_id
+            || saved.pending_direct_install_complete && !accepted
+        { return Err(HistoricalOwnerAttachError::Conflict); }
+        saved.pending_direct_install_begin_accepted |= verified.applied;
+        if let Some(replayed) = final_replay.as_ref() {
+            saved.pending_direct_install_complete = true;
+            saved.attached_sequence = Some(replayed.replay().sequence());
+            saved.attached_head = replayed.replay().head().map(str::to_owned);
+        }
+        let result = saved.clone();
+        save_history(&store, &history)?;
+        Ok(summary(attach_id, &result))
     }
 
     /// Authorize one *new* stage for an orphan marker that has no original
@@ -11009,11 +11113,6 @@ mod tests {
             assert_eq!(prepared.len(), 1);
             assert_eq!(prepared[0].status, "PREPARED");
             assert_eq!(count(), if expected_applied { 2 } else { 1 });
-            let ordinary_installs: serde_json::Value = serde_json::from_str(
-                &SecurePrivatePackageInstall::new(attached_owner.profile_config(&input))
-                    .installs_json().unwrap(),
-            ).unwrap();
-            assert_eq!(ordinary_installs.as_array().unwrap().len(), 0);
             let _root_lock = SecureStateStore::open(
                 &config.state_dir.join("owner-attach-recovery.state"),
             ).unwrap();
@@ -11056,11 +11155,8 @@ mod tests {
             assert_eq!(resumed.pending_direct_install_status.as_deref(), Some(if expected_applied {
                 "BEGIN_ACCEPTED_CONTINUATION_PENDING"
             } else { "PENDING_UNRESOLVED" }));
-            let ordinary_installs: serde_json::Value = serde_json::from_str(
-                &SecurePrivatePackageInstall::new(resumed_owner.profile_config(&input))
-                    .installs_json().unwrap(),
-            ).unwrap();
-            assert_eq!(ordinary_installs.as_array().unwrap().len(), 0);
+            assert!(SecurePrivatePackageInstall::new(resumed_owner.profile_config(&input))
+                .continue_install_json_with_cancel(command, &cancel).is_err());
             assert_eq!(count(), if expected_applied { 2 } else { 1 });
             let loaded = attach.load_quarantined_direct_install_plan(&plan.attach_id, &row).unwrap();
             assert_eq!(loaded.manifest, plan);
@@ -11084,6 +11180,44 @@ mod tests {
             }
             assert_eq!(count(), if expected_applied { 2 } else { 1 });
             assert!(attach.attachments().unwrap().is_empty());
+            let before_recovery = count();
+            assert!(matches!(resumed_owner.recover_pending_direct_install_begin(
+                &prepared[0].attach_id, &wrong_command, &cancel,
+            ), Err(HistoricalOwnerAttachError::Conflict)));
+            assert_eq!(count(), before_recovery);
+            let mut completed = None;
+            for _ in 0..512 {
+                let next = resumed_owner.recover_pending_direct_install_begin(
+                    &prepared[0].attach_id, command, &cancel,
+                ).unwrap();
+                if next.status == "ATTACHED" {
+                    completed = Some(next);
+                    break;
+                }
+                assert_eq!(next.status, "ATTACHED_RESTRICTED");
+            }
+            let completed = completed.expect("signed direct install did not complete");
+            assert_eq!(completed.pending_direct_install_status.as_deref(), Some("ACCEPTED"));
+            let original_commits: i64 = oracle.query_row(
+                "SELECT count(*) FROM secure_commits WHERE workspace_id=?1 AND command_id=?2",
+                [workspace, command], |row| row.get(0),
+            ).unwrap();
+            assert_eq!(original_commits, 1);
+            let installed: serde_json::Value = serde_json::from_str(
+                &resumed_owner.read_workspace_json(workspace, &cancel).unwrap(),
+            ).unwrap();
+            let objects = installed["objects"].as_array().unwrap();
+            assert!(objects.iter().any(|object| object["kind"] == "instances"
+                && object["id"] == fixture["instance_id"]
+                && object["value"]["protocol_digest"] == fixture["protocol_digest"]));
+            assert!(objects.iter().any(|object| object["kind"] == "protocols"
+                && object["id"] == fixture["protocol_digest"]));
+            let after_completion = count();
+            let repeated = resumed_owner.recover_pending_direct_install_begin(
+                &prepared[0].attach_id, command, &cancel,
+            ).unwrap();
+            assert_eq!(repeated.pending_direct_install_status.as_deref(), Some("ACCEPTED"));
+            assert_eq!(count(), after_completion);
         }
     }
 }
