@@ -149,7 +149,9 @@ try:
         item["fixture_dir"] = old_dir.name
         if not completed:
             assert item["pending_command_id"] and item["pending_commit_hash"]
-            # The operator hashes the canonical original source body, never native storage.
+            # Native retained import freezes canonical_wire_value(source.body),
+            # not the historical TS JSON.stringify HTTP serialization. Preserve
+            # this distinction and compare actual native raw POST bytes below.
             code = """import {readFileSync} from 'node:fs';
 import {pathToFileURL} from 'node:url';
 const [statePath,commandId,referenceRoot]=process.argv.slice(1);
@@ -160,7 +162,7 @@ console.log(JSON.stringify({method:'POST',path:pending.path,body_sha256:await se
 """
             packet = json.loads(subprocess.check_output([str(node), '--input-type=module', '-e', code,
                 item['state_path'], item['pending_command_id'], str(snapshot)], text=True))
-            item['expected_request'] = packet
+            item['expected_native_request'] = packet
         with sqlite3.connect(f"file:{database}?mode=ro", uri=True) as connection:
             workspace_count = connection.execute(
                 "SELECT count(*) FROM secure_commits WHERE workspace_id=?",

@@ -272,7 +272,7 @@ for item in sources:
         recorded = [row for row in observed(workspace) if row["command_id"] == command]
         if mode.endswith("before-post"):
             assert len(recorded) == 1
-            assert {key:recorded[0][key] for key in ("method","path","body_sha256")} == item["expected_request"]
+            assert {key:recorded[0][key] for key in ("method","path","body_sha256")} == item["expected_native_request"]
         else:
             assert recorded == [], "accepted selected packet was posted again"
         if mode == "direct-end-applied-loss":
@@ -287,11 +287,9 @@ for item in sources:
     assert any(row["kind"] == "protocols" and row["id"] == item["protocol_digest"] for row in readback["objects"])
     installs = call("installs")
     assert installs["ok"] is True
-    if completed:assert installs["value"] == []
-    else:
-        assert len(installs["value"]) == 1
-        assert installs["value"][0]["begin_command_id"] == item["historical_begin_command_id"]
-        assert installs["value"][0]["begin_command_id"] != command
+    # Imported rows remain restricted to named attachment recovery and are
+    # permanently excluded from ordinary installer discovery, even after END.
+    assert installs["value"] == []
     accepted_count = count(database, workspace)
     accepted_requests = observed(workspace)
     repeat = call("resume" if completed else "recover", attachment=attach_id)
