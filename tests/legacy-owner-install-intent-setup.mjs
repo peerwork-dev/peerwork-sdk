@@ -39,7 +39,8 @@ try {
       'direct-staged-package-end-applied-loss', 'direct-staged-package-page-before-post',
     'direct-staged-package-page-applied-loss', 'direct-staged-package-completed-end',
     'direct-implicit-begin-before-post', 'direct-implicit-end-applied-loss',
-    'direct-object-begin-before-post', 'direct-object-end-applied-loss'].includes(selected)) {
+    'direct-object-begin-before-post', 'direct-object-end-applied-loss',
+    'direct-object-page-before-post', 'direct-object-page-applied-loss', 'direct-object-completed-end'].includes(selected)) {
       throw new Error('INSTALL_SETUP_MODE_INVALID');
     }
     for (const mode of selected ? [selected]

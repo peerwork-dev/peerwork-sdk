@@ -540,6 +540,7 @@ struct LegacySource {
 struct LegacyCompletedInstallIntent {
     instance_id: String,
     intent_hash: String,
+    object_stage: Option<LegacyCompletedObjectStage>,
 }
 
 #[derive(Clone)]
@@ -579,11 +580,11 @@ struct LegacyCompletedObjectStage {
 }
 
 fn parse_completed_object_stage(
-    value: Option<&WireValue>, pending: &LegacyPendingInstallBegin, input: &HistoricalOwnerAttachInput,
+    value: Option<&WireValue>, instance_id: &str, input: &HistoricalOwnerAttachInput,
 ) -> Result<LegacyCompletedObjectStage, HistoricalOwnerAttachError> {
     let invalid = || HistoricalOwnerAttachError::SourceUnresolved;
     let Some(WireValue::Object(rows)) = value else { return Err(invalid()); };
-    let selected = format!("{}.{}", input.workspace_id, pending.instance_id).encode_utf16().collect::<Vec<_>>();
+    let selected = format!("{}.{}", input.workspace_id, instance_id).encode_utf16().collect::<Vec<_>>();
     if rows.len() != 1 || rows[0].0 != selected || rows[0].1.object_len() != Some(3) { return Err(invalid()); }
     let row = &rows[0].1;
     let request_hash = row.get("request_hash").and_then(WireValue::as_string).filter(|value| valid_digest(value)).ok_or_else(invalid)?;
@@ -6551,7 +6552,7 @@ fn verify_completed_direct_install(
             path: path.clone(),
             request,
             retained_installed_instances: Vec::new(),
-            object_stage: None,
+            object_stage: selected.object_stage.clone(),
         };
         if let Ok(verified) = verify_pending_direct_install_begin(
             &pending, options_wire, material_wire, ring, replayed, owner, input,
@@ -7384,7 +7385,7 @@ fn parse_completed_direct_install_intent(
                 == Some(selected_path.as_str()) { return Err(invalid()); }
         }
     } else if pending.is_some() { return Err(invalid()); }
-    Ok(LegacyCompletedInstallIntent { instance_id: selected_instance_id.to_owned(), intent_hash })
+    Ok(LegacyCompletedInstallIntent { instance_id: selected_instance_id.to_owned(), intent_hash, object_stage: None })
 }
 
 fn parse_legacy_source(
@@ -7504,11 +7505,7 @@ fn parse_legacy_source_selected_install_inner(
                 value.get("protocol_install_intents"), value.get("pending"), command_id, selected_install_instance_id, input,
             )?)
         } else { None };
-        if !empty_optional_map(value.get("protocol_object_stage_intents")) {
-            let pending = pending_install_begin.as_mut().ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
-            pending.object_stage = Some(parse_completed_object_stage(value.get("protocol_object_stage_intents"), pending, input)?);
-        }
-        let completed_install_intent = if let Some(instance_id) = selected_completed_install_instance_id {
+        let mut completed_install_intent = if let Some(instance_id) = selected_completed_install_instance_id {
             if selected_install_command_id.is_some() || !valid_token(instance_id)
                 || completed_package_stage.is_some() || pending_package_stage.is_some() {
                 return Err(HistoricalOwnerAttachError::SourceUnresolved);
@@ -7517,6 +7514,17 @@ fn parse_legacy_source_selected_install_inner(
                 value.get("protocol_install_intents"), value.get("pending"), instance_id, input,
             )?)
         } else { None };
+        if !empty_optional_map(value.get("protocol_object_stage_intents")) {
+            if let Some(pending) = pending_install_begin.as_mut() {
+                pending.object_stage = Some(parse_completed_object_stage(
+                    value.get("protocol_object_stage_intents"), &pending.instance_id, input)?);
+            } else if let Some(completed) = completed_install_intent.as_mut() {
+                completed.object_stage = Some(parse_completed_object_stage(
+                    value.get("protocol_object_stage_intents"), &completed.instance_id, input)?);
+            } else {
+                return Err(HistoricalOwnerAttachError::SourceUnresolved);
+            }
+        }
         for key in [
             "admission_browser_revocations",
             "configuration_receipts",
@@ -12162,10 +12170,10 @@ mod tests {
         let mode = std::env::var("PEERWORK_COMPLETED_DIRECT_MODE")
             .unwrap_or_else(|_| "direct-completed-end".into());
         assert!(["direct-completed-end", "complete-action", "complete-rotate",
-            "direct-checkpoint-completed-end", "direct-staged-package-completed-end"]
+            "direct-checkpoint-completed-end", "direct-staged-package-completed-end", "direct-object-completed-end"]
             .contains(&mode.as_str()));
         let helper = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join(if mode == "direct-completed-end" || mode == "direct-checkpoint-completed-end" || mode == "direct-staged-package-completed-end" {
+            .join(if mode == "direct-completed-end" || mode == "direct-checkpoint-completed-end" || mode == "direct-staged-package-completed-end" || mode == "direct-object-completed-end" {
                 "../../tests/legacy-owner-install-intent.mjs"
             } else {
                 "../../tests/legacy-owner-install-intent-later.mjs"
@@ -12255,6 +12263,13 @@ mod tests {
         if mode == "direct-staged-package-completed-end" {
             assert_eq!(fixture["pending_count"], 0);
             exercise_staged_source_options_rejections(&attach, &input, root.path(), None,
+                std::str::from_utf8(&options).unwrap(), std::str::from_utf8(&material).unwrap());
+            assert_eq!(count(), before_count);
+            assert_eq!(std::fs::read(&input.protected_ts_state_path).unwrap(), before);
+        }
+        if mode == "direct-object-completed-end" {
+            assert_eq!(fixture["pending_count"], 0);
+            exercise_object_source_rejections(&attach, &input, root.path(), None,
                 std::str::from_utf8(&options).unwrap(), std::str::from_utf8(&material).unwrap());
             assert_eq!(count(), before_count);
             assert_eq!(std::fs::read(&input.protected_ts_state_path).unwrap(), before);
@@ -12668,7 +12683,8 @@ mod tests {
     fn actual_service_imports_complete_protocol_object_source_install() {
         let mode = std::env::var("PEERWORK_OBJECT_SOURCE_INSTALL_MODE")
             .unwrap_or_else(|_| "direct-object-begin-before-post".into());
-        assert!(["direct-object-begin-before-post", "direct-object-end-applied-loss"].contains(&mode.as_str()));
+        assert!(["direct-object-begin-before-post", "direct-object-end-applied-loss",
+            "direct-object-page-before-post", "direct-object-page-applied-loss"].contains(&mode.as_str()));
         exercise_selected_direct_install_source(&mode);
     }
 
@@ -12864,7 +12880,7 @@ mod tests {
             assert_eq!(read_private_file_bounded(&input.protected_ts_state_path, MAX_SOURCE).unwrap(), source_before);
         }
         if object_source_options {
-            exercise_object_source_rejections(&attach, &input, root.path(), command, &options, &material);
+            exercise_object_source_rejections(&attach, &input, root.path(), Some(command), &options, &material);
             assert_eq!(count(), before);
             assert_eq!(read_private_file_bounded(&input.protected_ts_state_path, MAX_SOURCE).unwrap(), source_before);
         }
@@ -13006,7 +13022,7 @@ mod tests {
 
     fn exercise_object_source_rejections(
         attach: &SecureHistoricalOwnerAttach, input: &HistoricalOwnerAttachInput,
-        root: &Path, command: &str, options_json: &str, material: &str,
+        root: &Path, command: Option<&str>, options_json: &str, material: &str,
     ) {
         let source: serde_json::Value = serde_json::from_slice(&std::fs::read(&input.protected_ts_state_path).unwrap()).unwrap();
         let options: serde_json::Value = serde_json::from_str(options_json).unwrap();
@@ -13027,7 +13043,7 @@ mod tests {
                 "compiled-material" => { let mut value: serde_json::Value = serde_json::from_str(material).unwrap();
                     value["closure"]["root_package_digest"] = serde_json::json!("0".repeat(64)); changed_material = value.to_string(); },
                 "changed-manifest" => changed_options["manifest"]["name"] = serde_json::json!("example.changed-object-source.v1"),
-                "pending-stage-command" => marker["command_id"] = serde_json::json!(command),
+                "pending-stage-command" => marker["command_id"] = serde_json::json!(command.map(str::to_owned).unwrap_or_else(|| base64url(&[172; 32]))),
                 _ => { let other = marker.clone(); copy["protocol_object_stage_intents"][format!("{}.{}", input.workspace_id, base64url(&[172; 32]))] = other; },
             }
             let text = changed_options.to_string();
@@ -13042,10 +13058,18 @@ mod tests {
             std::fs::write(&path, &bytes).unwrap();
             #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap(); }
             let mut negative = input.clone(); negative.protected_ts_state_path = path.clone(); let cancel = CancellationToken::new();
-            assert!(matches!(attach.inspect_pending_direct_install_begin(&negative, command, &text, &changed_material, &cancel),
-                Err(HistoricalOwnerAttachError::SourceUnresolved)), "{name}: inspect must refuse");
-            assert!(matches!(attach.attach_pending_direct_install_begin(negative, command, &sha256_hex(&bytes), &text, &changed_material, &cancel),
-                Err(HistoricalOwnerAttachError::SourceUnresolved)), "{name}: attach must refuse before PREPARED");
+            if let Some(command) = command {
+                assert!(matches!(attach.inspect_pending_direct_install_begin(&negative, command, &text, &changed_material, &cancel),
+                    Err(HistoricalOwnerAttachError::SourceUnresolved)), "{name}: inspect must refuse");
+                assert!(matches!(attach.attach_pending_direct_install_begin(negative, command, &sha256_hex(&bytes), &text, &changed_material, &cancel),
+                    Err(HistoricalOwnerAttachError::SourceUnresolved)), "{name}: attach must refuse before PREPARED");
+            } else {
+                let instance = options["instance_id"].as_str().unwrap();
+                assert!(matches!(attach.inspect_completed_direct_install(&negative, instance, &text, &changed_material, &cancel),
+                    Err(HistoricalOwnerAttachError::SourceUnresolved)), "{name}: inspect must refuse");
+                assert!(matches!(attach.attach_completed_direct_install(negative, instance, &sha256_hex(&bytes), &text, &changed_material, &cancel),
+                    Err(HistoricalOwnerAttachError::SourceUnresolved)), "{name}: attach must refuse before PREPARED");
+            }
             assert!(attach.attachments().unwrap().is_empty()); assert!(!attach.workspace_dir(&input.workspace_id).join("lifecycle.state").exists());
             assert_eq!(std::fs::read(path).unwrap(), bytes);
         }
