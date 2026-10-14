@@ -1621,6 +1621,10 @@ impl SecureHistoricalOwnerAttach {
         if manifest.version != 1 || manifest.origin != self.config.origin
             || manifest.plan_id != plan_id || manifest.attach_id != attach_id
             || manifest.workspace_id != row.input.workspace_id
+            || row.pending_direct_install_command_id.as_deref() != Some(manifest.command_id.as_str())
+            || row.pending_direct_install_instance_id.as_deref() != Some(manifest.instance_id.as_str())
+            || (manifest.completed_map && (!row.pending_direct_install_begin_accepted
+                || !row.pending_direct_install_complete))
             || manifest.owner_actor_id != row.input.expected_owner_actor_id
             || manifest.owner_key_id != row.input.expected_owner_key_id
             || manifest.source_sequence != row.source_sequence
