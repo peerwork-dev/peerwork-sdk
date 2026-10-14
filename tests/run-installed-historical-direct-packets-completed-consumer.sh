@@ -15,7 +15,7 @@ unshare --user --map-root-user --mount --pid --fork /bin/bash -euc '
     PEERWORK_TEST_NODE=/opt/node24/bin/node \
     PEERWORK_TEST_NODE_PACKAGE=/work/sdk-historical-direct/dist/node-consumer/node_modules/@peerwork/agent-sdk \
     PEERWORK_TEST_CLI=/work/sdk-historical-direct/target/release/peerwork \
-    PEERWORK_TEST_ATTACH_SOURCE_SHA256=a12c2e4b7df075970e800082f67acc4762530c322a041c1739ee2dd231b32a95 \
+    PEERWORK_TEST_ATTACH_SOURCE_SHA256=e8199067d9b649f5a1165ad589c12c493e664c7c67f2a25c87403577dee12597 \
     PEERWORK_TEST_LEGACY_HELPER_SHA256=d4c20a4d02a76e2f8e468f3aa2e65c0b6185502915b26f3b698ebba7c47b4500 \
     PEERWORK_TEST_REFERENCE_FIXTURE_SHA256=50168d56f654e51d5d3696815e8cae7590e0a002721ca076ec636bf47d2769b0 \
     /bin/bash -euc '\''
