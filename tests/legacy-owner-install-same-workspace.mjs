@@ -79,6 +79,8 @@ try {
     protocol_digest: resolved.digest, entrypoint: options.entrypoint,
     initial_sequence: initial.checkpoint.sequence, latest_sequence: latest.checkpoint.sequence,
     latest_structure_state: latest.structure?.state, pending_count: pending.length,
+    pending_action_id: pending[0][1].body.commit.payload.action_id,
+    pending_sequence: pending[0][1].body.commit.payload.sequence,
     pending_command_id: pending[0][0], pending_commit_hash: await secureHash(pending[0][1].body.commit),
     retained_instance_id: first.instance_id, retained_intent_key: first.intent_key,
     retained_intent_hash: first.intent_hash, retained_protocol_digest: first.protocol_digest,
