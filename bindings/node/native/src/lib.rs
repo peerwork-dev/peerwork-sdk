@@ -89,7 +89,17 @@ impl Task for IdentityTask {
         } else {
             KernelIdentity::open(Path::new(&self.path))
         }
-        .map_err(|error| napi::Error::from_reason(error.to_string()))?;
+        .map_err(|error| {
+            if !self.create && self.pem_file.is_none() && self.seed_file.is_none() {
+                napi::Error::from_reason(format!(
+                    "{}: {}",
+                    error.code(),
+                    error.actionable_message()
+                ))
+            } else {
+                napi::Error::from_reason(error.to_string())
+            }
+        })?;
         Ok(format!(
             "{{\"actor_id\":\"{}\",\"key_id\":\"{}\"}}",
             identity.actor_id(),

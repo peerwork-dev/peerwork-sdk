@@ -214,9 +214,23 @@ def create_identity(path: str) -> IdentityInfo:
     return cast(IdentityInfo, json.loads(identity_create_json(path)))
 
 
+class IdentityError(RuntimeError):
+    """Identity operation failure with a stable machine-readable code."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
 def open_identity(path: str) -> IdentityInfo:
     """Read only the public IDs of an existing protected local identity."""
-    return cast(IdentityInfo, json.loads(identity_open_json(path)))
+    try:
+        return cast(IdentityInfo, json.loads(identity_open_json(path)))
+    except RuntimeError as error:
+        code, separator, message = str(error).partition(": ")
+        if separator and code in {"IDENTITY_MISSING", "IDENTITY_STATE"}:
+            raise IdentityError(code, message) from error
+        raise
 
 
 def import_identity_seed_file(path: str, seed_file: str) -> IdentityInfo:
@@ -442,7 +456,7 @@ class SecureSnapshotClient:
             raise
 
 
-__all__ = ["version", "capabilities", "create_identity", "open_identity",
+__all__ = ["version", "capabilities", "IdentityError", "create_identity", "open_identity",
            "create_identity_async", "open_identity_async",
            "import_identity_seed_file", "import_identity_seed_file_async", "KernelClient",
            "CapabilityManifest", "IdentityInfo", "KernelInfo", "PendingIntent",

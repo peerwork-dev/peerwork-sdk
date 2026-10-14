@@ -1,7 +1,7 @@
 use peerwork_runtime::interrupts::InterruptMonitor;
 use peerwork_runtime::kernel_access::KernelAccess;
 use peerwork_runtime::kernel_client::{KernelAcceptedResult, KernelOperationStatus};
-use peerwork_runtime::kernel_identity::KernelIdentity;
+use peerwork_runtime::kernel_identity::{KernelIdentity, KernelIdentityError};
 use peerwork_runtime::secure_action_access::{PublicActionInput, SecurePublicActionAccess};
 use peerwork_runtime::secure_public_admission::{PublicOfferInput, SecurePublicAdmission};
 use peerwork_runtime::secure_public_decision::{PublicDecisionConfig, SecurePublicDecision};
@@ -77,11 +77,15 @@ fn main() -> ExitCode {
             }
         }
         [noun, verb, path] if noun == "identity" && (verb == "create" || verb == "info") => {
-            let identity = identity_cli_path(path).and_then(|path| {
+            let identity = identity_cli_path(path).map_err(|error| ("IDENTITY_STATE", error)).and_then(|path| {
                 if verb == "create" {
-                    KernelIdentity::create(&path).map_err(|error| error.to_string())
+                    KernelIdentity::create(&path)
+                        .map_err(|error| ("IDENTITY_STATE", error.to_string()))
                 } else {
-                    KernelIdentity::open(&path).map_err(|error| error.to_string())
+                    KernelIdentity::open(&path).map_err(|error| match error {
+                        KernelIdentityError::NotFound => (error.code(), error.actionable_message()),
+                        error => ("IDENTITY_STATE", error.to_string()),
+                    })
                 }
             });
             match identity {
@@ -93,10 +97,10 @@ fn main() -> ExitCode {
                     );
                     ExitCode::SUCCESS
                 }
-                Err(error) => {
+                Err((code, message)) => {
                     eprintln!(
                         "{}",
-                        serde_json::json!({"code":"IDENTITY_STATE", "message":error.to_string()})
+                        serde_json::json!({"code":code, "message":message})
                     );
                     ExitCode::FAILURE
                 }

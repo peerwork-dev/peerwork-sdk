@@ -78,7 +78,11 @@ fn identity_create_json(path: &str) -> PyResult<String> {
 #[pyfunction]
 fn identity_open_json(path: &str) -> PyResult<String> {
     let identity = KernelIdentity::open(Path::new(path))
-        .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))?;
+        .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(format!(
+            "{}: {}",
+            error.code(),
+            error.actionable_message()
+        )))?;
     Ok(format!(
         "{{\"actor_id\":\"{}\",\"key_id\":\"{}\"}}",
         identity.actor_id(),

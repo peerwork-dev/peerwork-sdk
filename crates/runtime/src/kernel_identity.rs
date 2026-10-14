@@ -2,7 +2,8 @@
 //! in protected local state and runtime memory, never a public DTO or CLI arg.
 
 use crate::secure_state::{
-    read_private_file_bounded, read_private_seed_file, SecureStateError, SecureStateStore,
+    missing_in_private_parent, read_private_file_bounded, read_private_seed_file,
+    SecureStateError, SecureStateStore,
 };
 use ed25519_dalek::{pkcs8::DecodePrivateKey, SigningKey};
 use peerwork_core::crypto::{actor_id, base64url, decode_base64url, key_id};
@@ -31,6 +32,22 @@ pub enum KernelIdentityError {
     InvalidSeedSource,
     #[error("legacy Ed25519 PKCS#8 PEM identity source is invalid")]
     InvalidPemSource,
+}
+
+impl KernelIdentityError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::NotFound => "IDENTITY_MISSING",
+            _ => "IDENTITY_STATE",
+        }
+    }
+
+    pub fn actionable_message(&self) -> String {
+        match self {
+            Self::NotFound => "native identity is missing at this path; if it belongs to a legacy Owner profile, explicitly run identity import-legacy-owner-pem OWNER_CONFIG_JSON_FILE PROTECTED_PEM_FILE to import the already selected PEM into configured state_dir/identity.state. This read does not create identity state".to_owned(),
+            _ => self.to_string(),
+        }
+    }
 }
 
 pub struct KernelIdentity {
@@ -142,6 +159,15 @@ impl KernelIdentity {
     /// Open a previously created native identity. Old TypeScript identity
     /// files and malformed/changed bytes fail closed without rewriting them.
     pub fn open(path: &Path) -> Result<Self, KernelIdentityError> {
+        // Classify only an absent identity file, or its single absent parent
+        // directory, after validating the existing protected ancestor. This
+        // avoids creating a SecureStateStore lock file merely to report that
+        // the configured native identity has not been imported yet.
+        if missing_in_private_parent(path)
+            || path.parent().is_some_and(missing_in_private_parent)
+        {
+            return Err(KernelIdentityError::NotFound);
+        }
         let store = SecureStateStore::open(path)?;
         let wire = store
             .read_exact_secret()?
@@ -259,6 +285,42 @@ mod tests {
             Err(KernelIdentityError::Invalid)
         ));
         assert!(fs::metadata(path).unwrap().len() > 32);
+    }
+
+    #[test]
+    fn missing_identity_is_classified_without_creating_state_or_lock() {
+        let parent = protected_test_dir();
+        let direct = parent.path().join("missing.state");
+        assert!(matches!(KernelIdentity::open(&direct), Err(KernelIdentityError::NotFound)));
+        assert!(!direct.exists());
+        assert!(!direct.with_extension("state.lock").exists());
+
+        let missing_leaf = parent.path().join("native-state");
+        let configured = missing_leaf.join("identity.state");
+        assert!(matches!(KernelIdentity::open(&configured), Err(KernelIdentityError::NotFound)));
+        assert!(!missing_leaf.exists());
+        assert!(!configured.with_extension("state.lock").exists());
+
+        #[cfg(unix)] {
+            use std::os::unix::fs::PermissionsExt;
+            let unsafe_parent = parent.path().join("unsafe");
+            fs::create_dir(&unsafe_parent).unwrap();
+            fs::set_permissions(&unsafe_parent, fs::Permissions::from_mode(0o755)).unwrap();
+            let unsafe_identity = unsafe_parent.join("identity.state");
+            assert!(matches!(KernelIdentity::open(&unsafe_identity),
+                Err(KernelIdentityError::Store(SecureStateError::Protection))));
+            assert!(!unsafe_identity.exists());
+            assert!(!unsafe_identity.with_extension("state.lock").exists());
+
+            let target = parent.path().join("target");
+            fs::create_dir(&target).unwrap();
+            let symlink_parent = parent.path().join("linked");
+            std::os::unix::fs::symlink(&target, &symlink_parent).unwrap();
+            let linked_identity = symlink_parent.join("identity.state");
+            assert!(matches!(KernelIdentity::open(&linked_identity),
+                Err(KernelIdentityError::Store(SecureStateError::Protection))));
+            assert!(!target.join("identity.state").exists());
+        }
     }
 
     #[test]
