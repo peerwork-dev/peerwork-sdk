@@ -124,8 +124,9 @@ def validate_final(root,target,directory,payload,asset_names):
         notices.wheel(root,core_wheel);notices.platform(root,target,core_platform)
 
 
-def stage(root: Path,target: str,cli: Path,wheel: Path,node_root: Path,node_platform: Path,metadata: dict,output: Path):
+def stage(root: Path,target: str,cli: Path,wheel: Path,node_root: Path,node_platform: Path,metadata: dict,output: Path,input_source_commit: str):
     identity=check(root);revision,epoch=source(root)
+    if not re.fullmatch('[0-9a-f]{40}',input_source_commit):raise ReleaseError('exact compiled input source commit required')
     if output.exists():raise ReleaseError('release output must be fresh')
     original=inspect(root,target,cli,wheel,node_root,node_platform)
     notices.platform(root,target,node_platform);notices.wheel(root,wheel)
@@ -145,7 +146,7 @@ def stage(root: Path,target: str,cli: Path,wheel: Path,node_root: Path,node_plat
     # Compiled inputs are never modified by metadata/license repacking.
     if next(data for name,data in wheel_members(output/wheel.name).items() if name.endswith(('.so','.pyd')) and name.startswith('peerwork/'))!=next(data for name,data in wheel_members(wheel).items() if name.endswith(('.so','.pyd')) and name.startswith('peerwork/')) or tar_members(output/node_platform.name)['package/index.node']!=tar_members(node_platform)['package/index.node']:raise ReleaseError('metadata repacking changed compiled bytes')
     validate_final(root,target,output,payload,names)
-    manifest=dict(version=identity['version'],target=target,source_commit=revision,source_date_epoch=epoch,unsigned=True,scope='builder-selected artifacts; CI provenance and platform execution are separate gates',original_inputs=original['files'],package_assets=names,assets=inventory(output))
+    manifest=dict(version=identity['version'],target=target,source_commit=revision,input_source_commit=input_source_commit,release_eligible=input_source_commit==revision,source_date_epoch=epoch,unsigned=True,scope='declared input source and packaging source association; source agreement is necessary, verified CI build provenance and platform execution are separate gates',original_inputs=original['files'],package_assets=names,assets=inventory(output))
     (output/'release.json').write_bytes(wire(manifest))
     rows=inventory(output);(output/'SHA256SUMS').write_text(''.join(value['sha256']+'  '+name+'\n' for name,value in sorted(rows.items())))
     return manifest
@@ -154,8 +155,9 @@ def stage(root: Path,target: str,cli: Path,wheel: Path,node_root: Path,node_plat
 def verify(directory: Path,root: Path):
     manifest=json.loads((directory/'release.json').read_text())
     revision,epoch=source(root)
-    keys={'version','target','source_commit','source_date_epoch','unsigned','scope','original_inputs','package_assets','assets'}
+    keys={'version','target','source_commit','input_source_commit','release_eligible','source_date_epoch','unsigned','scope','original_inputs','package_assets','assets'}
     if set(manifest)!=keys or manifest.get('target') not in TARGETS or manifest.get('source_commit')!=revision or manifest.get('source_date_epoch')!=epoch or manifest.get('version')!=check(root)['version'] or manifest.get('unsigned') is not True:raise ReleaseError('invalid release identity')
+    if not isinstance(manifest['input_source_commit'],str) or not re.fullmatch('[0-9a-f]{40}',manifest['input_source_commit']) or manifest['release_eligible'] is not (manifest['input_source_commit']==revision):raise ReleaseError('invalid compiled source agreement')
     expected=manifest['assets']
     actual=inventory(directory)
     if set(actual)!=set(expected)|{'release.json','SHA256SUMS'}:raise ReleaseError('release file closure mismatch')
@@ -191,6 +193,7 @@ def assemble(root: Path,bundles: Path,output: Path,tag: str):
     for target in TARGETS:
         manifest=verify(bundles/target,root)
         if manifest['target']!=target:raise ReleaseError('bundle directory/target disagreement')
+        if not manifest['release_eligible']:raise ReleaseError('compiled input source differs from selected release source')
         manifests[target]=manifest
     wrappers={sha(bundles/target/manifest['package_assets'][2]) for target,manifest in manifests.items()}
     if len(wrappers)!=1:raise ReleaseError('root npm wrapper differs across target builders')
@@ -217,11 +220,12 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__);commands=parser.add_subparsers(dest='command',required=True)
     command=commands.add_parser('stage');command.add_argument('--root',type=Path,default=Path(__file__).resolve().parents[2]);command.add_argument('--target',required=True)
     for name in ['cli','wheel','node-root','node-platform','metadata','output']:command.add_argument('--'+name,type=Path,required=True)
+    command.add_argument('--input-source-commit',required=True)
     command=commands.add_parser('verify');command.add_argument('directory',type=Path);command.add_argument('--root',type=Path,default=Path(__file__).resolve().parents[2])
     command=commands.add_parser('assemble');command.add_argument('--root',type=Path,default=Path(__file__).resolve().parents[2]);command.add_argument('--bundles',type=Path,required=True);command.add_argument('--output',type=Path,required=True);command.add_argument('--tag',required=True)
     args=parser.parse_args()
     try:
-        result=assemble(args.root,args.bundles,args.output,args.tag) if args.command=='assemble' else verify(args.directory,args.root) if args.command=='verify' else stage(args.root,args.target,args.cli,args.wheel,args.node_root,args.node_platform,json.loads(args.metadata.read_text()),args.output)
+        result=assemble(args.root,args.bundles,args.output,args.tag) if args.command=='assemble' else verify(args.directory,args.root) if args.command=='verify' else stage(args.root,args.target,args.cli,args.wheel,args.node_root,args.node_platform,json.loads(args.metadata.read_text()),args.output,args.input_source_commit)
     except (ReleaseError,KeyError,ValueError) as error:parser.exit(2,'release stage refused: '+str(error)+'\n')
     print(json.dumps(dict(target=result.get('target'),source_commit=result['source_commit'],version=result['version'],assets=len(result['assets']),unsigned=result['unsigned']),sort_keys=True))
 if __name__=='__main__':main()

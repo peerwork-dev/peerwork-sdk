@@ -18,6 +18,7 @@ sys.path.insert(0,str(ROOT/'tools/release'))
 import assets,stage,version
 COHORT=Path(sys.argv.pop(1))
 METADATA=Path(sys.argv.pop(1))
+INPUT_SOURCE='c5e7a3d8e59ff913da545db2c82e6969646fbe1a'
 
 class StageGuards(unittest.TestCase):
     @classmethod
@@ -31,7 +32,7 @@ class StageGuards(unittest.TestCase):
         cls.platform=source/'dist/npm/peerwork-agent-sdk-linux-x64-gnu-0.0.1.tgz'
         cls.metadata=json.loads(METADATA.read_text())
         cls.bundle=cls.work/'first'
-        cls.manifest=stage.stage(ROOT,'linux-x64-gnu',cls.cli,cls.wheel,cls.wrapper,cls.platform,cls.metadata,cls.bundle)
+        cls.manifest=stage.stage(ROOT,'linux-x64-gnu',cls.cli,cls.wheel,cls.wrapper,cls.platform,cls.metadata,cls.bundle,INPUT_SOURCE)
     def copy(self):
         temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup)
         destination=Path(temporary.name)/'bundle';shutil.copytree(self.bundle,destination);return destination
@@ -41,13 +42,13 @@ class StageGuards(unittest.TestCase):
         (directory/'release.json').write_bytes(assets.wire(manifest))
         (directory/'SHA256SUMS').write_text(''.join(value['sha256']+'  '+name+'\n' for name,value in sorted(assets.inventory(directory).items()) if name!='SHA256SUMS'))
     def test_exact_source_bundle_and_all_compiled_bytes_preserved(self):
-        result=stage.verify(self.bundle,ROOT);self.assertEqual(result['target'],'linux-x64-gnu');self.assertEqual(result['unsigned'],True)
+        result=stage.verify(self.bundle,ROOT);self.assertEqual(result['target'],'linux-x64-gnu');self.assertEqual(result['unsigned'],True);self.assertEqual(result['input_source_commit'],INPUT_SOURCE);self.assertFalse(result['release_eligible'])
         for name,data in assets.wheel_members(self.wheel).items():
             if name.endswith(('.so','.pyd')):self.assertEqual(assets.wheel_members(self.bundle/self.wheel.name)[name],data)
         self.assertEqual(assets.tar_members(self.bundle/self.platform.name)['package/index.node'],assets.tar_members(self.platform)['package/index.node'])
         self.assertEqual(assets.tar_members(self.bundle/result['package_assets'][3])['peerwork'],self.cli.read_bytes())
     def test_independent_repacking_is_exact_without_native_build_claim(self):
-        second=self.work/'second';stage.stage(ROOT,'linux-x64-gnu',self.cli,self.wheel,self.wrapper,self.platform,self.metadata,second)
+        second=self.work/'second';stage.stage(ROOT,'linux-x64-gnu',self.cli,self.wheel,self.wrapper,self.platform,self.metadata,second,INPUT_SOURCE)
         self.assertEqual(assets.compare(self.bundle,second)['files'],8)
     def test_checksum_and_extra_file_refuse(self):
         directory=self.copy();(directory/'sbom.spdx.json').write_bytes(b'changed')
@@ -77,7 +78,10 @@ class StageGuards(unittest.TestCase):
         incomplete=self.work/'incomplete';incomplete.mkdir();shutil.copytree(self.bundle,incomplete/'linux-x64-gnu')
         with self.assertRaisesRegex(version.ReleaseError,'seven-target'):stage.assemble(ROOT,incomplete,self.work/'rejected','v0.0.1')
         self.assertFalse((self.work/'rejected').exists())
+    def test_caller_cannot_upgrade_mismatched_source_eligibility(self):
+        directory=self.copy();manifest=json.loads((directory/'release.json').read_text());manifest['release_eligible']=True;(directory/'release.json').write_bytes(assets.wire(manifest));self.reseal(directory)
+        with self.assertRaisesRegex(version.ReleaseError,'compiled source agreement'):stage.verify(directory,ROOT)
     def test_existing_output_and_wrong_tag_refuse(self):
-        with self.assertRaisesRegex(version.ReleaseError,'fresh'):stage.stage(ROOT,'linux-x64-gnu',self.cli,self.wheel,self.wrapper,self.platform,self.metadata,self.bundle)
+        with self.assertRaisesRegex(version.ReleaseError,'fresh'):stage.stage(ROOT,'linux-x64-gnu',self.cli,self.wheel,self.wrapper,self.platform,self.metadata,self.bundle,INPUT_SOURCE)
         with self.assertRaisesRegex(version.ReleaseError,'tag'):stage.assemble(ROOT,self.work,self.work/'wrong-tag','v0.0.2')
 if __name__=='__main__':unittest.main()
