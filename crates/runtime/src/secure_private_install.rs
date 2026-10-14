@@ -25,6 +25,7 @@ use peerwork_core::{
     },
     public_direct_install::plan_public_install_snapshot,
     replayed_secure_journal::StructureStatus,
+    secure_keyring::SecretKeyring,
     wire_json::{canonical_wire_value, parse_wire_json_bounded, WireValue},
 };
 use rand_core::{OsRng, RngCore};
@@ -807,9 +808,34 @@ pub struct PrivatePackageInstallProgress {
     pub commit_hash: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Input from a fully proved, durable Owner attachment. The caller saves this
+/// only after PREPARED and rechecks the selected old packet and source plan.
+/// It grants no ordinary install authority by itself.
+pub(crate) struct ImportedHistoricalDirectBegin {
+    pub attach_id: String,
+    pub command_id: String,
+    pub instance_id: String,
+    pub entrypoint: String,
+    pub grants_json: String,
+    pub issued_at_ms: u64,
+    pub request_wire: Vec<u8>,
+    pub commit_hash: String,
+    pub source_policy_hash: String,
+    pub policy_hash: String,
+    pub snapshot_json: String,
+    pub protocol_digest: String,
+    pub material_wire: Vec<u8>,
+    pub bindings_json: String,
+    pub source_checkpoint_json: String,
+    pub root_package_digest: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct InstallRow {
+    /// Attach-imported BEGINs are never ordinary mutable install intents.
+    #[serde(default)]
+    import_attach_id: Option<String>,
     #[serde(default)]
     source_kind: Option<InstallSourceKind>,
     #[serde(default)]
@@ -838,7 +864,7 @@ enum InstallSourceKind {
     Staged,
     Direct,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct DirectInstallSource {
     material_b64: String,
@@ -868,7 +894,7 @@ impl InstallRow {
         }
     }
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct InstallStep {
     command_id: String,
@@ -878,7 +904,7 @@ struct InstallStep {
     action_id: String,
     offset: usize,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct AcceptedInstall {
     sequence: u64,
@@ -923,7 +949,8 @@ impl InstallDocument {
             || doc
                 .rows
                 .iter()
-                .any(|(id, row)| !token(id) || row.source_kind().is_err())
+                .any(|(id, row)| !token(id) || row.source_kind().is_err()
+                    || row.import_attach_id.as_deref().is_some_and(|id| !token(id)))
         {
             return Err(PrivatePackageInstallError::Identity);
         }
@@ -1213,6 +1240,94 @@ impl SecurePrivatePackageInstall {
         })
     }
 
+    /// Attach-tagged BEGINs pin their historical ACTIVE predecessor from the
+    /// complete current signed replay. No ordinary profile floor is advanced
+    /// while the journal is SEEDING, and no caller-supplied checkpoint alone
+    /// can authorize a retry or a newly signed PAGE/END.
+    fn with_imported_install_replay<T, F>(
+        &self,
+        begin_id: &str,
+        attach_id: &str,
+        cancel: &CancellationToken,
+        consume: F,
+    ) -> Result<T, PrivatePackageInstallError>
+    where
+        F: FnOnce(&TransportReplayedJournal, &TransportReplayedJournal)
+            -> Result<T, PrivatePackageInstallError>,
+    {
+        let identity = KernelIdentity::open(&self.config.identity_path)
+            .map_err(|_| PrivatePackageInstallError::Identity)?;
+        let store = SecureStateStore::open(
+            &self.config.state_dir.join("private-install-operations.state"),
+        )?;
+        let doc = InstallDocument::open(
+            &store, &self.config, identity.actor_id(), identity.key_id(),
+        )?;
+        let row = doc.rows.get(begin_id).ok_or(PrivatePackageInstallError::Input)?;
+        if row.import_attach_id.as_deref() != Some(attach_id)
+            || row.source_kind()? != InstallSourceKind::Direct
+        { return Err(PrivatePackageInstallError::Plan); }
+        let source = row.direct_source.as_ref().ok_or(PrivatePackageInstallError::Plan)?;
+        let source_checkpoint = source.source_checkpoint_json.clone();
+        drop(doc);
+        drop(store);
+        let lifecycle = SecureLifecycle::open(
+            &self.config.state_dir.join("lifecycle.state"), &self.config.origin,
+            identity.actor_id(), &self.config.workspace_id,
+            identity.actor_id(), identity.key_id(),
+        ).map_err(|_| PrivatePackageInstallError::Identity)?;
+        let ring_wire = lifecycle.active_keyring_without_pending()
+            .ok_or(PrivatePackageInstallError::Identity)?
+            .canonical_wire().map_err(|_| PrivatePackageInstallError::Identity)?;
+        let ring = SecretKeyring::parse_wire(&ring_wire)
+            .map_err(|_| PrivatePackageInstallError::Identity)?;
+        // The fresh replay reopens lifecycle.state. Keep an owned protected
+        // ring and release this nonblocking store lock before that read.
+        drop(lifecycle);
+        let access = SecureReadAccess::new(SecureReadConfig {
+            origin: self.config.origin.clone(),
+            kernel_journal_path: self.config.state_dir.join("kernel.sqlite"),
+            read_state_path: self.config.state_dir.join("private-install-imported-read.state"),
+            lifecycle_path: self.config.state_dir.join("lifecycle.state"),
+            identity_path: self.config.identity_path.clone(),
+            workspace_id: self.config.workspace_id.clone(),
+            authority: self.config.authority.clone()
+                .ok_or(PrivatePackageInstallError::Identity)?,
+            owner_actor_id: identity.actor_id().to_owned(),
+            owner_key_id: identity.key_id().to_owned(),
+            required_features: self.config.required_features.clone(),
+            allow_loopback_http: self.config.allow_loopback_http,
+            max_replay_artifact_bytes: self.config.max_replay_artifact_bytes,
+        });
+        let fresh = access.replay_checked_attach_generation(cancel)?;
+        if fresh.replay().owner_actor_id() != identity.actor_id()
+            || fresh.replay().owner_signing_key() != identity.key_id()
+        { return Err(PrivatePackageInstallError::Identity); }
+        let current_policy = fresh.signed_policy_by_hash(fresh.replay().policy_hash())
+            .ok_or(PrivatePackageInstallError::Plan)?;
+        let current = parse_wire_json_bounded(current_policy, 64, 196_608)
+            .map_err(|_| PrivatePackageInstallError::Plan)?;
+        let payload = current.get("payload").ok_or(PrivatePackageInstallError::Plan)?;
+        let current_epoch = number(payload, "epoch")?;
+        let owner_current = matches!(payload.get("members"), Some(WireValue::Array(members))
+            if members.iter().any(|member| {
+                member.get("actor_id").and_then(WireValue::as_string).as_deref()
+                    == Some(identity.actor_id())
+                    && member.get("role").and_then(WireValue::as_string).as_deref()
+                        == Some("OWNER")
+                    && member.get("certificate").and_then(|cert| cert.get("payload"))
+                        .and_then(|cert| cert.get("signing_key"))
+                        .and_then(WireValue::as_string).as_deref() == Some(identity.key_id())
+            }));
+        if !owner_current || payload.get("visibility")
+            .and_then(WireValue::as_string).as_deref() != Some("PRIVATE")
+            || ring.epochs().last() != Some(current_epoch)
+        { return Err(PrivatePackageInstallError::Plan); }
+        let prior = fresh.authenticated_active_prefix(source_checkpoint.as_bytes(), &ring)
+            .map_err(|_| PrivatePackageInstallError::Plan)?;
+        consume(&prior, &fresh)
+    }
+
     /// Discover protected generated BEGIN IDs without a network request.
     /// A row is an intent, never evidence that installation was accepted.
     pub fn installs_json(&self) -> Result<String, PrivatePackageInstallError> {
@@ -1237,6 +1352,7 @@ impl SecurePrivatePackageInstall {
         let rows: Result<Vec<_>, PrivatePackageInstallError> = doc
             .rows
             .iter()
+            .filter(|(_, row)| row.import_attach_id.is_none())
             .map(|(id, row)| {
                 let kind = row.source_kind()?;
                 let mut item = serde_json::json!({
@@ -1255,6 +1371,87 @@ impl SecurePrivatePackageInstall {
             .collect();
         let rows = rows?;
         serde_json::to_string(&rows).map_err(|_| PrivatePackageInstallError::Encoding)
+    }
+
+    /// Link one exact historical direct BEGIN to a previously durable
+    /// attachment. This is an idempotent local write; it never submits the
+    /// saved request or makes the imported row visible to ordinary clients.
+    pub(crate) fn save_imported_direct_begin_row_for_attach(
+        &self,
+        imported: ImportedHistoricalDirectBegin,
+    ) -> Result<(), PrivatePackageInstallError> {
+        if !token(&imported.attach_id) || !token(&imported.command_id)
+            || !token(&imported.instance_id) || imported.entrypoint.is_empty()
+            || imported.entrypoint.len() > 256
+            || imported.request_wire.is_empty() || imported.request_wire.len() > 220_000
+            || imported.material_wire.is_empty() || imported.material_wire.len() > 8 * 1024 * 1024
+            || imported.bindings_json.len() > 2 * 1024 * 1024
+            || imported.grants_json.len() > 2 * 1024 * 1024
+            || imported.snapshot_json.len() > 8192
+            || imported.source_checkpoint_json.len() > 8192
+            || !digest(&imported.commit_hash) || !digest(&imported.source_policy_hash)
+            || !digest(&imported.policy_hash)
+            || !digest(&imported.protocol_digest) || !digest(&imported.root_package_digest)
+        { return Err(PrivatePackageInstallError::Input); }
+        let checkpoint = parse_wire_json_bounded(
+            imported.source_checkpoint_json.as_bytes(), 32, 8192,
+        ).map_err(|_| PrivatePackageInstallError::Input)?;
+        if scalar(&checkpoint, "policy_hash")? != imported.source_policy_hash {
+            return Err(PrivatePackageInstallError::Plan);
+        }
+        let request = parse_wire_json_bounded(&imported.request_wire, 64, 220_000)
+            .map_err(|_| PrivatePackageInstallError::Input)?;
+        let commit = request.get("commit").ok_or(PrivatePackageInstallError::Input)?;
+        let payload = commit.get("payload").ok_or(PrivatePackageInstallError::Input)?;
+        let commit_wire = canonical_wire_value(commit, CanonicalPath::SecureArtifact)
+            .map_err(|_| PrivatePackageInstallError::Input)?;
+        if request.object_len() != Some(2)
+            || request.get("policy_update").is_none()
+            || scalar(payload, "command_id")? != imported.command_id
+            || scalar(payload, "action_id")? != "secure.structure.begin"
+            || scalar(payload, "workspace_id")? != self.config.workspace_id
+            || sha256_hex(commit_wire.as_bytes()) != imported.commit_hash
+        { return Err(PrivatePackageInstallError::Plan); }
+        let identity = KernelIdentity::open(&self.config.identity_path)
+            .map_err(|_| PrivatePackageInstallError::Identity)?;
+        if self.config.owner_actor_id.as_deref() != Some(identity.actor_id())
+            || self.config.owner_key_id.as_deref() != Some(identity.key_id())
+            || scalar(payload, "actor_id")? != identity.actor_id()
+            || scalar(payload, "signing_key")? != identity.key_id()
+        { return Err(PrivatePackageInstallError::Identity); }
+        let row = InstallRow {
+            import_attach_id: Some(imported.attach_id),
+            source_kind: Some(InstallSourceKind::Direct), stage_id: None,
+            direct_source: Some(DirectInstallSource {
+                material_b64: base64url(&imported.material_wire),
+                bindings_json: Some(imported.bindings_json),
+                source_checkpoint_json: imported.source_checkpoint_json,
+                root_package_digest: imported.root_package_digest,
+            }),
+            instance_id: imported.instance_id, entrypoint: imported.entrypoint,
+            grants_json: imported.grants_json, disclose_json: None,
+            issued_at_ms: imported.issued_at_ms,
+            request_b64: base64url(&imported.request_wire),
+            commit_hash: imported.commit_hash, policy_hash: imported.policy_hash,
+            snapshot_json: imported.snapshot_json,
+            protocol_digest: imported.protocol_digest,
+            steps: Vec::new(), accepted: None,
+        };
+        let store = SecureStateStore::open(
+            &self.config.state_dir.join("private-install-operations.state"),
+        )?;
+        let mut doc = InstallDocument::open(
+            &store, &self.config, identity.actor_id(), identity.key_id(),
+        )?;
+        match doc.rows.get(&imported.command_id) {
+            Some(existing) if existing == &row => Ok(()),
+            Some(_) => Err(PrivatePackageInstallError::Plan),
+            None if doc.rows.len() >= 16 => Err(PrivatePackageInstallError::Plan),
+            None => {
+                doc.rows.insert(imported.command_id, row);
+                doc.save(&store)
+            }
+        }
     }
 
     pub fn submit_begin_json(
@@ -1421,6 +1618,7 @@ impl SecurePrivatePackageInstall {
                 )
                 .map_err(|_| PrivatePackageInstallError::Plan)?;
                 let row = InstallRow {
+                    import_attach_id: None,
                     source_kind: Some(InstallSourceKind::Staged),
                     stage_id: Some(input.stage_id.clone()),
                     direct_source: None,
@@ -1628,6 +1826,7 @@ impl SecurePrivatePackageInstall {
                     canonical_wire_value(prepared.snapshot(), CanonicalPath::SecureArtifact)
                         .map_err(|_| PrivatePackageInstallError::Plan)?;
                 let row = InstallRow {
+                    import_attach_id: None,
                     source_kind: Some(InstallSourceKind::Direct),
                     stage_id: None,
                     direct_source: Some(DirectInstallSource {
@@ -1729,10 +1928,32 @@ impl SecurePrivatePackageInstall {
         begin_id: &str,
         cancel: &CancellationToken,
     ) -> Result<String, PrivatePackageInstallError> {
+        self.continue_install_for_attach(begin_id, None, cancel)
+    }
+
+    /// Only the Owner attach recovery path may continue an imported BEGIN.
+    /// Its caller must hold the attach recovery lock and reprove the protected
+    /// selection before entering the producer.
+    pub(crate) fn continue_imported_install_json_with_cancel(
+        &self,
+        begin_id: &str,
+        attach_id: &str,
+        cancel: &CancellationToken,
+    ) -> Result<String, PrivatePackageInstallError> {
+        if !token(attach_id) { return Err(PrivatePackageInstallError::Input); }
+        self.continue_install_for_attach(begin_id, Some(attach_id), cancel)
+    }
+
+    fn continue_install_for_attach(
+        &self,
+        begin_id: &str,
+        expected_import_attach_id: Option<&str>,
+        cancel: &CancellationToken,
+    ) -> Result<String, PrivatePackageInstallError> {
         if !token(begin_id) {
             return Err(PrivatePackageInstallError::Input);
         }
-        let result = self.with_install_replay(cancel, |prior, fresh| {
+        let consume = |prior: &TransportReplayedJournal, fresh: &TransportReplayedJournal| {
             let identity = KernelIdentity::open(&self.config.identity_path)
                 .map_err(|_| PrivatePackageInstallError::Identity)?;
             if identity.actor_id() != prior.replay().owner_actor_id()
@@ -1757,6 +1978,9 @@ impl SecurePrivatePackageInstall {
                 .get(begin_id)
                 .cloned()
                 .ok_or(PrivatePackageInstallError::Input)?;
+            if row.import_attach_id.as_deref() != expected_import_attach_id {
+                return Err(PrivatePackageInstallError::Plan);
+            }
             if let Some(accepted) = &row.accepted {
                 if !prior.replay().contains_checkpoint(
                     accepted.sequence,
@@ -2211,7 +2435,12 @@ impl SecurePrivatePackageInstall {
                 instance_id: row.instance_id,
                 commit_hash: signed.commit_hash().into(),
             })
-        })?;
+        };
+        let result = if let Some(attach_id) = expected_import_attach_id {
+            self.with_imported_install_replay(begin_id, attach_id, cancel, consume)?
+        } else {
+            self.with_install_replay(cancel, consume)?
+        };
         serde_json::to_string(&result).map_err(|_| PrivatePackageInstallError::Encoding)
     }
 
@@ -2961,6 +3190,7 @@ mod tests {
         let store = SecureStateStore::open(&state_dir.join("private-install-operations.state")).unwrap();
         let mut doc = InstallDocument::open(&store, &config, identity.actor_id(), identity.key_id()).unwrap();
         let row = |kind: InstallSourceKind| InstallRow {
+            import_attach_id: None,
             source_kind: Some(kind),
             stage_id: (kind == InstallSourceKind::Staged).then(|| "s".repeat(43)),
             direct_source: (kind == InstallSourceKind::Direct).then(|| DirectInstallSource {

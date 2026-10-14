@@ -281,6 +281,45 @@ impl SecureLifecycle {
         old_head: Option<&str>,
         old_policy_hash: &str,
     ) -> Result<KeyringStatus, SecureLifecycleError> {
+        self.activate_verified_historical_owner_inner(
+            imported, source, old_sequence, old_head, old_policy_hash, None,
+        )
+    }
+
+    /// The attachment caller has separately reverified the exact saved BEGIN
+    /// signature and its signed acceptance. SEEDING may be read only through
+    /// the restricted imported-install attachment until signed END completes.
+    pub(crate) fn activate_verified_historical_owner_pending_begin(
+        &mut self,
+        imported: &SecretKeyring,
+        source: &TransportReplayedJournal,
+        old_sequence: u64,
+        old_head: Option<&str>,
+        old_policy_hash: &str,
+        begin_commit_hash: &str,
+        begin_policy_hash: &str,
+    ) -> Result<KeyringStatus, SecureLifecycleError> {
+        self.activate_verified_historical_owner_inner(
+            imported, source, old_sequence, old_head, old_policy_hash,
+            Some((begin_commit_hash, begin_policy_hash)),
+        )
+    }
+
+    fn activate_verified_historical_owner_inner(
+        &mut self,
+        imported: &SecretKeyring,
+        source: &TransportReplayedJournal,
+        old_sequence: u64,
+        old_head: Option<&str>,
+        old_policy_hash: &str,
+        accepted_begin: Option<(&str, &str)>,
+    ) -> Result<KeyringStatus, SecureLifecycleError> {
+        let seeding_allowed = accepted_begin.is_some_and(|(hash, policy_hash)| {
+            source.replay().structure_status() == StructureStatus::Seeding
+                && old_sequence.checked_add(1).is_some_and(|sequence| {
+                    source.replay().contains_checkpoint(sequence, Some(hash), policy_hash)
+                })
+        });
         if source.origin() != self.origin
             || source.source_actor_id() != self.actor_id
             || source.source_key_id() != self.owner_key_id
@@ -288,7 +327,8 @@ impl SecureLifecycle {
             || source.replay().workspace_id() != self.workspace_id
             || source.replay().owner_actor_id() != self.owner_actor_id
             || source.replay().owner_signing_key() != self.owner_key_id
-            || source.replay().structure_status() == StructureStatus::Seeding
+            || (source.replay().structure_status() == StructureStatus::Seeding
+                && !seeding_allowed)
             || !source
                 .replay()
                 .contains_checkpoint(old_sequence, old_head, old_policy_hash)

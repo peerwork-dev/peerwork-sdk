@@ -147,6 +147,73 @@ fn push_bounded(
 }
 
 impl TransportReplayedJournal {
+    /// Reconstruct an exact historical ACTIVE predecessor only from a complete
+    /// origin-bound replay that still contains its checkpoint. This remains a
+    /// private install proof context; it does not publish an older read floor.
+    pub(crate) fn authenticated_active_prefix(
+        &self,
+        checkpoint_wire: &[u8],
+        keyring: &SecretKeyring,
+    ) -> Result<Self, VerifiedReadError> {
+        let checkpoint = parse_wire_json_bounded(checkpoint_wire, 32, 8192)
+            .map_err(|_| VerifiedReadError::Content)?;
+        let canonical = canonical_wire_value(&checkpoint, Path::SecureArtifact)
+            .map_err(|_| VerifiedReadError::Content)?;
+        let sequence = checkpoint.get("sequence").and_then(WireValue::as_number)
+            .filter(|n| n.is_finite() && *n >= 1.0 && *n <= 9_007_199_254_740_991.0
+                && n.fract() == 0.0)
+            .ok_or(VerifiedReadError::Content)? as u64;
+        let head = checkpoint.get("head").and_then(WireValue::as_string)
+            .ok_or(VerifiedReadError::Content)?;
+        let policy_hash = checkpoint.get("policy_hash").and_then(WireValue::as_string)
+            .ok_or(VerifiedReadError::Content)?;
+        if checkpoint.get("workspace_id").and_then(WireValue::as_string).as_deref()
+                != Some(self.replay.workspace_id())
+            || checkpoint.get("owner_id").and_then(WireValue::as_string).as_deref()
+                != Some(self.replay.owner_actor_id())
+            || checkpoint.get("owner_key").and_then(WireValue::as_string).as_deref()
+                != Some(self.replay.owner_signing_key())
+            || !self.replay.contains_checkpoint(sequence, Some(&head), &policy_hash)
+        { return Err(VerifiedReadError::Content); }
+        let through = usize::try_from(sequence).map_err(|_| VerifiedReadError::Content)?;
+        let commits = self.signed_commit_wires.get(..through)
+            .ok_or(VerifiedReadError::Content)?.to_vec();
+        let mut policies = Vec::new();
+        for wire in &self.signed_policy_wires {
+            let signed = parse_wire_json_bounded(wire, 64, 196_608)
+                .map_err(|_| VerifiedReadError::Content)?;
+            let effective = signed.get("payload").and_then(|p| p.get("effective_sequence"))
+                .and_then(WireValue::as_number)
+                .filter(|n| n.is_finite() && *n >= 1.0 && n.fract() == 0.0)
+                .ok_or(VerifiedReadError::Content)? as u64;
+            if effective <= sequence { policies.push(wire.clone()); }
+        }
+        let ring_wire = keyring.canonical_wire().map_err(|_| VerifiedReadError::Content)?;
+        let policy_refs = policies.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        let commit_refs = commits.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        let replay = replay_secure_journal_exact(JournalReplayInput {
+            policy_wires: &policy_refs, commit_wires: &commit_refs,
+            checkpoint_wire: canonical.as_bytes(),
+            workspace_id: self.replay.workspace_id(),
+            owner_actor_id: self.replay.owner_actor_id(),
+            owner_signing_key: self.replay.owner_signing_key(),
+            final_sequence: sequence, final_head: Some(&head),
+            final_policy_hash: &policy_hash, keyring_wire: Some(&ring_wire),
+        })?;
+        if replay.structure_status() != StructureStatus::Active {
+            return Err(VerifiedReadError::NotActive);
+        }
+        Ok(Self {
+            origin: self.origin.clone(), authority: self.authority.clone(),
+            source_actor_id: self.source_actor_id.clone(),
+            source_key_id: self.source_key_id.clone(),
+            keyring_state: self.keyring_state,
+            checkpoint_canonical_json: canonical,
+            grant_keyring_sha256: self.grant_keyring_sha256.clone(),
+            signed_policy_wires: policies, signed_commit_wires: commits, replay,
+        })
+    }
+
     pub(crate) fn verified_read(&self) -> Result<VerifiedSecureRead<'_>, VerifiedReadError> {
         if self.keyring_state == Some(ReplayKeyringState::Pending)
             || self.replay.structure_status() == StructureStatus::Seeding
