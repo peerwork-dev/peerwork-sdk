@@ -2896,13 +2896,11 @@ mod tests {
 
     #[test]
     fn saved_begin_id_preflight_refuses_both_sources_with_protected_scope() {
-        let root = tempfile::tempdir().unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
-        }
+        let root = crate::test_support::protected_test_dir();
         let state_dir = root.path().join("state");
+        #[cfg(windows)]
+        crate::windows_fs::create_private_directory(&state_dir).unwrap();
+        #[cfg(not(windows))]
         fs::create_dir(&state_dir).unwrap();
         #[cfg(unix)]
         {
