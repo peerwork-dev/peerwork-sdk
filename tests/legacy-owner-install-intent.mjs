@@ -19,7 +19,8 @@ if (!origin || !sourceDir || !referenceRoot
     'direct-composition-end-applied-loss', 'direct-staged-package-begin-before-post',
     'direct-staged-package-end-applied-loss', 'direct-staged-package-page-before-post',
     'direct-staged-package-page-applied-loss', 'direct-staged-package-completed-end',
-    'direct-implicit-begin-before-post', 'direct-implicit-end-applied-loss'].includes(mode)) {
+    'direct-implicit-begin-before-post', 'direct-implicit-end-applied-loss',
+    'direct-object-begin-before-post', 'direct-object-end-applied-loss'].includes(mode)) {
   throw new Error('INSTALL_INTENT_TEST_INPUT');
 }
 mkdirSync(sourceDir, { recursive: true, mode: 0o700 });
@@ -48,19 +49,20 @@ try {
   const compositionOption = mode.startsWith('direct-composition-');
   const implicitOption = mode.startsWith('direct-implicit-');
   const stagedPackageOption = mode.startsWith('direct-staged-package-');
+  const objectSourceOption = mode.startsWith('direct-object-');
   let stagedPackage;
   let compiledMaterial;
   let installSource;
   const normalizedOptions = disclosureOption || emptyDisclosureOption || omittedGrants;
   let compositionMaterial;
-  const checkpointOption = mode.startsWith('direct-checkpoint-') || disclosureOption;
+  const checkpointOption = mode.startsWith('direct-checkpoint-') || disclosureOption || objectSourceOption;
   if (disclosureOption || emptyDisclosureOption || stagedPackageOption) {
     initial = await agent.enableFormatTwo(workspaceId);
     if (initial.policy.payload.protocol_format_ceiling !== 2
       || initial.structure?.state !== 'ACTIVE') throw new Error('INSTALL_DISCLOSURE_CEILING');
   }
   const retainedStep = /^direct-(page|end)-/.exec(mode.replace(
-    /^direct-(checkpoint|disclosure|empty-disclosure|no-grants|composition|staged-package|implicit)-/, 'direct-'))?.[1];
+    /^direct-(checkpoint|disclosure|empty-disclosure|no-grants|composition|staged-package|implicit|object)-/, 'direct-'))?.[1];
   if (retainedStep === 'page') {
     const wiki = initial.objects.find(row => row.kind === 'instances'
       && row.value.origin_entrypoint === 'wiki');
@@ -88,7 +90,9 @@ try {
     walk(directory);
     compositionMaterial = compositionOption || implicitOption
       ? await (await import('./legacy-owner-install-composition-material.mjs')).createLegacyComposedInstallMaterial(referenceRoot) : undefined;
-    const material = compositionMaterial ? compositionMaterial.material : disclosureOption || emptyDisclosureOption || stagedPackageOption
+    const material = objectSourceOption
+      ? await (await import('./legacy-owner-install-object-material.mjs')).createLegacyObjectInstallMaterial(referenceRoot)
+      : compositionMaterial ? compositionMaterial.material : disclosureOption || emptyDisclosureOption || stagedPackageOption
       ? await (await import('./legacy-owner-install-disclosure-material.mjs')).createLegacyReadableInstallMaterial(referenceRoot)
       : { v: 1, closure: createProtocolPackageClosure(
         parseProtocolPackage({ format: PROTOCOL_PACKAGE_FORMAT, files }), []), bindings: {} };
@@ -278,7 +282,8 @@ try {
       if (!stopped && requestOptions?.method === 'POST'
         && path === `/api/workspace/v1/secure/workspaces/${workspaceId}/commits`
         && (!retainedStep || JSON.parse(requestOptions.body).commit.payload.action_id
-          === `secure.structure.${retainedStep}`)) {
+          === `secure.structure.${retainedStep}`)
+        && (!objectSourceOption || JSON.parse(requestOptions.body).commit.payload.action_id === 'secure.structure.begin')) {
         stopped = true;
         throw new Error('TEST_STOP_BEFORE_INSTALL_BEGIN_POST');
       }
@@ -339,13 +344,47 @@ try {
     throw new Error('INSTALL_INTENT_PENDING_BEGIN_MISMATCH');
   }
   const journal = await agent.journal(workspaceId);
+  let completedObjectSource;
+  let objectBeginPredecessor;
+  if (objectSourceOption) {
+    const { readProtocolObjectSource, normalizeProtocolObjectSourceProof } = await import(moduleUrl('workspace-protocol-object-source'));
+    const { verifyStagedProtocolObjectCheckpoint } = await import(moduleUrl('workspace-protocol-object-stage'));
+    const { verifiedJournalCheckpoint } = await import(moduleUrl('workspace-secure-client'));
+    const marker = agent.state.protocol_object_stage_intents?.[key];
+    if (!marker || marker.request_hash !== await secureHash(options) || marker.command_id !== undefined) {
+      throw new Error('INSTALL_OBJECT_MARKER');
+    }
+    completedObjectSource = normalizeProtocolObjectSourceProof(marker.proof);
+    const proof = completedObjectSource;
+    if (proof.parts.length < 2 || !secureEqual(proof.source, initial.checkpoint)
+      || proof.protocol_digest !== compiledMaterial.protocolDigest
+      || !secureEqual(marker.parts, journal.objects.filter(row => row.kind === 'protocol_object_part'
+        && row.value.source_id === proof.source_id).sort((a, b) => a.value.index - b.value.index))) {
+      throw new Error('INSTALL_OBJECT_COMPLETE_PARTS');
+    }
+    const logical = readProtocolObjectSource(proof, journal.objects);
+    if (!secureEqual(logical, { workspace_id: workspaceId, digest: compiledMaterial.protocolDigest,
+      manifest: compiledMaterial.manifest, resolved_manifest: compiledMaterial.manifest })) {
+      throw new Error('INSTALL_OBJECT_COMPILED_VALUE');
+    }
+    objectBeginPredecessor = verifyStagedProtocolObjectCheckpoint(journal, proof,
+      verifiedJournalCheckpoint(journal, proof.source.sequence + proof.parts.length));
+    if (selected?.[1].body.commit.payload.action_id === 'secure.structure.begin'
+      ? selected[1].body.commit.payload.previous !== objectBeginPredecessor.head
+        || selected[1].body.commit.payload.sequence !== objectBeginPredecessor.sequence + 1
+        || selected[1].body.policy_update.payload.previous_policy !== objectBeginPredecessor.policy_hash
+      : !journal.installations?.some(row => row.instance_id === instanceId
+        && secureEqual(row.object_source, proof) && secureEqual(row.source, objectBeginPredecessor))) {
+      throw new Error('INSTALL_OBJECT_BEGIN_SOURCE');
+    }
+  }
   if (stagedPackageOption && (selected?.[1].body?.commit?.payload?.action_id === 'secure.structure.begin'
     ? selected[1].body.commit.payload.previous !== installSource.head
       || selected[1].body.commit.payload.sequence !== installSource.sequence + 1
       || selected[1].body.policy_update.payload.previous_policy !== installSource.policy_hash
     : !journal.installations?.some(row => row.instance_id === instanceId
       && secureEqual(row.source, installSource)))) throw new Error('INSTALL_STAGED_PACKAGE_BEGIN_SOURCE');
-  if (checkpointOption && (selected?.[1].body?.commit?.payload?.action_id === 'secure.structure.begin'
+  if (checkpointOption && !objectSourceOption && (selected?.[1].body?.commit?.payload?.action_id === 'secure.structure.begin'
     ? selected[1].body.commit.payload.previous !== options.expected_checkpoint.head
       || selected[1].body.commit.payload.sequence !== options.expected_checkpoint.sequence + 1
       || selected[1].body.policy_update.payload.previous_policy !== options.expected_checkpoint.policy_hash
@@ -353,6 +392,7 @@ try {
       && secureEqual(row.source, options.expected_checkpoint)))) {
     throw new Error('INSTALL_INTENT_REVIEWED_CHECKPOINT_SOURCE');
   }
+  const effectiveBeginPredecessor = objectBeginPredecessor ?? installSource ?? initial.checkpoint;
   if (mode.endsWith('completed-end')) {
     if (!stopped || observedAction !== 'secure.structure.end'
       || journal.structure?.state !== 'ACTIVE'
@@ -363,8 +403,8 @@ try {
         && row.protocol_digest === resolved.digest && row.entrypoint === options.entrypoint)) {
       throw new Error('INSTALL_INTENT_SIGNED_COMPLETION_MISSING');
     }
-  } else if (!retainedStep && ((mode.endsWith('before-post') && (!stopped || journal.checkpoint.sequence !== (installSource ?? initial.checkpoint).sequence))
-    || (mode.endsWith('applied-loss') && journal.checkpoint.sequence !== initial.checkpoint.sequence + 1))) {
+  } else if (!retainedStep && ((mode.endsWith('before-post') && (!stopped || journal.checkpoint.sequence !== effectiveBeginPredecessor.sequence))
+    || (mode.endsWith('applied-loss') && journal.checkpoint.sequence !== effectiveBeginPredecessor.sequence + 1))) {
     throw new Error('INSTALL_INTENT_BEGIN_STATE_MISMATCH');
   }
   if (retainedStep) {
@@ -390,6 +430,9 @@ try {
     pending_commit_hash: selected ? await secureHash(selected[1].body.commit) : null,
     ...(checkpointOption ? { expected_checkpoint: options.expected_checkpoint,
       canonical_options_hash: await secureHash(options) } : {}),
+    ...(objectSourceOption ? { object_source: completedObjectSource,
+      begin_predecessor: objectBeginPredecessor, source_parts: completedObjectSource.parts.length,
+      completed_object_marker: true, compiler_equality: true } : {}),
     ...(stagedPackageOption ? { canonical_options_hash: await secureHash(options),
       expected_checkpoint: options.expected_checkpoint, package_source: stagedPackage.proof,
       begin_predecessor: installSource, source_parts: stagedPackage.proof.parts.length,

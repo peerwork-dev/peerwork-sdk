@@ -42,6 +42,54 @@ pub fn normalize_package_source_proof(proof: &WireValue) -> Result<WireValue, Pr
     Ok(proof.clone())
 }
 
+/// Candidate shape/content only; complete authenticated staging is separate.
+pub fn normalize_protocol_object_source_proof(proof: &WireValue) -> Result<WireValue, PrivateInstallError> {
+    crate::protocol_object_source::validate_object_source_proof(proof).map_err(|_| PrivateInstallError::Invalid)?;
+    Ok(proof.clone())
+}
+
+pub fn read_complete_protocol_object_source(proof: &WireValue, parts: &[WireValue]) -> Result<WireValue, PrivateInstallError> {
+    crate::protocol_object_source::read_protocol_object_source(proof, parts).map_err(|_| PrivateInstallError::Invalid)
+}
+
+/// The caller supplies the exact authenticated original BEGIN predecessor.
+/// Stage headers/PRIVATE authority have already been verified by signed replay;
+/// every selected operation/proof/part must occupy the complete final prefix.
+pub fn verify_completed_protocol_object_source(
+    proof: &WireValue, prior: &crate::replayed_secure_journal::ReplayedSecureJournal,
+) -> Result<WireValue, PrivateInstallError> {
+    let bad = || PrivateInstallError::Invalid;
+    normalize_protocol_object_source_proof(proof)?;
+    let source = proof.get("source").ok_or_else(bad)?;
+    let Some(WireValue::Array(parts)) = proof.get("parts") else { return Err(bad()); };
+    let base = number(source, "sequence")?;
+    if string(source, "workspace_id")? != prior.workspace_id()
+        || string(source, "owner_id")? != prior.owner_actor_id()
+        || string(source, "owner_key")? != prior.owner_signing_key()
+        || base.checked_add(parts.len() as u64) != Some(prior.sequence())
+        || string(source, "policy_hash")? != prior.policy_hash()
+        || !prior.contains_checkpoint(base, Some(&string(source, "head")?), prior.policy_hash()) {
+        return Err(bad());
+    }
+    let start = usize::try_from(base).map_err(|_| bad())?;
+    let operations = prior.operations().get(start..).ok_or_else(bad)?;
+    if operations.len() != parts.len() { return Err(bad()); }
+    for (index, (operation, descriptor)) in operations.iter().zip(parts).enumerate() {
+        let input = operation.get("input").ok_or_else(bad)?;
+        let stage = input.get("protocol_object_stage").ok_or_else(bad)?;
+        let Some(WireValue::Array(objects)) = operation.get("objects") else { return Err(bad()); };
+        if operation.object_len() != Some(4) || number(operation, "v")? != 1
+            || string(operation, "kind")? != "ADMIN" || input.object_len() != Some(1)
+            || stage.object_len() != Some(2) || number(stage, "part_index")? != index as u64
+            || canonical_wire_value(stage.get("proof").ok_or_else(bad)?, Path::SecureArtifact).map_err(|_| bad())?
+                != canonical_wire_value(proof, Path::SecureArtifact).map_err(|_| bad())?
+            || objects.len() != 1 || objects[0].get("id") != descriptor.get("id") {
+            return Err(bad());
+        }
+    }
+    read_complete_protocol_object_source(proof, prior.objects())
+}
+
 /// Reconstruct a complete package source from consecutive authenticated
 /// signed parts. The caller separately binds every part to an origin-bound
 /// replayed stage commit and the source checkpoint to that replay.
@@ -1260,6 +1308,30 @@ pub fn prepare_private_direct_install_begin_with_options(
     signing_key: &SigningKey,
     epoch_key: &[u8; 32],
 ) -> Result<PreparedPrivatePackageInstallBegin, PrivateInstallError> {
+    prepare_private_direct_install_begin_with_source(material_wire, bindings_wire, expected_root_package_digest, expected_protocol_digest,
+        current_checkpoint_wire, signed_policy_wire, prior_objects, grants_wire, disclose_wire,
+        instance_id, entrypoint, command_id, issued_at, signing_key, epoch_key, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_private_direct_install_begin_with_source(
+    material_wire: &[u8],
+    bindings_wire: &[u8],
+    expected_root_package_digest: &str,
+    expected_protocol_digest: &str,
+    current_checkpoint_wire: &[u8],
+    signed_policy_wire: &[u8],
+    prior_objects: &[WireValue],
+    grants_wire: &[u8],
+    disclose_wire: &[u8],
+    instance_id: &str,
+    entrypoint: &str,
+    command_id: &str,
+    issued_at: u64,
+    signing_key: &SigningKey,
+    epoch_key: &[u8; 32],
+    object_source: Option<&WireValue>,
+) -> Result<PreparedPrivatePackageInstallBegin, PrivateInstallError> {
     let bad = || PrivateInstallError::Invalid;
     if !token(instance_id)
         || !token(command_id)
@@ -1381,9 +1453,29 @@ pub fn prepare_private_direct_install_begin_with_options(
         .map_err(|_| bad())?
         .snapshot()
         .clone();
+    let mut wire_added = added.clone();
+    if let Some(proof) = object_source {
+        normalize_protocol_object_source_proof(proof)?;
+        if version != 3 || prior_protocol.is_some() { return Err(bad()); }
+        let source = proof.get("source").ok_or_else(bad)?;
+        let Some(WireValue::Array(parts)) = proof.get("parts") else { return Err(bad()); };
+        if string(source, "workspace_id")? != workspace || string(source, "owner_id")? != actor
+            || string(source, "owner_key")? != signer_key || string(source, "policy_hash")? != string(&current, "policy_hash")?
+            || number(source, "sequence")?.checked_add(parts.len() as u64) != Some(number(&current, "sequence")?)
+            || string(proof, "protocol_digest")? != expected_protocol_digest { return Err(bad()); }
+        let logical = read_complete_protocol_object_source(proof, prior_objects)?;
+        if canonical_wire_value(&logical, Path::SecureArtifact).map_err(|_| bad())?
+            != canonical_wire_value(added[0].get("value").ok_or_else(bad)?, Path::SecureArtifact).map_err(|_| bad())? {
+            return Err(bad());
+        }
+        replace(&mut wire_added[0], "value", obj(vec![("workspace_id", s(&workspace)),
+            ("digest", s(expected_protocol_digest)), ("object_source", proof.clone())]))?;
+        if canonical_wire_value(&wire_added[0], Path::SecureArtifact).map_err(|_| bad())?.len()
+            > crate::protocol_object_source::OBJECT_BYTES { return Err(PrivateInstallError::Resource); }
+    }
     let begin = build_direct_install_begin(
         &current,
-        &added,
+        &wire_added,
         instance_id,
         expected_protocol_digest,
         entrypoint,
@@ -1634,6 +1726,22 @@ pub fn verify_saved_private_direct_install_begin_with_options(
         signing_key,
         epoch_key,
     )?;
+    verify_saved_private_install_begin_against(saved_request_wire, expected, signing_key, epoch_key)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn verify_saved_private_direct_install_begin_with_object_source(
+    saved_request_wire: &[u8], material_wire: &[u8], bindings_wire: &[u8],
+    expected_root_package_digest: &str, expected_protocol_digest: &str,
+    current_checkpoint_wire: &[u8], signed_policy_wire: &[u8], prior_objects: &[WireValue],
+    grants_wire: &[u8], disclose_wire: &[u8], instance_id: &str, entrypoint: &str,
+    command_id: &str, issued_at: u64, signing_key: &SigningKey, epoch_key: &[u8; 32],
+    proof: &WireValue,
+) -> Result<PreparedPrivatePackageInstallBegin, PrivateInstallError> {
+    let expected = prepare_private_direct_install_begin_with_source(material_wire, bindings_wire,
+        expected_root_package_digest, expected_protocol_digest, current_checkpoint_wire,
+        signed_policy_wire, prior_objects, grants_wire, disclose_wire, instance_id, entrypoint,
+        command_id, issued_at, signing_key, epoch_key, Some(proof))?;
     verify_saved_private_install_begin_against(saved_request_wire, expected, signing_key, epoch_key)
 }
 

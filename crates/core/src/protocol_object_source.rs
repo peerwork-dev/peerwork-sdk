@@ -8,7 +8,7 @@ use crate::{
 const VALUE_BYTES: usize = 32 * 1024 * 1024;
 const PART_BYTES: usize = 64 * 1024;
 const PARTS: usize = 2048;
-const OBJECT_BYTES: usize = 98_304;
+pub(crate) const OBJECT_BYTES: usize = 98_304;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ObjectSourceError {
