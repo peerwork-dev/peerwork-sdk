@@ -1,6 +1,6 @@
 # Optional acquisition observations: MET-01 design
 
-Design only, based on SDK `3605a3c764f07f75ae86602ffbf3e0915ff2aeac`. No collector, SDK hook, service or external journey has been implemented/run. This package implements the existing REQ-METRICS-01 contract; it does not change signed workspace installation semantics or prescribe a participant workflow.
+Initial design based on SDK `3605a3c764f07f75ae86602ffbf3e0915ff2aeac`. The local native collector and bounded fixtures are now implemented; public facades and real HTTP/installed acceptance remain pending. No external journey has been run. This package implements the existing REQ-METRICS-01 contract; it does not change signed workspace installation semantics or prescribe a participant workflow.
 
 The full contract read is `/root/workdir/message/analysis/cmo-agent-first-20261010/ACQUISITION-METRICS.md`, definition2, SHA-256 `77e6b286d6341ac2168dfa786615a790a12c3d513a8beb87013d893eb91e546d`. Sources audit SHA-256 `d4e131bc3ea5db6b2dc4e220e1c2a595c2096d3c7c80a2e0320b85dd80868e5b`; existing scorecard at this observation `0c38702ffdd1e671352f6bb93b13228c2148cf21fdf07d0221b428dfbde1b2f0`. These files remain coordinator-owned and their prior synthetic attempts remain distinct.
 

@@ -4,6 +4,7 @@ pub use peerwork_core::version;
 pub use tokio_util::sync::CancellationToken as KernelCancellationToken;
 
 pub mod interrupts;
+pub mod acquisition;
 pub mod kernel_access;
 pub mod kernel_client;
 pub mod kernel_identity;
