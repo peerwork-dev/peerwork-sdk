@@ -2712,7 +2712,10 @@ impl SecureHistoricalOwnerAttach {
             })?;
         let mut verified = verify_pending_direct_install_begin(
             pending, &plan.options, &plan.material, ring, &replayed, &owner, &row.input,
-        )?;
+        ).map_err(|error| {
+            #[cfg(test)] eprintln!("direct-install-attach:packet-proof");
+            error
+        })?;
         if verified.commit_hash != plan.manifest.original_commit_hash
             || verified.imported.command_id != plan.manifest.command_id
             || verified.imported.instance_id != plan.manifest.instance_id
@@ -2763,7 +2766,27 @@ impl SecureHistoricalOwnerAttach {
             || (!verified.applied
                 && (replayed.replay().structure_status() != StructureStatus::Active
                     || replayed.replay().policy_hash() != row.source_policy_hash))
-        { return Err(HistoricalOwnerAttachError::SourceUnresolved); }
+        {
+            #[cfg(test)] {
+                if !owner_current { eprintln!("direct-install-attach:current-owner"); }
+                if current_epoch != plan.manifest.source_epoch { eprintln!("direct-install-attach:current-epoch"); }
+                if ring.epochs().last() != Some(current_epoch) { eprintln!("direct-install-attach:ring-epoch"); }
+                if payload.get("visibility").and_then(WireValue::as_string).as_deref() != Some("PRIVATE") {
+                    eprintln!("direct-install-attach:visibility");
+                }
+                if replayed.replay().sequence() != expected_sequence { eprintln!("direct-install-attach:sequence"); }
+                if verified.applied && replayed.replay().structure_status() != StructureStatus::Seeding {
+                    eprintln!("direct-install-attach:applied-structure");
+                }
+                if !verified.applied && replayed.replay().structure_status() != StructureStatus::Active {
+                    eprintln!("direct-install-attach:presend-structure");
+                }
+                if !verified.applied && replayed.replay().policy_hash() != row.source_policy_hash {
+                    eprintln!("direct-install-attach:presend-policy");
+                }
+            }
+            return Err(HistoricalOwnerAttachError::SourceUnresolved);
+        }
         let kernel_import = self.import_selected_kernel_source(row, &owner, cancel)?;
         verified.imported.attach_id = attach_id.to_owned();
         SecurePrivatePackageInstall::new(self.profile_config(&row.input))
