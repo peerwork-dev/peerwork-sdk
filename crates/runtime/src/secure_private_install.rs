@@ -838,6 +838,7 @@ pub(crate) struct ImportedHistoricalDirectBegin {
     pub source_checkpoint_json: String,
     pub root_package_digest: String,
     pub staged_source: Option<ImportedHistoricalCompletedPackageSource>,
+    pub object_source_json: Option<String>,
     pub steps: Vec<InstallStep>,
 }
 
@@ -883,6 +884,8 @@ struct DirectInstallSource {
     bindings_json: Option<String>,
     source_checkpoint_json: String,
     root_package_digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    object_source_json: Option<String>,
 }
 impl InstallRow {
     fn source_kind(&self) -> Result<InstallSourceKind, PrivatePackageInstallError> {
@@ -1404,6 +1407,8 @@ impl SecurePrivatePackageInstall {
         imported: ImportedHistoricalDirectBegin,
     ) -> Result<(), PrivatePackageInstallError> {
         if !token(&imported.attach_id) || !token(&imported.command_id)
+            || (imported.staged_source.is_some() && imported.object_source_json.is_some())
+            || imported.object_source_json.as_ref().is_some_and(|wire| wire.is_empty() || wire.len() > 220_000)
             || !token(&imported.instance_id) || imported.entrypoint.is_empty()
             || imported.entrypoint.len() > 256
             || imported.request_wire.is_empty() || imported.request_wire.len() > 220_000
@@ -1453,6 +1458,7 @@ impl SecurePrivatePackageInstall {
             (InstallSourceKind::Direct, None, Some(DirectInstallSource {
                 material_b64: base64url(&imported.material_wire), bindings_json: Some(imported.bindings_json),
                 source_checkpoint_json: imported.source_checkpoint_json, root_package_digest: imported.root_package_digest,
+                object_source_json: imported.object_source_json,
             }))
         };
         let row = InstallRow {
@@ -1863,6 +1869,7 @@ impl SecurePrivatePackageInstall {
                         bindings_json: Some(bindings_json.to_owned()),
                         source_checkpoint_json: source.checkpoint_canonical_json().to_owned(),
                         root_package_digest: input.expected_root_package_digest.clone(),
+                        object_source_json: None,
                     }),
                     instance_id: input.instance_id.clone(),
                     entrypoint: input.entrypoint.clone(),
@@ -2171,7 +2178,18 @@ impl SecurePrivatePackageInstall {
                         .direct_source
                         .as_ref()
                         .ok_or(PrivatePackageInstallError::Identity)?;
-                    verify_saved_private_direct_install_begin_with_options(
+                    if let Some(proof_json) = source.object_source_json.as_ref() {
+                        if row.import_attach_id.is_none() { return Err(PrivatePackageInstallError::Identity); }
+                        let proof = parse_wire_json_bounded(proof_json.as_bytes(), 64, 220_000).map_err(|_| PrivatePackageInstallError::Plan)?;
+                        peerwork_core::prepared_private_install::verify_completed_protocol_object_source(&proof, prior.replay())?;
+                        peerwork_core::prepared_private_install::verify_saved_private_direct_install_begin_with_object_source(
+                            &exact_begin, &material, source.bindings_json.as_deref().unwrap_or("{}").as_bytes(),
+                            &source.root_package_digest, &row.protocol_digest, source_checkpoint_json.as_bytes(),
+                            prior_policy, prior.replay().objects(), row.grants_json.as_bytes(),
+                            row.disclose_json.as_deref().unwrap_or("[]").as_bytes(), &row.instance_id,
+                            &row.entrypoint, begin_id, row.issued_at_ms, identity.signing_key(), key, &proof,
+                        )?
+                    } else { verify_saved_private_direct_install_begin_with_options(
                         &exact_begin,
                         &material,
                         source.bindings_json.as_deref().unwrap_or("{}").as_bytes(),
@@ -2188,7 +2206,7 @@ impl SecurePrivatePackageInstall {
                         row.issued_at_ms,
                         identity.signing_key(),
                         key,
-                    )?
+                    )? }
                 }
             };
             if checked.commit_hash() != row.commit_hash
@@ -3234,6 +3252,7 @@ mod tests {
             direct_source: (kind == InstallSourceKind::Direct).then(|| DirectInstallSource {
                 material_b64: "e30".into(), bindings_json: Some("{}".into()),
                 source_checkpoint_json: "{}".into(), root_package_digest: "d".repeat(64),
+                object_source_json: None,
             }),
             instance_id: "i".repeat(43), entrypoint: "readable".into(),
             grants_json: "[]".into(), disclose_json: Some("[]".into()),

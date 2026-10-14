@@ -174,6 +174,31 @@ fn validate_signed_object_stage(
     Ok(())
 }
 
+struct HydratedProtocolObject {
+    reference_index: usize,
+    proof: WireValue,
+}
+
+fn validate_replayed_object_size(
+    object: &WireValue, index: usize, source: Option<&HydratedProtocolObject>,
+) -> Result<(), ReplayError> {
+    let object_bytes = canonical_wire_value(object, Path::SecureArtifact).map_err(|_| ReplayError::Invalid)?.len();
+    if object_bytes <= MAX_OBJECT_BYTES { return Ok(()); }
+    // Only the exact reference slot hydrated earlier in this iteration can
+    // exceed the wire-object bound; an unrelated/inline object cannot inherit it.
+    let source = source.filter(|source| source.reference_index == index).ok_or(ReplayError::Invalid)?;
+    validate_object_source_proof(&source.proof).map_err(|_| ReplayError::Invalid)?;
+    let value = canonical_wire_value(object.get("value").ok_or(ReplayError::Invalid)?, Path::SecureArtifact)
+        .map_err(|_| ReplayError::Invalid)?;
+    let declared = usize::try_from(integer(&source.proof, "bytes")?).map_err(|_| ReplayError::Invalid)?;
+    if string(object, "kind")? != "protocols" || object.get("id") != source.proof.get("protocol_digest")
+        || value.len() != declared || sha256_hex(value.as_bytes()) != string(&source.proof, "value_sha256")?
+        || object_bytes > declared.checked_add(MAX_OBJECT_BYTES).ok_or(ReplayError::Invalid)? {
+        return Err(ReplayError::Invalid);
+    }
+    Ok(())
+}
+
 fn hydrate_signed_protocol_install(
     operation: WireValue,
     context: &WireValue,
@@ -181,7 +206,7 @@ fn hydrate_signed_protocol_install(
     prior_operations: &[WireValue],
     chain: &HeaderChainFacts,
     commit_wires: &[&[u8]],
-) -> Result<(WireValue, Option<WireValue>), ReplayError> {
+) -> Result<(WireValue, Option<HydratedProtocolObject>), ReplayError> {
     let WireValue::Array(objects) = operation.get("objects").ok_or(ReplayError::Invalid)? else {
         return Err(ReplayError::Invalid);
     };
@@ -325,7 +350,7 @@ fn hydrate_signed_protocol_install(
         .find(|(name, _)| name.iter().copied().eq("value".encode_utf16()))
         .ok_or(ReplayError::Invalid)?;
     *value = logical_value;
-    Ok((hydrated, Some(saved_proof)))
+    Ok((hydrated, Some(HydratedProtocolObject { reference_index, proof: saved_proof })))
 }
 
 fn signed_checkpoint_at(
@@ -1969,12 +1994,8 @@ fn replay_basic_content_depth(
                     .map_err(|_| ReplayError::Invalid)?;
             }
             let mut batch = HashSet::new();
-            for object in objects {
-                let object_text = canonical_wire_value(object, Path::SecureArtifact)
-                    .map_err(|_| ReplayError::Invalid)?;
-                if object_text.len() > MAX_OBJECT_BYTES {
-                    return Err(ReplayError::Invalid);
-                }
+            for (object_index, object) in objects.iter().enumerate() {
+                validate_replayed_object_size(object, object_index, object_source.as_ref())?;
                 let object_kind = utf16(object, "kind")?;
                 let id = utf16(object, "id")?;
                 let revision = integer(object, "revision")?;
@@ -2056,7 +2077,7 @@ fn replay_basic_content_depth(
                     &chain,
                     commit_wires,
                     workspace_id,
-                    object_source.as_ref(),
+                    object_source.as_ref().map(|source| &source.proof),
                 )?;
             }
             let policy_payload = policy.get("payload").ok_or(ReplayError::Invalid)?;
@@ -4047,6 +4068,41 @@ fn utf16<'a>(value: &'a WireValue, name: &str) -> Result<&'a [u16], ReplayError>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hydrated_protocol_source_size_limit_is_reference_specific() {
+        let text = |value: &str| WireValue::String(value.encode_utf16().collect());
+        let Ok(directory) = std::env::var("PEERWORK_OBJECT_REPLAY_FIXTURE") else { return; };
+        let path = std::path::Path::new(&directory).join("direct-object-end-applied-loss/agent.state");
+        let before = std::fs::read(&path).unwrap();
+        let state = crate::wire_json::parse_wire_json_bounded(&before, 64, 8 * 1024 * 1024).unwrap();
+        let WireValue::Object(markers) = state.get("protocol_object_stage_intents").unwrap() else { panic!("marker map"); };
+        assert_eq!(markers.len(), 1);
+        let marker = &markers[0].1;
+        let proof = marker.get("proof").unwrap().clone();
+        let WireValue::Array(parts) = marker.get("parts").unwrap() else { panic!("parts"); };
+        let value = read_protocol_object_source(&proof, parts).unwrap();
+        let object = fields_object(vec![("kind", text("protocols")),
+            ("id", proof.get("protocol_digest").unwrap().clone()),
+            ("revision", WireValue::Number(1.0)), ("provenance", text("AUTHOR_SIGNED")), ("value", value)]);
+        let source = HydratedProtocolObject { reference_index: 0, proof };
+        assert_eq!(canonical_wire_value(&object, Path::SecureArtifact).unwrap().len(), 121_506);
+        // This unit isolates the size rule using genuine value/proof bytes.
+        // Signed source authority is exercised by the separate replay gates.
+        assert!(validate_replayed_object_size(&object, 0, Some(&source)).is_ok());
+        assert!(validate_replayed_object_size(&object, 0, None).is_err(), "inline oversized object");
+        assert!(validate_replayed_object_size(&object, 1, Some(&source)).is_err(), "unrelated slot");
+        let mut wrong_kind = object.clone();
+        let WireValue::Object(fields) = &mut wrong_kind else { unreachable!() };
+        fields.iter_mut().find(|(key, _)| key.iter().copied().eq("kind".encode_utf16())).unwrap().1 = text("instances");
+        assert!(validate_replayed_object_size(&wrong_kind, 0, Some(&source)).is_err(), "unrelated kind");
+        let mut changed = source;
+        let WireValue::Object(fields) = &mut changed.proof else { unreachable!() };
+        fields.iter_mut().find(|(key, _)| key.iter().copied().eq("value_sha256".encode_utf16())).unwrap().1 = text(&"0".repeat(64));
+        assert!(validate_replayed_object_size(&object, 0, Some(&changed)).is_err(), "value proof mismatch");
+        assert_eq!(std::fs::read(path).unwrap(), before);
+        eprintln!("OBJECT_SIZE_BOUNDARY selected_slot=true inline_refused=true unrelated_slot_refused=true unrelated_kind_refused=true changed_hash_refused=true bytes=121506 wire_limit=98304");
+    }
     use crate::{
         canonical::canonical,
         crypto::{actor_id, base64url, key_id, sha256, sha256_hex, sign_canonical},

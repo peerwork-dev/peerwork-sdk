@@ -38,7 +38,8 @@ try {
       'direct-composition-end-applied-loss', 'direct-staged-package-begin-before-post',
       'direct-staged-package-end-applied-loss', 'direct-staged-package-page-before-post',
     'direct-staged-package-page-applied-loss', 'direct-staged-package-completed-end',
-    'direct-implicit-begin-before-post', 'direct-implicit-end-applied-loss'].includes(selected)) {
+    'direct-implicit-begin-before-post', 'direct-implicit-end-applied-loss',
+    'direct-object-begin-before-post', 'direct-object-end-applied-loss'].includes(selected)) {
       throw new Error('INSTALL_SETUP_MODE_INVALID');
     }
     for (const mode of selected ? [selected]
@@ -63,10 +64,10 @@ try {
       }
       const source = JSON.parse(stdout);
       const completed = mode.endsWith('completed-end') || later;
-      const checkpointOption = mode.startsWith('direct-checkpoint-');
+      const checkpointOption = mode.startsWith('direct-checkpoint-') || mode.startsWith('direct-object-');
       const normalizedOptions = /^(direct-disclosure-|direct-no-grants-|direct-empty-disclosure-)/.test(mode);
       const retainedStep = /^direct-(page|end)-/.exec(mode.replace(
-        /^direct-(checkpoint|disclosure|empty-disclosure|no-grants|composition|staged-package|implicit)-/, 'direct-'))?.[1];
+        /^direct-(checkpoint|disclosure|empty-disclosure|no-grants|composition|staged-package|implicit|object)-/, 'direct-'))?.[1];
       if (source.mode !== mode || source.pending_count !== (completed ? 0 : 1)
         || source.latest_structure_state !== (retainedStep
           ? retainedStep === 'end' && mode.endsWith('applied-loss') ? 'ACTIVE' : 'SEEDING'
@@ -108,6 +109,15 @@ try {
         || source.canonical_options_hash === source.intent_hash || source.initial_sequence < 3)) {
         throw new Error(`INSTALL_SETUP_${mode}_IMPLICIT_COMPOSITION`);
       }
+      if (mode.startsWith('direct-object-') && (source.compiler_equality !== true
+        || source.completed_object_marker !== true || source.source_parts < 2
+        || source.object_source.parts.length !== source.source_parts
+        || source.object_source.source.sequence !== source.initial_sequence
+        || source.begin_predecessor.sequence !== source.initial_sequence + source.source_parts
+        || source.expected_checkpoint.sequence !== source.initial_sequence
+        || source.object_source.source.policy_hash !== source.begin_predecessor.policy_hash)) {
+        throw new Error(`INSTALL_SETUP_${mode}_OBJECT_SOURCE`);
+      }
       if (mode.startsWith('direct-staged-package-') && (source.compiler_equality !== true
         || !Number.isSafeInteger(source.source_parts) || source.source_parts < 1
         || source.stage_markers_cleared !== true || source.package_source?.v !== 1
@@ -140,6 +150,11 @@ try {
           original_dependencies_omitted: true, authenticated_dependency_count: 1,
           original_options_hash_distinct: true, source_digest: source.source_digest,
           protocol_digest: source.protocol_digest } : {}),
+        ...(mode.startsWith('direct-object-') ? { compiler_equality: true,
+          source_parts: source.source_parts, reviewed_sequence: source.expected_checkpoint.sequence,
+          object_source_sequence: source.object_source.source.sequence,
+          begin_predecessor_sequence: source.begin_predecessor.sequence,
+          completed_object_marker: true } : {}),
         selected_epoch: source.selected_epoch ?? null,
         latest_epoch: source.latest_epoch ?? null,
         ...(checkpointOption ? { reviewed_checkpoint_sequence: source.expected_checkpoint.sequence,

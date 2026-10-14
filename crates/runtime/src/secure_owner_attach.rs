@@ -28,6 +28,9 @@ use peerwork_core::{
     wire_json::{canonical_wire_value, parse_wire_json_bounded, WireValue},
 };
 use rand_core::{OsRng, RngCore};
+use peerwork_core::prepared_private_install::{normalize_protocol_object_source_proof,
+    read_complete_protocol_object_source, verify_completed_protocol_object_source,
+    verify_saved_private_direct_install_begin_with_object_source};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -565,6 +568,38 @@ struct LegacyPendingInstallBegin {
     path: String,
     request: Zeroizing<Vec<u8>>,
     retained_installed_instances: Vec<String>,
+    object_stage: Option<LegacyCompletedObjectStage>,
+}
+
+#[derive(Clone)]
+struct LegacyCompletedObjectStage {
+    request_hash: String,
+    proof: WireValue,
+    parts_wire: Zeroizing<Vec<u8>>,
+}
+
+fn parse_completed_object_stage(
+    value: Option<&WireValue>, pending: &LegacyPendingInstallBegin, input: &HistoricalOwnerAttachInput,
+) -> Result<LegacyCompletedObjectStage, HistoricalOwnerAttachError> {
+    let invalid = || HistoricalOwnerAttachError::SourceUnresolved;
+    let Some(WireValue::Object(rows)) = value else { return Err(invalid()); };
+    let selected = format!("{}.{}", input.workspace_id, pending.instance_id).encode_utf16().collect::<Vec<_>>();
+    if rows.len() != 1 || rows[0].0 != selected || rows[0].1.object_len() != Some(3) { return Err(invalid()); }
+    let row = &rows[0].1;
+    let request_hash = row.get("request_hash").and_then(WireValue::as_string).filter(|value| valid_digest(value)).ok_or_else(invalid)?;
+    let proof = normalize_protocol_object_source_proof(row.get("proof").ok_or_else(invalid)?).map_err(|_| invalid())?;
+    let source = proof.get("source").ok_or_else(invalid)?;
+    if proof.get("workspace_id").and_then(WireValue::as_string).as_deref() != Some(input.workspace_id.as_str())
+        || source.get("owner_id").and_then(WireValue::as_string).as_deref() != Some(input.expected_owner_actor_id.as_str())
+        || source.get("owner_key").and_then(WireValue::as_string).as_deref() != Some(input.expected_owner_key_id.as_str()) {
+        return Err(invalid());
+    }
+    let Some(WireValue::Array(parts)) = row.get("parts") else { return Err(invalid()); };
+    let mut logical = read_complete_protocol_object_source(&proof, parts).map_err(|_| invalid())?;
+    scrub(&mut logical);
+    let parts_wire = canonical_wire_value(&WireValue::Array(parts.clone()), CanonicalPath::SecureArtifact).map_err(|_| invalid())?;
+    if parts_wire.len() > 8 * 1024 * 1024 { return Err(invalid()); }
+    Ok(LegacyCompletedObjectStage { request_hash, proof, parts_wire: Zeroizing::new(parts_wire.into_bytes()) })
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -2189,6 +2224,7 @@ impl SecureHistoricalOwnerAttach {
             path: format!("/api/workspace/v1/secure/workspaces/{}/commits", input.workspace_id),
             request,
             retained_installed_instances: Vec::new(),
+            object_stage: None,
         };
         let plan = self.save_quarantined_direct_install_plan(
             &input, &source, &ts_digest, &pem_digest, &intent_digest,
@@ -6081,6 +6117,7 @@ fn verify_pending_direct_install_begin(
             command_id, instance_id: pending.instance_id.clone(), intent_hash: pending.intent_hash.clone(),
             path: pending.path.clone(), request: Zeroizing::new(serde_json::to_vec(&body).map_err(|_| invalid())?),
             retained_installed_instances: Vec::new(),
+            object_stage: pending.object_stage.clone(),
         };
         if let Ok(verified) = verify_exact_direct_install_begin(
             &candidate, options_wire, material_wire, ring, replayed, owner, input,
@@ -6292,9 +6329,26 @@ fn verify_exact_direct_install_begin(
     }
     let resolved = resolve_legacy_direct_options_from_prior(&options, prior.objects())?;
     if resolved.intent_hash != pending.intent_hash { return Err(invalid()); }
+    let object_source = if let Some(marker) = pending.object_stage.as_ref() {
+        if resolved.package_source.is_some()
+            || sha256_hex(canonical_wire_value(&options, CanonicalPath::SecureArtifact).map_err(|_| invalid())?.as_bytes()) != marker.request_hash {
+            return Err(invalid());
+        }
+        let mut logical = verify_completed_protocol_object_source(&marker.proof, &prior).map_err(|_| invalid())?;
+        scrub(&mut logical);
+        let parts = parse_wire_json_bounded(&marker.parts_wire, 64, 8 * 1024 * 1024).map_err(|_| invalid())?;
+        let WireValue::Array(parts) = parts else { return Err(invalid()); };
+        let base = usize::try_from(exact_u64(marker.proof.get("source").and_then(|value| value.get("sequence"))).ok_or_else(invalid)?).map_err(|_| invalid())?;
+        for (index, part) in parts.iter().enumerate() {
+            let Some(WireValue::Array(actual)) = prior.operations().get(base + index).and_then(|operation| operation.get("objects")) else { return Err(invalid()); };
+            if actual.len() != 1 || canonical_wire_value(part, CanonicalPath::SecureArtifact).map_err(|_| invalid())?
+                != canonical_wire_value(&actual[0], CanonicalPath::SecureArtifact).map_err(|_| invalid())? { return Err(invalid()); }
+        }
+        Some(&marker.proof)
+    } else { None };
     // Review floor is original BEGIN source, not latest or selected PAGE/END.
     if let Some(reviewed) = options.get("expected_checkpoint") {
-        let expected = if let Some(proof) = resolved.package_source.as_ref() { proof.get("source").ok_or_else(invalid)?.clone() }
+        let expected = if let Some(proof) = resolved.package_source.as_ref().or(object_source) { proof.get("source").ok_or_else(invalid)?.clone() }
             else { parse_wire_json_bounded(&checkpoint_wire, 32, 8192).map_err(|_| invalid())? };
         if canonical_wire_value(reviewed, CanonicalPath::SecureArtifact).map_err(|_| invalid())?
             != canonical_wire_value(&expected, CanonicalPath::SecureArtifact).map_err(|_| invalid())?
@@ -6348,7 +6402,14 @@ fn verify_exact_direct_install_begin(
             source.source_checkpoint_json.as_bytes(), &checkpoint_wire, prior_policy, prior.objects(),
             grants.as_bytes(), resolved.disclose_json.as_deref().unwrap_or("[]").as_bytes(),
             &pending.instance_id, &entrypoint, &pending.command_id, issued_at, owner.signing_key(), key)
-    } else { verify_saved_private_direct_install_begin_with_options(
+    } else if let Some(proof) = object_source { verify_saved_private_direct_install_begin_with_object_source(
+        &pending.request, closure.as_bytes(), bindings.as_bytes(),
+        &root_package_digest, &resolved.protocol_digest, &checkpoint_wire,
+        prior_policy, prior.objects(), grants.as_bytes(),
+        resolved.disclose_json.as_deref().unwrap_or("[]").as_bytes(),
+        &pending.instance_id, &entrypoint, &pending.command_id, issued_at,
+        owner.signing_key(), key, proof,
+    ) } else { verify_saved_private_direct_install_begin_with_options(
         &pending.request, closure.as_bytes(), bindings.as_bytes(),
         &root_package_digest, &resolved.protocol_digest, &checkpoint_wire,
         prior_policy, prior.objects(), grants.as_bytes(),
@@ -6418,6 +6479,7 @@ fn verify_exact_direct_install_begin(
             ).map_err(|_| invalid())?,
             root_package_digest,
             staged_source,
+            object_source_json: object_source.map(|proof| canonical_wire_value(proof, CanonicalPath::SecureArtifact).map_err(|_| invalid())).transpose()?,
             steps: Vec::new(),
         },
     })
@@ -6489,6 +6551,7 @@ fn verify_completed_direct_install(
             path: path.clone(),
             request,
             retained_installed_instances: Vec::new(),
+            object_stage: None,
         };
         if let Ok(verified) = verify_pending_direct_install_begin(
             &pending, options_wire, material_wire, ring, replayed, owner, input,
@@ -7288,6 +7351,7 @@ fn parse_pending_direct_install_begin(
         command_id, instance_id, intent_hash, path,
         request: Zeroizing::new(request.into_bytes()),
         retained_installed_instances,
+        object_stage: None,
     })
 }
 
@@ -7432,7 +7496,7 @@ fn parse_legacy_source_selected_install_inner(
         let stage_marker = completed_package_stage_marker(value.get("package_stage_intents"), input)?;
         let pending_package_stage = parse_pending_package_stage(value.get("pending"), stage_marker.as_ref(), input)?;
         let completed_package_stage = if pending_package_stage.is_some() { None } else { stage_marker };
-        let pending_install_begin = if let Some(command_id) = selected_install_command_id {
+        let mut pending_install_begin = if let Some(command_id) = selected_install_command_id {
             if completed_package_stage.is_some() || pending_package_stage.is_some() {
                 return Err(HistoricalOwnerAttachError::SourceUnresolved);
             }
@@ -7440,6 +7504,10 @@ fn parse_legacy_source_selected_install_inner(
                 value.get("protocol_install_intents"), value.get("pending"), command_id, selected_install_instance_id, input,
             )?)
         } else { None };
+        if !empty_optional_map(value.get("protocol_object_stage_intents")) {
+            let pending = pending_install_begin.as_mut().ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+            pending.object_stage = Some(parse_completed_object_stage(value.get("protocol_object_stage_intents"), pending, input)?);
+        }
         let completed_install_intent = if let Some(instance_id) = selected_completed_install_instance_id {
             if selected_install_command_id.is_some() || !valid_token(instance_id)
                 || completed_package_stage.is_some() || pending_package_stage.is_some() {
@@ -7504,7 +7572,6 @@ fn parse_legacy_source_selected_install_inner(
         // Retain all unsupported exact signed intents in the legacy source;
         // never silently discard them during a one-workspace attach.
         for key in [
-            "protocol_object_stage_intents",
             "coordination_intents",
             "field_policy_intents",
             "intake_intents",
@@ -12327,6 +12394,7 @@ mod tests {
                 path: pending.get("path").and_then(WireValue::as_string).unwrap(),
                 request: Zeroizing::new(request.into_bytes()),
                 retained_installed_instances: Vec::new(),
+                object_stage: None,
             };
             let options = read_private_file_bounded(
                 Path::new(fixture["options_path"].as_str().unwrap()), 2 * 1024 * 1024,
@@ -12597,6 +12665,74 @@ mod tests {
     }
 
     #[test]
+    fn actual_service_imports_complete_protocol_object_source_install() {
+        let mode = std::env::var("PEERWORK_OBJECT_SOURCE_INSTALL_MODE")
+            .unwrap_or_else(|_| "direct-object-begin-before-post".into());
+        assert!(["direct-object-begin-before-post", "direct-object-end-applied-loss"].contains(&mode.as_str()));
+        exercise_selected_direct_install_source(&mode);
+    }
+
+    #[test]
+    fn local_object_source_signed_replay_regression() {
+        let Ok(directory) = std::env::var("PEERWORK_OBJECT_REPLAY_FIXTURE") else { return; };
+        let directory = Path::new(&directory);
+        let state_path = directory.join("direct-object-end-applied-loss/agent.state");
+        let before = std::fs::read(&state_path).unwrap();
+        let state = parse_wire_json_bounded(&before, 64, MAX_SOURCE).unwrap();
+        let Some(WireValue::Object(workspaces)) = state.get("workspaces") else { panic!("workspace map"); };
+        assert_eq!(workspaces.len(), 1);
+        let workspace = String::from_utf16(&workspaces[0].0).unwrap();
+        let local = &workspaces[0].1;
+        let latest = local.get("checkpoint").unwrap();
+        assert_eq!(exact_u64(latest.get("sequence")), Some(5));
+        let owner = latest.get("owner_id").and_then(WireValue::as_string).unwrap();
+        let key = latest.get("owner_key").and_then(WireValue::as_string).unwrap();
+        let ring = canonical_wire_value(local.get("keyring").unwrap(), CanonicalPath::SecureArtifact).unwrap();
+        let Some(WireValue::Array(policies)) = local.get("policies") else { panic!("policies"); };
+        let policy_wires: Vec<_> = policies.iter().map(|policy|
+            (exact_u64(policy.get("payload").and_then(|payload| payload.get("effective_sequence"))).unwrap(),
+             canonical_wire_value(policy, CanonicalPath::SecureArtifact).unwrap().into_bytes())).collect();
+        let db = rusqlite::Connection::open_with_flags(directory.join("control.sqlite"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        let mut query = db.prepare("SELECT artifact FROM secure_commits WHERE workspace_id=?1 ORDER BY sequence").unwrap();
+        let commits: Vec<Vec<u8>> = query.query_map([&workspace], |row| row.get::<_, String>(0)).unwrap()
+            .map(|row| { let row = row.unwrap(); let value = parse_wire_json_bounded(row.as_bytes(), 64, 262_144).unwrap();
+                canonical_wire_value(&value, CanonicalPath::SecureArtifact).unwrap().into_bytes() }).collect();
+        assert_eq!(commits.len(), 5);
+        let Some(WireValue::Object(markers)) = state.get("protocol_object_stage_intents") else { panic!("marker map"); };
+        assert_eq!(markers.len(), 1);
+        let proof = markers[0].1.get("proof").unwrap();
+        for sequence in [3usize, 4, 5] {
+            let last = parse_wire_json_bounded(&commits[sequence - 1], 64, 262_144).unwrap();
+            let hash = last.get("payload").unwrap().get("policy_hash").and_then(WireValue::as_string).unwrap();
+            let head = sha256_hex(&commits[sequence - 1]);
+            let checkpoint = serde_json::to_vec(&serde_json::json!({"v":1,"workspace_id":workspace,
+                "owner_id":owner,"owner_key":key,"sequence":sequence,"head":head,"policy_hash":hash})).unwrap();
+            let policy_refs: Vec<_> = policy_wires.iter().filter(|(effective, _)| *effective <= sequence as u64)
+                .map(|(_, wire)| wire.as_slice()).collect();
+            let commit_refs: Vec<_> = commits[..sequence].iter().map(Vec::as_slice).collect();
+            let result = replay_secure_journal_exact(JournalReplayInput {
+                policy_wires:&policy_refs, commit_wires:&commit_refs, checkpoint_wire:&checkpoint,
+                workspace_id:&workspace, owner_actor_id:&owner, owner_signing_key:&key,
+                final_sequence:sequence as u64, final_head:Some(&head), final_policy_hash:&hash, keyring_wire:Some(ring.as_bytes()),
+            });
+            if sequence == 3 {
+                let prior = result.as_ref().expect("authenticated stage prefix");
+                let logical = verify_completed_protocol_object_source(proof, prior).unwrap();
+                let object = WireValue::Object(vec![("kind".encode_utf16().collect(), WireValue::String("protocols".encode_utf16().collect())),
+                    ("id".encode_utf16().collect(), proof.get("protocol_digest").unwrap().clone()),
+                    ("revision".encode_utf16().collect(), WireValue::Number(1.0)),
+                    ("provenance".encode_utf16().collect(), WireValue::String("AUTHOR_SIGNED".encode_utf16().collect())),
+                    ("value".encode_utf16().collect(), logical)]);
+                let bytes = canonical_wire_value(&object, CanonicalPath::SecureArtifact).unwrap().len();
+                assert_eq!(bytes, 121_506);
+                eprintln!("OBJECT_REPLAY_DIAGNOSTIC signed_prefix={sequence} passed=true hydrated_object_bytes={bytes} wire_object_limit=98304");
+            } else { eprintln!("OBJECT_REPLAY_REGRESSION signed_prefix={sequence} passed={}", result.is_ok()); }
+            assert!(result.is_ok(), "signed prefix {sequence} must replay after exact object-source hydration");
+        }
+        assert_eq!(std::fs::read(&state_path).unwrap(), before);
+    }
+
+    #[test]
     fn actual_service_imports_staged_package_source_install() {
         let mode = std::env::var("PEERWORK_STAGED_SOURCE_INSTALL_MODE")
             .unwrap_or_else(|_| "direct-staged-package-begin-before-post".into());
@@ -12613,6 +12749,7 @@ mod tests {
         let staged_source_options = mode.starts_with("direct-staged-package-");
         let composition_options = mode.starts_with("direct-composition-");
         let implicit_options = mode.starts_with("direct-implicit-");
+        let object_source_options = mode.starts_with("direct-object-");
         let normalized_options = ["direct-disclosure-", "direct-no-grants-", "direct-empty-disclosure-"]
             .iter().any(|prefix| mode.starts_with(prefix));
         let node = std::env::var("PEERWORK_NODE_BIN").unwrap_or_else(|_| "node".into());
@@ -12726,6 +12863,11 @@ mod tests {
             assert_eq!(count(), before);
             assert_eq!(read_private_file_bounded(&input.protected_ts_state_path, MAX_SOURCE).unwrap(), source_before);
         }
+        if object_source_options {
+            exercise_object_source_rejections(&attach, &input, root.path(), command, &options, &material);
+            assert_eq!(count(), before);
+            assert_eq!(read_private_file_bounded(&input.protected_ts_state_path, MAX_SOURCE).unwrap(), source_before);
+        }
         if same_workspace {
             let source: serde_json::Value = serde_json::from_slice(&source_before).unwrap();
             assert_eq!(source["protocol_install_intents"].as_object().unwrap().len(), 2);
@@ -12769,6 +12911,15 @@ mod tests {
         drop(row_store);
         let plan = attach.load_quarantined_direct_install_plan(&prepared[0].attach_id, &row).unwrap();
         let packet = plan.source.pending_install_begin.as_ref().unwrap().request.to_vec();
+        if object_source_options {
+            let marker = plan.source.pending_install_begin.as_ref().unwrap().object_stage.as_ref().unwrap();
+            assert_eq!(canonical_wire_value(&marker.proof, CanonicalPath::SecureArtifact).unwrap(),
+                fixture["object_source"].to_string());
+            assert!(fixture["source_parts"].as_u64().unwrap() >= 2);
+            assert_eq!(fixture["begin_predecessor"]["sequence"].as_u64().unwrap(),
+                fixture["expected_checkpoint"]["sequence"].as_u64().unwrap() + fixture["source_parts"].as_u64().unwrap());
+            assert_eq!(plan.manifest.options_sha256, fixture["canonical_options_hash"].as_str().unwrap());
+        }
         if staged_source_options {
             let protected_options: serde_json::Value = serde_json::from_slice(&plan.options).unwrap();
             assert_eq!(protected_options["package_source"], fixture["package_source"]);
@@ -12850,6 +13001,53 @@ mod tests {
         assert_eq!(count(), final_count);
         if applied && fixture["pending_action_id"] == "secure.structure.end" {
             assert_eq!(final_count, before);
+        }
+    }
+
+    fn exercise_object_source_rejections(
+        attach: &SecureHistoricalOwnerAttach, input: &HistoricalOwnerAttachInput,
+        root: &Path, command: &str, options_json: &str, material: &str,
+    ) {
+        let source: serde_json::Value = serde_json::from_slice(&std::fs::read(&input.protected_ts_state_path).unwrap()).unwrap();
+        let options: serde_json::Value = serde_json::from_str(options_json).unwrap();
+        let selected = format!("{}.{}", input.workspace_id, options["instance_id"].as_str().unwrap());
+        for name in ["request-hash", "descriptor", "reviewed-checkpoint", "part-bytes", "incomplete-parts",
+            "extra-parts", "compiled-material", "changed-manifest", "pending-stage-command", "other-stage-marker"] {
+            let mut copy = source.clone();
+            let mut changed_options = options.clone();
+            let mut changed_material = material.to_owned();
+            let marker = &mut copy["protocol_object_stage_intents"][&selected];
+            match name {
+                "request-hash" => marker["request_hash"] = serde_json::json!("0".repeat(64)),
+                "descriptor" => marker["proof"]["parts"][0]["sha256"] = serde_json::json!("0".repeat(64)),
+                "reviewed-checkpoint" => changed_options["expected_checkpoint"]["head"] = serde_json::json!("0".repeat(64)),
+                "part-bytes" => marker["parts"][0]["value"]["text"] = serde_json::json!("changed-original-part"),
+                "incomplete-parts" => { marker["parts"].as_array_mut().unwrap().pop(); },
+                "extra-parts" => { let extra = marker["parts"][0].clone(); marker["parts"].as_array_mut().unwrap().push(extra); },
+                "compiled-material" => { let mut value: serde_json::Value = serde_json::from_str(material).unwrap();
+                    value["closure"]["root_package_digest"] = serde_json::json!("0".repeat(64)); changed_material = value.to_string(); },
+                "changed-manifest" => changed_options["manifest"]["name"] = serde_json::json!("example.changed-object-source.v1"),
+                "pending-stage-command" => marker["command_id"] = serde_json::json!(command),
+                _ => { let other = marker.clone(); copy["protocol_object_stage_intents"][format!("{}.{}", input.workspace_id, base64url(&[172; 32]))] = other; },
+            }
+            let text = changed_options.to_string();
+            if ["reviewed-checkpoint", "changed-manifest"].contains(&name) {
+                let value = parse_wire_json_bounded(text.as_bytes(), 64, 2 * 1024 * 1024).unwrap();
+                copy["protocol_install_intents"][&selected] = serde_json::json!(resolve_legacy_direct_options(&value).unwrap().intent_hash);
+                copy["protocol_object_stage_intents"][&selected]["request_hash"] = serde_json::json!(sha256_hex(
+                    canonical_wire_value(&value, CanonicalPath::SecureArtifact).unwrap().as_bytes()));
+            }
+            assert_eq!(copy["pending"], source["pending"]); assert_eq!(copy["workspaces"], source["workspaces"]);
+            let bytes = serde_json::to_vec(&copy).unwrap(); let path = root.join(format!("negative-object-source-{name}.state"));
+            std::fs::write(&path, &bytes).unwrap();
+            #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap(); }
+            let mut negative = input.clone(); negative.protected_ts_state_path = path.clone(); let cancel = CancellationToken::new();
+            assert!(matches!(attach.inspect_pending_direct_install_begin(&negative, command, &text, &changed_material, &cancel),
+                Err(HistoricalOwnerAttachError::SourceUnresolved)), "{name}: inspect must refuse");
+            assert!(matches!(attach.attach_pending_direct_install_begin(negative, command, &sha256_hex(&bytes), &text, &changed_material, &cancel),
+                Err(HistoricalOwnerAttachError::SourceUnresolved)), "{name}: attach must refuse before PREPARED");
+            assert!(attach.attachments().unwrap().is_empty()); assert!(!attach.workspace_dir(&input.workspace_id).join("lifecycle.state").exists());
+            assert_eq!(std::fs::read(path).unwrap(), bytes);
         }
     }
 
