@@ -54,14 +54,18 @@ export async function createLegacyComposedInstallMaterial(referenceRoot) {
   const dependencies = compiled.resolvedDependencyManifests.map(node => ({ digest: node.protocolDigest, manifest: node.manifest }));
   if (dependencies.length !== 1) throw new Error('INSTALL_COMPOSITION_DEPENDENCY_COUNT');
   const sourceManifest = manifestCanonical({ ...ownManifest, dependencies: dependencies.map(node => node.digest) }).manifest;
+  const ownSource = await secureManifestDigest(ownManifest);
+  if (ownSource.digest !== compiled.sourceDigest) throw new Error('INSTALL_COMPOSITION_OWN_SOURCE_DIGEST');
   const source = await secureManifestDigest(sourceManifest);
-  if (source.digest !== compiled.sourceDigest) throw new Error('INSTALL_COMPOSITION_SOURCE_DIGEST');
   const resolved = await resolveSecureProtocol(sourceManifest, digest => dependencies.find(node => node.digest === digest)?.manifest);
-  if (resolved.digest !== compiled.protocolDigest || !secureEqual(resolved.manifest, compiled.manifest)
+  if (resolved.composition.source_digest !== source.digest
+    || !secureEqual(resolved.composition.source_manifest, sourceManifest)
+    || resolved.digest !== compiled.protocolDigest || !secureEqual(resolved.manifest, compiled.manifest)
     || !secureEqual(resolved.composition.dependencies, dependencies)) throw new Error('INSTALL_COMPOSITION_COMPILER_EQUALITY');
   // Independently reselect the complete exact closure through the public loader.
   exactPackageLoader(material.closure)(child.packageDigest);
   return { material, sourceManifest, dependencies, compiledManifest: compiled.manifest,
-    protocolDigest: compiled.protocolDigest, sourceDigest: compiled.sourceDigest,
+    protocolDigest: compiled.protocolDigest, sourceDigest: source.digest,
+    compilerOwnSourceDigest: compiled.sourceDigest,
     composition: resolved.composition };
 }
