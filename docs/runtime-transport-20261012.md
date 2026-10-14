@@ -5,7 +5,12 @@ and tokio-util 0.7.20 with Rustls, a 15-second default timeout and explicit
 cancellation. It accepts HTTPS origins, or loopback HTTP only when explicitly
 enabled. Credentials in origin URLs, cross-origin redirects, implicit proxy
 environment configuration, and unbounded response bodies are refused.
-Additional PEM trust roots and an explicit proxy can be configured. The
+Additional PEM trust roots and an explicit proxy can be configured. All language
+facades also accept an explicitly selected `PEERWORK_HTTP_PROXY` process environment
+variable. `TransportConfig.proxy` takes precedence; generic HTTP/HTTPS/ALL_PROXY
+and NO_PROXY variables remain ignored. An invalid explicit proxy fails closed.
+In a proxy-only runtime, callers may explicitly copy the runtime-supplied
+HTTP proxy into this SDK variable without changing the runtime destination policy. The
 transport returns exact response bytes for core verification; it does not
 interpret HTTP success as a verified command outcome.
 

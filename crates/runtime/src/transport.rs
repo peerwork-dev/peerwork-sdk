@@ -86,7 +86,11 @@ impl HttpTransport {
             .redirect(Policy::none())
             .timeout(config.timeout)
             .no_proxy();
-        if let Some(proxy) = config.proxy {
+        // This SDK-specific opt-in is shared by the language facades. Generic
+        // HTTP_PROXY/HTTPS_PROXY/NO_PROXY remain ignored: changing the route
+        // requires an explicit participant choice, including in a sandbox.
+        let proxy = selected_proxy(config.proxy, std::env::var("PEERWORK_HTTP_PROXY"))?;
+        if let Some(proxy) = proxy {
             let url = Url::parse(&proxy).map_err(|_| TransportError::InvalidTrust)?;
             if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
                 return Err(TransportError::InvalidTrust);
@@ -407,6 +411,20 @@ impl HttpTransport {
     }
 }
 
+fn selected_proxy(
+    configured: Option<String>,
+    environment: Result<String, std::env::VarError>,
+) -> Result<Option<String>, TransportError> {
+    match configured {
+        Some(proxy) => Ok(Some(proxy)),
+        None => match environment {
+            Ok(proxy) => Ok(Some(proxy)),
+            Err(std::env::VarError::NotPresent) => Ok(None),
+            Err(std::env::VarError::NotUnicode(_)) => Err(TransportError::InvalidTrust),
+        },
+    }
+}
+
 fn valid_identity_token(value: &str) -> bool {
     value.len() == 43
         && value
@@ -503,6 +521,18 @@ mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+
+    #[test]
+    fn explicit_proxy_selection_is_opt_in_and_config_takes_precedence() {
+        assert_eq!(selected_proxy(None, Err(std::env::VarError::NotPresent)).unwrap(), None);
+        assert_eq!(selected_proxy(None, Ok("http://127.0.0.1:1234".into())).unwrap(),
+            Some("http://127.0.0.1:1234".into()));
+        assert_eq!(selected_proxy(Some("http://127.0.0.1:4321".into()),
+            Ok("http://127.0.0.1:1234".into())).unwrap(),
+            Some("http://127.0.0.1:4321".into()));
+        assert!(matches!(selected_proxy(None, Err(std::env::VarError::NotUnicode(
+            std::ffi::OsString::from("invalid")))), Err(TransportError::InvalidTrust)));
+    }
 
     async fn one_response(response: &'static [u8]) -> (String, tokio::task::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
