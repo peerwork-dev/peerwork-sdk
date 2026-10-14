@@ -22,6 +22,14 @@ pub enum DirectInstallError {
     Invalid,
     Resource,
 }
+/// Normalize an already compiled candidate without inventing composition.
+/// The staged-source verifier must independently bind its source and digest.
+pub fn normalize_install_protocol_manifest(root: &WireValue) -> Result<(WireValue, String), DirectInstallError> {
+    let canonical = validate_full_manifest(root).map_err(|_| DirectInstallError::Invalid)?;
+    let wrapped = parse_wire_json_bounded(canonical.as_bytes(), 32, 65_536).map_err(|_| DirectInstallError::Invalid)?;
+    Ok((wrapped.get("manifest").ok_or(DirectInstallError::Invalid)?.clone(), sha256_hex(canonical.as_bytes())))
+}
+
 /// Resolve caller-selected explicit dependencies without granting authority.
 /// The authenticated PRIVATE verifier must independently compile the exact
 /// material under its signed source policy and bind the composition proof.
@@ -30,11 +38,7 @@ pub fn resolve_explicit_install_protocol(
     explicit: Option<&WireValue>,
 ) -> Result<(WireValue, String, Option<WireValue>), DirectInstallError> {
     let invalid = || DirectInstallError::Invalid;
-    let normalize = |value: &WireValue| -> Result<(WireValue, String), DirectInstallError> {
-        let canonical = validate_full_manifest(value).map_err(|_| invalid())?;
-        let wrapped = parse_wire_json_bounded(canonical.as_bytes(), 32, 65_536).map_err(|_| invalid())?;
-        Ok((wrapped.get("manifest").ok_or_else(invalid)?.clone(), sha256_hex(canonical.as_bytes())))
-    };
+    let normalize = normalize_install_protocol_manifest;
     let (source, source_digest) = normalize(root)?;
     let rows = match explicit { None => &[][..], Some(WireValue::Array(rows)) => rows.as_slice(), _ => return Err(invalid()) };
     if rows.len() > 16 { return Err(DirectInstallError::Resource); }

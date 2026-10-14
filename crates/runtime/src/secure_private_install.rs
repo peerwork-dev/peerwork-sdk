@@ -811,6 +811,14 @@ pub struct PrivatePackageInstallProgress {
 /// Input from a fully proved, durable Owner attachment. The caller saves this
 /// only after PREPARED and rechecks the selected old packet and source plan.
 /// It grants no ordinary install authority by itself.
+pub(crate) struct ImportedHistoricalCompletedPackageSource {
+    pub source_checkpoint_json: String,
+    pub source_id: String,
+    pub part_count: usize,
+    /// Reconstructed signed requests are provenance, never retried stage HTTP bytes.
+    pub steps: Vec<ImportedHistoricalStageStep>,
+}
+
 pub(crate) struct ImportedHistoricalDirectBegin {
     pub attach_id: String,
     pub command_id: String,
@@ -829,6 +837,7 @@ pub(crate) struct ImportedHistoricalDirectBegin {
     pub bindings_json: String,
     pub source_checkpoint_json: String,
     pub root_package_digest: String,
+    pub staged_source: Option<ImportedHistoricalCompletedPackageSource>,
     pub steps: Vec<InstallStep>,
 }
 
@@ -1267,10 +1276,22 @@ impl SecurePrivatePackageInstall {
         )?;
         let row = doc.rows.get(begin_id).ok_or(PrivatePackageInstallError::Input)?;
         if row.import_attach_id.as_deref() != Some(attach_id)
-            || row.source_kind()? != InstallSourceKind::Direct
         { return Err(PrivatePackageInstallError::Plan); }
-        let source = row.direct_source.as_ref().ok_or(PrivatePackageInstallError::Plan)?;
-        let source_checkpoint = source.source_checkpoint_json.clone();
+        let source_checkpoint = match row.source_kind()? {
+            InstallSourceKind::Direct => row.direct_source.as_ref().ok_or(PrivatePackageInstallError::Plan)?.source_checkpoint_json.clone(),
+            InstallSourceKind::Staged => {
+                // StageRow retains the pre-stage source. Imported replay must
+                // pin the distinct original BEGIN's post-stage predecessor.
+                let wire = decode_base64url(&row.request_b64).map_err(|_| PrivatePackageInstallError::Plan)?;
+                let request = parse_wire_json_bounded(&wire, 64, 220_000).map_err(|_| PrivatePackageInstallError::Plan)?;
+                let payload = request.get("commit").and_then(|commit| commit.get("payload")).ok_or(PrivatePackageInstallError::Plan)?;
+                let policy = request.get("policy_update").and_then(|policy| policy.get("payload")).ok_or(PrivatePackageInstallError::Plan)?;
+                serde_json::json!({"v":1,"workspace_id":self.config.workspace_id,
+                    "owner_id":identity.actor_id(),"owner_key":identity.key_id(),
+                    "sequence":number(payload,"sequence")?.checked_sub(1).ok_or(PrivatePackageInstallError::Plan)?,
+                    "head":scalar(payload,"previous")?,"policy_hash":scalar(policy,"previous_policy")?}).to_string()
+            },
+        };
         drop(doc);
         drop(store);
         let lifecycle = SecureLifecycle::open(
@@ -1422,15 +1443,20 @@ impl SecurePrivatePackageInstall {
             || scalar(payload, "actor_id")? != identity.actor_id()
             || scalar(payload, "signing_key")? != identity.key_id()
         { return Err(PrivatePackageInstallError::Identity); }
+        let (source_kind, stage_id, direct_source) = if let Some(source) = imported.staged_source {
+            let id = base64url(&sha256(format!("peerwork.imported-package-install.v1\0{}.{}", imported.attach_id, source.source_id).as_bytes()));
+            self.save_imported_stage_row_for_attach(&imported.attach_id, &id, &imported.material_wire,
+                &source.source_checkpoint_json, &imported.source_policy_hash, &source.source_id,
+                &imported.root_package_digest, &imported.protocol_digest, source.part_count, source.steps, true)?;
+            (InstallSourceKind::Staged, Some(id), None)
+        } else {
+            (InstallSourceKind::Direct, None, Some(DirectInstallSource {
+                material_b64: base64url(&imported.material_wire), bindings_json: Some(imported.bindings_json),
+                source_checkpoint_json: imported.source_checkpoint_json, root_package_digest: imported.root_package_digest,
+            }))
+        };
         let row = InstallRow {
-            import_attach_id: Some(imported.attach_id),
-            source_kind: Some(InstallSourceKind::Direct), stage_id: None,
-            direct_source: Some(DirectInstallSource {
-                material_b64: base64url(&imported.material_wire),
-                bindings_json: Some(imported.bindings_json),
-                source_checkpoint_json: imported.source_checkpoint_json,
-                root_package_digest: imported.root_package_digest,
-            }),
+            import_attach_id: Some(imported.attach_id), source_kind: Some(source_kind), stage_id, direct_source,
             instance_id: imported.instance_id, entrypoint: imported.entrypoint,
             grants_json: imported.grants_json, disclose_json: imported.disclose_json,
             issued_at_ms: imported.issued_at_ms,
@@ -2041,7 +2067,8 @@ impl SecurePrivatePackageInstall {
                             .map_err(|_| PrivatePackageInstallError::Input)?;
                     let base_sequence = number(&base, "sequence")?;
                     let base_head = scalar(&base, "head")?;
-                    if !stage.completed
+                    if row.import_attach_id.is_some() && stage.import_attach_id != row.import_attach_id
+                        || !stage.completed
                         || stage.steps.len() != stage.part_count
                         || prior.replay().sequence() != base_sequence + stage.part_count as u64
                         || prior.replay().policy_hash() != stage.policy_hash
@@ -2505,6 +2532,7 @@ impl SecurePrivatePackageInstall {
         protocol_digest: &str,
         part_count: usize,
         steps: Vec<ImportedHistoricalStageStep>,
+        completed: bool,
     ) -> Result<(), PrivatePackageInstallError> {
         if !token(attach_id) || !token(stage_id)
             || material.is_empty() || material.len() > 8 * 1024 * 1024
@@ -2512,6 +2540,7 @@ impl SecurePrivatePackageInstall {
             || !digest(root_package_digest) || !digest(protocol_digest)
             || part_count == 0 || part_count > peerwork_core::prepared_private_install::MAX_PACKAGE_SOURCE_PARTS
             || steps.is_empty() || steps.len() > part_count
+            || completed && steps.len() != part_count
             || steps.iter().any(|step| !token(&step.command_id)
                 || !digest(&step.commit_hash) || step.request_wire.is_empty()
                 || step.request_wire.len() > 262_144)
@@ -2543,7 +2572,7 @@ impl SecurePrivatePackageInstall {
                 command_id: step.command_id, issued_at_ms: step.issued_at_ms,
                 request_b64: base64url(&step.request_wire), commit_hash: step.commit_hash,
             }).collect(),
-            completed: false,
+            completed,
         };
         let store = SecureStateStore::open(&self.config.state_dir.join("private-install.state"))?;
         let mut doc = StageDocument::open(

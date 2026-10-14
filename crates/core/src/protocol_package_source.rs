@@ -175,10 +175,8 @@ pub(crate) fn validate_package_part(part: &WireValue) -> Result<(), PackageSourc
     Ok(())
 }
 
-pub(crate) fn verify_protocol_package_source(
-    proof: &WireValue,
-    objects: &[WireValue],
-) -> Result<VerifiedPackageMaterial, PackageSourceError> {
+/// Pure proof normalization shares the verifier's exact source/descriptor rules.
+pub(crate) fn validate_package_source_proof(proof: &WireValue) -> Result<(), PackageSourceError> {
     if !exact(
         proof,
         &[
@@ -228,6 +226,31 @@ pub(crate) fn verify_protocol_package_source(
     if descriptors.is_empty() || descriptors.len() > MAX_PARTS {
         return Err(Resource);
     }
+    let mut sum = 0usize;
+    for (index, descriptor) in descriptors.iter().enumerate() {
+        if !exact(descriptor, &["id", "index", "sha256", "bytes"])
+            || integer(field(descriptor, "index")?)? != index as u64
+            || scalar(field(descriptor, "id")?)? != package_part_id(source, &id, index)?
+            || !digest(&scalar(field(descriptor, "sha256")?)?) { return Err(Invalid); }
+        let length = integer(field(descriptor, "bytes")?)? as usize;
+        if !(1..=PART_BYTES).contains(&length) { return Err(Invalid); }
+        sum = sum.checked_add(length).filter(|sum| *sum <= MATERIAL_BYTES).ok_or(Resource)?;
+    }
+    if sum != total { return Err(Mismatch); }
+    Ok(())
+}
+
+pub(crate) fn verify_protocol_package_source(
+    proof: &WireValue,
+    objects: &[WireValue],
+) -> Result<VerifiedPackageMaterial, PackageSourceError> {
+    validate_package_source_proof(proof)?;
+    let source = field(proof, "source")?;
+    let workspace = scalar(field(proof, "workspace_id")?)?;
+    let source_hash = scalar(field(proof, "source_sha256")?)?;
+    let id = scalar(field(proof, "source_id")?)?;
+    let total = integer(field(proof, "bytes")?)? as usize;
+    let WireValue::Array(descriptors) = field(proof, "parts")? else { return Err(Invalid); };
     let related = objects
         .iter()
         .filter(|row| {

@@ -35,6 +35,13 @@ pub enum PrivateInstallError {
     Author,
 }
 
+/// Validate candidate proof bytes only; signed stage ancestry remains mandatory.
+pub fn normalize_package_source_proof(proof: &WireValue) -> Result<WireValue, PrivateInstallError> {
+    crate::protocol_package_source::validate_package_source_proof(proof)
+        .map_err(|_| PrivateInstallError::Invalid)?;
+    Ok(proof.clone())
+}
+
 /// Reconstruct a complete package source from consecutive authenticated
 /// signed parts. The caller separately binds every part to an origin-bound
 /// replayed stage commit and the source checkpoint to that replay.

@@ -8,7 +8,7 @@ use crate::{
     secure_intents::{SecureIntentError, SecureIntentJournal, SecurePacketInput},
     secure_lifecycle::SecureLifecycle,
     secure_owner_create::{SecureOwnerCreateConfig, SecureOwnerWorkspaceCreate},
-    secure_private_install::{ImportedHistoricalDirectBegin, InstallStep, ImportedHistoricalStageStep, PrivatePackageStageInput, SecurePrivatePackageInstall},
+    secure_private_install::{ImportedHistoricalCompletedPackageSource, ImportedHistoricalDirectBegin, InstallStep, ImportedHistoricalStageStep, PrivatePackageStageInput, SecurePrivatePackageInstall},
     secure_read_access::{SecureReadAccess, SecureReadConfig},
     secure_read_profile::{SecureReadProfile, SecureReadProfileConfig},
     secure_state::{read_private_file_bounded, SecureStateStore},
@@ -21,8 +21,8 @@ use peerwork_core::{
     prepared_secure_request::{
         verify_prepared_secure_commit_request_with_policy, SecureCommitRequestPins,
     },
-    prepared_private_install::{canonical_package_source_material, package_source_identity_matches, prepare_multipart_orphan_package_stage_material, prepare_orphan_package_stage_material, verify_complete_package_source, verify_saved_private_direct_install_begin_with_options, verify_saved_private_package_install_step, VerifiedMultipartOrphanMaterial, MAX_PACKAGE_SOURCE_PARTS},
-    public_direct_install::{plan_public_install_snapshot, resolve_explicit_install_protocol},
+    prepared_private_install::{canonical_package_source_material, package_source_identity_matches, prepare_multipart_orphan_package_stage_material, prepare_orphan_package_stage_material, verify_complete_package_source, normalize_package_source_proof, verify_saved_private_package_install_begin_with_disclosure, verify_saved_private_direct_install_begin_with_options, verify_saved_private_package_install_step, VerifiedMultipartOrphanMaterial, MAX_PACKAGE_SOURCE_PARTS},
+    public_direct_install::{normalize_install_protocol_manifest, plan_public_install_snapshot, resolve_explicit_install_protocol},
     replayed_secure_journal::{replay_secure_journal_exact, JournalReplayInput, StructureStatus},
     secure_keyring::SecretKeyring,
     wire_json::{canonical_wire_value, parse_wire_json_bounded, WireValue},
@@ -2830,7 +2830,7 @@ impl SecureHistoricalOwnerAttach {
                     attach_id, &plan.manifest.stage_id, &plan.material,
                     &source_wire, &historical_policy_hash, &saved.source_id,
                     &plan.manifest.root_package_digest, &plan.manifest.protocol_digest,
-                    saved.part_count, steps,
+                    saved.part_count, steps, false,
                 ).map_err(|_| HistoricalOwnerAttachError::Conflict)?;
             #[cfg(test)]
             if TEST_STOP_AFTER_IMPORTED_MULTIPART_STAGE_ROW.swap(false, Ordering::SeqCst) {
@@ -5851,6 +5851,7 @@ struct ResolvedLegacyDirectOptions {
     intent_hash: String,
     protocol_digest: String,
     composition: Option<WireValue>,
+    package_source: Option<WireValue>,
     grants_json: String,
     disclose_json: Option<String>,
     disclosed_fields: Option<std::collections::BTreeSet<(Vec<u16>, Vec<u16>)>>,
@@ -5862,7 +5863,7 @@ struct ResolvedLegacyDirectOptions {
 fn resolve_legacy_direct_options(options: &WireValue) -> Result<ResolvedLegacyDirectOptions, HistoricalOwnerAttachError> {
     let invalid = || HistoricalOwnerAttachError::SourceUnresolved;
     let WireValue::Object(keys) = options else { return Err(invalid()); };
-    if keys.iter().any(|(key, _)| !["instance_id", "entrypoint", "manifest", "grants", "disclose", "expected_checkpoint", "dependencies"]
+    if keys.iter().any(|(key, _)| !["instance_id", "entrypoint", "manifest", "grants", "disclose", "expected_checkpoint", "dependencies", "package_source"]
         .iter().any(|name| key.iter().copied().eq(name.encode_utf16())))
         || options.get("instance_id").and_then(WireValue::as_string).is_none_or(|id| !valid_token(&id))
         || options.get("entrypoint").and_then(WireValue::as_string).is_none()
@@ -5870,8 +5871,17 @@ fn resolve_legacy_direct_options(options: &WireValue) -> Result<ResolvedLegacyDi
     { return Err(invalid()); }
     let manifest = options.get("manifest").ok_or_else(invalid)?;
     let kv = |name: &str, value| (name.encode_utf16().collect::<Vec<_>>(), value);
-    let (manifest, protocol_digest, composition) = resolve_explicit_install_protocol(
-        manifest, options.get("dependencies")).map_err(|_| invalid())?;
+    let package_source = options.get("package_source").map(normalize_package_source_proof)
+        .transpose().map_err(|_| invalid())?;
+    let (manifest, protocol_digest, composition) = if let Some(proof) = package_source.as_ref() {
+        if options.get("dependencies").is_some_and(|nodes| !matches!(nodes, WireValue::Array(rows) if rows.is_empty()))
+            || canonical_wire_value(options.get("expected_checkpoint").ok_or_else(invalid)?, CanonicalPath::SecureArtifact).map_err(|_| invalid())?
+                != canonical_wire_value(proof.get("source").ok_or_else(invalid)?, CanonicalPath::SecureArtifact).map_err(|_| invalid())?
+        { return Err(invalid()); }
+        let (manifest, digest) = normalize_install_protocol_manifest(manifest).map_err(|_| invalid())?;
+        if proof.get("protocol_digest").and_then(WireValue::as_string).as_deref() != Some(digest.as_str()) { return Err(invalid()); }
+        (manifest, digest, None)
+    } else { resolve_explicit_install_protocol(manifest, options.get("dependencies")).map_err(|_| invalid())? };
     let grants = options.get("grants").cloned().unwrap_or_else(|| WireValue::Array(Vec::new()));
     if !matches!(&grants, WireValue::Array(rows) if rows.len() <= 128) { return Err(invalid()); }
     let mut semantic = vec![
@@ -5880,6 +5890,7 @@ fn resolve_legacy_direct_options(options: &WireValue) -> Result<ResolvedLegacyDi
         kv("manifest", manifest.clone()), kv("grants", grants.clone()),
     ];
     if let Some(proof) = composition.as_ref() { semantic.push(kv("composition", proof.clone())); }
+    if let Some(proof) = package_source.as_ref() { semantic.push(kv("package_source", proof.clone())); }
     if let Some(checkpoint) = options.get("expected_checkpoint") {
         semantic.push(kv("expected_checkpoint", checkpoint.clone()));
     }
@@ -5918,7 +5929,7 @@ fn resolve_legacy_direct_options(options: &WireValue) -> Result<ResolvedLegacyDi
     } else { None };
     let intent_hash = sha256_hex(canonical_wire_value(&WireValue::Object(semantic), CanonicalPath::SecureArtifact)
         .map_err(|_| invalid())?.as_bytes());
-    Ok(ResolvedLegacyDirectOptions { intent_hash, protocol_digest, composition,
+    Ok(ResolvedLegacyDirectOptions { intent_hash, protocol_digest, composition, package_source,
         grants_json: canonical_wire_value(&grants, CanonicalPath::SecureArtifact).map_err(|_| invalid())?,
         disclose_json, disclosed_fields })
 }
@@ -6202,8 +6213,9 @@ fn verify_exact_direct_install_begin(
     // Equality with this reconstructed authenticated value enforces all seven
     // keys and pins; the advisory options/map hash alone proves no checkpoint.
     if let Some(reviewed) = options.get("expected_checkpoint") {
-        let expected = parse_wire_json_bounded(&checkpoint_wire, 32, 8192)
-            .map_err(|_| invalid())?;
+        let expected = if let Some(proof) = resolved.package_source.as_ref() { proof.get("source").ok_or_else(invalid)?.clone() }
+            else { parse_wire_json_bounded(&checkpoint_wire, 32, 8192)
+            .map_err(|_| invalid())? };
         if canonical_wire_value(reviewed, CanonicalPath::SecureArtifact).map_err(|_| invalid())?
             != canonical_wire_value(&expected, CanonicalPath::SecureArtifact).map_err(|_| invalid())?
         { return Err(invalid()); }
@@ -6273,14 +6285,23 @@ fn verify_exact_direct_install_begin(
     let issued_at = exact_u64(payload.get("issued_at")).ok_or_else(invalid)?;
     let entrypoint = options.get("entrypoint").and_then(WireValue::as_string)
         .ok_or_else(invalid)?;
-    let verified = verify_saved_private_direct_install_begin_with_options(
+    let staged_source = if let Some(proof) = resolved.package_source.as_ref() {
+        Some(verify_staged_install_source(proof, material_wire, prior_sequence, replayed, input)?)
+    } else { None };
+    let verified = if let Some(source) = staged_source.as_ref() {
+        verify_saved_private_package_install_begin_with_disclosure(&pending.request, material_wire,
+            source.source_checkpoint_json.as_bytes(), &checkpoint_wire, prior_policy, prior.objects(),
+            grants.as_bytes(), resolved.disclose_json.as_deref().unwrap_or("[]").as_bytes(),
+            &pending.instance_id, &entrypoint, &pending.command_id, issued_at, owner.signing_key(), key)
+    } else { verify_saved_private_direct_install_begin_with_options(
         &pending.request, closure.as_bytes(), bindings.as_bytes(),
         &root_package_digest, &resolved.protocol_digest, &checkpoint_wire,
         prior_policy, prior.objects(), grants.as_bytes(),
         resolved.disclose_json.as_deref().unwrap_or("[]").as_bytes(),
         &pending.instance_id, &entrypoint, &pending.command_id, issued_at,
         owner.signing_key(), key,
-    ).map_err(|_| invalid())?;
+    ) }.map_err(|_| invalid())?;
+    if verified.protocol_digest() != resolved.protocol_digest { return Err(invalid()); }
     // Caller root/dependency provenance must equal the independently compiled
     // proof that the exact signed BEGIN verifier accepted, not only its digest.
     match (resolved.composition.as_ref(), verified.direct_composition()) {
@@ -6327,13 +6348,14 @@ fn verify_exact_direct_install_begin(
             policy_hash: verified.policy_hash().to_owned(),
             snapshot_json,
             protocol_digest: resolved.protocol_digest,
-            material_wire: closure.into_bytes(),
+            material_wire: if staged_source.is_some() { canonical_package_source_material(material_wire).map_err(|_| invalid())? } else { closure.into_bytes() },
             bindings_json: bindings,
             source_checkpoint_json: canonical_wire_value(
                 &parse_wire_json_bounded(&checkpoint_wire, 32, 8192)
                     .map_err(|_| invalid())?, CanonicalPath::SecureArtifact,
             ).map_err(|_| invalid())?,
             root_package_digest,
+            staged_source,
             steps: Vec::new(),
         },
     })
@@ -6467,6 +6489,53 @@ fn verify_completed_direct_install(
         })
     { return Err(invalid()); }
     Ok((verified, end_sequence))
+}
+
+/// Bind a complete selected source to its signed prefix, independently of
+/// advisory options. Reconstructed stage requests are never submitted.
+fn verify_staged_install_source(
+    proof: &WireValue, material: &[u8], begin_predecessor: u64,
+    replayed: &TransportReplayedJournal, input: &HistoricalOwnerAttachInput,
+) -> Result<ImportedHistoricalCompletedPackageSource, HistoricalOwnerAttachError> {
+    let invalid = || HistoricalOwnerAttachError::SourceUnresolved;
+    let source = proof.get("source").ok_or_else(invalid)?;
+    let base = exact_u64(source.get("sequence")).ok_or_else(invalid)?;
+    let Some(WireValue::Array(parts)) = proof.get("parts") else { return Err(invalid()); };
+    if parts.is_empty() || base.checked_add(parts.len() as u64) != Some(begin_predecessor) { return Err(invalid()); }
+    let last = usize::try_from(begin_predecessor.checked_sub(1).ok_or_else(invalid)?).map_err(|_| invalid())?;
+    let wire = replayed.signed_commit_wires().get(last).ok_or_else(invalid)?;
+    let signed = parse_wire_json_bounded(wire, 64, 262_144).map_err(|_| invalid())?;
+    let marker = CompletedPackageStageMarker {
+        command_id: signed.get("payload").and_then(|p| p.get("command_id")).and_then(WireValue::as_string).ok_or_else(invalid)?,
+        source: source.clone(), source_id: proof.get("source_id").and_then(WireValue::as_string).ok_or_else(invalid)?,
+        source_sha256: proof.get("source_sha256").and_then(WireValue::as_string).ok_or_else(invalid)?,
+        part_index: parts.len() - 1,
+    };
+    verify_completed_package_stage(&marker, replayed, input)?;
+    let mut signed_parts = Vec::new(); let mut steps = Vec::new();
+    for offset in 0..parts.len() {
+        let index = usize::try_from(base + offset as u64).map_err(|_| invalid())?;
+        let wire = replayed.signed_commit_wires().get(index).ok_or_else(invalid)?;
+        let signed = parse_wire_json_bounded(wire, 64, 262_144).map_err(|_| invalid())?;
+        let payload = signed.get("payload").ok_or_else(invalid)?;
+        let operation = replayed.replay().operations().get(index).ok_or_else(invalid)?;
+        let Some(WireValue::Array(objects)) = operation.get("objects") else { return Err(invalid()); };
+        if objects.len() != 1 { return Err(invalid()); } signed_parts.push(objects[0].clone());
+        let request = WireValue::Object(vec![("commit".encode_utf16().collect(), signed.clone())]);
+        steps.push(ImportedHistoricalStageStep {
+            command_id: payload.get("command_id").and_then(WireValue::as_string).ok_or_else(invalid)?,
+            issued_at_ms: exact_u64(payload.get("issued_at")).ok_or_else(invalid)?,
+            request_wire: canonical_wire_value(&request, CanonicalPath::SecureArtifact).map_err(|_| invalid())?.into_bytes(),
+            commit_hash: sha256_hex(wire),
+        });
+    }
+    let verified = verify_complete_package_source(&signed_parts, source).map_err(|_| invalid())?;
+    if canonical_wire_value(&verified, CanonicalPath::SecureArtifact).map_err(|_| invalid())?
+        != canonical_wire_value(proof, CanonicalPath::SecureArtifact).map_err(|_| invalid())?
+        || sha256_hex(&canonical_package_source_material(material).map_err(|_| invalid())?) != marker.source_sha256
+    { return Err(invalid()); }
+    Ok(ImportedHistoricalCompletedPackageSource { source_checkpoint_json: canonical_wire_value(source, CanonicalPath::SecureArtifact)
+        .map_err(|_| invalid())?, source_id: marker.source_id, part_count: parts.len(), steps })
 }
 
 fn verify_completed_package_stage(
@@ -12436,11 +12505,20 @@ mod tests {
         exercise_selected_direct_install_source(&mode);
     }
 
+    #[test]
+    fn actual_service_imports_staged_package_source_install() {
+        let mode = std::env::var("PEERWORK_STAGED_SOURCE_INSTALL_MODE")
+            .unwrap_or_else(|_| "direct-staged-package-begin-before-post".into());
+        assert!(["direct-staged-package-begin-before-post", "direct-staged-package-end-applied-loss"].contains(&mode.as_str()));
+        exercise_selected_direct_install_source(&mode);
+    }
+
     fn exercise_selected_direct_install_source(mode: &str) {
         let _fault_guard = ATTACH_FAULT_TEST_LOCK.lock().unwrap();
         let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else { return; };
         let mode = mode.to_owned();
         let same_workspace = mode == "direct-same-workspace-before-post";
+        let staged_source_options = mode.starts_with("direct-staged-package-");
         let composition_options = mode.starts_with("direct-composition-");
         let normalized_options = ["direct-disclosure-", "direct-no-grants-", "direct-empty-disclosure-"]
             .iter().any(|prefix| mode.starts_with(prefix));
@@ -12529,6 +12607,11 @@ mod tests {
             assert_eq!(count(), before);
             assert_eq!(read_private_file_bounded(&input.protected_ts_state_path, MAX_SOURCE).unwrap(), source_before);
         }
+        if staged_source_options {
+            exercise_staged_source_options_rejections(&attach, &input, root.path(), command, &options, &material);
+            assert_eq!(count(), before);
+            assert_eq!(read_private_file_bounded(&input.protected_ts_state_path, MAX_SOURCE).unwrap(), source_before);
+        }
         if same_workspace {
             let source: serde_json::Value = serde_json::from_slice(&source_before).unwrap();
             assert_eq!(source["protocol_install_intents"].as_object().unwrap().len(), 2);
@@ -12572,6 +12655,13 @@ mod tests {
         drop(row_store);
         let plan = attach.load_quarantined_direct_install_plan(&prepared[0].attach_id, &row).unwrap();
         let packet = plan.source.pending_install_begin.as_ref().unwrap().request.to_vec();
+        if staged_source_options {
+            let protected_options: serde_json::Value = serde_json::from_slice(&plan.options).unwrap();
+            assert_eq!(protected_options["package_source"], fixture["package_source"]);
+            assert_eq!(protected_options["expected_checkpoint"], fixture["expected_checkpoint"]);
+            assert_eq!(fixture["begin_predecessor"]["sequence"].as_u64().unwrap(),
+                fixture["expected_checkpoint"]["sequence"].as_u64().unwrap() + fixture["source_parts"].as_u64().unwrap());
+        }
         assert_eq!(plan.manifest.ts_state_sha256, sha256_hex(&source_before));
         assert_eq!(plan.manifest.command_id, command);
         assert_eq!(plan.manifest.original_commit_hash, selected_hash);
@@ -12646,6 +12736,47 @@ mod tests {
         assert_eq!(count(), final_count);
         if applied && fixture["pending_action_id"] == "secure.structure.end" {
             assert_eq!(final_count, before);
+        }
+    }
+
+    fn exercise_staged_source_options_rejections(
+        attach: &SecureHistoricalOwnerAttach, input: &HistoricalOwnerAttachInput,
+        root: &Path, command: &str, options_json: &str, material: &str,
+    ) {
+        let options: serde_json::Value = serde_json::from_str(options_json).unwrap();
+        let source: serde_json::Value = serde_json::from_slice(&std::fs::read(&input.protected_ts_state_path).unwrap()).unwrap();
+        let intent_key = format!("{}.{}", input.workspace_id, options["instance_id"].as_str().unwrap());
+        for name in ["proof-descriptor", "proof-source-hash", "reviewed-checkpoint", "proof-root",
+            "incomplete-material", "explicit-dependency", "raw-hash"] {
+            let mut changed = options.clone(); let mut changed_material = material.to_owned();
+            match name {
+                "proof-descriptor" => changed["package_source"]["parts"][0]["sha256"] = serde_json::json!("0".repeat(64)),
+                "proof-source-hash" => changed["package_source"]["source_sha256"] = serde_json::json!("0".repeat(64)),
+                "reviewed-checkpoint" => changed["expected_checkpoint"]["head"] = serde_json::json!("0".repeat(64)),
+                "proof-root" => changed["package_source"]["root_package_digest"] = serde_json::json!("0".repeat(64)),
+                "incomplete-material" => { let mut selected: serde_json::Value = serde_json::from_str(material).unwrap();
+                    selected["closure"]["root_package_digest"] = serde_json::json!("0".repeat(64)); changed_material = selected.to_string(); },
+                "explicit-dependency" => changed["dependencies"] = serde_json::json!([{"digest":"0".repeat(64),"manifest":changed["manifest"]}]),
+                _ => { changed["dependencies"] = serde_json::json!([]); },
+            }
+            let text = changed.to_string();
+            let value = parse_wire_json_bounded(text.as_bytes(), 64, 2 * 1024 * 1024).unwrap();
+            let hash = if name == "raw-hash" {
+                let hash = sha256_hex(canonical_wire_value(&value, CanonicalPath::SecureArtifact).unwrap().as_bytes());
+                assert_ne!(hash, resolve_legacy_direct_options(&value).unwrap().intent_hash); hash
+            } else { resolve_legacy_direct_options(&value).map(|resolved| resolved.intent_hash).unwrap_or_else(|_| "0".repeat(64)) };
+            let mut copy = source.clone(); copy["protocol_install_intents"][&intent_key] = serde_json::json!(hash);
+            assert_eq!(copy["pending"], source["pending"]); assert_eq!(copy["workspaces"], source["workspaces"]);
+            let bytes = serde_json::to_vec(&copy).unwrap(); let path = root.join(format!("negative-staged-source-{name}.state"));
+            std::fs::write(&path, &bytes).unwrap();
+            #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap(); }
+            let mut negative = input.clone(); negative.protected_ts_state_path = path.clone(); let cancel = CancellationToken::new();
+            assert!(matches!(attach.inspect_pending_direct_install_begin(&negative, command, &text, &changed_material, &cancel),
+                Err(HistoricalOwnerAttachError::SourceUnresolved)), "{name}: inspect must refuse");
+            assert!(matches!(attach.attach_pending_direct_install_begin(negative, command, &sha256_hex(&bytes), &text, &changed_material, &cancel),
+                Err(HistoricalOwnerAttachError::SourceUnresolved)), "{name}: attach must refuse before PREPARED");
+            assert!(attach.attachments().unwrap().is_empty()); assert!(!attach.workspace_dir(&input.workspace_id).join("lifecycle.state").exists());
+            assert_eq!(std::fs::read(path).unwrap(), bytes);
         }
     }
 
