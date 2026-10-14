@@ -1,0 +1,44 @@
+{
+  "linux": {
+    "linux-arm64-gnu": {
+      "arch": "aarch64",
+      "image": "quay.io/pypa/manylinux_2_28_aarch64@sha256:abd1230aa9e4058a74b89d27cd14ba18c0db036d7bfe6e6f219a29ea63c24eb6",
+      "node_arch": "arm64",
+      "node_sha256": "5f4ddab610c1ab2016b3c227cebdbf6d9495161487e4739c7b90090595f465f7",
+      "rust_target": "aarch64-unknown-linux-gnu",
+      "rustup_sha256": "15f6e4ce9f583b929c996c91562bad6d4454f3281de858b02cdfdef615fac433"
+    },
+    "linux-arm64-musl": {
+      "alpine": "3.22.6",
+      "arch": "aarch64",
+      "rootfs_sha256": "821565fa8f3953eefd12497b166b4b50add2f7c57fb312e75862f5867e06fefe",
+      "rust_target": "aarch64-unknown-linux-musl",
+      "rustup_sha256": "1ddf36182ac5d1782dbeefcb9bea7f5f9412d88f4a0d5047b1564a223624e8c6"
+    },
+    "linux-x64-gnu": {
+      "arch": "x86_64",
+      "image": "quay.io/pypa/manylinux_2_28_x86_64@sha256:4131ddd7acb9c6c966af02fe7e71edc51e078c2d41f475966697676430bfa2ae",
+      "node_arch": "x64",
+      "node_sha256": "2f2c0da162318f0de47665410c7c8c2ed3d36c8f3105de4bbc61176c70a7cbf2",
+      "rust_target": "x86_64-unknown-linux-gnu",
+      "rustup_sha256": "dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71"
+    },
+    "linux-x64-musl": {
+      "alpine": "3.22.6",
+      "arch": "x86_64",
+      "rootfs_sha256": "27694aaa55fd7a9e3ef596e0ad4eb66802308bb20172b17030cd5f4d8ae9bac2",
+      "rust_target": "x86_64-unknown-linux-musl",
+      "rustup_sha256": "331228566cc931f32cd684f9bebc5956a5e5d7394c8d5de595f196a658ab98e6"
+    }
+  },
+  "maturin": "1.15.0",
+  "new_arm_gnu_metadata_sources": [
+    "https://quay.io/api/v1/repository/pypa/manylinux_2_28_aarch64/tag/?limit=1&onlyActiveTags=true",
+    "https://static.rust-lang.org/rustup/dist/aarch64-unknown-linux-gnu/rustup-init.sha256",
+    "https://nodejs.org/dist/v24.20.0/SHASUMS256.txt"
+  ],
+  "node": "24.20.0",
+  "retrieved": "2026-10-14",
+  "rust": "1.89.0",
+  "source_date": "exact Git commit timestamp"
+}

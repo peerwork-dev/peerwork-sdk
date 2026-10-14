@@ -207,8 +207,10 @@ def assemble(root: Path,bundles: Path,output: Path,tag: str):
                 if name!=names[2] or selected[name]!=sha(candidate):raise ReleaseError('release asset name collision')
                 continue
             shutil.copyfile(candidate,output/name);selected[name]=sha(candidate)
-        target_dir=output/'dependencies'/target;target_dir.mkdir(parents=True)
-        for name in ['sbom.spdx.json','licenses.json']:shutil.copyfile(bundles/target/name,target_dir/name)
+        # GitHub release assets use basenames, so target-specific standalone
+        # dependency documents must be flat and collision-free too.
+        shutil.copyfile(bundles/target/'sbom.spdx.json',output/('sbom-'+target+'.spdx.json'))
+        shutil.copyfile(bundles/target/'licenses.json',output/('licenses-'+target+'.json'))
         targets[target]=dict(bundle_manifest_sha256=sha(bundles/target/'release.json'),package_assets=names)
     manifest=dict(version=identity['version'],tag=tag,source_commit=revision,source_date_epoch=epoch,unsigned=True,targets=targets,assets=inventory(output))
     (output/'release.json').write_bytes(wire(manifest))
