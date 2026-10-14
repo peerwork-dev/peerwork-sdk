@@ -2753,7 +2753,24 @@ impl SecureHistoricalOwnerAttach {
                 #[cfg(test)] eprintln!("direct-install-attach:policy-epoch");
                 HistoricalOwnerAttachError::Verification
             })?;
-        let expected_sequence = row.source_sequence
+        // The inspected TS checkpoint may already include BEGIN after its
+        // response was lost. Use the predecessor re-proved from the original
+        // signed packet for the BEGIN position and lifecycle promotion.
+        let predecessor = parse_wire_json_bounded(
+            verified.imported.source_checkpoint_json.as_bytes(), 32, 8192,
+        ).map_err(|_| HistoricalOwnerAttachError::Verification)?;
+        let predecessor_sequence = exact_u64(predecessor.get("sequence"))
+            .ok_or(HistoricalOwnerAttachError::Verification)?;
+        let predecessor_head = predecessor.get("head")
+            .and_then(WireValue::as_string)
+            .ok_or(HistoricalOwnerAttachError::Verification)?;
+        let predecessor_policy_hash = predecessor.get("policy_hash")
+            .and_then(WireValue::as_string)
+            .ok_or(HistoricalOwnerAttachError::Verification)?;
+        if !replayed.replay().contains_checkpoint(
+            predecessor_sequence, Some(&predecessor_head), &predecessor_policy_hash,
+        ) { return Err(HistoricalOwnerAttachError::Verification); }
+        let expected_sequence = predecessor_sequence
             .checked_add(u64::from(verified.applied))
             .ok_or(HistoricalOwnerAttachError::Verification)?;
         if !owner_current || current_epoch != plan.manifest.source_epoch
@@ -2798,8 +2815,8 @@ impl SecureHistoricalOwnerAttach {
         ).map_err(|_| HistoricalOwnerAttachError::Local)?;
         if verified.applied {
             lifecycle.activate_verified_historical_owner_pending_begin(
-                ring, &replayed, row.source_sequence, row.source_head.as_deref(),
-                &row.source_policy_hash, &verified.commit_hash,
+                ring, &replayed, predecessor_sequence, Some(&predecessor_head),
+                &predecessor_policy_hash, &verified.commit_hash,
                 replayed.replay().policy_hash(),
             ).map_err(|_| {
                 #[cfg(test)] eprintln!("direct-install-attach:activate-seeding");
@@ -2807,8 +2824,8 @@ impl SecureHistoricalOwnerAttach {
             })?;
         } else {
             lifecycle.activate_verified_historical_owner(
-                ring, &replayed, row.source_sequence, row.source_head.as_deref(),
-                &row.source_policy_hash,
+                ring, &replayed, predecessor_sequence, Some(&predecessor_head),
+                &predecessor_policy_hash,
             ).map_err(|_| {
                 #[cfg(test)] eprintln!("direct-install-attach:activate-active");
                 HistoricalOwnerAttachError::Verification
