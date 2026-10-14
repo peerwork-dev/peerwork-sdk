@@ -13,7 +13,9 @@ if (!origin || !sourceDir || !referenceRoot
     'direct-page-before-post', 'direct-page-applied-loss',
     'direct-end-before-post', 'direct-end-applied-loss',
     'direct-checkpoint-begin-before-post', 'direct-checkpoint-end-applied-loss',
-    'direct-checkpoint-completed-end'].includes(mode)) {
+    'direct-checkpoint-completed-end', 'direct-disclosure-begin-before-post',
+    'direct-disclosure-end-applied-loss', 'direct-no-grants-begin-before-post',
+    'direct-empty-disclosure-begin-before-post'].includes(mode)) {
   throw new Error('INSTALL_INTENT_TEST_INPUT');
 }
 mkdirSync(sourceDir, { recursive: true, mode: 0o700 });
@@ -36,8 +38,13 @@ try {
   const created = await agent.create('Legacy install intent proof', 'PRIVATE', { structure: true });
   const workspaceId = created.workspaceId;
   let initial = await agent.journal(workspaceId);
-  const checkpointOption = mode.startsWith('direct-checkpoint-');
-  const retainedStep = /^direct-(page|end)-/.exec(mode.replace(/^direct-checkpoint-/, 'direct-'))?.[1];
+  const disclosureOption = mode.startsWith('direct-disclosure-');
+  const emptyDisclosureOption = mode.startsWith('direct-empty-disclosure-');
+  const omittedGrants = mode.startsWith('direct-no-grants-');
+  const normalizedOptions = disclosureOption || emptyDisclosureOption || omittedGrants;
+  const checkpointOption = mode.startsWith('direct-checkpoint-') || disclosureOption;
+  const retainedStep = /^direct-(page|end)-/.exec(mode.replace(
+    /^direct-(checkpoint|disclosure|empty-disclosure|no-grants)-/, 'direct-'))?.[1];
   if (retainedStep === 'page') {
     const wiki = initial.objects.find(row => row.kind === 'instances'
       && row.value.origin_entrypoint === 'wiki');
@@ -162,14 +169,23 @@ try {
   const instanceId = randomBytes(32).toString('base64url');
   const options = {
     instance_id: instanceId, entrypoint: 'migrated_discussion', manifest,
-    grants: [{ actor_id: agent.identity.actorId, actions: ['discussion.post'],
-      protocol_roles: ['CONTRIBUTOR'], capabilities: ['POST'] }],
+    ...(!omittedGrants ? { grants: [{ actor_id: agent.identity.actorId, actions: ['discussion.post'],
+      protocol_roles: ['CONTRIBUTOR'], capabilities: ['POST'] }] } : {}),
+    ...(disclosureOption || emptyDisclosureOption ? { disclose: [{ schema: 'discussion.message',
+      fields: emptyDisclosureOption ? [] : ['reply_to', 'message'] }] } : {}),
     ...(checkpointOption ? { expected_checkpoint: structuredClone(initial.checkpoint) } : {}),
   };
   const resolved = await resolveProtocolInstall(initial, options, []);
   if (checkpointOption && (!secureEqual(resolved.expectedCheckpoint, initial.checkpoint)
-    || await secureHash(options) !== resolved.intentHash)) {
+    || !normalizedOptions && await secureHash(options) !== resolved.intentHash)) {
     throw new Error('INSTALL_INTENT_REVIEWED_CHECKPOINT_HASH');
+  }
+  if (normalizedOptions && (await secureHash(options) === resolved.intentHash
+    || omittedGrants && resolved.grants.length !== 0
+    || (disclosureOption || emptyDisclosureOption) && !secureEqual(resolved.disclose,
+      [{ protocol_digest: resolved.digest, schema: 'discussion.message',
+        fields: emptyDisclosureOption ? [] : ['message', 'reply_to'] }]))) {
+    throw new Error('INSTALL_INTENT_NORMALIZED_OPTIONS');
   }
   writeFileSync(optionsPath, JSON.stringify(options), { mode: 0o600, flag: 'wx' });
   const key = `${workspaceId}.${instanceId}`;
@@ -289,6 +305,9 @@ try {
     pending_commit_hash: selected ? await secureHash(selected[1].body.commit) : null,
     ...(checkpointOption ? { expected_checkpoint: options.expected_checkpoint,
       canonical_options_hash: await secureHash(options) } : {}),
+    ...(normalizedOptions ? { canonical_options_hash: await secureHash(options),
+      normalized_disclosure: resolved.disclose ?? null,
+      normalized_grants: resolved.grants, original_grants_omitted: omittedGrants } : {}),
   }) + '\n');
   }
 } finally {
