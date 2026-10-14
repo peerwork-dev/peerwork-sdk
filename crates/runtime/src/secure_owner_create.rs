@@ -5,7 +5,7 @@
 
 use crate::{
     kernel_client::KernelClient,
-    kernel_identity::KernelIdentity,
+    kernel_identity::{KernelIdentity, KernelIdentityError},
     secure_action_access::{SecurePrivateActionAccess, SecurePublicActionAccess},
     secure_intents::{SecureIntentError, SecureIntentJournal},
     secure_journal_read::SecureJournalRead,
@@ -24,7 +24,7 @@ use crate::{
     secure_read_profile::{SecureReadProfile, SecureReadProfileConfig},
     secure_recipient_enrollment::{RecipientEnrollmentConfig, SecureRecipientEnrollment},
     secure_recipient_state::RecipientState,
-    secure_state::SecureStateStore,
+    secure_state::{missing_in_private_parent, SecureStateStore},
     secure_verified_read::{replay_authenticated_pages_with_budget, SecureJournalReadBudget},
     transport::{HttpTransport, TransportConfig, TransportError},
 };
@@ -114,6 +114,8 @@ pub struct SecureOwnerCreateResult {
 pub enum SecureOwnerCreateError {
     #[error("owner-create input or protected history is invalid")]
     Invalid,
+    #[error("configured Owner identity is missing; import the selected legacy Owner with identity import-legacy-owner-pem using its Owner config and protected PEM before Owner reads or operations")]
+    IdentityMissing,
     #[error("protected owner identity or origin changed")]
     Identity,
     #[error("owner-create operation was not found")]
@@ -146,6 +148,7 @@ impl SecureOwnerCreateError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::Invalid => "INPUT_INVALID",
+            Self::IdentityMissing => "IDENTITY_MISSING",
             Self::Identity => "IDENTITY_CHANGED",
             Self::NotFound => "NOT_FOUND",
             Self::PendingPackageStageUnresolved => "PENDING_PACKAGE_STAGE_UNRESOLVED",
@@ -213,6 +216,18 @@ pub struct SecureOwnerWorkspaceCreate {
 impl SecureOwnerWorkspaceCreate {
     pub fn new(config: SecureOwnerCreateConfig) -> Self {
         Self { config }
+    }
+
+    fn open_identity(&self) -> Result<KernelIdentity, SecureOwnerCreateError> {
+        // A missing profile directory has no native identity yet. Preserve
+        // protection errors when its parent cannot be validated as private.
+        if missing_in_private_parent(&self.config.state_dir) {
+            return Err(SecureOwnerCreateError::IdentityMissing);
+        }
+        KernelIdentity::open(&self.identity_path()).map_err(|error| match error {
+            KernelIdentityError::NotFound => SecureOwnerCreateError::IdentityMissing,
+            _ => SecureOwnerCreateError::Identity,
+        })
     }
 
     pub(crate) fn has_saved_workspace_for_attach(
@@ -365,8 +380,7 @@ impl SecureOwnerWorkspaceCreate {
         workspace_id: &str,
         visibility: &str,
     ) -> Result<SecureReadProfileConfig, SecureOwnerCreateError> {
-        let identity = KernelIdentity::open(&self.identity_path())
-            .map_err(|_| SecureOwnerCreateError::Identity)?;
+        let identity = self.open_identity()?;
         let store = SecureStateStore::open(&self.history_path())
             .map_err(|_| SecureOwnerCreateError::Local)?;
         let history = read_history(&store, &self.config, &identity)?;
@@ -414,8 +428,7 @@ impl SecureOwnerWorkspaceCreate {
         if published.status != "PUBLISHED" {
             return Err(SecureOwnerCreateError::Enrollment);
         }
-        let identity = KernelIdentity::open(&self.identity_path())
-            .map_err(|_| SecureOwnerCreateError::Identity)?;
+        let identity = self.open_identity()?;
         let recipient = RecipientState::open(&self.recipient_path(), &identity)
             .map_err(|_| SecureOwnerCreateError::Identity)?;
         let store = SecureStateStore::open(&self.history_path())
@@ -475,8 +488,7 @@ impl SecureOwnerWorkspaceCreate {
     /// a result hidden by process cancellation. It does not assert current
     /// server state or expose requests, keys, or encrypted bodies.
     pub fn operations(&self) -> Result<Vec<SecureOwnerCreateResult>, SecureOwnerCreateError> {
-        let identity = KernelIdentity::open(&self.identity_path())
-            .map_err(|_| SecureOwnerCreateError::Identity)?;
+        let identity = self.open_identity()?;
         let store = SecureStateStore::open(&self.history_path())
             .map_err(|_| SecureOwnerCreateError::Local)?;
         let history = read_history(&store, &self.config, &identity)?;
@@ -495,8 +507,7 @@ impl SecureOwnerWorkspaceCreate {
         workspace_id: &str,
         cancel: &CancellationToken,
     ) -> Result<String, SecureOwnerCreateError> {
-        let identity = KernelIdentity::open(&self.identity_path())
-            .map_err(|_| SecureOwnerCreateError::Identity)?;
+        let identity = self.open_identity()?;
         let store = SecureStateStore::open(&self.history_path())
             .map_err(|_| SecureOwnerCreateError::Local)?;
         let history = read_history(&store, &self.config, &identity)?;
@@ -583,8 +594,7 @@ impl SecureOwnerWorkspaceCreate {
         if cancel.is_cancelled() {
             return Err(SecureOwnerCreateError::Cancelled);
         }
-        let identity = KernelIdentity::open(&self.identity_path())
-            .map_err(|_| SecureOwnerCreateError::Identity)?;
+        let identity = self.open_identity()?;
         let recipient = RecipientState::open(&self.recipient_path(), &identity)
             .map_err(|_| SecureOwnerCreateError::Identity)?;
         let store = SecureStateStore::open(&self.history_path())
@@ -927,8 +937,7 @@ impl SecureOwnerWorkspaceCreate {
                 .map_err(|_| SecureOwnerCreateError::Verification)?;
             Ok(())
         })?;
-        let identity = KernelIdentity::open(&self.identity_path())
-            .map_err(|_| SecureOwnerCreateError::Identity)?;
+        let identity = self.open_identity()?;
         let store = SecureStateStore::open(&self.history_path())
             .map_err(|_| SecureOwnerCreateError::Local)?;
         let mut history = read_history(&store, &self.config, &identity)?;
@@ -1250,6 +1259,38 @@ mod tests {
         io::{BufRead, BufReader},
         process::{Child, Command, Stdio},
     };
+
+    #[test]
+    fn owner_missing_identity_is_distinct_from_saved_identity_mismatch() {
+        let root = crate::test_support::protected_test_dir();
+        let config = SecureOwnerCreateConfig {
+            origin: "http://127.0.0.1:1/".into(),
+            state_dir: root.path().to_owned(),
+            allow_loopback_http: true,
+            max_replay_artifact_bytes: 64 * 1024 * 1024,
+        };
+        let access = SecureOwnerWorkspaceCreate::new(config.clone());
+        let missing = access.operations().unwrap_err();
+        assert!(matches!(missing, SecureOwnerCreateError::IdentityMissing));
+        assert_eq!(missing.code(), "IDENTITY_MISSING");
+        assert!(!config.identity_path().exists());
+        let identity = KernelIdentity::create(&config.identity_path()).unwrap();
+        {
+            let store = SecureStateStore::open(&access.history_path()).unwrap();
+            write_history(&store, &OwnerHistory {
+                version: 1, origin: config.origin.clone(),
+                actor_id: identity.actor_id().into(), signing_key_id: identity.key_id().into(),
+                rows: BTreeMap::new(),
+            }).unwrap();
+        }
+        assert!(access.operations().unwrap().is_empty());
+        fs::rename(config.identity_path(), root.path().join("prior-identity.state")).unwrap();
+        let other = KernelIdentity::create(&config.identity_path()).unwrap();
+        assert_ne!(identity.actor_id(), other.actor_id());
+        let changed = access.operations().unwrap_err();
+        assert!(matches!(changed, SecureOwnerCreateError::Identity));
+        assert_eq!(changed.code(), "IDENTITY_CHANGED");
+    }
 
     #[test]
     fn actual_service_native_public_and_private_owner_create_recover_lost_reply() {
