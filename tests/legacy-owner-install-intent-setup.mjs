@@ -25,7 +25,8 @@ try {
   if (typeof ready.origin !== 'string') throw new Error('SERVICE_ORIGIN_MISSING');
   const db = new DatabaseSync(join(testRoot, 'control.sqlite'), { readOnly: true });
   try {
-    for (const mode of ['begin-applied-loss', 'begin-before-post', 'completed-end']) {
+    for (const mode of ['begin-applied-loss', 'begin-before-post', 'completed-end',
+      'direct-begin-applied-loss', 'direct-begin-before-post']) {
       const sourceDir = join(testRoot, mode);
       mkdirSync(sourceDir, { mode: 0o700 });
       const child = spawn(process.execPath, [join(sdkRoot, 'tests/legacy-owner-install-intent.mjs'),
@@ -43,15 +44,16 @@ try {
       }
       const source = JSON.parse(stdout);
       if (source.mode !== mode || source.pending_count !== (mode === 'completed-end' ? 0 : 1)
-        || source.latest_structure_state !== (mode === 'begin-applied-loss' ? 'SEEDING' : 'ACTIVE')) {
+        || source.latest_structure_state !== (mode.endsWith('applied-loss') ? 'SEEDING' : 'ACTIVE')
+        || (mode.startsWith('direct-') && !source.material_path)) {
         throw new Error(`INSTALL_SETUP_${mode}_SHAPE`);
       }
       const count = db.prepare('SELECT count(*) AS count FROM secure_commits WHERE workspace_id=?').get(source.workspace_id).count;
       if (count !== source.latest_sequence) throw new Error(`INSTALL_SETUP_${mode}_REPLAY_COUNT`);
-      if (mode === 'begin-applied-loss' || mode === 'begin-before-post') {
+      if (mode !== 'completed-end') {
         const accepted = db.prepare('SELECT count(*) AS count FROM secure_commits WHERE workspace_id=? AND command_id=?')
           .get(source.workspace_id, source.pending_command_id).count;
-        if (accepted !== (mode === 'begin-applied-loss' ? 1 : 0)) throw new Error(`INSTALL_SETUP_${mode}_ACCEPTANCE`);
+        if (accepted !== (mode.endsWith('applied-loss') ? 1 : 0)) throw new Error(`INSTALL_SETUP_${mode}_ACCEPTANCE`);
       }
       process.stdout.write(JSON.stringify({ mode, pending_count: source.pending_count,
         initial_sequence: source.initial_sequence, latest_sequence: source.latest_sequence,
