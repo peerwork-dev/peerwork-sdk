@@ -980,7 +980,9 @@ class HistoricalPackageStageOrphanInventory(TypedDict):
     source_id: str
     source_sha256: str
     source_sequence: int
-    status: Literal["ORPHAN_NO_PACKET"]
+    part_index: int
+    part_count: int | None
+    status: Literal["ORPHAN_NO_PACKET", "APPLIED_IN_SIGNED_REPLAY"]
 
 
 class HistoricalKernelCommandStatus(TypedDict):
@@ -1234,6 +1236,34 @@ class SecureOwnerWorkspaceClient:
         return cast(HistoricalPackageStageOrphanInventory,
             self._owner("orphan_inspect", input_value=value))
 
+    def inspect_multipart_orphan_package_stage(self, workspace_id: str,
+            protected_ts_state_path: str, protected_ts_intent_db_path: str,
+            protected_owner_pkcs8_path: str, expected_owner_actor_id: str,
+            expected_owner_key_id: str, material_json: str) -> HistoricalPackageStageOrphanInventory:
+        """Verify complete material against an orphaned nonzero part; no attach row or POST."""
+        value = self._attachment_input(workspace_id, protected_ts_state_path,
+            protected_ts_intent_db_path, protected_owner_pkcs8_path,
+            expected_owner_actor_id, expected_owner_key_id)
+        return cast(HistoricalPackageStageOrphanInventory, self._owner(
+            "orphan_multipart_inspect",
+            input_value=self._multipart_stage_request(value, material_json)))
+
+    def attach_multipart_orphan_package_stage(self, workspace_id: str,
+            protected_ts_state_path: str, protected_ts_intent_db_path: str,
+            protected_owner_pkcs8_path: str, expected_owner_actor_id: str,
+            expected_owner_key_id: str, material_json: str, *,
+            selected_orphan_package_stage_command_id: str,
+            expected_ts_state_digest: str) -> HistoricalOwnerAttachmentResult:
+        """Import a verified orphaned nonzero part without POST; replan remains explicit."""
+        value = self._attachment_input(workspace_id, protected_ts_state_path,
+            protected_ts_intent_db_path, protected_owner_pkcs8_path,
+            expected_owner_actor_id, expected_owner_key_id,
+            selected_orphan_package_stage_command_id=selected_orphan_package_stage_command_id,
+            expected_ts_state_digest=expected_ts_state_digest)
+        return cast(HistoricalOwnerAttachmentResult, self._owner(
+            "orphan_multipart_attach",
+            input_value=self._multipart_stage_request(value, material_json)))
+
     def replan_orphan_package_stage(self, attach_id: str,
                                     original_command_id: str,
                                     material_json: str | None = None) -> HistoricalOwnerAttachmentResult:
@@ -1418,6 +1448,32 @@ class SecureOwnerWorkspaceClient:
             expected_owner_actor_id, expected_owner_key_id)
         return cast(HistoricalPackageStageOrphanInventory, await _run_cancelled_async(
             self._owner, "orphan_inspect", input_value=value))
+
+    async def inspect_multipart_orphan_package_stage_async(self, workspace_id: str,
+            protected_ts_state_path: str, protected_ts_intent_db_path: str,
+            protected_owner_pkcs8_path: str, expected_owner_actor_id: str,
+            expected_owner_key_id: str, material_json: str) -> HistoricalPackageStageOrphanInventory:
+        value = self._attachment_input(workspace_id, protected_ts_state_path,
+            protected_ts_intent_db_path, protected_owner_pkcs8_path,
+            expected_owner_actor_id, expected_owner_key_id)
+        return cast(HistoricalPackageStageOrphanInventory, await _run_cancelled_async(
+            self._owner, "orphan_multipart_inspect",
+            input_value=self._multipart_stage_request(value, material_json)))
+
+    async def attach_multipart_orphan_package_stage_async(self, workspace_id: str,
+            protected_ts_state_path: str, protected_ts_intent_db_path: str,
+            protected_owner_pkcs8_path: str, expected_owner_actor_id: str,
+            expected_owner_key_id: str, material_json: str, *,
+            selected_orphan_package_stage_command_id: str,
+            expected_ts_state_digest: str) -> HistoricalOwnerAttachmentResult:
+        value = self._attachment_input(workspace_id, protected_ts_state_path,
+            protected_ts_intent_db_path, protected_owner_pkcs8_path,
+            expected_owner_actor_id, expected_owner_key_id,
+            selected_orphan_package_stage_command_id=selected_orphan_package_stage_command_id,
+            expected_ts_state_digest=expected_ts_state_digest)
+        return cast(HistoricalOwnerAttachmentResult, await _run_cancelled_async(
+            self._owner, "orphan_multipart_attach",
+            input_value=self._multipart_stage_request(value, material_json)))
 
     async def replan_orphan_package_stage_async(self, attach_id: str,
             original_command_id: str,

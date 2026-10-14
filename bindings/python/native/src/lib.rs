@@ -386,7 +386,7 @@ fn secure_owner_create_json(
             Ok(value) => value,
             Err(_) => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid Owner configuration"}).to_string(),
         };
-        if matches!(operation.as_str(), "attach" | "resume_attachment" | "retain_pending_action" | "attachments" | "kernel_inspect" | "kernel_status" | "kernel_recover" | "stage_inspect" | "stage_multipart_inspect" | "stage_multipart_attach" | "stage_recover" | "orphan_inspect" | "orphan_replan") {
+        if matches!(operation.as_str(), "attach" | "resume_attachment" | "retain_pending_action" | "attachments" | "kernel_inspect" | "kernel_status" | "kernel_recover" | "stage_inspect" | "stage_multipart_inspect" | "stage_multipart_attach" | "stage_recover" | "orphan_inspect" | "orphan_multipart_inspect" | "orphan_multipart_attach" | "orphan_replan") {
             let access = SecureHistoricalOwnerAttach::new(config);
             let result = match operation.as_str() {
                 "attach" => {
@@ -453,6 +453,26 @@ fn secure_owner_create_json(
                         None => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid orphan stage inspection input"}).to_string(),
                     };
                     access.inspect_orphan_package_stage(&input, &cancel).map(|value| serde_json::to_string(&value).expect("orphan stage inventory serializes"))
+                },
+                "orphan_multipart_inspect" => {
+                    let (input, material) = match multipart_stage_request(input_json.as_deref()) {
+                        Some((input, material)) if input.selected_pending_package_stage_command_id.is_none()
+                            && input.selected_orphan_package_stage_command_id.is_none()
+                            && input.expected_ts_state_digest.is_none() => (input, material),
+                        _ => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid multipart orphan inspection input"}).to_string(),
+                    };
+                    access.inspect_multipart_orphan_package_stage_with_material(&input, &material, &cancel)
+                        .map(|value| serde_json::to_string(&value).expect("orphan stage inventory serializes"))
+                },
+                "orphan_multipart_attach" => {
+                    let (input, material) = match multipart_stage_request(input_json.as_deref()) {
+                        Some((input, material)) if input.selected_pending_package_stage_command_id.is_none()
+                            && input.selected_orphan_package_stage_command_id.is_some()
+                            && input.expected_ts_state_digest.is_some() => (input, material),
+                        _ => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid multipart orphan attachment input"}).to_string(),
+                    };
+                    access.attach_pending_package_stage_with_material(input, &material, &cancel)
+                        .map(|value| serde_json::to_string(&value).expect("attachment result serializes"))
                 },
                 "orphan_replan" => match (workspace_id.as_deref(), command_id.as_deref()) {
                     (Some(attach_id), Some(id)) => {

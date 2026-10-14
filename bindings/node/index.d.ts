@@ -193,7 +193,9 @@ export interface HistoricalPackageStageOrphanInventory {
   source_id: string;
   source_sha256: string;
   source_sequence: number;
-  status: 'ORPHAN_NO_PACKET';
+  part_index: number;
+  part_count: number | null;
+  status: 'ORPHAN_NO_PACKET' | 'APPLIED_IN_SIGNED_REPLAY';
 }
 export interface HistoricalKernelCommandStatus {
   command_id: string;
@@ -242,6 +244,10 @@ export interface SecureOwnerWorkspaceSession {
   recoverPendingPackageStage(attachId: string, expectedCommandId: string, options?: {signal?: AbortSignal}): Promise<HistoricalOwnerAttachmentResult>;
   /** Read-only verification of an original stage marker without a signed packet. */
   inspectOrphanPackageStage(input: HistoricalOwnerAttachmentInput, options?: {signal?: AbortSignal}): Promise<HistoricalPackageStageOrphanInventory>;
+  /** Verify complete material for an orphaned nonzero part; no attach row or POST. */
+  inspectMultipartOrphanPackageStage(input: HistoricalOwnerAttachmentInput, materialJson: string, options?: {signal?: AbortSignal}): Promise<HistoricalPackageStageOrphanInventory>;
+  /** Import an inspected orphaned nonzero part without POST; replan remains explicit. */
+  attachMultipartOrphanPackageStage(input: HistoricalOwnerAttachmentInput, materialJson: string, options?: {signal?: AbortSignal}): Promise<HistoricalOwnerAttachmentResult>;
   /** Explicitly plan one new stage; omit material only to resume a saved replan. */
   replanOrphanPackageStage(attachId: string, originalCommandId: string, materialJson?: string, options?: {signal?: AbortSignal}): Promise<HistoricalOwnerAttachmentResult>;
   /** Protected local status only. */
