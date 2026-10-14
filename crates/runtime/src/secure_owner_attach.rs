@@ -11500,7 +11500,7 @@ mod tests {
         assert_eq!(after_retry["sequence"], after["sequence"]);
     }
     #[test]
-    fn actual_service_inspects_signed_completed_direct_install_map() {
+    fn actual_service_imports_signed_completed_direct_install_map() {
         let _fault_guard = ATTACH_FAULT_TEST_LOCK.lock().unwrap();
         let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else { return; };
         let node = std::env::var("PEERWORK_NODE_BIN").unwrap_or_else(|_| "node".into());
