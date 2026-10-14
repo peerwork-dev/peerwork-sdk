@@ -296,6 +296,8 @@ struct SavedAttach {
     #[serde(default)]
     orphan_multipart_plan_id: Option<String>,
     #[serde(default)]
+    pending_direct_install_plan_id: Option<String>,
+    #[serde(default)]
     orphan_package_stage: Option<SavedOrphanPackageStage>,
 }
 
@@ -458,6 +460,15 @@ struct QuarantinedDirectInstallPlan {
     ts_intent_sha256: String,
     options_sha256: String,
     material_sha256: String,
+}
+
+struct LoadedDirectInstallPlan {
+    manifest: QuarantinedDirectInstallPlan,
+    source: LegacySource,
+    pem: Zeroizing<Vec<u8>>,
+    options: Zeroizing<Vec<u8>>,
+    material: Zeroizing<Vec<u8>>,
+    intent_backup_path: PathBuf,
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1474,6 +1485,123 @@ impl SecureHistoricalOwnerAttach {
         Ok(LoadedOrphanPlan { manifest, source, pem, material, intent_backup_path })
     }
 
+    /// A PREPARED direct-install row may resume from these copies after all
+    /// legacy exports disappear. Missing/partial/tampered plan contents are
+    /// never interpreted as an absent old packet or a new authorization.
+    fn load_quarantined_direct_install_plan(
+        &self,
+        attach_id: &str,
+        row: &SavedAttach,
+    ) -> Result<LoadedDirectInstallPlan, HistoricalOwnerAttachError> {
+        let plan_id = row.pending_direct_install_plan_id.as_deref()
+            .ok_or(HistoricalOwnerAttachError::Conflict)?;
+        if !valid_token(plan_id) || !valid_token(attach_id) {
+            return Err(HistoricalOwnerAttachError::Conflict);
+        }
+        let directory = self.config.state_dir.join("owner-direct-install-plans").join(plan_id);
+        std::fs::symlink_metadata(&directory).map_err(|_| HistoricalOwnerAttachError::Local)?;
+        ensure_dir(&directory)?;
+        let marker_wire = format!("peerwork.owner.direct-install-plan.v1:{plan_id}\n");
+        let marker = SecureStateStore::open(&directory.join("plan-marker.state"))
+            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        if marker.read_exact_secret().map_err(|_| HistoricalOwnerAttachError::Local)?
+            .as_deref().map(Vec::as_slice) != Some(marker_wire.as_bytes()) {
+            return Err(HistoricalOwnerAttachError::Conflict);
+        }
+        drop(marker);
+        let manifest_wire = SecureStateStore::open(&directory.join("plan-manifest.state"))
+            .map_err(|_| HistoricalOwnerAttachError::Local)?
+            .read_exact_secret().map_err(|_| HistoricalOwnerAttachError::Local)?
+            .ok_or(HistoricalOwnerAttachError::Local)?;
+        let manifest: QuarantinedDirectInstallPlan = serde_json::from_slice(&manifest_wire)
+            .map_err(|_| HistoricalOwnerAttachError::Conflict)?;
+        if manifest.version != 1 || manifest.origin != self.config.origin
+            || manifest.plan_id != plan_id || manifest.attach_id != attach_id
+            || manifest.workspace_id != row.input.workspace_id
+            || manifest.owner_actor_id != row.input.expected_owner_actor_id
+            || manifest.owner_key_id != row.input.expected_owner_key_id
+            || manifest.source_sequence != row.source_sequence
+            || manifest.source_head != row.source_head
+            || manifest.source_policy_hash != row.source_policy_hash
+            || manifest.ts_state_sha256 != row.ts_state_sha256
+            || manifest.owner_pem_sha256 != row.owner_pem_sha256
+            || manifest.ts_intent_sha256 != row.ts_intent_sha256
+            || !valid_token(&manifest.command_id) || !valid_token(&manifest.instance_id)
+            || !valid_digest(&manifest.intent_hash)
+            || !valid_digest(&manifest.original_commit_hash)
+            || !valid_digest(&manifest.request_sha256)
+            || !valid_digest(&manifest.options_sha256)
+            || !valid_digest(&manifest.material_sha256)
+        { return Err(HistoricalOwnerAttachError::Conflict); }
+        let load = |name: &str| -> Result<Zeroizing<Vec<u8>>, HistoricalOwnerAttachError> {
+            SecureStateStore::open(&directory.join(name))
+                .map_err(|_| HistoricalOwnerAttachError::Local)?
+                .read_exact_secret().map_err(|_| HistoricalOwnerAttachError::Local)?
+                .ok_or(HistoricalOwnerAttachError::Local)
+        };
+        let state = load("source-state.state")?;
+        let pem = load("owner-pem.state")?;
+        let options = load("options.state")?;
+        let material = load("material.state")?;
+        if state.len() > MAX_SOURCE || pem.len() > 2048
+            || options.is_empty() || options.len() > 2 * 1024 * 1024
+            || material.is_empty() || material.len() > 8 * 1024 * 1024
+            || sha256_hex(&state) != manifest.ts_state_sha256
+            || sha256_hex(&pem) != manifest.owner_pem_sha256
+            || sha256_hex(&options) != manifest.options_sha256
+            || sha256_hex(&material) != manifest.material_sha256
+        { return Err(HistoricalOwnerAttachError::Conflict); }
+        let owner = KernelIdentity::inspect_pkcs8_pem_bytes(&pem)
+            .map_err(|_| HistoricalOwnerAttachError::Identity)?;
+        if owner.actor_id() != manifest.owner_actor_id || owner.key_id() != manifest.owner_key_id {
+            return Err(HistoricalOwnerAttachError::Identity);
+        }
+        let source = parse_legacy_source_selected_install(
+            &state, &row.input, Some(&manifest.command_id),
+        )?;
+        let pending = source.pending_install_begin.as_ref()
+            .ok_or(HistoricalOwnerAttachError::SourceChanged)?;
+        if source.visibility != row.visibility || source.sequence != row.source_sequence
+            || source.head != row.source_head || source.policy_hash != row.source_policy_hash
+            || source.ring.as_ref().and_then(|ring| ring.epochs().last())
+                != Some(manifest.source_epoch)
+            || pending.command_id != manifest.command_id
+            || pending.instance_id != manifest.instance_id
+            || pending.intent_hash != manifest.intent_hash
+            || pending.path != manifest.path
+            || sha256_hex(&pending.request) != manifest.request_sha256
+        { return Err(HistoricalOwnerAttachError::Conflict); }
+        let intent_backup_path = directory.join("source-intents.sqlite");
+        if crate::ts_migration::source_snapshot_digest_allow_pending(&intent_backup_path)
+            .map_err(|_| HistoricalOwnerAttachError::Local)? != manifest.ts_intent_sha256 {
+            return Err(HistoricalOwnerAttachError::Conflict);
+        }
+        let mut all_missing = true;
+        for path in [
+            &row.input.protected_ts_state_path,
+            &row.input.protected_owner_pkcs8_path,
+            &row.input.protected_ts_intent_db_path,
+        ] {
+            match std::fs::symlink_metadata(path) {
+                Ok(_) => all_missing = false,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                Err(_) => return Err(HistoricalOwnerAttachError::SourceChanged),
+            }
+        }
+        if !all_missing {
+            let (_, state_after, pem_after, intent_after) = self.inspect_sources_selected_install(
+                &row.input, Some(&manifest.command_id),
+            )?;
+            if (state_after, pem_after, intent_after) != (
+                manifest.ts_state_sha256.clone(), manifest.owner_pem_sha256.clone(),
+                manifest.ts_intent_sha256.clone(),
+            ) { return Err(HistoricalOwnerAttachError::SourceChanged); }
+        }
+        Ok(LoadedDirectInstallPlan {
+            manifest, source, pem, options, material, intent_backup_path,
+        })
+    }
+
     /// An existing PREPARED multipart row may resume from its digest-bound
     /// protected copies after all original exports have been removed. If any
     /// original path is still present, recheck all three against the copied
@@ -1920,6 +2048,7 @@ impl SecureHistoricalOwnerAttach {
             pending_package_stage: None,
             pending_multipart_plan_id: multipart_plan.map(|plan| plan.plan_id),
             orphan_multipart_plan_id: orphan_plan.map(|plan| plan.plan_id),
+            pending_direct_install_plan_id: None,
             orphan_package_stage: None,
         };
         history.rows.insert(id.clone(), row);
@@ -10532,6 +10661,56 @@ mod tests {
                 &input, command, &altered_options,
                 std::str::from_utf8(&material).unwrap(), &cancel,
             ), Err(HistoricalOwnerAttachError::SourceUnresolved)));
+            assert_eq!(count(), if expected_applied { 2 } else { 1 });
+            assert!(attach.attachments().unwrap().is_empty());
+            let _root_lock = SecureStateStore::open(
+                &config.state_dir.join("owner-attach-recovery.state"),
+            ).unwrap();
+            let (parsed_source, ts_digest, pem_digest, intent_digest) = attach
+                .inspect_sources_selected_install(&input, Some(command)).unwrap();
+            let saved_packet = parsed_source.pending_install_begin.as_ref().unwrap();
+            let plan = attach.save_quarantined_direct_install_plan(
+                &input, &parsed_source, &ts_digest, &pem_digest, &intent_digest,
+                saved_packet, std::str::from_utf8(&options).unwrap(),
+                std::str::from_utf8(&material).unwrap(), &original_hash,
+            ).unwrap();
+            assert_eq!(plan.command_id, command);
+            assert_eq!(plan.attach_id.len(), 43);
+            let row = SavedAttach {
+                input: input.clone(), visibility: parsed_source.visibility.clone(),
+                ts_state_sha256: ts_digest, owner_pem_sha256: pem_digest,
+                ts_intent_sha256: intent_digest,
+                source_sequence: parsed_source.sequence, source_head: parsed_source.head.clone(),
+                source_policy_hash: parsed_source.policy_hash.clone(),
+                attached_sequence: None, attached_head: None, kernel_import: None,
+                retained_action_commit_hash: None, retained_action_command_id: None,
+                retained_upgrade_accepted: false, retained_action_accepted: false,
+                pending_package_stage: None, pending_multipart_plan_id: None,
+                orphan_multipart_plan_id: None,
+                pending_direct_install_plan_id: Some(plan.plan_id.clone()),
+                orphan_package_stage: None,
+            };
+            let old_source_dir = root.path().join(name);
+            std::fs::rename(&old_source_dir, root.path().join(format!("{name}-moved"))).unwrap();
+            let loaded = attach.load_quarantined_direct_install_plan(&plan.attach_id, &row).unwrap();
+            assert_eq!(loaded.manifest, plan);
+            assert_eq!(loaded.source.pending_install_begin.as_ref().unwrap().command_id, command);
+            assert_eq!(sha256_hex(&loaded.options), plan.options_sha256);
+            assert_eq!(sha256_hex(&loaded.material), plan.material_sha256);
+            assert_eq!(sha256_hex(&loaded.pem), plan.owner_pem_sha256);
+            assert_eq!(crate::ts_migration::source_snapshot_digest_allow_pending(
+                &loaded.intent_backup_path,
+            ).unwrap(), plan.ts_intent_sha256);
+            drop(loaded);
+            if !expected_applied {
+                let stored_material = SecureStateStore::open(&config.state_dir
+                    .join("owner-direct-install-plans").join(&plan.plan_id)
+                    .join("material.state")).unwrap();
+                stored_material.write_exact(b"tampered material").unwrap();
+                assert!(matches!(attach.load_quarantined_direct_install_plan(
+                    &plan.attach_id, &row,
+                ), Err(HistoricalOwnerAttachError::Conflict)));
+            }
             assert_eq!(count(), if expected_applied { 2 } else { 1 });
             assert!(attach.attachments().unwrap().is_empty());
         }
