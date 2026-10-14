@@ -1,12 +1,14 @@
 #!/bin/bash
 set -euo pipefail
 task_root="$1"
+test_guest="$2"
 unshare --user --map-root-user --mount --pid --fork /bin/bash -euc '
   task_root="$1"
   for device in null zero urandom; do mount --bind "/dev/$device" "$task_root/dev/$device"; done
   chroot "$task_root" /usr/bin/env -i \
     PATH=/opt/python/cp311-cp311/bin:/opt/node24/bin:/usr/local/bin:/usr/bin:/bin \
     PYTHONPATH=/work/sdk-historical-direct/dist/python-consumer \
+    PEERWORK_TEST_CONSUMER_SCRIPT="$2/installed-historical-direct-packets-completed-smoke.py" \
     PEERWORK_TEST_SDK_ROOT=/work/sdk-historical-direct \
     PEERWORK_TEST_STATE=/work/sdk-historical-direct/dist/historical-direct-state-split \
     PEERWORK_TEST_HOST_FIXTURE_JSON=/work/sdk-historical-direct/dist/historical-direct-state-split/host-fixture.json \
@@ -22,6 +24,6 @@ unshare --user --map-root-user --mount --pid --fork /bin/bash -euc '
       getconf GNU_LIBC_VERSION
       /work/sdk-historical-direct/target/release/peerwork version
       cd /work/sdk-historical-direct
-      /opt/python/cp311-cp311/bin/python tests/installed-historical-direct-packets-completed-smoke.py
+      /opt/python/cp311-cp311/bin/python "$PEERWORK_TEST_CONSUMER_SCRIPT"
     '\''
-' consumer "$task_root"
+' consumer "$task_root" "$test_guest"

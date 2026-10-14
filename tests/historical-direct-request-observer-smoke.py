@@ -41,7 +41,25 @@ with tempfile.TemporaryDirectory(prefix='direct-observer-') as temporary:
         assert all(set(row)=={'method','path','host','command_id','body_bytes','body_sha256'} for row in rows)
         with sqlite3.connect('file:'+str(state/'control.sqlite')+'?mode=ro',uri=True) as database:
             assert database.execute('SELECT count(*) FROM secure_commits').fetchone()[0]==0
-        print(json.dumps({'scope':'real pinned service observer smoke','invalid_request_http_status':status,
-            'outer_requests':len(outer),'service_commits':0,'request_body_persisted':False}))
+        prepared = subprocess.run([str(node),str(sdk/'tests/legacy-owner-install-intent.mjs'),
+            origin,str(state/'signed-source'),str(reference),'direct-completed-end'],
+            cwd=sdk,env=env,capture_output=True,text=True,timeout=120)
+        assert prepared.returncode == 0,'observer changed genuine signed completion'
+        fixture = json.loads(prepared.stdout)
+        assert fixture['pending_count']==0 and fixture['latest_sequence']==3
+        rows = [json.loads(line) for line in output.read_text().splitlines()]
+        signed = [row for row in rows if row['host']==urlsplit(origin).netloc
+            and row['path']==f"/api/workspace/v1/secure/workspaces/{fixture['workspace_id']}/commits"]
+        assert len(signed)==2 and len({row['command_id'] for row in signed})==2
+        with sqlite3.connect('file:'+str(state/'control.sqlite')+'?mode=ro',uri=True) as database:
+            assert database.execute('SELECT count(*) FROM secure_commits').fetchone()[0]==3
+            accepted = {row[0] for row in database.execute('SELECT command_id FROM secure_commits')}
+        assert all(row['command_id'] in accepted for row in signed)
+        for row in signed:
+            matching = [other for other in rows if other['command_id']==row['command_id']]
+            assert len(matching)==2 and len({other['body_sha256'] for other in matching})==1
+        print(json.dumps({'scope':'real pinned service observer unsigned and signed regression',
+            'invalid_request_http_status':status,'signed_outer_requests':len(signed),
+            'service_commits':3,'signed_pending_count':0,'request_body_persisted':False}))
     finally:
         server.terminate();server.wait(timeout=10)

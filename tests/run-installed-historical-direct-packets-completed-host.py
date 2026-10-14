@@ -15,6 +15,9 @@ import sys
 
 rootfs = Path(sys.argv[1]).resolve()
 source = rootfs / "work/sdk-historical-direct"
+test_source = Path(__file__).resolve().parent
+assert test_source.parent == rootfs / "work", "test overlay must be copied into the isolated rootfs work directory"
+test_guest = "/work/" + test_source.name
 state = source / "dist/historical-direct-state-split"
 guest_state = Path("/work/sdk-historical-direct/dist/historical-direct-state-split")
 reference = Path("/root/workdir/message/.worktrees/e2ee-main-integration-20261006")
@@ -23,10 +26,11 @@ expected = {
     "crates/runtime/src/secure_owner_attach.rs": os.environ["PEERWORK_TEST_ATTACH_SOURCE_SHA256"],
     "tests/legacy-owner-install-intent.mjs": "d4c20a4d02a76e2f8e468f3aa2e65c0b6185502915b26f3b698ebba7c47b4500",
     "tests/reference-kernel-server.mjs": "50168d56f654e51d5d3696815e8cae7590e0a002721ca076ec636bf47d2769b0",
-    "tests/historical-direct-request-observer.cjs": "307889f31dffedde9d5452ec5c32508de63c4971e746e692e41560dacace8406",
+    "tests/historical-direct-request-observer.cjs": "72ff2d87a31bec0632e797bf19bd0cccc0fc200dee8ea8d858cc3e0fae020f10",
 }
 for relative, digest in expected.items():
-    assert hashlib.sha256((source / relative).read_bytes()).hexdigest() == digest
+    path = test_source / Path(relative).name if relative.endswith("historical-direct-request-observer.cjs") else source / relative
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == digest
 assert subprocess.check_output(["git", "-C", str(reference), "rev-parse", "HEAD"], text=True).strip() == "f828b6c50a0a58d1e718af90f653b214adcc3328"
 assert subprocess.run(["git", "-C", str(reference), "diff", "--quiet", "HEAD", "--", "src", "protocols", "package.json", "package-lock.json", "tsconfig.workspace.json"], check=False).returncode == 0
 state.mkdir(mode=0o700, parents=True, exist_ok=False)
@@ -125,7 +129,7 @@ env["PEERWORK_TEST_REQUEST_OBSERVER"] = str(request_log)
 server_stderr_path = state / "reference-server.stderr.log"
 server_stderr = server_stderr_path.open("wb")
 server_stderr_path.chmod(0o600)
-server = subprocess.Popen([str(node), "--require", str(source / "tests/historical-direct-request-observer.cjs"), str(source / "tests/reference-kernel-server.mjs")],
+server = subprocess.Popen([str(node), "--require", str(test_source / "historical-direct-request-observer.cjs"), str(source / "tests/reference-kernel-server.mjs")],
                           cwd=source, env=env, stdout=subprocess.PIPE,
                           stderr=server_stderr, text=True)
 try:
@@ -145,7 +149,10 @@ try:
         produced = subprocess.run([str(node), str(source / "tests/legacy-owner-install-intent.mjs"),
                                    origin, str(old_dir), str(snapshot), mode],
                                   cwd=source, env=env, capture_output=True, text=True, timeout=120)
-        assert produced.returncode == 0, "historical direct packet/completed fixture generation failed"
+        if produced.returncode != 0:
+            diagnostic = state / f"{interface}-{mode}.fixture-stderr.log"
+            diagnostic.write_text(produced.stderr);diagnostic.chmod(0o600)
+            raise AssertionError("historical fixture generation failed; inspect protected diagnostic log")
         item = json.loads(produced.stdout)
         assert item["mode"] == mode
         completed = mode == "direct-completed-end"
@@ -195,7 +202,7 @@ console.log(JSON.stringify({method:'POST',path:pending.path,body_sha256:await se
     print(json.dumps({"fixture": "host", "scenarios":
                       [[item["interface"], item["mode"]] for item in exported],
                       "state_path": str(guest_state), "source_paths": "mapped into rootfs"}), flush=True)
-    subprocess.run(["bash", str(Path(__file__).with_name("run-installed-historical-direct-packets-completed-consumer.sh")), str(rootfs)], check=True)
+    subprocess.run(["bash", str(Path(__file__).with_name("run-installed-historical-direct-packets-completed-consumer.sh")), str(rootfs), test_guest], check=True)
 finally:
     server.terminate()
     try:

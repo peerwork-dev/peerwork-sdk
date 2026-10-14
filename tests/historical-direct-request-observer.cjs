@@ -15,21 +15,29 @@ http.createServer = function (...args) {
       if (request.method === 'POST' && /^\/api\/workspace\/v1\/secure\/workspaces\/[A-Za-z0-9_-]+\/commits$/.test(request.url)) {
         const chunks = [];
         let bytes = 0;
-        request.on('data', chunk => {
-          bytes += chunk.length;
-          if (bytes <= 8 * 1024 * 1024) chunks.push(chunk);
-        });
-        request.on('end', () => {
-          if (bytes > 8 * 1024 * 1024) throw new Error('observer request cap');
-          const body = Buffer.concat(chunks);
-          const value = JSON.parse(body.toString('utf8'));
-          const commandId = value?.commit?.payload?.command_id;
-          if (typeof commandId !== 'string') throw new Error('observer commit ID');
-          fs.appendFileSync(output, JSON.stringify({ method: request.method,
-            path: request.url, host: request.headers.host, command_id: commandId,
-            body_bytes: body.length, body_sha256: crypto.createHash('sha256').update(body).digest('hex'),
-          }) + '\n', { mode: 0o600 });
-        });
+        let finished = false;
+        const originalPush = request.push;
+        // Observe parser input without adding a data listener: a data listener
+        // switches IncomingMessage to flowing mode before Hono reads its body.
+        request.push = function (chunk, ...rest) {
+          if (chunk !== null) {
+            const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+            bytes += data.length;
+            if (bytes <= 8 * 1024 * 1024) chunks.push(data);
+          } else if (!finished) {
+            finished = true;
+            if (bytes > 8 * 1024 * 1024) throw new Error('observer request cap');
+            const body = Buffer.concat(chunks);
+            const value = JSON.parse(body.toString('utf8'));
+            const commandId = value?.commit?.payload?.command_id;
+            if (typeof commandId !== 'string') throw new Error('observer commit ID');
+            fs.appendFileSync(output, JSON.stringify({ method: request.method,
+              path: request.url, host: request.headers.host, command_id: commandId,
+              body_bytes: body.length, body_sha256: crypto.createHash('sha256').update(body).digest('hex'),
+            }) + '\n', { mode: 0o600 });
+          }
+          return originalPush.call(this, chunk, ...rest);
+        };
       }
       return listener.call(this, request, response);
     };
