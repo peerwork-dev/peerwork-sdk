@@ -14,7 +14,8 @@ use peerwork_runtime::secure_read_access::{SecureReadAccess, SecureReadConfig};
 use peerwork_runtime::secure_read_profile::{SecureReadProfile, SecureReadProfileConfig};
 use peerwork_runtime::secure_private_read_access::SecurePrivateReadAccess;
 use peerwork_runtime::secure_owner_create::{
-    SecureOwnerCreateConfig, SecureOwnerCreateInput, SecureOwnerWorkspaceCreate,
+    import_legacy_owner_identity, SecureOwnerCreateConfig, SecureOwnerCreateInput,
+    SecureOwnerWorkspaceCreate,
 };
 use peerwork_runtime::secure_owner_attach::{HistoricalOwnerAttachInput, SecureHistoricalOwnerAttach};
 use peerwork_runtime::secure_owner_format_transition::OwnerFormatTransitionInput;
@@ -161,7 +162,7 @@ fn main() -> ExitCode {
                     .map_err(|_| ("CONFIG_INVALID", "invalid Owner configuration".to_owned()))?;
                 let pem_file = identity_cli_path(pem_file)
                     .map_err(|error| ("IDENTITY_STATE", error))?;
-                KernelIdentity::import_pkcs8_pem_file(&config.identity_path(), &pem_file)
+                import_legacy_owner_identity(&config, &pem_file)
                     .map_err(|error| ("IDENTITY_STATE", error.to_string()))
             })();
             match identity {

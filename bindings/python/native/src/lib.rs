@@ -13,7 +13,8 @@ use peerwork_runtime::secure_read_access::{SecureReadAccess, SecureReadConfig};
 use peerwork_runtime::secure_read_profile::{SecureReadProfile, SecureReadProfileConfig};
 use peerwork_runtime::secure_private_read_access::SecurePrivateReadAccess;
 use peerwork_runtime::secure_owner_create::{
-    SecureOwnerCreateConfig, SecureOwnerCreateInput, SecureOwnerWorkspaceCreate,
+    import_legacy_owner_identity, SecureOwnerCreateConfig, SecureOwnerCreateInput,
+    SecureOwnerWorkspaceCreate,
 };
 use peerwork_runtime::secure_owner_attach::{HistoricalOwnerAttachInput, SecureHistoricalOwnerAttach};
 use peerwork_runtime::secure_owner_format_transition::OwnerFormatTransitionInput;
@@ -104,6 +105,20 @@ fn identity_import_pkcs8_pem_json(path: &str, pem_file: &str) -> PyResult<String
         "{{\"actor_id\":\"{}\",\"key_id\":\"{}\"}}",
         identity.actor_id(),
         identity.key_id()
+    ))
+}
+
+#[pyfunction]
+fn identity_import_owner_pem_json(config_file: &str, pem_file: &str) -> PyResult<String> {
+    let config_bytes = std::fs::read(config_file)
+        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("Owner config could not be read"))?;
+    let config: SecureOwnerCreateConfig = serde_json::from_slice(&config_bytes)
+        .map_err(|_| pyo3::exceptions::PyValueError::new_err("invalid Owner configuration"))?;
+    let identity = import_legacy_owner_identity(&config, Path::new(pem_file))
+        .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))?;
+    Ok(format!(
+        "{{\"actor_id\":\"{}\",\"key_id\":\"{}\"}}",
+        identity.actor_id(), identity.key_id()
     ))
 }
 
@@ -1023,6 +1038,7 @@ fn _peerwork_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(identity_open_json, module)?)?;
     module.add_function(wrap_pyfunction!(identity_import_seed_json, module)?)?;
     module.add_function(wrap_pyfunction!(identity_import_pkcs8_pem_json, module)?)?;
+    module.add_function(wrap_pyfunction!(identity_import_owner_pem_json, module)?)?;
     module.add_function(wrap_pyfunction!(kernel_json, module)?)?;
     module.add_function(wrap_pyfunction!(secure_read_json, module)?)?;
     module.add_function(wrap_pyfunction!(secure_read_profile_json, module)?)?;

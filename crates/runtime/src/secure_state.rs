@@ -15,6 +15,56 @@ use zeroize::Zeroizing;
 const MAGIC: &[u8] = b"PEERWORK-NATIVE-SECURE-STATE\n1\n";
 const MAX_STATE_BYTES: u64 = 64 * 1024 * 1024;
 
+/// Create one configured state directory for an explicit identity bootstrap.
+/// The parent must already be protected; this never creates a path tree.
+pub(crate) fn create_private_state_directory(path: &Path) -> Result<(), SecureStateError> {
+    if !path.is_absolute() {
+        return Err(SecureStateError::Protection);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+        let parent = path.parent().ok_or(SecureStateError::Protection)?;
+        let parent_meta = fs::symlink_metadata(parent).map_err(|_| SecureStateError::Protection)?;
+        if !parent_meta.is_dir()
+            || parent_meta.file_type().is_symlink()
+            || parent_meta.mode() & 0o077 != 0
+            || parent_meta.uid() != unsafe { libc::geteuid() }
+            || fs::canonicalize(parent).map_err(|_| SecureStateError::Protection)? != parent
+        {
+            return Err(SecureStateError::Protection);
+        }
+        let mut builder = fs::DirBuilder::new();
+        builder.mode(0o700);
+        match builder.create(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(SecureStateError::Io(error)),
+        }
+        let meta = fs::symlink_metadata(path).map_err(|_| SecureStateError::Protection)?;
+        if !meta.is_dir()
+            || meta.file_type().is_symlink()
+            || meta.mode() & 0o077 != 0
+            || meta.uid() != unsafe { libc::geteuid() }
+            || fs::canonicalize(path).map_err(|_| SecureStateError::Protection)? != path
+        {
+            return Err(SecureStateError::Protection);
+        }
+        Ok(())
+    }
+    #[cfg(windows)]
+    {
+        crate::windows_fs::private_existing_parent(path)
+            .map_err(|_| SecureStateError::Protection)?;
+        crate::windows_fs::create_private_directory(path)
+            .map_err(|_| SecureStateError::Protection)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        Err(SecureStateError::UnsupportedPlatform)
+    }
+}
+
 /// Read only a separately protected raw 32-byte identity seed. Unlike native
 /// state, this source has no magic prefix; it is never created or rewritten.
 pub(crate) fn read_private_file_bounded(
@@ -356,7 +406,7 @@ fn lock_exclusive(file: &File) -> Result<(), SecureStateError> {
 
 #[cfg(windows)]
 fn check_private_parent(path: &Path) -> Result<(), SecureStateError> {
-    crate::windows_fs::private_parent(path).map_err(|_| SecureStateError::Protection)
+    crate::windows_fs::private_existing_parent(path).map_err(|_| SecureStateError::Protection)
 }
 #[cfg(windows)]
 fn check_private_file(path: &Path) -> Result<(), SecureStateError> {
