@@ -25,6 +25,7 @@ use peerwork_core::{
     },
     public_direct_install::plan_public_install_snapshot,
     replayed_secure_journal::StructureStatus,
+    secure_keyring::SecretKeyring,
     wire_json::{canonical_wire_value, parse_wire_json_bounded, WireValue},
 };
 use rand_core::{OsRng, RngCore};
@@ -1275,8 +1276,14 @@ impl SecurePrivatePackageInstall {
             identity.actor_id(), &self.config.workspace_id,
             identity.actor_id(), identity.key_id(),
         ).map_err(|_| PrivatePackageInstallError::Identity)?;
-        let ring = lifecycle.active_keyring_without_pending()
-            .ok_or(PrivatePackageInstallError::Identity)?;
+        let ring_wire = lifecycle.active_keyring_without_pending()
+            .ok_or(PrivatePackageInstallError::Identity)?
+            .canonical_wire().map_err(|_| PrivatePackageInstallError::Identity)?;
+        let ring = SecretKeyring::parse_wire(&ring_wire)
+            .map_err(|_| PrivatePackageInstallError::Identity)?;
+        // The fresh replay reopens lifecycle.state. Keep an owned protected
+        // ring and release this nonblocking store lock before that read.
+        drop(lifecycle);
         let access = SecureReadAccess::new(SecureReadConfig {
             origin: self.config.origin.clone(),
             kernel_journal_path: self.config.state_dir.join("kernel.sqlite"),
@@ -1316,7 +1323,7 @@ impl SecurePrivatePackageInstall {
             .and_then(WireValue::as_string).as_deref() != Some("PRIVATE")
             || ring.epochs().last() != Some(current_epoch)
         { return Err(PrivatePackageInstallError::Plan); }
-        let prior = fresh.authenticated_active_prefix(source_checkpoint.as_bytes(), ring)
+        let prior = fresh.authenticated_active_prefix(source_checkpoint.as_bytes(), &ring)
             .map_err(|_| PrivatePackageInstallError::Plan)?;
         consume(&prior, &fresh)
     }
