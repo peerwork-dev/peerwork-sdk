@@ -933,8 +933,8 @@ impl SecureHistoricalOwnerAttach {
         })
     }
 
-    /// Inspect a selected map-only direct install whose signed END is the
-    /// current head. The map is only an options hash; completion comes from
+    /// Inspect a selected map-only direct install whose signed END is in the
+    /// authenticated history. The map is only an options hash; completion comes from
     /// exact signed BEGIN/PAGE/END replay and the installed instance object.
     pub fn inspect_completed_direct_install(
         &self,
@@ -959,11 +959,10 @@ impl SecureHistoricalOwnerAttach {
         let _lock = SecureStateStore::open(&self.config.state_dir.join("owner-attach-recovery.state"))
             .map_err(|_| HistoricalOwnerAttachError::Local)?;
         let (verified, end_sequence) = self.with_preflight_replay(input, &source, cancel, |replayed, owner| {
-            let verified = verify_completed_direct_install(
+            verify_completed_direct_install(
                 selected, options_json.as_bytes(), material_json.as_bytes(), ring,
                 replayed, owner, input,
-            )?;
-            Ok((verified, replayed.replay().sequence()))
+            )
         })?;
         let (_, state_after, pem_after, intent_after) =
             self.inspect_sources_selected_completed_install(input, selected_instance_id)?;
@@ -2097,7 +2096,7 @@ impl SecureHistoricalOwnerAttach {
     }
 
     /// Attach a selected map-only direct install whose exact signed END is
-    /// current. No old request exists locally, so this path never retries a
+    /// authenticated in replay. No old request exists locally, so this path never retries a
     /// packet or creates an imported InstallRow.
     pub fn attach_completed_direct_install(
         &self,
@@ -2145,10 +2144,13 @@ impl SecureHistoricalOwnerAttach {
         self.preflight_kernel_source(&input, cancel, Some(&[]))?;
         let lock = SecureStateStore::open(&self.config.state_dir.join("owner-attach-recovery.state"))
             .map_err(|_| HistoricalOwnerAttachError::Local)?;
-        let verified = self.with_preflight_replay(&input, &source, cancel, |replayed, owner| {
+        let (verified, end_sequence) = self.with_preflight_replay(&input, &source, cancel, |replayed, owner| {
             verify_completed_direct_install(selected, options_json.as_bytes(),
                 material_json.as_bytes(), ring, replayed, owner, &input)
         })?;
+        if end_sequence != source.sequence {
+            return Err(HistoricalOwnerAttachError::SourceUnresolved);
+        }
         let request = Zeroizing::new(verified.imported.request_wire.clone());
         let pending = LegacyPendingInstallBegin {
             command_id: verified.imported.command_id.clone(),
@@ -2533,7 +2535,7 @@ impl SecureHistoricalOwnerAttach {
                 .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
             let ring = plan.source.ring.as_ref()
                 .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
-            let verified = verify_completed_direct_install(
+            let (verified, end_sequence) = verify_completed_direct_install(
                 selected, &plan.options, &plan.material, ring,
                 &replayed, &owner, &row.input,
             )?;
@@ -2541,7 +2543,7 @@ impl SecureHistoricalOwnerAttach {
                 || verified.imported.instance_id != plan.manifest.instance_id
                 || verified.commit_hash != plan.manifest.original_commit_hash
                 || sha256_hex(&verified.imported.request_wire) != plan.manifest.request_sha256
-                || replayed.replay().sequence() != row.source_sequence
+                || end_sequence != row.source_sequence
             { return Err(HistoricalOwnerAttachError::Conflict); }
         }
         for command in &source.retained_member_commands {
@@ -5998,11 +6000,36 @@ fn verify_completed_direct_install(
     replayed: &TransportReplayedJournal,
     owner: &KernelIdentity,
     input: &HistoricalOwnerAttachInput,
-) -> Result<VerifiedLegacyDirectBegin, HistoricalOwnerAttachError> {
+) -> Result<(VerifiedLegacyDirectBegin, u64), HistoricalOwnerAttachError> {
     let invalid = || HistoricalOwnerAttachError::SourceUnresolved;
     if replayed.replay().structure_status() != StructureStatus::Active
         || replayed.replay().sequence() < 3
         || replayed.replay().sequence() as usize != replayed.signed_commit_wires().len()
+    { return Err(invalid()); }
+    // Historical completion does not grant current authority. Prove the
+    // selected Owner still controls the latest PRIVATE policy and ring before
+    // the caller can persist a PREPARED attachment.
+    let current_policy = replayed.signed_policy_by_hash(replayed.replay().policy_hash())
+        .ok_or_else(invalid)?;
+    let current = parse_wire_json_bounded(current_policy, 64, 196_608).map_err(|_| invalid())?;
+    let current = current.get("payload").ok_or_else(invalid)?;
+    let owner_member = matches!(current.get("members"), Some(WireValue::Array(members))
+        if members.iter().any(|member| {
+            member.get("actor_id").and_then(WireValue::as_string).as_deref()
+                == Some(input.expected_owner_actor_id.as_str())
+                && member.get("role").and_then(WireValue::as_string).as_deref()
+                    == Some("OWNER")
+                && member.get("certificate").and_then(|value| value.get("payload"))
+                    .and_then(|value| value.get("signing_key"))
+                    .and_then(WireValue::as_string).as_deref()
+                    == Some(input.expected_owner_key_id.as_str())
+        }));
+    if replayed.replay().owner_actor_id() != input.expected_owner_actor_id
+        || replayed.replay().owner_signing_key() != input.expected_owner_key_id
+        || current.get("visibility").and_then(WireValue::as_string).as_deref()
+            != Some("PRIVATE")
+        || !owner_member
+        || exact_u64(current.get("epoch")) != ring.epochs().last()
     { return Err(invalid()); }
     let path = format!("/api/workspace/v1/secure/workspaces/{}/commits", input.workspace_id);
     let mut matched: Option<(usize, VerifiedLegacyDirectBegin)> = None;
@@ -6038,13 +6065,15 @@ fn verify_completed_direct_install(
     let final_index = replayed.signed_commit_wires().len().checked_sub(1).ok_or_else(invalid)?;
     if begin_index >= final_index { return Err(invalid()); }
     let mut previous = verified.commit_hash.clone();
+    let mut end: Option<(u64, String, String)> = None;
+    let mut pages = 0usize;
     for index in begin_index + 1..=final_index {
         let wire = &replayed.signed_commit_wires()[index];
         let commit = parse_wire_json_bounded(wire, 64, 262_144).map_err(|_| invalid())?;
         let payload = commit.get("payload").ok_or_else(invalid)?;
         let action = payload.get("action_id").and_then(WireValue::as_string).ok_or_else(invalid)?;
-        if (index == final_index && action != "secure.structure.end")
-            || (index < final_index && action != "secure.structure.page")
+        if (action != "secure.structure.page" && action != "secure.structure.end")
+            || (action == "secure.structure.end" && pages == 0)
             || payload.get("previous").and_then(WireValue::as_string).as_deref()
                 != Some(previous.as_str())
             || payload.get("workspace_id").and_then(WireValue::as_string).as_deref()
@@ -6056,9 +6085,27 @@ fn verify_completed_direct_install(
             || exact_u64(payload.get("sequence")) != Some(index as u64 + 1)
         { return Err(invalid()); }
         previous = sha256_hex(wire);
+        if action == "secure.structure.end" {
+            let policy_hash = payload.get("policy_hash").and_then(WireValue::as_string)
+                .filter(|hash| valid_digest(hash)).ok_or_else(invalid)?;
+            end = Some((index as u64 + 1, previous.clone(), policy_hash));
+            break;
+        }
+        pages += 1;
     }
-    if replayed.replay().head() != Some(previous.as_str())
-        || !replayed.replay().objects().iter().any(|object| {
+    let (end_sequence, end_head, end_policy) = end.ok_or_else(invalid)?;
+    if !replayed.replay().contains_checkpoint(end_sequence, Some(&end_head), &end_policy) {
+        return Err(invalid());
+    }
+    let checkpoint = serde_json::json!({
+        "v": 1, "workspace_id": input.workspace_id,
+        "owner_id": input.expected_owner_actor_id, "owner_key": input.expected_owner_key_id,
+        "sequence": end_sequence, "head": end_head, "policy_hash": end_policy,
+    });
+    let checkpoint_wire = serde_json::to_vec(&checkpoint).map_err(|_| invalid())?;
+    let completed = replayed.authenticated_active_prefix(&checkpoint_wire, ring)
+        .map_err(|_| invalid())?;
+    if !completed.replay().objects().iter().any(|object| {
             object.get("kind").and_then(WireValue::as_string).as_deref() == Some("instances")
                 && object.get("id").and_then(WireValue::as_string).as_deref()
                     == Some(selected.instance_id.as_str())
@@ -6070,7 +6117,7 @@ fn verify_completed_direct_install(
                     == Some(verified.imported.entrypoint.as_str())
         })
     { return Err(invalid()); }
-    Ok(verified)
+    Ok((verified, end_sequence))
 }
 
 fn verify_completed_package_stage(
@@ -11529,11 +11576,19 @@ mod tests {
         BufReader::new(child.0.stdout.take().unwrap()).read_line(&mut line).unwrap();
         let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
         let origin = ready["origin"].as_str().unwrap();
+        let mode = std::env::var("PEERWORK_COMPLETED_DIRECT_MODE")
+            .unwrap_or_else(|_| "direct-completed-end".into());
+        assert!(["direct-completed-end", "complete-action", "complete-rotate"]
+            .contains(&mode.as_str()));
         let helper = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/legacy-owner-install-intent.mjs");
+            .join(if mode == "direct-completed-end" {
+                "../../tests/legacy-owner-install-intent.mjs"
+            } else {
+                "../../tests/legacy-owner-install-intent-later.mjs"
+            });
         let setup = Command::new(&node).arg(helper).arg(origin)
             .arg(root.path().join("legacy")).arg(&reference_root)
-            .arg("direct-completed-end").output().unwrap();
+            .arg(&mode).output().unwrap();
         assert!(setup.status.success(), "genuine completed source setup failed");
         let fixture: serde_json::Value = serde_json::from_slice(&setup.stdout).unwrap();
         let workspace = fixture["workspace_id"].as_str().unwrap();
@@ -11561,24 +11616,6 @@ mod tests {
         };
         let attach = SecureHistoricalOwnerAttach::new(config);
         let cancel = CancellationToken::new();
-        assert!(matches!(attach.attach(input.clone(), &cancel),
-            Err(HistoricalOwnerAttachError::SourceUnresolved)));
-        let before = std::fs::read(&input.protected_ts_state_path).unwrap();
-        let valid = attach.inspect_completed_direct_install(
-            &input, instance, std::str::from_utf8(&options).unwrap(),
-            std::str::from_utf8(&material).unwrap(), &cancel,
-        ).unwrap();
-        assert_eq!(valid.status, "COMPLETED_IN_SIGNED_REPLAY");
-        assert_eq!(valid.instance_id, instance);
-        assert_eq!(valid.intent_hash, fixture["intent_hash"].as_str().unwrap());
-        assert_eq!(valid.protocol_digest, fixture["protocol_digest"].as_str().unwrap());
-        assert_eq!(valid.end_sequence, fixture["latest_sequence"].as_u64().unwrap());
-        assert!(matches!(attach.inspect_completed_direct_install(
-            &input, &random_token().unwrap(), std::str::from_utf8(&options).unwrap(),
-            std::str::from_utf8(&material).unwrap(), &cancel,
-        ), Err(HistoricalOwnerAttachError::SourceUnresolved)));
-        assert_eq!(std::fs::read(&input.protected_ts_state_path).unwrap(), before);
-        assert!(attach.attachments().unwrap().is_empty());
         let oracle = rusqlite::Connection::open_with_flags(
             root.path().join("control.sqlite"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         ).unwrap();
@@ -11587,7 +11624,44 @@ mod tests {
             |row| row.get(0),
         ).unwrap() };
         let before_count = count();
-        assert_eq!(before_count, valid.end_sequence as i64);
+        assert!(matches!(attach.attach(input.clone(), &cancel),
+            Err(HistoricalOwnerAttachError::SourceUnresolved)));
+        let before = std::fs::read(&input.protected_ts_state_path).unwrap();
+        if mode == "complete-rotate" {
+            let digest = sha256_hex(&before);
+            assert!(matches!(attach.inspect_completed_direct_install(
+                &input, instance, std::str::from_utf8(&options).unwrap(),
+                std::str::from_utf8(&material).unwrap(), &cancel,
+            ), Err(HistoricalOwnerAttachError::SourceUnresolved)));
+            assert!(matches!(attach.attach_completed_direct_install(
+                input.clone(), instance, &digest,
+                std::str::from_utf8(&options).unwrap(),
+                std::str::from_utf8(&material).unwrap(), &cancel,
+            ), Err(HistoricalOwnerAttachError::SourceUnresolved)));
+            assert!(attach.attachments().unwrap().is_empty());
+            assert!(!attach.workspace_dir(workspace).join("lifecycle.state").exists());
+            assert_eq!(count(), before_count);
+            assert_eq!(std::fs::read(&input.protected_ts_state_path).unwrap(), before);
+            return;
+        }
+        let valid = attach.inspect_completed_direct_install(
+            &input, instance, std::str::from_utf8(&options).unwrap(),
+            std::str::from_utf8(&material).unwrap(), &cancel,
+        ).unwrap();
+        assert_eq!(valid.status, "COMPLETED_IN_SIGNED_REPLAY");
+        assert_eq!(valid.instance_id, instance);
+        assert_eq!(valid.intent_hash, fixture["intent_hash"].as_str().unwrap());
+        assert_eq!(valid.protocol_digest, fixture["protocol_digest"].as_str().unwrap());
+        assert_eq!(valid.end_sequence,
+            fixture[if mode == "complete-action" { "selected_sequence" } else { "latest_sequence" }]
+                .as_u64().unwrap());
+        assert!(matches!(attach.inspect_completed_direct_install(
+            &input, &random_token().unwrap(), std::str::from_utf8(&options).unwrap(),
+            std::str::from_utf8(&material).unwrap(), &cancel,
+        ), Err(HistoricalOwnerAttachError::SourceUnresolved)));
+        assert_eq!(std::fs::read(&input.protected_ts_state_path).unwrap(), before);
+        assert!(attach.attachments().unwrap().is_empty());
+        assert_eq!(before_count, fixture["latest_sequence"].as_i64().unwrap());
         TEST_STOP_AFTER_ATTACH_ROW.store(true, Ordering::SeqCst);
         assert!(matches!(attach.attach_completed_direct_install(
             input.clone(), instance, &valid.ts_state_digest,
