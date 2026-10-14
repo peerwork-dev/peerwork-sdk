@@ -30,7 +30,9 @@ try {
     const selected = process.env.PEERWORK_INSTALL_SETUP_MODE;
     if (selected && !['direct-completed-end', 'complete-action', 'complete-rotate',
       'direct-page-before-post', 'direct-page-applied-loss',
-      'direct-end-before-post', 'direct-end-applied-loss'].includes(selected)) {
+      'direct-end-before-post', 'direct-end-applied-loss',
+      'direct-checkpoint-begin-before-post', 'direct-checkpoint-end-applied-loss',
+      'direct-checkpoint-completed-end'].includes(selected)) {
       throw new Error('INSTALL_SETUP_MODE_INVALID');
     }
     for (const mode of selected ? [selected]
@@ -55,7 +57,8 @@ try {
       }
       const source = JSON.parse(stdout);
       const completed = mode.endsWith('completed-end') || later;
-      const retainedStep = /^direct-(page|end)-/.exec(mode)?.[1];
+      const checkpointOption = mode.startsWith('direct-checkpoint-');
+      const retainedStep = /^direct-(page|end)-/.exec(mode.replace(/^direct-checkpoint-/, 'direct-'))?.[1];
       if (source.mode !== mode || source.pending_count !== (completed ? 0 : 1)
         || source.latest_structure_state !== (retainedStep
           ? retainedStep === 'end' && mode.endsWith('applied-loss') ? 'ACTIVE' : 'SEEDING'
@@ -66,6 +69,14 @@ try {
       }
       const count = db.prepare('SELECT count(*) AS count FROM secure_commits WHERE workspace_id=?').get(source.workspace_id).count;
       if (count !== source.latest_sequence) throw new Error(`INSTALL_SETUP_${mode}_REPLAY_COUNT`);
+      if (checkpointOption && (source.expected_checkpoint?.v !== 1
+        || source.expected_checkpoint.workspace_id !== source.workspace_id
+        || source.expected_checkpoint.owner_id !== source.owner_actor_id
+        || source.expected_checkpoint.owner_key !== source.owner_key_id
+        || source.expected_checkpoint.sequence !== source.initial_sequence
+        || source.canonical_options_hash !== source.intent_hash)) {
+        throw new Error(`INSTALL_SETUP_${mode}_REVIEWED_CHECKPOINT`);
+      }
       if (!completed) {
         const accepted = db.prepare('SELECT count(*) AS count FROM secure_commits WHERE workspace_id=? AND command_id=?')
           .get(source.workspace_id, source.pending_command_id).count;
@@ -78,7 +89,9 @@ try {
         structure_state: source.latest_structure_state, commit_count: count,
         intent_hash_bound: true,
         selected_epoch: source.selected_epoch ?? null,
-        latest_epoch: source.latest_epoch ?? null }) + '\n');
+        latest_epoch: source.latest_epoch ?? null,
+        ...(checkpointOption ? { reviewed_checkpoint_sequence: source.expected_checkpoint.sequence,
+          original_options_hash_bound: true } : {}) }) + '\n');
     }
   } finally { db.close(); }
 } finally {

@@ -11,7 +11,9 @@ if (!origin || !sourceDir || !referenceRoot
     'direct-begin-applied-loss', 'direct-begin-before-post',
     'direct-two-workspace-before-post', 'direct-completed-end',
     'direct-page-before-post', 'direct-page-applied-loss',
-    'direct-end-before-post', 'direct-end-applied-loss'].includes(mode)) {
+    'direct-end-before-post', 'direct-end-applied-loss',
+    'direct-checkpoint-begin-before-post', 'direct-checkpoint-end-applied-loss',
+    'direct-checkpoint-completed-end'].includes(mode)) {
   throw new Error('INSTALL_INTENT_TEST_INPUT');
 }
 mkdirSync(sourceDir, { recursive: true, mode: 0o700 });
@@ -25,7 +27,7 @@ writeFileSync(pemPath, privateKey.export({ type: 'pkcs8', format: 'pem' }), { mo
 const moduleUrl = name => pathToFileURL(join(referenceRoot, `dist-workspace/src/${name}.js`)).href;
 const { SecureAgentClient } = await import(moduleUrl('workspace-secure-agent'));
 const { discussionPreset } = await import(moduleUrl('workspace-presets'));
-const { secureHash } = await import(moduleUrl('workspace-secure-client'));
+const { secureHash, secureEqual } = await import(moduleUrl('workspace-secure-client'));
 const { resolveProtocolInstall } = await import(moduleUrl('workspace-protocol-install-plan'));
 const agent = await SecureAgentClient.open({
   baseUrl: new URL(origin).origin, privateKey, statePath, intentDbPath,
@@ -34,7 +36,8 @@ try {
   const created = await agent.create('Legacy install intent proof', 'PRIVATE', { structure: true });
   const workspaceId = created.workspaceId;
   let initial = await agent.journal(workspaceId);
-  const retainedStep = /^direct-(page|end)-/.exec(mode)?.[1];
+  const checkpointOption = mode.startsWith('direct-checkpoint-');
+  const retainedStep = /^direct-(page|end)-/.exec(mode.replace(/^direct-checkpoint-/, 'direct-'))?.[1];
   if (retainedStep === 'page') {
     const wiki = initial.objects.find(row => row.kind === 'instances'
       && row.value.origin_entrypoint === 'wiki');
@@ -161,8 +164,13 @@ try {
     instance_id: instanceId, entrypoint: 'migrated_discussion', manifest,
     grants: [{ actor_id: agent.identity.actorId, actions: ['discussion.post'],
       protocol_roles: ['CONTRIBUTOR'], capabilities: ['POST'] }],
+    ...(checkpointOption ? { expected_checkpoint: structuredClone(initial.checkpoint) } : {}),
   };
   const resolved = await resolveProtocolInstall(initial, options, []);
+  if (checkpointOption && (!secureEqual(resolved.expectedCheckpoint, initial.checkpoint)
+    || await secureHash(options) !== resolved.intentHash)) {
+    throw new Error('INSTALL_INTENT_REVIEWED_CHECKPOINT_HASH');
+  }
   writeFileSync(optionsPath, JSON.stringify(options), { mode: 0o600, flag: 'wx' });
   const key = `${workspaceId}.${instanceId}`;
   const originalPost = agent.post.bind(agent);
@@ -236,6 +244,14 @@ try {
     throw new Error('INSTALL_INTENT_PENDING_BEGIN_MISMATCH');
   }
   const journal = await agent.journal(workspaceId);
+  if (checkpointOption && (selected?.[1].body?.commit?.payload?.action_id === 'secure.structure.begin'
+    ? selected[1].body.commit.payload.previous !== options.expected_checkpoint.head
+      || selected[1].body.commit.payload.sequence !== options.expected_checkpoint.sequence + 1
+      || selected[1].body.policy_update.payload.previous_policy !== options.expected_checkpoint.policy_hash
+    : !journal.installations?.some(row => row.instance_id === instanceId
+      && secureEqual(row.source, options.expected_checkpoint)))) {
+    throw new Error('INSTALL_INTENT_REVIEWED_CHECKPOINT_SOURCE');
+  }
   if (mode.endsWith('completed-end')) {
     if (!stopped || observedAction !== 'secure.structure.end'
       || journal.structure?.state !== 'ACTIVE'
@@ -271,6 +287,8 @@ try {
     latest_structure_state: journal.structure?.state ?? null,
     pending_count: pending.length, pending_command_id: selected?.[0] ?? null,
     pending_commit_hash: selected ? await secureHash(selected[1].body.commit) : null,
+    ...(checkpointOption ? { expected_checkpoint: options.expected_checkpoint,
+      canonical_options_hash: await secureHash(options) } : {}),
   }) + '\n');
   }
 } finally {
