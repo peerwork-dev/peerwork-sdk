@@ -9,7 +9,7 @@ const [origin, sourceDir, referenceRoot, mode] = process.argv.slice(2);
 if (!origin || !sourceDir || !referenceRoot
   || !['begin-applied-loss', 'begin-before-post', 'completed-end',
     'direct-begin-applied-loss', 'direct-begin-before-post',
-    'direct-two-workspace-before-post'].includes(mode)) {
+    'direct-two-workspace-before-post', 'direct-completed-end'].includes(mode)) {
   throw new Error('INSTALL_INTENT_TEST_INPUT');
 }
 mkdirSync(sourceDir, { recursive: true, mode: 0o700 });
@@ -172,7 +172,7 @@ try {
       return originalRequest(path, requestOptions);
     };
   }
-  if (mode === 'completed-end') {
+  if (mode.endsWith('completed-end')) {
     agent.post = async (...args) => {
       const action = args[1]?.commit?.payload?.action_id;
       const result = await originalPost(...args);
@@ -188,7 +188,7 @@ try {
     await agent.installProtocol(workspaceId, options);
     throw new Error('TEST_INSTALL_NOT_INTERRUPTED');
   } catch (error) {
-    if (mode.endsWith('before-post') || mode === 'completed-end') {
+    if (mode.endsWith('before-post') || mode.endsWith('completed-end')) {
       const expected = mode.endsWith('before-post')
         ? 'TEST_STOP_BEFORE_INSTALL_BEGIN_POST' : 'TEST_STOP_AFTER_INSTALL_END_POST';
       if (error?.message !== expected) throw error;
@@ -204,7 +204,7 @@ try {
     throw new Error('INSTALL_INTENT_MAP_MISSING');
   }
   const pending = Object.entries(agent.state.pending);
-  const expectedPending = mode === 'completed-end' ? 0 : 1;
+  const expectedPending = mode.endsWith('completed-end') ? 0 : 1;
   if (pending.length !== expectedPending) throw new Error('INSTALL_INTENT_PENDING_COUNT');
   const selected = pending[0];
   if (selected && (selected[0] !== selected[1].body?.commit?.payload?.command_id
@@ -213,7 +213,7 @@ try {
     throw new Error('INSTALL_INTENT_PENDING_BEGIN_MISMATCH');
   }
   const journal = await agent.journal(workspaceId);
-  if (mode === 'completed-end') {
+  if (mode.endsWith('completed-end')) {
     if (!stopped || observedAction !== 'secure.structure.end'
       || journal.structure?.state !== 'ACTIVE'
       || !journal.objects.some(row => row.kind === 'instances' && row.id === instanceId

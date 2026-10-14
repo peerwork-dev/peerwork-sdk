@@ -27,7 +27,12 @@ try {
   try {
     // The original three modes have a separate frozen setup result. Exercise
     // only the newly added closure-backed direct subset in this successor.
-    for (const mode of ['direct-begin-applied-loss', 'direct-begin-before-post']) {
+    const selected = process.env.PEERWORK_INSTALL_SETUP_MODE;
+    if (selected && !['direct-completed-end'].includes(selected)) {
+      throw new Error('INSTALL_SETUP_MODE_INVALID');
+    }
+    for (const mode of selected ? [selected]
+      : ['direct-begin-applied-loss', 'direct-begin-before-post']) {
       const sourceDir = join(testRoot, mode);
       mkdirSync(sourceDir, { mode: 0o700 });
       const child = spawn(process.execPath, [join(sdkRoot, 'tests/legacy-owner-install-intent.mjs'),
@@ -44,14 +49,14 @@ try {
         throw new Error(`INSTALL_SETUP_${mode}_FAILED: rc=${code} stderr_sha256=${createHash('sha256').update(stderr).digest('hex')}`);
       }
       const source = JSON.parse(stdout);
-      if (source.mode !== mode || source.pending_count !== (mode === 'completed-end' ? 0 : 1)
+      if (source.mode !== mode || source.pending_count !== (mode.endsWith('completed-end') ? 0 : 1)
         || source.latest_structure_state !== (mode.endsWith('applied-loss') ? 'SEEDING' : 'ACTIVE')
         || (mode.startsWith('direct-') && !source.material_path)) {
         throw new Error(`INSTALL_SETUP_${mode}_SHAPE`);
       }
       const count = db.prepare('SELECT count(*) AS count FROM secure_commits WHERE workspace_id=?').get(source.workspace_id).count;
       if (count !== source.latest_sequence) throw new Error(`INSTALL_SETUP_${mode}_REPLAY_COUNT`);
-      if (mode !== 'completed-end') {
+      if (!mode.endsWith('completed-end')) {
         const accepted = db.prepare('SELECT count(*) AS count FROM secure_commits WHERE workspace_id=? AND command_id=?')
           .get(source.workspace_id, source.pending_command_id).count;
         if (accepted !== (mode.endsWith('applied-loss') ? 1 : 0)) throw new Error(`INSTALL_SETUP_${mode}_ACCEPTANCE`);
