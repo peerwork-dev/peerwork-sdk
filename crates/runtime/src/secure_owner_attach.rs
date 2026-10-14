@@ -6348,7 +6348,10 @@ fn verify_exact_direct_install_begin(
             policy_hash: verified.policy_hash().to_owned(),
             snapshot_json,
             protocol_digest: resolved.protocol_digest,
-            material_wire: if staged_source.is_some() { canonical_package_source_material(material_wire).map_err(|_| invalid())? } else { closure.into_bytes() },
+            material_wire: if let Some(source) = staged_source.as_ref() {
+                canonical_package_source_material(material_wire, source.source_checkpoint_json.as_bytes())
+                    .map_err(|_| invalid())?.as_bytes().to_vec()
+            } else { closure.into_bytes() },
             bindings_json: bindings,
             source_checkpoint_json: canonical_wire_value(
                 &parse_wire_json_bounded(&checkpoint_wire, 32, 8192)
@@ -6532,7 +6535,8 @@ fn verify_staged_install_source(
     let verified = verify_complete_package_source(&signed_parts, source).map_err(|_| invalid())?;
     if canonical_wire_value(&verified, CanonicalPath::SecureArtifact).map_err(|_| invalid())?
         != canonical_wire_value(proof, CanonicalPath::SecureArtifact).map_err(|_| invalid())?
-        || sha256_hex(&canonical_package_source_material(material).map_err(|_| invalid())?) != marker.source_sha256
+        || sha256_hex(canonical_package_source_material(material, canonical_wire_value(source, CanonicalPath::SecureArtifact)
+            .map_err(|_| invalid())?.as_bytes()).map_err(|_| invalid())?.as_bytes()) != marker.source_sha256
     { return Err(invalid()); }
     Ok(ImportedHistoricalCompletedPackageSource { source_checkpoint_json: canonical_wire_value(source, CanonicalPath::SecureArtifact)
         .map_err(|_| invalid())?, source_id: marker.source_id, part_count: parts.len(), steps })
