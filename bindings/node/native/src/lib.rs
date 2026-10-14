@@ -39,6 +39,23 @@ fn multipart_stage_request(wire: Option<&str>) -> Option<(HistoricalOwnerAttachI
     Some((input, material))
 }
 
+fn direct_begin_request(wire: Option<&str>) -> Option<(HistoricalOwnerAttachInput, String, Option<String>, String, String)> {
+    let value: serde_json::Value = serde_json::from_str(wire?).ok()?;
+    let object = value.as_object()?;
+    if object.len() != 5 { return None; }
+    let input = serde_json::from_value(object.get("attachment_input")?.clone()).ok()?;
+    let selected = object.get("selected_command_id")?.as_str()?.to_owned();
+    let digest = match object.get("expected_ts_state_digest")? {
+        serde_json::Value::Null => None,
+        value => Some(value.as_str()?.to_owned()),
+    };
+    let options = object.get("options_json")?.as_str()?.to_owned();
+    let material = object.get("material_json")?.as_str()?.to_owned();
+    if selected.is_empty() || options.is_empty() || material.is_empty()
+        || digest.as_deref().is_some_and(str::is_empty) { return None; }
+    Some((input, selected, digest, options, material))
+}
+
 #[napi]
 pub fn version() -> &'static str {
     peerwork_core::version()
@@ -542,7 +559,7 @@ impl Task for SecureOwnerCreateTask {
             Ok(value) => value,
             Err(_) => return Ok(serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid Owner configuration"}).to_string()),
         };
-        if matches!(self.operation.as_str(), "attach" | "resume_attachment" | "retain_pending_action" | "attachments" | "kernel_inspect" | "kernel_status" | "kernel_recover" | "stage_inspect" | "stage_multipart_inspect" | "stage_multipart_attach" | "stage_recover" | "orphan_inspect" | "orphan_multipart_inspect" | "orphan_multipart_attach" | "orphan_replan") {
+        if matches!(self.operation.as_str(), "attach" | "resume_attachment" | "retain_pending_action" | "attachments" | "kernel_inspect" | "kernel_status" | "kernel_recover" | "stage_inspect" | "stage_multipart_inspect" | "stage_multipart_attach" | "stage_recover" | "orphan_inspect" | "orphan_multipart_inspect" | "orphan_multipart_attach" | "orphan_replan" | "direct_begin_inspect" | "direct_begin_attach" | "direct_begin_recover") {
             let access = SecureHistoricalOwnerAttach::new(config);
             let result = match self.operation.as_str() {
                 "attach" => {
@@ -575,6 +592,26 @@ impl Task for SecureOwnerCreateTask {
                 "kernel_recover" => match (self.workspace_id.as_deref(), self.command_id.as_deref()) {
                     (Some(attach_id), Some(id)) => access.recover_kernel_command(attach_id, id, &self.cancel).map(|value| serde_json::to_string(&value).expect("kernel recovery status serializes")),
                     _ => return Ok(serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"attachment and kernel command IDs are required"}).to_string()),
+                },
+                "direct_begin_inspect" | "direct_begin_attach" => {
+                    let (input, selected, digest, options, material) = match direct_begin_request(self.input_json.as_deref()) {
+                        Some(value) => value,
+                        None => return Ok(serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid direct install BEGIN input"}).to_string()),
+                    };
+                    if self.operation == "direct_begin_inspect" {
+                        if digest.is_some() { return Ok(serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"direct BEGIN inspection must not select a TS state digest"}).to_string()); }
+                        access.inspect_pending_direct_install_begin(&input, &selected, &options, &material, &self.cancel)
+                            .map(|value| serde_json::to_string(&value).expect("direct BEGIN inventory serializes"))
+                    } else {
+                        let Some(digest) = digest else { return Ok(serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"direct BEGIN attach requires inspected TS state digest"}).to_string()); };
+                        access.attach_pending_direct_install_begin(input, &selected, &digest, &options, &material, &self.cancel)
+                            .map(|value| serde_json::to_string(&value).expect("attachment result serializes"))
+                    }
+                },
+                "direct_begin_recover" => match (self.workspace_id.as_deref(), self.command_id.as_deref()) {
+                    (Some(attach_id), Some(id)) => access.recover_pending_direct_install_begin(attach_id, id, &self.cancel)
+                        .map(|value| serde_json::to_string(&value).expect("attachment result serializes")),
+                    _ => return Ok(serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"attachment and direct BEGIN command IDs are required"}).to_string()),
                 },
                 "stage_inspect" => {
                     let input: HistoricalOwnerAttachInput = match self.input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {

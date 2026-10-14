@@ -476,6 +476,32 @@ exports.openSecureOwnerWorkspaces = options => {
     }
     return { attachment_input: attachmentInput(input), material_json: materialJson };
   };
+  const directBeginRequest = (input, selectedCommandId, expectedDigest, optionsJson, materialJson, attach) => {
+    const allowed = new Set([
+      'workspaceId', 'protectedTsStatePath', 'protectedTsIntentDbPath',
+      'protectedOwnerPkcs8Path', 'expectedOwnerActorId', 'expectedOwnerKeyId',
+      'recoverPendingAction', 'retainPendingActionCommandId',
+      'kernelPendingCommandIds', 'expectedKernelIntentDbDigest',
+      'selectedPendingPackageStageCommandId', 'selectedOrphanPackageStageCommandId',
+      'expectedTsStateDigest',
+    ]);
+    if (!input || typeof input !== 'object' || Object.keys(input).some(key => !allowed.has(key)) ||
+        typeof selectedCommandId !== 'string' || !selectedCommandId ||
+        typeof optionsJson !== 'string' || !optionsJson ||
+        typeof materialJson !== 'string' || !materialJson ||
+        (attach ? typeof expectedDigest !== 'string' || !expectedDigest : expectedDigest != null)) {
+      throw new TypeError('direct BEGIN requires exact source, selected command, options, material and inspected digest for attach');
+    }
+    const source = attachmentInput(input);
+    if (source.recover_pending_action || source.retain_pending_action_command_id != null ||
+        source.kernel_pending_command_ids.length || source.selected_pending_package_stage_command_id != null ||
+        source.selected_orphan_package_stage_command_id != null || source.expected_ts_state_digest != null) {
+      throw new TypeError('direct BEGIN selection cannot be combined with other attachment recovery');
+    }
+    return { attachment_input: source, selected_command_id: selectedCommandId,
+      expected_ts_state_digest: expectedDigest ?? null, options_json: optionsJson,
+      material_json: materialJson };
+  };
   const formatTransitionInput = input => {
     if (!input || typeof input.workspaceId !== 'string' || !input.workspaceId ||
         !['UPGRADE_WIRE_V3', 'RAISE_PRIVATE_CEILING_TWO'].includes(input.transition)) {
@@ -646,6 +672,12 @@ exports.openSecureOwnerWorkspaces = options => {
     attachPendingMultipartPackageStage: (input, materialJson, { signal } = {}) => invoke(
       'stage_multipart_attach', multipartStageRequest(input, materialJson, 'pending'), undefined, undefined, signal),
     recoverPendingPackageStage: (attachId, expectedCommandId, { signal } = {}) => invoke('stage_recover', undefined, expectedCommandId, attachId, signal),
+    inspectPendingDirectInstallBegin: (input, selectedCommandId, optionsJson, materialJson, { signal } = {}) => invoke(
+      'direct_begin_inspect', directBeginRequest(input, selectedCommandId, null, optionsJson, materialJson, false), undefined, undefined, signal),
+    attachPendingDirectInstallBegin: (input, selectedCommandId, expectedTsStateDigest, optionsJson, materialJson, { signal } = {}) => invoke(
+      'direct_begin_attach', directBeginRequest(input, selectedCommandId, expectedTsStateDigest, optionsJson, materialJson, true), undefined, undefined, signal),
+    recoverPendingDirectInstallBegin: (attachId, expectedCommandId, { signal } = {}) => invoke(
+      'direct_begin_recover', undefined, expectedCommandId, attachId, signal),
     inspectOrphanPackageStage: (input, { signal } = {}) => invoke('orphan_inspect', attachmentInput(input), undefined, undefined, signal),
     inspectMultipartOrphanPackageStage: (input, materialJson, { signal } = {}) => invoke(
       'orphan_multipart_inspect', multipartStageRequest(input, materialJson, null), undefined, undefined, signal),

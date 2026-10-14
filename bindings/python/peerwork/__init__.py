@@ -956,10 +956,22 @@ class HistoricalOwnerAttachmentResult(TypedDict):
     pending_package_stage_command_id: str | None
     pending_package_stage_status: Literal["PENDING_UNRESOLVED", "PART_ACCEPTED_CONTINUATION_PENDING", "ACCEPTED"] | None
     pending_package_stage_id: str | None
+    pending_direct_install_command_id: str | None
+    pending_direct_install_instance_id: str | None
+    pending_direct_install_status: Literal["PENDING_UNRESOLVED", "BEGIN_ACCEPTED_CONTINUATION_PENDING", "ACCEPTED"] | None
     orphan_package_stage_command_id: str | None
     orphan_package_stage_status: Literal["ORPHAN_NO_PACKET", "REPLAN_SELECTED_UNVERIFIED", "ORPHAN_REPLANNED"] | None
     orphan_replan_stage_id: str | None
     orphan_replan_command_id: str | None
+
+
+class HistoricalDirectInstallPendingInventory(TypedDict):
+    ts_state_digest: str
+    command_id: str
+    instance_id: str
+    intent_hash: str
+    original_commit_hash: str
+    status: Literal["PENDING_UNRESOLVED", "APPLIED_IN_SIGNED_REPLAY"]
 
 
 class HistoricalPackageStagePendingInventory(TypedDict):
@@ -1191,6 +1203,57 @@ class SecureOwnerWorkspaceClient:
             raise TypeError("material_json must be a nonempty JSON string")
         return {"attachment_input": attachment_input, "material_json": material_json}
 
+    @staticmethod
+    def _direct_begin_request(attachment_input: dict, selected_command_id: str,
+            expected_ts_state_digest: str | None, options_json: str, material_json: str,
+            *, attach: bool) -> dict:
+        if any(not isinstance(value, str) or not value for value in
+               (selected_command_id, options_json, material_json)):
+            raise TypeError("direct BEGIN requires selected command, options and material JSON strings")
+        if attach and (not isinstance(expected_ts_state_digest, str) or not expected_ts_state_digest):
+            raise ValueError("direct BEGIN attach requires the inspected TS state digest")
+        if not attach and expected_ts_state_digest is not None:
+            raise ValueError("direct BEGIN inspection must not select a TS state digest")
+        return dict(attachment_input=attachment_input, selected_command_id=selected_command_id,
+            expected_ts_state_digest=expected_ts_state_digest, options_json=options_json,
+            material_json=material_json)
+
+    def inspect_pending_direct_install_begin(self, workspace_id: str,
+            protected_ts_state_path: str, protected_ts_intent_db_path: str,
+            protected_owner_pkcs8_path: str, expected_owner_actor_id: str,
+            expected_owner_key_id: str, selected_command_id: str,
+            options_json: str, material_json: str) -> HistoricalDirectInstallPendingInventory:
+        """Verify an exact saved direct BEGIN against caller-supplied options/material; no POST."""
+        value = self._attachment_input(workspace_id, protected_ts_state_path,
+            protected_ts_intent_db_path, protected_owner_pkcs8_path,
+            expected_owner_actor_id, expected_owner_key_id)
+        request = self._direct_begin_request(value, selected_command_id, None,
+            options_json, material_json, attach=False)
+        return cast(HistoricalDirectInstallPendingInventory, self._owner(
+            "direct_begin_inspect", input_value=request))
+
+    def attach_pending_direct_install_begin(self, workspace_id: str,
+            protected_ts_state_path: str, protected_ts_intent_db_path: str,
+            protected_owner_pkcs8_path: str, expected_owner_actor_id: str,
+            expected_owner_key_id: str, selected_command_id: str,
+            expected_ts_state_digest: str, options_json: str,
+            material_json: str) -> HistoricalOwnerAttachmentResult:
+        """Import only the inspected direct BEGIN; recover it by saved command ID."""
+        value = self._attachment_input(workspace_id, protected_ts_state_path,
+            protected_ts_intent_db_path, protected_owner_pkcs8_path,
+            expected_owner_actor_id, expected_owner_key_id)
+        request = self._direct_begin_request(value, selected_command_id,
+            expected_ts_state_digest, options_json, material_json, attach=True)
+        return cast(HistoricalOwnerAttachmentResult, self._owner(
+            "direct_begin_attach", input_value=request))
+
+    def recover_pending_direct_install_begin(self, attach_id: str,
+            expected_command_id: str) -> HistoricalOwnerAttachmentResult:
+        """Explicit same-ID recovery of a retained direct BEGIN."""
+        return cast(HistoricalOwnerAttachmentResult, self._owner(
+            "direct_begin_recover", command_id=expected_command_id,
+            workspace_id=attach_id))
+
     def inspect_pending_multipart_package_stage(self, workspace_id: str,
             protected_ts_state_path: str, protected_ts_intent_db_path: str,
             protected_owner_pkcs8_path: str, expected_owner_actor_id: str,
@@ -1406,6 +1469,39 @@ class SecureOwnerWorkspaceClient:
             expected_owner_actor_id, expected_owner_key_id)
         return cast(HistoricalPackageStagePendingInventory, await _run_cancelled_async(
             self._owner, "stage_inspect", input_value=value))
+
+    async def inspect_pending_direct_install_begin_async(self, workspace_id: str,
+            protected_ts_state_path: str, protected_ts_intent_db_path: str,
+            protected_owner_pkcs8_path: str, expected_owner_actor_id: str,
+            expected_owner_key_id: str, selected_command_id: str,
+            options_json: str, material_json: str) -> HistoricalDirectInstallPendingInventory:
+        value = self._attachment_input(workspace_id, protected_ts_state_path,
+            protected_ts_intent_db_path, protected_owner_pkcs8_path,
+            expected_owner_actor_id, expected_owner_key_id)
+        request = self._direct_begin_request(value, selected_command_id, None,
+            options_json, material_json, attach=False)
+        return cast(HistoricalDirectInstallPendingInventory, await _run_cancelled_async(
+            self._owner, "direct_begin_inspect", input_value=request))
+
+    async def attach_pending_direct_install_begin_async(self, workspace_id: str,
+            protected_ts_state_path: str, protected_ts_intent_db_path: str,
+            protected_owner_pkcs8_path: str, expected_owner_actor_id: str,
+            expected_owner_key_id: str, selected_command_id: str,
+            expected_ts_state_digest: str, options_json: str,
+            material_json: str) -> HistoricalOwnerAttachmentResult:
+        value = self._attachment_input(workspace_id, protected_ts_state_path,
+            protected_ts_intent_db_path, protected_owner_pkcs8_path,
+            expected_owner_actor_id, expected_owner_key_id)
+        request = self._direct_begin_request(value, selected_command_id,
+            expected_ts_state_digest, options_json, material_json, attach=True)
+        return cast(HistoricalOwnerAttachmentResult, await _run_cancelled_async(
+            self._owner, "direct_begin_attach", input_value=request))
+
+    async def recover_pending_direct_install_begin_async(self, attach_id: str,
+            expected_command_id: str) -> HistoricalOwnerAttachmentResult:
+        return cast(HistoricalOwnerAttachmentResult, await _run_cancelled_async(
+            self._owner, "direct_begin_recover", command_id=expected_command_id,
+            workspace_id=attach_id))
 
     async def inspect_pending_multipart_package_stage_async(self, workspace_id: str,
             protected_ts_state_path: str, protected_ts_intent_db_path: str,
