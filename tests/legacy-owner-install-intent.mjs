@@ -21,6 +21,7 @@ const moduleUrl = name => pathToFileURL(join(referenceRoot, `dist-workspace/src/
 const { SecureAgentClient } = await import(moduleUrl('workspace-secure-agent'));
 const { discussionPreset } = await import(moduleUrl('workspace-presets'));
 const { secureHash } = await import(moduleUrl('workspace-secure-client'));
+const { resolveProtocolInstall } = await import(moduleUrl('workspace-protocol-install-plan'));
 const agent = await SecureAgentClient.open({
   baseUrl: new URL(origin).origin, privateKey, statePath, intentDbPath,
 });
@@ -38,6 +39,7 @@ try {
     grants: [{ actor_id: agent.identity.actorId, actions: ['discussion.post'],
       protocol_roles: ['CONTRIBUTOR'], capabilities: ['POST'] }],
   };
+  const resolved = await resolveProtocolInstall(initial, options, []);
   writeFileSync(optionsPath, JSON.stringify(options), { mode: 0o600, flag: 'wx' });
   const key = `${workspaceId}.${instanceId}`;
   const originalPost = agent.post.bind(agent);
@@ -86,7 +88,7 @@ try {
     agent.request = originalRequest;
   }
   const retainedHash = agent.state.protocol_install_intents?.[key];
-  if (typeof retainedHash !== 'string' || !/^[a-f0-9]{64}$/.test(retainedHash)) {
+  if (retainedHash !== resolved.intentHash) {
     throw new Error('INSTALL_INTENT_MAP_MISSING');
   }
   const pending = Object.entries(agent.state.pending);
@@ -101,7 +103,11 @@ try {
   if (mode === 'completed-end') {
     if (!stopped || observedAction !== 'secure.structure.end'
       || journal.structure?.state !== 'ACTIVE'
-      || !journal.objects.some(row => row.kind === 'instances' && row.id === instanceId)) {
+      || !journal.objects.some(row => row.kind === 'instances' && row.id === instanceId
+        && row.value.protocol_digest === resolved.digest
+        && row.value.origin_entrypoint === options.entrypoint)
+      || !journal.installations?.some(row => row.instance_id === instanceId
+        && row.protocol_digest === resolved.digest && row.entrypoint === options.entrypoint)) {
       throw new Error('INSTALL_INTENT_SIGNED_COMPLETION_MISSING');
     }
   } else if ((mode === 'begin-before-post' && (!stopped || journal.checkpoint.sequence !== initial.checkpoint.sequence))
@@ -113,6 +119,7 @@ try {
     owner_key_id: agent.identity.keyId, state_path: statePath,
     pem_path: pemPath, intent_db_path: intentDbPath, options_path: optionsPath,
     instance_id: instanceId, intent_key: key, intent_hash: retainedHash,
+    protocol_digest: resolved.digest, entrypoint: options.entrypoint,
     initial_sequence: initial.checkpoint.sequence, latest_sequence: journal.checkpoint.sequence,
     latest_structure_state: journal.structure?.state ?? null,
     pending_count: pending.length, pending_command_id: selected?.[0] ?? null,
