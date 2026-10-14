@@ -2698,6 +2698,10 @@ impl SecureHistoricalOwnerAttach {
         ).map_err(|_| HistoricalOwnerAttachError::Local)?;
         lifecycle.stage_historical_owner_ring(ring)
             .map_err(|_| HistoricalOwnerAttachError::Conflict)?;
+        // Replay opens the same protected lifecycle. Release its nonblocking
+        // store lock after the pending ring is durable, then reopen it only
+        // after the saved BEGIN and current authority have been re-proved.
+        drop(lifecycle);
         let replayed = SecureReadAccess::new(self.attach_read_config(&row.input))
             .replay_checked_attach_generation(cancel)
             .map_err(|_| if cancel.is_cancelled() {
@@ -2765,6 +2769,10 @@ impl SecureHistoricalOwnerAttach {
         SecurePrivatePackageInstall::new(self.profile_config(&row.input))
             .save_imported_direct_begin_row_for_attach(verified.imported)
             .map_err(|_| HistoricalOwnerAttachError::Conflict)?;
+        let mut lifecycle = SecureLifecycle::open(
+            &directory.join("lifecycle.state"), &self.config.origin,
+            owner.actor_id(), &row.input.workspace_id, owner.actor_id(), owner.key_id(),
+        ).map_err(|_| HistoricalOwnerAttachError::Local)?;
         if verified.applied {
             lifecycle.activate_verified_historical_owner_pending_begin(
                 ring, &replayed, row.source_sequence, row.source_head.as_deref(),
