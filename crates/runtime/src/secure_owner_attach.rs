@@ -5852,6 +5852,7 @@ struct ResolvedLegacyDirectOptions {
     protocol_digest: String,
     grants_json: String,
     disclose_json: Option<String>,
+    disclosed_fields: Option<std::collections::BTreeSet<(Vec<u16>, Vec<u16>)>>,
 }
 
 /// f828 direct options retain original caller bytes separately from the
@@ -5887,11 +5888,13 @@ fn resolve_legacy_direct_options(options: &WireValue) -> Result<ResolvedLegacyDi
     if let Some(checkpoint) = options.get("expected_checkpoint") {
         semantic.push(kv("expected_checkpoint", checkpoint.clone()));
     }
+    let mut disclosed_fields = None;
     let disclose_json = if let Some(disclose) = options.get("disclose") {
         let WireValue::Array(rows) = disclose else { return Err(invalid()); };
         if rows.len() > 256 { return Err(invalid()); }
         let mut seen = std::collections::BTreeSet::new();
         let mut normalized = Vec::new();
+        let mut selected_fields = std::collections::BTreeSet::new();
         for row in rows {
             if row.object_len() != Some(2) { return Err(invalid()); }
             let schema = row.get("schema").and_then(WireValue::as_utf16).ok_or_else(invalid)?;
@@ -5902,6 +5905,7 @@ fn resolve_legacy_direct_options(options: &WireValue) -> Result<ResolvedLegacyDi
             for field in fields {
                 let units = field.as_utf16().filter(|units| !units.is_empty()).ok_or_else(invalid)?;
                 if !fields_seen.insert(units.to_vec()) { return Err(invalid()); }
+                selected_fields.insert((schema.to_vec(), units.to_vec()));
             }
             let fields = fields_seen.into_iter().map(WireValue::String).collect();
             let digest = WireValue::String(protocol_digest.encode_utf16().collect());
@@ -5914,12 +5918,14 @@ fn resolve_legacy_direct_options(options: &WireValue) -> Result<ResolvedLegacyDi
         }
         normalized.sort_by(|left, right| left.0.cmp(&right.0));
         semantic.push(kv("disclose", WireValue::Array(normalized.into_iter().map(|(_, row)| row).collect())));
+        disclosed_fields = Some(selected_fields);
         Some(canonical_wire_value(disclose, CanonicalPath::SecureArtifact).map_err(|_| invalid())?)
     } else { None };
     let intent_hash = sha256_hex(canonical_wire_value(&WireValue::Object(semantic), CanonicalPath::SecureArtifact)
         .map_err(|_| invalid())?.as_bytes());
     Ok(ResolvedLegacyDirectOptions { intent_hash, protocol_digest,
-        grants_json: canonical_wire_value(&grants, CanonicalPath::SecureArtifact).map_err(|_| invalid())?, disclose_json })
+        grants_json: canonical_wire_value(&grants, CanonicalPath::SecureArtifact).map_err(|_| invalid())?,
+        disclose_json, disclosed_fields })
 }
 
 /// Classify the caller-selected exact packet. BEGIN owns the installation;
@@ -6235,6 +6241,35 @@ fn verify_exact_direct_install_begin(
     let prior_policy = replayed.signed_policy_by_hash(&prior_hash).ok_or_else(invalid)?;
     let prior_policy_value = parse_wire_json_bounded(prior_policy, 64, 196_608)
         .map_err(|_| invalid())?;
+    // f828 distinguishes an absent disclosure from an explicit empty choice.
+    // When a protocol is reused, any explicit choice must match its existing
+    // signed readable fields, including a choice selecting no fields at all.
+    if let Some(desired) = resolved.disclosed_fields.as_ref() {
+        if prior.objects().iter().any(|object|
+            object.get("kind").and_then(WireValue::as_string).as_deref() == Some("protocols")
+                && object.get("id").and_then(WireValue::as_string).as_deref()
+                    == Some(resolved.protocol_digest.as_str())) {
+            let payload = prior_policy_value.get("payload").ok_or_else(invalid)?;
+            let undisclosed = exact_u64(payload.get("v")) == Some(1)
+                || (exact_u64(payload.get("v")) == Some(3)
+                    && payload.get("structure_mode").and_then(WireValue::as_string).as_deref() == Some("NONE"));
+            let mut approved = std::collections::BTreeSet::new();
+            if !undisclosed {
+                let Some(WireValue::Array(rows)) = payload.get("structure").and_then(|value| value.get("disclosure"))
+                    else { return Err(invalid()); };
+                for row in rows {
+                    if row.get("protocol_digest").and_then(WireValue::as_string).as_deref()
+                        != Some(resolved.protocol_digest.as_str()) { continue; }
+                    let schema = row.get("schema").and_then(WireValue::as_utf16).ok_or_else(invalid)?;
+                    let Some(WireValue::Array(fields)) = row.get("fields") else { return Err(invalid()); };
+                    for field in fields {
+                        approved.insert((schema.to_vec(), field.as_utf16().ok_or_else(invalid)?.to_vec()));
+                    }
+                }
+            }
+            if &approved != desired { return Err(invalid()); }
+        }
+    }
     let epoch = exact_u64(prior_policy_value.get("payload")
         .and_then(|p| p.get("epoch"))).ok_or_else(invalid)?;
     let key = ring.key_at(epoch).ok_or_else(invalid)?;
