@@ -6056,7 +6056,7 @@ fn verify_exact_direct_install_begin(
     }
     let options = parse_wire_json_bounded(options_wire, 64, 2 * 1024 * 1024)
         .map_err(|_| invalid())?;
-    if options.object_len() != Some(4)
+    if options.object_len() != Some(if options.get("expected_checkpoint").is_some() { 5 } else { 4 })
         || options.get("instance_id").and_then(WireValue::as_string).as_deref()
             != Some(pending.instance_id.as_str())
         || options.get("entrypoint").and_then(WireValue::as_string).is_none()
@@ -6125,6 +6125,17 @@ fn verify_exact_direct_install_begin(
         "sequence": prior_sequence, "head": predecessor, "policy_hash": prior_hash,
     });
     let checkpoint_wire = serde_json::to_vec(&checkpoint).map_err(|_| invalid())?;
+    // The optional review floor belongs to the original BEGIN source, even
+    // when a later retained PAGE/END or completed map is being selected.
+    // Equality with this reconstructed authenticated value enforces all seven
+    // keys and pins; the advisory options/map hash alone proves no checkpoint.
+    if let Some(reviewed) = options.get("expected_checkpoint") {
+        let expected = parse_wire_json_bounded(&checkpoint_wire, 32, 8192)
+            .map_err(|_| invalid())?;
+        if canonical_wire_value(reviewed, CanonicalPath::SecureArtifact).map_err(|_| invalid())?
+            != canonical_wire_value(&expected, CanonicalPath::SecureArtifact).map_err(|_| invalid())?
+        { return Err(invalid()); }
+    }
     let through = usize::try_from(prior_sequence).map_err(|_| invalid())?;
     let commit_refs: Vec<&[u8]> = replayed.signed_commit_wires()
         .get(..through).ok_or_else(invalid)?.iter().map(Vec::as_slice).collect();
@@ -11826,10 +11837,11 @@ mod tests {
         let origin = ready["origin"].as_str().unwrap();
         let mode = std::env::var("PEERWORK_COMPLETED_DIRECT_MODE")
             .unwrap_or_else(|_| "direct-completed-end".into());
-        assert!(["direct-completed-end", "complete-action", "complete-rotate"]
+        assert!(["direct-completed-end", "complete-action", "complete-rotate",
+            "direct-checkpoint-completed-end"]
             .contains(&mode.as_str()));
         let helper = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join(if mode == "direct-completed-end" {
+            .join(if mode == "direct-completed-end" || mode == "direct-checkpoint-completed-end" {
                 "../../tests/legacy-owner-install-intent.mjs"
             } else {
                 "../../tests/legacy-owner-install-intent-later.mjs"
@@ -11910,6 +11922,12 @@ mod tests {
         assert_eq!(std::fs::read(&input.protected_ts_state_path).unwrap(), before);
         assert!(attach.attachments().unwrap().is_empty());
         assert_eq!(before_count, fixture["latest_sequence"].as_i64().unwrap());
+        if mode == "direct-checkpoint-completed-end" {
+            exercise_reviewed_checkpoint_rejections(&attach, &input, root.path(),
+                std::str::from_utf8(&options).unwrap(), std::str::from_utf8(&material).unwrap(), None);
+            assert_eq!(count(), before_count);
+            assert_eq!(std::fs::read(&input.protected_ts_state_path).unwrap(), before);
+        }
         TEST_STOP_AFTER_ATTACH_ROW.store(true, Ordering::SeqCst);
         assert!(matches!(attach.attach_completed_direct_install(
             input.clone(), instance, &valid.ts_state_digest,
@@ -12280,6 +12298,15 @@ mod tests {
         exercise_selected_direct_install_source("direct-same-workspace-before-post");
     }
 
+    #[test]
+    fn actual_service_imports_reviewed_checkpoint_direct_install() {
+        let mode = std::env::var("PEERWORK_CHECKPOINT_DIRECT_MODE")
+            .unwrap_or_else(|_| "direct-checkpoint-begin-before-post".into());
+        assert!(["direct-checkpoint-begin-before-post", "direct-checkpoint-end-applied-loss"]
+            .contains(&mode.as_str()));
+        exercise_selected_direct_install_source(&mode);
+    }
+
     fn exercise_selected_direct_install_source(mode: &str) {
         let _fault_guard = ATTACH_FAULT_TEST_LOCK.lock().unwrap();
         let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else { return; };
@@ -12355,6 +12382,11 @@ mod tests {
         assert!(!attach.workspace_dir(workspace).join("lifecycle.state").exists());
         assert_eq!(count(), before);
         assert_eq!(read_private_file_bounded(&input.protected_ts_state_path, MAX_SOURCE).unwrap(), source_before);
+        if mode.starts_with("direct-checkpoint-") {
+            exercise_reviewed_checkpoint_rejections(&attach, &input, root.path(), &options, &material, Some(command));
+            assert_eq!(count(), before);
+            assert_eq!(read_private_file_bounded(&input.protected_ts_state_path, MAX_SOURCE).unwrap(), source_before);
+        }
         if same_workspace {
             let source: serde_json::Value = serde_json::from_slice(&source_before).unwrap();
             assert_eq!(source["protocol_install_intents"].as_object().unwrap().len(), 2);
@@ -12401,6 +12433,11 @@ mod tests {
         assert_eq!(plan.manifest.ts_state_sha256, sha256_hex(&source_before));
         assert_eq!(plan.manifest.command_id, command);
         assert_eq!(plan.manifest.original_commit_hash, selected_hash);
+        if mode.starts_with("direct-checkpoint-") {
+            let protected_options: serde_json::Value = serde_json::from_slice(&plan.options).unwrap();
+            assert_eq!(protected_options["expected_checkpoint"], fixture["expected_checkpoint"]);
+            assert_eq!(plan.manifest.options_sha256, fixture["canonical_options_hash"].as_str().unwrap());
+        }
         drop(plan);
         std::fs::rename(&source_dir, root.path().join("source-gone")).unwrap();
         let fresh = SecureHistoricalOwnerAttach::new(config.clone());
@@ -12457,7 +12494,74 @@ mod tests {
         let final_count = count();
         assert_eq!(fresh.recover_pending_direct_install_begin(&prepared[0].attach_id, command, &cancel).unwrap(), complete);
         assert_eq!(count(), final_count);
-        if applied && mode.starts_with("direct-end-") { assert_eq!(final_count, before); }
+        if applied && fixture["pending_action_id"] == "secure.structure.end" {
+            assert_eq!(final_count, before);
+        }
+    }
+
+    fn exercise_reviewed_checkpoint_rejections(
+        attach: &SecureHistoricalOwnerAttach,
+        input: &HistoricalOwnerAttachInput,
+        root: &Path,
+        options_json: &str,
+        material: &str,
+        command: Option<&str>,
+    ) {
+        let options: serde_json::Value = serde_json::from_str(options_json).unwrap();
+        let source: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&input.protected_ts_state_path).unwrap()).unwrap();
+        let instance = options["instance_id"].as_str().unwrap().to_owned();
+        let intent_key = format!("{}.{instance}", input.workspace_id);
+        for (name, mut changed_options) in [("unknown-option", options.clone()),
+            ("malformed-checkpoint", options.clone()), ("wrong-checkpoint", options)] {
+            match name {
+                "unknown-option" => changed_options["unreviewed"] = serde_json::json!(true),
+                "malformed-checkpoint" => changed_options["expected_checkpoint"]["sequence"] = serde_json::json!("1"),
+                _ => {
+                    assert_ne!(changed_options["expected_checkpoint"]["head"], "0".repeat(64));
+                    changed_options["expected_checkpoint"]["head"] = serde_json::json!("0".repeat(64));
+                },
+            }
+            let options_bytes = serde_json::to_vec(&changed_options).unwrap();
+            let options_value = parse_wire_json_bounded(&options_bytes, 64, 2 * 1024 * 1024).unwrap();
+            let options_hash = sha256_hex(canonical_wire_value(&options_value, CanonicalPath::SecureArtifact)
+                .unwrap().as_bytes());
+            let mut changed_source = source.clone();
+            changed_source["protocol_install_intents"][&intent_key] = serde_json::json!(options_hash);
+            // Match the advisory hash to the altered options but leave every
+            // original signed packet/checkpoint unchanged in the copied source.
+            assert_eq!(changed_source["pending"], source["pending"]);
+            assert_eq!(changed_source["workspaces"], source["workspaces"]);
+            let source_bytes = serde_json::to_vec(&changed_source).unwrap();
+            let path = root.join(format!("negative-checkpoint-{name}.state"));
+            std::fs::write(&path, &source_bytes).unwrap();
+            #[cfg(unix)] {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            }
+            let mut negative = input.clone();
+            negative.protected_ts_state_path = path.clone();
+            let changed_options = std::str::from_utf8(&options_bytes).unwrap();
+            let cancel = CancellationToken::new();
+            if let Some(command) = command {
+                assert!(matches!(attach.inspect_pending_direct_install_begin(&negative, command,
+                    changed_options, material, &cancel), Err(HistoricalOwnerAttachError::SourceUnresolved)),
+                    "{name}: inspect must reject despite matching advisory hash");
+                assert!(matches!(attach.attach_pending_direct_install_begin(negative, command,
+                    &sha256_hex(&source_bytes), changed_options, material, &cancel),
+                    Err(HistoricalOwnerAttachError::SourceUnresolved)), "{name}: attach must reject before PREPARED");
+            } else {
+                assert!(matches!(attach.inspect_completed_direct_install(&negative, &instance,
+                    changed_options, material, &cancel), Err(HistoricalOwnerAttachError::SourceUnresolved)),
+                    "{name}: completed inspect must reject despite matching advisory hash");
+                assert!(matches!(attach.attach_completed_direct_install(negative, &instance,
+                    &sha256_hex(&source_bytes), changed_options, material, &cancel),
+                    Err(HistoricalOwnerAttachError::SourceUnresolved)), "{name}: completed attach must reject before PREPARED");
+            }
+            assert!(attach.attachments().unwrap().is_empty());
+            assert!(!attach.workspace_dir(&input.workspace_id).join("lifecycle.state").exists());
+            assert_eq!(std::fs::read(path).unwrap(), source_bytes);
+        }
     }
 
 }
