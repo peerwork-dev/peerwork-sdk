@@ -5867,11 +5867,18 @@ fn resolve_legacy_direct_options(options: &WireValue) -> Result<ResolvedLegacyDi
         || !matches!(options.get("manifest"), Some(WireValue::Object(_)))
     { return Err(invalid()); }
     let manifest = options.get("manifest").ok_or_else(invalid)?;
-    let protocol_digest = sha256_hex(canonical_wire_value(manifest, CanonicalPath::SecureArtifact)
+    let kv = |name: &str, value| (name.encode_utf16().collect::<Vec<_>>(), value);
+    // f828 manifestCanonical hashes {semantics,manifest}, not manifest alone.
+    // The private BEGIN verifier independently binds this expected digest to
+    // its source-policy-authorized compilation of the exact closure/bindings.
+    let wrapped = WireValue::Object(vec![
+        kv("semantics", WireValue::String("peerwork.kernel.v1".encode_utf16().collect())),
+        kv("manifest", manifest.clone()),
+    ]);
+    let protocol_digest = sha256_hex(canonical_wire_value(&wrapped, CanonicalPath::SecureArtifact)
         .map_err(|_| invalid())?.as_bytes());
     let grants = options.get("grants").cloned().unwrap_or_else(|| WireValue::Array(Vec::new()));
     if !matches!(&grants, WireValue::Array(rows) if rows.len() <= 128) { return Err(invalid()); }
-    let kv = |name: &str, value| (name.encode_utf16().collect::<Vec<_>>(), value);
     let mut semantic = vec![
         kv("instance_id", options.get("instance_id").ok_or_else(invalid)?.clone()),
         kv("entrypoint", options.get("entrypoint").ok_or_else(invalid)?.clone()),
