@@ -14,7 +14,7 @@ const observer=()=>sdk.openAcquisitionObservations({path:observationsPath});
  switch(operation){
  case 'identity-info':result=await sdk.openIdentity(c.identity_path);break;
  case 'identity-import':result=await sdk.importLegacyOwnerIdentity(a.config_file,a.pem_file);break;
- case 'read':result=await sdk.openSecurePublicActions(options).read();break;
+ case 'read':result=await sdk.readSecureWorkspace(options);break;
  case 'catalog-search':result=await sdk.openPublicCatalog({origin:a.origin,allowLoopbackHttp:true}).search('proposal');break;
  case 'catalog-inspect':result=await sdk.openPublicCatalog({origin:a.origin,allowLoopbackHttp:true}).inspectExact(a.digest);break;
  case 'install-begin':result=await sdk.openSecurePublicPackageInstaller(options).begin({closureJson:a.closure_json,

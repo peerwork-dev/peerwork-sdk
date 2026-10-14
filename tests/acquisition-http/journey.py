@@ -91,7 +91,7 @@ def run(operation,arg=None):
  return value['value'] if metric else value
 
 def counts():
- with urllib.request.urlopen(config['origin']+'/__test/secure-counts',timeout=5) as r:return json.load(r)
+ with urllib.request.urlopen(config['origin'].rstrip('/')+'/__test/secure-counts',timeout=5) as r:return json.load(r)
 def posts():return [row for line in (STATE/'requests.jsonl').read_text().splitlines() if (row:=json.loads(line))['host']==urlparse(config['origin']).netloc]
 def install_posts():return [r for r in posts() if r.get('action_id','').startswith('secure.structure.')]
 def ref(kind,n):return f'obs:{kind}:{n:032x}'
