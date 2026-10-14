@@ -35,7 +35,8 @@ try {
       'direct-checkpoint-completed-end', 'direct-disclosure-begin-before-post',
       'direct-disclosure-end-applied-loss', 'direct-no-grants-begin-before-post',
       'direct-empty-disclosure-begin-before-post', 'direct-composition-begin-before-post',
-      'direct-composition-end-applied-loss'].includes(selected)) {
+      'direct-composition-end-applied-loss', 'direct-staged-package-begin-before-post',
+      'direct-staged-package-end-applied-loss'].includes(selected)) {
       throw new Error('INSTALL_SETUP_MODE_INVALID');
     }
     for (const mode of selected ? [selected]
@@ -63,7 +64,7 @@ try {
       const checkpointOption = mode.startsWith('direct-checkpoint-');
       const normalizedOptions = /^(direct-disclosure-|direct-no-grants-|direct-empty-disclosure-)/.test(mode);
       const retainedStep = /^direct-(page|end)-/.exec(mode.replace(
-        /^direct-(checkpoint|disclosure|empty-disclosure|no-grants|composition)-/, 'direct-'))?.[1];
+        /^direct-(checkpoint|disclosure|empty-disclosure|no-grants|composition|staged-package)-/, 'direct-'))?.[1];
       if (source.mode !== mode || source.pending_count !== (completed ? 0 : 1)
         || source.latest_structure_state !== (retainedStep
           ? retainedStep === 'end' && mode.endsWith('applied-loss') ? 'ACTIVE' : 'SEEDING'
@@ -97,6 +98,15 @@ try {
         || source.canonical_options_hash === source.intent_hash)) {
         throw new Error(`INSTALL_SETUP_${mode}_COMPOSITION`);
       }
+      if (mode.startsWith('direct-staged-package-') && (source.compiler_equality !== true
+        || !Number.isSafeInteger(source.source_parts) || source.source_parts < 1
+        || source.stage_markers_cleared !== true || source.package_source?.v !== 1
+        || source.package_source.source.sequence !== source.initial_sequence
+        || source.begin_predecessor.sequence !== source.initial_sequence + source.source_parts
+        || source.begin_predecessor.policy_hash !== source.expected_checkpoint.policy_hash
+        || source.expected_checkpoint.sequence !== source.initial_sequence)) {
+        throw new Error(`INSTALL_SETUP_${mode}_STAGED_SOURCE`);
+      }
       if (!completed) {
         const accepted = db.prepare('SELECT count(*) AS count FROM secure_commits WHERE workspace_id=? AND command_id=?')
           .get(source.workspace_id, source.pending_command_id).count;
@@ -108,6 +118,10 @@ try {
         initial_sequence: source.initial_sequence, latest_sequence: source.latest_sequence,
         structure_state: source.latest_structure_state, commit_count: count,
         intent_hash_bound: true,
+        ...(mode.startsWith('direct-staged-package-') ? { compiler_equality: true,
+          source_parts: source.source_parts, reviewed_sequence: source.expected_checkpoint.sequence,
+          begin_predecessor_sequence: source.begin_predecessor.sequence,
+          stage_markers_cleared: true } : {}),
         ...(mode.startsWith('direct-composition-') ? { compiler_equality: true,
           explicit_dependency_count: source.explicit_dependency_count,
           original_options_hash_distinct: true, source_digest: source.source_digest,
