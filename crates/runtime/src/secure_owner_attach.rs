@@ -12657,7 +12657,7 @@ mod tests {
         let source: serde_json::Value = serde_json::from_slice(&std::fs::read(&input.protected_ts_state_path).unwrap()).unwrap();
         let intent_key = format!("{}.{}", input.workspace_id, options["instance_id"].as_str().unwrap());
         for name in ["dependency-digest", "duplicate-dependency", "unused-dependency", "changed-root",
-            "flattened-without-provenance", "changed-material", "raw-hash"] {
+            "changed-provenance-same-digest", "changed-material", "raw-hash"] {
             let mut changed = options.clone();
             let mut changed_material = material.to_owned();
             match name {
@@ -12671,11 +12671,21 @@ mod tests {
                     changed["dependencies"].as_array_mut().unwrap().push(node);
                 },
                 "changed-root" => changed["manifest"]["name"] = serde_json::json!("example.changed-composition-root.v1"),
-                "flattened-without-provenance" => {
-                    let value = parse_wire_json_bounded(options_json.as_bytes(), 64, 2 * 1024 * 1024).unwrap();
-                    let (flattened, _, _) = resolve_explicit_install_protocol(value.get("manifest").unwrap(), value.get("dependencies")).unwrap();
-                    changed["manifest"] = serde_json::from_str(&canonical_wire_value(&flattened, CanonicalPath::SecureArtifact).unwrap()).unwrap();
-                    changed.as_object_mut().unwrap().remove("dependencies");
+                "changed-provenance-same-digest" => {
+                    let id = changed["manifest"]["actions"][0]["id"].as_str().unwrap().to_owned();
+                    let guard = changed["manifest"]["actions"][0]["variants"][0]["when"].as_array_mut().unwrap().remove(0);
+                    changed["manifest"]["constraints"][&id] = serde_json::json!([guard]);
+                    // Resolution prepends constraints: moving the first guard
+                    // preserves the exact final manifest but changes provenance.
+                    let before = parse_wire_json_bounded(options_json.as_bytes(), 64, 2 * 1024 * 1024).unwrap();
+                    let after = parse_wire_json_bounded(changed.to_string().as_bytes(), 64, 2 * 1024 * 1024).unwrap();
+                    let original = resolve_explicit_install_protocol(before.get("manifest").unwrap(), before.get("dependencies")).unwrap();
+                    let altered = resolve_explicit_install_protocol(after.get("manifest").unwrap(), after.get("dependencies")).unwrap();
+                    assert_eq!(original.1, altered.1);
+                    assert_eq!(canonical_wire_value(&original.0, CanonicalPath::SecureArtifact).unwrap(),
+                        canonical_wire_value(&altered.0, CanonicalPath::SecureArtifact).unwrap());
+                    assert_ne!(canonical_wire_value(original.2.as_ref().unwrap(), CanonicalPath::SecureArtifact).unwrap(),
+                        canonical_wire_value(altered.2.as_ref().unwrap(), CanonicalPath::SecureArtifact).unwrap());
                 },
                 "changed-material" => {
                     let mut value: serde_json::Value = serde_json::from_str(material).unwrap();
