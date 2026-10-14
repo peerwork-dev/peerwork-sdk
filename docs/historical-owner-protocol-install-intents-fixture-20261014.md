@@ -1,0 +1,13 @@
+# Legacy protocol-install intent source fixture
+
+The frozen fixture source is isolated SDK commit `7c931f91105f522063bbb67875aac57facdcebb5`: `tests/legacy-owner-install-intent.mjs` SHA-256 `fe2e41c0eb65f26e494aa2c9a0a0987957764f77979d2563b0bff8c4e9c31840`, and `tests/legacy-owner-install-intent-setup.mjs` SHA-256 `ed4766d2f784bc866c0062f65b4b77833a4cc4076cd2f81538c29ba88f7deb50`. The unchanged reference bridge `tests/reference-kernel-server.mjs` is SHA-256 `50168d56f654e51d5d3696815e8cae7590e0a002721ca076ec636bf47d2769b0`. Reference checkout `.worktrees/e2ee-main-integration-20261006` is pinned to `f828b6c50a0a58d1e718af90f653b214adcc3328`; its compiled `dist-workspace/src/workspace-secure-agent.js` is SHA-256 `2ab11378c3e3754243877b5ca7a161f782f35e37d4552fada8a8c018a9ae9b26`. Node 24.20.0 executable SHA-256 is `89af8424dd53e560b1933f87ba650d8bf57c83ca5a04600eefb31f416aabbae7`.
+
+The exact setup invocation was:
+
+```sh
+/root/workdir/message/.tools/node-v24.20.0-linux-x64/bin/node tests/legacy-owner-install-intent-setup.mjs /root/workdir/message/.worktrees/e2ee-main-integration-20261006 /root/workdir/message/.worktrees/peerwork-sdk-owner-protocol-install-intents-20261014 /tmp/peerwork-install-intent-setup-7c931f9
+```
+
+The managed task-local reference-service run (exec session `64149`) exited 0; output chunks `466971` and terminal `18b462` recorded all three modes. `begin-applied-loss` had one pending exact BEGIN packet, signed sequence 2 and two workspace commits after initial sequence 1. `begin-before-post` had one pending BEGIN packet, signed sequence 1 and one workspace commit. `completed-end` had no pending packet, signed sequence 3 and three workspace commits, with ACTIVE structure and the intended installed instance/protocol digest/entrypoint. All three map entries matched independently resolved f828 semantic intent hashes; the pending map command ID matched the signed request command ID. The helper used the public client and injected loss/interruption around its actual POST path, without editing state or the service DB. The SQLite control query is read-only and checks effects, not network request count.
+
+This is genuine source-state construction only. Native inventory/import/recovery, package installation after native attach, installed SDK facades, Agent workflow, hash-only orphan replan, and PAGE/END packet recovery remain untested or unimplemented in this fixture result. It does not establish a signed server outcome merely from map presence or pending absence.
