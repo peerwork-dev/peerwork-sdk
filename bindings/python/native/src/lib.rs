@@ -1030,8 +1030,17 @@ fn secure_public_decision_json(
     }))
 }
 
+#[pyfunction]
+#[pyo3(signature = (operation, config_json, input_json=None))]
+fn acquisition_observations_json(py: Python<'_>, operation: String, config_json: String,
+    input_json: Option<String>) -> String {
+    py.allow_threads(move || peerwork_runtime::acquisition::acquisition_json(
+        &operation, &config_json, input_json.as_deref()))
+}
+
 #[pymodule]
 fn _peerwork_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_function(wrap_pyfunction!(acquisition_observations_json, module)?)?;
     module.add_function(wrap_pyfunction!(version, module)?)?;
     module.add_function(wrap_pyfunction!(capabilities_json, module)?)?;
     module.add_function(wrap_pyfunction!(identity_create_json, module)?)?;

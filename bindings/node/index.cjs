@@ -967,3 +967,33 @@ exports.openSecurePublicPackageInstaller = options => {
     pending: (options = {}) => invoke('pending', undefined, undefined, options.signal),
   });
 };
+
+/** Explicit local observations. No implicit observer, upload or business calls. */
+exports.openAcquisitionObservations = options => {
+  if (!options || typeof options.path !== 'string') throw new TypeError('observation path is required');
+  const config = strictCommandJson({path: options.path, max_records: options.maxRecords ?? null,
+    max_store_bytes: options.maxStoreBytes ?? null});
+  const call = async (operation, input) => {
+    const result = JSON.parse(await binding.acquisitionObservationsJson(operation, config,
+      input === undefined ? null : strictCommandJson(input)));
+    if (result.ok !== true) { const error = new Error(result.message); error.code = result.code; throw error; }
+    return result.value;
+  };
+  return Object.freeze({
+    attestExternalPrincipal: attestation => call('attest_external_principal', attestation),
+    attestations: () => call('attestations'),
+    append: event => call('append', event),
+    export: () => call('export'),
+    snapshots: () => call('snapshots'),
+    scorecard: window => call('scorecard', window),
+    recordCatalogResult: (event, result) => call('catalog_result', {event,
+      catalog_origin: result.catalog_origin, bundle_digest: result.bundle_digest,
+      bundle_canonical_json: result.bundle_canonical_json}),
+    recordInstallResult: input => call('install_result', input),
+    recordActionResult: (event, selectedInstanceId, resultInstanceId, result) => call('action_result', {
+      event, selected_instance_id: selectedInstanceId, result_instance_id: resultInstanceId,
+      result_status: result.status, result_command_id: result.command_id,
+      result_commit_hash: result.commit_hash ?? null, result_sequence: result.sequence ?? null,
+    }),
+  });
+};

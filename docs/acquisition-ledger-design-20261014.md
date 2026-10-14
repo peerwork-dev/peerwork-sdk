@@ -1,6 +1,6 @@
 # Optional acquisition observations: MET-01 design
 
-Initial design based on SDK `3605a3c764f07f75ae86602ffbf3e0915ff2aeac`. The local native collector and bounded fixtures are now implemented; public facades and real HTTP/installed acceptance remain pending. No external journey has been run. This package implements the existing REQ-METRICS-01 contract; it does not change signed workspace installation semantics or prescribe a participant workflow.
+Initial design based on SDK `3605a3c764f07f75ae86602ffbf3e0915ff2aeac`. The local native collector and bounded fixtures are now implemented; Python sync/async, Node typed/native and CLI facades have compiled-local parity; real HTTP/installed acceptance remains pending. No external journey has been run. This package implements the existing REQ-METRICS-01 contract; it does not change signed workspace installation semantics or prescribe a participant workflow.
 
 The full contract read is `/root/workdir/message/analysis/cmo-agent-first-20261010/ACQUISITION-METRICS.md`, definition2, SHA-256 `77e6b286d6341ac2168dfa786615a790a12c3d513a8beb87013d893eb91e546d`. Sources audit SHA-256 `d4e131bc3ea5db6b2dc4e220e1c2a595c2096d3c7c80a2e0320b85dd80868e5b`; existing scorecard at this observation `0c38702ffdd1e671352f6bb93b13228c2148cf21fdf07d0221b428dfbde1b2f0`. These files remain coordinator-owned and their prior synthetic attempts remain distinct.
 
@@ -48,3 +48,10 @@ Use unique joined principal/task/journey/exact release, UTC end-exclusive interv
 3. Python sync/async, Node typed and CLI parity for append/export/scorecard and the same supported result adapters; one stable installed cohort when source is frozen. No whole SDK matrix, natural Agent, external contact, credential probe or production telemetry deployment.
 
 Ownership: new runtime acquisition module, thin new/native facade exports, new bounded tests and these docs. Existing owner attach/private compiler normalization stays with core; coordinate before any shared facade/main-index mutation. Implementation begins only after this design is reviewed. A later consented external journey and actual cohort observation are separate remaining gates, not claims from synthetic HTTP verification.
+
+
+## Source-review correction
+
+The first native draft bc9b221 accepted caller Checked flags directly for external eligibility. Review rejected that automatic promotion, despite its documented attestation limits. The successor keeps raw append/shape proofs observational and adds one explicit `attest_external_principal` local decision. Its closed statement/evidence-basis vocabulary binds principal and exact binding/external-evidence references to observer/version. Arrival-time visibility, conflicting attestation IDs and withdrawals determine whether that attestation can support a later scorecard; prior snapshots stay immutable. Referrers require their own matching attestation. Reports say observer-attested external evidence, not independently proven controllers or truth. No central verifier or automatic evidence upgrades are introduced.
+
+Retention requires a different genuine task with its own acceptance instance; it may reuse the same predicate definition. A new request ID or predicate for the same task does not create a repeat. Logical retries collapse in the funnel while retaining attempts; publication retries collapse by exact namespace/package/version and quarantine conflicting bytes. Natural-run outcomes require pre-outcome enrollment or checked contemporaneous enrollment evidence. Claimed coverage cannot upgrade a mature denominator.

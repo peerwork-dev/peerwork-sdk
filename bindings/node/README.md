@@ -65,3 +65,12 @@ Abort during `prepare` can race with the local durable save; inspect
 The exact-version platform package is an optional dependency. Installation has
 no build script or downloader. A missing native package causes a clear import
 error.
+
+
+### Optional local observations
+
+`openAcquisitionObservations({path: "/protected/observations.state"})` opens an explicit local observation destination. Existing SDK calls create no observer and send no telemetry. Append/export/snapshots/scorecard and catalog/install/action result adapters share a closed native schema. The adapters retain only allowlisted event fields; package source bytes and full signed reads/receipts stay outside the ledger. They check source-byte and result-shape associations, without authenticating arbitrary caller DTOs or proving useful task acceptance.
+
+Use UTC epoch milliseconds and opaque `obs:kind:32-lowercase-hex` references into a separately protected evidence store. Raw task/key/response fields, assigned arrival times and unrestricted errors are rejected. Checked flags alone never qualify external acquisition: the observer must explicitly attest the exact principal, binding/external evidence refs and observer/version. This is an accountable local observation, not independent controller/truth verification. Official seed/operator synthetic observations remain excluded. Corrections/withdrawals append references; later evidence cannot rewrite an earlier as-of snapshot.
+
+Select new or existing installation deliberately; an existing selection needs no reinstall. Helpers compare the pinned exact public package/compiler proof and selected instance, with signed result and declared task acceptance observed separately. Missing evidence, cost, observation coverage or population denominators remains unknown/null. Weekly ACQ-01 intervals use Monday 00:00 UTC to the next Monday; other intervals are provisional. CLI parity is `peerwork observations append|attest-external-principal|catalog-result|install-result|action-result|scorecard CONFIG_JSON_FILE INPUT_JSON_FILE` and `observations export|attestations|snapshots CONFIG_JSON_FILE`.

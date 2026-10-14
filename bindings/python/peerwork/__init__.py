@@ -17,6 +17,7 @@ _OMITTED_DISCLOSURE = _OmittedInstallOption()
 
 from ._peerwork_native import (
     KernelCancelHandle,
+    acquisition_observations_json,
     capabilities_json,
     identity_create_json,
     identity_open_json,
@@ -2355,3 +2356,266 @@ class SecureInvitationClient:
 
 __all__ += ["SecurePublicAdmissionClient", "SecureInvitationClient", "AdmissionError",
             "AdmissionOfferResult", "AdmissionDeliveryResult", "InvitationDecisionResult", "InvitationReceiveResult"]
+
+
+class ObservationEvidence(TypedDict):
+    status: Literal["unknown", "claimed", "checked"]
+    reference: str | None
+
+
+class ObservationRelease(TypedDict):
+    catalog_origin: str
+    namespace: str | None
+    package_id: str
+    version: str
+    bundle_digest: str
+
+
+class AcquisitionEvent(TypedDict):
+    event_id: str
+    occurred_at: int
+    environment: Literal["production", "staging", "local_test"]
+    audience_class: Literal["official_seed", "operator_synthetic", "external_evidenced", "unknown"]
+    principal_ref: str | None
+    principal_binding: ObservationEvidence
+    external_status_evidence: NotRequired[ObservationEvidence | None]
+    newness: Literal["proved_new", "first_observed", "existing", "unknown"]
+    newness_evidence: ObservationEvidence
+    journey_id: str
+    task_ref: str | None
+    logical_operation_id: str
+    attempt_id: str
+    event_type: Literal["qualified_start", "discovery_observed", "release_verified", "adoption_selected",
+        "install_accepted", "task_outcome_verified", "publish_requested", "publish_accepted", "release_visible",
+        "share_reference_observed", "attempt_finished", "coverage_ended", "correction", "withdrawal"]
+    outcome: Literal["pass", "fail", "pending", "unverified"]
+    attempt_class: Literal["first_attempt", "recovery", "redundant", "unknown"]
+    evidence: ObservationEvidence
+    observer: str
+    observer_version: str
+    release: NotRequired[ObservationRelease | None]
+    protocol_digest: NotRequired[str | None]
+    protocol_ref: NotRequired[str | None]
+    instance_ref: NotRequired[str | None]
+    association_evidence: NotRequired[ObservationEvidence | None]
+    adoption_branch: NotRequired[Literal["new_install", "existing_install"] | None]
+    acceptance_predicate_ref: NotRequired[str | None]
+    signed_result_evidence: NotRequired[ObservationEvidence | None]
+    enrollment_timing_evidence: NotRequired[ObservationEvidence | None]
+    source_channel: NotRequired[Literal["mcp_search", "agent_entry", "canonical_share", "repository_release", "direct", "unknown"] | None]
+    source_ref: NotRequired[str | None]
+    source_evidence: NotRequired[ObservationEvidence | None]
+    referrer_principal_ref: NotRequired[str | None]
+    referrer_audience_class: NotRequired[Literal["official_seed", "operator_synthetic", "external_evidenced", "unknown"] | None]
+    referrer_binding: NotRequired[ObservationEvidence | None]
+    referrer_external_status_evidence: NotRequired[ObservationEvidence | None]
+    distinct_controller_evidence: NotRequired[ObservationEvidence | None]
+    publisher_principal_ref: NotRequired[str | None]
+    error_code: NotRequired[str | None]
+    active_execution_ms: NotRequired[int | None]
+    external_wait_ms: NotRequired[int | None]
+    calls: NotRequired[int | None]
+    tokens: NotRequired[int | None]
+    cost: NotRequired[dict | None]
+    observation_end: NotRequired[int | None]
+    coverage: NotRequired[Literal["complete", "lost", "unknown"] | None]
+    run_kind: NotRequired[Literal["natural_agent", "scripted", "unknown"] | None]
+    workflow_outcome: NotRequired[Literal["pass", "fail", "pending", "unverified"] | None]
+    supersedes: NotRequired[str | None]
+    client_ref: NotRequired[str | None]
+    client_version: NotRequired[str | None]
+    model_ref: NotRequired[str | None]
+    model_version: NotRequired[str | None]
+    instruction_ref: NotRequired[str | None]
+    instruction_version: NotRequired[str | None]
+    variant_ref: NotRequired[str | None]
+    source_release: NotRequired[ObservationRelease | None]
+    lineage_evidence: NotRequired[ObservationEvidence | None]
+
+
+class AcquisitionAppendResult(TypedDict):
+    event_id: str
+    disposition: Literal["APPENDED", "DUPLICATE", "CONFLICT"]
+    observed_at: int
+    payload_sha256: str
+    records: int
+
+
+class ExternalPrincipalAttestation(TypedDict):
+    attestation_id: str
+    principal_ref: str
+    binding_evidence_ref: str
+    external_status_evidence_ref: str
+    observer: str
+    observer_version: str
+    statement: Literal["observer_checked_external_principal_binding"]
+    evidence_basis: Literal["consented_controller_grouping", "public_controller_evidence"]
+
+
+class AcquisitionInstallObservation(TypedDict):
+    event: AcquisitionEvent
+    closure_json: str
+    bindings_json: NotRequired[str | None]
+    expected_package_id: str
+    expected_package_version: str
+    expected_package_digest: str
+    expected_protocol_digest: str
+    selected_instance_id: str
+    result_package_digest: str | None
+    result_protocol_digest: str
+    result_instance_id: str
+    result_status: Literal["SELECTED", "ACTIVE", "ACCEPTED"]
+    result_step_action_id: str | None
+    result_commit_hash: str | None
+
+
+class RecordedAcquisitionObservation(TypedDict):
+    event: AcquisitionEvent
+    observed_at: int
+    payload_sha256: str
+
+
+class RecordedExternalPrincipalAttestation(TypedDict):
+    attestation: ExternalPrincipalAttestation
+    observed_at: int
+    payload_sha256: str
+
+
+AcquisitionScorecardWindow = TypedDict("AcquisitionScorecardWindow", {"from": int, "to_exclusive": int, "as_of": int})
+
+
+class AcquisitionMetric(TypedDict):
+    id: str
+    value: JSONValue
+    numerator: int | None
+    denominator: int | None
+    mature_cohort_size: int
+    pending: int
+    lost: int
+    unknown: int
+    details: JSONValue
+
+
+class AcquisitionScorecard(TypedDict):
+    definition_version: int
+    window: AcquisitionScorecardWindow
+    window_complete: bool
+    snapshot_sha256: str
+    visible_observations: int
+    excluded_synthetic_seed: int
+    unknown_audience_binding: int
+    conflicting_events: int
+    metrics: list[AcquisitionMetric]
+    coverage_scope: str
+
+
+class StoredAcquisitionScorecard(TypedDict):
+    generated_at: int
+    scorecard: AcquisitionScorecard
+
+
+class AcquisitionObservationError(RuntimeError):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+class AcquisitionObservations:
+    """Explicit protected local observations; no telemetry or business calls.
+
+    Proof adapters preserve observer evidence judgments. Arbitrary result DTOs
+    do not authenticate external controllers. Async cancellation drains atomic
+    local work before raising; reopen/export to discover its disposition.
+    """
+    def __init__(self, path: str, *, max_records: int | None = None,
+                 max_store_bytes: int | None = None):
+        self._config = dict(path=path, max_records=max_records, max_store_bytes=max_store_bytes)
+
+    def _call(self, operation: str, *, input_value: dict | None = None,
+              cancel_handle: KernelCancelHandle | None = None):
+        result = json.loads(acquisition_observations_json(operation,
+            json.dumps(self._config, ensure_ascii=True, allow_nan=False, separators=(",", ":")),
+            None if input_value is None else json.dumps(input_value, ensure_ascii=True, allow_nan=False, separators=(",", ":"))))
+        if result["ok"] is not True:
+            raise AcquisitionObservationError(result["code"], result["message"])
+        return result["value"]
+
+    def attest_external_principal(self, attestation: ExternalPrincipalAttestation) -> AcquisitionAppendResult:
+        """Explicit observer decision; does not independently prove a controller."""
+        return self._call("attest_external_principal", input_value=attestation)
+
+    async def attest_external_principal_async(self, attestation: ExternalPrincipalAttestation) -> AcquisitionAppendResult:
+        return await _run_cancelled_async(self._call, "attest_external_principal", input_value=attestation)
+
+    def attestations(self) -> list[RecordedExternalPrincipalAttestation]:
+        return self._call("attestations")
+
+    async def attestations_async(self) -> list[RecordedExternalPrincipalAttestation]:
+        return await _run_cancelled_async(self._call, "attestations")
+
+    def append(self, event: AcquisitionEvent) -> AcquisitionAppendResult:
+        return self._call("append", input_value=event)
+
+    async def append_async(self, event: AcquisitionEvent) -> AcquisitionAppendResult:
+        return await _run_cancelled_async(self._call, "append", input_value=event)
+
+    def export(self) -> list[RecordedAcquisitionObservation]:
+        return self._call("export")
+
+    async def export_async(self) -> list[RecordedAcquisitionObservation]:
+        return await _run_cancelled_async(self._call, "export")
+
+    def snapshots(self) -> list[StoredAcquisitionScorecard]:
+        return self._call("snapshots")
+
+    async def snapshots_async(self) -> list[StoredAcquisitionScorecard]:
+        return await _run_cancelled_async(self._call, "snapshots")
+
+    def scorecard(self, *, from_ms: int, to_exclusive: int, as_of: int) -> StoredAcquisitionScorecard:
+        return self._call("scorecard", input_value=dict(**{"from":from_ms}, to_exclusive=to_exclusive, as_of=as_of))
+
+    async def scorecard_async(self, *, from_ms: int, to_exclusive: int, as_of: int) -> StoredAcquisitionScorecard:
+        return await _run_cancelled_async(self._call, "scorecard",
+            input_value=dict(**{"from":from_ms}, to_exclusive=to_exclusive, as_of=as_of))
+
+    @staticmethod
+    def _catalog_input(event: AcquisitionEvent, result: InspectedPublicPackage) -> dict:
+        return dict(event=event, catalog_origin=result["catalog_origin"],
+            bundle_digest=result["bundle_digest"], bundle_canonical_json=result["bundle_canonical_json"])
+
+    def record_catalog_result(self, event: AcquisitionEvent, result: InspectedPublicPackage) -> AcquisitionAppendResult:
+        return self._call("catalog_result", input_value=self._catalog_input(event, result))
+
+    async def record_catalog_result_async(self, event: AcquisitionEvent, result: InspectedPublicPackage) -> AcquisitionAppendResult:
+        return await _run_cancelled_async(self._call, "catalog_result", input_value=self._catalog_input(event, result))
+
+    def record_install_result(self, input_value: AcquisitionInstallObservation) -> AcquisitionAppendResult:
+        """Strict minimized source selection/progress DTO; full receipts are rejected."""
+        return self._call("install_result", input_value=input_value)
+
+    async def record_install_result_async(self, input_value: AcquisitionInstallObservation) -> AcquisitionAppendResult:
+        return await _run_cancelled_async(self._call, "install_result", input_value=input_value)
+
+    @staticmethod
+    def _action_input(event: AcquisitionEvent, selected_instance_id: str,
+                      result_instance_id: str, result: SecureActionResult) -> dict:
+        return dict(event=event, selected_instance_id=selected_instance_id,
+            result_instance_id=result_instance_id, result_status=result["status"],
+            result_command_id=result["command_id"], result_commit_hash=result.get("commit_hash"),
+            result_sequence=result.get("sequence"))
+
+    def record_action_result(self, event: AcquisitionEvent, selected_instance_id: str,
+                             result_instance_id: str, result: SecureActionResult) -> AcquisitionAppendResult:
+        return self._call("action_result", input_value=self._action_input(event, selected_instance_id, result_instance_id, result))
+
+    async def record_action_result_async(self, event: AcquisitionEvent, selected_instance_id: str,
+                                        result_instance_id: str, result: SecureActionResult) -> AcquisitionAppendResult:
+        return await _run_cancelled_async(self._call, "action_result",
+            input_value=self._action_input(event, selected_instance_id, result_instance_id, result))
+
+
+__all__ += ["AcquisitionObservations", "AcquisitionEvent", "AcquisitionAppendResult",
+            "AcquisitionObservationError", "ObservationEvidence", "ObservationRelease",
+            "ExternalPrincipalAttestation", "AcquisitionInstallObservation", "RecordedAcquisitionObservation",
+            "RecordedExternalPrincipalAttestation", "AcquisitionMetric", "AcquisitionScorecard",
+            "StoredAcquisitionScorecard", "AcquisitionScorecardWindow"]

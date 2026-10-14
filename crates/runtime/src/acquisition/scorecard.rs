@@ -82,12 +82,37 @@ fn journeys<'a>(rows: &[&'a RecordedObservation]) -> Vec<Journey<'a>> {
     for row in rows {
         groups.entry(&row.event.journey_id).or_default().push(row);
     }
+    let mut aliases = BTreeMap::<(&str, Option<&str>, Option<&str>), &str>::new();
+    let mut roots = BTreeMap::<&str, &str>::new();
+    for (id, group) in &groups {
+        if let Some(start) = group
+            .iter()
+            .filter(|r| r.event.event_type == EventType::QualifiedStart && r.external())
+            .min_by_key(|r| (r.event.occurred_at, r.observed_at))
+        {
+            let key = (
+                start.event.logical_operation_id.as_str(),
+                start.event.task_ref.as_deref(),
+                start.event.principal_ref.as_deref(),
+            );
+            let root = *aliases.entry(key).or_insert(id);
+            roots.insert(id, root);
+        }
+    }
+    let mut merged = BTreeMap::<&str, Vec<&RecordedObservation>>::new();
+    for (id, group) in groups {
+        merged
+            .entry(*roots.get(id).unwrap_or(&id))
+            .or_default()
+            .extend(group);
+    }
+    let mut groups = merged;
     let mut result = Vec::new();
     for group in groups.values_mut() {
         group.sort_by_key(|r| (r.event.occurred_at, r.observed_at));
         let Some(start) = group
             .iter()
-            .find(|r| r.event.event_type == EventType::QualifiedStart && r.event.external())
+            .find(|r| r.event.event_type == EventType::QualifiedStart && r.external())
         else {
             continue;
         };
@@ -107,7 +132,7 @@ fn journeys<'a>(rows: &[&'a RecordedObservation]) -> Vec<Journey<'a>> {
             .iter()
             .filter(|r| {
                 r.event.event_type == EventType::AdoptionSelected
-                    && r.event.external()
+                    && r.external()
                     && r.event.outcome == Outcome::Pass
             })
             .copied()
@@ -116,7 +141,7 @@ fn journeys<'a>(rows: &[&'a RecordedObservation]) -> Vec<Journey<'a>> {
         let first_touch = group
             .iter()
             .filter(|r| {
-                r.event.external()
+                r.external()
                     && r.event.source_ref.is_some()
                     && checked(&r.event.source_evidence)
                     && r.event
@@ -152,14 +177,14 @@ fn journeys<'a>(rows: &[&'a RecordedObservation]) -> Vec<Journey<'a>> {
         });
         let inspected = group.iter().any(|r| {
             r.event.event_type == EventType::ReleaseVerified
-                && r.event.external()
+                && r.external()
                 && r.event.outcome == Outcome::Pass
                 && (r.event.release.is_some() || r.event.protocol_ref.is_some())
         });
         let selection_inspected = selection.is_some_and(|s| {
             group.iter().any(|r| {
                 r.event.event_type == EventType::ReleaseVerified
-                    && r.event.external()
+                    && r.external()
                     && r.event.outcome == Outcome::Pass
                     && (r
                         .event
@@ -184,7 +209,7 @@ fn journeys<'a>(rows: &[&'a RecordedObservation]) -> Vec<Journey<'a>> {
             Some(AdoptionBranch::ExistingInstall) => true,
             Some(AdoptionBranch::NewInstall) => group.iter().any(|r| {
                 r.event.event_type == EventType::InstallAccepted
-                    && r.event.external()
+                    && r.external()
                     && r.event.outcome == Outcome::Pass
                     && checked(&r.event.signed_result_evidence)
                     && exact_protocol(&r.event, &s.event)
@@ -205,7 +230,7 @@ fn journeys<'a>(rows: &[&'a RecordedObservation]) -> Vec<Journey<'a>> {
                 .find(|r| {
                     let s = selection.unwrap();
                     r.event.event_type == EventType::TaskOutcomeVerified
-                        && r.event.external()
+                        && r.external()
                         && r.event.outcome == Outcome::Pass
                         && checked(&r.event.signed_result_evidence)
                         && r.event.task_ref == start.event.task_ref
@@ -234,14 +259,15 @@ fn journeys<'a>(rows: &[&'a RecordedObservation]) -> Vec<Journey<'a>> {
 
 fn coverage_through(journey: &Journey<'_>, end: u64) -> Coverage {
     if journey.rows.iter().any(|r| {
-        r.event.coverage == Some(Coverage::Complete)
+        r.external()
+            && r.event.coverage == Some(Coverage::Complete)
             && r.event.observation_end.is_some_and(|t| t >= end)
     }) {
         Coverage::Complete
     } else if journey
         .rows
         .iter()
-        .any(|r| r.event.coverage == Some(Coverage::Lost))
+        .any(|r| r.external() && r.event.coverage == Some(Coverage::Lost))
     {
         Coverage::Lost
     } else {
@@ -256,7 +282,7 @@ fn primary_touch<'a>(journey: &Journey<'a>) -> Option<&'a RecordedObservation> {
         .iter()
         .copied()
         .filter(|r| {
-            r.event.external()
+            r.external()
                 && r.event.source_ref.is_some()
                 && checked(&r.event.source_evidence)
                 && r.event
@@ -335,7 +361,7 @@ fn activation_cohort(
             observed_success += 1
         } else if group.iter().any(|j| {
             j.rows.iter().any(|r| {
-                r.event.external()
+                r.external()
                     && r.event.event_type == EventType::TaskOutcomeVerified
                     && r.event.outcome == Outcome::Fail
                     && elapsed(start, r.event.occurred_at, duration)
@@ -394,7 +420,7 @@ fn funnel(id: &str, all: &[Journey<'_>], request: &ScorecardRequest, duration: u
             j.inspected
                 && j.rows.iter().any(|r| {
                     r.event.event_type == EventType::ReleaseVerified
-                        && r.event.external()
+                        && r.external()
                         && r.event.outcome == Outcome::Pass
                         && elapsed(j.start.event.occurred_at, r.event.occurred_at, duration)
                 })
@@ -406,7 +432,7 @@ fn funnel(id: &str, all: &[Journey<'_>], request: &ScorecardRequest, duration: u
             j.selected
                 && j.rows.iter().any(|r| {
                     r.event.event_type == EventType::AdoptionSelected
-                        && r.event.external()
+                        && r.external()
                         && r.event.outcome == Outcome::Pass
                         && elapsed(j.start.event.occurred_at, r.event.occurred_at, duration)
                 })
@@ -432,8 +458,8 @@ fn funnel(id: &str, all: &[Journey<'_>], request: &ScorecardRequest, duration: u
         lost,
         matured.len() - complete.len() - lost,
         serde_json::json!({"unit":"joined_journeys","verified_inspection":inspected,"deliberate_selection":selected,
-            "new_install_selection":complete.iter().filter(|j| j.rows.iter().any(|r| r.event.event_type==EventType::AdoptionSelected && r.event.adoption_branch==Some(AdoptionBranch::NewInstall))).count(),
-            "existing_install_selection":complete.iter().filter(|j| j.rows.iter().any(|r| r.event.event_type==EventType::AdoptionSelected && r.event.adoption_branch==Some(AdoptionBranch::ExistingInstall))).count()}),
+            "new_install_selection":complete.iter().filter(|j| j.selected && j.rows.iter().any(|r| r.external() && r.event.outcome==Outcome::Pass && elapsed(j.start.event.occurred_at,r.event.occurred_at,duration) && r.event.event_type==EventType::AdoptionSelected && r.event.adoption_branch==Some(AdoptionBranch::NewInstall))).count(),
+            "existing_install_selection":complete.iter().filter(|j| j.selected && j.rows.iter().any(|r| r.external() && r.event.outcome==Outcome::Pass && elapsed(j.start.event.occurred_at,r.event.occurred_at,duration) && r.event.event_type==EventType::AdoptionSelected && r.event.adoption_branch==Some(AdoptionBranch::ExistingInstall))).count()}),
     )
 }
 
@@ -531,7 +557,7 @@ fn cost_metric(id: &str, all: &[Journey<'_>], request: &ScorecardRequest, durati
             attempt_count += 1;
             let finished: Vec<_> = observations
                 .iter()
-                .filter(|r| r.event.event_type == EventType::AttemptFinished && r.event.external())
+                .filter(|r| r.event.event_type == EventType::AttemptFinished && r.external())
                 .collect();
             let Some(last) = finished.last() else {
                 complete_cost = false;
@@ -663,7 +689,6 @@ fn retention(
             let delta = a.event.occurred_at.checked_sub(at);
             delta.is_some_and(|t| t >= lower && t < upper && t > 0)
                 && a.event.task_ref != activation.event.task_ref
-                && a.event.acceptance_predicate_ref != activation.event.acceptance_predicate_ref
         });
         if repeat {
             n += 1
@@ -678,18 +703,28 @@ fn retention(
         lost,
         unknown,
         serde_json::json!({"unit":"activated_external_principals",
-        "repeat_from_ms":lower,"repeat_to_exclusive_ms":upper,"distinct_task_and_acceptance_required":true}),
+        "repeat_from_ms":lower,"repeat_to_exclusive_ms":upper,"distinct_task_with_declared_acceptance_required":true}),
     )
 }
 
 fn publication(rows: &[&RecordedObservation], request: &ScorecardRequest) -> Metric {
-    let mut requests = BTreeMap::<&str, &RecordedObservation>::new();
+    let mut requests = BTreeMap::<String, &RecordedObservation>::new();
     for row in rows
         .iter()
-        .filter(|r| r.event.event_type == EventType::PublishRequested && r.event.external())
+        .filter(|r| r.event.event_type == EventType::PublishRequested && r.external())
     {
         requests
-            .entry(&row.event.journey_id)
+            .entry(match &row.event.release {
+                Some(r) => serde_json::to_string(&(
+                    row.event.principal_ref.as_deref(),
+                    &r.catalog_origin,
+                    &r.namespace,
+                    &r.package_id,
+                    &r.version,
+                ))
+                .unwrap(),
+                None => row.event.journey_id.clone(),
+            })
             .and_modify(|old| {
                 if row.event.occurred_at < old.event.occurred_at {
                     *old = row
@@ -719,18 +754,27 @@ fn publication(rows: &[&RecordedObservation], request: &ScorecardRequest) -> Met
             .iter()
             .copied()
             .filter(|r| {
-                r.event.journey_id == first.event.journey_id
-                    && r.event.principal_ref == first.event.principal_ref
+                r.event.principal_ref == first.event.principal_ref
+                    && match (&first.event.release, &r.event.release) {
+                        (Some(a), Some(b)) => {
+                            a.catalog_origin == b.catalog_origin
+                                && a.namespace == b.namespace
+                                && a.package_id == b.package_id
+                                && a.version == b.version
+                        }
+                        _ => r.event.journey_id == first.event.journey_id,
+                    }
             })
             .collect();
         let complete = group.iter().any(|r| {
-            r.event.coverage == Some(Coverage::Complete)
+            r.external()
+                && r.event.coverage == Some(Coverage::Complete)
                 && r.event.observation_end.is_some_and(|end| end >= at + DAY)
         });
         if !complete {
             if group
                 .iter()
-                .any(|r| r.event.coverage == Some(Coverage::Lost))
+                .any(|r| r.external() && r.event.coverage == Some(Coverage::Lost))
             {
                 lost += 1
             } else {
@@ -763,7 +807,7 @@ fn publication(rows: &[&RecordedObservation], request: &ScorecardRequest) -> Met
         d += 1;
         let receipt = group.iter().any(|r| {
             r.event.event_type == EventType::PublishAccepted
-                && r.event.external()
+                && r.external()
                 && r.event.outcome == Outcome::Pass
                 && checked(&r.event.signed_result_evidence)
                 && r.event.release.as_ref() == Some(release)
@@ -771,7 +815,7 @@ fn publication(rows: &[&RecordedObservation], request: &ScorecardRequest) -> Met
         });
         let visible = group.iter().any(|r| {
             r.event.event_type == EventType::ReleaseVisible
-                && r.event.external()
+                && r.external()
                 && r.event.outcome == Outcome::Pass
                 && r.event.release.as_ref() == Some(release)
                 && elapsed(at, r.event.occurred_at, DAY)
@@ -806,14 +850,25 @@ fn share(
     request: &ScorecardRequest,
     duration: u64,
 ) -> Metric {
+    let unknown_handoffs = rows
+        .iter()
+        .filter(|r| {
+            r.event.event_type == EventType::ShareReferenceObserved
+                && in_window(r.event.occurred_at, request)
+                && (!r.external() || !r.eligible_referrer)
+        })
+        .map(|r| r.event.journey_id.as_str())
+        .collect::<BTreeSet<_>>()
+        .len();
     let mut recipients = BTreeMap::<&str, &RecordedObservation>::new();
     for handoff in rows.iter().filter(|r| {
         r.event.event_type == EventType::ShareReferenceObserved
-            && r.event.external()
+            && r.external()
             && r.event.outcome == Outcome::Pass
             && r.event.source_ref.is_some()
             && (r.event.release.is_some() || r.event.protocol_ref.is_some())
             && r.event.referrer_audience_class == Some(Audience::ExternalEvidenced)
+            && r.eligible_referrer
             && checked(&r.event.referrer_binding)
             && checked(&r.event.distinct_controller_evidence)
             && r.event.referrer_principal_ref.is_some()
@@ -834,7 +889,7 @@ fn share(
     let mut mature_size = 0;
     let mut pending = 0;
     let mut lost = 0;
-    let mut unknown = 0;
+    let mut unknown = unknown_handoffs;
     let mut sharers = BTreeSet::new();
     for (principal, handoff) in recipients {
         let at = handoff.event.occurred_at;
@@ -854,14 +909,15 @@ fn share(
             })
             .collect();
         if !coverage.iter().any(|r| {
-            r.event.coverage == Some(Coverage::Complete)
+            r.external()
+                && r.event.coverage == Some(Coverage::Complete)
                 && r.event
                     .observation_end
                     .is_some_and(|end| end >= at + duration)
         }) {
             if coverage
                 .iter()
-                .any(|r| r.event.coverage == Some(Coverage::Lost))
+                .any(|r| r.external() && r.event.coverage == Some(Coverage::Lost))
             {
                 lost += 1
             } else {
@@ -947,7 +1003,7 @@ fn supply(
         };
         let published = rows.iter().any(|r| {
             r.event.event_type == EventType::PublishAccepted
-                && r.event.external()
+                && r.external()
                 && r.event.outcome == Outcome::Pass
                 && checked(&r.event.signed_result_evidence)
                 && r.event.principal_ref.as_deref() == Some(publisher)
@@ -957,7 +1013,7 @@ fn supply(
         });
         let visible = rows.iter().any(|r| {
             r.event.event_type == EventType::ReleaseVisible
-                && r.event.external()
+                && r.external()
                 && r.event.outcome == Outcome::Pass
                 && r.event.principal_ref.as_deref() == Some(publisher)
                 && r.event.release.as_ref() == selected_release
@@ -973,7 +1029,7 @@ fn supply(
         id: "ACQ-08".into(),
         value: rows
             .iter()
-            .any(|r| r.event.external())
+            .any(|r| r.external())
             .then(|| serde_json::json!(publishers.len())),
         numerator: Some(publishers.len()),
         denominator: None,
@@ -989,12 +1045,37 @@ fn agent_outcomes(rows: &[&RecordedObservation], request: &ScorecardRequest) -> 
     let mut attempts = BTreeMap::<&str, &RecordedObservation>::new();
     for row in rows.iter().filter(|r| {
         r.event.event_type == EventType::AttemptFinished
-            && r.event.external()
+            && r.external()
             && r.event.run_kind == Some(RunKind::NaturalAgent)
             && in_window(r.event.occurred_at, request)
     }) {
         attempts.insert(&row.event.attempt_id, row);
     }
+    let missing_enrollment = attempts
+        .values()
+        .filter(|row| {
+            !checked(&row.event.enrollment_timing_evidence)
+                && !rows.iter().any(|start| {
+                    start.external()
+                        && start.event.event_type == EventType::QualifiedStart
+                        && start.event.attempt_id == row.event.attempt_id
+                        && start.event.task_ref == row.event.task_ref
+                        && start.observed_at <= row.event.occurred_at
+                        && start.event.occurred_at <= row.event.occurred_at
+                })
+        })
+        .count();
+    attempts.retain(|_, row| {
+        checked(&row.event.enrollment_timing_evidence)
+            || rows.iter().any(|start| {
+                start.external()
+                    && start.event.event_type == EventType::QualifiedStart
+                    && start.event.attempt_id == row.event.attempt_id
+                    && start.event.task_ref == row.event.task_ref
+                    && start.observed_at <= row.event.occurred_at
+                    && start.event.occurred_at <= row.event.occurred_at
+            })
+    });
     let first: Vec<_> = attempts
         .values()
         .filter(|r| r.event.attempt_class == AttemptClass::FirstAttempt)
@@ -1025,10 +1106,11 @@ fn agent_outcomes(rows: &[&RecordedObservation], request: &ScorecardRequest) -> 
         mature_cohort_size: attempts.len(),
         pending: 0,
         lost: 0,
-        unknown: attempts
-            .values()
-            .filter(|r| r.event.attempt_class == AttemptClass::Unknown)
-            .count(),
+        unknown: missing_enrollment
+            + attempts
+                .values()
+                .filter(|r| r.event.attempt_class == AttemptClass::Unknown)
+                .count(),
         details: serde_json::json!({"unit":"predeclared_evidenced_natural_runs","synthetic_readiness_is_separate":true}),
     }
 }
@@ -1047,7 +1129,7 @@ fn guardrails(
     let mut errors = BTreeMap::<&str, BTreeSet<&str>>::new();
     for row in rows
         .iter()
-        .filter(|r| r.event.external() && in_window(r.event.occurred_at, request))
+        .filter(|r| r.external() && in_window(r.event.occurred_at, request))
     {
         if let Some(code) = row.event.error_code.as_deref() {
             errors
@@ -1059,14 +1141,14 @@ fn guardrails(
     let mut lags = Vec::new();
     for visible in rows.iter().filter(|r| {
         r.event.event_type == EventType::ReleaseVisible
-            && r.event.external()
+            && r.external()
             && r.event.outcome == Outcome::Pass
     }) {
         if let Some(receipt) = rows
             .iter()
             .filter(|r| {
                 r.event.event_type == EventType::PublishAccepted
-                    && r.event.external()
+                    && r.external()
                     && checked(&r.event.signed_result_evidence)
                     && r.event.release == visible.event.release
                     && r.event.principal_ref == visible.event.principal_ref
@@ -1077,7 +1159,7 @@ fn guardrails(
             lags.push(visible.event.occurred_at - receipt.event.occurred_at);
         }
     }
-    Metric{id:"ACQ-10".into(),value:rows.iter().any(|r|r.event.external()).then(||serde_json::json!({
+    Metric{id:"ACQ-10".into(),value:rows.iter().any(|r|r.external()).then(||serde_json::json!({
         "joined_result_coverage":if starts.is_empty(){None}else{Some(linked as f64/starts.len() as f64)},
         "source_coverage":if starts.is_empty(){None}else{Some(source_bound as f64/starts.len() as f64)},
         "finite_failure_reasons":errors.into_iter().map(|(k,v)|(k,v.len())).collect::<BTreeMap<_,_>>(),
@@ -1092,6 +1174,7 @@ fn guardrails(
 /// corrections, so later observations never alter an earlier as-of report.
 pub(super) fn compute(
     rows: &[RecordedObservation],
+    attestations: &[RecordedAttestation],
     request: &ScorecardRequest,
 ) -> Result<Scorecard, ObservationError> {
     if request.from >= request.to_exclusive
@@ -1102,6 +1185,77 @@ pub(super) fn compute(
     {
         return Err(ObservationError::Input);
     }
+    let visible_attestations: Vec<_> = attestations
+        .iter()
+        .filter(|r| r.observed_at <= request.as_of)
+        .collect();
+    let mut attestation_versions = BTreeMap::<&str, BTreeSet<&str>>::new();
+    for row in &visible_attestations {
+        attestation_versions
+            .entry(&row.attestation.attestation_id)
+            .or_default()
+            .insert(&row.payload_sha256);
+    }
+    let withdrawn: BTreeSet<_> = rows
+        .iter()
+        .filter(|r| {
+            r.observed_at <= request.as_of
+                && r.event.occurred_at <= request.as_of
+                && matches!(
+                    r.event.event_type,
+                    EventType::Correction | EventType::Withdrawal
+                )
+                && r.event.evidence.checked()
+        })
+        .filter_map(|r| r.event.supersedes.as_deref())
+        .collect();
+    let mut eligible_rows = rows.to_vec();
+    for row in &mut eligible_rows {
+        row.eligible_external = row.event.external_claims()
+            && visible_attestations.iter().any(|r| {
+                let a = &r.attestation;
+                !withdrawn.contains(a.attestation_id.as_str())
+                    && attestation_versions[a.attestation_id.as_str()].len() == 1
+                    && row.event.principal_ref.as_deref() == Some(a.principal_ref.as_str())
+                    && row.event.principal_binding.reference.as_deref()
+                        == Some(a.binding_evidence_ref.as_str())
+                    && row
+                        .event
+                        .external_status_evidence
+                        .as_ref()
+                        .and_then(|e| e.reference.as_deref())
+                        == Some(a.external_status_evidence_ref.as_str())
+                    && row.event.observer == a.observer
+                    && row.event.observer_version == a.observer_version
+            });
+    }
+    for row in &mut eligible_rows {
+        row.eligible_referrer = row.event.referrer_audience_class
+            == Some(Audience::ExternalEvidenced)
+            && checked(&row.event.referrer_binding)
+            && checked(&row.event.referrer_external_status_evidence)
+            && visible_attestations.iter().any(|r| {
+                let a = &r.attestation;
+                !withdrawn.contains(a.attestation_id.as_str())
+                    && attestation_versions[a.attestation_id.as_str()].len() == 1
+                    && row.event.referrer_principal_ref.as_deref() == Some(a.principal_ref.as_str())
+                    && row
+                        .event
+                        .referrer_binding
+                        .as_ref()
+                        .and_then(|e| e.reference.as_deref())
+                        == Some(a.binding_evidence_ref.as_str())
+                    && row
+                        .event
+                        .referrer_external_status_evidence
+                        .as_ref()
+                        .and_then(|e| e.reference.as_deref())
+                        == Some(a.external_status_evidence_ref.as_str())
+                    && row.event.observer == a.observer
+                    && row.event.observer_version == a.observer_version
+            });
+    }
+    let rows = &eligible_rows;
     let visible: Vec<_> = rows
         .iter()
         .filter(|r| r.observed_at <= request.as_of && r.event.occurred_at <= request.as_of)
@@ -1232,13 +1386,13 @@ pub(super) fn compute(
     metrics.push(supply(&active, &all, request));
     metrics.push(agent_outcomes(&active, request));
     metrics.push(guardrails(&active, &all, request));
-    let mut snapshot =
-        serde_json::to_vec(&(request, &visible)).map_err(|_| ObservationError::Corrupt)?;
+    let mut snapshot = serde_json::to_vec(&(request, &visible, &visible_attestations))
+        .map_err(|_| ObservationError::Corrupt)?;
     snapshot.extend_from_slice(b"definition2");
     Ok(Scorecard{definition_version:2,window:request.clone(),window_complete:request.to_exclusive<=request.as_of,
         snapshot_sha256:sha256_hex(&snapshot),visible_observations:visible.len(),
         excluded_synthetic_seed:visible.iter().filter(|r|matches!(r.event.audience_class,Audience::OfficialSeed|Audience::OperatorSynthetic)).count(),
-        unknown_audience_binding:visible.iter().filter(|r|!r.event.external() && !matches!(r.event.audience_class,Audience::OfficialSeed|Audience::OperatorSynthetic)).count(),
+        unknown_audience_binding:visible.iter().filter(|r|!r.external() && !matches!(r.event.audience_class,Audience::OfficialSeed|Audience::OperatorSynthetic)).count(),
         conflicting_events:conflicts.len()+conflicting_journeys,metrics,
-        coverage_scope:"Explicitly instrumented local observations only; no uninstrumented population denominator".into()})
+        coverage_scope:"Explicit local observer-attested external observations; no independently proven controller/truth or uninstrumented population denominator".into()})
 }

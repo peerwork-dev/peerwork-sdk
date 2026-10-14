@@ -1355,3 +1355,24 @@ pub fn secure_public_admission_json(
         cancel: cancel_handle.map(|h| h.token.clone()).unwrap_or_default(),
     })
 }
+
+/// Local atomic work runs off the JavaScript event loop; no network/cancel handle.
+pub struct AcquisitionObservationsTask {
+    operation: String,
+    config_json: String,
+    input_json: Option<String>,
+}
+impl Task for AcquisitionObservationsTask {
+    type Output = String;
+    type JsValue = String;
+    fn compute(&mut self) -> Result<Self::Output> {
+        Ok(peerwork_runtime::acquisition::acquisition_json(
+            &self.operation, &self.config_json, self.input_json.as_deref()))
+    }
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> { Ok(output) }
+}
+#[napi]
+pub fn acquisition_observations_json(operation: String, config_json: String,
+    input_json: Option<String>) -> AsyncTask<AcquisitionObservationsTask> {
+    AsyncTask::new(AcquisitionObservationsTask { operation, config_json, input_json })
+}

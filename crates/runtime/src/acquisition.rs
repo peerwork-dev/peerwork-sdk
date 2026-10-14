@@ -214,6 +214,8 @@ pub struct ObservationEvent {
     pub audience_class: Audience,
     pub principal_ref: Option<String>,
     pub principal_binding: Evidence,
+    #[serde(default)]
+    pub external_status_evidence: Option<Evidence>,
     pub newness: Newness,
     pub newness_evidence: Evidence,
     pub journey_id: String,
@@ -256,6 +258,8 @@ pub struct ObservationEvent {
     pub referrer_audience_class: Option<Audience>,
     #[serde(default)]
     pub referrer_binding: Option<Evidence>,
+    #[serde(default)]
+    pub referrer_external_status_evidence: Option<Evidence>,
     #[serde(default)]
     pub distinct_controller_evidence: Option<Evidence>,
     #[serde(default)]
@@ -391,11 +395,13 @@ impl ObservationEvent {
             &self.variant_ref,
         ];
         let evidences = [
+            &self.external_status_evidence,
             &self.association_evidence,
             &self.signed_result_evidence,
             &self.enrollment_timing_evidence,
             &self.distinct_controller_evidence,
             &self.referrer_binding,
+            &self.referrer_external_status_evidence,
             &self.source_evidence,
             &self.lineage_evidence,
         ];
@@ -465,11 +471,15 @@ impl ObservationEvent {
         }
         Ok(())
     }
-    fn external(&self) -> bool {
+    fn external_claims(&self) -> bool {
         self.audience_class == Audience::ExternalEvidenced
             && self.principal_ref.is_some()
             && self.principal_binding.checked()
             && self.evidence.checked()
+            && self
+                .external_status_evidence
+                .as_ref()
+                .is_some_and(Evidence::checked)
     }
 }
 
@@ -479,6 +489,61 @@ pub struct RecordedObservation {
     pub event: ObservationEvent,
     pub observed_at: u64,
     pub payload_sha256: String,
+    #[serde(skip)]
+    eligible_external: bool,
+    #[serde(skip)]
+    eligible_referrer: bool,
+}
+impl RecordedObservation {
+    fn external(&self) -> bool {
+        self.eligible_external && self.event.external_claims()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalEvidenceBasis {
+    ConsentedControllerGrouping,
+    PublicControllerEvidence,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalAttestationStatement {
+    ObserverCheckedExternalPrincipalBinding,
+}
+/// A deliberate local observer attestation, not independent controller proof.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExternalPrincipalAttestation {
+    pub attestation_id: String,
+    pub principal_ref: String,
+    pub binding_evidence_ref: String,
+    pub external_status_evidence_ref: String,
+    pub observer: String,
+    pub observer_version: String,
+    pub statement: ExternalAttestationStatement,
+    pub evidence_basis: ExternalEvidenceBasis,
+}
+impl ExternalPrincipalAttestation {
+    fn valid(&self) -> bool {
+        [
+            &self.attestation_id,
+            &self.principal_ref,
+            &self.binding_evidence_ref,
+            &self.external_status_evidence_ref,
+        ]
+        .into_iter()
+        .all(|s| opaque_ref(s))
+            && token(&self.observer, 64)
+            && token(&self.observer_version, 32)
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordedAttestation {
+    pub attestation: ExternalPrincipalAttestation,
+    pub observed_at: u64,
+    pub payload_sha256: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -486,6 +551,8 @@ pub struct RecordedObservation {
 struct LedgerState {
     format: u32,
     events: Vec<RecordedObservation>,
+    #[serde(default)]
+    attestations: Vec<RecordedAttestation>,
     #[serde(default)]
     snapshots: Vec<StoredScorecard>,
 }
@@ -539,6 +606,7 @@ impl AcquisitionObservations {
             return Ok(LedgerState {
                 format: 1,
                 events: Vec::new(),
+                attestations: Vec::new(),
                 snapshots: Vec::new(),
             });
         };
@@ -548,7 +616,8 @@ impl AcquisitionObservations {
         let state: LedgerState =
             serde_json::from_slice(&bytes).map_err(|_| ObservationError::Corrupt)?;
         if state.format != 1
-            || state.events.len() > self.config.max_records.unwrap_or(MAX_RECORDS)
+            || state.events.len() + state.attestations.len()
+                > self.config.max_records.unwrap_or(MAX_RECORDS)
             || state.snapshots.len() > 128
         {
             return Err(ObservationError::Corrupt);
@@ -562,12 +631,26 @@ impl AcquisitionObservations {
                 return Err(ObservationError::Corrupt);
             }
         }
+        for row in &state.attestations {
+            if !row.attestation.valid()
+                || row.observed_at > MAX_SAFE_INTEGER
+                || sha256_hex(
+                    &serde_json::to_vec(&row.attestation).map_err(|_| ObservationError::Corrupt)?,
+                ) != row.payload_sha256
+            {
+                return Err(ObservationError::Corrupt);
+            }
+        }
         for snapshot in &state.snapshots {
             if snapshot.scorecard.window.as_of > snapshot.generated_at {
                 return Err(ObservationError::Corrupt);
             }
-            let expected = scorecard::compute(&state.events, &snapshot.scorecard.window)
-                .map_err(|_| ObservationError::Corrupt)?;
+            let expected = scorecard::compute(
+                &state.events,
+                &state.attestations,
+                &snapshot.scorecard.window,
+            )
+            .map_err(|_| ObservationError::Corrupt)?;
             if serde_json::to_value(expected).map_err(|_| ObservationError::Corrupt)?
                 != serde_json::to_value(&snapshot.scorecard)
                     .map_err(|_| ObservationError::Corrupt)?
@@ -600,6 +683,13 @@ impl AcquisitionObservations {
         {
             return Err(ObservationError::Storage);
         }
+        if state
+            .attestations
+            .last()
+            .is_some_and(|s| s.observed_at > observed_at)
+        {
+            return Err(ObservationError::Storage);
+        }
         let hash = sha256_hex(&serde_json::to_vec(&event).map_err(|_| ObservationError::Input)?);
         if let Some(old) = state
             .events
@@ -623,13 +713,17 @@ impl AcquisitionObservations {
         } else {
             "APPENDED"
         };
-        if state.events.len() >= self.config.max_records.unwrap_or(MAX_RECORDS) {
+        if state.events.len() + state.attestations.len()
+            >= self.config.max_records.unwrap_or(MAX_RECORDS)
+        {
             return Err(ObservationError::Resource);
         }
         let row = RecordedObservation {
             event: event.clone(),
             observed_at,
             payload_sha256: hash.clone(),
+            eligible_external: false,
+            eligible_referrer: false,
         };
         state.events.push(row);
         let wire = serde_json::to_vec(&state).map_err(|_| ObservationError::Corrupt)?;
@@ -646,6 +740,83 @@ impl AcquisitionObservations {
             payload_sha256: hash,
             records: state.events.len(),
         })
+    }
+    pub fn attest_external_principal(
+        &self,
+        input: ExternalPrincipalAttestation,
+    ) -> Result<AppendResult, ObservationError> {
+        self.attest_at(input, clock_ms()?)
+    }
+    fn attest_at(
+        &self,
+        input: ExternalPrincipalAttestation,
+        now: u64,
+    ) -> Result<AppendResult, ObservationError> {
+        if !input.valid() || now > MAX_SAFE_INTEGER {
+            return Err(ObservationError::Input);
+        }
+        let store =
+            SecureStateStore::open(&self.config.path).map_err(|_| ObservationError::Storage)?;
+        let mut state = self.read(&store)?;
+        if state.events.last().is_some_and(|r| r.observed_at > now)
+            || state
+                .attestations
+                .last()
+                .is_some_and(|r| r.observed_at > now)
+            || state.snapshots.last().is_some_and(|r| r.generated_at > now)
+        {
+            return Err(ObservationError::Storage);
+        }
+        let hash = sha256_hex(&serde_json::to_vec(&input).map_err(|_| ObservationError::Input)?);
+        if let Some(old) = state.attestations.iter().find(|r| {
+            r.attestation.attestation_id == input.attestation_id && r.payload_sha256 == hash
+        }) {
+            return Ok(AppendResult {
+                event_id: input.attestation_id,
+                disposition: "DUPLICATE",
+                observed_at: old.observed_at,
+                payload_sha256: hash,
+                records: state.attestations.len(),
+            });
+        }
+        if state.events.len() + state.attestations.len()
+            >= self.config.max_records.unwrap_or(MAX_RECORDS)
+        {
+            return Err(ObservationError::Resource);
+        }
+        let disposition = if state
+            .attestations
+            .iter()
+            .any(|r| r.attestation.attestation_id == input.attestation_id)
+        {
+            "CONFLICT"
+        } else {
+            "APPENDED"
+        };
+        state.attestations.push(RecordedAttestation {
+            attestation: input.clone(),
+            observed_at: now,
+            payload_sha256: hash.clone(),
+        });
+        let bytes = serde_json::to_vec(&state).map_err(|_| ObservationError::Corrupt)?;
+        if bytes.len() > self.config.max_store_bytes.unwrap_or(MAX_STORE_BYTES) {
+            return Err(ObservationError::Resource);
+        }
+        store
+            .write_exact(&bytes)
+            .map_err(|_| ObservationError::Storage)?;
+        Ok(AppendResult {
+            event_id: input.attestation_id,
+            disposition,
+            observed_at: now,
+            payload_sha256: hash,
+            records: state.attestations.len(),
+        })
+    }
+    pub fn attestations(&self) -> Result<Vec<RecordedAttestation>, ObservationError> {
+        let store =
+            SecureStateStore::open(&self.config.path).map_err(|_| ObservationError::Storage)?;
+        Ok(self.read(&store)?.attestations)
     }
     pub fn export(&self) -> Result<Vec<RecordedObservation>, ObservationError> {
         let store =
@@ -675,11 +846,22 @@ impl AcquisitionObservations {
             SecureStateStore::open(&self.config.path).map_err(|_| ObservationError::Storage)?;
         let mut state = self.read(&store)?;
         if state.events.last().is_some_and(|r| r.observed_at > now)
+            || state
+                .attestations
+                .last()
+                .is_some_and(|s| s.observed_at > now)
             || state.snapshots.last().is_some_and(|s| s.generated_at > now)
         {
             return Err(ObservationError::Storage);
         }
-        let result = scorecard::compute(&state.events, &request)?;
+        if state
+            .attestations
+            .last()
+            .is_some_and(|s| s.observed_at > now)
+        {
+            return Err(ObservationError::Storage);
+        }
+        let result = scorecard::compute(&state.events, &state.attestations, &request)?;
         if let Some(old) = state
             .snapshots
             .iter()
@@ -727,6 +909,10 @@ pub fn acquisition_json(operation: &str, config_json: &str, input_json: Option<&
         }
         let value = match operation {
             "append" => serde_json::to_value(ledger.append(parse(input)?)?),
+            "attest_external_principal" => {
+                serde_json::to_value(ledger.attest_external_principal(parse(input)?)?)
+            }
+            "attestations" if input.is_none() => serde_json::to_value(ledger.attestations()?),
             "catalog_result" => serde_json::to_value(ledger.record_catalog_result(parse(input)?)?),
             "install_result" => serde_json::to_value(ledger.record_install_result(parse(input)?)?),
             "action_result" => serde_json::to_value(ledger.record_action_result(parse(input)?)?),
@@ -833,23 +1019,24 @@ mod tests {
     fn unknown_claims_and_synthetic_keys_never_establish_external_eligibility() {
         let mut value = event(1);
         value.audience_class = Audience::ExternalEvidenced;
-        assert!(!value.external());
+        assert!(!value.external_claims());
         value.principal_binding = Evidence {
             status: Verification::Checked,
             reference: Some(reference("evidence", 1)),
         };
-        assert!(!value.external());
+        assert!(!value.external_claims());
         value.evidence = Evidence {
             status: Verification::Checked,
             reference: Some(reference("evidence", 2)),
         };
-        assert!(value.external());
+        value.external_status_evidence = Some(checked_evidence(3));
+        assert!(value.external_claims());
         value.audience_class = Audience::OperatorSynthetic;
-        assert!(!value.external());
+        assert!(!value.external_claims());
         value.audience_class = Audience::OfficialSeed;
-        assert!(!value.external());
+        assert!(!value.external_claims());
         value.audience_class = Audience::Unknown;
-        assert!(!value.external());
+        assert!(!value.external_claims());
     }
     #[test]
     fn duplicate_conflict_and_reopen_preserve_every_original_observation() {
@@ -914,6 +1101,7 @@ mod tests {
         value.audience_class = Audience::ExternalEvidenced;
         value.principal_binding = checked_evidence(1);
         value.evidence = checked_evidence(number);
+        value.external_status_evidence = Some(checked_evidence(3));
         value.newness = Newness::ProvedNew;
         value.newness_evidence = checked_evidence(2);
         value.observer = "arithmetic-fixture".into();
@@ -926,6 +1114,8 @@ mod tests {
             payload_sha256: sha256_hex(&serde_json::to_vec(&value).unwrap()),
             event: value,
             observed_at,
+            eligible_external: false,
+            eligible_referrer: false,
         }
     }
     fn release() -> Release {
@@ -975,6 +1165,67 @@ mod tests {
             as_of: 40 * 86_400_000,
         }
     }
+    fn attestation_for(event: &ObservationEvent) -> ExternalPrincipalAttestation {
+        ExternalPrincipalAttestation {
+            attestation_id: reference("attestation", 1),
+            principal_ref: event.principal_ref.clone().unwrap(),
+            binding_evidence_ref: event.principal_binding.reference.clone().unwrap(),
+            external_status_evidence_ref: event
+                .external_status_evidence
+                .as_ref()
+                .unwrap()
+                .reference
+                .clone()
+                .unwrap(),
+            observer: event.observer.clone(),
+            observer_version: event.observer_version.clone(),
+            statement: ExternalAttestationStatement::ObserverCheckedExternalPrincipalBinding,
+            evidence_basis: ExternalEvidenceBasis::ConsentedControllerGrouping,
+        }
+    }
+    fn fixture_compute(
+        rows: &[RecordedObservation],
+        req: &ScorecardRequest,
+    ) -> Result<Scorecard, ObservationError> {
+        let mut attestations = Vec::new();
+        let mut keys = std::collections::BTreeSet::new();
+        for row in rows.iter().filter(|r| r.event.external_claims()) {
+            let mut attestation = attestation_for(&row.event);
+            let key = serde_json::to_string(&attestation).unwrap();
+            if keys.insert(key) {
+                attestation.attestation_id =
+                    reference("attestation", attestations.len() as u64 + 1);
+                attestations.push(RecordedAttestation {
+                    payload_sha256: sha256_hex(&serde_json::to_vec(&attestation).unwrap()),
+                    attestation,
+                    observed_at: 0,
+                });
+            }
+        }
+        for row in rows.iter().filter(|r| {
+            r.event
+                .referrer_external_status_evidence
+                .as_ref()
+                .is_some_and(Evidence::checked)
+        }) {
+            let mut event = row.event.clone();
+            event.principal_ref = event.referrer_principal_ref.clone();
+            event.principal_binding = event.referrer_binding.clone().unwrap();
+            event.external_status_evidence = event.referrer_external_status_evidence.clone();
+            let mut attestation = attestation_for(&event);
+            let key = serde_json::to_string(&attestation).unwrap();
+            if keys.insert(key) {
+                attestation.attestation_id =
+                    reference("attestation", attestations.len() as u64 + 1);
+                attestations.push(RecordedAttestation {
+                    payload_sha256: sha256_hex(&serde_json::to_vec(&attestation).unwrap()),
+                    attestation,
+                    observed_at: 0,
+                });
+            }
+        }
+        scorecard::compute(rows, &attestations, req)
+    }
     fn metric<'a>(score: &'a Scorecard, id: &str) -> &'a AcquisitionMetric {
         score.metrics.iter().find(|m| m.id == id).unwrap()
     }
@@ -982,7 +1233,7 @@ mod tests {
     fn new_and_existing_selection_need_exact_release_and_signed_result_join() {
         for branch in [AdoptionBranch::NewInstall, AdoptionBranch::ExistingInstall] {
             let rows = journey(branch);
-            let score = scorecard::compute(&rows, &request()).unwrap();
+            let score = fixture_compute(&rows, &request()).unwrap();
             assert_eq!(metric(&score, "ACQ-01").numerator, Some(1));
             assert_eq!(metric(&score, "ACQ-02").value, Some(serde_json::json!(1.0)));
             assert_eq!(metric(&score, "ACQ-03").details["deliberate_selection"], 1);
@@ -993,13 +1244,13 @@ mod tests {
                 .unwrap();
             result.event.release.as_mut().unwrap().bundle_digest = "c".repeat(64);
             assert_eq!(
-                metric(&scorecard::compute(&wrong, &request()).unwrap(), "ACQ-01").numerator,
+                metric(&fixture_compute(&wrong, &request()).unwrap(), "ACQ-01").numerator,
                 Some(0)
             );
         }
         let mut rows = journey(AdoptionBranch::NewInstall);
         rows.retain(|r| r.event.event_type != EventType::InstallAccepted);
-        let score = scorecard::compute(&rows, &request()).unwrap();
+        let score = fixture_compute(&rows, &request()).unwrap();
         assert_eq!(metric(&score, "ACQ-03").details["deliberate_selection"], 1);
         assert_eq!(metric(&score, "ACQ-01").numerator, Some(0));
     }
@@ -1008,7 +1259,7 @@ mod tests {
         let mut rows = journey(AdoptionBranch::ExistingInstall);
         rows[0].observed_at = rows[0].event.occurred_at + 20;
         assert_eq!(
-            metric(&scorecard::compute(&rows, &request()).unwrap(), "ACQ-01").numerator,
+            metric(&fixture_compute(&rows, &request()).unwrap(), "ACQ-01").numerator,
             Some(0)
         );
         rows[0].event.enrollment_timing_evidence = Some(Evidence {
@@ -1016,12 +1267,12 @@ mod tests {
             reference: Some(reference("timing", 1)),
         });
         assert_eq!(
-            metric(&scorecard::compute(&rows, &request()).unwrap(), "ACQ-01").numerator,
+            metric(&fixture_compute(&rows, &request()).unwrap(), "ACQ-01").numerator,
             Some(0)
         );
         rows[0].event.enrollment_timing_evidence = Some(checked_evidence(8));
         assert_eq!(
-            metric(&scorecard::compute(&rows, &request()).unwrap(), "ACQ-01").numerator,
+            metric(&fixture_compute(&rows, &request()).unwrap(), "ACQ-01").numerator,
             Some(1)
         );
     }
@@ -1030,17 +1281,17 @@ mod tests {
         let rows = journey(AdoptionBranch::ExistingInstall);
         let mut early = request();
         early.as_of = 2 * 86_400_000 - 1;
-        let score = scorecard::compute(&rows, &early).unwrap();
+        let score = fixture_compute(&rows, &early).unwrap();
         assert_eq!(metric(&score, "ACQ-02-24H").pending, 1);
         assert_eq!(metric(&score, "ACQ-02-24H").value, None);
-        let score = scorecard::compute(&rows, &request()).unwrap();
+        let score = fixture_compute(&rows, &request()).unwrap();
         assert!(
             metric(&score, "ACQ-04").value.as_ref().unwrap()["cost_microunits_per_activation"]
                 .is_null()
         );
         let mut lost = rows.clone();
         lost.last_mut().unwrap().event.coverage = Some(Coverage::Lost);
-        let score = scorecard::compute(&lost, &request()).unwrap();
+        let score = fixture_compute(&lost, &request()).unwrap();
         assert_eq!(metric(&score, "ACQ-02").lost, 1);
         assert_eq!(metric(&score, "ACQ-02").value, None);
         assert_eq!(
@@ -1051,7 +1302,7 @@ mod tests {
         for r in &mut synthetic {
             r.event.audience_class = Audience::OperatorSynthetic;
         }
-        let score = scorecard::compute(&synthetic, &request()).unwrap();
+        let score = fixture_compute(&synthetic, &request()).unwrap();
         assert_eq!(score.excluded_synthetic_seed, synthetic.len());
         assert_eq!(metric(&score, "ACQ-01").value, None);
         assert_eq!(metric(&score, "ACQ-08").value, None);
@@ -1063,12 +1314,12 @@ mod tests {
         conflict.event.outcome = Outcome::Fail;
         conflict.payload_sha256 = sha256_hex(&serde_json::to_vec(&conflict.event).unwrap());
         rows.push(conflict);
-        let score = scorecard::compute(&rows, &request()).unwrap();
+        let score = fixture_compute(&rows, &request()).unwrap();
         assert_eq!(score.conflicting_events, 1);
         assert_eq!(metric(&score, "ACQ-01").value, None);
         let mut rows = journey(AdoptionBranch::ExistingInstall);
         rows[2].event.principal_ref = Some(reference("principal", 9));
-        let score = scorecard::compute(&rows, &request()).unwrap();
+        let score = fixture_compute(&rows, &request()).unwrap();
         assert_eq!(score.conflicting_events, 1);
         assert_eq!(metric(&score, "ACQ-01").numerator, Some(0));
     }
@@ -1135,14 +1386,14 @@ mod tests {
             value.tokens = Some(20);
             rows.push(row(value, DAY + 20));
         }
-        let score = scorecard::compute(&rows, &request()).unwrap();
+        let score = fixture_compute(&rows, &request()).unwrap();
         assert_eq!(
             metric(&score, "ACQ-04").value.as_ref().unwrap()["cost_microunits_per_activation"],
             5.0
         );
         assert_eq!(metric(&score, "ACQ-04").details["active_execution_ms"], 20);
         rows.last_mut().unwrap().event.cost = None;
-        let score = scorecard::compute(&rows, &request()).unwrap();
+        let score = fixture_compute(&rows, &request()).unwrap();
         assert!(
             metric(&score, "ACQ-04").value.as_ref().unwrap()["cost_microunits_per_activation"]
                 .is_null()
@@ -1164,7 +1415,7 @@ mod tests {
             r.payload_sha256 = sha256_hex(&serde_json::to_vec(&r.event).unwrap());
         }
         rows.extend(second.clone());
-        let score = scorecard::compute(&rows, &request()).unwrap();
+        let score = fixture_compute(&rows, &request()).unwrap();
         assert_eq!(metric(&score, "ACQ-05").numerator, Some(0));
         rows.truncate(journey(AdoptionBranch::ExistingInstall).len());
         for r in &mut second {
@@ -1173,7 +1424,7 @@ mod tests {
             r.payload_sha256 = sha256_hex(&serde_json::to_vec(&r.event).unwrap());
         }
         rows.extend(second);
-        let score = scorecard::compute(&rows, &request()).unwrap();
+        let score = fixture_compute(&rows, &request()).unwrap();
         assert_eq!(metric(&score, "ACQ-05").numerator, Some(1));
         assert_eq!(metric(&score, "ACQ-01").numerator, Some(1));
     }
@@ -1197,12 +1448,12 @@ mod tests {
         end.observation_end = Some(3 * DAY);
         rows.push(row(end, 3 * DAY));
         assert_eq!(
-            metric(&scorecard::compute(&rows, &request()).unwrap(), "ACQ-06").value,
+            metric(&fixture_compute(&rows, &request()).unwrap(), "ACQ-06").value,
             Some(serde_json::json!(1.0))
         );
         rows.retain(|r| r.event.event_type != EventType::ReleaseVisible);
         assert_eq!(
-            metric(&scorecard::compute(&rows, &request()).unwrap(), "ACQ-06").numerator,
+            metric(&fixture_compute(&rows, &request()).unwrap(), "ACQ-06").numerator,
             Some(0)
         );
     }
@@ -1220,6 +1471,7 @@ mod tests {
             handoff.referrer_principal_ref = Some(reference("principal", 9));
             handoff.referrer_audience_class = Some(Audience::ExternalEvidenced);
             handoff.referrer_binding = Some(checked_evidence(10));
+            handoff.referrer_external_status_evidence = Some(checked_evidence(3));
             handoff.distinct_controller_evidence = Some(checked_evidence(11));
             rows.push(row(handoff, DAY));
             let mut end = external(10 + recipient, 16 * DAY, EventType::CoverageEnded);
@@ -1229,7 +1481,7 @@ mod tests {
             end.observation_end = Some(16 * DAY);
             rows.push(row(end, 16 * DAY));
         }
-        let score = scorecard::compute(&rows, &request()).unwrap();
+        let score = fixture_compute(&rows, &request()).unwrap();
         assert_eq!(metric(&score, "ACQ-07").denominator, Some(2));
         assert_eq!(metric(&score, "ACQ-07").numerator, Some(0));
         let mut consumer = journey(AdoptionBranch::ExistingInstall);
@@ -1240,7 +1492,7 @@ mod tests {
         consumer[0].event.source_ref = Some(reference("share", 1));
         consumer[0].event.source_evidence = Some(checked_evidence(12));
         rows.extend(consumer.clone());
-        let score = scorecard::compute(&rows, &request()).unwrap();
+        let score = fixture_compute(&rows, &request()).unwrap();
         assert_eq!(metric(&score, "ACQ-07").numerator, Some(1));
         assert_eq!(metric(&score, "ACQ-07").value, Some(serde_json::json!(0.5)));
         let mut earlier = external(200, DAY - 1, EventType::DiscoveryObserved);
@@ -1250,11 +1502,11 @@ mod tests {
         earlier.source_evidence = Some(checked_evidence(13));
         rows.push(row(earlier, DAY - 1));
         assert_eq!(
-            metric(&scorecard::compute(&rows, &request()).unwrap(), "ACQ-07").numerator,
+            metric(&fixture_compute(&rows, &request()).unwrap(), "ACQ-07").numerator,
             Some(0)
         );
         rows[0].event.referrer_principal_ref = rows[0].event.principal_ref.clone();
-        let score = scorecard::compute(&rows, &request()).unwrap();
+        let score = fixture_compute(&rows, &request()).unwrap();
         assert_eq!(metric(&score, "ACQ-07").denominator, Some(1));
     }
     #[test]
@@ -1296,7 +1548,7 @@ mod tests {
                 bundle_canonical_json: inspected.bundle_canonical_json,
             })
             .unwrap();
-        assert!(!client.export().unwrap()[0].event.external());
+        assert!(!client.export().unwrap()[0].external());
         let protocol = vector["protocol_digest"].as_str().unwrap().to_owned();
         let mut selected = event(2);
         selected.event_type = EventType::AdoptionSelected;
@@ -1346,7 +1598,7 @@ mod tests {
                 r.event.protocol_ref = Some(reference("protocol", 1));
             }
         }
-        let score = scorecard::compute(&rows, &request()).unwrap();
+        let score = fixture_compute(&rows, &request()).unwrap();
         assert_eq!(metric(&score, "ACQ-01").numerator, Some(1));
         assert_eq!(metric(&score, "ACQ-06").denominator, Some(0));
         rows.iter_mut()
@@ -1355,7 +1607,7 @@ mod tests {
             .event
             .protocol_ref = Some(reference("protocol", 2));
         assert_eq!(
-            metric(&scorecard::compute(&rows, &request()).unwrap(), "ACQ-01").numerator,
+            metric(&fixture_compute(&rows, &request()).unwrap(), "ACQ-01").numerator,
             Some(0)
         );
     }
@@ -1382,7 +1634,7 @@ mod tests {
             rows.push(row(value, DAY - 1));
         }
         assert_eq!(
-            metric(&scorecard::compute(&rows, &request()).unwrap(), "ACQ-08").numerator,
+            metric(&fixture_compute(&rows, &request()).unwrap(), "ACQ-08").numerator,
             Some(1)
         );
         rows.iter_mut()
@@ -1391,7 +1643,7 @@ mod tests {
             .event
             .publisher_principal_ref = Some(reference("principal", 1));
         assert_eq!(
-            metric(&scorecard::compute(&rows, &request()).unwrap(), "ACQ-08").numerator,
+            metric(&fixture_compute(&rows, &request()).unwrap(), "ACQ-08").numerator,
             Some(0)
         );
     }
@@ -1414,9 +1666,10 @@ mod tests {
             value.outcome = business;
             value.workflow_outcome = Some(workflow);
             value.run_kind = Some(RunKind::NaturalAgent);
+            value.enrollment_timing_evidence = Some(checked_evidence(30));
             rows.push(row(value, DAY + id));
         }
-        let score = scorecard::compute(&rows, &request()).unwrap();
+        let score = fixture_compute(&rows, &request()).unwrap();
         let value = metric(&score, "ACQ-09").value.as_ref().unwrap();
         assert_eq!(value["first_attempt"]["business_fail"], 1);
         assert_eq!(value["first_attempt"]["workflow_unverified"], 1);
@@ -1425,7 +1678,7 @@ mod tests {
             r.event.audience_class = Audience::OperatorSynthetic;
         }
         assert_eq!(
-            metric(&scorecard::compute(&rows, &request()).unwrap(), "ACQ-09").value,
+            metric(&fixture_compute(&rows, &request()).unwrap(), "ACQ-09").value,
             None
         );
     }
@@ -1449,14 +1702,14 @@ mod tests {
         withdraw.evidence.status = Verification::Claimed;
         rows.push(row(withdraw.clone(), 37 * 86_400_000));
         assert_eq!(
-            metric(&scorecard::compute(&rows, &request()).unwrap(), "ACQ-01").numerator,
+            metric(&fixture_compute(&rows, &request()).unwrap(), "ACQ-01").numerator,
             Some(1)
         );
         withdraw.evidence = checked_evidence(200);
         rows.pop();
         rows.push(row(withdraw, 37 * 86_400_000));
         assert_eq!(
-            metric(&scorecard::compute(&rows, &request()).unwrap(), "ACQ-01").numerator,
+            metric(&fixture_compute(&rows, &request()).unwrap(), "ACQ-01").numerator,
             Some(0)
         );
         assert_eq!(rows[0].event.event_type, EventType::QualifiedStart);
@@ -1464,7 +1717,7 @@ mod tests {
     #[test]
     fn weekly_interval_and_derivative_use_require_explicit_checked_lineage() {
         let mut rows = journey(AdoptionBranch::ExistingInstall);
-        let score = scorecard::compute(&rows, &request()).unwrap();
+        let score = fixture_compute(&rows, &request()).unwrap();
         assert_eq!(metric(&score, "ACQ-01").value, None);
         assert_eq!(
             metric(&score, "ACQ-01").details["provisional_interval"],
@@ -1481,7 +1734,7 @@ mod tests {
             as_of: 45 * DAY,
         };
         assert_eq!(
-            metric(&scorecard::compute(&rows, &week).unwrap(), "ACQ-01").value,
+            metric(&fixture_compute(&rows, &week).unwrap(), "ACQ-01").value,
             Some(serde_json::json!(1))
         );
         let original = release();
@@ -1515,7 +1768,7 @@ mod tests {
             rows.push(row(value, 4 * DAY));
         }
         assert_eq!(
-            metric(&scorecard::compute(&rows, &week).unwrap(), "ACQ-08").numerator,
+            metric(&fixture_compute(&rows, &week).unwrap(), "ACQ-08").numerator,
             Some(0)
         );
         rows.iter_mut()
@@ -1524,7 +1777,7 @@ mod tests {
             .event
             .lineage_evidence = Some(checked_evidence(10));
         assert_eq!(
-            metric(&scorecard::compute(&rows, &week).unwrap(), "ACQ-08").numerator,
+            metric(&fixture_compute(&rows, &week).unwrap(), "ACQ-08").numerator,
             Some(1)
         );
     }
@@ -1540,17 +1793,244 @@ mod tests {
         conflict.event_type = EventType::DiscoveryObserved;
         conflict.source_ref = Some(reference("source", 2));
         rows.push(row(conflict, rows[0].observed_at));
-        let score = scorecard::compute(&rows, &request()).unwrap();
+        let score = fixture_compute(&rows, &request()).unwrap();
         assert_eq!(score.conflicting_events, 1);
         assert_eq!(metric(&score, "ACQ-01").numerator, Some(0));
         let mut rows = journey(AdoptionBranch::ExistingInstall);
         rows[0].event.variant_ref = Some(reference("variant", 1));
         rows[1].event.variant_ref = Some(reference("variant", 2));
         assert_eq!(
-            scorecard::compute(&rows, &request())
+            fixture_compute(&rows, &request())
                 .unwrap()
                 .conflicting_events,
             1
         );
+    }
+    #[test]
+    fn raw_external_flag_forgery_needs_matching_deliberate_attestation() {
+        let rows = journey(AdoptionBranch::ExistingInstall);
+        let score = scorecard::compute(&rows, &[], &request()).unwrap();
+        assert_eq!(metric(&score, "ACQ-01").numerator, Some(0));
+        assert_eq!(score.unknown_audience_binding, rows.len());
+        let attestation = attestation_for(&rows[0].event);
+        let record = RecordedAttestation {
+            payload_sha256: sha256_hex(&serde_json::to_vec(&attestation).unwrap()),
+            attestation: attestation.clone(),
+            observed_at: 0,
+        };
+        assert_eq!(
+            metric(
+                &scorecard::compute(&rows, &[record.clone()], &request()).unwrap(),
+                "ACQ-01"
+            )
+            .numerator,
+            Some(1)
+        );
+        for field in ["binding", "external", "observer", "version", "principal"] {
+            let mut wrong = record.clone();
+            match field {
+                "binding" => wrong.attestation.binding_evidence_ref = reference("evidence", 99),
+                "external" => {
+                    wrong.attestation.external_status_evidence_ref = reference("evidence", 99)
+                }
+                "observer" => wrong.attestation.observer = "other-observer".into(),
+                "version" => wrong.attestation.observer_version = "other-version".into(),
+                _ => wrong.attestation.principal_ref = reference("principal", 99),
+            }
+            assert_eq!(
+                metric(
+                    &scorecard::compute(&rows, &[wrong], &request()).unwrap(),
+                    "ACQ-01"
+                )
+                .numerator,
+                Some(0),
+                "{field}"
+            );
+        }
+        let mut bad = serde_json::to_value(attestation).unwrap();
+        bad["statement"] = serde_json::json!("arbitrary truth claim");
+        assert!(serde_json::from_value::<ExternalPrincipalAttestation>(bad).is_err());
+    }
+    #[test]
+    fn late_attestation_and_withdrawal_preserve_earlier_as_of_snapshot() {
+        const DAY: u64 = 86_400_000;
+        let (_dir, client) = ledger();
+        let rows = journey(AdoptionBranch::ExistingInstall);
+        for row in &rows {
+            client
+                .append_at(row.event.clone(), row.observed_at)
+                .unwrap();
+        }
+        let old = client.scorecard_at(request(), 40 * DAY).unwrap();
+        assert_eq!(metric(&old.scorecard, "ACQ-01").numerator, Some(0));
+        let attestation = attestation_for(&rows[0].event);
+        client.attest_at(attestation.clone(), 41 * DAY).unwrap();
+        assert_eq!(
+            serde_json::to_value(client.scorecard_at(request(), 41 * DAY).unwrap()).unwrap(),
+            serde_json::to_value(&old).unwrap()
+        );
+        let mut req = request();
+        req.as_of = 41 * DAY;
+        assert_eq!(
+            metric(
+                &client
+                    .scorecard_at(req.clone(), 41 * DAY)
+                    .unwrap()
+                    .scorecard,
+                "ACQ-01"
+            )
+            .numerator,
+            Some(1)
+        );
+        let mut withdrawal = external(200, 42 * DAY, EventType::Withdrawal);
+        withdrawal.supersedes = Some(attestation.attestation_id.clone());
+        client.append_at(withdrawal, 42 * DAY).unwrap();
+        req.as_of = 42 * DAY;
+        assert_eq!(
+            metric(
+                &client.scorecard_at(req, 42 * DAY).unwrap().scorecard,
+                "ACQ-01"
+            )
+            .numerator,
+            Some(0)
+        );
+        assert_eq!(client.attestations().unwrap().len(), 1);
+        assert_eq!(
+            client
+                .snapshots()
+                .unwrap()
+                .first()
+                .unwrap()
+                .scorecard
+                .snapshot_sha256,
+            old.scorecard.snapshot_sha256
+        );
+    }
+    #[test]
+    fn a_different_genuine_task_can_reuse_the_same_acceptance_predicate() {
+        const DAY: u64 = 86_400_000;
+        let mut rows = journey(AdoptionBranch::ExistingInstall);
+        let mut repeat = journey(AdoptionBranch::ExistingInstall);
+        for (index, row) in repeat.iter_mut().enumerate() {
+            row.event.event_id = reference("event", 100 + index as u64);
+            row.event.journey_id = reference("journey", 2);
+            row.event.task_ref = Some(reference("task", 2));
+            row.event.occurred_at += 8 * DAY;
+            row.observed_at += 8 * DAY;
+        }
+        rows.extend(repeat);
+        assert_eq!(
+            metric(&fixture_compute(&rows, &request()).unwrap(), "ACQ-05").numerator,
+            Some(1)
+        );
+    }
+    #[test]
+    fn logical_retry_journeys_and_publication_retries_collapse_without_losing_attempts() {
+        let mut rows = journey(AdoptionBranch::ExistingInstall);
+        let mut retry = journey(AdoptionBranch::ExistingInstall);
+        for (index, row) in retry.iter_mut().enumerate() {
+            row.event.event_id = reference("event", 100 + index as u64);
+            row.event.journey_id = reference("journey", 2);
+            row.event.attempt_id = reference("attempt", 2);
+        }
+        rows.extend(retry);
+        assert_eq!(
+            metric(&fixture_compute(&rows, &request()).unwrap(), "ACQ-03").denominator,
+            Some(1)
+        );
+        const DAY: u64 = 86_400_000;
+        let mut rows = Vec::new();
+        for j in 1..=2 {
+            for (id, kind) in [
+                (1, EventType::PublishRequested),
+                (2, EventType::PublishAccepted),
+                (3, EventType::ReleaseVisible),
+                (4, EventType::CoverageEnded),
+            ] {
+                let mut value = external(j * 10 + id, DAY + id, kind);
+                value.journey_id = reference("journey", j);
+                value.release = Some(release());
+                value.outcome = Outcome::Pass;
+                value.signed_result_evidence = Some(checked_evidence(3));
+                if kind == EventType::CoverageEnded {
+                    value.coverage = Some(Coverage::Complete);
+                    value.occurred_at = 3 * DAY;
+                    value.observation_end = Some(3 * DAY);
+                }
+                rows.push(row(value, 3 * DAY));
+            }
+        }
+        let score = fixture_compute(&rows, &request()).unwrap();
+        assert_eq!(metric(&score, "ACQ-06").denominator, Some(1));
+        assert_eq!(metric(&score, "ACQ-06").numerator, Some(1));
+        rows.iter_mut()
+            .find(|r| {
+                r.event.journey_id == reference("journey", 2)
+                    && r.event.event_type == EventType::ReleaseVisible
+            })
+            .unwrap()
+            .event
+            .release
+            .as_mut()
+            .unwrap()
+            .bundle_digest = "f".repeat(64);
+        assert_eq!(
+            metric(&fixture_compute(&rows, &request()).unwrap(), "ACQ-06").unknown,
+            1
+        );
+    }
+    #[test]
+    fn natural_run_without_pre_outcome_enrollment_stays_unknown() {
+        let mut value = external(1, 86_400_000, EventType::AttemptFinished);
+        value.run_kind = Some(RunKind::NaturalAgent);
+        value.outcome = Outcome::Pass;
+        value.workflow_outcome = Some(Outcome::Pass);
+        let rows = vec![row(value, 86_400_000)];
+        let score = fixture_compute(&rows, &request()).unwrap();
+        assert_eq!(metric(&score, "ACQ-09").value, None);
+        assert_eq!(metric(&score, "ACQ-09").unknown, 1);
+    }
+    #[test]
+    fn funnel_branch_breakdowns_use_the_successful_eligible_selection_window() {
+        for branch in [AdoptionBranch::ExistingInstall, AdoptionBranch::NewInstall] {
+            let key = if branch == AdoptionBranch::NewInstall {
+                "new_install_selection"
+            } else {
+                "existing_install_selection"
+            };
+            let original = journey(branch);
+            assert_eq!(
+                metric(&fixture_compute(&original, &request()).unwrap(), "ACQ-03").details[key],
+                1
+            );
+            for disposition in ["fail", "claimed", "late"] {
+                let mut rows = original.clone();
+                let selected = rows
+                    .iter_mut()
+                    .find(|r| r.event.event_type == EventType::AdoptionSelected)
+                    .unwrap();
+                match disposition {
+                    "fail" => selected.event.outcome = Outcome::Fail,
+                    "claimed" => selected.event.evidence.status = Verification::Claimed,
+                    _ => {
+                        selected.event.occurred_at += 8 * 86_400_000;
+                        selected.observed_at += 8 * 86_400_000;
+                    }
+                }
+                assert_eq!(
+                    metric(&fixture_compute(&rows, &request()).unwrap(), "ACQ-03").details[key],
+                    0,
+                    "{disposition}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn unverified_coverage_cannot_upgrade_a_mature_cohort_denominator() {
+        let mut rows = journey(AdoptionBranch::ExistingInstall);
+        rows.last_mut().unwrap().event.evidence.status = Verification::Claimed;
+        let score = fixture_compute(&rows, &request()).unwrap();
+        assert_eq!(metric(&score, "ACQ-02").denominator, Some(0));
+        assert_eq!(metric(&score, "ACQ-02").unknown, 1);
     }
 }

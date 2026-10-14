@@ -636,3 +636,81 @@ export interface SecurePrivatePackageInstaller {
   /** Local saved BEGIN IDs; listing does not establish service acceptance or ACTIVE status. */
   installs(options?: {signal?: AbortSignal}): Promise<SavedPrivatePackageInstall[]>;
 }
+
+
+export interface ObservationEvidence { status: 'unknown'|'claimed'|'checked'; reference: string|null; }
+export interface ObservationRelease { catalog_origin:string; namespace:string|null; package_id:string; version:string; bundle_digest:string; }
+export type ObservationAudience = 'official_seed'|'operator_synthetic'|'external_evidenced'|'unknown';
+export type ObservationOutcome = 'pass'|'fail'|'pending'|'unverified';
+/** Closed native schema. Epoch milliseconds must be safe integers; refs are obs:kind:32hex. */
+export interface AcquisitionEvent {
+  event_id:string; occurred_at:number; environment:'production'|'staging'|'local_test';
+  audience_class:ObservationAudience; principal_ref:string|null; principal_binding:ObservationEvidence;
+  external_status_evidence?:ObservationEvidence|null;
+  newness:'proved_new'|'first_observed'|'existing'|'unknown'; newness_evidence:ObservationEvidence;
+  journey_id:string; task_ref:string|null; logical_operation_id:string; attempt_id:string;
+  event_type:'qualified_start'|'discovery_observed'|'release_verified'|'adoption_selected'|'install_accepted'|
+    'task_outcome_verified'|'publish_requested'|'publish_accepted'|'release_visible'|'share_reference_observed'|
+    'attempt_finished'|'coverage_ended'|'correction'|'withdrawal';
+  outcome:ObservationOutcome; attempt_class:'first_attempt'|'recovery'|'redundant'|'unknown';
+  evidence:ObservationEvidence; observer:string; observer_version:string;
+  release?:ObservationRelease|null; protocol_digest?:string|null; protocol_ref?:string|null; instance_ref?:string|null;
+  association_evidence?:ObservationEvidence|null; adoption_branch?:'new_install'|'existing_install'|null;
+  acceptance_predicate_ref?:string|null; signed_result_evidence?:ObservationEvidence|null;
+  enrollment_timing_evidence?:ObservationEvidence|null;
+  source_channel?:'mcp_search'|'agent_entry'|'canonical_share'|'repository_release'|'direct'|'unknown'|null;
+  source_ref?:string|null; source_evidence?:ObservationEvidence|null; referrer_principal_ref?:string|null;
+  referrer_audience_class?:ObservationAudience|null; referrer_binding?:ObservationEvidence|null;referrer_external_status_evidence?:ObservationEvidence|null;
+  distinct_controller_evidence?:ObservationEvidence|null; publisher_principal_ref?:string|null;
+  /** Closed native finite vocabulary; unsupported application errors use UNCLASSIFIED. */
+  error_code?:string|null; active_execution_ms?:number|null; external_wait_ms?:number|null; calls?:number|null; tokens?:number|null;
+  cost?:{amount_microunits:number;unit:string;basis_ref:string}|null;
+  observation_end?:number|null; coverage?:'complete'|'lost'|'unknown'|null; run_kind?:'natural_agent'|'scripted'|'unknown'|null;
+  workflow_outcome?:ObservationOutcome|null; supersedes?:string|null;
+  client_ref?:string|null;client_version?:string|null;model_ref?:string|null;model_version?:string|null;
+  instruction_ref?:string|null;instruction_version?:string|null;variant_ref?:string|null;
+  source_release?:ObservationRelease|null;lineage_evidence?:ObservationEvidence|null;
+}
+/** Deliberate local observer attestation; not independent controller/truth verification. */
+export interface ExternalPrincipalAttestation {
+  attestation_id:string;principal_ref:string;binding_evidence_ref:string;external_status_evidence_ref:string;
+  observer:string;observer_version:string;statement:'observer_checked_external_principal_binding';
+  evidence_basis:'consented_controller_grouping'|'public_controller_evidence';
+}
+export interface AcquisitionAppendResult {
+  event_id:string;disposition:'APPENDED'|'DUPLICATE'|'CONFLICT';observed_at:number;payload_sha256:string;records:number;
+}
+export interface AcquisitionRecordedObservation {event:AcquisitionEvent;observed_at:number;payload_sha256:string;}
+export interface AcquisitionRecordedAttestation {attestation:ExternalPrincipalAttestation;observed_at:number;payload_sha256:string;}
+export interface AcquisitionScorecardWindow {from:number;to_exclusive:number;as_of:number;}
+export interface AcquisitionMetric {
+  id:string;value:unknown|null;numerator:number|null;denominator:number|null;
+  mature_cohort_size:number;pending:number;lost:number;unknown:number;details:unknown;
+}
+export interface AcquisitionScorecard {
+  definition_version:number;window:AcquisitionScorecardWindow;window_complete:boolean;snapshot_sha256:string;
+  visible_observations:number;excluded_synthetic_seed:number;unknown_audience_binding:number;
+  conflicting_events:number;metrics:AcquisitionMetric[];coverage_scope:string;
+}
+export interface AcquisitionStoredScorecard {generated_at:number;scorecard:AcquisitionScorecard;}
+/** Transient source bytes and minimized progress/read fields; never exported/stored as event fields. */
+export interface AcquisitionInstallObservation {
+  event:AcquisitionEvent;closure_json:string;bindings_json?:string|null;
+  expected_package_id:string;expected_package_version:string;expected_package_digest:string;expected_protocol_digest:string;
+  selected_instance_id:string;result_package_digest:string|null;result_protocol_digest:string;result_instance_id:string;
+  result_status:'SELECTED'|'ACTIVE'|'ACCEPTED';result_step_action_id:string|null;result_commit_hash:string|null;
+}
+export interface AcquisitionObservations {
+  append(event:AcquisitionEvent):Promise<AcquisitionAppendResult>;
+  attestExternalPrincipal(attestation:ExternalPrincipalAttestation):Promise<AcquisitionAppendResult>;
+  attestations():Promise<AcquisitionRecordedAttestation[]>;
+  export():Promise<AcquisitionRecordedObservation[]>;
+  snapshots():Promise<AcquisitionStoredScorecard[]>;
+  scorecard(window:AcquisitionScorecardWindow):Promise<AcquisitionStoredScorecard>;
+  recordCatalogResult(event:AcquisitionEvent,result:InspectedPublicPackage):Promise<AcquisitionAppendResult>;
+  recordInstallResult(input:AcquisitionInstallObservation):Promise<AcquisitionAppendResult>;
+  /** Caller supplies the selected instance from its signed read; accepted DTO alone does not prove task acceptance. */
+  recordActionResult(event:AcquisitionEvent,selectedInstanceId:string,resultInstanceId:string,result:SecureActionResult):Promise<AcquisitionAppendResult>;
+}
+/** Explicit absolute protected local path. No SDK operation creates an observer implicitly. */
+export declare function openAcquisitionObservations(options:{path:string;maxRecords?:number;maxStoreBytes?:number}):AcquisitionObservations;
