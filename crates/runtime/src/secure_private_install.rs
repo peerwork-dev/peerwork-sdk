@@ -819,6 +819,7 @@ pub(crate) struct ImportedHistoricalDirectBegin {
     pub issued_at_ms: u64,
     pub request_wire: Vec<u8>,
     pub commit_hash: String,
+    pub source_policy_hash: String,
     pub policy_hash: String,
     pub snapshot_json: String,
     pub protocol_digest: String,
@@ -1299,13 +1300,14 @@ impl SecurePrivatePackageInstall {
             || imported.grants_json.len() > 2 * 1024 * 1024
             || imported.snapshot_json.len() > 8192
             || imported.source_checkpoint_json.len() > 8192
-            || !digest(&imported.commit_hash) || !digest(&imported.policy_hash)
+            || !digest(&imported.commit_hash) || !digest(&imported.source_policy_hash)
+            || !digest(&imported.policy_hash)
             || !digest(&imported.protocol_digest) || !digest(&imported.root_package_digest)
         { return Err(PrivatePackageInstallError::Input); }
         let checkpoint = parse_wire_json_bounded(
             imported.source_checkpoint_json.as_bytes(), 32, 8192,
         ).map_err(|_| PrivatePackageInstallError::Input)?;
-        if scalar(&checkpoint, "policy_hash")? != imported.policy_hash {
+        if scalar(&checkpoint, "policy_hash")? != imported.source_policy_hash {
             return Err(PrivatePackageInstallError::Plan);
         }
         let request = parse_wire_json_bounded(&imported.request_wire, 64, 220_000)
