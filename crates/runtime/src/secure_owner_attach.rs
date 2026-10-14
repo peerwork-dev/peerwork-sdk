@@ -10983,7 +10983,7 @@ mod tests {
         assert_eq!(after_retry["sequence"], after["sequence"]);
     }
     #[test]
-    fn actual_service_reproves_exact_legacy_direct_install_begin_without_post() {
+    fn actual_service_imports_and_recovers_selected_direct_begin() {
         let _fault_guard = ATTACH_FAULT_TEST_LOCK.lock().unwrap();
         let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else { return; };
         let node = std::env::var("PEERWORK_NODE_BIN").unwrap_or_else(|_| "node".into());
