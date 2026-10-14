@@ -37,7 +37,8 @@ try {
       'direct-empty-disclosure-begin-before-post', 'direct-composition-begin-before-post',
       'direct-composition-end-applied-loss', 'direct-staged-package-begin-before-post',
       'direct-staged-package-end-applied-loss', 'direct-staged-package-page-before-post',
-    'direct-staged-package-page-applied-loss', 'direct-staged-package-completed-end'].includes(selected)) {
+    'direct-staged-package-page-applied-loss', 'direct-staged-package-completed-end',
+    'direct-implicit-begin-before-post', 'direct-implicit-end-applied-loss'].includes(selected)) {
       throw new Error('INSTALL_SETUP_MODE_INVALID');
     }
     for (const mode of selected ? [selected]
@@ -65,7 +66,7 @@ try {
       const checkpointOption = mode.startsWith('direct-checkpoint-');
       const normalizedOptions = /^(direct-disclosure-|direct-no-grants-|direct-empty-disclosure-)/.test(mode);
       const retainedStep = /^direct-(page|end)-/.exec(mode.replace(
-        /^direct-(checkpoint|disclosure|empty-disclosure|no-grants|composition|staged-package)-/, 'direct-'))?.[1];
+        /^direct-(checkpoint|disclosure|empty-disclosure|no-grants|composition|staged-package|implicit)-/, 'direct-'))?.[1];
       if (source.mode !== mode || source.pending_count !== (completed ? 0 : 1)
         || source.latest_structure_state !== (retainedStep
           ? retainedStep === 'end' && mode.endsWith('applied-loss') ? 'ACTIVE' : 'SEEDING'
@@ -99,6 +100,14 @@ try {
         || source.canonical_options_hash === source.intent_hash)) {
         throw new Error(`INSTALL_SETUP_${mode}_COMPOSITION`);
       }
+      if (mode.startsWith('direct-implicit-') && (source.compiler_equality !== true
+        || source.explicit_dependency_count !== 0 || source.original_dependencies_omitted !== true
+        || source.authenticated_dependency_count !== 1 || source.composition?.v !== 1
+        || source.composition.dependencies.length !== 1
+        || source.composition.source_digest !== source.source_digest
+        || source.canonical_options_hash === source.intent_hash || source.initial_sequence < 3)) {
+        throw new Error(`INSTALL_SETUP_${mode}_IMPLICIT_COMPOSITION`);
+      }
       if (mode.startsWith('direct-staged-package-') && (source.compiler_equality !== true
         || !Number.isSafeInteger(source.source_parts) || source.source_parts < 1
         || source.stage_markers_cleared !== true || source.package_source?.v !== 1
@@ -125,6 +134,10 @@ try {
           stage_markers_cleared: true } : {}),
         ...(mode.startsWith('direct-composition-') ? { compiler_equality: true,
           explicit_dependency_count: source.explicit_dependency_count,
+          original_options_hash_distinct: true, source_digest: source.source_digest,
+          protocol_digest: source.protocol_digest } : {}),
+        ...(mode.startsWith('direct-implicit-') ? { compiler_equality: true,
+          original_dependencies_omitted: true, authenticated_dependency_count: 1,
           original_options_hash_distinct: true, source_digest: source.source_digest,
           protocol_digest: source.protocol_digest } : {}),
         selected_epoch: source.selected_epoch ?? null,
