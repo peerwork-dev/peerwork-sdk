@@ -2946,7 +2946,7 @@ impl SecureHistoricalOwnerAttach {
             error
         })?;
         if verified.commit_hash != plan.manifest.original_commit_hash
-            || verified.imported.command_id != plan.manifest.command_id
+            || pending.command_id != plan.manifest.command_id
             || verified.imported.instance_id != plan.manifest.instance_id
             || !replayed.replay().contains_checkpoint(
                 row.source_sequence, row.source_head.as_deref(), &row.source_policy_hash,
