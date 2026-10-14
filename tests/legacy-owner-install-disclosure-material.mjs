@@ -17,7 +17,7 @@ export async function createLegacyReadableInstallMaterial(referenceRoot) {
       required: ['label', 'title', 'secret'], max_bytes: 1024, protection: { v: 1, fields: {
         label: { protection: 'server_readable', type: 'opaque' },
         title: { protection: 'server_readable', type: 'opaque' },
-        secret: { protection: 'e2ee' },
+        secret: { protection: 'e2ee', type: 'string' },
       } } } },
     actions: [{ id: 'set', reads: [], writes: [['count']],
       revisionEffects: { control: true, contentEntities: [] }, variants: [{ when: [], effects: [
