@@ -2483,10 +2483,14 @@ mod tests {
             &read_path, &client, &identity, &workspace, &authority,
         )
         .unwrap();
+        client.transport().fail_one_journal_get_and_record_proofs();
         let progress = read
             .fetch_next(&client, &identity, &CancellationToken::new())
             .await
             .unwrap();
+        let proofs = client.transport().take_journal_get_probe_proofs();
+        assert_eq!(proofs.len(), 2, "only one journal GET network retry");
+        assert_ne!(proofs[0], proofs[1], "retry must use a fresh signed read proof");
         assert_eq!(progress.pages, 1);
         assert_eq!(progress.saved_commits, 50);
         assert_eq!(progress.checkpoint_sequence, Some(51));
@@ -2615,7 +2619,12 @@ mod tests {
             Err(crate::secure_journal_read::JournalReadError::ServerRejected(401))
         ));
         assert_eq!(wrong.progress().unwrap().pages, 0);
-        assert_eq!(counts().await, paginated, "signed reads must not submit");
+        let after_reads = counts().await;
+        for field in ["commits", "head_sequence", "head_hash"] {
+            assert_eq!(after_reads[field], paginated[field], "signed reads must not submit");
+        }
+        assert!(after_reads["journal_gets"].as_u64().unwrap()
+            > paginated["journal_gets"].as_u64().unwrap());
     }
 
     #[tokio::test]

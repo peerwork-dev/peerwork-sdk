@@ -390,6 +390,10 @@ impl SecureJournalRead {
         }
         let after = last.and_then(|p| p.next).unwrap_or(0);
         let mut request_limit = 50;
+        // A journal GET is idempotent and the page is not saved until its
+        // response validates. Retry one incomplete network GET with a fresh
+        // signed read proof; persistent failures still surface to the caller.
+        let mut retried_network = false;
         let response = loop {
             let path =
                 journal_path_with_limit(&self.document.workspace_id, after, last, request_limit);
@@ -407,6 +411,9 @@ impl SecureJournalRead {
                 Ok(response) => break response,
                 Err(TransportError::ResponseTooLarge) if request_limit > 1 => {
                     request_limit = (request_limit + 1) / 2;
+                }
+                Err(TransportError::Network) if !retried_network && !cancel.is_cancelled() => {
+                    retried_network = true;
                 }
                 Err(error) => return Err(error.into()),
             }

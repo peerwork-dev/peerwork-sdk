@@ -62,6 +62,8 @@ pub struct ExactHttpResponse {
 pub struct HttpTransport {
     origin: Url,
     client: Client,
+    #[cfg(test)]
+    journal_get_probe: std::sync::Mutex<Option<Vec<String>>>,
 }
 
 impl HttpTransport {
@@ -96,7 +98,22 @@ impl HttpTransport {
             builder = builder.add_root_certificate(cert);
         }
         let client = builder.build().map_err(|_| TransportError::Setup)?;
-        Ok(Self { origin, client })
+        Ok(Self {
+            origin,
+            client,
+            #[cfg(test)]
+            journal_get_probe: std::sync::Mutex::new(None),
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_one_journal_get_and_record_proofs(&self) {
+        *self.journal_get_probe.lock().unwrap() = Some(Vec::new());
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_journal_get_probe_proofs(&self) -> Vec<String> {
+        self.journal_get_probe.lock().unwrap().take().unwrap()
     }
 
     pub(crate) fn trusted_origin(&self) -> &str {
@@ -246,6 +263,15 @@ impl HttpTransport {
             return Err(TransportError::InvalidOrigin);
         }
         let url = self.endpoint(path)?;
+        #[cfg(test)]
+        {
+            if let Some(proofs) = self.journal_get_probe.lock().unwrap().as_mut() {
+                proofs.push(peerwork_core::crypto::sha256_hex(read_proof.as_bytes()));
+                if proofs.len() == 1 {
+                    return Err(TransportError::Network);
+                }
+            }
+        }
         let send = self
             .client
             .get(url)
