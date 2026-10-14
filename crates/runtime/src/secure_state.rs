@@ -279,7 +279,11 @@ fn state_exists(path: &Path) -> Result<bool, SecureStateError> {
 /// Classify an absent entry only after its existing parent passes the ordinary
 /// private-parent checks. This does not create the entry or any lock file.
 pub(crate) fn missing_in_private_parent(path: &Path) -> bool {
-    check_private_parent(path).is_ok()
+    #[cfg(windows)]
+    let parent_valid = crate::windows_fs::private_existing_parent(path).is_ok();
+    #[cfg(not(windows))]
+    let parent_valid = check_private_parent(path).is_ok();
+    parent_valid
         && matches!(fs::symlink_metadata(path),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound)
 }

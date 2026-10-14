@@ -221,8 +221,13 @@ impl SecureOwnerWorkspaceCreate {
     fn open_identity(&self) -> Result<KernelIdentity, SecureOwnerCreateError> {
         // A missing profile directory has no native identity yet. Preserve
         // protection errors when its parent cannot be validated as private.
-        if missing_in_private_parent(&self.config.state_dir) {
-            return Err(SecureOwnerCreateError::IdentityMissing);
+        if matches!(fs::symlink_metadata(&self.config.state_dir),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound) {
+            return Err(if missing_in_private_parent(&self.config.state_dir) {
+                SecureOwnerCreateError::IdentityMissing
+            } else {
+                SecureOwnerCreateError::Identity
+            });
         }
         KernelIdentity::open(&self.identity_path()).map_err(|error| match error {
             KernelIdentityError::NotFound => SecureOwnerCreateError::IdentityMissing,
@@ -1290,6 +1295,21 @@ mod tests {
         let changed = access.operations().unwrap_err();
         assert!(matches!(changed, SecureOwnerCreateError::Identity));
         assert_eq!(changed.code(), "IDENTITY_CHANGED");
+    }
+
+    #[test]
+    fn owner_missing_nested_state_does_not_create_parent() {
+        let root = crate::test_support::protected_test_dir();
+        let parent = root.path().join("absent-parent");
+        let access = SecureOwnerWorkspaceCreate::new(SecureOwnerCreateConfig {
+            origin: "http://127.0.0.1:1/".into(), state_dir: parent.join("absent-state"),
+            allow_loopback_http: true, max_replay_artifact_bytes: 64 * 1024 * 1024,
+        });
+        assert!(matches!(access.operations(), Err(SecureOwnerCreateError::Identity)));
+        assert!(!parent.exists());
+        assert!(matches!(access.read_workspace_json("selected-workspace", &CancellationToken::new()),
+            Err(SecureOwnerCreateError::Identity)));
+        assert!(!parent.exists());
     }
 
     #[test]

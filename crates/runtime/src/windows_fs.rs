@@ -252,6 +252,17 @@ pub(crate) fn private_parent(path: &Path) -> io::Result<()> {
     create_private_directory(parent)
 }
 
+/// Validate an existing protected parent without creating missing directories.
+pub(crate) fn private_existing_parent(path: &Path) -> io::Result<()> {
+    if !path.is_absolute() {
+        return Err(denied());
+    }
+    let parent = path.parent().ok_or_else(denied)?;
+    reject_reparse_ancestors(parent)?;
+    let _parent = open_nofollow(parent, true, 0, true)?;
+    Ok(())
+}
+
 /// Creates a dedicated state directory with a protected current-user DACL.
 /// Existing directories must pass the same handle-based review.
 pub fn create_private_directory(path: &Path) -> io::Result<()> {
