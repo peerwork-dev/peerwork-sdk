@@ -24,9 +24,11 @@ for relative, key in (
 fixture = json.loads(Path(os.environ["PEERWORK_TEST_HOST_FIXTURE_JSON"]).read_text())
 origin = fixture["origin"]
 assert origin.startswith("http://127.0.0.1:") and STATE.stat().st_mode & 0o077 == 0
-assert len(fixture["sources"]) == 2
-assert {item["mode"] for item in fixture["sources"]} == {
-    "direct-completed-end", "direct-end-before-post"}
+scope = fixture["async_scope"]
+assert scope in {"two-cases", "retained-only"}
+expected_modes = {"direct-end-before-post"} if scope == "retained-only" else {"direct-completed-end", "direct-end-before-post"}
+assert len(fixture["sources"]) == len(expected_modes)
+assert {item["mode"] for item in fixture["sources"]} == expected_modes
 assert all(item["interface"] == "python-async" for item in fixture["sources"])
 database = STATE / "control.sqlite"
 request_log = Path(fixture["request_log"])
@@ -93,6 +95,9 @@ async def cancel_after_applied_end(owner, item, attach_id):
         else:
             raise AssertionError("cancelled caller received a recovery result")
         assert task.cancelled()
+        print(json.dumps({"phase":"after-apply-cancellation", "mode":item["mode"],
+            "caller":"CancelledError", "service_commits":service_count(item["workspace_id"]),
+            "selected_command_count":service_count(item["workspace_id"], item["pending_command_id"])}), flush=True)
     finally:
         if not task.done():
             task.cancel()
@@ -159,7 +164,7 @@ async def main():
             assert history[0]["status"] == "ATTACHED_RESTRICTED"
             assert history[0]["pending_direct_install_command_id"] == item["pending_command_id"]
             resumed = await fresh.resume_attachment_async(attach_id)
-            assert resumed["status"] == "ATTACHED_RESTRICTED" and resumed["sequence"] == 3
+            assert resumed == history[0] and resumed["status"] == "ATTACHED_RESTRICTED" and resumed["sequence"] == 2
             progress = await fresh.recover_pending_direct_install_packet_async(attach_id, item["pending_command_id"])
             assert progress["status"] == "ATTACHED" and progress["pending_direct_install_status"] == "ACCEPTED"
             assert service_count(workspace, item["pending_command_id"]) == 1
@@ -184,7 +189,7 @@ async def main():
         print(json.dumps({"interface":"python-async", "mode":item["mode"],
             "status":progress["status"], "sequence":3, "native_commit_posts":0 if completed else 1,
             "source_removed":not completed, "cancellation_disposition":"not cancelled" if completed else "CancelledError after selected END applied; fresh exact recovery accepted"}), flush=True)
-    print("installed Python async completed-map and cancelled source-gone END recovery PASS", flush=True)
+    print(json.dumps({"result":"PASS", "scope":scope, "installed_async_cases":len(expected_modes)}), flush=True)
 
 
 asyncio.run(main())

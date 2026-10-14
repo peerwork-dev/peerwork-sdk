@@ -141,7 +141,9 @@ try:
     origin = json.loads(first)["origin"]
     database = state / "control.sqlite"
     exported = []
-    modes = ("direct-completed-end", "direct-end-before-post")
+    async_scope = os.environ.get("PEERWORK_TEST_ASYNC_SCOPE", "two-cases")
+    assert async_scope in {"two-cases", "retained-only"}
+    modes = ("direct-end-before-post",) if async_scope == "retained-only" else ("direct-completed-end", "direct-end-before-post")
     scenarios = [("python-async", mode) for mode in modes]
     for interface, mode in scenarios:
         old_dir = state / f"{interface}-{mode}"
@@ -196,7 +198,7 @@ console.log(JSON.stringify({method:'POST',path:pending.path,body_sha256:await se
             item[key] = str(guest_state / path.relative_to(state))
         exported.append(item)
     (state / "host-fixture.json").write_text(json.dumps({"origin": origin, "sources": exported,
-        "request_log": str(guest_state / "request-observer.jsonl"),
+        "async_scope": async_scope, "request_log": str(guest_state / "request-observer.jsonl"),
         "fixture_request_lines": len(request_log.read_text().splitlines())}))
     print(json.dumps({"fixture": "host", "scenarios":
                       [[item["interface"], item["mode"]] for item in exported],
