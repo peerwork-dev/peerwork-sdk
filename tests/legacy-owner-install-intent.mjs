@@ -8,7 +8,8 @@ import { pathToFileURL } from 'node:url';
 const [origin, sourceDir, referenceRoot, mode] = process.argv.slice(2);
 if (!origin || !sourceDir || !referenceRoot
   || !['begin-applied-loss', 'begin-before-post', 'completed-end',
-    'direct-begin-applied-loss', 'direct-begin-before-post'].includes(mode)) {
+    'direct-begin-applied-loss', 'direct-begin-before-post',
+    'direct-two-workspace-before-post'].includes(mode)) {
   throw new Error('INSTALL_INTENT_TEST_INPUT');
 }
 mkdirSync(sourceDir, { recursive: true, mode: 0o700 });
@@ -57,6 +58,93 @@ try {
     manifest = discussionPreset();
     manifest.name = 'example.native-install-intent.v1';
   }
+  if (mode === 'direct-two-workspace-before-post') {
+    const otherCreated = await agent.create('Other pending install intent', 'PRIVATE', { structure: true });
+    const otherWorkspaceId = otherCreated.workspaceId;
+    const otherInitial = await agent.journal(otherWorkspaceId);
+    if (otherInitial.policy.payload.v !== 3
+      || otherInitial.policy.payload.visibility !== 'PRIVATE'
+      || otherInitial.structure?.state !== 'ACTIVE') {
+      throw new Error('INSTALL_INTENT_OTHER_INITIAL_POLICY');
+    }
+    const makeOptions = instanceId => ({
+      instance_id: instanceId, entrypoint: 'migrated_discussion', manifest,
+      grants: [{ actor_id: agent.identity.actorId, actions: ['discussion.post'],
+        protocol_roles: ['CONTRIBUTOR'], capabilities: ['POST'] }],
+    });
+    const instanceId = randomBytes(32).toString('base64url');
+    const otherInstanceId = randomBytes(32).toString('base64url');
+    const options = makeOptions(instanceId);
+    const otherOptions = makeOptions(otherInstanceId);
+    const resolved = await resolveProtocolInstall(initial, options, []);
+    const otherResolved = await resolveProtocolInstall(otherInitial, otherOptions, []);
+    writeFileSync(optionsPath, JSON.stringify(options), { mode: 0o600, flag: 'wx' });
+    const originalRequest = agent.request.bind(agent);
+    const interrupted = new Set();
+    agent.request = async (path, requestOptions) => {
+      for (const id of [workspaceId, otherWorkspaceId]) {
+        if (requestOptions?.method === 'POST'
+          && path === `/api/workspace/v1/secure/workspaces/${id}/commits`
+          && !interrupted.has(id)) {
+          interrupted.add(id);
+          throw new Error('TEST_STOP_BEFORE_INSTALL_BEGIN_POST');
+        }
+      }
+      return originalRequest(path, requestOptions);
+    };
+    try {
+      for (const [id, selected] of [[workspaceId, options], [otherWorkspaceId, otherOptions]]) {
+        try {
+          await agent.installProtocol(id, selected);
+          throw new Error('TEST_INSTALL_NOT_INTERRUPTED');
+        } catch (error) {
+          if (error?.message !== 'TEST_STOP_BEFORE_INSTALL_BEGIN_POST') throw error;
+        }
+      }
+    } finally {
+      agent.request = originalRequest;
+    }
+    const entries = Object.entries(agent.state.pending);
+    const map = agent.state.protocol_install_intents ?? {};
+    const selected = entries.find(([, row]) => row.path ===
+      `/api/workspace/v1/secure/workspaces/${workspaceId}/commits`);
+    const other = entries.find(([, row]) => row.path ===
+      `/api/workspace/v1/secure/workspaces/${otherWorkspaceId}/commits`);
+    if (interrupted.size !== 2 || entries.length !== 2 || Object.keys(map).length !== 2
+      || !selected || !other || selected[0] === other[0]
+      || map[`${workspaceId}.${instanceId}`] !== resolved.intentHash
+      || map[`${otherWorkspaceId}.${otherInstanceId}`] !== otherResolved.intentHash
+      || selected[0] !== selected[1].body?.commit?.payload?.command_id
+      || other[0] !== other[1].body?.commit?.payload?.command_id
+      || selected[1].body?.commit?.payload?.action_id !== 'secure.structure.begin'
+      || other[1].body?.commit?.payload?.action_id !== 'secure.structure.begin') {
+      throw new Error('INSTALL_INTENT_TWO_WORKSPACE_SHAPE');
+    }
+    const latest = await agent.journal(workspaceId);
+    const otherLatest = await agent.journal(otherWorkspaceId);
+    if (latest.checkpoint.sequence !== initial.checkpoint.sequence
+      || otherLatest.checkpoint.sequence !== otherInitial.checkpoint.sequence) {
+      throw new Error('INSTALL_INTENT_TWO_WORKSPACE_POSTED');
+    }
+    process.stdout.write(JSON.stringify({
+      mode, workspace_id: workspaceId, other_workspace_id: otherWorkspaceId,
+      owner_actor_id: agent.identity.actorId, owner_key_id: agent.identity.keyId,
+      state_path: statePath, pem_path: pemPath, intent_db_path: intentDbPath,
+      options_path: optionsPath, material_path: materialPath,
+      instance_id: instanceId, intent_key: `${workspaceId}.${instanceId}`,
+      intent_hash: resolved.intentHash, protocol_digest: resolved.digest,
+      entrypoint: options.entrypoint, initial_sequence: initial.checkpoint.sequence,
+      latest_sequence: latest.checkpoint.sequence,
+      latest_structure_state: latest.structure?.state ?? null,
+      pending_count: entries.length, pending_command_id: selected[0],
+      pending_commit_hash: await secureHash(selected[1].body.commit),
+      other_instance_id: otherInstanceId, other_intent_hash: otherResolved.intentHash,
+      other_pending_command_id: other[0],
+      other_pending_commit_hash: await secureHash(other[1].body.commit),
+      other_initial_sequence: otherInitial.checkpoint.sequence,
+      other_latest_sequence: otherLatest.checkpoint.sequence,
+    }) + '\n');
+  } else {
   const instanceId = randomBytes(32).toString('base64url');
   const options = {
     instance_id: instanceId, entrypoint: 'migrated_discussion', manifest,
@@ -151,6 +239,7 @@ try {
     pending_count: pending.length, pending_command_id: selected?.[0] ?? null,
     pending_commit_hash: selected ? await secureHash(selected[1].body.commit) : null,
   }) + '\n');
+  }
 } finally {
   agent.close();
 }

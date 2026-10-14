@@ -6323,20 +6323,41 @@ fn parse_pending_direct_install_begin(
     if !valid_token(selected_command_id) { return Err(invalid()); }
     let Some(WireValue::Object(intent_rows)) = intents else { return Err(invalid()); };
     let Some(WireValue::Object(pending_rows)) = pending else { return Err(invalid()); };
-    if intent_rows.len() != 1 || pending_rows.len() != 1 { return Err(invalid()); }
-    let (key_units, hash_value) = &intent_rows[0];
-    let key = String::from_utf16(key_units).map_err(|_| invalid())?;
-    let instance_id = key.strip_prefix(&format!("{}.", input.workspace_id))
-        .filter(|id| valid_token(id)).ok_or_else(invalid)?.to_owned();
+    let selected_prefix = format!("{}.", input.workspace_id);
+    let mut selected_intent = None;
+    for (key_units, hash_value) in intent_rows {
+        let key = String::from_utf16(key_units).map_err(|_| invalid())?;
+        if let Some(instance_id) = key.strip_prefix(&selected_prefix) {
+            if !valid_token(instance_id) || selected_intent.is_some() {
+                return Err(invalid());
+            }
+            selected_intent = Some((instance_id.to_owned(), hash_value));
+        }
+    }
+    let (instance_id, hash_value) = selected_intent.ok_or_else(invalid)?;
     let intent_hash = hash_value.as_string()
         .filter(|value| valid_digest(value)).ok_or_else(invalid)?;
-    let (id_units, row) = &pending_rows[0];
-    let command_id = String::from_utf16(id_units).map_err(|_| invalid())?;
-    if command_id != selected_command_id || row.object_len() != Some(2) {
-        return Err(invalid());
+    let selected_path = format!(
+        "/api/workspace/v1/secure/workspaces/{}/commits", input.workspace_id,
+    );
+    let mut selected_pending = None;
+    for (id_units, row) in pending_rows {
+        let id = String::from_utf16(id_units).map_err(|_| invalid())?;
+        if id == selected_command_id {
+            if selected_pending.is_some() { return Err(invalid()); }
+            selected_pending = Some(row);
+        } else if row.get("path").and_then(WireValue::as_string).as_deref()
+            == Some(selected_path.as_str()) {
+            // A second packet for the selected workspace needs its own exact
+            // disposition; never infer that the caller selected it too.
+            return Err(invalid());
+        }
     }
+    let row = selected_pending.ok_or_else(invalid)?;
+    let command_id = selected_command_id.to_owned();
+    if row.object_len() != Some(2) { return Err(invalid()); }
     let path = row.get("path").and_then(WireValue::as_string).ok_or_else(invalid)?;
-    if path != format!("/api/workspace/v1/secure/workspaces/{}/commits", input.workspace_id) {
+    if path != selected_path {
         return Err(invalid());
     }
     let body = row.get("body").ok_or_else(invalid)?;
@@ -11082,9 +11103,16 @@ mod tests {
         let oracle = rusqlite::Connection::open_with_flags(
             root.path().join("control.sqlite"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         ).unwrap();
+        let selected_mode = std::env::var("PEERWORK_DIRECT_INSTALL_MODE").ok();
+        assert!(selected_mode.as_deref().is_none_or(|mode| [
+            "direct-begin-applied-loss", "direct-begin-before-post",
+            "direct-two-workspace-before-post",
+        ].contains(&mode)));
         for (name, expected_applied) in [
             ("direct-begin-applied-loss", true), ("direct-begin-before-post", false),
+            ("direct-two-workspace-before-post", false),
         ] {
+            if selected_mode.as_deref().is_some_and(|mode| mode != name) { continue; }
             let output = Command::new(&node).arg(&helper).arg(origin)
                 .arg(root.path().join(name)).arg(&reference_root).arg(name)
                 .output().unwrap();
@@ -11096,6 +11124,17 @@ mod tests {
                 "SELECT count(*) FROM secure_commits WHERE workspace_id=?1", [workspace],
                 |row| row.get(0),
             ).unwrap() };
+            let other_workspace = fixture["other_workspace_id"].as_str();
+            let other_count = || -> Option<i64> { other_workspace.map(|workspace| oracle.query_row(
+                "SELECT count(*) FROM secure_commits WHERE workspace_id=?1", [workspace],
+                |row| row.get(0),
+            ).unwrap()) };
+            let other_before = other_count();
+            if other_workspace.is_some() {
+                assert_eq!(other_before, Some(1));
+                assert_eq!(fixture["pending_count"].as_u64(), Some(2));
+                assert_ne!(fixture["other_pending_command_id"], fixture["pending_command_id"]);
+            }
             assert_eq!(count(), if expected_applied { 2 } else { 1 });
             let input = HistoricalOwnerAttachInput {
                 workspace_id: workspace.into(),
@@ -11273,6 +11312,21 @@ mod tests {
                 &loaded.intent_backup_path,
             ).unwrap(), plan.ts_intent_sha256);
             drop(loaded);
+            if let Some(other_workspace) = other_workspace {
+                let protected = SecureStateStore::open(&config.state_dir
+                    .join("owner-direct-install-plans").join(&plan.plan_id)
+                    .join("source-state.state")).unwrap();
+                let bytes = protected.read_exact_secret().unwrap().unwrap();
+                drop(protected);
+                let state = parse_wire_json_bounded(&bytes, 48, MAX_SOURCE).unwrap();
+                let other_key = format!("{}.{}", other_workspace,
+                    fixture["other_instance_id"].as_str().unwrap());
+                assert_eq!(state.get("protocol_install_intents").unwrap()
+                    .get(&other_key).and_then(WireValue::as_string).as_deref(),
+                    fixture["other_intent_hash"].as_str());
+                assert!(state.get("pending").unwrap()
+                    .get(fixture["other_pending_command_id"].as_str().unwrap()).is_some());
+            }
             if !expected_applied {
                 let stored_material = SecureStateStore::open(&config.state_dir
                     .join("owner-direct-install-plans").join(&plan.plan_id)
@@ -11338,6 +11392,7 @@ mod tests {
             ).unwrap();
             assert_eq!(repeated.pending_direct_install_status.as_deref(), Some("ACCEPTED"));
             assert_eq!(count(), after_completion);
+            assert_eq!(other_count(), other_before);
         }
     }
 }
