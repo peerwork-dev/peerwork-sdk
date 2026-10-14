@@ -28,14 +28,17 @@ try {
     // The original three modes have a separate frozen setup result. Exercise
     // only the newly added closure-backed direct subset in this successor.
     const selected = process.env.PEERWORK_INSTALL_SETUP_MODE;
-    if (selected && !['direct-completed-end'].includes(selected)) {
+    if (selected && !['direct-completed-end', 'complete-action', 'complete-rotate'].includes(selected)) {
       throw new Error('INSTALL_SETUP_MODE_INVALID');
     }
     for (const mode of selected ? [selected]
       : ['direct-begin-applied-loss', 'direct-begin-before-post']) {
       const sourceDir = join(testRoot, mode);
       mkdirSync(sourceDir, { mode: 0o700 });
-      const child = spawn(process.execPath, [join(sdkRoot, 'tests/legacy-owner-install-intent.mjs'),
+      const later = mode.startsWith('complete-');
+      const child = spawn(process.execPath, [join(sdkRoot, later
+        ? 'tests/legacy-owner-install-intent-later.mjs'
+        : 'tests/legacy-owner-install-intent.mjs'),
         ready.origin, sourceDir, referenceRoot, mode], { stdio: ['ignore', 'pipe', 'pipe'] });
       let stdout = '';
       let stderr = '';
@@ -49,14 +52,16 @@ try {
         throw new Error(`INSTALL_SETUP_${mode}_FAILED: rc=${code} stderr_sha256=${createHash('sha256').update(stderr).digest('hex')}`);
       }
       const source = JSON.parse(stdout);
-      if (source.mode !== mode || source.pending_count !== (mode.endsWith('completed-end') ? 0 : 1)
+      const completed = mode.endsWith('completed-end') || later;
+      if (source.mode !== mode || source.pending_count !== (completed ? 0 : 1)
         || source.latest_structure_state !== (mode.endsWith('applied-loss') ? 'SEEDING' : 'ACTIVE')
-        || (mode.startsWith('direct-') && !source.material_path)) {
+        || ((mode.startsWith('direct-') || later) && !source.material_path)
+        || (later && (source.selected_sequence !== 3 || source.latest_sequence !== 4))) {
         throw new Error(`INSTALL_SETUP_${mode}_SHAPE`);
       }
       const count = db.prepare('SELECT count(*) AS count FROM secure_commits WHERE workspace_id=?').get(source.workspace_id).count;
       if (count !== source.latest_sequence) throw new Error(`INSTALL_SETUP_${mode}_REPLAY_COUNT`);
-      if (!mode.endsWith('completed-end')) {
+      if (!completed) {
         const accepted = db.prepare('SELECT count(*) AS count FROM secure_commits WHERE workspace_id=? AND command_id=?')
           .get(source.workspace_id, source.pending_command_id).count;
         if (accepted !== (mode.endsWith('applied-loss') ? 1 : 0)) throw new Error(`INSTALL_SETUP_${mode}_ACCEPTANCE`);
@@ -64,7 +69,9 @@ try {
       process.stdout.write(JSON.stringify({ mode, pending_count: source.pending_count,
         initial_sequence: source.initial_sequence, latest_sequence: source.latest_sequence,
         structure_state: source.latest_structure_state, commit_count: count,
-        intent_hash_bound: true }) + '\n');
+        intent_hash_bound: true,
+        selected_epoch: source.selected_epoch ?? null,
+        latest_epoch: source.latest_epoch ?? null }) + '\n');
     }
   } finally { db.close(); }
 } finally {
