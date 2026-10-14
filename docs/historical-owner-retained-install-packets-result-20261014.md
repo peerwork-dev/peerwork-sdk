@@ -12,7 +12,6 @@ Each native retained invocation sets `PEERWORK_REFERENCE_ROOT=/root/workdir/mess
 | --- | --- | --- | --- |
 | direct-page-before-post | 21589 / 62d7fe | PASS 1/1, 148.87s | Original options/packet proof, wrong command/options refusal before row/lifecycle/effect, PREPARED cancellation, all original source exports moved, fresh sourcegone resume with no POST, exact selected saved request/ID submitted once, remaining record/head snapshot steps, signed ACTIVE instance/protocol/entrypoint readback, same-ID idempotence. |
 | direct-end-applied-loss | 30879 / 55977d | PASS 1/1, 112.17s | Genuine retained END exact signed reconciliation, same pre-PREPARED negatives/protected sourcegone resume, signed ACTIVE installed readback and same-ID idempotence with no additional service commit. |
-
 | direct-page-applied-loss | 58737 / a877bc | PASS 1/1, 161.57s | Exact applied PAGE reconciliation, protected sourcegone attach/resume with no POST, original random PAGE ID occurs once, remaining snapshot PAGE/END completion and signed installed readback/idempotence. |
 | direct-end-before-post | 69650 / 79e00b | PASS 1/1, 143.75s | Exact absent END request reused at its signed predecessor after protected sourcegone resume, original selected random ID occurs once, installed readback and same-ID idempotence. |
 
