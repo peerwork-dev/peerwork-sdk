@@ -216,7 +216,7 @@ try {
       fields: emptyDisclosureOption ? [] : ['title', 'label'] }] } : {}),
     ...(checkpointOption ? { expected_checkpoint: structuredClone(initial.checkpoint) } : {}),
   };
-  const resolved = await resolveProtocolInstall(initial, options,
+  const resolved = await resolveProtocolInstall(stagedPackage?.journal ?? initial, options,
     disclosureOption || emptyDisclosureOption || stagedPackageOption ? agent.transport.discovery.protocol_features ?? [] : []);
   if (checkpointOption && (!secureEqual(resolved.expectedCheckpoint, initial.checkpoint)
     || !normalizedOptions && await secureHash(options) !== resolved.intentHash)) {
