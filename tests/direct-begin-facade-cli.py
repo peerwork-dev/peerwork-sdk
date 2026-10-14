@@ -32,7 +32,7 @@ with tempfile.TemporaryDirectory() as directory:
                               str(input_file), selected, *suffix],
                              text=True, capture_output=True, timeout=10)
         assert run.returncode != 0 and not run.stdout
-        assert json.loads(run.stderr)["code"] == "INPUT_INVALID"
+        assert json.loads(run.stderr)["code"] == "INPUT_INVALID", {"verb": verb, "code": json.loads(run.stderr)["code"]}
         assert not state.exists()
         assert "PRIVATE KEY" not in run.stderr and material.read_text() not in run.stderr
     refuse("owner-direct-begin-inspect", {**base,
@@ -41,10 +41,22 @@ with tempfile.TemporaryDirectory() as directory:
     refuse("owner-direct-begin-attach", {**base,
         "recover_pending_action": True}, digest, str(options), str(material))
     refuse("owner-direct-begin-attach", base, "", str(options), str(material))
+    for family in ("owner-direct-packet", "owner-direct-completed"):
+        refuse(family + "-inspect", {**base, "recover_pending_action": True}, str(options), str(material))
+        refuse(family + "-attach", {**base, "expected_ts_state_digest": digest}, digest, str(options), str(material))
+        refuse(family + "-attach", base, "", str(options), str(material))
+    for verb in ("owner-direct-begin-recover", "owner-direct-packet-recover"):
+        result = subprocess.run([str(binary), "secure", verb, str(config), "", ""],
+            text=True, capture_output=True, timeout=10)
+        assert result.returncode != 0 and not result.stdout
+        assert json.loads(result.stderr)["code"] == "INPUT_INVALID", {"verb": verb, "code": json.loads(result.stderr)["code"]}
+        assert not state.exists()
     help_result = subprocess.run([str(binary), "help"], text=True,
                                  capture_output=True, timeout=10, check=True)
     usage = json.loads(help_result.stdout)["usage"]
     for verb in ("owner-direct-begin-inspect", "owner-direct-begin-attach",
-                 "owner-direct-begin-recover"):
+                 "owner-direct-begin-recover", "owner-direct-packet-inspect",
+                 "owner-direct-packet-attach", "owner-direct-packet-recover",
+                 "owner-direct-completed-inspect", "owner-direct-completed-attach"):
         assert verb in usage
-print("CLI direct BEGIN typed preflight and help PASS")
+print("CLI direct packet aliases/completed typed preflight and help PASS")

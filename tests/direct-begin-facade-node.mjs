@@ -46,6 +46,21 @@ await owner.recoverPendingDirectInstallBegin('t'.repeat(43), selected);
 assert.equal(calls.at(-1)[0], 'direct_begin_recover');
 assert.equal(calls.at(-1)[3], selected);
 assert.equal(calls.at(-1)[4], 't'.repeat(43));
+assert.equal(owner.inspectPendingDirectInstallPacket, owner.inspectPendingDirectInstallBegin);
+assert.equal(owner.attachPendingDirectInstallPacket, owner.attachPendingDirectInstallBegin);
+assert.equal(owner.recoverPendingDirectInstallPacket, owner.recoverPendingDirectInstallBegin);
+await owner.inspectPendingDirectInstallPacket(input, selected, options, material);
+await owner.attachPendingDirectInstallPacket(input, selected, digest, options, material);
+await owner.recoverPendingDirectInstallPacket('t'.repeat(43), selected);
+assert.deepEqual(calls.slice(-3).map(row => row[0]), ['direct_begin_inspect', 'direct_begin_attach', 'direct_begin_recover']);
+await owner.inspectCompletedDirectInstall(input, selected, options, material);
+assert.equal(calls.at(-1)[0], 'direct_completed_inspect');
+assert.equal(JSON.parse(calls.at(-1)[2]).selected_instance_id, selected);
+assert.equal(JSON.parse(calls.at(-1)[2]).expected_ts_state_digest, null);
+assert.ok(!('selected_command_id' in JSON.parse(calls.at(-1)[2])));
+await owner.attachCompletedDirectInstall(input, selected, digest, options, material);
+assert.equal(calls.at(-1)[0], 'direct_completed_attach');
+assert.equal(JSON.parse(calls.at(-1)[2]).expected_ts_state_digest, digest);
 const before = calls.length;
 for (const invalid of [
   { ...input, unsupported: true },
@@ -54,9 +69,14 @@ for (const invalid of [
 ]) assert.throws(() => owner.attachPendingDirectInstallBegin(invalid, selected, digest, options, material), TypeError);
 assert.throws(() => owner.attachPendingDirectInstallBegin(input, selected, '', options, material), TypeError);
 assert.throws(() => owner.inspectPendingDirectInstallBegin(input, selected, '', material), TypeError);
+assert.throws(() => owner.attachCompletedDirectInstall(input, selected, '', options, material), TypeError);
+assert.throws(() => owner.inspectCompletedDirectInstall(input, '', options, material), TypeError);
+assert.throws(() => owner.inspectCompletedDirectInstall({ ...input, expectedTsStateDigest: digest }, selected, options, material), TypeError);
 assert.equal(calls.length, before);
 const controller = new AbortController();
 controller.abort();
 await owner.inspectPendingDirectInstallBegin(input, selected, options, material, { signal: controller.signal });
 assert.equal(calls.at(-1)[5].cancelled, true);
-console.log('Node direct BEGIN facade routing, preflight and AbortSignal PASS');
+await owner.inspectCompletedDirectInstall(input, selected, options, material, { signal: controller.signal });
+assert.equal(calls.at(-1)[5].cancelled, true);
+console.log('Node direct packet aliases/completed routing, preflight and AbortSignal PASS');

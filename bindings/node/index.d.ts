@@ -171,6 +171,7 @@ export interface HistoricalOwnerAttachmentResult {
   pending_package_stage_command_id: string | null;
   pending_package_stage_status: 'PENDING_UNRESOLVED' | 'PART_ACCEPTED_CONTINUATION_PENDING' | 'ACCEPTED' | null;
   pending_package_stage_id: string | null;
+  /** Selected retained packet ID; completed maps have no packet and use the historical BEGIN ID. */
   pending_direct_install_command_id: string | null;
   pending_direct_install_instance_id: string | null;
   pending_direct_install_status: 'PENDING_UNRESOLVED' | 'BEGIN_ACCEPTED_CONTINUATION_PENDING' | 'ACCEPTED' | null;
@@ -181,11 +182,23 @@ export interface HistoricalOwnerAttachmentResult {
 }
 export interface HistoricalDirectInstallPendingInventory {
   ts_state_digest: string;
+  /** Caller-selected retained BEGIN/PAGE/END packet ID. */
   command_id: string;
   instance_id: string;
   intent_hash: string;
   original_commit_hash: string;
   status: 'PENDING_UNRESOLVED' | 'APPLIED_IN_SIGNED_REPLAY';
+}
+/** A selected completed map verified against its signed END and current authority. */
+export interface HistoricalDirectInstallCompletedInventory {
+  ts_state_digest: string;
+  instance_id: string;
+  intent_hash: string;
+  begin_command_id: string;
+  begin_commit_hash: string;
+  end_sequence: number;
+  protocol_digest: string;
+  status: 'COMPLETED_IN_SIGNED_REPLAY';
 }
 export interface HistoricalPackageStagePendingInventory {
   ts_state_digest: string;
@@ -253,12 +266,22 @@ export interface SecureOwnerWorkspaceSession {
   attachPendingMultipartPackageStage(input: HistoricalOwnerAttachmentInput, materialJson: string, options?: {signal?: AbortSignal}): Promise<HistoricalOwnerAttachmentResult>;
   /** Explicit recovery of one selected original ADMIN stage packet. */
   recoverPendingPackageStage(attachId: string, expectedCommandId: string, options?: {signal?: AbortSignal}): Promise<HistoricalOwnerAttachmentResult>;
-  /** Verify one saved direct BEGIN against explicit options and full source material; no attach row or POST. */
+  /** Verify one retained BEGIN/PAGE/END packet against explicit options and full source material; no attach row or POST. */
   inspectPendingDirectInstallBegin(input: HistoricalOwnerAttachmentInput, selectedCommandId: string, optionsJson: string, materialJson: string, options?: {signal?: AbortSignal}): Promise<HistoricalDirectInstallPendingInventory>;
-  /** Import exactly the inspected direct BEGIN without POST; later continuation is explicit. */
+  /** Import exactly the inspected retained BEGIN/PAGE/END packet without POST; later continuation is explicit. */
   attachPendingDirectInstallBegin(input: HistoricalOwnerAttachmentInput, selectedCommandId: string, expectedTsStateDigest: string, optionsJson: string, materialJson: string, options?: {signal?: AbortSignal}): Promise<HistoricalOwnerAttachmentResult>;
-  /** Recover only this saved original BEGIN command from protected attachment history. */
+  /** Recover only this selected exact BEGIN/PAGE/END packet from protected attachment history. */
   recoverPendingDirectInstallBegin(attachId: string, expectedCommandId: string, options?: {signal?: AbortSignal}): Promise<HistoricalOwnerAttachmentResult>;
+  /** Generic name for exact retained BEGIN/PAGE/END inspection; command_id is the selected packet ID. */
+  inspectPendingDirectInstallPacket(input: HistoricalOwnerAttachmentInput, selectedCommandId: string, optionsJson: string, materialJson: string, options?: {signal?: AbortSignal}): Promise<HistoricalDirectInstallPendingInventory>;
+  /** Attach the selected packet with the full inspected TS state digest; never submit a replacement packet. */
+  attachPendingDirectInstallPacket(input: HistoricalOwnerAttachmentInput, selectedCommandId: string, expectedTsStateDigest: string, optionsJson: string, materialJson: string, options?: {signal?: AbortSignal}): Promise<HistoricalOwnerAttachmentResult>;
+  /** The ID is the selected retained packet, distinct from the installer's original BEGIN ID. */
+  recoverPendingDirectInstallPacket(attachId: string, expectedCommandId: string, options?: {signal?: AbortSignal}): Promise<HistoricalOwnerAttachmentResult>;
+  /** Verify the caller-selected completed instance and signed END; no install POST. */
+  inspectCompletedDirectInstall(input: HistoricalOwnerAttachmentInput, selectedInstanceId: string, optionsJson: string, materialJson: string, options?: {signal?: AbortSignal}): Promise<HistoricalDirectInstallCompletedInventory>;
+  /** Import the inspected completed map; no retained packet or imported install operation is created. */
+  attachCompletedDirectInstall(input: HistoricalOwnerAttachmentInput, selectedInstanceId: string, expectedTsStateDigest: string, optionsJson: string, materialJson: string, options?: {signal?: AbortSignal}): Promise<HistoricalOwnerAttachmentResult>;
   /** Read-only verification of an original stage marker without a signed packet. */
   inspectOrphanPackageStage(input: HistoricalOwnerAttachmentInput, options?: {signal?: AbortSignal}): Promise<HistoricalPackageStageOrphanInventory>;
   /** Verify complete material for an orphaned nonzero part; no attach row or POST. */

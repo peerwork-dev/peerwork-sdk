@@ -490,17 +490,22 @@ exports.openSecureOwnerWorkspaces = options => {
         typeof optionsJson !== 'string' || !optionsJson ||
         typeof materialJson !== 'string' || !materialJson ||
         (attach ? typeof expectedDigest !== 'string' || !expectedDigest : expectedDigest != null)) {
-      throw new TypeError('direct BEGIN requires exact source, selected command, options, material and inspected digest for attach');
+      throw new TypeError('direct install requires exact source, selected ID, options, material and inspected digest for attach');
     }
     const source = attachmentInput(input);
     if (source.recover_pending_action || source.retain_pending_action_command_id != null ||
         source.kernel_pending_command_ids.length || source.selected_pending_package_stage_command_id != null ||
         source.selected_orphan_package_stage_command_id != null || source.expected_ts_state_digest != null) {
-      throw new TypeError('direct BEGIN selection cannot be combined with other attachment recovery');
+      throw new TypeError('direct install selection cannot be combined with other attachment recovery');
     }
     return { attachment_input: source, selected_command_id: selectedCommandId,
       expected_ts_state_digest: expectedDigest ?? null, options_json: optionsJson,
       material_json: materialJson };
+  };
+  const completedDirectRequest = (input, selectedInstanceId, expectedDigest, optionsJson, materialJson, attach) => {
+    const { selected_command_id, ...value } = directBeginRequest(input, selectedInstanceId,
+      expectedDigest, optionsJson, materialJson, attach);
+    return { ...value, selected_instance_id: selected_command_id };
   };
   const formatTransitionInput = input => {
     if (!input || typeof input.workspaceId !== 'string' || !input.workspaceId ||
@@ -659,6 +664,12 @@ exports.openSecureOwnerWorkspaces = options => {
       pending: (options = {}) => call('pending', undefined, undefined, options.signal),
     });
   };
+  const inspectDirectPacket = (input, selectedCommandId, optionsJson, materialJson, { signal } = {}) => invoke(
+    'direct_begin_inspect', directBeginRequest(input, selectedCommandId, null, optionsJson, materialJson, false), undefined, undefined, signal);
+  const attachDirectPacket = (input, selectedCommandId, expectedTsStateDigest, optionsJson, materialJson, { signal } = {}) => invoke(
+    'direct_begin_attach', directBeginRequest(input, selectedCommandId, expectedTsStateDigest, optionsJson, materialJson, true), undefined, undefined, signal);
+  const recoverDirectPacket = (attachId, expectedCommandId, { signal } = {}) => invoke(
+    'direct_begin_recover', undefined, expectedCommandId, attachId, signal);
   return Object.freeze({
     prepare: (input, { signal } = {}) => invoke('prepare', createInput(input), undefined, undefined, signal),
     create: (input, { signal } = {}) => invoke('create', createInput(input), undefined, undefined, signal),
@@ -672,12 +683,16 @@ exports.openSecureOwnerWorkspaces = options => {
     attachPendingMultipartPackageStage: (input, materialJson, { signal } = {}) => invoke(
       'stage_multipart_attach', multipartStageRequest(input, materialJson, 'pending'), undefined, undefined, signal),
     recoverPendingPackageStage: (attachId, expectedCommandId, { signal } = {}) => invoke('stage_recover', undefined, expectedCommandId, attachId, signal),
-    inspectPendingDirectInstallBegin: (input, selectedCommandId, optionsJson, materialJson, { signal } = {}) => invoke(
-      'direct_begin_inspect', directBeginRequest(input, selectedCommandId, null, optionsJson, materialJson, false), undefined, undefined, signal),
-    attachPendingDirectInstallBegin: (input, selectedCommandId, expectedTsStateDigest, optionsJson, materialJson, { signal } = {}) => invoke(
-      'direct_begin_attach', directBeginRequest(input, selectedCommandId, expectedTsStateDigest, optionsJson, materialJson, true), undefined, undefined, signal),
-    recoverPendingDirectInstallBegin: (attachId, expectedCommandId, { signal } = {}) => invoke(
-      'direct_begin_recover', undefined, expectedCommandId, attachId, signal),
+    inspectPendingDirectInstallBegin: inspectDirectPacket,
+    attachPendingDirectInstallBegin: attachDirectPacket,
+    recoverPendingDirectInstallBegin: recoverDirectPacket,
+    inspectPendingDirectInstallPacket: inspectDirectPacket,
+    attachPendingDirectInstallPacket: attachDirectPacket,
+    recoverPendingDirectInstallPacket: recoverDirectPacket,
+    inspectCompletedDirectInstall: (input, selectedInstanceId, optionsJson, materialJson, { signal } = {}) => invoke(
+      'direct_completed_inspect', completedDirectRequest(input, selectedInstanceId, null, optionsJson, materialJson, false), undefined, undefined, signal),
+    attachCompletedDirectInstall: (input, selectedInstanceId, expectedTsStateDigest, optionsJson, materialJson, { signal } = {}) => invoke(
+      'direct_completed_attach', completedDirectRequest(input, selectedInstanceId, expectedTsStateDigest, optionsJson, materialJson, true), undefined, undefined, signal),
     inspectOrphanPackageStage: (input, { signal } = {}) => invoke('orphan_inspect', attachmentInput(input), undefined, undefined, signal),
     inspectMultipartOrphanPackageStage: (input, materialJson, { signal } = {}) => invoke(
       'orphan_multipart_inspect', multipartStageRequest(input, materialJson, null), undefined, undefined, signal),
