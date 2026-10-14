@@ -95,7 +95,8 @@ try {
   const expectedPending = mode === 'completed-end' ? 0 : 1;
   if (pending.length !== expectedPending) throw new Error('INSTALL_INTENT_PENDING_COUNT');
   const selected = pending[0];
-  if (selected && (selected[1].path !== `/api/workspace/v1/secure/workspaces/${workspaceId}/commits`
+  if (selected && (selected[0] !== selected[1].body?.commit?.payload?.command_id
+    || selected[1].path !== `/api/workspace/v1/secure/workspaces/${workspaceId}/commits`
     || selected[1].body?.commit?.payload?.action_id !== 'secure.structure.begin')) {
     throw new Error('INSTALL_INTENT_PENDING_BEGIN_MISMATCH');
   }
