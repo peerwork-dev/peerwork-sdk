@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import selectors
 import sqlite3
 import subprocess
 import sys
@@ -121,12 +122,18 @@ env = dict(os.environ, PEERWORK_REFERENCE_ROOT=str(reference), PEERWORK_TEST_STA
 request_log = state / "request-observer.jsonl"
 request_log.touch(mode=0o600)
 env["PEERWORK_TEST_REQUEST_OBSERVER"] = str(request_log)
+server_stderr_path = state / "reference-server.stderr.log"
+server_stderr = server_stderr_path.open("wb")
+server_stderr_path.chmod(0o600)
 server = subprocess.Popen([str(node), "--require", str(source / "tests/historical-direct-request-observer.cjs"), str(source / "tests/reference-kernel-server.mjs")],
                           cwd=source, env=env, stdout=subprocess.PIPE,
-                          stderr=subprocess.PIPE, text=True)
+                          stderr=server_stderr, text=True)
 try:
-    first = server.stdout.readline()
-    assert first, f"reference service did not start: {server.stderr.read()[-800:]}"
+    with selectors.DefaultSelector() as ready:
+        ready.register(server.stdout, selectors.EVENT_READ)
+        assert ready.select(timeout=60), "reference service READY timeout; inspect protected stderr log"
+        first = server.stdout.readline()
+    assert first, "reference service did not start; inspect protected stderr log"
     origin = json.loads(first)["origin"]
     database = state / "control.sqlite"
     exported = []
@@ -191,4 +198,12 @@ console.log(JSON.stringify({method:'POST',path:pending.path,body_sha256:await se
     subprocess.run(["bash", str(Path(__file__).with_name("run-installed-historical-direct-packets-completed-consumer.sh")), str(rootfs)], check=True)
 finally:
     server.terminate()
-    server.wait(timeout=10)
+    try:
+        server.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        server.kill();server.wait(timeout=10)
+    server_stderr.close()
+    exit_record = state / "reference-service-exit.json"
+    exit_record.write_text(json.dumps({"exit_code":server.returncode,
+        "stderr_sha256":hashlib.sha256(server_stderr_path.read_bytes()).hexdigest()})+"\n")
+    exit_record.chmod(0o600)
