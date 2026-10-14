@@ -376,13 +376,14 @@ fn decode_entries(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::protected_test_dir;
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn published_rotation_preserves_exact_historical_recipient() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = protected_test_dir();
         #[cfg(unix)]
         fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let identity = KernelIdentity::create(&dir.path().join("identity.state")).unwrap();
@@ -438,7 +439,7 @@ mod tests {
 
     #[test]
     fn recipient_create_reopen_and_signer_continuity() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = protected_test_dir();
         #[cfg(unix)]
         fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let identity = KernelIdentity::create(&dir.path().join("identity.state")).unwrap();

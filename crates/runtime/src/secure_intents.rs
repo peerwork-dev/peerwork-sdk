@@ -1339,6 +1339,7 @@ fn valid_row(id: &str, row: &Entry, actor_id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::protected_test_dir;
     use peerwork_core::{
         canonical::{canonical, Path as CanonicalPath},
         crypto::sign_canonical,
@@ -1388,7 +1389,7 @@ mod tests {
 
     #[test]
     fn saved_signed_commit_requires_every_immutable_row_pin_before_transport() {
-        let root = tempfile::tempdir().unwrap();
+        let root = protected_test_dir();
         #[cfg(unix)]
         fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let identity = KernelIdentity::create(&root.path().join("identity.state")).unwrap();
@@ -1467,7 +1468,7 @@ mod tests {
 
     #[tokio::test]
     async fn lost_http_reply_then_restart_retries_identical_verified_packet() {
-        let root = tempfile::tempdir().unwrap();
+        let root = protected_test_dir();
         #[cfg(unix)]
         fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let identity = KernelIdentity::create(&root.path().join("identity.state")).unwrap();
@@ -1995,7 +1996,7 @@ mod tests {
 
     #[test]
     fn exact_packet_and_untrusted_response_survive_restart_without_acceptance() {
-        let root = tempfile::tempdir().unwrap();
+        let root = protected_test_dir();
         #[cfg(unix)]
         fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let path = root.path().join("secure-intents.state");

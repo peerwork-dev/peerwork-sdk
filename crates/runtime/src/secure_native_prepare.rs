@@ -1361,6 +1361,7 @@ fn prepare_new_private_commit_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::protected_test_dir;
     use crate::{
         secure_state::read_private_file_bounded,
         transport::{HttpTransport, TransportConfig, TransportError},
@@ -1378,7 +1379,7 @@ mod tests {
 
     #[test]
     fn default_owner_workspace_uses_six_embedded_presets_without_posting() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = protected_test_dir();
         #[cfg(unix)]
         fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let identity = KernelIdentity::create(&dir.path().join("owner.state")).unwrap();
@@ -2624,7 +2625,7 @@ mod tests {
             crypto::{sha256_hex, sign_canonical},
             secure_recipient::SecretRecipient,
         };
-        let dir = tempfile::tempdir().unwrap();
+        let dir = protected_test_dir();
         #[cfg(unix)]
         fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let identity = KernelIdentity::create(&dir.path().join("owner.state")).unwrap();
@@ -2763,7 +2764,7 @@ mod tests {
 
     #[test]
     fn native_protected_keys_stage_one_exact_pending_packet_without_reauthoring() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = protected_test_dir();
         #[cfg(unix)]
         fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let identity = KernelIdentity::create(&dir.path().join("identity.state")).unwrap();

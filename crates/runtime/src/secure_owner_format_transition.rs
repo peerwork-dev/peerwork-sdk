@@ -753,6 +753,7 @@ impl SecureOwnerFormatTransition {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::protected_test_dir;
     use crate::{
         secure_action_access::PublicActionInput,
         secure_owner_attach::{HistoricalOwnerAttachInput, SecureHistoricalOwnerAttach},
@@ -773,7 +774,7 @@ mod tests {
 
     #[test]
     fn old_private_saved_history_without_visibility_keeps_pending_packet() {
-        let root = tempfile::tempdir().unwrap();
+        let root = protected_test_dir();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

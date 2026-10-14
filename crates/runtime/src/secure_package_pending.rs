@@ -209,6 +209,7 @@ fn decode(bytes: &[u8]) -> Result<[&[u8]; FIELDS], PendingPackageError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::protected_test_dir;
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
@@ -224,7 +225,7 @@ mod tests {
 
     #[test]
     fn exact_material_survives_restart_and_rejects_context_or_byte_change() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = protected_test_dir();
         #[cfg(unix)]
         fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let path = dir.path().join("package.state");
@@ -257,7 +258,7 @@ mod tests {
 
     #[test]
     fn input_bounds_refuse_before_first_write() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = protected_test_dir();
         #[cfg(unix)]
         fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let path = dir.path().join("package.state");
@@ -277,7 +278,7 @@ mod tests {
 
     #[test]
     fn damaged_saved_material_refuses_reopen() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = protected_test_dir();
         #[cfg(unix)]
         fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let path = dir.path().join("package.state");

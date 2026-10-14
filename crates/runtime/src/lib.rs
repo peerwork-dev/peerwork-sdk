@@ -45,5 +45,7 @@ pub use secure_verified_read::SecureJournalReadBudget;
 pub mod secure_state;
 pub mod transport;
 mod ts_migration;
+#[cfg(test)]
+mod test_support;
 #[cfg(windows)]
 mod windows_fs;

@@ -220,40 +220,11 @@ fn validate_single_private_pem(pem: &str) -> Result<(), KernelIdentityError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::protected_test_dir;
     use ed25519_dalek::pkcs8::EncodePrivateKey;
     use std::fs;
-    use std::path::PathBuf;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
-
-    struct ProtectedTestDir {
-        _root: tempfile::TempDir,
-        path: PathBuf,
-    }
-
-    impl ProtectedTestDir {
-        fn path(&self) -> &Path {
-            &self.path
-        }
-    }
-
-    fn protected_test_dir() -> ProtectedTestDir {
-        let root = tempfile::tempdir().unwrap();
-        #[cfg(unix)]
-        let path = {
-            fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
-            root.path().to_owned()
-        };
-        #[cfg(windows)]
-        let path = {
-            let path = root.path().join("state");
-            crate::windows_fs::create_private_directory(&path).unwrap();
-            path
-        };
-        #[cfg(not(any(unix, windows)))]
-        let path = root.path().to_owned();
-        ProtectedTestDir { _root: root, path }
-    }
 
     #[test]
     fn explicit_create_reopen_and_incompatible_refusal() {

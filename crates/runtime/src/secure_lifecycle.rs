@@ -616,6 +616,7 @@ fn valid_origin(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::protected_test_dir;
     use peerwork_core::crypto::base64url;
     use std::fs;
     #[cfg(unix)]
@@ -639,7 +640,7 @@ mod tests {
 
     #[test]
     fn empty_lifecycle_persists_first_owner_pin() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = protected_test_dir();
         #[cfg(unix)]
         fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let file = dir.path().join("public.state");
@@ -685,7 +686,7 @@ mod tests {
 
     #[test]
     fn pending_keys_survive_reopen_without_regeneration_or_promotion() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = protected_test_dir();
         #[cfg(unix)]
         fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let file = dir.path().join("keys.state");
@@ -765,7 +766,7 @@ mod tests {
 
     #[test]
     fn empty_pending_or_active_history_is_corrupt_on_reopen() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = protected_test_dir();
         #[cfg(unix)]
         fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let origin = "https://example.invalid/";

@@ -892,6 +892,7 @@ fn valid_hex(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::protected_test_dir;
     use serde_json::json;
 
     fn page(workspace: &str, head: &str, sequences: &[u64], next: Option<u64>) -> Vec<u8> {
@@ -973,7 +974,7 @@ mod tests {
 
     #[test]
     fn inline_pages_migrate_atomically_and_reopen_from_separate_files() {
-        let root = tempfile::tempdir().unwrap();
+        let root = protected_test_dir();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -1073,7 +1074,7 @@ mod tests {
         let mut added = base.clone();
         added["protocol_features"] = serde_json::json!(["old", "new"]);
         let d1 = parse(&added);
-        let root = tempfile::tempdir().unwrap();
+        let root = protected_test_dir();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -1114,7 +1115,7 @@ mod tests {
 
     #[test]
     fn chain_head_ignores_uncommitted_orphan_and_detects_page_mutation() {
-        let root = tempfile::tempdir().unwrap();
+        let root = protected_test_dir();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

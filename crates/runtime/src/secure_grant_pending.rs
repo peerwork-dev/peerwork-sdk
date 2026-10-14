@@ -556,6 +556,7 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::protected_test_dir;
     use crate::secure_lifecycle::{SecureLifecycle, SecureLifecycleError};
     use peerwork_core::{
         canonical::{canonical, Path as CanonicalPath},
@@ -577,7 +578,7 @@ mod tests {
 
     #[test]
     fn saved_owner_grant_is_exact_pending_and_reverified_after_restart() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = protected_test_dir();
         #[cfg(unix)]
         fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let identity = KernelIdentity::create(&dir.path().join("identity.state")).unwrap();
