@@ -17,7 +17,8 @@ if (!origin || !sourceDir || !referenceRoot
     'direct-disclosure-end-applied-loss', 'direct-no-grants-begin-before-post',
     'direct-empty-disclosure-begin-before-post', 'direct-composition-begin-before-post',
     'direct-composition-end-applied-loss', 'direct-staged-package-begin-before-post',
-    'direct-staged-package-end-applied-loss'].includes(mode)) {
+    'direct-staged-package-end-applied-loss', 'direct-staged-package-page-before-post',
+    'direct-staged-package-page-applied-loss', 'direct-staged-package-completed-end'].includes(mode)) {
   throw new Error('INSTALL_INTENT_TEST_INPUT');
 }
 mkdirSync(sourceDir, { recursive: true, mode: 0o700 });
