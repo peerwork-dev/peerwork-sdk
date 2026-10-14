@@ -6656,8 +6656,8 @@ fn verify_completed_package_stage_with_structure(
         // A staged install's exact original BEGIN is verified separately.
         // Its continuation legitimately leaves current replay SEEDING; the
         // completed/orphan stage-only caller retains its ACTIVE requirement.
-        || if require_active { replayed.replay().structure_status() != StructureStatus::Active }
-            else { !matches!(replayed.replay().structure_status(), StructureStatus::Active | StructureStatus::Seeding) }
+        || (if require_active { replayed.replay().structure_status() != StructureStatus::Active }
+            else { !matches!(replayed.replay().structure_status(), StructureStatus::Active | StructureStatus::Seeding) })
         || current.get("visibility").and_then(WireValue::as_string).as_deref()
             != Some("PRIVATE")
         || !owner_member
