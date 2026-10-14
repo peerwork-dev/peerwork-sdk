@@ -10714,6 +10714,7 @@ mod tests {
                     .join("owner-direct-install-plans").join(&plan.plan_id)
                     .join("material.state")).unwrap();
                 stored_material.write_exact(b"tampered material").unwrap();
+                drop(stored_material);
                 assert!(matches!(attach.load_quarantined_direct_install_plan(
                     &plan.attach_id, &row,
                 ), Err(HistoricalOwnerAttachError::Conflict)));
