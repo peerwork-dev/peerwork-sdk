@@ -2242,15 +2242,34 @@ impl SecureHistoricalOwnerAttach {
             .clone();
         drop(history);
         drop(store);
+        if row.pending_direct_install_plan_id.is_some() && !row.pending_direct_install_complete {
+            if row.attached_sequence.is_some() && row.kernel_import.is_some() {
+                let plan = self.load_quarantined_direct_install_plan(attach_id, &row)?;
+                let owner = KernelIdentity::open(&self.identity_path())
+                    .map_err(|_| HistoricalOwnerAttachError::Identity)?;
+                let pending = plan.source.pending_install_begin.as_ref()
+                    .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+                let ring = plan.source.ring.as_ref()
+                    .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+                let replayed = SecureReadAccess::new(self.attach_read_config(&row.input))
+                    .replay_checked_attach_generation(cancel)
+                    .map_err(|_| HistoricalOwnerAttachError::Verification)?;
+                let verified = verify_pending_direct_install_begin(
+                    pending, &plan.options, &plan.material, ring, &replayed, &owner, &row.input,
+                )?;
+                if verified.commit_hash != plan.manifest.original_commit_hash {
+                    return Err(HistoricalOwnerAttachError::Conflict);
+                }
+                return Ok(summary(attach_id, &row));
+            }
+            return self.resume_pending_direct_install_attachment(attach_id, &row, cancel);
+        }
         if row.attached_sequence.is_some() && row.kernel_import.is_some() {
             self.checked_kernel_commands(attach_id)?;
             SecureReadProfile::new(self.profile_config(&row.input))
                 .read_latest_json_with_cancel(cancel)
                 .map_err(|_| HistoricalOwnerAttachError::Verification)?;
             return Ok(summary(attach_id, &row));
-        }
-        if row.pending_direct_install_plan_id.is_some() {
-            return self.resume_pending_direct_install_attachment(attach_id, &row, cancel);
         }
         let (source, copied_pem, multipart_material, _intent_source_path) =
             self.inspect_saved_sources(&row)?;
@@ -2656,6 +2675,11 @@ impl SecureHistoricalOwnerAttach {
             .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
         let ring = plan.source.ring.as_ref()
             .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+        // These two durable writes are inert setup for a replay. PREPARED and
+        // the complete protected plan already exist; an interrupted or failed
+        // replay leaves only the exact imported identity and PENDING ring.
+        // No active key, InstallRow, attached row, or POST is created until
+        // the saved BEGIN and current signed policy have been re-proved.
         let owner = match KernelIdentity::open(&self.identity_path()) {
             Ok(identity) => identity,
             Err(KernelIdentityError::NotFound) =>
@@ -11155,8 +11179,20 @@ mod tests {
             assert_eq!(resumed.pending_direct_install_status.as_deref(), Some(if expected_applied {
                 "BEGIN_ACCEPTED_CONTINUATION_PENDING"
             } else { "PENDING_UNRESOLVED" }));
+            let resumed_again = resumed_owner.resume_attachment(&prepared[0].attach_id, &cancel)
+                .unwrap();
+            assert_eq!(resumed_again.pending_direct_install_status,
+                resumed.pending_direct_install_status);
+            assert_eq!(count(), if expected_applied { 2 } else { 1 });
             assert!(SecurePrivatePackageInstall::new(resumed_owner.profile_config(&input))
                 .continue_install_json_with_cancel(command, &cancel).is_err());
+            if !expected_applied {
+                let ordinary: serde_json::Value = serde_json::from_str(
+                    &SecurePrivatePackageInstall::new(resumed_owner.profile_config(&input))
+                        .installs_json().unwrap(),
+                ).unwrap();
+                assert!(ordinary.as_array().unwrap().is_empty());
+            }
             assert_eq!(count(), if expected_applied { 2 } else { 1 });
             let loaded = attach.load_quarantined_direct_install_plan(&plan.attach_id, &row).unwrap();
             assert_eq!(loaded.manifest, plan);
@@ -11186,6 +11222,7 @@ mod tests {
             ), Err(HistoricalOwnerAttachError::Conflict)));
             assert_eq!(count(), before_recovery);
             let mut completed = None;
+            let mut checked_midflight_resume = false;
             for _ in 0..512 {
                 let next = resumed_owner.recover_pending_direct_install_begin(
                     &prepared[0].attach_id, command, &cancel,
@@ -11195,6 +11232,15 @@ mod tests {
                     break;
                 }
                 assert_eq!(next.status, "ATTACHED_RESTRICTED");
+                if !checked_midflight_resume {
+                    let prior_count = count();
+                    let repeated = resumed_owner.resume_attachment(
+                        &prepared[0].attach_id, &cancel,
+                    ).unwrap();
+                    assert_eq!(repeated.status, "ATTACHED_RESTRICTED");
+                    assert_eq!(count(), prior_count);
+                    checked_midflight_resume = true;
+                }
             }
             let completed = completed.expect("signed direct install did not complete");
             assert_eq!(completed.pending_direct_install_status.as_deref(), Some("ACCEPTED"));
@@ -11212,6 +11258,11 @@ mod tests {
                 && object["value"]["protocol_digest"] == fixture["protocol_digest"]));
             assert!(objects.iter().any(|object| object["kind"] == "protocols"
                 && object["id"] == fixture["protocol_digest"]));
+            let ordinary: serde_json::Value = serde_json::from_str(
+                &SecurePrivatePackageInstall::new(resumed_owner.profile_config(&input))
+                    .installs_json().unwrap(),
+            ).unwrap();
+            assert!(ordinary.as_array().unwrap().is_empty());
             let after_completion = count();
             let repeated = resumed_owner.recover_pending_direct_install_begin(
                 &prepared[0].attach_id, command, &cancel,
