@@ -6066,14 +6066,12 @@ fn verify_completed_direct_install(
     if begin_index >= final_index { return Err(invalid()); }
     let mut previous = verified.commit_hash.clone();
     let mut end: Option<(u64, String, String)> = None;
-    let mut pages = 0usize;
     for index in begin_index + 1..=final_index {
         let wire = &replayed.signed_commit_wires()[index];
         let commit = parse_wire_json_bounded(wire, 64, 262_144).map_err(|_| invalid())?;
         let payload = commit.get("payload").ok_or_else(invalid)?;
         let action = payload.get("action_id").and_then(WireValue::as_string).ok_or_else(invalid)?;
         if (action != "secure.structure.page" && action != "secure.structure.end")
-            || (action == "secure.structure.end" && pages == 0)
             || payload.get("previous").and_then(WireValue::as_string).as_deref()
                 != Some(previous.as_str())
             || payload.get("workspace_id").and_then(WireValue::as_string).as_deref()
@@ -6091,7 +6089,6 @@ fn verify_completed_direct_install(
             end = Some((index as u64 + 1, previous.clone(), policy_hash));
             break;
         }
-        pages += 1;
     }
     let (end_sequence, end_head, end_policy) = end.ok_or_else(invalid)?;
     if !replayed.replay().contains_checkpoint(end_sequence, Some(&end_head), &end_policy) {
