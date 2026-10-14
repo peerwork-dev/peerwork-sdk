@@ -2702,7 +2702,10 @@ impl SecureHistoricalOwnerAttach {
             .replay_checked_attach_generation(cancel)
             .map_err(|_| if cancel.is_cancelled() {
                 HistoricalOwnerAttachError::Cancelled
-            } else { HistoricalOwnerAttachError::Verification })?;
+            } else {
+                #[cfg(test)] eprintln!("direct-install-attach:replay");
+                HistoricalOwnerAttachError::Verification
+            })?;
         let mut verified = verify_pending_direct_install_begin(
             pending, &plan.options, &plan.material, ring, &replayed, &owner, &row.input,
         )?;
@@ -2755,12 +2758,18 @@ impl SecureHistoricalOwnerAttach {
                 ring, &replayed, row.source_sequence, row.source_head.as_deref(),
                 &row.source_policy_hash, &verified.commit_hash,
                 replayed.replay().policy_hash(),
-            ).map_err(|_| HistoricalOwnerAttachError::Verification)?;
+            ).map_err(|_| {
+                #[cfg(test)] eprintln!("direct-install-attach:activate-seeding");
+                HistoricalOwnerAttachError::Verification
+            })?;
         } else {
             lifecycle.activate_verified_historical_owner(
                 ring, &replayed, row.source_sequence, row.source_head.as_deref(),
                 &row.source_policy_hash,
-            ).map_err(|_| HistoricalOwnerAttachError::Verification)?;
+            ).map_err(|_| {
+                #[cfg(test)] eprintln!("direct-install-attach:activate-active");
+                HistoricalOwnerAttachError::Verification
+            })?;
         }
         drop(lifecycle);
         if !verified.applied {
