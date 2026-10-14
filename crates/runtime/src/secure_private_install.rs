@@ -807,7 +807,28 @@ pub struct PrivatePackageInstallProgress {
     pub commit_hash: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Input from a fully proved, durable Owner attachment. The caller saves this
+/// only after PREPARED and rechecks the selected old packet and source plan.
+/// It grants no ordinary install authority by itself.
+pub(crate) struct ImportedHistoricalDirectBegin {
+    pub attach_id: String,
+    pub command_id: String,
+    pub instance_id: String,
+    pub entrypoint: String,
+    pub grants_json: String,
+    pub issued_at_ms: u64,
+    pub request_wire: Vec<u8>,
+    pub commit_hash: String,
+    pub policy_hash: String,
+    pub snapshot_json: String,
+    pub protocol_digest: String,
+    pub material_wire: Vec<u8>,
+    pub bindings_json: String,
+    pub source_checkpoint_json: String,
+    pub root_package_digest: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct InstallRow {
     /// Attach-imported BEGINs are never ordinary mutable install intents.
@@ -841,7 +862,7 @@ enum InstallSourceKind {
     Staged,
     Direct,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct DirectInstallSource {
     material_b64: String,
@@ -871,7 +892,7 @@ impl InstallRow {
         }
     }
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct InstallStep {
     command_id: String,
@@ -881,7 +902,7 @@ struct InstallStep {
     action_id: String,
     offset: usize,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct AcceptedInstall {
     sequence: u64,
@@ -1260,6 +1281,86 @@ impl SecurePrivatePackageInstall {
             .collect();
         let rows = rows?;
         serde_json::to_string(&rows).map_err(|_| PrivatePackageInstallError::Encoding)
+    }
+
+    /// Link one exact historical direct BEGIN to a previously durable
+    /// attachment. This is an idempotent local write; it never submits the
+    /// saved request or makes the imported row visible to ordinary clients.
+    pub(crate) fn save_imported_direct_begin_row_for_attach(
+        &self,
+        imported: ImportedHistoricalDirectBegin,
+    ) -> Result<(), PrivatePackageInstallError> {
+        if !token(&imported.attach_id) || !token(&imported.command_id)
+            || !token(&imported.instance_id) || imported.entrypoint.is_empty()
+            || imported.entrypoint.len() > 256
+            || imported.request_wire.is_empty() || imported.request_wire.len() > 220_000
+            || imported.material_wire.is_empty() || imported.material_wire.len() > 8 * 1024 * 1024
+            || imported.bindings_json.len() > 2 * 1024 * 1024
+            || imported.grants_json.len() > 2 * 1024 * 1024
+            || imported.snapshot_json.len() > 8192
+            || imported.source_checkpoint_json.len() > 8192
+            || !digest(&imported.commit_hash) || !digest(&imported.policy_hash)
+            || !digest(&imported.protocol_digest) || !digest(&imported.root_package_digest)
+        { return Err(PrivatePackageInstallError::Input); }
+        let checkpoint = parse_wire_json_bounded(
+            imported.source_checkpoint_json.as_bytes(), 32, 8192,
+        ).map_err(|_| PrivatePackageInstallError::Input)?;
+        if scalar(&checkpoint, "policy_hash")? != imported.policy_hash {
+            return Err(PrivatePackageInstallError::Plan);
+        }
+        let request = parse_wire_json_bounded(&imported.request_wire, 64, 220_000)
+            .map_err(|_| PrivatePackageInstallError::Input)?;
+        let commit = request.get("commit").ok_or(PrivatePackageInstallError::Input)?;
+        let payload = commit.get("payload").ok_or(PrivatePackageInstallError::Input)?;
+        let commit_wire = canonical_wire_value(commit, CanonicalPath::SecureArtifact)
+            .map_err(|_| PrivatePackageInstallError::Input)?;
+        if request.object_len() != Some(2)
+            || request.get("policy_update").is_none()
+            || scalar(payload, "command_id")? != imported.command_id
+            || scalar(payload, "action_id")? != "secure.structure.begin"
+            || scalar(payload, "workspace_id")? != self.config.workspace_id
+            || sha256_hex(commit_wire.as_bytes()) != imported.commit_hash
+        { return Err(PrivatePackageInstallError::Plan); }
+        let identity = KernelIdentity::open(&self.config.identity_path)
+            .map_err(|_| PrivatePackageInstallError::Identity)?;
+        if self.config.owner_actor_id.as_deref() != Some(identity.actor_id())
+            || self.config.owner_key_id.as_deref() != Some(identity.key_id())
+            || scalar(payload, "actor_id")? != identity.actor_id()
+            || scalar(payload, "signing_key")? != identity.key_id()
+        { return Err(PrivatePackageInstallError::Identity); }
+        let row = InstallRow {
+            import_attach_id: Some(imported.attach_id),
+            source_kind: Some(InstallSourceKind::Direct), stage_id: None,
+            direct_source: Some(DirectInstallSource {
+                material_b64: base64url(&imported.material_wire),
+                bindings_json: Some(imported.bindings_json),
+                source_checkpoint_json: imported.source_checkpoint_json,
+                root_package_digest: imported.root_package_digest,
+            }),
+            instance_id: imported.instance_id, entrypoint: imported.entrypoint,
+            grants_json: imported.grants_json, disclose_json: None,
+            issued_at_ms: imported.issued_at_ms,
+            request_b64: base64url(&imported.request_wire),
+            commit_hash: imported.commit_hash, policy_hash: imported.policy_hash,
+            snapshot_json: imported.snapshot_json,
+            protocol_digest: imported.protocol_digest,
+            steps: Vec::new(), accepted: None,
+        };
+        let store = SecureStateStore::open(
+            &self.config.state_dir.join("private-install-operations.state"),
+        )?;
+        let mut doc = InstallDocument::open(
+            &store, &self.config, identity.actor_id(), identity.key_id(),
+        )?;
+        match doc.rows.get(&imported.command_id) {
+            Some(existing) if existing == &row => Ok(()),
+            Some(_) => Err(PrivatePackageInstallError::Plan),
+            None if doc.rows.len() >= 16 => Err(PrivatePackageInstallError::Plan),
+            None => {
+                doc.rows.insert(imported.command_id, row);
+                doc.save(&store)
+            }
+        }
     }
 
     pub fn submit_begin_json(
