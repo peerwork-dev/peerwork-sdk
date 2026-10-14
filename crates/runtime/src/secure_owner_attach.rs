@@ -5654,10 +5654,13 @@ mod tests {
             .post(format!("{origin}__test/drop-next-post"))
             .body("{}").send()).unwrap().status(), 200);
         let after_save = SecureHistoricalOwnerAttach::new(config.clone());
-        assert!(matches!(after_save.replan_orphan_package_stage(
+        let after_loss = after_save.replan_orphan_package_stage(
             &restricted.attach_id, original, None, &cancel,
-        ), Err(HistoricalOwnerAttachError::OrphanStageUnresolved)));
-        assert_eq!(count(), 4, "the exact saved later part applied despite lost reply");
+        ).unwrap();
+        assert_eq!(after_loss.status, "ATTACHED");
+        assert_eq!(after_loss.orphan_package_stage_status.as_deref(), Some("ORPHAN_REPLANNED"));
+        assert_eq!(count(), 2 + parts as i64,
+            "the lost-response later part reconciled and all new parts were signed");
         assert_eq!(stager.imported_stage_saved_step_for_attach(
             &stage_id, &restricted.attach_id, 1,
         ).unwrap(), saved_step);
@@ -5665,6 +5668,7 @@ mod tests {
         let accepted = final_handle.replan_orphan_package_stage(
             &restricted.attach_id, original, None, &cancel,
         ).unwrap();
+        assert_eq!(accepted, after_loss);
         assert_eq!(accepted.status, "ATTACHED");
         assert_eq!(accepted.orphan_package_stage_status.as_deref(), Some("ORPHAN_REPLANNED"));
         assert_eq!(accepted.orphan_replan_stage_id.as_deref(), Some(stage_id.as_str()));
