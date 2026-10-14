@@ -817,6 +817,7 @@ pub(crate) struct ImportedHistoricalDirectBegin {
     pub instance_id: String,
     pub entrypoint: String,
     pub grants_json: String,
+    pub disclose_json: Option<String>,
     pub issued_at_ms: u64,
     pub request_wire: Vec<u8>,
     pub commit_hash: String,
@@ -1388,6 +1389,7 @@ impl SecurePrivatePackageInstall {
             || imported.material_wire.is_empty() || imported.material_wire.len() > 8 * 1024 * 1024
             || imported.bindings_json.len() > 2 * 1024 * 1024
             || imported.grants_json.len() > 2 * 1024 * 1024
+            || imported.disclose_json.as_ref().is_some_and(|wire| wire.len() > 65_536)
             || imported.snapshot_json.len() > 8192
             || imported.source_checkpoint_json.len() > 8192
             || !digest(&imported.commit_hash) || !digest(&imported.source_policy_hash)
@@ -1430,7 +1432,7 @@ impl SecurePrivatePackageInstall {
                 root_package_digest: imported.root_package_digest,
             }),
             instance_id: imported.instance_id, entrypoint: imported.entrypoint,
-            grants_json: imported.grants_json, disclose_json: None,
+            grants_json: imported.grants_json, disclose_json: imported.disclose_json,
             issued_at_ms: imported.issued_at_ms,
             request_b64: base64url(&imported.request_wire),
             commit_hash: imported.commit_hash, policy_hash: imported.policy_hash,
