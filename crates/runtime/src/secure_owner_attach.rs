@@ -1532,6 +1532,7 @@ impl SecureHistoricalOwnerAttach {
             || !valid_digest(&manifest.request_sha256)
             || !valid_digest(&manifest.options_sha256)
             || !valid_digest(&manifest.material_sha256)
+            || manifest.options_sha256 != manifest.intent_hash
         { return Err(HistoricalOwnerAttachError::Conflict); }
         let load = |name: &str| -> Result<Zeroizing<Vec<u8>>, HistoricalOwnerAttachError> {
             SecureStateStore::open(&directory.join(name))
@@ -1561,6 +1562,11 @@ impl SecureHistoricalOwnerAttach {
         )?;
         let pending = source.pending_install_begin.as_ref()
             .ok_or(HistoricalOwnerAttachError::SourceChanged)?;
+        let request = parse_wire_json_bounded(&pending.request, 64, 220_000)
+            .map_err(|_| HistoricalOwnerAttachError::Conflict)?;
+        let commit = request.get("commit").ok_or(HistoricalOwnerAttachError::Conflict)?;
+        let commit_wire = canonical_wire_value(commit, CanonicalPath::SecureArtifact)
+            .map_err(|_| HistoricalOwnerAttachError::Conflict)?;
         if source.visibility != row.visibility || source.sequence != row.source_sequence
             || source.head != row.source_head || source.policy_hash != row.source_policy_hash
             || source.ring.as_ref().and_then(|ring| ring.epochs().last())
@@ -1570,6 +1576,7 @@ impl SecureHistoricalOwnerAttach {
             || pending.intent_hash != manifest.intent_hash
             || pending.path != manifest.path
             || sha256_hex(&pending.request) != manifest.request_sha256
+            || sha256_hex(commit_wire.as_bytes()) != manifest.original_commit_hash
         { return Err(HistoricalOwnerAttachError::Conflict); }
         let intent_backup_path = directory.join("source-intents.sqlite");
         if crate::ts_migration::source_snapshot_digest_allow_pending(&intent_backup_path)
