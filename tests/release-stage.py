@@ -25,6 +25,13 @@ class StageGuards(unittest.TestCase):
     def setUpClass(cls):
         cls.temporary=tempfile.TemporaryDirectory();cls.addClassCleanup(cls.temporary.cleanup)
         cls.work=Path(cls.temporary.name)
+        manifest=COHORT/'artifact-manifest.sha256'
+        if assets.sha(manifest)!='271e94cf10c812b09bad974358c51b8bbb157afbb7d99fb02c3b90c44e36dd92':raise RuntimeError('frozen c5e artifact manifest changed')
+        rows=manifest.read_text().splitlines()
+        if len(rows)!=14:raise RuntimeError('frozen c5e artifact roster changed')
+        for row in rows:
+            digest,name=row.split('  ',1)
+            if assets.sha(COHORT/name)!=digest:raise RuntimeError('frozen c5e input changed')
         source=COHORT/'rootfs/work/sdk-current-c5e7a3d'
         cls.cli=source/'target/release/peerwork'
         cls.wheel=source/'dist/wheels/peerwork_sdk-0.0.1-cp311-abi3-manylinux_2_28_x86_64.whl'
@@ -81,6 +88,14 @@ class StageGuards(unittest.TestCase):
     def test_caller_cannot_upgrade_mismatched_source_eligibility(self):
         directory=self.copy();manifest=json.loads((directory/'release.json').read_text());manifest['release_eligible']=True;(directory/'release.json').write_bytes(assets.wire(manifest));self.reseal(directory)
         with self.assertRaisesRegex(version.ReleaseError,'compiled source agreement'):stage.verify(directory,ROOT)
+    def test_complete_named_roster_cannot_release_old_compiled_source(self):
+        directory=self.work/'named-roster';directory.mkdir()
+        for target in version.TARGETS:
+            if target=='linux-x64-gnu':shutil.copytree(self.bundle,directory/target)
+            else:(directory/target).mkdir()
+        output=self.work/'old-source-release'
+        with self.assertRaisesRegex(version.ReleaseError,'compiled input source differs'):stage.assemble(ROOT,directory,output,'v0.0.1')
+        self.assertFalse(output.exists())
     def test_existing_output_and_wrong_tag_refuse(self):
         with self.assertRaisesRegex(version.ReleaseError,'fresh'):stage.stage(ROOT,'linux-x64-gnu',self.cli,self.wheel,self.wrapper,self.platform,self.metadata,self.bundle,INPUT_SOURCE)
         with self.assertRaisesRegex(version.ReleaseError,'tag'):stage.assemble(ROOT,self.work,self.work/'wrong-tag','v0.0.2')
