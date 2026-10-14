@@ -810,6 +810,9 @@ pub struct PrivatePackageInstallProgress {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct InstallRow {
+    /// Attach-imported BEGINs are never ordinary mutable install intents.
+    #[serde(default)]
+    import_attach_id: Option<String>,
     #[serde(default)]
     source_kind: Option<InstallSourceKind>,
     #[serde(default)]
@@ -923,7 +926,8 @@ impl InstallDocument {
             || doc
                 .rows
                 .iter()
-                .any(|(id, row)| !token(id) || row.source_kind().is_err())
+                .any(|(id, row)| !token(id) || row.source_kind().is_err()
+                    || row.import_attach_id.as_deref().is_some_and(|id| !token(id)))
         {
             return Err(PrivatePackageInstallError::Identity);
         }
@@ -1237,6 +1241,7 @@ impl SecurePrivatePackageInstall {
         let rows: Result<Vec<_>, PrivatePackageInstallError> = doc
             .rows
             .iter()
+            .filter(|(_, row)| row.import_attach_id.is_none())
             .map(|(id, row)| {
                 let kind = row.source_kind()?;
                 let mut item = serde_json::json!({
@@ -1421,6 +1426,7 @@ impl SecurePrivatePackageInstall {
                 )
                 .map_err(|_| PrivatePackageInstallError::Plan)?;
                 let row = InstallRow {
+                    import_attach_id: None,
                     source_kind: Some(InstallSourceKind::Staged),
                     stage_id: Some(input.stage_id.clone()),
                     direct_source: None,
@@ -1628,6 +1634,7 @@ impl SecurePrivatePackageInstall {
                     canonical_wire_value(prepared.snapshot(), CanonicalPath::SecureArtifact)
                         .map_err(|_| PrivatePackageInstallError::Plan)?;
                 let row = InstallRow {
+                    import_attach_id: None,
                     source_kind: Some(InstallSourceKind::Direct),
                     stage_id: None,
                     direct_source: Some(DirectInstallSource {
@@ -1729,6 +1736,28 @@ impl SecurePrivatePackageInstall {
         begin_id: &str,
         cancel: &CancellationToken,
     ) -> Result<String, PrivatePackageInstallError> {
+        self.continue_install_for_attach(begin_id, None, cancel)
+    }
+
+    /// Only the Owner attach recovery path may continue an imported BEGIN.
+    /// Its caller must hold the attach recovery lock and reprove the protected
+    /// selection before entering the producer.
+    pub(crate) fn continue_imported_install_json_with_cancel(
+        &self,
+        begin_id: &str,
+        attach_id: &str,
+        cancel: &CancellationToken,
+    ) -> Result<String, PrivatePackageInstallError> {
+        if !token(attach_id) { return Err(PrivatePackageInstallError::Input); }
+        self.continue_install_for_attach(begin_id, Some(attach_id), cancel)
+    }
+
+    fn continue_install_for_attach(
+        &self,
+        begin_id: &str,
+        expected_import_attach_id: Option<&str>,
+        cancel: &CancellationToken,
+    ) -> Result<String, PrivatePackageInstallError> {
         if !token(begin_id) {
             return Err(PrivatePackageInstallError::Input);
         }
@@ -1757,6 +1786,9 @@ impl SecurePrivatePackageInstall {
                 .get(begin_id)
                 .cloned()
                 .ok_or(PrivatePackageInstallError::Input)?;
+            if row.import_attach_id.as_deref() != expected_import_attach_id {
+                return Err(PrivatePackageInstallError::Plan);
+            }
             if let Some(accepted) = &row.accepted {
                 if !prior.replay().contains_checkpoint(
                     accepted.sequence,
@@ -2961,6 +2993,7 @@ mod tests {
         let store = SecureStateStore::open(&state_dir.join("private-install-operations.state")).unwrap();
         let mut doc = InstallDocument::open(&store, &config, identity.actor_id(), identity.key_id()).unwrap();
         let row = |kind: InstallSourceKind| InstallRow {
+            import_attach_id: None,
             source_kind: Some(kind),
             stage_id: (kind == InstallSourceKind::Staged).then(|| "s".repeat(43)),
             direct_source: (kind == InstallSourceKind::Direct).then(|| DirectInstallSource {
