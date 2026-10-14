@@ -198,12 +198,13 @@ for item in sources:
     selected = source_input(item)
     source_file.write_text(json.dumps(selected));source_file.chmod(0o600)
     def call(operation, *, selected_command=None, inspected_digest=None,
-             selected_options=None, options_path=None, attachment=None):
+             selected_options=None, options_path=None, selected_material=None, material_path=None, attachment=None):
         return invoke(interface, operation, owner, node_config, config_file, source_file,
             selected, command if selected_command is None else selected_command,
             inspected_digest, options if selected_options is None else selected_options,
-            material, options_file if options_path is None else options_path,
-            material_file, attach_id=attachment, workspace=workspace, completed=completed)
+            material if selected_material is None else selected_material,
+            options_file if options_path is None else options_path,
+            material_file if material_path is None else material_path, attach_id=attachment, workspace=workspace, completed=completed)
     inspected = call("inspect")
     assert inspected["ok"] is True, {"interface":interface,"mode":mode,"phase":"inspect"}
     inventory = inspected["value"]
@@ -229,6 +230,10 @@ for item in sources:
     altered_file = STATE / f"altered-options-{suffix}.json"
     altered_file.write_text(altered_json);altered_file.chmod(0o600)
     wrong = call("inspect", selected_options=altered_json, options_path=altered_file)
+    assert wrong["ok"] is False and error_code(wrong, interface) == "SOURCE_UNRESOLVED"
+    wrong_material_file = STATE / f"wrong-material-{suffix}.json"
+    wrong_material_file.write_text("{}");wrong_material_file.chmod(0o600)
+    wrong = call("inspect", selected_material="{}", material_path=wrong_material_file)
     assert wrong["ok"] is False and error_code(wrong, interface) == "SOURCE_UNRESOLVED"
     wrong = call("attach", inspected_digest="0" * 64)
     assert wrong["ok"] is False and error_code(wrong, interface) == "SOURCE_CHANGED"
