@@ -6252,6 +6252,7 @@ fn verify_exact_direct_install_begin(
             let payload = prior_policy_value.get("payload").ok_or_else(invalid)?;
             let undisclosed = exact_u64(payload.get("v")) == Some(1)
                 || (exact_u64(payload.get("v")) == Some(3)
+                    && payload.get("visibility").and_then(WireValue::as_string).as_deref() == Some("PRIVATE")
                     && payload.get("structure_mode").and_then(WireValue::as_string).as_deref() == Some("NONE"));
             let mut approved = std::collections::BTreeSet::new();
             if !undisclosed {
