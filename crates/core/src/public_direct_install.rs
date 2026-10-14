@@ -8,7 +8,7 @@ use crate::{
     full_manifest::validate_full_manifest,
     genesis_structure_policy::derive_install_structure_policy_with_keep_encrypted,
     package_closure::{compile_package_material, scan_package_closure},
-    protocol_composition::verify_composition,
+    protocol_composition::{resolve_protocol, verify_composition},
     secure_replay::project_structure_data,
     structure_bindings::validate_object_bindings,
     structure_policy::validate_structure_policy,
@@ -22,6 +22,51 @@ pub enum DirectInstallError {
     Invalid,
     Resource,
 }
+/// Resolve caller-selected explicit dependencies without granting authority.
+/// The authenticated PRIVATE verifier must independently compile the exact
+/// material under its signed source policy and bind the composition proof.
+pub fn resolve_explicit_install_protocol(
+    root: &WireValue,
+    explicit: Option<&WireValue>,
+) -> Result<(WireValue, String, Option<WireValue>), DirectInstallError> {
+    let invalid = || DirectInstallError::Invalid;
+    let normalize = |value: &WireValue| -> Result<(WireValue, String), DirectInstallError> {
+        let canonical = validate_full_manifest(value).map_err(|_| invalid())?;
+        let wrapped = parse_wire_json_bounded(canonical.as_bytes(), 32, 65_536).map_err(|_| invalid())?;
+        Ok((wrapped.get("manifest").ok_or_else(invalid)?.clone(), sha256_hex(canonical.as_bytes())))
+    };
+    let (source, source_digest) = normalize(root)?;
+    let rows = match explicit { None => &[][..], Some(WireValue::Array(rows)) => rows.as_slice(), _ => return Err(invalid()) };
+    if rows.len() > 16 { return Err(DirectInstallError::Resource); }
+    let mut nodes = std::collections::HashMap::new();
+    for row in rows {
+        if row.object_len() != Some(2) { return Err(invalid()); }
+        let id = row.get("digest").and_then(WireValue::as_utf16).ok_or_else(invalid)?.to_vec();
+        let (manifest, digest) = normalize(row.get("manifest").ok_or_else(invalid)?)?;
+        if id != digest.encode_utf16().collect::<Vec<_>>() || nodes.insert(id, manifest).is_some() {
+            return Err(invalid());
+        }
+    }
+    let composed = matches!(source.get("dependencies"), Some(WireValue::Array(rows)) if !rows.is_empty())
+        || source.get("constraints").and_then(WireValue::object_len).is_some_and(|len| len > 0);
+    if !composed {
+        if !nodes.is_empty() { return Err(invalid()); }
+        return Ok((source, source_digest, None));
+    }
+    let (resolved, closure) = resolve_protocol(&source, &nodes).map_err(|_| invalid())?;
+    if nodes.keys().any(|id| !closure.contains(id)) { return Err(invalid()); }
+    let dependencies = closure.into_iter().map(|id| {
+        let manifest = nodes.get(&id).ok_or_else(invalid)?.clone();
+        Ok(WireValue::Object(vec![(key("digest"), WireValue::String(id)), (key("manifest"), manifest)]))
+    }).collect::<Result<Vec<_>, DirectInstallError>>()?;
+    let proof = WireValue::Object(vec![
+        (key("v"), WireValue::Number(1.0)), (key("source_digest"), text(&source_digest)),
+        (key("source_manifest"), source), (key("dependencies"), WireValue::Array(dependencies)),
+    ]);
+    let digest = normalize(&resolved)?.1;
+    Ok((resolved, digest, Some(proof)))
+}
+
 pub struct PublicPackageCompilation {
     package_digest: String,
     package_id: String,

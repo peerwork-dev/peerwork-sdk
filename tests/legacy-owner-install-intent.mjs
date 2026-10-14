@@ -15,7 +15,8 @@ if (!origin || !sourceDir || !referenceRoot
     'direct-checkpoint-begin-before-post', 'direct-checkpoint-end-applied-loss',
     'direct-checkpoint-completed-end', 'direct-disclosure-begin-before-post',
     'direct-disclosure-end-applied-loss', 'direct-no-grants-begin-before-post',
-    'direct-empty-disclosure-begin-before-post'].includes(mode)) {
+    'direct-empty-disclosure-begin-before-post', 'direct-composition-begin-before-post',
+    'direct-composition-end-applied-loss'].includes(mode)) {
   throw new Error('INSTALL_INTENT_TEST_INPUT');
 }
 mkdirSync(sourceDir, { recursive: true, mode: 0o700 });
@@ -41,7 +42,9 @@ try {
   const disclosureOption = mode.startsWith('direct-disclosure-');
   const emptyDisclosureOption = mode.startsWith('direct-empty-disclosure-');
   const omittedGrants = mode.startsWith('direct-no-grants-');
+  const compositionOption = mode.startsWith('direct-composition-');
   const normalizedOptions = disclosureOption || emptyDisclosureOption || omittedGrants;
+  let compositionMaterial;
   const checkpointOption = mode.startsWith('direct-checkpoint-') || disclosureOption;
   if (disclosureOption || emptyDisclosureOption) {
     initial = await agent.enableFormatTwo(workspaceId);
@@ -49,7 +52,7 @@ try {
       || initial.structure?.state !== 'ACTIVE') throw new Error('INSTALL_DISCLOSURE_CEILING');
   }
   const retainedStep = /^direct-(page|end)-/.exec(mode.replace(
-    /^direct-(checkpoint|disclosure|empty-disclosure|no-grants)-/, 'direct-'))?.[1];
+    /^direct-(checkpoint|disclosure|empty-disclosure|no-grants|composition)-/, 'direct-'))?.[1];
   if (retainedStep === 'page') {
     const wiki = initial.objects.find(row => row.kind === 'instances'
       && row.value.origin_entrypoint === 'wiki');
@@ -75,12 +78,14 @@ try {
       }
     };
     walk(directory);
-    const material = disclosureOption || emptyDisclosureOption
+    compositionMaterial = compositionOption
+      ? await (await import('./legacy-owner-install-composition-material.mjs')).createLegacyComposedInstallMaterial(referenceRoot) : undefined;
+    const material = compositionMaterial ? compositionMaterial.material : disclosureOption || emptyDisclosureOption
       ? await (await import('./legacy-owner-install-disclosure-material.mjs')).createLegacyReadableInstallMaterial(referenceRoot)
       : { v: 1, closure: createProtocolPackageClosure(
         parseProtocolPackage({ format: PROTOCOL_PACKAGE_FORMAT, files }), []), bindings: {} };
     const compiled = compilePackageMaterial(material);
-    manifest = compiled.manifest;
+    manifest = compositionMaterial ? compositionMaterial.sourceManifest : compiled.manifest;
     writeFileSync(materialPath, JSON.stringify(material), { mode: 0o600, flag: 'wx' });
   } else {
     manifest = discussionPreset();
@@ -176,6 +181,7 @@ try {
   const instanceId = randomBytes(32).toString('base64url');
   const options = {
     instance_id: instanceId, entrypoint: 'migrated_discussion', manifest,
+    ...(compositionOption ? { dependencies: compositionMaterial.dependencies } : {}),
     ...(!omittedGrants ? { grants: [{ actor_id: agent.identity.actorId,
       actions: disclosureOption || emptyDisclosureOption ? ['set'] : ['discussion.post'],
       protocol_roles: disclosureOption || emptyDisclosureOption ? [] : ['CONTRIBUTOR'],
@@ -189,6 +195,12 @@ try {
   if (checkpointOption && (!secureEqual(resolved.expectedCheckpoint, initial.checkpoint)
     || !normalizedOptions && await secureHash(options) !== resolved.intentHash)) {
     throw new Error('INSTALL_INTENT_REVIEWED_CHECKPOINT_HASH');
+  }
+  if (compositionOption && (await secureHash(options) === resolved.intentHash
+    || resolved.digest !== compositionMaterial.protocolDigest
+    || !secureEqual(resolved.manifest, compositionMaterial.compiledManifest)
+    || !secureEqual(resolved.composition, compositionMaterial.composition))) {
+    throw new Error('INSTALL_INTENT_COMPOSITION_COMPILER_EQUALITY');
   }
   if (normalizedOptions && (await secureHash(options) === resolved.intentHash
     || omittedGrants && resolved.grants.length !== 0
@@ -318,6 +330,9 @@ try {
     pending_commit_hash: selected ? await secureHash(selected[1].body.commit) : null,
     ...(checkpointOption ? { expected_checkpoint: options.expected_checkpoint,
       canonical_options_hash: await secureHash(options) } : {}),
+    ...(compositionOption ? { canonical_options_hash: await secureHash(options),
+      source_digest: compositionMaterial.sourceDigest, composition: resolved.composition,
+      explicit_dependency_count: options.dependencies.length, compiler_equality: true } : {}),
     ...(normalizedOptions ? { canonical_options_hash: await secureHash(options),
       normalized_disclosure: resolved.disclose ?? null,
       normalized_grants: resolved.grants, original_grants_omitted: omittedGrants } : {}),

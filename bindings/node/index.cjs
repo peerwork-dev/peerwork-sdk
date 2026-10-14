@@ -34,7 +34,15 @@ const binding = require(modulePath);
 exports.version = binding.version;
 exports.capabilities = () => JSON.parse(binding.capabilitiesJson());
 exports.createIdentity = async path => JSON.parse(await binding.identityCreateJson(path));
-exports.openIdentity = async path => JSON.parse(await binding.identityOpenJson(path));
+exports.openIdentity = async path => {
+  try {
+    return JSON.parse(await binding.identityOpenJson(path));
+  } catch (error) {
+    const code = typeof error.message === 'string' && error.message.match(/^(IDENTITY_MISSING|IDENTITY_STATE): /)?.[1];
+    if (code) error.code = code;
+    throw error;
+  }
+};
 exports.importIdentitySeedFile = async (path, seedFile) => JSON.parse(await binding.identityImportSeedJson(path, seedFile));
 exports.importLegacyIdentityPem = async (path, pemFile) => JSON.parse(await binding.identityImportPkcs8PemJson(path, pemFile));
 /** Import a legacy Owner PEM into identity.state under the supplied Owner config. */

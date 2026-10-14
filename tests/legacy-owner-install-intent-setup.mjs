@@ -34,7 +34,8 @@ try {
       'direct-checkpoint-begin-before-post', 'direct-checkpoint-end-applied-loss',
       'direct-checkpoint-completed-end', 'direct-disclosure-begin-before-post',
       'direct-disclosure-end-applied-loss', 'direct-no-grants-begin-before-post',
-      'direct-empty-disclosure-begin-before-post'].includes(selected)) {
+      'direct-empty-disclosure-begin-before-post', 'direct-composition-begin-before-post',
+      'direct-composition-end-applied-loss'].includes(selected)) {
       throw new Error('INSTALL_SETUP_MODE_INVALID');
     }
     for (const mode of selected ? [selected]
@@ -62,7 +63,7 @@ try {
       const checkpointOption = mode.startsWith('direct-checkpoint-');
       const normalizedOptions = /^(direct-disclosure-|direct-no-grants-|direct-empty-disclosure-)/.test(mode);
       const retainedStep = /^direct-(page|end)-/.exec(mode.replace(
-        /^direct-(checkpoint|disclosure|empty-disclosure|no-grants)-/, 'direct-'))?.[1];
+        /^direct-(checkpoint|disclosure|empty-disclosure|no-grants|composition)-/, 'direct-'))?.[1];
       if (source.mode !== mode || source.pending_count !== (completed ? 0 : 1)
         || source.latest_structure_state !== (retainedStep
           ? retainedStep === 'end' && mode.endsWith('applied-loss') ? 'ACTIVE' : 'SEEDING'
@@ -90,6 +91,12 @@ try {
           || source.normalized_disclosure[0].protocol_digest !== source.protocol_digest))) {
         throw new Error(`INSTALL_SETUP_${mode}_NORMALIZED_OPTIONS`);
       }
+      if (mode.startsWith('direct-composition-') && (source.compiler_equality !== true
+        || source.explicit_dependency_count !== 1 || source.composition?.v !== 1
+        || source.composition.source_digest !== source.source_digest
+        || source.canonical_options_hash === source.intent_hash)) {
+        throw new Error(`INSTALL_SETUP_${mode}_COMPOSITION`);
+      }
       if (!completed) {
         const accepted = db.prepare('SELECT count(*) AS count FROM secure_commits WHERE workspace_id=? AND command_id=?')
           .get(source.workspace_id, source.pending_command_id).count;
@@ -101,6 +108,10 @@ try {
         initial_sequence: source.initial_sequence, latest_sequence: source.latest_sequence,
         structure_state: source.latest_structure_state, commit_count: count,
         intent_hash_bound: true,
+        ...(mode.startsWith('direct-composition-') ? { compiler_equality: true,
+          explicit_dependency_count: source.explicit_dependency_count,
+          original_options_hash_distinct: true, source_digest: source.source_digest,
+          protocol_digest: source.protocol_digest } : {}),
         selected_epoch: source.selected_epoch ?? null,
         latest_epoch: source.latest_epoch ?? null,
         ...(checkpointOption ? { reviewed_checkpoint_sequence: source.expected_checkpoint.sequence,
