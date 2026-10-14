@@ -66,6 +66,14 @@ pub struct SecureOwnerCreateConfig {
     pub max_replay_artifact_bytes: u64,
 }
 
+impl SecureOwnerCreateConfig {
+    /// The Owner profile and config-aware identity import share one native
+    /// identity file under the configured protected state directory.
+    pub fn identity_path(&self) -> PathBuf {
+        self.state_dir.join("identity.state")
+    }
+}
+
 fn default_budget() -> u64 {
     SecureJournalReadBudget::default().max_replay_artifact_bytes
 }
@@ -944,7 +952,7 @@ impl SecureOwnerWorkspaceCreate {
         SecureRecipientEnrollment::new(config)
     }
     fn identity_path(&self) -> PathBuf {
-        self.config.state_dir.join("identity.state")
+        self.config.identity_path()
     }
     fn recipient_path(&self) -> PathBuf {
         self.config.state_dir.join("recipient.state")
