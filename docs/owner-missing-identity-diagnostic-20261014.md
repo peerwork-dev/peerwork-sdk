@@ -25,3 +25,15 @@ Corrected windows_fs.rs SHA-256 `f064763f3a14e2633e71c6c9e20c9d85c19e5e2eee50d17
 Predecessor df4 binding check `22695` (`cargo check -p peerwork-python-native -p peerwork-node-native --offline --locked`) exited 0 in 3m15s, log SHA-256 `a068ff2e0f43855933c32949f36555780ab61e78b3dd1832cb8fbd7da9ff8400`. This is Linux compile evidence, not installed binding or Windows execution.
 
 Corrected source `0188b7e` regression `1821` passed 2/2 in 0.08 seconds after a 12.69-second test build. It includes the new absent-parent check for Owner read/operations and retained saved-identity mismatch semantics. Log `.build-target/identity-corrected-test.log` SHA-256 `e2fd90658833c30a6536b8a97ec33c56c5f176baf45f4175c0099cc456dc94ff`. No Windows runner was used.
+
+Combined handoff source `06667a705f36f9da13aa6d2782eb4d65b77ab766` preserves main c37 completed-map and facade bytes (`secure_owner_attach.rs` has no delta), plus the byte-identical accepted proxy paths. Incremental CLI build and four-crate runtime/CLI/Python/Node compile `11588` passed; the final CLI missing-identity regression exited 0, exact-policy proxy regression `92691` exited 0, and focused integrated runtime `91867` passed missing-identity 2/2 plus explicit proxy selection 1/1. These repeat only interacting checks for the merged source. The earlier signed-inspect result `47947` is reused in its recorded source scope; no signed fixture, release artifact cohort or natural Agent was rerun. The integrated debug binary is a local verification artifact, not a rebuilt release package.
+
+| Integrated artifact | SHA-256 |
+| --- | --- |
+| `.build-target/integrated-build.log` | `cd2afdc937fac8a5fb1d1a86b3684e7db3089e7bb161ea5200cb8ae011afc555` |
+| `.build-target/integrated-check.log` | `560be8cf5c5eec43a164b5fb701b11c85f722296851dc5a7e31647df305ce5b5` |
+| `.build-target/integrated-identity-cli.log` | `d2cd0648e7c44fa44620db1a7523b57aecfa290706454ff1c7f83fc4f3b9411f` |
+| `.build-target/integrated-proxy-cli.log` | `51e1c377031429ad582f46218d6422010b595859bd1e5402d698a7e695679ef0` |
+| `.build-target/integrated-identity-test.log` | `aa7652b610576d3d20031b2b7b8134ebaa52939b7868a3780b1d46f6cd72e027` |
+| `.build-target/integrated-proxy-test.log` | `1cc5d0e8e0ccb01d073a666c666519264b33230535baa265d56344083f74018c` |
+| `.build-target/target/debug/peerwork` | `7d56f84a1798213d913b5e125b6c07ee44c1d375efb2fbd62783d23766fe0744` |
