@@ -5,6 +5,7 @@ No native build, actual signature/notary, auth lookup or publication is run.
 import importlib.util
 import io
 import json
+import re
 from pathlib import Path
 import shutil
 import struct
@@ -138,4 +139,19 @@ class WorkflowGuards(unittest.TestCase):
     def test_missing_signing_prerequisites_block_before_verification(self):
         with patch.object(mac.ci,'verify_subject') as verify,self.assertRaisesRegex(version.ReleaseError,'protected notarization keychain'):mac.sign(ROOT,self.work/'absent','darwin-x64',self.work/'rejected','synthetic','profile','v0.0.1','owner/repo',self.work/'absent.keychain')
         verify.assert_not_called();self.assertFalse((self.work/'rejected').exists())
+    def test_hidden_output_uploads_are_explicit_and_finite(self):
+        text=(ROOT/'.github/workflows/release.yml').read_text()
+        blocks=re.findall(r'(?ms)^      - uses: actions/upload-artifact@[^\n]+\n(.*?)(?=^      - |^  [a-z_]+:|\Z)',text)
+        self.assertEqual(len(blocks),3)
+        found=set()
+        for block in blocks:
+            path=re.search(r'(?m)^          path: (.+)$',block).group(1)
+            self.assertIn(path,{'.release-unsigned/**','.release-signed/*','.release-final/**'})
+            self.assertIn('          include-hidden-files: true\n',block)
+            self.assertIn('          if-no-files-found: error',block);found.add(path)
+        self.assertEqual(len(found),3)
+        # Private certificate/keychain material is created under RUNNER_TEMP;
+        # every upload is limited to a separately checked release inventory.
+        self.assertIn('$RUNNER_TEMP/peerwork-release.keychain-db',text)
+        self.assertIn('pathlib.Path(os.environ["RUNNER_TEMP"],"developer-id.p12")',text)
 if __name__=='__main__':unittest.main()

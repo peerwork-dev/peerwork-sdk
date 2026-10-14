@@ -51,6 +51,7 @@ jobs:
         with:
           name: release-unsigned-assembled
           path: .release-unsigned/**
+          include-hidden-files: true
           if-no-files-found: error
   macos_sign:
     needs: compare_and_assemble
@@ -113,6 +114,7 @@ jobs:
         with:
           name: release-signed-${{ matrix.target }}
           path: .release-signed/*
+          include-hidden-files: true
           if-no-files-found: error
       - name: Delete temporary private signing material
         if: always()
@@ -150,6 +152,7 @@ jobs:
         with:
           name: release-final-candidate
           path: .release-final/**
+          include-hidden-files: true
           if-no-files-found: error
   publish_github:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
