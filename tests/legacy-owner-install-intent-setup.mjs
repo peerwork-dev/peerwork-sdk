@@ -1,7 +1,8 @@
 // Fixture-only service gate. It proves that the public f828 client naturally
 // creates three distinct install-intent states; it does not import them.
 import { spawn } from 'node:child_process';
-import { mkdirSync, openSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdirSync, openSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { DatabaseSync } from 'node:sqlite';
@@ -36,7 +37,10 @@ try {
       child.stdout.on('data', chunk => { stdout += chunk; if (stdout.length > 65536) child.kill(); });
       child.stderr.on('data', chunk => { stderr += chunk; if (stderr.length > 65536) child.kill(); });
       const code = await new Promise(resolve => child.once('exit', resolve));
-      if (code !== 0) throw new Error(`INSTALL_SETUP_${mode}_FAILED: ${stderr.slice(0, 4000)}`);
+      if (code !== 0) {
+        writeFileSync(join(sourceDir, 'helper.stderr'), stderr, { mode: 0o600, flag: 'wx' });
+        throw new Error(`INSTALL_SETUP_${mode}_FAILED: rc=${code} stderr_sha256=${createHash('sha256').update(stderr).digest('hex')}`);
+      }
       const source = JSON.parse(stdout);
       if (source.mode !== mode || source.pending_count !== (mode === 'completed-end' ? 0 : 1)
         || source.latest_structure_state !== (mode === 'begin-applied-loss' ? 'SEEDING' : 'ACTIVE')) {
