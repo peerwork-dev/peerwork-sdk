@@ -27,8 +27,31 @@ use peerwork_core::canonical::Path as CanonicalPath;
 use peerwork_core::wire_json::{canonical_wire_value, parse_wire_json_bounded, WireValue};
 use std::fs;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
+
+// Only CLI identity arguments accept paths relative to the caller's working
+// directory. The protected-state layer still checks the resulting absolute
+// path's private parent, file mode, ownership, and symlink/canonical form.
+fn identity_cli_path(value: &str) -> Result<PathBuf, String> {
+    let path = Path::new(value);
+    if path.is_absolute() {
+        Ok(path.to_path_buf())
+    } else {
+        let mut relative = PathBuf::new();
+        for component in path.components() {
+            if matches!(component, Component::Prefix(_)) {
+                return Err("drive-relative identity paths are unsupported".to_owned());
+            }
+            if !matches!(component, Component::CurDir) {
+                relative.push(component.as_os_str());
+            }
+        }
+        std::env::current_dir()
+            .map(|cwd| cwd.join(relative))
+            .map_err(|_| "working directory is unavailable".to_owned())
+    }
+}
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -53,11 +76,13 @@ fn main() -> ExitCode {
             }
         }
         [noun, verb, path] if noun == "identity" && (verb == "create" || verb == "info") => {
-            let identity = if verb == "create" {
-                KernelIdentity::create(Path::new(path))
-            } else {
-                KernelIdentity::open(Path::new(path))
-            };
+            let identity = identity_cli_path(path).and_then(|path| {
+                if verb == "create" {
+                    KernelIdentity::create(&path).map_err(|error| error.to_string())
+                } else {
+                    KernelIdentity::open(&path).map_err(|error| error.to_string())
+                }
+            });
             match identity {
                 Ok(identity) => {
                     println!(
@@ -77,7 +102,13 @@ fn main() -> ExitCode {
             }
         }
         [noun, verb, path, seed_file] if noun == "identity" && verb == "import-seed-file" => {
-            match KernelIdentity::import_seed_file(Path::new(path), Path::new(seed_file)) {
+            let identity = identity_cli_path(path)
+                .and_then(|path| identity_cli_path(seed_file).map(|seed_file| (path, seed_file)))
+                .and_then(|(path, seed_file)| {
+                    KernelIdentity::import_seed_file(&path, &seed_file)
+                        .map_err(|error| error.to_string())
+                });
+            match identity {
                 Ok(identity) => {
                     println!(
                         "{{\"actor_id\":\"{}\",\"key_id\":\"{}\"}}",
@@ -96,7 +127,13 @@ fn main() -> ExitCode {
             }
         }
         [noun, verb, path, pem_file] if noun == "identity" && verb == "import-legacy-pem" => {
-            match KernelIdentity::import_pkcs8_pem_file(Path::new(path), Path::new(pem_file)) {
+            let identity = identity_cli_path(path)
+                .and_then(|path| identity_cli_path(pem_file).map(|pem_file| (path, pem_file)))
+                .and_then(|(path, pem_file)| {
+                    KernelIdentity::import_pkcs8_pem_file(&path, &pem_file)
+                        .map_err(|error| error.to_string())
+                });
+            match identity {
                 Ok(identity) => {
                     println!(
                         "{{\"actor_id\":\"{}\",\"key_id\":\"{}\"}}",
@@ -318,7 +355,7 @@ fn main() -> ExitCode {
             cli_result(public_catalog_command(verb, rest))
         }
         _ => {
-            let usage = r#"peerwork version|capabilities|identity create PATH|identity info PATH|identity import-legacy-pem PATH PROTECTED_PEM_FILE|identity import-seed-file PATH PROTECTED_SEED_FILE|kernel open|prepare|pending|status|submit ORIGIN JOURNAL IDENTITY [COMMAND_FILE|COMMAND_ID] [--allow-loopback-http] [--authority=HEX] [--chunk-file=PATH|--chunk-stdin for prepare]; kernel migrate ORIGIN JOURNAL IDENTITY SOURCE BACKUP --trusted-signer=KEY_ID [--trusted-signer=KEY_ID ...]; secure read|private-read --origin=URL --state-dir=DIR --identity=PATH --workspace=ID [--owner-actor=ID --owner-key=ID] [--authority=HEX]; secure snapshot ORIGIN KERNEL_JOURNAL READ_STATE LIFECYCLE IDENTITY WORKSPACE AUTHORITY OWNER_ACTOR OWNER_KEY [--allow-loopback-http] [--max-replay-artifact-bytes=N]; secure action-submit|action-status|action-retry CONFIG_JSON_FILE ACTION_JSON_FILE|COMMAND_ID; secure action-pending CONFIG_JSON_FILE; secure install-begin CONFIG_JSON_FILE INPUT_JSON_FILE | install-continue CONFIG_JSON_FILE BEGIN_COMMAND_ID | install-pending CONFIG_JSON_FILE; secure owner-prepare|owner-create CONFIG_JSON_FILE INPUT_JSON_FILE | owner-resume CONFIG_JSON_FILE COMMAND_ID | owner-operations CONFIG_JSON_FILE | owner-read CONFIG_JSON_FILE WORKSPACE_ID | owner-attach CONFIG_JSON_FILE INPUT_JSON_FILE | owner-attach-resume CONFIG_JSON_FILE ATTACH_ID | owner-attach-retain CONFIG_JSON_FILE ATTACH_ID EXPECTED_COMMAND_ID | owner-attachments CONFIG_JSON_FILE | owner-kernel-inspect CONFIG_JSON_FILE INPUT_JSON_FILE | owner-kernel-status CONFIG_JSON_FILE ATTACH_ID | owner-kernel-recover CONFIG_JSON_FILE ATTACH_ID COMMAND_ID | owner-stage-inspect CONFIG_JSON_FILE INPUT_JSON_FILE | owner-stage-multipart-inspect|owner-stage-multipart-attach CONFIG_JSON_FILE INPUT_JSON_FILE MATERIAL_JSON_FILE | owner-stage-recover CONFIG_JSON_FILE ATTACH_ID COMMAND_ID | owner-stage-orphan-inspect CONFIG_JSON_FILE INPUT_JSON_FILE | owner-stage-orphan-replan CONFIG_JSON_FILE ATTACH_ID ORIGINAL_COMMAND_ID [MATERIAL_JSON_FILE] | owner-format-submit CONFIG_JSON_FILE INPUT_JSON_FILE | owner-format-resume CONFIG_JSON_FILE WORKSPACE_ID COMMAND_ID | owner-format-history CONFIG_JSON_FILE WORKSPACE_ID | owner-action-submit|owner-action-status|owner-action-retry|owner-action-pending|owner-private-action-submit|owner-private-action-status|owner-private-action-retry|owner-private-action-pending|owner-install-begin|owner-install-continue|owner-install-pending|owner-private-stage-submit|owner-private-stage-continue|owner-private-stage-list|owner-private-install-begin|owner-private-install-begin-direct|owner-private-install-continue|owner-private-install-list|owner-admit-offer|owner-admit-retry-offer|owner-admit-pending-offers|owner-admit-deliver|owner-admit-retry-delivery|owner-admit-pending-deliveries|owner-private-admit-offer|owner-private-admit-retry-offer|owner-private-admit-pending-offers|owner-private-admit-deliver|owner-private-admit-retry-delivery|owner-private-admit-pending-deliveries CONFIG_JSON_FILE WORKSPACE_ID [INPUT_JSON_FILE|COMMAND_ID]; secure catalog-search CONFIG_JSON_FILE QUERY [AFTER] [LIMIT] | catalog-inspect CONFIG_JSON_FILE LOWERCASE_DIGEST; secure recipient-create|recipient-publish|recipient-pending|recipient-certificate|recipient-update|recipient-retry-update|recipient-pending-updates --origin=URL --state-dir=DIR [--mode=ROTATE|RENEW --expected-certificate-hash=HEX --update-id=ID] [--allow-loopback-http]; secure directory-lookup --origin=URL --state-dir=DIR --actor=ACTOR --key=KEY [--identity=PATH] [--allow-loopback-http]"#;
+            let usage = r#"peerwork version|capabilities|identity create IDENTITY_STATE_FILE|identity info IDENTITY_STATE_FILE|identity import-legacy-pem IDENTITY_STATE_FILE PROTECTED_PEM_FILE|identity import-seed-file IDENTITY_STATE_FILE PROTECTED_SEED_FILE|kernel open|prepare|pending|status|submit ORIGIN JOURNAL IDENTITY [COMMAND_FILE|COMMAND_ID] [--allow-loopback-http] [--authority=HEX] [--chunk-file=PATH|--chunk-stdin for prepare]; kernel migrate ORIGIN JOURNAL IDENTITY SOURCE BACKUP --trusted-signer=KEY_ID [--trusted-signer=KEY_ID ...]; secure read|private-read --origin=URL --state-dir=DIR --identity=PATH --workspace=ID [--owner-actor=ID --owner-key=ID] [--authority=HEX]; secure snapshot ORIGIN KERNEL_JOURNAL READ_STATE LIFECYCLE IDENTITY WORKSPACE AUTHORITY OWNER_ACTOR OWNER_KEY [--allow-loopback-http] [--max-replay-artifact-bytes=N]; secure action-submit|action-status|action-retry CONFIG_JSON_FILE ACTION_JSON_FILE|COMMAND_ID; secure action-pending CONFIG_JSON_FILE; secure install-begin CONFIG_JSON_FILE INPUT_JSON_FILE | install-continue CONFIG_JSON_FILE BEGIN_COMMAND_ID | install-pending CONFIG_JSON_FILE; secure owner-prepare|owner-create CONFIG_JSON_FILE INPUT_JSON_FILE | owner-resume CONFIG_JSON_FILE COMMAND_ID | owner-operations CONFIG_JSON_FILE | owner-read CONFIG_JSON_FILE WORKSPACE_ID | owner-attach CONFIG_JSON_FILE INPUT_JSON_FILE | owner-attach-resume CONFIG_JSON_FILE ATTACH_ID | owner-attach-retain CONFIG_JSON_FILE ATTACH_ID EXPECTED_COMMAND_ID | owner-attachments CONFIG_JSON_FILE | owner-kernel-inspect CONFIG_JSON_FILE INPUT_JSON_FILE | owner-kernel-status CONFIG_JSON_FILE ATTACH_ID | owner-kernel-recover CONFIG_JSON_FILE ATTACH_ID COMMAND_ID | owner-stage-inspect CONFIG_JSON_FILE INPUT_JSON_FILE | owner-stage-multipart-inspect|owner-stage-multipart-attach CONFIG_JSON_FILE INPUT_JSON_FILE MATERIAL_JSON_FILE | owner-stage-recover CONFIG_JSON_FILE ATTACH_ID COMMAND_ID | owner-stage-orphan-inspect CONFIG_JSON_FILE INPUT_JSON_FILE | owner-stage-orphan-replan CONFIG_JSON_FILE ATTACH_ID ORIGINAL_COMMAND_ID [MATERIAL_JSON_FILE] | owner-format-submit CONFIG_JSON_FILE INPUT_JSON_FILE | owner-format-resume CONFIG_JSON_FILE WORKSPACE_ID COMMAND_ID | owner-format-history CONFIG_JSON_FILE WORKSPACE_ID | owner-action-submit|owner-action-status|owner-action-retry|owner-action-pending|owner-private-action-submit|owner-private-action-status|owner-private-action-retry|owner-private-action-pending|owner-install-begin|owner-install-continue|owner-install-pending|owner-private-stage-submit|owner-private-stage-continue|owner-private-stage-list|owner-private-install-begin|owner-private-install-begin-direct|owner-private-install-continue|owner-private-install-list|owner-admit-offer|owner-admit-retry-offer|owner-admit-pending-offers|owner-admit-deliver|owner-admit-retry-delivery|owner-admit-pending-deliveries|owner-private-admit-offer|owner-private-admit-retry-offer|owner-private-admit-pending-offers|owner-private-admit-deliver|owner-private-admit-retry-delivery|owner-private-admit-pending-deliveries CONFIG_JSON_FILE WORKSPACE_ID [INPUT_JSON_FILE|COMMAND_ID]; secure catalog-search CONFIG_JSON_FILE QUERY [AFTER] [LIMIT] | catalog-inspect CONFIG_JSON_FILE LOWERCASE_DIGEST; secure recipient-create|recipient-publish|recipient-pending|recipient-certificate|recipient-update|recipient-retry-update|recipient-pending-updates --origin=URL --state-dir=DIR [--mode=ROTATE|RENEW --expected-certificate-hash=HEX --update-id=ID] [--allow-loopback-http]; secure directory-lookup --origin=URL --state-dir=DIR --actor=ACTOR --key=KEY [--identity=PATH] [--allow-loopback-http]"#;
             if matches!(args.as_slice(), [command] if command == "--help" || command == "-h" || command == "help") {
                 println!("{}", serde_json::json!({"status":"HELP", "usage":usage}));
                 ExitCode::SUCCESS
