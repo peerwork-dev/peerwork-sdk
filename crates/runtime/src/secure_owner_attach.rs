@@ -11629,12 +11629,12 @@ mod tests {
             assert!(matches!(attach.inspect_completed_direct_install(
                 &input, instance, std::str::from_utf8(&options).unwrap(),
                 std::str::from_utf8(&material).unwrap(), &cancel,
-            ), Err(HistoricalOwnerAttachError::SourceUnresolved)));
+            ), Err(HistoricalOwnerAttachError::Verification)));
             assert!(matches!(attach.attach_completed_direct_install(
                 input.clone(), instance, &digest,
                 std::str::from_utf8(&options).unwrap(),
                 std::str::from_utf8(&material).unwrap(), &cancel,
-            ), Err(HistoricalOwnerAttachError::SourceUnresolved)));
+            ), Err(HistoricalOwnerAttachError::Verification)));
             assert!(attach.attachments().unwrap().is_empty());
             assert!(!attach.workspace_dir(workspace).join("lifecycle.state").exists());
             assert_eq!(count(), before_count);
