@@ -5,6 +5,16 @@ use crate::canonical::Path;
 use std::{cmp::Ordering, collections::HashSet, str};
 use thiserror::Error;
 
+#[cfg(test)]
+thread_local! {
+    static UTF8_VALIDATION_BYTES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn record_utf8_validation(bytes: usize) {
+    UTF8_VALIDATION_BYTES.with(|total| total.set(total.get() + bytes as u64));
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum WireValue {
     Null,
@@ -191,6 +201,8 @@ fn parse_wire_json_with_mode(
     // Both tracked HTTP readers and the secure crypto decoder use fatal UTF-8
     // TextDecoder, whose default BOM handling removes one leading UTF-8 BOM.
     let input = input.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(input);
+    #[cfg(test)]
+    record_utf8_validation(input.len());
     str::from_utf8(input).map_err(|_| WireError::Invalid)?;
     let mut parser = Parser {
         input,
@@ -412,11 +424,46 @@ impl Parser<'_> {
                     _ => return Err(WireError::Invalid),
                 }
             } else {
+                #[cfg(test)]
+                record_utf8_validation(self.input.len() - self.at);
                 let rest =
                     str::from_utf8(&self.input[self.at..]).map_err(|_| WireError::Invalid)?;
                 let ch = rest.chars().next().ok_or(WireError::Invalid)?;
                 units.extend(ch.encode_utf16(&mut [0; 2]).iter().copied());
                 self.at += ch.len_utf8();
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod parser_profile {
+    use super::*;
+
+    /// Explicit, bounded profiling only; never prints caller material.
+    #[test]
+    #[ignore]
+    fn small_string_scaling() {
+        for kind in ["ascii", "multibyte"] {
+            for target_bytes in [4096, 8192, 16384, 32768] {
+                let text = if kind == "ascii" {
+                    "A".repeat(target_bytes)
+                } else {
+                    "🙂éA".repeat(target_bytes / 7)
+                };
+                let wire = serde_json::to_vec(&text).unwrap();
+                let expected: Vec<_> = text.encode_utf16().collect();
+                let iterations = 3;
+                UTF8_VALIDATION_BYTES.with(|total| total.set(0));
+                let started = std::time::Instant::now();
+                for _ in 0..iterations {
+                    let parsed = parse_wire_json_bounded(&wire, 64, 65536).unwrap();
+                    assert_eq!(parsed.as_utf16(), Some(expected.as_slice()));
+                    std::hint::black_box(parsed);
+                }
+                let elapsed_ns = started.elapsed().as_nanos();
+                let validated_bytes = UTF8_VALIDATION_BYTES.with(|total| total.get());
+                println!("{{\"profile\":\"wire_parser\",\"kind\":\"{kind}\",\"input_bytes\":{},\"iterations\":{iterations},\"elapsed_ns\":{elapsed_ns},\"utf8_validation_bytes\":{validated_bytes}}}", wire.len());
             }
         }
     }
