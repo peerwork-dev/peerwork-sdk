@@ -456,6 +456,8 @@ struct LoadedOrphanPlan {
 #[serde(deny_unknown_fields)]
 struct QuarantinedDirectInstallPlan {
     version: u8,
+    #[serde(default)]
+    completed_map: bool,
     origin: String,
     plan_id: String,
     attach_id: String,
@@ -995,13 +997,19 @@ impl SecureHistoricalOwnerAttach {
         options_json: &str,
         material_json: &str,
         original_commit_hash: &str,
+        completed_map: bool,
     ) -> Result<QuarantinedDirectInstallPlan, HistoricalOwnerAttachError> {
         let invalid = || HistoricalOwnerAttachError::SourceUnresolved;
         if !valid_digest(ts_digest) || !valid_digest(pem_digest)
             || !valid_digest(intent_digest) || !valid_digest(original_commit_hash)
             || source.visibility != "PRIVATE" || source.head.is_none()
-            || source.pending_install_begin.as_ref().map(|row| row.command_id.as_str())
-                != Some(pending.command_id.as_str())
+            || (if completed_map {
+                source.completed_install_intent.as_ref().is_none_or(|row|
+                    row.instance_id != pending.instance_id || row.intent_hash != pending.intent_hash)
+            } else {
+                source.pending_install_begin.as_ref().map(|row| row.command_id.as_str())
+                    != Some(pending.command_id.as_str())
+            })
         { return Err(invalid()); }
         let options = parse_wire_json_bounded(options_json.as_bytes(), 64, 2 * 1024 * 1024)
             .map_err(|_| invalid())?;
@@ -1019,7 +1027,8 @@ impl SecureHistoricalOwnerAttach {
         let source_epoch = source.ring.as_ref().and_then(|ring| ring.epochs().last())
             .ok_or_else(invalid)?;
         let selection = serde_json::to_vec(&(
-            "peerwork.owner.direct-install-plan.v1", &self.config.origin,
+            if completed_map { "peerwork.owner.completed-direct-install-plan.v1" }
+                else { "peerwork.owner.direct-install-plan.v1" }, &self.config.origin,
             &input.workspace_id, ts_digest, &pending.command_id,
             &options_sha256, &material_sha256,
         )).map_err(|_| HistoricalOwnerAttachError::Local)?;
@@ -1028,7 +1037,7 @@ impl SecureHistoricalOwnerAttach {
             "peerwork.owner.direct-install-attach.v1:{plan_id}"
         ).as_bytes()));
         let manifest = QuarantinedDirectInstallPlan {
-            version: 1, origin: self.config.origin.clone(), plan_id: plan_id.clone(), attach_id,
+            version: 1, completed_map, origin: self.config.origin.clone(), plan_id: plan_id.clone(), attach_id,
             workspace_id: input.workspace_id.clone(),
             owner_actor_id: input.expected_owner_actor_id.clone(),
             owner_key_id: input.expected_owner_key_id.clone(),
@@ -1118,8 +1127,11 @@ impl SecureHistoricalOwnerAttach {
         if total > MAX_SOURCE as u64 + 2048 + 2 * 1024 * 1024 + 8 * 1024 * 1024 + 256 * 1024 * 1024 {
             return Err(HistoricalOwnerAttachError::Local);
         }
-        let (_, state_after, pem_after, intent_after) =
-            self.inspect_sources_selected_install(input, Some(&pending.command_id))?;
+        let (_, state_after, pem_after, intent_after) = if completed_map {
+            self.inspect_sources_selected_completed_install(input, &pending.instance_id)?
+        } else {
+            self.inspect_sources_selected_install(input, Some(&pending.command_id))?
+        };
         if (state_after, pem_after, intent_after) !=
             (ts_digest.into(), pem_digest.into(), intent_digest.into()) {
             return Err(HistoricalOwnerAttachError::SourceChanged);
@@ -1648,26 +1660,35 @@ impl SecureHistoricalOwnerAttach {
         if owner.actor_id() != manifest.owner_actor_id || owner.key_id() != manifest.owner_key_id {
             return Err(HistoricalOwnerAttachError::Identity);
         }
-        let source = parse_legacy_source_selected_install(
-            &state, &row.input, Some(&manifest.command_id),
-        )?;
-        let pending = source.pending_install_begin.as_ref()
-            .ok_or(HistoricalOwnerAttachError::SourceChanged)?;
-        let request = parse_wire_json_bounded(&pending.request, 64, 220_000)
-            .map_err(|_| HistoricalOwnerAttachError::Conflict)?;
-        let commit = request.get("commit").ok_or(HistoricalOwnerAttachError::Conflict)?;
-        let commit_wire = canonical_wire_value(commit, CanonicalPath::SecureArtifact)
-            .map_err(|_| HistoricalOwnerAttachError::Conflict)?;
+        let source = if manifest.completed_map {
+            parse_legacy_source_selected_completed_install(&state, &row.input, &manifest.instance_id)?
+        } else {
+            parse_legacy_source_selected_install(&state, &row.input, Some(&manifest.command_id))?
+        };
+        let pending_matches = if manifest.completed_map {
+            source.completed_install_intent.as_ref().is_some_and(|selected|
+                selected.instance_id == manifest.instance_id
+                    && selected.intent_hash == manifest.intent_hash)
+        } else {
+            let pending = source.pending_install_begin.as_ref()
+                .ok_or(HistoricalOwnerAttachError::SourceChanged)?;
+            let request = parse_wire_json_bounded(&pending.request, 64, 220_000)
+                .map_err(|_| HistoricalOwnerAttachError::Conflict)?;
+            let commit = request.get("commit").ok_or(HistoricalOwnerAttachError::Conflict)?;
+            let commit_wire = canonical_wire_value(commit, CanonicalPath::SecureArtifact)
+                .map_err(|_| HistoricalOwnerAttachError::Conflict)?;
+            pending.command_id == manifest.command_id
+                && pending.instance_id == manifest.instance_id
+                && pending.intent_hash == manifest.intent_hash
+                && pending.path == manifest.path
+                && sha256_hex(&pending.request) == manifest.request_sha256
+                && sha256_hex(commit_wire.as_bytes()) == manifest.original_commit_hash
+        };
         if source.visibility != row.visibility || source.sequence != row.source_sequence
             || source.head != row.source_head || source.policy_hash != row.source_policy_hash
             || source.ring.as_ref().and_then(|ring| ring.epochs().last())
                 != Some(manifest.source_epoch)
-            || pending.command_id != manifest.command_id
-            || pending.instance_id != manifest.instance_id
-            || pending.intent_hash != manifest.intent_hash
-            || pending.path != manifest.path
-            || sha256_hex(&pending.request) != manifest.request_sha256
-            || sha256_hex(commit_wire.as_bytes()) != manifest.original_commit_hash
+            || !pending_matches
         { return Err(HistoricalOwnerAttachError::Conflict); }
         let intent_backup_path = directory.join("source-intents.sqlite");
         if crate::ts_migration::source_snapshot_digest_allow_pending(&intent_backup_path)
@@ -1687,9 +1708,11 @@ impl SecureHistoricalOwnerAttach {
             }
         }
         if !all_missing {
-            let (_, state_after, pem_after, intent_after) = self.inspect_sources_selected_install(
-                &row.input, Some(&manifest.command_id),
-            )?;
+            let (_, state_after, pem_after, intent_after) = if manifest.completed_map {
+                self.inspect_sources_selected_completed_install(&row.input, &manifest.instance_id)?
+            } else {
+                self.inspect_sources_selected_install(&row.input, Some(&manifest.command_id))?
+            };
             if (state_after, pem_after, intent_after) != (
                 manifest.ts_state_sha256.clone(), manifest.owner_pem_sha256.clone(),
                 manifest.ts_intent_sha256.clone(),
@@ -2023,7 +2046,7 @@ impl SecureHistoricalOwnerAttach {
         )?;
         let plan = self.save_quarantined_direct_install_plan(
             &input, &source, &ts_digest, &pem_digest, &intent_digest,
-            pending, options_json, material_json, &verified.commit_hash,
+            pending, options_json, material_json, &verified.commit_hash, false,
         )?;
         let store = SecureStateStore::open(&self.history_path())
             .map_err(|_| HistoricalOwnerAttachError::Local)?;
@@ -2060,6 +2083,115 @@ impl SecureHistoricalOwnerAttach {
             pending_direct_install_complete: false,
         };
         history.rows.insert(id.clone(), row);
+        save_history(&store, &history)?;
+        drop(history); drop(store); drop(lock);
+        #[cfg(test)]
+        if TEST_STOP_AFTER_ATTACH_ROW.swap(false, Ordering::SeqCst) {
+            return Err(HistoricalOwnerAttachError::Cancelled);
+        }
+        self.resume_attachment(&id, cancel)
+    }
+
+    /// Attach a selected map-only direct install whose exact signed END is
+    /// current. No old request exists locally, so this path never retries a
+    /// packet or creates an imported InstallRow.
+    pub fn attach_completed_direct_install(
+        &self,
+        input: HistoricalOwnerAttachInput,
+        selected_instance_id: &str,
+        expected_ts_state_digest: &str,
+        options_json: &str,
+        material_json: &str,
+        cancel: &CancellationToken,
+    ) -> Result<HistoricalOwnerAttachResult, HistoricalOwnerAttachError> {
+        validate_input(&input)?;
+        if !valid_token(selected_instance_id) || !valid_digest(expected_ts_state_digest)
+            || options_json.is_empty() || options_json.len() > 2 * 1024 * 1024
+            || material_json.is_empty() || material_json.len() > 8 * 1024 * 1024
+            || input.recover_pending_action || input.retain_pending_action_command_id.is_some()
+            || input.selected_pending_package_stage_command_id.is_some()
+            || input.selected_orphan_package_stage_command_id.is_some()
+            || !input.kernel_pending_command_ids.is_empty()
+        { return Err(HistoricalOwnerAttachError::Input); }
+        if cancel.is_cancelled() { return Err(HistoricalOwnerAttachError::Cancelled); }
+        let (source, ts_digest, pem_digest, intent_digest) =
+            self.inspect_sources_selected_completed_install(&input, selected_instance_id)?;
+        if ts_digest != expected_ts_state_digest { return Err(HistoricalOwnerAttachError::SourceChanged); }
+        if input.expected_kernel_intent_db_digest.as_deref()
+            .is_some_and(|digest| digest != intent_digest) {
+            return Err(HistoricalOwnerAttachError::SourceChanged);
+        }
+        let selected = source.completed_install_intent.as_ref()
+            .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+        let ring = source.ring.as_ref().ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+        ensure_dir(&self.config.state_dir)?;
+        let source_owner = KernelIdentity::inspect_pkcs8_pem_file(&input.protected_owner_pkcs8_path)
+            .map_err(|_| HistoricalOwnerAttachError::SourceChanged)?;
+        match KernelIdentity::open(&self.identity_path()) {
+            Ok(existing) if existing.actor_id() == source_owner.actor_id()
+                && existing.key_id() == source_owner.key_id() => (),
+            Err(KernelIdentityError::NotFound) => (),
+            _ => return Err(HistoricalOwnerAttachError::Identity),
+        }
+        if SecureOwnerWorkspaceCreate::new(self.config.clone())
+            .has_saved_workspace_for_attach(&input.workspace_id, &source_owner)
+            .map_err(|_| HistoricalOwnerAttachError::Conflict)? {
+            return Err(HistoricalOwnerAttachError::Conflict);
+        }
+        self.preflight_kernel_source(&input, cancel, Some(&[]))?;
+        let lock = SecureStateStore::open(&self.config.state_dir.join("owner-attach-recovery.state"))
+            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        let verified = self.with_preflight_replay(&input, &source, cancel, |replayed, owner| {
+            verify_completed_direct_install(selected, options_json.as_bytes(),
+                material_json.as_bytes(), ring, replayed, owner, &input)
+        })?;
+        let request = Zeroizing::new(verified.imported.request_wire.clone());
+        let pending = LegacyPendingInstallBegin {
+            command_id: verified.imported.command_id.clone(),
+            instance_id: selected.instance_id.clone(),
+            intent_hash: selected.intent_hash.clone(),
+            path: format!("/api/workspace/v1/secure/workspaces/{}/commits", input.workspace_id),
+            request,
+        };
+        let plan = self.save_quarantined_direct_install_plan(
+            &input, &source, &ts_digest, &pem_digest, &intent_digest,
+            &pending, options_json, material_json, &verified.commit_hash, true,
+        )?;
+        let store = SecureStateStore::open(&self.history_path())
+            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        let mut history = read_history(&store, &self.config.origin)?;
+        if let Some((id, old)) = history.rows.iter()
+            .find(|(_, row)| row.input.workspace_id == input.workspace_id) {
+            if id != &plan.attach_id || old.input != input
+                || old.pending_direct_install_plan_id.as_deref() != Some(&plan.plan_id)
+                || old.pending_direct_install_command_id.as_deref() != Some(&plan.command_id)
+                || old.ts_state_sha256 != ts_digest || old.owner_pem_sha256 != pem_digest
+                || old.ts_intent_sha256 != intent_digest {
+                return Err(HistoricalOwnerAttachError::Conflict);
+            }
+            let id = id.clone();
+            drop(history); drop(store); drop(lock);
+            return self.resume_attachment(&id, cancel);
+        }
+        if history.rows.len() >= MAX_HISTORY { return Err(HistoricalOwnerAttachError::Local); }
+        let id = plan.attach_id.clone();
+        history.rows.insert(id.clone(), SavedAttach {
+            input, visibility: source.visibility,
+            ts_state_sha256: ts_digest, owner_pem_sha256: pem_digest,
+            ts_intent_sha256: intent_digest,
+            source_sequence: source.sequence, source_head: source.head,
+            source_policy_hash: source.policy_hash,
+            attached_sequence: None, attached_head: None, kernel_import: None,
+            retained_action_commit_hash: None, retained_action_command_id: None,
+            retained_upgrade_accepted: false, retained_action_accepted: false,
+            pending_package_stage: None, pending_multipart_plan_id: None,
+            orphan_multipart_plan_id: None, orphan_package_stage: None,
+            pending_direct_install_plan_id: Some(plan.plan_id),
+            pending_direct_install_command_id: Some(plan.command_id),
+            pending_direct_install_instance_id: Some(plan.instance_id),
+            pending_direct_install_begin_accepted: true,
+            pending_direct_install_complete: true,
+        });
         save_history(&store, &history)?;
         drop(history); drop(store); drop(lock);
         #[cfg(test)]
@@ -2310,6 +2442,13 @@ impl SecureHistoricalOwnerAttach {
             .clone();
         drop(history);
         drop(store);
+        // Completed map-only plans contain no old packet. Revalidate their
+        // protected copies on each resume, including after source removal.
+        let completed_direct_plan = if row.pending_direct_install_plan_id.is_some()
+            && row.pending_direct_install_complete {
+            let plan = self.load_quarantined_direct_install_plan(attach_id, &row)?;
+            if plan.manifest.completed_map { Some(plan) } else { None }
+        } else { None };
         if row.pending_direct_install_plan_id.is_some() && !row.pending_direct_install_complete {
             if row.attached_sequence.is_some() && row.kernel_import.is_some() {
                 let plan = self.load_quarantined_direct_install_plan(attach_id, &row)?;
@@ -2385,6 +2524,22 @@ impl SecureHistoricalOwnerAttach {
                     HistoricalOwnerAttachError::Verification
                 }
             })?;
+        if let Some(plan) = completed_direct_plan.as_ref() {
+            let selected = plan.source.completed_install_intent.as_ref()
+                .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+            let ring = plan.source.ring.as_ref()
+                .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
+            let verified = verify_completed_direct_install(
+                selected, &plan.options, &plan.material, ring,
+                &replayed, &owner, &row.input,
+            )?;
+            if verified.imported.command_id != plan.manifest.command_id
+                || verified.imported.instance_id != plan.manifest.instance_id
+                || verified.commit_hash != plan.manifest.original_commit_hash
+                || sha256_hex(&verified.imported.request_wire) != plan.manifest.request_sha256
+                || replayed.replay().sequence() != row.source_sequence
+            { return Err(HistoricalOwnerAttachError::Conflict); }
+        }
         for command in &source.retained_member_commands {
             let completed = replayed.signed_commit_wires().iter().any(|wire| {
                 parse_wire_json_bounded(wire, 64, 262_144)
@@ -11420,6 +11575,44 @@ mod tests {
         ), Err(HistoricalOwnerAttachError::SourceUnresolved)));
         assert_eq!(std::fs::read(&input.protected_ts_state_path).unwrap(), before);
         assert!(attach.attachments().unwrap().is_empty());
+        let oracle = rusqlite::Connection::open_with_flags(
+            root.path().join("control.sqlite"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        ).unwrap();
+        let count = || -> i64 { oracle.query_row(
+            "SELECT count(*) FROM secure_commits WHERE workspace_id=?1", [workspace],
+            |row| row.get(0),
+        ).unwrap() };
+        let before_count = count();
+        assert_eq!(before_count, valid.end_sequence as i64);
+        TEST_STOP_AFTER_ATTACH_ROW.store(true, Ordering::SeqCst);
+        assert!(matches!(attach.attach_completed_direct_install(
+            input.clone(), instance, &valid.ts_state_digest,
+            std::str::from_utf8(&options).unwrap(),
+            std::str::from_utf8(&material).unwrap(), &cancel,
+        ), Err(HistoricalOwnerAttachError::Cancelled)));
+        let rows = attach.attachments().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, "PREPARED");
+        assert_eq!(count(), before_count);
+        std::fs::rename(root.path().join("legacy"), root.path().join("source-moved")).unwrap();
+        assert!(!input.protected_ts_state_path.exists());
+        let reopened = SecureHistoricalOwnerAttach::new(SecureOwnerCreateConfig {
+            origin: origin.into(), state_dir: root.path().join("native"),
+            allow_loopback_http: true, max_replay_artifact_bytes: 64 * 1024 * 1024,
+        });
+        let attached = reopened.resume_attachment(&rows[0].attach_id, &cancel).unwrap();
+        assert_eq!(attached.status, "ATTACHED");
+        assert_eq!(attached.pending_direct_install_status.as_deref(), Some("ACCEPTED"));
+        assert_eq!(count(), before_count, "completed map must never submit a packet");
+        let read: serde_json::Value = serde_json::from_str(
+            &reopened.read_workspace_json(workspace, &cancel).unwrap(),
+        ).unwrap();
+        assert!(read["objects"].as_array().unwrap().iter().any(|row|
+            row["kind"] == "instances" && row["id"] == instance
+                && row["value"]["protocol_digest"] == fixture["protocol_digest"]
+                && row["value"]["origin_entrypoint"] == fixture["entrypoint"]));
+        assert_eq!(reopened.resume_attachment(&attached.attach_id, &cancel).unwrap(), attached);
+        assert_eq!(count(), before_count);
     }
 
     #[test]
@@ -11605,7 +11798,7 @@ mod tests {
             let plan = attach.save_quarantined_direct_install_plan(
                 &input, &parsed_source, &ts_digest, &pem_digest, &intent_digest,
                 saved_packet, std::str::from_utf8(&options).unwrap(),
-                std::str::from_utf8(&material).unwrap(), &original_hash,
+                std::str::from_utf8(&material).unwrap(), &original_hash, false,
             ).unwrap();
             assert_eq!(plan.command_id, command);
             assert_eq!(plan.attach_id.len(), 43);
