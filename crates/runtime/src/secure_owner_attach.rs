@@ -8,7 +8,7 @@ use crate::{
     secure_intents::{SecureIntentError, SecureIntentJournal, SecurePacketInput},
     secure_lifecycle::SecureLifecycle,
     secure_owner_create::{SecureOwnerCreateConfig, SecureOwnerWorkspaceCreate},
-    secure_private_install::{ImportedHistoricalDirectBegin, ImportedHistoricalStageStep, PrivatePackageStageInput, SecurePrivatePackageInstall},
+    secure_private_install::{ImportedHistoricalDirectBegin, InstallStep, ImportedHistoricalStageStep, PrivatePackageStageInput, SecurePrivatePackageInstall},
     secure_read_access::{SecureReadAccess, SecureReadConfig},
     secure_read_profile::{SecureReadProfile, SecureReadProfileConfig},
     secure_state::{read_private_file_bounded, SecureStateStore},
@@ -21,8 +21,8 @@ use peerwork_core::{
     prepared_secure_request::{
         verify_prepared_secure_commit_request_with_policy, SecureCommitRequestPins,
     },
-    prepared_private_install::{canonical_package_source_material, package_source_identity_matches, prepare_multipart_orphan_package_stage_material, prepare_orphan_package_stage_material, verify_complete_package_source, verify_saved_private_direct_install_begin_with_options, VerifiedMultipartOrphanMaterial, MAX_PACKAGE_SOURCE_PARTS},
-    public_direct_install::compile_public_package_closure_with_bindings,
+    prepared_private_install::{canonical_package_source_material, package_source_identity_matches, prepare_multipart_orphan_package_stage_material, prepare_orphan_package_stage_material, verify_complete_package_source, verify_saved_private_direct_install_begin_with_options, verify_saved_private_package_install_step, VerifiedMultipartOrphanMaterial, MAX_PACKAGE_SOURCE_PARTS},
+    public_direct_install::{compile_public_package_closure_with_bindings, plan_public_install_snapshot},
     replayed_secure_journal::{replay_secure_journal_exact, JournalReplayInput, StructureStatus},
     secure_keyring::SecretKeyring,
     wire_json::{canonical_wire_value, parse_wire_json_bounded, WireValue},
@@ -449,9 +449,9 @@ struct LoadedOrphanPlan {
     intent_backup_path: PathBuf,
 }
 
-/// Inert original direct-BEGIN selection. The attach ID and future InstallRow
-/// command ID are fixed before PREPARED; only the matching attachment may
-/// activate an imported row or submit the original saved request.
+/// Inert original direct-install packet selection. The caller-selected packet
+/// ID is fixed before PREPARED; its historical BEGIN separately owns the
+/// imported InstallRow. Only the matching attachment may submit saved steps.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct QuarantinedDirectInstallPlan {
@@ -884,8 +884,8 @@ impl SecureHistoricalOwnerAttach {
         })
     }
 
-    /// Inspect one selected f828 direct-install BEGIN with full caller-owned
-    /// closure material and resolved options. It returns only safe identity,
+    /// Inspect one selected f828 direct-install BEGIN/PAGE/END with full
+    /// caller-owned closure material and original resolved options. It returns only safe identity,
     /// digest and signed-outcome metadata. This never imports or submits the
     /// old packet, and the ordinary attach parser remains fail-closed.
     pub fn inspect_pending_direct_install_begin(
@@ -1988,8 +1988,8 @@ impl SecureHistoricalOwnerAttach {
         self.attach_inner(input, Some(material_json), cancel)
     }
 
-    /// Persist an exact, selected old direct BEGIN as a restricted historical
-    /// Owner handoff. Full source/packet proof and protected copies precede
+    /// Persist an exact selected old direct-install BEGIN/PAGE/END as a
+    /// restricted historical Owner handoff. Full source/packet proof and protected copies precede
     /// PREPARED; this method never submits the old or a new install packet.
     pub fn attach_pending_direct_install_begin(
         &self,
@@ -2999,19 +2999,29 @@ impl SecureHistoricalOwnerAttach {
         if !replayed.replay().contains_checkpoint(
             predecessor_sequence, Some(&predecessor_head), &predecessor_policy_hash,
         ) { return Err(HistoricalOwnerAttachError::Verification); }
-        let expected_sequence = predecessor_sequence
-            .checked_add(u64::from(verified.applied))
+        let selected_request = parse_wire_json_bounded(&pending.request, 64, 220_000)
+            .map_err(|_| HistoricalOwnerAttachError::Verification)?;
+        let selected_payload = selected_request.get("commit").and_then(|c| c.get("payload"))
             .ok_or(HistoricalOwnerAttachError::Verification)?;
+        let selected_action = selected_payload.get("action_id").and_then(WireValue::as_string)
+            .ok_or(HistoricalOwnerAttachError::Verification)?;
+        let selected_sequence = exact_u64(selected_payload.get("sequence"))
+            .ok_or(HistoricalOwnerAttachError::Verification)?;
+        let expected_sequence = selected_sequence.checked_sub(u64::from(!verified.applied))
+            .ok_or(HistoricalOwnerAttachError::Verification)?;
+        let begin_hash = verified.imported.commit_hash.clone();
+        let begin_policy_hash = verified.imported.policy_hash.clone();
+        let begun = selected_action != "secure.structure.begin" || verified.applied;
+        let ended = selected_action == "secure.structure.end" && verified.applied;
         if !owner_current || current_epoch != plan.manifest.source_epoch
             || ring.epochs().last() != Some(current_epoch)
             || payload.get("visibility").and_then(WireValue::as_string).as_deref()
                 != Some("PRIVATE")
             || replayed.replay().sequence() != expected_sequence
-            || (verified.applied
-                && replayed.replay().structure_status() != StructureStatus::Seeding)
-            || (!verified.applied
-                && (replayed.replay().structure_status() != StructureStatus::Active
-                    || replayed.replay().policy_hash() != row.source_policy_hash))
+            || (begun && !ended && replayed.replay().structure_status() != StructureStatus::Seeding)
+            || (ended && replayed.replay().structure_status() != StructureStatus::Active)
+            || (!begun && (replayed.replay().structure_status() != StructureStatus::Active
+                || replayed.replay().policy_hash() != row.source_policy_hash))
         {
             #[cfg(test)] {
                 if !owner_current { eprintln!("direct-install-attach:current-owner"); }
@@ -3042,11 +3052,10 @@ impl SecureHistoricalOwnerAttach {
             &directory.join("lifecycle.state"), &self.config.origin,
             owner.actor_id(), &row.input.workspace_id, owner.actor_id(), owner.key_id(),
         ).map_err(|_| HistoricalOwnerAttachError::Local)?;
-        if verified.applied {
+        if begun && !ended {
             lifecycle.activate_verified_historical_owner_pending_begin(
                 ring, &replayed, predecessor_sequence, Some(&predecessor_head),
-                &predecessor_policy_hash, &verified.commit_hash,
-                replayed.replay().policy_hash(),
+                &predecessor_policy_hash, &begin_hash, &begin_policy_hash,
             ).map_err(|_| {
                 #[cfg(test)] eprintln!("direct-install-attach:activate-seeding");
                 HistoricalOwnerAttachError::Verification
@@ -3061,7 +3070,7 @@ impl SecureHistoricalOwnerAttach {
             })?;
         }
         drop(lifecycle);
-        if !verified.applied {
+        if !begun || ended {
             SecureReadProfile::new(self.profile_config(&row.input))
                 .read_latest_json_with_cancel(cancel)
                 .map_err(|_| HistoricalOwnerAttachError::Verification)?;
@@ -3076,7 +3085,7 @@ impl SecureHistoricalOwnerAttach {
             || saved.kernel_import.as_ref().is_some_and(|old| old != &kernel_import)
         { return Err(HistoricalOwnerAttachError::Conflict); }
         saved.kernel_import = Some(kernel_import);
-        saved.pending_direct_install_begin_accepted = verified.applied;
+        saved.pending_direct_install_begin_accepted = begun;
         saved.attached_sequence = Some(replayed.replay().sequence());
         saved.attached_head = replayed.replay().head().map(str::to_owned);
         let completed = saved.clone();
@@ -3135,12 +3144,12 @@ impl SecureHistoricalOwnerAttach {
         // exact historical ACTIVE predecessor and signed BEGIN before POST.
         let progress_wire = SecurePrivatePackageInstall::new(self.profile_config(&row.input))
             .continue_imported_install_json_with_cancel(
-                expected_command_id, attach_id, cancel,
+                &verified.imported.command_id, attach_id, cancel,
             ).map_err(|_| HistoricalOwnerAttachError::PendingDirectInstallUnresolved)?;
         let progress: serde_json::Value = serde_json::from_str(&progress_wire)
             .map_err(|_| HistoricalOwnerAttachError::Local)?;
         if progress.get("begin_command_id").and_then(serde_json::Value::as_str)
-            != Some(expected_command_id)
+            != Some(verified.imported.command_id.as_str())
             || progress.get("instance_id").and_then(serde_json::Value::as_str)
                 != Some(plan.manifest.instance_id.as_str())
         { return Err(HistoricalOwnerAttachError::Conflict); }
@@ -5808,7 +5817,195 @@ fn parse_pending_package_stage(
 /// predecessor. This is import proof only: it never signs, submits, or changes
 /// a protected attachment row. Other install variants require their own proof.
 #[allow(dead_code)]
+/// Classify the caller-selected exact packet. BEGIN owns the installation;
+/// a retained PAGE/END owns only its original saved step and command ID.
 fn verify_pending_direct_install_begin(
+    pending: &LegacyPendingInstallBegin,
+    options_wire: &[u8],
+    material_wire: &[u8],
+    ring: &SecretKeyring,
+    replayed: &TransportReplayedJournal,
+    owner: &KernelIdentity,
+    input: &HistoricalOwnerAttachInput,
+) -> Result<VerifiedLegacyDirectBegin, HistoricalOwnerAttachError> {
+    let invalid = || HistoricalOwnerAttachError::SourceUnresolved;
+    let request = parse_wire_json_bounded(&pending.request, 64, 220_000)
+        .map_err(|_| invalid())?;
+    let selected_commit = request.get("commit").ok_or_else(invalid)?;
+    let selected = selected_commit.get("payload").ok_or_else(invalid)?;
+    let action = selected.get("action_id").and_then(WireValue::as_string).ok_or_else(invalid)?;
+    if action == "secure.structure.begin" {
+        return verify_exact_direct_install_begin(
+            pending, options_wire, material_wire, ring, replayed, owner, input,
+        );
+    }
+    if !["secure.structure.page", "secure.structure.end"].contains(&action.as_str())
+        || request.object_len() != Some(1)
+        || selected.get("command_id").and_then(WireValue::as_string).as_deref()
+            != Some(pending.command_id.as_str())
+        || pending.path != format!("/api/workspace/v1/secure/workspaces/{}/commits", input.workspace_id)
+    { return Err(invalid()); }
+    let selected_sequence = exact_u64(selected.get("sequence")).ok_or_else(invalid)?;
+    let selected_index = usize::try_from(selected_sequence.checked_sub(1).ok_or_else(invalid)?)
+        .map_err(|_| invalid())?;
+    let selected_hash = sha256_hex(canonical_wire_value(selected_commit,
+        CanonicalPath::SecureArtifact).map_err(|_| invalid())?.as_bytes());
+    let applied = if let Some(wire) = replayed.signed_commit_wires().get(selected_index) {
+        if sha256_hex(wire) != selected_hash { return Err(invalid()); }
+        true
+    } else if replayed.replay().sequence().checked_add(1) == Some(selected_sequence)
+        && selected.get("previous").and_then(WireValue::as_string).as_deref()
+            == replayed.replay().head()
+        && selected.get("policy_hash").and_then(WireValue::as_string).as_deref()
+            == Some(replayed.replay().policy_hash()) {
+        false
+    } else { return Err(invalid()); };
+    // Re-prove current authority independently of the historical BEGIN.
+    let current_wire = replayed.signed_policy_by_hash(replayed.replay().policy_hash())
+        .ok_or_else(invalid)?;
+    let current = parse_wire_json_bounded(current_wire, 64, 196_608).map_err(|_| invalid())?;
+    let current = current.get("payload").ok_or_else(invalid)?;
+    let owner_current = matches!(current.get("members"), Some(WireValue::Array(members))
+        if members.iter().any(|member| {
+            member.get("actor_id").and_then(WireValue::as_string).as_deref()
+                == Some(input.expected_owner_actor_id.as_str())
+                && member.get("role").and_then(WireValue::as_string).as_deref() == Some("OWNER")
+                && member.get("certificate").and_then(|value| value.get("payload"))
+                    .and_then(|value| value.get("signing_key"))
+                    .and_then(WireValue::as_string).as_deref()
+                    == Some(input.expected_owner_key_id.as_str())
+        }));
+    if !owner_current || current.get("visibility").and_then(WireValue::as_string).as_deref()
+        != Some("PRIVATE") || exact_u64(current.get("epoch")) != ring.epochs().last()
+    { return Err(invalid()); }
+    let mut matched = None;
+    for (index, wire) in replayed.signed_commit_wires().iter().enumerate().take(selected_index) {
+        let begin = parse_wire_json_bounded(wire, 64, 262_144).map_err(|_| invalid())?;
+        let payload = begin.get("payload").ok_or_else(invalid)?;
+        if payload.get("action_id").and_then(WireValue::as_string).as_deref()
+            != Some("secure.structure.begin") { continue; }
+        let command_id = payload.get("command_id").and_then(WireValue::as_string)
+            .filter(|id| valid_token(id)).ok_or_else(invalid)?;
+        let policy_hash = payload.get("policy_hash").and_then(WireValue::as_string)
+            .ok_or_else(invalid)?;
+        let policy_wire = replayed.signed_policy_by_hash(&policy_hash).ok_or_else(invalid)?;
+        let body = serde_json::json!({
+            "commit": serde_json::from_slice::<serde_json::Value>(wire).map_err(|_| invalid())?,
+            "policy_update": serde_json::from_slice::<serde_json::Value>(policy_wire).map_err(|_| invalid())?,
+        });
+        let candidate = LegacyPendingInstallBegin {
+            command_id, instance_id: pending.instance_id.clone(), intent_hash: pending.intent_hash.clone(),
+            path: pending.path.clone(), request: Zeroizing::new(serde_json::to_vec(&body).map_err(|_| invalid())?),
+        };
+        if let Ok(verified) = verify_exact_direct_install_begin(
+            &candidate, options_wire, material_wire, ring, replayed, owner, input,
+        ) {
+            if matched.is_some() || !verified.applied { return Err(invalid()); }
+            matched = Some((index, verified));
+        }
+    }
+    let (begin_index, mut verified) = matched.ok_or_else(invalid)?;
+    if selected_index <= begin_index || selected_index - begin_index > 2048
+        || replayed.replay().policy_hash() != verified.imported.policy_hash
+    { return Err(invalid()); }
+    let prior = replayed.authenticated_active_prefix(
+        verified.imported.source_checkpoint_json.as_bytes(), ring,
+    ).map_err(|_| invalid())?;
+    let policy_wire = replayed.signed_policy_by_hash(&verified.imported.policy_hash).ok_or_else(invalid)?;
+    let policy = parse_wire_json_bounded(policy_wire, 64, 196_608).map_err(|_| invalid())?;
+    let policy_payload = policy.get("payload").ok_or_else(invalid)?;
+    let plan = plan_public_install_snapshot(
+        prior.replay().objects(), policy_payload.get("structure").ok_or_else(invalid)?,
+        &parse_wire_json_bounded(verified.imported.source_checkpoint_json.as_bytes(), 32, 8192)
+            .map_err(|_| invalid())?,
+    ).map_err(|_| invalid())?;
+    let key = ring.key_at(exact_u64(policy_payload.get("epoch")).ok_or_else(invalid)?)
+        .ok_or_else(invalid)?;
+    for index in begin_index + 1..=selected_index {
+        let request_wire = if index == selected_index {
+            pending.request.to_vec()
+        } else {
+            let wire = replayed.signed_commit_wires().get(index).ok_or_else(invalid)?;
+            let body = serde_json::json!({"commit": serde_json::from_slice::<serde_json::Value>(wire)
+                .map_err(|_| invalid())?});
+            let body = parse_wire_json_bounded(&serde_json::to_vec(&body).map_err(|_| invalid())?, 64, 220_000)
+                .map_err(|_| invalid())?;
+            canonical_wire_value(&body, CanonicalPath::SecureArtifact).map_err(|_| invalid())?.into_bytes()
+        };
+        let body = parse_wire_json_bounded(&request_wire, 64, 220_000).map_err(|_| invalid())?;
+        let payload = body.get("commit").and_then(|value| value.get("payload")).ok_or_else(invalid)?;
+        let command_id = payload.get("command_id").and_then(WireValue::as_string)
+            .filter(|id| valid_token(id)).ok_or_else(invalid)?;
+        let issued_at = exact_u64(payload.get("issued_at")).ok_or_else(invalid)?;
+        let (prefix, checkpoint) = replay_install_step_predecessor(replayed, ring, input, index as u64)?;
+        if prefix.structure_status() != StructureStatus::Seeding
+            || prefix.policy_hash() != verified.imported.policy_hash
+        { return Err(invalid()); }
+        let snapshot = prefix.structure_snapshot().ok_or_else(invalid)?;
+        let checked = verify_saved_private_package_install_step(
+            &request_wire, policy_wire, &checkpoint, snapshot, &plan,
+            &command_id, issued_at, owner.signing_key(), key,
+        ).map_err(|_| invalid())?;
+        // A prior END would close this snapshot and cannot precede the selected step.
+        if index != selected_index && checked.action_id() != "secure.structure.page" {
+            return Err(invalid());
+        }
+        verified.imported.steps.push(InstallStep {
+            command_id, issued_at_ms: issued_at, request_b64: base64url(&request_wire),
+            commit_hash: checked.commit_hash().to_owned(), action_id: checked.action_id().to_owned(),
+            offset: usize::try_from(exact_u64(snapshot.get("offset")).ok_or_else(invalid)?)
+                .map_err(|_| invalid())?,
+        });
+    }
+    if verified.imported.steps.last().is_none_or(|step|
+        step.command_id != pending.command_id || step.commit_hash != selected_hash || step.action_id != action)
+    { return Err(invalid()); }
+    verified.applied = applied;
+    verified.commit_hash = selected_hash;
+    Ok(verified)
+}
+
+/// Internal low-level SEEDING proof context derived only from exact wires in
+/// the complete transport-authenticated replay. It never publishes a read floor.
+fn replay_install_step_predecessor(
+    replayed: &TransportReplayedJournal,
+    ring: &SecretKeyring,
+    input: &HistoricalOwnerAttachInput,
+    sequence: u64,
+) -> Result<(peerwork_core::replayed_secure_journal::ReplayedSecureJournal, Vec<u8>), HistoricalOwnerAttachError> {
+    let invalid = || HistoricalOwnerAttachError::SourceUnresolved;
+    let through = usize::try_from(sequence).map_err(|_| invalid())?;
+    let wire = replayed.signed_commit_wires().get(through.checked_sub(1).ok_or_else(invalid)?)
+        .ok_or_else(invalid)?;
+    let commit = parse_wire_json_bounded(wire, 64, 262_144).map_err(|_| invalid())?;
+    let payload = commit.get("payload").ok_or_else(invalid)?;
+    let head = sha256_hex(wire);
+    let policy_hash = payload.get("policy_hash").and_then(WireValue::as_string).ok_or_else(invalid)?;
+    if !replayed.replay().contains_checkpoint(sequence, Some(&head), &policy_hash) { return Err(invalid()); }
+    let checkpoint = serde_json::to_vec(&serde_json::json!({
+        "v": 1, "workspace_id": input.workspace_id,
+        "owner_id": input.expected_owner_actor_id, "owner_key": input.expected_owner_key_id,
+        "sequence": sequence, "head": head, "policy_hash": policy_hash,
+    })).map_err(|_| invalid())?;
+    let commits: Vec<_> = replayed.signed_commit_wires().get(..through).ok_or_else(invalid)?
+        .iter().map(Vec::as_slice).collect();
+    let mut policies = Vec::new();
+    for wire in replayed.signed_policy_wires() {
+        let policy = parse_wire_json_bounded(wire, 64, 196_608).map_err(|_| invalid())?;
+        if exact_u64(policy.get("payload").and_then(|value| value.get("effective_sequence")))
+            .ok_or_else(invalid)? <= sequence { policies.push(wire.as_slice()); }
+    }
+    let ring_wire = ring.canonical_wire().map_err(|_| invalid())?;
+    let prefix = replay_secure_journal_exact(JournalReplayInput {
+        policy_wires: &policies, commit_wires: &commits, checkpoint_wire: &checkpoint,
+        workspace_id: &input.workspace_id, owner_actor_id: &input.expected_owner_actor_id,
+        owner_signing_key: &input.expected_owner_key_id, final_sequence: sequence,
+        final_head: Some(&head), final_policy_hash: &policy_hash, keyring_wire: Some(&ring_wire),
+    }).map_err(|_| invalid())?;
+    Ok((prefix, checkpoint))
+}
+
+fn verify_exact_direct_install_begin(
     pending: &LegacyPendingInstallBegin,
     options_wire: &[u8],
     material_wire: &[u8],
@@ -5984,6 +6181,7 @@ fn verify_pending_direct_install_begin(
                     .map_err(|_| invalid())?, CanonicalPath::SecureArtifact,
             ).map_err(|_| invalid())?,
             root_package_digest: compiled.package_digest().to_owned(),
+            steps: Vec::new(),
         },
     })
 }
@@ -6753,17 +6951,19 @@ fn parse_pending_direct_install_begin(
     }
     let body = row.get("body").ok_or_else(invalid)?;
     let commit = body.get("commit").ok_or_else(invalid)?;
-    let policy = body.get("policy_update").ok_or_else(invalid)?;
+    let action = commit.get("payload").and_then(|p| p.get("action_id"))
+        .and_then(WireValue::as_string).ok_or_else(invalid)?;
+    let begin = action == "secure.structure.begin";
     let payload = commit.get("payload").ok_or_else(invalid)?;
-    if body.object_len() != Some(2)
+    if !["secure.structure.begin", "secure.structure.page", "secure.structure.end"].contains(&action.as_str())
+        || body.object_len() != Some(if begin { 2 } else { 1 })
         || commit.object_len() != Some(2)
-        || policy.object_len() != Some(2)
         || commit.get("signature").and_then(WireValue::as_string).is_none()
-        || policy.get("signature").and_then(WireValue::as_string).is_none()
+        || (begin && body.get("policy_update").is_none_or(|policy|
+            policy.object_len() != Some(2)
+                || policy.get("signature").and_then(WireValue::as_string).is_none()))
         || payload.get("command_id").and_then(WireValue::as_string).as_deref()
             != Some(selected_command_id)
-        || payload.get("action_id").and_then(WireValue::as_string).as_deref()
-            != Some("secure.structure.begin")
         || payload.get("workspace_id").and_then(WireValue::as_string).as_deref()
             != Some(input.workspace_id.as_str())
         || payload.get("actor_id").and_then(WireValue::as_string).as_deref()
@@ -12014,4 +12214,138 @@ mod tests {
             assert_eq!(other_count(), other_before);
         }
     }
+    #[test]
+    fn actual_service_recovers_retained_direct_install_page_end() {
+        let _fault_guard = ATTACH_FAULT_TEST_LOCK.lock().unwrap();
+        let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else { return; };
+        let mode = std::env::var("PEERWORK_RETAINED_DIRECT_MODE")
+            .unwrap_or_else(|_| "direct-page-before-post".into());
+        assert!(["direct-page-before-post", "direct-page-applied-loss",
+            "direct-end-before-post", "direct-end-applied-loss"].contains(&mode.as_str()));
+        let node = std::env::var("PEERWORK_NODE_BIN").unwrap_or_else(|_| "node".into());
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)] {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let bridge = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/reference-kernel-server.mjs");
+        let child = Command::new(&node).arg(bridge).env("PEERWORK_REFERENCE_ROOT", &reference_root)
+            .env("PEERWORK_TEST_STATE", root.path()).env("PEERWORK_TEST_FIRST_POST_MODE", "normal")
+            .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        struct StopRetainedInstall(Child);
+        impl Drop for StopRetainedInstall {
+            fn drop(&mut self) { let _ = self.0.kill(); let _ = self.0.wait(); }
+        }
+        let mut child = StopRetainedInstall(child);
+        let mut line = String::new();
+        BufReader::new(child.0.stdout.take().unwrap()).read_line(&mut line).unwrap();
+        let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let origin = ready["origin"].as_str().unwrap();
+        let source_dir = root.path().join("source");
+        let helper = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/legacy-owner-install-intent.mjs");
+        let output = Command::new(&node).arg(helper).arg(origin).arg(&source_dir)
+            .arg(&reference_root).arg(&mode).output().unwrap();
+        assert!(output.status.success(), "genuine retained install fixture failed: {:?}", output.status);
+        let fixture: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let workspace = fixture["workspace_id"].as_str().unwrap();
+        let command = fixture["pending_command_id"].as_str().unwrap();
+        let selected_hash = fixture["pending_commit_hash"].as_str().unwrap();
+        let selected_sequence = fixture["pending_sequence"].as_u64().unwrap();
+        let applied = mode.ends_with("applied-loss");
+        let oracle = rusqlite::Connection::open_with_flags(root.path().join("control.sqlite"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        let count = || -> i64 { oracle.query_row("SELECT count(*) FROM secure_commits WHERE workspace_id=?1",
+            [workspace], |row| row.get(0)).unwrap() };
+        let before = count();
+        assert_eq!(before as u64, selected_sequence - u64::from(!applied));
+        let input = HistoricalOwnerAttachInput {
+            workspace_id: workspace.into(), protected_ts_state_path: fixture["state_path"].as_str().unwrap().into(),
+            protected_owner_pkcs8_path: fixture["pem_path"].as_str().unwrap().into(),
+            protected_ts_intent_db_path: fixture["intent_db_path"].as_str().unwrap().into(),
+            expected_owner_actor_id: fixture["owner_actor_id"].as_str().unwrap().into(),
+            expected_owner_key_id: fixture["owner_key_id"].as_str().unwrap().into(),
+            recover_pending_action: false, retain_pending_action_command_id: None,
+            selected_pending_package_stage_command_id: None, selected_orphan_package_stage_command_id: None,
+            expected_ts_state_digest: None, kernel_pending_command_ids: Vec::new(),
+            expected_kernel_intent_db_digest: None,
+        };
+        let source_before = read_private_file_bounded(&input.protected_ts_state_path, MAX_SOURCE).unwrap();
+        let options = std::fs::read_to_string(fixture["options_path"].as_str().unwrap()).unwrap();
+        let material = std::fs::read_to_string(fixture["material_path"].as_str().unwrap()).unwrap();
+        let config = SecureOwnerCreateConfig { origin: origin.into(), state_dir: root.path().join("native"),
+            allow_loopback_http: true, max_replay_artifact_bytes: 64 * 1024 * 1024 };
+        let attach = SecureHistoricalOwnerAttach::new(config.clone());
+        let cancel = CancellationToken::new();
+        let inventory = attach.inspect_pending_direct_install_begin(&input, command, &options, &material, &cancel).unwrap();
+        assert_eq!(inventory.original_commit_hash, selected_hash);
+        assert_eq!(inventory.status, if applied { "APPLIED_IN_SIGNED_REPLAY" } else { "PENDING_UNRESOLVED" });
+        let wrong_command = base64url(&[171; 32]);
+        assert!(attach.inspect_pending_direct_install_begin(&input, &wrong_command, &options, &material, &cancel).is_err());
+        let mut wrong_options: serde_json::Value = serde_json::from_str(&options).unwrap();
+        wrong_options["entrypoint"] = serde_json::json!("wrong_entrypoint");
+        assert!(matches!(attach.attach_pending_direct_install_begin(input.clone(), command,
+            &inventory.ts_state_digest, &wrong_options.to_string(), &material, &cancel),
+            Err(HistoricalOwnerAttachError::SourceUnresolved)));
+        assert!(attach.attachments().unwrap().is_empty());
+        assert!(!attach.workspace_dir(workspace).join("lifecycle.state").exists());
+        assert_eq!(count(), before);
+        assert_eq!(read_private_file_bounded(&input.protected_ts_state_path, MAX_SOURCE).unwrap(), source_before);
+        TEST_STOP_AFTER_ATTACH_ROW.store(true, Ordering::SeqCst);
+        assert!(matches!(attach.attach_pending_direct_install_begin(input.clone(), command,
+            &inventory.ts_state_digest, &options, &material, &cancel), Err(HistoricalOwnerAttachError::Cancelled)));
+        let prepared = attach.attachments().unwrap();
+        assert_eq!(prepared.len(), 1);
+        assert_eq!(prepared[0].status, "PREPARED");
+        assert_eq!(count(), before);
+        let row_store = SecureStateStore::open(&attach.history_path()).unwrap();
+        let row = read_history(&row_store, origin).unwrap().rows[&prepared[0].attach_id].clone();
+        drop(row_store);
+        let plan = attach.load_quarantined_direct_install_plan(&prepared[0].attach_id, &row).unwrap();
+        let packet = plan.source.pending_install_begin.as_ref().unwrap().request.to_vec();
+        assert_eq!(plan.manifest.command_id, command);
+        assert_eq!(plan.manifest.original_commit_hash, selected_hash);
+        drop(plan);
+        std::fs::rename(&source_dir, root.path().join("source-gone")).unwrap();
+        let fresh = SecureHistoricalOwnerAttach::new(config.clone());
+        let resumed = fresh.resume_attachment(&prepared[0].attach_id, &cancel).unwrap();
+        assert_eq!(resumed.status, "ATTACHED_RESTRICTED");
+        assert_eq!(count(), before, "attachment must not submit a retained step");
+        let repeated = fresh.resume_attachment(&prepared[0].attach_id, &cancel).unwrap();
+        assert_eq!(repeated, resumed);
+        assert_eq!(count(), before);
+        let installer = SecurePrivatePackageInstall::new(fresh.profile_config(&input));
+        assert!(installer.continue_install_json(command).is_err());
+        assert!(matches!(fresh.recover_pending_direct_install_begin(&prepared[0].attach_id,
+            &wrong_command, &cancel), Err(HistoricalOwnerAttachError::Conflict)));
+        assert_eq!(count(), before);
+        let mut complete = None;
+        for _ in 0..8 {
+            let result = fresh.recover_pending_direct_install_begin(&prepared[0].attach_id, command, &cancel).unwrap();
+            if result.status == "ATTACHED" { complete = Some(result); break; }
+            assert_eq!(result.status, "ATTACHED_RESTRICTED");
+        }
+        let complete = complete.expect("retained direct install did not reach signed END");
+        assert_eq!(complete.pending_direct_install_status.as_deref(), Some("ACCEPTED"));
+        let exact_count: i64 = oracle.query_row("SELECT count(*) FROM secure_commits WHERE workspace_id=?1 AND command_id=?2",
+            [workspace, command], |row| row.get(0)).unwrap();
+        assert_eq!(exact_count, 1, "original random legacy step ID must occur exactly once");
+        let intents = SecureIntentJournal::open(&fresh.profile_config(&input).state_dir.join("private-install-intents.state"),
+            origin, &input.expected_owner_actor_id).unwrap();
+        if !applied {
+            assert_eq!(intents.exact_request(command).unwrap(), packet, "POST must reuse the protected exact request");
+        }
+        drop(intents);
+        let installed: serde_json::Value = serde_json::from_str(&fresh.read_workspace_json(workspace, &cancel).unwrap()).unwrap();
+        assert!(installed["objects"].as_array().unwrap().iter().any(|object|
+            object["kind"] == "instances" && object["id"] == fixture["instance_id"]
+                && object["value"]["protocol_digest"] == fixture["protocol_digest"]
+                && object["value"]["origin_entrypoint"] == fixture["entrypoint"]));
+        assert!(installed["objects"].as_array().unwrap().iter().any(|object|
+            object["kind"] == "protocols" && object["id"] == fixture["protocol_digest"]));
+        let final_count = count();
+        assert_eq!(fresh.recover_pending_direct_install_begin(&prepared[0].attach_id, command, &cancel).unwrap(), complete);
+        assert_eq!(count(), final_count);
+        if applied && mode.starts_with("direct-end-") { assert_eq!(final_count, before); }
+    }
+
 }
