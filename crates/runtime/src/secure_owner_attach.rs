@@ -6514,7 +6514,7 @@ fn verify_staged_install_source(
         source_sha256: proof.get("source_sha256").and_then(WireValue::as_string).ok_or_else(invalid)?,
         part_index: parts.len() - 1,
     };
-    verify_completed_package_stage(&marker, replayed, input)?;
+    verify_completed_package_stage_with_structure(&marker, replayed, input, false)?;
     let mut signed_parts = Vec::new(); let mut steps = Vec::new();
     for offset in 0..parts.len() {
         let index = usize::try_from(base + offset as u64).map_err(|_| invalid())?;
@@ -6546,6 +6546,15 @@ fn verify_completed_package_stage(
     marker: &CompletedPackageStageMarker,
     replayed: &TransportReplayedJournal,
     input: &HistoricalOwnerAttachInput,
+) -> Result<(), HistoricalOwnerAttachError> {
+    verify_completed_package_stage_with_structure(marker, replayed, input, true)
+}
+
+fn verify_completed_package_stage_with_structure(
+    marker: &CompletedPackageStageMarker,
+    replayed: &TransportReplayedJournal,
+    input: &HistoricalOwnerAttachInput,
+    require_active: bool,
 ) -> Result<(), HistoricalOwnerAttachError> {
     let invalid = || HistoricalOwnerAttachError::SourceUnresolved;
     let source = &marker.source;
@@ -6644,7 +6653,11 @@ fn verify_completed_package_stage(
         }));
     if replayed.replay().owner_actor_id() != input.expected_owner_actor_id
         || replayed.replay().owner_signing_key() != input.expected_owner_key_id
-        || replayed.replay().structure_status() != StructureStatus::Active
+        // A staged install's exact original BEGIN is verified separately.
+        // Its continuation legitimately leaves current replay SEEDING; the
+        // completed/orphan stage-only caller retains its ACTIVE requirement.
+        || if require_active { replayed.replay().structure_status() != StructureStatus::Active }
+            else { !matches!(replayed.replay().structure_status(), StructureStatus::Active | StructureStatus::Seeding) }
         || current.get("visibility").and_then(WireValue::as_string).as_deref()
             != Some("PRIVATE")
         || !owner_member
