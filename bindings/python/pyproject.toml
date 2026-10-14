@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "peerwork-sdk"
-version = "0.0.1"
+dynamic = ["version"]
 description = "Experimental native Peerwork SDK with local identity lifecycle; verified actions incomplete"
 requires-python = ">=3.11"
 license = "Apache-2.0"

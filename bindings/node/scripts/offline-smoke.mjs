@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 
@@ -8,7 +9,8 @@ if (!installedRoot) {
 }
 const sdk = createRequire(import.meta.url)(resolve(installedRoot, 'node_modules', '@peerwork', 'agent-sdk'));
 const capabilities = sdk.capabilities();
-if (sdk.version() !== '0.0.1' || capabilities.version !== '0.0.1') {
+const metadata = JSON.parse(readFileSync(resolve(installedRoot, 'node_modules', '@peerwork', 'agent-sdk', 'package.json'), 'utf8'));
+if (sdk.version() !== metadata.version || capabilities.version !== metadata.version) {
   throw new Error('native core version/manifest mismatch');
 }
 console.log(JSON.stringify({ version: sdk.version(), capabilities }));

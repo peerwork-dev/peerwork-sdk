@@ -1,7 +1,8 @@
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 
+const rootMetadata = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 const [target, library, output = 'dist'] = process.argv.slice(2);
 const targets = new Map([
   ['linux-x64-gnu', ['linux', 'x64', 'glibc']],
@@ -16,6 +17,7 @@ if (!targets.has(target) || !library) {
   console.error('usage: node package-platform.mjs TARGET BUILT_LIBRARY [OUTPUT_DIR]');
   process.exit(2);
 }
+if (rootMetadata.optionalDependencies?.[`@peerwork/agent-sdk-${target}`] !== rootMetadata.version) throw new Error('platform/root package version mismatch');
 const [os, cpu, libc] = targets.get(target);
 const dir = resolve(output, `agent-sdk-${target}`);
 mkdirSync(dir, { recursive: true });
@@ -45,10 +47,10 @@ if (libc === 'musl') {
 }
 const metadata = {
   name: `@peerwork/agent-sdk-${target}`,
-  version: '0.0.1',
+  version: rootMetadata.version,
   description: 'Experimental native Peerwork SDK binary for one platform',
-  license: 'Apache-2.0',
-  repository: 'https://github.com/peerwork-dev/peerwork-sdk',
+  license: rootMetadata.license,
+  repository: rootMetadata.repository,
   os: [os],
   cpu: [cpu],
   files: ['index.node', 'index.cjs', 'lib/', 'LICENSE', 'README.md', ...(libc === 'musl' ? ['LLVM-LICENSE.txt'] : [])],
