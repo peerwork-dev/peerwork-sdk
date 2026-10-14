@@ -43,6 +43,11 @@ try {
   const omittedGrants = mode.startsWith('direct-no-grants-');
   const normalizedOptions = disclosureOption || emptyDisclosureOption || omittedGrants;
   const checkpointOption = mode.startsWith('direct-checkpoint-') || disclosureOption;
+  if (disclosureOption || emptyDisclosureOption) {
+    initial = await agent.enableFormatTwo(workspaceId);
+    if (initial.policy.payload.protocol_format_ceiling !== 2
+      || initial.structure?.state !== 'ACTIVE') throw new Error('INSTALL_DISCLOSURE_CEILING');
+  }
   const retainedStep = /^direct-(page|end)-/.exec(mode.replace(
     /^direct-(checkpoint|disclosure|empty-disclosure|no-grants)-/, 'direct-'))?.[1];
   if (retainedStep === 'page') {
@@ -70,8 +75,10 @@ try {
       }
     };
     walk(directory);
-    const material = { v: 1, closure: createProtocolPackageClosure(
-      parseProtocolPackage({ format: PROTOCOL_PACKAGE_FORMAT, files }), []), bindings: {} };
+    const material = disclosureOption || emptyDisclosureOption
+      ? await (await import('./legacy-owner-install-disclosure-material.mjs')).createLegacyReadableInstallMaterial(referenceRoot)
+      : { v: 1, closure: createProtocolPackageClosure(
+        parseProtocolPackage({ format: PROTOCOL_PACKAGE_FORMAT, files }), []), bindings: {} };
     const compiled = compilePackageMaterial(material);
     manifest = compiled.manifest;
     writeFileSync(materialPath, JSON.stringify(material), { mode: 0o600, flag: 'wx' });
@@ -169,13 +176,16 @@ try {
   const instanceId = randomBytes(32).toString('base64url');
   const options = {
     instance_id: instanceId, entrypoint: 'migrated_discussion', manifest,
-    ...(!omittedGrants ? { grants: [{ actor_id: agent.identity.actorId, actions: ['discussion.post'],
-      protocol_roles: ['CONTRIBUTOR'], capabilities: ['POST'] }] } : {}),
-    ...(disclosureOption || emptyDisclosureOption ? { disclose: [{ schema: 'discussion.message',
-      fields: emptyDisclosureOption ? [] : ['reply_to', 'message'] }] } : {}),
+    ...(!omittedGrants ? { grants: [{ actor_id: agent.identity.actorId,
+      actions: disclosureOption || emptyDisclosureOption ? ['set'] : ['discussion.post'],
+      protocol_roles: disclosureOption || emptyDisclosureOption ? [] : ['CONTRIBUTOR'],
+      capabilities: disclosureOption || emptyDisclosureOption ? [] : ['POST'] }] } : {}),
+    ...(disclosureOption || emptyDisclosureOption ? { disclose: [{ schema: 'item',
+      fields: emptyDisclosureOption ? [] : ['title', 'label'] }] } : {}),
     ...(checkpointOption ? { expected_checkpoint: structuredClone(initial.checkpoint) } : {}),
   };
-  const resolved = await resolveProtocolInstall(initial, options, []);
+  const resolved = await resolveProtocolInstall(initial, options,
+    disclosureOption || emptyDisclosureOption ? agent.transport.discovery.protocol_features ?? [] : []);
   if (checkpointOption && (!secureEqual(resolved.expectedCheckpoint, initial.checkpoint)
     || !normalizedOptions && await secureHash(options) !== resolved.intentHash)) {
     throw new Error('INSTALL_INTENT_REVIEWED_CHECKPOINT_HASH');
@@ -183,8 +193,8 @@ try {
   if (normalizedOptions && (await secureHash(options) === resolved.intentHash
     || omittedGrants && resolved.grants.length !== 0
     || (disclosureOption || emptyDisclosureOption) && !secureEqual(resolved.disclose,
-      [{ protocol_digest: resolved.digest, schema: 'discussion.message',
-        fields: emptyDisclosureOption ? [] : ['message', 'reply_to'] }]))) {
+      [{ protocol_digest: resolved.digest, schema: 'item',
+        fields: emptyDisclosureOption ? [] : ['label', 'title'] }]))) {
     throw new Error('INSTALL_INTENT_NORMALIZED_OPTIONS');
   }
   writeFileSync(optionsPath, JSON.stringify(options), { mode: 0o600, flag: 'wx' });
@@ -239,8 +249,11 @@ try {
       const expected = mode.endsWith('before-post')
         ? 'TEST_STOP_BEFORE_INSTALL_BEGIN_POST' : 'TEST_STOP_AFTER_INSTALL_END_POST';
       if (error?.message !== expected) throw error;
-    } else if (error?.message === 'TEST_INSTALL_NOT_INTERRUPTED') {
-      throw error;
+    } else {
+      // Preserve the original failure unless this is the intended transport
+      // loss boundary. A map/pending assertion must not hide a planner error.
+      if (retainedStep ? !stopped : !Object.keys(agent.state.pending).length) throw error;
+      if (error?.message === 'TEST_INSTALL_NOT_INTERRUPTED') throw error;
     }
   } finally {
     agent.post = originalPost;
