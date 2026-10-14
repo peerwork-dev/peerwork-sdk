@@ -1,0 +1,29 @@
+{
+  "file": "napi-rs-LICENSE.txt",
+  "sha256": "3f1ce66533302df3a32edbfdfc0b78f0dd34659e4c1f5817162e5ea3c2297215",
+  "source_revisions": [
+    "f2178312d0e3e07beecc19836b91716a229107d3",
+    "a312b7eb4e12d3e0a3e9770429ee05c333947a39",
+    "f1b8ab5e645e674df33c796ef75aa278cd1b4a31"
+  ],
+  "packages": {
+    "napi": {
+      "version": "2.16.17",
+      "source_revision": "f2178312d0e3e07beecc19836b91716a229107d3"
+    },
+    "napi-derive": {
+      "version": "2.16.13",
+      "source_revision": "a312b7eb4e12d3e0a3e9770429ee05c333947a39"
+    },
+    "napi-derive-backend": {
+      "version": "1.0.75",
+      "source_revision": "a312b7eb4e12d3e0a3e9770429ee05c333947a39"
+    },
+    "napi-sys": {
+      "version": "2.4.0",
+      "source_revision": "f1b8ab5e645e674df33c796ef75aa278cd1b4a31"
+    }
+  },
+  "license": "MIT",
+  "repository": "https://github.com/napi-rs/napi-rs"
+}
