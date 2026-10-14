@@ -1,0 +1,31 @@
+# Current installed PRIVATE option recovery/use result
+
+PASS for three independent scripted installed Python, Node and CLI cases on immutable c5e7a3d8e59ff913da545db2c82e6969646fbe1a Linux x64/glibc2.28 artifacts. Each case combines the explicit reviewed checkpoint2, a nonempty `set` grant, and explicit format-two `item` disclosure of `title` and `label`. No SDK product was modified or rebuilt. Later staged sources are excluded.
+
+Fixture source3a8a2694c9180f13246a5ba1d2b976af266b60b8 is the reviewed one-line host successor to4d8dd22. Consumer SHAe6271888c897d6a6dca781a69f2bae61b6409215927ee9c4fcf96d555b633e26 is unchanged. Source and artifact guards pin the existing 493-row source manifest3b9de240 and 14-entry artifact manifest271e94cf; the source archive remains1366bc1f. The genuine author/client/service is unchanged f828, with its 204-module compiled closure6de57ae9. The guarded host copies the consumer into a separate task overlay and uses only installed wheel/npm/CLI under env-i in the established rootfs namespace. The approved outer context permits local service/namespace operations; there is no model, external destination or inherited auth/SDK-proxy configuration.
+
+Original45161 exited1 before any installed consumer: the host mistakenly reused a PAGE/END body-only-commit guard for BEGIN. The genuine retained BEGIN has exactly `commit` and `policy_update`. PRIVATE setup stayed at two commits with no selected BEGIN accepted; Node/CLI did not start. The original review missed this host shape assumption. The exact-key successor additionally checks selected command and BEGIN action identity and still hashes the complete canonical body. This is an oracle correction, not an SDK failure or relaxed signed predicate. The first service stopped/waited with exit-15 and empty stderr; its state/log/effects remain protected.
+
+Corrected25209 exited0 for command `umask 077; python3 tests/current-options/host.py current-options-c5e-begin-shape-retry > .build-target/current-options-c5e-begin-shape-retry.log 2>&1`, from this fixture worktree. The original command used `current-options-c5e-first` and its separate log. All three fresh services stopped/waited with exit-15 and empty stderr. No owned live handles remain.
+
+| Independent interface | Original review checkpoint | Native recovery | Granted use | Native outer POSTs |
+|---|---|---|---|---|
+| Python | sequence2 | original BEGIN3 and END4 | ACCEPTED exact receipt/readback sequence5 | 3 |
+| Node | sequence2 | original BEGIN3 and END4 | ACCEPTED exact receipt/readback sequence5 | 3 |
+| CLI | sequence2 | original BEGIN3 and END4 | ACCEPTED exact receipt/readback sequence5 | 3 |
+
+Each selected the exact historical Owner/workspace/packet and complete original source material. Wrong packet, entrypoint, material, reviewed checkpoint, private-field disclosure, grant actor and inspected state digest refused before attachment/history/commit/POST effects. Full inspected state digest was required. Attachment performed no POST, exposed a restricted saved row, and copied the protected source. The complete old state/PEM/SQLite/options/material directory was moved away; fresh public handles then used only saved attachment/packet identities for recovery. The selected original BEGIN was accepted exactly once with its original signed commit hash; observed raw POST method/path/body SHA equalled the canonical full saved BEGIN request, including policy_update. This does not claim the historical TypeScript JSON.stringify wire serialization is preserved. Named recovery reached signed ACTIVE END, selected instance/protocol/entrypoint readback and saved ACCEPTED history; ordinary installer discovery remained empty under the permanent imported-row contract. Recovery/history retries added no POST/commit.
+
+The already verified native read's head/policy hashes bound the read-only service policy oracle: disclosed fields stayed server_readable/opaque, secret stayed E2EE/string, and the exact disclosure row was retained. This is not a public policy getter or independent signature verifier. The selected interface then invoked the granted `set` action, reconciled its exact command/commit/sequence/Owner receipt with zero content effects, and read the selected instance at revision2/count1 and sequence5. Exact action retry returned the same result with no further POST/effect. Three native POSTs per case are BEGIN, END and the granted action.
+
+Evidence resides in this tree's `.build-target/` and protected physical rootfs `/root/workdir/message/.worktrees/peerwork-sdk-historical-direct-facades-20261014/.build-artifacts/historical-direct-873a37d/rootfs-managed/work/`. Original state is `current-options-c5e-first`; retry state is `current-options-c5e-begin-shape-retry`.
+
+| Evidence | SHA-256 |
+|---|---|
+| `.build-target/current-options-evidence.json` (34 source/log/fixture/shutdown files) | 180e09946732490caaa04957ae7d4a69d69a25519ee63e9802d334ff5b4cccf3 |
+| `.build-target/current-options-first-effects.json` | 5f87920b459fa48c13e5f8873b75c36c5bf214429f17ddc9f85aeac39c68a07c |
+| `.build-target/current-options-effects.json` | 7d765bebee76e42ef76bd79fa93d86e4ec958422358a441e1f0c540e08298bfb |
+| `.build-target/current-options-c5e-first.log` | c48304beeed6e799508cb9ffb6893bf315ff39d3611947feca1c35d45aa69cf0 |
+| `.build-target/current-options-c5e-begin-shape-retry.log` | dca5422fec63b00b5a72e2c1fd05270e87a3e484028e0b701605c3d9bc9e72b1 |
+
+Post-run14 artifact checks passed from the cohort directory. An initial diagnostic checksum invocation ran from the fixture directory and reported missing relative paths; correcting only cwd resolved it, with no artifact writes. These synthetic scripted cases establish only this checkpoint/nonempty-disclosure/nonempty-grant recovery-and-use variant in three installed interfaces. They do not establish external qualification, natural-Agent workflow compliance, every optional combination, explicit composition or implicit dependency recovery, selected nondefault binding, omitted/empty choice, current Python async/cancellation, staged/object source families, other platforms, publication or the full migration/business plan. Earlier cohort/native evidence retains its original attribution in the brief inventory.

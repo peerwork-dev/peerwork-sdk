@@ -18,7 +18,8 @@ if (!origin || !sourceDir || !referenceRoot
     'direct-empty-disclosure-begin-before-post', 'direct-composition-begin-before-post',
     'direct-composition-end-applied-loss', 'direct-staged-package-begin-before-post',
     'direct-staged-package-end-applied-loss', 'direct-staged-package-page-before-post',
-    'direct-staged-package-page-applied-loss', 'direct-staged-package-completed-end'].includes(mode)) {
+    'direct-staged-package-page-applied-loss', 'direct-staged-package-completed-end',
+    'direct-implicit-begin-before-post', 'direct-implicit-end-applied-loss'].includes(mode)) {
   throw new Error('INSTALL_INTENT_TEST_INPUT');
 }
 mkdirSync(sourceDir, { recursive: true, mode: 0o700 });
@@ -45,6 +46,7 @@ try {
   const emptyDisclosureOption = mode.startsWith('direct-empty-disclosure-');
   const omittedGrants = mode.startsWith('direct-no-grants-');
   const compositionOption = mode.startsWith('direct-composition-');
+  const implicitOption = mode.startsWith('direct-implicit-');
   const stagedPackageOption = mode.startsWith('direct-staged-package-');
   let stagedPackage;
   let compiledMaterial;
@@ -58,7 +60,7 @@ try {
       || initial.structure?.state !== 'ACTIVE') throw new Error('INSTALL_DISCLOSURE_CEILING');
   }
   const retainedStep = /^direct-(page|end)-/.exec(mode.replace(
-    /^direct-(checkpoint|disclosure|empty-disclosure|no-grants|composition|staged-package)-/, 'direct-'))?.[1];
+    /^direct-(checkpoint|disclosure|empty-disclosure|no-grants|composition|staged-package|implicit)-/, 'direct-'))?.[1];
   if (retainedStep === 'page') {
     const wiki = initial.objects.find(row => row.kind === 'instances'
       && row.value.origin_entrypoint === 'wiki');
@@ -84,7 +86,7 @@ try {
       }
     };
     walk(directory);
-    compositionMaterial = compositionOption
+    compositionMaterial = compositionOption || implicitOption
       ? await (await import('./legacy-owner-install-composition-material.mjs')).createLegacyComposedInstallMaterial(referenceRoot) : undefined;
     const material = compositionMaterial ? compositionMaterial.material : disclosureOption || emptyDisclosureOption || stagedPackageOption
       ? await (await import('./legacy-owner-install-disclosure-material.mjs')).createLegacyReadableInstallMaterial(referenceRoot)
@@ -94,6 +96,21 @@ try {
     compiledMaterial = compiled;
     manifest = compositionMaterial ? compositionMaterial.sourceManifest : compiled.manifest;
     writeFileSync(materialPath, JSON.stringify(material), { mode: 0o600, flag: 'wx' });
+    if (implicitOption) {
+      const dependency = compositionMaterial.dependencies[0];
+      // Install the compiler-selected namespaced child through the public API;
+      // its authenticated protocol object, not material bytes, is availability.
+      await agent.installProtocol(workspaceId, {
+        instance_id: randomBytes(32).toString('base64url'), entrypoint: 'implicit_dependency',
+        manifest: dependency.manifest, grants: [],
+      });
+      initial = await agent.journal(workspaceId);
+      const installed = initial.objects.find(row => row.kind === 'protocols' && row.id === dependency.digest);
+      const storedManifest = installed && (typeof installed.value.manifest === 'string'
+        ? JSON.parse(installed.value.manifest) : installed.value.manifest);
+      if (initial.structure?.state !== 'ACTIVE' || !installed
+        || !secureEqual(storedManifest, dependency.manifest)) throw new Error('INSTALL_IMPLICIT_AUTHENTICATED_DEPENDENCY');
+    }
     if (stagedPackageOption) {
       stagedPackage = await agent.stagePackageMaterial(workspaceId, material, initial.checkpoint);
       const { verifyProtocolPackageSource, verifyStagedPackageCheckpoint, readProtocolPackageMaterial }
@@ -228,11 +245,16 @@ try {
     || resolved.digest !== compiledMaterial.protocolDigest
     || !secureEqual(resolved.manifest, compiledMaterial.manifest)
     || resolved.composition !== undefined)) throw new Error('INSTALL_INTENT_STAGED_PACKAGE_RESOLUTION');
-  if (compositionOption && (await secureHash(options) === resolved.intentHash
+  if ((compositionOption || implicitOption) && (await secureHash(options) === resolved.intentHash
     || resolved.digest !== compositionMaterial.protocolDigest
     || !secureEqual(resolved.manifest, compositionMaterial.compiledManifest)
     || !secureEqual(resolved.composition, compositionMaterial.composition))) {
     throw new Error('INSTALL_INTENT_COMPOSITION_COMPILER_EQUALITY');
+  }
+  if (implicitOption && (Object.hasOwn(options, 'dependencies')
+    || resolved.composition.dependencies.length !== 1
+    || resolved.composition.dependencies[0].digest !== compositionMaterial.dependencies[0].digest)) {
+    throw new Error('INSTALL_IMPLICIT_SELECTION');
   }
   if (normalizedOptions && (await secureHash(options) === resolved.intentHash
     || omittedGrants && resolved.grants.length !== 0
@@ -375,6 +397,10 @@ try {
     ...(compositionOption ? { canonical_options_hash: await secureHash(options),
       source_digest: compositionMaterial.sourceDigest, composition: resolved.composition,
       explicit_dependency_count: options.dependencies.length, compiler_equality: true } : {}),
+    ...(implicitOption ? { canonical_options_hash: await secureHash(options),
+      source_digest: compositionMaterial.sourceDigest, composition: resolved.composition,
+      explicit_dependency_count: 0, original_dependencies_omitted: true,
+      authenticated_dependency_count: 1, compiler_equality: true } : {}),
     ...(normalizedOptions ? { canonical_options_hash: await secureHash(options),
       normalized_disclosure: resolved.disclose ?? null,
       normalized_grants: resolved.grants, original_grants_omitted: omittedGrants } : {}),

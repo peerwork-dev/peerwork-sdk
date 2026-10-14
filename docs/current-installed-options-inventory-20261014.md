@@ -1,0 +1,18 @@
+# Current installed option and async inventory
+
+Tested SDK cohort remains c5e7a3d (493 source files, artifact manifest271e94cf). It includes accepted direct-install checkpoint selection, normalized grants/disclosure and explicit composition dependency proofs; its runtime Owner attach source is ca36c729. Later staged048 and its PAGE/map extensions are excluded. No rebuild is needed for the source-supported cases below.
+
+| Behavior | Evidence applicable now | Small remaining installed boundary |
+|---|---|---|
+| PUBLIC nonempty action/role/capability grant | c5e MET44180: three independent installed BEGIN/END/proposal/readback cases | PRIVATE optional grant/disclosure selection still needs current installed proof |
+| Explicit expected_checkpoint | Accepted native BEGIN/END/completed-map suite; included in c5e | No current installed Python/Node/CLI optional selection result |
+| Nonempty/empty disclosure and omitted grants | Accepted native normalized-options suite; included in c5e | Old c4e options86310 is mixed-interface and earlier source; no current independent optional recovery result |
+| Explicit composition dependencies | Accepted native BEGIN/END/provenance negatives; included in c5e | No installed Python/Node/CLI composition recovery result |
+| Selected nondefault package binding | Old1fbe independent branches2252 plus affected CLI10549; old c4e86310 option forwarding | Retain original attribution; current independently installed binding/action/readback is missing |
+| Python completed/packet async and cancellation | Old873 completed44604 plus retained-only6481 prove actual async and after-apply double-cancel/sourcegone recovery for that artifact | Do not relabel as c5e runtime acceptance; current optional normalized/explicit-composition path and current async case need installed proof |
+
+First missing gate: three fresh independent PRIVATE disclosure BEGIN-before-POST flows, one per interface, using the unchanged genuine f828 author helper. This mode already combines reviewed checkpoint2, nonempty action grants, nonempty disclosed fields and format-two policy. Each must refuse altered checkpoint/disclosure/grants before attachment/effects, inspect the exact original BEGIN and material, attach with full inspected state digest without POST, remove the complete original source, reopen, explicitly recover saved BEGIN through signed END, verify the selected policy/instance and use its granted state-only action with exact receipt/readback and duplicate-free retry. The service policy oracle is hash-bound to the native verified head/policy; it is not a public policy getter or independent signature verifier. Subsequent bounded groups cover composition, selected binding, omitted grants/empty choice and current Python async/cancellation; none closes every optional combination, source family or full independent business workflow.
+
+All cases are operator-created synthetic scripted consumers, not natural Agents or external acquisition. Existing catalog projections remain seeded setup when used. No native state mutation, widened policy, source substitution or immutable artifact write is permitted.
+
+First fixture4d8 run45161 exited1 before any installed consumer: the host inherited a PAGE/END-only request shape guard and rejected the genuine saved BEGIN body containing exactly `commit` and `policy_update`. The selected BEGIN was not accepted, PRIVATE setup stayed at two commits, and its service was terminated/waited. Node/CLI setup did not start. The successor requires those exact BEGIN keys plus selected command and action identity; the canonical full-body hash and every consumer predicate remain unchanged. Original log/state and `.build-target/current-options-first-effects.json` remain preserved.

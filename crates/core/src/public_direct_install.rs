@@ -37,6 +37,17 @@ pub fn resolve_explicit_install_protocol(
     root: &WireValue,
     explicit: Option<&WireValue>,
 ) -> Result<(WireValue, String, Option<WireValue>), DirectInstallError> {
+    resolve_install_protocol_with_available(root, explicit, &[])
+}
+
+/// Resolve candidates selected by the caller's authenticated journal verifier.
+/// This pure function grants no authority: runtime must supply an exact signed
+/// predecessor and independently bind the result to saved BEGIN material.
+pub fn resolve_install_protocol_with_available(
+    root: &WireValue,
+    explicit: Option<&WireValue>,
+    available: &[(String, WireValue)],
+) -> Result<(WireValue, String, Option<WireValue>), DirectInstallError> {
     let invalid = || DirectInstallError::Invalid;
     let normalize = normalize_install_protocol_manifest;
     let (source, source_digest) = normalize(root)?;
@@ -51,14 +62,23 @@ pub fn resolve_explicit_install_protocol(
             return Err(invalid());
         }
     }
+    let explicit_ids: HashSet<_> = nodes.keys().cloned().collect();
+    for (id, raw) in available {
+        let (manifest, digest) = normalize(raw)?;
+        if id != &digest { return Err(invalid()); }
+        let id = id.encode_utf16().collect::<Vec<_>>();
+        if explicit_ids.contains(&id) { continue; }
+        if nodes.get(&id).is_some_and(|previous| previous != &manifest) { return Err(invalid()); }
+        nodes.insert(id, manifest);
+    }
     let composed = matches!(source.get("dependencies"), Some(WireValue::Array(rows)) if !rows.is_empty())
         || source.get("constraints").and_then(WireValue::object_len).is_some_and(|len| len > 0);
     if !composed {
-        if !nodes.is_empty() { return Err(invalid()); }
+        if !explicit_ids.is_empty() { return Err(invalid()); }
         return Ok((source, source_digest, None));
     }
     let (resolved, closure) = resolve_protocol(&source, &nodes).map_err(|_| invalid())?;
-    if nodes.keys().any(|id| !closure.contains(id)) { return Err(invalid()); }
+    if explicit_ids.iter().any(|id| !closure.contains(id)) { return Err(invalid()); }
     let dependencies = closure.into_iter().map(|id| {
         let manifest = nodes.get(&id).ok_or_else(invalid)?.clone();
         Ok(WireValue::Object(vec![(key("digest"), WireValue::String(id)), (key("manifest"), manifest)]))
