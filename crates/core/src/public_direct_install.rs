@@ -1042,9 +1042,10 @@ pub(crate) fn derive_direct_install_structure_with_options(
     let maximum = parse_wire_json_bounded(maximum_wire.as_bytes(), 64, 2_000_000)
         .map_err(|_| DirectInstallError::Invalid)?;
     let mut approved = HashSet::new();
-    if disclose.len() > 64 {
+    if disclose.len() > 256 {
         return Err(DirectInstallError::Invalid);
     }
+    let mut disclosed_schemas = HashSet::new();
     for choice in disclose {
         if choice.object_len() != Some(2) {
             return Err(DirectInstallError::Invalid);
@@ -1053,19 +1054,22 @@ pub(crate) fn derive_direct_install_structure_with_options(
             .as_string()
             .ok_or(DirectInstallError::Invalid)?;
         let fields = array(required(choice, "fields")?)?;
-        if fields.is_empty() || fields.len() > 64 {
+        if fields.len() > 64 || !disclosed_schemas.insert(schema.clone()) {
             return Err(DirectInstallError::Invalid);
         }
+        // f828 validates the schema even when the caller explicitly selects
+        // no readable fields. An empty unknown-schema row cannot bypass proof.
+        let declared_fields = array(required(&maximum, "protocols")?)?
+            .iter()
+            .find(|p| p.get("protocol_digest").and_then(WireValue::as_string).as_deref()
+                == Some(protocol_digest))
+            .and_then(|p| p.get("schemas"))
+            .and_then(|schemas| schemas.get(&schema))
+            .and_then(|definition| definition.get("fields"))
+            .ok_or(DirectInstallError::Invalid)?;
         for field in fields {
             let field = field.as_string().ok_or(DirectInstallError::Invalid)?;
-            let declared = array(required(&maximum, "protocols")?)?
-                .iter()
-                .find(|p| p.get("protocol_digest").and_then(WireValue::as_string).as_deref()
-                    == Some(protocol_digest))
-                .and_then(|p| p.get("schemas"))
-                .and_then(|schemas| schemas.get(&schema))
-                .and_then(|definition| definition.get("fields"))
-                .and_then(|fields| fields.get(&field))
+            let declared = declared_fields.get(&field)
                 .ok_or(DirectInstallError::Invalid)?;
             if required(declared, "protection")?.as_string().as_deref()
                 != Some("server_readable")

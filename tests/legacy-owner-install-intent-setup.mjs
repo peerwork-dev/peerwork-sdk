@@ -32,7 +32,9 @@ try {
       'direct-page-before-post', 'direct-page-applied-loss',
       'direct-end-before-post', 'direct-end-applied-loss',
       'direct-checkpoint-begin-before-post', 'direct-checkpoint-end-applied-loss',
-      'direct-checkpoint-completed-end'].includes(selected)) {
+      'direct-checkpoint-completed-end', 'direct-disclosure-begin-before-post',
+      'direct-disclosure-end-applied-loss', 'direct-no-grants-begin-before-post',
+      'direct-empty-disclosure-begin-before-post'].includes(selected)) {
       throw new Error('INSTALL_SETUP_MODE_INVALID');
     }
     for (const mode of selected ? [selected]
@@ -58,7 +60,9 @@ try {
       const source = JSON.parse(stdout);
       const completed = mode.endsWith('completed-end') || later;
       const checkpointOption = mode.startsWith('direct-checkpoint-');
-      const retainedStep = /^direct-(page|end)-/.exec(mode.replace(/^direct-checkpoint-/, 'direct-'))?.[1];
+      const normalizedOptions = /^(direct-disclosure-|direct-no-grants-|direct-empty-disclosure-)/.test(mode);
+      const retainedStep = /^direct-(page|end)-/.exec(mode.replace(
+        /^direct-(checkpoint|disclosure|empty-disclosure|no-grants)-/, 'direct-'))?.[1];
       if (source.mode !== mode || source.pending_count !== (completed ? 0 : 1)
         || source.latest_structure_state !== (retainedStep
           ? retainedStep === 'end' && mode.endsWith('applied-loss') ? 'ACTIVE' : 'SEEDING'
@@ -77,6 +81,15 @@ try {
         || source.canonical_options_hash !== source.intent_hash)) {
         throw new Error(`INSTALL_SETUP_${mode}_REVIEWED_CHECKPOINT`);
       }
+      if (normalizedOptions && (source.canonical_options_hash === source.intent_hash
+        || !Array.isArray(source.normalized_grants)
+        || mode.startsWith('direct-no-grants-') && (source.original_grants_omitted !== true
+          || source.normalized_grants.length !== 0)
+        || !mode.startsWith('direct-no-grants-') && (!Array.isArray(source.normalized_disclosure)
+          || source.normalized_disclosure.length !== 1
+          || source.normalized_disclosure[0].protocol_digest !== source.protocol_digest))) {
+        throw new Error(`INSTALL_SETUP_${mode}_NORMALIZED_OPTIONS`);
+      }
       if (!completed) {
         const accepted = db.prepare('SELECT count(*) AS count FROM secure_commits WHERE workspace_id=? AND command_id=?')
           .get(source.workspace_id, source.pending_command_id).count;
@@ -91,7 +104,12 @@ try {
         selected_epoch: source.selected_epoch ?? null,
         latest_epoch: source.latest_epoch ?? null,
         ...(checkpointOption ? { reviewed_checkpoint_sequence: source.expected_checkpoint.sequence,
-          original_options_hash_bound: true } : {}) }) + '\n');
+          original_options_hash_bound: true } : {}),
+        ...(normalizedOptions ? { original_options_hash_distinct: true,
+          original_grants_omitted: source.original_grants_omitted,
+          normalized_disclosure: source.normalized_disclosure,
+          normalized_grants_count: source.normalized_grants.length,
+          reviewed_checkpoint_sequence: source.expected_checkpoint?.sequence ?? null } : {}) }) + '\n');
     }
   } finally { db.close(); }
 } finally {
