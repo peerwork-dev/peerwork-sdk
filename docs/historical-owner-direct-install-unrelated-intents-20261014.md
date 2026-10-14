@@ -1,0 +1,17 @@
+# Selected direct BEGIN with another workspace pending
+
+This follow-on gate used isolated SDK commit `3bc9584` in `/root/workdir/message/.worktrees/peerwork-sdk-owner-protocol-install-intents-20261014`. SHA-256: `crates/runtime/src/secure_owner_attach.rs` `388c9d418c317f4c5e10e061ec85156767bd07dcbf46010699200df9ec4cea05`, unchanged imported installer `secure_private_install.rs` `330f8d7f18f6066a7434544697bd618ed99362ab4697598f80776d1a1af201c7`, genuine f828 helper `tests/legacy-owner-install-intent.mjs` `38697e9a7f122c100ea5de78c18980a6dd00c2deb1c742e770da5f2a3da0f8b0`. The reference checkout and Node 24.20.0 are the same as the separately pinned direct-BEGIN recovery report. Offline locked Rust 1.89.0 no-run passed (session `33005`, terminal chunk `213416`, exit 0), as did Node syntax and `git diff --check`. The dedicated binary `/root/workdir/message/.worktrees/peerwork-sdk-owner-protocol-install-intents-20261014/.build-target/debug/deps/peerwork_runtime-9edbda4ad04cb6ae` was SHA-256 `22e685c62683d1f2adf6863a7b26ddc3299b279cfffe74e833ecc50774e55cc6`.
+
+The exact invocation selected only the new mode, leaving the previously passed applied-loss and one-workspace pre-send modes unrun here:
+
+```sh
+PEERWORK_REFERENCE_ROOT=/root/workdir/message/.worktrees/e2ee-main-integration-20261006 \
+PEERWORK_NODE_BIN=/root/workdir/message/.tools/node-v24.20.0-linux-x64/bin/node \
+PEERWORK_DIRECT_INSTALL_MODE=direct-two-workspace-before-post \
+.build-target/debug/deps/peerwork_runtime-9edbda4ad04cb6ae \
+--exact secure_owner_attach::tests::actual_service_imports_and_recovers_selected_direct_begin --nocapture
+```
+
+Session `65973` exited 0 (terminal chunk `2f6389`): 1 test passed, 0 failed, 108.05 seconds. The helper used the current f828 public Agent to create two PRIVATE STRUCTURED workspaces under one Owner. It stopped each `installProtocol` at `agent.request` after `post()` had saved its exact BEGIN packet but before network. It asserted two distinct `${workspace}.${instance}` map entries, two pending BEGIN packets with exact command IDs and resolved hashes, and signed sequence 1 for each workspace. The native caller selected one workspace/command with full options and material. It rejected a wrong command and altered options without an attachment or service effect, imported a protected full-state/checked-DB snapshot, recovered the selected original packet and continued its install to signed ACTIVE, with authenticated protocol/instance readback and same-ID no-extra-commit retry. The unrelated workspace remained at its one original service commit; its map hash and pending command were still present in the protected state copy. The test does not independently capture every HTTP request, but neither helper nor native selected recovery submitted the unrelated command in the observed signed service history.
+
+The parser now permits other-workspace map/pending entries only when exactly one intent key has the selected workspace prefix and no second pending packet has the selected workspace commits path. It does not parse or decide the outcome of unrelated entries. Default unselected attach still rejects a nonempty `protocol_install_intents` map. This is cross-workspace preservation, not same-workspace multi-entry selection; completed map/no-packet proof, retained PAGE/END, package/object-source options, orphan replan, installed facades and Agent workflow remain open. The earlier two-mode direct-BEGIN result and its failure chronology are recorded separately in `historical-owner-direct-install-recovery-20261014.md`.
