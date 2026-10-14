@@ -93,6 +93,44 @@ class ReleaseGuards(unittest.TestCase):
         with zipfile.ZipFile(self.wheel,'w') as archive:
             for name,data in files.items():archive.writestr(name,data)
         with self.assertRaises(version.ReleaseError):self.inspect()
+    def test_all_release_wheel_profiles_and_build_tag(self):
+        for target,platform in assets.WHEEL_PLATFORM.items():
+            with self.subTest(target=target):
+                tag='cp311-abi3-'+platform
+                assets.wheel_tags('peerwork_sdk-0.0.1-'+tag+'.whl',[tag],target,'0.0.1')
+                assets.wheel_tags('peerwork_sdk-0.0.1-2build_-'+tag+'.whl',[tag],target,'0.0.1')
+    def test_wheel_substrings_wrong_floors_and_extra_tags_refuse(self):
+        invalid={
+            'linux-x64-gnu':['notmanylinux_2_28_x86_64','manylinux_2_28_x86_64_extra','manylinux_2_39_x86_64','manylinux_2_28_aarch64'],
+            'linux-arm64-gnu':['manylinux_2_39_aarch64','linux_aarch64','notmanylinux_2_28_aarch64'],
+            'linux-x64-musl':['notmusllinux_1_2_x86_64','musllinux_1_1_x86_64'],
+            'linux-arm64-musl':['musllinux_1_3_aarch64','musllinux_1_2_aarch64_extra'],
+            'darwin-x64':['notmacosx_11_0_x86_64','macosx_12_0_x86_64','macosx_11_0_universal2'],
+            'darwin-arm64':['macosx_10_9_arm64','macosx_11_0_arm64_extra'],
+            'win32-x64-msvc':['notwin_amd64','win_amd64_extra','win_arm64']}
+        for target,platforms in invalid.items():
+            for platform in platforms:
+                with self.subTest(target=target,platform=platform),self.assertRaises(version.ReleaseError):
+                    tag='cp311-abi3-'+platform
+                    assets.wheel_tags('peerwork_sdk-0.0.1-'+tag+'.whl',[tag],target,'0.0.1')
+        tag='cp311-abi3-manylinux_2_28_x86_64'
+        with self.assertRaises(version.ReleaseError):assets.wheel_tags(self.wheel.name,[tag,tag], 'linux-x64-gnu','0.0.1')
+        with self.assertRaises(version.ReleaseError):assets.wheel_tags(self.wheel.name,[tag,'cp312-abi3-manylinux_2_28_x86_64'],'linux-x64-gnu','0.0.1')
+    def test_filename_internal_tag_disagreement_and_grammar_refuse(self):
+        tag='cp311-abi3-manylinux_2_28_x86_64'
+        for filename in ['peerwork_sdk-0.0.1-cp312-abi3-manylinux_2_28_x86_64.whl','peerwork_sdk-0.0.1-cp311-abi3-win_amd64.whl','peerwork_sdk-0.0.2-'+tag+'.whl','other-0.0.1-'+tag+'.whl','peerwork_sdk-0.0.1-xbuild-'+tag+'.whl','peerwork_sdk-0.0.1-cp311..cp312-abi3-manylinux_2_28_x86_64.whl']:
+            with self.subTest(filename=filename),self.assertRaises(version.ReleaseError):assets.wheel_tags(filename,[tag],'linux-x64-gnu','0.0.1')
+        # Exercise the inspector itself with a valid filename but different
+        # well-formed internal tags, and the opposite renamed valid wheel.
+        self.wheel_files['peerwork_sdk-0.0.1.dist-info/WHEEL']=b'Tag: cp312-abi3-manylinux_2_28_x86_64\n';self.write_wheel()
+        with self.assertRaisesRegex(version.ReleaseError,'disagree'):self.inspect()
+        self.wheel_files['peerwork_sdk-0.0.1.dist-info/WHEEL']=('Tag: '+tag+'\n').encode();self.write_wheel()
+        renamed=self.wheel.with_name('peerwork_sdk-0.0.1-cp312-abi3-manylinux_2_28_x86_64.whl');self.wheel.rename(renamed);self.wheel=renamed
+        with self.assertRaisesRegex(version.ReleaseError,'disagree'):self.inspect()
+    def test_compressed_filename_expansion_cannot_hide_extra_profile(self):
+        filename='peerwork_sdk-0.0.1-cp311.cp312-abi3-manylinux_2_28_x86_64.whl'
+        with self.assertRaisesRegex(version.ReleaseError,'disagree'):assets.wheel_tags(filename,['cp311-abi3-manylinux_2_28_x86_64'],'linux-x64-gnu','0.0.1')
+        with self.assertRaisesRegex(version.ReleaseError,'profile mismatch'):assets.wheel_tags(filename,['cp311-abi3-manylinux_2_28_x86_64','cp312-abi3-manylinux_2_28_x86_64'],'linux-x64-gnu','0.0.1')
     def test_wrapper_extra_or_substituted_source_refuses(self):
         self.wrapper_files['package/index.cjs']=b'altered loader';self.write_tar(self.wrapper,self.wrapper_files)
         with self.assertRaises(version.ReleaseError):self.inspect()

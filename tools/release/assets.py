@@ -12,7 +12,9 @@ import gzip
 import hashlib
 import io
 import json
+import itertools
 from pathlib import Path, PurePosixPath
+import re
 import struct
 import subprocess
 import tarfile
@@ -82,7 +84,31 @@ def require_binary(data: bytes,target: str):
     expected=tuple(target.split('-')[:2])
     if binary_target(data)!=expected:raise ReleaseError('native binary OS/architecture does not match selected target')
 
-WHEEL_PLATFORM={'linux-x64-gnu':'manylinux_2_28_x86_64','linux-arm64-gnu':'aarch64','linux-x64-musl':'musllinux_1_2_x86_64','linux-arm64-musl':'musllinux_1_2_aarch64','darwin-x64':'x86_64','darwin-arm64':'arm64','win32-x64-msvc':'win_amd64'}
+# Release build profiles, not evidence of execution on these platforms. Builders
+# must produce these exact floors; an arbitrary newer floor is not substituted.
+WHEEL_PLATFORM={'linux-x64-gnu':'manylinux_2_28_x86_64','linux-arm64-gnu':'manylinux_2_28_aarch64','linux-x64-musl':'musllinux_1_2_x86_64','linux-arm64-musl':'musllinux_1_2_aarch64','darwin-x64':'macosx_11_0_x86_64','darwin-arm64':'macosx_11_0_arm64','win32-x64-msvc':'win_amd64'}
+
+def wheel_tags(filename: str,tags: list[str],target: str,version: str):
+    """Match the complete filename expansion to uncompressed WHEEL tags.
+
+    This deliberately accepts only our release's cp311/abi3 build profile,
+    rather than serving as a general Python installer tag parser.
+    """
+    if target not in WHEEL_PLATFORM:raise ReleaseError('unknown release target')
+    if len(filename)>255 or not filename.endswith('.whl'):raise ReleaseError('invalid wheel filename')
+    fields=filename[:-4].split('-')
+    if len(fields) not in (5,6) or fields[:2]!=['peerwork_sdk',version]:raise ReleaseError('wheel filename identity/version mismatch')
+    build=fields[2] if len(fields)==6 else None
+    if build is not None and not re.fullmatch(r'[0-9][A-Za-z0-9_]*',build):raise ReleaseError('invalid wheel build tag')
+    components=[field.split('.') for field in fields[-3:]]
+    if any(not values or len(values)!=len(set(values)) or any(not re.fullmatch(r'[a-z0-9_]+',value) for value in values) for values in components):raise ReleaseError('invalid wheel filename tag grammar')
+    expected={'cp311-abi3-'+WHEEL_PLATFORM[target]}
+    expanded={'-'.join(values) for values in itertools.product(*components)}
+    # Reject duplicate/compressed/malformed metadata tags and every extra tag,
+    # including cross-arch alternatives and different compatibility floors.
+    if not tags or len(tags)>64 or len(tags)!=len(set(tags)) or any(len(tag)>128 or not re.fullmatch(r'[a-z0-9_]+-[a-z0-9_]+-[a-z0-9_]+',tag) for tag in tags):raise ReleaseError('invalid WHEEL tag grammar')
+    if set(tags)!=expanded:raise ReleaseError('wheel filename and WHEEL tags disagree')
+    if expanded!=expected:raise ReleaseError('wheel interpreter/ABI/platform release profile mismatch')
 
 def inspect(root: Path,target: str,cli: Path,wheel: Path,node_root: Path,node_platform: Path):
     identity=check(root)
@@ -95,9 +121,7 @@ def inspect(root: Path,target: str,cli: Path,wheel: Path,node_root: Path,node_pl
     if metadata['Name']!='peerwork-sdk' or metadata['Version']!=version:raise ReleaseError('wheel release identity/version mismatch')
     wheel_data=BytesParser().parsebytes(files[prefix+'/WHEEL'])
     tags=wheel_data.get_all('Tag',[])
-    if not tags or not any(WHEEL_PLATFORM[target] in tag.split('-',2)[-1] for tag in tags):raise ReleaseError('wheel platform tag mismatch')
-    if target.startswith('linux') and target.endswith('gnu') and not any('manylinux_' in tag for tag in tags):raise ReleaseError('GNU release wheel must have a manylinux tag')
-    if target.startswith('darwin') and not all('macosx_' in tag for tag in tags):raise ReleaseError('macOS wheel tag mismatch')
+    wheel_tags(wheel.name,tags,target,version)
     native=[n for n in files if n.startswith('peerwork/') and n.endswith(('.so','.pyd'))]
     if len(native)!=1 or 'peerwork/py.typed' not in files:raise ReleaseError('wheel missing unique native module or py.typed')
     require_binary(files[native[0]],target)
