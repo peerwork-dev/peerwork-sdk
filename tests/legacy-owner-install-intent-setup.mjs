@@ -28,7 +28,9 @@ try {
     // The original three modes have a separate frozen setup result. Exercise
     // only the newly added closure-backed direct subset in this successor.
     const selected = process.env.PEERWORK_INSTALL_SETUP_MODE;
-    if (selected && !['direct-completed-end', 'complete-action', 'complete-rotate'].includes(selected)) {
+    if (selected && !['direct-completed-end', 'complete-action', 'complete-rotate',
+      'direct-page-before-post', 'direct-page-applied-loss',
+      'direct-end-before-post', 'direct-end-applied-loss'].includes(selected)) {
       throw new Error('INSTALL_SETUP_MODE_INVALID');
     }
     for (const mode of selected ? [selected]
@@ -53,8 +55,11 @@ try {
       }
       const source = JSON.parse(stdout);
       const completed = mode.endsWith('completed-end') || later;
+      const retainedStep = /^direct-(page|end)-/.exec(mode)?.[1];
       if (source.mode !== mode || source.pending_count !== (completed ? 0 : 1)
-        || source.latest_structure_state !== (mode.endsWith('applied-loss') ? 'SEEDING' : 'ACTIVE')
+        || source.latest_structure_state !== (retainedStep
+          ? retainedStep === 'end' && mode.endsWith('applied-loss') ? 'ACTIVE' : 'SEEDING'
+          : mode.endsWith('applied-loss') ? 'SEEDING' : 'ACTIVE')
         || ((mode.startsWith('direct-') || later) && !source.material_path)
         || (later && (source.selected_sequence !== 3 || source.latest_sequence !== 4))) {
         throw new Error(`INSTALL_SETUP_${mode}_SHAPE`);
@@ -67,6 +72,8 @@ try {
         if (accepted !== (mode.endsWith('applied-loss') ? 1 : 0)) throw new Error(`INSTALL_SETUP_${mode}_ACCEPTANCE`);
       }
       process.stdout.write(JSON.stringify({ mode, pending_count: source.pending_count,
+        pending_action_id: source.pending_action_id ?? null,
+        pending_sequence: source.pending_sequence ?? null,
         initial_sequence: source.initial_sequence, latest_sequence: source.latest_sequence,
         structure_state: source.latest_structure_state, commit_count: count,
         intent_hash_bound: true,

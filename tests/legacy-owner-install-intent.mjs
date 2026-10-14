@@ -9,7 +9,9 @@ const [origin, sourceDir, referenceRoot, mode] = process.argv.slice(2);
 if (!origin || !sourceDir || !referenceRoot
   || !['begin-applied-loss', 'begin-before-post', 'completed-end',
     'direct-begin-applied-loss', 'direct-begin-before-post',
-    'direct-two-workspace-before-post', 'direct-completed-end'].includes(mode)) {
+    'direct-two-workspace-before-post', 'direct-completed-end',
+    'direct-page-before-post', 'direct-page-applied-loss',
+    'direct-end-before-post', 'direct-end-applied-loss'].includes(mode)) {
   throw new Error('INSTALL_INTENT_TEST_INPUT');
 }
 mkdirSync(sourceDir, { recursive: true, mode: 0o700 });
@@ -31,7 +33,16 @@ const agent = await SecureAgentClient.open({
 try {
   const created = await agent.create('Legacy install intent proof', 'PRIVATE', { structure: true });
   const workspaceId = created.workspaceId;
-  const initial = await agent.journal(workspaceId);
+  let initial = await agent.journal(workspaceId);
+  const retainedStep = /^direct-(page|end)-/.exec(mode)?.[1];
+  if (retainedStep === 'page') {
+    const wiki = initial.objects.find(row => row.kind === 'instances'
+      && row.value.origin_entrypoint === 'wiki');
+    if (!wiki) throw new Error('INSTALL_INTENT_WIKI_MISSING');
+    initial = await agent.action(workspaceId, wiki.id, 'wiki.create', {
+      title: 'Retained install PAGE source', body: 'Signed original snapshot record',
+    });
+  }
   if (initial.policy.payload.v !== 3 || initial.policy.payload.visibility !== 'PRIVATE'
     || initial.structure?.state !== 'ACTIVE') throw new Error('INSTALL_INTENT_INITIAL_POLICY');
   let manifest;
@@ -158,18 +169,30 @@ try {
   const originalRequest = agent.request.bind(agent);
   let stopped = false;
   let observedAction = null;
-  if (mode.endsWith('applied-loss')) {
+  if (mode.endsWith('applied-loss') && !retainedStep) {
     const hook = await fetch(new URL('/__test/drop-next-post', origin), { method: 'POST', body: '{}' });
     if (!hook.ok) throw new Error('INSTALL_INTENT_DROP_HOOK');
   }
   if (mode.endsWith('before-post')) {
     agent.request = async (path, requestOptions) => {
       if (!stopped && requestOptions?.method === 'POST'
-        && path === `/api/workspace/v1/secure/workspaces/${workspaceId}/commits`) {
+        && path === `/api/workspace/v1/secure/workspaces/${workspaceId}/commits`
+        && (!retainedStep || JSON.parse(requestOptions.body).commit.payload.action_id
+          === `secure.structure.${retainedStep}`)) {
         stopped = true;
         throw new Error('TEST_STOP_BEFORE_INSTALL_BEGIN_POST');
       }
       return originalRequest(path, requestOptions);
+    };
+  }
+  if (retainedStep && mode.endsWith('applied-loss')) {
+    agent.post = async (...args) => {
+      if (!stopped && args[1]?.commit?.payload?.action_id === `secure.structure.${retainedStep}`) {
+        stopped = true;
+        const hook = await fetch(new URL('/__test/drop-next-post', origin), { method: 'POST', body: '{}' });
+        if (!hook.ok) throw new Error('INSTALL_INTENT_STEP_DROP_HOOK');
+      }
+      return originalPost(...args);
     };
   }
   if (mode.endsWith('completed-end')) {
@@ -209,7 +232,7 @@ try {
   const selected = pending[0];
   if (selected && (selected[0] !== selected[1].body?.commit?.payload?.command_id
     || selected[1].path !== `/api/workspace/v1/secure/workspaces/${workspaceId}/commits`
-    || selected[1].body?.commit?.payload?.action_id !== 'secure.structure.begin')) {
+    || selected[1].body?.commit?.payload?.action_id !== `secure.structure.${retainedStep ?? 'begin'}`)) {
     throw new Error('INSTALL_INTENT_PENDING_BEGIN_MISMATCH');
   }
   const journal = await agent.journal(workspaceId);
@@ -223,12 +246,22 @@ try {
         && row.protocol_digest === resolved.digest && row.entrypoint === options.entrypoint)) {
       throw new Error('INSTALL_INTENT_SIGNED_COMPLETION_MISSING');
     }
-  } else if ((mode.endsWith('before-post') && (!stopped || journal.checkpoint.sequence !== initial.checkpoint.sequence))
-    || (mode.endsWith('applied-loss') && journal.checkpoint.sequence !== initial.checkpoint.sequence + 1)) {
+  } else if (!retainedStep && ((mode.endsWith('before-post') && (!stopped || journal.checkpoint.sequence !== initial.checkpoint.sequence))
+    || (mode.endsWith('applied-loss') && journal.checkpoint.sequence !== initial.checkpoint.sequence + 1))) {
     throw new Error('INSTALL_INTENT_BEGIN_STATE_MISMATCH');
   }
+  if (retainedStep) {
+    const sequence = selected[1].body.commit.payload.sequence;
+    if (sequence < initial.checkpoint.sequence + 2
+      || journal.checkpoint.sequence !== sequence - (mode.endsWith('before-post') ? 1 : 0)
+      || journal.structure?.state !== (retainedStep === 'end' && mode.endsWith('applied-loss') ? 'ACTIVE' : 'SEEDING')) {
+      throw new Error('INSTALL_INTENT_RETAINED_STEP_STATE');
+    }
+  }
   process.stdout.write(JSON.stringify({
-    mode, workspace_id: workspaceId, owner_actor_id: agent.identity.actorId,
+    mode, pending_action_id: selected?.[1].body?.commit?.payload?.action_id ?? null,
+    pending_sequence: selected?.[1].body?.commit?.payload?.sequence ?? null,
+    workspace_id: workspaceId, owner_actor_id: agent.identity.actorId,
     owner_key_id: agent.identity.keyId, state_path: statePath,
     pem_path: pemPath, intent_db_path: intentDbPath, options_path: optionsPath,
     material_path: mode.startsWith('direct-') ? materialPath : null,

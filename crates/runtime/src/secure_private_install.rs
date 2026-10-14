@@ -828,6 +828,7 @@ pub(crate) struct ImportedHistoricalDirectBegin {
     pub bindings_json: String,
     pub source_checkpoint_json: String,
     pub root_package_digest: String,
+    pub steps: Vec<InstallStep>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -896,13 +897,13 @@ impl InstallRow {
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct InstallStep {
-    command_id: String,
-    issued_at_ms: u64,
-    request_b64: String,
-    commit_hash: String,
-    action_id: String,
-    offset: usize,
+pub(crate) struct InstallStep {
+    pub command_id: String,
+    pub issued_at_ms: u64,
+    pub request_b64: String,
+    pub commit_hash: String,
+    pub action_id: String,
+    pub offset: usize,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -1435,7 +1436,7 @@ impl SecurePrivatePackageInstall {
             commit_hash: imported.commit_hash, policy_hash: imported.policy_hash,
             snapshot_json: imported.snapshot_json,
             protocol_digest: imported.protocol_digest,
-            steps: Vec::new(), accepted: None,
+            steps: imported.steps, accepted: None,
         };
         let store = SecureStateStore::open(
             &self.config.state_dir.join("private-install-operations.state"),
@@ -2333,12 +2334,18 @@ impl SecurePrivatePackageInstall {
                 return Err(PrivatePackageInstallError::Plan);
             }
             let done = offset == total;
-            let step_id = install_step_id(begin_id, offset, done);
-            let existing = row
-                .steps
-                .iter()
-                .find(|step| step.command_id == step_id)
-                .cloned();
+            // Legacy PAGE/END IDs are random. Only imported rows may select
+            // a saved step by its already verified snapshot offset; ordinary
+            // rows retain the deterministic native ID convention.
+            let native_step_id = install_step_id(begin_id, offset, done);
+            let candidates: Vec<_> = row.steps.iter().filter(|step|
+                if expected_import_attach_id.is_some() { step.offset == offset }
+                else { step.command_id == native_step_id }
+            ).cloned().collect();
+            if candidates.len() > 1 { return Err(PrivatePackageInstallError::Plan); }
+            let existing = candidates.into_iter().next();
+            let step_id = existing.as_ref().map(|step| step.command_id.clone())
+                .unwrap_or(native_step_id);
             let issued_at = existing
                 .as_ref()
                 .map(|step| step.issued_at_ms)
