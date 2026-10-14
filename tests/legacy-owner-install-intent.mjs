@@ -20,7 +20,8 @@ if (!origin || !sourceDir || !referenceRoot
     'direct-staged-package-end-applied-loss', 'direct-staged-package-page-before-post',
     'direct-staged-package-page-applied-loss', 'direct-staged-package-completed-end',
     'direct-implicit-begin-before-post', 'direct-implicit-end-applied-loss',
-    'direct-object-begin-before-post', 'direct-object-end-applied-loss'].includes(mode)) {
+    'direct-object-begin-before-post', 'direct-object-end-applied-loss',
+    'direct-object-page-before-post', 'direct-object-page-applied-loss', 'direct-object-completed-end'].includes(mode)) {
   throw new Error('INSTALL_INTENT_TEST_INPUT');
 }
 mkdirSync(sourceDir, { recursive: true, mode: 0o700 });
@@ -283,7 +284,7 @@ try {
         && path === `/api/workspace/v1/secure/workspaces/${workspaceId}/commits`
         && (!retainedStep || JSON.parse(requestOptions.body).commit.payload.action_id
           === `secure.structure.${retainedStep}`)
-        && (!objectSourceOption || JSON.parse(requestOptions.body).commit.payload.action_id === 'secure.structure.begin')) {
+        && (!objectSourceOption || retainedStep || JSON.parse(requestOptions.body).commit.payload.action_id === 'secure.structure.begin')) {
         stopped = true;
         throw new Error('TEST_STOP_BEFORE_INSTALL_BEGIN_POST');
       }
