@@ -2717,11 +2717,20 @@ impl SecureHistoricalOwnerAttach {
             )
         { return Err(HistoricalOwnerAttachError::Conflict); }
         let signed_policy = replayed.signed_policy_by_hash(replayed.replay().policy_hash())
-            .ok_or(HistoricalOwnerAttachError::Verification)?;
+            .ok_or_else(|| {
+                #[cfg(test)] eprintln!("direct-install-attach:policy-missing");
+                HistoricalOwnerAttachError::Verification
+            })?;
         let current = parse_wire_json_bounded(signed_policy, 64, 196_608)
-            .map_err(|_| HistoricalOwnerAttachError::Verification)?;
+            .map_err(|_| {
+                #[cfg(test)] eprintln!("direct-install-attach:policy-parse");
+                HistoricalOwnerAttachError::Verification
+            })?;
         let payload = current.get("payload")
-            .ok_or(HistoricalOwnerAttachError::Verification)?;
+            .ok_or_else(|| {
+                #[cfg(test)] eprintln!("direct-install-attach:policy-payload");
+                HistoricalOwnerAttachError::Verification
+            })?;
         let owner_current = matches!(payload.get("members"), Some(WireValue::Array(members))
             if members.iter().any(|member| {
                 member.get("actor_id").and_then(WireValue::as_string).as_deref()
@@ -2733,7 +2742,10 @@ impl SecureHistoricalOwnerAttach {
                         .and_then(WireValue::as_string).as_deref() == Some(owner.key_id())
             }));
         let current_epoch = exact_u64(payload.get("epoch"))
-            .ok_or(HistoricalOwnerAttachError::Verification)?;
+            .ok_or_else(|| {
+                #[cfg(test)] eprintln!("direct-install-attach:policy-epoch");
+                HistoricalOwnerAttachError::Verification
+            })?;
         let expected_sequence = row.source_sequence
             .checked_add(u64::from(verified.applied))
             .ok_or(HistoricalOwnerAttachError::Verification)?;
