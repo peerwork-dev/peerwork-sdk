@@ -222,6 +222,7 @@ pub struct PreparedPrivatePackageInstallBegin {
     commit_hash: String,
     policy_hash: String,
     snapshot: WireValue,
+    direct_composition: Option<WireValue>,
     protocol_digest: String,
     instance_id: String,
 }
@@ -253,6 +254,10 @@ impl PreparedPrivatePackageInstallBegin {
     }
     pub fn snapshot(&self) -> &WireValue {
         &self.snapshot
+    }
+    /// Exact composition independently compiled under the authenticated source policy.
+    pub fn direct_composition(&self) -> Option<&WireValue> {
+        self.direct_composition.as_ref()
     }
     pub fn protocol_digest(&self) -> &str {
         &self.protocol_digest
@@ -1196,6 +1201,7 @@ pub fn prepare_private_package_install_begin_with_disclosure(
         commit_hash,
         policy_hash: new_policy_hash,
         snapshot,
+        direct_composition: None,
         protocol_digest: digest,
         instance_id: instance_id.to_owned(),
     })
@@ -1488,6 +1494,7 @@ pub fn prepare_private_direct_install_begin_with_options(
         commit_hash,
         policy_hash: new_policy_hash,
         snapshot,
+        direct_composition: compiled.composition().cloned(),
         protocol_digest: expected_protocol_digest.to_owned(),
         instance_id: instance_id.to_owned(),
     })
@@ -1720,6 +1727,7 @@ fn verify_saved_private_install_begin_against(
         commit_hash: sha256_hex(saved_commit_wire.as_bytes()),
         policy_hash: expected.policy_hash,
         snapshot: expected.snapshot,
+        direct_composition: expected.direct_composition,
         protocol_digest: expected.protocol_digest,
         instance_id: expected.instance_id,
     })
