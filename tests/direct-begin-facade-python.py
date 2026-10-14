@@ -49,9 +49,27 @@ assert calls[-1][2]["expected_ts_state_digest"] == digest
 client.recover_pending_direct_install_begin("t" * 43, args[6])
 assert calls[-1][0] == "direct_begin_recover"
 assert calls[-1][3:5] == (args[6], "t" * 43)
+# Generic packet names are aliases, including the same native operation IDs.
+assert client.inspect_pending_direct_install_packet.__func__ is client.inspect_pending_direct_install_begin.__func__
+client.inspect_pending_direct_install_packet(*args)
+client.attach_pending_direct_install_packet(*args[:7], digest, *args[7:])
+client.recover_pending_direct_install_packet("t" * 43, args[6])
+assert [row[0] for row in calls[-3:]] == ["direct_begin_inspect", "direct_begin_attach", "direct_begin_recover"]
+client.inspect_completed_direct_install(*args)
+assert calls[-1][0] == "direct_completed_inspect"
+assert calls[-1][2]["selected_instance_id"] == args[6]
+assert "selected_command_id" not in calls[-1][2]
+assert calls[-1][2]["expected_ts_state_digest"] is None
+client.attach_completed_direct_install(*args[:7], digest, *args[7:])
+assert calls[-1][0] == "direct_completed_attach"
+assert calls[-1][2]["expected_ts_state_digest"] == digest
+assert "HistoricalDirectInstallCompletedInventory" in peerwork.__all__
 before = len(calls)
 for operation in (
     lambda: client.attach_pending_direct_install_begin(*args[:7], "", *args[7:]),
+    lambda: client.attach_completed_direct_install(*args[:7], "", *args[7:]),
+    lambda: client.inspect_completed_direct_install(*args[:6], "", *args[7:]),
+    lambda: client.inspect_completed_direct_install(*args[:7], "", args[8]),
     lambda: client.inspect_pending_direct_install_begin(*args[:7], "", args[8]),
 ):
     try:
@@ -68,6 +86,11 @@ async def check_async():
     await client.inspect_pending_direct_install_begin_async(*args)
     await client.attach_pending_direct_install_begin_async(*args[:7], digest, *args[7:])
     await client.recover_pending_direct_install_begin_async("t" * 43, args[6])
+    await client.inspect_pending_direct_install_packet_async(*args)
+    await client.attach_pending_direct_install_packet_async(*args[:7], digest, *args[7:])
+    await client.recover_pending_direct_install_packet_async("t" * 43, args[6])
+    await client.inspect_completed_direct_install_async(*args)
+    await client.attach_completed_direct_install_async(*args[:7], digest, *args[7:])
 asyncio.run(check_async())
-assert [row[0] for row in calls[-3:]] == ["direct_begin_inspect", "direct_begin_attach", "direct_begin_recover"]
-print("Python direct BEGIN facade sync, async and preflight PASS")
+assert [row[0] for row in calls[-5:]] == ["direct_begin_inspect", "direct_begin_attach", "direct_begin_recover", "direct_completed_inspect", "direct_completed_attach"]
+print("Python direct packet aliases/completed facade sync, async routing and preflight PASS")
