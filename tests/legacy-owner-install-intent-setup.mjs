@@ -25,8 +25,9 @@ try {
   if (typeof ready.origin !== 'string') throw new Error('SERVICE_ORIGIN_MISSING');
   const db = new DatabaseSync(join(testRoot, 'control.sqlite'), { readOnly: true });
   try {
-    for (const mode of ['begin-applied-loss', 'begin-before-post', 'completed-end',
-      'direct-begin-applied-loss', 'direct-begin-before-post']) {
+    // The original three modes have a separate frozen setup result. Exercise
+    // only the newly added closure-backed direct subset in this successor.
+    for (const mode of ['direct-begin-applied-loss', 'direct-begin-before-post']) {
       const sourceDir = join(testRoot, mode);
       mkdirSync(sourceDir, { mode: 0o700 });
       const child = spawn(process.execPath, [join(sdkRoot, 'tests/legacy-owner-install-intent.mjs'),
