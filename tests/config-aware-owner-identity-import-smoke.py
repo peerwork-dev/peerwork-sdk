@@ -122,8 +122,14 @@ symlink = restricted(["identity", "import-legacy-owner-pem", str(symlink_config)
 
 identity_digest_after = hashlib.sha256((state / "identity.state").read_bytes()).hexdigest() if (state / "identity.state").is_file() else None
 same_public_ids = bool(
-    imported.get("actor_id") == info.get("actor_id")
-    and imported.get("key_id") == info.get("key_id")
+    isinstance(imported.get("value"), dict)
+    and isinstance(info.get("value"), dict)
+    and isinstance(imported["value"].get("actor_id"), str)
+    and bool(imported["value"].get("actor_id"))
+    and isinstance(imported["value"].get("key_id"), str)
+    and bool(imported["value"].get("key_id"))
+    and imported["value"].get("actor_id") == info["value"].get("actor_id")
+    and imported["value"].get("key_id") == info["value"].get("key_id")
 )
 summary = {
     "cli_sha256": hashlib.sha256(Path(cli).read_bytes()).hexdigest(),
