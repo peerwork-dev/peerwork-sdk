@@ -2345,6 +2345,33 @@ impl SecurePrivatePackageInstall {
         self.stage_package_json_with_expected_source(input, Some(expected_source_id), cancel)
     }
 
+    /// Restricted Owner-attach producer for a new stage after a packetless
+    /// legacy orphan. The caller persisted the exact stage and first-command
+    /// IDs under the attach root lock; the row remains attach-tagged and is
+    /// never exposed to ordinary stage continuation.
+    pub(crate) fn stage_exact_imported_orphan_json_with_cancel(
+        &self,
+        input: PrivatePackageStageInput,
+        attach_id: &str,
+        cancel: &CancellationToken,
+    ) -> Result<String, PrivatePackageInstallError> {
+        let stage_id = input.stage_id.as_deref().ok_or(PrivatePackageInstallError::Input)?;
+        let command_id = input.command_id.as_deref().ok_or(PrivatePackageInstallError::Input)?;
+        let issued_at = input.issued_at_ms.ok_or(PrivatePackageInstallError::Input)?;
+        if !token(attach_id) || !token(stage_id) || !token(command_id)
+            || !digest(&input.expected_root_package_digest)
+            || !digest(&input.expected_protocol_digest)
+            || input.material_json.is_empty() || input.material_json.len() > 8 * 1024 * 1024
+        {
+            return Err(PrivatePackageInstallError::Input);
+        }
+        let result = SecureReadProfile::new(self.config.clone()).with_latest_replay(cancel, |source| {
+            self.stage_from_replay(source, &input, stage_id, command_id, issued_at,
+                None, Some(attach_id), cancel)
+        })?;
+        serde_json::to_string(&result).map_err(|_| PrivatePackageInstallError::Encoding)
+    }
+
     fn stage_package_json_with_expected_source(
         &self,
         input: PrivatePackageStageInput,

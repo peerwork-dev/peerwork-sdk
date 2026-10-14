@@ -225,6 +225,8 @@ pub enum HistoricalOwnerAttachError {
     OrphanMaterialRequired,
     #[error("orphan package stage replan remains unresolved")]
     OrphanStageUnresolved,
+    #[error("protected orphan staging residue needs local review")]
+    OrphanPlanResidue,
 }
 
 impl HistoricalOwnerAttachError {
@@ -245,6 +247,7 @@ impl HistoricalOwnerAttachError {
             Self::PendingPackageStageUnresolved => "PENDING_PACKAGE_STAGE_UNRESOLVED",
             Self::OrphanMaterialRequired => "ORPHAN_MATERIAL_REQUIRED",
             Self::OrphanStageUnresolved => "ORPHAN_STAGE_UNRESOLVED",
+            Self::OrphanPlanResidue => "ORPHAN_PLAN_RESIDUE",
         }
     }
 }
@@ -318,6 +321,10 @@ struct SavedOrphanReplan {
     root_package_digest: String,
     protocol_digest: String,
     proof_sha256: String,
+    /// Multipart replan pins the new signed-stage base before its producer
+    /// saves a StageRow or sends any packet. Legacy one-part rows omit it.
+    #[serde(default)]
+    new_source_wire: Option<String>,
     #[serde(default)]
     accepted_in_signed_replay: bool,
 }
@@ -934,6 +941,7 @@ impl SecureHistoricalOwnerAttach {
         };
         let plans_root = self.config.state_dir.join("owner-orphan-plans");
         ensure_dir(&plans_root)?;
+        clear_owned_orphan_plan_staging(&plans_root)?;
         let final_directory = plans_root.join(&plan_id);
         let existed = match std::fs::symlink_metadata(&final_directory) {
             Ok(_) => true,
@@ -2104,6 +2112,11 @@ impl SecureHistoricalOwnerAttach {
         {
             return Err(HistoricalOwnerAttachError::Identity);
         }
+        if orphan.part_index > 0 {
+            return self.replan_multipart_orphan_package_stage(
+                attach_id, &row, orphan, material_json, cancel,
+            );
+        }
         let source = parse_wire_json_bounded(orphan.source_wire.as_bytes(), 32, 8192)
             .map_err(|_| HistoricalOwnerAttachError::Conflict)?;
         let marker = CompletedPackageStageMarker {
@@ -2166,6 +2179,7 @@ impl SecureHistoricalOwnerAttach {
                 proof_sha256: proof,
                 root_package_digest: root,
                 protocol_digest: protocol,
+                new_source_wire: None,
                 accepted_in_signed_replay: false,
             };
             // Persist distinct new IDs and full compiler-proof digest before
@@ -2244,6 +2258,194 @@ impl SecureHistoricalOwnerAttach {
             .accepted_in_signed_replay = true;
         saved.attached_sequence = Some(replayed.replay().sequence());
         saved.attached_head = replayed.replay().head().map(str::to_owned);
+        let completed = saved.clone();
+        save_history(&store, &history)?;
+        Ok(summary(attach_id, &completed))
+    }
+
+    /// An index>0 packetless marker can authorize only a distinct new stage.
+    /// The complete old material and signed prefix are already quarantined by
+    /// PREPARED; no part of the missing original packet is synthesized.
+    fn replan_multipart_orphan_package_stage(
+        &self,
+        attach_id: &str,
+        row: &SavedAttach,
+        orphan: &SavedOrphanPackageStage,
+        material_json: Option<&str>,
+        cancel: &CancellationToken,
+    ) -> Result<HistoricalOwnerAttachResult, HistoricalOwnerAttachError> {
+        let plan = self.load_quarantined_orphan_plan(row)?;
+        if plan.manifest.marker_part_index != orphan.part_index
+            || plan.manifest.part_count != orphan.part_count
+            || plan.manifest.command_id != orphan.original_command_id
+            || plan.manifest.marker_source_id != orphan.source_id
+            || plan.manifest.marker_source_sha256 != orphan.source_sha256
+        {
+            return Err(HistoricalOwnerAttachError::Conflict);
+        }
+        if material_json.filter(|wire| !wire.is_empty())
+            .is_some_and(|wire| sha256_hex(wire.as_bytes()) != plan.manifest.material_sha256)
+        {
+            return Err(HistoricalOwnerAttachError::Conflict);
+        }
+        let old_marker = plan.source.completed_package_stage.as_ref()
+            .ok_or(HistoricalOwnerAttachError::Conflict)?;
+        let access = SecureReadAccess::new(self.attach_read_config(&row.input));
+        let replayed = access.replay_checked_attach_generation(cancel)
+            .map_err(|_| HistoricalOwnerAttachError::Verification)?;
+        if !replayed.replay().contains_checkpoint(
+            row.source_sequence, row.source_head.as_deref(), &row.source_policy_hash,
+        ) || replayed.replay().owner_actor_id() != row.input.expected_owner_actor_id
+            || replayed.replay().owner_signing_key() != row.input.expected_owner_key_id
+            || replayed.replay().structure_status() != StructureStatus::Active
+        {
+            return Err(HistoricalOwnerAttachError::Verification);
+        }
+        let replan = if let Some(saved) = orphan.replan.as_ref() {
+            let new_source = saved.new_source_wire.as_deref()
+                .ok_or(HistoricalOwnerAttachError::Conflict)?;
+            let new_source = parse_wire_json_bounded(new_source.as_bytes(), 32, 8192)
+                .map_err(|_| HistoricalOwnerAttachError::Conflict)?;
+            let sequence = exact_u64(new_source.get("sequence"))
+                .ok_or(HistoricalOwnerAttachError::Conflict)?;
+            let head = new_source.get("head").and_then(WireValue::as_string)
+                .ok_or(HistoricalOwnerAttachError::Conflict)?;
+            let policy = new_source.get("policy_hash").and_then(WireValue::as_string)
+                .ok_or(HistoricalOwnerAttachError::Conflict)?;
+            if !replayed.replay().contains_checkpoint(sequence, Some(&head), &policy)
+                || saved.material_sha256 != plan.manifest.material_sha256
+                || saved.root_package_digest != plan.manifest.root_package_digest
+                || saved.protocol_digest != plan.manifest.protocol_digest
+                || saved.proof_sha256 != plan.manifest.proof_sha256
+            {
+                return Err(HistoricalOwnerAttachError::Conflict);
+            }
+            saved.clone()
+        } else {
+            let (verified, old_applied) = verify_multipart_orphan_package_stage(
+                old_marker, &plan.material, &replayed, &row.input,
+            )?;
+            if old_applied || verified.part_count != plan.manifest.part_count
+                || verified.root_package_digest != plan.manifest.root_package_digest
+                || verified.protocol_digest != plan.manifest.protocol_digest
+                || verified.proof_sha256 != plan.manifest.proof_sha256
+            {
+                return Err(HistoricalOwnerAttachError::SourceUnresolved);
+            }
+            self.assert_source_unchanged(row)?;
+            let issued_at_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| HistoricalOwnerAttachError::Local)?
+                .as_millis() as u64;
+            let selected = SavedOrphanReplan {
+                stage_id: random_token()?, command_id: random_token()?, issued_at_ms,
+                material_sha256: plan.manifest.material_sha256.clone(),
+                root_package_digest: plan.manifest.root_package_digest.clone(),
+                protocol_digest: plan.manifest.protocol_digest.clone(),
+                proof_sha256: plan.manifest.proof_sha256.clone(),
+                new_source_wire: Some(replayed.checkpoint_canonical_json().to_owned()),
+                accepted_in_signed_replay: false,
+            };
+            let store = SecureStateStore::open(&self.history_path())
+                .map_err(|_| HistoricalOwnerAttachError::Local)?;
+            let mut history = read_history(&store, &self.config.origin)?;
+            let saved = history.rows.get_mut(attach_id)
+                .ok_or(HistoricalOwnerAttachError::NotFound)?;
+            if saved.input != row.input || saved.orphan_package_stage.as_ref() != Some(orphan)
+                || saved.orphan_multipart_plan_id != row.orphan_multipart_plan_id
+            {
+                return Err(HistoricalOwnerAttachError::Conflict);
+            }
+            saved.orphan_package_stage.as_mut()
+                .ok_or(HistoricalOwnerAttachError::Conflict)?.replan = Some(selected.clone());
+            save_history(&store, &history)?;
+            selected
+        };
+        #[cfg(test)]
+        if TEST_STOP_AFTER_ORPHAN_REPLAN_INTENT.swap(false, Ordering::SeqCst) {
+            return Err(HistoricalOwnerAttachError::Cancelled);
+        }
+        if cancel.is_cancelled() { return Err(HistoricalOwnerAttachError::Cancelled); }
+        let material = Zeroizing::new(String::from_utf8(plan.material.to_vec())
+            .map_err(|_| HistoricalOwnerAttachError::Conflict)?);
+        let stager = SecurePrivatePackageInstall::new(self.profile_config(&row.input));
+        let input = PrivatePackageStageInput {
+            material_json: material.to_string(),
+            expected_root_package_digest: replan.root_package_digest.clone(),
+            expected_protocol_digest: replan.protocol_digest.clone(),
+            stage_id: Some(replan.stage_id.clone()),
+            command_id: Some(replan.command_id.clone()),
+            issued_at_ms: Some(replan.issued_at_ms),
+        };
+        let mut progress = None;
+        for _ in 0..=plan.manifest.part_count {
+            let wire = stager.stage_exact_imported_orphan_json_with_cancel(
+                input.clone(), attach_id, cancel,
+            ).map_err(|_| {
+                if cancel.is_cancelled() { HistoricalOwnerAttachError::Cancelled }
+                else { HistoricalOwnerAttachError::OrphanStageUnresolved }
+            })?;
+            let value: serde_json::Value = serde_json::from_str(&wire)
+                .map_err(|_| HistoricalOwnerAttachError::Local)?;
+            if value.get("stage_id").and_then(serde_json::Value::as_str)
+                != Some(replan.stage_id.as_str())
+                || value.get("part_count").and_then(serde_json::Value::as_u64)
+                    != Some(plan.manifest.part_count as u64)
+            {
+                return Err(HistoricalOwnerAttachError::Conflict);
+            }
+            let staged = value.get("status").and_then(serde_json::Value::as_str)
+                == Some("STAGED");
+            progress = Some(value);
+            if staged { break; }
+        }
+        let progress = progress.ok_or(HistoricalOwnerAttachError::OrphanStageUnresolved)?;
+        if progress.get("status").and_then(serde_json::Value::as_str) != Some("STAGED") {
+            return Err(HistoricalOwnerAttachError::OrphanStageUnresolved);
+        }
+        let new_source_id = progress.get("source_id").and_then(serde_json::Value::as_str)
+            .ok_or(HistoricalOwnerAttachError::Conflict)?;
+        let (last_command, last_hash) = stager.imported_stage_final_step_for_attach(
+            &replan.stage_id, attach_id, new_source_id, plan.manifest.part_count,
+        ).map_err(|_| HistoricalOwnerAttachError::Conflict)?;
+        let final_replay = access.replay_checked_attach_generation(cancel)
+            .map_err(|_| HistoricalOwnerAttachError::OrphanStageUnresolved)?;
+        let new_source_wire = replan.new_source_wire.as_deref()
+            .ok_or(HistoricalOwnerAttachError::Conflict)?;
+        let new_source = parse_wire_json_bounded(new_source_wire.as_bytes(), 32, 8192)
+            .map_err(|_| HistoricalOwnerAttachError::Conflict)?;
+        let marker = CompletedPackageStageMarker {
+            command_id: last_command,
+            source: new_source,
+            source_id: new_source_id.to_owned(),
+            source_sha256: orphan.source_sha256.clone(),
+            part_index: plan.manifest.part_count - 1,
+        };
+        verify_completed_package_stage(&marker, &final_replay, &row.input)
+            .map_err(|_| HistoricalOwnerAttachError::OrphanStageUnresolved)?;
+        let final_sequence = exact_u64(marker.source.get("sequence"))
+            .ok_or(HistoricalOwnerAttachError::Conflict)?
+            .checked_add(plan.manifest.part_count as u64)
+            .ok_or(HistoricalOwnerAttachError::Conflict)?;
+        let new_policy = marker.source.get("policy_hash").and_then(WireValue::as_string)
+            .ok_or(HistoricalOwnerAttachError::Conflict)?;
+        if !final_replay.replay().contains_checkpoint(final_sequence, Some(&last_hash), &new_policy) {
+            return Err(HistoricalOwnerAttachError::Conflict);
+        }
+        self.assert_source_unchanged(row)?;
+        let store = SecureStateStore::open(&self.history_path())
+            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        let mut history = read_history(&store, &self.config.origin)?;
+        let saved = history.rows.get_mut(attach_id).ok_or(HistoricalOwnerAttachError::NotFound)?;
+        if saved.input != row.input || saved.orphan_multipart_plan_id != row.orphan_multipart_plan_id
+            || saved.orphan_package_stage.as_ref() != Some(orphan) {
+            return Err(HistoricalOwnerAttachError::Conflict);
+        }
+        saved.orphan_package_stage.as_mut().ok_or(HistoricalOwnerAttachError::Conflict)?
+            .replan.as_mut().ok_or(HistoricalOwnerAttachError::Conflict)?
+            .accepted_in_signed_replay = true;
+        saved.attached_sequence = Some(final_replay.replay().sequence());
+        saved.attached_head = final_replay.replay().head().map(str::to_owned);
         let completed = saved.clone();
         save_history(&store, &history)?;
         Ok(summary(attach_id, &completed))
@@ -3776,6 +3978,45 @@ fn new_orphan_plan_staging(root: &Path) -> Result<tempfile::TempDir, HistoricalO
     Ok(staging)
 }
 
+/// Called only while the Owner recovery root lock is held. A marked random
+/// staging directory cannot be referenced by an attach row, whose plan path
+/// is deterministic and published only after the manifest is complete.
+/// Unmarked residue may be from the mkdir-before-marker crash gap: never
+/// delete it automatically, and surface a finite resource limit instead.
+fn clear_owned_orphan_plan_staging(root: &Path) -> Result<(), HistoricalOwnerAttachError> {
+    let mut unmarked = 0usize;
+    for entry in std::fs::read_dir(root).map_err(|_| HistoricalOwnerAttachError::Local)? {
+        let entry = entry.map_err(|_| HistoricalOwnerAttachError::Local)?;
+        let name = entry.file_name();
+        if !name.to_string_lossy().starts_with(".owner-orphan-plan-staging-") { continue; }
+        let path = entry.path();
+        if ensure_dir(&path).is_err() {
+            unmarked += 1;
+            continue;
+        }
+        let marker_path = path.join("plan-marker.state");
+        if std::fs::symlink_metadata(&marker_path).is_err() {
+            unmarked += 1;
+            continue;
+        }
+        let marker = SecureStateStore::open(&marker_path)
+            .map_err(|_| HistoricalOwnerAttachError::Local)?;
+        let saved = marker.read_exact_secret().map_err(|_| HistoricalOwnerAttachError::Local)?;
+        drop(marker);
+        let Some(saved) = saved else { unmarked += 1; continue; };
+        let Ok(text) = std::str::from_utf8(&saved) else { unmarked += 1; continue; };
+        let Some(id) = text.strip_prefix("peerwork.owner.multipart-orphan-plan.v1:")
+            .and_then(|value| value.strip_suffix('\n')) else {
+            unmarked += 1;
+            continue;
+        };
+        if !valid_token(id) { unmarked += 1; continue; }
+        std::fs::remove_dir_all(&path).map_err(|_| HistoricalOwnerAttachError::Local)?;
+    }
+    if unmarked > 16 { return Err(HistoricalOwnerAttachError::OrphanPlanResidue); }
+    Ok(())
+}
+
 fn publish_orphan_plan_staging(
     staging: &tempfile::TempDir,
     final_directory: &Path,
@@ -5249,10 +5490,13 @@ mod tests {
         let after_marker = new_orphan_plan_staging(&plans).unwrap();
         let after_marker_path = after_marker.path().to_owned();
         let marker = SecureStateStore::open(&after_marker_path.join("plan-marker.state")).unwrap();
-        marker.write_exact(b"owned partial plan").unwrap();
+        marker.write_exact(format!("peerwork.owner.multipart-orphan-plan.v1:{}\n", "A".repeat(43)).as_bytes()).unwrap();
         drop(marker);
         std::fs::write(after_marker_path.join("source-intents.sqlite"), b"partial backup").unwrap();
         std::mem::forget(after_marker);
+        clear_owned_orphan_plan_staging(&plans).unwrap();
+        assert!(before_marker_path.is_dir());
+        assert!(!after_marker_path.exists(), "marked partial backup is removed under root lock");
         let retry = new_orphan_plan_staging(&plans).unwrap();
         assert_ne!(retry.path(), before_marker_path);
         assert_ne!(retry.path(), after_marker_path);
@@ -5263,12 +5507,205 @@ mod tests {
         publish_orphan_plan_staging(&retry, &final_directory, &plans).unwrap();
         drop(retry);
         assert!(before_marker_path.is_dir());
-        assert_eq!(std::fs::read(after_marker_path.join("source-intents.sqlite")).unwrap(), b"partial backup");
         assert!(final_directory.join("plan-manifest.state").exists());
         let unexpected = new_orphan_plan_staging(&plans).unwrap();
         assert!(matches!(publish_orphan_plan_staging(&unexpected, &final_directory, &plans),
             Err(HistoricalOwnerAttachError::Conflict)));
         assert!(final_directory.join("plan-manifest.state").exists());
+    }
+
+    #[test]
+    fn actual_service_replans_multipart_orphan_with_durable_later_packet_and_install() {
+        let _fault_guard = ATTACH_FAULT_TEST_LOCK.lock().unwrap();
+        let Ok(reference_root) = std::env::var("PEERWORK_REFERENCE_ROOT") else { return; };
+        let node = std::env::var("PEERWORK_NODE_BIN").unwrap_or_else(|_| "node".into());
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)] {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let bridge = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/reference-kernel-server.mjs");
+        let child = Command::new(&node).arg(bridge)
+            .env("PEERWORK_REFERENCE_ROOT", &reference_root)
+            .env("PEERWORK_TEST_STATE", root.path())
+            .env("PEERWORK_TEST_FIRST_POST_MODE", "normal")
+            .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        struct StopMultipartOrphan(Child);
+        impl Drop for StopMultipartOrphan {
+            fn drop(&mut self) { let _ = self.0.kill(); let _ = self.0.wait(); }
+        }
+        let mut child = StopMultipartOrphan(child);
+        let mut line = String::new();
+        BufReader::new(child.0.stdout.take().unwrap()).read_line(&mut line).unwrap();
+        let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let origin = ready["origin"].as_str().unwrap();
+        let helper = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/legacy-owner-source.mjs");
+        let output = Command::new(&node).arg(helper).arg(origin)
+            .arg(root.path().join("legacy-orphan"))
+            .arg(&reference_root).arg("stage-marker-multipart-orphan-index1")
+            .output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let source: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let workspace = source["workspace_id"].as_str().unwrap();
+        let original = source["stage_marker"]["command_id"].as_str().unwrap();
+        let material = source["orphan_stage_material_json"].as_str().unwrap();
+        let parts = source["stage_part_count"].as_u64().unwrap() as usize;
+        assert!(parts >= 3);
+        assert_eq!(source["stage_marker"]["part_index"], 1);
+        assert_eq!(source["pending_count"], 0);
+        assert_eq!(source["stage_applied"], false);
+        let oracle = rusqlite::Connection::open_with_flags(
+            root.path().join("control.sqlite"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        ).unwrap();
+        let count = || -> i64 { oracle.query_row(
+            "SELECT count(*) FROM secure_commits WHERE workspace_id=?1", [workspace],
+            |row| row.get(0),
+        ).unwrap() };
+        assert_eq!(count(), 2, "workspace create plus one old signed prefix");
+        let config = SecureOwnerCreateConfig {
+            origin: origin.into(), state_dir: root.path().join("native-orphan"),
+            allow_loopback_http: true, max_replay_artifact_bytes: 64 * 1024 * 1024,
+        };
+        let attach = SecureHistoricalOwnerAttach::new(config.clone());
+        let cancel = CancellationToken::new();
+        let mut input = HistoricalOwnerAttachInput {
+            workspace_id: workspace.into(),
+            protected_ts_state_path: source["state_path"].as_str().unwrap().into(),
+            protected_owner_pkcs8_path: source["pem_path"].as_str().unwrap().into(),
+            protected_ts_intent_db_path: source["intent_db_path"].as_str().unwrap().into(),
+            expected_owner_actor_id: source["owner_actor_id"].as_str().unwrap().into(),
+            expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
+            recover_pending_action: false, retain_pending_action_command_id: None,
+            selected_pending_package_stage_command_id: None,
+            selected_orphan_package_stage_command_id: None,
+            expected_ts_state_digest: None,
+            kernel_pending_command_ids: Vec::new(), expected_kernel_intent_db_digest: None,
+        };
+        let inventory = attach.inspect_multipart_orphan_package_stage_with_material(
+            &input, material, &cancel,
+        ).unwrap();
+        assert_eq!(inventory.command_id, original);
+        assert_eq!(inventory.part_index, 1);
+        assert_eq!(inventory.part_count, Some(parts));
+        assert_eq!(inventory.status, "ORPHAN_NO_PACKET");
+        input.expected_ts_state_digest = Some(inventory.ts_state_digest);
+        input.selected_orphan_package_stage_command_id = Some(random_token().unwrap());
+        assert!(matches!(attach.attach_pending_package_stage_with_material(
+            input.clone(), material, &cancel,
+        ), Err(HistoricalOwnerAttachError::SourceUnresolved)));
+        assert!(attach.attachments().unwrap().is_empty());
+        assert!(!config.state_dir.join("workspaces").join(workspace)
+            .join("lifecycle.state").exists());
+        assert_eq!(count(), 2);
+        input.selected_orphan_package_stage_command_id = Some(original.into());
+        TEST_STOP_AFTER_ATTACH_ROW.store(true, Ordering::SeqCst);
+        assert!(matches!(attach.attach_pending_package_stage_with_material(
+            input, material, &cancel,
+        ), Err(HistoricalOwnerAttachError::Cancelled)));
+        assert_eq!(count(), 2);
+        let prepared = attach.attachments().unwrap();
+        assert_eq!(prepared.len(), 1);
+        assert_eq!(prepared[0].status, "PREPARED");
+        std::fs::rename(root.path().join("legacy-orphan"), root.path().join("archived-orphan")).unwrap();
+        let reopened = SecureHistoricalOwnerAttach::new(config.clone());
+        let restricted = reopened.resume_attachment(&prepared[0].attach_id, &cancel).unwrap();
+        assert_eq!(restricted.status, "ATTACHED_RESTRICTED");
+        assert_eq!(restricted.orphan_package_stage_status.as_deref(), Some("ORPHAN_NO_PACKET"));
+        assert_eq!(count(), 2);
+        let facade = SecureOwnerWorkspaceCreate::new(config.clone());
+        assert!(matches!(facade.private_install_access(workspace),
+            Err(crate::secure_owner_create::SecureOwnerCreateError::OrphanStageUnresolved)));
+        TEST_STOP_AFTER_ORPHAN_REPLAN_INTENT.store(true, Ordering::SeqCst);
+        assert!(matches!(reopened.replan_orphan_package_stage(
+            &restricted.attach_id, original, None, &cancel,
+        ), Err(HistoricalOwnerAttachError::Cancelled)));
+        assert_eq!(count(), 2);
+        let chosen = reopened.attachments().unwrap()[0].clone();
+        let stage_id = chosen.orphan_replan_stage_id.as_deref().unwrap().to_owned();
+        let first_command = chosen.orphan_replan_command_id.as_deref().unwrap().to_owned();
+        assert_ne!(first_command, original);
+        crate::secure_private_install::TEST_STOP_AFTER_IMPORTED_LATER_STAGE_ROW
+            .store(true, Ordering::SeqCst);
+        let resumed = SecureHistoricalOwnerAttach::new(config.clone());
+        assert!(matches!(resumed.replan_orphan_package_stage(
+            &restricted.attach_id, original, None, &cancel,
+        ), Err(HistoricalOwnerAttachError::OrphanStageUnresolved)));
+        assert_eq!(count(), 3, "only new part zero applied before later packet save");
+        let stager = SecurePrivatePackageInstall::new(resumed.profile_config(&HistoricalOwnerAttachInput {
+            workspace_id: workspace.into(),
+            protected_ts_state_path: source["state_path"].as_str().unwrap().into(),
+            protected_owner_pkcs8_path: source["pem_path"].as_str().unwrap().into(),
+            protected_ts_intent_db_path: source["intent_db_path"].as_str().unwrap().into(),
+            expected_owner_actor_id: source["owner_actor_id"].as_str().unwrap().into(),
+            expected_owner_key_id: source["owner_key_id"].as_str().unwrap().into(),
+            recover_pending_action: false, retain_pending_action_command_id: None,
+            selected_pending_package_stage_command_id: None,
+            selected_orphan_package_stage_command_id: Some(original.into()),
+            expected_ts_state_digest: None,
+            kernel_pending_command_ids: Vec::new(), expected_kernel_intent_db_digest: None,
+        }));
+        let saved_step = stager.imported_stage_saved_step_for_attach(
+            &stage_id, &restricted.attach_id, 1,
+        ).unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        assert_eq!(rt.block_on(reqwest::Client::new()
+            .post(format!("{origin}__test/drop-next-post"))
+            .body("{}").send()).unwrap().status(), 200);
+        let after_save = SecureHistoricalOwnerAttach::new(config.clone());
+        assert!(matches!(after_save.replan_orphan_package_stage(
+            &restricted.attach_id, original, None, &cancel,
+        ), Err(HistoricalOwnerAttachError::OrphanStageUnresolved)));
+        assert_eq!(count(), 4, "the exact saved later part applied despite lost reply");
+        assert_eq!(stager.imported_stage_saved_step_for_attach(
+            &stage_id, &restricted.attach_id, 1,
+        ).unwrap(), saved_step);
+        let final_handle = SecureHistoricalOwnerAttach::new(config.clone());
+        let accepted = final_handle.replan_orphan_package_stage(
+            &restricted.attach_id, original, None, &cancel,
+        ).unwrap();
+        assert_eq!(accepted.status, "ATTACHED");
+        assert_eq!(accepted.orphan_package_stage_status.as_deref(), Some("ORPHAN_REPLANNED"));
+        assert_eq!(accepted.orphan_replan_stage_id.as_deref(), Some(stage_id.as_str()));
+        assert_eq!(count(), 2 + parts as i64);
+        assert_eq!(final_handle.replan_orphan_package_stage(
+            &restricted.attach_id, original, None, &cancel,
+        ).unwrap(), accepted);
+        assert_eq!(count(), 2 + parts as i64);
+        let old_count: i64 = oracle.query_row(
+            "SELECT count(*) FROM secure_commits WHERE workspace_id=?1 AND command_id=?2",
+            [workspace, original], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(old_count, 0);
+        let installer = facade.private_install_access(workspace).unwrap();
+        let begin_wire = installer.submit_begin_json(
+            crate::secure_private_install::PrivatePackageInstallBeginInput {
+                stage_id: stage_id.clone(), instance_id: random_token().unwrap(),
+                entrypoint: "multipart-orphan-replan".into(),
+                grants_json: serde_json::json!([{"actor_id":source["owner_actor_id"],
+                    "actions":["discussion.post"],"protocol_roles":["CONTRIBUTOR"],
+                    "capabilities":["POST"]}]).to_string(),
+                disclose: None, command_id: None, issued_at_ms: None,
+            },
+        ).unwrap();
+        let mut installed: serde_json::Value = serde_json::from_str(&begin_wire).unwrap();
+        let begin_id = installed["begin_command_id"].as_str().unwrap().to_owned();
+        for _ in 0..8 {
+            if installed["status"] == "ACCEPTED" { break; }
+            installed = serde_json::from_str(&installer.continue_install_json(&begin_id).unwrap()).unwrap();
+        }
+        assert_eq!(installed["status"], "ACCEPTED");
+        let read: serde_json::Value = serde_json::from_str(
+            &facade.read_workspace_json(workspace, &cancel).unwrap(),
+        ).unwrap();
+        let objects = read["objects"].as_array().unwrap();
+        assert!(objects.iter().any(|object| object["kind"] == "protocols"
+            && object["id"] == installed["protocol_digest"]));
+        assert!(objects.iter().any(|object| object["kind"] == "instances"
+            && object["id"] == installed["instance_id"]
+            && object["value"]["protocol_digest"] == installed["protocol_digest"]
+            && object["value"]["origin_entrypoint"] == "multipart-orphan-replan"));
     }
 
     #[test]
