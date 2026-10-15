@@ -19,6 +19,7 @@ from ._peerwork_native import (
     KernelCancelHandle,
     acquisition_observations_json,
     capabilities_json,
+    load_config_json,
     identity_create_json,
     identity_open_json,
     identity_import_seed_json,
@@ -51,6 +52,25 @@ class CapabilityManifest(TypedDict):
     verified_workspace_reads: bool
     safe_actions: bool
     durable_recovery: bool
+
+
+class ClientConfig(TypedDict):
+    origin: str
+    state_dir: str
+
+
+class ConfigError(RuntimeError):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+def load_config(path: str | None = None) -> ClientConfig:
+    """Read explicit/env/OS protected config; never creates identity or contacts a service."""
+    result = json.loads(load_config_json(path))
+    if result["ok"] is not True:
+        raise ConfigError(result["code"], result["message"])
+    return cast(ClientConfig, result["value"])
 
 
 class IdentityInfo(TypedDict):

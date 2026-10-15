@@ -1,3 +1,6 @@
+export interface ClientConfig { origin: string; stateDir: string }
+/** Read-only explicit > PEERWORK_CONFIG > OS protected user config; rejects selected failures. */
+export declare function loadConfig(path?: string): Promise<ClientConfig>;
 /** Experimental native kernel command client; secure-agent replay remains incomplete. */
 export declare function version(): string;
 export interface CapabilityManifest {

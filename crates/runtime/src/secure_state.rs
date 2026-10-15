@@ -326,6 +326,11 @@ fn state_exists(path: &Path) -> Result<bool, SecureStateError> {
     }
 }
 
+/// Validate an existing protected directory without creating files or locks.
+pub(crate) fn check_private_directory(path: &Path) -> Result<(), SecureStateError> {
+    check_private_parent(&path.join("identity.state"))
+}
+
 /// Classify an absent entry only after its existing parent passes the ordinary
 /// private-parent checks. This does not create the entry or any lock file.
 pub(crate) fn missing_in_private_parent(path: &Path) -> bool {

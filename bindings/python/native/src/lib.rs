@@ -65,6 +65,11 @@ fn capabilities_json() -> PyResult<String> {
         .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("manifest serialization failed"))
 }
 
+#[pyfunction(signature = (path=None))]
+fn load_config_json(path: Option<String>) -> String {
+    peerwork_runtime::protected_config::load_config_json(path.as_deref().map(Path::new))
+}
+
 #[pyfunction]
 fn identity_create_json(path: &str) -> PyResult<String> {
     let identity = KernelIdentity::create(Path::new(path))
@@ -1108,6 +1113,7 @@ fn _peerwork_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(acquisition_observations_json, module)?)?;
     module.add_function(wrap_pyfunction!(version, module)?)?;
     module.add_function(wrap_pyfunction!(capabilities_json, module)?)?;
+    module.add_function(wrap_pyfunction!(load_config_json, module)?)?;
     module.add_function(wrap_pyfunction!(identity_create_json, module)?)?;
     module.add_function(wrap_pyfunction!(identity_open_json, module)?)?;
     module.add_function(wrap_pyfunction!(identity_import_seed_json, module)?)?;

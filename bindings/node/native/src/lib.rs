@@ -140,6 +140,15 @@ pub fn identity_import_owner_pem_json(config_file: String, pem_file: String) -> 
     AsyncTask::new(OwnerIdentityImportTask { config_file, pem_file })
 }
 
+pub struct ConfigTask { path: Option<String> }
+impl Task for ConfigTask {
+    type Output = String; type JsValue = String;
+    fn compute(&mut self) -> Result<String> { Ok(peerwork_runtime::protected_config::load_config_json(self.path.as_deref().map(Path::new))) }
+    fn resolve(&mut self, _env: Env, output: String) -> Result<String> { Ok(output) }
+}
+#[napi]
+pub fn load_config_json(path: Option<String>) -> AsyncTask<ConfigTask> { AsyncTask::new(ConfigTask { path }) }
+
 #[napi]
 pub fn identity_create_json(path: String) -> AsyncTask<IdentityTask> {
     AsyncTask::new(IdentityTask {

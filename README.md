@@ -75,3 +75,11 @@ release remain gated by protocol parity, recovery, target runs, and Agent
 acceptance.
 
 Licensed under Apache-2.0. See [LICENSE](LICENSE).
+
+### Protected configuration
+
+Protected configuration discovery is opt-in and read-only: Python `config = peerwork.load_config()` then `peerwork.SecureOwnerWorkspaceClient(**config)`; Node `sdk.openSecureOwnerWorkspaces(await sdk.loadConfig())`; CLI `peerwork config resolve [PATH]` prints the same public configuration with `state_dir`. Existing explicit constructors and CLI JSON-file arguments bypass discovery unchanged.
+
+Selection is explicit helper path, then `PEERWORK_CONFIG`, then Linux `$XDG_CONFIG_HOME/peerwork/config.json` (or `$HOME/.config/peerwork/config.json` when XDG is unset), macOS `$HOME/Library/Application Support/peerwork/config.json`, or Windows `%APPDATA%/peerwork/config.json`. The selected file must contain only `{"origin":"https://control.example","state_dir":"state"}`. Node returns `{origin, stateDir}`. Relative state paths resolve against the config file directory, never the working directory; parent traversal is rejected by protected path rules. Explicit file paths and `PEERWORK_CONFIG` may be relative to the current directory. OS location roots must be absolute. An empty selected environment value, missing/unsafe file, unknown/duplicate field, or invalid origin fails closed with a `CONFIG_*` code; no fallback occurs after selection.
+
+The config is bounded to 16 KiB, must be an owner-protected regular file without symlinks/hardlinks, and its directory and existing state directory (or immediate parent for new state) must meet the native protected-directory rules. On Unix use private directories and mode 0600 or stricter files; read-only private config directories/files are supported. The resolver creates no directories, locks, identity, authority defaults or network requests and never reads identity state. HTTPS origins cannot contain credentials, non-root paths, query or fragment. Loopback HTTP remains available only through the existing explicitly configured constructors, with their explicit opt-in; discovery adds no bypass flag. macOS/Windows selection conventions are source-defined, with execution pending platform gates.

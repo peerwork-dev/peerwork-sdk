@@ -31,6 +31,11 @@ try {
 }
 const binding = require(modulePath);
 
+exports.loadConfig = async path => {
+  const result = JSON.parse(await binding.loadConfigJson(path));
+  if (result.ok !== true) { const error = new Error(result.message); error.code = result.code; throw error; }
+  return { origin: result.value.origin, stateDir: result.value.state_dir };
+};
 exports.version = binding.version;
 exports.capabilities = () => JSON.parse(binding.capabilitiesJson());
 exports.createIdentity = async path => JSON.parse(await binding.identityCreateJson(path));
