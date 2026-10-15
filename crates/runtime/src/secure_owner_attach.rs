@@ -30,7 +30,8 @@ use peerwork_core::{
 use rand_core::{OsRng, RngCore};
 use peerwork_core::prepared_private_install::{normalize_protocol_object_source_proof,
     read_complete_protocol_object_source, verify_completed_protocol_object_source,
-    verify_saved_private_direct_install_begin_with_object_source};
+    verify_saved_private_direct_install_begin_with_object_source,
+    verify_saved_private_package_install_begin_with_object_source};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -6398,8 +6399,7 @@ fn verify_exact_direct_install_begin(
     let resolved = resolve_legacy_direct_options_from_prior(&options, prior.objects())?;
     if resolved.intent_hash != pending.intent_hash { return Err(invalid()); }
     let object_source = if let Some(marker) = pending.object_stage.as_ref() {
-        if resolved.package_source.is_some()
-            || sha256_hex(canonical_wire_value(&options, CanonicalPath::SecureArtifact).map_err(|_| invalid())?.as_bytes()) != marker.request_hash {
+        if sha256_hex(canonical_wire_value(&options, CanonicalPath::SecureArtifact).map_err(|_| invalid())?.as_bytes()) != marker.request_hash {
             return Err(invalid());
         }
         let mut logical = verify_completed_protocol_object_source(&marker.proof, &prior).map_err(|_| invalid())?;
@@ -6463,13 +6463,21 @@ fn verify_exact_direct_install_begin(
     let entrypoint = options.get("entrypoint").and_then(WireValue::as_string)
         .ok_or_else(invalid)?;
     let staged_source = if let Some(proof) = resolved.package_source.as_ref() {
-        Some(verify_staged_install_source(proof, material_wire, prior_sequence, replayed, input)?)
+        let package_end = object_source.map(|object| exact_u64(object.get("source").and_then(|source| source.get("sequence"))).ok_or_else(invalid)).transpose()?.unwrap_or(prior_sequence);
+        Some(verify_staged_install_source(proof, material_wire, package_end, replayed, input)?)
     } else { None };
     let verified = if let Some(source) = staged_source.as_ref() {
-        verify_saved_private_package_install_begin_with_disclosure(&pending.request, material_wire,
-            source.source_checkpoint_json.as_bytes(), &checkpoint_wire, prior_policy, prior.objects(),
-            grants.as_bytes(), resolved.disclose_json.as_deref().unwrap_or("[]").as_bytes(),
-            &pending.instance_id, &entrypoint, &pending.command_id, issued_at, owner.signing_key(), key)
+        if let Some(proof) = object_source {
+            verify_saved_private_package_install_begin_with_object_source(&pending.request, material_wire,
+                source.source_checkpoint_json.as_bytes(), &checkpoint_wire, prior_policy, prior.objects(),
+                grants.as_bytes(), resolved.disclose_json.as_deref().unwrap_or("[]").as_bytes(),
+                &pending.instance_id, &entrypoint, &pending.command_id, issued_at, owner.signing_key(), key, proof)
+        } else {
+            verify_saved_private_package_install_begin_with_disclosure(&pending.request, material_wire,
+                source.source_checkpoint_json.as_bytes(), &checkpoint_wire, prior_policy, prior.objects(),
+                grants.as_bytes(), resolved.disclose_json.as_deref().unwrap_or("[]").as_bytes(),
+                &pending.instance_id, &entrypoint, &pending.command_id, issued_at, owner.signing_key(), key)
+        }
     } else if let Some(proof) = object_source { verify_saved_private_direct_install_begin_with_object_source(
         &pending.request, closure.as_bytes(), bindings.as_bytes(),
         &root_package_digest, &resolved.protocol_digest, &checkpoint_wire,

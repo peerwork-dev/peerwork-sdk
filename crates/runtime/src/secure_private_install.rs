@@ -852,6 +852,8 @@ struct InstallRow {
     native_object_plan_id: Option<String>,
     #[serde(default)]
     source_kind: Option<InstallSourceKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    staged_object_source_json: Option<String>,
     #[serde(default)]
     stage_id: Option<String>,
     #[serde(default)]
@@ -1424,7 +1426,6 @@ impl SecurePrivatePackageInstall {
     fn save_attach_direct_begin_row(&self, imported: ImportedHistoricalDirectBegin,
         native_plan_id: Option<String>) -> Result<(), PrivatePackageInstallError> {
         if !token(&imported.attach_id) || !token(&imported.command_id)
-            || (imported.staged_source.is_some() && imported.object_source_json.is_some())
             || imported.object_source_json.as_ref().is_some_and(|wire| wire.is_empty() || wire.len() > 220_000)
             || !token(&imported.instance_id) || imported.entrypoint.is_empty()
             || imported.entrypoint.len() > 256
@@ -1465,6 +1466,7 @@ impl SecurePrivatePackageInstall {
             || scalar(payload, "actor_id")? != identity.actor_id()
             || scalar(payload, "signing_key")? != identity.key_id()
         { return Err(PrivatePackageInstallError::Identity); }
+        let staged_object_source_json = if imported.staged_source.is_some() { imported.object_source_json.clone() } else { None };
         let (source_kind, stage_id, direct_source) = if let Some(source) = imported.staged_source {
             let id = base64url(&sha256(format!("peerwork.imported-package-install.v1\0{}.{}", imported.attach_id, source.source_id).as_bytes()));
             self.save_imported_stage_row_for_attach(&imported.attach_id, &id, &imported.material_wire,
@@ -1480,7 +1482,7 @@ impl SecurePrivatePackageInstall {
         };
         let mut row = InstallRow {
             import_attach_id: Some(imported.attach_id), native_object_plan_id: native_plan_id.clone(),
-            source_kind: Some(source_kind), stage_id, direct_source,
+            source_kind: Some(source_kind), staged_object_source_json, stage_id, direct_source,
             instance_id: imported.instance_id, entrypoint: imported.entrypoint,
             grants_json: imported.grants_json, disclose_json: imported.disclose_json,
             issued_at_ms: imported.issued_at_ms,
@@ -1678,6 +1680,7 @@ impl SecurePrivatePackageInstall {
                 let row = InstallRow {
                     import_attach_id: None, native_object_plan_id: None,
                     source_kind: Some(InstallSourceKind::Staged),
+                    staged_object_source_json: None,
                     stage_id: Some(input.stage_id.clone()),
                     direct_source: None,
                     instance_id: input.instance_id.clone(),
@@ -1886,6 +1889,7 @@ impl SecurePrivatePackageInstall {
                 let row = InstallRow {
                     import_attach_id: None, native_object_plan_id: None,
                     source_kind: Some(InstallSourceKind::Direct),
+                    staged_object_source_json: None,
                     stage_id: None,
                     direct_source: Some(DirectInstallSource {
                         material_b64: base64url(input.closure_json.as_bytes()),
@@ -2097,10 +2101,16 @@ impl SecurePrivatePackageInstall {
                             .map_err(|_| PrivatePackageInstallError::Input)?;
                     let base_sequence = number(&base, "sequence")?;
                     let base_head = scalar(&base, "head")?;
+                    let package_end = if let Some(wire) = row.staged_object_source_json.as_ref() {
+                        if row.import_attach_id.is_none() { return Err(PrivatePackageInstallError::Identity); }
+                        let proof = parse_wire_json_bounded(wire.as_bytes(), 64, 220_000).map_err(|_| PrivatePackageInstallError::Plan)?;
+                        peerwork_core::prepared_private_install::verify_completed_protocol_object_source(&proof, prior.replay())?;
+                        number(proof.get("source").ok_or(PrivatePackageInstallError::Plan)?, "sequence")?
+                    } else { prior.replay().sequence() };
                     if row.import_attach_id.is_some() && stage.import_attach_id != row.import_attach_id
                         || !stage.completed
                         || stage.steps.len() != stage.part_count
-                        || prior.replay().sequence() != base_sequence + stage.part_count as u64
+                        || package_end != base_sequence + stage.part_count as u64
                         || prior.replay().policy_hash() != stage.policy_hash
                         || !prior.replay().contains_checkpoint(
                             base_sequence,
@@ -2180,7 +2190,15 @@ impl SecurePrivatePackageInstall {
             let exact_begin = decode_base64url(&row.request_b64)
                 .map_err(|_| PrivatePackageInstallError::Identity)?;
             let checked = match row.source_kind()? {
-                InstallSourceKind::Staged => verify_saved_private_package_install_begin_with_disclosure(
+                InstallSourceKind::Staged => if let Some(wire) = row.staged_object_source_json.as_ref() {
+                    let proof = parse_wire_json_bounded(wire.as_bytes(), 64, 220_000).map_err(|_| PrivatePackageInstallError::Plan)?;
+                    peerwork_core::prepared_private_install::verify_saved_private_package_install_begin_with_object_source(
+                        &exact_begin, &material, source_checkpoint_json.as_bytes(), prior.checkpoint_canonical_json().as_bytes(),
+                        prior_policy, prior.replay().objects(), row.grants_json.as_bytes(),
+                        row.disclose_json.as_deref().unwrap_or("[]").as_bytes(), &row.instance_id, &row.entrypoint,
+                        begin_id, row.issued_at_ms, identity.signing_key(), key, &proof,
+                    )?
+                } else { verify_saved_private_package_install_begin_with_disclosure(
                     &exact_begin,
                     &material,
                     source_checkpoint_json.as_bytes(),
@@ -2195,7 +2213,7 @@ impl SecurePrivatePackageInstall {
                     row.issued_at_ms,
                     identity.signing_key(),
                     key,
-                )?,
+                )? },
                 InstallSourceKind::Direct => {
                     let source = row
                         .direct_source
@@ -3271,6 +3289,7 @@ mod tests {
         let row = |kind: InstallSourceKind| InstallRow {
             import_attach_id: None, native_object_plan_id: None,
             source_kind: Some(kind),
+            staged_object_source_json: None,
             stage_id: (kind == InstallSourceKind::Staged).then(|| "s".repeat(43)),
             direct_source: (kind == InstallSourceKind::Direct).then(|| DirectInstallSource {
                 material_b64: "e30".into(), bindings_json: Some("{}".into()),
@@ -3284,11 +3303,30 @@ mod tests {
             snapshot_json: "{}".into(), protocol_digest: "d".repeat(64),
             steps: vec![], accepted: None,
         };
+        // Existing rows omit the additive field; protected serialization must
+        // retain both sources when a combined imported row is reopened.
+        let legacy = row(InstallSourceKind::Staged);
+        let legacy_wire = serde_json::to_value(&legacy).unwrap();
+        assert!(legacy_wire.get("staged_object_source_json").is_none());
+        let decoded: InstallRow = serde_json::from_value(legacy_wire).unwrap();
+        assert!(decoded.staged_object_source_json.is_none());
+        let combined_id = "b".repeat(43);
+        let mut combined = row(InstallSourceKind::Staged);
+        combined.import_attach_id = Some("a".repeat(43));
+        combined.staged_object_source_json = Some("{\"retained_encoding_test\":true}".into());
+        doc.rows.insert(combined_id.clone(), combined);
         let direct_id = "d".repeat(43);
         let staged_id = "t".repeat(43);
         doc.rows.insert(direct_id.clone(), row(InstallSourceKind::Direct));
         doc.rows.insert(staged_id.clone(), row(InstallSourceKind::Staged));
         doc.save(&store).unwrap();
+        let reopened = InstallDocument::open(&store, &config, identity.actor_id(), identity.key_id()).unwrap();
+        let retained = reopened.rows.get(&combined_id).unwrap();
+        assert_eq!(retained.source_kind().unwrap(), InstallSourceKind::Staged);
+        assert_eq!(retained.stage_id.as_deref(), Some("s".repeat(43).as_str()));
+        assert_eq!(retained.staged_object_source_json.as_deref(), Some("{\"retained_encoding_test\":true}"));
+        assert!(reopened.rows[&direct_id].staged_object_source_json.is_none());
+        assert!(reopened.rows[&staged_id].staged_object_source_json.is_none());
         drop(store);
         let cancel = CancellationToken::new();
         for id in [&direct_id, &staged_id] {

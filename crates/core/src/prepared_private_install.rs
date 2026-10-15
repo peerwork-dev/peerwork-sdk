@@ -1258,6 +1258,28 @@ pub fn prepare_private_package_install_begin_with_disclosure(
     signing_key: &SigningKey,
     epoch_key: &[u8; 32],
 ) -> Result<PreparedPrivatePackageInstallBegin, PrivateInstallError> {
+    prepare_private_package_install_begin_with_sources(material_wire, source_checkpoint_wire,
+        stage_end_checkpoint_wire, signed_policy_wire, prior_objects, grants_wire, disclose_wire,
+        instance_id, entrypoint, command_id, issued_at, signing_key, epoch_key, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_private_package_install_begin_with_sources(
+    material_wire: &[u8],
+    source_checkpoint_wire: &[u8],
+    stage_end_checkpoint_wire: &[u8],
+    signed_policy_wire: &[u8],
+    prior_objects: &[WireValue],
+    grants_wire: &[u8],
+    disclose_wire: &[u8],
+    instance_id: &str,
+    entrypoint: &str,
+    command_id: &str,
+    issued_at: u64,
+    signing_key: &SigningKey,
+    epoch_key: &[u8; 32],
+    object_source: Option<&WireValue>,
+) -> Result<PreparedPrivatePackageInstallBegin, PrivateInstallError> {
     let bad = || PrivateInstallError::Invalid;
     if !token(instance_id)
         || !token(command_id)
@@ -1317,15 +1339,25 @@ pub fn prepare_private_package_install_begin_with_disclosure(
                 _ => bad(),
             }
         })?;
+    let package_end = if let Some(proof) = object_source {
+        normalize_protocol_object_source_proof(proof)?;
+        if version != 3 { return Err(bad()); }
+        let middle = proof.get("source").ok_or_else(bad)?;
+        let Some(WireValue::Array(parts)) = proof.get("parts") else { return Err(bad()); };
+        if string(middle, "workspace_id")? != string(&end, "workspace_id")?
+            || string(middle, "owner_id")? != actor || string(middle, "owner_key")? != signer_key
+            || string(middle, "policy_hash")? != string(&end, "policy_hash")?
+            || number(middle, "sequence")?.checked_add(parts.len() as u64) != Some(number(&end, "sequence")?)
+        { return Err(bad()); }
+        middle
+    } else { &end };
     let stage_count = prepared.parts.len() as u64;
-    if number(&source, "sequence")?.checked_add(stage_count) != Some(number(&end, "sequence")?)
+    if number(&source, "sequence")?.checked_add(stage_count) != Some(number(package_end, "sequence")?)
         || prior_objects.iter().any(|o| {
             o.get("kind").and_then(WireValue::as_string).as_deref() == Some("instances")
                 && o.get("id") == Some(&s(instance_id))
         })
-    {
-        return Err(bad());
-    }
+    { return Err(bad()); }
     let verified =
         verify_protocol_package_source(&prepared.proof, prior_objects).map_err(|_| bad())?;
     let digest = verified.protocol_digest;
@@ -1406,8 +1438,20 @@ pub fn prepare_private_package_install_begin_with_disclosure(
         .map_err(|_| bad())?
         .snapshot()
         .clone();
+    let mut wire_added = added.clone();
+    if let Some(proof) = object_source {
+        if protocol_exists || string(proof, "protocol_digest")? != digest { return Err(bad()); }
+        let logical = read_complete_protocol_object_source(proof, prior_objects)?;
+        if canonical_wire_value(&logical, Path::SecureArtifact).map_err(|_| bad())?
+            != canonical_wire_value(added[0].get("value").ok_or_else(bad)?, Path::SecureArtifact).map_err(|_| bad())?
+        { return Err(bad()); }
+        replace(&mut wire_added[0], "value", obj(vec![("workspace_id", s(&workspace)),
+            ("digest", s(&digest)), ("object_source", proof.clone())]))?;
+        if canonical_wire_value(&wire_added[0], Path::SecureArtifact).map_err(|_| bad())?.len()
+            > crate::protocol_object_source::OBJECT_BYTES { return Err(PrivateInstallError::Resource); }
+    }
     let begin =
-        build_direct_install_begin(&end, &added, instance_id, &digest, entrypoint, &snapshot)
+        build_direct_install_begin(&end, &wire_added, instance_id, &digest, entrypoint, &snapshot)
             .map_err(|_| bad())?;
     let mut next_policy = policy.clone();
     replace(&mut next_policy, "structure", structure)?;
@@ -1932,6 +1976,24 @@ pub fn verify_saved_private_package_install_begin_with_disclosure(
         signing_key,
         epoch_key,
     )?;
+    verify_saved_private_install_begin_against(saved_request_wire, expected, signing_key, epoch_key)
+}
+
+/// Verify an original saved BEGIN whose logical protocol carries a package
+/// proof and whose wire protocol uses a separately authenticated object proof.
+/// Runtime must authenticate both contiguous signed stage prefixes.
+#[allow(clippy::too_many_arguments)]
+pub fn verify_saved_private_package_install_begin_with_object_source(
+    saved_request_wire: &[u8], material_wire: &[u8], source_checkpoint_wire: &[u8],
+    current_checkpoint_wire: &[u8], signed_policy_wire: &[u8], prior_objects: &[WireValue],
+    grants_wire: &[u8], disclose_wire: &[u8], instance_id: &str, entrypoint: &str,
+    command_id: &str, issued_at: u64, signing_key: &SigningKey, epoch_key: &[u8; 32],
+    proof: &WireValue,
+) -> Result<PreparedPrivatePackageInstallBegin, PrivateInstallError> {
+    let expected = prepare_private_package_install_begin_with_sources(material_wire,
+        source_checkpoint_wire, current_checkpoint_wire, signed_policy_wire, prior_objects,
+        grants_wire, disclose_wire, instance_id, entrypoint, command_id, issued_at,
+        signing_key, epoch_key, Some(proof))?;
     verify_saved_private_install_begin_against(saved_request_wire, expected, signing_key, epoch_key)
 }
 
