@@ -11,7 +11,7 @@ def guard():
 # Failure gates must complete before any runtime leaf/service is created.
 subprocess.run([NODE,'--check',str(HERE/'fixture.mjs')],check=True)
 compile((HERE/'consumer.py').read_text(),str(HERE/'consumer.py'),'exec');guard()
-tracer=Path(os.environ['PEERWORK_T076_SOURCE']);qualification=Path(os.environ['PEERWORK_T076_QUALIFICATION']);assert sha(tracer/'trace.py')==os.environ['PEERWORK_T076_TRACE_SHA256'];assert sha(qualification)==os.environ['PEERWORK_T076_QUALIFICATION_SHA256'];q=json.loads(qualification.read_text());assert q['result']=='PASS' and q['positive']['boundary_reached'] and not q['wrong_backup_negative']['boundary_reached'] and not q['short_payload_negative']['boundary_reached']
+tracer=Path(os.environ['PEERWORK_T076_SOURCE']);qualification=Path(os.environ['PEERWORK_T076_QUALIFICATION']);assert sha(tracer/'trace.py')==os.environ['PEERWORK_T076_TRACE_SHA256'];assert sha(qualification)==os.environ['PEERWORK_T076_QUALIFICATION_SHA256'];q=json.loads(qualification.read_text());assert q['result']=='PASS' and q['positive']['boundary_reached'] and not q['wrong_backup_negative']['boundary_reached'] and not q['short_payload_negative']['boundary_reached'] and not q['prearm_headers_negative']['boundary_reached']
 assert subprocess.check_output(['git','-C',str(tracer),'rev-parse','HEAD'],text=True).strip()==os.environ['PEERWORK_T076_COMMIT'];subprocess.run(['git','-C',str(tracer),'diff','--quiet','HEAD','--','tests/migration-wal-barrier'],check=True)
 state=ROOT/'work/t077-migration-crash';overlay=ROOT/'work/t077-crash-overlay';assert not state.exists() and not overlay.exists();overlay.mkdir(mode=0o700);shutil.copyfile(HERE/'consumer.py',overlay/'consumer.py')
 for name in ['trace.py','qualify.py','dummy.py']:shutil.copyfile(tracer/name,overlay/name)
@@ -23,7 +23,7 @@ qualification_argv=[v.replace('/work/t077-crash-overlay/consumer.py "$phase"','/
 qt=time.monotonic()
 with (E/'namespace-qualification.stdout').open('w') as out,(E/'namespace-qualification.stderr').open('w') as err:qr=subprocess.run(qualification_argv,stdout=out,stderr=err,timeout=45)
 (E/'namespace-qualification-terminal.json').write_text(json.dumps({'exit_code':qr.returncode,'seconds':time.monotonic()-qt,'argv':qualification_argv},indent=2)+'\n');assert qr.returncode==0,'qualified tracer failed in consumer namespace; no service launched'
-qq=json.loads((E/'namespace-qualification.stdout').read_text());assert qq['result']=='PASS' and qq['positive']['boundary_reached'] and not qq['wrong_backup_negative']['boundary_reached'] and not qq['short_payload_negative']['boundary_reached']
+qq=json.loads((E/'namespace-qualification.stdout').read_text());assert qq['result']=='PASS' and qq['positive']['boundary_reached'] and not qq['wrong_backup_negative']['boundary_reached'] and not qq['short_payload_negative']['boundary_reached'] and not qq['prearm_headers_negative']['boundary_reached']
 commandfile=E/'commands.json';commandfile.write_text(json.dumps(commands,indent=2)+'\n');commandfile.chmod(0o600)
 argv=[NODE,str(HERE/'fixture.mjs'),str(REF),str(state),str(commandfile)];(E/'invocation.json').write_text(json.dumps(argv,indent=2)+'\n');(E/'paths.json').write_text(json.dumps({'state':str(state),'base':str(BASE),'root':str(ROOT)},indent=2)+'\n')
 start=time.monotonic();began=datetime.datetime.now(datetime.timezone.utc).isoformat()
