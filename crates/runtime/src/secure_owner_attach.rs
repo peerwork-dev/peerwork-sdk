@@ -7895,6 +7895,7 @@ mod tests {
     static ATTACH_FAULT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     include!("secure_owner_attach/object_stage_tests.rs");
     include!("secure_owner_attach/object_middle_tests.rs");
+    include!("secure_owner_attach/object_first_tests.rs");
     include!("secure_owner_attach/completed_read_floor_tests.rs");
 
     #[test]

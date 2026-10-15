@@ -1,0 +1,5 @@
+# First selected object-source packet
+
+Admit index0 through the existing saved-packet route. The authenticated predecessor is exactly the original source checkpoint (zero accepted parts); proof/source hash, full compiler material, current PRIVATE Owner/key/epoch, selected signature/ciphertext and original request identity remain mandatory. Existing accepted-prefix accounting and durable ordered remaining-tail packets handle all later parts without a first-part special case. Complete signed SOURCE still precedes the distinct native BEGIN and signed END/ACTIVE.
+
+Use the accepted public four-part T005 composition and source factory, selecting genuine part0 before POST or after applied-response loss. Remove original source, reopen each saved-before-POST native tail packet, verify exact request IDs/hashes and full readback/idempotence. Marker-only is separate: f828 saves the complete marker before selecting/persisting a command; a crash there has no saved packet. This route still requires the exact four-field marker and matching pending packet and must refuse that state. No marker-only route is added or claimed here.

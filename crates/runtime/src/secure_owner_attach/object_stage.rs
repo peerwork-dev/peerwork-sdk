@@ -1,4 +1,4 @@
-//! Selected final or bounded middle object-stage handoff. Original source provenance and the
+//! Selected saved object-stage handoff, including the first part. Original source provenance and the
 //! separately authorized native BEGIN are retained as distinct durable facts.
 use super::*;
 use peerwork_core::prepared_private_install::{
@@ -298,9 +298,9 @@ fn verify_object_stage(
             .ok_or_else(invalid)?,
     )
     .map_err(|_| invalid())?;
-    // Any selected nonzero part is supported. Unsent tail parts are authored
+    // Any selected in-range part is supported. Unsent tail parts are authored
     // only from the retained complete proof/material after signed-prefix proof.
-    if part_index == 0 || part_index >= part_count {
+    if part_index >= part_count {
         return Err(invalid());
     }
     let stage_end = base.checked_add(part_count as u64).ok_or_else(invalid)?;
