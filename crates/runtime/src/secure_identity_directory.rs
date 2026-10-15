@@ -30,6 +30,8 @@ const CERTIFICATE_DOMAIN: &str = "peerwork.secure.key-certificate.v1";
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IdentityDirectoryConfig {
+    #[serde(default)]
+    pub transport: crate::transport::TransportOptions,
     pub origin: String,
     pub identity_path: PathBuf,
     pub kernel_journal_path: PathBuf,
@@ -193,7 +195,7 @@ impl SecureIdentityDirectory {
         {
             return Err(IdentityDirectoryError::Continuity);
         }
-        let mut transport = TransportConfig::new(self.config.origin.clone());
+        let mut transport = TransportConfig::new(self.config.origin.clone()).with_options(self.config.transport.clone());
         transport.allow_loopback_http = self.config.allow_loopback_http;
         let client = KernelClient::open(transport, &self.config.kernel_journal_path, &[], cancel)
             .await
@@ -537,6 +539,7 @@ mod tests {
         )
         .unwrap();
         let directory = SecureIdentityDirectory::new(IdentityDirectoryConfig {
+            transport: Default::default(),
             origin: origin.clone(),
             identity_path: owner_path,
             kernel_journal_path: temp.path().join("owner.kernel.sqlite"),

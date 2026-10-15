@@ -123,6 +123,7 @@ fn actual_service_imports_middle_partial_protocol_object_stage() {
         .unwrap()
         .into_bytes();
     let config = SecureOwnerCreateConfig {
+            transport: Default::default(),
         origin: origin.into(),
         state_dir: root.join("native"),
         allow_loopback_http: true,

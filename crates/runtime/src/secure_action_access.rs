@@ -458,7 +458,7 @@ impl SecurePublicActionAccess {
             source.origin(),
             identity.actor_id(),
         )?;
-        let mut config = TransportConfig::new(self.config.origin.clone());
+        let mut config = TransportConfig::new(self.config.origin.clone()).with_options(self.config.transport.clone());
         config.allow_loopback_http = self.config.allow_loopback_http;
         let transport = HttpTransport::new(config).map_err(|_| PublicActionError::Transport)?;
         Ok((identity, lifecycle, journal, transport))
@@ -701,6 +701,7 @@ mod private_action_tests {
         let owner_key_id = fixture["owner_key_id"].as_str().unwrap().to_owned();
         let authority = fixture["recipient_authority"].as_str().unwrap().to_owned();
         let decision = SecurePublicDecision::new(PublicDecisionConfig {
+            transport: Default::default(),
             origin: origin.clone(),
             state_dir: state.clone(),
             identity_path: identity_path.clone(),
@@ -721,6 +722,7 @@ mod private_action_tests {
             serde_json::from_str(&decision.retry_receive_json(invite_id).unwrap()).unwrap();
         assert_eq!(recovered["status"], "READY");
         let profile = SecureReadProfileConfig {
+            transport: Default::default(),
             origin: origin.clone(),
             state_dir: state.clone(),
             identity_path,

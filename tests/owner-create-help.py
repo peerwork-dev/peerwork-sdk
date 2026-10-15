@@ -20,7 +20,7 @@ with tempfile.TemporaryDirectory(prefix="peerwork-owner-create-help-") as tmp:
         assert payload["usage"] == "secure owner-create CONFIG_JSON_FILE INPUT_JSON_FILE"
         assert set(payload["config_fields"]) == {
             "origin", "state_dir", "allow_loopback_http (optional, explicit opt-in)",
-            "max_replay_artifact_bytes (optional)", "max_replay_commits (optional, default 102400)"}
+            "max_replay_artifact_bytes (optional)", "max_replay_commits (optional, default 102400)", "transport (optional: request_timeout_ms, additional_root_pem_files)"}
         assert set(payload["input_fields"]) == {
             "name", "visibility (PUBLIC or PRIVATE)", "structured (optional)",
             "keep_encrypted_json (optional)", "coordination_version (optional)",

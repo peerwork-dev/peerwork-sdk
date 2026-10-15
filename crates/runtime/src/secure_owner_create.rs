@@ -61,6 +61,8 @@ const MAX_DOCUMENT: usize = 2 * 1024 * 1024;
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SecureOwnerCreateConfig {
+    #[serde(default)]
+    pub transport: crate::transport::TransportOptions,
     pub origin: String,
     pub state_dir: PathBuf,
     #[serde(default)]
@@ -810,7 +812,7 @@ impl SecureOwnerWorkspaceCreate {
             identity.actor_id(),
         )
         .map_err(|_| SecureOwnerCreateError::Local)?;
-        let mut transport_config = TransportConfig::new(self.config.origin.clone());
+        let mut transport_config = TransportConfig::new(self.config.origin.clone()).with_options(self.config.transport.clone());
         transport_config.allow_loopback_http = self.config.allow_loopback_http;
         let transport =
             HttpTransport::new(transport_config).map_err(|_| SecureOwnerCreateError::Transport)?;
@@ -890,7 +892,7 @@ impl SecureOwnerWorkspaceCreate {
         if cancel.is_cancelled() {
             return Ok(summary(command, &row));
         }
-        let mut client_config = TransportConfig::new(self.config.origin.clone());
+        let mut client_config = TransportConfig::new(self.config.origin.clone()).with_options(self.config.transport.clone());
         client_config.allow_loopback_http = self.config.allow_loopback_http;
         let runtime = self.runtime()?;
         let client = runtime
@@ -1010,6 +1012,7 @@ impl SecureOwnerWorkspaceCreate {
             &self.config.state_dir,
         );
         config.allow_loopback_http = self.config.allow_loopback_http;
+        config.transport = self.config.transport.clone();
         SecureRecipientEnrollment::new(config)
     }
     fn identity_path(&self) -> PathBuf {
@@ -1031,6 +1034,7 @@ impl SecureOwnerWorkspaceCreate {
         owner_key: &str,
     ) -> SecureReadProfileConfig {
         SecureReadProfileConfig {
+            transport: self.config.transport.clone(),
             origin: self.config.origin.clone(),
             state_dir: self.workspace_dir(workspace_id),
             identity_path: self.identity_path(),
@@ -1334,6 +1338,7 @@ mod tests {
         let root = crate::test_support::protected_test_dir();
         let state = root.path().join("native");
         let access = SecureOwnerWorkspaceCreate::new(SecureOwnerCreateConfig {
+            transport: Default::default(),
             origin: "http://127.0.0.1:1/".into(), state_dir: state.clone(),
             allow_loopback_http: true, max_replay_artifact_bytes: 64 * 1024 * 1024,
             max_replay_commits: crate::secure_verified_read::default_replay_commits(),
@@ -1371,6 +1376,7 @@ mod tests {
         let root = crate::test_support::protected_test_dir();
         let state_dir = root.path().join("native-state");
         let config = SecureOwnerCreateConfig {
+            transport: Default::default(),
             origin: "http://127.0.0.1:1/".into(),
             state_dir: state_dir.clone(),
             allow_loopback_http: true,
@@ -1437,6 +1443,7 @@ mod tests {
     fn owner_missing_identity_is_distinct_from_saved_identity_mismatch() {
         let root = crate::test_support::protected_test_dir();
         let config = SecureOwnerCreateConfig {
+            transport: Default::default(),
             origin: "http://127.0.0.1:1/".into(),
             state_dir: root.path().to_owned(),
             allow_loopback_http: true,
@@ -1471,6 +1478,7 @@ mod tests {
         let root = crate::test_support::protected_test_dir();
         let parent = root.path().join("absent-parent");
         let access = SecureOwnerWorkspaceCreate::new(SecureOwnerCreateConfig {
+            transport: Default::default(),
             origin: "http://127.0.0.1:1/".into(), state_dir: parent.join("absent-state"),
             allow_loopback_http: true, max_replay_artifact_bytes: 64 * 1024 * 1024,
             max_replay_commits: crate::secure_verified_read::default_replay_commits(),
@@ -1522,6 +1530,7 @@ mod tests {
         let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
         let origin = ready["origin"].as_str().unwrap().to_owned();
         let config = SecureOwnerCreateConfig {
+            transport: Default::default(),
             origin: origin.clone(),
             state_dir: root.path().join("sdk-state"),
             allow_loopback_http: true,

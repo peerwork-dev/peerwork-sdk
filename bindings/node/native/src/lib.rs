@@ -236,6 +236,7 @@ pub struct KernelTask {
     migration_source: Option<String>,
     migration_backup: Option<String>,
     trusted_signer_key_ids: Option<Vec<String>>,
+    transport_json: Option<String>,
     cancel: KernelCancellationToken,
 }
 
@@ -244,6 +245,8 @@ impl Task for KernelTask {
     type JsValue = String;
 
     fn compute(&mut self) -> Result<Self::Output> {
+        let transport = self.transport_json.as_deref().map(serde_json::from_str::<peerwork_runtime::transport::TransportOptions>).transpose().map_err(|_| napi::Error::from_reason("invalid transport options"))?.unwrap_or_default();
+        transport.validate().map_err(|_| napi::Error::from_reason("invalid transport options"))?;
         let access = KernelAccess::new(
             &self.origin,
             &self.journal_path,
@@ -251,7 +254,7 @@ impl Task for KernelTask {
             &self.required_features,
             self.allow_loopback_http,
         )
-        .with_authority(self.authority.clone());
+        .with_authority(self.authority.clone()).with_transport_options(transport);
         let value = match self.operation.as_str() {
             "open" => {
                 let info = access.open_with_cancel(&self.cancel).map_err(|error| napi::Error::from_reason(error.to_string()))?;
@@ -311,6 +314,7 @@ pub fn kernel_json(
     migration_source: Option<String>,
     migration_backup: Option<String>,
     trusted_signer_key_ids: Option<Vec<String>>,
+    transport_json: Option<String>,
 ) -> AsyncTask<KernelTask> {
     AsyncTask::new(KernelTask {
         operation,
@@ -326,6 +330,7 @@ pub fn kernel_json(
         migration_source,
         migration_backup,
         trusted_signer_key_ids,
+        transport_json,
         cancel: cancel_handle
             .map(|handle| handle.token.clone())
             .unwrap_or_default(),
@@ -1138,6 +1143,7 @@ pub struct SecureEnrollmentTask {
     mode: Option<String>,
     expected_certificate_hash: Option<String>,
     update_id: Option<String>,
+    transport_json: Option<String>,
     cancel: KernelCancellationToken,
 }
 
@@ -1151,6 +1157,8 @@ impl Task for SecureEnrollmentTask {
             Path::new(&self.state_dir),
         );
         config.allow_loopback_http = self.allow_loopback_http;
+        config.transport = self.transport_json.as_deref().map(serde_json::from_str).transpose().map_err(|_| napi::Error::from_reason("invalid transport options"))?.unwrap_or_default();
+        config.transport.validate().map_err(|_| napi::Error::from_reason("invalid transport options"))?;
         let access = SecureRecipientEnrollment::new(config);
         if self.operation == "certificate" {
             return Ok(match access.certificate_json() {
@@ -1221,6 +1229,7 @@ pub fn secure_recipient_enrollment_json(
     mode: Option<String>,
     expected_certificate_hash: Option<String>,
     update_id: Option<String>,
+    transport_json: Option<String>,
 ) -> AsyncTask<SecureEnrollmentTask> {
     AsyncTask::new(SecureEnrollmentTask {
         operation,
@@ -1230,6 +1239,7 @@ pub fn secure_recipient_enrollment_json(
         mode,
         expected_certificate_hash,
         update_id,
+        transport_json,
         cancel: cancel_handle
             .map(|handle| handle.token.clone())
             .unwrap_or_default(),
@@ -1237,6 +1247,7 @@ pub fn secure_recipient_enrollment_json(
 }
 
 pub struct SecureDirectoryTask {
+    transport_json: Option<String>,
     origin: String,
     state_dir: String,
     identity_path: String,
@@ -1252,6 +1263,7 @@ impl Task for SecureDirectoryTask {
 
     fn compute(&mut self) -> Result<Self::Output> {
         let config = IdentityDirectoryConfig {
+            transport: self.transport_json.as_deref().map(serde_json::from_str).transpose().map_err(|_| napi::Error::from_reason("invalid transport options"))?.unwrap_or_default(),
             origin: self.origin.clone(),
             identity_path: Path::new(&self.identity_path).to_path_buf(),
             kernel_journal_path: Path::new(&self.state_dir).join("kernel.sqlite"),
@@ -1280,8 +1292,10 @@ pub fn secure_identity_directory_json(
     target_signing_key_id: String,
     allow_loopback_http: bool,
     cancel_handle: Option<ClassInstance<KernelCancelHandle>>,
+    transport_json: Option<String>,
 ) -> AsyncTask<SecureDirectoryTask> {
     AsyncTask::new(SecureDirectoryTask {
+        transport_json,
         origin,
         state_dir,
         identity_path,

@@ -18,6 +18,8 @@ use tokio_util::sync::CancellationToken;
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SecureReadProfileConfig {
+    #[serde(default)]
+    pub transport: crate::transport::TransportOptions,
     pub origin: String,
     pub state_dir: PathBuf,
     pub identity_path: PathBuf,
@@ -385,6 +387,7 @@ impl SecureReadProfile {
     fn read_config(&self, profile: &ProfileDocument, slot: u8) -> SecureReadConfig {
         let state_dir = &self.config.state_dir;
         SecureReadConfig {
+            transport: self.config.transport.clone(),
             origin: profile.origin.clone(),
             kernel_journal_path: state_dir.join("kernel.sqlite"),
             read_state_path: state_dir.join(format!("read-{slot}.state")),
@@ -531,6 +534,7 @@ mod tests {
         .unwrap();
         assert_eq!(identity.actor_id(), fixture["actor_id"].as_str().unwrap());
         let config = SecureReadProfileConfig {
+            transport: Default::default(),
             origin: origin.clone(),
             state_dir: root.path().join("profile"),
             identity_path,

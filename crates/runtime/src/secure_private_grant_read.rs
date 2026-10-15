@@ -108,7 +108,7 @@ impl SecurePrivateDirectGrantRead {
             .enable_all()
             .build()
             .map_err(|_| SecurePrivateDirectGrantReadError::Transport)?;
-        let mut transport = TransportConfig::new(config.origin.clone());
+        let mut transport = TransportConfig::new(config.origin.clone()).with_options(config.transport.clone());
         transport.allow_loopback_http = config.allow_loopback_http;
         let features = config
             .required_features
@@ -477,6 +477,7 @@ mod tests {
         .unwrap();
         drop(identity);
         let read = SecureReadConfig {
+            transport: Default::default(),
             origin,
             kernel_journal_path: state.join("kernel.sqlite"),
             read_state_path: state.join("private-pages.state"),
@@ -613,6 +614,7 @@ mod tests {
         let authority = fixture["recipient_authority"].as_str().unwrap().to_owned();
         let invite_id = fixture["invite_id"].as_str().unwrap();
         let decision = SecurePublicDecision::new(PublicDecisionConfig {
+            transport: Default::default(),
             origin: origin.clone(),
             state_dir: state.clone(),
             identity_path: identity_path.clone(),
@@ -653,6 +655,7 @@ mod tests {
             serde_json::from_str(&decision.receive_json(invite_id).unwrap()).unwrap();
         assert_eq!(received["status"], "PENDING");
         let reopened = SecurePublicDecision::new(PublicDecisionConfig {
+            transport: Default::default(),
             origin: origin.clone(),
             state_dir: state.clone(),
             identity_path: identity_path.clone(),
@@ -669,6 +672,7 @@ mod tests {
             serde_json::from_str(&reopened.retry_receive_json(invite_id).unwrap()).unwrap();
         assert_eq!(recovered["status"], "READY");
         let read = SecureReadConfig {
+            transport: Default::default(),
             origin,
             kernel_journal_path: state.join("kernel.sqlite"),
             read_state_path: state.join("private-admission-pages.state"),
@@ -773,6 +777,7 @@ mod tests {
         let authority = fixture["recipient_authority"].as_str().unwrap().to_owned();
         let invite_id = fixture["invite_id"].as_str().unwrap();
         let decision = SecurePublicDecision::new(PublicDecisionConfig {
+            transport: Default::default(),
             origin: origin.clone(),
             state_dir: state.clone(),
             identity_path: identity_path.clone(),
@@ -836,6 +841,7 @@ mod tests {
             serde_json::from_str(&decision.receive_json(invite_id).unwrap()).unwrap();
         assert_eq!(received["status"], "PENDING");
         let reopened = SecurePublicDecision::new(PublicDecisionConfig {
+            transport: Default::default(),
             origin: origin.clone(),
             state_dir: state.clone(),
             identity_path: identity_path.clone(),
@@ -852,6 +858,7 @@ mod tests {
             serde_json::from_str(&reopened.retry_receive_json(invite_id).unwrap()).unwrap();
         assert_eq!(recovered["status"], "READY");
         let read = SecureReadConfig {
+            transport: Default::default(),
             origin,
             kernel_journal_path: state.join("kernel.sqlite"),
             read_state_path: state.join("private-admission-pages.state"),

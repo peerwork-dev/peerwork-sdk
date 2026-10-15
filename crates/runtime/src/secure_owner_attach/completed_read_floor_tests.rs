@@ -93,6 +93,7 @@ fn actual_service_completed_install_preserves_historical_end_and_current_floor()
     let material = std::fs::read_to_string(f["material_path"].as_str().unwrap()).unwrap();
     let source = std::fs::read(&input.protected_ts_state_path).unwrap();
     let config = SecureOwnerCreateConfig {
+            transport: Default::default(),
         origin: origin.into(),
         state_dir: root.join("native"),
         allow_loopback_http: true,

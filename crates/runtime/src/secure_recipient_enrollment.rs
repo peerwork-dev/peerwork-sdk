@@ -36,6 +36,8 @@ const DIRECTORY_DOMAIN: &str = "peerwork.secure.identity-directory.v1";
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecipientEnrollmentConfig {
+    #[serde(default)]
+    pub transport: crate::transport::TransportOptions,
     pub origin: String,
     pub identity_path: PathBuf,
     pub recipient_path: PathBuf,
@@ -48,6 +50,7 @@ pub struct RecipientEnrollmentConfig {
 impl RecipientEnrollmentConfig {
     pub fn for_state_dir(origin: String, state_dir: &Path) -> Self {
         Self {
+            transport: Default::default(),
             origin,
             identity_path: state_dir.join("identity.state"),
             recipient_path: state_dir.join("recipient.state"),
@@ -502,7 +505,7 @@ impl SecureRecipientEnrollment {
                 .enable_all()
                 .build()
                 .map_err(|_| RecipientEnrollmentError::Transport)?;
-            let mut transport = TransportConfig::new(self.config.origin.clone());
+            let mut transport = TransportConfig::new(self.config.origin.clone()).with_options(self.config.transport.clone());
             transport.allow_loopback_http = self.config.allow_loopback_http;
             let client = runtime
                 .block_on(KernelClient::open(
@@ -595,6 +598,7 @@ impl SecureRecipientEnrollment {
             .parent()
             .unwrap_or(std::path::Path::new("/"));
         SecureIdentityDirectory::new(IdentityDirectoryConfig {
+            transport: self.config.transport.clone(),
             origin: self.config.origin.clone(),
             identity_path: self.config.identity_path.clone(),
             kernel_journal_path: self.config.kernel_journal_path.clone(),
@@ -725,7 +729,7 @@ impl SecureRecipientEnrollment {
                 document.published_head.as_deref(),
             ));
         }
-        let mut transport = TransportConfig::new(self.config.origin.clone());
+        let mut transport = TransportConfig::new(self.config.origin.clone()).with_options(self.config.transport.clone());
         transport.allow_loopback_http = self.config.allow_loopback_http;
         let mut client =
             KernelClient::open(transport, &self.config.kernel_journal_path, &[], cancel)
@@ -1454,6 +1458,7 @@ mod tests {
             .unwrap()
             .to_owned();
         let owner_config = crate::secure_read_profile::SecureReadProfileConfig {
+            transport: Default::default(),
             origin: origin.clone(),
             state_dir: temp.path().join("native-owner-profile"),
             identity_path: owner_path,
@@ -1491,6 +1496,7 @@ mod tests {
         )
         .unwrap();
         let decision_config = crate::secure_public_decision::PublicDecisionConfig {
+            transport: Default::default(),
             origin: origin.clone(),
             state_dir: recipient_dir,
             identity_path: enrollment.config.identity_path.clone(),

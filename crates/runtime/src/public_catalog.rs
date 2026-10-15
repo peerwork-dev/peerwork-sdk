@@ -22,6 +22,8 @@ const MAX_BUNDLE_BYTES: usize = 1024 * 1024;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PublicCatalogConfig {
+    #[serde(default)]
+    pub transport: crate::transport::TransportOptions,
     pub origin: String,
     #[serde(default)]
     pub allow_loopback_http: bool,
@@ -164,7 +166,7 @@ impl PublicCatalog {
     }
 
     fn transport(&self) -> Result<HttpTransport, PublicCatalogError> {
-        let mut config = TransportConfig::new(&self.config.origin);
+        let mut config = TransportConfig::new(&self.config.origin).with_options(self.config.transport.clone());
         config.timeout = Duration::from_secs(15);
         config.allow_loopback_http = self.config.allow_loopback_http;
         HttpTransport::new(config).map_err(map_transport)
@@ -279,6 +281,7 @@ mod tests {
         let origin = fixture["origin"].as_str().unwrap().to_owned();
         assert_eq!(fixture["bundles"], 2);
         let catalog = PublicCatalog::new(PublicCatalogConfig {
+            transport: Default::default(),
             origin,
             allow_loopback_http: true,
             max_listing_bytes: None,
@@ -292,6 +295,7 @@ mod tests {
                 initial_cursor.listing_canonical_json
             );
             let constrained = PublicCatalog::new(PublicCatalogConfig {
+            transport: Default::default(),
                 origin: listed.catalog_origin.clone(),
                 allow_loopback_http: true,
                 max_listing_bytes: Some(1),

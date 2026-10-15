@@ -800,7 +800,7 @@ impl SecureHistoricalOwnerAttach {
         ensure_dir(&self.config.state_dir)?;
         let directory = self.workspace_dir(&input.workspace_id);
         ensure_dir(&directory)?;
-        let mut transport_config = TransportConfig::new(self.config.origin.clone());
+        let mut transport_config = TransportConfig::new(self.config.origin.clone()).with_options(self.config.transport.clone());
         transport_config.allow_loopback_http = self.config.allow_loopback_http;
         let transport =
             HttpTransport::new(transport_config).map_err(|_| HistoricalOwnerAttachError::Input)?;
@@ -3797,7 +3797,7 @@ impl SecureHistoricalOwnerAttach {
         )?;
         if hash != stage.commit_hash { return Err(HistoricalOwnerAttachError::Conflict); }
         if !applied {
-            let mut transport_config = TransportConfig::new(self.config.origin.clone());
+            let mut transport_config = TransportConfig::new(self.config.origin.clone()).with_options(self.config.transport.clone());
             transport_config.allow_loopback_http = self.config.allow_loopback_http;
             let transport = HttpTransport::new(transport_config)
                 .map_err(|_| HistoricalOwnerAttachError::Verification)?;
@@ -4484,7 +4484,7 @@ impl SecureHistoricalOwnerAttach {
                 .prepare(packet())
                 .map_err(|_| HistoricalOwnerAttachError::Local)?;
         }
-        let mut transport_config = TransportConfig::new(self.config.origin.clone());
+        let mut transport_config = TransportConfig::new(self.config.origin.clone()).with_options(self.config.transport.clone());
         transport_config.allow_loopback_http = self.config.allow_loopback_http;
         let transport = HttpTransport::new(transport_config)
             .map_err(|_| HistoricalOwnerAttachError::Verification)?;
@@ -5073,6 +5073,7 @@ impl SecureHistoricalOwnerAttach {
     }
     fn profile_config(&self, input: &HistoricalOwnerAttachInput) -> SecureReadProfileConfig {
         SecureReadProfileConfig {
+            transport: self.config.transport.clone(),
             origin: self.config.origin.clone(),
             state_dir: self.workspace_dir(&input.workspace_id),
             identity_path: self.identity_path(),
@@ -5089,6 +5090,7 @@ impl SecureHistoricalOwnerAttach {
     fn attach_read_config(&self, input: &HistoricalOwnerAttachInput) -> SecureReadConfig {
         let directory = self.workspace_dir(&input.workspace_id);
         SecureReadConfig {
+            transport: self.config.transport.clone(),
             origin: self.config.origin.clone(),
             kernel_journal_path: directory.join("kernel.sqlite"),
             read_state_path: directory.join("owner-attach-pages.state"),
@@ -5110,7 +5112,7 @@ fn valid_history_config(config: &SecureOwnerCreateConfig) -> bool {
     if !config.state_dir.is_absolute() {
         return false;
     }
-    let mut transport_config = TransportConfig::new(config.origin.clone());
+    let mut transport_config = TransportConfig::new(config.origin.clone()).with_options(config.transport.clone());
     transport_config.allow_loopback_http = config.allow_loopback_http;
     let Ok(transport) = HttpTransport::new(transport_config) else {
         return false;
@@ -8010,6 +8012,7 @@ mod tests {
         ).unwrap() };
         assert_eq!(count(), 2, "workspace create plus one old signed prefix");
         let config = SecureOwnerCreateConfig {
+            transport: Default::default(),
             origin: origin.into(), state_dir: root.path().join("native-orphan"),
             allow_loopback_http: true, max_replay_artifact_bytes: 64 * 1024 * 1024,
             max_replay_commits: crate::secure_verified_read::default_replay_commits(),
@@ -8244,6 +8247,7 @@ mod tests {
         assert_eq!(unfinished["policy_v"], 2);
         assert_eq!(unfinished["signed_ack"], false);
         let config = |name: &str| SecureOwnerCreateConfig {
+            transport: Default::default(),
             origin: origin.into(),
             state_dir: root.path().join(name),
             allow_loopback_http: true,
@@ -8420,6 +8424,7 @@ mod tests {
             source
         };
         let config = |directory: &str| SecureOwnerCreateConfig {
+            transport: Default::default(),
             origin: origin.into(),
             state_dir: root.path().join(directory),
             allow_loopback_http: true,
@@ -8630,6 +8635,7 @@ mod tests {
                 .unwrap()
         };
         let config = |name: &str| SecureOwnerCreateConfig {
+            transport: Default::default(),
             origin: origin.into(),
             state_dir: root.path().join(name),
             allow_loopback_http: true,
@@ -8921,6 +8927,7 @@ mod tests {
             let pending_id = source["pending_command_id"].as_str().unwrap();
             assert_eq!(commit_count(workspace), 1, "{name}");
             let config = SecureOwnerCreateConfig {
+            transport: Default::default(),
                 origin: origin.into(),
                 state_dir: root.path().join(format!("native-{name}")),
                 allow_loopback_http: true,
@@ -9182,6 +9189,7 @@ mod tests {
         ).unwrap() };
         assert_eq!(count(), 1);
         let config = SecureOwnerCreateConfig {
+            transport: Default::default(),
             origin: origin.into(), state_dir: root.path().join("native-orphan"),
             allow_loopback_http: true, max_replay_artifact_bytes: 64 * 1024 * 1024,
             max_replay_commits: crate::secure_verified_read::default_replay_commits(),
@@ -9395,6 +9403,7 @@ mod tests {
                 .unwrap();
             assert_eq!(total, 2, "{name}");
             let config = SecureOwnerCreateConfig {
+            transport: Default::default(),
                 origin: origin.into(),
                 state_dir: root.path().join(format!("native-{name}")),
                 allow_loopback_http: true,
@@ -9543,6 +9552,7 @@ mod tests {
                 assert!(source["stage_signed_command_id"].is_null());
             }
             let config = SecureOwnerCreateConfig {
+            transport: Default::default(),
                 origin: origin.into(), state_dir: root.path().join(format!("native-{name}")),
                 allow_loopback_http: true, max_replay_artifact_bytes: 64 * 1024 * 1024,
             max_replay_commits: crate::secure_verified_read::default_replay_commits(),
@@ -9708,6 +9718,7 @@ mod tests {
             let latest = source["latest_sequence"].as_i64().unwrap();
             assert_eq!(count(), latest, "{mode}");
             let config = SecureOwnerCreateConfig {
+            transport: Default::default(),
                 origin: origin.into(), state_dir: root.path().join(format!("native-{mode}")),
                 allow_loopback_http: true, max_replay_artifact_bytes: 64 * 1024 * 1024,
             max_replay_commits: crate::secure_verified_read::default_replay_commits(),
@@ -9892,6 +9903,7 @@ mod tests {
             ).unwrap() };
             assert_eq!(count(), initial_sequence, "{name}");
             let config = SecureOwnerCreateConfig {
+            transport: Default::default(),
                 origin: origin.into(), state_dir: root.path().join(format!("native-{name}")),
                 allow_loopback_http: true, max_replay_artifact_bytes: 64 * 1024 * 1024,
             max_replay_commits: crate::secure_verified_read::default_replay_commits(),
@@ -10096,6 +10108,7 @@ mod tests {
             ).unwrap() };
             assert_eq!(count(), expected_sequence, "{name}");
             let config = SecureOwnerCreateConfig {
+            transport: Default::default(),
                 origin: origin.into(), state_dir: root.path().join(format!("native-{name}")),
                 allow_loopback_http: true, max_replay_artifact_bytes: 64 * 1024 * 1024,
             max_replay_commits: crate::secure_verified_read::default_replay_commits(),
@@ -10209,6 +10222,7 @@ mod tests {
             ).unwrap();
             assert_eq!(before, i64::from(initially_applied), "{name}");
             let attach = SecureHistoricalOwnerAttach::new(SecureOwnerCreateConfig {
+            transport: Default::default(),
                 origin: origin.into(),
                 state_dir: root.path().join(format!("native-{name}")),
                 allow_loopback_http: true,
@@ -10525,6 +10539,7 @@ mod tests {
             let workspace = source["workspace_id"].as_str().unwrap();
             let command = source["pending_command_id"].as_str().unwrap();
             let config = SecureOwnerCreateConfig {
+            transport: Default::default(),
                 origin: origin.into(),
                 state_dir: root.path().join(format!("native-family-{index}")),
                 allow_loopback_http: true,
@@ -10830,6 +10845,7 @@ mod tests {
             let workspace = source["workspace_id"].as_str().unwrap();
             let command = source["pending_command_id"].as_str().unwrap();
             let config = SecureOwnerCreateConfig {
+            transport: Default::default(),
                 origin: origin.into(),
                 state_dir: root.path().join(format!("native-current-v3-{index}")),
                 allow_loopback_http: true,
@@ -11330,6 +11346,7 @@ mod tests {
         let changed: serde_json::Value = serde_json::from_slice(&changed_output.stdout).unwrap();
         let changed_id = changed["selected_command_id"].as_str().unwrap();
         let changed_owner = SecureHistoricalOwnerAttach::new(SecureOwnerCreateConfig {
+            transport: Default::default(),
             origin: origin.into(),
             state_dir: root.path().join("native-changed-snapshot"),
             allow_loopback_http: true,
@@ -11438,6 +11455,7 @@ mod tests {
             assert_eq!(accepted_command_count(unrelated), 0);
             assert_eq!(accepted_command_count(global), 0);
             let config = SecureOwnerCreateConfig {
+            transport: Default::default(),
                 origin: origin.into(),
                 state_dir: root.path().join(format!("native-{mode}")),
                 allow_loopback_http: true,
@@ -11560,6 +11578,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let state_dir = root.path().join("native-owner");
         let attach = SecureHistoricalOwnerAttach::new(SecureOwnerCreateConfig {
+            transport: Default::default(),
             origin: "http://127.0.0.1:12345".into(),
             state_dir: state_dir.clone(),
             allow_loopback_http: true,
@@ -11645,6 +11664,7 @@ mod tests {
         let missing: serde_json::Value = serde_json::from_slice(&missing_ring.stdout).unwrap();
         let missing_workspace = missing["workspace_id"].as_str().unwrap();
         let bad_config = SecureOwnerCreateConfig {
+            transport: Default::default(),
             origin: origin.into(),
             state_dir: root.path().join("native-missing-ring"),
             allow_loopback_http: true,
@@ -11703,6 +11723,7 @@ mod tests {
         assert_eq!(source["policy_v"], 1);
         let workspace_id = source["workspace_id"].as_str().unwrap();
         let config = SecureOwnerCreateConfig {
+            transport: Default::default(),
             origin: origin.into(),
             state_dir: root.path().join("native-owner"),
             allow_loopback_http: true,
@@ -11765,6 +11786,7 @@ mod tests {
             serde_json::from_slice(&rt.block_on(activated.bytes()).unwrap()).unwrap();
         assert_eq!(phase["phase"], "ENFORCE");
         let owner = SecureOwnerWorkspaceCreate::new(SecureOwnerCreateConfig {
+            transport: Default::default(),
             origin: origin.into(),
             state_dir: root.path().join("native-owner"),
             allow_loopback_http: true,
@@ -11933,6 +11955,7 @@ mod tests {
         assert_eq!(source["policy_v"], 2);
         let workspace_id = source["workspace_id"].as_str().unwrap();
         let config = SecureOwnerCreateConfig {
+            transport: Default::default(),
             origin: origin.into(),
             state_dir: root.path().join("native-owner"),
             allow_loopback_http: true,
@@ -12077,6 +12100,7 @@ mod tests {
         let helper =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/legacy-owner-source.mjs");
         let config = SecureOwnerCreateConfig {
+            transport: Default::default(),
             origin: origin.clone(),
             state_dir: root.path().join("native-owner"),
             allow_loopback_http: true,
@@ -12325,6 +12349,7 @@ mod tests {
         let material = read_private_file_bounded(
             Path::new(fixture["material_path"].as_str().unwrap()), 8 * 1024 * 1024).unwrap();
         let config = SecureOwnerCreateConfig {
+            transport: Default::default(),
             origin: origin.into(), state_dir: root.path().join("native"),
             allow_loopback_http: true, max_replay_artifact_bytes: 64 * 1024 * 1024,
             max_replay_commits: crate::secure_verified_read::default_replay_commits(),
@@ -12410,6 +12435,7 @@ mod tests {
         std::fs::rename(root.path().join("legacy"), root.path().join("source-moved")).unwrap();
         assert!(!input.protected_ts_state_path.exists());
         let reopened = SecureHistoricalOwnerAttach::new(SecureOwnerCreateConfig {
+            transport: Default::default(),
             origin: origin.into(), state_dir: root.path().join("native"),
             allow_loopback_http: true, max_replay_artifact_bytes: 64 * 1024 * 1024,
             max_replay_commits: crate::secure_verified_read::default_replay_commits(),
@@ -12543,6 +12569,7 @@ mod tests {
                 Path::new(fixture["material_path"].as_str().unwrap()), 8 * 1024 * 1024,
             ).unwrap();
             let config = SecureOwnerCreateConfig {
+            transport: Default::default(),
                 origin: origin.into(), state_dir: root.path().join(format!("native-{name}")),
                 allow_loopback_http: true, max_replay_artifact_bytes: 64 * 1024 * 1024,
             max_replay_commits: crate::secure_verified_read::default_replay_commits(),
@@ -12948,7 +12975,8 @@ mod tests {
         let source_before = read_private_file_bounded(&input.protected_ts_state_path, MAX_SOURCE).unwrap();
         let options = std::fs::read_to_string(fixture["options_path"].as_str().unwrap()).unwrap();
         let material = std::fs::read_to_string(fixture["material_path"].as_str().unwrap()).unwrap();
-        let config = SecureOwnerCreateConfig { origin: origin.into(), state_dir: root.path().join("native"),
+        let config = SecureOwnerCreateConfig {
+            transport: Default::default(), origin: origin.into(), state_dir: root.path().join("native"),
             allow_loopback_http: true, max_replay_artifact_bytes: 64 * 1024 * 1024,
             max_replay_commits: crate::secure_verified_read::default_replay_commits() };
         let attach = SecureHistoricalOwnerAttach::new(config.clone());

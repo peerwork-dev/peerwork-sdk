@@ -246,6 +246,7 @@ impl SecurePublicPackageInstall {
             };
             let state_dir = &self.config.state_dir;
             let access = SecureReadAccess::new(SecureReadConfig {
+            transport: self.config.transport.clone(),
                 origin: prior.origin().to_owned(),
                 kernel_journal_path: state_dir.join("kernel.sqlite"),
                 read_state_path: state_dir.join("install-read.state"),
@@ -386,7 +387,7 @@ impl SecurePublicPackageInstall {
             // Rebuild from protected selection and the same authenticated
             // replay before transport; the saved packet is the only POST body.
             let saved = prove_saved_begin(&journal, &command_id, source, &identity)?;
-            let mut transport_config = TransportConfig::new(self.config.origin.clone());
+            let mut transport_config = TransportConfig::new(self.config.origin.clone()).with_options(self.config.transport.clone());
             transport_config.allow_loopback_http = self.config.allow_loopback_http;
             let transport = HttpTransport::new(transport_config)
                 .map_err(|_| PublicPackageInstallError::Transport)?;
@@ -641,7 +642,7 @@ fn post_saved_install_step(
         "/api/workspace/v1/secure/workspaces/{}/commits",
         config.workspace_id
     );
-    let mut transport_config = TransportConfig::new(config.origin.clone());
+    let mut transport_config = TransportConfig::new(config.origin.clone()).with_options(config.transport.clone());
     transport_config.allow_loopback_http = config.allow_loopback_http;
     let transport =
         HttpTransport::new(transport_config).map_err(|_| PublicPackageInstallError::Transport)?;
@@ -1179,6 +1180,7 @@ mod tests {
         .unwrap();
         assert_eq!(identity.actor_id(), fixture["actor_id"].as_str().unwrap());
         let config = SecureReadProfileConfig {
+            transport: Default::default(),
             origin: origin.clone(),
             state_dir: root.path().join("profile"),
             identity_path,
@@ -1548,6 +1550,7 @@ mod tests {
         )
         .unwrap();
         let config = SecureReadProfileConfig {
+            transport: Default::default(),
             origin: origin.clone(),
             state_dir: root.path().join("profile"),
             identity_path,
@@ -1777,6 +1780,7 @@ mod selected_binding_service_test {
         let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
         let origin = ready["origin"].as_str().unwrap().to_owned();
         let owner = SecureOwnerWorkspaceCreate::new(SecureOwnerCreateConfig {
+            transport: Default::default(),
             origin: origin.clone(),
             state_dir: root.path().join("native-owner"),
             allow_loopback_http: true,

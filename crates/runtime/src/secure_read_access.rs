@@ -28,6 +28,8 @@ use tokio_util::sync::CancellationToken;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SecureReadConfig {
+    #[serde(default)]
+    pub transport: crate::transport::TransportOptions,
     pub origin: String,
     pub kernel_journal_path: PathBuf,
     pub read_state_path: PathBuf,
@@ -143,7 +145,7 @@ impl SecureReadAccess {
         let identity = KernelIdentity::open(&self.config.identity_path)
             .map_err(|_| SecureReadAccessError::Identity)?;
         let runtime = Self::runtime()?;
-        let mut transport = TransportConfig::new(self.config.origin.clone());
+        let mut transport = TransportConfig::new(self.config.origin.clone()).with_options(self.config.transport.clone());
         transport.allow_loopback_http = self.config.allow_loopback_http;
         let features = self
             .config
@@ -271,7 +273,7 @@ impl SecureReadAccess {
         let identity = KernelIdentity::open(&self.config.identity_path)
             .map_err(|_| SecureReadAccessError::Identity)?;
         let runtime = Self::runtime()?;
-        let mut transport = TransportConfig::new(self.config.origin.clone());
+        let mut transport = TransportConfig::new(self.config.origin.clone()).with_options(self.config.transport.clone());
         transport.allow_loopback_http = self.config.allow_loopback_http;
         let features = self
             .config

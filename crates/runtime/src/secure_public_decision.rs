@@ -42,6 +42,8 @@ use tokio_util::sync::CancellationToken;
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PublicDecisionConfig {
+    #[serde(default)]
+    pub transport: crate::transport::TransportOptions,
     pub origin: String,
     pub state_dir: PathBuf,
     pub identity_path: PathBuf,
@@ -451,6 +453,7 @@ impl SecurePublicDecision {
             );
         }
         let profile = SecureReadProfileConfig {
+            transport: self.config.transport.clone(),
             origin: self.config.origin.clone(),
             state_dir: self.config.state_dir.clone(),
             identity_path: self.config.identity_path.clone(),
@@ -587,6 +590,7 @@ impl SecurePublicDecision {
         cancel: &CancellationToken,
     ) -> Result<String, PublicDecisionError> {
         let config = SecureReadConfig {
+            transport: self.config.transport.clone(),
             origin: self.config.origin.clone(),
             kernel_journal_path: self.config.state_dir.join("kernel.sqlite"),
             read_state_path: self.config.state_dir.join("private-admission-pages.state"),
@@ -910,6 +914,7 @@ impl SecurePublicDecision {
             .ok_or(PublicDecisionError::Invalid)?;
         let receipt_path = format!("{}/receipt", control_path(invite_id)?);
         let profile = SecureReadProfileConfig {
+            transport: self.config.transport.clone(),
             origin: self.config.origin.clone(),
             state_dir: self.config.state_dir.clone(),
             identity_path: self.config.identity_path.clone(),
@@ -1303,7 +1308,7 @@ impl SecurePublicDecision {
             .enable_all()
             .build()
             .map_err(|_| PublicDecisionError::Runtime)?;
-        let mut transport = TransportConfig::new(self.config.origin.clone());
+        let mut transport = TransportConfig::new(self.config.origin.clone()).with_options(self.config.transport.clone());
         transport.allow_loopback_http = self.config.allow_loopback_http;
         let features = self
             .config

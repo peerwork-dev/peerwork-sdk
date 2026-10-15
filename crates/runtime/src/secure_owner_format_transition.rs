@@ -429,7 +429,7 @@ impl SecureOwnerFormatTransition {
         self.config.state_dir.join("owner-format-intents.state")
     }
     fn transport(&self) -> Result<HttpTransport, OwnerFormatTransitionError> {
-        let mut c = TransportConfig::new(self.config.origin.clone());
+        let mut c = TransportConfig::new(self.config.origin.clone()).with_options(self.config.transport.clone());
         c.allow_loopback_http = self.config.allow_loopback_http;
         HttpTransport::new(c).map_err(|_| OwnerFormatTransitionError::Transport)
     }
@@ -786,6 +786,7 @@ mod tests {
         let command_id = base64url(&[4; 32]);
         let exact_packet = b"legacy exact saved request";
         let config = SecureReadProfileConfig {
+            transport: Default::default(),
             origin: "https://example.invalid/".into(),
             state_dir: root.path().into(),
             identity_path,
@@ -891,6 +892,7 @@ mod tests {
         assert_eq!(source["policy_v"], 1);
         let workspace_id = source["workspace_id"].as_str().unwrap().to_owned();
         let config = SecureOwnerCreateConfig {
+            transport: Default::default(),
             origin: origin.clone(),
             state_dir: root.path().join("native-owner"),
             allow_loopback_http: true,
@@ -1329,6 +1331,7 @@ mod tests {
         .unwrap();
         let invite_id = offer["invite_id"].as_str().unwrap();
         let decision = SecurePublicDecision::new(PublicDecisionConfig {
+            transport: Default::default(),
             origin: origin.clone(),
             state_dir: member_dir.clone(),
             identity_path: member_dir.join("identity.state"),
@@ -1387,6 +1390,7 @@ mod tests {
         assert_eq!(received["status"], "READY");
         assert_eq!(counts()["commits"], before_receipt_retry);
         let member_profile = SecureReadProfileConfig {
+            transport: Default::default(),
             origin: origin.clone(),
             state_dir: member_dir.clone(),
             identity_path: member_dir.join("identity.state"),
@@ -1528,6 +1532,7 @@ mod tests {
         assert_eq!(source["policy_v"], 2);
         let workspace_id = source["workspace_id"].as_str().unwrap().to_owned();
         let config = SecureOwnerCreateConfig {
+            transport: Default::default(),
             origin: origin.clone(),
             state_dir: root.path().join("native-owner"),
             allow_loopback_http: true,

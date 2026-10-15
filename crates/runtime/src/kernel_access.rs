@@ -37,6 +37,7 @@ pub struct KernelAccess {
     required_features: Vec<Vec<u16>>,
     allow_loopback_http: bool,
     authority_override: Option<String>,
+    transport: crate::transport::TransportOptions,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +67,7 @@ impl KernelAccess {
                 .collect(),
             allow_loopback_http,
             authority_override: None,
+            transport: Default::default(),
         }
     }
 
@@ -76,6 +78,8 @@ impl KernelAccess {
         self
     }
 
+    pub fn with_transport_options(mut self, options: crate::transport::TransportOptions) -> Self { self.transport = options; self }
+
     fn runtime(&self) -> Result<Runtime, KernelAccessError> {
         Builder::new_current_thread()
             .enable_all()
@@ -84,7 +88,7 @@ impl KernelAccess {
     }
 
     fn transport_config(&self) -> TransportConfig {
-        let mut config = TransportConfig::new(self.origin.clone());
+        let mut config = TransportConfig::new(self.origin.clone()).with_options(self.transport.clone());
         config.allow_loopback_http = self.allow_loopback_http;
         config
     }

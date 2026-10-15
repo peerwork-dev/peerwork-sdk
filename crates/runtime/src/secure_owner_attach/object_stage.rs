@@ -1682,7 +1682,7 @@ impl SecureHistoricalOwnerAttach {
         {
             return Err(invalid());
         }
-        let mut config = TransportConfig::new(self.config.origin.clone());
+        let mut config = TransportConfig::new(self.config.origin.clone()).with_options(self.config.transport.clone());
         config.allow_loopback_http = self.config.allow_loopback_http;
         let transport =
             HttpTransport::new(config).map_err(|_| HistoricalOwnerAttachError::Verification)?;
@@ -1807,7 +1807,7 @@ impl SecureHistoricalOwnerAttach {
                     exact_request: &pending.request,
                 })
                 .map_err(|_| HistoricalOwnerAttachError::Conflict)?;
-            let mut config = TransportConfig::new(self.config.origin.clone());
+            let mut config = TransportConfig::new(self.config.origin.clone()).with_options(self.config.transport.clone());
             config.allow_loopback_http = self.config.allow_loopback_http;
             let transport =
                 HttpTransport::new(config).map_err(|_| HistoricalOwnerAttachError::Verification)?;

@@ -165,7 +165,7 @@ impl KernelCancelHandle {
 }
 
 #[pyfunction]
-#[pyo3(signature = (operation, origin, journal_path, identity_path, required_features, allow_loopback_http, authority=None, command_json=None, command_id=None, upload_chunk=None, cancel_handle=None, migration_source=None, migration_backup=None, trusted_signer_key_ids=None))]
+#[pyo3(signature = (operation, origin, journal_path, identity_path, required_features, allow_loopback_http, authority=None, command_json=None, command_id=None, upload_chunk=None, cancel_handle=None, migration_source=None, migration_backup=None, trusted_signer_key_ids=None, transport_json=None))]
 fn kernel_json(
     py: Python<'_>,
     operation: &str,
@@ -182,10 +182,13 @@ fn kernel_json(
     migration_source: Option<String>,
     migration_backup: Option<String>,
     trusted_signer_key_ids: Option<Vec<String>>,
+    transport_json: Option<&str>,
 ) -> PyResult<String> {
     let cancel = cancel_handle
         .map(|handle| handle.token.clone())
         .unwrap_or_default();
+    let transport = transport_json.map(serde_json::from_str::<peerwork_runtime::transport::TransportOptions>).transpose().map_err(|_| pyo3::exceptions::PyValueError::new_err("invalid transport options"))?.unwrap_or_default();
+    transport.validate().map_err(|_| pyo3::exceptions::PyValueError::new_err("invalid transport options"))?;
     let access = KernelAccess::new(
         origin,
         journal_path,
@@ -193,7 +196,7 @@ fn kernel_json(
         &required_features,
         allow_loopback_http,
     )
-    .with_authority(authority);
+    .with_authority(authority).with_transport_options(transport);
     let operation = operation.to_owned();
     let command_json = command_json.map(str::to_owned);
     let command_id = command_id.map(str::to_owned);
@@ -916,7 +919,7 @@ fn public_catalog_json(
 }
 
 #[pyfunction]
-#[pyo3(signature = (operation, origin, state_dir, allow_loopback_http=false, cancel_handle=None, mode=None, expected_certificate_hash=None, update_id=None))]
+#[pyo3(signature = (operation, origin, state_dir, allow_loopback_http=false, cancel_handle=None, mode=None, expected_certificate_hash=None, update_id=None, transport_json=None))]
 fn secure_recipient_enrollment_json(
     py: Python<'_>,
     operation: &str,
@@ -927,10 +930,13 @@ fn secure_recipient_enrollment_json(
     mode: Option<&str>,
     expected_certificate_hash: Option<&str>,
     update_id: Option<&str>,
+    transport_json: Option<&str>,
 ) -> PyResult<String> {
     let mut config =
         RecipientEnrollmentConfig::for_state_dir(origin.to_owned(), Path::new(state_dir));
     config.allow_loopback_http = allow_loopback_http;
+    config.transport = transport_json.map(serde_json::from_str).transpose().map_err(|_| pyo3::exceptions::PyValueError::new_err("invalid transport options"))?.unwrap_or_default();
+    config.transport.validate().map_err(|_| pyo3::exceptions::PyValueError::new_err("invalid transport options"))?;
     let operation = operation.to_owned();
     let mode = mode.map(str::to_owned);
     let expected_certificate_hash = expected_certificate_hash.map(str::to_owned);
@@ -990,7 +996,7 @@ fn secure_recipient_enrollment_json(
 }
 
 #[pyfunction]
-#[pyo3(signature = (origin, state_dir, identity_path, target_actor_id, target_signing_key_id, allow_loopback_http=false, cancel_handle=None))]
+#[pyo3(signature = (origin, state_dir, identity_path, target_actor_id, target_signing_key_id, allow_loopback_http=false, cancel_handle=None, transport_json=None))]
 fn secure_identity_directory_json(
     py: Python<'_>,
     origin: &str,
@@ -1000,8 +1006,10 @@ fn secure_identity_directory_json(
     target_signing_key_id: &str,
     allow_loopback_http: bool,
     cancel_handle: Option<PyRef<'_, KernelCancelHandle>>,
+    transport_json: Option<&str>,
 ) -> PyResult<String> {
     let config = IdentityDirectoryConfig {
+            transport: transport_json.map(serde_json::from_str).transpose().map_err(|_| pyo3::exceptions::PyValueError::new_err("invalid transport options"))?.unwrap_or_default(),
         origin: origin.to_owned(),
         identity_path: Path::new(identity_path).to_path_buf(),
         kernel_journal_path: Path::new(state_dir).join("kernel.sqlite"),

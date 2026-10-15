@@ -566,7 +566,7 @@ impl SecureOwnerCoordination {
         if journal.exact_request(&step.id).map_err(|_| Error::Packet)? != request {
             return Err(Error::Packet);
         }
-        let mut config = TransportConfig::new(self.config.origin.clone());
+        let mut config = TransportConfig::new(self.config.origin.clone()).with_options(self.config.transport.clone());
         config.allow_loopback_http = self.config.allow_loopback_http;
         let transport = HttpTransport::new(config).map_err(|_| Error::Transport)?;
         let rt = Builder::new_current_thread()
@@ -601,6 +601,7 @@ impl SecureOwnerCoordination {
                 policy_hash: prior.replay().policy_hash().into(),
             };
             let access = SecureReadAccess::new(SecureReadConfig {
+            transport: self.config.transport.clone(),
                 origin: prior.origin().into(),
                 kernel_journal_path: self.config.state_dir.join("kernel.sqlite"),
                 read_state_path: self.config.state_dir.join("owner-coordination-read.state"),
@@ -948,6 +949,7 @@ mod tests {
         let root = crate::test_support::protected_test_dir();
         let path = root.path().join("missing").join("identity.state");
         let access = SecureOwnerCoordination::new(SecureReadProfileConfig {
+            transport: Default::default(),
             origin: "https://example.invalid/".into(),
             state_dir: root.path().join("missing"),
             identity_path: path.clone(),
@@ -1040,6 +1042,7 @@ mod tests {
         let workspace = source["workspace_id"].as_str().unwrap();
         let actor = source["owner_actor_id"].as_str().unwrap();
         let config = SecureOwnerCreateConfig {
+            transport: Default::default(),
             origin: origin.into(),
             state_dir: root.join("native-owner"),
             allow_loopback_http: true,

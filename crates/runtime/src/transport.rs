@@ -14,7 +14,7 @@ const MAX_SECURE_JOURNAL_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 pub enum TransportError {
     #[error("invalid or unsupported server origin")]
     InvalidOrigin,
-    #[error("invalid proxy or trust root")]
+    #[error("invalid transport options, proxy or trust root")]
     InvalidTrust,
     #[error("HTTP client setup failed")]
     Setup,
@@ -32,15 +32,77 @@ pub enum TransportError {
     SubmittedUncertain,
 }
 
+/// Invocation-local caller choices; never stored as workspace authority.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct TransportOptions {
+    pub request_timeout_ms: u64,
+    pub additional_root_pem_files: Vec<std::path::PathBuf>,
+}
+impl Default for TransportOptions {
+    fn default() -> Self { Self { request_timeout_ms: 15_000, additional_root_pem_files: Vec::new() } }
+}
+impl TransportOptions {
+    pub const MAX_ROOT_FILES: usize = 16;
+    pub const MAX_ROOT_FILE_BYTES: usize = 65_536;
+    pub const MAX_ROOT_TOTAL_BYTES: usize = 262_144;
+    pub fn validate(&self) -> Result<(), TransportError> {
+        if self.request_timeout_ms == 0
+            || std::time::Instant::now().checked_add(Duration::from_millis(self.request_timeout_ms)).is_none()
+            || self.additional_root_pem_files.len() > Self::MAX_ROOT_FILES
+            || self.additional_root_pem_files.iter().any(|p| p.as_os_str().is_empty()) {
+            return Err(TransportError::InvalidTrust);
+        }
+        Ok(())
+    }
+    fn roots(&self) -> Result<Vec<Certificate>, TransportError> {
+        use std::io::Read;
+        self.validate()?;
+        let mut roots = Vec::new(); let mut total = 0usize;
+        for path in &self.additional_root_pem_files {
+            // Public CA inputs need no secret-file ownership rule, but special
+            // files must never block a client or evade the streaming bound.
+            let metadata = std::fs::metadata(path).map_err(|_| TransportError::InvalidTrust)?;
+            if !metadata.is_file() || metadata.len() == 0 || metadata.len() > Self::MAX_ROOT_FILE_BYTES as u64 {
+                return Err(TransportError::InvalidTrust);
+            }
+            let mut open = std::fs::OpenOptions::new(); open.read(true);
+            #[cfg(unix)] { use std::os::unix::fs::OpenOptionsExt; open.custom_flags(libc::O_NONBLOCK); }
+            let file = open.open(path).map_err(|_| TransportError::InvalidTrust)?;
+            let current = file.metadata().map_err(|_| TransportError::InvalidTrust)?;
+            let remaining = Self::MAX_ROOT_TOTAL_BYTES.checked_sub(total).ok_or(TransportError::InvalidTrust)?;
+            let bound = remaining.min(Self::MAX_ROOT_FILE_BYTES);
+            if !current.is_file() || current.len() == 0 || current.len() > bound as u64 { return Err(TransportError::InvalidTrust); }
+            let mut bytes = Vec::new();
+            file.take((bound + 1) as u64).read_to_end(&mut bytes).map_err(|_| TransportError::InvalidTrust)?;
+            if bytes.is_empty() || bytes.len() > bound { return Err(TransportError::InvalidTrust); }
+            total = total.checked_add(bytes.len()).ok_or(TransportError::InvalidTrust)?;
+            let text = std::str::from_utf8(&bytes).map_err(|_| TransportError::InvalidTrust)?;
+            let mut remaining_pem = text.trim();
+            while !remaining_pem.is_empty() {
+                if !remaining_pem.starts_with("-----BEGIN CERTIFICATE-----") { return Err(TransportError::InvalidTrust); }
+                let end = remaining_pem.find("-----END CERTIFICATE-----").ok_or(TransportError::InvalidTrust)? + "-----END CERTIFICATE-----".len();
+                remaining_pem = remaining_pem[end..].trim();
+            }
+            let parsed = Certificate::from_pem_bundle(&bytes).map_err(|_| TransportError::InvalidTrust)?;
+            if parsed.is_empty() { return Err(TransportError::InvalidTrust); }
+            roots.extend(parsed);
+        }
+        Ok(roots)
+    }
+}
+
 pub struct TransportConfig {
     pub origin: String,
     pub timeout: Duration,
     pub allow_loopback_http: bool,
     pub additional_root_pem: Vec<Vec<u8>>,
     pub proxy: Option<String>,
+    pub client_options: Option<TransportOptions>,
 }
 
 impl TransportConfig {
+    pub fn with_options(mut self, options: TransportOptions) -> Self { self.client_options = Some(options); self }
     pub fn new(origin: impl Into<String>) -> Self {
         Self {
             origin: origin.into(),
@@ -48,6 +110,7 @@ impl TransportConfig {
             allow_loopback_http: false,
             additional_root_pem: Vec::new(),
             proxy: None,
+            client_options: None,
         }
     }
 }
@@ -75,7 +138,10 @@ pub(crate) fn canonical_lifecycle_origin(origin: &str, allow_loopback_http: bool
 }
 
 impl HttpTransport {
-    pub fn new(config: TransportConfig) -> Result<Self, TransportError> {
+    pub fn new(mut config: TransportConfig) -> Result<Self, TransportError> {
+        let extra_roots = if let Some(options) = &config.client_options {
+            options.validate()?; config.timeout = Duration::from_millis(options.request_timeout_ms); options.roots()?
+        } else { Vec::new() };
         let origin = Url::parse(&config.origin).map_err(|_| TransportError::InvalidOrigin)?;
         let loopback = matches!(origin.host_str(), Some("localhost" | "127.0.0.1" | "::1"));
         if !(origin.scheme() == "https"
@@ -105,6 +171,7 @@ impl HttpTransport {
             }
             builder = builder.proxy(Proxy::all(proxy).map_err(|_| TransportError::InvalidTrust)?);
         }
+        for cert in extra_roots { builder = builder.add_root_certificate(cert); }
         for pem in config.additional_root_pem {
             let cert = Certificate::from_pem(&pem).map_err(|_| TransportError::InvalidTrust)?;
             builder = builder.add_root_certificate(cert);

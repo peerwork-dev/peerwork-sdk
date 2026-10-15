@@ -421,7 +421,7 @@ fn main() -> ExitCode {
             cli_result(public_catalog_command(verb, rest))
         }
         _ => {
-            let usage = r#"peerwork config resolve [PATH] | observations attest-external-principal|append|catalog-result|install-result|action-result|scorecard CONFIG_JSON_FILE INPUT_JSON_FILE | observations export|attestations|snapshots CONFIG_JSON_FILE; version|capabilities|identity create IDENTITY_STATE_FILE|identity info IDENTITY_STATE_FILE|identity import-legacy-pem IDENTITY_STATE_FILE PROTECTED_PEM_FILE|identity import-legacy-owner-pem OWNER_CONFIG_JSON_FILE PROTECTED_PEM_FILE|identity import-seed-file IDENTITY_STATE_FILE PROTECTED_SEED_FILE|kernel open|prepare|pending|status|submit ORIGIN JOURNAL IDENTITY [COMMAND_FILE|COMMAND_ID] [--allow-loopback-http] [--authority=HEX] [--chunk-file=PATH|--chunk-stdin for prepare]; kernel migrate ORIGIN JOURNAL IDENTITY SOURCE BACKUP --trusted-signer=KEY_ID [--trusted-signer=KEY_ID ...]; secure read|private-read --origin=URL --state-dir=DIR --identity=PATH --workspace=ID [--owner-actor=ID --owner-key=ID] [--authority=HEX]; secure snapshot ORIGIN KERNEL_JOURNAL READ_STATE LIFECYCLE IDENTITY WORKSPACE AUTHORITY OWNER_ACTOR OWNER_KEY [--allow-loopback-http] [--max-replay-artifact-bytes=N]; secure action-submit|action-status|action-retry CONFIG_JSON_FILE ACTION_JSON_FILE|COMMAND_ID; secure action-pending CONFIG_JSON_FILE; secure install-begin CONFIG_JSON_FILE INPUT_JSON_FILE | install-continue CONFIG_JSON_FILE BEGIN_COMMAND_ID | install-pending CONFIG_JSON_FILE; secure owner-prepare|owner-create CONFIG_JSON_FILE INPUT_JSON_FILE | owner-resume CONFIG_JSON_FILE COMMAND_ID | owner-operations CONFIG_JSON_FILE | owner-read CONFIG_JSON_FILE WORKSPACE_ID | owner-attach CONFIG_JSON_FILE INPUT_JSON_FILE | owner-attach-resume CONFIG_JSON_FILE ATTACH_ID | owner-attach-retain CONFIG_JSON_FILE ATTACH_ID EXPECTED_COMMAND_ID | owner-attachments CONFIG_JSON_FILE | owner-kernel-inspect CONFIG_JSON_FILE INPUT_JSON_FILE | owner-kernel-status CONFIG_JSON_FILE ATTACH_ID | owner-kernel-recover CONFIG_JSON_FILE ATTACH_ID COMMAND_ID | owner-stage-inspect CONFIG_JSON_FILE INPUT_JSON_FILE | owner-stage-multipart-inspect|owner-stage-multipart-attach CONFIG_JSON_FILE INPUT_JSON_FILE MATERIAL_JSON_FILE | owner-stage-recover CONFIG_JSON_FILE ATTACH_ID COMMAND_ID | owner-stage-orphan-inspect CONFIG_JSON_FILE INPUT_JSON_FILE | owner-stage-multipart-orphan-inspect|owner-stage-multipart-orphan-attach CONFIG_JSON_FILE INPUT_JSON_FILE MATERIAL_JSON_FILE | owner-stage-orphan-replan CONFIG_JSON_FILE ATTACH_ID ORIGINAL_COMMAND_ID [MATERIAL_JSON_FILE] | owner-object-stage-inspect CONFIG_JSON_FILE INPUT_JSON_FILE ORIGINAL_STAGE_COMMAND_ID OPTIONS_JSON_FILE MATERIAL_JSON_FILE | owner-object-stage-attach CONFIG_JSON_FILE INPUT_JSON_FILE ORIGINAL_STAGE_COMMAND_ID INSPECTED_TS_STATE_DIGEST OPTIONS_JSON_FILE MATERIAL_JSON_FILE | owner-object-stage-recover CONFIG_JSON_FILE ATTACH_ID ORIGINAL_STAGE_COMMAND_ID | owner-object-intent-candidates CONFIG_JSON_FILE SOURCE_INPUT_JSON_FILE | owner-object-intent-inspect CONFIG_JSON_FILE SOURCE_INPUT_JSON_FILE MARKER_SHA256 OPTIONS_JSON_FILE MATERIAL_JSON_FILE | owner-object-intent-attach CONFIG_JSON_FILE SOURCE_INPUT_JSON_FILE MARKER_SHA256 INSPECTED_TS_STATE_DIGEST OPTIONS_JSON_FILE MATERIAL_JSON_FILE | owner-object-intent-recover CONFIG_JSON_FILE ATTACH_ID MARKER_SHA256 | owner-direct-begin-inspect CONFIG_JSON_FILE INPUT_JSON_FILE COMMAND_ID OPTIONS_JSON_FILE MATERIAL_JSON_FILE | owner-direct-begin-attach CONFIG_JSON_FILE INPUT_JSON_FILE COMMAND_ID INSPECTED_TS_STATE_DIGEST OPTIONS_JSON_FILE MATERIAL_JSON_FILE | owner-direct-begin-recover CONFIG_JSON_FILE ATTACH_ID COMMAND_ID | owner-direct-packet-inspect CONFIG_JSON_FILE INPUT_JSON_FILE PACKET_COMMAND_ID OPTIONS_JSON_FILE MATERIAL_JSON_FILE | owner-direct-packet-attach CONFIG_JSON_FILE INPUT_JSON_FILE PACKET_COMMAND_ID INSPECTED_TS_STATE_DIGEST OPTIONS_JSON_FILE MATERIAL_JSON_FILE | owner-direct-packet-recover CONFIG_JSON_FILE ATTACH_ID PACKET_COMMAND_ID | owner-direct-completed-inspect CONFIG_JSON_FILE INPUT_JSON_FILE INSTANCE_ID OPTIONS_JSON_FILE MATERIAL_JSON_FILE | owner-direct-completed-attach CONFIG_JSON_FILE INPUT_JSON_FILE INSTANCE_ID INSPECTED_TS_STATE_DIGEST OPTIONS_JSON_FILE MATERIAL_JSON_FILE | owner-coordination-enable CONFIG_JSON_FILE WORKSPACE_ID INPUT_JSON_FILE | owner-coordination-resume CONFIG_JSON_FILE WORKSPACE_ID ORIGINAL_BEGIN_COMMAND_ID | owner-coordination-operations CONFIG_JSON_FILE WORKSPACE_ID | owner-format-submit CONFIG_JSON_FILE INPUT_JSON_FILE | owner-format-resume CONFIG_JSON_FILE WORKSPACE_ID COMMAND_ID | owner-format-history CONFIG_JSON_FILE WORKSPACE_ID | owner-action-submit|owner-action-status|owner-action-retry|owner-action-pending|owner-private-action-submit|owner-private-action-status|owner-private-action-retry|owner-private-action-pending|owner-install-begin|owner-install-continue|owner-install-pending|owner-private-stage-submit|owner-private-stage-continue|owner-private-stage-list|owner-private-install-begin|owner-private-install-begin-direct|owner-private-install-continue|owner-private-install-list|owner-admit-offer|owner-admit-retry-offer|owner-admit-pending-offers|owner-admit-deliver|owner-admit-retry-delivery|owner-admit-pending-deliveries|owner-private-admit-offer|owner-private-admit-retry-offer|owner-private-admit-pending-offers|owner-private-admit-deliver|owner-private-admit-retry-delivery|owner-private-admit-pending-deliveries CONFIG_JSON_FILE WORKSPACE_ID [INPUT_JSON_FILE|COMMAND_ID]; secure catalog-search CONFIG_JSON_FILE QUERY [AFTER] [LIMIT] | catalog-inspect CONFIG_JSON_FILE LOWERCASE_DIGEST; secure recipient-create|recipient-publish|recipient-pending|recipient-certificate|recipient-update|recipient-retry-update|recipient-pending-updates --origin=URL --state-dir=DIR [--mode=ROTATE|RENEW --expected-certificate-hash=HEX --update-id=ID] [--allow-loopback-http]; secure directory-lookup --origin=URL --state-dir=DIR --actor=ACTOR --key=KEY [--identity=PATH] [--allow-loopback-http]"#;
+            let usage = r#"peerwork config resolve [PATH] | observations attest-external-principal|append|catalog-result|install-result|action-result|scorecard CONFIG_JSON_FILE INPUT_JSON_FILE | observations export|attestations|snapshots CONFIG_JSON_FILE; transport options on kernel/snapshot/read/private-read/recipient/directory: --request-timeout-ms=N --additional-root-pem-file=PATH (repeatable); JSON clients accept transport:{request_timeout_ms:15000,additional_root_pem_files:[]}; version|capabilities|identity create IDENTITY_STATE_FILE|identity info IDENTITY_STATE_FILE|identity import-legacy-pem IDENTITY_STATE_FILE PROTECTED_PEM_FILE|identity import-legacy-owner-pem OWNER_CONFIG_JSON_FILE PROTECTED_PEM_FILE|identity import-seed-file IDENTITY_STATE_FILE PROTECTED_SEED_FILE|kernel open|prepare|pending|status|submit ORIGIN JOURNAL IDENTITY [COMMAND_FILE|COMMAND_ID] [--allow-loopback-http] [--authority=HEX] [--chunk-file=PATH|--chunk-stdin for prepare]; kernel migrate ORIGIN JOURNAL IDENTITY SOURCE BACKUP --trusted-signer=KEY_ID [--trusted-signer=KEY_ID ...]; secure read|private-read --origin=URL --state-dir=DIR --identity=PATH --workspace=ID [--owner-actor=ID --owner-key=ID] [--authority=HEX]; secure snapshot ORIGIN KERNEL_JOURNAL READ_STATE LIFECYCLE IDENTITY WORKSPACE AUTHORITY OWNER_ACTOR OWNER_KEY [--allow-loopback-http] [--max-replay-artifact-bytes=N]; secure action-submit|action-status|action-retry CONFIG_JSON_FILE ACTION_JSON_FILE|COMMAND_ID; secure action-pending CONFIG_JSON_FILE; secure install-begin CONFIG_JSON_FILE INPUT_JSON_FILE | install-continue CONFIG_JSON_FILE BEGIN_COMMAND_ID | install-pending CONFIG_JSON_FILE; secure owner-prepare|owner-create CONFIG_JSON_FILE INPUT_JSON_FILE | owner-resume CONFIG_JSON_FILE COMMAND_ID | owner-operations CONFIG_JSON_FILE | owner-read CONFIG_JSON_FILE WORKSPACE_ID | owner-attach CONFIG_JSON_FILE INPUT_JSON_FILE | owner-attach-resume CONFIG_JSON_FILE ATTACH_ID | owner-attach-retain CONFIG_JSON_FILE ATTACH_ID EXPECTED_COMMAND_ID | owner-attachments CONFIG_JSON_FILE | owner-kernel-inspect CONFIG_JSON_FILE INPUT_JSON_FILE | owner-kernel-status CONFIG_JSON_FILE ATTACH_ID | owner-kernel-recover CONFIG_JSON_FILE ATTACH_ID COMMAND_ID | owner-stage-inspect CONFIG_JSON_FILE INPUT_JSON_FILE | owner-stage-multipart-inspect|owner-stage-multipart-attach CONFIG_JSON_FILE INPUT_JSON_FILE MATERIAL_JSON_FILE | owner-stage-recover CONFIG_JSON_FILE ATTACH_ID COMMAND_ID | owner-stage-orphan-inspect CONFIG_JSON_FILE INPUT_JSON_FILE | owner-stage-multipart-orphan-inspect|owner-stage-multipart-orphan-attach CONFIG_JSON_FILE INPUT_JSON_FILE MATERIAL_JSON_FILE | owner-stage-orphan-replan CONFIG_JSON_FILE ATTACH_ID ORIGINAL_COMMAND_ID [MATERIAL_JSON_FILE] | owner-object-stage-inspect CONFIG_JSON_FILE INPUT_JSON_FILE ORIGINAL_STAGE_COMMAND_ID OPTIONS_JSON_FILE MATERIAL_JSON_FILE | owner-object-stage-attach CONFIG_JSON_FILE INPUT_JSON_FILE ORIGINAL_STAGE_COMMAND_ID INSPECTED_TS_STATE_DIGEST OPTIONS_JSON_FILE MATERIAL_JSON_FILE | owner-object-stage-recover CONFIG_JSON_FILE ATTACH_ID ORIGINAL_STAGE_COMMAND_ID | owner-object-intent-candidates CONFIG_JSON_FILE SOURCE_INPUT_JSON_FILE | owner-object-intent-inspect CONFIG_JSON_FILE SOURCE_INPUT_JSON_FILE MARKER_SHA256 OPTIONS_JSON_FILE MATERIAL_JSON_FILE | owner-object-intent-attach CONFIG_JSON_FILE SOURCE_INPUT_JSON_FILE MARKER_SHA256 INSPECTED_TS_STATE_DIGEST OPTIONS_JSON_FILE MATERIAL_JSON_FILE | owner-object-intent-recover CONFIG_JSON_FILE ATTACH_ID MARKER_SHA256 | owner-direct-begin-inspect CONFIG_JSON_FILE INPUT_JSON_FILE COMMAND_ID OPTIONS_JSON_FILE MATERIAL_JSON_FILE | owner-direct-begin-attach CONFIG_JSON_FILE INPUT_JSON_FILE COMMAND_ID INSPECTED_TS_STATE_DIGEST OPTIONS_JSON_FILE MATERIAL_JSON_FILE | owner-direct-begin-recover CONFIG_JSON_FILE ATTACH_ID COMMAND_ID | owner-direct-packet-inspect CONFIG_JSON_FILE INPUT_JSON_FILE PACKET_COMMAND_ID OPTIONS_JSON_FILE MATERIAL_JSON_FILE | owner-direct-packet-attach CONFIG_JSON_FILE INPUT_JSON_FILE PACKET_COMMAND_ID INSPECTED_TS_STATE_DIGEST OPTIONS_JSON_FILE MATERIAL_JSON_FILE | owner-direct-packet-recover CONFIG_JSON_FILE ATTACH_ID PACKET_COMMAND_ID | owner-direct-completed-inspect CONFIG_JSON_FILE INPUT_JSON_FILE INSTANCE_ID OPTIONS_JSON_FILE MATERIAL_JSON_FILE | owner-direct-completed-attach CONFIG_JSON_FILE INPUT_JSON_FILE INSTANCE_ID INSPECTED_TS_STATE_DIGEST OPTIONS_JSON_FILE MATERIAL_JSON_FILE | owner-coordination-enable CONFIG_JSON_FILE WORKSPACE_ID INPUT_JSON_FILE | owner-coordination-resume CONFIG_JSON_FILE WORKSPACE_ID ORIGINAL_BEGIN_COMMAND_ID | owner-coordination-operations CONFIG_JSON_FILE WORKSPACE_ID | owner-format-submit CONFIG_JSON_FILE INPUT_JSON_FILE | owner-format-resume CONFIG_JSON_FILE WORKSPACE_ID COMMAND_ID | owner-format-history CONFIG_JSON_FILE WORKSPACE_ID | owner-action-submit|owner-action-status|owner-action-retry|owner-action-pending|owner-private-action-submit|owner-private-action-status|owner-private-action-retry|owner-private-action-pending|owner-install-begin|owner-install-continue|owner-install-pending|owner-private-stage-submit|owner-private-stage-continue|owner-private-stage-list|owner-private-install-begin|owner-private-install-begin-direct|owner-private-install-continue|owner-private-install-list|owner-admit-offer|owner-admit-retry-offer|owner-admit-pending-offers|owner-admit-deliver|owner-admit-retry-delivery|owner-admit-pending-deliveries|owner-private-admit-offer|owner-private-admit-retry-offer|owner-private-admit-pending-offers|owner-private-admit-deliver|owner-private-admit-retry-delivery|owner-private-admit-pending-deliveries CONFIG_JSON_FILE WORKSPACE_ID [INPUT_JSON_FILE|COMMAND_ID]; secure catalog-search CONFIG_JSON_FILE QUERY [AFTER] [LIMIT] | catalog-inspect CONFIG_JSON_FILE LOWERCASE_DIGEST; secure recipient-create|recipient-publish|recipient-pending|recipient-certificate|recipient-update|recipient-retry-update|recipient-pending-updates --origin=URL --state-dir=DIR [--mode=ROTATE|RENEW --expected-certificate-hash=HEX --update-id=ID] [--allow-loopback-http]; secure directory-lookup --origin=URL --state-dir=DIR --actor=ACTOR --key=KEY [--identity=PATH] [--allow-loopback-http]"#;
             if matches!(args.as_slice(), [command] if command == "--help" || command == "-h" || command == "help") {
                 println!("{}", serde_json::json!({"status":"HELP", "usage":usage}));
                 ExitCode::SUCCESS
@@ -727,7 +727,7 @@ fn owner_consumer_help(verb: &str) -> Option<serde_json::Value> {
         return Some(serde_json::json!({
             "command": verb,
             "usage": "secure owner-create CONFIG_JSON_FILE INPUT_JSON_FILE",
-            "config_fields": ["origin", "state_dir", "allow_loopback_http (optional, explicit opt-in)", "max_replay_artifact_bytes (optional)", "max_replay_commits (optional, default 102400)"],
+            "config_fields": ["origin", "state_dir", "allow_loopback_http (optional, explicit opt-in)", "max_replay_artifact_bytes (optional)", "max_replay_commits (optional, default 102400)", "transport (optional: request_timeout_ms, additional_root_pem_files)"],
             "input_fields": ["name", "visibility (PUBLIC or PRIVATE)", "structured (optional)", "keep_encrypted_json (optional)", "coordination_version (optional)", "name_utf16 (optional only for an unpaired-surrogate name; mutually exclusive with nonempty name)"],
             "files": "Pass local protected file paths as the two arguments. Help does not open either file or contact a service."
         }));
@@ -1031,7 +1031,21 @@ fn parse_owner_input(bytes: &[u8]) -> Result<SecureOwnerCreateInput, (&'static s
         .map_err(|_| ("INPUT_INVALID", "invalid Owner creation input".to_owned()))
 }
 
+fn transport_arguments(args: &[String]) -> Result<(Vec<String>, peerwork_runtime::transport::TransportOptions), (&'static str, String)> {
+    let mut options = peerwork_runtime::transport::TransportOptions::default(); let mut rest = Vec::new();
+    for arg in args {
+        if let Some(value) = arg.strip_prefix("--request-timeout-ms=") {
+            options.request_timeout_ms = value.parse().map_err(|_| ("CONFIG_INVALID", "invalid transport options".to_owned()))?;
+        } else if let Some(value) = arg.strip_prefix("--additional-root-pem-file=") {
+            options.additional_root_pem_files.push(value.into());
+        } else { rest.push(arg.clone()); }
+    }
+    options.validate().map_err(|_| ("CONFIG_INVALID", "invalid transport options".to_owned()))?;
+    Ok((rest, options))
+}
+
 fn secure_recipient_command(verb: &str, args: &[String]) -> Result<String, (&'static str, String)> {
+    let (filtered, transport) = transport_arguments(args)?; let args = filtered.as_slice();
     let mut origin = None;
     let mut state_dir = None;
     let mut mode = None;
@@ -1063,6 +1077,7 @@ fn secure_recipient_command(verb: &str, args: &[String]) -> Result<String, (&'st
         .ok_or(("USAGE", "--state-dir is required".to_owned()))?;
     let mut config = RecipientEnrollmentConfig::for_state_dir(origin, Path::new(&state_dir));
     config.allow_loopback_http = allow_loopback_http;
+    config.transport = transport;
     let access = SecureRecipientEnrollment::new(config);
     if verb == "recipient-certificate" {
         return access
@@ -1122,6 +1137,7 @@ fn secure_recipient_command(verb: &str, args: &[String]) -> Result<String, (&'st
 }
 
 fn secure_directory_lookup(args: &[String]) -> Result<String, (&'static str, String)> {
+    let (filtered, transport) = transport_arguments(args)?; let args = filtered.as_slice();
     let mut origin = None;
     let mut state_dir = None;
     let mut identity_path = None;
@@ -1157,6 +1173,7 @@ fn secure_directory_lookup(args: &[String]) -> Result<String, (&'static str, Str
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| Path::new(&state_dir).join("identity.state"));
     let config = IdentityDirectoryConfig {
+            transport: transport.clone(),
         origin,
         identity_path,
         kernel_journal_path: Path::new(&state_dir).join("kernel.sqlite"),
@@ -1391,6 +1408,7 @@ fn secure_action_command(verb: &str, args: &[String]) -> Result<String, (&'stati
 }
 
 fn secure_read_profile_command(args: &[String], private_grant: bool) -> Result<String, (&'static str, String)> {
+    let (filtered, transport) = transport_arguments(args)?; let args = filtered.as_slice();
     let mut origin = None;
     let mut state_dir = None;
     let mut identity_path = None;
@@ -1440,6 +1458,7 @@ fn secure_read_profile_command(args: &[String], private_grant: bool) -> Result<S
         }
     }
     let config = SecureReadProfileConfig {
+            transport: transport.clone(),
         origin: origin
             .filter(|v: &String| !v.is_empty())
             .ok_or(("USAGE", "--origin is required".to_owned()))?,
@@ -1481,6 +1500,7 @@ fn secure_read_profile_command(args: &[String], private_grant: bool) -> Result<S
 }
 
 fn secure_read_command(args: &[String]) -> Result<String, (&'static str, String)> {
+    let (filtered, transport) = transport_arguments(args)?; let args = filtered.as_slice();
     let mut values = Vec::new();
     let mut allow_loopback_http = false;
     let mut max_replay_artifact_bytes = 64 * 1024 * 1024;
@@ -1514,6 +1534,7 @@ fn secure_read_command(args: &[String]) -> Result<String, (&'static str, String)
         return Err(("USAGE", "secure read requires origin, four protected paths and explicit workspace/authority/owner pins".into()));
     }
     let access = SecureReadAccess::new(SecureReadConfig {
+            transport: transport.clone(),
         origin: values[0].to_owned(),
         kernel_journal_path: values[1].into(),
         read_state_path: values[2].into(),
@@ -1554,7 +1575,7 @@ fn accepted_json(result: KernelAcceptedResult) -> serde_json::Value {
 }
 
 fn kernel_command(verb: &str, args: &[String]) -> Result<serde_json::Value, String> {
-    let mut args = args.to_vec();
+    let (mut args, transport) = transport_arguments(args).map_err(|(_, message)| message)?;
     let mut allow_loopback = false;
     let mut authority = None;
     let mut chunk_file = None;
@@ -1598,7 +1619,7 @@ fn kernel_command(verb: &str, args: &[String]) -> Result<serde_json::Value, Stri
         return Err("upload chunk is only accepted by kernel prepare".into());
     }
     let access = KernelAccess::new(&args[0], &args[1], &args[2], &[], allow_loopback)
-        .with_authority(authority);
+        .with_authority(authority).with_transport_options(transport);
     let cancel = KernelCancellationToken::new();
     let _interrupts = InterruptMonitor::start(cancel.clone())
         .map_err(|_| "unable to install interrupt handler")?;

@@ -1779,6 +1779,7 @@ mod tests {
         if !structured && coordination.is_none() && !keep_encrypted {
             drop(identity);
             let config = crate::secure_read_access::SecureReadConfig {
+            transport: Default::default(),
                 origin: origin.to_owned(),
                 kernel_journal_path: root.path().join("native-public-proof-discovery.sqlite"),
                 read_state_path: root.path().join("native-public-proof-journal.state"),
@@ -3217,6 +3218,7 @@ mod tests {
         assert!(journal.pending().is_empty());
 
         let profile_config = crate::secure_read_profile::SecureReadProfileConfig {
+            transport: Default::default(),
             origin: origin.clone(),
             state_dir: root.path().to_path_buf(),
             identity_path: root.path().join("native-public-identity.state"),

@@ -95,6 +95,7 @@ fn actual_service_imports_marker_only_object_stage() {
     let initial = if mode == "cleanup-applied" { 2 } else { 1 };
     assert_eq!(count(), initial);
     let config = SecureOwnerCreateConfig {
+            transport: Default::default(),
         origin: origin.into(),
         state_dir: root.join("native"),
         allow_loopback_http: true,

@@ -14,6 +14,8 @@ const MAX_CONFIG_BYTES: usize = 16 * 1024;
 pub struct ClientConfig {
     pub origin: String,
     pub state_dir: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<crate::transport::TransportOptions>,
 }
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ConfigError {
@@ -25,7 +27,7 @@ pub enum ConfigError {
     Unsafe,
     #[error("protected configuration exceeds the 16 KiB limit")]
     Limit,
-    #[error("configuration must contain only a valid HTTPS origin and state_dir")]
+    #[error("configuration must contain a valid HTTPS origin, state_dir and optional transport choices")]
     Invalid,
 }
 impl ConfigError {
@@ -107,6 +109,12 @@ fn read_selected(path: &Path) -> Result<ClientConfig, ConfigError> {
     })?;
     let mut config: ClientConfig =
         serde_json::from_slice(&bytes).map_err(|_| ConfigError::Invalid)?;
+    if let Some(options) = &mut config.transport {
+        options.validate().map_err(|_| ConfigError::Invalid)?;
+        for file in &mut options.additional_root_pem_files {
+            if file.is_relative() { *file = path.parent().ok_or(ConfigError::Location)?.join(&*file); }
+        }
+    }
     let origin = reqwest::Url::parse(&config.origin).map_err(|_| ConfigError::Invalid)?;
     // Same HTTPS-origin predicate as HttpTransport; config discovery has no HTTP override.
     if origin.scheme() != "https"

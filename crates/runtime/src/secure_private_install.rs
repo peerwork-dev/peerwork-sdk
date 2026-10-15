@@ -131,6 +131,7 @@ mod historical_v1_direct_test {
         let workspace_id = source["workspace_id"].as_str().unwrap().to_owned();
         let prior_record_id = source["prior_record_id"].as_str().unwrap().to_owned();
         let config = SecureOwnerCreateConfig {
+            transport: Default::default(),
             origin: origin.clone(),
             state_dir: root.path().join("native-owner"),
             allow_loopback_http: true,
@@ -480,6 +481,7 @@ mod format_two_direct_test {
         let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
         let origin = ready["origin"].as_str().unwrap().to_owned();
         let config = SecureOwnerCreateConfig {
+            transport: Default::default(),
             origin: origin.clone(),
             state_dir: root.path().join("native-owner"),
             allow_loopback_http: true,
@@ -1179,7 +1181,7 @@ fn post_saved_private(
         "/api/workspace/v1/secure/workspaces/{}/commits",
         config.workspace_id
     );
-    let mut transport_config = TransportConfig::new(config.origin.clone());
+    let mut transport_config = TransportConfig::new(config.origin.clone()).with_options(config.transport.clone());
     transport_config.allow_loopback_http = config.allow_loopback_http;
     let transport =
         HttpTransport::new(transport_config).map_err(|_| PrivatePackageInstallError::Transport)?;
@@ -1234,6 +1236,7 @@ impl SecurePrivatePackageInstall {
                 policy_hash: prior.replay().policy_hash().to_owned(),
             };
             let access = SecureReadAccess::new(SecureReadConfig {
+            transport: self.config.transport.clone(),
                 origin: prior.origin().to_owned(),
                 kernel_journal_path: self.config.state_dir.join("kernel.sqlite"),
                 read_state_path: self.config.state_dir.join("private-install-read.state"),
@@ -1318,6 +1321,7 @@ impl SecurePrivatePackageInstall {
         // ring and release this nonblocking store lock before that read.
         drop(lifecycle);
         let access = SecureReadAccess::new(SecureReadConfig {
+            transport: self.config.transport.clone(),
             origin: self.config.origin.clone(),
             kernel_journal_path: self.config.state_dir.join("kernel.sqlite"),
             read_state_path: self.config.state_dir.join("private-install-imported-read.state"),
@@ -1726,7 +1730,7 @@ impl SecurePrivatePackageInstall {
                 {
                     return Err(PrivatePackageInstallError::Plan);
                 }
-                let mut transport_config = TransportConfig::new(self.config.origin.clone());
+                let mut transport_config = TransportConfig::new(self.config.origin.clone()).with_options(self.config.transport.clone());
                 transport_config.allow_loopback_http = self.config.allow_loopback_http;
                 let transport = HttpTransport::new(transport_config)
                     .map_err(|_| PrivatePackageInstallError::Transport)?;
@@ -1941,7 +1945,7 @@ impl SecurePrivatePackageInstall {
                 {
                     return Err(PrivatePackageInstallError::Plan);
                 }
-                let mut transport_config = TransportConfig::new(self.config.origin.clone());
+                let mut transport_config = TransportConfig::new(self.config.origin.clone()).with_options(self.config.transport.clone());
                 transport_config.allow_loopback_http = self.config.allow_loopback_http;
                 let transport = HttpTransport::new(transport_config)
                     .map_err(|_| PrivatePackageInstallError::Transport)?;
@@ -3197,7 +3201,7 @@ impl SecurePrivatePackageInstall {
         {
             return Err(PrivatePackageInstallError::Plan);
         };
-        let mut transport_config = TransportConfig::new(self.config.origin.clone());
+        let mut transport_config = TransportConfig::new(self.config.origin.clone()).with_options(self.config.transport.clone());
         transport_config.allow_loopback_http = self.config.allow_loopback_http;
         let transport = HttpTransport::new(transport_config)
             .map_err(|_| PrivatePackageInstallError::Transport)?;
@@ -3267,6 +3271,7 @@ mod tests {
         let identity_path = state_dir.join("owner.state");
         let identity = KernelIdentity::create(&identity_path).unwrap();
         let config = SecureReadProfileConfig {
+            transport: Default::default(),
             origin: "https://example.invalid/".into(),
             state_dir: state_dir.clone(),
             identity_path: identity_path.clone(),
@@ -3410,6 +3415,7 @@ mod tests {
         let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
         let origin = ready["origin"].as_str().unwrap().to_owned();
         let config = SecureOwnerCreateConfig {
+            transport: Default::default(),
             origin: origin.clone(),
             state_dir: root.path().join("sdk-state"),
             allow_loopback_http: true,
@@ -3623,6 +3629,7 @@ mod tests {
         drop(stage);
         drop(reopened);
         let reopened = SecureOwnerWorkspaceCreate::new(SecureOwnerCreateConfig {
+            transport: Default::default(),
             origin: origin.clone(),
             state_dir: root.path().join("sdk-state"),
             allow_loopback_http: true,
@@ -3680,6 +3687,7 @@ mod tests {
             drop(stage);
             drop(reopened);
             let reopened = SecureOwnerWorkspaceCreate::new(SecureOwnerCreateConfig {
+            transport: Default::default(),
                 origin: origin.clone(),
                 state_dir: root.path().join("sdk-state"),
                 allow_loopback_http: true,
@@ -3996,6 +4004,7 @@ mod tests {
         let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
         let origin = ready["origin"].as_str().unwrap().to_owned();
         let config = SecureOwnerCreateConfig {
+            transport: Default::default(),
             origin: origin.clone(),
             state_dir: root.path().join("sdk-state"),
             allow_loopback_http: true,
@@ -4678,6 +4687,7 @@ mod tests {
         let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
         let origin = ready["origin"].as_str().unwrap().to_owned();
         let owner = SecureOwnerWorkspaceCreate::new(SecureOwnerCreateConfig {
+            transport: Default::default(),
             origin: origin.clone(),
             state_dir: root.path().join("sdk-state"),
             allow_loopback_http: true,

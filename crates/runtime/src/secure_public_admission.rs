@@ -785,7 +785,7 @@ impl SecurePublicAdmission {
             .enable_all()
             .build()
             .map_err(|_| PublicAdmissionRuntimeError::Runtime)?;
-        let mut transport = TransportConfig::new(self.config.origin.clone());
+        let mut transport = TransportConfig::new(self.config.origin.clone()).with_options(self.config.transport.clone());
         transport.allow_loopback_http = self.config.allow_loopback_http;
         let features = self
             .config
@@ -840,7 +840,7 @@ impl SecurePublicAdmission {
             .enable_all()
             .build()
             .map_err(|_| PublicAdmissionRuntimeError::Runtime)?;
-        let mut transport = TransportConfig::new(self.config.origin.clone());
+        let mut transport = TransportConfig::new(self.config.origin.clone()).with_options(self.config.transport.clone());
         transport.allow_loopback_http = self.config.allow_loopback_http;
         let features = self
             .config
@@ -1092,7 +1092,7 @@ impl SecurePublicAdmission {
             .enable_all()
             .build()
             .map_err(|_| PublicAdmissionRuntimeError::Runtime)?;
-        let mut transport = TransportConfig::new(self.config.origin.clone());
+        let mut transport = TransportConfig::new(self.config.origin.clone()).with_options(self.config.transport.clone());
         transport.allow_loopback_http = self.config.allow_loopback_http;
         let features = self
             .config
@@ -1153,6 +1153,7 @@ impl SecurePublicAdmission {
             .and_then(WireValue::as_string)
             .ok_or(PublicAdmissionRuntimeError::Input)?;
         let directory = SecureIdentityDirectory::new(IdentityDirectoryConfig {
+            transport: self.config.transport.clone(),
             origin: self.config.origin.clone(),
             identity_path: self.config.identity_path.clone(),
             kernel_journal_path: self.config.state_dir.join("kernel.sqlite"),
@@ -1293,6 +1294,7 @@ mod tests {
         let ready: serde_json::Value = serde_json::from_str(&ready_line).unwrap();
         let origin = ready["origin"].as_str().unwrap().to_owned();
         let owner = SecureOwnerWorkspaceCreate::new(SecureOwnerCreateConfig {
+            transport: Default::default(),
             origin: origin.clone(),
             state_dir: root.path().join("owner"),
             allow_loopback_http: true,
@@ -1371,6 +1373,7 @@ mod tests {
         .unwrap();
         assert_eq!(offer.status, "PENDING");
         let decision = SecurePublicDecision::new(PublicDecisionConfig {
+            transport: Default::default(),
             origin: origin.clone(),
             state_dir: recipient_dir.clone(),
             identity_path: recipient_dir.join("identity.state"),
@@ -1480,6 +1483,7 @@ mod tests {
             serde_json::from_str(accepted["receipt_canonical_json"].as_str().unwrap()).unwrap();
         let record_id = receipt["effects"][0]["record_id"].as_str().unwrap();
         let recipient_read = SecureReadProfile::new(SecureReadProfileConfig {
+            transport: Default::default(),
             origin: origin.clone(),
             state_dir: recipient_dir.clone(),
             identity_path: recipient_dir.join("identity.state"),
@@ -1581,6 +1585,7 @@ mod tests {
         .unwrap();
         assert_eq!(identity.actor_id(), owner_actor);
         let config = SecureReadProfileConfig {
+            transport: Default::default(),
             origin: origin.clone(),
             state_dir: temp.path().join("native-offer"),
             identity_path,
@@ -1690,6 +1695,7 @@ mod tests {
         );
         drop(imported);
         let recipient_config = crate::secure_public_decision::PublicDecisionConfig {
+            transport: Default::default(),
             origin: origin.clone(),
             state_dir: recipient_dir.clone(),
             identity_path: recipient_identity_path,
@@ -2001,6 +2007,7 @@ mod tests {
         );
         drop(receipt_journal);
         let recipient_profile = SecureReadProfileConfig {
+            transport: Default::default(),
             origin: origin.clone(),
             state_dir: recipient_dir.clone(),
             identity_path: recipient_config.identity_path.clone(),
