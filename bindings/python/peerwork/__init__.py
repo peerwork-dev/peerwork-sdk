@@ -8,6 +8,12 @@ from typing import Literal, NotRequired, TypeAlias, TypedDict, cast
 
 JSONValue: TypeAlias = "None | bool | int | float | str | list[JSONValue] | dict[str, JSONValue]"
 
+
+def _positive_u64_option(name: str, value: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0 or value > 2**64 - 1:
+        raise ValueError(f"{name} must be a positive u64")
+    return value
+
 class _OmittedInstallOption:
     pass
 
@@ -428,7 +434,8 @@ class SecureSnapshotClient:
                  authority: str, owner_actor_id: str, owner_key_id: str, *,
                  required_features: tuple[str, ...] = (),
                  allow_loopback_http: bool = False,
-                 max_replay_artifact_bytes: int = 64 * 1024 * 1024):
+                 max_replay_artifact_bytes: int = 64 * 1024 * 1024,
+                 max_replay_commits: int = 102400):
         if isinstance(max_replay_artifact_bytes, bool) or not isinstance(max_replay_artifact_bytes, int) or max_replay_artifact_bytes <= 0 or max_replay_artifact_bytes > 2**64 - 1:
             raise ValueError("max_replay_artifact_bytes must be a positive u64")
         self._config = {
@@ -444,6 +451,7 @@ class SecureSnapshotClient:
             "required_features": list(required_features),
             "allow_loopback_http": allow_loopback_http,
             "max_replay_artifact_bytes": max_replay_artifact_bytes,
+            "max_replay_commits": _positive_u64_option("max_replay_commits", max_replay_commits),
         }
 
     def _read(self, cancel_handle: KernelCancelHandle | None = None) -> VerifiedSecureWorkspace:
@@ -503,7 +511,8 @@ class SecureReadClient:
                  owner_key_id: str | None = None, authority: str | None = None,
                  required_features: tuple[str, ...] = (),
                  allow_loopback_http: bool = False,
-                 max_replay_artifact_bytes: int = 64 * 1024 * 1024):
+                 max_replay_artifact_bytes: int = 64 * 1024 * 1024,
+                 max_replay_commits: int = 102400):
         if isinstance(max_replay_artifact_bytes, bool) or not isinstance(max_replay_artifact_bytes, int) or max_replay_artifact_bytes <= 0 or max_replay_artifact_bytes > 2**64 - 1:
             raise ValueError("max_replay_artifact_bytes must be a positive u64")
         if (owner_actor_id is None) != (owner_key_id is None):
@@ -519,6 +528,7 @@ class SecureReadClient:
             "required_features": list(required_features),
             "allow_loopback_http": allow_loopback_http,
             "max_replay_artifact_bytes": max_replay_artifact_bytes,
+            "max_replay_commits": _positive_u64_option("max_replay_commits", max_replay_commits),
         }
 
     def _read(self, cancel_handle: KernelCancelHandle | None = None) -> VerifiedSecureWorkspace:
@@ -1142,10 +1152,12 @@ class SecureOwnerWorkspaceClient:
     """
 
     def __init__(self, origin: str, state_dir: str, *, allow_loopback_http: bool = False,
-                 max_replay_artifact_bytes: int = 64 * 1024 * 1024):
+                 max_replay_artifact_bytes: int = 64 * 1024 * 1024,
+                 max_replay_commits: int = 102400):
         self._config = dict(origin=origin, state_dir=state_dir,
             allow_loopback_http=allow_loopback_http,
-            max_replay_artifact_bytes=max_replay_artifact_bytes)
+            max_replay_artifact_bytes=max_replay_artifact_bytes,
+            max_replay_commits=_positive_u64_option("max_replay_commits", max_replay_commits))
 
     def _owner(self, operation: str, *, input_value: dict | str | None = None,
                command_id: str | None = None, workspace_id: str | None = None,
@@ -2601,7 +2613,8 @@ class SecureInvitationClient:
                  owner_actor_id: str, owner_key_id: str, authority: str | None = None, *,
                  allow_loopback_http: bool = False,
                  required_features: tuple[str, ...] = (),
-                 max_replay_artifact_bytes: int = 64 * 1024 * 1024):
+                 max_replay_artifact_bytes: int = 64 * 1024 * 1024,
+                 max_replay_commits: int = 102400):
         if not all((origin, state_dir, workspace_id, owner_actor_id, owner_key_id)):
             raise ValueError("origin, state directory, workspace and owner pins are required")
         if authority is not None and not authority:
@@ -2616,6 +2629,7 @@ class SecureInvitationClient:
                             allow_loopback_http=allow_loopback_http,
                             required_features=list(required_features),
                             max_replay_artifact_bytes=max_replay_artifact_bytes)
+        self._config["max_replay_commits"] = _positive_u64_option("max_replay_commits", max_replay_commits)
 
     def _decision(self, operation: str, *, invite_id: str | None = None,
                   decision: str | None = None,

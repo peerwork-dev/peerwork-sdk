@@ -81,6 +81,8 @@ export interface SecureSnapshotOptions {
   allowLoopbackHttp?: boolean;
   /** Canonical signed artifact bytes retained for replay; default 64 MiB. */
   maxReplayArtifactBytes?: number;
+  /** Maximum restored signed commits; default 102400. */
+  maxReplayCommits?: number;
   signal?: AbortSignal;
 }
 export interface VerifiedSecureWorkspace {
@@ -110,6 +112,8 @@ export interface SecureReadOptions {
   allowLoopbackHttp?: boolean;
   /** Retained canonical signed artifacts; default 64 MiB. */
   maxReplayArtifactBytes?: number;
+  /** Maximum restored signed commits; default 102400. */
+  maxReplayCommits?: number;
   signal?: AbortSignal;
 }
 /** Fetches the latest verified supported active history; failed refresh rejects. */
@@ -122,6 +126,8 @@ export interface SecureOwnerWorkspaceOptions {
   stateDir: string;
   allowLoopbackHttp?: boolean;
   maxReplayArtifactBytes?: number;
+  /** Maximum restored signed commits; default 102400. */
+  maxReplayCommits?: number;
 }
 export interface SecureOwnerWorkspaceInput {
   name: string;
@@ -560,6 +566,8 @@ export interface SecureInvitationOptions extends RecipientEnrollmentOptions {
   authority?: string;
   requiredFeatures?: string[];
   maxReplayArtifactBytes?: number;
+  /** Maximum restored signed commits; default 102400. */
+  maxReplayCommits?: number;
 }
 export interface SecureInvitationSession {
   decide(inviteId: string, decision: 'ACCEPT' | 'DECLINE', options?: { signal?: AbortSignal }): Promise<InvitationDecisionResult>;

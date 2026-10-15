@@ -163,7 +163,7 @@ exports.readSecureSnapshot = async options => {
   const allowed = new Set([
     'origin', 'kernelJournalPath', 'readStatePath', 'lifecyclePath', 'identityPath',
     'workspaceId', 'authority', 'ownerActorId', 'ownerKeyId', 'requiredFeatures',
-    'allowLoopbackHttp', 'maxReplayArtifactBytes', 'signal',
+    'allowLoopbackHttp', 'maxReplayArtifactBytes', 'maxReplayCommits', 'signal',
   ]);
   const input = Object.create(null);
   for (const key of Reflect.ownKeys(options)) {
@@ -188,6 +188,8 @@ exports.readSecureSnapshot = async options => {
   }
   const limit = input.maxReplayArtifactBytes ?? 64 * 1024 * 1024;
   if (!Number.isSafeInteger(limit) || limit <= 0) throw new TypeError('maxReplayArtifactBytes must be a positive safe integer');
+  const maxReplayCommits = input.maxReplayCommits ?? 102400;
+  if (!Number.isSafeInteger(maxReplayCommits) || maxReplayCommits <= 0) throw new TypeError('maxReplayCommits must be a positive safe integer');
   const config = {
     origin: input.origin,
     kernel_journal_path: input.kernelJournalPath,
@@ -201,6 +203,7 @@ exports.readSecureSnapshot = async options => {
     required_features: input.requiredFeatures ?? [],
     allow_loopback_http: input.allowLoopbackHttp ?? false,
     max_replay_artifact_bytes: limit,
+    max_replay_commits: maxReplayCommits,
   };
   const handle = new binding.KernelCancelHandle();
   const signal = input.signal;
@@ -228,7 +231,7 @@ function secureProfileOptions(options) {
   const allowed = new Set([
     'origin', 'stateDir', 'identityPath', 'workspaceId', 'authority',
     'ownerActorId', 'ownerKeyId', 'requiredFeatures', 'allowLoopbackHttp',
-    'maxReplayArtifactBytes', 'signal',
+    'maxReplayArtifactBytes', 'maxReplayCommits', 'signal',
   ]);
   const input = Object.create(null);
   for (const key of Reflect.ownKeys(options)) {
@@ -258,6 +261,8 @@ function secureProfileOptions(options) {
   }
   const limit = input.maxReplayArtifactBytes ?? 64 * 1024 * 1024;
   if (!Number.isSafeInteger(limit) || limit <= 0) throw new TypeError('maxReplayArtifactBytes must be a positive safe integer');
+  const maxReplayCommits = input.maxReplayCommits ?? 102400;
+  if (!Number.isSafeInteger(maxReplayCommits) || maxReplayCommits <= 0) throw new TypeError('maxReplayCommits must be a positive safe integer');
   const config = {
     origin: input.origin,
     state_dir: input.stateDir,
@@ -269,6 +274,7 @@ function secureProfileOptions(options) {
     required_features: input.requiredFeatures ?? [],
     allow_loopback_http: input.allowLoopbackHttp ?? false,
     max_replay_artifact_bytes: limit,
+    max_replay_commits: maxReplayCommits,
   };
   return { config, signal: input.signal };
 }
@@ -371,6 +377,7 @@ exports.openSecureOwnerWorkspaces = options => {
     state_dir: options.stateDir,
     allow_loopback_http: options.allowLoopbackHttp ?? false,
     max_replay_artifact_bytes: options.maxReplayArtifactBytes ?? 64 * 1024 * 1024,
+    max_replay_commits: checkedMaxReplayCommits(options.maxReplayCommits),
   };
   const invoke = async (operation, input, commandId, workspaceId, signal) => {
     const handle = new binding.KernelCancelHandle();
@@ -780,6 +787,12 @@ exports.openSecureOwnerWorkspaces = options => {
   });
 };
 
+function checkedMaxReplayCommits(value) {
+  const limit = value ?? 102400;
+  if (!Number.isSafeInteger(limit) || limit <= 0) throw new TypeError('maxReplayCommits must be a positive safe integer');
+  return limit;
+}
+
 /** Anonymous catalog metadata is advisory; exact digest inspection checks bytes, not publisher trust. */
 exports.openPublicCatalog = options => {
   if (!options || typeof options.origin !== 'string' || !options.origin) {
@@ -959,6 +972,7 @@ exports.openSecureInvitation = options => {
     allow_loopback_http: options.allowLoopbackHttp ?? false,
     required_features: options.requiredFeatures ?? [],
     max_replay_artifact_bytes: options.maxReplayArtifactBytes ?? 64 * 1024 * 1024,
+    max_replay_commits: checkedMaxReplayCommits(options.maxReplayCommits),
   };
   const call = admissionCall('recipient', config);
   return Object.freeze({
