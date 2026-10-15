@@ -219,6 +219,8 @@ pub struct HistoricalPackageStageOrphanInventory {
 
 #[derive(Debug, Error)]
 pub enum HistoricalOwnerAttachError {
+    #[error("selected replay resource limit exceeded")]
+    ResourceLimit,
     #[error("historical Owner attachment input is invalid")]
     Input,
     #[error("protected legacy Owner source is unavailable or changed")]
@@ -262,6 +264,7 @@ pub enum HistoricalOwnerAttachError {
 impl HistoricalOwnerAttachError {
     pub fn code(&self) -> &'static str {
         match self {
+            Self::ResourceLimit => "RESOURCE_LIMIT",
             Self::Input => "INPUT_INVALID",
             Self::SourceChanged => "SOURCE_CHANGED",
             Self::SourceUnresolved => "SOURCE_UNRESOLVED",
@@ -288,8 +291,11 @@ impl HistoricalOwnerAttachError {
 }
 
 impl From<crate::secure_read_access::SecureReadAccessError> for HistoricalOwnerAttachError {
-    fn from(_: crate::secure_read_access::SecureReadAccessError) -> Self {
-        Self::Verification
+    fn from(error: crate::secure_read_access::SecureReadAccessError) -> Self {
+        match error {
+            crate::secure_read_access::SecureReadAccessError::ResourceLimit => Self::ResourceLimit,
+            _ => Self::Verification,
+        }
     }
 }
 
@@ -4964,11 +4970,11 @@ impl SecureHistoricalOwnerAttach {
         drop(store);
         let config = self.attached_profile_config_internal(workspace_id, &row.visibility, true)?;
         let profile = SecureReadProfile::new(config);
-        let json = profile.read_latest_json_with_cancel(cancel).map_err(|_| {
+        let json = profile.read_latest_json_with_cancel(cancel).map_err(|error| {
             if cancel.is_cancelled() {
                 HistoricalOwnerAttachError::Cancelled
             } else {
-                HistoricalOwnerAttachError::Verification
+                HistoricalOwnerAttachError::from(error)
             }
         })?;
         profile.with_pinned_replay(cancel, |replayed| {

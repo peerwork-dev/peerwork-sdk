@@ -192,13 +192,17 @@ impl SecureOwnerCreateError {
 }
 
 impl From<SecureReadAccessError> for SecureOwnerCreateError {
-    fn from(_: SecureReadAccessError) -> Self {
-        Self::Verification
+    fn from(error: SecureReadAccessError) -> Self {
+        match error {
+            SecureReadAccessError::ResourceLimit => Self::ResourceLimit,
+            _ => Self::Verification,
+        }
     }
 }
 
 fn map_attach_error(error: HistoricalOwnerAttachError) -> SecureOwnerCreateError {
     match error {
+        HistoricalOwnerAttachError::ResourceLimit => SecureOwnerCreateError::ResourceLimit,
         HistoricalOwnerAttachError::NotFound => SecureOwnerCreateError::NotFound,
         HistoricalOwnerAttachError::PendingPackageStageUnresolved =>
             SecureOwnerCreateError::PendingPackageStageUnresolved,
