@@ -31,8 +31,10 @@ with tempfile.TemporaryDirectory(prefix="t076-wal-barrier-") as temp:
     positive = run(root / "positive", "positive", True)
     wrong_backup = run(root / "wrong-backup", "wrong-backup", False)
     short_payload = run(root / "short-payload", "short-payload", False)
+    prearm_headers = run(root / "prearm-headers", "prearm-headers", False)
     summary = {"result": "PASS", "scope": "own synchronous Python child; Linux x86_64 syscall metadata only",
                "positive": positive, "wrong_backup_negative": wrong_backup,
                "short_payload_negative": short_payload,
-               "write_buffers_read": False, "processes_traced": 3}
+               "prearm_headers_negative": prearm_headers,
+               "write_buffers_read": False, "processes_traced": 4}
     print(json.dumps(summary, separators=(",", ":")))

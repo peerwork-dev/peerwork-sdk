@@ -56,6 +56,7 @@ def run_child(argv, env, backup_path, wal_path, stop_at_payload, timeout=20):
         raise RuntimeError("procfs PID view does not match the own-child tracer namespace")
 
     events = []
+    child_reaped = False
     armed = False
     wal_header_ok = False
     frame_header_ok = False
@@ -66,11 +67,14 @@ def run_child(argv, env, backup_path, wal_path, stop_at_payload, timeout=20):
     signal.alarm(timeout)
     try:
         child, status = os.waitpid(out, 0)
+        child_reaped = os.WIFEXITED(status) or os.WIFSIGNALED(status)
         assert child == out and os.WIFSTOPPED(status)
         ptrace(PTRACE_SETOPTIONS, out, 0, PTRACE_O_TRACESYSGOOD | PTRACE_O_EXITKILL)
         while True:
             ptrace(PTRACE_SYSCALL, out, 0, 0)
             child, status = os.waitpid(out, 0)
+            if os.WIFEXITED(status) or os.WIFSIGNALED(status):
+                child_reaped = True
             assert child == out
             if os.WIFEXITED(status):
                 return {"pid": out, "exit_code": os.WEXITSTATUS(status), "boundary_reached": hit,
@@ -107,6 +111,7 @@ def run_child(argv, env, backup_path, wal_path, stop_at_payload, timeout=20):
                                        "prior_frame_header": True})
                         os.kill(out, signal.SIGKILL)
                         child, status = os.waitpid(out, 0)
+                        child_reaped = True
                         assert child == out and os.WIFSIGNALED(status) and os.WTERMSIG(status) == signal.SIGKILL
                         return {"pid": out, "exit_code": -signal.SIGKILL, "boundary_reached": True,
                                 "armed_by_backup_fsync": armed, "events": events,
@@ -118,6 +123,10 @@ def run_child(argv, env, backup_path, wal_path, stop_at_payload, timeout=20):
                 if pending and pending[0] == "fsync":
                     matched = pending[2] == backup_path
                     if matched and result == 0:
+                        # Only writes after the selected durable backup may
+                        # establish the WAL/frame-header prefix.
+                        wal_header_ok = False
+                        frame_header_ok = False
                         armed = True
                     events.append({"phase": "exit", "syscall": "fsync", "fd": pending[1],
                                    "exact_backup": matched, "return": result, "armed": armed})
@@ -135,8 +144,10 @@ def run_child(argv, env, backup_path, wal_path, stop_at_payload, timeout=20):
     finally:
         signal.alarm(0)
         signal.signal(signal.SIGALRM, previous)
-        try:
-            os.kill(out, signal.SIGKILL)
-            os.waitpid(out, 0)
-        except (ProcessLookupError, ChildProcessError):
-            pass
+        if not child_reaped:
+            try:
+                os.kill(out, signal.SIGKILL)
+                os.waitpid(out, 0)
+                child_reaped = True
+            except (ProcessLookupError, ChildProcessError):
+                pass

@@ -3,10 +3,11 @@ import os
 import sys
 
 backup, wal, mode = sys.argv[1:]
-with open(backup, "wb") as stream:
-    stream.write(b"public backup fixture")
-    stream.flush()
-    os.fsync(stream.fileno())
+if mode != "prearm-headers":
+    with open(backup, "wb") as stream:
+        stream.write(b"public backup fixture")
+        stream.flush()
+        os.fsync(stream.fileno())
 
 if mode == "wrong-backup":
     with open(backup + ".other", "wb") as stream:
@@ -21,6 +22,11 @@ fd = os.open(wal, os.O_CREAT | os.O_RDWR | os.O_TRUNC, 0o600)
 try:
     os.pwrite(fd, b"H" * 32, 0)
     os.pwrite(fd, b"F" * 24, 32)
+    if mode == "prearm-headers":
+        with open(backup, "wb") as stream:
+            stream.write(b"public backup fixture")
+            stream.flush()
+            os.fsync(stream.fileno())
     length = 511 if mode == "short-payload" else 512
     os.pwrite(fd, b"P" * length, 56)
 finally:
