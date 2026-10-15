@@ -1,0 +1,21 @@
+# Completed staged PACKAGE complementary dispositions
+
+The two previously unverified native dispositions passed on test source `e6e08d57408e4942c5cb8e6daa51c4e6c282fa2e`, based on accepted main `8538059a93d8580cd043eeb6855e2a0217d5e7d6`: **BEGIN-applied response loss** and **END-before-POST**. No product correction was needed. Only the fixture mode allowlists and runtime test module changed; the complete runtime prefix before `#[cfg(test)] mod tests` is byte-identical to main, SHA-256 `e40268396846204ccf85142d63a1148600bd20b335875198dcefaefa2ed98eca`.
+
+| Owned invocation | Actual result |
+| --- | --- |
+| Offline/locked Rust1.89 `cargo test -p peerwork-runtime --lib --no-run`, 22854 | exit0, 1m11s; stopped guidance cache copied successfully in 66351, then 22 owned local core/runtime outputs invalidated; dependency cache retained |
+| Genuine BEGIN-applied setup 89352 | exit0; reviewed2, one source stage3, selected BEGIN4 already accepted, current SEEDING4; compiler/proof equality |
+| Genuine END-before setup 73010 | exit0; reviewed2, source stage3, selected END5 held before POST, current SEEDING4; compiler/proof equality |
+| Native BEGIN-applied 94540 | PASS1/1, 65.01s |
+| Native END-before 43354 | PASS1/1, 56.98s |
+
+Both native runs used the same owned `.build-target/debug/deps/peerwork_runtime-9edbda4ad04cb6ae`, SHA-256 `d8a3611381c8368af9c8187a0fecec6f61e1f14d452c928e23f5edfdf66585d3`. Exact command: `env -u PEERWORK_HTTP_PROXY PEERWORK_REFERENCE_ROOT=/root/workdir/message/.worktrees/e2ee-main-integration-20261006 PEERWORK_NODE_BIN=/root/workdir/message/.tools/node-v24.20.0-linux-x64/bin/node PEERWORK_STAGED_SOURCE_INSTALL_MODE=<mode> .build-target/debug/deps/peerwork_runtime-9edbda4ad04cb6ae secure_owner_attach::tests::actual_service_imports_staged_package_source_install --exact --nocapture`. Modes are `direct-staged-package-begin-applied-loss` and `direct-staged-package-end-before-post`; the existing public f828 client, staging and supported interruption hooks created all state.
+
+Each native test preserves the seven pre-effect staged source/options/material refusals, full inspected digest and reviewed checkpoint, PREPARED interruption, complete original-source removal, fresh protected reload, restricted history and selected-command conflict checks. Recovery authenticates the original selected packet and saved IDs; the pre-send END reuses its protected exact request. Both reach signed ACTIVE instance/protocol readback with exactly **five accepted commits**, **one original package-stage effect**, and exactly one selected-command commit, then repeat recovery without another effect. These are accepted-effect counts, **not HTTP request counters**; no zero-restage-request claim is made. The native harness removes its temporary state after these assertions. The retained public setup fixtures are separate instances/IDs and bind the starting dispositions, not the native runs' identities.
+
+Preserved first setup failure: the default restricted tool context exited1 before service READY because the reference bridge's `spawnSync git` returned `EPERM`. No SDK/importer assertion or HTTP mutation ran. Its log and service stderr remain retained; the fresh host-context setup above passed without source/policy changes. Both native gates ran once in that authorized host context. Existing service kill/wait paths completed; no matching reference process remained after the final test.
+
+Evidence is under `.test-data/staged-package-complementary/`: `invocations.json` records commands/environment and terminals; `setup-summary.json` records the separately retained selected public IDs; `terminal-summary.json` binds native assertions and binary. The **33-file** `evidence-manifest.json`, SHA-256 `e5c1ac3d4292ff095b31ee5a563e16284823213bfa7af49c10de93b3a402f017`, includes exact source inputs, logs, cache invalidation, binary, retained service DBs **and WALs**, and protected fixture state/options/material hashes. No private material is printed in the report.
+
+Scope is native single-part staged PACKAGE recovery for exactly these two dispositions. It adds no later-history, multipart, installed Python/Node/CLI, platform, publication or natural-Agent claim; workflow compliance is unverified. Existing opposite BEGIN/END, PAGE and completed-map evidence remains separate and unchanged.

@@ -12809,7 +12809,8 @@ mod tests {
     fn actual_service_imports_staged_package_source_install() {
         let mode = std::env::var("PEERWORK_STAGED_SOURCE_INSTALL_MODE")
             .unwrap_or_else(|_| "direct-staged-package-begin-before-post".into());
-        assert!(["direct-staged-package-begin-before-post", "direct-staged-package-end-applied-loss",
+        assert!(["direct-staged-package-begin-before-post", "direct-staged-package-begin-applied-loss",
+            "direct-staged-package-end-before-post", "direct-staged-package-end-applied-loss",
             "direct-staged-package-page-before-post", "direct-staged-package-page-applied-loss"].contains(&mode.as_str()));
         exercise_selected_direct_install_source(&mode);
     }
@@ -13070,6 +13071,13 @@ mod tests {
             assert_eq!(protected_bytes.as_slice(), source_before.as_slice(), "A's full map/packet provenance remains untouched");
         }
         let final_count = count();
+        if ["direct-staged-package-begin-applied-loss", "direct-staged-package-end-before-post"].contains(&mode.as_str()) {
+            assert_eq!(installed["structure_status"], "ACTIVE");
+            assert_eq!(final_count as u64, fixture["begin_predecessor"]["sequence"].as_u64().unwrap() + 2);
+            let staged: i64 = oracle.query_row("SELECT count(*) FROM secure_commits WHERE workspace_id=?1 AND action_id='secure.protocol-package.stage'",
+                [workspace], |row| row.get(0)).unwrap();
+            assert_eq!(staged as u64, fixture["source_parts"].as_u64().unwrap());
+        }
         if ["direct-object-begin-applied-loss", "direct-object-end-before-post"].contains(&mode.as_str()) {
             assert_eq!(installed["structure_status"], "ACTIVE");
             assert_eq!(final_count as u64, fixture["begin_predecessor"]["sequence"].as_u64().unwrap() + 2);
