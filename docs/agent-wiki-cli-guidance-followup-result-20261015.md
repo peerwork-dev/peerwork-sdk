@@ -1,0 +1,20 @@
+# Wiki CLI-guidance follow-up
+
+**Business: ACHIEVED. Workflow: followed after recovery, with observable deviations; not a pristine first-attempt pass.** The Agent imported the supplied Owner, created the PRIVATE structured workspace, installed the selected f828 Wiki package into a fresh instance, and verified exactly one welcome note with the requested title/body, imported author, selected instance and compiled protocol digest. The accepted receipt's record ID matches the final verified Owner read at ACTIVE sequence4.
+
+One authorized capture48100 exited0 in110.323541s (55events/22completed commands; no deadline expiry). Prompt90046381,18policy settings,480s budget, author/material/drop inputs and no runner-selected SDK proxy stayed unchanged; no hints or retry sampling. Prior3627/24127 failures remain unchanged. Harness `024da84b4eb5b992b7c011edd18f2916307f1657` used the explicitly source/hash-bound **task-built CLI/docs overlay**: product `181b2142aedfa930ccbd1fea8e2779d9eba8802e`, debug CLI `0de2290a8f4b3bb20d0e63851656bf197826b9d25480ca541e8ea92edfb0173c`, entry1f0cbc00 and README93ba250c. Runtime sources match baseline8900; its584-source/14-artifact manifest remains separate. This is not a new optimized installed release cohort or platform/publication pass.
+
+The first wiki.create returned SERVER_REJECTED/HTTP502 after the fixture dropped its response following originHTTP200. The Agent discovered the saved command, obtained ACCEPTED, then redundantly retried that **same** command. Control retains four commits and exactly one accepted wiki.create. No new action ID or duplicate effect appeared; the drop metadata is not an all-HTTP request counter. Final signed-read extraction corrected an initial record-shape mistake without another action.
+
+Remaining deviations and follow-up scope:
+
+- Two help usage errors; `owner-create --help` is not supported by this profile.
+- Initial create proxy omission recovered after TRANSPORT_FAILED; a later read omission recovered after VERIFICATION_FAILED. Consistent explicit proxy selection per process remains a guidance issue.
+- The same-command retry after ACCEPTED was redundant; signed-record extraction needed correction to payload/schema_ref.
+- No full material/PEM dump was observed, but actor-created `/tmp` input/action/read files had no explicit chmod/umask in the trace. **Secure temporary-file handling is unverified.** Retaining read copies as0600 does not establish their original protection.
+
+Independent Luna assessment SHA `3d87100614d0990dc114dbdb5b84d90cf64a587b1d237ed5cf966076c51ca8f8` and raw evidence are under `/root/workdir/message/.test-data/agent-wiki-cli-guidance-20261015-ready/observer/agent-attempt-1`. Raw SHA `e5bbe28df1e3806c8af6384f18120e0c74d014e0cf49d9433997c1bb629cb705`; process9545aeb7/effectsc042bf5c. `observer/trial-evidence.json` binds51 existing files (`5dec44cc9845a495b543a584be22199e2122c5d4dfa1c772c1aa1d35b039a630`), including raw7, assessment, source/overlay pins, drop, Control SQLite+WAL and the actual actor-produced final read (2ba2ccab), retained without a new API call. SHM is ephemeral. Service1256151 exited-15 (verified kernel status15), setup48707 terminal130; both processes are absent and stderr empty. Shutdown SHA45b373ae.
+
+`observer/acquisition-scorecard-row.json` (`0de5322ab606c0eb122fb83275be166d8cdce390c9ca9680cb936a154022c5f8`) is a **proposal only** for the existing synthetic-exclusion section. Root plans/ledger were not edited; external16 metrics and prior rows remain unchanged. Time-to-first-value is unmeasured; process duration is not a latency benchmark.
+
+Existing publication access note: root `analysis/sdk-native-20261012/STATUS.md:296,379` records the pending GitHub connection for peerwork-dev/peerwork-sdk and last2026-10-14 discovery as installed=false. No access/auth probe was repeated, and this is not evidence that no usable credentials exist. Actual platform/CI/publication prerequisites remain separate; no new actor or rebuild is planned here.

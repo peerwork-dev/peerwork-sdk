@@ -9,8 +9,8 @@ import signal
 import subprocess
 import sys
 
-if len(sys.argv) != 3:
-    raise SystemExit("usage: prepare_private_wiki_task.py ACCEPTED_8900_ROOTFS NEW_TASK_DIRECTORY")
+if len(sys.argv) not in (3, 5):
+    raise SystemExit("usage: prepare_private_wiki_task.py ACCEPTED_8900_ROOTFS NEW_TASK_DIRECTORY [GUIDANCE_SOURCE_WORKTREE TASK_BUILT_CLI]")
 rootfs_lexical = Path(sys.argv[1])
 assert rootfs_lexical.name == "rootfs"
 artifact_root = rootfs_lexical.parent.resolve(strict=True)
@@ -31,6 +31,38 @@ for rel, expected in {
     "crates/cli/src/main.rs":"30726c49d865fa91e7d3f5e67bd8db7074ada3bafe27eecf3be8d6e42f3c7818",
 }.items(): assert sha(source / rel) == expected
 assert len((artifact_root / "artifact-manifest.sha256").read_text().splitlines()) == 14
+subprocess.run(["sha256sum", "-c", "--status", str(artifact_root / "artifact-manifest.sha256")], cwd=artifact_root, check=True)
+
+# An explicit task-built CLI overlay is independent of the immutable optimized
+# baseline. Only the reviewed CLI/entry/README source changes are permitted.
+entry_source, readme_source = source / "docs/agent-entry.md", source / "README.md"
+cli_overlay = None
+if len(sys.argv) == 5:
+    guidance = Path(sys.argv[3]).resolve(strict=True)
+    selected_cli = Path(sys.argv[4]).resolve(strict=True)
+    product = "181b2142aedfa930ccbd1fea8e2779d9eba8802e"
+    expected = {
+        "crates/cli/src/main.rs":"a0169e7ede787a9996512f992d9b0cbc347a2879c2de7f73b3517bf706b8c937",
+        "docs/agent-entry.md":"1f0cbc003bc47a4f5128eb1139549c4c6f438481176fcebb95836e3477417105",
+        "README.md":"93ba250ce1ad440c416d4db1a03710ef11ad790308ac66a0c397e670787f0061",
+    }
+    for rel, digest in expected.items():
+        assert sha(guidance / rel) == digest
+        blob = subprocess.check_output(["git", "-C", str(guidance), "show", product + ":" + rel])
+        assert hashlib.sha256(blob).hexdigest() == digest
+    changed = subprocess.check_output(["git", "-C", str(guidance), "diff", "--name-only",
+        "8900e8066ef8d07117a3b85771e831e4f84ffba8", product, "--",
+        "crates", "bindings", "assets", "third_party", ".cargo", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "build.rs"], text=True).splitlines()
+    assert changed == ["crates/cli/src/main.rs"]
+    subprocess.run(["git", "-C", str(guidance), "diff", "--quiet", product, "--",
+        "crates", "bindings", "assets", "third_party", ".cargo", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "build.rs"], check=True)
+    assert sha(selected_cli) == "0de2290a8f4b3bb20d0e63851656bf197826b9d25480ca541e8ea92edfb0173c"
+    cli = selected_cli
+    entry_source, readme_source = guidance / "docs/agent-entry.md", guidance / "README.md"
+    cli_overlay = {"kind":"task-built-guidance-overlay-not-release-cohort",
+        "source_commit":product, "baseline_runtime_source":"8900e8066ef8d07117a3b85771e831e4f84ffba8",
+        "cli_source_sha256":expected["crates/cli/src/main.rs"], "binary_sha256":sha(cli),
+        "entry_sha256":expected["docs/agent-entry.md"], "readme_sha256":expected["README.md"]}
 
 reference = Path("/root/workdir/message/.worktrees/e2ee-main-integration-20261006").resolve(strict=True)
 assert subprocess.check_output(["git", "-C", str(reference), "rev-parse", "HEAD"], text=True).strip() == "f828b6c50a0a58d1e718af90f653b214adcc3328"
@@ -47,8 +79,8 @@ for rel in ("docs/agent-entry.md",):
     assert sha(source / rel) == "f4c00d82563130c7afeb0a7e02100008e8eecbbb6f522753f6dcfa9e70bb9131"
 assert sha(source / "README.md") == "6ec287637283b6ad46672891fb3d90758eb160602d51e4de87bf69e290cb7f0a"
 shutil.copyfile(cli, actor / "peerwork"); (actor / "peerwork").chmod(0o500)
-shutil.copyfile(source / "docs/agent-entry.md", actor / "AGENT_ENTRY.md"); (actor / "AGENT_ENTRY.md").chmod(0o400)
-shutil.copyfile(source / "README.md", actor / "CLIENT_README.md"); (actor / "CLIENT_README.md").chmod(0o400)
+shutil.copyfile(entry_source, actor / "AGENT_ENTRY.md"); (actor / "AGENT_ENTRY.md").chmod(0o400)
+shutil.copyfile(readme_source, actor / "CLIENT_README.md"); (actor / "CLIENT_README.md").chmod(0o400)
 for rel in ("protocols/wiki/package.json", "protocols/wiki/protocol.source.json", "protocols/wiki/release.lock.json", "protocols/wiki/README.md", "protocols/wiki/LICENSE", "protocols/wiki/fixtures/authorized-interaction.json", "protocols/wiki/fixtures/unauthenticated-rejected.json"):
     src = reference / rel
     dst = selected / rel.removeprefix("protocols/wiki/")
@@ -148,7 +180,7 @@ try:
     (actor / "ENVIRONMENT.json").write_text(json.dumps(environment, indent=2) + "\n")
     (actor / "ENVIRONMENT.json").chmod(0o400)
     fixture = {"state":"READY", "source_commit":"f828b6c50a0a58d1e718af90f653b214adcc3328",
-      "artifact_root":str(artifact_root), "cli_sha256":sha(cli), "protocol_root_digest":proof["root_package_digest"],
+      "artifact_root":str(artifact_root), "cli_sha256":sha(cli), "cli_overlay":cli_overlay, "protocol_root_digest":proof["root_package_digest"],
       "protocol_source_digest":proof["source_digest"], "protocol_digest":proof["protocol_digest"],
       "control_database":str(operator / "control.sqlite"),
       "workspace_created_by_setup":False, "identity_created_by_setup":False,

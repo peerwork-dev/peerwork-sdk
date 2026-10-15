@@ -24,7 +24,24 @@ fixture = json.loads((observer / "fixture.json").read_text())
 assert fixture.get("state") == "READY" and fixture.get("state_leaf_absent") is True
 assert not (actor / "native-state").exists()
 assert "PEERWORK_HTTP_PROXY" not in os.environ
-assert hashlib.sha256((actor / "peerwork").read_bytes()).hexdigest() == fixture["cli_sha256"] == "4271a27c7c713210a5fe058a6f7357b93964b470a7a5ca8199e1083beaf2b3fc"
+cli_overlay = fixture.get("cli_overlay")
+if cli_overlay is None:
+    expected_cli = "4271a27c7c713210a5fe058a6f7357b93964b470a7a5ca8199e1083beaf2b3fc"
+    expected_entry = "f4c00d82563130c7afeb0a7e02100008e8eecbbb6f522753f6dcfa9e70bb9131"
+    expected_readme = "6ec287637283b6ad46672891fb3d90758eb160602d51e4de87bf69e290cb7f0a"
+else:
+    assert cli_overlay == {"kind":"task-built-guidance-overlay-not-release-cohort",
+        "source_commit":"181b2142aedfa930ccbd1fea8e2779d9eba8802e",
+        "baseline_runtime_source":"8900e8066ef8d07117a3b85771e831e4f84ffba8",
+        "cli_source_sha256":"a0169e7ede787a9996512f992d9b0cbc347a2879c2de7f73b3517bf706b8c937",
+        "binary_sha256":"0de2290a8f4b3bb20d0e63851656bf197826b9d25480ca541e8ea92edfb0173c",
+        "entry_sha256":"1f0cbc003bc47a4f5128eb1139549c4c6f438481176fcebb95836e3477417105",
+        "readme_sha256":"93ba250ce1ad440c416d4db1a03710ef11ad790308ac66a0c397e670787f0061"}
+    expected_cli, expected_entry, expected_readme = (cli_overlay[key] for key in
+        ("binary_sha256", "entry_sha256", "readme_sha256"))
+assert hashlib.sha256((actor / "peerwork").read_bytes()).hexdigest() == fixture["cli_sha256"] == expected_cli
+assert hashlib.sha256((actor / "AGENT_ENTRY.md").read_bytes()).hexdigest() == expected_entry
+assert hashlib.sha256((actor / "CLIENT_README.md").read_bytes()).hexdigest() == expected_readme
 assert (actor / "ENVIRONMENT.json").is_file() and (actor / "selected-source/protocol.source.json").is_file()
 inventory = json.loads(subprocess.check_output([str(codex), "mcp", "list", "--json", "-c", "mcp_servers={}"], text=True))
 assert inventory == []
