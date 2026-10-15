@@ -91,12 +91,19 @@ pub fn resolve_install_protocol_with_available(
     Ok((resolved, digest, Some(proof)))
 }
 
+fn policy_field_mut<'a>(value: &'a mut WireValue, key: &str) -> Result<&'a mut WireValue, DirectInstallError> {
+    let WireValue::Object(fields) = value else { return Err(DirectInstallError::Invalid); };
+    fields.iter_mut().find(|(name, _)| name.iter().copied().eq(key.encode_utf16()))
+        .map(|(_, value)| value).ok_or(DirectInstallError::Invalid)
+}
+
 pub struct PublicPackageCompilation {
     package_digest: String,
     package_id: String,
     package_version: String,
     protocol_digest: String,
     manifest_wire: Vec<u8>,
+    schema_order: Vec<Vec<u16>>,
     composition: Option<WireValue>,
 }
 impl PublicPackageCompilation {
@@ -114,6 +121,26 @@ impl PublicPackageCompilation {
     }
     pub fn manifest_wire(&self) -> &[u8] {
         &self.manifest_wire
+    }
+    /// Restore only compiler schema enumeration for policy construction.
+    /// Object canonical bytes/digests remain identical; signed array order does not.
+    pub(crate) fn restore_policy_schema_order(&self, added: &mut [WireValue]) -> Result<(), DirectInstallError> {
+        let protocol = added.iter_mut().find(|row| row.get("kind").and_then(WireValue::as_string).as_deref() == Some("protocols"))
+            .ok_or(DirectInstallError::Invalid)?;
+        let value = policy_field_mut(protocol, "value")?;
+        for key in ["manifest", "resolved_manifest"] {
+            let manifest = policy_field_mut(value, key)?;
+            let schemas = policy_field_mut(manifest, "record_schemas")?;
+            let WireValue::Object(fields) = schemas else { return Err(DirectInstallError::Invalid); };
+            if fields.len() != self.schema_order.len() { return Err(DirectInstallError::Invalid); }
+            let mut seen = HashSet::new();
+            let ordered = self.schema_order.iter().map(|name| {
+                if !seen.insert(name.clone()) { return Err(DirectInstallError::Invalid); }
+                fields.iter().find(|(key, _)| key == name).cloned().ok_or(DirectInstallError::Invalid)
+            }).collect::<Result<Vec<_>, _>>()?;
+            *fields = ordered;
+        }
+        Ok(())
     }
     pub(crate) fn composition(&self) -> Option<&WireValue> {
         self.composition.as_ref()
@@ -244,6 +271,7 @@ pub(crate) fn compile_package_closure_with_bindings_at_ceiling(
         package_version,
         protocol_digest: compiled.protocol_digest,
         manifest_wire,
+        schema_order: compiled.schema_order,
         composition: compiled.composition,
     })
 }
@@ -1601,6 +1629,25 @@ pub(crate) fn sign_public_direct_install_begin(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compiler_schema_enumeration_changes_no_canonical_bytes() {
+        let mut added = vec![obj(vec![("kind", text("protocols")), ("value", obj(vec![
+            ("manifest", obj(vec![("record_schemas", obj(vec![("own", obj(vec![])), ("outer.dep", obj(vec![]))]))])),
+            ("resolved_manifest", obj(vec![("record_schemas", obj(vec![("own", obj(vec![])), ("outer.dep", obj(vec![]))]))])),
+        ]))])];
+        let before = canonical_wire_value(&WireValue::Array(added.clone()), Path::SecureArtifact).unwrap();
+        let mut compiled = PublicPackageCompilation { package_digest: String::new(), package_id: String::new(), package_version: String::new(), protocol_digest: String::new(), manifest_wire: vec![], composition: None,
+            schema_order: vec!["outer.dep".encode_utf16().collect(), "own".encode_utf16().collect()] };
+        compiled.restore_policy_schema_order(&mut added).unwrap();
+        let WireValue::Object(fields) = added[0].get("value").unwrap().get("manifest").unwrap().get("record_schemas").unwrap() else { panic!() };
+        assert_eq!(String::from_utf16(&fields[0].0).unwrap(), "outer.dep");
+        assert_eq!(canonical_wire_value(&WireValue::Array(added.clone()), Path::SecureArtifact).unwrap(), before);
+        compiled.schema_order = vec!["own".encode_utf16().collect(), "own".encode_utf16().collect()];
+        assert!(compiled.restore_policy_schema_order(&mut added).is_err());
+        compiled.schema_order = vec!["absent".encode_utf16().collect(), "own".encode_utf16().collect()];
+        assert!(compiled.restore_policy_schema_order(&mut added).is_err());
+    }
 
     #[test]
     fn reference_selected_binding_changes_compiled_digest_without_raising_public_ceiling() {

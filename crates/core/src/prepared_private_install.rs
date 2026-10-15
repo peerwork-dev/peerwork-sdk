@@ -1688,6 +1688,7 @@ fn prepare_private_direct_install_begin_with_source(
     )
     .map_err(|_| bad())?;
     let mut added = built.added;
+    compiled.restore_policy_schema_order(&mut added).map_err(|_| bad())?;
     let prior_protocol = prior_objects.iter().find(|object| {
         object.get("kind").and_then(WireValue::as_string).as_deref() == Some("protocols")
             && object.get("id") == Some(&s(expected_protocol_digest))

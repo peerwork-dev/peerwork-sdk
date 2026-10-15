@@ -419,6 +419,8 @@ pub(crate) fn inspect_exact_public_bundle(
 /// A caller must never turn this subset into a general publishability proof.
 pub(crate) struct SimpleCompilation {
     pub manifest: WireValue,
+    // TS compiler enumeration is separate from canonical digest ordering.
+    pub schema_order: Vec<Vec<u16>>,
     pub source_digest: String,
     pub protocol_digest: String,
     /// Exact normalized manifest closure for a dependency-bearing secure
@@ -449,6 +451,7 @@ struct ImportedUnit {
     source: WireValue,
     values: WireValue,
     manifest: WireValue,
+    schema_order: Vec<Vec<u16>>,
     roles: HashMap<Vec<u16>, Vec<u16>>,
     capabilities: HashMap<Vec<u16>, Vec<u16>>,
 }
@@ -2245,6 +2248,22 @@ fn apply_connections(
     }
     Ok(())
 }
+// ECMAScript OwnPropertyKeys: integer indices first; other strings retain insertion.
+fn schema_enumeration(manifest: &WireValue) -> Result<Vec<Vec<u16>>, ClosureError> {
+    let WireValue::Object(fields) = field(manifest, "record_schemas")? else { return Err(ClosureError::Invalid); };
+    let index = |name: &[u16]| -> Option<u32> {
+        let text = String::from_utf16(name).ok()?;
+        let value = text.parse::<u32>().ok()?;
+        (value != u32::MAX && value.to_string() == text).then_some(value)
+    };
+    let mut names = fields.iter().map(|(name, _)| name.clone()).collect::<Vec<_>>();
+    names.sort_by(|a,b| match (index(a), index(b)) {
+        (Some(a), Some(b)) => a.cmp(&b), (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater, (None, None) => std::cmp::Ordering::Equal,
+    });
+    Ok(names)
+}
+
 fn compile_at(
     closure: &ScannedPackageClosure,
     package_digest: &str,
@@ -2324,6 +2343,8 @@ fn compile_at(
         return Err(ClosureError::Invalid);
     };
     let mut nodes = HashMap::new();
+    let mut schema_orders = std::collections::BTreeMap::new();
+    let own_schema_order = schema_enumeration(&raw_manifest)?;
     let mut dependency_ids = Vec::new();
     let mut inherited_ports = Vec::new();
     let mut imported_units = HashMap::<String, ImportedUnit>::new();
@@ -2376,10 +2397,14 @@ fn compile_at(
                 alias,
                 ImportedUnit {
                     package_digest: digest,
-                    namespace,
+                    namespace: namespace.clone(),
                     source: dependency_source,
                     values: dependency_values,
                     manifest: namespaced,
+                    schema_order: compiled.schema_order.iter().map(|name| {
+                        let mut qualified = namespace.encode_utf16().collect::<Vec<_>>();
+                        qualified.push(u16::from(b'.')); qualified.extend(name); qualified
+                    }).collect(),
                     roles,
                     capabilities,
                 },
@@ -2432,6 +2457,7 @@ fn compile_at(
         {
             return Err(ClosureError::Mismatch);
         }
+        schema_orders.insert(digest.encode_utf16().collect::<Vec<_>>(), unit.schema_order.clone());
         dependency_ids.push(WireValue::String(digest.encode_utf16().collect()));
     }
     let mut root = raw_manifest;
@@ -2564,8 +2590,12 @@ fn compile_at(
             WireValue::String(protocol_digest.encode_utf16().collect()),
         ),
     ]);
+    let mut seen_schemas = HashSet::new();
+    let schema_order = schema_orders.into_values().flatten().chain(own_schema_order)
+        .filter(|name| seen_schemas.insert(name.clone())).collect();
     Ok(SimpleCompilation {
         manifest,
+        schema_order,
         source_digest,
         protocol_digest,
         composition,
@@ -3308,5 +3338,16 @@ mod tests {
         assert_eq!(vector["wrong_code"]["result"], "EXAMPLE_FAILED");
         assert_eq!(vector["wrong_origin"]["result"], "INVALID_PAYLOAD");
         assert_eq!(vector["wrong_replacement"]["result"], "EXAMPLE_FAILED");
+    }
+}
+
+#[cfg(test)]
+mod schema_order_regression {
+    use super::*;
+    #[test]
+    fn own_schemas_follow_js_integer_index_enumeration() {
+        let manifest = parse_wire_json_bounded(br#"{"record_schemas":{"10":{},"2":{},"01":{},"4294967295":{},"z":{}}}"#, 8, 1024).unwrap();
+        let names = schema_enumeration(&manifest).unwrap().iter().map(|name| String::from_utf16(name).unwrap()).collect::<Vec<_>>();
+        assert_eq!(names, ["2", "10", "01", "4294967295", "z"]);
     }
 }
