@@ -967,7 +967,7 @@ impl SecureOwnerWorkspaceCreate {
         let profile = self.profile(&row.workspace_id, &owner_actor, &owner_key);
         let _ = profile
             .read_latest_json_with_cancel(cancel)
-            .map_err(|_| SecureOwnerCreateError::Verification)?;
+            .map_err(SecureOwnerCreateError::from)?;
         profile.with_pinned_replay(cancel, |latest| {
             if latest.origin() != self.config.origin
                 || latest.replay().workspace_id() != row.workspace_id
