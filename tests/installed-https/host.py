@@ -23,7 +23,8 @@ ENV=dict(HOME=HOME,PATH='/usr/bin',PYTHONHOME='/usr',PYTHONDONTWRITEBYTECODE='1'
 def run(label,phase,root,argv,expected=0):
  start=datetime.datetime.now(datetime.timezone.utc).isoformat();t=time.monotonic();command=chroot(root,argv);r=subprocess.run(command,env=ENV,capture_output=True,text=True,timeout=90)
  record=dict(phase=phase,argv=command,exit_code=r.returncode,started=start,seconds=time.monotonic()-t,stdout=r.stdout,stderr=r.stderr);dump(E/(label+'-'+phase+'.json'),record)
- assert r.returncode==expected,(label,phase,r.stderr);return r
+ if expected is not None:assert r.returncode==expected,(label,phase,r.stderr)
+ return r
 
 def prepare():
  if BASE.exists():assert '--resume-preparation' in sys.argv
@@ -81,8 +82,11 @@ def install(label):
  dump(E/(label+'-runtime-installed.json'),inventory(root,label))
 
 def tls_fixture():
- leaf=E/'tls-runtime';leaf.mkdir(mode=0o700)
- for ca in ['ca1','ca2']:
+ leaf=E/'tls-runtime';resume='--resume-same-fixture' in sys.argv
+ saved=json.loads((BASE/'python'/HOME.lstrip('/')/'input.json').read_text()) if resume else None
+ if resume:assert leaf.is_dir()
+ else:leaf.mkdir(mode=0o700)
+ for ca in ([] if resume else ['ca1','ca2']):
   subprocess.run(['/usr/bin/openssl','req','-x509','-newkey','rsa:2048','-nodes','-keyout',ca+'.key','-out',ca+'.pem','-days','1','-subj','/CN=synthetic '+ca],cwd=leaf,check=True,capture_output=True)
   subprocess.run(['/usr/bin/openssl','req','-newkey','rsa:2048','-nodes','-keyout',ca+'-server.key','-out',ca+'-server.csr','-subj','/CN=localhost'],cwd=leaf,check=True,capture_output=True)
   (leaf/'extension.cnf').write_text('subjectAltName=DNS:localhost\nextendedKeyUsage=serverAuth\n')
@@ -102,7 +106,9 @@ def tls_fixture():
      except (BrokenPipeError,ssl.SSLError):pass
     def do_POST(self):requests.append(dict(authority=authority,method='POST',target=self.path,status=405));self.send_error(405)
    return Handler
-  server=ThreadingHTTPServer(('127.0.0.1',0),handler(ca));context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);context.load_cert_chain(leaf/(ca+'-server.pem'),leaf/(ca+'-server.key'));server.socket=context.wrap_socket(server.socket,server_side=True);t=threading.Thread(target=server.serve_forever);t.start();servers.append(server);threads.append(t)
+  port=int(urlsplit(saved['origin' if ca=='ca1' else 'os_origin']).port) if resume else 0
+  server=ThreadingHTTPServer(('127.0.0.1',port),handler(ca));context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);context.load_cert_chain(leaf/(ca+'-server.pem'),leaf/(ca+'-server.key'));server.socket=context.wrap_socket(server.socket,server_side=True);t=threading.Thread(target=server.serve_forever);t.start();servers.append(server);threads.append(t)
+ dump(E/'fixture.json',dict(origin='https://localhost:'+str(servers[0].server_port),os_origin='https://localhost:'+str(servers[1].server_port),public_certificates={p.name:sha(p) for p in leaf.glob('*.pem')},same_saved_fixture=resume))
  return leaf,requests,servers,threads
 
 def execute():
@@ -112,7 +118,14 @@ def execute():
  # Gate source syntax/parse before installers, then all loaded-runtime preflights before first SDK HTTPS call.
  for p in [HERE/'host.py',HERE/'python.py']:compile(p.read_text(),str(p),'exec')
  subprocess.run(['/root/workdir/message/.tools/node-v24.20.0-linux-x64/bin/node','--check',str(HERE/'node.cjs')],check=True)
- for label in ['python','node','cli']:install(label)
+ if '--resume-same-fixture' in sys.argv:
+  dns=json.loads((E/'dns-qualified.json').read_text());assert dns['result']=='PASS' and len(dns['calls'])==3
+  for label in ['python','node','cli']:
+   assert json.loads((E/(label+'-loaded-preflight.json')).read_text())['exit_code']==0
+   assert not(BASE/label/'usr/bin/getent').exists()
+   dump(E/(label+'-runtime-resumed.json'),inventory(BASE/label,label))
+ else:
+  for label in ['python','node','cli']:install(label)
  leaf,requests,servers,threads=tls_fixture();origin='https://localhost:'+str(servers[0].server_port);os_origin='https://localhost:'+str(servers[1].server_port);results=[]
  try:
   for label in ['python','node','cli']:
@@ -129,10 +142,12 @@ def execute():
      config=dict(origin=target)
      if transport is not None:config['transport']=transport
      dump(home/'catalog.json',config);os.chown(home/'catalog.json',65534,65534)
-     r=run(label,name,root,['/usr/bin/peerwork','secure','catalog-search',HOME+'/catalog.json',query],expected=code);value=json.loads(r.stdout if code==0 else r.stderr)
+     r=run(label,name,root,['/usr/bin/peerwork','secure','catalog-search',HOME+'/catalog.json',query],expected=None);value=json.loads(r.stdout if code==0 else r.stderr)
+     calls.append(dict(name=name,target=target+'/api/protocol-catalog/v1/packages',http_status=200 if r.returncode==0 else None,result=value,exit_code=r.returncode));dump(E/'cli-calls.json',calls)
+     assert r.returncode==code
      if code==0:assert json.loads(value['listing_canonical_json'])==dict(items=[],next=None,watermark=0)
      else:assert value['code']=='CATALOG_TRANSPORT_FAILED'
-     calls.append(dict(name=name,result=value,exit_code=r.returncode))
+
     result=dict(result='PASS',interface='cli',uid=65534,calls=calls,loaded=[dict(path='/usr/bin/peerwork',sha256=sha(root/'usr/bin/peerwork'))])
    assert result['result']=='PASS';results.append(result);dump(E/(label+'-result.json'),result)
    dump(E/(label+'-runtime-after.json'),inventory(root,label))

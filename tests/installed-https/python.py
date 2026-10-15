@@ -11,8 +11,10 @@ def call(name,origin,transport,query='t090'):
   v=peerwork.PublicCatalogClient(origin,**kw).search(query);assert json.loads(v['listing_canonical_json'])==expected and v['listing']==expected
   r=dict(ok=True,value=v)
  except peerwork.PublicCatalogError as error:r=dict(ok=False,code=error.code,message=str(error))
+ r['http_status']=None if not r['ok'] else 200
+ r.update(name=name,seconds=time.monotonic()-start,target=origin+'/api/protocol-catalog/v1/packages');calls.append(r);log=Path(os.environ['HOME'])/'calls.json';log.write_text(json.dumps(calls,indent=2));log.chmod(0o600)
  if not r['ok']:assert r['code']=='CATALOG_TRANSPORT_FAILED',r
- r.update(name=name,seconds=time.monotonic()-start,target=origin+'/api/protocol-catalog/v1/packages');calls.append(r);return r
+ return r
 ca=dict(request_timeout_ms=2000,additional_root_pem_files=[x['ca']])
 assert not call('default-untrusted',x['origin'],None)['ok']
 assert call('explicit-CA',x['origin'],ca)['ok']
