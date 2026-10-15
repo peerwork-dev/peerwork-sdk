@@ -1405,7 +1405,7 @@ impl SecureHistoricalOwnerAttach {
         ensure_dir(&directory)?;
         let mut lifecycle = SecureLifecycle::open(
             &directory.join("lifecycle.state"),
-            &self.config.origin,
+            &crate::transport::canonical_lifecycle_origin(&self.config.origin, self.config.allow_loopback_http).map_err(|_| HistoricalOwnerAttachError::Input)?,
             owner.actor_id(),
             &row.input.workspace_id,
             owner.actor_id(),
@@ -1451,7 +1451,7 @@ impl SecureHistoricalOwnerAttach {
         let kernel = self.import_selected_kernel_source(row, &owner, cancel)?;
         let mut lifecycle = SecureLifecycle::open(
             &directory.join("lifecycle.state"),
-            &self.config.origin,
+            &crate::transport::canonical_lifecycle_origin(&self.config.origin, self.config.allow_loopback_http).map_err(|_| HistoricalOwnerAttachError::Input)?,
             owner.actor_id(),
             &row.input.workspace_id,
             owner.actor_id(),

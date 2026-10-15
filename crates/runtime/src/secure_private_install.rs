@@ -1302,7 +1302,7 @@ impl SecurePrivatePackageInstall {
         drop(doc);
         drop(store);
         let lifecycle = SecureLifecycle::open(
-            &self.config.state_dir.join("lifecycle.state"), &self.config.origin,
+            &self.config.state_dir.join("lifecycle.state"), &crate::transport::canonical_lifecycle_origin(&self.config.origin, self.config.allow_loopback_http).map_err(|_| PrivatePackageInstallError::Input)?,
             identity.actor_id(), &self.config.workspace_id,
             identity.actor_id(), identity.key_id(),
         ).map_err(|_| PrivatePackageInstallError::Identity)?;

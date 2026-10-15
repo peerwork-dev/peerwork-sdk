@@ -1047,7 +1047,7 @@ impl SecureOwnerWorkspaceCreate {
     ) -> Result<SecureLifecycle, SecureOwnerCreateError> {
         SecureLifecycle::open(
             &self.workspace_dir(workspace_id).join("lifecycle.state"),
-            &self.config.origin,
+            &crate::transport::canonical_lifecycle_origin(&self.config.origin, self.config.allow_loopback_http).map_err(|_| SecureOwnerCreateError::Invalid)?,
             identity.actor_id(),
             workspace_id,
             identity.actor_id(),

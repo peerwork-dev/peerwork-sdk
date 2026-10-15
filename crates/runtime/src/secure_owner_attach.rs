@@ -2031,7 +2031,7 @@ impl SecureHistoricalOwnerAttach {
             drop(scratch_owner);
             let mut lifecycle = SecureLifecycle::open(
                 &scratch.join("lifecycle.state"),
-                &self.config.origin,
+                &crate::transport::canonical_lifecycle_origin(&self.config.origin, self.config.allow_loopback_http).map_err(|_| HistoricalOwnerAttachError::Input)?,
                 &input.expected_owner_actor_id,
                 &input.workspace_id,
                 &input.expected_owner_actor_id,
@@ -2625,7 +2625,7 @@ impl SecureHistoricalOwnerAttach {
         if let Some(ring) = source.ring.as_ref() {
             let mut lifecycle = SecureLifecycle::open(
                 &directory.join("lifecycle.state"),
-                &self.config.origin,
+                &crate::transport::canonical_lifecycle_origin(&self.config.origin, self.config.allow_loopback_http).map_err(|_| HistoricalOwnerAttachError::Input)?,
                 owner.actor_id(),
                 &row.input.workspace_id,
                 owner.actor_id(),
@@ -2946,7 +2946,7 @@ impl SecureHistoricalOwnerAttach {
         if let Some(ring) = source.ring.as_ref() {
             let mut lifecycle = SecureLifecycle::open(
                 &directory.join("lifecycle.state"),
-                &self.config.origin,
+                &crate::transport::canonical_lifecycle_origin(&self.config.origin, self.config.allow_loopback_http).map_err(|_| HistoricalOwnerAttachError::Input)?,
                 owner.actor_id(),
                 &row.input.workspace_id,
                 owner.actor_id(),
@@ -3041,7 +3041,7 @@ impl SecureHistoricalOwnerAttach {
         let directory = self.workspace_dir(&row.input.workspace_id);
         ensure_dir(&directory)?;
         let mut lifecycle = SecureLifecycle::open(
-            &directory.join("lifecycle.state"), &self.config.origin,
+            &directory.join("lifecycle.state"), &crate::transport::canonical_lifecycle_origin(&self.config.origin, self.config.allow_loopback_http).map_err(|_| HistoricalOwnerAttachError::Input)?,
             owner.actor_id(), &row.input.workspace_id, owner.actor_id(), owner.key_id(),
         ).map_err(|_| HistoricalOwnerAttachError::Local)?;
         lifecycle.stage_historical_owner_ring(ring)
@@ -3168,7 +3168,7 @@ impl SecureHistoricalOwnerAttach {
             .save_imported_direct_begin_row_for_attach(verified.imported)
             .map_err(|_| HistoricalOwnerAttachError::Conflict)?;
         let mut lifecycle = SecureLifecycle::open(
-            &directory.join("lifecycle.state"), &self.config.origin,
+            &directory.join("lifecycle.state"), &crate::transport::canonical_lifecycle_origin(&self.config.origin, self.config.allow_loopback_http).map_err(|_| HistoricalOwnerAttachError::Input)?,
             owner.actor_id(), &row.input.workspace_id, owner.actor_id(), owner.key_id(),
         ).map_err(|_| HistoricalOwnerAttachError::Local)?;
         if begun && !ended {
@@ -3743,7 +3743,7 @@ impl SecureHistoricalOwnerAttach {
         }
         let directory = self.workspace_dir(&row.input.workspace_id);
         let lifecycle = SecureLifecycle::open(
-            &directory.join("lifecycle.state"), &self.config.origin,
+            &directory.join("lifecycle.state"), &crate::transport::canonical_lifecycle_origin(&self.config.origin, self.config.allow_loopback_http).map_err(|_| HistoricalOwnerAttachError::Input)?,
             owner.actor_id(), &row.input.workspace_id, owner.actor_id(), owner.key_id(),
         ).map_err(|_| HistoricalOwnerAttachError::Local)?;
         let candidate = lifecycle.replay_keyring_candidate()
@@ -3881,7 +3881,7 @@ impl SecureHistoricalOwnerAttach {
         }
         let directory = self.workspace_dir(&row.input.workspace_id);
         let lifecycle = SecureLifecycle::open(
-            &directory.join("lifecycle.state"), &self.config.origin,
+            &directory.join("lifecycle.state"), &crate::transport::canonical_lifecycle_origin(&self.config.origin, self.config.allow_loopback_http).map_err(|_| HistoricalOwnerAttachError::Input)?,
             owner.actor_id(), &row.input.workspace_id, owner.actor_id(), owner.key_id(),
         ).map_err(|_| HistoricalOwnerAttachError::Local)?;
         let candidate = lifecycle.replay_keyring_candidate()
@@ -4075,7 +4075,7 @@ impl SecureHistoricalOwnerAttach {
             ensure_dir(&directory)?;
             SecureLifecycle::open(
                 &directory.join("lifecycle.state"),
-                &self.config.origin,
+                &crate::transport::canonical_lifecycle_origin(&self.config.origin, self.config.allow_loopback_http).map_err(|_| HistoricalOwnerAttachError::Input)?,
                 owner.actor_id(),
                 &row.input.workspace_id,
                 owner.actor_id(),

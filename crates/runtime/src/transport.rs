@@ -66,6 +66,14 @@ pub struct HttpTransport {
     journal_get_probe: std::sync::Mutex<Option<Vec<String>>>,
 }
 
+/// Canonical transport origin for local lifecycle pins only. Callers retain
+/// their original config/history origin binding; no network request is made.
+pub(crate) fn canonical_lifecycle_origin(origin: &str, allow_loopback_http: bool) -> Result<String, TransportError> {
+    let mut config = TransportConfig::new(origin);
+    config.allow_loopback_http = allow_loopback_http;
+    Ok(HttpTransport::new(config)?.trusted_origin().to_owned())
+}
+
 impl HttpTransport {
     pub fn new(config: TransportConfig) -> Result<Self, TransportError> {
         let origin = Url::parse(&config.origin).map_err(|_| TransportError::InvalidOrigin)?;
@@ -668,4 +676,42 @@ mod tests {
             assert!(!valid_admission_post_path(&path));
         }
     }
+}
+
+#[cfg(test)]
+mod lifecycle_origin_contract_tests {
+    use super::*;
+    #[test]
+    fn lifecycle_origin_is_canonical_without_rebinding_input() {
+        let raw = String::from("http://127.0.0.1:34635");
+        assert_eq!(canonical_lifecycle_origin(&raw, true).unwrap(), "http://127.0.0.1:34635/");
+        assert_eq!(canonical_lifecycle_origin(&(raw.clone() + "/"), true).unwrap(), canonical_lifecycle_origin(&raw, true).unwrap());
+        assert_eq!(raw, "http://127.0.0.1:34635");
+        assert!(canonical_lifecycle_origin(&raw, false).is_err());
+        assert!(canonical_lifecycle_origin("https://example.com/path", false).is_err());
+        assert!(canonical_lifecycle_origin("https://user@example.com/", false).is_err());
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_origin_reopen_tests {
+use crate::secure_lifecycle::SecureLifecycle;
+use peerwork_core::crypto::base64url;
+
+#[test]
+fn canonical_lifecycle_reopen_preserves_existing_bytes() {
+    let directory = tempfile::tempdir().unwrap();
+    #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap(); }
+    let path = directory.path().join("lifecycle.state");
+    let actor = base64url(&[31; 32]);
+    let key = base64url(&[32; 32]);
+    let workspace = base64url(&[33; 32]);
+    assert!(SecureLifecycle::open(&path, "http://127.0.0.1:34635", &actor, &workspace, &actor, &key).is_err());
+    assert!(!path.exists());
+    drop(SecureLifecycle::open(&path, "http://127.0.0.1:34635/", &actor, &workspace, &actor, &key).unwrap());
+    let before = std::fs::read(&path).unwrap(); // Fresh test state contains pins only, no epoch keys.
+    drop(SecureLifecycle::open(&path, "http://127.0.0.1:34635/", &actor, &workspace, &actor, &key).unwrap());
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+}
+
 }
