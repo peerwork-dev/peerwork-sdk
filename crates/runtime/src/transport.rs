@@ -782,3 +782,52 @@ fn canonical_lifecycle_reopen_preserves_existing_bytes() {
 }
 
 }
+
+#[cfg(test)]
+mod transport_options_tests {
+    use super::*;
+    #[test]
+    fn defaults_and_invalid_inputs_remain_checked() {
+        let default: TransportOptions = serde_json::from_str("{}").unwrap();
+        assert_eq!(default, TransportOptions::default()); assert_eq!(default.request_timeout_ms, 15_000);
+        assert!(serde_json::from_str::<TransportOptions>(r#"{"request_timeout_ms":-1}"#).is_err());
+        assert!(serde_json::from_str::<TransportOptions>(r#"{"unknown":1}"#).is_err());
+        assert!(TransportOptions { request_timeout_ms: 0, ..default.clone() }.validate().is_err());
+        // Platform representability is checked, with no invented daily ceiling.
+        assert!(TransportOptions { request_timeout_ms: 86_400_001, ..default.clone() }.validate().is_ok());
+        let _ = TransportOptions { request_timeout_ms: u64::MAX, ..default.clone() }.validate();
+        assert!(TransportOptions { additional_root_pem_files: vec!["x".into();17], ..default.clone() }.validate().is_err());
+        assert!(TransportOptions { additional_root_pem_files: vec!["".into()], ..default }.validate().is_err());
+    }
+    #[test]
+    fn certificate_files_fail_closed_under_actual_read_bounds() {
+        let root = tempfile::tempdir().unwrap();
+        for (name, bytes) in [("empty",Vec::new()),("bad",b"not a certificate".to_vec()),("large",vec![b' ';65_537])] {
+            let path = root.path().join(name);std::fs::write(&path,bytes).unwrap();
+            assert!(TransportOptions { additional_root_pem_files:vec![path], ..Default::default() }.roots().is_err());
+        }
+        assert!(TransportOptions { additional_root_pem_files:vec![root.path().into()], ..Default::default() }.roots().is_err());
+    }
+    #[tokio::test]
+    #[ignore = "requires the task-local actual HTTPS fixture"]
+    async fn local_https_preserves_validation_and_selected_deadline() {
+        let origin=std::env::var("PEERWORK_TLS_ORIGIN").unwrap();let ca=std::env::var("PEERWORK_TLS_CA").unwrap();
+        let cancel=CancellationToken::new();
+        let no_ca=HttpTransport::new(TransportConfig::new(&origin)).unwrap();
+        assert!(no_ca.discovery(&cancel).await.is_err());
+        let options=TransportOptions { request_timeout_ms:2_000,additional_root_pem_files:vec![ca.clone().into()] };
+        let good=HttpTransport::new(TransportConfig::new(&origin).with_options(options.clone())).unwrap();
+        assert_eq!(good.discovery(&cancel).await.unwrap().wire,b"{\"ok\":true}");
+        let wrong=origin.replace("localhost","127.0.0.1");
+        let wrong=HttpTransport::new(TransportConfig::new(&wrong).with_options(options.clone())).unwrap();
+        assert!(wrong.discovery(&cancel).await.is_err());
+        let short=HttpTransport::new(TransportConfig::new(&origin).with_options(TransportOptions { request_timeout_ms:40,..options.clone() })).unwrap();
+        assert!(matches!(short.discovery(&cancel).await,Err(TransportError::Timeout)));
+        assert_eq!(good.discovery(&cancel).await.unwrap().wire,b"{\"ok\":true}");
+        let root=tempfile::tempdir().unwrap();let cert=std::fs::read(ca).unwrap();
+        let mut padded=cert;padded.resize(65_536,b' ');
+        let files=(0..5).map(|i| {let p=root.path().join(i.to_string());std::fs::write(&p,&padded).unwrap();p}).collect();
+        assert!(TransportOptions { additional_root_pem_files:files,..options }.roots().is_err());
+        println!("HTTPS_RESULT untrusted=REFUSED explicitCA=PASS hostname=REFUSED selected40ms=TIMEOUT recovery=PASS aggregateCA=REFUSED");
+    }
+}

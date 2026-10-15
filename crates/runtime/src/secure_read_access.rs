@@ -412,6 +412,7 @@ mod tests {
 
     fn unused_config() -> SecureReadConfig {
         SecureReadConfig {
+            transport: Default::default(),
             origin: "https://example.invalid/".into(),
             kernel_journal_path: "not-used-kernel".into(),
             read_state_path: "not-used-read".into(),

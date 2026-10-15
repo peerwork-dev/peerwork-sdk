@@ -1877,3 +1877,16 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod caller_transport_propagation_tests {
+    use super::*;
+    #[test]
+    fn owner_profile_carries_invocation_transport_without_changing_origin() {
+        let raw="https://example.invalid";
+        let config: SecureOwnerCreateConfig=serde_json::from_value(serde_json::json!({"origin":raw,"state_dir":"/unused","transport":{"request_timeout_ms":321,"additional_root_pem_files":["/public/ca.pem"]}})).unwrap();
+        let expected=config.transport.clone();let owner=SecureOwnerWorkspaceCreate::new(config);
+        let next=owner.profile_config("workspace","actor","key");
+        assert_eq!(next.transport,expected);assert_eq!(next.origin,raw);
+    }
+}
