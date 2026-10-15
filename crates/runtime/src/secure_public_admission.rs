@@ -1297,6 +1297,7 @@ mod tests {
             state_dir: root.path().join("owner"),
             allow_loopback_http: true,
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         });
         let cancel = CancellationToken::new();
         let prepared = owner
@@ -1386,6 +1387,7 @@ mod tests {
             allow_loopback_http: true,
             required_features: vec![],
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         });
         let decided: serde_json::Value =
             serde_json::from_str(&decision.decide_json(&offer.invite_id, "ACCEPT").unwrap())
@@ -1498,6 +1500,7 @@ mod tests {
             required_features: vec![],
             allow_loopback_http: true,
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         })
         .read_latest_json()
         .unwrap();
@@ -1588,6 +1591,7 @@ mod tests {
             required_features: vec![],
             allow_loopback_http: true,
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         };
         SecureReadProfile::new(config.clone())
             .read_latest_json()
@@ -1696,6 +1700,7 @@ mod tests {
             allow_loopback_http: true,
             required_features: vec![],
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         };
         let drop_url = format!("{origin}__test/drop-next-post");
         let drop_result = runtime
@@ -2006,6 +2011,7 @@ mod tests {
             required_features: vec![],
             allow_loopback_http: true,
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         };
         let lifecycle = SecureLifecycle::open(
             &recipient_dir.join("lifecycle.state"),

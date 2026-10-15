@@ -14,7 +14,7 @@ use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
 const POLICY_MAX: usize = 1024;
-const COMMIT_MAX: usize = 102_400;
+pub(crate) const DEFAULT_MAX_COMMITS: usize = 102_400;
 const COMMIT_BYTES: usize = 196_608;
 const MAX_SAFE: f64 = 9_007_199_254_740_991.0;
 
@@ -95,10 +95,23 @@ pub(crate) fn scan_signed_chain_headers(
     trusted_owner: Option<&OwnerPin<'_>>,
     pinned: Option<&CheckpointPin<'_>>,
 ) -> Result<HeaderChainFacts, ChainError> {
+    scan_signed_chain_headers_with_limit(policy_wires, commit_wires, checkpoint_wire, workspace_id, trusted_owner, pinned, DEFAULT_MAX_COMMITS)
+}
+
+pub(crate) fn scan_signed_chain_headers_with_limit(
+    policy_wires: &[&[u8]],
+    commit_wires: &[&[u8]],
+    checkpoint_wire: &[u8],
+    workspace_id: &str,
+    trusted_owner: Option<&OwnerPin<'_>>,
+    pinned: Option<&CheckpointPin<'_>>,
+    max_commits: usize,
+) -> Result<HeaderChainFacts, ChainError> {
     if !token(workspace_id)
         || policy_wires.is_empty()
         || policy_wires.len() > POLICY_MAX
-        || commit_wires.len() > COMMIT_MAX
+        || max_commits == 0
+        || commit_wires.len() > max_commits
     {
         return Err(ChainError::Invalid);
     }

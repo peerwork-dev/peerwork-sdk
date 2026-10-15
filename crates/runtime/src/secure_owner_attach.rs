@@ -5077,6 +5077,7 @@ impl SecureHistoricalOwnerAttach {
             required_features: Vec::new(),
             allow_loopback_http: self.config.allow_loopback_http,
             max_replay_artifact_bytes: self.config.max_replay_artifact_bytes,
+            max_replay_commits: self.config.max_replay_commits,
         }
     }
     fn attach_read_config(&self, input: &HistoricalOwnerAttachInput) -> SecureReadConfig {
@@ -5094,6 +5095,7 @@ impl SecureHistoricalOwnerAttach {
             required_features: Vec::new(),
             allow_loopback_http: self.config.allow_loopback_http,
             max_replay_artifact_bytes: self.config.max_replay_artifact_bytes,
+            max_replay_commits: self.config.max_replay_commits,
         }
     }
 }
@@ -8004,6 +8006,7 @@ mod tests {
         let config = SecureOwnerCreateConfig {
             origin: origin.into(), state_dir: root.path().join("native-orphan"),
             allow_loopback_http: true, max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         };
         let attach = SecureHistoricalOwnerAttach::new(config.clone());
         let cancel = CancellationToken::new();
@@ -8239,6 +8242,7 @@ mod tests {
             state_dir: root.path().join(name),
             allow_loopback_http: true,
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         };
         let input = |source: &serde_json::Value| HistoricalOwnerAttachInput {
             workspace_id: source["workspace_id"].as_str().unwrap().into(),
@@ -8414,6 +8418,7 @@ mod tests {
             state_dir: root.path().join(directory),
             allow_loopback_http: true,
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         };
         let input = |source: &serde_json::Value, recover| HistoricalOwnerAttachInput {
             workspace_id: source["workspace_id"].as_str().unwrap().into(),
@@ -8623,6 +8628,7 @@ mod tests {
             state_dir: root.path().join(name),
             allow_loopback_http: true,
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         };
         let input = |source: &serde_json::Value| HistoricalOwnerAttachInput {
             workspace_id: source["workspace_id"].as_str().unwrap().into(),
@@ -8913,6 +8919,7 @@ mod tests {
                 state_dir: root.path().join(format!("native-{name}")),
                 allow_loopback_http: true,
                 max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
             };
             let input = HistoricalOwnerAttachInput {
                 workspace_id: workspace.into(),
@@ -9171,6 +9178,7 @@ mod tests {
         let config = SecureOwnerCreateConfig {
             origin: origin.into(), state_dir: root.path().join("native-orphan"),
             allow_loopback_http: true, max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         };
         let attach = SecureHistoricalOwnerAttach::new(config.clone());
         let mut input = HistoricalOwnerAttachInput {
@@ -9385,6 +9393,7 @@ mod tests {
                 state_dir: root.path().join(format!("native-{name}")),
                 allow_loopback_http: true,
                 max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
             };
             let attach = SecureHistoricalOwnerAttach::new(config);
             let input = HistoricalOwnerAttachInput {
@@ -9530,6 +9539,7 @@ mod tests {
             let config = SecureOwnerCreateConfig {
                 origin: origin.into(), state_dir: root.path().join(format!("native-{name}")),
                 allow_loopback_http: true, max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
             };
             let attach = SecureHistoricalOwnerAttach::new(config.clone());
             let input = HistoricalOwnerAttachInput {
@@ -9694,6 +9704,7 @@ mod tests {
             let config = SecureOwnerCreateConfig {
                 origin: origin.into(), state_dir: root.path().join(format!("native-{mode}")),
                 allow_loopback_http: true, max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
             };
             let attach = SecureHistoricalOwnerAttach::new(config.clone());
             let cancel = CancellationToken::new();
@@ -9877,6 +9888,7 @@ mod tests {
             let config = SecureOwnerCreateConfig {
                 origin: origin.into(), state_dir: root.path().join(format!("native-{name}")),
                 allow_loopback_http: true, max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
             };
             let attach = SecureHistoricalOwnerAttach::new(config.clone());
             let mut input = HistoricalOwnerAttachInput {
@@ -10080,6 +10092,7 @@ mod tests {
             let config = SecureOwnerCreateConfig {
                 origin: origin.into(), state_dir: root.path().join(format!("native-{name}")),
                 allow_loopback_http: true, max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
             };
             let attach = SecureHistoricalOwnerAttach::new(config.clone());
             let input = HistoricalOwnerAttachInput {
@@ -10194,6 +10207,7 @@ mod tests {
                 state_dir: root.path().join(format!("native-{name}")),
                 allow_loopback_http: true,
                 max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
             });
             let mut input = HistoricalOwnerAttachInput {
                 workspace_id: workspace.into(),
@@ -10509,6 +10523,7 @@ mod tests {
                 state_dir: root.path().join(format!("native-family-{index}")),
                 allow_loopback_http: true,
                 max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
             };
             let input = HistoricalOwnerAttachInput {
                 workspace_id: workspace.into(),
@@ -10813,6 +10828,7 @@ mod tests {
                 state_dir: root.path().join(format!("native-current-v3-{index}")),
                 allow_loopback_http: true,
                 max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
             };
             let input = HistoricalOwnerAttachInput {
                 workspace_id: workspace.into(),
@@ -11312,6 +11328,7 @@ mod tests {
             state_dir: root.path().join("native-changed-snapshot"),
             allow_loopback_http: true,
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         });
         let mut changed_input = HistoricalOwnerAttachInput {
             workspace_id: changed["workspace_id"].as_str().unwrap().into(),
@@ -11419,6 +11436,7 @@ mod tests {
                 state_dir: root.path().join(format!("native-{mode}")),
                 allow_loopback_http: true,
                 max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
             };
             let owner = SecureHistoricalOwnerAttach::new(config.clone());
             let mut input = HistoricalOwnerAttachInput {
@@ -11540,6 +11558,7 @@ mod tests {
             state_dir: state_dir.clone(),
             allow_loopback_http: true,
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         });
         assert!(attach.attachments().unwrap().is_empty());
         assert!(!state_dir.exists());
@@ -11624,6 +11643,7 @@ mod tests {
             state_dir: root.path().join("native-missing-ring"),
             allow_loopback_http: true,
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         };
         let cancel = CancellationToken::new();
         let bad_attach = SecureHistoricalOwnerAttach::new(bad_config.clone());
@@ -11681,6 +11701,7 @@ mod tests {
             state_dir: root.path().join("native-owner"),
             allow_loopback_http: true,
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         };
         let cancel = CancellationToken::new();
         let attach = SecureHistoricalOwnerAttach::new(config.clone());
@@ -11742,6 +11763,7 @@ mod tests {
             state_dir: root.path().join("native-owner"),
             allow_loopback_http: true,
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         });
         let access = owner.format_transition_access(workspace_id).unwrap();
         let before = SecureReadProfile::new(access.profile_config().clone()).with_latest_replay(&cancel, |source| {
@@ -11909,6 +11931,7 @@ mod tests {
             state_dir: root.path().join("native-owner"),
             allow_loopback_http: true,
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         };
         let cancel = CancellationToken::new();
         let attached = SecureHistoricalOwnerAttach::new(config.clone())
@@ -12052,6 +12075,7 @@ mod tests {
             state_dir: root.path().join("native-owner"),
             allow_loopback_http: true,
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         };
         let token = CancellationToken::new();
         let attach = SecureHistoricalOwnerAttach::new(config.clone());
@@ -12297,6 +12321,7 @@ mod tests {
         let config = SecureOwnerCreateConfig {
             origin: origin.into(), state_dir: root.path().join("native"),
             allow_loopback_http: true, max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         };
         let attach = SecureHistoricalOwnerAttach::new(config);
         let cancel = CancellationToken::new();
@@ -12381,6 +12406,7 @@ mod tests {
         let reopened = SecureHistoricalOwnerAttach::new(SecureOwnerCreateConfig {
             origin: origin.into(), state_dir: root.path().join("native"),
             allow_loopback_http: true, max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         });
         let attached = reopened.resume_attachment(&rows[0].attach_id, &cancel).unwrap();
         assert_eq!(attached.status, "ATTACHED");
@@ -12513,6 +12539,7 @@ mod tests {
             let config = SecureOwnerCreateConfig {
                 origin: origin.into(), state_dir: root.path().join(format!("native-{name}")),
                 allow_loopback_http: true, max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
             };
             ensure_dir(&config.state_dir).unwrap();
             let attach = SecureHistoricalOwnerAttach::new(config.clone());

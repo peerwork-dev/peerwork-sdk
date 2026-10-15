@@ -45,6 +45,8 @@ pub struct SecureReadConfig {
     pub allow_loopback_http: bool,
     #[serde(default = "default_replay_budget")]
     pub max_replay_artifact_bytes: u64,
+    #[serde(default = "crate::secure_verified_read::default_replay_commits")]
+    pub max_replay_commits: u64,
 }
 
 fn default_replay_budget() -> u64 {
@@ -264,7 +266,7 @@ impl SecureReadAccess {
         if cancel.is_cancelled() {
             return Err(SecureReadAccessError::Cancelled);
         }
-        let budget = SecureJournalReadBudget::new(self.config.max_replay_artifact_bytes)
+        let budget = SecureJournalReadBudget::new_with_limits(self.config.max_replay_artifact_bytes, self.config.max_replay_commits)
             .ok_or(SecureReadAccessError::ResourceLimit)?;
         let identity = KernelIdentity::open(&self.config.identity_path)
             .map_err(|_| SecureReadAccessError::Identity)?;
@@ -420,6 +422,7 @@ mod tests {
             required_features: vec![],
             allow_loopback_http: false,
             max_replay_artifact_bytes: 0,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         }
     }
 

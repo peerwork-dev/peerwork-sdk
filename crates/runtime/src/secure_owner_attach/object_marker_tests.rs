@@ -99,6 +99,7 @@ fn actual_service_imports_marker_only_object_stage() {
         state_dir: root.join("native"),
         allow_loopback_http: true,
         max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
     };
     let attach = SecureHistoricalOwnerAttach::new(config.clone());
     let cancel = CancellationToken::new();

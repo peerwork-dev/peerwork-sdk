@@ -258,6 +258,7 @@ impl SecurePublicPackageInstall {
                 required_features: self.config.required_features.clone(),
                 allow_loopback_http: self.config.allow_loopback_http,
                 max_replay_artifact_bytes: self.config.max_replay_artifact_bytes,
+            max_replay_commits: self.config.max_replay_commits,
             });
             let (fresh, _) = access.replay_checked_install_generation(cancel, &floor)?;
             if fresh.origin() != prior.origin()
@@ -1188,6 +1189,7 @@ mod tests {
             required_features: vec![],
             allow_loopback_http: true,
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         };
         drop(identity);
         let vectors: serde_json::Value = serde_json::from_str(include_str!(
@@ -1556,6 +1558,7 @@ mod tests {
             required_features: vec![],
             allow_loopback_http: true,
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         };
         drop(identity);
         let initial_config = config.clone();
@@ -1778,6 +1781,7 @@ mod selected_binding_service_test {
             state_dir: root.path().join("native-owner"),
             allow_loopback_http: true,
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         });
         let token = CancellationToken::new();
         let created = owner

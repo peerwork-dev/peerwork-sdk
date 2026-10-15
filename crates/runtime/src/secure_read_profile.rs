@@ -33,6 +33,8 @@ pub struct SecureReadProfileConfig {
     pub allow_loopback_http: bool,
     #[serde(default = "default_replay_budget")]
     pub max_replay_artifact_bytes: u64,
+    #[serde(default = "crate::secure_verified_read::default_replay_commits")]
+    pub max_replay_commits: u64,
 }
 
 fn default_replay_budget() -> u64 {
@@ -395,6 +397,7 @@ impl SecureReadProfile {
             required_features: profile.required_features.clone(),
             allow_loopback_http: profile.allow_loopback_http,
             max_replay_artifact_bytes: self.config.max_replay_artifact_bytes,
+            max_replay_commits: self.config.max_replay_commits,
         }
     }
 }
@@ -538,6 +541,7 @@ mod tests {
             required_features: vec![],
             allow_loopback_http: true,
             max_replay_artifact_bytes: default_replay_budget(),
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         };
         let first_config = config.clone();
         let first = tokio::task::spawn_blocking(move || {

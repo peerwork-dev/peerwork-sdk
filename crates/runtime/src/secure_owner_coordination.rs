@@ -613,6 +613,7 @@ impl SecureOwnerCoordination {
                 required_features: self.config.required_features.clone(),
                 allow_loopback_http: self.config.allow_loopback_http,
                 max_replay_artifact_bytes: self.config.max_replay_artifact_bytes,
+            max_replay_commits: self.config.max_replay_commits,
             });
             let (fresh, _) = access.replay_checked_install_generation(cancel, &floor)?;
             if fresh.origin() != prior.origin() || fresh.authority() != prior.authority() {
@@ -957,6 +958,7 @@ mod tests {
             required_features: vec![],
             allow_loopback_http: false,
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         });
         assert!(matches!(access.operations(), Err(Error::Identity)));
         assert!(!path.parent().unwrap().exists());
@@ -1042,6 +1044,7 @@ mod tests {
             state_dir: root.join("native-owner"),
             allow_loopback_http: true,
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         };
         let cancel = CancellationToken::new();
         let attached = SecureHistoricalOwnerAttach::new(config.clone())

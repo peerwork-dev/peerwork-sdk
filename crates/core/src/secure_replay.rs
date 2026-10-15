@@ -18,13 +18,15 @@ use crate::{
         verify_protocol_package_source,
     },
     secure_chain::{
-        scan_signed_chain_headers, ChainError, CheckpointPin, HeaderChainFacts, OwnerPin,
+        scan_signed_chain_headers_with_limit, DEFAULT_MAX_COMMITS, ChainError, CheckpointPin, HeaderChainFacts, OwnerPin,
     },
     secure_recovery::preflight_recovery,
     wire_json::{
         canonical_wire_value, parse_js_json_string_bounded, parse_wire_json_js_bounded, WireValue,
     },
 };
+#[cfg(test)]
+use crate::secure_chain::scan_signed_chain_headers;
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
@@ -34,6 +36,8 @@ type RoleHistory = HashMap<(Vec<u16>, Vec<u16>, Vec<u16>), HashSet<Vec<u16>>>;
 
 #[derive(Debug, Error)]
 pub(crate) enum ReplayError {
+    #[error("signed replay exceeds configured commit budget")]
+    ResourceLimit,
     #[error("signed chain did not validate: {0}")]
     Chain(#[from] ChainError),
     #[error("content or object history is invalid")]
@@ -1280,12 +1284,24 @@ pub(crate) struct ReplayFacts {
 /// Reconstruct a signed PUBLIC prefix exported into the first PRIVATE
 /// migration pages. The regular header scanner authenticates the complete
 /// concatenated history after this function returns; nothing here is a proof.
+#[cfg(test)]
 fn restore_archived_public_history(
     policy_wires: &[&[u8]],
     commit_wires: &[&[u8]],
     workspace_id: &str,
     keyring_wire: Option<&[u8]>,
 ) -> Result<Vec<Vec<u8>>, ReplayError> {
+    restore_archived_public_history_with_limit(policy_wires, commit_wires, workspace_id, keyring_wire, DEFAULT_MAX_COMMITS)
+}
+
+fn restore_archived_public_history_with_limit(
+    policy_wires: &[&[u8]],
+    commit_wires: &[&[u8]],
+    workspace_id: &str,
+    keyring_wire: Option<&[u8]>,
+    max_commits: usize,
+) -> Result<Vec<Vec<u8>>, ReplayError> {
+    if max_commits == 0 || commit_wires.len() > max_commits { return Err(ReplayError::ResourceLimit); }
     let Some(first_wire) = commit_wires.first() else {
         return Ok(Vec::new());
     };
@@ -1307,6 +1323,8 @@ fn restore_archived_public_history(
     {
         return Err(ReplayError::Invalid);
     }
+    let restored_count = usize::try_from(source_sequence).ok().and_then(|n| n.checked_add(commit_wires.len())).ok_or(ReplayError::ResourceLimit)?;
+    if restored_count > max_commits { return Err(ReplayError::ResourceLimit); }
     let genesis_wire = policy_wires.first().ok_or(ReplayError::Invalid)?;
     let genesis = parse_wire_json_js_bounded(genesis_wire, 64, 32 * 1024 * 1024)
         .map_err(|_| ReplayError::Invalid)?;
@@ -1446,7 +1464,7 @@ fn restore_archived_public_history(
     if u64::try_from(originals.len()).map_err(|_| ReplayError::Invalid)? != source_sequence {
         return Err(ReplayError::Invalid);
     }
-    let mut restored = Vec::with_capacity(originals.len() + commit_wires.len());
+    let mut restored = Vec::with_capacity(restored_count);
     for sequence in 1..=source_sequence {
         restored.push(originals.remove(&sequence).ok_or(ReplayError::Invalid)?);
     }
@@ -1501,6 +1519,20 @@ pub(crate) fn replay_basic_content(
     pinned: Option<&CheckpointPin<'_>>,
     keyring_wire: Option<&[u8]>,
 ) -> Result<ReplayFacts, ReplayError> {
+    replay_basic_content_with_limit(policy_wires, commit_wires, checkpoint_wire, workspace_id, trusted_owner, pinned, keyring_wire, DEFAULT_MAX_COMMITS)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn replay_basic_content_with_limit(
+    policy_wires: &[&[u8]],
+    commit_wires: &[&[u8]],
+    checkpoint_wire: &[u8],
+    workspace_id: &str,
+    trusted_owner: Option<&OwnerPin<'_>>,
+    pinned: Option<&CheckpointPin<'_>>,
+    keyring_wire: Option<&[u8]>,
+    max_commits: usize,
+) -> Result<ReplayFacts, ReplayError> {
     replay_basic_content_depth(
         policy_wires,
         commit_wires,
@@ -1510,6 +1542,7 @@ pub(crate) fn replay_basic_content(
         pinned,
         keyring_wire,
         0,
+        max_commits,
     )
 }
 
@@ -1523,21 +1556,23 @@ fn replay_basic_content_depth(
     pinned: Option<&CheckpointPin<'_>>,
     keyring_wire: Option<&[u8]>,
     depth: usize,
+    max_commits: usize,
 ) -> Result<ReplayFacts, ReplayError> {
     if depth > 32 {
         return Err(ReplayError::Invalid);
     }
     let restored =
-        restore_archived_public_history(policy_wires, commit_wires, workspace_id, keyring_wire)?;
+        restore_archived_public_history_with_limit(policy_wires, commit_wires, workspace_id, keyring_wire, max_commits)?;
     let restored_refs = restored.iter().map(Vec::as_slice).collect::<Vec<_>>();
     let commit_wires = restored_refs.as_slice();
-    let chain = scan_signed_chain_headers(
+    let chain = scan_signed_chain_headers_with_limit(
         policy_wires,
         commit_wires,
         checkpoint_wire,
         workspace_id,
         trusted_owner,
         pinned,
+        max_commits,
     )?;
     let recovery_segments =
         preflight_recovery(policy_wires, commit_wires, &chain).map_err(|_| ReplayError::Invalid)?;
@@ -1649,6 +1684,7 @@ fn replay_basic_content_depth(
                     pinned.filter(|pin| pin.sequence <= segment.base),
                     keyring_wire,
                     depth + 1,
+                    max_commits,
                 )?;
                 let failed_checkpoint = signed_checkpoint_at(sequence, &chain, commit_wires)?;
                 let failed_checkpoint_wire =
@@ -1663,6 +1699,7 @@ fn replay_basic_content_depth(
                     pinned.filter(|pin| pin.sequence <= sequence),
                     keyring_wire,
                     depth + 1,
+                    max_commits,
                 ) {
                     Err(ReplayError::Content(failed)) if failed == sequence => {}
                     _ => return Err(ReplayError::Invalid),
@@ -2213,7 +2250,7 @@ fn replay_basic_content_depth(
             Ok(())
         })();
         step.map_err(|error| match error {
-            ReplayError::Chain(_) | ReplayError::Content(_) => error,
+            ReplayError::Chain(_) | ReplayError::Content(_) | ReplayError::ResourceLimit => error,
             ReplayError::Invalid => ReplayError::Content(sequence),
         })?;
     }
@@ -4430,6 +4467,13 @@ mod tests {
             Some(&keyring),
         )
         .unwrap();
+        assert!(matches!(restore_archived_public_history_with_limit(
+            &[&policy1, &policy2], &[&migration], &workspace, Some(&keyring), 1
+        ), Err(ReplayError::ResourceLimit)));
+        let selected = restore_archived_public_history_with_limit(
+            &[&policy1, &policy2], &[&migration], &workspace, Some(&keyring), 2
+        ).unwrap();
+        assert_eq!(selected, restored);
         assert_eq!(restored.len(), 2);
         assert_eq!(hash(&restored[0]), hash(&public));
         let checkpoint = serde_json::to_vec(&json!({"v":1,"workspace_id":workspace,"owner_id":owner,

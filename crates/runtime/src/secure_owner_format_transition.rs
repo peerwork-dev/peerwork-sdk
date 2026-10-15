@@ -796,6 +796,7 @@ mod tests {
             required_features: vec![],
             allow_loopback_http: false,
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         };
         let store = SecureStateStore::open(&root.path().join("owner-format.state")).unwrap();
         let mut rows = serde_json::Map::new();
@@ -894,6 +895,7 @@ mod tests {
             state_dir: root.path().join("native-owner"),
             allow_loopback_http: true,
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         };
         let cancel = CancellationToken::new();
         let attached = SecureHistoricalOwnerAttach::new(config.clone())
@@ -1337,6 +1339,7 @@ mod tests {
             allow_loopback_http: true,
             required_features: vec![],
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         });
         let decided: serde_json::Value =
             serde_json::from_str(&decision.decide_json(invite_id, "ACCEPT").unwrap()).unwrap();
@@ -1396,6 +1399,7 @@ mod tests {
             required_features: vec![],
             allow_loopback_http: true,
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         };
         let before_consume = counts()["commits"].as_u64().unwrap();
         let member_action =
@@ -1528,6 +1532,7 @@ mod tests {
             state_dir: root.path().join("native-owner"),
             allow_loopback_http: true,
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         };
         let cancel = CancellationToken::new();
         let attached = SecureHistoricalOwnerAttach::new(config.clone())

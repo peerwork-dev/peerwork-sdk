@@ -488,6 +488,7 @@ mod tests {
             required_features: vec![],
             allow_loopback_http: true,
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         };
         let access = SecurePrivateDirectGrantRead::new(SecurePrivateDirectGrantReadConfig {
             read: read.clone(),
@@ -621,6 +622,7 @@ mod tests {
             allow_loopback_http: true,
             required_features: vec![],
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         });
         let runtime = Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
@@ -660,6 +662,7 @@ mod tests {
             allow_loopback_http: true,
             required_features: vec![],
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         });
         let recovered: serde_json::Value =
             serde_json::from_str(&reopened.retry_receive_json(invite_id).unwrap()).unwrap();
@@ -677,6 +680,7 @@ mod tests {
             required_features: vec![],
             allow_loopback_http: true,
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         };
         let output = SecureReadAccess::new(read).read_json().unwrap();
         let value: serde_json::Value = serde_json::from_str(&output).unwrap();
@@ -778,6 +782,7 @@ mod tests {
             allow_loopback_http: true,
             required_features: vec![],
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         });
         let runtime = Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
@@ -840,6 +845,7 @@ mod tests {
             allow_loopback_http: true,
             required_features: vec![],
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         });
         let recovered: serde_json::Value =
             serde_json::from_str(&reopened.retry_receive_json(invite_id).unwrap()).unwrap();
@@ -857,6 +863,7 @@ mod tests {
             required_features: vec![],
             allow_loopback_http: true,
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         };
         let output = SecureReadAccess::new(read).read_json().unwrap();
         let value: serde_json::Value = serde_json::from_str(&output).unwrap();

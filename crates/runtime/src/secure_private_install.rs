@@ -135,6 +135,7 @@ mod historical_v1_direct_test {
             state_dir: root.path().join("native-owner"),
             allow_loopback_http: true,
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         };
         let token = CancellationToken::new();
         let attached = SecureHistoricalOwnerAttach::new(config.clone())
@@ -483,6 +484,7 @@ mod format_two_direct_test {
             state_dir: root.path().join("native-owner"),
             allow_loopback_http: true,
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         };
         let token = CancellationToken::new();
         let owner = SecureOwnerWorkspaceCreate::new(config.clone());
@@ -1244,6 +1246,7 @@ impl SecurePrivatePackageInstall {
                 required_features: self.config.required_features.clone(),
                 allow_loopback_http: self.config.allow_loopback_http,
                 max_replay_artifact_bytes: self.config.max_replay_artifact_bytes,
+            max_replay_commits: self.config.max_replay_commits,
             });
             let (fresh, _) = access.replay_checked_install_generation(cancel, &floor)?;
             if fresh.origin() != prior.origin()
@@ -1328,6 +1331,7 @@ impl SecurePrivatePackageInstall {
             required_features: self.config.required_features.clone(),
             allow_loopback_http: self.config.allow_loopback_http,
             max_replay_artifact_bytes: self.config.max_replay_artifact_bytes,
+            max_replay_commits: self.config.max_replay_commits,
         });
         let fresh = access.replay_checked_attach_generation(cancel)?;
         if fresh.replay().owner_actor_id() != identity.actor_id()
@@ -3273,6 +3277,7 @@ mod tests {
             required_features: vec![],
             allow_loopback_http: false,
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         };
         let profile = serde_json::json!({
             "version":1,"origin":config.origin,"identity_path":config.identity_path,
@@ -3409,6 +3414,7 @@ mod tests {
             state_dir: root.path().join("sdk-state"),
             allow_loopback_http: true,
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         };
         let token = CancellationToken::new();
         let owner = SecureOwnerWorkspaceCreate::new(config.clone());
@@ -3621,6 +3627,7 @@ mod tests {
             state_dir: root.path().join("sdk-state"),
             allow_loopback_http: true,
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         });
         let stage = reopened
             .private_install_access(&created.workspace_id)
@@ -3677,6 +3684,7 @@ mod tests {
                 state_dir: root.path().join("sdk-state"),
                 allow_loopback_http: true,
                 max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
             });
             let stage = reopened
                 .private_install_access(&created.workspace_id)
@@ -3992,6 +4000,7 @@ mod tests {
             state_dir: root.path().join("sdk-state"),
             allow_loopback_http: true,
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         };
         let token = CancellationToken::new();
         let owner = SecureOwnerWorkspaceCreate::new(config.clone());
@@ -4673,6 +4682,7 @@ mod tests {
             state_dir: root.path().join("sdk-state"),
             allow_loopback_http: true,
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         });
         let token = CancellationToken::new();
         let runtime = Builder::new_current_thread().enable_all().build().unwrap();

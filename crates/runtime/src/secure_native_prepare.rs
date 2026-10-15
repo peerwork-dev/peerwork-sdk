@@ -3226,6 +3226,7 @@ mod tests {
             required_features: vec![],
             allow_loopback_http: true,
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         };
         let reconcile_config = profile_config.clone();
         let readback_config = profile_config.clone();

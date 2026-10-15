@@ -711,6 +711,7 @@ mod private_action_tests {
             allow_loopback_http: true,
             required_features: vec![],
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         });
         let invite_id = fixture["invite_id"].as_str().unwrap();
         let received: serde_json::Value =
@@ -730,6 +731,7 @@ mod private_action_tests {
             required_features: vec![],
             allow_loopback_http: true,
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         };
         let runtime = Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {

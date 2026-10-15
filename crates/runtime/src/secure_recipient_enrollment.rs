@@ -1464,6 +1464,7 @@ mod tests {
             required_features: vec![],
             allow_loopback_http: true,
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         };
         crate::secure_read_profile::SecureReadProfile::new(owner_config.clone())
             .read_latest_json()
@@ -1500,6 +1501,7 @@ mod tests {
             allow_loopback_http: true,
             required_features: vec![],
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         };
         let decision =
             crate::secure_public_decision::SecurePublicDecision::new(decision_config.clone());

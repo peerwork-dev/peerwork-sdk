@@ -4,18 +4,31 @@
 
 use crate::{
     secure_chain::{CheckpointPin, OwnerPin},
-    secure_replay::replay_basic_content,
+    secure_replay::{replay_basic_content_with_limit, ReplayError},
     wire_json::WireValue,
 };
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum JournalReplayError {
+    #[error("signed replay exceeds configured commit budget")]
+    ResourceLimit,
     #[error("signed journal or its exact final pins did not validate")]
     Invalid,
     #[error("structured journal is still seeding")]
     Seeding,
 }
+
+/// Caller-selected complete replay commit count, including restored archives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct JournalReplayLimits { max_commits: usize }
+impl JournalReplayLimits {
+    pub fn new(max_replay_commits: u64) -> Option<Self> {
+        usize::try_from(max_replay_commits).ok().filter(|n| *n > 0).map(|max_commits| Self { max_commits })
+    }
+    pub fn max_commits(self) -> usize { self.max_commits }
+}
+impl Default for JournalReplayLimits { fn default() -> Self { Self { max_commits: 102_400 } } }
 
 /// Pins must come from the runtime's protected identity, configured workspace,
 /// and previously accepted checkpoint. The low-level verifier cannot attest
@@ -155,6 +168,13 @@ impl ReplayedSecureJournal {
 pub fn replay_secure_journal_exact(
     input: JournalReplayInput<'_>,
 ) -> Result<ReplayedSecureJournal, JournalReplayError> {
+    replay_secure_journal_exact_with_limits(input, JournalReplayLimits::default())
+}
+
+pub fn replay_secure_journal_exact_with_limits(
+    input: JournalReplayInput<'_>,
+    limits: JournalReplayLimits,
+) -> Result<ReplayedSecureJournal, JournalReplayError> {
     let owner = OwnerPin {
         actor_id: input.owner_actor_id,
         signing_key: input.owner_signing_key,
@@ -164,7 +184,7 @@ pub fn replay_secure_journal_exact(
         head: input.final_head,
         policy_hash: input.final_policy_hash,
     };
-    let facts = replay_basic_content(
+    let facts = replay_basic_content_with_limit(
         input.policy_wires,
         input.commit_wires,
         input.checkpoint_wire,
@@ -172,8 +192,9 @@ pub fn replay_secure_journal_exact(
         Some(&owner),
         Some(&final_pin),
         input.keyring_wire,
+        limits.max_commits(),
     )
-    .map_err(|_| JournalReplayError::Invalid)?;
+    .map_err(|error| match error { ReplayError::ResourceLimit => JournalReplayError::ResourceLimit, _ => JournalReplayError::Invalid })?;
     // Replay may restore an authenticated archived PUBLIC prefix from signed
     // migration fragments. Reuse its scanner result, not the original
     // truncated transport suffix, for the final checkpoint binding.
@@ -399,5 +420,17 @@ mod tests {
             ..pins()
         })
         .is_err());
+    }
+}
+
+#[cfg(test)]
+mod replay_limit_tests {
+    use super::*;
+    #[test]
+    fn checked_commit_limits_preserve_default_and_refuse_zero() {
+        assert_eq!(JournalReplayLimits::default().max_commits(), 102_400);
+        assert!(JournalReplayLimits::new(0).is_none());
+        assert_eq!(JournalReplayLimits::new(27).unwrap().max_commits(), 27);
+        if usize::BITS < 64 { assert!(JournalReplayLimits::new(u64::MAX).is_none()); }
     }
 }

@@ -97,6 +97,7 @@ fn actual_service_completed_install_preserves_historical_end_and_current_floor()
         state_dir: root.join("native"),
         allow_loopback_http: true,
         max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
     };
     let attach = SecureHistoricalOwnerAttach::new(config.clone());
     let cancel = CancellationToken::new();

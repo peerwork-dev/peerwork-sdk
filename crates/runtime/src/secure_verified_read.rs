@@ -9,7 +9,7 @@ use peerwork_core::{
     canonical::Path,
     crypto::sha256_hex,
     replayed_secure_journal::{
-        replay_secure_journal_exact, JournalReplayError, JournalReplayInput, ReplayedSecureJournal,
+        replay_secure_journal_exact_with_limits, JournalReplayLimits, JournalReplayError, JournalReplayInput, ReplayedSecureJournal,
         StructureStatus,
     },
     secure_keyring::SecretKeyring,
@@ -21,6 +21,7 @@ use thiserror::Error;
 const MAX_PAGE: usize = 64 * 1024 * 1024;
 const DEFAULT_REPLAY_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_POLICIES: usize = 1024;
+pub(crate) fn default_replay_commits() -> u64 { 102_400 }
 
 /// Bounded canonical artifacts from exact transport pages. This is only an
 /// input to signed grant and journal verification, never an authority token.
@@ -35,13 +36,18 @@ pub(crate) struct UnverifiedSignedArtifacts {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SecureJournalReadBudget {
     pub max_replay_artifact_bytes: u64,
+    pub max_replay_commits: u64,
 }
 
 impl SecureJournalReadBudget {
     pub fn new(max_replay_artifact_bytes: u64) -> Option<Self> {
-        (max_replay_artifact_bytes > 0).then_some(Self {
-            max_replay_artifact_bytes,
-        })
+        Self::new_with_limits(max_replay_artifact_bytes, default_replay_commits())
+    }
+    pub fn new_with_limits(max_replay_artifact_bytes: u64,
+            max_replay_commits: u64) -> Option<Self> {
+        JournalReplayLimits::new(max_replay_commits)?;
+        usize::try_from(max_replay_artifact_bytes).ok().filter(|n| *n > 0)?;
+        Some(Self { max_replay_artifact_bytes, max_replay_commits })
     }
 }
 
@@ -49,6 +55,7 @@ impl Default for SecureJournalReadBudget {
     fn default() -> Self {
         Self {
             max_replay_artifact_bytes: DEFAULT_REPLAY_ARTIFACT_BYTES,
+            max_replay_commits: default_replay_commits(),
         }
     }
 }
@@ -83,6 +90,7 @@ pub(crate) struct TransportReplayedJournal {
     signed_policy_wires: Vec<Vec<u8>>,
     signed_commit_wires: Vec<Vec<u8>>,
     replay: ReplayedSecureJournal,
+    budget: SecureJournalReadBudget,
 }
 
 /// Read-only view of an origin-bound, fully replayed active history. A
@@ -191,7 +199,7 @@ impl TransportReplayedJournal {
         let ring_wire = keyring.canonical_wire().map_err(|_| VerifiedReadError::Content)?;
         let policy_refs = policies.iter().map(Vec::as_slice).collect::<Vec<_>>();
         let commit_refs = commits.iter().map(Vec::as_slice).collect::<Vec<_>>();
-        let replay = replay_secure_journal_exact(JournalReplayInput {
+        let replay = replay_with_budget(JournalReplayInput {
             policy_wires: &policy_refs, commit_wires: &commit_refs,
             checkpoint_wire: canonical.as_bytes(),
             workspace_id: self.replay.workspace_id(),
@@ -199,7 +207,7 @@ impl TransportReplayedJournal {
             owner_signing_key: self.replay.owner_signing_key(),
             final_sequence: sequence, final_head: Some(&head),
             final_policy_hash: &policy_hash, keyring_wire: Some(&ring_wire),
-        })?;
+        }, self.budget)?;
         if replay.structure_status() != StructureStatus::Active {
             return Err(VerifiedReadError::NotActive);
         }
@@ -210,7 +218,7 @@ impl TransportReplayedJournal {
             keyring_state: self.keyring_state,
             checkpoint_canonical_json: canonical,
             grant_keyring_sha256: self.grant_keyring_sha256.clone(),
-            signed_policy_wires: policies, signed_commit_wires: commits, replay,
+            signed_policy_wires: policies, signed_commit_wires: commits, replay, budget: self.budget,
         })
     }
 
@@ -382,7 +390,7 @@ fn replay_authenticated_pages_with_material(
         .map_err(|_| VerifiedReadError::Content)?;
     let policy_refs = policy_wires.iter().map(Vec::as_slice).collect::<Vec<_>>();
     let commit_refs = commit_wires.iter().map(Vec::as_slice).collect::<Vec<_>>();
-    let replay = replay_secure_journal_exact(JournalReplayInput {
+    let replay = replay_with_budget(JournalReplayInput {
         policy_wires: &policy_refs,
         commit_wires: &commit_refs,
         checkpoint_wire,
@@ -393,7 +401,7 @@ fn replay_authenticated_pages_with_material(
         final_head: head.as_deref(),
         final_policy_hash: &policy_hash,
         keyring_wire: keyring_wire.as_deref().map(Vec::as_slice),
-    })?;
+    }, budget)?;
     Ok(TransportReplayedJournal {
         origin: pages.origin().to_owned(),
         authority: pages.authority().to_owned(),
@@ -405,6 +413,15 @@ fn replay_authenticated_pages_with_material(
         signed_policy_wires: policy_wires,
         signed_commit_wires: commit_wires,
         replay,
+        budget,
+    })
+}
+
+fn replay_with_budget(input: JournalReplayInput<'_>, budget: SecureJournalReadBudget) -> Result<ReplayedSecureJournal, VerifiedReadError> {
+    let limits = JournalReplayLimits::new(budget.max_replay_commits).ok_or(VerifiedReadError::ResourceLimit)?;
+    replay_secure_journal_exact_with_limits(input, limits).map_err(|error| match error {
+        JournalReplayError::ResourceLimit => VerifiedReadError::ResourceLimit,
+        other => VerifiedReadError::Replay(other),
     })
 }
 
@@ -416,6 +433,7 @@ pub(crate) fn collect_unverified_artifacts(
         .ok()
         .filter(|limit| *limit > 0)
         .ok_or(VerifiedReadError::ResourceLimit)?;
+    let max_commits = JournalReplayLimits::new(budget.max_replay_commits).ok_or(VerifiedReadError::ResourceLimit)?.max_commits();
     let mut policy_wires = Vec::<Vec<u8>>::new();
     let mut commit_wires = Vec::<Vec<u8>>::new();
     let mut total_bytes = 0usize;
@@ -457,7 +475,7 @@ pub(crate) fn collect_unverified_artifacts(
                     &mut commit_wires,
                     encoded,
                     &mut total_bytes,
-                    usize::MAX,
+                    max_commits,
                     max_artifact_bytes,
                 )?;
             }
@@ -477,6 +495,14 @@ pub(crate) fn collect_unverified_artifacts(
 mod tests {
     use super::*;
 
+    #[test]
+    fn count_budget_is_checked_without_changing_wire_budget() {
+        assert!(SecureJournalReadBudget::new_with_limits(1024, 0).is_none());
+        let budget = SecureJournalReadBudget::new_with_limits(1024, 27).unwrap();
+        assert_eq!(budget.max_replay_artifact_bytes, 1024);
+        assert_eq!(budget.max_replay_commits, 27);
+        assert_eq!(SecureJournalReadBudget::new(1024).unwrap().max_replay_commits, 102_400);
+    }
     #[test]
     fn replay_artifact_buffer_overflow_refuses_before_insertion() {
         let mut rows = Vec::new();

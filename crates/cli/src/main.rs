@@ -727,7 +727,7 @@ fn owner_consumer_help(verb: &str) -> Option<serde_json::Value> {
         return Some(serde_json::json!({
             "command": verb,
             "usage": "secure owner-create CONFIG_JSON_FILE INPUT_JSON_FILE",
-            "config_fields": ["origin", "state_dir", "allow_loopback_http (optional, explicit opt-in)", "max_replay_artifact_bytes (optional)"],
+            "config_fields": ["origin", "state_dir", "allow_loopback_http (optional, explicit opt-in)", "max_replay_artifact_bytes (optional)", "max_replay_commits (optional, default 102400)"],
             "input_fields": ["name", "visibility (PUBLIC or PRIVATE)", "structured (optional)", "keep_encrypted_json (optional)", "coordination_version (optional)", "name_utf16 (optional only for an unpaired-surrogate name; mutually exclusive with nonempty name)"],
             "files": "Pass local protected file paths as the two arguments. Help does not open either file or contact a service."
         }));
@@ -1401,9 +1401,12 @@ fn secure_read_profile_command(args: &[String], private_grant: bool) -> Result<S
     let mut required_features = Vec::new();
     let mut allow_loopback_http = false;
     let mut max_replay_artifact_bytes = 64 * 1024 * 1024;
+    let mut max_replay_commits = 102_400;
     for arg in args {
         if arg == "--allow-loopback-http" {
             allow_loopback_http = true;
+        } else if let Some(value) = arg.strip_prefix("--max-replay-commits=") {
+            max_replay_commits = value.parse::<u64>().ok().filter(|n| *n > 0 && usize::try_from(*n).is_ok()).ok_or(("USAGE", "max replay commits must be positive and fit this platform".to_owned()))?;
         } else if let Some(value) = arg.strip_prefix("--max-replay-artifact-bytes=") {
             max_replay_artifact_bytes =
                 value
@@ -1451,6 +1454,7 @@ fn secure_read_profile_command(args: &[String], private_grant: bool) -> Result<S
         required_features,
         allow_loopback_http,
         max_replay_artifact_bytes,
+        max_replay_commits,
     };
     if config.owner_actor_id.is_some() != config.owner_key_id.is_some() {
         return Err((
@@ -1480,10 +1484,13 @@ fn secure_read_command(args: &[String]) -> Result<String, (&'static str, String)
     let mut values = Vec::new();
     let mut allow_loopback_http = false;
     let mut max_replay_artifact_bytes = 64 * 1024 * 1024;
+    let mut max_replay_commits = 102_400;
     let mut required_features = Vec::new();
     for arg in args {
         if arg == "--allow-loopback-http" {
             allow_loopback_http = true;
+        } else if let Some(value) = arg.strip_prefix("--max-replay-commits=") {
+            max_replay_commits = value.parse::<u64>().ok().filter(|n| *n > 0 && usize::try_from(*n).is_ok()).ok_or(("USAGE", "max replay commits must be positive and fit this platform".to_owned()))?;
         } else if let Some(value) = arg.strip_prefix("--max-replay-artifact-bytes=") {
             max_replay_artifact_bytes = value
                 .parse::<u64>()
@@ -1519,6 +1526,7 @@ fn secure_read_command(args: &[String]) -> Result<String, (&'static str, String)
         required_features,
         allow_loopback_http,
         max_replay_artifact_bytes,
+        max_replay_commits,
     });
     let cancel = KernelCancellationToken::new();
     let _interrupts = InterruptMonitor::start(cancel.clone()).map_err(|_| {

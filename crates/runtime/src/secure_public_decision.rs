@@ -55,6 +55,8 @@ pub struct PublicDecisionConfig {
     pub required_features: Vec<String>,
     #[serde(default = "default_replay_artifact_bytes")]
     pub max_replay_artifact_bytes: u64,
+    #[serde(default = "crate::secure_verified_read::default_replay_commits")]
+    pub max_replay_commits: u64,
 }
 
 fn default_replay_artifact_bytes() -> u64 {
@@ -459,6 +461,7 @@ impl SecurePublicDecision {
             required_features: self.config.required_features.clone(),
             allow_loopback_http: self.config.allow_loopback_http,
             max_replay_artifact_bytes: self.config.max_replay_artifact_bytes,
+            max_replay_commits: self.config.max_replay_commits,
         };
         SecureReadProfile::new(profile).with_latest_replay(cancel, |source| {
             if source.origin() != self.config.origin
@@ -596,6 +599,7 @@ impl SecurePublicDecision {
             required_features: self.config.required_features.clone(),
             allow_loopback_http: self.config.allow_loopback_http,
             max_replay_artifact_bytes: self.config.max_replay_artifact_bytes,
+            max_replay_commits: self.config.max_replay_commits,
         };
         let budget = SecureJournalReadBudget::new(config.max_replay_artifact_bytes)
             .ok_or(PublicDecisionError::Grant)?;
@@ -916,6 +920,7 @@ impl SecurePublicDecision {
             required_features: self.config.required_features.clone(),
             allow_loopback_http: self.config.allow_loopback_http,
             max_replay_artifact_bytes: self.config.max_replay_artifact_bytes,
+            max_replay_commits: self.config.max_replay_commits,
         };
         SecureReadProfile::new(profile).with_latest_replay(cancel, |source| {
             if source.origin() != self.config.origin

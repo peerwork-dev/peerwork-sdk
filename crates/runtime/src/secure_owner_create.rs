@@ -28,7 +28,7 @@ use crate::{
         create_private_state_directory, missing_in_private_parent, read_private_file_bounded,
         SecureStateStore,
     },
-    secure_verified_read::{replay_authenticated_pages_with_budget, SecureJournalReadBudget},
+    secure_verified_read::{replay_authenticated_pages_with_budget, SecureJournalReadBudget, VerifiedReadError},
     transport::{HttpTransport, TransportConfig, TransportError},
 };
 use peerwork_core::{
@@ -67,6 +67,8 @@ pub struct SecureOwnerCreateConfig {
     pub allow_loopback_http: bool,
     #[serde(default = "default_budget")]
     pub max_replay_artifact_bytes: u64,
+    #[serde(default = "crate::secure_verified_read::default_replay_commits")]
+    pub max_replay_commits: u64,
 }
 
 /// Explicitly bootstrap the native identity for one configured Owner profile.
@@ -921,10 +923,10 @@ impl SecureOwnerWorkspaceCreate {
         let pages = reader
             .authenticated_pages(&client, &identity)
             .map_err(|_| SecureOwnerCreateError::Verification)?;
-        let budget = SecureJournalReadBudget::new(self.config.max_replay_artifact_bytes)
+        let budget = SecureJournalReadBudget::new_with_limits(self.config.max_replay_artifact_bytes, self.config.max_replay_commits)
             .ok_or(SecureOwnerCreateError::ResourceLimit)?;
         let replay = replay_authenticated_pages_with_budget(&pages, &lifecycle, budget)
-            .map_err(|_| SecureOwnerCreateError::Verification)?;
+            .map_err(|e| match e { VerifiedReadError::ResourceLimit => SecureOwnerCreateError::ResourceLimit, _ => SecureOwnerCreateError::Verification })?;
         if replay.origin() != self.config.origin
             || replay.source_actor_id() != identity.actor_id()
             || replay.source_key_id() != identity.key_id()
@@ -1035,6 +1037,7 @@ impl SecureOwnerWorkspaceCreate {
             required_features: Vec::new(),
             allow_loopback_http: self.config.allow_loopback_http,
             max_replay_artifact_bytes: self.config.max_replay_artifact_bytes,
+            max_replay_commits: self.config.max_replay_commits,
         }
     }
     fn workspace_dir(&self, workspace_id: &str) -> PathBuf {
@@ -1329,6 +1332,7 @@ mod tests {
         let access = SecureOwnerWorkspaceCreate::new(SecureOwnerCreateConfig {
             origin: "http://127.0.0.1:1/".into(), state_dir: state.clone(),
             allow_loopback_http: true, max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         });
         let input = SecureOwnerCreateInput { name: "Owner error regression".into(),
             name_utf16: None, visibility: "PRIVATE".into(), structured: true,
@@ -1367,6 +1371,7 @@ mod tests {
             state_dir: state_dir.clone(),
             allow_loopback_http: true,
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         };
 
         // Read-only Owner identity lookup must not bootstrap an absent profile.
@@ -1432,6 +1437,7 @@ mod tests {
             state_dir: root.path().to_owned(),
             allow_loopback_http: true,
             max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         };
         let access = SecureOwnerWorkspaceCreate::new(config.clone());
         let missing = access.operations().unwrap_err();
@@ -1463,6 +1469,7 @@ mod tests {
         let access = SecureOwnerWorkspaceCreate::new(SecureOwnerCreateConfig {
             origin: "http://127.0.0.1:1/".into(), state_dir: parent.join("absent-state"),
             allow_loopback_http: true, max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         });
         assert!(matches!(access.operations(), Err(SecureOwnerCreateError::Identity)));
         assert!(!parent.exists());
@@ -1515,6 +1522,7 @@ mod tests {
             state_dir: root.path().join("sdk-state"),
             allow_loopback_http: true,
             max_replay_artifact_bytes: default_budget(),
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
         };
         let token = CancellationToken::new();
         let runtime = Builder::new_current_thread().enable_all().build().unwrap();
