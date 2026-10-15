@@ -10,25 +10,25 @@ import subprocess
 import sys
 
 if len(sys.argv) != 3:
-    raise SystemExit("usage: prepare_private_wiki_task.py ACCEPTED_C5E_ROOTFS NEW_TASK_DIRECTORY")
+    raise SystemExit("usage: prepare_private_wiki_task.py ACCEPTED_8900_ROOTFS NEW_TASK_DIRECTORY")
 rootfs_lexical = Path(sys.argv[1])
 assert rootfs_lexical.name == "rootfs"
 artifact_root = rootfs_lexical.parent.resolve(strict=True)
-assert artifact_root.name == "current-sdk-c5e7a3d"
+assert artifact_root.name == "unified-sdk-20261015"
 rootfs = rootfs_lexical.resolve(strict=True)
 assert rootfs.name == "rootfs-managed" and rootfs.parent.name == "historical-direct-873a37d"
 def sha(path): return hashlib.sha256(Path(path).read_bytes()).hexdigest()
-assert sha(artifact_root / "sdk-source-c5e7a3d.tar") == "1366bc1f37e2fcbc068a96ef3f407d9ba2aa7adb8b43f92e132c7fc10741ed5b"
-assert sha(artifact_root / "source-manifest-c5e7a3d.sha256") == "3b9de2409d0afe40e915cba8f913bee98f3c0367f6d55cb6df49f47fe3d9badf"
-assert sha(artifact_root / "artifact-manifest.sha256") == "271e94cf10c812b09bad974358c51b8bbb157afbb7d99fb02c3b90c44e36dd92"
-cli = rootfs / "work/sdk-current-c5e7a3d/target/release/peerwork"
-assert sha(cli) == "d41590a8becd0140f1a84fdcffff2eaf75e3b7fd5d237dfb79400d61d4fc605e"
-source = rootfs / "work/sdk-current-c5e7a3d"
-subprocess.run(["sha256sum", "-c", "--status", str(artifact_root / "source-manifest-c5e7a3d.sha256")], cwd=source, check=True)
+assert sha(artifact_root / "sdk-source-8900e80.tar") == "1e530eda285f686dee0b60cb068f7900fcd0791e22f726c1577069391706326a"
+assert sha(artifact_root / "source-manifest-8900e80.sha256") == "900334eb7e1d67559d32f6b5a9422492889261a5cfa50343f174cce3cfcde639"
+assert sha(artifact_root / "artifact-manifest.sha256") == "0ec1001fd1200c42cb248c949b8d2222b8db256ed0b09ff0b7bb47fbd3d90e55"
+cli = rootfs / "work/sdk-unified-8900e80/target/release/peerwork"
+assert sha(cli) == "4271a27c7c713210a5fe058a6f7357b93964b470a7a5ca8199e1083beaf2b3fc"
+source = rootfs / "work/sdk-unified-8900e80"
+subprocess.run(["sha256sum", "-c", "--status", str(artifact_root / "source-manifest-8900e80.sha256")], cwd=source, check=True)
 for rel, expected in {
-    "crates/runtime/src/secure_owner_create.rs":"5a886ca74e0e61c432a0298bf6a37c449062c5fe0a5827eb149939bf31bd9f32",
+    "crates/runtime/src/secure_owner_create.rs":"5cdc4bac78a096ef1397f88b093016e8b96c858d055bb9df9a8468da6f220cdf",
     "crates/runtime/src/secure_state.rs":"e9c08b0d53d8c5d74f3aa11d0e5a9bc4ef7eb6618424837609fa557cad7a0cb2",
-    "crates/cli/src/main.rs":"7f49ba758243a59c588761c037607c2f592f5f22d4ec022c4ee8e969b533133d",
+    "crates/cli/src/main.rs":"30726c49d865fa91e7d3f5e67bd8db7074ada3bafe27eecf3be8d6e42f3c7818",
 }.items(): assert sha(source / rel) == expected
 assert len((artifact_root / "artifact-manifest.sha256").read_text().splitlines()) == 14
 
@@ -44,8 +44,8 @@ operator = state / "operator"; operator.mkdir(mode=0o700)
 selected = actor / "selected-source"; selected.mkdir(mode=0o700)
 
 for rel in ("docs/agent-entry.md",):
-    assert sha(source / rel) == "923f0182848171008da8b6e905df102534c48267402a1b8c5c9527ff743df07b"
-assert sha(source / "README.md") == "53af28ae253db4219085066fceeb44cb88b2d1b92351747ba3706116b016a5a8"
+    assert sha(source / rel) == "f4c00d82563130c7afeb0a7e02100008e8eecbbb6f522753f6dcfa9e70bb9131"
+assert sha(source / "README.md") == "6ec287637283b6ad46672891fb3d90758eb160602d51e4de87bf69e290cb7f0a"
 shutil.copyfile(cli, actor / "peerwork"); (actor / "peerwork").chmod(0o500)
 shutil.copyfile(source / "docs/agent-entry.md", actor / "AGENT_ENTRY.md"); (actor / "AGENT_ENTRY.md").chmod(0o400)
 shutil.copyfile(source / "README.md", actor / "CLIENT_README.md"); (actor / "CLIENT_README.md").chmod(0o400)

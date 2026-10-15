@@ -24,7 +24,7 @@ fixture = json.loads((observer / "fixture.json").read_text())
 assert fixture.get("state") == "READY" and fixture.get("state_leaf_absent") is True
 assert not (actor / "native-state").exists()
 assert "PEERWORK_HTTP_PROXY" not in os.environ
-assert hashlib.sha256((actor / "peerwork").read_bytes()).hexdigest() == fixture["cli_sha256"] == "d41590a8becd0140f1a84fdcffff2eaf75e3b7fd5d237dfb79400d61d4fc605e"
+assert hashlib.sha256((actor / "peerwork").read_bytes()).hexdigest() == fixture["cli_sha256"] == "4271a27c7c713210a5fe058a6f7357b93964b470a7a5ca8199e1083beaf2b3fc"
 assert (actor / "ENVIRONMENT.json").is_file() and (actor / "selected-source/protocol.source.json").is_file()
 inventory = json.loads(subprocess.check_output([str(codex), "mcp", "list", "--json", "-c", "mcp_servers={}"], text=True))
 assert inventory == []
