@@ -98,7 +98,7 @@ impl SecurePrivateDirectGrantRead {
             return Err(SecurePrivateDirectGrantReadError::Cancelled);
         }
         let config = &self.config.read;
-        let budget = SecureJournalReadBudget::new(config.max_replay_artifact_bytes)
+        let budget = SecureJournalReadBudget::new_with_limits(config.max_replay_artifact_bytes, config.max_replay_commits)
             .ok_or(SecurePrivateDirectGrantReadError::ResourceLimit)?;
         let identity = KernelIdentity::open(&config.identity_path)
             .map_err(|_| SecurePrivateDirectGrantReadError::Local)?;
@@ -235,7 +235,7 @@ impl SecurePrivateDirectGrantRead {
             )
             .map_err(|_| SecurePrivateDirectGrantReadError::Verification)?;
         let replay = replay_authenticated_pages_with_grant(&pages, &lifecycle, &grant, budget)
-            .map_err(|_| SecurePrivateDirectGrantReadError::Verification)?;
+            .map_err(|e| match e { crate::secure_verified_read::VerifiedReadError::ResourceLimit => SecurePrivateDirectGrantReadError::ResourceLimit, _ => SecurePrivateDirectGrantReadError::Verification })?;
         let proof = pending
             .bind_to_replay(&recipient, now_ms()?, &replay)
             .map_err(|_| SecurePrivateDirectGrantReadError::Verification)?
@@ -251,7 +251,8 @@ impl SecurePrivateDirectGrantRead {
         drop(runtime);
         SecureReadAccess::new(config.clone())
             .read_json_with_cancel(cancel)
-            .map_err(|_| {
+            .map_err(|e| {
+                if matches!(e, crate::secure_read_access::SecureReadAccessError::ResourceLimit) { return SecurePrivateDirectGrantReadError::ResourceLimit; }
                 if cancel.is_cancelled() {
                     SecurePrivateDirectGrantReadError::Cancelled
                 } else {

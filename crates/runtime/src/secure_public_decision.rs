@@ -601,8 +601,8 @@ impl SecurePublicDecision {
             max_replay_artifact_bytes: self.config.max_replay_artifact_bytes,
             max_replay_commits: self.config.max_replay_commits,
         };
-        let budget = SecureJournalReadBudget::new(config.max_replay_artifact_bytes)
-            .ok_or(PublicDecisionError::Grant)?;
+        let budget = SecureJournalReadBudget::new_with_limits(config.max_replay_artifact_bytes, config.max_replay_commits)
+            .ok_or(PublicDecisionError::Read(crate::secure_read_access::SecureReadAccessError::ResourceLimit))?;
         let mut reader = SecureJournalRead::open(
             &config.read_state_path,
             client,
@@ -633,7 +633,7 @@ impl SecurePublicDecision {
             .authenticated_pages(client, identity)
             .map_err(|_| PublicDecisionError::Grant)?;
         let artifacts =
-            collect_unverified_artifacts(&pages, budget).map_err(|_| PublicDecisionError::Grant)?;
+            collect_unverified_artifacts(&pages, budget).map_err(|e| match e { crate::secure_verified_read::VerifiedReadError::ResourceLimit => PublicDecisionError::Read(crate::secure_read_access::SecureReadAccessError::ResourceLimit), _ => PublicDecisionError::Grant })?;
         let last_policy = artifacts
             .policy_wires
             .last()
@@ -768,7 +768,7 @@ impl SecurePublicDecision {
         };
         let replay =
             replay_authenticated_pages_with_grant(&pages, &lifecycle, &replay_grant, budget)
-                .map_err(|_| PublicDecisionError::Grant)?;
+                .map_err(|e| match e { crate::secure_verified_read::VerifiedReadError::ResourceLimit => PublicDecisionError::Read(crate::secure_read_access::SecureReadAccessError::ResourceLimit), _ => PublicDecisionError::Grant })?;
         let historical_head = if historical_commit_count == 0 {
             None
         } else {
