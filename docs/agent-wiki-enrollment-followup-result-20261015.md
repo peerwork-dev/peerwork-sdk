@@ -1,0 +1,31 @@
+# Wiki follow-up: workspace created, installation unresolved
+
+One authorized natural-Agent capture `24127` exited0 in49.056589s, with35 JSON events/14 completed commands and no deadline expiry. **Workflow: INCOMPLETE. Business: NOT ACHIEVED.** It created one PRIVATE structured workspace, but did not install the selected Wiki package or create the requested note. Its truthful final handoff reports that limit. Exit0 is not acceptance. The original failed `3627` attempt remains unchanged and is not reclassified.
+
+This follow-up used the already verified optimized unified SDK source `8900e8066ef8d07117a3b85771e831e4f84ffba8` (CLI `4271a27c7c713210a5fe058a6f7357b93964b470a7a5ca8199e1083beaf2b3fc`) after the typed-enrollment/entry improvement and three-interface installed regression. Harness `219d2a31c42ef545a7135a373c57ee1dcda95637` changed only actual cohort/source/CLI/public entry/README pins and paths. Business prompt `90046381b42138b8d0ded45f9c364cea372a15dda571e3366aaa9678dfcf4011`, author helper, f828 Wiki source `05300473589495f96080b96c78962acc0c0ecc8bf1ae82d84f214042a6d30ca2`, compiled protocol `33f799e4b168b28032348a26e8c5d320cb2c43550e3effc60f584dc4561717a3`, all18 policy settings, 480s budget, capture route and public-entry-only inputs stayed unchanged. The runner did not preselect `PEERWORK_HTTP_PROXY`, add hints or retry the actor.
+
+Fresh setup `86264` reached READY with no native identity/workspace/commits, unconsumed one-shot successful-backend `wiki.create` response loss, and protected source/PEM/service inputs only. Root inspected that boundary before authorizing:
+
+```
+env -u PEERWORK_HTTP_PROXY python3 -B tests/agent-trial/capture_wiki_attempt.py /root/workdir/message/.test-data/agent-wiki-enrollment-20261015-ready /root/.local/bin/codex
+```
+
+## Observable workflow and business effects
+
+The Agent read the README and supplied entry, checked version/capabilities/help, explicitly imported the selected Owner PEM, inspected identity/existing Owner state and selected Wiki package metadata/source. It also tried an absent repository-relative integration `AGENTS.md` path. Command6 printed the full public `material.json` (~34KB combined package output), contrary to the entry's pass-the-file guidance. No private-key contents were observed; this is an output-instruction deviation, not a claimed private-key leak.
+
+Command7 `owner-create` returned `TRANSPORT_FAILED` with the new guidance. Command8 explicitly selected the runtime `HTTP_PROXY` via `PEERWORK_HTTP_PROXY` for the same config/identity and succeeded. The signed Owner read showed PRIVATE/ACTIVE sequence1. This proves actual recovery after a typed transport refusal; it is not first-attempt route compliance and does not establish the original3627 underlying cause.
+
+The later supported `owner-install-pending` call with the workspace ID returned `NOT_FOUND: owner-create operation was not found`; it selects the PUBLIC installer, while this created workspace is PRIVATE. The following PRIVATE install list was empty. Command13 then passed the compiled material directly to the staged `owner-private-install-begin` verb and received `INSTALL_INPUT_INVALID`. No corrected install, install continuation or Wiki action followed. No pending install needed durable recovery after that validation refusal. The final signed read remained sequence1/built-in instances only, with no welcome note.
+
+Persisted Control SQLite has exactly one workspace/bootstrap commit, zero accepted `wiki.create` commits, native identity state and no response-drop metadata. The drop hook was never consumed. These effects do not describe every enrollment HTTP/state transition. Independent Luna assessment (`observer/agent-attempt-1/assessment.md`, SHA `356a0849fdbe81f7304d552f535a556d984b2c425d19ad0863903c77919e37d7`) separately concludes incomplete workflow/business not achieved.
+
+Read-only source diagnosis identifies an input-discovery boundary: CLI `owner-private-install-begin` parses `PrivatePackageInstallBeginInput` (`stage_id`, instance/entrypoint/grants), but the supplied material is `{v:1,closure,bindings:{}}`. The separate direct verb requires `PrivateDirectInstallBeginInput` and its expected digests/instance/grants wrapper. The safe refusal is expected for the wrong shape; this is not evidence that a valid native installation fails. Core owns the bounded generic CLI input-help/error/capability follow-up. No product patch, new capture, SDK build or acceptance weakening was performed here.
+
+## Evidence and shutdown
+
+Root `/root/workdir/message/.test-data/agent-wiki-enrollment-20261015-ready`; attempt `observer/agent-attempt-1`. Raw events SHA `05ea3424d1f03fddbe6b6bd0a1dccef2fecaa7e0dc62c317cf6e43ca46569b8d`; timing `7d10500379b087f0143566d5c38aefccbd2f998182bfac50b07e5b11e3b91dff`; process `42a487835f7cbc4c96f6f002783076986da2c9fade969a5ff1f35ab4bd01c940`; effects `06fa33f55d866d25e993afa6b4b779e1e52968f514dfde6c658e66b31f472e53`. `observer/trial-evidence.json` binds42 exact files, including raw/timing/process/effects/assessment, fixture/inputs, Control SQLite **and WAL**, source pins and shutdown (`82362b9014f7c7b72a3fc8bedcc93389802f27b2eb97082494434bbecdbfe38f`). SHM is ephemeral; protected key files/native secrets are retained locally but not exported into this evidence roster. The14-entry SDK artifact manifest still verifies unchanged.
+
+Owned service PID1250224/start ticks146881995 was verified before SIGTERM. Its kernel wait status15 was observed while unreaped, proving exit-15; setup PID1250170 was then interrupted and waited through owned handle86264 (actual terminal130). Both PIDs are absent and service stderr is empty. `observer/shutdown.json` SHA `3da35e111387343ece75debecc6d4d1f04c7334c69b6ad6e67b40cc43c00d659` preserves the method/status. All owned processes are terminal.
+
+`observer/acquisition-scorecard-row.json` supplies the existing scorecard's minimized operator-synthetic exclusion row (`4bb98a0f279ce146809a1f3b754429010bbe1f60b4fa3a5c67ab91010ff5468b`); external acquisition/public-installation rates remain unmeasured. This trial does not close natural-Agent business, uncertain-action recovery, external population, platform or publication gates. No repeated sampling occurred.
