@@ -23,7 +23,7 @@ const paths = { state_path: join(sourceDir, 'agent.state'), pem_path: join(sourc
   intent_db_path: join(sourceDir, 'workspace-intents.sqlite'), options_path: join(sourceDir, 'install-options.json'),
   material_path: join(sourceDir, 'install-material.json') };
 writeFileSync(paths.pem_path, privateKey.export({ type: 'pkcs8', format: 'pem' }), { mode: 0o600, flag: 'wx' });
-const agent = await SecureAgentClient.open({ baseUrl: origin, privateKey,
+const agent = await SecureAgentClient.open({ baseUrl: new URL(origin).origin, privateKey,
   statePath: paths.state_path, intentDbPath: paths.intent_db_path });
 try {
   const workspace = (await agent.create('Partial object stage source', 'PRIVATE', { structure: true })).workspaceId;
