@@ -1,0 +1,42 @@
+# T091: deterministic migration overlap contract
+
+READ-ONLY discriminator at SDK `ff43d30`. Migration-vs-migration overlap remains **UNVERIFIED**. No SDK, service, test, build or network invocation occurred in this task. This finding does not reopen the accepted normal migration, old-client continuation or process-interruption results.
+
+`KernelAccess::migrate_ts_store` (`kernel_access.rs:181–194`) checks the selected identity and opens a client before importing. `KernelClient::migrate_ts_store` (`kernel_client.rs:322–338`) delegates to the same importer. `kernel_intents.rs:321–355` first obtains the checked source/backup and verified rows; `:397–490` holds a SQLite **IMMEDIATE transaction** through destination conflict checks, original signed-row/receipt proof, intent and accepted-response inserts, and one commit. Identical existing rows are permitted; unrelated/changed rows refuse before commit. `KernelIntentJournal::open` (`:231–246`) sets a five-second busy timeout; `initialize` (`:759`) also takes IMMEDIATE, and `set_wal_with_retry` (`:740–757`) separately bounds WAL mode-change contention. This is SQLite locking, not the protected-file replacement lock tested by T030.
+
+Existing evidence is narrower. T073 (`docs/installed-ts-store-continuation-result-20261015.md`) imports and then continues the old TS client sequentially; original host EXIT1 and its offline201 closure remain separate. T077 (`docs/installed-migration-crash-result-20261015.md`) kills one synchronous importer at WAL payload entry, observes neither row, and retries to exact1accepted+1pending. It does not start a contender. `kernel_intents.rs:1346–1406` has a real two-process **prepare** collision unit, not signed migration overlap; `:1307–1336` tests WAL transition against a reader thread. Neither closes migration concurrency or async acceptance. The current importer, kernel client and journal hashes below equal the corresponding T075 source pins, so those existing results apply to their recorded unchanged mechanisms without relabeling their old installed cohort as current main.
+
+## Smallest next actual gate
+
+Use the retained **T077** quiesced source/checked backup and its explicit synthetic identity, not T073's source subsequently advanced by its old client. Resolve its runtime from accepted `.test-data/t077/paths.json`; host source points to `archive-sdk-t064-20261015/rootfs/work/t077-migration-crash`. Reopen only its reference service DB at the saved exact origin, with the public fixture's known receipt seed `Buffer.alloc(32,74)` / namespace `t077` (`tests/installed-migration-crash/fixture.mjs:17–24`); add a server-only entry, not another producer. Do not copy profiles, read a hidden key, recreate commands, or reset the service DB. New destination journal lives in ONE newly created private task leaf; both processes use exactly that absolute journal path and the existing explicit fixture identity path. Source/backup remain at their original paths. A public `pending()` prewarm establishes empty schema/discovery and both original IDs NOT_FOUND before tracing.
+
+A is an own-child synchronous installed Python `KernelClient.migrate_ts_store(source, backup, [key_id])`. B is the same coherent cohort's public CLI:
+
+```text
+peerwork kernel migrate ORIGIN NEW_JOURNAL EXISTING_IDENTITY SOURCE EXISTING_BACKUP --trusted-signer=KEY_ID --allow-loopback-http
+```
+
+The existing CLI parser (`crates/cli/src/main.rs:1576–1625`) accepts these five positional inputs; neither process submits any saved command. Pin the chosen coherent source/artifact manifests and loaded Python/native/CLI paths before and after; do not mix an old native module with current wrappers. The T089 coherent artifacts are available, while T077's original52a package remains separately attributed.
+
+Minimal control changes belong in a NEW task-local derivative of `tests/migration-wal-barrier/trace.py`, leaving accepted T076/T077 bytes immutable. Add an explicit hold callback/pipe at the already qualified exact WAL payload-entry stop. Keep A ptrace-stopped; launch B and wait for B's public terminal BEFORE releasing A. Persist B's safe error/status, argv, start/end and whether A was still stopped. Then continue A at the same pending syscall using PTRACE_SYSCALL and drain/wait normally. No random sleep, SIGKILL, private buffer read or native SQL is needed. Timeouts are failure bounds, not evidence of contention. Fail closed on a missed boundary or any earlier unexpected exact destination WAL write.
+
+**Existing-backup prerequisite:** `ts_migration.rs:205–225` fsyncs only a newly created backup. Required reuse of an existing backup cannot arm the old fsync-only tracer. Add and first qualify a distinct existing-backup mode: match successful `close(fd)` of the exact read-only backup opened by the child, then require the subsequent exact destination WAL header/frame-header completions and payload-entry stop. This event is NOT a new durability/fsync claim. Source ordering (`ts_migration.rs:227–241`, `backed_up_rows:160–181`, importer:321–355) establishes backup/source readback equality and signed row validation before target import writes. Prewarm and refusal of earlier WAL writes distinguish import from initialization. Qualify hold/release with public dummy children: exact existing-backup close plus WAL sequence hits and releases normally; wrong backup, pre-arm headers, short payload and missing close do not hit. If actual SQLite close/write ordering differs, stop on that original fixture and diagnose rather than invent an arming event or create a new backup silently. Existing namespace is `unshare --user --map-root-user --mount --fork`; no PID namespace, so `/proc/<own-child>/fd` matches. Trace paths/counts/offsets/results only.
+
+While A remains stopped holding the import reservation, B should terminate with a bounded busy/locked refusal and no success report. Its lock acquisition can be in client initialization, before import: that proves public migration exclusion, NOT two entered import transactions. Do not preassign an unobserved public error code; retain its actual safe message/code and distinguish SQLite refusal from transport/input failure. If B unexpectedly succeeds or only hangs, preserve that result and diagnose the exact paths/boundary; do not call it an overlap pass. Releasing A must return1accepted+1pending. Retry B with the SAME source/backup after A completes must return the same counts idempotently. Fresh public status/pending must bind original accepted ID/workspace/result, pending ID/JWS digest, and exactly one pending row. Compare source/backup hashes before/after, protected backup mode, and public actor/key plus existing identity file metadata; never inspect native journal/WAL contents. Reference observer must show zero additional command POSTs and unchanged1command/1workspace, with service closed/waited in finally. Caller cancellation, changing old TS writers, crashes, Windows/macOS, power loss and Agent workflow remain outside this single overlap gate.
+
+## Source pins and timing
+
+Few relevant SHA256 pins at the read-only baseline:
+
+| Source | SHA256 |
+| --- | --- |
+| `crates/runtime/src/ts_migration.rs` | `78c3fa950d92595006854a50cf7825c8974aca8601cae5b31b98e091321ee53b` |
+| `crates/runtime/src/kernel_client.rs` | `1794fe215b9038ff531c230eb4c12473083b55a385ca798034cd56077b5cce82` |
+| `crates/runtime/src/kernel_intents.rs` | `d44a09e47df4041b3bebcdbd2c1285dc197779a4d8c525ddec609010f3b9f97a` |
+| `crates/runtime/src/kernel_access.rs` | `2d2536d30e1ae51fa31c2b7863175a1199a3896c18122111499cda124a08a3dd` |
+| `tests/migration-wal-barrier/trace.py` | `fb90b68aa04afbf1179d30edd0c3d2f04531b1e186af32a493c8d364a1808b83` |
+| `tests/installed-migration-crash/host.py` | `e415e3cdb80728e3896e5254340ba690010b95326817cfe6388772353c8ff1fb` |
+| `tests/installed-migration-crash/consumer.py` | `49e3bd84d1f9183a2c571a5c5b4c3cbf502773a85b4bb353bc80039217343ef1` |
+| `tests/installed-migration-crash/fixture.mjs` | `8a78fb6d55c9bde2e28867d5a901993bae95f056993dea4fb8bdf3a930404ced` |
+
+Actual ledger start15:59:37UTC. Concrete feasibility sent16:02:06; existing-backup arm limitation sent16:02:30. No runtime wait, failed SDK attempt or live handle exists. Exact reading/writing subtimings are unmeasured; root acceptance/integration timing remains root-owned. The actionable next task is the tiny qualified hold/release + existing-backup close control and ONE retained-fixture Python/CLI overlap, not another source audit or ordinary migration rerun.
