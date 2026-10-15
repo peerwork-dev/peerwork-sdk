@@ -93,6 +93,9 @@ def run_child(argv, env, backup_path, wal_path, stop_at_payload, timeout=20, on_
                 args = struct.unpack_from("<6Q", raw, 32)
                 if nr == 3:  # close(fd), exact existing checked backup only
                     pending = ("backup_close", args[0], fd_path(out, args[0]))
+                elif nr == 72:  # fcntl(fd, command, pointer); never dereference pointer
+                    path = fd_path(out, args[0])
+                    pending = ("fcntl", args[0], args[1], path in (wal_path[:-4], wal_path[:-4] + "-shm"))
                 elif nr == 18:  # pwrite64(fd, user_buffer, count, offset)
                     fd, count, offset = args[0], args[2], args[3]
                     path = fd_path(out, fd)
@@ -128,6 +131,10 @@ def run_child(argv, env, backup_path, wal_path, stop_at_payload, timeout=20, on_
                         armed = True
                     events.append({"phase": "exit", "syscall": "close", "fd": pending[1],
                                    "exact_backup": matched, "return": result, "armed": armed})
+                elif pending and pending[0] == "fcntl":
+                    events.append({"phase": "exit", "syscall": "fcntl", "fd": pending[1],
+                                   "command": pending[2], "exact_destination_lock_file": pending[3],
+                                   "return": result})
                 elif pending and pending[0] == "pwrite64":
                     _, fd, _path, count, offset, exact_wal = pending
                     if result > 0 and exact_wal and offset == 0 and count >= 32 and result >= 32:
