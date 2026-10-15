@@ -1,0 +1,23 @@
+# T102: pre-request admission and recoverable fixture signer
+
+Both TEST-DRIVER local preflights pass. No HTTP, service, workspace, business command, SDK build or product edit occurred. T100's first pre-HTTP EPERM, later pacing timeout, lost signer and incomplete conversion remain unchanged; this package does not turn that fixture into a pass or resume it.
+
+Source `bbf6ca6` is based on4167589. `tests/fixture-driver/admission.mjs` exports `PostAdmission.run(makePublicRequest)`: it waits for the caller's90-per-minute admission BEFORE invoking the callback. Future conversion context must use `gate.run(() => agent.post(path, body, originalId))`, and legacy submit similarly. The downstream fetch wrapper must only observe/forward, never do this wait. Thus original reference request construction, fresh proof and15,000ms AbortSignal occur AFTER admission. The service120/min bound is unchanged; there is no test/server override. Queueing serializes permit selection without making the network request hold the admission queue.
+
+`order.mjs` uses a deterministic injected clock and explicit deferred release, not sleep or HTTP. The first90 callbacks construct/call normally. The91st is blocked with constructor/call counts still90. Advancing the injected clock to the next window and releasing the gate constructs/calls exactly once; selected timeout stays15,000 and the real newly constructed AbortSignal is not aborted. An independent admission-refusal negative never invokes its callback. Original deadline behavior is not replaced or stretched. This proves ordering, not an actual long-wait network request or completed migration.
+
+`identity.mjs` alone creates a NEW0700 runtime directory and exclusive0600 Ed25519 PKCS#8 file. It explicitly fsyncs that file and its parent directory, then stores PUBLIC fixture metadata naming that exact selected path, actor/key IDs, phase `LOCAL_SIGNER_READY_BUSINESS_NOT_STARTED`, and no pending business operation. It never overwrites an existing identity; host freshness refuses an existing fixture. No original T100 path is touched. This is standard explicit serialization of a newly generated test signer, not private-state extraction or a new SDK feature.
+
+A SEPARATE process (`identity-worker.mjs`) imports that exact PEM with Node `createPrivateKey` and reference `signingIdentityFromKey`. Its public actor/key equal the creator's, and the parent verifies its Ed25519 signature over one fixed public qualification message. ParentPID1554677 and workerPID1554688 differ. File inode/size/mtime and0600 mode are unchanged. The signature is returned only through the local pipe; persisted evidence contains its SHA256/public IDs/verification result, not the private PEM or its hash. The pending metadata explicitly requires reopening the selected existing signer, never generating a replacement. Runtime serialization/fsync succeeded; no power-loss/crash guarantee is claimed from this check.
+
+Actual approved-context entrypoint:
+
+```text
+unshare --user --map-root-user --mount --fork /bin/bash -euc 'python3 tests/fixture-driver/host.py'
+```
+
+Host mechanically requires every Node syntax check to exit0 before either local test or the sole identity creator runs. It starts no HTTP listener and makes no network request. This upfront qualified namespace reuses the known Node-child context, avoiding T100's already diagnosed default-context EPERM rather than resampling it. Original T100 failure counts are not reset.
+
+Both first local gates exited0, stderr empty; host exit0. Admission order ran17:09:40.262000–17:09:40.294104UTC,0.032102s. Separate-process identity ran17:09:40.294361–17:09:40.559251UTC,0.264898s. ActualNode is24.20.0. Source/evidence/commands/terminal/public metadata hashes use the existing `.test-data/t102/evidence.json` format; the private PEM and all old fixture/key/state contents are excluded. No raw key or private-state value enters logs/Git/manifest. Public fixture metadata remains in its protected fresh directory and is an explicit future reopen locator, not a business handoff completion.
+
+Ledger start17:07:00; first resumed tool clock17:08:07; both checks complete17:09:40. Earlier runtime/tool interruption and T100 failures remain recorded separately, not SDK failures. Preparation and approval subdurations are not individually measured or reconstructed. Root acceptance/integration timing is root-owned. T103 may start a NEW genuine fixture only under its own authorization, after these two gates; this package itself proves no HTTP conversion, bulk feasibility, >64MiB acceptance or natural Agent compliance.
