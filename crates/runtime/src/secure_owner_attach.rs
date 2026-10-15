@@ -480,6 +480,8 @@ struct QuarantinedDirectInstallPlan {
     version: u8,
     #[serde(default)]
     completed_map: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    completed_checkpoint: Option<CompletedDirectInstallCheckpoint>,
     origin: String,
     plan_id: String,
     attach_id: String,
@@ -501,6 +503,15 @@ struct QuarantinedDirectInstallPlan {
     ts_intent_sha256: String,
     options_sha256: String,
     material_sha256: String,
+}
+
+/// Original signed END, separate from the selected source/read floor.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct CompletedDirectInstallCheckpoint {
+    sequence: u64,
+    head: String,
+    policy_hash: String,
 }
 
 struct LoadedDirectInstallPlan {
@@ -1039,7 +1050,7 @@ impl SecureHistoricalOwnerAttach {
             intent_hash: selected.intent_hash.clone(),
             begin_command_id: verified.imported.command_id,
             begin_commit_hash: verified.commit_hash,
-            end_sequence,
+            end_sequence: end_sequence.sequence,
             protocol_digest: verified.imported.protocol_digest,
             status: "COMPLETED_IN_SIGNED_REPLAY".into(),
         })
@@ -1062,11 +1073,14 @@ impl SecureHistoricalOwnerAttach {
         original_commit_hash: &str,
         completed_map: bool,
         verified_context: Option<&VerifiedLegacyDirectBegin>,
+        completed_checkpoint: Option<&CompletedDirectInstallCheckpoint>,
     ) -> Result<QuarantinedDirectInstallPlan, HistoricalOwnerAttachError> {
         let invalid = || HistoricalOwnerAttachError::SourceUnresolved;
         if !valid_digest(ts_digest) || !valid_digest(pem_digest)
             || !valid_digest(intent_digest) || !valid_digest(original_commit_hash)
             || source.visibility != "PRIVATE" || source.head.is_none()
+            || completed_checkpoint.is_some_and(|cp| !completed_map || cp.sequence > source.sequence
+                || cp.sequence < 3 || !valid_digest(&cp.head) || !valid_digest(&cp.policy_hash))
             || (if completed_map {
                 source.completed_install_intent.as_ref().is_none_or(|row|
                     row.instance_id != pending.instance_id || row.intent_hash != pending.intent_hash)
@@ -1112,7 +1126,7 @@ impl SecureHistoricalOwnerAttach {
         ).as_bytes()));
         let manifest = QuarantinedDirectInstallPlan {
             version: if contextual { 3 } else if options_sha256 == pending.intent_hash { 1 } else { 2 },
-            completed_map, origin: self.config.origin.clone(), plan_id: plan_id.clone(), attach_id,
+            completed_map, completed_checkpoint: completed_checkpoint.cloned(), origin: self.config.origin.clone(), plan_id: plan_id.clone(), attach_id,
             workspace_id: input.workspace_id.clone(),
             owner_actor_id: input.expected_owner_actor_id.clone(),
             owner_key_id: input.expected_owner_key_id.clone(),
@@ -1698,6 +1712,9 @@ impl SecureHistoricalOwnerAttach {
             || manifest.workspace_id != row.input.workspace_id
             || row.pending_direct_install_command_id.as_deref() != Some(manifest.command_id.as_str())
             || row.pending_direct_install_instance_id.as_deref() != Some(manifest.instance_id.as_str())
+            || manifest.completed_checkpoint.as_ref().is_some_and(|cp| !manifest.completed_map
+                || cp.sequence > manifest.source_sequence || cp.sequence < 3
+                || !valid_digest(&cp.head) || !valid_digest(&cp.policy_hash))
             || (manifest.completed_map && (!row.pending_direct_install_begin_accepted
                 || !row.pending_direct_install_complete))
             || manifest.owner_actor_id != row.input.expected_owner_actor_id
@@ -2138,7 +2155,7 @@ impl SecureHistoricalOwnerAttach {
         )?;
         let plan = self.save_quarantined_direct_install_plan(
             &input, &source, &ts_digest, &pem_digest, &intent_digest,
-            pending, options_json, material_json, &verified.commit_hash, false, Some(&verified),
+            pending, options_json, material_json, &verified.commit_hash, false, Some(&verified), None,
         )?;
         let store = SecureStateStore::open(&self.history_path())
             .map_err(|_| HistoricalOwnerAttachError::Local)?;
@@ -2237,7 +2254,7 @@ impl SecureHistoricalOwnerAttach {
             verify_completed_direct_install(selected, options_json.as_bytes(),
                 material_json.as_bytes(), ring, replayed, owner, &input)
         })?;
-        if end_sequence != source.sequence {
+        if end_sequence.sequence > source.sequence {
             return Err(HistoricalOwnerAttachError::SourceUnresolved);
         }
         let request = Zeroizing::new(verified.imported.request_wire.clone());
@@ -2253,6 +2270,7 @@ impl SecureHistoricalOwnerAttach {
         let plan = self.save_quarantined_direct_install_plan(
             &input, &source, &ts_digest, &pem_digest, &intent_digest,
             &pending, options_json, material_json, &verified.commit_hash, true, Some(&verified),
+            (end_sequence.sequence != source.sequence).then_some(&end_sequence),
         )?;
         let store = SecureStateStore::open(&self.history_path())
             .map_err(|_| HistoricalOwnerAttachError::Local)?;
@@ -2571,7 +2589,8 @@ impl SecureHistoricalOwnerAttach {
             }
             return self.resume_pending_direct_install_attachment(attach_id, &row, cancel);
         }
-        if row.attached_sequence.is_some() && row.kernel_import.is_some() {
+        if row.attached_sequence.is_some() && row.kernel_import.is_some()
+            && completed_direct_plan.is_none() {
             self.checked_kernel_commands(attach_id)?;
             SecureReadProfile::new(self.profile_config(&row.input))
                 .read_latest_json_with_cancel(cancel)
@@ -2637,7 +2656,10 @@ impl SecureHistoricalOwnerAttach {
                 || verified.imported.instance_id != plan.manifest.instance_id
                 || verified.commit_hash != plan.manifest.original_commit_hash
                 || sha256_hex(&verified.imported.request_wire) != plan.manifest.request_sha256
-                || end_sequence != row.source_sequence
+                || (match plan.manifest.completed_checkpoint.as_ref() {
+                    Some(saved) => saved != &end_sequence || end_sequence.sequence > row.source_sequence,
+                    None => end_sequence.sequence != row.source_sequence,
+                })
             { return Err(HistoricalOwnerAttachError::Conflict); }
         }
         for command in &source.retained_member_commands {
@@ -6540,7 +6562,7 @@ fn verify_completed_direct_install(
     replayed: &TransportReplayedJournal,
     owner: &KernelIdentity,
     input: &HistoricalOwnerAttachInput,
-) -> Result<(VerifiedLegacyDirectBegin, u64), HistoricalOwnerAttachError> {
+) -> Result<(VerifiedLegacyDirectBegin, CompletedDirectInstallCheckpoint), HistoricalOwnerAttachError> {
     let invalid = || HistoricalOwnerAttachError::SourceUnresolved;
     if replayed.replay().structure_status() != StructureStatus::Active
         || replayed.replay().sequence() < 3
@@ -6656,7 +6678,7 @@ fn verify_completed_direct_install(
                     == Some(verified.imported.entrypoint.as_str())
         })
     { return Err(invalid()); }
-    Ok((verified, end_sequence))
+    Ok((verified, CompletedDirectInstallCheckpoint { sequence: end_sequence, head: end_head, policy_hash: end_policy }))
 }
 
 /// Bind a complete selected source to its signed prefix, independently of
@@ -7873,6 +7895,7 @@ mod tests {
     static ATTACH_FAULT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     include!("secure_owner_attach/object_stage_tests.rs");
     include!("secure_owner_attach/object_middle_tests.rs");
+    include!("secure_owner_attach/completed_read_floor_tests.rs");
 
     #[test]
     fn orphan_plan_partial_staging_never_strands_or_clobbers_retry() {
@@ -12547,7 +12570,7 @@ mod tests {
             let plan = attach.save_quarantined_direct_install_plan(
                 &input, &parsed_source, &ts_digest, &pem_digest, &intent_digest,
                 saved_packet, std::str::from_utf8(&options).unwrap(),
-                std::str::from_utf8(&material).unwrap(), &original_hash, false, None,
+                std::str::from_utf8(&material).unwrap(), &original_hash, false, None, None,
             ).unwrap();
             assert_eq!(plan.command_id, command);
             assert_eq!(plan.attach_id.len(), 43);
