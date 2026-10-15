@@ -26,17 +26,24 @@ def run(label,phase,root,argv,expected=0):
  assert r.returncode==expected,(label,phase,r.stderr);return r
 
 def prepare():
- assert not BASE.exists();BASE.mkdir(mode=0o755)
+ if BASE.exists():assert '--resume-preparation' in sys.argv
+ else:BASE.mkdir(mode=0o755)
+ BASE.chmod(0o755)
  for label in ['python','node','cli']:
-  root=BASE/label;root.mkdir(mode=0o755)
+  root=BASE/label;existed=root.exists()
+  if existed:assert '--resume-preparation' in sys.argv
+  else:root.mkdir(mode=0o755)
+  root.chmod(0o755)
   # Explicit whitelist: no old /home, /work, /packages, keys, profiles or SDK install.
-  for name in ['usr','lib64']:
+  for name in ([] if existed else ['usr','lib64']):
    shutil.copytree(PUBLIC/label/name,root/name,ignore=shutil.ignore_patterns('peerwork') if label=='cli' else None)
-  for name in ['home','etc','packages']:(root/name).mkdir(mode=0o755)
-  (root/'tmp').mkdir(mode=0o1777);(root/'tmp').chmod(0o1777)
-  home=root/HOME.lstrip('/');home.mkdir(mode=0o700);os.chown(home,65534,65534)
+  for name in ['home','etc','packages']:(root/name).mkdir(mode=0o755,exist_ok=True)
+  (root/'tmp').mkdir(mode=0o1777,exist_ok=True);(root/'tmp').chmod(0o1777)
+  home=root/HOME.lstrip('/');home.mkdir(mode=0o700,exist_ok=True);assert not list(home.iterdir());home.chmod(0o700);os.chown(home,65534,65534)
   (root/'etc/hosts').write_text('127.0.0.1 localhost\n::1 localhost\n');(root/'etc/nsswitch.conf').write_text('hosts: files\npasswd: files\ngroup: files\n');(root/'etc/passwd').write_text('nobody:x:65534:65534:synthetic:'+HOME+':/usr/bin/false\n');(root/'etc/group').write_text('nogroup:x:65534:\n')
   for p in (root/'etc').iterdir():p.chmod(0o644)
+  for directory in root.rglob('*'):
+   if directory.is_dir() and directory!=home and not directory.is_relative_to(home):directory.chmod(0o1777 if directory==root/'tmp' else 0o755)
   dump(E/(label+'-runtime-before.json'),inventory(root,label))
   run(label,'loader-preflight',root,['/lib64/ld-linux-x86-64.so.2','--version'])
   if label=='python':run(label,'installer-preflight',root,['/usr/bin/python3','-m','pip','--version'])
@@ -101,6 +108,7 @@ def tls_fixture():
 def execute():
  before=guard();dump(E/'cohort-before.json',before)
  assert (E/'prepared.json').exists()
+ qualification=json.loads((E/'qualification.json').read_text());assert qualification['result']=='PASS' and len(qualification['calls'])==3 and all(x['exit_code']==0 for x in qualification['calls'])
  # Gate source syntax/parse before installers, then all loaded-runtime preflights before first SDK HTTPS call.
  for p in [HERE/'host.py',HERE/'python.py']:compile(p.read_text(),str(p),'exec')
  subprocess.run(['/root/workdir/message/.tools/node-v24.20.0-linux-x64/bin/node','--check',str(HERE/'node.cjs')],check=True)
