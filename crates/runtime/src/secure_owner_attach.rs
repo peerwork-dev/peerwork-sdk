@@ -60,7 +60,7 @@ static TEST_STOP_AFTER_ORPHAN_REPLAN_INTENT: AtomicBool = AtomicBool::new(false)
 static TEST_STOP_AFTER_IMPORTED_MULTIPART_STAGE_ROW: AtomicBool = AtomicBool::new(false);
 
 mod object_stage;
-pub use object_stage::HistoricalObjectStagePendingInventory;
+pub use object_stage::{HistoricalObjectStagePendingInventory, HistoricalObjectStageIntentInventory, HistoricalObjectStageIntentCandidate};
 
 const MAX_SOURCE: usize = 64 * 1024 * 1024;
 const MAX_HISTORY: usize = 4096;
@@ -145,6 +145,8 @@ pub struct HistoricalOwnerAttachResult {
     pub orphan_replan_command_id: Option<String>,
     #[serde(default)]
     pub pending_object_stage_command_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object_stage_intent_marker_hash: Option<String>,
     #[serde(default)]
     pub pending_object_stage_instance_id: Option<String>,
     #[serde(default)]
@@ -5195,7 +5197,8 @@ fn summary(id: &str, row: &SavedAttach) -> HistoricalOwnerAttachResult {
             .and_then(|stage| stage.replan.as_ref().map(|replan| replan.stage_id.clone())),
         orphan_replan_command_id: row.orphan_package_stage.as_ref()
             .and_then(|stage| stage.replan.as_ref().map(|replan| replan.command_id.clone())),
-        pending_object_stage_command_id: row.pending_object_stage.as_ref().map(|stage| stage.command_id.clone()),
+        pending_object_stage_command_id: row.pending_object_stage.as_ref().filter(|stage| valid_token(&stage.command_id)).map(|stage| stage.command_id.clone()),
+        object_stage_intent_marker_hash: row.pending_object_stage.as_ref().filter(|stage| valid_digest(&stage.command_id)).map(|stage| stage.command_id.clone()),
         pending_object_stage_instance_id: row.pending_object_stage.as_ref().map(|stage| stage.instance_id.clone()),
         pending_object_stage_status: row.pending_object_stage.as_ref().map(|stage| {
             if stage.complete { "ACCEPTED" } else if stage.native_begin_command_id.is_some() { "NATIVE_BEGIN_CONTINUATION_PENDING" }
@@ -7896,6 +7899,7 @@ mod tests {
     include!("secure_owner_attach/object_stage_tests.rs");
     include!("secure_owner_attach/object_middle_tests.rs");
     include!("secure_owner_attach/object_first_tests.rs");
+    include!("secure_owner_attach/object_marker_tests.rs");
     include!("secure_owner_attach/completed_read_floor_tests.rs");
 
     #[test]

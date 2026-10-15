@@ -39,6 +39,8 @@ pub(super) struct LegacyPendingObjectStage {
     path: String,
     request: Zeroizing<Vec<u8>>,
     marker: LegacyCompletedObjectStage,
+    marker_floor: Option<u64>,
+    orphan_command: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -98,6 +100,7 @@ struct NativeObjectStagePacket {
 pub(super) static TEST_STOP_AFTER_OBJECT_REMAINDER_ROW: AtomicBool = AtomicBool::new(false);
 
 struct VerifiedObjectStage {
+    marker_only: bool,
     applied: bool,
     source_complete: bool,
     accepted_parts: usize,
@@ -158,6 +161,9 @@ pub(super) fn parse_pending_object_stage(
     command: &str,
     instance: &str,
 ) -> Result<LegacyPendingObjectStage, HistoricalOwnerAttachError> {
+    if valid_digest(command) {
+        return parse_marker_object_stage(value, input, command, instance);
+    }
     if !valid_token(command)
         || !valid_token(instance)
         || !empty_optional_map(value.get("protocol_install_intents"))
@@ -227,6 +233,84 @@ pub(super) fn parse_pending_object_stage(
         instance_id: instance.into(),
         path,
         request: Zeroizing::new(canonical(body)?.into_bytes()),
+        marker_floor: None,
+        orphan_command: None,
+        marker: LegacyCompletedObjectStage {
+            request_hash,
+            proof,
+            parts_wire: Zeroizing::new(
+                canonical(marker.get("parts").ok_or_else(invalid)?)?.into_bytes(),
+            ),
+        },
+    })
+}
+
+// A marker selection has no original saved packet. Its SHA256 is a selection
+// identity, never a command ID or a claim about a missing signature/nonce.
+fn parse_marker_object_stage(
+    value: &WireValue,
+    input: &HistoricalOwnerAttachInput,
+    hash: &str,
+    instance: &str,
+) -> Result<LegacyPendingObjectStage, HistoricalOwnerAttachError> {
+    if !valid_token(instance)
+        || !empty_optional_map(value.get("pending"))
+        || !empty_optional_map(value.get("protocol_install_intents"))
+    {
+        return Err(invalid());
+    }
+    let Some(WireValue::Object(markers)) = value.get("protocol_object_stage_intents") else {
+        return Err(invalid());
+    };
+    let key = format!("{}.{}", input.workspace_id, instance)
+        .encode_utf16()
+        .collect::<Vec<_>>();
+    if markers.len() != 1 || markers[0].0 != key {
+        return Err(invalid());
+    }
+    let marker = &markers[0].1;
+    let orphan = marker
+        .get("command_id")
+        .map(|_| scalar(marker, "command_id"))
+        .transpose()?;
+    if marker.object_len() != Some(3 + usize::from(orphan.is_some()))
+        || orphan.as_ref().is_some_and(|id| !valid_token(id))
+        || sha256_hex(canonical(marker)?.as_bytes()) != hash
+    {
+        return Err(invalid());
+    }
+    let request_hash = scalar(marker, "request_hash")?;
+    let proof = normalize_protocol_object_source_proof(marker.get("proof").ok_or_else(invalid)?)
+        .map_err(|_| invalid())?;
+    let source = proof.get("source").ok_or_else(invalid)?;
+    if !valid_digest(&request_hash)
+        || scalar(&proof, "workspace_id")? != input.workspace_id
+        || scalar(source, "owner_id")? != input.expected_owner_actor_id
+        || scalar(source, "owner_key")? != input.expected_owner_key_id
+    {
+        return Err(invalid());
+    }
+    let Some(WireValue::Array(parts)) = marker.get("parts") else {
+        return Err(invalid());
+    };
+    let mut logical = read_complete_protocol_object_source(&proof, parts).map_err(|_| invalid())?;
+    scrub(&mut logical);
+    let floor = value
+        .get("workspaces")
+        .and_then(|v| v.get(&input.workspace_id))
+        .and_then(|v| v.get("checkpoint"))
+        .and_then(|v| exact_u64(v.get("sequence")))
+        .ok_or_else(invalid)?;
+    Ok(LegacyPendingObjectStage {
+        command_id: hash.into(),
+        instance_id: instance.into(),
+        path: format!(
+            "/api/workspace/v1/secure/workspaces/{}/commits",
+            input.workspace_id
+        ),
+        request: Zeroizing::new(vec![]),
+        marker_floor: Some(floor),
+        orphan_command: orphan,
         marker: LegacyCompletedObjectStage {
             request_hash,
             proof,
@@ -285,78 +369,131 @@ fn verify_object_stage(
         return Err(invalid());
     };
     let part_count = descriptors.len();
-    let request = parse_wire_json_bounded(&pending.request, 64, 220_000).map_err(|_| invalid())?;
-    let payload = request
-        .get("commit")
-        .and_then(|commit| commit.get("payload"))
-        .ok_or_else(invalid)?;
-    let sequence = exact_u64(payload.get("sequence")).ok_or_else(invalid)?;
-    let part_index = usize::try_from(
-        sequence
-            .checked_sub(base)
-            .and_then(|n| n.checked_sub(1))
-            .ok_or_else(invalid)?,
-    )
-    .map_err(|_| invalid())?;
-    // Any selected in-range part is supported. Unsent tail parts are authored
-    // only from the retained complete proof/material after signed-prefix proof.
-    if part_index >= part_count {
-        return Err(invalid());
-    }
     let stage_end = base.checked_add(part_count as u64).ok_or_else(invalid)?;
-    let (prior, checkpoint) = replay_install_step_predecessor(replayed, ring, input, sequence - 1)?;
-    verify_protocol_object_source_prefix(proof, &prior).map_err(|_| invalid())?;
-    if prior.structure_status() != StructureStatus::Active {
-        return Err(invalid());
-    }
-    let policy_hash = scalar(source, "policy_hash")?;
-    let policy = replayed
-        .signed_policy_by_hash(&policy_hash)
-        .ok_or_else(invalid)?;
-    let epoch = exact_u64(payload.get("epoch")).ok_or_else(invalid)?;
     let parts = parse_wire_json_bounded(&pending.marker.parts_wire, 64, MAX_SOURCE)
         .map_err(|_| invalid())?;
     let WireValue::Array(parts) = parts else {
         return Err(invalid());
     };
-    let selected = parts.get(part_index).ok_or_else(invalid)?;
-    let commit_hash = verify_saved_private_protocol_object_stage(
-        &pending.request,
-        proof,
-        selected,
-        part_index,
-        &checkpoint,
-        policy,
-        &pending.command_id,
-        owner.signing_key(),
-        ring.key_at(epoch).ok_or_else(invalid)?,
-    )
-    .map_err(|_| invalid())?;
-    let applied = if let Some(signed) = replayed.signed_commit_wires().get((sequence - 1) as usize)
+    let policy_hash = scalar(source, "policy_hash")?;
+    let policy = replayed
+        .signed_policy_by_hash(&policy_hash)
+        .ok_or_else(invalid)?;
+    let epoch = ring.epochs().last().ok_or_else(invalid)?;
+    let (applied, commit_hash, part_index, mut accepted_parts, tail_start) = if let Some(floor) =
+        pending.marker_floor
     {
-        if sha256_hex(signed) != commit_hash {
+        if floor < base || floor > stage_end {
             return Err(invalid());
         }
-        true
-    } else if replayed.replay().sequence() == sequence - 1
-        && replayed.replay().head() == prior.head()
-        && replayed.replay().policy_hash() == prior.policy_hash()
-    {
-        false
+        let (prefix, _) = replay_install_step_predecessor(replayed, ring, input, floor)?;
+        verify_protocol_object_source_prefix(proof, &prefix).map_err(|_| invalid())?;
+        if prefix.structure_status() != StructureStatus::Active {
+            return Err(invalid());
+        }
+        let mut initial = floor;
+        if let Some(orphan) = pending.orphan_command.as_ref() {
+            let mut found = None;
+            for (i, signed) in replayed.signed_commit_wires().iter().enumerate() {
+                let wire = parse_wire_json_bounded(signed, 64, 220_000).map_err(|_| invalid())?;
+                if wire
+                    .get("payload")
+                    .and_then(|p| p.get("command_id"))
+                    .and_then(WireValue::as_string)
+                    .as_ref()
+                    == Some(orphan)
+                {
+                    if found.replace(i as u64 + 1).is_some() {
+                        return Err(invalid());
+                    }
+                }
+            }
+            if let Some(sequence) = found {
+                if sequence <= base
+                    || sequence > stage_end
+                    || !(sequence == floor || sequence == floor + 1)
+                {
+                    return Err(invalid());
+                }
+                initial = initial.max(sequence);
+            }
+        }
+        let (prefix, _) = replay_install_step_predecessor(replayed, ring, input, initial)?;
+        verify_protocol_object_source_prefix(proof, &prefix).map_err(|_| invalid())?;
+        if prefix.structure_status() != StructureStatus::Active {
+            return Err(invalid());
+        }
+        let count = usize::try_from(initial - base).map_err(|_| invalid())?;
+        (true, pending.command_id.clone(), count, count, count)
     } else {
-        return Err(invalid());
+        let request =
+            parse_wire_json_bounded(&pending.request, 64, 220_000).map_err(|_| invalid())?;
+        let payload = request
+            .get("commit")
+            .and_then(|v| v.get("payload"))
+            .ok_or_else(invalid)?;
+        let sequence = exact_u64(payload.get("sequence")).ok_or_else(invalid)?;
+        let index = usize::try_from(
+            sequence
+                .checked_sub(base)
+                .and_then(|n| n.checked_sub(1))
+                .ok_or_else(invalid)?,
+        )
+        .map_err(|_| invalid())?;
+        if index >= part_count {
+            return Err(invalid());
+        }
+        let (prior, checkpoint) =
+            replay_install_step_predecessor(replayed, ring, input, sequence - 1)?;
+        verify_protocol_object_source_prefix(proof, &prior).map_err(|_| invalid())?;
+        if prior.structure_status() != StructureStatus::Active {
+            return Err(invalid());
+        }
+        let hash = verify_saved_private_protocol_object_stage(
+            &pending.request,
+            proof,
+            parts.get(index).ok_or_else(invalid)?,
+            index,
+            &checkpoint,
+            policy,
+            &pending.command_id,
+            owner.signing_key(),
+            ring.key_at(exact_u64(payload.get("epoch")).ok_or_else(invalid)?)
+                .ok_or_else(invalid)?,
+        )
+        .map_err(|_| invalid())?;
+        let applied =
+            if let Some(signed) = replayed.signed_commit_wires().get((sequence - 1) as usize) {
+                if sha256_hex(signed) != hash {
+                    return Err(invalid());
+                }
+                true
+            } else if replayed.replay().sequence() == sequence - 1
+                && replayed.replay().head() == prior.head()
+                && replayed.replay().policy_hash() == prior.policy_hash()
+            {
+                false
+            } else {
+                return Err(invalid());
+            };
+        (
+            applied,
+            hash,
+            index,
+            index + usize::from(applied),
+            index + 1,
+        )
     };
-    let mut accepted_parts = part_index + usize::from(applied);
     if let Some(remaining) = remaining {
-        if !applied
+        if (!applied && pending.marker_floor.is_none())
             || remaining.packets.is_empty()
-            || remaining.packets.len() > part_count - part_index - 1
+            || remaining.packets.len() > part_count - tail_start
         {
             return Err(invalid());
         }
         let mut ids = std::collections::HashSet::new();
         for (offset, packet) in remaining.packets.iter().enumerate() {
-            let index = part_index + 1 + offset;
+            let index = tail_start + offset;
             if packet.part_index != index
                 || packet.command_id == pending.command_id
                 || !valid_token(&packet.command_id)
@@ -481,7 +618,12 @@ fn verify_object_stage(
         scrub(&mut logical);
     }
     Ok(VerifiedObjectStage {
-        applied,
+        marker_only: pending.marker_floor.is_some(),
+        applied: if pending.marker_floor.is_some() {
+            accepted_parts > 0
+        } else {
+            applied
+        },
         source_complete,
         accepted_parts,
         commit_hash,
@@ -506,7 +648,7 @@ fn selection_input(
     if material.is_empty() {
         return Err(HistoricalOwnerAttachError::ObjectMaterialRequired);
     }
-    if !valid_token(command)
+    if !(valid_token(command) || valid_digest(command))
         || options.is_empty()
         || options.len() > 2 * 1024 * 1024
         || material.len() > 8 * 1024 * 1024
@@ -559,7 +701,7 @@ impl SecureHistoricalOwnerAttach {
 
     /// Inspect one original selected object-stage packet with full caller
     /// options/material. This authors no packet and creates no attachment row.
-    pub fn inspect_pending_object_stage(
+    fn inspect_selected_object_stage(
         &self,
         input: &HistoricalOwnerAttachInput,
         command: &str,
@@ -619,7 +761,7 @@ impl SecureHistoricalOwnerAttach {
         })
     }
 
-    pub fn attach_pending_object_stage(
+    fn attach_selected_object_stage(
         &self,
         input: HistoricalOwnerAttachInput,
         command: &str,
@@ -728,7 +870,7 @@ impl SecureHistoricalOwnerAttach {
             return Err(local());
         }
         let manifest = ObjectStagePlan {
-            version: 1,
+            version: if valid_digest(command) { 2 } else { 1 },
             origin: self.config.origin.clone(),
             plan_id: plan_id.clone(),
             attach_id: attach_id.clone(),
@@ -911,7 +1053,7 @@ impl SecureHistoricalOwnerAttach {
     ) -> Result<LoadedObjectStagePlan, HistoricalOwnerAttachError> {
         let saved = row.pending_object_stage.as_ref().ok_or_else(invalid)?;
         if !valid_token(&saved.plan_id)
-            || !valid_token(&saved.command_id)
+            || !(valid_token(&saved.command_id) || valid_digest(&saved.command_id))
             || !valid_token(&saved.instance_id)
             || row.pending_direct_install_plan_id.is_some()
             || row.pending_multipart_plan_id.is_some()
@@ -937,7 +1079,12 @@ impl SecureHistoricalOwnerAttach {
         let manifest_bytes = load("plan-manifest.state", 32_768)?;
         let manifest: ObjectStagePlan =
             serde_json::from_slice(&manifest_bytes).map_err(|_| local())?;
-        if manifest.version != 1
+        if manifest.version
+            != if valid_digest(&manifest.command_id) {
+                2
+            } else {
+                1
+            }
             || manifest.origin != self.config.origin
             || manifest.plan_id != saved.plan_id
             || manifest.attach_id != attach_id
@@ -1399,7 +1546,7 @@ impl SecureHistoricalOwnerAttach {
         remaining: Option<NativeObjectRemainder>,
         cancel: &CancellationToken,
     ) -> Result<HistoricalOwnerAttachResult, HistoricalOwnerAttachError> {
-        if !original.applied
+        if (!original.applied && !original.marker_only)
             || original.source_complete
             || original.accepted_parts >= original.part_count
         {
@@ -1574,7 +1721,7 @@ impl SecureHistoricalOwnerAttach {
 
     /// Reconcile the original final stage packet, then explicitly authorize a
     /// distinct durable native BEGIN and ordinary attach-owned continuation.
-    pub fn recover_pending_object_stage(
+    fn recover_selected_object_stage(
         &self,
         attach_id: &str,
         expected_command: &str,
@@ -1582,7 +1729,7 @@ impl SecureHistoricalOwnerAttach {
     ) -> Result<HistoricalOwnerAttachResult, HistoricalOwnerAttachError> {
         if !valid_history_config(&self.config)
             || !valid_token(attach_id)
-            || !valid_token(expected_command)
+            || !(valid_token(expected_command) || valid_digest(expected_command))
         {
             return Err(HistoricalOwnerAttachError::Input);
         }
@@ -1640,7 +1787,7 @@ impl SecureHistoricalOwnerAttach {
         if verified.commit_hash != plan.manifest.original_commit_hash {
             return Err(HistoricalOwnerAttachError::Conflict);
         }
-        if !verified.applied {
+        if !verified.marker_only && !verified.applied {
             let mut journal = SecureIntentJournal::open(
                 &self
                     .workspace_dir(&row.input.workspace_id)
@@ -1831,5 +1978,156 @@ impl SecureHistoricalOwnerAttach {
             &after,
             None,
         )
+    }
+}
+
+impl SecureHistoricalOwnerAttach {
+    pub fn inspect_pending_object_stage(
+        &self,
+        input: &HistoricalOwnerAttachInput,
+        command: &str,
+        options: &str,
+        material: &str,
+        cancel: &CancellationToken,
+    ) -> Result<HistoricalObjectStagePendingInventory, HistoricalOwnerAttachError> {
+        if !valid_token(command) {
+            return Err(HistoricalOwnerAttachError::Input);
+        }
+        self.inspect_selected_object_stage(input, command, options, material, cancel)
+    }
+    pub fn attach_pending_object_stage(
+        &self,
+        input: HistoricalOwnerAttachInput,
+        command: &str,
+        digest: &str,
+        options: &str,
+        material: &str,
+        cancel: &CancellationToken,
+    ) -> Result<HistoricalOwnerAttachResult, HistoricalOwnerAttachError> {
+        if !valid_token(command) {
+            return Err(HistoricalOwnerAttachError::Input);
+        }
+        self.attach_selected_object_stage(input, command, digest, options, material, cancel)
+    }
+    pub fn recover_pending_object_stage(
+        &self,
+        id: &str,
+        command: &str,
+        cancel: &CancellationToken,
+    ) -> Result<HistoricalOwnerAttachResult, HistoricalOwnerAttachError> {
+        if !valid_token(command) {
+            return Err(HistoricalOwnerAttachError::Input);
+        }
+        self.recover_selected_object_stage(id, command, cancel)
+    }
+    /// Explicit marker SHA256 selection. No original packet is claimed or reconstructed.
+    pub fn inspect_object_stage_intent(
+        &self,
+        input: &HistoricalOwnerAttachInput,
+        marker_hash: &str,
+        options: &str,
+        material: &str,
+        cancel: &CancellationToken,
+    ) -> Result<HistoricalObjectStageIntentInventory, HistoricalOwnerAttachError> {
+        if !valid_digest(marker_hash) {
+            return Err(HistoricalOwnerAttachError::Input);
+        }
+        let i =
+            self.inspect_selected_object_stage(input, marker_hash, options, material, cancel)?;
+        Ok(HistoricalObjectStageIntentInventory {
+            ts_state_digest: i.ts_state_digest,
+            marker_hash: marker_hash.into(),
+            instance_id: i.instance_id,
+            source_id: i.source_id,
+            protocol_digest: i.protocol_digest,
+            accepted_parts: i.part_index,
+            part_count: i.part_count,
+        })
+    }
+    pub fn attach_object_stage_intent(
+        &self,
+        input: HistoricalOwnerAttachInput,
+        marker_hash: &str,
+        digest: &str,
+        options: &str,
+        material: &str,
+        cancel: &CancellationToken,
+    ) -> Result<HistoricalOwnerAttachResult, HistoricalOwnerAttachError> {
+        if !valid_digest(marker_hash) {
+            return Err(HistoricalOwnerAttachError::Input);
+        }
+        self.attach_selected_object_stage(input, marker_hash, digest, options, material, cancel)
+    }
+    pub fn recover_object_stage_intent(
+        &self,
+        id: &str,
+        marker_hash: &str,
+        cancel: &CancellationToken,
+    ) -> Result<HistoricalOwnerAttachResult, HistoricalOwnerAttachError> {
+        if !valid_digest(marker_hash) {
+            return Err(HistoricalOwnerAttachError::Input);
+        }
+        self.recover_selected_object_stage(id, marker_hash, cancel)
+    }
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HistoricalObjectStageIntentInventory {
+    pub ts_state_digest: String,
+    pub marker_hash: String,
+    pub instance_id: String,
+    pub source_id: String,
+    pub protocol_digest: String,
+    pub accepted_parts: usize,
+    pub part_count: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HistoricalObjectStageIntentCandidate {
+    pub workspace_id: String,
+    pub instance_id: String,
+    pub marker_hash: String,
+    pub original_command_id: Option<String>,
+    pub original_options_hash: String,
+    pub protocol_digest: String,
+    pub part_count: usize,
+}
+impl SecureHistoricalOwnerAttach {
+    /// Protected source candidates only. Caller-selected full options/material
+    /// and authenticated signed replay are required by inspect/attach.
+    pub fn object_stage_intent_candidates(
+        &self,
+        input: &HistoricalOwnerAttachInput,
+    ) -> Result<Vec<HistoricalObjectStageIntentCandidate>, HistoricalOwnerAttachError> {
+        validate_input(input)?;
+        let bytes = read_private_file_bounded(&input.protected_ts_state_path, MAX_SOURCE)
+            .map_err(|_| HistoricalOwnerAttachError::SourceChanged)?;
+        let value = parse_wire_json_bounded(&bytes, 64, MAX_SOURCE).map_err(|_| invalid())?;
+        let Some(WireValue::Object(markers)) = value.get("protocol_object_stage_intents") else {
+            return Err(invalid());
+        };
+        if markers.len() != 1 {
+            return Err(invalid());
+        }
+        let key = String::from_utf16(&markers[0].0).map_err(|_| invalid())?;
+        let instance = key
+            .strip_prefix(&format!("{}.", input.workspace_id))
+            .ok_or_else(invalid)?;
+        let hash = sha256_hex(canonical(&markers[0].1)?.as_bytes());
+        let (source, _, _, _) = self.inspect_object_stage_sources(input, &hash, instance)?;
+        let marker = source.pending_object_stage.as_ref().ok_or_else(invalid)?;
+        let Some(WireValue::Array(parts)) = marker.marker.proof.get("parts") else {
+            return Err(invalid());
+        };
+        Ok(vec![HistoricalObjectStageIntentCandidate {
+            workspace_id: input.workspace_id.clone(),
+            instance_id: instance.into(),
+            marker_hash: hash,
+            original_command_id: marker.orphan_command.clone(),
+            original_options_hash: marker.marker.request_hash.clone(),
+            protocol_digest: scalar(&marker.marker.proof, "protocol_digest")?,
+            part_count: parts.len(),
+        }])
     }
 }
