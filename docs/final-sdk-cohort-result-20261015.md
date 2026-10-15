@@ -1,0 +1,24 @@
+# Frozen final Linux x64 installed cohort (T-015)
+
+One immutable optimized CLI/Python/npm cohort is built from accepted SDK `34287775ac31e2f812c016affd4038df4f1f7346`, including the completed-map read-floor, selected first/middle object-stage and schema-enumeration corrections. Exact Git archive SHA256 is `a626032c901faad4bfe5218bdefc1e438e9e18b4424648bad3c24f37ea6166c6`; the complete660-file source manifest is `86de91cbaad2da92eca425aeab13517f99825289d050c0f6c7e6d4a6ae8bc322`. No source was exported or compiled before root's final source release08:35:27UTC.
+
+The accepted d47 recipe/toolchains were reused in the existing native x64 glibc2.28 rootfs, with new `/work/sdk-final-t015-20261015` source/target/dist and separate build-tool paths. The stopped d47 target copy35685 completed0 before compilation;35 owned local Peerwork output/fingerprint/relocated-core-build paths were invalidated. Dependency cache was reused, with no hardlinks to old artifacts. Rust1.89, locked offline Cargo, CPython3.11 abi3/maturin and Node24 were used; SOURCE_DATE_EPOCH=`1792053315`. All six older c5e/360/873/8cae/8900/d47 artifact manifests verify unchanged before and after.
+
+| Phase | Actual terminal evidence |
+|---|---|
+| Source gate/setup |08:31:36–08:35:27,3m51; setup overlaps this wait and is not added twice|
+| Source/archive/scripts frozen |08:36:19.263;660 inputs and six exact script hashes pinned before build|
+| Build42382 |exit0,08:36:19.303–08:39:10.861,171.558s; CLI/Node release2m11s, Python37.63s|
+| Offline install49144 |exit0,08:39:40.503–08:39:45.423,4.920s|
+| Verify35925 |all3 checks exit0,08:40:34.742–08:40:37.052,2.310s|
+| Root artifact readiness/T-016 release |08:42:00; no report/prose hold|
+
+The14-entry artifact manifest is `66b503676b7c0bdcae01ceb0487dfc4b586872a07f029a5525b16b10ca505ed8`. Wheel SHA256 is `58106407e11d83297cebe1cce1ec62b3fc9819075734a63f8312bf27544aca65`; RECORD contains10 rows/9 verified hashes, with `py.typed`, exact installed/source wrapper bytes and native package bytes. Strict release inspection passes package version0.0.1, target/architecture, wheel tags, finite npm root/platform closure and exact source-generated license/notices. Source660 guards passed before build, before install and after install; frozen/extracted manifests remain byte-identical. The report selfcheck reads those manifests rather than repeating another source-content scan.
+
+Actual isolated installed imports load Python `/work/sdk-final-t015-20261015/dist/python-consumer/peerwork/__init__.py`, Node root `dist/node-consumer/node_modules/@peerwork/agent-sdk/index.cjs` and its actual loaded platform `@peerwork/agent-sdk-linux-x64-gnu/index.node`; both package versions are0.0.1. CLI is `target/release/peerwork` and help executes. The initial auxiliary module probe mislabeled the platform JS entry as `native_path`; its raw result is retained. A metadata-only re-probe distinguishes `platform_entry` from the loaded `.node`, without changing any artifact or rebuilding/reinstalling.
+
+CLI/native Node/native Python hashes are respectively `77e5b5715321aa7f04344606e3e8d0483a9133f6926241fc7dfb4f5e041b49f0`, `54ae568c1d72b9ae6aa5f434d7aa1a26281b7e2ad2cf732f6b09b904957a5c64`, `565af4149cb29dc31f0d6730b09176258d0cdd6a750c7c8e2a918c6b84b294b3`. All three ELF files require at most GLIBC2.28, GLIBCXX3.4.11 and CXXABI1.3.8; measured DT_NEEDED is `ld-linux-x86-64.so.2, libc.so.6, libdl.so.2, libgcc_s.so.1, libm.so.6, libpthread.so.0, libstdc++.so.6`. This CLI is dynamically linked, with that measured Linux profile; no universal-runtime claim follows.
+
+All artifacts, scripts, normal inspection outputs and logs live under SDK main `.build-artifacts/final-sdk-t015-20261015/`. `cohort-source.json` binds archive/source/tool scripts/cache setup; `artifact-manifest.sha256` binds the14 distributed/installed subjects. `cohort-evidence.json` SHA256 `b8a84605bbb01fdb0e67e71d09fd0f08b7139321a0ca9db684c7dc70bdb4f53a` binds29 metadata/script/log/inspection records, including exact phase terminal JSON, module-path correction, source inventory selfcheck, ELF and wheel RECORD results, source notices and old-cohort before/after records. Existing unused-import/dead-code and pip root-user warnings remain in logs. No build/install/verification failure or retry occurred; the cache-copy exact subduration was not separately measured.
+
+T-015 began08:31:36UTC with25-minute budget; all artifact checks completed by9m01 and root released T-016 by10m24. Delivery/integration times are reported separately. This is one native Linux x64 glibc2.28 build/offline-install/package/load gate, not business HTTP, natural-Agent workflow, independent second-build reproducibility, other platform/runtime matrix, signed CI or publication. T-016 independently owns actual installed HTTP on these same immutable bytes; it is not inferred here.
