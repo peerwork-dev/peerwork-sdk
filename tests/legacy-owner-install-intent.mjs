@@ -20,7 +20,8 @@ if (!origin || !sourceDir || !referenceRoot
     'direct-staged-package-end-applied-loss', 'direct-staged-package-page-before-post',
     'direct-staged-package-page-applied-loss', 'direct-staged-package-completed-end',
     'direct-implicit-begin-before-post', 'direct-implicit-end-applied-loss',
-    'direct-object-begin-before-post', 'direct-object-end-applied-loss',
+    'direct-object-begin-before-post', 'direct-object-begin-applied-loss',
+    'direct-object-end-before-post', 'direct-object-end-applied-loss',
     'direct-object-page-before-post', 'direct-object-page-applied-loss', 'direct-object-completed-end'].includes(mode)) {
   throw new Error('INSTALL_INTENT_TEST_INPUT');
 }
@@ -274,7 +275,9 @@ try {
   const originalRequest = agent.request.bind(agent);
   let stopped = false;
   let observedAction = null;
-  if (mode.endsWith('applied-loss') && !retainedStep) {
+  // Automatic object staging must finish before the selected BEGIN loss.
+  const objectBeginAppliedLoss = mode === 'direct-object-begin-applied-loss';
+  if (mode.endsWith('applied-loss') && !retainedStep && !objectBeginAppliedLoss) {
     const hook = await fetch(new URL('/__test/drop-next-post', origin), { method: 'POST', body: '{}' });
     if (!hook.ok) throw new Error('INSTALL_INTENT_DROP_HOOK');
   }
@@ -291,9 +294,10 @@ try {
       return originalRequest(path, requestOptions);
     };
   }
-  if (retainedStep && mode.endsWith('applied-loss')) {
+  if ((retainedStep || objectBeginAppliedLoss) && mode.endsWith('applied-loss')) {
+    const selectedAction = `secure.structure.${retainedStep ?? 'begin'}`;
     agent.post = async (...args) => {
-      if (!stopped && args[1]?.commit?.payload?.action_id === `secure.structure.${retainedStep}`) {
+      if (!stopped && args[1]?.commit?.payload?.action_id === selectedAction) {
         stopped = true;
         const hook = await fetch(new URL('/__test/drop-next-post', origin), { method: 'POST', body: '{}' });
         if (!hook.ok) throw new Error('INSTALL_INTENT_STEP_DROP_HOOK');
@@ -324,7 +328,7 @@ try {
     } else {
       // Preserve the original failure unless this is the intended transport
       // loss boundary. A map/pending assertion must not hide a planner error.
-      if (retainedStep ? !stopped : !Object.keys(agent.state.pending).length) throw error;
+      if (retainedStep || objectBeginAppliedLoss ? !stopped : !Object.keys(agent.state.pending).length) throw error;
       if (error?.message === 'TEST_INSTALL_NOT_INTERRUPTED') throw error;
     }
   } finally {
