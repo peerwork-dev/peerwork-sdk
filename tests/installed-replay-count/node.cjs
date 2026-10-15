@@ -1,0 +1,10 @@
+'use strict';
+const fs=require('node:fs'),sdk=require(process.env.T083_NODE_PACKAGE),x=JSON.parse(fs.readFileSync(0,'utf8'));
+void(async()=>{let value;const config={origin:x.origin,stateDir:x.profile,allowLoopbackHttp:true};if(x.limit!==null)config.maxReplayCommits=x.limit;
+const owner=sdk.openSecureOwnerWorkspaces(config);
+if(x.operation==='read')value=await owner.read(x.workspace);
+else if(x.operation==='attachments')value=await owner.attachments();
+else if(x.operation==='identity')value=await sdk.openIdentity(x.profile+'/identity.state');
+else throw Error('unknown test operation');
+console.log(JSON.stringify({ok:true,value,runtime:process.version,wrapper:require.resolve(process.env.T083_NODE_PACKAGE),native:Object.keys(require.cache).find(p=>p.endsWith('.node'))}));
+})().catch(error=>{console.log(JSON.stringify({ok:false,code:error.code,message:error.message}));});
