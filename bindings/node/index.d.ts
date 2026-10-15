@@ -802,3 +802,6 @@ export interface AcquisitionObservations {
 }
 /** Explicit absolute protected local path. No SDK operation creates an observer implicitly. */
 export declare function openAcquisitionObservations(options:{path:string;maxRecords?:number;maxStoreBytes?:number}):AcquisitionObservations;
+
+/** Redacted generic Kernel runtime failure. Argument shape errors retain TypeError. */
+export class KernelError extends Error { readonly code: string; }

@@ -202,10 +202,10 @@ fn main() -> ExitCode {
                 println!("{value}");
                 ExitCode::SUCCESS
             }
-            Err(message) => {
+            Err(error) => {
                 eprintln!(
                     "{}",
-                    serde_json::json!({"code": if InterruptMonitor::interrupted() {"INTERRUPTED"} else {"KERNEL_OPERATION"}, "message":message})
+                    serde_json::json!({"code": error.code, "message":error.message})
                 );
                 if InterruptMonitor::interrupted() {
                     ExitCode::from(130)
@@ -1574,8 +1574,8 @@ fn accepted_json(result: KernelAcceptedResult) -> serde_json::Value {
     })
 }
 
-fn kernel_command(verb: &str, args: &[String]) -> Result<serde_json::Value, String> {
-    let (mut args, transport) = transport_arguments(args).map_err(|(_, message)| message)?;
+fn kernel_command(verb: &str, args: &[String]) -> Result<serde_json::Value, peerwork_runtime::kernel_access::KernelPublicError> {
+    let (mut args, transport) = transport_arguments(args).map_err(|_| peerwork_runtime::kernel_access::KernelPublicError { code: "CONFIG_INVALID", message: "invalid kernel transport options" })?;
     let mut allow_loopback = false;
     let mut authority = None;
     let mut chunk_file = None;
@@ -1627,7 +1627,7 @@ fn kernel_command(verb: &str, args: &[String]) -> Result<serde_json::Value, Stri
         "open" => {
             let info = access
                 .open_with_cancel(&cancel)
-                .map_err(|error| error.to_string())?;
+                .map_err(peerwork_runtime::kernel_access::KernelPublicError::from)?;
             Ok(
                 serde_json::json!({"actor_id":info.actor_id,"key_id":info.key_id,"origin":info.origin}),
             )
@@ -1659,7 +1659,7 @@ fn kernel_command(verb: &str, args: &[String]) -> Result<serde_json::Value, Stri
             }
             let pending = access
                 .prepare_with_cancel(&command, chunk.as_deref(), &cancel)
-                .map_err(|error| error.to_string())?;
+                .map_err(peerwork_runtime::kernel_access::KernelPublicError::from)?;
             Ok(
                 serde_json::json!({"command_id":pending.command_id,"intent_digest":pending.intent_digest,"created_at_ms":pending.created_at_ms}),
             )
@@ -1667,14 +1667,14 @@ fn kernel_command(verb: &str, args: &[String]) -> Result<serde_json::Value, Stri
         "pending" => {
             let pending = access
                 .pending_with_cancel(&cancel)
-                .map_err(|error| error.to_string())?;
+                .map_err(peerwork_runtime::kernel_access::KernelPublicError::from)?;
             Ok(serde_json::json!(pending.into_iter().map(|row| serde_json::json!({
                 "command_id":row.command_id,"intent_digest":row.intent_digest,"created_at_ms":row.created_at_ms
             })).collect::<Vec<_>>()))
         }
         "status" => match access
             .status_with_cancel(&args[3], &cancel)
-            .map_err(|error| error.to_string())?
+            .map_err(peerwork_runtime::kernel_access::KernelPublicError::from)?
         {
             None => Ok(serde_json::json!({"state":"NOT_FOUND"})),
             Some(KernelOperationStatus::Pending) => Ok(serde_json::json!({"state":"PENDING"})),
@@ -1685,7 +1685,7 @@ fn kernel_command(verb: &str, args: &[String]) -> Result<serde_json::Value, Stri
         "submit" => Ok(accepted_json(
             access
                 .submit_saved_with_cancel(&args[3], &cancel)
-                .map_err(|error| error.to_string())?,
+                .map_err(peerwork_runtime::kernel_access::KernelPublicError::from)?,
         )),
         "migrate" => {
             let report = access
@@ -1695,7 +1695,7 @@ fn kernel_command(verb: &str, args: &[String]) -> Result<serde_json::Value, Stri
                     &trusted_signer_key_ids,
                     &cancel,
                 )
-                .map_err(|error| error.to_string())?;
+                .map_err(peerwork_runtime::kernel_access::KernelPublicError::from)?;
             Ok(
                 serde_json::json!({"pending_count":report.pending_count,"accepted_count":report.accepted_count}),
             )

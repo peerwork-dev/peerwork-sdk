@@ -152,6 +152,11 @@ function selectedDisclosure(selection) {
   return selection.disclose;
 }
 
+class KernelError extends Error {
+  constructor(code, message) { super(message); this.name = 'KernelError'; this.code = code; }
+}
+exports.KernelError = KernelError;
+
 /** An explicit origin and protected local paths anchor every operation. */
 exports.openKernel = async options => {
   const { origin, journalPath, identityPath, requiredFeatures = [], allowLoopbackHttp = false, authority, signal, transport } = options;
@@ -163,11 +168,13 @@ exports.openKernel = async options => {
     if (abortSignal?.aborted) onAbort();
     abortSignal?.addEventListener('abort', onAbort, { once: true });
     try {
-      return JSON.parse(await binding.kernelJson(
+      const value = JSON.parse(await binding.kernelJson(
         operation, origin, journalPath, identityPath, requiredFeatures,
         allowLoopbackHttp, authority, commandJson, commandId, uploadChunk, handle,
         migrationSource, migrationBackup, trustedSignerKeyIds, transportJson,
       ));
+      if (value?.ok === false) throw new KernelError(value.code, value.message);
+      return value;
     } finally {
       abortSignal?.removeEventListener('abort', onAbort);
     }

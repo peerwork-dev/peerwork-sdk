@@ -201,44 +201,44 @@ fn kernel_json(
     let command_json = command_json.map(str::to_owned);
     let command_id = command_id.map(str::to_owned);
     // Discovery, protected disk access and HTTP must not hold Python's GIL.
-    let result = py.allow_threads(move || {
+    let result = py.allow_threads(move || -> Result<serde_json::Value, peerwork_runtime::kernel_access::KernelPublicError> {
         let value = match operation.as_str() {
             "open" => {
-                let info = access.open_with_cancel(&cancel).map_err(|error| error.to_string())?;
+                let info = access.open_with_cancel(&cancel).map_err(peerwork_runtime::kernel_access::KernelPublicError::from)?;
                 serde_json::json!({"actor_id": info.actor_id, "key_id": info.key_id, "origin": info.origin})
             }
             "prepare" => {
-                let command = command_json.as_deref().ok_or_else(|| "command is required".to_owned())?;
-                let pending = access.prepare_with_cancel(command.as_bytes(), upload_chunk.as_deref(), &cancel).map_err(|error| error.to_string())?;
+                let command = command_json.as_deref().ok_or_else(|| peerwork_runtime::kernel_access::KernelPublicError::from("command is required"))?;
+                let pending = access.prepare_with_cancel(command.as_bytes(), upload_chunk.as_deref(), &cancel).map_err(peerwork_runtime::kernel_access::KernelPublicError::from)?;
                 serde_json::json!({"command_id": pending.command_id, "intent_digest": pending.intent_digest, "created_at_ms": pending.created_at_ms})
             }
-            "pending" => serde_json::json!(access.pending_with_cancel(&cancel).map_err(|error| error.to_string())?.into_iter().map(|row| {
+            "pending" => serde_json::json!(access.pending_with_cancel(&cancel).map_err(peerwork_runtime::kernel_access::KernelPublicError::from)?.into_iter().map(|row| {
                 serde_json::json!({"command_id": row.command_id, "intent_digest": row.intent_digest, "created_at_ms": row.created_at_ms})
             }).collect::<Vec<_>>()),
             "status" => {
-                let id = command_id.as_deref().ok_or_else(|| "command ID is required".to_owned())?;
-                match access.status_with_cancel(id, &cancel).map_err(|error| error.to_string())? {
+                let id = command_id.as_deref().ok_or_else(|| peerwork_runtime::kernel_access::KernelPublicError::from("command ID is required"))?;
+                match access.status_with_cancel(id, &cancel).map_err(peerwork_runtime::kernel_access::KernelPublicError::from)? {
                     None => serde_json::json!({"state": "NOT_FOUND"}),
                     Some(KernelOperationStatus::Pending) => serde_json::json!({"state": "PENDING"}),
                     Some(KernelOperationStatus::Accepted(accepted)) => serde_json::json!({"state": "ACCEPTED", "result": accepted_json(accepted)}),
                 }
             }
             "submit_saved" => {
-                let id = command_id.as_deref().ok_or_else(|| "command ID is required".to_owned())?;
-                accepted_json(access.submit_saved_with_cancel(id, &cancel).map_err(|error| error.to_string())?)
+                let id = command_id.as_deref().ok_or_else(|| peerwork_runtime::kernel_access::KernelPublicError::from("command ID is required"))?;
+                accepted_json(access.submit_saved_with_cancel(id, &cancel).map_err(peerwork_runtime::kernel_access::KernelPublicError::from)?)
             }
             "migrate_ts_store" => {
-                let source = migration_source.as_deref().ok_or_else(|| "legacy source path is required".to_owned())?;
-                let backup = migration_backup.as_deref().ok_or_else(|| "backup path is required".to_owned())?;
-                let signers = trusted_signer_key_ids.as_deref().ok_or_else(|| "trusted signer IDs are required".to_owned())?;
-                let report = access.migrate_ts_store(Path::new(source), Path::new(backup), signers, &cancel).map_err(|error| error.to_string())?;
+                let source = migration_source.as_deref().ok_or_else(|| peerwork_runtime::kernel_access::KernelPublicError::from("legacy source path is required"))?;
+                let backup = migration_backup.as_deref().ok_or_else(|| peerwork_runtime::kernel_access::KernelPublicError::from("backup path is required"))?;
+                let signers = trusted_signer_key_ids.as_deref().ok_or_else(|| peerwork_runtime::kernel_access::KernelPublicError::from("trusted signer IDs are required"))?;
+                let report = access.migrate_ts_store(Path::new(source), Path::new(backup), signers, &cancel).map_err(peerwork_runtime::kernel_access::KernelPublicError::from)?;
                 serde_json::json!({"pending_count": report.pending_count, "accepted_count": report.accepted_count})
             }
-            _ => return Err("unsupported kernel operation".to_owned()),
+            _ => return Err(peerwork_runtime::kernel_access::KernelPublicError::from("unsupported kernel operation")),
         };
-        serde_json::to_string(&value).map_err(|_| "public result encoding failed".to_owned())
+        Ok(value)
     });
-    result.map_err(pyo3::exceptions::PyRuntimeError::new_err)
+    Ok(match result { Ok(value) => value, Err(error) => error.envelope() }.to_string())
 }
 
 #[pyfunction]

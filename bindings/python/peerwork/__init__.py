@@ -335,6 +335,13 @@ async def import_legacy_owner_identity_async(config_file: str, pem_file: str) ->
     return cast(IdentityInfo, await asyncio.to_thread(import_legacy_owner_identity, config_file, pem_file))
 
 
+class KernelError(RuntimeError):
+    """Redacted native Kernel failure with a stable machine-readable code."""
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
 class KernelClient:
     """Experimental verified kernel command client with durable exact retry.
 
@@ -365,7 +372,7 @@ class KernelClient:
         command_json = None if command is None else json.dumps(
             command, ensure_ascii=True, allow_nan=False, separators=(",", ":")
         )
-        return json.loads(kernel_json(
+        value = json.loads(kernel_json(
             operation, self.origin, self.journal_path, self.identity_path,
             list(self.required_features), self.allow_loopback_http,
             self.authority, command_json, command_id, upload_chunk, cancel_handle,
@@ -373,6 +380,10 @@ class KernelClient:
             None if self.transport is None else json.dumps(_transport_config(self.transport),
                 ensure_ascii=True, allow_nan=False, separators=(",", ":")),
         ))
+
+        if isinstance(value, dict) and value.get("ok") is False:
+            raise KernelError(value["code"], value["message"])
+        return value
 
     async def _call_async(self, operation: str, *, command: dict | None = None,
                           command_id: str | None = None,
@@ -3006,3 +3017,5 @@ __all__ += ["AcquisitionObservations", "AcquisitionEvent", "AcquisitionAppendRes
             "ExternalPrincipalAttestation", "AcquisitionInstallObservation", "RecordedAcquisitionObservation",
             "RecordedExternalPrincipalAttestation", "AcquisitionMetric", "AcquisitionScorecard",
             "StoredAcquisitionScorecard", "AcquisitionScorecardWindow"]
+
+__all__ += ["KernelError"]

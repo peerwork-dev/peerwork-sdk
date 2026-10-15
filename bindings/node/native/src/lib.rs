@@ -255,42 +255,44 @@ impl Task for KernelTask {
             self.allow_loopback_http,
         )
         .with_authority(self.authority.clone()).with_transport_options(transport);
+        let result = (|| -> std::result::Result<serde_json::Value, peerwork_runtime::kernel_access::KernelPublicError> {
         let value = match self.operation.as_str() {
             "open" => {
-                let info = access.open_with_cancel(&self.cancel).map_err(|error| napi::Error::from_reason(error.to_string()))?;
+                let info = access.open_with_cancel(&self.cancel).map_err(peerwork_runtime::kernel_access::KernelPublicError::from)?;
                 serde_json::json!({"actor_id": info.actor_id, "key_id": info.key_id, "origin": info.origin})
             }
             "prepare" => {
-                let command = self.command_json.as_deref().ok_or_else(|| napi::Error::from_reason("command is required"))?;
-                let pending = access.prepare_with_cancel(command.as_bytes(), self.upload_chunk.as_deref(), &self.cancel).map_err(|error| napi::Error::from_reason(error.to_string()))?;
+                let command = self.command_json.as_deref().ok_or_else(|| peerwork_runtime::kernel_access::KernelPublicError::from("command is required"))?;
+                let pending = access.prepare_with_cancel(command.as_bytes(), self.upload_chunk.as_deref(), &self.cancel).map_err(peerwork_runtime::kernel_access::KernelPublicError::from)?;
                 serde_json::json!({"command_id": pending.command_id, "intent_digest": pending.intent_digest, "created_at_ms": pending.created_at_ms})
             }
-            "pending" => serde_json::json!(access.pending_with_cancel(&self.cancel).map_err(|error| napi::Error::from_reason(error.to_string()))?.into_iter().map(|row| {
+            "pending" => serde_json::json!(access.pending_with_cancel(&self.cancel).map_err(peerwork_runtime::kernel_access::KernelPublicError::from)?.into_iter().map(|row| {
                 serde_json::json!({"command_id": row.command_id, "intent_digest": row.intent_digest, "created_at_ms": row.created_at_ms})
             }).collect::<Vec<_>>()),
             "status" => {
-                let id = self.command_id.as_deref().ok_or_else(|| napi::Error::from_reason("command ID is required"))?;
-                match access.status_with_cancel(id, &self.cancel).map_err(|error| napi::Error::from_reason(error.to_string()))? {
+                let id = self.command_id.as_deref().ok_or_else(|| peerwork_runtime::kernel_access::KernelPublicError::from("command ID is required"))?;
+                match access.status_with_cancel(id, &self.cancel).map_err(peerwork_runtime::kernel_access::KernelPublicError::from)? {
                     None => serde_json::json!({"state": "NOT_FOUND"}),
                     Some(KernelOperationStatus::Pending) => serde_json::json!({"state": "PENDING"}),
                     Some(KernelOperationStatus::Accepted(accepted)) => serde_json::json!({"state": "ACCEPTED", "result": accepted_json(accepted)}),
                 }
             }
             "submit_saved" => {
-                let id = self.command_id.as_deref().ok_or_else(|| napi::Error::from_reason("command ID is required"))?;
-                accepted_json(access.submit_saved_with_cancel(id, &self.cancel).map_err(|error| napi::Error::from_reason(error.to_string()))?)
+                let id = self.command_id.as_deref().ok_or_else(|| peerwork_runtime::kernel_access::KernelPublicError::from("command ID is required"))?;
+                accepted_json(access.submit_saved_with_cancel(id, &self.cancel).map_err(peerwork_runtime::kernel_access::KernelPublicError::from)?)
             }
             "migrate_ts_store" => {
-                let source = self.migration_source.as_deref().ok_or_else(|| napi::Error::from_reason("legacy source path is required"))?;
-                let backup = self.migration_backup.as_deref().ok_or_else(|| napi::Error::from_reason("backup path is required"))?;
-                let signers = self.trusted_signer_key_ids.as_deref().ok_or_else(|| napi::Error::from_reason("trusted signer IDs are required"))?;
-                let report = access.migrate_ts_store(Path::new(source), Path::new(backup), signers, &self.cancel).map_err(|error| napi::Error::from_reason(error.to_string()))?;
+                let source = self.migration_source.as_deref().ok_or_else(|| peerwork_runtime::kernel_access::KernelPublicError::from("legacy source path is required"))?;
+                let backup = self.migration_backup.as_deref().ok_or_else(|| peerwork_runtime::kernel_access::KernelPublicError::from("backup path is required"))?;
+                let signers = self.trusted_signer_key_ids.as_deref().ok_or_else(|| peerwork_runtime::kernel_access::KernelPublicError::from("trusted signer IDs are required"))?;
+                let report = access.migrate_ts_store(Path::new(source), Path::new(backup), signers, &self.cancel).map_err(peerwork_runtime::kernel_access::KernelPublicError::from)?;
                 serde_json::json!({"pending_count": report.pending_count, "accepted_count": report.accepted_count})
             }
-            _ => return Err(napi::Error::from_reason("unsupported kernel operation")),
+            _ => return Err(peerwork_runtime::kernel_access::KernelPublicError::from("unsupported kernel operation")),
         };
-        serde_json::to_string(&value)
-            .map_err(|_| napi::Error::from_reason("public result encoding failed"))
+        Ok(value)
+        })();
+        Ok(match result { Ok(value) => value, Err(error) => error.envelope() }.to_string())
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
