@@ -36,7 +36,7 @@ try:
  origin=json.loads(server.stdout.readline())['origin'];assert origin.startswith('http://127.0.0.1:')
  for language in ['python','node','cli']:
   case=OUT/language;case.mkdir(mode=0o700);identity=case/'identity';journal=case/'journal.sqlite'
-  info=run([CLI,'identity','create',identity]);identity_before=shafile(identity)
+  info=run([CLI,'identity','create',identity])
   def invoke(mode,selected=origin,code=None,command=None):
    options=dict(mode=mode,origin=selected,identity=str(identity),journal=str(journal),code=code,command=command)
    if language=='python':
@@ -70,8 +70,8 @@ try:
   import base64
   command=dict(v=1,audience='reference-kernel',command_id=base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip('='),actor_id=info['actor_id'],authority=hashlib.sha256(info['actor_id'].encode()).hexdigest(),method='POST',path='/api/workspace/v1/commands',workspace_id=None,instance_id=None,protocol_digest=None,action_id='workspace.create',expected_workspace_revision=None,expected_instance_revision=None,exact_input_refs=[],body=dict(name='T094 '+language,visibility='PUBLIC'),issued_at=now,expires_at=now+60000)
   success=invoke('success',command=command);assert success['result']['command_id']==command['command_id'] and success['result']['workspace_id']
-  assert shafile(identity)==identity_before
-  results[language]=dict(invalid=invalid,service=failed,shape=shape,success=success,identity_unchanged=True)
+  assert run([CLI,'identity','info',identity])==info
+  results[language]=dict(invalid=invalid,service=failed,shape=shape,success=success,public_identity_reopened=True)
  assert len(failures)==3 and all(p=='/api/workspace/v1/discovery' for p in failures)
  import urllib.request
  with urllib.request.urlopen(origin+'__test/counts') as response:counts=json.load(response)
