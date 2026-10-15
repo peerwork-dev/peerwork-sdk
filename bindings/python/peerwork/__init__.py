@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from dataclasses import dataclass
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal, NotRequired, TypeAlias, TypedDict, cast
@@ -13,6 +14,35 @@ def _positive_u64_option(name: str, value: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0 or value > 2**64 - 1:
         raise ValueError(f"{name} must be a positive u64")
     return value
+
+
+@dataclass(frozen=True)
+class TransportOptions:
+    """Explicit HTTP transport controls; certificate contents remain native-owned."""
+
+    request_timeout_ms: int = 15000
+    additional_root_pem_files: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        _positive_u64_option("request_timeout_ms", self.request_timeout_ms)
+        paths = self.additional_root_pem_files
+        if not isinstance(paths, (tuple, list)) or len(paths) > 16:
+            raise ValueError("additional_root_pem_files must contain at most 16 paths")
+        if any(not isinstance(path, str) or not path for path in paths):
+            raise ValueError("additional_root_pem_files must contain nonempty paths")
+        object.__setattr__(self, "additional_root_pem_files", tuple(paths))
+
+    def _json_value(self) -> dict:
+        return {"request_timeout_ms": self.request_timeout_ms,
+                "additional_root_pem_files": list(self.additional_root_pem_files)}
+
+
+def _transport_config(transport: TransportOptions | None) -> dict | None:
+    if transport is None:
+        return None
+    if not isinstance(transport, TransportOptions):
+        raise TypeError("transport must be a TransportOptions")
+    return transport._json_value()
 
 class _OmittedInstallOption:
     pass
@@ -63,6 +93,7 @@ class CapabilityManifest(TypedDict):
 class ClientConfig(TypedDict):
     origin: str
     state_dir: str
+    transport: NotRequired[TransportOptions]
 
 
 class ConfigError(RuntimeError):
@@ -76,7 +107,13 @@ def load_config(path: str | None = None) -> ClientConfig:
     result = json.loads(load_config_json(path))
     if result["ok"] is not True:
         raise ConfigError(result["code"], result["message"])
-    return cast(ClientConfig, result["value"])
+    value = result["value"]
+    if "transport" in value:
+        selected = value["transport"]
+        value["transport"] = TransportOptions(
+            request_timeout_ms=selected["request_timeout_ms"],
+            additional_root_pem_files=tuple(selected["additional_root_pem_files"]))
+    return cast(ClientConfig, value)
 
 
 class IdentityInfo(TypedDict):
@@ -308,13 +345,15 @@ class KernelClient:
     def __init__(self, origin: str, journal_path: str, identity_path: str,
                  *, required_features: tuple[str, ...] = (),
                  allow_loopback_http: bool = False,
-                 authority: str | None = None):
+                 authority: str | None = None,
+                 transport: TransportOptions | None = None):
         self.origin = origin
         self.journal_path = journal_path
         self.identity_path = identity_path
         self.required_features = tuple(required_features)
         self.allow_loopback_http = allow_loopback_http
         self.authority = authority
+        self.transport = transport
 
     def _call(self, operation: str, *, command: dict | None = None,
               command_id: str | None = None,
@@ -331,6 +370,8 @@ class KernelClient:
             list(self.required_features), self.allow_loopback_http,
             self.authority, command_json, command_id, upload_chunk, cancel_handle,
             migration_source, migration_backup, trusted_signer_key_ids,
+            None if self.transport is None else json.dumps(_transport_config(self.transport),
+                ensure_ascii=True, allow_nan=False, separators=(",", ":")),
         ))
 
     async def _call_async(self, operation: str, *, command: dict | None = None,
@@ -435,7 +476,8 @@ class SecureSnapshotClient:
                  required_features: tuple[str, ...] = (),
                  allow_loopback_http: bool = False,
                  max_replay_artifact_bytes: int = 64 * 1024 * 1024,
-                 max_replay_commits: int = 102400):
+                 max_replay_commits: int = 102400,
+                 transport: TransportOptions | None = None):
         if isinstance(max_replay_artifact_bytes, bool) or not isinstance(max_replay_artifact_bytes, int) or max_replay_artifact_bytes <= 0 or max_replay_artifact_bytes > 2**64 - 1:
             raise ValueError("max_replay_artifact_bytes must be a positive u64")
         self._config = {
@@ -453,6 +495,9 @@ class SecureSnapshotClient:
             "max_replay_artifact_bytes": max_replay_artifact_bytes,
             "max_replay_commits": _positive_u64_option("max_replay_commits", max_replay_commits),
         }
+        wire_transport = _transport_config(transport)
+        if wire_transport is not None:
+            self._config["transport"] = wire_transport
 
     def _read(self, cancel_handle: KernelCancelHandle | None = None) -> VerifiedSecureWorkspace:
         config_json = json.dumps(self._config, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
@@ -486,6 +531,7 @@ class SecureSnapshotClient:
 
 
 __all__ = ["version", "capabilities", "IdentityError", "create_identity", "open_identity",
+           "TransportOptions", "ClientConfig",
            "create_identity_async", "open_identity_async",
            "import_identity_seed_file", "import_identity_seed_file_async", "KernelClient",
            "CapabilityManifest", "IdentityInfo", "KernelInfo", "PendingIntent",
@@ -512,7 +558,8 @@ class SecureReadClient:
                  required_features: tuple[str, ...] = (),
                  allow_loopback_http: bool = False,
                  max_replay_artifact_bytes: int = 64 * 1024 * 1024,
-                 max_replay_commits: int = 102400):
+                 max_replay_commits: int = 102400,
+                 transport: TransportOptions | None = None):
         if isinstance(max_replay_artifact_bytes, bool) or not isinstance(max_replay_artifact_bytes, int) or max_replay_artifact_bytes <= 0 or max_replay_artifact_bytes > 2**64 - 1:
             raise ValueError("max_replay_artifact_bytes must be a positive u64")
         if (owner_actor_id is None) != (owner_key_id is None):
@@ -530,6 +577,9 @@ class SecureReadClient:
             "max_replay_artifact_bytes": max_replay_artifact_bytes,
             "max_replay_commits": _positive_u64_option("max_replay_commits", max_replay_commits),
         }
+        wire_transport = _transport_config(transport)
+        if wire_transport is not None:
+            self._config["transport"] = wire_transport
 
     def _read(self, cancel_handle: KernelCancelHandle | None = None) -> VerifiedSecureWorkspace:
         config_json = json.dumps(self._config, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
@@ -871,10 +921,12 @@ class SecureRecipientEnrollmentClient:
     """
 
     def __init__(self, origin: str, state_dir: str, *,
-                 allow_loopback_http: bool = False):
+                 allow_loopback_http: bool = False,
+                 transport: TransportOptions | None = None):
         self._origin = origin
         self._state_dir = state_dir
         self._allow_loopback_http = allow_loopback_http
+        self._transport = transport
 
     def _enroll(self, operation: str,
                 cancel_handle: KernelCancelHandle | None = None, *,
@@ -882,7 +934,9 @@ class SecureRecipientEnrollmentClient:
                 update_id: str | None = None) -> RecipientEnrollmentResult | RecipientKeyUpdateResult | list[RecipientKeyUpdateResult] | str | None:
         result = json.loads(secure_recipient_enrollment_json(
             operation, self._origin, self._state_dir,
-            self._allow_loopback_http, cancel_handle, mode, expected_certificate_hash, update_id))
+            self._allow_loopback_http, cancel_handle, mode, expected_certificate_hash, update_id,
+            None if self._transport is None else json.dumps(_transport_config(self._transport),
+                ensure_ascii=True, allow_nan=False, separators=(",", ":"))))
         if result["ok"] is not True:
             raise RecipientEnrollmentError(result["code"], result["message"])
         return cast(RecipientEnrollmentResult | RecipientKeyUpdateResult | list[RecipientKeyUpdateResult] | str | None, result["value"])
@@ -1153,11 +1207,15 @@ class SecureOwnerWorkspaceClient:
 
     def __init__(self, origin: str, state_dir: str, *, allow_loopback_http: bool = False,
                  max_replay_artifact_bytes: int = 64 * 1024 * 1024,
-                 max_replay_commits: int = 102400):
+                 max_replay_commits: int = 102400,
+                 transport: TransportOptions | None = None):
         self._config = dict(origin=origin, state_dir=state_dir,
             allow_loopback_http=allow_loopback_http,
             max_replay_artifact_bytes=max_replay_artifact_bytes,
             max_replay_commits=_positive_u64_option("max_replay_commits", max_replay_commits))
+        wire_transport = _transport_config(transport)
+        if wire_transport is not None:
+            self._config["transport"] = wire_transport
 
     def _owner(self, operation: str, *, input_value: dict | str | None = None,
                command_id: str | None = None, workspace_id: str | None = None,
@@ -2340,13 +2398,15 @@ class SecureIdentityDirectoryClient:
     """Read a signed public certificate with explicit peer pins and protected continuity."""
 
     def __init__(self, origin: str, state_dir: str, identity_path: str | None = None, *,
-                 allow_loopback_http: bool = False):
+                 allow_loopback_http: bool = False,
+                 transport: TransportOptions | None = None):
         if not origin or not state_dir:
             raise ValueError("origin and state directory are required")
         self._origin = origin
         self._state_dir = state_dir
         self._identity_path = identity_path or str(Path(state_dir) / "identity.state")
         self._allow_loopback_http = allow_loopback_http
+        self._transport = transport
 
     def _lookup(self, actor_id: str, signing_key_id: str,
                 cancel_handle: KernelCancelHandle | None = None) -> VerifiedIdentityCertificate:
@@ -2354,7 +2414,9 @@ class SecureIdentityDirectoryClient:
             raise ValueError("explicit peer actor and signing key pins are required")
         result = json.loads(secure_identity_directory_json(
             self._origin, self._state_dir, self._identity_path,
-            actor_id, signing_key_id, self._allow_loopback_http, cancel_handle))
+            actor_id, signing_key_id, self._allow_loopback_http, cancel_handle,
+            None if self._transport is None else json.dumps(_transport_config(self._transport),
+                ensure_ascii=True, allow_nan=False, separators=(",", ":"))))
         if result["ok"] is not True:
             raise IdentityDirectoryError(result["code"], result["message"])
         return cast(VerifiedIdentityCertificate, result["value"])
@@ -2564,9 +2626,13 @@ class PublicCatalogClient:
     """
 
     def __init__(self, origin: str, *, allow_loopback_http: bool = False,
-                 max_listing_bytes: int | None = None):
+                 max_listing_bytes: int | None = None,
+                 transport: TransportOptions | None = None):
         self._config = dict(origin=origin, allow_loopback_http=allow_loopback_http,
                             max_listing_bytes=max_listing_bytes)
+        wire_transport = _transport_config(transport)
+        if wire_transport is not None:
+            self._config["transport"] = wire_transport
 
     def _call(self, operation: str, *, query: str | None = None, after: str | None = None,
               limit: int | None = None, digest: str | None = None,
@@ -2614,7 +2680,8 @@ class SecureInvitationClient:
                  allow_loopback_http: bool = False,
                  required_features: tuple[str, ...] = (),
                  max_replay_artifact_bytes: int = 64 * 1024 * 1024,
-                 max_replay_commits: int = 102400):
+                 max_replay_commits: int = 102400,
+                 transport: TransportOptions | None = None):
         if not all((origin, state_dir, workspace_id, owner_actor_id, owner_key_id)):
             raise ValueError("origin, state directory, workspace and owner pins are required")
         if authority is not None and not authority:
@@ -2630,6 +2697,9 @@ class SecureInvitationClient:
                             required_features=list(required_features),
                             max_replay_artifact_bytes=max_replay_artifact_bytes)
         self._config["max_replay_commits"] = _positive_u64_option("max_replay_commits", max_replay_commits)
+        wire_transport = _transport_config(transport)
+        if wire_transport is not None:
+            self._config["transport"] = wire_transport
 
     def _decision(self, operation: str, *, invite_id: str | None = None,
                   decision: str | None = None,

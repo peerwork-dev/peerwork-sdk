@@ -34,7 +34,14 @@ const binding = require(modulePath);
 exports.loadConfig = async path => {
   const result = JSON.parse(await binding.loadConfigJson(path));
   if (result.ok !== true) { const error = new Error(result.message); error.code = result.code; throw error; }
-  return { origin: result.value.origin, stateDir: result.value.state_dir };
+  const config = { origin: result.value.origin, stateDir: result.value.state_dir };
+  if (Object.hasOwn(result.value, 'transport')) {
+    config.transport = {
+      requestTimeoutMs: result.value.transport.request_timeout_ms,
+      additionalRootPemFiles: result.value.transport.additional_root_pem_files,
+    };
+  }
+  return config;
 };
 exports.version = binding.version;
 exports.capabilities = () => JSON.parse(binding.capabilitiesJson());
@@ -95,6 +102,39 @@ function strictCommandJson(input) {
   return JSON.stringify(visit(input, 0));
 }
 
+function transportJsonValue(value) {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value) || isProxy(value) ||
+      (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null)) {
+    throw new TypeError('transport must be a plain object');
+  }
+  const allowed = new Set(['requestTimeoutMs', 'additionalRootPemFiles']);
+  const input = Object.create(null);
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== 'string' || !allowed.has(key)) throw new TypeError('unknown transport option');
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor?.enumerable || !('value' in descriptor)) throw new TypeError('transport options contain an accessor or hidden member');
+    input[key] = descriptor.value;
+  }
+  const timeout = Object.hasOwn(input, 'requestTimeoutMs') ? input.requestTimeoutMs : 15000;
+  if (!Number.isSafeInteger(timeout) || timeout <= 0) throw new TypeError('requestTimeoutMs must be a positive safe integer');
+  const roots = Object.hasOwn(input, 'additionalRootPemFiles') ? input.additionalRootPemFiles : [];
+  if (!Array.isArray(roots) || isProxy(roots) || roots.length > 16) {
+    throw new TypeError('additionalRootPemFiles must contain at most 16 nonempty paths');
+  }
+  const copiedRoots = JSON.parse(strictCommandJson(roots));
+  if (copiedRoots.some(path => typeof path !== 'string' || path.length === 0)) {
+    throw new TypeError('additionalRootPemFiles must contain at most 16 nonempty paths');
+  }
+  return { request_timeout_ms: timeout, additional_root_pem_files: copiedRoots };
+}
+
+function withTransport(config, transport) {
+  const value = transportJsonValue(transport);
+  if (value !== undefined) config.transport = value;
+  return config;
+}
+
 function selectedBindingsJson(selection) {
   if (!Object.hasOwn(selection, 'bindings')) return null;
   const bindings = selection.bindings;
@@ -114,7 +154,8 @@ function selectedDisclosure(selection) {
 
 /** An explicit origin and protected local paths anchor every operation. */
 exports.openKernel = async options => {
-  const { origin, journalPath, identityPath, requiredFeatures = [], allowLoopbackHttp = false, authority, signal } = options;
+  const { origin, journalPath, identityPath, requiredFeatures = [], allowLoopbackHttp = false, authority, signal, transport } = options;
+  const transportJson = transport === undefined ? undefined : strictCommandJson(transportJsonValue(transport));
   const call = async (operation, commandJson, commandId, uploadChunk, abortSignal,
                       migrationSource, migrationBackup, trustedSignerKeyIds) => {
     const handle = new binding.KernelCancelHandle();
@@ -125,7 +166,7 @@ exports.openKernel = async options => {
       return JSON.parse(await binding.kernelJson(
         operation, origin, journalPath, identityPath, requiredFeatures,
         allowLoopbackHttp, authority, commandJson, commandId, uploadChunk, handle,
-        migrationSource, migrationBackup, trustedSignerKeyIds,
+        migrationSource, migrationBackup, trustedSignerKeyIds, transportJson,
       ));
     } finally {
       abortSignal?.removeEventListener('abort', onAbort);
@@ -163,7 +204,7 @@ exports.readSecureSnapshot = async options => {
   const allowed = new Set([
     'origin', 'kernelJournalPath', 'readStatePath', 'lifecyclePath', 'identityPath',
     'workspaceId', 'authority', 'ownerActorId', 'ownerKeyId', 'requiredFeatures',
-    'allowLoopbackHttp', 'maxReplayArtifactBytes', 'maxReplayCommits', 'signal',
+    'allowLoopbackHttp', 'maxReplayArtifactBytes', 'maxReplayCommits', 'transport', 'signal',
   ]);
   const input = Object.create(null);
   for (const key of Reflect.ownKeys(options)) {
@@ -190,7 +231,7 @@ exports.readSecureSnapshot = async options => {
   if (!Number.isSafeInteger(limit) || limit <= 0) throw new TypeError('maxReplayArtifactBytes must be a positive safe integer');
   const maxReplayCommits = input.maxReplayCommits ?? 102400;
   if (!Number.isSafeInteger(maxReplayCommits) || maxReplayCommits <= 0) throw new TypeError('maxReplayCommits must be a positive safe integer');
-  const config = {
+  const config = withTransport({
     origin: input.origin,
     kernel_journal_path: input.kernelJournalPath,
     read_state_path: input.readStatePath,
@@ -204,7 +245,7 @@ exports.readSecureSnapshot = async options => {
     allow_loopback_http: input.allowLoopbackHttp ?? false,
     max_replay_artifact_bytes: limit,
     max_replay_commits: maxReplayCommits,
-  };
+  }, input.transport);
   const handle = new binding.KernelCancelHandle();
   const signal = input.signal;
   const onAbort = () => handle.cancel();
@@ -231,7 +272,7 @@ function secureProfileOptions(options) {
   const allowed = new Set([
     'origin', 'stateDir', 'identityPath', 'workspaceId', 'authority',
     'ownerActorId', 'ownerKeyId', 'requiredFeatures', 'allowLoopbackHttp',
-    'maxReplayArtifactBytes', 'maxReplayCommits', 'signal',
+    'maxReplayArtifactBytes', 'maxReplayCommits', 'transport', 'signal',
   ]);
   const input = Object.create(null);
   for (const key of Reflect.ownKeys(options)) {
@@ -276,6 +317,7 @@ function secureProfileOptions(options) {
     max_replay_artifact_bytes: limit,
     max_replay_commits: maxReplayCommits,
   };
+  withTransport(config, input.transport);
   return { config, signal: input.signal };
 }
 
@@ -372,13 +414,13 @@ exports.openSecureOwnerWorkspaces = options => {
       typeof options.stateDir !== 'string' || !options.stateDir) {
     throw new TypeError('Owner workspaces require origin and stateDir');
   }
-  const config = {
+  const config = withTransport({
     origin: options.origin,
     state_dir: options.stateDir,
     allow_loopback_http: options.allowLoopbackHttp ?? false,
     max_replay_artifact_bytes: options.maxReplayArtifactBytes ?? 64 * 1024 * 1024,
     max_replay_commits: checkedMaxReplayCommits(options.maxReplayCommits),
-  };
+  }, options.transport);
   const invoke = async (operation, input, commandId, workspaceId, signal) => {
     const handle = new binding.KernelCancelHandle();
     const onAbort = () => handle.cancel();
@@ -798,11 +840,11 @@ exports.openPublicCatalog = options => {
   if (!options || typeof options.origin !== 'string' || !options.origin) {
     throw new TypeError('catalog origin is required');
   }
-  const config = {
+  const config = withTransport({
     origin: options.origin,
     allow_loopback_http: options.allowLoopbackHttp ?? false,
     max_listing_bytes: options.maxListingBytes ?? null,
-  };
+  }, options.transport);
   const call = async (operation, query, after, limit, digest, signal) => {
     const handle = new binding.KernelCancelHandle();
     const onAbort = () => handle.cancel();
@@ -839,6 +881,7 @@ exports.openSecureRecipientEnrollment = options => {
   if (!options || typeof options.origin !== 'string' || typeof options.stateDir !== 'string') {
     throw new TypeError('recipient enrollment requires origin and stateDir');
   }
+  const transportJson = options.transport === undefined ? undefined : strictCommandJson(transportJsonValue(options.transport));
   const invoke = async (operation, signal, mode, expectedCertificateHash, updateId) => {
     const handle = new binding.KernelCancelHandle();
     const onAbort = () => handle.cancel();
@@ -847,7 +890,7 @@ exports.openSecureRecipientEnrollment = options => {
     try {
       const result = JSON.parse(await binding.secureRecipientEnrollmentJson(
         operation, options.origin, options.stateDir,
-        options.allowLoopbackHttp ?? false, handle, mode, expectedCertificateHash, updateId,
+        options.allowLoopbackHttp ?? false, handle, mode, expectedCertificateHash, updateId, transportJson,
       ));
       if (result.ok !== true) {
         const error = new Error(result.message);
@@ -881,6 +924,7 @@ exports.openSecureIdentityDirectory = options => {
   }
   const identityPath = options.identityPath ?? join(options.stateDir, 'identity.state');
   if (typeof identityPath !== 'string' || !identityPath) throw new TypeError('identityPath must be a path');
+  const transportJson = options.transport === undefined ? undefined : strictCommandJson(transportJsonValue(options.transport));
   return Object.freeze({
     lookup: async (actorId, signingKeyId, { signal } = {}) => {
       if (typeof actorId !== 'string' || !actorId || typeof signingKeyId !== 'string' || !signingKeyId) {
@@ -893,7 +937,7 @@ exports.openSecureIdentityDirectory = options => {
       try {
         const result = JSON.parse(await binding.secureIdentityDirectoryJson(
           options.origin, options.stateDir, identityPath, actorId, signingKeyId,
-          options.allowLoopbackHttp ?? false, handle,
+          options.allowLoopbackHttp ?? false, handle, transportJson,
         ));
         if (result.ok !== true) {
           const error = new Error(result.message);
@@ -964,7 +1008,7 @@ exports.openSecureInvitation = options => {
       (options.authority !== undefined && (typeof options.authority !== 'string' || options.authority.length === 0))) {
     throw new TypeError('recipient decision requires origin, stateDir, workspaceId and owner pins');
   }
-  const config = {
+  const config = withTransport({
     origin: options.origin, state_dir: options.stateDir,
     identity_path: require('node:path').join(options.stateDir, 'identity.state'),
     workspace_id: options.workspaceId, owner_actor_id: options.ownerActorId,
@@ -973,7 +1017,7 @@ exports.openSecureInvitation = options => {
     required_features: options.requiredFeatures ?? [],
     max_replay_artifact_bytes: options.maxReplayArtifactBytes ?? 64 * 1024 * 1024,
     max_replay_commits: checkedMaxReplayCommits(options.maxReplayCommits),
-  };
+  }, options.transport);
   const call = admissionCall('recipient', config);
   return Object.freeze({
     decide: (inviteId, decision, options = {}) => call('decide', undefined, inviteId, undefined, decision, options.signal),

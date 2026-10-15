@@ -1,4 +1,10 @@
-export interface ClientConfig { origin: string; stateDir: string }
+export interface TransportConfig { requestTimeoutMs: number; additionalRootPemFiles: string[] }
+export interface ClientConfig { origin: string; stateDir: string; transport?: TransportConfig }
+/** Explicit HTTP settings. Certificate files are read only by the native layer. */
+export interface TransportOptions {
+  requestTimeoutMs?: number;
+  additionalRootPemFiles?: string[];
+}
 /** Read-only explicit > PEERWORK_CONFIG > OS protected user config; rejects selected failures. */
 export declare function loadConfig(path?: string): Promise<ClientConfig>;
 /** Experimental native kernel command client; secure-agent replay remains incomplete. */
@@ -35,6 +41,7 @@ export interface KernelAccessOptions {
   allowLoopbackHttp?: boolean;
   /** Defaults to SHA-256 of the local actor ID, matching WorkspaceClient. */
   authority?: string;
+  transport?: TransportOptions;
   signal?: AbortSignal;
 }
 export interface PendingIntent { command_id: string; intent_digest: string; created_at_ms: number }
@@ -83,6 +90,7 @@ export interface SecureSnapshotOptions {
   maxReplayArtifactBytes?: number;
   /** Maximum restored signed commits; default 102400. */
   maxReplayCommits?: number;
+  transport?: TransportOptions;
   signal?: AbortSignal;
 }
 export interface VerifiedSecureWorkspace {
@@ -114,6 +122,7 @@ export interface SecureReadOptions {
   maxReplayArtifactBytes?: number;
   /** Maximum restored signed commits; default 102400. */
   maxReplayCommits?: number;
+  transport?: TransportOptions;
   signal?: AbortSignal;
 }
 /** Fetches the latest verified supported active history; failed refresh rejects. */
@@ -128,6 +137,7 @@ export interface SecureOwnerWorkspaceOptions {
   maxReplayArtifactBytes?: number;
   /** Maximum restored signed commits; default 102400. */
   maxReplayCommits?: number;
+  transport?: TransportOptions;
 }
 export interface SecureOwnerWorkspaceInput {
   name: string;
@@ -400,6 +410,7 @@ export interface PublicCatalogOptions {
   allowLoopbackHttp?: boolean;
   /** Advisory listing response budget; default 8 MiB. */
   maxListingBytes?: number;
+  transport?: TransportOptions;
 }
 export interface PublicCatalogListing {
   catalog_origin: string;
@@ -465,6 +476,7 @@ export interface RecipientEnrollmentOptions {
   origin: string;
   stateDir: string;
   allowLoopbackHttp?: boolean;
+  transport?: TransportOptions;
 }
 export interface RecipientEnrollmentResult {
   status: 'LOCAL' | 'REGISTRATION_PENDING' | 'PUBLICATION_PENDING' | 'PUBLISHED' | 'PUBLISHED_LOCAL';
