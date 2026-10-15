@@ -526,6 +526,14 @@ exports.openSecureOwnerWorkspaces = options => {
       expected_ts_state_digest: expectedDigest ?? null, options_json: optionsJson,
       material_json: materialJson };
   };
+  const markerHash = value => {
+    if (typeof value !== 'string' || !/^[0-9a-f]{64}$/.test(value)) throw new TypeError('markerHash must be an inspected SHA256, not a command ID');
+    return value;
+  };
+  const markerIntentRequest = (input, hash, digest, options, material, attach) => {
+    const { selected_command_id, ...value } = directBeginRequest(input, markerHash(hash), digest, options, material, attach);
+    return { ...value, selected_marker_hash: selected_command_id };
+  };
   const completedDirectRequest = (input, selectedInstanceId, expectedDigest, optionsJson, materialJson, attach) => {
     const { selected_command_id, ...value } = directBeginRequest(input, selectedInstanceId,
       expectedDigest, optionsJson, materialJson, attach);
@@ -713,6 +721,14 @@ exports.openSecureOwnerWorkspaces = options => {
     attachPendingMultipartPackageStage: (input, materialJson, { signal } = {}) => invoke(
       'stage_multipart_attach', multipartStageRequest(input, materialJson, 'pending'), undefined, undefined, signal),
     recoverPendingPackageStage: (attachId, expectedCommandId, { signal } = {}) => invoke('stage_recover', undefined, expectedCommandId, attachId, signal),
+    objectStageIntentCandidates: (input, { signal } = {}) => invoke(
+      'object_intent_candidates', attachmentInput(input), undefined, undefined, signal),
+    inspectObjectStageIntent: (input, hash, optionsJson, materialJson, { signal } = {}) => invoke(
+      'object_intent_inspect', markerIntentRequest(input, hash, null, optionsJson, materialJson, false), undefined, undefined, signal),
+    attachObjectStageIntent: (input, hash, expectedTsStateDigest, optionsJson, materialJson, { signal } = {}) => invoke(
+      'object_intent_attach', markerIntentRequest(input, hash, expectedTsStateDigest, optionsJson, materialJson, true), undefined, undefined, signal),
+    recoverObjectStageIntent: (attachId, hash, { signal } = {}) => invoke(
+      'object_intent_recover', undefined, markerHash(hash), attachId, signal),
     inspectPendingObjectStage: (input, selectedCommandId, optionsJson, materialJson, { signal } = {}) => invoke(
       'object_stage_inspect', directBeginRequest(input, selectedCommandId, null, optionsJson, materialJson, false), undefined, undefined, signal),
     attachPendingObjectStage: (input, selectedCommandId, expectedTsStateDigest, optionsJson, materialJson, { signal } = {}) => invoke(

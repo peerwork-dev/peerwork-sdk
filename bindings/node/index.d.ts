@@ -197,6 +197,7 @@ export interface HistoricalOwnerAttachmentResult {
   pending_direct_install_command_id: string | null;
   pending_direct_install_instance_id: string | null;
   pending_direct_install_status: 'PENDING_UNRESOLVED' | 'BEGIN_ACCEPTED_CONTINUATION_PENDING' | 'ACCEPTED' | null;
+  object_stage_intent_marker_hash?: string;
   pending_object_stage_command_id: string | null;
   pending_object_stage_instance_id: string | null;
   pending_object_stage_status: 'PENDING_UNRESOLVED' | 'STAGE_ACCEPTED_INSTALL_PENDING' | 'NATIVE_BEGIN_CONTINUATION_PENDING' | 'ACCEPTED' | null;
@@ -205,6 +206,15 @@ export interface HistoricalOwnerAttachmentResult {
   orphan_package_stage_status: 'ORPHAN_NO_PACKET' | 'REPLAN_SELECTED_UNVERIFIED' | 'ORPHAN_REPLANNED' | null;
   orphan_replan_stage_id: string | null;
   orphan_replan_command_id: string | null;
+}
+export interface HistoricalObjectStageIntentCandidate {
+  workspace_id: string; instance_id: string; marker_hash: string;
+  original_command_id: string | null; original_options_hash: string;
+  protocol_digest: string; part_count: number;
+}
+export interface HistoricalObjectStageIntentInventory {
+  ts_state_digest: string; marker_hash: string; instance_id: string;
+  source_id: string; protocol_digest: string; accepted_parts: number; part_count: number;
 }
 export interface HistoricalObjectStagePendingInventory {
   ts_state_digest: string;
@@ -310,6 +320,13 @@ export interface SecureOwnerWorkspaceSession {
   attachPendingMultipartPackageStage(input: HistoricalOwnerAttachmentInput, materialJson: string, options?: {signal?: AbortSignal}): Promise<HistoricalOwnerAttachmentResult>;
   /** Explicit recovery of one selected original ADMIN stage packet. */
   recoverPendingPackageStage(attachId: string, expectedCommandId: string, options?: {signal?: AbortSignal}): Promise<HistoricalOwnerAttachmentResult>;
+  /** Redacted source candidates only; full options/material and signed replay are required by inspect/attach. */
+  objectStageIntentCandidates(input: HistoricalOwnerAttachmentInput, options?: {signal?: AbortSignal}): Promise<HistoricalObjectStageIntentCandidate[]>;
+  /** Select workspace from input, instance_id from original options, exact marker hash from candidates. No POST. */
+  inspectObjectStageIntent(input: HistoricalOwnerAttachmentInput, markerHash: string, optionsJson: string, materialJson: string, options?: {signal?: AbortSignal}): Promise<HistoricalObjectStageIntentInventory>;
+  attachObjectStageIntent(input: HistoricalOwnerAttachmentInput, markerHash: string, expectedTsStateDigest: string, optionsJson: string, materialJson: string, options?: {signal?: AbortSignal}): Promise<HistoricalOwnerAttachmentResult>;
+  /** Explicit recovery; marker hash is not an original command ID. */
+  recoverObjectStageIntent(attachId: string, markerHash: string, options?: {signal?: AbortSignal}): Promise<HistoricalOwnerAttachmentResult>;
   /** Verify the selected final object-stage packet and full author material; no attach or POST. */
   inspectPendingObjectStage(input: HistoricalOwnerAttachmentInput, selectedCommandId: string, optionsJson: string, materialJson: string, options?: {signal?: AbortSignal}): Promise<HistoricalObjectStagePendingInventory>;
   /** Protect the inspected plan without POST; keep its original stage ID for recovery. */

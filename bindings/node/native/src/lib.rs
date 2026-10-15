@@ -598,7 +598,7 @@ impl Task for SecureOwnerCreateTask {
             Ok(value) => value,
             Err(_) => return Ok(serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid Owner configuration"}).to_string()),
         };
-        if matches!(self.operation.as_str(), "attach" | "resume_attachment" | "retain_pending_action" | "attachments" | "kernel_inspect" | "kernel_status" | "kernel_recover" | "stage_inspect" | "stage_multipart_inspect" | "stage_multipart_attach" | "stage_recover" | "orphan_inspect" | "orphan_multipart_inspect" | "orphan_multipart_attach" | "orphan_replan" | "direct_begin_inspect" | "direct_begin_attach" | "direct_begin_recover" | "direct_completed_inspect" | "direct_completed_attach" | "object_stage_inspect" | "object_stage_attach" | "object_stage_recover") {
+        if matches!(self.operation.as_str(), "attach" | "resume_attachment" | "retain_pending_action" | "attachments" | "kernel_inspect" | "kernel_status" | "kernel_recover" | "stage_inspect" | "stage_multipart_inspect" | "stage_multipart_attach" | "stage_recover" | "orphan_inspect" | "orphan_multipart_inspect" | "orphan_multipart_attach" | "orphan_replan" | "direct_begin_inspect" | "direct_begin_attach" | "direct_begin_recover" | "direct_completed_inspect" | "direct_completed_attach" | "object_stage_inspect" | "object_stage_attach" | "object_stage_recover" | "object_intent_candidates" | "object_intent_inspect" | "object_intent_attach" | "object_intent_recover") {
             let access = SecureHistoricalOwnerAttach::new(config);
             let result = match self.operation.as_str() {
                 "attach" => {
@@ -632,17 +632,21 @@ impl Task for SecureOwnerCreateTask {
                     (Some(attach_id), Some(id)) => access.recover_kernel_command(attach_id, id, &self.cancel).map(|value| serde_json::to_string(&value).expect("kernel recovery status serializes")),
                     _ => return Ok(serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"attachment and kernel command IDs are required"}).to_string()),
                 },
-                "direct_begin_inspect" | "direct_begin_attach" | "direct_completed_inspect" | "direct_completed_attach" | "object_stage_inspect" | "object_stage_attach" => {
+                "direct_begin_inspect" | "direct_begin_attach" | "direct_completed_inspect" | "direct_completed_attach" | "object_stage_inspect" | "object_stage_attach" | "object_intent_inspect" | "object_intent_attach" => {
                     let completed = self.operation.starts_with("direct_completed_");
                     let object_stage = self.operation.starts_with("object_stage_");
-                    let selection_key = if completed { "selected_instance_id" } else { "selected_command_id" };
+                    let marker_intent = self.operation.starts_with("object_intent_");
+                    let selection_key = if marker_intent { "selected_marker_hash" } else if completed { "selected_instance_id" } else { "selected_command_id" };
                     let (input, selected, digest, options, material) = match direct_install_request(self.input_json.as_deref(), selection_key) {
                         Some(value) => value,
                         None => return Ok(serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid direct install input"}).to_string()),
                     };
                     if self.operation.ends_with("_inspect") {
                         if digest.is_some() { return Ok(serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"direct install inspection must not select a TS state digest"}).to_string()); }
-                        if object_stage {
+                        if marker_intent {
+                            access.inspect_object_stage_intent(&input, &selected, &options, &material, &self.cancel)
+                                .map(|value| serde_json::to_string(&value).expect("marker intent inventory serializes"))
+                        } else if object_stage {
                             access.inspect_pending_object_stage(&input, &selected, &options, &material, &self.cancel)
                                 .map(|value| serde_json::to_string(&value).expect("object stage inventory serializes"))
                         } else if completed {
@@ -654,7 +658,10 @@ impl Task for SecureOwnerCreateTask {
                         }
                     } else {
                         let Some(digest) = digest else { return Ok(serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"direct install attach requires inspected TS state digest"}).to_string()); };
-                        if object_stage {
+                        if marker_intent {
+                            access.attach_object_stage_intent(input, &selected, &digest, &options, &material, &self.cancel)
+                                .map(|value| serde_json::to_string(&value).expect("attachment result serializes"))
+                        } else if object_stage {
                             access.attach_pending_object_stage(input, &selected, &digest, &options, &material, &self.cancel)
                                 .map(|value| serde_json::to_string(&value).expect("attachment result serializes"))
                         } else if completed {
@@ -670,6 +677,19 @@ impl Task for SecureOwnerCreateTask {
                     (Some(attach_id), Some(id)) => access.recover_pending_direct_install_begin(attach_id, id, &self.cancel)
                         .map(|value| serde_json::to_string(&value).expect("attachment result serializes")),
                     _ => return Ok(serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"attachment and selected direct packet IDs are required"}).to_string()),
+                },
+                "object_intent_candidates" => {
+                    let input: HistoricalOwnerAttachInput = match self.input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {
+                        Some(value) => value,
+                        None => return Ok(serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid marker source input"}).to_string()),
+                    };
+                    if self.cancel.is_cancelled() { return Ok(serde_json::json!({"ok":false,"code":"CANCELLED","message":"cancelled"}).to_string()); }
+                    access.object_stage_intent_candidates(&input).map(|value| serde_json::to_string(&value).expect("marker candidates serialize"))
+                },
+                "object_intent_recover" => match (self.workspace_id.as_deref(), self.command_id.as_deref()) {
+                    (Some(attach_id), Some(hash)) => access.recover_object_stage_intent(attach_id, hash, &self.cancel)
+                        .map(|value| serde_json::to_string(&value).expect("attachment result serializes")),
+                    _ => return Ok(serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"attachment ID and selected marker hash are required"}).to_string()),
                 },
                 "object_stage_recover" => match (self.workspace_id.as_deref(), self.command_id.as_deref()) {
                     (Some(attach_id), Some(id)) => access.recover_pending_object_stage(attach_id, id, &self.cancel)

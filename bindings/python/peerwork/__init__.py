@@ -999,6 +999,7 @@ class HistoricalOwnerAttachmentResult(TypedDict):
     pending_direct_install_command_id: str | None
     pending_direct_install_instance_id: str | None
     pending_direct_install_status: Literal["PENDING_UNRESOLVED", "BEGIN_ACCEPTED_CONTINUATION_PENDING", "ACCEPTED"] | None
+    object_stage_intent_marker_hash: NotRequired[str]
     pending_object_stage_command_id: str | None
     pending_object_stage_instance_id: str | None
     pending_object_stage_status: Literal["PENDING_UNRESOLVED", "STAGE_ACCEPTED_INSTALL_PENDING", "NATIVE_BEGIN_CONTINUATION_PENDING", "ACCEPTED"] | None
@@ -1008,6 +1009,24 @@ class HistoricalOwnerAttachmentResult(TypedDict):
     orphan_replan_stage_id: str | None
     orphan_replan_command_id: str | None
 
+
+class HistoricalObjectStageIntentCandidate(TypedDict):
+    workspace_id: str
+    instance_id: str
+    marker_hash: str
+    original_command_id: str | None
+    original_options_hash: str
+    protocol_digest: str
+    part_count: int
+
+class HistoricalObjectStageIntentInventory(TypedDict):
+    ts_state_digest: str
+    marker_hash: str
+    instance_id: str
+    source_id: str
+    protocol_digest: str
+    accepted_parts: int
+    part_count: int
 
 class HistoricalObjectStagePendingInventory(TypedDict):
     ts_state_digest: str
@@ -1285,6 +1304,68 @@ class SecureOwnerWorkspaceClient:
         return dict(attachment_input=attachment_input, selected_command_id=selected_command_id,
             expected_ts_state_digest=expected_ts_state_digest, options_json=options_json,
             material_json=material_json)
+
+    @staticmethod
+    def _marker_hash(value: str) -> str:
+        if not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
+            raise ValueError("marker_hash must be the inspected lowercase SHA256, not a command ID")
+        return value
+
+    @staticmethod
+    def _object_stage_intent_request(attachment_input: dict, marker_hash: str,
+            expected_ts_state_digest: str | None, options_json: str, material_json: str,
+            *, attach: bool) -> dict:
+        value = SecureOwnerWorkspaceClient._direct_begin_request(attachment_input,
+            SecureOwnerWorkspaceClient._marker_hash(marker_hash), expected_ts_state_digest,
+            options_json, material_json, attach=attach)
+        value["selected_marker_hash"] = value.pop("selected_command_id")
+        return value
+
+    def object_stage_intent_candidates(self, workspace_id: str,
+            protected_ts_state_path: str, protected_ts_intent_db_path: str,
+            protected_owner_pkcs8_path: str, expected_owner_actor_id: str,
+            expected_owner_key_id: str) -> list[HistoricalObjectStageIntentCandidate]:
+        """Redacted protected-source candidates, not authenticated acceptance; no POST."""
+        value = self._attachment_input(workspace_id, protected_ts_state_path,
+            protected_ts_intent_db_path, protected_owner_pkcs8_path,
+            expected_owner_actor_id, expected_owner_key_id)
+        return cast(list[HistoricalObjectStageIntentCandidate], self._owner("object_intent_candidates", input_value=value))
+
+    def inspect_object_stage_intent(self, workspace_id: str,
+            protected_ts_state_path: str, protected_ts_intent_db_path: str,
+            protected_owner_pkcs8_path: str, expected_owner_actor_id: str,
+            expected_owner_key_id: str, marker_hash: str,
+            options_json: str, material_json: str) -> HistoricalObjectStageIntentInventory:
+        """Verify explicit marker/options.instance_id and full material; no attach or POST."""
+        value = self._attachment_input(workspace_id, protected_ts_state_path,
+            protected_ts_intent_db_path, protected_owner_pkcs8_path,
+            expected_owner_actor_id, expected_owner_key_id)
+        request = self._object_stage_intent_request(value, marker_hash, None,
+            options_json, material_json, attach=False)
+        return cast(HistoricalObjectStageIntentInventory, self._owner(
+            "object_intent_inspect", input_value=request))
+
+    def attach_object_stage_intent(self, workspace_id: str,
+            protected_ts_state_path: str, protected_ts_intent_db_path: str,
+            protected_owner_pkcs8_path: str, expected_owner_actor_id: str,
+            expected_owner_key_id: str, marker_hash: str,
+            expected_ts_state_digest: str, options_json: str,
+            material_json: str) -> HistoricalOwnerAttachmentResult:
+        """Protect the inspected object-stage plan without POST; recovery remains explicit."""
+        value = self._attachment_input(workspace_id, protected_ts_state_path,
+            protected_ts_intent_db_path, protected_owner_pkcs8_path,
+            expected_owner_actor_id, expected_owner_key_id)
+        request = self._object_stage_intent_request(value, marker_hash,
+            expected_ts_state_digest, options_json, material_json, attach=True)
+        return cast(HistoricalOwnerAttachmentResult, self._owner(
+            "object_intent_attach", input_value=request))
+
+    def recover_object_stage_intent(self, attach_id: str,
+            marker_hash: str) -> HistoricalOwnerAttachmentResult:
+        """Recover the protected marker selection; never reconstruct a missing original packet."""
+        return cast(HistoricalOwnerAttachmentResult, self._owner(
+            "object_intent_recover", command_id=self._marker_hash(marker_hash),
+            workspace_id=attach_id))
 
     def inspect_pending_object_stage(self, workspace_id: str,
             protected_ts_state_path: str, protected_ts_intent_db_path: str,
@@ -1648,6 +1729,49 @@ class SecureOwnerWorkspaceClient:
             expected_owner_actor_id, expected_owner_key_id)
         return cast(HistoricalPackageStagePendingInventory, await _run_cancelled_async(
             self._owner, "stage_inspect", input_value=value))
+
+    async def object_stage_intent_candidates_async(self, workspace_id: str,
+            protected_ts_state_path: str, protected_ts_intent_db_path: str,
+            protected_owner_pkcs8_path: str, expected_owner_actor_id: str,
+            expected_owner_key_id: str) -> list[HistoricalObjectStageIntentCandidate]:
+        """Redacted protected-source candidates, not authenticated acceptance; no POST."""
+        value = self._attachment_input(workspace_id, protected_ts_state_path,
+            protected_ts_intent_db_path, protected_owner_pkcs8_path,
+            expected_owner_actor_id, expected_owner_key_id)
+        return cast(list[HistoricalObjectStageIntentCandidate], await _run_cancelled_async(self._owner, "object_intent_candidates", input_value=value))
+
+    async def inspect_object_stage_intent_async(self, workspace_id: str,
+            protected_ts_state_path: str, protected_ts_intent_db_path: str,
+            protected_owner_pkcs8_path: str, expected_owner_actor_id: str,
+            expected_owner_key_id: str, marker_hash: str,
+            options_json: str, material_json: str) -> HistoricalObjectStageIntentInventory:
+        value = self._attachment_input(workspace_id, protected_ts_state_path,
+            protected_ts_intent_db_path, protected_owner_pkcs8_path,
+            expected_owner_actor_id, expected_owner_key_id)
+        request = self._object_stage_intent_request(value, marker_hash, None,
+            options_json, material_json, attach=False)
+        return cast(HistoricalObjectStageIntentInventory, await _run_cancelled_async(
+            self._owner, "object_intent_inspect", input_value=request))
+
+    async def attach_object_stage_intent_async(self, workspace_id: str,
+            protected_ts_state_path: str, protected_ts_intent_db_path: str,
+            protected_owner_pkcs8_path: str, expected_owner_actor_id: str,
+            expected_owner_key_id: str, marker_hash: str,
+            expected_ts_state_digest: str, options_json: str,
+            material_json: str) -> HistoricalOwnerAttachmentResult:
+        value = self._attachment_input(workspace_id, protected_ts_state_path,
+            protected_ts_intent_db_path, protected_owner_pkcs8_path,
+            expected_owner_actor_id, expected_owner_key_id)
+        request = self._object_stage_intent_request(value, marker_hash,
+            expected_ts_state_digest, options_json, material_json, attach=True)
+        return cast(HistoricalOwnerAttachmentResult, await _run_cancelled_async(
+            self._owner, "object_intent_attach", input_value=request))
+
+    async def recover_object_stage_intent_async(self, attach_id: str,
+            marker_hash: str) -> HistoricalOwnerAttachmentResult:
+        return cast(HistoricalOwnerAttachmentResult, await _run_cancelled_async(
+            self._owner, "object_intent_recover", command_id=self._marker_hash(marker_hash),
+            workspace_id=attach_id))
 
     async def inspect_pending_object_stage_async(self, workspace_id: str,
             protected_ts_state_path: str, protected_ts_intent_db_path: str,
@@ -2157,7 +2281,7 @@ class OwnerWorkspacePrivatePackageInstaller(OwnerWorkspacePrivatePackageStager):
             "installs"))
 
 
-__all__ += ["HistoricalObjectStagePendingInventory", "HistoricalDirectInstallPendingInventory", "HistoricalDirectInstallCompletedInventory"]
+__all__ += ["HistoricalObjectStagePendingInventory", "HistoricalObjectStageIntentCandidate", "HistoricalObjectStageIntentInventory", "HistoricalDirectInstallPendingInventory", "HistoricalDirectInstallCompletedInventory"]
 __all__ += ["SecureOwnerWorkspaceClient", "OwnerCoordinationProgress", "OwnerWorkspaceResult", "HistoricalOwnerAttachmentResult", "HistoricalKernelCommandStatus", "HistoricalKernelPendingInventory", "HistoricalPackageStagePendingInventory", "OwnerFormatTransitionResult", "OwnerWorkspaceError",
             "OwnerWorkspaceActionClient", "OwnerWorkspacePackageInstaller",
             "OwnerWorkspacePrivatePackageStager", "PrivatePackageStageResult",
