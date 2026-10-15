@@ -257,7 +257,7 @@ impl KernelAccess {
             .clone()
             .unwrap_or_else(|| sha256_hex(identity.actor_id().as_bytes()));
         let parsed = parse_wire_json_bounded(command_wire, 40, 180_000)
-            .map_err(|_| KernelAccessError::Authority)?;
+            .map_err(|_| KernelClientError::InvalidCommand)?;
         if parsed
             .get("authority")
             .and_then(WireValue::as_string)
@@ -376,6 +376,23 @@ mod public_error_tests {
         kernel_client::KernelClientError as C, kernel_intents::JournalError as J,
         transport::TransportError as T,
     };
+    #[test]
+    fn malformed_command_is_not_an_authority_mismatch() {
+        let state = tempfile::tempdir().unwrap();
+        let identity = state.path().join("identity");
+        KernelIdentity::create(&identity).unwrap();
+        let journal = state.path().join("journal");
+        let access = KernelAccess::new("https://example.invalid", &journal, &identity, &[], false);
+        let malformed = KernelPublicError::from(access.prepare(b"{", None).unwrap_err());
+        assert_eq!(malformed.code, "COMMAND_INVALID");
+        let authority = KernelPublicError::from(
+            access
+                .prepare(br#"{"authority":"wrong"}"#, None)
+                .unwrap_err(),
+        );
+        assert_eq!(authority.code, "AUTHORITY_MISMATCH");
+        assert!(!journal.exists());
+    }
     #[test]
     fn typed_failures_are_redacted_and_stable() {
         let cases = [
