@@ -64,18 +64,20 @@ impl OwnerCoordinationEnableInput {
             participants,
         })
     }
-    fn equivalent(&self, other: &Self, actor: &str) -> bool {
-        fn selected(p: &Option<Vec<String>>, actor: &str) -> Option<Vec<String>> {
-            p.as_ref().map(|p| {
-                let mut v = p.clone();
-                v.push(actor.into());
-                v.sort();
-                v.dedup();
-                v
-            })
+    fn matches_pending(&self, other: &Self, actor: &str) -> bool {
+        fn selected(p: &Option<Vec<String>>, actor: &str) -> Vec<String> {
+            let mut values = p.clone().unwrap_or_default();
+            values.push(actor.into());
+            values.sort();
+            values.dedup();
+            values
         }
+        // f828 only constrains a pending install's chosen participants when
+        // the new caller explicitly supplies participants. Omission recovers
+        // the original choice; it never authors a different grant set.
         self.version == other.version
-            && selected(&self.participants, actor) == selected(&other.participants, actor)
+            && (self.participants.is_none()
+                || selected(&self.participants, actor) == selected(&other.participants, actor))
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -437,7 +439,7 @@ impl SecureOwnerCoordination {
                 return Err(Error::Conflict);
             }
             if let Some((id, row)) = rows.first() {
-                if !input.equivalent(&row.input, identity.actor_id()) {
+                if !input.matches_pending(&row.input, identity.actor_id()) {
                     return Err(Error::Conflict);
                 }
                 Some((*id).clone())
@@ -915,17 +917,33 @@ mod tests {
         }
         .normalized()
         .unwrap();
-        assert!(!empty
+        assert_ne!(empty.normalized().unwrap(), explicit);
+        assert!(empty
             .normalized()
             .unwrap()
-            .equivalent(&explicit, &token_id(1)));
-        assert!(explicit.equivalent(
+            .matches_pending(&explicit, &token_id(1)));
+        assert!(explicit.matches_pending(
             &OwnerCoordinationEnableInput {
                 version: Some(1),
                 participants: Some(vec![token_id(1)])
             },
             &token_id(1)
         ));
+        let saved_member = OwnerCoordinationEnableInput {
+            version: Some(1),
+            participants: Some(vec![token_id(4)]),
+        };
+        assert!(empty
+            .normalized()
+            .unwrap()
+            .matches_pending(&saved_member, &token_id(1)));
+        assert!(!explicit.matches_pending(&saved_member, &token_id(1)));
+        assert!(explicit.matches_pending(&empty.normalized().unwrap(), &token_id(1)));
+        assert!(!OwnerCoordinationEnableInput {
+            version: Some(2),
+            participants: None
+        }
+        .matches_pending(&saved_member, &token_id(1)));
         let root = crate::test_support::protected_test_dir();
         let path = root.path().join("missing").join("identity.state");
         let access = SecureOwnerCoordination::new(SecureReadProfileConfig {
