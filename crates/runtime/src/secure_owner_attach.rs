@@ -12444,6 +12444,7 @@ mod tests {
                 completed_package_stage: None, pending_package_stage: None, pending_action: None,
                 pending_install_begin: None,
                 completed_install_intent: None,
+                pending_object_stage: None,
             };
             let pending = parsed.get("pending").unwrap().get(command).unwrap();
             let request = canonical_wire_value(pending.get("body").unwrap(),
