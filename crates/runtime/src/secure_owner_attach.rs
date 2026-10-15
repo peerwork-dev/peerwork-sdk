@@ -59,6 +59,9 @@ static TEST_STOP_AFTER_ORPHAN_REPLAN_INTENT: AtomicBool = AtomicBool::new(false)
 #[cfg(test)]
 static TEST_STOP_AFTER_IMPORTED_MULTIPART_STAGE_ROW: AtomicBool = AtomicBool::new(false);
 
+mod object_stage;
+pub use object_stage::HistoricalObjectStagePendingInventory;
+
 const MAX_SOURCE: usize = 64 * 1024 * 1024;
 const MAX_HISTORY: usize = 4096;
 const MAX_HISTORY_WIRE: usize = 2 * 1024 * 1024;
@@ -140,6 +143,14 @@ pub struct HistoricalOwnerAttachResult {
     pub orphan_replan_stage_id: Option<String>,
     #[serde(default)]
     pub orphan_replan_command_id: Option<String>,
+    #[serde(default)]
+    pub pending_object_stage_command_id: Option<String>,
+    #[serde(default)]
+    pub pending_object_stage_instance_id: Option<String>,
+    #[serde(default)]
+    pub pending_object_stage_status: Option<String>,
+    #[serde(default)]
+    pub pending_object_stage_native_begin_command_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -239,6 +250,10 @@ pub enum HistoricalOwnerAttachError {
     OrphanStageUnresolved,
     #[error("protected orphan staging residue needs local review")]
     OrphanPlanResidue,
+    #[error("original author material is required for object-stage continuation")]
+    ObjectMaterialRequired,
+    #[error("selected object stage or its native install remains unresolved")]
+    PendingObjectStageUnresolved,
 }
 
 impl HistoricalOwnerAttachError {
@@ -261,6 +276,8 @@ impl HistoricalOwnerAttachError {
             Self::OrphanMaterialRequired => "ORPHAN_MATERIAL_REQUIRED",
             Self::OrphanStageUnresolved => "ORPHAN_STAGE_UNRESOLVED",
             Self::OrphanPlanResidue => "ORPHAN_PLAN_RESIDUE",
+            Self::ObjectMaterialRequired => "OBJECT_MATERIAL_REQUIRED",
+            Self::PendingObjectStageUnresolved => "PENDING_OBJECT_STAGE_UNRESOLVED",
         }
     }
 
@@ -319,6 +336,8 @@ struct SavedAttach {
     pending_direct_install_complete: bool,
     #[serde(default)]
     orphan_package_stage: Option<SavedOrphanPackageStage>,
+    #[serde(default)]
+    pending_object_stage: Option<object_stage::SavedObjectStage>,
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -534,6 +553,7 @@ struct LegacySource {
     pending_package_stage: Option<LegacyPendingPackageStage>,
     pending_action: Option<LegacyPendingAction>,
     pending_install_begin: Option<LegacyPendingInstallBegin>,
+    pending_object_stage: Option<object_stage::LegacyPendingObjectStage>,
     completed_install_intent: Option<LegacyCompletedInstallIntent>,
 }
 
@@ -2149,7 +2169,7 @@ impl SecureHistoricalOwnerAttach {
             pending_direct_install_command_id: Some(plan.command_id),
             pending_direct_install_instance_id: Some(plan.instance_id),
             pending_direct_install_begin_accepted: false,
-            pending_direct_install_complete: false,
+            pending_direct_install_complete: false, pending_object_stage: None,
         };
         history.rows.insert(id.clone(), row);
         save_history(&store, &history)?;
@@ -2264,7 +2284,7 @@ impl SecureHistoricalOwnerAttach {
             pending_direct_install_command_id: Some(plan.command_id),
             pending_direct_install_instance_id: Some(plan.instance_id),
             pending_direct_install_begin_accepted: true,
-            pending_direct_install_complete: true,
+            pending_direct_install_complete: true, pending_object_stage: None,
         });
         save_history(&store, &history)?;
         drop(history); drop(store); drop(lock);
@@ -2474,7 +2494,7 @@ impl SecureHistoricalOwnerAttach {
             pending_direct_install_command_id: None,
             pending_direct_install_instance_id: None,
             pending_direct_install_begin_accepted: false,
-            pending_direct_install_complete: false,
+            pending_direct_install_complete: false, pending_object_stage: None,
             orphan_package_stage: None,
         };
         history.rows.insert(id.clone(), row);
@@ -2516,6 +2536,9 @@ impl SecureHistoricalOwnerAttach {
             .clone();
         drop(history);
         drop(store);
+        if row.pending_object_stage.is_some() {
+            return self.resume_object_stage_attachment(attach_id, &row, cancel);
+        }
         // Completed map-only plans contain no old packet. Revalidate their
         // protected copies on each resume, including after source removal.
         let completed_direct_plan = if row.pending_direct_install_plan_id.is_some()
@@ -4282,7 +4305,9 @@ impl SecureHistoricalOwnerAttach {
             self.config.allow_loopback_http,
         );
         let backup = directory.join("historical-ts-intents-backup.sqlite");
-        let source_intents = if row.pending_direct_install_plan_id.is_some() {
+        let source_intents = if let Some(stage) = row.pending_object_stage.as_ref() {
+            self.object_stage_plan_directory(&stage.plan_id).join("source-intents.sqlite")
+        } else if row.pending_direct_install_plan_id.is_some() {
             let plan_id = row.pending_direct_install_plan_id.as_deref()
                 .ok_or(HistoricalOwnerAttachError::Conflict)?;
             let attach_id = base64url(&sha256(format!(
@@ -5061,12 +5086,13 @@ fn summary(id: &str, row: &SavedAttach) -> HistoricalOwnerAttachResult {
             .is_some_and(|replan| replan.accepted_in_signed_replay));
     let direct_install_unresolved = row.pending_direct_install_plan_id.is_some()
         && !row.pending_direct_install_complete;
+    let object_stage_unresolved = row.pending_object_stage.as_ref().is_some_and(|stage| !stage.complete);
     HistoricalOwnerAttachResult {
         attach_id: id.into(),
         workspace_id: row.input.workspace_id.clone(),
         provenance: "HISTORICAL_TS_OWNER".into(),
         status: if row.attached_sequence.is_some() &&
-            (stage_unresolved || orphan_unresolved || direct_install_unresolved) {
+            (stage_unresolved || orphan_unresolved || direct_install_unresolved || object_stage_unresolved) {
             "ATTACHED_RESTRICTED"
         } else if row.attached_sequence.is_some()
             && retained
@@ -5138,6 +5164,13 @@ fn summary(id: &str, row: &SavedAttach) -> HistoricalOwnerAttachResult {
             .and_then(|stage| stage.replan.as_ref().map(|replan| replan.stage_id.clone())),
         orphan_replan_command_id: row.orphan_package_stage.as_ref()
             .and_then(|stage| stage.replan.as_ref().map(|replan| replan.command_id.clone())),
+        pending_object_stage_command_id: row.pending_object_stage.as_ref().map(|stage| stage.command_id.clone()),
+        pending_object_stage_instance_id: row.pending_object_stage.as_ref().map(|stage| stage.instance_id.clone()),
+        pending_object_stage_status: row.pending_object_stage.as_ref().map(|stage| {
+            if stage.complete { "ACCEPTED" } else if stage.native_begin_command_id.is_some() { "NATIVE_BEGIN_CONTINUATION_PENDING" }
+            else if stage.stage_accepted { "STAGE_ACCEPTED_INSTALL_PENDING" } else { "PENDING_UNRESOLVED" }.into()
+        }),
+        pending_object_stage_native_begin_command_id: row.pending_object_stage.as_ref().and_then(|stage| stage.native_begin_command_id.clone()),
     }
 }
 
@@ -7409,7 +7442,7 @@ fn parse_legacy_source_selected_install_with_instance(
     selected_install_command_id: Option<&str>,
     selected_install_instance_id: Option<&str>,
 ) -> Result<LegacySource, HistoricalOwnerAttachError> {
-    parse_legacy_source_selected_install_inner(bytes, input, selected_install_command_id, None, selected_install_instance_id)
+    parse_legacy_source_selected_install_inner(bytes, input, selected_install_command_id, None, selected_install_instance_id, None)
 }
 
 fn parse_legacy_source_selected_completed_install(
@@ -7417,7 +7450,7 @@ fn parse_legacy_source_selected_completed_install(
     input: &HistoricalOwnerAttachInput,
     selected_instance_id: &str,
 ) -> Result<LegacySource, HistoricalOwnerAttachError> {
-    parse_legacy_source_selected_install_inner(bytes, input, None, Some(selected_instance_id), None)
+    parse_legacy_source_selected_install_inner(bytes, input, None, Some(selected_instance_id), None, None)
 }
 
 fn parse_legacy_source_selected_install_inner(
@@ -7426,6 +7459,7 @@ fn parse_legacy_source_selected_install_inner(
     selected_install_command_id: Option<&str>,
     selected_completed_install_instance_id: Option<&str>,
     selected_install_instance_id: Option<&str>,
+    selected_object_stage: Option<(&str, &str)>,
 ) -> Result<LegacySource, HistoricalOwnerAttachError> {
     let mut value = parse_wire_json_bounded(bytes, 48, MAX_SOURCE)
         .map_err(|_| HistoricalOwnerAttachError::SourceChanged)?;
@@ -7514,8 +7548,18 @@ fn parse_legacy_source_selected_install_inner(
                 value.get("protocol_install_intents"), value.get("pending"), instance_id, input,
             )?)
         } else { None };
+        let pending_object_stage = if let Some((command, instance)) = selected_object_stage {
+            if pending_install_begin.is_some() || completed_install_intent.is_some()
+                || pending_package_stage.is_some() || completed_package_stage.is_some() {
+                return Err(HistoricalOwnerAttachError::SourceUnresolved);
+            }
+            Some(object_stage::parse_pending_object_stage(&value, input, command, instance)?)
+        } else { None };
         if !empty_optional_map(value.get("protocol_object_stage_intents")) {
-            if let Some(pending) = pending_install_begin.as_mut() {
+            if pending_object_stage.is_some() {
+                // Its distinct selector already verified the exact four-field
+                // marker and pending packet; never invent an install map.
+            } else if let Some(pending) = pending_install_begin.as_mut() {
                 pending.object_stage = Some(parse_completed_object_stage(
                     value.get("protocol_object_stage_intents"), &pending.instance_id, input)?);
             } else if let Some(completed) = completed_install_intent.as_mut() {
@@ -7713,7 +7757,7 @@ fn parse_legacy_source_selected_install_inner(
             None
         };
         let pending_action = if pending_package_stage.is_some() || pending_install_begin.is_some()
-            || completed_install_intent.is_some() {
+            || completed_install_intent.is_some() || pending_object_stage.is_some() {
             None
         } else {
             parse_pending_owner_action(value.get("pending"), input)?
@@ -7739,6 +7783,7 @@ fn parse_legacy_source_selected_install_inner(
             pending_package_stage,
             pending_action,
             pending_install_begin,
+            pending_object_stage,
             completed_install_intent,
         })
     })();
@@ -7817,6 +7862,7 @@ mod tests {
     };
 
     static ATTACH_FAULT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    include!("secure_owner_attach/object_stage_tests.rs");
 
     #[test]
     fn orphan_plan_partial_staging_never_strands_or_clobbers_retry() {
@@ -12509,7 +12555,7 @@ mod tests {
                 pending_direct_install_command_id: Some(plan.command_id.clone()),
                 pending_direct_install_instance_id: Some(plan.instance_id.clone()),
                 pending_direct_install_begin_accepted: false,
-                pending_direct_install_complete: false,
+                pending_direct_install_complete: false, pending_object_stage: None,
                 orphan_package_stage: None,
             };
             let old_source_dir = root.path().join(name);

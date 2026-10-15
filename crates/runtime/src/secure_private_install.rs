@@ -849,6 +849,8 @@ struct InstallRow {
     #[serde(default)]
     import_attach_id: Option<String>,
     #[serde(default)]
+    native_object_plan_id: Option<String>,
+    #[serde(default)]
     source_kind: Option<InstallSourceKind>,
     #[serde(default)]
     stage_id: Option<String>,
@@ -1406,6 +1408,21 @@ impl SecurePrivatePackageInstall {
         &self,
         imported: ImportedHistoricalDirectBegin,
     ) -> Result<(), PrivatePackageInstallError> {
+        self.save_attach_direct_begin_row(imported, None)
+    }
+
+    /// A new native BEGIN authorized by one protected object-stage plan.
+    /// Reopening this exact plan preserves already-saved continuation steps.
+    pub(crate) fn save_native_object_begin_row_for_attach(
+        &self, imported: ImportedHistoricalDirectBegin, native_plan_id: &str,
+    ) -> Result<(), PrivatePackageInstallError> {
+        if !token(native_plan_id) || imported.object_source_json.is_none() || imported.staged_source.is_some()
+            || !imported.steps.is_empty() { return Err(PrivatePackageInstallError::Input); }
+        self.save_attach_direct_begin_row(imported, Some(native_plan_id.to_owned()))
+    }
+
+    fn save_attach_direct_begin_row(&self, imported: ImportedHistoricalDirectBegin,
+        native_plan_id: Option<String>) -> Result<(), PrivatePackageInstallError> {
         if !token(&imported.attach_id) || !token(&imported.command_id)
             || (imported.staged_source.is_some() && imported.object_source_json.is_some())
             || imported.object_source_json.as_ref().is_some_and(|wire| wire.is_empty() || wire.len() > 220_000)
@@ -1461,8 +1478,9 @@ impl SecurePrivatePackageInstall {
                 object_source_json: imported.object_source_json,
             }))
         };
-        let row = InstallRow {
-            import_attach_id: Some(imported.attach_id), source_kind: Some(source_kind), stage_id, direct_source,
+        let mut row = InstallRow {
+            import_attach_id: Some(imported.attach_id), native_object_plan_id: native_plan_id.clone(),
+            source_kind: Some(source_kind), stage_id, direct_source,
             instance_id: imported.instance_id, entrypoint: imported.entrypoint,
             grants_json: imported.grants_json, disclose_json: imported.disclose_json,
             issued_at_ms: imported.issued_at_ms,
@@ -1478,6 +1496,11 @@ impl SecurePrivatePackageInstall {
         let mut doc = InstallDocument::open(
             &store, &self.config, identity.actor_id(), identity.key_id(),
         )?;
+        if let (Some(plan_id), Some(existing)) = (native_plan_id.as_ref(), doc.rows.get(&imported.command_id)) {
+            if existing.native_object_plan_id.as_ref() != Some(plan_id) { return Err(PrivatePackageInstallError::Plan); }
+            row.steps = existing.steps.clone();
+            row.accepted = existing.accepted.clone();
+        }
         match doc.rows.get(&imported.command_id) {
             Some(existing) if existing == &row => Ok(()),
             Some(_) => Err(PrivatePackageInstallError::Plan),
@@ -1653,7 +1676,7 @@ impl SecurePrivatePackageInstall {
                 )
                 .map_err(|_| PrivatePackageInstallError::Plan)?;
                 let row = InstallRow {
-                    import_attach_id: None,
+                    import_attach_id: None, native_object_plan_id: None,
                     source_kind: Some(InstallSourceKind::Staged),
                     stage_id: Some(input.stage_id.clone()),
                     direct_source: None,
@@ -1861,7 +1884,7 @@ impl SecurePrivatePackageInstall {
                     canonical_wire_value(prepared.snapshot(), CanonicalPath::SecureArtifact)
                         .map_err(|_| PrivatePackageInstallError::Plan)?;
                 let row = InstallRow {
-                    import_attach_id: None,
+                    import_attach_id: None, native_object_plan_id: None,
                     source_kind: Some(InstallSourceKind::Direct),
                     stage_id: None,
                     direct_source: Some(DirectInstallSource {
@@ -3246,7 +3269,7 @@ mod tests {
         let store = SecureStateStore::open(&state_dir.join("private-install-operations.state")).unwrap();
         let mut doc = InstallDocument::open(&store, &config, identity.actor_id(), identity.key_id()).unwrap();
         let row = |kind: InstallSourceKind| InstallRow {
-            import_attach_id: None,
+            import_attach_id: None, native_object_plan_id: None,
             source_kind: Some(kind),
             stage_id: (kind == InstallSourceKind::Staged).then(|| "s".repeat(43)),
             direct_source: (kind == InstallSourceKind::Direct).then(|| DirectInstallSource {
