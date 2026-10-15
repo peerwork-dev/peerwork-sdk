@@ -10,7 +10,7 @@ def offline():
  py='/usr/bin/python3';node='/usr/bin/node'
  run([py,'-m','pip','install','--no-index','--no-deps','--target',HOME+'/python','/work/artifacts/peerwork_sdk-0.0.1-cp311-abi3-musllinux_1_2_x86_64.whl'])
  np=h/'node';np.mkdir();(np/'package.json').write_text('{"name":"t098-offline","private":true}')
- run(['/usr/bin/npm','install','--prefix',str(np),'--cache',HOME+'/npm-cache','--offline','--ignore-scripts','--no-audit','--no-fund','--no-save','/work/artifacts/peerwork-agent-sdk-0.0.1.tgz','/work/artifacts/peerwork-agent-sdk-linux-x64-musl-0.0.1.tgz'])
+ run(['/usr/bin/npm','install','--prefix',str(np),'--cache',HOME+'/npm-cache','--offline','--ignore-scripts','--omit=optional','--no-audit','--no-fund','--no-save','/work/artifacts/peerwork-agent-sdk-0.0.1.tgz','/work/artifacts/peerwork-agent-sdk-linux-x64-musl-0.0.1.tgz'])
  (h/'bin').mkdir();cli=h/'bin/peerwork';shutil.copy2('/work/artifacts/peerwork',cli)
  sys.path.insert(0,HOME+'/python');import peerwork,peerwork._peerwork_native as native
  assert issubclass(peerwork.KernelError,RuntimeError)
