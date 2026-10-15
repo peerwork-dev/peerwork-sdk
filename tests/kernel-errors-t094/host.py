@@ -1,10 +1,10 @@
 """Compiled-local public Kernel typed-error and unchanged saved-result regression."""
 import os,sys,json,subprocess,hashlib,time,threading,http.server,shutil
 from pathlib import Path
-ROOT=Path(__file__).resolve().parents[2]; OUT=ROOT/'.test-data/t094'; C=OUT/'compiled'
+ROOT=Path(__file__).resolve().parents[2]; OUT=ROOT/'.test-data/t094'/os.environ.get('PEERWORK_KERNEL_ERROR_RUN','first'); C=OUT/'compiled'
 NODE='/root/workdir/message/.tools/node-v24.20.0-linux-x64/bin/node'
 REFERENCE='/root/workdir/message/.worktrees/e2ee-main-integration-20261006'
-os.umask(0o077); OUT.mkdir(exist_ok=True); C.mkdir(exist_ok=True)
+os.umask(0o077); OUT.mkdir(parents=True,exist_ok=True); C.mkdir(exist_ok=True)
 assert not (C/'peerwork').exists(), 'retain first execution objects'
 for src,dst in [(ROOT/'.build-target/debug/peerwork',C/'peerwork'),(ROOT/'.build-target/debug/lib_peerwork_native.so',C/'python/peerwork/_peerwork_native.abi3.so'),(ROOT/'.build-target/debug/libpeerwork_node_native.so',C/'node/node_modules/@peerwork/agent-sdk-linux-x64-gnu/index.node')]:
  dst.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(src,dst)
