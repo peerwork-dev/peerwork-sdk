@@ -1792,6 +1792,7 @@ mod tests {
                 allow_loopback_http: true,
                 max_replay_artifact_bytes: crate::SecureJournalReadBudget::default()
                     .max_replay_artifact_bytes,
+                max_replay_commits: crate::secure_verified_read::default_replay_commits(),
             };
             let result = std::thread::spawn(move || {
                 let access = crate::secure_read_access::SecureReadAccess::new(config);

@@ -12949,7 +12949,8 @@ mod tests {
         let options = std::fs::read_to_string(fixture["options_path"].as_str().unwrap()).unwrap();
         let material = std::fs::read_to_string(fixture["material_path"].as_str().unwrap()).unwrap();
         let config = SecureOwnerCreateConfig { origin: origin.into(), state_dir: root.path().join("native"),
-            allow_loopback_http: true, max_replay_artifact_bytes: 64 * 1024 * 1024 };
+            allow_loopback_http: true, max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits() };
         let attach = SecureHistoricalOwnerAttach::new(config.clone());
         let cancel = CancellationToken::new();
         let inventory = attach.inspect_pending_direct_install_begin(&input, command, &options, &material, &cancel).unwrap();
