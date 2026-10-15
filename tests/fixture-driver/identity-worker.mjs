@@ -1,0 +1,3 @@
+import{createPrivateKey,createPublicKey,sign}from'node:crypto';import{readFileSync,lstatSync}from'node:fs';import{pathToFileURL}from'node:url';import assert from'node:assert/strict';
+const [path,ref]=process.argv.slice(2);assert.equal(lstatSync(path).mode&0o777,0o600);const key=createPrivateKey(readFileSync(path)),{signingIdentityFromKey}=await import(pathToFileURL(ref+'/dist-workspace/src/workspace-secure-local-state.js').href),identity=await signingIdentityFromKey(key),signature=sign(null,Buffer.from('T102 explicit fixture identity reopen'),key);
+console.log(JSON.stringify({pid:process.pid,actor_id:identity.actorId,key_id:identity.keyId,signature:signature.toString('base64url')}));
