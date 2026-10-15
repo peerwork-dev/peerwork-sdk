@@ -1,0 +1,43 @@
+# Selected final partial object stage: native result
+
+This package adds Rust-runtime inspect/attach/recover for an original selected final `secure.protocol-object.stage` packet with explicit original options and full author material. The genuine two-part producer has no installation BEGIN or install-intent map: part0 is signed at2; selected part1/command3 is either pending before POST or already signed after response loss. Recovery preserves that exact stage identity, then explicitly authorizes a distinct durable native BEGIN4 and END5. It does not reinterpret the stage as an old installation BEGIN.
+
+Product source is d1795e2 with the source-gone/profile correction bda3bc9. Source review cleared both. Test-only initializer8d9e961 corrects the original no-run failure; observer70e48b2 changes no product. The frozen passing binary is `.test-data/partial-object-stage/frozen-bda3bc9-runtime`, SHA256 `fb3196392f6d09b934972cb58cda15ad1de7884b39c4a2f7722af6347e0dc69e`. The separate failed binary67e1cef1 remains retained. Neither existing frozen object-source binaries nor their evidence were overwritten.
+
+## Behavior and boundaries
+
+The new selection retains the complete original marker/source and requires current PRIVATE Owner/key/epoch authority, exact authenticated source and predecessor, selected signature/ciphertext/context and deterministic part, full proof/part reconstruction, original canonical options hash, and independently compiled closure/material/composition. The complete-source wrapper remains strict. Missing material is `OBJECT_MATERIAL_REQUIRED`; it is not reconstructed from a flattened object. Only a selected last nonzero part is supported initially (actual fixture index1 of2); earlier-index continuation remains refused and has no positive fixture coverage here.
+
+PREPARED follows protected source/PEM/options/material/checked intent backup with manifest-last publication. Fresh source-gone resume reloads and rechecks those copies. The stage is posted only when absent from its exact authenticated predecessor; an already signed selected stage is skipped. A separate protected native-BEGIN packet/ID is saved before network, reverified on reload, and continued through an explicitly plan-tagged attach-owned InstallRow. Ordinary install APIs cannot continue that row. Ordinary and format profile selection refuse an unfinished object-stage attachment; it stays `ATTACHED_RESTRICTED` until signed ACTIVE END/readback.
+
+The three new methods are **Rust-runtime only**: `inspect_pending_object_stage`, `attach_pending_object_stage`, and `recover_pending_object_stage`. Python sync/async, Node native/CJS/types and CLI routes are absent in this source. Additive serialized result fields alone do not establish public facade coverage. Thin public methods for this same capability are approved next, before one coherent installed cohort with the separate enrollment fix.
+
+## Actual verification
+
+All native service cases used the pinned f828 reference, its existing compiled modules, Node24, and local real HTTP. Both source setups use public client staging with no state/DB edits. The runtime cases use explicit retained native roots; service SQLite main/WAL, original exported source, and protected plans remain available. Evidence hashes and exact paths are in `.test-data/partial-object-stage/evidence-manifest.json`.
+
+| Gate | Owned handle | Result |
+|---|---:|---|
+| Genuine before-POST setup, corrected origin |3395|exit0; ACTIVE2, one accepted part, selected command3, zero BEGIN/install map|
+| Genuine applied-loss setup, corrected origin |42735|exit0; ACTIVE3, two accepted parts, same pending selected command3, zero BEGIN/install map|
+| Corrected no-run after initializer |30542|exit0,22.70s|
+| No-run after source-gone/profile correction |65866|exit0,18.63s|
+| Before-POST source-gone native recovery |76771|PASS1/1,228.16s|
+| Applied-loss source-gone native recovery |27997|PASS1/1,148.49s|
+| Affected complete-object BEGIN regression |91016|PASS1/1,74.70s|
+| Core/runtime/CLI/Python-native/Node-native offline check |83482|exit0,3m54s|
+| Applied-stage HTTP no-repost observer |56829|exit0; nativePASS1/1,191.35s; two stage POSTs before baseline, BEGIN+END only afterward; owned server exited/reaped|
+
+Both partial native cases exercise eleven copied advisory negatives through inspect **and** attach: raw options hash, part descriptor/text/count, source checkpoint, selected signed packet, wrong material/manifest/grant, and extra marker. Changed options also update the advisory hash, so that hash cannot substitute for compiler/authority proof. Refusals require no attachment/lifecycle/accepted commit and unchanged protected source bytes. Missing material, wrong selected command, stale inspected digest, PREPARED interruption, fresh source-gone resume, ordinary-profile restriction, wrong recovery command, exact original request, distinct native BEGIN, signed selected instance/protocol/entrypoint and repeated recovery/resume idempotence are checked. The before-POST case additionally creates genuine independent later-action and epoch-rotation controls through public APIs, requiring refusal without PREPARED/effects. Final selected history is exactly bootstrap, stage, stage, BEGIN, END at sequence5, with the original selected stage accepted once.
+
+The observer reuses the accepted pass-through `request.push` metadata-only preload. Its reviewed applied-loss fixture baseline binds the exact host/workspace commit path and selected command. It requires two actual stage POSTs before baseline (selected once), no prior BEGIN, then exactly the distinct BEGIN and END with zero stage POSTs afterward. Binary hashes before/after and Linux server PID absence/reaping are separate assertions. No request body, key, or decrypted private payload is persisted by the observer. The actual observer passed: raw requests SHA256 `1c081f6ef5b8dcc6f8593ed86905f6cbe06769f2b23f275ee051b01dc3161d05`; native log `8aaaa9d6f08921212b18c1d421f7bbd24c389d4dc6165c4461987c569769e9a5`. It observed exactly2 stage POSTs before baseline, selected command once, then exactly BEGIN+END and zero stage POSTs. PID1206689 was absent after the test and the same frozen binary hash remained intact. This HTTP claim is limited to the fresh applied-final-part case; other positives assert accepted effects, not absence of every request.
+
+## Preserved failures and limits
+
+The original f1ff604 producer setup failed twice before workspace creation with `TRUSTED_ORIGIN_REQUIRED`; each service had zero commits. The reviewed one-line7b67a6f normalization of the reference ready URL to `new URL(origin).origin` fixed the fixture input. These are failures and a fixture review miss, not product passes.
+
+No-run10915 exited101 because a pre-existing test's `LegacySource` initializer omitted the new optional field. Its log remains `native-no-run-first.log`;8d9e961 adds only `pending_object_stage: None` in that test. The initial native65022 then exited101/30.70s at source-gone resume with `SourceChanged`: shared kernel-import validation reopened the vanished old source because the new plan was missing from `inspect_saved_sources`. Retained SQLite proves the selected workspace still had only bootstrap+first stage (2 commits); selected-stage recovery had not begun. The service stderr is empty; its PID was not retained, so shutdown is source-reviewed kill/wait only. Bda3bc9 dispatches to the strict protected object plan loader and adds the missing unfinished-profile guards; independent review cleared the correction before the affected retry. Failed binary67e1cef1/log/state are retained separately.
+
+Cache copy85036 finished before Cargo;13 copied local Peerwork outputs/fingerprints were invalidated, dependency cache reused. Pinned Rust1.89 lacks rustfmt; system rustfmt was used only for the two new Rust files. Existing unused-import/dead-code compiler warnings remain recorded. The affected prior case and separate partial applied case used independent services/processes in parallel; no timing comparison or performance acceptance is claimed.
+
+This is deterministic native migration evidence, not an Agent trial: business assertions do not establish natural Agent workflow compliance. No installed facade, native platform, release/CI/publication, or new natural Agent claim follows. Earlier partial indices, marker-only crashes, unavailable-material alternatives, later histories, combined package/object sources, remaining staged multipart/implicit dispositions and dedicated coordination remain in the full plan. No new migration family is started after this package pending root reprioritization.
