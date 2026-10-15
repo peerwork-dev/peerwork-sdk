@@ -1,12 +1,12 @@
 // Exact official PUBLIC-v1 writer/conversion path; size preflight only.
 import assert from 'node:assert/strict';
 import {generateKeyPairSync,createHash}from'node:crypto';
-import {mkdirSync,writeFileSync,readFileSync,readdirSync}from'node:fs';
+import {mkdirSync,writeFileSync,readFileSync,readdirSync,existsSync}from'node:fs';
 import {join,resolve}from'node:path';
 import {createRequire}from'node:module';
 import {pathToFileURL}from'node:url';
 import {execFileSync}from'node:child_process';
-const ref=resolve(process.argv[2]),out=resolve(process.argv[3]);mkdirSync(out,{mode:0o700});
+const ref=resolve(process.argv[2]),out=resolve(process.argv[3]);if(existsSync(out)){assert.deepEqual(readdirSync(out),[],'only the original empty pre-service leaf may be continued');}else mkdirSync(out,{mode:0o700});
 assert.equal(execFileSync('git',['-C',ref,'rev-parse','HEAD'],{encoding:'utf8'}).trim(),'f828b6c50a0a58d1e718af90f653b214adcc3328');execFileSync('git',['-C',ref,'diff','--quiet','HEAD','--','src','package.json','package-lock.json']);
 const files=[];function scan(d){for(const e of readdirSync(d,{withFileTypes:true})){const p=join(d,e.name);if(e.isDirectory())scan(p);else if(e.name.endsWith('.js'))files.push(p);}}const compiled=join(ref,'dist-workspace/src');scan(compiled);files.sort();const h=createHash('sha256');for(const p of files)h.update(p.slice(compiled.length+1)+'\0'+createHash('sha256').update(readFileSync(p)).digest('hex')+'\n');assert.equal(files.length,204);assert.equal(h.digest('hex'),'6de57ae9bbaae615c0d7f87e744e5422dfc25959bf92a659c28c924961ddf1dc');
 const require=createRequire(join(ref,'package.json')),load=p=>import(pathToFileURL(join(compiled,p+'.js')).href);
