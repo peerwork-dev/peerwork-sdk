@@ -380,6 +380,19 @@ impl SecureOwnerWorkspaceCreate {
         }
     }
 
+    /// Dedicated coordination enable selects only an ordinary Owner profile.
+    pub fn coordination_access(
+        &self, workspace_id: &str,
+    ) -> Result<crate::secure_owner_coordination::SecureOwnerCoordination, SecureOwnerCreateError> {
+        use crate::secure_owner_coordination::SecureOwnerCoordination;
+        match (self.created_profile_config(workspace_id, "PRIVATE"), self.created_profile_config(workspace_id, "PUBLIC")) {
+            (Ok(config), Err(SecureOwnerCreateError::NotFound)) => Ok(SecureOwnerCoordination::new(config)),
+            (Err(SecureOwnerCreateError::NotFound), Ok(config)) => Ok(SecureOwnerCoordination::new_public(config)),
+            (Ok(_), Ok(_)) => Err(SecureOwnerCreateError::Invalid),
+            (Err(error), _) | (_, Err(error)) => Err(error),
+        }
+    }
+
     /// Invite and deliver for an Owner-created PUBLIC workspace using the
     /// verified, protected Owner profile selected by its public workspace ID.
     /// Recipient identity and consent remain separate admission checks.

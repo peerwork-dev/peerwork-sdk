@@ -27,6 +27,7 @@ mod secure_native_prepare;
 pub mod secure_owner_attach;
 pub mod secure_owner_create;
 pub mod secure_owner_format_transition;
+pub mod secure_owner_coordination;
 #[allow(dead_code)]
 mod secure_package_pending;
 pub mod secure_private_grant_read;

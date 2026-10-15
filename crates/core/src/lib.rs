@@ -26,6 +26,7 @@ mod package_schema;
 mod prepared_package_source;
 pub mod prepared_private_install;
 pub mod prepared_owner_format;
+pub mod prepared_owner_coordination;
 pub mod prepared_public_admission;
 pub mod prepared_command;
 pub mod prepared_secure_action;
