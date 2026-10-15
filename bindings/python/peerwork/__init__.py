@@ -985,10 +985,27 @@ class HistoricalOwnerAttachmentResult(TypedDict):
     pending_direct_install_command_id: str | None
     pending_direct_install_instance_id: str | None
     pending_direct_install_status: Literal["PENDING_UNRESOLVED", "BEGIN_ACCEPTED_CONTINUATION_PENDING", "ACCEPTED"] | None
+    pending_object_stage_command_id: str | None
+    pending_object_stage_instance_id: str | None
+    pending_object_stage_status: Literal["PENDING_UNRESOLVED", "STAGE_ACCEPTED_INSTALL_PENDING", "NATIVE_BEGIN_CONTINUATION_PENDING", "ACCEPTED"] | None
+    pending_object_stage_native_begin_command_id: str | None
     orphan_package_stage_command_id: str | None
     orphan_package_stage_status: Literal["ORPHAN_NO_PACKET", "REPLAN_SELECTED_UNVERIFIED", "ORPHAN_REPLANNED"] | None
     orphan_replan_stage_id: str | None
     orphan_replan_command_id: str | None
+
+
+class HistoricalObjectStagePendingInventory(TypedDict):
+    ts_state_digest: str
+    command_id: str
+    instance_id: str
+    source_id: str
+    protocol_digest: str
+    part_index: int
+    part_count: int
+    original_commit_hash: str
+    original_options_hash: str
+    status: Literal["PENDING_UNRESOLVED", "APPLIED_IN_SIGNED_REPLAY"]
 
 
 class HistoricalDirectInstallPendingInventory(TypedDict):
@@ -1254,6 +1271,42 @@ class SecureOwnerWorkspaceClient:
         return dict(attachment_input=attachment_input, selected_command_id=selected_command_id,
             expected_ts_state_digest=expected_ts_state_digest, options_json=options_json,
             material_json=material_json)
+
+    def inspect_pending_object_stage(self, workspace_id: str,
+            protected_ts_state_path: str, protected_ts_intent_db_path: str,
+            protected_owner_pkcs8_path: str, expected_owner_actor_id: str,
+            expected_owner_key_id: str, selected_command_id: str,
+            options_json: str, material_json: str) -> HistoricalObjectStagePendingInventory:
+        """Verify one selected final object-stage packet and full author material; no POST."""
+        value = self._attachment_input(workspace_id, protected_ts_state_path,
+            protected_ts_intent_db_path, protected_owner_pkcs8_path,
+            expected_owner_actor_id, expected_owner_key_id)
+        request = self._direct_begin_request(value, selected_command_id, None,
+            options_json, material_json, attach=False)
+        return cast(HistoricalObjectStagePendingInventory, self._owner(
+            "object_stage_inspect", input_value=request))
+
+    def attach_pending_object_stage(self, workspace_id: str,
+            protected_ts_state_path: str, protected_ts_intent_db_path: str,
+            protected_owner_pkcs8_path: str, expected_owner_actor_id: str,
+            expected_owner_key_id: str, selected_command_id: str,
+            expected_ts_state_digest: str, options_json: str,
+            material_json: str) -> HistoricalOwnerAttachmentResult:
+        """Protect the inspected object-stage plan without POST; recovery remains explicit."""
+        value = self._attachment_input(workspace_id, protected_ts_state_path,
+            protected_ts_intent_db_path, protected_owner_pkcs8_path,
+            expected_owner_actor_id, expected_owner_key_id)
+        request = self._direct_begin_request(value, selected_command_id,
+            expected_ts_state_digest, options_json, material_json, attach=True)
+        return cast(HistoricalOwnerAttachmentResult, self._owner(
+            "object_stage_attach", input_value=request))
+
+    def recover_pending_object_stage(self, attach_id: str,
+            expected_command_id: str) -> HistoricalOwnerAttachmentResult:
+        """Reconcile the original stage; explicitly finish its distinct native installation."""
+        return cast(HistoricalOwnerAttachmentResult, self._owner(
+            "object_stage_recover", command_id=expected_command_id,
+            workspace_id=attach_id))
 
     def inspect_pending_direct_install_begin(self, workspace_id: str,
             protected_ts_state_path: str, protected_ts_intent_db_path: str,
@@ -1550,6 +1603,39 @@ class SecureOwnerWorkspaceClient:
             expected_owner_actor_id, expected_owner_key_id)
         return cast(HistoricalPackageStagePendingInventory, await _run_cancelled_async(
             self._owner, "stage_inspect", input_value=value))
+
+    async def inspect_pending_object_stage_async(self, workspace_id: str,
+            protected_ts_state_path: str, protected_ts_intent_db_path: str,
+            protected_owner_pkcs8_path: str, expected_owner_actor_id: str,
+            expected_owner_key_id: str, selected_command_id: str,
+            options_json: str, material_json: str) -> HistoricalObjectStagePendingInventory:
+        value = self._attachment_input(workspace_id, protected_ts_state_path,
+            protected_ts_intent_db_path, protected_owner_pkcs8_path,
+            expected_owner_actor_id, expected_owner_key_id)
+        request = self._direct_begin_request(value, selected_command_id, None,
+            options_json, material_json, attach=False)
+        return cast(HistoricalObjectStagePendingInventory, await _run_cancelled_async(
+            self._owner, "object_stage_inspect", input_value=request))
+
+    async def attach_pending_object_stage_async(self, workspace_id: str,
+            protected_ts_state_path: str, protected_ts_intent_db_path: str,
+            protected_owner_pkcs8_path: str, expected_owner_actor_id: str,
+            expected_owner_key_id: str, selected_command_id: str,
+            expected_ts_state_digest: str, options_json: str,
+            material_json: str) -> HistoricalOwnerAttachmentResult:
+        value = self._attachment_input(workspace_id, protected_ts_state_path,
+            protected_ts_intent_db_path, protected_owner_pkcs8_path,
+            expected_owner_actor_id, expected_owner_key_id)
+        request = self._direct_begin_request(value, selected_command_id,
+            expected_ts_state_digest, options_json, material_json, attach=True)
+        return cast(HistoricalOwnerAttachmentResult, await _run_cancelled_async(
+            self._owner, "object_stage_attach", input_value=request))
+
+    async def recover_pending_object_stage_async(self, attach_id: str,
+            expected_command_id: str) -> HistoricalOwnerAttachmentResult:
+        return cast(HistoricalOwnerAttachmentResult, await _run_cancelled_async(
+            self._owner, "object_stage_recover", command_id=expected_command_id,
+            workspace_id=attach_id))
 
     async def inspect_pending_direct_install_begin_async(self, workspace_id: str,
             protected_ts_state_path: str, protected_ts_intent_db_path: str,
@@ -2012,7 +2098,7 @@ class OwnerWorkspacePrivatePackageInstaller(OwnerWorkspacePrivatePackageStager):
             "installs"))
 
 
-__all__ += ["HistoricalDirectInstallPendingInventory", "HistoricalDirectInstallCompletedInventory"]
+__all__ += ["HistoricalObjectStagePendingInventory", "HistoricalDirectInstallPendingInventory", "HistoricalDirectInstallCompletedInventory"]
 __all__ += ["SecureOwnerWorkspaceClient", "OwnerWorkspaceResult", "HistoricalOwnerAttachmentResult", "HistoricalKernelCommandStatus", "HistoricalKernelPendingInventory", "HistoricalPackageStagePendingInventory", "OwnerFormatTransitionResult", "OwnerWorkspaceError",
             "OwnerWorkspaceActionClient", "OwnerWorkspacePackageInstaller",
             "OwnerWorkspacePrivatePackageStager", "PrivatePackageStageResult",

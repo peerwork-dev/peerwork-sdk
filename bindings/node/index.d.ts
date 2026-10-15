@@ -177,10 +177,27 @@ export interface HistoricalOwnerAttachmentResult {
   pending_direct_install_command_id: string | null;
   pending_direct_install_instance_id: string | null;
   pending_direct_install_status: 'PENDING_UNRESOLVED' | 'BEGIN_ACCEPTED_CONTINUATION_PENDING' | 'ACCEPTED' | null;
+  pending_object_stage_command_id: string | null;
+  pending_object_stage_instance_id: string | null;
+  pending_object_stage_status: 'PENDING_UNRESOLVED' | 'STAGE_ACCEPTED_INSTALL_PENDING' | 'NATIVE_BEGIN_CONTINUATION_PENDING' | 'ACCEPTED' | null;
+  pending_object_stage_native_begin_command_id: string | null;
   orphan_package_stage_command_id: string | null;
   orphan_package_stage_status: 'ORPHAN_NO_PACKET' | 'REPLAN_SELECTED_UNVERIFIED' | 'ORPHAN_REPLANNED' | null;
   orphan_replan_stage_id: string | null;
   orphan_replan_command_id: string | null;
+}
+export interface HistoricalObjectStagePendingInventory {
+  ts_state_digest: string;
+  /** Original selected stage command, distinct from the later native BEGIN. */
+  command_id: string;
+  instance_id: string;
+  source_id: string;
+  protocol_digest: string;
+  part_index: number;
+  part_count: number;
+  original_commit_hash: string;
+  original_options_hash: string;
+  status: 'PENDING_UNRESOLVED' | 'APPLIED_IN_SIGNED_REPLAY';
 }
 export interface HistoricalDirectInstallPendingInventory {
   ts_state_digest: string;
@@ -268,6 +285,12 @@ export interface SecureOwnerWorkspaceSession {
   attachPendingMultipartPackageStage(input: HistoricalOwnerAttachmentInput, materialJson: string, options?: {signal?: AbortSignal}): Promise<HistoricalOwnerAttachmentResult>;
   /** Explicit recovery of one selected original ADMIN stage packet. */
   recoverPendingPackageStage(attachId: string, expectedCommandId: string, options?: {signal?: AbortSignal}): Promise<HistoricalOwnerAttachmentResult>;
+  /** Verify the selected final object-stage packet and full author material; no attach or POST. */
+  inspectPendingObjectStage(input: HistoricalOwnerAttachmentInput, selectedCommandId: string, optionsJson: string, materialJson: string, options?: {signal?: AbortSignal}): Promise<HistoricalObjectStagePendingInventory>;
+  /** Protect the inspected plan without POST; keep its original stage ID for recovery. */
+  attachPendingObjectStage(input: HistoricalOwnerAttachmentInput, selectedCommandId: string, expectedTsStateDigest: string, optionsJson: string, materialJson: string, options?: {signal?: AbortSignal}): Promise<HistoricalOwnerAttachmentResult>;
+  /** Explicitly reconcile the original stage and authorize its distinct native BEGIN/continuation. */
+  recoverPendingObjectStage(attachId: string, expectedCommandId: string, options?: {signal?: AbortSignal}): Promise<HistoricalOwnerAttachmentResult>;
   /** Verify one retained BEGIN/PAGE/END packet against explicit options and full source material; no attach row or POST. */
   inspectPendingDirectInstallBegin(input: HistoricalOwnerAttachmentInput, selectedCommandId: string, optionsJson: string, materialJson: string, options?: {signal?: AbortSignal}): Promise<HistoricalDirectInstallPendingInventory>;
   /** Import exactly the inspected retained BEGIN/PAGE/END packet without POST; later continuation is explicit. */

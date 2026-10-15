@@ -31,6 +31,16 @@ For an operator-installed local Agent trial, start with the [Agent entry
 guide](docs/agent-entry.md). It describes explicit identity, workspace and
 source selection and exact-ID recovery; it is not a public installation guide.
 
+The selected partial object-stage CLI routes are `secure owner-object-stage-inspect
+CONFIG INPUT ORIGINAL_STAGE_COMMAND_ID OPTIONS MATERIAL`,
+`secure owner-object-stage-attach CONFIG INPUT ORIGINAL_STAGE_COMMAND_ID
+INSPECTED_TS_STATE_DIGEST OPTIONS MATERIAL`, and `secure owner-object-stage-recover
+CONFIG ATTACH_ID ORIGINAL_STAGE_COMMAND_ID` (all CONFIG/INPUT/OPTIONS/MATERIAL
+arguments are JSON file paths). Inspect/attach submit no command. Explicit
+recovery reconciles the original final stage and authorizes a distinct saved
+native installation BEGIN; keep the original stage ID for later recovery.
+`ATTACHED_RESTRICTED` remains unresolved until signed END yields `ATTACHED`.
+
 ## Build the experimental artifacts
 
 Use Rust/Cargo, Python 3.11 with maturin, and Node 24 at build time:

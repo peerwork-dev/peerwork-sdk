@@ -693,6 +693,12 @@ exports.openSecureOwnerWorkspaces = options => {
     attachPendingMultipartPackageStage: (input, materialJson, { signal } = {}) => invoke(
       'stage_multipart_attach', multipartStageRequest(input, materialJson, 'pending'), undefined, undefined, signal),
     recoverPendingPackageStage: (attachId, expectedCommandId, { signal } = {}) => invoke('stage_recover', undefined, expectedCommandId, attachId, signal),
+    inspectPendingObjectStage: (input, selectedCommandId, optionsJson, materialJson, { signal } = {}) => invoke(
+      'object_stage_inspect', directBeginRequest(input, selectedCommandId, null, optionsJson, materialJson, false), undefined, undefined, signal),
+    attachPendingObjectStage: (input, selectedCommandId, expectedTsStateDigest, optionsJson, materialJson, { signal } = {}) => invoke(
+      'object_stage_attach', directBeginRequest(input, selectedCommandId, expectedTsStateDigest, optionsJson, materialJson, true), undefined, undefined, signal),
+    recoverPendingObjectStage: (attachId, expectedCommandId, { signal } = {}) => invoke(
+      'object_stage_recover', undefined, expectedCommandId, attachId, signal),
     inspectPendingDirectInstallBegin: inspectDirectPacket,
     attachPendingDirectInstallBegin: attachDirectPacket,
     recoverPendingDirectInstallBegin: recoverDirectPacket,

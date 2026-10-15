@@ -66,6 +66,25 @@ inspect `pending()` or `status(command_id)` before preparing the same command
 again.
 Do not use it as a production Agent SDK.
 
+### Recover a selected partial object stage
+
+`SecureOwnerWorkspaceClient` exposes `inspect_pending_object_stage`,
+`attach_pending_object_stage`, and `recover_pending_object_stage`, with matching
+`_async` methods. Inspect takes the explicit protected Owner/source paths and
+pins, original selected stage command ID, original options JSON and full author
+material JSON. Attach additionally requires the inspected `ts_state_digest`.
+Inspect and attach submit no command. This route currently supports a selected
+final nonzero part; missing full material remains unresolved.
+
+Recover with the returned attachment ID and **original stage command ID**.
+Recovery reconciles that exact packet and explicitly authorizes a distinct saved
+native installation BEGIN; its ID is `pending_object_stage_native_begin_command_id`.
+Keep calling recovery with the original stage ID. `ATTACHED_RESTRICTED` remains
+unresolved; only `ATTACHED` with stage status `ACCEPTED` proves the signed END.
+After interruption, reopen the same state directory and inspect `attachments()`
+before recovering the saved selection. Async cancellation drains its worker;
+it does not undo an accepted stage or installation.
+
 
 ### Optional local observations
 

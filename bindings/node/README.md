@@ -66,6 +66,25 @@ The exact-version platform package is an optional dependency. Installation has
 no build script or downloader. A missing native package causes a clear import
 error.
 
+### Recover a selected partial object stage
+
+`openSecureOwnerWorkspaces(config)` exposes `inspectPendingObjectStage(input,
+originalStageCommandId, optionsJson, materialJson)`,
+`attachPendingObjectStage(input, originalStageCommandId, inspectedTsStateDigest,
+optionsJson, materialJson)`, and `recoverPendingObjectStage(attachId,
+originalStageCommandId)`. Methods accept an optional `{signal}`. Inspect and
+attach submit no command; select the protected Owner/source paths and pins
+explicitly and retain the full original author material. This route currently
+supports a selected final nonzero part.
+
+Recovery reconciles the original stage packet and explicitly authorizes a
+distinct saved native BEGIN. Its `pending_object_stage_native_begin_command_id`
+is separate from the original stage ID used for recovery. Remain responsible
+for `ATTACHED_RESTRICTED`; only `ATTACHED` with stage status `ACCEPTED` proves
+signed END. After interruption, reopen the same state directory and inspect
+`attachments()` before recovering that saved selection. Aborting does not undo
+an accepted stage or installation.
+
 
 ### Optional local observations
 
