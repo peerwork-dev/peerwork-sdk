@@ -420,6 +420,11 @@ fn main() -> ExitCode {
 }
 
 fn secure_owner_command(verb: &str, args: &[String]) -> Result<String, (&'static str, String)> {
+    if matches!(args, [flag] if flag == "--help" || flag == "-h") {
+        if let Some(help) = owner_consumer_help(verb) {
+            return Ok(help.to_string());
+        }
+    }
     // Generic packet aliases use the exact existing recovery dispatcher.
     let verb = match verb {
         "owner-direct-packet-inspect" => "owner-direct-begin-inspect",
@@ -673,6 +678,68 @@ fn secure_owner_command(verb: &str, args: &[String]) -> Result<String, (&'static
     value.map_err(|_| ("RESULT_ENCODING_FAILED", "Owner result encoding failed".to_owned()))
 }
 
+// These examples describe explicit caller choices; they never construct grants or
+// convert package material into an installation request.
+fn owner_consumer_help(verb: &str) -> Option<serde_json::Value> {
+    let private_install = verb.starts_with("owner-private-install-");
+    let private_stage = verb.starts_with("owner-private-stage-");
+    let action = verb.starts_with("owner-action-") || verb.starts_with("owner-private-action-");
+    if !(private_install || private_stage || action || verb.starts_with("owner-install-")) {
+        return None;
+    }
+    let example = match verb {
+        "owner-private-install-begin-direct" => serde_json::json!({
+            "closure_json":"<JSON-encoded selected package closure>",
+            "expected_root_package_digest":"<compiler root package digest>",
+            "expected_protocol_digest":"<compiler output protocol digest>",
+            "instance_id":"<new caller-selected 43-character base64url ID>",
+            "entrypoint":"<entrypoint in the selected compiled manifest>",
+            "grants_json":"[{\"actor_id\":\"<authorized actor ID>\",\"actions\":[\"<selected action>\"],\"protocol_roles\":[\"<selected role>\"],\"capabilities\":[\"<selected capability>\"]}]"
+        }),
+        "owner-private-stage-submit" => serde_json::json!({
+            "material_json":"<JSON-encoded complete selected {v:1,closure,bindings} material>",
+            "expected_root_package_digest":"<compiler root package digest>",
+            "expected_protocol_digest":"<compiler output protocol digest>"
+        }),
+        "owner-private-install-begin" => serde_json::json!({
+            "stage_id":"<ACCEPTED stage ID from owner-private-stage-submit/continue>",
+            "instance_id":"<new caller-selected 43-character base64url ID>",
+            "entrypoint":"<selected entrypoint>",
+            "grants_json":"<JSON-encoded explicit grants array>"
+        }),
+        "owner-private-action-submit" | "owner-action-submit" => serde_json::json!({
+            "action_id":"<action in the selected installed protocol>",
+            "instance_id":"<selected installed instance ID>",
+            "body_json":"<JSON-encoded action body matching that action schema>"
+        }),
+        _ => serde_json::Value::Null,
+    };
+    let final_arg = if verb.ends_with("-list") || verb.ends_with("-pending") { "" }
+        else if verb.ends_with("-continue") { if private_stage { " STAGE_ID" } else { " BEGIN_COMMAND_ID" } }
+        else if verb.ends_with("-status") || verb.ends_with("-retry") { " COMMAND_ID" }
+        else { " INPUT_JSON_FILE" };
+    Some(serde_json::json!({
+        "status":"HELP", "command":verb,
+        "usage":format!("peerwork secure {verb} CONFIG_JSON_FILE WORKSPACE_ID{final_arg}"),
+        "workspace_visibility":if private_install || private_stage || verb.starts_with("owner-private-action-") { "PRIVATE" } else { "PUBLIC" },
+        "input_example":example,
+        "routes":{
+            "PRIVATE_install":"owner-private-install-begin-direct takes a direct envelope; alternatively owner-private-stage-submit/continue then owner-private-install-begin takes a completed stage_id. Continue with owner-private-install-continue CONFIG WORKSPACE BEGIN_COMMAND_ID; list with owner-private-install-list, stages with owner-private-stage-list.",
+            "PUBLIC_install":"owner-install-begin/continue/pending are PUBLIC only. owner-install-pending accepts a WORKSPACE_ID, not a command ID; use owner-private-install-list for PRIVATE workspaces.",
+            "PRIVATE_action":"owner-private-action-submit/pending/status/retry; status/retry take the original saved action COMMAND_ID.",
+            "PUBLIC_action":"owner-action-submit/pending/status/retry are PUBLIC only."
+        },
+        "constraints":[
+            "Raw {v:1,closure,bindings} material is not an install request or authorization. Select direct or staged explicitly; no automatic wrapping, source selection or grants.",
+            "Expected root package digest and compiled protocol digest are distinct pins from the selected public compiler output. Same-name builtins are not interchangeable sources.",
+            "grants_json is a JSON string, chosen explicitly within the caller's authority using the selected protocol's actors/actions/roles/capabilities. No grants are defaulted.",
+            "Direct input optionally accepts bindings as a JSON object (not bindings_json). Direct/staged BEGIN optionally accepts disclose as [{schema,fields:[...]}]; omission differs from explicit empty. Use only reviewed disclosure choices.",
+            "Optional command_id is a caller-selected 43-character base64url ID; issued_at_ms is an integer. Workspace, instance, stage and BEGIN/action command IDs are different scopes; do not substitute them.",
+            "Keep package material and signing sources in protected files. Continue the saved BEGIN until ACCEPTED, then owner-read and verify the selected instance/digest and ACTIVE state. For uncertain actions inspect pending/status and retry only the saved command."
+        ]
+    }))
+}
+
 fn install_input_bindings(bytes: &[u8]) -> Result<Vec<u8>, (&'static str, String)> {
     let mut input: serde_json::Value = serde_json::from_slice(bytes)
         .map_err(|_| ("INSTALL_INPUT_INVALID", "invalid install input JSON".to_owned()))?;
@@ -714,7 +781,7 @@ fn secure_owner_consumer_command(verb: &str, args: &[String]) -> Result<String, 
             "owner-private-stage-submit" => {
                 let bytes = fs::read(&args[2]).map_err(|e| ("STAGE_FILE", e.to_string()))?;
                 let input: PrivatePackageStageInput = serde_json::from_slice(&bytes)
-                    .map_err(|_| ("INSTALL_INPUT_INVALID", "invalid PRIVATE stage input".to_owned()))?;
+                    .map_err(|_| ("INSTALL_INPUT_INVALID", "PRIVATE stage-submit requires material_json plus expected_root_package_digest and expected_protocol_digest; raw material is not an envelope. Run secure owner-private-stage-submit --help".to_owned()))?;
                 access.stage_package_json_with_cancel(input, &cancel)
             }
             "owner-private-stage-continue" => access.continue_stage_json_with_cancel(&args[2], &cancel),
@@ -730,14 +797,14 @@ fn secure_owner_consumer_command(verb: &str, args: &[String]) -> Result<String, 
                 let bytes = fs::read(&args[2]).map_err(|e| ("INSTALL_FILE", e.to_string()))?;
                 let normalized = install_input_bindings(&bytes)?;
                 let input: PrivatePackageInstallBeginInput = serde_json::from_slice(&normalized)
-                    .map_err(|_| ("INSTALL_INPUT_INVALID", "invalid PRIVATE install input".to_owned()))?;
+                    .map_err(|_| ("INSTALL_INPUT_INVALID", "PRIVATE install-begin requires an ACCEPTED stage_id, instance_id, entrypoint and explicit grants_json. For a selected closure use owner-private-install-begin-direct. Raw material is not authorization. Run secure owner-private-install-begin --help".to_owned()))?;
                 access.submit_begin_json_with_cancel(input, &cancel)
             }
             "owner-private-install-begin-direct" => {
                 let bytes = fs::read(&args[2]).map_err(|e| ("INSTALL_FILE", e.to_string()))?;
                 let normalized = install_input_bindings(&bytes)?;
                 let input: PrivateDirectInstallBeginInput = serde_json::from_slice(&normalized)
-                    .map_err(|_| ("INSTALL_INPUT_INVALID", "invalid PRIVATE direct install input".to_owned()))?;
+                    .map_err(|_| ("INSTALL_INPUT_INVALID", "PRIVATE direct install requires closure_json, expected_root_package_digest, expected_protocol_digest, instance_id, entrypoint and explicit grants_json; raw material is not an install envelope. Run secure owner-private-install-begin-direct --help".to_owned()))?;
                 access.submit_direct_begin_json_with_cancel(input, &cancel)
             }
             "owner-private-install-continue" => access.continue_install_json_with_cancel(&args[2], &cancel),
@@ -818,7 +885,7 @@ fn secure_owner_consumer_command(verb: &str, args: &[String]) -> Result<String, 
         let result = result.map_err(|e| (e.code(), e.to_string()))?;
         return if verb == "owner-action-pending" { Ok(result) } else { action_result_with_receipt(result) };
     }
-    let access = owner.public_install_access(workspace_id).map_err(|e| (e.code(), e.to_string()))?;
+    let access = owner.public_install_access(workspace_id).map_err(|e| (e.code(), format!("{e}; owner-install-* is PUBLIC only. For a PRIVATE workspace use owner-private-install-list and owner-private-install-begin-direct or the explicit staged route; run secure owner-private-install-begin-direct --help")))?;
     let result = match verb {
         "owner-install-begin" => {
             let bytes = fs::read(&args[2]).map_err(|e| ("INSTALL_FILE", e.to_string()))?;

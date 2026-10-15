@@ -8,7 +8,17 @@ kernel status/results, and exact saved-command retry. A guarded import path
 for the tracked TypeScript kernel-intent store has focused migration tests.
 Verified secure-agent reads/actions, full result models, and cross-platform
 release acceptance remain incomplete. Do not use these artifacts as a
-production Agent SDK or publish them as a complete verifier.
+production Agent SDK or publish them as a complete verifier. This whole-SDK readiness
+limit does not disable the bounded native Owner PRIVATE create, signed read,
+explicit direct/staged install, action and saved-command recovery routes.
+Their command contracts and focused real-service evidence apply within the
+specified identity/source/authorization scope; broad capability flags remain
+conservative and do not promise complete coverage. For a selected local package,
+run `peerwork secure owner-private-install-begin-direct --help` or
+`peerwork secure owner-private-stage-submit --help`: compiler material is not an
+install envelope or a grant. PRIVATE pending/status/retry commands carry the
+`owner-private-` prefix; `owner-install-*` and `owner-action-*` are PUBLIC routes.
+The [Agent entry](docs/agent-entry.md) gives the complete PRIVATE route.
 
 The baseline for migration is the locally tracked TypeScript SDK source at
 Peerwork protocols commit `dd8a9d2`, with reviewed evidence commit `4065739`.
