@@ -26,7 +26,7 @@ def offline():
  result=dict(status='PASS',uid=os.getuid(),euid=os.geteuid(),python_runtime=sys.version,node=n,version=peerwork.version(),files=[dict(path=str(p),sha256=sha(p),bytes=p.stat().st_size)for p in files],identity_public=info)
  (h/'offline-result.json').write_text(json.dumps(result,indent=2));print(json.dumps(result))
 def host(base):
- b=Path(base).resolve();root=b/'rootfs';source=root/GUEST.lstrip('/');h=root/HOME.lstrip('/');h.mkdir(mode=0o700);os.chown(h,65534,65534)
+ b=Path(base).resolve();root=b/'rootfs';source=root/GUEST.lstrip('/');h=root/HOME.lstrip('/');h.mkdir(mode=0o700,exist_ok='--continue' in sys.argv);os.chown(h,65534,65534)
  def guard():
   for file,cwd in [('source-manifest-final.sha256',source),('artifact-manifest.sha256',b)]:subprocess.run(['sha256sum','-c','--status',str(b/file)],cwd=cwd,check=True)
  guard();shutil.copy2(__file__,h/'offline.py');os.chown(h/'offline.py',65534,65534)
@@ -36,11 +36,11 @@ def host(base):
   with(b/(label+'.stdout')).open('w')as out,(b/(label+'.stderr')).open('w')as err:r=subprocess.run(argv,stdout=out,stderr=err)
   record=dict(argv=argv,start=start,end=datetime.datetime.now(datetime.timezone.utc).isoformat(),seconds=time.monotonic()-t,exit_code=r.returncode)
   (b/(label+'.terminal.json')).write_text(json.dumps(record,indent=2));assert r.returncode==0,record
- run('offline',HOME+'/offline.py',('PEERWORK_T097_CHILD=1',))
+ if '--continue' not in sys.argv:run('offline',HOME+'/offline.py',('PEERWORK_T097_CHILD=1',))
  raw=(source/'tests/kernel-errors-t094/host.py').read_text();a=raw.index('ROOT=Path(');z=raw.index('def run(',a)
  replacement=f'''ROOT=Path({GUEST!r});OUT=Path({HOME!r})/'http-first';C=Path({HOME!r})
 NODE='/opt/node24/bin/node'
-os.umask(0o077);OUT.mkdir(mode=0o700);assert os.geteuid()==65534
+os.umask(0o077);OUT.mkdir(mode=0o700,exist_ok=True);assert os.geteuid()==65534
 sys.path.insert(0,str(C/'python'));import peerwork
 assert Path(peerwork.__file__).resolve()==C/'python/peerwork/__init__.py'
 entry=C/'node/node_modules/@peerwork/agent-sdk/index.cjs'
@@ -52,12 +52,17 @@ CLI=str(C/'bin/peerwork');calls=[]
  a=raw.index("bad.shutdown();bad.server_close();thread.join();server.terminate()")
  raw=raw[:a]+"bad.shutdown();bad.server_close();thread.join();(OUT/'shutdown.json').write_text(json.dumps(dict(failure_server_closed=True,reference_owned_by_host=True)))\n"
  raw=raw.replace("{str(p.relative_to(C)):shafile(p) for p in C.rglob('*') if p.is_file()}","{str(p):shafile(p) for p in [C/'bin/peerwork',C/'python/peerwork/__init__.py',C/'python/peerwork/_peerwork_native.abi3.so',entry,C/'node/node_modules/@peerwork/agent-sdk-linux-x64-gnu/index.node']}")
+ raw=raw.replace("case.mkdir(mode=0o700)","case.mkdir(mode=0o700,exist_ok=True)").replace("info=run([CLI,'identity','create',identity])", "info=run([CLI,'identity','info' if identity.exists() else 'create',identity])")
+ raw=raw.replace("assert isinstance(e,RuntimeError) and e.code==code;return dict", "(OUT/('error-'+mode+'-python.json')).write_text(json.dumps(dict(code=e.code,message=str(e),operation='open',target=selected)));assert isinstance(e,RuntimeError) and e.code==code;return dict")
  compile(raw,'derived-http.py','exec');(h/'http.py').write_text(raw);os.chown(h/'http.py',65534,65534);(b/'derived-http-source.sha256').write_text(sha(h/'http.py')+'\n')
- state=b/'http-service';state.mkdir(mode=0o700);env=os.environ.copy();env.update(PEERWORK_REFERENCE_ROOT=REF,PEERWORK_TEST_STATE=str(state),PEERWORK_TEST_FIRST_POST_MODE='normal');env.pop('PEERWORK_HTTP_PROXY',None)
+ state=b/'http-service';state.mkdir(mode=0o700,exist_ok=True);env=os.environ.copy();env.update(PEERWORK_REFERENCE_ROOT=REF,PEERWORK_TEST_STATE=str(state),PEERWORK_TEST_FIRST_POST_MODE='normal');env.pop('PEERWORK_HTTP_PROXY',None)
  with(b/'service.stderr').open('w')as err:
   server=subprocess.Popen([NODE,str(source/'tests/reference-kernel-server.mjs')],env=env,stdout=subprocess.PIPE,stderr=err,text=True)
   try:
    line=server.stdout.readline();assert line,'reference startup failed';origin=json.loads(line)['origin'];(b/'service-ready.json').write_text(line)
+   import urllib.request
+   with urllib.request.urlopen(origin+'__test/counts')as response:baseline=json.load(response)
+   (b/'http-baseline-counts.json').write_text(json.dumps(baseline));assert baseline['commands']==0
    run('http',HOME+'/http.py',('PEERWORK_T097_ORIGIN='+origin,))
   finally:
    server.terminate();status=server.wait(timeout=10);(b/'service-shutdown.json').write_text(json.dumps(dict(exit_code=status,waited=True)))
