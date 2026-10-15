@@ -22,7 +22,7 @@ use crate::{
     secure_public_install::SecurePublicPackageInstall,
     secure_read_access::SecureReadAccessError,
     secure_read_profile::{SecureReadProfile, SecureReadProfileConfig},
-    secure_recipient_enrollment::{RecipientEnrollmentConfig, SecureRecipientEnrollment},
+    secure_recipient_enrollment::{RecipientEnrollmentConfig, RecipientEnrollmentError, SecureRecipientEnrollment},
     secure_recipient_state::RecipientState,
     secure_state::{
         create_private_state_directory, missing_in_private_parent, read_private_file_bounded,
@@ -150,8 +150,10 @@ pub enum SecureOwnerCreateError {
     ResourceLimit,
     #[error("owner-create local state failed")]
     Local,
-    #[error("owner enrollment or directory publication failed")]
-    Enrollment,
+    #[error("owner enrollment: {0}")]
+    Enrollment(#[source] RecipientEnrollmentError),
+    #[error("owner enrollment is pending; retry with the same Owner config and identity to reconcile the saved registration/publication before workspace creation")]
+    EnrollmentPending,
     #[error("saved owner bootstrap failed source verification")]
     Bootstrap,
     #[error("complete signed owner journal or read profile did not verify")]
@@ -176,7 +178,8 @@ impl SecureOwnerCreateError {
             Self::OrphanStageUnresolved => "ORPHAN_STAGE_UNRESOLVED",
             Self::ResourceLimit => "RESOURCE_LIMIT",
             Self::Local => "LOCAL_STATE_FAILED",
-            Self::Enrollment => "ENROLLMENT_FAILED",
+            Self::Enrollment(error) => error.code(),
+            Self::EnrollmentPending => "ENROLLMENT_PENDING",
             Self::Bootstrap => "BOOTSTRAP_INVALID",
             Self::Verification => "VERIFICATION_FAILED",
             Self::Transport => "TRANSPORT_FAILED",
@@ -446,12 +449,12 @@ impl SecureOwnerWorkspaceCreate {
         let enrollment = self.enrollment();
         enrollment
             .create_local()
-            .map_err(|_| SecureOwnerCreateError::Enrollment)?;
+            .map_err(SecureOwnerCreateError::Enrollment)?;
         let published = enrollment
             .publish_with_cancel(cancel)
-            .map_err(|_| SecureOwnerCreateError::Enrollment)?;
+            .map_err(SecureOwnerCreateError::Enrollment)?;
         if published.status != "PUBLISHED" {
-            return Err(SecureOwnerCreateError::Enrollment);
+            return Err(SecureOwnerCreateError::EnrollmentPending);
         }
         let identity = self.open_identity()?;
         let recipient = RecipientState::open(&self.recipient_path(), &identity)
@@ -1286,6 +1289,61 @@ mod tests {
         io::{BufRead, BufReader},
         process::{Child, Command, Stdio},
     };
+
+    #[test]
+    fn owner_enrollment_errors_preserve_cause_and_pending_guidance() {
+        for cause in [RecipientEnrollmentError::Invalid, RecipientEnrollmentError::Identity,
+            RecipientEnrollmentError::DirectoryContinuity, RecipientEnrollmentError::Transport,
+            RecipientEnrollmentError::TransportConfiguration, RecipientEnrollmentError::DiscoveryStatus,
+            RecipientEnrollmentError::Verification, RecipientEnrollmentError::Local,
+            RecipientEnrollmentError::ServerRejected(403), RecipientEnrollmentError::ClockOrEntropy,
+            RecipientEnrollmentError::Cancelled] {
+            let code = cause.code();
+            let error = SecureOwnerCreateError::Enrollment(cause);
+            assert_eq!(error.code(), code);
+            assert!(error.to_string().starts_with("owner enrollment: "));
+            assert_ne!(error.code(), "ENROLLMENT_FAILED");
+        }
+        let pending = SecureOwnerCreateError::EnrollmentPending;
+        assert_eq!(pending.code(), "ENROLLMENT_PENDING");
+        assert!(pending.to_string().contains("same Owner config and identity"));
+    }
+
+    #[test]
+    fn owner_prepare_refuses_corrupt_or_unsafe_existing_identity_without_replacement() {
+        let root = crate::test_support::protected_test_dir();
+        let state = root.path().join("native");
+        let access = SecureOwnerWorkspaceCreate::new(SecureOwnerCreateConfig {
+            origin: "http://127.0.0.1:1/".into(), state_dir: state.clone(),
+            allow_loopback_http: true, max_replay_artifact_bytes: 64 * 1024 * 1024,
+        });
+        let input = SecureOwnerCreateInput { name: "Owner error regression".into(),
+            name_utf16: None, visibility: "PRIVATE".into(), structured: true,
+            keep_encrypted_json: "[]".into(), coordination_version: None };
+        // Preserve enrollment's existing absent-identity cold start. An existing
+        // corrupt or unsafe selection must never be silently replaced.
+        create_private_state_directory(&state).unwrap();
+        let path = access.identity_path();
+        fs::write(&path, b"corrupt-selected-identity").unwrap();
+        #[cfg(unix)] {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        assert!(matches!(access.prepare(input.clone(), &CancellationToken::new()),
+            Err(SecureOwnerCreateError::Enrollment(RecipientEnrollmentError::Local))));
+        assert_eq!(fs::read(&path).unwrap(), b"corrupt-selected-identity");
+        assert!(!access.recipient_path().exists());
+        assert!(!access.history_path().exists());
+        #[cfg(unix)] {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(matches!(access.prepare(input, &CancellationToken::new()),
+                Err(SecureOwnerCreateError::Enrollment(RecipientEnrollmentError::Local))));
+            assert_eq!(fs::read(&path).unwrap(), b"corrupt-selected-identity");
+            assert!(!access.recipient_path().exists());
+            assert!(!access.history_path().exists());
+        }
+    }
 
     #[test]
     fn config_aware_identity_import_creates_only_the_configured_private_directory() {

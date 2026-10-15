@@ -5,6 +5,7 @@
 use crate::{
     kernel_client::{KernelClient, KernelClientError, KernelOperationStatus},
     kernel_identity::{KernelIdentity, KernelIdentityError},
+    kernel_intents::JournalError,
     secure_identity_directory::{IdentityDirectoryConfig, SecureIdentityDirectory},
     secure_journal_read::sign_read_proof,
     secure_recipient_state::{RecipientState, RecipientStateError},
@@ -87,8 +88,14 @@ pub enum RecipientEnrollmentError {
     Identity,
     #[error("directory history changed or requires an unsupported rotation")]
     DirectoryContinuity,
-    #[error("configured recipient enrollment transport failed")]
+    #[error("enrollment transport failed; check the configured origin and explicitly select PEERWORK_HTTP_PROXY from the runtime proxy route if required; generic HTTP_PROXY/HTTPS_PROXY/ALL_PROXY variables are ignored; keep the selected identity")]
     Transport,
+    #[error("enrollment transport configuration is invalid; check the selected origin, explicit PEERWORK_HTTP_PROXY and trust-root settings; values are not included in this error")]
+    TransportConfiguration,
+    #[error("enrollment discovery returned an unsuccessful HTTP status; check the configured origin and selected proxy access policy")]
+    DiscoveryStatus,
+    #[error("enrollment discovery or signed command result did not verify; check the configured service and pinned authority; keep the selected identity")]
+    Verification,
     #[error("protected local recipient state failed")]
     Local,
     #[error("server rejected recipient enrollment with HTTP {0}")]
@@ -106,6 +113,9 @@ impl RecipientEnrollmentError {
             Self::Identity => "IDENTITY_CHANGED",
             Self::DirectoryContinuity => "DIRECTORY_CONTINUITY",
             Self::Transport => "TRANSPORT_FAILED",
+            Self::TransportConfiguration => "TRANSPORT_CONFIGURATION_INVALID",
+            Self::DiscoveryStatus => "DISCOVERY_FAILED",
+            Self::Verification => "VERIFICATION_FAILED",
             Self::Local => "LOCAL_STATE_FAILED",
             Self::ServerRejected(_) => "SERVER_REJECTED",
             Self::ClockOrEntropy => "CLOCK_OR_ENTROPY",
@@ -1097,10 +1107,26 @@ fn directory_or_cancel(cancel: &CancellationToken) -> RecipientEnrollmentError {
 
 fn map_kernel(error: KernelClientError) -> RecipientEnrollmentError {
     match error {
+        KernelClientError::Transport(error) => match error {
+            TransportError::InvalidOrigin | TransportError::InvalidTrust | TransportError::Setup =>
+                RecipientEnrollmentError::TransportConfiguration,
+            TransportError::Cancelled => RecipientEnrollmentError::Cancelled,
+            TransportError::Redirect | TransportError::ResponseTooLarge =>
+                RecipientEnrollmentError::Verification,
+            TransportError::Network | TransportError::Timeout | TransportError::SubmittedUncertain =>
+                RecipientEnrollmentError::Transport,
+        },
         KernelClientError::ServerRejected(status) => {
             RecipientEnrollmentError::ServerRejected(status)
         }
-        _ => RecipientEnrollmentError::Transport,
+        KernelClientError::DiscoveryStatus => RecipientEnrollmentError::DiscoveryStatus,
+        KernelClientError::UnsupportedDiscovery | KernelClientError::InvalidResult
+            | KernelClientError::InvalidCommand => RecipientEnrollmentError::Verification,
+        KernelClientError::Store(JournalError::DiscoveryChanged) => RecipientEnrollmentError::Identity,
+        KernelClientError::Store(JournalError::InvalidReceipt) => RecipientEnrollmentError::Verification,
+        KernelClientError::Store(JournalError::InvalidIntent | JournalError::IntentConflict)
+            | KernelClientError::IntentNotFound | KernelClientError::Migration(_) => RecipientEnrollmentError::Invalid,
+        KernelClientError::Store(_) => RecipientEnrollmentError::Local,
     }
 }
 
@@ -1271,6 +1297,38 @@ mod tests {
         io::{BufRead, BufReader},
         process::{Child, Command, Stdio},
     };
+
+    #[test]
+    fn enrollment_kernel_causes_are_typed_without_sensitive_error_details() {
+        let cases = [
+            (KernelClientError::Transport(TransportError::Network), "TRANSPORT_FAILED"),
+            (KernelClientError::Transport(TransportError::Timeout), "TRANSPORT_FAILED"),
+            (KernelClientError::Transport(TransportError::InvalidOrigin), "TRANSPORT_CONFIGURATION_INVALID"),
+            (KernelClientError::Transport(TransportError::InvalidTrust), "TRANSPORT_CONFIGURATION_INVALID"),
+            (KernelClientError::Transport(TransportError::Cancelled), "CANCELLED"),
+            (KernelClientError::Transport(TransportError::Redirect), "VERIFICATION_FAILED"),
+            (KernelClientError::DiscoveryStatus, "DISCOVERY_FAILED"),
+            (KernelClientError::UnsupportedDiscovery, "VERIFICATION_FAILED"),
+            (KernelClientError::InvalidResult, "VERIFICATION_FAILED"),
+            (KernelClientError::ServerRejected(403), "SERVER_REJECTED"),
+            (KernelClientError::Store(JournalError::DiscoveryChanged), "IDENTITY_CHANGED"),
+            (KernelClientError::Store(JournalError::InvalidReceipt), "VERIFICATION_FAILED"),
+            (KernelClientError::Store(JournalError::Io(std::io::Error::other(
+                "http://private-user:private-secret@private-host/private-path"))), "LOCAL_STATE_FAILED"),
+        ];
+        for (cause, expected) in cases {
+            let mapped = map_kernel(cause);
+            assert_eq!(mapped.code(), expected);
+            for word in ["private-user", "private-secret", "private-host", "private-path"] {
+                assert!(!mapped.to_string().contains(word));
+                assert!(!format!("{mapped:?}").contains(word));
+            }
+        }
+        let route = RecipientEnrollmentError::Transport.to_string();
+        assert!(route.contains("PEERWORK_HTTP_PROXY"));
+        assert!(route.contains("ignored"));
+        assert!(route.contains("keep the selected identity"));
+    }
 
     #[test]
     fn actual_service_native_recipient_cold_start_and_exact_recovery() {
