@@ -344,6 +344,8 @@ fn actual_service_imports_final_partial_protocol_object_stage() {
     let attach_id = &prepared[0].attach_id;
     let resumed = fresh.resume_attachment(attach_id, &cancel).unwrap();
     assert_eq!(resumed.status, "ATTACHED_RESTRICTED");
+    assert!(matches!(fresh.attached_profile_config(workspace, "PRIVATE"),
+        Err(HistoricalOwnerAttachError::PendingObjectStageUnresolved)));
     assert_eq!(
         resumed.pending_object_stage_command_id.as_deref(),
         Some(command)

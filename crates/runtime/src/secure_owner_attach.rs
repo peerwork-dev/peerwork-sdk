@@ -1819,6 +1819,9 @@ impl SecureHistoricalOwnerAttach {
         &self,
         row: &SavedAttach,
     ) -> Result<(LegacySource, Option<Zeroizing<Vec<u8>>>, Option<Zeroizing<Vec<u8>>>, PathBuf), HistoricalOwnerAttachError> {
+        if row.pending_object_stage.is_some() {
+            return self.inspect_object_stage_saved_sources(row);
+        }
         if row.pending_direct_install_plan_id.is_some() {
             let plan_id = row.pending_direct_install_plan_id.as_deref()
                 .ok_or(HistoricalOwnerAttachError::Conflict)?;
@@ -4847,6 +4850,9 @@ impl SecureHistoricalOwnerAttach {
         if row.pending_direct_install_plan_id.is_some() && !row.pending_direct_install_complete {
             return Err(HistoricalOwnerAttachError::PendingDirectInstallUnresolved);
         }
+        if row.pending_object_stage.as_ref().is_some_and(|stage| !stage.complete) {
+            return Err(HistoricalOwnerAttachError::PendingObjectStageUnresolved);
+        }
         if row.orphan_package_stage.as_ref()
             .is_some_and(|stage| !stage.replan.as_ref()
                 .is_some_and(|replan| replan.accepted_in_signed_replay))
@@ -4895,6 +4901,9 @@ impl SecureHistoricalOwnerAttach {
         if !allow_restricted && row.pending_direct_install_plan_id.is_some()
             && !row.pending_direct_install_complete {
             return Err(HistoricalOwnerAttachError::PendingDirectInstallUnresolved);
+        }
+        if !allow_restricted && row.pending_object_stage.as_ref().is_some_and(|stage| !stage.complete) {
+            return Err(HistoricalOwnerAttachError::PendingObjectStageUnresolved);
         }
         if !allow_restricted && row.orphan_package_stage.as_ref()
             .is_some_and(|stage| !stage.replan.as_ref()

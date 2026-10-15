@@ -930,6 +930,16 @@ impl SecureHistoricalOwnerAttach {
 }
 
 impl SecureHistoricalOwnerAttach {
+    pub(super) fn inspect_object_stage_saved_sources(
+        &self,
+        row: &SavedAttach,
+    ) -> Result<(LegacySource, Option<Zeroizing<Vec<u8>>>, Option<Zeroizing<Vec<u8>>>, PathBuf), HistoricalOwnerAttachError> {
+        let saved = row.pending_object_stage.as_ref().ok_or_else(invalid)?;
+        let loaded = self.load_object_stage_plan(&object_attach_id(&saved.plan_id), row)?;
+        let intents = self.object_stage_plan_directory(&saved.plan_id).join("source-intents.sqlite");
+        Ok((loaded.source, Some(loaded.pem), None, intents))
+    }
+
     fn load_native_object_begin(
         &self,
         plan: &LoadedObjectStagePlan,
