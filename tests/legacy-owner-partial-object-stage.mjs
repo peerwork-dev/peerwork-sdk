@@ -1,13 +1,14 @@
 // Genuine public-client partial object staging; no source/DB edits.
-import { generateKeyPairSync, randomBytes } from 'node:crypto';
+import { createHash, generateKeyPairSync, randomBytes } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { createLegacyComposedInstallMaterial } from './legacy-owner-install-composition-material.mjs';
 import { createLegacyObjectInstallMaterial } from './legacy-owner-install-object-material.mjs';
 
 const [origin, sourceDir, referenceRoot, mode] = process.argv.slice(2);
 if (!origin || !sourceDir || !referenceRoot
-  || !['part1-before-post', 'part1-applied-loss'].includes(mode)) throw new Error('PARTIAL_OBJECT_INPUT');
+  || !['part1-before-post', 'part1-applied-loss', 'middle-part1-before-post', 'middle-part1-applied-loss'].includes(mode)) throw new Error('PARTIAL_OBJECT_INPUT');
 mkdirSync(sourceDir, { recursive: true, mode: 0o700 });
 const load = name => import(pathToFileURL(join(referenceRoot, `dist-workspace/src/${name}.js`)).href);
 const { SecureAgentClient } = await load('workspace-secure-agent');
@@ -30,9 +31,12 @@ try {
   const initial = await agent.journal(workspace);
   if (initial.policy.payload.v !== 3 || initial.policy.payload.visibility !== 'PRIVATE'
     || initial.structure?.state !== 'ACTIVE') throw new Error('PARTIAL_OBJECT_INITIAL');
-  const material = await createLegacyObjectInstallMaterial(referenceRoot), compiled = compilePackageMaterial(material);
+  const middle = mode.startsWith('middle-');
+  const composed = middle ? await createLegacyComposedInstallMaterial(referenceRoot, true) : undefined;
+  const material = composed?.material ?? await createLegacyObjectInstallMaterial(referenceRoot), compiled = compilePackageMaterial(material);
   const instance = randomBytes(32).toString('base64url'), key = `${workspace}.${instance}`;
-  const options = { instance_id: instance, entrypoint: 'migrated_discussion', manifest: compiled.manifest,
+  const options = { instance_id: instance, entrypoint: 'migrated_discussion', manifest: composed?.sourceManifest ?? compiled.manifest,
+    ...(composed ? {dependencies:composed.dependencies} : {}),
     grants: [{ actor_id: agent.identity.actorId, actions: ['discussion.post'],
       protocol_roles: ['CONTRIBUTOR'], capabilities: ['POST'] }], expected_checkpoint: initial.checkpoint };
   const resolved = await resolveProtocolInstall(initial, options, agent.transport.discovery.protocol_features ?? []);
@@ -91,10 +95,10 @@ try {
     throw new Error('PARTIAL_OBJECT_GENUINE_SHAPE');
   }
   const proof = normalizeProtocolObjectSourceProof(marker.proof);
-  if (proof.parts.length !== 2 || marker.parts.length !== proof.parts.length
+  if (proof.parts.length !== (middle ? 4 : 2) || marker.parts.length !== proof.parts.length
     || !secureEqual(proof.source, initial.checkpoint) || proof.protocol_digest !== compiled.protocolDigest
     || !secureEqual(readProtocolObjectSource(proof, marker.parts), { workspace_id: workspace,
-      digest: compiled.protocolDigest, manifest: compiled.manifest, resolved_manifest: compiled.manifest })) {
+      digest: compiled.protocolDigest, manifest: compiled.manifest, resolved_manifest: compiled.manifest, ...(composed ? {composition:composed.composition} : {}) })) {
     throw new Error('PARTIAL_OBJECT_FULL_MATERIAL');
   }
   verifyStagedProtocolObjectCheckpoint(journal, proof);
@@ -118,6 +122,7 @@ try {
   process.stdout.write(JSON.stringify({ mode, ...paths, workspace_id: workspace,
     owner_actor_id: agent.identity.actorId, owner_key_id: agent.identity.keyId, instance_id: instance,
     entrypoint: options.entrypoint, protocol_digest: compiled.protocolDigest, material_root_digest: material.closure.root_package_digest,
+    pending_transport_body_sha256: createHash('sha256').update(JSON.stringify(pending[0][1].body)).digest('hex'),
     pending_command_id: marker.command_id, pending_commit_hash: await secureHash(commit),
     pending_action_id: commit.payload.action_id, pending_sequence: commit.payload.sequence,
     part_index: index, part_count: proof.parts.length, accepted_part_count: expectedAccepted,

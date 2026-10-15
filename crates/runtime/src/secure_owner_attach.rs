@@ -7872,6 +7872,7 @@ mod tests {
 
     static ATTACH_FAULT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     include!("secure_owner_attach/object_stage_tests.rs");
+    include!("secure_owner_attach/object_middle_tests.rs");
 
     #[test]
     fn orphan_plan_partial_staging_never_strands_or_clobbers_retry() {

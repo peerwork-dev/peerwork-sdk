@@ -3,7 +3,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-export async function createLegacyComposedInstallMaterial(referenceRoot) {
+export async function createLegacyComposedInstallMaterial(referenceRoot, largeObject = false) {
   const load = name => import(pathToFileURL(join(referenceRoot, `dist-workspace/src/${name}.js`)).href);
   const { manifestCanonical, SEMANTICS } = await load('workspace-manifest');
   const { discussionPreset } = await load('workspace-presets');
@@ -29,6 +29,15 @@ export async function createLegacyComposedInstallMaterial(referenceRoot) {
   const selectedImport = { alias: 'discussion', package_digest: child.packageDigest, namespace: 'dep' };
   const ownManifest = manifestCanonical({ ...discussionPreset(),
     name: 'example.legacy-explicit-composition.v1', dependencies: [] }).manifest;
+  if (largeObject) {
+    const original = structuredClone(ownManifest.actions[0]);
+    ownManifest.actions = Array.from({length: 8}, (_, index) => {
+      const action = structuredClone(original);
+      action.id = index === 0 ? 'discussion.post' : `large.package.post${index}`;
+      action.variants[0].effects[0].value.fields.message = {from:'literal', value:'\\'.repeat(3000)};
+      return action;
+    });
+  }
   const files = {
     'package.json': JSON.stringify({ format: PROTOCOL_METADATA_FORMAT, package_id: 'legacy-explicit-composition',
       version: '1.0.0', name: 'Legacy explicit composition fixture', description: 'One exact public dependency',

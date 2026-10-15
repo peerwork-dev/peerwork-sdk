@@ -228,6 +228,123 @@ pub fn verify_saved_private_protocol_object_stage(
     Ok(sha256_hex(commit_wire.as_bytes()))
 }
 
+/// Author one retained original object-source part after the caller proves its
+/// exact authenticated prefix. Persist this packet before POST; never replace
+/// it with newly encrypted bytes on an uncertain retry.
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_private_protocol_object_stage(
+    proof: &WireValue,
+    part: &WireValue,
+    part_index: usize,
+    checkpoint_wire: &[u8],
+    signed_policy_wire: &[u8],
+    command_id: &str,
+    issued_at: u64,
+    signing_key: &SigningKey,
+    epoch_key: &[u8; 32],
+) -> Result<PreparedPrivatePackageInstallStep, PrivateInstallError> {
+    let bad = || PrivateInstallError::Invalid;
+    if issued_at > MAX_SAFE || !token(command_id) {
+        return Err(bad());
+    }
+    let signed = parse_wire_json_bounded(signed_policy_wire, 64, 196_608).map_err(|_| bad())?;
+    let policy = signed.get("payload").ok_or_else(bad)?;
+    let checkpoint = parse_wire_json_bounded(checkpoint_wire, 32, 8192).map_err(|_| bad())?;
+    let policy_hash = sha256_hex(
+        canonical_wire_value(&signed, Path::SecureArtifact)
+            .map_err(|_| bad())?
+            .as_bytes(),
+    );
+    let key = base64url(&signing_key.verifying_key().to_bytes());
+    let actor = actor_id(&signing_key.verifying_key().to_bytes());
+    let workspace = string(policy, "workspace_id")?;
+    let previous = string(&checkpoint, "head")?;
+    let sequence = number(&checkpoint, "sequence")?
+        .checked_add(1)
+        .ok_or_else(bad)?;
+    let epoch = number(policy, "epoch")?;
+    let ceiling = number(policy, "protocol_format_ceiling")?;
+    let context = obj(vec![
+        ("v", WireValue::Number(3.0)),
+        ("workspace_id", s(&workspace)),
+        ("sequence", WireValue::Number(sequence as f64)),
+        ("previous", s(&previous)),
+        ("policy_hash", s(&policy_hash)),
+        ("epoch", WireValue::Number(epoch as f64)),
+        ("actor_id", s(&actor)),
+        ("signing_key", s(&key)),
+        ("command_id", s(command_id)),
+        ("action_id", s("secure.protocol-object.stage")),
+        ("instance_id", WireValue::Null),
+        ("issued_at", WireValue::Number(issued_at as f64)),
+        ("delegation", WireValue::Null),
+        ("protocol_format_ceiling", WireValue::Number(ceiling as f64)),
+        (
+            "structure",
+            obj(vec![
+                ("v", WireValue::Number(1.0)),
+                ("mode", s("DELTA")),
+                ("records", WireValue::Array(vec![])),
+                ("heads", WireValue::Array(vec![])),
+            ]),
+        ),
+    ]);
+    let operation = obj(vec![
+        ("v", WireValue::Number(1.0)),
+        ("kind", s("ADMIN")),
+        (
+            "input",
+            obj(vec![(
+                "protocol_object_stage",
+                obj(vec![
+                    ("proof", proof.clone()),
+                    ("part_index", WireValue::Number(part_index as f64)),
+                ]),
+            )]),
+        ),
+        ("objects", WireValue::Array(vec![part.clone()])),
+    ]);
+    let operation = canonical_wire_value(&operation, Path::SecureArtifact).map_err(|_| bad())?;
+    let commit = sign_private_commit(
+        &context,
+        operation.as_bytes(),
+        epoch_key,
+        signing_key,
+        &crate::prepared_secure_request::SecureCommitRequestPins {
+            actor_id: &actor,
+            signing_key: &key,
+            workspace_id: &workspace,
+            policy_hash: &policy_hash,
+            sequence,
+            previous: Some(&previous),
+            epoch,
+            mode: "PRIVATE",
+            version: 3,
+            protocol_format_ceiling: Some(ceiling),
+        },
+    )
+    .map_err(|_| PrivateInstallError::Author)?;
+    let request_wire = format!("{{\"commit\":{commit}}}").into_bytes();
+    // The same exact verifier binds proof/descriptor/text/policy/Owner/context
+    // and decrypts the produced bytes before any caller can retain them.
+    let commit_hash = verify_saved_private_protocol_object_stage(
+        &request_wire,
+        proof,
+        part,
+        part_index,
+        checkpoint_wire,
+        signed_policy_wire,
+        command_id,
+        signing_key,
+        epoch_key,
+    )?;
+    Ok(PreparedPrivatePackageInstallStep {
+        request_wire,
+        commit_hash,
+        action_id: "secure.protocol-object.stage",
+    })
+}
+
 /// Reconstruct a complete package source from consecutive authenticated
 /// signed parts. The caller separately binds every part to an origin-bound
 /// replayed stage commit and the source checkpoint to that replay.

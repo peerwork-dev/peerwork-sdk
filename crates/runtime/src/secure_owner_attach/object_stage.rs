@@ -1,8 +1,8 @@
-//! Selected final object-stage handoff. Original source provenance and the
+//! Selected final or bounded middle object-stage handoff. Original source provenance and the
 //! separately authorized native BEGIN are retained as distinct durable facts.
 use super::*;
 use peerwork_core::prepared_private_install::{
-    prepare_private_direct_install_begin_with_object_source,
+    prepare_private_direct_install_begin_with_object_source, prepare_private_protocol_object_stage,
     verify_private_protocol_object_stage_material, verify_protocol_object_source_prefix,
     verify_saved_private_protocol_object_stage,
 };
@@ -78,8 +78,29 @@ struct NativeObjectBegin {
     commit_hash: String,
     request_b64: String,
 }
+/// One native-authored remaining part; never labeled as an original TS packet.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativeObjectRemainder {
+    version: u8,
+    plan_id: String,
+    packets: Vec<NativeObjectStagePacket>,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativeObjectStagePacket {
+    part_index: usize,
+    command_id: String,
+    commit_hash: String,
+    request_b64: String,
+}
+#[cfg(test)]
+pub(super) static TEST_STOP_AFTER_OBJECT_REMAINDER_ROW: AtomicBool = AtomicBool::new(false);
+
 struct VerifiedObjectStage {
     applied: bool,
+    source_complete: bool,
+    accepted_parts: usize,
     commit_hash: String,
     part_index: usize,
     part_count: usize,
@@ -254,6 +275,7 @@ fn verify_object_stage(
     owner: &KernelIdentity,
     input: &HistoricalOwnerAttachInput,
     native_begin_exists: bool,
+    remaining: Option<&NativeObjectRemainder>,
 ) -> Result<VerifiedObjectStage, HistoricalOwnerAttachError> {
     check_current_owner(replayed, ring, owner, input)?;
     let proof = &pending.marker.proof;
@@ -276,9 +298,9 @@ fn verify_object_stage(
             .ok_or_else(invalid)?,
     )
     .map_err(|_| invalid())?;
-    // Initial native slice is explicitly last-part only. It cannot skip an
-    // unimplemented earlier-part continuation by treating the source complete.
-    if part_index == 0 || part_index.checked_add(1) != Some(part_count) {
+    // Any selected nonzero part is supported. Unsent tail parts are authored
+    // only from the retained complete proof/material after signed-prefix proof.
+    if part_index == 0 || part_index >= part_count {
         return Err(invalid());
     }
     let stage_end = base.checked_add(part_count as u64).ok_or_else(invalid)?;
@@ -324,10 +346,67 @@ fn verify_object_stage(
     } else {
         return Err(invalid());
     };
-    if !native_begin_exists
-        && (replayed.replay().sequence() != sequence - u64::from(!applied)
-            || replayed.replay().structure_status() != StructureStatus::Active)
-        || native_begin_exists && (!applied || replayed.replay().sequence() < stage_end)
+    let mut accepted_parts = part_index + usize::from(applied);
+    if let Some(remaining) = remaining {
+        if !applied
+            || remaining.packets.is_empty()
+            || remaining.packets.len() > part_count - part_index - 1
+        {
+            return Err(invalid());
+        }
+        let mut ids = std::collections::HashSet::new();
+        for (offset, packet) in remaining.packets.iter().enumerate() {
+            let index = part_index + 1 + offset;
+            if packet.part_index != index
+                || packet.command_id == pending.command_id
+                || !valid_token(&packet.command_id)
+                || !valid_digest(&packet.commit_hash)
+                || !ids.insert(&packet.command_id)
+            {
+                return Err(invalid());
+            }
+            let (prefix, checkpoint) =
+                replay_install_step_predecessor(replayed, ring, input, base + index as u64)?;
+            verify_protocol_object_source_prefix(proof, &prefix).map_err(|_| invalid())?;
+            if prefix.structure_status() != StructureStatus::Active {
+                return Err(invalid());
+            }
+            let request = peerwork_core::crypto::decode_base64url(&packet.request_b64)
+                .map_err(|_| invalid())?;
+            let hash = verify_saved_private_protocol_object_stage(
+                &request,
+                proof,
+                parts.get(index).ok_or_else(invalid)?,
+                index,
+                &checkpoint,
+                policy,
+                &packet.command_id,
+                owner.signing_key(),
+                ring.key_at(epoch).ok_or_else(invalid)?,
+            )
+            .map_err(|_| invalid())?;
+            if hash != packet.commit_hash {
+                return Err(invalid());
+            }
+            if let Some(signed) = replayed.signed_commit_wires().get(base as usize + index) {
+                if sha256_hex(signed) != hash {
+                    return Err(invalid());
+                }
+                accepted_parts += 1;
+            } else if offset + 1 != remaining.packets.len()
+                || replayed.replay().sequence() != base + index as u64
+                || replayed.replay().head() != prefix.head()
+                || replayed.replay().policy_hash() != prefix.policy_hash()
+            {
+                return Err(invalid());
+            }
+        }
+    }
+    let source_complete = accepted_parts == part_count;
+    if (!native_begin_exists
+        && (replayed.replay().sequence() != base + accepted_parts as u64
+            || replayed.replay().structure_status() != StructureStatus::Active))
+        || (native_begin_exists && (!source_complete || replayed.replay().sequence() < stage_end))
     {
         return Err(invalid());
     }
@@ -382,11 +461,7 @@ fn verify_object_stage(
         return Err(invalid());
     }
     // Authenticate all accepted original part bytes, not merely descriptors.
-    for (index, expected) in parts
-        .iter()
-        .enumerate()
-        .take(part_index + usize::from(applied))
-    {
+    for (index, expected) in parts.iter().enumerate().take(accepted_parts) {
         let operation = replayed
             .replay()
             .operations()
@@ -399,7 +474,7 @@ fn verify_object_stage(
             return Err(invalid());
         }
     }
-    if applied {
+    if source_complete {
         let (complete, _) = replay_install_step_predecessor(replayed, ring, input, stage_end)?;
         let mut logical =
             verify_completed_protocol_object_source(proof, &complete).map_err(|_| invalid())?;
@@ -407,6 +482,8 @@ fn verify_object_stage(
     }
     Ok(VerifiedObjectStage {
         applied,
+        source_complete,
+        accepted_parts,
         commit_hash,
         part_index,
         part_count,
@@ -515,6 +592,7 @@ impl SecureHistoricalOwnerAttach {
                 owner,
                 input,
                 false,
+                None,
             )
         })?;
         let (_, after, pem_after, intent_after) =
@@ -603,6 +681,7 @@ impl SecureHistoricalOwnerAttach {
                 owner,
                 &input,
                 false,
+                None,
             )
         })?;
         let options_value = parse_wire_json_bounded(options.as_bytes(), 64, 2 * 1024 * 1024)
@@ -933,11 +1012,70 @@ impl SecureHistoricalOwnerAttach {
     pub(super) fn inspect_object_stage_saved_sources(
         &self,
         row: &SavedAttach,
-    ) -> Result<(LegacySource, Option<Zeroizing<Vec<u8>>>, Option<Zeroizing<Vec<u8>>>, PathBuf), HistoricalOwnerAttachError> {
+    ) -> Result<
+        (
+            LegacySource,
+            Option<Zeroizing<Vec<u8>>>,
+            Option<Zeroizing<Vec<u8>>>,
+            PathBuf,
+        ),
+        HistoricalOwnerAttachError,
+    > {
         let saved = row.pending_object_stage.as_ref().ok_or_else(invalid)?;
         let loaded = self.load_object_stage_plan(&object_attach_id(&saved.plan_id), row)?;
-        let intents = self.object_stage_plan_directory(&saved.plan_id).join("source-intents.sqlite");
+        let intents = self
+            .object_stage_plan_directory(&saved.plan_id)
+            .join("source-intents.sqlite");
         Ok((loaded.source, Some(loaded.pem), None, intents))
+    }
+
+    fn load_native_object_remainder(
+        &self,
+        plan: &LoadedObjectStagePlan,
+    ) -> Result<Option<NativeObjectRemainder>, HistoricalOwnerAttachError> {
+        let store = SecureStateStore::open(
+            &self
+                .object_stage_plan_directory(&plan.manifest.plan_id)
+                .join("native-remainder.state"),
+        )
+        .map_err(|_| local())?;
+        let Some(bytes) = store.read_exact_secret().map_err(|_| local())? else {
+            return Ok(None);
+        };
+        if bytes.len() > MAX_SOURCE {
+            return Err(local());
+        }
+        let packet: NativeObjectRemainder =
+            serde_json::from_slice(&bytes).map_err(|_| invalid())?;
+        if packet.version != 1
+            || packet.plan_id != plan.manifest.plan_id
+            || packet.packets.is_empty()
+            || packet.packets.len()
+                > plan
+                    .source
+                    .pending_object_stage
+                    .as_ref()
+                    .ok_or_else(invalid)?
+                    .marker
+                    .proof
+                    .get("parts")
+                    .and_then(|v| {
+                        if let WireValue::Array(a) = v {
+                            Some(a.len())
+                        } else {
+                            None
+                        }
+                    })
+                    .ok_or_else(invalid)?
+            || packet.packets.iter().any(|part| {
+                !valid_token(&part.command_id)
+                    || part.command_id == plan.manifest.command_id
+                    || !valid_digest(&part.commit_hash)
+            })
+        {
+            return Err(invalid());
+        }
+        Ok(Some(packet))
     }
 
     fn load_native_object_begin(
@@ -1102,6 +1240,7 @@ impl SecureHistoricalOwnerAttach {
             .as_ref()
             .ok_or_else(invalid)?;
         let native = self.load_native_object_begin(&plan, row)?;
+        let remaining = self.load_native_object_remainder(&plan)?;
         let owner = match KernelIdentity::open(&self.identity_path()) {
             Ok(owner) => owner,
             Err(KernelIdentityError::NotFound) => {
@@ -1149,6 +1288,7 @@ impl SecureHistoricalOwnerAttach {
             &owner,
             &row.input,
             native.is_some(),
+            remaining.as_ref(),
         )?;
         if original.commit_hash != plan.manifest.original_commit_hash {
             return Err(HistoricalOwnerAttachError::Conflict);
@@ -1246,6 +1386,192 @@ impl SecureHistoricalOwnerAttach {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn continue_object_stage_remainder(
+        &self,
+        attach_id: &str,
+        row: &SavedAttach,
+        plan: &LoadedObjectStagePlan,
+        owner: &KernelIdentity,
+        replayed: &TransportReplayedJournal,
+        access: &SecureReadAccess,
+        original: &VerifiedObjectStage,
+        remaining: Option<NativeObjectRemainder>,
+        cancel: &CancellationToken,
+    ) -> Result<HistoricalOwnerAttachResult, HistoricalOwnerAttachError> {
+        if !original.applied
+            || original.source_complete
+            || original.accepted_parts >= original.part_count
+        {
+            return Err(invalid());
+        }
+        let stage = plan
+            .source
+            .pending_object_stage
+            .as_ref()
+            .ok_or_else(invalid)?;
+        let ring = plan.source.ring.as_ref().ok_or_else(invalid)?;
+        let mut remaining = remaining.unwrap_or(NativeObjectRemainder {
+            version: 1,
+            plan_id: plan.manifest.plan_id.clone(),
+            packets: vec![],
+        });
+        let author_next = remaining
+            .packets
+            .last()
+            .is_none_or(|p| p.part_index < original.accepted_parts);
+        if author_next {
+            let index = original.accepted_parts;
+            let proof = &stage.marker.proof;
+            verify_protocol_object_source_prefix(proof, replayed.replay())
+                .map_err(|_| invalid())?;
+            let parts = parse_wire_json_bounded(&stage.marker.parts_wire, 64, MAX_SOURCE)
+                .map_err(|_| invalid())?;
+            let WireValue::Array(parts) = parts else {
+                return Err(invalid());
+            };
+            let policy = replayed
+                .signed_policy_by_hash(replayed.replay().policy_hash())
+                .ok_or_else(invalid)?;
+            let mut random = [0u8; 32];
+            OsRng.try_fill_bytes(&mut random).map_err(|_| local())?;
+            let command = base64url(&random);
+            if command == plan.manifest.command_id
+                || remaining.packets.iter().any(|p| p.command_id == command)
+            {
+                return Err(local());
+            }
+            let issued = u64::try_from(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_err(|_| local())?
+                    .as_millis(),
+            )
+            .map_err(|_| local())?;
+            let prepared = prepare_private_protocol_object_stage(
+                proof,
+                parts.get(index).ok_or_else(invalid)?,
+                index,
+                replayed.checkpoint_canonical_json().as_bytes(),
+                policy,
+                &command,
+                issued,
+                owner.signing_key(),
+                ring.key_at(plan.manifest.source_epoch)
+                    .ok_or_else(invalid)?,
+            )
+            .map_err(|_| invalid())?;
+            let previous = if remaining.packets.is_empty() {
+                None
+            } else {
+                Some(serde_json::to_vec(&remaining).map_err(|_| local())?)
+            };
+            remaining.packets.push(NativeObjectStagePacket {
+                part_index: index,
+                command_id: command,
+                commit_hash: prepared.commit_hash().into(),
+                request_b64: base64url(prepared.request_wire()),
+            });
+            let store = SecureStateStore::open(
+                &self
+                    .object_stage_plan_directory(&plan.manifest.plan_id)
+                    .join("native-remainder.state"),
+            )
+            .map_err(|_| local())?;
+            let saved = store.read_exact_secret().map_err(|_| local())?;
+            if saved.as_deref().map(Vec::as_slice) != previous.as_deref() {
+                return Err(HistoricalOwnerAttachError::Conflict);
+            }
+            let bytes = serde_json::to_vec(&remaining).map_err(|_| local())?;
+            if bytes.len() > MAX_SOURCE {
+                return Err(local());
+            }
+            store.write_exact(&bytes).map_err(|_| local())?;
+            #[cfg(test)]
+            if TEST_STOP_AFTER_OBJECT_REMAINDER_ROW.swap(false, Ordering::SeqCst) {
+                return Err(HistoricalOwnerAttachError::Cancelled);
+            }
+        }
+        let packet = remaining.packets.last().ok_or_else(invalid)?;
+        let checked = verify_object_stage(
+            stage,
+            &plan.options,
+            &plan.material,
+            ring,
+            replayed,
+            owner,
+            &row.input,
+            false,
+            Some(&remaining),
+        )?;
+        if checked.source_complete {
+            return Err(HistoricalOwnerAttachError::Conflict);
+        }
+        let request =
+            peerwork_core::crypto::decode_base64url(&packet.request_b64).map_err(|_| invalid())?;
+        let mut journal = SecureIntentJournal::open(
+            &self
+                .workspace_dir(&row.input.workspace_id)
+                .join("private-object-stage-intents.state"),
+            &self.config.origin,
+            owner.actor_id(),
+        )
+        .map_err(|_| local())?;
+        journal
+            .prepare(SecurePacketInput {
+                intent_id: &packet.command_id,
+                path: &stage.path,
+                action_id: "secure.protocol-object.stage",
+                workspace_id: Some(&row.input.workspace_id),
+                trusted_owner_key: Some(owner.key_id()),
+                intent_digest: &packet.commit_hash,
+                exact_request: &request,
+            })
+            .map_err(|_| HistoricalOwnerAttachError::Conflict)?;
+        if journal
+            .exact_request(&packet.command_id)
+            .map_err(|_| invalid())?
+            != request
+        {
+            return Err(invalid());
+        }
+        let mut config = TransportConfig::new(self.config.origin.clone());
+        config.allow_loopback_http = self.config.allow_loopback_http;
+        let transport =
+            HttpTransport::new(config).map_err(|_| HistoricalOwnerAttachError::Verification)?;
+        let runtime = Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| local())?;
+        let response = runtime
+            .block_on(transport.post_exact(&stage.path, request, cancel))
+            .map_err(|_| HistoricalOwnerAttachError::PendingObjectStageUnresolved)?;
+        if !response.wire.is_empty() {
+            journal
+                .observe_response(&packet.command_id, &response.wire)
+                .map_err(|_| local())?;
+        }
+        drop(journal);
+        let after = access
+            .replay_checked_attach_generation(cancel)
+            .map_err(|_| HistoricalOwnerAttachError::PendingObjectStageUnresolved)?;
+        let checked = verify_object_stage(
+            stage,
+            &plan.options,
+            &plan.material,
+            ring,
+            &after,
+            owner,
+            &row.input,
+            false,
+            Some(&remaining),
+        )?;
+        if checked.accepted_parts != packet.part_index + 1 {
+            return Err(HistoricalOwnerAttachError::PendingObjectStageUnresolved);
+        }
+        self.write_object_stage_history(attach_id, row, true, None, false, &after, None)
+    }
+
     /// Reconcile the original final stage packet, then explicitly authorize a
     /// distinct durable native BEGIN and ordinary attach-owned continuation.
     pub fn recover_pending_object_stage(
@@ -1299,6 +1625,7 @@ impl SecureHistoricalOwnerAttach {
             .replay_checked_attach_generation(cancel)
             .map_err(|_| HistoricalOwnerAttachError::Verification)?;
         let mut native = self.load_native_object_begin(&plan, &row)?;
+        let mut remaining = self.load_native_object_remainder(&plan)?;
         let verified = verify_object_stage(
             pending,
             &plan.options,
@@ -1308,6 +1635,7 @@ impl SecureHistoricalOwnerAttach {
             &owner,
             &row.input,
             native.is_some(),
+            remaining.as_ref(),
         )?;
         if verified.commit_hash != plan.manifest.original_commit_hash {
             return Err(HistoricalOwnerAttachError::Conflict);
@@ -1361,6 +1689,7 @@ impl SecureHistoricalOwnerAttach {
                 &owner,
                 &row.input,
                 false,
+                remaining.as_ref(),
             )?;
             if !accepted.applied {
                 return Err(HistoricalOwnerAttachError::PendingObjectStageUnresolved);
@@ -1368,13 +1697,30 @@ impl SecureHistoricalOwnerAttach {
             return self
                 .write_object_stage_history(attach_id, &row, true, None, false, &after, None);
         }
+        if !verified.source_complete {
+            return self.continue_object_stage_remainder(
+                attach_id,
+                &row,
+                &plan,
+                &owner,
+                &replayed,
+                &access,
+                &verified,
+                remaining.take(),
+                cancel,
+            );
+        }
         if native.is_none() {
             // Stage ancestry and complete compiler value are authenticated at
             // this exact head. Allocate/sign once, then save before any POST.
             let mut random = [0u8; 32];
             OsRng.try_fill_bytes(&mut random).map_err(|_| local())?;
             let command = base64url(&random);
-            if command == expected_command {
+            if command == expected_command
+                || remaining
+                    .as_ref()
+                    .is_some_and(|r| r.packets.iter().any(|p| p.command_id == command))
+            {
                 return Err(local());
             }
             let issued = std::time::SystemTime::now()
@@ -1462,6 +1808,7 @@ impl SecureHistoricalOwnerAttach {
             &owner,
             &row.input,
             true,
+            remaining.as_ref(),
         )?;
         self.verify_native_object_begin(attach_id, &row, &plan, native, &original, &after, &owner)?;
         if accepted {

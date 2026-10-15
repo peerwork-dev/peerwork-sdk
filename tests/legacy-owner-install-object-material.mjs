@@ -3,7 +3,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-export async function createLegacyObjectInstallMaterial(referenceRoot) {
+export async function createLegacyObjectInstallMaterial(referenceRoot, actionCount = 8) {
   const load = name => import(pathToFileURL(join(referenceRoot, `dist-workspace/src/${name}.js`)).href);
   const { previewProtocolPackage } = await load('protocol-compiler');
   const { parseProtocolPackage, PROTOCOL_PACKAGE_FORMAT } = await load('protocol-package');
@@ -24,7 +24,7 @@ export async function createLegacyObjectInstallMaterial(referenceRoot) {
   walk(directory);
   const source = JSON.parse(files['protocol.source.json']), original = source.manifest.actions[0];
   source.manifest.name = 'example.native-retained-object-source.v1';
-  source.manifest.actions = Array.from({ length: 8 }, (_, index) => {
+  source.manifest.actions = Array.from({ length: actionCount }, (_, index) => {
     const action = structuredClone(original);
     action.id = index === 0 ? 'discussion.post' : `large.package.post${index}`;
     action.variants[0].effects[0].value.fields.message = { from: 'literal', value: `package ${index}: ` + 'y'.repeat(7000) };
