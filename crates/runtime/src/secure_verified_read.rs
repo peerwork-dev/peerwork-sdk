@@ -478,6 +478,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn replay_artifact_buffer_overflow_refuses_before_insertion() {
+        let mut rows = Vec::new();
+        let mut total = usize::MAX;
+        assert!(matches!(
+            push_bounded(&mut rows, vec![1], &mut total, usize::MAX, usize::MAX),
+            Err(JournalReadError::TooLarge)
+        ));
+        assert!(rows.is_empty());
+        assert_eq!(total, usize::MAX);
+    }
+
+    #[test]
     fn replay_artifact_buffer_checks_total_bytes_and_count_before_insertion() {
         assert_eq!(
             SecureJournalReadBudget::default().max_replay_artifact_bytes,
