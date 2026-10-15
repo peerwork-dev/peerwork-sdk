@@ -1,8 +1,8 @@
 import os,sys,json,hashlib
 from pathlib import Path
 import peerwork,peerwork._peerwork_native as native
-S=Path('/work/t077-migration-crash');F=json.loads((S/'fixture.json').read_text())
-assert Path(peerwork.__file__)==Path('/work/sdk-config-t062-20261015/dist/python-consumer/peerwork/__init__.py')
+S=Path(os.environ['T077_STATE']);F=json.loads((S/'fixture.json').read_text())
+assert Path(peerwork.__file__)==Path(os.environ['T077_SDK'])/'dist/python-consumer/peerwork/__init__.py'
 assert hashlib.sha256(Path(native.__file__).read_bytes()).hexdigest()=='46db204843cb30961ef846e74f8155ad87a17e0f05bba4d9db2200ea5583f11b'
 sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
 identity_metadata=lambda p:(p.stat().st_ino,p.stat().st_size,p.stat().st_mtime_ns)

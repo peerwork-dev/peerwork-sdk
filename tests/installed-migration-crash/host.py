@@ -12,14 +12,14 @@ def guard():
 subprocess.run([NODE,'--check',str(HERE/'fixture.mjs')],check=True)
 compile((HERE/'consumer.py').read_text(),str(HERE/'consumer.py'),'exec');guard()
 tracer=Path(os.environ['PEERWORK_T076_SOURCE']);qualification=Path(os.environ['PEERWORK_T076_QUALIFICATION']);assert sha(tracer/'trace.py')==os.environ['PEERWORK_T076_TRACE_SHA256'];assert sha(qualification)==os.environ['PEERWORK_T076_QUALIFICATION_SHA256'];q=json.loads(qualification.read_text());assert q['result']=='PASS' and q['positive']['boundary_reached'] and not q['wrong_backup_negative']['boundary_reached'] and not q['short_payload_negative']['boundary_reached'] and not q['prearm_headers_negative']['boundary_reached']
-assert subprocess.check_output(['git','-C',str(tracer),'rev-parse','HEAD'],text=True).strip()==os.environ['PEERWORK_T076_COMMIT'];subprocess.run(['git','-C',str(tracer),'diff','--quiet','HEAD','--','tests/migration-wal-barrier'],check=True)
-state=ROOT/'work/t077-migration-crash';overlay=ROOT/'work/t077-crash-overlay';assert not state.exists() and not overlay.exists();overlay.mkdir(mode=0o700);shutil.copyfile(HERE/'consumer.py',overlay/'consumer.py')
+assert subprocess.check_output(['git','-C',str(tracer),'rev-parse','HEAD'],text=True).strip()==os.environ['PEERWORK_T076_COMMIT'];subprocess.run(['git','-C',str(tracer),'diff','--quiet','HEAD','--','.'],check=True)
+state=ROOT/'work/t077-migration-crash';overlay=ROOT/'work/t077-crash-host-overlay';assert not state.exists() and not overlay.exists();overlay.mkdir(mode=0o700);shutil.copyfile(HERE/'consumer.py',overlay/'consumer.py')
 for name in ['trace.py','qualify.py','dummy.py']:shutil.copyfile(tracer/name,overlay/name)
 (E/'tracer-dependency.json').write_text(json.dumps({'source':str(tracer),'qualification':str(qualification),'qualification_sha256':sha(qualification),'copied_sources':{n:sha(overlay/n) for n in ['trace.py','qualify.py','dummy.py']}},indent=2)+'\n')
-program='root="$1"; phase="$2"; mount --bind /proc "$root/proc"; mount -o remount,bind,ro "$root/proc"; for d in null zero urandom;do mount --bind "/dev/$d" "$root/dev/$d";done; chroot "$root" /usr/bin/env -i PATH=/usr/bin:/bin PYTHONPATH=/work/sdk-config-t062-20261015/dist/python-consumer PYTHONDONTWRITEBYTECODE=1 /opt/python/cp311-cp311/bin/python -B /work/t077-crash-overlay/consumer.py "$phase"'
-commands={phase:['unshare','--user','--map-root-user','--mount','--fork','/bin/bash','-euc',program,'t077',str(ROOT),phase] for phase in ['consumer']}
+program='sdk="$1"; state="$2"; overlay="$3"; phase="$4"; /usr/bin/env -i PATH=/usr/bin:/bin PYTHONPATH="$sdk/dist/python-consumer" PYTHONDONTWRITEBYTECODE=1 T077_STATE="$state" T077_SDK="$sdk" /usr/bin/python3 -B "$overlay/consumer.py" "$phase"'
+commands={phase:['unshare','--user','--map-root-user','--mount','--fork','/bin/bash','-euc',program,'t077',str(SDK),str(state),str(overlay),phase] for phase in ['consumer']}
 qualification_argv=commands['consumer'][:-1]+['qualification']
-qualification_argv=[v.replace('/work/t077-crash-overlay/consumer.py "$phase"','/work/t077-crash-overlay/qualify.py') if isinstance(v,str) else v for v in qualification_argv]
+qualification_argv=[v.replace('$overlay/consumer.py" "$phase"','$overlay/qualify.py"') if isinstance(v,str) else v for v in qualification_argv]
 qt=time.monotonic()
 with (E/'namespace-qualification.stdout').open('w') as out,(E/'namespace-qualification.stderr').open('w') as err:qr=subprocess.run(qualification_argv,stdout=out,stderr=err,timeout=45)
 (E/'namespace-qualification-terminal.json').write_text(json.dumps({'exit_code':qr.returncode,'seconds':time.monotonic()-qt,'argv':qualification_argv},indent=2)+'\n');assert qr.returncode==0,'qualified tracer failed in consumer namespace; no service launched'
