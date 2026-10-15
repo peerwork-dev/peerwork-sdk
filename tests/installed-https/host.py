@@ -49,6 +49,9 @@ def prepare():
   run(label,'loader-preflight',root,['/lib64/ld-linux-x86-64.so.2','--version'])
   if label=='python':run(label,'installer-preflight',root,['/usr/bin/python3','-m','pip','--version'])
   if label=='node':run(label,'installer-preflight',root,['/usr/bin/node','/usr/lib/npm/bin/npm-cli.js','--version'])
+ # Fresh preparation includes the final qualified permissions AND dynamic DNS closure.
+ subprocess.run([sys.executable,str(HERE/'qualify.py')],check=True)
+ subprocess.run([sys.executable,str(HERE/'dns.py')],check=True)
  dump(E/'prepared.json',dict(result='PASS',public_whitelist=['/usr','/lib64'],root=str(BASE),ready=datetime.datetime.now(datetime.timezone.utc).isoformat()))
 
 def guard():
@@ -114,6 +117,7 @@ def tls_fixture():
 def execute():
  before=guard();dump(E/'cohort-before.json',before)
  assert (E/'prepared.json').exists()
+ assert json.loads((E/'dns-qualified.json').read_text())['result']=='PASS'
  qualification=json.loads((E/'qualification.json').read_text());assert qualification['result']=='PASS' and len(qualification['calls'])==3 and all(x['exit_code']==0 for x in qualification['calls'])
  # Gate source syntax/parse before installers, then all loaded-runtime preflights before first SDK HTTPS call.
  for p in [HERE/'host.py',HERE/'python.py']:compile(p.read_text(),str(p),'exec')
