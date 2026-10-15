@@ -130,7 +130,7 @@ try:
     selected_instances(after)
     ws=[o for o in after['objects'] if o['kind']=='workspaces' and o['id']==workspace]
     assert len(ws)==1 and ws[0]['value']['visibility']=='PRIVATE' and ws[0]['value']['owner']==identity['actor_id']
-    notes=[o for o in after['objects'] if o['kind']=='records' and o['value'].get('instance_id')==instance and o['value'].get('protocol_digest')==proof['protocol_digest'] and o['value'].get('schema_ref')=='wiki.revision' and o['value'].get('payload',{}).get('title')==title and o['value'].get('payload',{}).get('body')==body and o['value'].get('payload',{}).get('author')==identity['actor_id']]
+    notes=[o for o in after['objects'] if o['kind']=='records' and o['value'].get('instance_id')==instance and o['value'].get('protocol_digest')==proof['protocol_digest'] and o['value'].get('schema_ref')=='wiki.revision' and o['value'].get('payload')=={'title':title,'body':body,'author':identity['actor_id'],'parent':None}]
     assert len(notes)==1 and len(receipt['effects'])==1 and receipt['effects'][0]['record_id']==notes[0]['id'] and receipt['effects'][0]['schema_ref']=='wiki.revision'
     assert db.execute('select count(*) from secure_commits where workspace_id=? and command_id=? and action_id=?',(workspace,command,'wiki.create')).fetchone()[0]==1
     db.close()
