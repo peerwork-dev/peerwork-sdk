@@ -387,6 +387,20 @@ exports.openSecureOwnerWorkspaces = options => {
       signal?.removeEventListener?.('abort', onAbort);
     }
   };
+  const coordinationInput = input => {
+    if (!input || typeof input !== 'object' || Array.isArray(input) ||
+        Object.keys(input).some(key => key !== 'version' && key !== 'participants')) {
+      throw new TypeError('coordination input permits only version and participants');
+    }
+    if (input.version != null && input.version !== 1 && input.version !== 2) {
+      throw new TypeError('coordination version must be 1 or 2');
+    }
+    if (input.participants != null && (!Array.isArray(input.participants) ||
+        input.participants.some(actor => typeof actor !== 'string' || !actor))) {
+      throw new TypeError('participants must be an array of nonempty actor IDs');
+    }
+    return { version: input.version ?? null, participants: input.participants ?? null };
+  };
   const createInput = input => {
     if (!input || typeof input.name !== 'string' || typeof input.visibility !== 'string') {
       throw new TypeError('Owner name and visibility are required');
@@ -685,6 +699,12 @@ exports.openSecureOwnerWorkspaces = options => {
     create: (input, { signal } = {}) => invoke('create', createInput(input), undefined, undefined, signal),
     resume: (commandId, { signal } = {}) => invoke('resume', undefined, commandId, undefined, signal),
     operations: ({ signal } = {}) => invoke('operations', undefined, undefined, undefined, signal),
+    enableCoordination: (workspaceId, input = {}, { signal } = {}) => invoke(
+      'coordination_enable', coordinationInput(input), undefined, workspaceId, signal),
+    resumeCoordination: (workspaceId, beginCommandId, { signal } = {}) => invoke(
+      'coordination_resume', undefined, beginCommandId, workspaceId, signal),
+    coordinationOperations: (workspaceId, { signal } = {}) => invoke(
+      'coordination_operations', undefined, undefined, workspaceId, signal),
     attach: (input, { signal } = {}) => invoke('attach', attachmentInput(input), undefined, undefined, signal),
     inspectKernelPending: (input, { signal } = {}) => invoke('kernel_inspect', attachmentInput(input), undefined, undefined, signal),
     inspectPendingPackageStage: (input, { signal } = {}) => invoke('stage_inspect', attachmentInput(input), undefined, undefined, signal),

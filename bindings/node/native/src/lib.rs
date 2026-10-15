@@ -23,6 +23,7 @@ use peerwork_runtime::secure_owner_create::{
 };
 use peerwork_runtime::secure_owner_attach::{HistoricalOwnerAttachInput, SecureHistoricalOwnerAttach};
 use peerwork_runtime::secure_owner_format_transition::OwnerFormatTransitionInput;
+use peerwork_runtime::secure_owner_coordination::OwnerCoordinationEnableInput;
 use peerwork_runtime::public_catalog::{PublicCatalog, PublicCatalogConfig};
 use peerwork_runtime::secure_recipient_enrollment::{
     RecipientEnrollmentConfig, SecureRecipientEnrollment,
@@ -742,6 +743,34 @@ impl Task for SecureOwnerCreateTask {
                     }
                     _ => return Ok(serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"attachment and original stage command IDs are required"}).to_string()),
                 },
+                _ => unreachable!(),
+            };
+            return Ok(match result {
+                Ok(value) => format!("{{\"ok\":true,\"value\":{value}}}"),
+                Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
+            });
+        }
+        if matches!(self.operation.as_str(), "coordination_enable" | "coordination_resume" | "coordination_operations") {
+            let input: Option<OwnerCoordinationEnableInput> = if self.operation == "coordination_enable" {
+                match self.input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {
+                    Some(value) => Some(value),
+                    None => { return Ok(serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid Owner coordination input"}).to_string()); },
+                }
+            } else { None };
+            let Some(workspace) = self.workspace_id.as_deref() else {
+                return Ok(serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"workspace ID is required"}).to_string());
+            };
+            if self.operation == "coordination_resume" && self.command_id.is_none() {
+                return Ok(serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"original coordination BEGIN command ID is required"}).to_string());
+            }
+            let access = match SecureOwnerWorkspaceCreate::new(config).coordination_access(workspace) {
+                Ok(value) => value,
+                Err(error) => return Ok(serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string()),
+            };
+            let result = match self.operation.as_str() {
+                "coordination_enable" => access.enable_json_with_cancel(input.expect("enable input parsed"), &self.cancel),
+                "coordination_resume" => access.resume_json_with_cancel(self.command_id.as_deref().expect("BEGIN ID checked"), &self.cancel),
+                "coordination_operations" => access.operations_json(),
                 _ => unreachable!(),
             };
             return Ok(match result {

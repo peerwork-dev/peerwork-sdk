@@ -18,6 +18,7 @@ use peerwork_runtime::secure_owner_create::{
 };
 use peerwork_runtime::secure_owner_attach::{HistoricalOwnerAttachInput, SecureHistoricalOwnerAttach};
 use peerwork_runtime::secure_owner_format_transition::OwnerFormatTransitionInput;
+use peerwork_runtime::secure_owner_coordination::OwnerCoordinationEnableInput;
 use peerwork_runtime::public_catalog::{PublicCatalog, PublicCatalogConfig};
 use peerwork_runtime::secure_recipient_enrollment::{
     RecipientEnrollmentConfig, SecureRecipientEnrollment,
@@ -567,6 +568,34 @@ fn secure_owner_create_json(
                     }
                     _ => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"attachment and original stage command IDs are required"}).to_string(),
                 },
+                _ => unreachable!(),
+            };
+            return match result {
+                Ok(value) => format!("{{\"ok\":true,\"value\":{value}}}"),
+                Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
+            };
+        }
+        if matches!(operation.as_str(), "coordination_enable" | "coordination_resume" | "coordination_operations") {
+            let input: Option<OwnerCoordinationEnableInput> = if operation == "coordination_enable" {
+                match input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {
+                    Some(value) => Some(value),
+                    None => { return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid Owner coordination input"}).to_string(); },
+                }
+            } else { None };
+            let Some(workspace) = workspace_id.as_deref() else {
+                return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"workspace ID is required"}).to_string();
+            };
+            if operation == "coordination_resume" && command_id.is_none() {
+                return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"original coordination BEGIN command ID is required"}).to_string();
+            }
+            let access = match SecureOwnerWorkspaceCreate::new(config).coordination_access(workspace) {
+                Ok(value) => value,
+                Err(error) => return serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
+            };
+            let result = match operation.as_str() {
+                "coordination_enable" => access.enable_json_with_cancel(input.expect("enable input parsed"), &cancel),
+                "coordination_resume" => access.resume_json_with_cancel(command_id.as_deref().expect("BEGIN ID checked"), &cancel),
+                "coordination_operations" => access.operations_json(),
                 _ => unreachable!(),
             };
             return match result {

@@ -957,6 +957,20 @@ class SecureRecipientEnrollmentClient:
 __all__ += ["SecureRecipientEnrollmentClient", "RecipientEnrollmentResult", "RecipientKeyUpdateResult", "RecipientEnrollmentError"]
 
 
+class OwnerCoordinationProgress(TypedDict):
+    status: Literal["PENDING", "ACCEPTED"]
+    workspace_id: str
+    version: Literal[1, 2]
+    protocol_digest: str
+    instance_id: str
+    begin_command_id: str | None
+    step_command_id: str | None
+    step_action_id: str | None
+    sequence: int | None
+    head: str | None
+    policy_hash: str | None
+
+
 class OwnerWorkspaceResult(TypedDict):
     status: Literal["PENDING", "CREATED_LOCAL", "CREATED"]
     command_id: str
@@ -1496,6 +1510,37 @@ class SecureOwnerWorkspaceClient:
         """Protected local attachment history; PREPARED is not remote acceptance."""
         return cast(list[HistoricalOwnerAttachmentResult], self._owner("attachments"))
 
+    @staticmethod
+    def _coordination_input(version: int | None, participants: list[str] | None) -> dict:
+        if version is not None and (type(version) is not int or version not in (1, 2)):
+            raise TypeError("coordination version must be 1 or 2")
+        if participants is not None and (not isinstance(participants, list) or
+                any(not isinstance(actor, str) or not actor for actor in participants)):
+            raise TypeError("participants must be a list of nonempty actor IDs")
+        return dict(version=version, participants=participants)
+
+    def enable_coordination(self, workspace_id: str, *, version: int | None = None,
+                            participants: list[str] | None = None) -> OwnerCoordinationProgress:
+        """Enable/upgrade dedicated coordination, advancing at most one saved step.
+
+        Omitted version defaults to v1. Omitted participants and an explicit empty
+        list remain distinct inputs: omission uses Owner on a new installation,
+        but requests no participant grant check when already enabled. [] explicitly
+        requests Owner and is checked on the already-enabled path too.
+        PENDING requires discovery/resume with the original BEGIN ID.
+        """
+        return cast(OwnerCoordinationProgress, self._owner("coordination_enable",
+            workspace_id=workspace_id, input_value=self._coordination_input(version, participants)))
+
+    def resume_coordination(self, workspace_id: str, begin_command_id: str) -> OwnerCoordinationProgress:
+        return cast(OwnerCoordinationProgress, self._owner("coordination_resume",
+            workspace_id=workspace_id, command_id=begin_command_id))
+
+    def coordination_operations(self, workspace_id: str) -> list[OwnerCoordinationProgress]:
+        """Protected local operations; this does not refresh remote acceptance."""
+        return cast(list[OwnerCoordinationProgress], self._owner("coordination_operations",
+            workspace_id=workspace_id))
+
     def submit_format_transition(self, workspace_id: str,
                                  transition: Literal["UPGRADE_WIRE_V3", "RAISE_PRIVATE_CEILING_TWO"],
                                  *, command_id: str | None = None,
@@ -1802,6 +1847,20 @@ class SecureOwnerWorkspaceClient:
         return cast(list[HistoricalOwnerAttachmentResult], await _run_cancelled_async(
             self._owner, "attachments"))
 
+    async def enable_coordination_async(self, workspace_id: str, *, version: int | None = None,
+                                        participants: list[str] | None = None) -> OwnerCoordinationProgress:
+        value = self._coordination_input(version, participants)
+        return cast(OwnerCoordinationProgress, await _run_cancelled_async(self._owner,
+            "coordination_enable", workspace_id=workspace_id, input_value=value))
+
+    async def resume_coordination_async(self, workspace_id: str, begin_command_id: str) -> OwnerCoordinationProgress:
+        return cast(OwnerCoordinationProgress, await _run_cancelled_async(self._owner,
+            "coordination_resume", workspace_id=workspace_id, command_id=begin_command_id))
+
+    async def coordination_operations_async(self, workspace_id: str) -> list[OwnerCoordinationProgress]:
+        return cast(list[OwnerCoordinationProgress], await _run_cancelled_async(self._owner,
+            "coordination_operations", workspace_id=workspace_id))
+
     async def submit_format_transition_async(self, workspace_id: str,
                                               transition: Literal["UPGRADE_WIRE_V3", "RAISE_PRIVATE_CEILING_TWO"],
                                               *, command_id: str | None = None,
@@ -2099,7 +2158,7 @@ class OwnerWorkspacePrivatePackageInstaller(OwnerWorkspacePrivatePackageStager):
 
 
 __all__ += ["HistoricalObjectStagePendingInventory", "HistoricalDirectInstallPendingInventory", "HistoricalDirectInstallCompletedInventory"]
-__all__ += ["SecureOwnerWorkspaceClient", "OwnerWorkspaceResult", "HistoricalOwnerAttachmentResult", "HistoricalKernelCommandStatus", "HistoricalKernelPendingInventory", "HistoricalPackageStagePendingInventory", "OwnerFormatTransitionResult", "OwnerWorkspaceError",
+__all__ += ["SecureOwnerWorkspaceClient", "OwnerCoordinationProgress", "OwnerWorkspaceResult", "HistoricalOwnerAttachmentResult", "HistoricalKernelCommandStatus", "HistoricalKernelPendingInventory", "HistoricalPackageStagePendingInventory", "OwnerFormatTransitionResult", "OwnerWorkspaceError",
             "OwnerWorkspaceActionClient", "OwnerWorkspacePackageInstaller",
             "OwnerWorkspacePrivatePackageStager", "PrivatePackageStageResult",
             "SavedPrivatePackageStage", "PrivatePackageStageError",

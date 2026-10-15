@@ -127,6 +127,26 @@ export interface SecureOwnerWorkspaceInput {
   keepEncrypted?: unknown[];
   coordinationVersion?: 1 | 2;
 }
+export interface OwnerCoordinationEnableInput {
+  /** Omission defaults to v1; request v2 explicitly for the supported v1 upgrade. */
+  version?: 1 | 2;
+  /** Omitted: Owner for new install, no participant check when already enabled.
+   * [] explicitly requests Owner and is checked on the already-enabled path too. */
+  participants?: string[];
+}
+export interface OwnerCoordinationProgress {
+  status: 'PENDING' | 'ACCEPTED';
+  workspace_id: string;
+  version: 1 | 2;
+  protocol_digest: string;
+  instance_id: string;
+  begin_command_id: string | null;
+  step_command_id: string | null;
+  step_action_id: string | null;
+  sequence: number | null;
+  head: string | null;
+  policy_hash: string | null;
+}
 export interface SecureOwnerWorkspaceResult {
   status: 'PENDING' | 'CREATED_LOCAL' | 'CREATED';
   command_id: string;
@@ -273,6 +293,11 @@ export interface SecureOwnerWorkspaceSession {
   resume(commandId: string, options?: {signal?: AbortSignal}): Promise<SecureOwnerWorkspaceResult>;
   /** Protected local history; CREATED_LOCAL rows may be reconciled by resume. */
   operations(options?: {signal?: AbortSignal}): Promise<SecureOwnerWorkspaceResult[]>;
+  /** Advances at most one saved step; PENDING requires original-BEGIN recovery. */
+  enableCoordination(workspaceId: string, input?: OwnerCoordinationEnableInput, options?: {signal?: AbortSignal}): Promise<OwnerCoordinationProgress>;
+  resumeCoordination(workspaceId: string, beginCommandId: string, options?: {signal?: AbortSignal}): Promise<OwnerCoordinationProgress>;
+  /** Local protected operation history; does not refresh remote acceptance. */
+  coordinationOperations(workspaceId: string, options?: {signal?: AbortSignal}): Promise<OwnerCoordinationProgress[]>;
   /** Attach a protected existing Owner after exact local and remote proofs. */
   attach(input: HistoricalOwnerAttachmentInput, options?: {signal?: AbortSignal}): Promise<HistoricalOwnerAttachmentResult>;
   /** Read-only verified source inventory; no attach row or command POST. */
