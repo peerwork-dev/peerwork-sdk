@@ -23,6 +23,7 @@ class Handler(BaseHTTPRequestHandler):
 server=ThreadingHTTPServer(('127.0.0.1',0),Handler);context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);context.load_cert_chain(leaf/'server.pem',leaf/'server.key');server.socket=context.wrap_socket(server.socket,server_side=True)
 thread=threading.Thread(target=server.serve_forever);thread.start()
 env=dict(os.environ,PEERWORK_TLS_ORIGIN=f'https://localhost:{server.server_port}',PEERWORK_TLS_CA=str(leaf/'ca.pem'))
+env.pop('PEERWORK_HTTP_PROXY',None)
 cmd=['/tmp/peerwork-rustup/toolchains/1.89.0-x86_64-unknown-linux-gnu/bin/cargo','test','--offline','--locked','-p','peerwork-runtime','--lib','local_https_preserves_validation_and_selected_deadline','--','--ignored','--nocapture']
 start=time.monotonic();began=datetime.datetime.now(datetime.timezone.utc).isoformat()
 try:

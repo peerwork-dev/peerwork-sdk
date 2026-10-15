@@ -281,3 +281,19 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod caller_transport_config_tests {
+    use super::*;
+    #[test]
+    fn selected_transport_is_normalized_without_opening_ca_or_state() {
+        let root=tempfile::tempdir().unwrap();
+        #[cfg(unix)] { use std::os::unix::fs::PermissionsExt;std::fs::set_permissions(root.path(),std::fs::Permissions::from_mode(0o700)).unwrap(); }
+        let path=root.path().join("config.json");let bytes=br#"{"origin":"https://example.invalid","state_dir":"native","transport":{"request_timeout_ms":123,"additional_root_pem_files":["public-ca.pem"]}}"#;
+        std::fs::write(&path,bytes).unwrap();
+        #[cfg(unix)] { use std::os::unix::fs::PermissionsExt;std::fs::set_permissions(&path,std::fs::Permissions::from_mode(0o600)).unwrap(); }
+        let config=load_config(Some(&path)).unwrap();let options=config.transport.unwrap();
+        assert_eq!(options.request_timeout_ms,123);assert_eq!(options.additional_root_pem_files,vec![root.path().join("public-ca.pem")]);
+        assert!(!root.path().join("native").exists());assert!(!root.path().join("public-ca.pem").exists());assert_eq!(std::fs::read(path).unwrap(),bytes);
+    }
+}
