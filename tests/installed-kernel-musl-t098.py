@@ -9,7 +9,7 @@ def offline():
   t=time.monotonic();r=subprocess.run(argv,capture_output=True,text=True);calls.append(dict(argv=argv,exit_code=r.returncode,seconds=time.monotonic()-t,stdout=r.stdout,stderr=r.stderr));(h/'offline-calls.json').write_text(json.dumps(calls,indent=2));assert r.returncode==0,r.stderr;return r.stdout
  py='/usr/bin/python3';node='/usr/bin/node'
  run([py,'-m','pip','install','--no-index','--no-deps','--target',HOME+'/python','/work/artifacts/peerwork_sdk-0.0.1-cp311-abi3-musllinux_1_2_x86_64.whl'])
- np=h/'node';np.mkdir();(np/'package.json').write_text('{"name":"t097-offline","private":true}')
+ np=h/'node';np.mkdir();(np/'package.json').write_text('{"name":"t098-offline","private":true}')
  run(['/usr/bin/npm','install','--prefix',str(np),'--cache',HOME+'/npm-cache','--offline','--ignore-scripts','--no-audit','--no-fund','--no-save','/work/artifacts/peerwork-agent-sdk-0.0.1.tgz','/work/artifacts/peerwork-agent-sdk-linux-x64-musl-0.0.1.tgz'])
  (h/'bin').mkdir();cli=h/'bin/peerwork';shutil.copy2('/work/artifacts/peerwork',cli)
  sys.path.insert(0,HOME+'/python');import peerwork,peerwork._peerwork_native as native
@@ -32,12 +32,12 @@ def host(base):
   for row in manifest['artifacts']+manifest['compiled_elf_subjects']:assert sha(row['path'])==row['sha256']
  guard();shutil.copy2(__file__,h/'offline.py');os.chown(h/'offline.py',65534,65534)
  def run(label,guest_script,extra=()):
-  argv=['/usr/sbin/chroot','--userspec=65534:65534',str(root),'/usr/bin/env','-i','HOME='+HOME,'PATH=/opt/python/cp311-cp311/bin:/opt/node24/bin:/usr/bin:/bin','PYTHONDONTWRITEBYTECODE=1','PIP_DISABLE_PIP_VERSION_CHECK=1',*extra,'/usr/bin/python3','-I',guest_script]
+  argv=['/usr/sbin/chroot','--userspec=65534:65534',str(root),'/usr/bin/env','-i','HOME='+HOME,'PATH=/usr/bin:/bin:/usr/sbin:/sbin','PYTHONDONTWRITEBYTECODE=1','PIP_DISABLE_PIP_VERSION_CHECK=1',*extra,'/usr/bin/python3','-I',guest_script]
   t=time.monotonic();start=datetime.datetime.now(datetime.timezone.utc).isoformat()
   with(b/(label+'.stdout')).open('w')as out,(b/(label+'.stderr')).open('w')as err:r=subprocess.run(argv,stdout=out,stderr=err)
   record=dict(argv=argv,start=start,end=datetime.datetime.now(datetime.timezone.utc).isoformat(),seconds=time.monotonic()-t,exit_code=r.returncode)
   (b/(label+'.terminal.json')).write_text(json.dumps(record,indent=2));assert r.returncode==0,record
- if '--continue' not in sys.argv:run('offline',HOME+'/offline.py',('PEERWORK_T097_CHILD=1',))
+ if '--continue' not in sys.argv:run('offline',HOME+'/offline.py',('PEERWORK_T098_CHILD=1',))
  raw=(source/'tests/kernel-errors-t094/host.py').read_text();a=raw.index('ROOT=Path(');z=raw.index('def run(',a)
  replacement=f'''ROOT=Path({GUEST!r});OUT=Path({HOME!r})/'http-first';C=Path({HOME!r})
 NODE='/usr/bin/node'
@@ -49,7 +49,7 @@ CLI=str(C/'bin/peerwork');calls=[]
 '''
  raw=raw[:a]+replacement+raw[z:]
  a=raw.index("service=OUT/'reference'");z=raw.index(" for language in ['python','node','cli']:",a)
- raw=raw[:a]+"results={}\ntry:\n origin=os.environ['PEERWORK_T097_ORIGIN']\n"+raw[z:]
+ raw=raw[:a]+"results={}\ntry:\n origin=os.environ['PEERWORK_T098_ORIGIN']\n"+raw[z:]
  a=raw.index("bad.shutdown();bad.server_close();thread.join();server.terminate()")
  raw=raw[:a]+"bad.shutdown();bad.server_close();thread.join();(OUT/'shutdown.json').write_text(json.dumps(dict(failure_server_closed=True,reference_owned_by_host=True)))\n"
  raw=raw.replace("{str(p.relative_to(C)):shafile(p) for p in C.rglob('*') if p.is_file()}","{str(p):shafile(p) for p in [C/'bin/peerwork',C/'python/peerwork/__init__.py',C/'python/peerwork/_peerwork_native.abi3.so',entry,C/'node/node_modules/@peerwork/agent-sdk-linux-x64-musl/index.node']}")
@@ -66,10 +66,10 @@ CLI=str(C/'bin/peerwork');calls=[]
    import urllib.request
    with urllib.request.urlopen(origin+'__test/counts')as response:baseline=json.load(response)
    (b/'http-baseline-counts.json').write_text(json.dumps(baseline));assert baseline['commands']==0
-   run('http',HOME+'/http.py',('PEERWORK_T097_ORIGIN='+origin,))
+   run('http',HOME+'/http.py',('PEERWORK_T098_ORIGIN='+origin,))
   finally:
    server.terminate();status=server.wait(timeout=10);(b/'service-shutdown.json').write_text(json.dumps(dict(exit_code=status,waited=True)))
  guard()
  result=dict(status='PASS',source=json.loads((b/'cohort-source.json').read_text())['source_commit'],artifact_manifest_sha256=sha(b/'artifact-manifest.json'),offline=json.loads((h/'offline-result.json').read_text()),http=json.loads((h/'http-first/summary.json').read_text()),service_shutdown=json.loads((b/'service-shutdown.json').read_text()),service_stderr_bytes=(b/'service.stderr').stat().st_size,post_guards='PASS')
  (b/'installed-result.json').write_text(json.dumps(result,indent=2));print(json.dumps(dict(status='PASS',uid=result['offline']['uid'],interfaces=list(result['http']['results']),counts=result['http']['counts'])))
-if __name__=='__main__':offline()if os.environ.get('PEERWORK_T097_CHILD')else host(sys.argv[1])
+if __name__=='__main__':offline()if os.environ.get('PEERWORK_T098_CHILD')else host(sys.argv[1])
