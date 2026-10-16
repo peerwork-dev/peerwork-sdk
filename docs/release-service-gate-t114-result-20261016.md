@@ -19,8 +19,10 @@ genesis and reopen, package install, distinct recipient enrollment/admission,
 proposal, adoption, task and exact signed readback through Python, Node and
 CLI. The external mode removes only development control endpoints for dropped
 responses and counters. No legacy migration, load, depth, browser or Agent
-trial was added. An isolated service endpoint and source assertion are explicit
-operator inputs, described in `docs/release-service-acceptance.md`.
+trial was added. The operator explicitly selects a service origin and permits
+fresh PUBLIC demo resources; a dedicated deployment is not required. An
+optional source commit provides attribution only, as described in
+`docs/release-service-acceptance.md`.
 
 One affected actual HTTP run used the immutable T097 GNU x64 installed wheel,
 npm packages and CLI, version `0.0.1`, with SDK source/vector unchanged between
@@ -59,9 +61,10 @@ defect or a repeatedly sampled business pass.
 
 Static checks: Python compilation, `git diff --check` and pinned
 `actionlint` on both release workflows passed; configuration
-checks accepted an explicitly scoped HTTPS origin and rejected missing source,
-unsafe HTTP and non-isolated scope. `python3 tests/release-workflows.py` passed
+checks accepted an explicitly scoped HTTPS origin and rejected missing origin,
+unsafe HTTP and missing write scope. The optional source commit is format-checked
+when supplied. `python3 tests/release-workflows.py` passed
 12/12 in 4.277 s. Seven hosted native target
-executions, the configured endpoint's independent source binding and final
+executions, independent source attribution for the configured endpoint and final
 `0.1.0` candidate execution remain unverified. The local pass is a scripted
 business/runtime result; Agent entry/workflow compliance was not tested.

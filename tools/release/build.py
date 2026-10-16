@@ -40,10 +40,10 @@ def service_gate_config(env):
             or parsed.path not in ('','/') or parsed.query or parsed.fragment
             or (parsed.scheme=='http' and parsed.hostname not in ('localhost','127.0.0.1','::1'))):
         raise ReleaseError('service gate requires an explicit HTTPS or loopback HTTP service origin')
-    if not re.fullmatch(r'[0-9a-f]{40}',source):
-        raise ReleaseError('service gate requires the exact current-service source commit')
-    if scope!='ephemeral-isolated':
-        raise ReleaseError('service gate requires explicit ephemeral-isolated write scope')
+    if source and not re.fullmatch(r'[0-9a-f]{40}',source):
+        raise ReleaseError('service gate source commit must be a full lowercase Git commit when supplied')
+    if scope!='new-public-workspace':
+        raise ReleaseError('service gate requires explicit new-public-workspace write scope')
     return origin
 
 def build(root: Path,target: str,output: Path,tag: str):
