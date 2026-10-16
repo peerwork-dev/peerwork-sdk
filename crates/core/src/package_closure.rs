@@ -1929,13 +1929,153 @@ fn resolve_source_output(
         _ => Err(ClosureError::Invalid),
     }
 }
+#[derive(Clone)]
+struct PublicInput {
+    contract: WireValue,
+    import_path: Vec<String>,
+}
+
+// Resolve public names without making callers depend on descendant action names.
+// The contract and runtime requirement always belong to the original leaf port.
+fn resolve_public_input(
+    closure: &ScannedPackageClosure,
+    source: &WireValue,
+    name: &str,
+    depth: usize,
+) -> Result<PublicInput, ClosureError> {
+    if depth > 16 {
+        return Err(ClosureError::Invalid);
+    }
+    let interfaces = field(source, "interfaces")?;
+    let WireValue::Array(inputs) = field(interfaces, "inputs")? else {
+        return Err(ClosureError::Invalid);
+    };
+    if let Some(input) = inputs
+        .iter()
+        .find(|input| input.get("name").and_then(WireValue::as_string).as_deref() == Some(name))
+    {
+        return Ok(PublicInput {
+            contract: input.clone(),
+            import_path: vec![],
+        });
+    }
+    let Some(WireValue::Array(exports)) = interfaces.get("input_exports") else {
+        return Err(ClosureError::Invalid);
+    };
+    let export = exports
+        .iter()
+        .find(|export| export.get("name").and_then(WireValue::as_string).as_deref() == Some(name))
+        .ok_or(ClosureError::Invalid)?;
+    let from = field(export, "from")?;
+    let alias = scalar(field(from, "import")?)?;
+    let child_name = scalar(field(from, "input")?)?;
+    let WireValue::Array(imports) = field(source, "imports")? else {
+        return Err(ClosureError::Invalid);
+    };
+    let imported = imports
+        .iter()
+        .find(|imported| {
+            imported
+                .get("alias")
+                .and_then(WireValue::as_string)
+                .as_deref()
+                == Some(&alias)
+        })
+        .ok_or(ClosureError::Missing)?;
+    let digest = scalar(field(imported, "package_digest")?)?;
+    let namespace = scalar(field(imported, "namespace")?)?;
+    let bundle = closure.packages.get(&digest).ok_or(ClosureError::Missing)?;
+    let child_source = source_file(field(bundle, "files")?)?;
+    let mut resolved = resolve_public_input(closure, &child_source, &child_name, depth + 1)?;
+    let action = format!(
+        "{}.{}",
+        namespace,
+        scalar(field(&resolved.contract, "action")?)?
+    );
+    insert_field(
+        &mut resolved.contract,
+        "action",
+        WireValue::String(action.encode_utf16().collect()),
+    )?;
+    if let Some(mut hook) = resolved.contract.get("provenance_hook").cloned() {
+        for key in ["record_schema", "relation_kind"] {
+            let value = format!("{}.{}", namespace, scalar(field(&hook, key)?)?);
+            insert_field(
+                &mut hook,
+                key,
+                WireValue::String(value.encode_utf16().collect()),
+            )?;
+        }
+        insert_field(&mut resolved.contract, "provenance_hook", hook)?;
+    }
+    resolved.import_path.insert(0, alias);
+    Ok(resolved)
+}
+
+fn matches_input_port(port: &WireValue, path: &[String], action: &str, input: &WireValue) -> bool {
+    matches!(port.get("import_path"), Some(WireValue::Array(parts)) if parts.len() == path.len() && parts.iter().zip(path).all(|(part, expected)| part.as_string().as_deref() == Some(expected)))
+        && port
+            .get("action_id")
+            .and_then(WireValue::as_string)
+            .as_deref()
+            == Some(action)
+        && port.get("variant") == input.get("variant")
+        && port.get("input_name") == input.get("name")
+}
+
+type InputTarget = (Vec<String>, String, usize, String);
+
+fn validate_input_exports(
+    closure: &ScannedPackageClosure,
+    source: &WireValue,
+    units: &HashMap<String, ImportedUnit>,
+    connected: &HashSet<InputTarget>,
+) -> Result<(), ClosureError> {
+    let Some(WireValue::Array(exports)) = source
+        .get("interfaces")
+        .and_then(|interfaces| interfaces.get("input_exports"))
+    else {
+        return Ok(());
+    };
+    let mut targets = HashSet::new();
+    for export in exports {
+        let resolved = resolve_public_input(closure, source, &scalar(field(export, "name")?)?, 0)?;
+        let alias = resolved.import_path.first().ok_or(ClosureError::Invalid)?;
+        let unit = units.get(alias).ok_or(ClosureError::Missing)?;
+        let action = scalar(field(&resolved.contract, "action")?)?;
+        let key = (
+            resolved.import_path.clone(),
+            action.clone(),
+            safe_integer(field(&resolved.contract, "variant")?)? as usize,
+            scalar(field(&resolved.contract, "name")?)?,
+        );
+        if connected.contains(&key) || !targets.insert(key) {
+            return Err(ClosureError::Mismatch);
+        }
+        let WireValue::Array(ports) =
+            field(field(&unit.manifest, "execution_requirements")?, "ports")?
+        else {
+            return Err(ClosureError::Invalid);
+        };
+        let port = ports
+            .iter()
+            .find(|port| {
+                matches_input_port(port, &resolved.import_path, &action, &resolved.contract)
+            })
+            .ok_or(ClosureError::Invalid)?;
+        if port.get("bound") != Some(&WireValue::Bool(false)) {
+            return Err(ClosureError::Mismatch);
+        }
+    }
+    Ok(())
+}
 fn apply_connections(
     closure: &ScannedPackageClosure,
     source: &WireValue,
     units: &mut HashMap<String, ImportedUnit>,
-) -> Result<(), ClosureError> {
+) -> Result<HashSet<InputTarget>, ClosureError> {
     let Some(WireValue::Array(rows)) = source.get("connections") else {
-        return Ok(());
+        return Ok(HashSet::new());
     };
     fn text(value: &str) -> WireValue {
         WireValue::String(value.encode_utf16().collect())
@@ -1984,20 +2124,29 @@ fn apply_connections(
         }
     }
     let mut target_ports = HashSet::new();
+    let mut connected_ports = HashSet::new();
     for connection in rows {
         let from = field(connection, "from")?;
         let to = field(connection, "to")?;
         let from_alias = scalar(field(from, "import")?)?;
         let to_alias = scalar(field(to, "import")?)?;
         let output_name = scalar(field(from, "output")?)?;
-        let action_name = scalar(field(to, "action")?)?;
-        let variant_index = safe_integer(field(to, "variant")?)? as usize;
         let input_name = scalar(field(to, "input")?)?;
+        let consumer = units.get(&to_alias).ok_or(ClosureError::Missing)?;
+        let resolved_input = resolve_public_input(closure, &consumer.source, &input_name, 0)?;
+        let input = &resolved_input.contract;
+        let action_name = scalar(field(input, "action")?)?;
+        let variant_index = safe_integer(field(input, "variant")?)? as usize;
+        if to.get("action").is_some_and(|value| value.as_string().as_deref() != Some(&action_name))
+            || to.get("variant").is_some_and(|value| input.get("variant") != Some(value)) {
+            return Err(ClosureError::Invalid);
+        }
         if !target_ports.insert((
             to_alias.clone(),
+            resolved_input.import_path.clone(),
             action_name.clone(),
             variant_index,
-            input_name.clone(),
+            scalar(field(input, "name")?)?,
         )) {
             return Err(ClosureError::Invalid);
         }
@@ -2043,20 +2192,6 @@ fn apply_connections(
         )
         .map_err(|_| ClosureError::Invalid)?;
         let consumer = units.get_mut(&to_alias).ok_or(ClosureError::Missing)?;
-        let WireValue::Array(inputs) = field(field(&consumer.source, "interfaces")?, "inputs")?
-        else {
-            return Err(ClosureError::Invalid);
-        };
-        let input = inputs
-            .iter()
-            .find(|row| {
-                row.get("action").and_then(WireValue::as_string).as_deref() == Some(&action_name)
-                    && row.get("name").and_then(WireValue::as_string).as_deref()
-                        == Some(&input_name)
-                    && row.get("variant").and_then(WireValue::as_number)
-                        == Some(variant_index as f64)
-            })
-            .ok_or(ClosureError::Invalid)?;
         let input_type = scalar(field(input, "type")?)?;
         if input_type != output_type {
             return Err(ClosureError::Mismatch);
@@ -2069,6 +2204,12 @@ fn apply_connections(
         }
         let body_field = scalar(&body_path[0])?;
         let action_id = format!("{}.{}", consumer.namespace, action_name);
+        let mut requirement_path = vec![to_alias.clone()];
+        requirement_path.extend(resolved_input.import_path.iter().cloned());
+        let WireValue::Array(ports) = field(field(&consumer.manifest, "execution_requirements")?, "ports")? else { return Err(ClosureError::Invalid); };
+        let port = ports.iter().find(|port| matches_input_port(port, &requirement_path, &action_id, input)).ok_or(ClosureError::Invalid)?;
+        if port.get("bound") != Some(&WireValue::Bool(false)) { return Err(ClosureError::Mismatch); }
+        connected_ports.insert((requirement_path, action_id.clone(), variant_index, scalar(field(input, "name")?)?));
         let WireValue::Array(actions) = field_mut(&mut consumer.manifest, "actions")? else {
             return Err(ClosureError::Invalid);
         };
@@ -2246,7 +2387,7 @@ fn apply_connections(
             }
         }
     }
-    Ok(())
+    Ok(connected_ports)
 }
 // ECMAScript OwnPropertyKeys: integer indices first; other strings retain insertion.
 fn schema_enumeration(manifest: &WireValue) -> Result<Vec<Vec<u16>>, ClosureError> {
@@ -2306,7 +2447,8 @@ fn compile_at(
             )
         || v2
             && (!matches!(source.get("interfaces"), Some(interfaces)
-                if exact(interfaces, &["outputs", "inputs", "action_bodies"])
+                if (exact(interfaces, &["outputs", "inputs", "action_bodies"])
+                    || exact(interfaces, &["outputs", "inputs", "action_bodies", "input_exports"]))
                     && ["outputs", "inputs", "action_bodies"].iter().all(|key| matches!(interfaces.get(key), Some(WireValue::Array(_))))))
         || !matches!(source.get("bindings"), Some(WireValue::Array(_)))
         || !exact(
@@ -2414,7 +2556,8 @@ fn compile_at(
             return Err(ClosureError::Mismatch);
         }
     }
-    apply_connections(closure, &source, &mut imported_units)?;
+    let connected_ports = apply_connections(closure, &source, &mut imported_units)?;
+    validate_input_exports(closure, &source, &imported_units, &connected_ports)?;
     for imported in imports {
         let alias = scalar(field(imported, "alias")?)?;
         let unit = imported_units.get(&alias).ok_or(ClosureError::Invalid)?;
@@ -2424,26 +2567,11 @@ fn compile_at(
             };
             for port in ports {
                 let mut inherited = port.clone();
-                if let Some(WireValue::Array(connections)) = source.get("connections") {
-                    let direct = matches!(port.get("import_path"), Some(WireValue::Array(path)) if path.len()==1 && path[0].as_string().as_deref()==Some(&alias));
-                    if direct
-                        && connections.iter().any(|row| {
-                            let Some(to) = row.get("to") else {
-                                return false;
-                            };
-                            to.get("import").and_then(WireValue::as_string).as_deref()
-                                == Some(&alias)
-                                && to
-                                    .get("action")
-                                    .and_then(WireValue::as_string)
-                                    .map(|action| format!("{}.{}", unit.namespace, action))
-                                    == port.get("action_id").and_then(WireValue::as_string)
-                                && to.get("variant") == port.get("variant")
-                                && to.get("input") == port.get("input_name")
-                        })
-                    {
-                        insert_field(&mut inherited, "bound", WireValue::Bool(true))?;
-                    }
+                let WireValue::Array(path) = field(port, "import_path")? else { return Err(ClosureError::Invalid); };
+                let path = path.iter().map(scalar).collect::<Result<Vec<_>, _>>()?;
+                let key = (path, scalar(field(port, "action_id")?)?, safe_integer(field(port, "variant")?)? as usize, scalar(field(port, "input_name")?)?);
+                if connected_ports.contains(&key) {
+                    insert_field(&mut inherited, "bound", WireValue::Bool(true))?;
                 }
                 inherited_ports.push(inherited);
             }
@@ -2813,6 +2941,41 @@ mod tests {
             } else {
                 assert!(scan_package_closure(&closure).is_err());
             }
+        }
+    }
+
+    #[test]
+    fn recursive_input_forwarding_matches_typescript_vectors() {
+        let vectors: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../conformance/input-forwarding-vectors.json"
+        )).unwrap();
+        for vector in vectors.as_array().unwrap() {
+            let name = vector["name"].as_str().unwrap();
+            let encoded = serde_json::to_vec(&vector["closure"]).unwrap();
+            let closure = parse_wire_json_bounded(&encoded, 64, 6 * 1024 * 1024).unwrap();
+            let scanned = scan_package_closure(&closure);
+            if vector["stage"] == "parse" {
+                assert!(scanned.is_err(), "{name}: invalid source was accepted");
+                continue;
+            }
+            let scanned = scanned.unwrap_or_else(|error| panic!("{name}: scan {error:?}"));
+            if vector.get("error").is_some() {
+                // The negative vectors intentionally have no root baseline lock.
+                // Bypass only that root lock so rejection must come from composition.
+                assert!(compile_at(&scanned, &scanned.root, None, false, 0, &mut 0).is_err(), "{name}: invalid composition was accepted");
+                continue;
+            }
+            let compiled = compile_simple_baseline(&scanned).unwrap_or_else(|error| panic!("{name}: compile {error:?}"));
+            assert_eq!(compiled.protocol_digest, vector["protocol_digest"].as_str().unwrap(), "{name}");
+            assert_eq!(compiled.source_digest, vector["source_digest"].as_str().unwrap(), "{name}");
+            for (actual, key) in [(&compiled.manifest, "compiled_manifest"), (&compiled.compilation_lock, "compilation_lock")] {
+                let bytes = serde_json::to_vec(&vector[key]).unwrap();
+                let expected = parse_wire_json_bounded(&bytes, 64, 2_000_000).unwrap();
+                assert_eq!(canonical(actual).unwrap(), canonical(&expected).unwrap(), "{name}: {key}");
+            }
+            let WireValue::Array(ports) = field(field(&compiled.manifest, "execution_requirements").unwrap(), "ports").unwrap() else { panic!("{name}: missing requirements"); };
+            let complete = ports.iter().all(|port| port.get("required") != Some(&WireValue::Bool(true)) || port.get("bound") == Some(&WireValue::Bool(true)));
+            assert_eq!(complete, vector["interfaces_complete"].as_bool().unwrap(), "{name}: executable boundary");
         }
     }
 

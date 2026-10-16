@@ -1,0 +1,15 @@
+{
+  "format": "peerwork.protocol-package-metadata.v1",
+  "package_id": "peerwork-wiki-draft-component",
+  "version": "2.0.0",
+  "name": "Peerwork Wiki Draft Component",
+  "description": "Creates and revises non-public wiki drafts, exporting only the current exact draft reference and its authenticated author fact.",
+  "license": "Apache-2.0",
+  "license_file": "LICENSE",
+  "source_maintainers": [
+    {
+      "name": "Peerwork project maintainers",
+      "origin": "project-maintained Wiki preset draft actions"
+    }
+  ]
+}

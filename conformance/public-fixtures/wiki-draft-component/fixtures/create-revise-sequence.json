@@ -1,0 +1,91 @@
+{
+  "kind": "sequence",
+  "id": "create-revise-retains-draft-without-publishing-head",
+  "state": {},
+  "steps": [
+    {
+      "action_id": "wiki.create",
+      "body": {
+        "title": "Wiki draft",
+        "body": "Initial content"
+      },
+      "auth": {
+        "actorId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "workspaceRoles": [],
+        "protocolRoles": [
+          "AUTHOR"
+        ],
+        "capabilities": [
+          "DRAFT"
+        ]
+      },
+      "bind_refs": [
+        {
+          "name": "draft1",
+          "record_slot": "revision"
+        }
+      ],
+      "expected": {
+        "accepted": true
+      }
+    },
+    {
+      "action_id": "wiki.revise",
+      "body": {
+        "title": "Wiki draft v2",
+        "body": "Revised content",
+        "parent_ref": {
+          "$fixture_ref": "draft1"
+        }
+      },
+      "auth": {
+        "actorId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "workspaceRoles": [],
+        "protocolRoles": [
+          "AUTHOR"
+        ],
+        "capabilities": [
+          "DRAFT"
+        ]
+      },
+      "exact_inputs": [
+        "draft1"
+      ],
+      "bind_refs": [
+        {
+          "name": "draft2",
+          "record_slot": "revision"
+        }
+      ],
+      "expected": {
+        "accepted": true
+      }
+    },
+    {
+      "action_id": "wiki.create",
+      "body": {
+        "title": "A draft action cannot publish",
+        "body": "A second draft"
+      },
+      "auth": {
+        "actorId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "workspaceRoles": [],
+        "protocolRoles": [
+          "AUTHOR"
+        ],
+        "capabilities": [
+          "DRAFT"
+        ]
+      },
+      "bind_refs": [
+        {
+          "name": "draft3",
+          "record_slot": "revision"
+        }
+      ],
+      "expected": {
+        "accepted": true
+      }
+    }
+  ]
+}

@@ -22,7 +22,7 @@ type PackageImport=ProtocolPackage['source']['imports'][number];
 type CompileOptions={loadExactPackage:(packageDigest:string)=>unknown|undefined;bindings?:Record<string,unknown>;compilerVersion?:string};
 type Session={packages:Map<string,ProtocolPackage>;closure:string[];steps:number;sourceMap:Record<string,ProtocolSourceLocation[]>;baselineReports:Map<string,ProtocolFixtureResult[]>;};
 type FixtureScenario={id:string;fixture:ProtocolFixture;originPackageDigest:string;importPath:string[]};
-type InterfaceContext={pkg:ProtocolPackage;manifest:Manifest;imports:Map<string,InterfaceContext>};
+type InterfaceContext={pkg:ProtocolPackage;manifest:Manifest;imports:Map<string,InterfaceContext>;inputRequirements:ProtocolInputRequirement[]};
 
 function reject(code='INVALID_PAYLOAD',status=400,message=code):never{throw new ApiError(code,status,message);}
 function canonical(value:unknown){try{return canonicalStructured(value);}catch{return reject('INVALID_PAYLOAD',400,'invalid protocol package value');}}
@@ -161,6 +161,15 @@ function sourceMapFor(pkg:ProtocolPackage,namespace=''){
 function mergeSourceMap(target:Record<string,ProtocolSourceLocation[]>,source:Record<string,ProtocolSourceLocation[]>,namespace=''){
  for(const [path,locations] of Object.entries(source)){const mapped=namespace?path.replace(/^(actions|record_schemas)\//,`$1/${namespace}.`):path;(target[mapped]??=[]).push(...locations);}
 }
+function shiftGuardSourceMap(sourceMap:Record<string,ProtocolSourceLocation[]>,manifests:Manifest[]){
+ const offsets:Record<string,number>=Object.create(null);for(const manifest of manifests)for(const [action,rules]of Object.entries(manifest.constraints))offsets[action]=(offsets[action]??0)+rules.length;
+ const moved:Record<string,ProtocolSourceLocation[]>={};for(const [key,locations]of Object.entries(sourceMap)){const match=/^actions\/(.+)\/variants\/(\d+)\/when\/(\d+)$/.exec(key);if(!match)continue;const offset=offsets[match[1]!]??0;if(!offset)continue;delete sourceMap[key];moved[`actions/${match[1]}/variants/${match[2]}/when/${Number(match[3])+offset}`]=locations;}Object.assign(sourceMap,moved);
+}
+/** Source attribution for inspection; this does not infer which guard failed. */
+export function explainProtocolActionGuards(compilation:Pick<CompiledProtocolPackage,'manifest'|'sourceMap'>,actionId:string,variantIndex:number){
+ const variant=compilation.manifest.actions.find(action=>action.id===actionId)?.variants[variantIndex];if(!variant)reject('INVALID_PAYLOAD',400,'unknown action variant');
+ return variant.when.map((guard,index)=>({index,guard,sources:compilation.sourceMap[`actions/${actionId}/variants/${variantIndex}/when/${index}`]??[]}));
+}
 function statePaths(value:any,out:string[][]=[]):string[][]{
  if(Array.isArray(value)){for(const item of value)statePaths(item,out);return out;}if(!value||typeof value!=='object')return out;
  if(value.from==='literal')return out;
@@ -168,6 +177,27 @@ function statePaths(value:any,out:string[][]=[]):string[][]{
  for(const child of Object.values(value))statePaths(child,out);return out;
 }
 type ResolvedInterfaceOutput={type:'exact_ref';path:string[];schema:string;scope:'INSTANCE'|'WORKSPACE';available_when:any}|{type:'actor_id';path:string[];available_when:any};
+type InterfaceInput=NonNullable<ProtocolPackage['source']['interfaces']>['inputs'][number];
+type ResolvedInterfaceInput={input:InterfaceInput;importPath:string[]};
+function inputTargetKey(target:{importPath:string[];actionId:string;variant:number;inputName:string}){return JSON.stringify([target.importPath,target.actionId,target.variant,target.inputName]);}
+function resolvedInputTarget(resolved:ResolvedInterfaceInput){return {importPath:resolved.importPath,actionId:resolved.input.action,variant:resolved.input.variant,inputName:resolved.input.name};}
+function resolveSourceInput(context:InterfaceContext,name:string,seen=new Set<string>()):ResolvedInterfaceInput|undefined{
+ const key=`${context.pkg.packageDigest}\0${name}`;if(seen.has(key))reject('DEPENDENCY_CYCLE',409,'interface input forwarding cycle');seen.add(key);
+ const local=context.pkg.source.interfaces?.inputs.find(input=>input.name===name);if(local)return {input:structuredClone(local),importPath:[]};
+ const exported=context.pkg.source.interfaces?.input_exports?.find(input=>input.name===name);if(!exported)return undefined;
+ const imported=context.pkg.source.imports.find(item=>item.alias===exported.from.import),dependency=imported&&context.imports.get(imported.alias);if(!imported||!dependency)reject('DEPENDENCY_MISSING',409,'exported interface input dependency is missing');
+ const inner=resolveSourceInput(dependency,exported.from.input,seen);if(!inner)reject('INVALID_PAYLOAD',400,'exported interface input does not exist');
+ const input=structuredClone(inner.input);input.action=qualify(imported.namespace,input.action);
+ if(input.type==='exact_ref'&&input.provenance_hook){input.provenance_hook.record_schema=qualify(imported.namespace,input.provenance_hook.record_schema,80);input.provenance_hook.relation_kind=qualify(imported.namespace,input.provenance_hook.relation_kind,80);}
+ return {input,importPath:[imported.alias,...inner.importPath]};
+}
+function validateInputExports(context:InterfaceContext,sourceMap:Record<string,ProtocolSourceLocation[]>){
+ const targets=new Set<string>();for(const [index,exported]of (context.pkg.source.interfaces?.input_exports??[]).entries()){
+  const resolved=resolveSourceInput(context,exported.name);if(!resolved)reject('INVALID_PAYLOAD',400,'exported interface input does not exist');const key=inputTargetKey(resolvedInputTarget(resolved)),requirement=context.inputRequirements.find(port=>inputTargetKey(port)===key);
+  if(!requirement)reject('INVALID_PAYLOAD',400,'exported interface input has no leaf requirement');if(requirement.bound)reject('COMPOSITION_CONFLICT',409,'cannot export an internally connected interface input');if(targets.has(key))reject('COMPOSITION_CONFLICT',409,'interface input leaf is exported more than once');targets.add(key);
+  (sourceMap[`actions/${resolved.input.action}`]??=[]).push({packageDigest:context.pkg.packageDigest,path:`protocol.source.json#/interfaces/input_exports/${index}`,operation:'export-input'});
+ }
+}
 function resolveSourceOutput(context:InterfaceContext,name:string,seen=new Set<string>()):ResolvedInterfaceOutput|undefined{
  const pkg=context.pkg;
  const key=`${pkg.packageDigest}\0${name}`;if(seen.has(key))reject('DEPENDENCY_CYCLE',409,'interface forwarding cycle');seen.add(key);
@@ -178,34 +208,42 @@ function resolveSourceOutput(context:InterfaceContext,name:string,seen=new Set<s
  const symbols=mappingsFor(pkg,imported.alias,dependency.manifest),nestedAvailability=transformGuard(inner.available_when,imported.namespace,symbols,pkg.lock.compiler_version===PROTOCOL_COMPILER_VERSION_V3);
  return inner.type==='exact_ref'?{type:'exact_ref',path:[imported.namespace,...inner.path],schema:qualify(imported.namespace,inner.schema,80),scope:inner.scope,available_when:{op:'and',rules:[structuredClone(output.available_when),nestedAvailability]}}:{type:'actor_id',path:[imported.namespace,...inner.path],available_when:{op:'and',rules:[structuredClone(output.available_when),nestedAvailability]}};
 }
-function applyConnections(parent:ProtocolPackage,units:Map<string,{pkg:ProtocolPackage;namespace:string;manifest:Manifest;context:InterfaceContext}>){
- if(parent.source.format!==PROTOCOL_SOURCE_FORMAT_V2)return;
- for(const connection of parent.source.connections??[]){
+function applyConnections(parent:ProtocolPackage,units:Map<string,{pkg:ProtocolPackage;namespace:string;manifest:Manifest;context:InterfaceContext}>,sourceMap:Record<string,ProtocolSourceLocation[]>){
+ const connected=new Set<string>();if(parent.source.format!==PROTOCOL_SOURCE_FORMAT_V2)return connected;
+ for(const [connectionIndex,connection]of (parent.source.connections??[]).entries()){
   const from=units.get(connection.from.import),to=units.get(connection.to.import);if(!from||!to)reject('INVALID_PAYLOAD',400,'connection import missing');
-  const declaredOutput=from.pkg.source.interfaces?.outputs.find(item=>item.name===connection.from.output),resolvedOutput=resolveSourceOutput(from.context,connection.from.output),actualInput=to.pkg.source.interfaces?.inputs.find(item=>item.action===connection.to.action&&item.variant===connection.to.variant&&item.name===connection.to.input);if(!declaredOutput||!resolvedOutput||!actualInput)reject('INVALID_PAYLOAD',400,'connection references an unknown public interface');
+  const declaredOutput=from.pkg.source.interfaces?.outputs.find(item=>item.name===connection.from.output),resolvedOutput=resolveSourceOutput(from.context,connection.from.output),resolvedInput=resolveSourceInput(to.context,connection.to.input);if(!declaredOutput||!resolvedOutput||!resolvedInput)reject('INVALID_PAYLOAD',400,'connection references an unknown public interface');
+  const actualInput=resolvedInput.input;if('action'in connection.to&&(connection.to.action!==actualInput.action||connection.to.variant!==actualInput.variant))reject('INVALID_PAYLOAD',400,'connection action or variant differs from public input');
+  const localTarget=resolvedInputTarget(resolvedInput),requirement=to.context.inputRequirements.find(port=>inputTargetKey(port)===inputTargetKey(localTarget));if(!requirement||requirement.bound)reject('COMPOSITION_CONFLICT',409,'connection target input is already bound or missing');
+  const target={...localTarget,importPath:[connection.to.import,...localTarget.importPath],actionId:qualify(to.namespace,localTarget.actionId)},targetKey=inputTargetKey(target);if(connected.has(targetKey))reject('COMPOSITION_CONFLICT',409,'interface input leaf is connected more than once');connected.add(targetKey);
   if(declaredOutput.type!==actualInput.type||resolvedOutput.type!==actualInput.type)reject('COMPOSITION_CONFLICT',409,'connected interface types are incompatible');
   const action=to.manifest.actions.find(item=>item.id===qualify(to.namespace,actualInput.action)),variant=action?.variants[actualInput.variant];if(!action||!variant)reject('INVALID_PAYLOAD',400,'connection targets missing action variant');const outputSymbols=mappingsFor(parent,connection.from.import,from.context.manifest),available=transformGuard(resolvedOutput.available_when,from.namespace,outputSymbols,parent.lock.compiler_version===PROTOCOL_COMPILER_VERSION_V3);
+  const location={packageDigest:parent.packageDigest,path:`protocol.source.json#/connections/${connectionIndex}`,operation:'connect-input'};(sourceMap[`actions/${action.id}`]??=[]).push(location);
+  const traceGuards=(start:number)=>{for(let index=start;index<variant.when.length;index++)(sourceMap[`actions/${action.id}/variants/${actualInput.variant}/when/${index}`]??=[]).push(location);};const guardStart=variant.when.length;
   if(actualInput.type==='actor_id'&&resolvedOutput.type==='actor_id'){
    const actorField=actualInput.action_body.fields[actualInput.body_path[0]!] as any,field=(action.inputs as any)?.fields[actualInput.body_path[0]!];if(!actorField||actorField.type!=='actor_id'||actorField.input!==actualInput.name||!field||field.type!=='actor_id')reject('COMPOSITION_CONFLICT',409,'actor-id interface input is not a typed body field');
    const sourcePath=statePath(resolvedOutput.path,from.namespace) as string[],bodyActor={from:'body',path:actualInput.body_path},authActor={from:'auth',field:'actorId'};
    variant.when.push({op:'eq',left:bodyActor,right:{from:'state',path:sourcePath}},{op:actualInput.relation==='same_actor'?'eq':'not',...(actualInput.relation==='same_actor'?{left:bodyActor,right:authActor}:{rule:{op:'eq',left:bodyActor,right:authActor}})},{op:'and',rules:[available]});
-   action.reads.push(sourcePath,...statePaths(available));const unique=new Map(action.reads.map(path=>[JSON.stringify(path),path]));action.reads=[...unique.values()];continue;
+   traceGuards(guardStart);action.reads.push(sourcePath,...statePaths(available));const unique=new Map(action.reads.map(path=>[JSON.stringify(path),path]));action.reads=[...unique.values()];continue;
   }
   if(actualInput.type!=='exact_ref'||resolvedOutput.type!=='exact_ref')reject('COMPOSITION_CONFLICT',409,'connected interface types or scopes are incompatible');
+  if(actualInput.scope!==resolvedOutput.scope)reject('COMPOSITION_CONFLICT',409,'connected interface scopes are incompatible');
   const portField=actualInput.action_body.fields[actualInput.body_path[0]!] as any;if(!portField||portField.type!=='exact_ref'||portField.input!==actualInput.name)reject('INVALID_PAYLOAD',400,'connected input field is not a typed reference port');
   const schema=qualify(from.namespace,resolvedOutput.schema,80),field=(action.inputs as any)?.fields[actualInput.body_path[0]!];if(!field||field.type!=='exact_ref'||field.schema!=='*')reject('COMPOSITION_CONFLICT',409,'input reference port is not unresolved');field.schema=schema;
   const outputPath=statePath(resolvedOutput.path,from.namespace) as string[],bodyRef={from:'ref',source:'body',path:actualInput.body_path,scope:actualInput.scope,schema};
   variant.when.push({op:'exact_ref',ref:bodyRef},{op:'eq',left:bodyRef,right:{from:'ref',source:'state',path:outputPath,scope:resolvedOutput.scope,schema}},{op:'and',rules:[available]});
+  traceGuards(guardStart);
   action.reads.push(outputPath,...statePaths(available));const unique=new Map(action.reads.map(path=>[JSON.stringify(path),path]));action.reads=[...unique.values()];
   const hook=actualInput.provenance_hook;if(!hook)continue;
   const schemaName=qualify(to.namespace,hook.record_schema,80),relationKind=qualify(to.namespace,hook.relation_kind,80),targetPath=actualInput.body_path;
   const appends=variant.effects.filter((effect:any)=>effect.op==='append'&&effect.recordSlot===hook.record_slot&&effect.schema===schemaName);if(appends.length!==1)reject('COMPOSITION_CONFLICT',409,'provenance hook does not identify one output record');
-  const append=appends[0] as any;if(append.relations.some((relation:any)=>relation.kind===relationKind))reject('COMPOSITION_CONFLICT',409,'provenance relation would overwrite an existing relation');append.relations.push({kind:relationKind,target:{from:'ref',source:'body',path:targetPath,scope:actualInput.scope,schema}});
+  const append=appends[0] as any;if(append.relations.some((relation:any)=>relation.kind===relationKind))reject('COMPOSITION_CONFLICT',409,'provenance relation would overwrite an existing relation');const relationIndex=append.relations.length;append.relations.push({kind:relationKind,target:{from:'ref',source:'body',path:targetPath,scope:actualInput.scope,schema}});(sourceMap[`actions/${action.id}/variants/${actualInput.variant}/effects/${variant.effects.indexOf(append)}/relations/${relationIndex}`]??=[]).push(location);
  }
+ return connected;
 }
 function compileRaw(pkg:ProtocolPackage,provided:Record<string,unknown>,session:Session,stack:string[]):{manifest:Manifest;sourceDigest:string;protocolDigest:string;dependencyClosure:string[];resolvedDependencyManifests:{protocolDigest:string;manifest:Manifest}[];sourceMap:Record<string,ProtocolSourceLocation[]>;unresolvedInputs:ProtocolUnresolvedInput[];inputRequirements:ProtocolInputRequirement[];values:Record<string,unknown>;fixtureResults:ProtocolFixtureResult[];fixtureScenarios:FixtureScenario[];interfaceContext:InterfaceContext} {
  if(stack.includes(pkg.packageDigest))reject('DEPENDENCY_CYCLE',409,'package dependency cycle');if(++session.steps>MAX_COMPILE_STEPS)reject('RESOURCE_EXHAUSTED',429,'package compiler work limit exceeded');
- const values=valuesFor(pkg,provided),dependencies:Manifest[]=[],unresolvedInputs:ProtocolUnresolvedInput[]=[],inputRequirements:ProtocolInputRequirement[]=[],loadMap=new Map<string,Manifest>(),sourceMap=sourceMapFor(pkg),inheritedScenarios:FixtureScenario[]=[],inheritedDispositions:any[]=[],importedUnits=new Map<string,{pkg:ProtocolPackage;namespace:string;manifest:Manifest;context:InterfaceContext}>(),interfaceImports=new Map<string,InterfaceContext>(),connected=new Set((pkg.source.connections??[]).map(connection=>`${connection.to.import}\0${connection.to.action}\0${connection.to.variant}\0${connection.to.input}`));
+ const values=valuesFor(pkg,provided),dependencies:Manifest[]=[],unresolvedInputs:ProtocolUnresolvedInput[]=[],inputRequirements:ProtocolInputRequirement[]=[],inputOrigins=new Map<string,string>(),loadMap=new Map<string,Manifest>(),sourceMap=sourceMapFor(pkg),inheritedScenarios:FixtureScenario[]=[],inheritedDispositions:any[]=[],importedUnits=new Map<string,{pkg:ProtocolPackage;namespace:string;manifest:Manifest;context:InterfaceContext}>(),interfaceImports=new Map<string,InterfaceContext>();
  for(const imp of pkg.source.imports){
   const dep=session.packages.get(imp.package_digest);if(!dep)reject('DEPENDENCY_MISSING',409,'exact package dependency is missing');
   const mapped:Record<string,unknown>={};for(const binding of pkg.source.bindings.filter(item=>item.import_alias===imp.alias)){
@@ -213,7 +251,7 @@ function compileRaw(pkg:ProtocolPackage,provided:Record<string,unknown>,session:
   }
   const compiled=compileRaw(dep,mapped,session,[...stack,pkg.packageDigest]);
   interfaceImports.set(imp.alias,compiled.interfaceContext);
-  for(const port of compiled.inputRequirements){const direct=port.importPath.length===0&&dep.source.interfaces?.inputs.some(input=>input.action===port.actionId&&input.variant===port.variant&&input.name===port.inputName),bound=port.bound||Boolean(direct&&connected.has(`${imp.alias}\0${port.actionId}\0${port.variant}\0${port.inputName}`)),mapped={...port,actionId:qualify(imp.namespace,port.actionId),importPath:[imp.alias,...port.importPath],bound};inputRequirements.push(mapped);if(!bound)unresolvedInputs.push({packageDigest:dep.packageDigest,importPath:mapped.importPath,actionId:mapped.actionId,variant:mapped.variant,inputName:mapped.inputName,required:mapped.required,type:mapped.type});}
+  for(const port of compiled.inputRequirements){const mapped={...port,actionId:qualify(imp.namespace,port.actionId),importPath:[imp.alias,...port.importPath]};inputRequirements.push(mapped);inputOrigins.set(inputTargetKey(mapped),compiled.unresolvedInputs.find(input=>inputTargetKey(input)===inputTargetKey(port))?.packageDigest??dep.packageDigest);}
   // A compiled dependency manifest is already the flattened, validated view of
   // its exact package closure. Namespace that composition unit once; adding its
   // closure manifests again duplicates every reducer inherited by the aggregate
@@ -224,10 +262,11 @@ function compileRaw(pkg:ProtocolPackage,provided:Record<string,unknown>,session:
   for(const row of compiled.fixtureResults)if(row.disposition)inheritedDispositions.push({origin:{package_digest:row.disposition.origin.package_digest,import_path:[imp.alias,...row.disposition.origin.import_path],fixture_id:row.disposition.origin.fixture_id},expected_rejection:row.disposition.expectedRejection,rationale:row.disposition.rationale,replacement_scenario_id:`${imp.alias}/${row.disposition.replacementScenarioId}`});
   mergeSourceMap(sourceMap,compiled.sourceMap,imp.namespace);
  }
- applyConnections(pkg,importedUnits);
+ const connected=applyConnections(pkg,importedUnits,sourceMap);for(const port of inputRequirements)if(connected.has(inputTargetKey(port)))port.bound=true;
  loadMap.clear();for(const dependency of dependencies){const digest=manifestDigest(dependency).digest,prior=loadMap.get(digest);if(prior&&!same(prior,dependency))reject('DEPENDENCY_MISMATCH',409,'connected dependency digest collision');loadMap.set(digest,dependency);}
  const own=applyInterfaceInputs(pkg,applyParameters(pkg,values,pkg.source.manifest));requireDeclaredReads(own);const root=structuredClone(own) as any;root.dependencies=[];
- for(const input of pkg.source.interfaces?.inputs??[]){const requirement={importPath:[],actionId:input.action,variant:input.variant,inputName:input.name,required:input.required,type:input.type,bound:false};inputRequirements.push(requirement);unresolvedInputs.push({packageDigest:pkg.packageDigest,...requirement});}
+ for(const input of pkg.source.interfaces?.inputs??[]){const requirement={importPath:[],actionId:input.action,variant:input.variant,inputName:input.name,required:input.required,type:input.type,bound:false};inputRequirements.push(requirement);inputOrigins.set(inputTargetKey(requirement),pkg.packageDigest);}
+ for(const {bound,...port}of inputRequirements)if(!bound)unresolvedInputs.push({packageDigest:inputOrigins.get(inputTargetKey(port))??pkg.packageDigest,...port});
  const availableActions=new Set<string>([...root.actions.map((action:any)=>action.id),...dependencies.flatMap(dependency=>dependency.actions.map(action=>action.id))]);
  const availableRoles=new Set<string>([...root.protocol_roles,...dependencies.flatMap(dependency=>dependency.protocol_roles)]),availableCapabilities=new Set<string>([...root.capabilities,...dependencies.flatMap(dependency=>dependency.capabilities)]);
  const added:Record<string,unknown[]>=Object.assign(Object.create(null),root.constraints??{});
@@ -237,13 +276,13 @@ function compileRaw(pkg:ProtocolPackage,provided:Record<string,unknown>,session:
  const dependencyIds=dependencies.map(dependency=>manifestDigest(dependency).digest);root.dependencies=dependencyIds;
  for(const [id,rules] of Object.entries(root.constraints))for(const imp of pkg.source.imports)if(id.startsWith(`${imp.namespace}.`)&&!dependencies.some(dependency=>dependency.actions.some(action=>action.id===id)))reject('COMPOSITION_CONFLICT',409,`derivation targets missing action ${id}`);
  if(pkg.lock.compiler_version===PROTOCOL_COMPILER_VERSION_V3)root.execution_requirements={format:'peerwork.protocol-execution-requirements.v1',closure_complete:true,ports:inputRequirements.map(({importPath,actionId,variant,inputName,type,required,bound})=>({import_path:importPath,action_id:actionId,variant,input_name:inputName,type,required,bound}))};
- const resolved=resolveProtocol(root,digest=>loadMap.get(digest));requireDeclaredReads(resolved.manifest);
+ shiftGuardSourceMap(sourceMap,[...dependencies,root]);const resolved=resolveProtocol(root,digest=>loadMap.get(digest));requireDeclaredReads(resolved.manifest);
  const ownSource=manifestDigest(own).digest;
  mergeSourceMap(sourceMap,sourceMapFor(pkg));
  const resolvedDependencyManifests=resolved.dependencyClosure.map(protocolDigest=>({protocolDigest,manifest:loadMap.get(protocolDigest)!}));
+ const interfaceContext:InterfaceContext={pkg,manifest:resolved.manifest,imports:interfaceImports,inputRequirements};validateInputExports(interfaceContext,sourceMap);
  const fixtureScenarios=[...inheritedScenarios,...pkg.fixtures.map(fixture=>({id:fixture.id,fixture,originPackageDigest:pkg.packageDigest,importPath:[]}))];
  const fixtureResults=applyFixtureDispositions(pkg,fixtureScenarios,runFixtures(resolved.manifest,fixtureScenarios),inheritedDispositions);
- const interfaceContext:InterfaceContext={pkg,manifest:resolved.manifest,imports:interfaceImports};
  return {manifest:resolved.manifest,sourceDigest:ownSource,protocolDigest:resolved.resolvedDigest,dependencyClosure:resolved.dependencyClosure,resolvedDependencyManifests,sourceMap,unresolvedInputs,inputRequirements,values,fixtureResults,fixtureScenarios,interfaceContext};
 }
 function transformFixture(fixture:ProtocolFixture,namespace:string,symbols:SymbolMapping={roles:new Map(),capabilities:new Map()}):ProtocolFixture{

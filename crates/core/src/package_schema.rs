@@ -719,7 +719,7 @@ fn validate_source_inner(source: &WireValue) -> Result<WireValue, PackageSchemaE
         if !v2 {
             return Err(Invalid);
         }
-        shape(ifaces, &[], &["outputs", "inputs", "action_bodies"])?;
+        shape(ifaces, &[], &["outputs", "inputs", "action_bodies", "input_exports"])?;
         let mut ni = ifaces.clone();
         let mut outputs = Vec::new();
         let mut inputs = Vec::new();
@@ -778,6 +778,23 @@ fn validate_source_inner(source: &WireValue) -> Result<WireValue, PackageSchemaE
                 }
             }
             put(&mut ni, field, value)?;
+        }
+        if let Some(exports) = ifaces.get("input_exports") {
+            let mut targets = Vec::new();
+            for export in arr(exports, 32, 0)? {
+                shape(export, &["name", "from"], &[])?;
+                let exported_name = name(get(export, "name")?, 120)?;
+                if inputs.contains(&exported_name) { return Err(Invalid); }
+                inputs.push(exported_name);
+                let from = get(export, "from")?;
+                shape(from, &["import", "input"], &[])?;
+                let alias = ascii(get(from, "import")?, 1, 40)?;
+                let input = ascii(get(from, "input")?, 1, 120)?;
+                if !aliases.contains(&alias) || targets.contains(&(alias.clone(), input.clone())) {
+                    return Err(Invalid);
+                }
+                targets.push((alias, input));
+            }
         }
         // Cross-field checks are applied to the normalized interface shape.
         for input in arr(ni.get("inputs").unwrap(), 32, 0)? {
@@ -893,19 +910,22 @@ fn validate_source_inner(source: &WireValue) -> Result<WireValue, PackageSchemaE
                         let from = get(x, "from")?;
                         let to = get(x, "to")?;
                         shape(from, &["import", "output"], &[])?;
-                        shape(to, &["import", "action", "variant", "input"], &[])?;
+                        let full = to.get("action").is_some() || to.get("variant").is_some();
+                        if full { shape(to, &["import", "action", "variant", "input"], &[])?; }
+                        else { shape(to, &["import", "input"], &[])?; }
                         let fa = ascii(get(from, "import")?, 1, 40)?;
                         string_len(get(from, "output")?, 1, 120)?;
                         let ta = ascii(get(to, "import")?, 1, 40)?;
-                        let action = as_str(get(to, "action")?)?.to_vec();
-                        string_len(get(to, "action")?, 1, 120)?;
-                        let var = bounded_int(get(to, "variant")?, 0.0, 31.0)?;
+                        if full {
+                            string_len(get(to, "action")?, 1, 120)?;
+                            bounded_int(get(to, "variant")?, 0.0, 31.0)?;
+                        }
                         let input = as_str(get(to, "input")?)?.to_vec();
                         string_len(get(to, "input")?, 1, 120)?;
                         if !aliases.contains(&fa) || !aliases.contains(&ta) {
                             return Err(Invalid);
                         }
-                        let port = (ta, action, var, input);
+                        let port = (ta, input);
                         if ports.contains(&port) {
                             return Err(Invalid);
                         }
