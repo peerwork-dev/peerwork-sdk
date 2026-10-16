@@ -1349,10 +1349,12 @@ mod tests {
         eprintln!("COORDINATION_HTTP {visibility} PASS baseline={baseline} v1={accepted_count} v2={after_upgrade} original_begin={begin} upgrade_begin={upgrade_id}");
     }
     #[test]
+    #[ignore = "requires PEERWORK_REFERENCE_ROOT, PEERWORK_NODE_BIN, and PEERWORK_COORDINATION_TEST_DIR"]
     fn actual_service_private_coordination_enable_upgrade_recovery() {
         actual("PRIVATE")
     }
     #[test]
+    #[ignore = "requires PEERWORK_REFERENCE_ROOT, PEERWORK_NODE_BIN, and PEERWORK_COORDINATION_TEST_DIR"]
     fn actual_service_public_coordination_enable_upgrade_recovery() {
         actual("PUBLIC")
     }
