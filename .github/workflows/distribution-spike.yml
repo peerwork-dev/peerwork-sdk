@@ -323,8 +323,61 @@ jobs:
         shell: pwsh
         run: |
           Remove-Item Env:\ICU_DATA -ErrorAction SilentlyContinue
-          cargo test -p peerwork-core --locked js_locale::tests::pinned_node_locale_compare_vectors -- --exact
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cargoLog = Join-Path $env:RUNNER_TEMP 'peerwork-windows-icu-cargo.log'
+          & cargo test -vv -p peerwork-core --locked js_locale::tests::pinned_node_locale_compare_vectors -- --exact *> $cargoLog
+          $testExit = $LASTEXITCODE
+
+          if ($testExit -ne 0) {
+            Write-Output 'Windows ICU link diagnostic: selected Cargo directives and unresolved symbols'
+            Get-Content -LiteralPath $cargoLog | Select-String -Pattern 'cargo:rustc-link-(?:search|lib)=|error LNK(?:2019|1120):'
+
+            $archiveSpecs = @(
+              @{ Name = 'icudatapeerwork'; Project = 'stubdata' },
+              @{ Name = 'icuucpeerwork'; Project = 'common' },
+              @{ Name = 'icui18npeerwork'; Project = 'i18n' }
+            )
+            $expectedSymbols = 'udata_setFileAccess_78_peerwork|udata_setCommonData_78_peerwork|ucol_open_78_peerwork|ucol_strcoll_78_peerwork|ucol_close_78_peerwork'
+            $buildRoots = Get-ChildItem -LiteralPath 'target/debug/build' -Directory -Filter 'peerwork-core-*' -ErrorAction SilentlyContinue
+            $archives = @{}
+            foreach ($spec in $archiveSpecs) {
+              $archives[$spec.Name] = @()
+              foreach ($buildRoot in $buildRoots) {
+                $archivePath = Join-Path $buildRoot.FullName "out/source/icu/source/$($spec.Project)/x64/Release/$($spec.Name).lib"
+                if (Test-Path -LiteralPath $archivePath) {
+                  $archive = Get-Item -LiteralPath $archivePath
+                  $archives[$spec.Name] += $archive.FullName
+                  Write-Output "ICU_ARCHIVE_FOUND $($spec.Name).lib bytes=$($archive.Length)"
+                }
+              }
+              if ($archives[$spec.Name].Count -eq 0) {
+                Write-Output "ICU_ARCHIVE_MISSING $($spec.Name).lib"
+              }
+            }
+
+            $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+            $dumpbin = $null
+            if (Test-Path -LiteralPath $vswhere) {
+              $vsroot = & $vswhere -latest -property installationPath
+              $dumpbin = Get-ChildItem -Path (Join-Path $vsroot 'VC/Tools/MSVC') -Recurse -File -Filter dumpbin.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+            }
+
+            if ($dumpbin) {
+              foreach ($spec in $archiveSpecs) {
+                foreach ($archivePath in $archives[$spec.Name]) {
+                  $matches = @(& $dumpbin /linkermember:1 $archivePath 2>&1 | Select-String -Pattern $expectedSymbols)
+                  if ($matches.Count -eq 0) {
+                    Write-Output "ICU_PUBLIC_SYMBOLS_NONE $($spec.Name).lib"
+                  } else {
+                    $matches | ForEach-Object { Write-Output $_.Line }
+                  }
+                }
+              }
+            } else {
+              Write-Output 'ICU_DUMPBIN_UNAVAILABLE'
+            }
+          }
+
+          exit $testExit
       - name: Compile and exercise native interfaces
         shell: pwsh
         run: |
