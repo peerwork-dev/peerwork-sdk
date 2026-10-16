@@ -11,20 +11,22 @@ on:
         description: Successful main-branch Experimental native distribution run to promote
         required: true
         type: string
+  repository_dispatch:
+    types: [promote-experimental]
 
 permissions:
   actions: read
   contents: read
 
 concurrency:
-  group: experimental-prerelease-${{ github.event.workflow_run.id || inputs.source_run_id }}
+  group: experimental-prerelease-${{ github.event.workflow_run.id || github.event.client_payload.source_run_id || inputs.source_run_id }}
   cancel-in-progress: false
 
 jobs:
   validate_source:
     if: >-
       ${{
-        github.event_name == 'workflow_dispatch' ||
+        (github.event_name == 'workflow_dispatch' || github.event_name == 'repository_dispatch') ||
         (github.event.workflow_run.conclusion == 'success' &&
          github.event.workflow_run.head_branch == 'main' &&
          github.event.workflow_run.head_repository.full_name == github.repository)
@@ -42,7 +44,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPOSITORY: ${{ github.repository }}
-          SOURCE_RUN_ID: ${{ github.event.workflow_run.id || inputs.source_run_id }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id || github.event.client_payload.source_run_id || inputs.source_run_id }}
         shell: bash
         run: |
           set -euo pipefail
