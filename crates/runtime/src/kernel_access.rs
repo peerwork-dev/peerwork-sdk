@@ -376,14 +376,10 @@ mod public_error_tests {
         kernel_client::KernelClientError as C, kernel_intents::JournalError as J,
         transport::TransportError as T,
     };
+    use crate::test_support::protected_test_dir;
     #[test]
     fn malformed_command_is_not_an_authority_mismatch() {
-        let state = tempfile::tempdir().unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(state.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-        }
+        let state = protected_test_dir();
         let identity = state.path().join("identity");
         KernelIdentity::create(&identity).unwrap();
         let journal = state.path().join("journal");

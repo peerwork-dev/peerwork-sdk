@@ -329,6 +329,8 @@ mod tests {
         let source_path = dir.path().join("legacy-seed.bin");
         let target_path = dir.path().join("identity.state");
         let seed = [7u8; 32];
+        #[cfg(windows)]
+        crate::windows_fs::create_or_check_file(&source_path).unwrap();
         fs::write(&source_path, seed).unwrap();
         #[cfg(unix)]
         fs::set_permissions(&source_path, fs::Permissions::from_mode(0o600)).unwrap();
@@ -379,6 +381,8 @@ mod tests {
             SigningKey::from_pkcs8_pem(&pem).is_ok(),
             "maintained PEM parser rejected generated key"
         );
+        #[cfg(windows)]
+        crate::windows_fs::create_or_check_file(&source_path).unwrap();
         fs::write(&source_path, pem.as_bytes()).unwrap();
         #[cfg(unix)]
         fs::set_permissions(&source_path, fs::Permissions::from_mode(0o600)).unwrap();

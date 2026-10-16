@@ -22,8 +22,9 @@ use windows_sys::Win32::Security::{
     AclSizeInformation, EqualSid, GetAce, GetAclInformation, GetLengthSid,
     GetSecurityDescriptorControl, GetTokenInformation, TokenUser, ACCESS_ALLOWED_ACE, ACL,
     ACL_SIZE_INFORMATION, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, INHERITED_ACE,
-    INHERIT_ONLY_ACE, OBJECT_INHERIT_ACE, OWNER_SECURITY_INFORMATION, PSID, SECURITY_ATTRIBUTES,
-    SE_DACL_PROTECTED, TOKEN_QUERY, TOKEN_USER,
+    INHERIT_ONLY_ACE, OBJECT_INHERIT_ACE, OWNER_SECURITY_INFORMATION,
+    PROTECTED_DACL_SECURITY_INFORMATION, PSID, SECURITY_ATTRIBUTES, SE_DACL_PROTECTED, TOKEN_QUERY,
+    TOKEN_USER,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateDirectoryW, CreateFileW, GetFileInformationByHandle, MoveFileExW,
@@ -31,7 +32,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
     FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
     FILE_WRITE_DATA, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, OPEN_EXISTING,
-    READ_CONTROL, WRITE_OWNER,
+    READ_CONTROL, WRITE_DAC, WRITE_OWNER,
 };
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -223,6 +224,101 @@ fn set_current_user_owner(path: &Path, file: &File) -> io::Result<()> {
         return Err(io::Error::from_raw_os_error(result as i32));
     }
     inspect(file, false)
+}
+
+/// Apply the protected current-user owner and DACL to a newly-created
+/// directory under an already-protected parent. Callers must invoke this
+/// immediately after their exclusive directory creation, before using it.
+pub(crate) fn set_current_user_owner_for_new_directory(path: &Path) -> io::Result<()> {
+    private_existing_parent(path)?;
+    let handle = unsafe {
+        CreateFileW(
+            wide(path).as_ptr(),
+            WRITE_OWNER | WRITE_DAC | READ_CONTROL | FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            null(),
+            OPEN_EXISTING,
+            FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+            null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    let directory = unsafe { File::from_raw_handle(handle) };
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { zeroed() };
+    if unsafe { GetFileInformationByHandle(directory.as_raw_handle(), &mut info) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0
+        || info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    {
+        return Err(denied());
+    }
+    let current = current_user_sid()?;
+    let mut sid_string = null_mut();
+    if unsafe { ConvertSidToStringSidW(current.as_ptr().cast_mut().cast(), &mut sid_string) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let sid_text = unsafe {
+        let mut len = 0;
+        while *sid_string.add(len) != 0 {
+            len += 1;
+        }
+        let text = String::from_utf16_lossy(std::slice::from_raw_parts(sid_string, len));
+        LocalFree(sid_string.cast());
+        text
+    };
+    let sddl: Vec<u16> = format!("O:{sid_text}D:P(A;OICI;FA;;;{sid_text})")
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let mut descriptor = null_mut();
+    if unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl.as_ptr(),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            null_mut(),
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let _descriptor = Descriptor(descriptor);
+    let mut dacl_present = 0;
+    let mut dacl_defaulted = 0;
+    let mut dacl = null_mut();
+    if unsafe {
+        windows_sys::Win32::Security::GetSecurityDescriptorDacl(
+            descriptor,
+            &mut dacl_present,
+            &mut dacl,
+            &mut dacl_defaulted,
+        )
+    } == 0
+        || dacl_present == 0
+        || dacl.is_null()
+    {
+        return Err(denied());
+    }
+    let result = unsafe {
+        SetSecurityInfo(
+            directory.as_raw_handle(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION
+                | DACL_SECURITY_INFORMATION
+                | PROTECTED_DACL_SECURITY_INFORMATION,
+            current.as_ptr().cast_mut().cast(),
+            null_mut(),
+            dacl,
+            null_mut(),
+        )
+    };
+    if result != ERROR_SUCCESS {
+        return Err(io::Error::from_raw_os_error(result as i32));
+    }
+    inspect(&directory, true)
 }
 
 fn open_nofollow(

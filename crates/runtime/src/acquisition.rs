@@ -953,13 +953,8 @@ mod tests {
         }))
         .unwrap()
     }
-    fn ledger() -> (tempfile::TempDir, AcquisitionObservations) {
-        let dir = tempfile::tempdir().unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-        }
+    fn ledger() -> (crate::test_support::ProtectedTestDir, AcquisitionObservations) {
+        let dir = crate::test_support::protected_test_dir();
         let client = AcquisitionObservations::new(ObservationConfig {
             path: dir.path().join("observations.state"),
             max_records: None,

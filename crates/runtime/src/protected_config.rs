@@ -162,6 +162,8 @@ mod tests {
     use super::*;
     use crate::test_support::protected_test_dir;
     fn write(path: &Path, wire: &str) {
+        #[cfg(windows)]
+        crate::windows_fs::create_or_check_file(path).unwrap();
         std::fs::write(path, wire).unwrap();
         #[cfg(unix)]
         {
@@ -171,17 +173,17 @@ mod tests {
     }
     #[test]
     fn selection_precedence_and_no_fallback() {
-        let cwd = Path::new("/protected");
+        let cwd = std::env::current_dir().unwrap();
         let get = |key: &str| match key {
             "PEERWORK_CONFIG" => Some("env.json".into()),
             "HOME" => Some("/home/test".into()),
             _ => None,
         };
         assert_eq!(
-            selected(Some(Path::new("explicit.json")), get, cwd).unwrap(),
+            selected(Some(Path::new("explicit.json")), get, &cwd).unwrap(),
             cwd.join("explicit.json")
         );
-        assert_eq!(selected(None, get, cwd).unwrap(), cwd.join("env.json"));
+        assert_eq!(selected(None, get, &cwd).unwrap(), cwd.join("env.json"));
         let root = protected_test_dir();
         assert_eq!(
             read_selected(&root.path().join("missing.json")),
@@ -285,11 +287,13 @@ mod tests {
 #[cfg(test)]
 mod caller_transport_config_tests {
     use super::*;
+    use crate::test_support::protected_test_dir;
     #[test]
     fn selected_transport_is_normalized_without_opening_ca_or_state() {
-        let root=tempfile::tempdir().unwrap();
-        #[cfg(unix)] { use std::os::unix::fs::PermissionsExt;std::fs::set_permissions(root.path(),std::fs::Permissions::from_mode(0o700)).unwrap(); }
+        let root=protected_test_dir();
         let path=root.path().join("config.json");let bytes=br#"{"origin":"https://example.invalid","state_dir":"native","transport":{"request_timeout_ms":123,"additional_root_pem_files":["public-ca.pem"]}}"#;
+        #[cfg(windows)]
+        crate::windows_fs::create_or_check_file(&path).unwrap();
         std::fs::write(&path,bytes).unwrap();
         #[cfg(unix)] { use std::os::unix::fs::PermissionsExt;std::fs::set_permissions(&path,std::fs::Permissions::from_mode(0o600)).unwrap(); }
         let config=load_config(Some(&path)).unwrap();let options=config.transport.unwrap();

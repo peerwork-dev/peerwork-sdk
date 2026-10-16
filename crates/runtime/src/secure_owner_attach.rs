@@ -5325,6 +5325,9 @@ fn new_orphan_plan_staging(root: &Path) -> Result<tempfile::TempDir, HistoricalO
         builder.permissions(std::fs::Permissions::from_mode(0o700));
     }
     let staging = builder.tempdir_in(root).map_err(|_| HistoricalOwnerAttachError::Local)?;
+    #[cfg(windows)]
+    crate::windows_fs::set_current_user_owner_for_new_directory(staging.path())
+        .map_err(|_| HistoricalOwnerAttachError::Local)?;
     ensure_dir(staging.path())?;
     Ok(staging)
 }
@@ -5337,6 +5340,9 @@ fn new_direct_install_plan_staging(root: &Path) -> Result<tempfile::TempDir, His
         builder.permissions(std::fs::Permissions::from_mode(0o700));
     }
     let staging = builder.tempdir_in(root).map_err(|_| HistoricalOwnerAttachError::Local)?;
+    #[cfg(windows)]
+    crate::windows_fs::set_current_user_owner_for_new_directory(staging.path())
+        .map_err(|_| HistoricalOwnerAttachError::Local)?;
     ensure_dir(staging.path())?;
     Ok(staging)
 }

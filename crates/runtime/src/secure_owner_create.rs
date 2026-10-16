@@ -1397,6 +1397,8 @@ mod tests {
             .map(|line| std::str::from_utf8(line).unwrap()).collect::<Vec<_>>().join("\n");
         let pem = format!("-----BEGIN PRIVATE KEY-----\n{wrapped}\n-----END PRIVATE KEY-----\n");
         let source = root.path().join("legacy-owner.pem");
+        #[cfg(windows)]
+        crate::windows_fs::create_or_check_file(&source).unwrap();
         fs::write(&source, pem.as_bytes()).unwrap();
         #[cfg(unix)] {
             use std::os::unix::fs::PermissionsExt;

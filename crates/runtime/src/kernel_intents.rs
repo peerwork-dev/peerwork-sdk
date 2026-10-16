@@ -233,6 +233,8 @@ impl KernelIntentJournal {
         create_or_check_private_file(path)?;
         #[cfg(windows)]
         check_private_sidecars(path)?;
+        #[cfg(windows)]
+        create_missing_private_wal_sidecars(path)?;
         let mut db = Connection::open(path)?;
         db.busy_timeout(Duration::from_secs(5))?;
         initialize(&mut db)?;
@@ -966,6 +968,20 @@ fn check_private_sidecars(path: &Path) -> Result<(), JournalError> {
         name.push(suffix);
         crate::windows_fs::private_file_if_exists(Path::new(&name))
             .map_err(|_| JournalError::Protection)?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn create_missing_private_wal_sidecars(path: &Path) -> Result<(), JournalError> {
+    use std::ffi::OsString;
+    // SQLite creates these on first WAL use. Pre-create only missing entries
+    // under the protected parent so they inherit the same verified owner and
+    // ACL as the database. Existing entries still go through full validation.
+    for suffix in ["-wal", "-shm"] {
+        let mut name = OsString::from(path.as_os_str());
+        name.push(suffix);
+        create_or_check_private_file(Path::new(&name))?;
     }
     Ok(())
 }

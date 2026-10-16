@@ -767,7 +767,7 @@ use peerwork_core::crypto::base64url;
 
 #[test]
 fn canonical_lifecycle_reopen_preserves_existing_bytes() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::test_support::protected_test_dir();
     #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap(); }
     let path = directory.path().join("lifecycle.state");
     let actor = base64url(&[31; 32]);
