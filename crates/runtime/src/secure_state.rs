@@ -2,11 +2,11 @@
 //! bytes; semantic transitions and verification belong to `peerwork-core`.
 //! An old TypeScript state file is never rewritten without explicit migration.
 
-use std::fs::File;
-#[cfg(not(windows))]
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File};
+#[cfg(any(not(windows), test))]
+use std::fs::OpenOptions;
 use std::io::Read;
-#[cfg(not(windows))]
+#[cfg(any(not(windows), test))]
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
