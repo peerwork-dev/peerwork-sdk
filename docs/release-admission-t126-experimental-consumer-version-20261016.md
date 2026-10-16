@@ -1,0 +1,7 @@
+# T126 experimental consumer version selection (2026-10-16)
+
+GNU experimental job `116802184619` packed `peerwork-agent-sdk-0.1.1.tgz` and `peerwork-agent-sdk-linux-x64-gnu-0.1.1.tgz`, then the workflow asked npm to install hardcoded `0.0.1` files. The job failed with `ENOENT` at the offline consumer install, after its core and runtime tests passed. The same experimental workflow used those stale filenames and fixed Python version assertions in its Linux, musl, macOS, and Windows steps, so Windows would encounter the same fixture error after native compilation.
+
+The workflow now reads the declared version from `bindings/node/package.json` in each relevant shell and uses it for the two tarball names and installed Python version assertions. Upload patterns accept the packed tarball names. The package metadata is already synchronized with the workspace version by `tools/release/version.py`; this edit does not set a release version or change package contents. The actual release builder, `tools/release/build.py`, already uses `identity['version']` and was not changed.
+
+Pre-push checks confirmed the Node expression returns `0.1.1`, no `0.0.1` reference remains in the experimental workflow, and `git diff --check` passes. The local Python environment lacks a YAML parser, so YAML parsing and shell execution are pending the hosted jobs. This corrects test fixture selection only; it does not establish a Windows final-consumer or release pass.

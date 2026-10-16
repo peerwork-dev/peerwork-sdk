@@ -47,13 +47,14 @@ jobs:
           node bindings/node/scripts/package-platform.mjs "$target" target/release/libpeerwork_node_native.so dist
           npm pack ./bindings/node --pack-destination dist --offline
           npm pack "./dist/agent-sdk-$target" --pack-destination dist --offline
+          version=$(node -p "require(\"./bindings/node/package.json\").version")
           mkdir -p dist/node-consumer
           printf '%s\n' '{"name":"peerwork-offline-consumer","version":"0.0.0","private":true}' > dist/node-consumer/package.json
-          npm install --prefix dist/node-consumer --offline --ignore-scripts --no-audit --no-fund ./dist/peerwork-agent-sdk-0.0.1.tgz "./dist/peerwork-agent-sdk-$target-0.0.1.tgz"
+          npm install --prefix dist/node-consumer --offline --ignore-scripts --no-audit --no-fund "./dist/peerwork-agent-sdk-$version.tgz" "./dist/peerwork-agent-sdk-$target-$version.tgz"
           node bindings/node/scripts/offline-smoke.mjs dist/node-consumer
           python -m venv /tmp/peerwork-wheel-consumer
           /tmp/peerwork-wheel-consumer/bin/pip install --no-index --no-deps dist/wheels/*.whl
-          /tmp/peerwork-wheel-consumer/bin/python -c 'import peerwork; assert peerwork.version() == "0.0.1"; assert peerwork.capabilities()["version"] == "0.0.1"'
+          /tmp/peerwork-wheel-consumer/bin/python -c 'import peerwork,sys; assert peerwork.version() == sys.argv[1]; assert peerwork.capabilities()["version"] == sys.argv[1]' "$version"
           python -m pip install 'mypy==1.18.2'
           python tests/verify-installed-python-types.py \
             --python /tmp/peerwork-wheel-consumer/bin/python --mypy "$(command -v mypy)"
@@ -108,13 +109,14 @@ jobs:
             node bindings/node/scripts/package-platform.mjs linux-x64-gnu target/release/libpeerwork_node_native.so dist
             npm pack ./bindings/node --pack-destination dist --offline
             npm pack ./dist/agent-sdk-linux-x64-gnu --pack-destination dist --offline
+            version=$(node -p "require(\"./bindings/node/package.json\").version")
             mkdir -p dist/node-consumer
             printf "%s\n" "{\"name\":\"peerwork-offline-consumer\",\"version\":\"0.0.0\",\"private\":true}" > dist/node-consumer/package.json
-            npm install --prefix dist/node-consumer --offline --ignore-scripts --no-audit --no-fund --no-save ./dist/peerwork-agent-sdk-0.0.1.tgz ./dist/peerwork-agent-sdk-linux-x64-gnu-0.0.1.tgz
+            npm install --prefix dist/node-consumer --offline --ignore-scripts --no-audit --no-fund --no-save "./dist/peerwork-agent-sdk-$version.tgz" "./dist/peerwork-agent-sdk-linux-x64-gnu-$version.tgz"
             python -m pip install --no-index --no-deps --target dist/wheel-consumer dist/wheels/*.whl
             unset LD_LIBRARY_PATH
             env -i HOME=/tmp PATH=/tmp/peerwork-gnu-tools/node/bin:/usr/bin:/bin node bindings/node/scripts/offline-smoke.mjs dist/node-consumer
-            env -i HOME=/tmp PATH=/opt/python/cp311-cp311/bin:/usr/bin:/bin PYTHONPATH=/work/sdk/dist/wheel-consumer python -c "import peerwork; assert peerwork.version() == \"0.0.1\"; assert peerwork.capabilities()[\"verified_public_workspace_reads\"]"
+            env -i HOME=/tmp PATH=/opt/python/cp311-cp311/bin:/usr/bin:/bin PYTHONPATH=/work/sdk/dist/wheel-consumer python -c "import peerwork,sys; assert peerwork.version() == sys.argv[1]; assert peerwork.capabilities()[\"verified_public_workspace_reads\"]" "$version"
             env -i HOME=/tmp PATH=/usr/bin:/bin target/release/peerwork version
             python -c "import glob,zipfile; zipfile.ZipFile(glob.glob(\"dist/wheels/*.whl\")[0]).extractall(\"dist/wheel-inspect\")"
             for binary in target/release/peerwork target/release/libpeerwork_node_native.so $(find dist/wheel-inspect -name "*.so"); do
@@ -129,8 +131,7 @@ jobs:
             target/release/peerwork
             dist/wheels/*.whl
             dist/agent-sdk-linux-x64-gnu/
-            dist/peerwork-agent-sdk-0.0.1.tgz
-            dist/peerwork-agent-sdk-linux-x64-gnu-0.0.1.tgz
+            dist/peerwork-agent-sdk-*.tgz
 
   linux_musl:
     strategy:
@@ -189,12 +190,13 @@ jobs:
             PEERWORK_MUSL_CXX_LIB_DIR=/usr/lib node bindings/node/scripts/package-platform.mjs "$PEERWORK_NODE_PLATFORM_TARGET" target/musl-shared/release/libpeerwork_node_native.so dist
             npm pack ./bindings/node --pack-destination dist --offline
             npm pack ./dist/agent-sdk-$PEERWORK_NODE_PLATFORM_TARGET --pack-destination dist --offline
+            version=$(node -p "require(\"./bindings/node/package.json\").version")
             mkdir -p dist/node-consumer
             printf "%s\n" "{\"name\":\"peerwork-offline-consumer\",\"version\":\"0.0.0\",\"private\":true}" > dist/node-consumer/package.json
-            npm install --prefix dist/node-consumer --offline --ignore-scripts --no-audit --no-fund --omit=optional ./dist/peerwork-agent-sdk-0.0.1.tgz ./dist/peerwork-agent-sdk-$PEERWORK_NODE_PLATFORM_TARGET-0.0.1.tgz
+            npm install --prefix dist/node-consumer --offline --ignore-scripts --no-audit --no-fund --omit=optional "./dist/peerwork-agent-sdk-$version.tgz" "./dist/peerwork-agent-sdk-$PEERWORK_NODE_PLATFORM_TARGET-$version.tgz"
             node bindings/node/scripts/offline-smoke.mjs dist/node-consumer
             python3 -m pip install --no-deps --target dist/wheel-consumer dist/wheels/*.whl
-            PYTHONPATH=dist/wheel-consumer python3 -c "import peerwork; assert peerwork.version() == \"0.0.1\""
+            PYTHONPATH=dist/wheel-consumer python3 -c "import peerwork,sys; assert peerwork.version() == sys.argv[1]" "$version"
             unset RUSTFLAGS
             export CARGO_TARGET_DIR=/work/sdk/target/musl-static
             export PEERWORK_MUSL_STATIC_CXX=1 PEERWORK_MUSL_CXX_LIB_DIR=/usr/lib
@@ -217,7 +219,8 @@ jobs:
             python3 -m venv --without-pip /tmp/peerwork-wheel-consumer
             site_packages=$(/tmp/peerwork-wheel-consumer/bin/python -I -c "import sysconfig; print(sysconfig.get_path(\"purelib\"))")
             python3 -m pip install --no-index --no-deps --target "$site_packages" dist/wheels/*.whl
-            /tmp/peerwork-wheel-consumer/bin/python -I -c "import peerwork; assert peerwork.version() == \"0.0.1\"; assert peerwork.capabilities()[\"verified_public_workspace_reads\"]"
+            version=$(node -p "require(\"./bindings/node/package.json\").version")
+            /tmp/peerwork-wheel-consumer/bin/python -I -c "import peerwork,sys; assert peerwork.version() == sys.argv[1]; assert peerwork.capabilities()[\"verified_public_workspace_reads\"]" "$version"
             node bindings/node/scripts/offline-smoke.mjs dist/node-consumer
             target/musl-static/release/peerwork version
             python3 -c "import glob,zipfile; zipfile.ZipFile(glob.glob(\"dist/wheels/*.whl\")[0]).extractall(\"/tmp/wheel-inspect\")"
@@ -241,8 +244,7 @@ jobs:
             target/musl-static/release/peerwork
             dist/wheels/*.whl
             dist/agent-sdk-${{ matrix.target }}/
-            dist/peerwork-agent-sdk-0.0.1.tgz
-            dist/peerwork-agent-sdk-${{ matrix.target }}-0.0.1.tgz
+            dist/peerwork-agent-sdk-*.tgz
 
   macos:
     strategy:
@@ -280,13 +282,14 @@ jobs:
           node bindings/node/scripts/package-platform.mjs "$target" target/release/libpeerwork_node_native.dylib dist
           npm pack ./bindings/node --pack-destination dist --offline
           npm pack "./dist/agent-sdk-$target" --pack-destination dist --offline
+          version=$(node -p "require(\"./bindings/node/package.json\").version")
           mkdir -p dist/node-consumer
           printf '%s\n' '{"name":"peerwork-offline-consumer","version":"0.0.0","private":true}' > dist/node-consumer/package.json
-          npm install --prefix dist/node-consumer --offline --ignore-scripts --no-audit --no-fund ./dist/peerwork-agent-sdk-0.0.1.tgz "./dist/peerwork-agent-sdk-$target-0.0.1.tgz"
+          npm install --prefix dist/node-consumer --offline --ignore-scripts --no-audit --no-fund "./dist/peerwork-agent-sdk-$version.tgz" "./dist/peerwork-agent-sdk-$target-$version.tgz"
           node bindings/node/scripts/offline-smoke.mjs dist/node-consumer
           python -m venv /tmp/peerwork-wheel-consumer
           /tmp/peerwork-wheel-consumer/bin/pip install --no-index --no-deps dist/wheels/*.whl
-          /tmp/peerwork-wheel-consumer/bin/python -c 'import peerwork; assert peerwork.version() == "0.0.1"; assert peerwork.capabilities()["version"] == "0.0.1"'
+          /tmp/peerwork-wheel-consumer/bin/python -c 'import peerwork,sys; assert peerwork.version() == sys.argv[1]; assert peerwork.capabilities()["version"] == sys.argv[1]' "$version"
           python -m pip install 'mypy==1.18.2'
           python tests/verify-installed-python-types.py \
             --python /tmp/peerwork-wheel-consumer/bin/python --mypy "$(command -v mypy)"
@@ -456,9 +459,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm pack ./dist/agent-sdk-win32-x64-msvc --pack-destination dist --offline
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $version = node -p "require('./bindings/node/package.json').version"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           New-Item -ItemType Directory -Force -Path dist/node-consumer | Out-Null
           Set-Content -Path dist/node-consumer/package.json -Value '{"name":"peerwork-offline-consumer","version":"0.0.0","private":true}'
-          npm install --prefix dist/node-consumer --offline --ignore-scripts --no-audit --no-fund ./dist/peerwork-agent-sdk-0.0.1.tgz ./dist/peerwork-agent-sdk-win32-x64-msvc-0.0.1.tgz
+          npm install --prefix dist/node-consumer --offline --ignore-scripts --no-audit --no-fund "./dist/peerwork-agent-sdk-$version.tgz" "./dist/peerwork-agent-sdk-win32-x64-msvc-$version.tgz"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node bindings/node/scripts/offline-smoke.mjs dist/node-consumer
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -469,7 +474,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & "$env:RUNNER_TEMP\peerwork-wheel-consumer\Scripts\pip.exe" install --no-index --no-deps $wheel
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & "$env:RUNNER_TEMP\peerwork-wheel-consumer\Scripts\python.exe" -c 'import peerwork; assert peerwork.version() == "0.0.1"; assert peerwork.capabilities()["version"] == "0.0.1"'
+          & "$env:RUNNER_TEMP\peerwork-wheel-consumer\Scripts\python.exe" -c 'import peerwork,sys; assert peerwork.version() == sys.argv[1]; assert peerwork.capabilities()["version"] == sys.argv[1]' $version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m pip install 'mypy==1.18.2'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
