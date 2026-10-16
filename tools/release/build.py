@@ -4,6 +4,7 @@ No prebuilt SDK artifact or caller-supplied compiler-source value is accepted.
 The reusable CI workflow authenticates this exact checkout and resulting bytes.
 """
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -13,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import venv
+from urllib.parse import urlsplit
 import stage
 from version import TARGETS,ReleaseError,check
 
@@ -21,7 +23,31 @@ TRIPLES={'linux-x64-gnu':'x86_64-unknown-linux-gnu','linux-arm64-gnu':'aarch64-u
 def run(args,root,env=None):
     subprocess.run([str(arg) for arg in args],cwd=root,env=env,check=True)
 
+def service_gate_config(env):
+    if env.get('PEERWORK_RELEASE_SERVICE_GATE')!='1':
+        if env.get('PEERWORK_RELEASE_SERVICE_GATE') not in (None,'0'):
+            raise ReleaseError('release service gate selector must be 0 or 1')
+        return None
+    origin=env.get('PEERWORK_RELEASE_SERVICE_ORIGIN','')
+    source=env.get('PEERWORK_RELEASE_SERVICE_SOURCE_COMMIT','')
+    scope=env.get('PEERWORK_RELEASE_SERVICE_WRITE_SCOPE','')
+    try:
+        parsed=urlsplit(origin)
+        parsed.port
+    except ValueError as error:
+        raise ReleaseError('service gate origin is malformed') from error
+    if (parsed.scheme not in ('https','http') or not parsed.hostname or parsed.username or parsed.password
+            or parsed.path not in ('','/') or parsed.query or parsed.fragment
+            or (parsed.scheme=='http' and parsed.hostname not in ('localhost','127.0.0.1','::1'))):
+        raise ReleaseError('service gate requires an explicit HTTPS or loopback HTTP service origin')
+    if not re.fullmatch(r'[0-9a-f]{40}',source):
+        raise ReleaseError('service gate requires the exact current-service source commit')
+    if scope!='ephemeral-isolated':
+        raise ReleaseError('service gate requires explicit ephemeral-isolated write scope')
+    return origin
+
 def build(root: Path,target: str,output: Path,tag: str):
+    service_origin=service_gate_config(os.environ)
     identity=check(root,tag);revision,epoch=stage.source(root)
     if target not in TRIPLES:raise ReleaseError('unknown native release build target')
     host=subprocess.check_output(['rustc','-vV'],text=True)
@@ -86,6 +112,14 @@ def build(root: Path,target: str,output: Path,tag: str):
         run(['pwsh','-NoProfile','-NonInteractive','-Command','$p=$env:PEERWORK_RELEASE_STATE; [void][System.IO.Directory]::CreateDirectory($p); $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; $acl=New-Object System.Security.AccessControl.DirectorySecurity; $acl.SetSecurityDescriptorSddlForm("D:P(A;OICI;FA;;;$sid)"); Set-Acl -LiteralPath $p -AclObject $acl -ErrorAction Stop'],root,acl_env)
     else:state.mkdir(mode=0o700)
     run([sys.executable,'tests/installed-protected-identity-smoke.py','--python',interpreter,'--node',shutil.which('node'),'--node-consumer',consumer,'--cli',cli,'--state-dir',state],root,smoke)
+    if service_origin and not target.endswith('musl'):
+        gate_env=dict(smoke,PEERWORK_TEST_ORIGIN=service_origin,
+                      PEERWORK_TEST_SDK_ROOT=str(root),PEERWORK_TEST_STATE=str(state/'service'),
+                      PEERWORK_TEST_NODE=shutil.which('node'),
+                      PEERWORK_TEST_NODE_PACKAGE=str(consumer/'node_modules/@peerwork/agent-sdk'),
+                      PEERWORK_TEST_CLI=str(cli),
+                      PEERWORK_TEST_OWNER_SOURCE_SHA256=hashlib.sha256((root/'crates/runtime/src/secure_owner_create.rs').read_bytes()).hexdigest())
+        run([interpreter,'tests/installed-native-owner-adopter-workflow.py'],root,gate_env)
     metadata=json.loads(subprocess.check_output(['cargo','metadata','--locked','--format-version','1','--filter-platform',TRIPLES[target]],cwd=root,env=env,text=True))
     result=stage.stage(root,target,cli,wheel_list[0],wrapper,native,metadata,output,revision)
     if not result['release_eligible']:raise ReleaseError('builder source changed before packaging')

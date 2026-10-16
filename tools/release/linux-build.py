@@ -2,11 +2,13 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
 import urllib.request
 from version import ReleaseError,check
+from build import service_gate_config
 
 def download(url,path,digest):
     if not re.fullmatch('[0-9a-f]{64}',digest):raise ReleaseError('missing pinned bootstrap checksum')
@@ -16,6 +18,7 @@ def download(url,path,digest):
     if value.hexdigest()!=digest:raise ReleaseError('Linux bootstrap input checksum mismatch')
 
 def launch(root,target,tag):
+    service_gate_config(os.environ)
     check(root,tag);inputs=json.loads((root/'tools/release/build-inputs.json').read_text());p=inputs['linux'][target]
     bootstrap=root/'.release-bootstrap';bootstrap.mkdir(exist_ok=True)
     installer=bootstrap/'rustup-init'
@@ -51,10 +54,13 @@ python -m pip install maturin==1.15.0
 python tools/release/build.py --target "$PEERWORK_BUILD_TARGET" --tag "$PEERWORK_RELEASE_TAG" --output "/work/sdk/.release-ci/$PEERWORK_BUILD_TARGET"
 '''
     shell='/bin/bash' if target.endswith('gnu') else '/bin/sh'
-    subprocess.run(['docker','run','--rm','-v',str(root)+':/work/sdk','-w','/work/sdk','-e','PEERWORK_BUILD_ARCH='+p['arch'],'-e','PEERWORK_RUST_TARGET='+p['rust_target'],'-e','PEERWORK_BUILD_TARGET='+target,'-e','PEERWORK_RELEASE_TAG='+tag,image,shell,'-ec',script],check=True)
+    gate_names=['PEERWORK_RELEASE_SERVICE_GATE','PEERWORK_RELEASE_SERVICE_ORIGIN',
+                'PEERWORK_RELEASE_SERVICE_SOURCE_COMMIT','PEERWORK_RELEASE_SERVICE_WRITE_SCOPE']
+    gate_env=[arg for name in gate_names for arg in ('-e',name)]
+    subprocess.run(['docker','run','--rm','-v',str(root)+':/work/sdk','-w','/work/sdk','-e','PEERWORK_BUILD_ARCH='+p['arch'],'-e','PEERWORK_RUST_TARGET='+p['rust_target'],'-e','PEERWORK_BUILD_TARGET='+target,'-e','PEERWORK_RELEASE_TAG='+tag,*gate_env,image,shell,'-ec',script],check=True)
     if target.endswith('musl'):
         runtime='''set -eu
-apk add --no-cache python3 py3-pip nodejs npm binutils
+apk add --no-cache python3 py3-pip nodejs npm binutils ca-certificates
 test ! -e /usr/lib/libc++.so.1
 test ! -e /usr/lib/libc++abi.so.1
 test ! -e /usr/lib/libunwind.so.1
@@ -74,8 +80,18 @@ if readelf -l /tmp/cli/peerwork | grep -q INTERP; then exit 1; fi
 /tmp/cli/peerwork version
 mkdir -m 700 '/tmp/release protected identity Ω with spaces'
 python3 tests/installed-protected-identity-smoke.py --python /tmp/release-consumer/bin/python --node "$(command -v node)" --node-consumer /tmp/node-consumer --cli /tmp/cli/peerwork --state-dir '/tmp/release protected identity Ω with spaces'
+if [ "${PEERWORK_RELEASE_SERVICE_GATE:-0}" = 1 ]; then
+    PEERWORK_TEST_ORIGIN="$PEERWORK_RELEASE_SERVICE_ORIGIN" \
+    PEERWORK_TEST_SDK_ROOT=/work/sdk \
+    PEERWORK_TEST_STATE='/tmp/release protected identity Ω with spaces/service' \
+    PEERWORK_TEST_NODE="$(command -v node)" \
+    PEERWORK_TEST_NODE_PACKAGE=/tmp/node-consumer/node_modules/@peerwork/agent-sdk \
+    PEERWORK_TEST_CLI=/tmp/cli/peerwork \
+    PEERWORK_TEST_OWNER_SOURCE_SHA256="$(sha256sum crates/runtime/src/secure_owner_create.rs | cut -d ' ' -f 1)" \
+    /tmp/release-consumer/bin/python tests/installed-native-owner-adopter-workflow.py
+fi
 '''
-        subprocess.run(['docker','run','--rm','-v',str(root)+':/work/sdk:ro','-w','/work/sdk','-e','PEERWORK_BUILD_TARGET='+target,image,'/bin/sh','-ec',runtime],check=True)
+        subprocess.run(['docker','run','--rm','-v',str(root)+':/work/sdk:ro','-w','/work/sdk','-e','PEERWORK_BUILD_TARGET='+target,*gate_env,image,'/bin/sh','-ec',runtime],check=True)
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--root',type=Path,default=Path(__file__).resolve().parents[2]);parser.add_argument('--target',choices=['linux-x64-gnu','linux-arm64-gnu','linux-x64-musl','linux-arm64-musl'],required=True);parser.add_argument('--tag',required=True);args=parser.parse_args()

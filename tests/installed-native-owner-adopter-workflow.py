@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import subprocess
 import urllib.request
+from urllib.parse import urlsplit
 
 import peerwork
 
@@ -22,6 +23,12 @@ CLI = os.environ["PEERWORK_TEST_CLI"]
 EXPECTED_OWNER_HASH = os.environ["PEERWORK_TEST_OWNER_SOURCE_SHA256"]
 assert hashlib.sha256((SOURCE / "crates/runtime/src/secure_owner_create.rs").read_bytes()).hexdigest() == EXPECTED_OWNER_HASH
 STATE.mkdir(mode=0o700, parents=True, exist_ok=False)
+EXTERNAL_ORIGIN = os.environ.get("PEERWORK_TEST_ORIGIN")
+if EXTERNAL_ORIGIN:
+    parsed = urlsplit(EXTERNAL_ORIGIN)
+    assert parsed.scheme in ("http", "https") and parsed.hostname and not parsed.username and not parsed.password
+    assert not parsed.query and not parsed.fragment and parsed.path in ("", "/")
+    assert parsed.scheme == "https" or parsed.hostname in ("localhost", "127.0.0.1", "::1")
 
 
 def post(origin, path):
@@ -61,31 +68,47 @@ def cli(*args):
     return json.loads(result.stdout)
 
 
-server_env = dict(os.environ, PEERWORK_TEST_STATE=str(STATE), PEERWORK_TEST_FIRST_POST_MODE="normal")
-server = subprocess.Popen([NODE, str(SOURCE / "tests/reference-kernel-server.mjs")],
-                          cwd=SOURCE, env=server_env, stdout=subprocess.PIPE,
-                          stderr=subprocess.PIPE, text=True)
+server = None
 try:
-    line = server.stdout.readline()
-    assert line, f"service did not start: {server.stderr.read()[-800:]}"
-    ready = json.loads(line)
-    origin = ready["origin"]
+    if EXTERNAL_ORIGIN:
+        origin = EXTERNAL_ORIGIN.rstrip("/") + "/"
+    else:
+        server_env = dict(os.environ, PEERWORK_TEST_STATE=str(STATE), PEERWORK_TEST_FIRST_POST_MODE="normal")
+        server = subprocess.Popen([NODE, str(SOURCE / "tests/reference-kernel-server.mjs")],
+                                  cwd=SOURCE, env=server_env, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, text=True)
+        line = server.stdout.readline()
+        assert line, f"service did not start: {server.stderr.read()[-800:]}"
+        ready = json.loads(line)
+        origin = ready["origin"]
     owner_dir = STATE / "native-owner"
     owner = peerwork.SecureOwnerWorkspaceClient(origin, str(owner_dir), allow_loopback_http=True)
-    prepared = owner.prepare("Native proposal adoption task", "PUBLIC", structured=True)
+    for _ in range(4):
+        try:
+            prepared = owner.prepare("Native proposal adoption task", "PUBLIC", structured=True)
+            break
+        except peerwork.OwnerWorkspaceError as error:
+            if error.code != "ENROLLMENT_PENDING":
+                raise
+    else:
+        raise AssertionError("Owner enrollment did not settle before workspace preparation")
     assert prepared["status"] == "PENDING"
-    before = counts(origin)
-    post(origin, "__test/drop-next-post")
-    assert owner.resume(prepared["command_id"])["status"] == "PENDING"
-    after_apply = counts(origin)
-    assert after_apply["commits"] == before["commits"] + 1
+    if EXTERNAL_ORIGIN:
+        assert owner.resume(prepared["command_id"])["status"] == "CREATED"
+    else:
+        before = counts(origin)
+        post(origin, "__test/drop-next-post")
+        assert owner.resume(prepared["command_id"])["status"] == "PENDING"
+        after_apply = counts(origin)
+        assert after_apply["commits"] == before["commits"] + 1
     del prepared
     reopened = peerwork.SecureOwnerWorkspaceClient(origin, str(owner_dir), allow_loopback_http=True)
     rows = reopened.operations()
-    assert len(rows) == 1 and rows[0]["status"] == "PENDING"
+    assert len(rows) == 1 and rows[0]["status"] == ("CREATED_LOCAL" if EXTERNAL_ORIGIN else "PENDING")
     command_id, workspace_id = rows[0]["command_id"], rows[0]["workspace_id"]
     assert reopened.resume(command_id)["status"] == "CREATED"
-    assert counts(origin)["commits"] == after_apply["commits"]
+    if not EXTERNAL_ORIGIN:
+        assert counts(origin)["commits"] == after_apply["commits"]
     owner_identity = peerwork.open_identity(str(owner_dir / "identity.state"))
     owner_actor, owner_key = owner_identity["actor_id"], owner_identity["key_id"]
     assert reopened.read(workspace_id)["sequence"] == 1
@@ -204,7 +227,8 @@ try:
         identity_path=str(recipient_dir / "identity.state"), workspace_id=workspace_id,
         owner_actor_id=owner_actor, owner_key_id=owner_key, allow_loopback_http=True)))
     assert cli("action-retry", str(member_config_file), adopt_id)["status"] == "ACCEPTED"
-    assert counts(origin)["head_sequence"] == adopted_read["sequence"]
+    if not EXTERNAL_ORIGIN:
+        assert counts(origin)["head_sequence"] == adopted_read["sequence"]
 
     task_id = "t" * 43
     task = reopened.public_actions(workspace_id).submit("tasks.task.create_from_proposal", instance_id,
@@ -232,14 +256,16 @@ try:
     owner_config_file = STATE / "owner.json"
     owner_config_file.write_text(json.dumps(dict(origin=origin, state_dir=str(owner_dir), allow_loopback_http=True)))
     assert cli("owner-action-retry", str(owner_config_file), workspace_id, task_id)["status"] == "ACCEPTED"
-    assert counts(origin)["head_sequence"] == final["sequence"]
+    if not EXTERNAL_ORIGIN:
+        assert counts(origin)["head_sequence"] == final["sequence"]
     print(json.dumps(dict(status="PASS", workspace_id=workspace_id, owner_actor_id=owner_actor,
         recipient_actor_id=local["actor_id"], candidate_id=candidate_id,
         task_record_id=task_record_id, final_sequence=final["sequence"], install_steps=steps)))
 finally:
-    server.terminate()
-    try:
-        server.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        server.kill()
-        server.wait(timeout=5)
+    if server is not None:
+        server.terminate()
+        try:
+            server.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            server.kill()
+            server.wait(timeout=5)
