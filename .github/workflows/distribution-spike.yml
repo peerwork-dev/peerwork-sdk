@@ -270,6 +270,8 @@ jobs:
       - name: Compile and exercise native interfaces
         shell: bash
         run: |
+          export TMPDIR="$(cd "$RUNNER_TEMP" && pwd -P)"
+          printf 'MACOS_TEST_TMPDIR=%s\n' "$TMPDIR"
           cargo test --workspace --locked
           cargo build --release --locked -p peerwork-cli -p peerwork-node-native
           python -m pip install 'maturin==1.15.0'
