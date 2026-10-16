@@ -28,14 +28,20 @@ its production input and this source. The server was the locally pinned
 `f828b6c50a0a58d1e718af90f653b214adcc3328` integration checkout,
 launched through `tests/reference-kernel-server.mjs`, which checks its source,
 compiler and compiled closure before serving loopback HTTP. The corrected
-external-mode helper exited 0 in 10.871 s. It observed distinct Owner and
+external-mode helper exited 0 in 11.407 s on the final helper. It observed distinct Owner and
 recipient actors, two PAGE and two END install steps, one proposal candidate,
 one adopted exact candidate revision, one task related to that candidate, and
 verified final sequence 10. The installed Node and CLI paths were exercised;
-CLI retries returned the accepted operation without advancing the signed head.
+CLI retries returned the accepted operation. Fresh verified reads through the
+same member and Owner profiles after those retries each found the identical
+signed sequence as before the retry, so neither caused a duplicate effect.
 Public result metadata is retained in
-`/tmp/t114-release-service-20261016/result5.json` and
-`/tmp/t114-release-service-20261016/gate5.stdout`.
+`/tmp/t114-release-service-20261016/result6.json` (SHA-256
+`676f2282b65008123d6f5933face5167a28d64ab985267691e76aebd2554747e`)
+and `/tmp/t114-release-service-20261016/gate6.stdout` (SHA-256
+`0533df0ac215bea4a5df25efafd5f3453d798f1fd78e256d2baf03bf5f17d4a1`).
+The earlier successful result5 is retained but did not verify the head after
+either CLI retry; it is not used for that assertion.
 
 First failures remain separate. The first local launch stopped before service
 startup because sandboxed Node `spawnSync git` returned `EPERM`; no HTTP or

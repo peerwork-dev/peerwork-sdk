@@ -227,7 +227,9 @@ try:
         identity_path=str(recipient_dir / "identity.state"), workspace_id=workspace_id,
         owner_actor_id=owner_actor, owner_key_id=owner_key, allow_loopback_http=True)))
     assert cli("action-retry", str(member_config_file), adopt_id)["status"] == "ACCEPTED"
-    if not EXTERNAL_ORIGIN:
+    if EXTERNAL_ORIGIN:
+        assert member.read()["sequence"] == adopted_read["sequence"]
+    else:
         assert counts(origin)["head_sequence"] == adopted_read["sequence"]
 
     task_id = "t" * 43
@@ -256,7 +258,9 @@ try:
     owner_config_file = STATE / "owner.json"
     owner_config_file.write_text(json.dumps(dict(origin=origin, state_dir=str(owner_dir), allow_loopback_http=True)))
     assert cli("owner-action-retry", str(owner_config_file), workspace_id, task_id)["status"] == "ACCEPTED"
-    if not EXTERNAL_ORIGIN:
+    if EXTERNAL_ORIGIN:
+        assert reopened.read(workspace_id)["sequence"] == final["sequence"]
+    else:
         assert counts(origin)["head_sequence"] == final["sequence"]
     print(json.dumps(dict(status="PASS", workspace_id=workspace_id, owner_actor_id=owner_actor,
         recipient_actor_id=local["actor_id"], candidate_id=candidate_id,
