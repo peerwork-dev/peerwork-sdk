@@ -238,6 +238,15 @@ fn verify_certificate(cert: &WireValue, at: f64) -> Result<(), ActionScopeError>
     Ok(())
 }
 
+pub(crate) fn verify_member_certificate_at(
+    policy_payload: &WireValue,
+    actor_id: &str,
+    at: u64,
+) -> Result<(), ActionScopeError> {
+    let row = member(policy_payload, actor_id)?;
+    verify_certificate(field(row, "certificate")?, at as f64)
+}
+
 /// The caller must supply the signed, selected policy payload and signed
 /// commit context from full replay. This function checks only ACTION actor,
 /// device delegation and effective scope at `context.issued_at`.

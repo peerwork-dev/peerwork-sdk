@@ -9,6 +9,7 @@ use crate::{
     },
     wire_json::{canonical_wire_value, parse_wire_json_js_bounded, WireValue},
 };
+use crate::guard_time::{parse_guard_time_context, parse_guard_time_policy, GuardTimePolicyV1};
 use hpke::{kem::DhP256HkdfSha256, Deserializable, Kem};
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
@@ -50,6 +51,7 @@ pub(crate) struct HeaderChainFacts {
     pub policy_hashes: Vec<String>,
     pub policy_effective_sequences: Vec<u64>,
     pub commit_hashes: Vec<String>,
+    pub guard_time_enabled: bool,
 }
 
 struct PolicyHeader {
@@ -66,6 +68,7 @@ struct PolicyHeader {
     structured: bool,
     format_ceiling: Option<u64>,
     format_raise_guard: Option<String>,
+    guard_time: Option<GuardTimePolicyV1>,
 }
 
 struct MemberHeader {
@@ -144,7 +147,7 @@ pub(crate) fn scan_signed_chain_headers_with_limit(
         let epoch = unsigned(payload, "epoch")?;
         let issued_at = unsigned(payload, "issued_at")?;
         let visibility = field(payload, "visibility")?;
-        let (structured, format_ceiling) = validate_policy_shape(payload, wire_version)?;
+        let (structured, format_ceiling, guard_time) = validate_policy_shape(payload, wire_version)?;
         let format_raise_guard = if wire_version == 3 {
             Some(format_raise_guard(payload)?)
         } else {
@@ -184,6 +187,16 @@ pub(crate) fn scan_signed_chain_headers_with_limit(
             {
                 return Err(ChainError::Invalid);
             }
+            if prior.guard_time.is_some() && prior.guard_time != guard_time {
+                return Err(ChainError::Invalid);
+            }
+            if guard_time.is_some()
+                && (prior.wire_version != 3
+                    || prior.visibility != "PRIVATE"
+                    || visibility != "PRIVATE")
+            {
+                return Err(ChainError::Invalid);
+            }
             let removed_or_rotated = prior.members.iter().any(|(actor, old)| {
                 members
                     .get(actor)
@@ -195,7 +208,7 @@ pub(crate) fn scan_signed_chain_headers_with_limit(
             {
                 return Err(ChainError::Invalid);
             }
-        } else if effective_sequence != 1 {
+        } else if effective_sequence != 1 || guard_time.is_some() {
             return Err(ChainError::Invalid);
         } else if wire_version == 3 && format_ceiling != Some(1) {
             return Err(ChainError::Invalid);
@@ -218,6 +231,7 @@ pub(crate) fn scan_signed_chain_headers_with_limit(
             structured,
             format_ceiling,
             format_raise_guard,
+            guard_time,
         });
     }
     let genesis = &policies[0];
@@ -326,6 +340,7 @@ pub(crate) fn scan_signed_chain_headers_with_limit(
             return Err(ChainError::Rollback);
         }
     }
+    let guard_time_enabled = policies.iter().any(|policy| policy.guard_time.is_some());
     Ok(HeaderChainFacts {
         workspace_id: workspace_id.into(),
         owner_id: genesis.owner_id.clone(),
@@ -336,6 +351,7 @@ pub(crate) fn scan_signed_chain_headers_with_limit(
         policy_effective_sequences: policies.iter().map(|p| p.effective_sequence).collect(),
         policy_hashes: policies.into_iter().map(|p| p.hash).collect(),
         commit_hashes,
+        guard_time_enabled,
     })
 }
 
@@ -440,7 +456,7 @@ fn exact_keys(value: &WireValue, required: &[&str], optional: &[&str]) -> Result
 fn validate_policy_shape(
     payload: &WireValue,
     version: u64,
-) -> Result<(bool, Option<u64>), ChainError> {
+) -> Result<(bool, Option<u64>, Option<GuardTimePolicyV1>), ChainError> {
     let base = [
         "v",
         "workspace_id",
@@ -456,10 +472,12 @@ fn validate_policy_shape(
     ];
     match version {
         1 => {
-            if !matches!(payload.get("structure"), None | Some(WireValue::Null)) {
+            if !matches!(payload.get("structure"), None | Some(WireValue::Null))
+                || payload.get("guard_time").is_some()
+            {
                 return Err(ChainError::Invalid);
             }
-            Ok((false, None))
+            Ok((false, None, None))
         }
         2 => {
             let mut required = base.to_vec();
@@ -468,7 +486,7 @@ fn validate_policy_shape(
             if matches!(payload.get("structure"), None | Some(WireValue::Null)) {
                 return Err(ChainError::Invalid);
             }
-            Ok((true, None))
+            Ok((true, None, None))
         }
         3 => {
             let mut required = base.to_vec();
@@ -482,7 +500,7 @@ fn validate_policy_shape(
             exact_keys(
                 payload,
                 &required,
-                if structured { &["structure"] } else { &[] },
+                if structured { &["structure", "guard_time"] } else { &["guard_time"] },
             )?;
             if structured != payload.get("structure").is_some() {
                 return Err(ChainError::Invalid);
@@ -491,10 +509,24 @@ fn validate_policy_shape(
             if ceiling != 1 && !(ceiling == 2 && field(payload, "visibility")? == "PRIVATE") {
                 return Err(ChainError::Invalid);
             }
-            Ok((structured, Some(ceiling)))
+            let guard_time = payload
+                .get("guard_time")
+                .map(parse_guard_time_policy)
+                .transpose()
+                .map_err(|_| ChainError::Invalid)?;
+            if guard_time.is_some() && field(payload, "visibility")? != "PRIVATE" {
+                return Err(ChainError::Invalid);
+            }
+            Ok((structured, Some(ceiling), guard_time))
         }
         _ => Err(ChainError::Invalid),
     }
+}
+
+fn validate_guard_time_context(value: &WireValue) -> Result<(), ChainError> {
+    parse_guard_time_context(value)
+        .map(|_| ())
+        .map_err(|_| ChainError::Invalid)
 }
 
 fn format_raise_guard(payload: &WireValue) -> Result<String, ChainError> {
@@ -555,11 +587,19 @@ fn validate_commit_shape(payload: &WireValue, policy: &PolicyHeader) -> Result<(
             return Err(ChainError::Invalid);
         }
     }
+    if policy.guard_time.is_some() {
+        required.push("guard_time");
+    }
     exact_keys(
         payload,
         &required,
-        &["migration", "conversion_excluded_members", "recovery"],
+        &["migration", "conversion_excluded_members", "recovery", "guard_time"],
     )?;
+    match (policy.guard_time.is_some(), payload.get("guard_time")) {
+        (true, Some(context)) => validate_guard_time_context(context)?,
+        (false, None) => {}
+        _ => return Err(ChainError::Invalid),
+    }
     if policy.wire_version == 3 && !policy.structured && payload.get("structure").is_some() {
         return Err(ChainError::Invalid);
     }
@@ -861,6 +901,30 @@ mod tests {
     use ed25519_dalek::SigningKey;
     use hpke::Serializable;
     use serde_json::{json, Value};
+
+    #[test]
+    fn guard_time_policy_and_context_are_exact_private_v1_shapes() {
+        let parse = |value: Value| {
+            parse_wire_json_js_bounded(&serde_json::to_vec(&value).unwrap(), 16, 8192).unwrap()
+        };
+        let policy = parse(json!({
+            "v":1,"mode":"ALL_COMMITS","audience":"private/例","service_key":"A".repeat(43),"disclosure":"GUARD_WINDOW"
+        }));
+        let parsed = parse_guard_time_policy(&policy).unwrap();
+        assert_eq!(parsed.audience, "private/例");
+        assert_eq!(parsed.service_key, "A".repeat(43));
+        let with_unknown = parse(json!({
+            "v":1,"mode":"ALL_COMMITS","audience":"private","service_key":"A".repeat(43),"disclosure":"GUARD_WINDOW","extra":true
+        }));
+        assert_eq!(parse_guard_time_policy(&with_unknown), Err(crate::guard_time::GuardTimeError::Invalid));
+        let max = 9_007_199_254_740_991u64;
+        let boundary = parse(json!({"v":1,"lower_ms":max,"upper_ms":max}));
+        assert_eq!(validate_guard_time_context(&boundary), Ok(()));
+        let out_of_range = parse(json!({"v":1,"lower_ms":0,"upper_ms":max + 1}));
+        assert_eq!(validate_guard_time_context(&out_of_range), Err(ChainError::Invalid));
+        let empty = parse(json!({"v":1,"lower_ms":2,"upper_ms":1}));
+        assert_eq!(validate_guard_time_context(&empty), Err(ChainError::Invalid));
+    }
 
     fn signed(payload: Value, domain: &str, key: &SigningKey) -> Vec<u8> {
         let signature = sign_canonical(domain, &payload, key).unwrap();

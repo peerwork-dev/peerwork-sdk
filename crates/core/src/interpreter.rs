@@ -848,6 +848,59 @@ pub(crate) fn evaluate_action(
     })
 }
 
+/// Resolve a selector with the same read, input, auth, and typed-selector
+/// semantics used by action evaluation. Guard-time derivation calls this only
+/// for the time-free side of a numeric comparison.
+pub(crate) fn resolve_guard_time_operand(
+    manifest: &WireValue,
+    action_id: &[u16],
+    state: &WireValue,
+    body: &WireValue,
+    auth: &InterpreterAuth,
+    exact_inputs: &[ResolvedInput],
+    selector: &WireValue,
+) -> Result<WireValue, EvalError> {
+    validate_manifest(manifest)?;
+    validate_auth(auth)?;
+    let mut seen = HashSet::new();
+    for input in exact_inputs {
+        if !token(&input.record_id)
+            || input.revision == 0
+            || input.revision as f64 > MAX_SAFE
+            || !segment(&input.schema)
+            || !matches!(input.scope.as_str(), "INSTANCE" | "WORKSPACE")
+            || input.entity_id.as_ref().is_some_and(|id| !token(id))
+            || !seen.insert((input.record_id.clone(), input.revision))
+        {
+            return Err(EvalError::InvalidPayload);
+        }
+        safe_value(&input.payload, 0, &mut 0)?;
+    }
+    let action = array(field(manifest, "actions")?)?
+        .iter()
+        .find(|action| {
+            units(field(action, "id").unwrap_or(&WireValue::Null))
+                .is_ok_and(|id| id == action_id)
+        })
+        .ok_or(EvalError::Forbidden)?;
+    validate_action_inputs(action.get("inputs"), body, exact_inputs)?;
+    let reads = paths(field(action, "reads")?)?;
+    let mut ctx = EvalContext {
+        state,
+        body,
+        auth,
+        exact_inputs,
+        reads,
+        execution_time_ms: None,
+        used_time: false,
+    };
+    let value = select(selector, &mut ctx, false)?;
+    if ctx.used_time {
+        return Err(EvalError::InvalidPayload);
+    }
+    Ok(value)
+}
+
 struct EvalContext<'a> {
     state: &'a WireValue,
     body: &'a WireValue,

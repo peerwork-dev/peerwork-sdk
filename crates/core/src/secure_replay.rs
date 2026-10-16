@@ -1533,6 +1533,23 @@ pub(crate) fn replay_basic_content_with_limit(
     keyring_wire: Option<&[u8]>,
     max_commits: usize,
 ) -> Result<ReplayFacts, ReplayError> {
+    replay_basic_content_with_guard_times(
+        policy_wires, commit_wires, checkpoint_wire, workspace_id, trusted_owner, pinned,
+        keyring_wire, max_commits, None,
+    )
+}
+
+pub(crate) fn replay_basic_content_with_guard_times(
+    policy_wires: &[&[u8]],
+    commit_wires: &[&[u8]],
+    checkpoint_wire: &[u8],
+    workspace_id: &str,
+    trusted_owner: Option<&OwnerPin<'_>>,
+    pinned: Option<&CheckpointPin<'_>>,
+    keyring_wire: Option<&[u8]>,
+    max_commits: usize,
+    guard_times: Option<&HashMap<String, Vec<u8>>>,
+) -> Result<ReplayFacts, ReplayError> {
     replay_basic_content_depth(
         policy_wires,
         commit_wires,
@@ -1541,6 +1558,7 @@ pub(crate) fn replay_basic_content_with_limit(
         trusted_owner,
         pinned,
         keyring_wire,
+        guard_times,
         0,
         max_commits,
     )
@@ -1555,6 +1573,7 @@ fn replay_basic_content_depth(
     trusted_owner: Option<&OwnerPin<'_>>,
     pinned: Option<&CheckpointPin<'_>>,
     keyring_wire: Option<&[u8]>,
+    guard_times: Option<&HashMap<String, Vec<u8>>>,
     depth: usize,
     max_commits: usize,
 ) -> Result<ReplayFacts, ReplayError> {
@@ -1574,6 +1593,11 @@ fn replay_basic_content_depth(
         pinned,
         max_commits,
     )?;
+    // The legacy replay API carries no service proof collection. It must fail
+    // closed before decrypting or evaluating opted-in journal content.
+    if chain.guard_time_enabled && guard_times.is_none() {
+        return Err(ReplayError::Invalid);
+    }
     let recovery_segments =
         preflight_recovery(policy_wires, commit_wires, &chain).map_err(|_| ReplayError::Invalid)?;
     let mut policies = HashMap::new();
@@ -1595,16 +1619,152 @@ fn replay_basic_content_depth(
     let mut migration_batch: Option<MigrationBatch> = None;
     let mut migration_base: Option<Vec<WireValue>> = None;
     let mut prior_mode: Option<String> = None;
+    let mut verified_guard_proofs = HashSet::new();
     for (commit_index, wire) in commit_wires.iter().enumerate() {
         let mut staged_revisions: HashMap<String, u64> = HashMap::new();
         let commit =
             parse_wire_json_js_bounded(wire, 64, 196_608).map_err(|_| ReplayError::Invalid)?;
         let payload = commit.get("payload").ok_or(ReplayError::Invalid)?;
         let sequence = integer(payload, "sequence")?;
+        let commit_policy_hash = string(payload, "policy_hash")?;
+        let commit_policy = policies.get(commit_policy_hash.as_str()).ok_or(ReplayError::Invalid)?;
+        let commit_policy_payload = commit_policy.get("payload").ok_or(ReplayError::Invalid)?;
+        let admitted_at_ms = if chain.guard_time_enabled && commit_policy_payload.get("guard_time").is_some() {
+            let guard_policy = crate::guard_time::parse_guard_time_policy(
+                commit_policy_payload.get("guard_time").ok_or(ReplayError::Invalid)?,
+            )
+            .map_err(|_| ReplayError::Invalid)?;
+            let source = signed_checkpoint_at(sequence.checked_sub(1).ok_or(ReplayError::Invalid)?, &chain, commit_wires)?;
+            let result = signed_checkpoint_at(sequence, &chain, commit_wires)?;
+            let commit_hash = chain.commit_hashes.get(commit_index).ok_or(ReplayError::Invalid)?;
+            let proof_wire = guard_times
+                .and_then(|proofs| proofs.get(commit_hash))
+                .ok_or(ReplayError::Invalid)?;
+            let proof_envelope = parse_wire_json_js_bounded(proof_wire, 32, crate::guard_time::GUARD_TIME_ATTESTATION_MAX_BYTES)
+                .map_err(|_| ReplayError::Invalid)?;
+            let proof_payload = proof_envelope.get("payload").ok_or(ReplayError::Invalid)?;
+            let expected = fields_object(vec![
+                ("v", WireValue::Number(1.0)),
+                ("audience", string_value(&guard_policy.audience)),
+                ("service_key", string_value(&guard_policy.service_key)),
+                ("workspace_id", string_value(workspace_id)),
+                ("command_id", payload.get("command_id").ok_or(ReplayError::Invalid)?.clone()),
+                ("actor_id", payload.get("actor_id").ok_or(ReplayError::Invalid)?.clone()),
+                ("signing_key", payload.get("signing_key").ok_or(ReplayError::Invalid)?.clone()),
+                ("action_id", payload.get("action_id").ok_or(ReplayError::Invalid)?.clone()),
+                ("instance_id", payload.get("instance_id").ok_or(ReplayError::Invalid)?.clone()),
+                ("epoch", payload.get("epoch").ok_or(ReplayError::Invalid)?.clone()),
+                ("policy_hash", payload.get("policy_hash").ok_or(ReplayError::Invalid)?.clone()),
+                ("source", source),
+                ("result", result),
+                ("commit_hash", string_value(commit_hash)),
+                ("context", payload.get("guard_time").ok_or(ReplayError::Invalid)?.clone()),
+                ("admitted_at_ms", proof_payload.get("admitted_at_ms").ok_or(ReplayError::Invalid)?.clone()),
+            ]);
+            let proof = crate::guard_time::verify_guard_time_attestation(proof_wire, &guard_policy, &expected)
+                .map_err(|_| ReplayError::Invalid)?;
+            if !verified_guard_proofs.insert(commit_hash.clone()) {
+                return Err(ReplayError::Invalid);
+            }
+            Some(proof.payload.get("admitted_at_ms").and_then(WireValue::as_number)
+                .filter(|value| value.is_finite() && *value >= 0.0 && value.fract() == 0.0)
+                .map(|value| value as u64).ok_or(ReplayError::Invalid)?)
+        } else {
+            None
+        };
+        if let Some(admitted_at) = admitted_at_ms {
+            let mut auth_context = commit_context(payload)?;
+            replace_field(
+                &mut auth_context,
+                "issued_at",
+                WireValue::Number(admitted_at as f64),
+            )
+            .map_err(|_| ReplayError::Invalid)?;
+            let policy = commit_policy.get("payload").ok_or(ReplayError::Invalid)?;
+            let delegation_wire = match auth_context.get("delegation") {
+                Some(WireValue::Null) => None,
+                Some(value) => Some(
+                    canonical_wire_value(value, Path::SecureArtifact)
+                        .map_err(|_| ReplayError::Invalid)?,
+                ),
+                None => return Err(ReplayError::Invalid),
+            };
+            let checked = crate::secure_action_delegation::resolve_action_scope(
+                &auth_context,
+                policy,
+                delegation_wire.as_deref().map(str::as_bytes),
+            )
+            .map_err(|_| ReplayError::Invalid)?;
+            crate::secure_action_delegation::verify_member_certificate_at(
+                policy,
+                &checked.actor_id,
+                admitted_at,
+            )
+            .map_err(|_| ReplayError::Invalid)?;
+            let instance_at_t = payload.get("instance_id").and_then(WireValue::as_utf16);
+            let mut admission_history = RoleHistory::new();
+            validate_role_policies_with_history(
+                policy,
+                &prior_objects,
+                admitted_at,
+                instance_at_t,
+                &mut admission_history,
+            )
+            .map_err(|_| ReplayError::Invalid)?;
+            let owner_admin_context = string(payload, "actor_id")? == chain.owner_id
+                && matches!(payload.get("instance_id"), Some(WireValue::Null))
+                && matches!(payload.get("delegation"), Some(WireValue::Null));
+            if !owner_admin_context && !checked.permits_action() {
+                return Err(ReplayError::Invalid);
+            }
+        }
+        let old_policy_payload = previous_policy_hash
+            .as_deref()
+            .and_then(|old_hash| policies.get(old_hash))
+            .and_then(|old| old.get("payload"));
+        let enabling_guard_time = old_policy_payload
+            .is_some_and(|old| old.get("guard_time").is_none())
+            && commit_policy_payload.get("guard_time").is_some();
+        if enabling_guard_time {
+            if string(payload, "action_id")? != "secure.guard-time.enable"
+                || string(payload, "actor_id")? != chain.owner_id
+                || !matches!(payload.get("instance_id"), Some(WireValue::Null))
+                || !matches!(payload.get("delegation"), Some(WireValue::Null))
+                || commit_policy_payload.get("visibility").and_then(WireValue::as_string).as_deref() != Some("PRIVATE")
+                || crate::guard_time::parse_guard_time_context(
+                    payload.get("guard_time").ok_or(ReplayError::Invalid)?,
+                )
+                .map_err(|_| ReplayError::Invalid)?
+                    != crate::guard_time::GuardTimeContextV1::universal()
+            {
+                return Err(ReplayError::Invalid);
+            }
+            let old = old_policy_payload.ok_or(ReplayError::Invalid)?;
+            for field in ["epoch", "members", "structure_mode", "protocol_format_ceiling"] {
+                if !same_wire(
+                    old.get(field).ok_or(ReplayError::Invalid)?,
+                    commit_policy_payload.get(field).ok_or(ReplayError::Invalid)?,
+                )? {
+                    return Err(ReplayError::Invalid);
+                }
+            }
+            if match (old.get("structure"), commit_policy_payload.get("structure")) {
+                (Some(old), Some(new)) => !same_wire(old, new)?,
+                (None, None) => false,
+                _ => true,
+            } {
+                return Err(ReplayError::Invalid);
+            }
+        } else if string(payload, "action_id")? == "secure.guard-time.enable" {
+            return Err(ReplayError::Invalid);
+        }
         let excluded = recovery_segments
             .iter()
             .find(|segment| sequence > segment.base && sequence <= segment.through);
         if let Some(segment) = excluded {
+            if enabling_guard_time {
+                return Err(ReplayError::Invalid);
+            }
             let policy_hash = string(payload, "policy_hash")?;
             let policy = policies
                 .get(policy_hash.as_str())
@@ -1683,6 +1843,7 @@ fn replay_basic_content_depth(
                     trusted_owner,
                     pinned.filter(|pin| pin.sequence <= segment.base),
                     keyring_wire,
+                    guard_times,
                     depth + 1,
                     max_commits,
                 )?;
@@ -1698,6 +1859,7 @@ fn replay_basic_content_depth(
                     trusted_owner,
                     pinned.filter(|pin| pin.sequence <= sequence),
                     keyring_wire,
+                    guard_times,
                     depth + 1,
                     max_commits,
                 ) {
@@ -1763,6 +1925,15 @@ fn replay_basic_content_depth(
             if !matches!(kind.as_str(), "BOOTSTRAP" | "MIGRATE" | "ACTION" | "ADMIN") {
                 return Err(ReplayError::Invalid);
             }
+            if commit_policy_payload.get("guard_time").is_some() && kind != "ACTION" {
+                let context = crate::guard_time::parse_guard_time_context(
+                    payload.get("guard_time").ok_or(ReplayError::Invalid)?,
+                )
+                .map_err(|_| ReplayError::Invalid)?;
+                if context != crate::guard_time::GuardTimeContextV1::universal() {
+                    return Err(ReplayError::Invalid);
+                }
+            }
             let marker = recovery_segments
                 .iter()
                 .find(|segment| segment.marker == sequence);
@@ -1810,6 +1981,23 @@ fn replay_basic_content_depth(
             let policy = policies
                 .get(policy_hash.as_str())
                 .ok_or(ReplayError::Invalid)?;
+            if enabling_guard_time {
+                if kind != "ADMIN"
+                    || mode != "PRIVATE"
+                    || string(payload, "action_id")? != "secure.guard-time.enable"
+                    || string(payload, "actor_id")? != chain.owner_id
+                    || !matches!(payload.get("instance_id"), Some(WireValue::Null))
+                    || !matches!(payload.get("delegation"), Some(WireValue::Null))
+                    || !exact_fields(&operation, &["v", "kind", "input", "objects"])
+                    || operation.get("input").and_then(WireValue::object_len) != Some(0)
+                    || !matches!(operation.get("objects"), Some(WireValue::Array(items)) if items.is_empty())
+                    || policy.get("payload").and_then(|p| p.get("visibility")).and_then(WireValue::as_string).as_deref() != Some("PRIVATE")
+                {
+                    return Err(ReplayError::Invalid);
+                }
+            } else if string(payload, "action_id")? == "secure.guard-time.enable" {
+                return Err(ReplayError::Invalid);
+            }
             if let Some(old_hash) = previous_policy_hash.as_deref() {
                 let old_policy = policies.get(old_hash).ok_or(ReplayError::Invalid)?;
                 let old_structure = old_policy.get("payload").and_then(|p| p.get("structure"));
@@ -1926,8 +2114,34 @@ fn replay_basic_content_depth(
             } else if kind == "ACTION" {
                 let hash = string(payload, "policy_hash")?;
                 let policy = policies.get(hash.as_str()).ok_or(ReplayError::Invalid)?;
+                if let Some(admitted_at) = admitted_at_ms {
+                    let mut auth_context = commit_context(payload)?;
+                    replace_field(
+                        &mut auth_context,
+                        "issued_at",
+                        WireValue::Number(admitted_at as f64),
+                    )
+                    .map_err(|_| ReplayError::Invalid)?;
+                    let delegation_wire = match auth_context.get("delegation") {
+                        Some(WireValue::Null) => None,
+                        Some(value) => Some(
+                            canonical_wire_value(value, Path::SecureArtifact)
+                                .map_err(|_| ReplayError::Invalid)?,
+                        ),
+                        None => return Err(ReplayError::Invalid),
+                    };
+                    let checked_at_t = crate::secure_action_delegation::resolve_action_scope(
+                        &auth_context,
+                        policy.get("payload").ok_or(ReplayError::Invalid)?,
+                        delegation_wire.as_deref().map(str::as_bytes),
+                    )
+                    .map_err(|_| ReplayError::Invalid)?;
+                    if !checked_at_t.permits_action() {
+                        return Err(ReplayError::Invalid);
+                    }
+                }
                 let context = commit_context(payload)?;
-                validate_action_state_slice(&operation, &context, policy, &prior_objects)
+                validate_action_state_slice_at_time(&operation, &context, policy, &prior_objects, admitted_at_ms)
                     .map_err(|_| ReplayError::Invalid)?;
             } else if kind == "BOOTSTRAP" {
                 if integer(payload, "sequence")? != 1 || !prior_objects.is_empty() {
@@ -2287,6 +2501,9 @@ fn replay_basic_content_depth(
         });
         prior_objects = candidate;
     }
+    if depth == 0 && guard_times.is_some_and(|proofs| proofs.len() != verified_guard_proofs.len()) {
+        return Err(ReplayError::Invalid);
+    }
     let final_policy = policies
         .get(chain.policy_hash.as_str())
         .ok_or(ReplayError::Invalid)?;
@@ -2571,11 +2788,29 @@ pub(crate) fn validate_action_state_slice(
     policy: &WireValue,
     prior: &[WireValue],
 ) -> Result<(), &'static str> {
+    validate_action_state_slice_at_time(operation, context, policy, prior, None)
+}
+
+fn validate_action_state_slice_at_time(
+    operation: &WireValue,
+    context: &WireValue,
+    policy: &WireValue,
+    prior: &[WireValue],
+    execution_time_ms: Option<u64>,
+) -> Result<(), &'static str> {
     if !exact_fields(operation, &["v", "kind", "input", "objects"]) {
         return Err("PROTOCOL_OUTPUT_MISMATCH");
     }
     let input = operation.get("input").ok_or("ACTION_CONTEXT_MISMATCH")?;
-    let expected = compute_action_objects(input, context, policy, prior)?;
+    let mut context = context.clone();
+    let expected = compute_action_objects_inner(
+        &mut input.clone(),
+        &mut context,
+        policy,
+        prior,
+        None,
+        execution_time_ms,
+    )?;
     let actual = operation.get("objects").ok_or("PROTOCOL_OUTPUT_MISMATCH")?;
     if canonical_wire_value(&expected, Path::SecureArtifact)
         .map_err(|_| "PROTOCOL_OUTPUT_MISMATCH")?
@@ -2593,25 +2828,27 @@ pub(crate) fn compute_action_objects(
     policy: &WireValue,
     prior: &[WireValue],
 ) -> Result<WireValue, &'static str> {
-    compute_action_objects_inner(&mut input.clone(), context, policy, prior, None)
+    let mut context = context.clone();
+    compute_action_objects_inner(&mut input.clone(), &mut context, policy, prior, None, None)
 }
 
 pub(crate) fn compute_action_objects_with_default_allocations(
     input: &mut WireValue,
-    context: &WireValue,
+    context: &mut WireValue,
     policy: &WireValue,
     prior: &[WireValue],
     candidates: &[WireValue],
 ) -> Result<WireValue, &'static str> {
-    compute_action_objects_inner(input, context, policy, prior, Some(candidates))
+    compute_action_objects_inner(input, context, policy, prior, Some(candidates), None)
 }
 
 fn compute_action_objects_inner(
     input: &mut WireValue,
-    context: &WireValue,
+    context: &mut WireValue,
     policy: &WireValue,
     prior: &[WireValue],
     default_allocations: Option<&[WireValue]>,
+    execution_time_override: Option<u64>,
 ) -> Result<WireValue, &'static str> {
     if !exact_fields(
         input,
@@ -2629,13 +2866,15 @@ fn compute_action_objects_inner(
     let action_id = context
         .get("action_id")
         .and_then(WireValue::as_utf16)
-        .ok_or("ACTION_CONTEXT_MISMATCH")?;
+        .ok_or("ACTION_CONTEXT_MISMATCH")?
+        .to_vec();
     let instance_id = context
         .get("instance_id")
         .and_then(WireValue::as_utf16)
-        .ok_or("ACTION_CONTEXT_MISMATCH")?;
-    if input.get("action_id").and_then(WireValue::as_utf16) != Some(action_id)
-        || input.get("instance_id").and_then(WireValue::as_utf16) != Some(instance_id)
+        .ok_or("ACTION_CONTEXT_MISMATCH")?
+        .to_vec();
+    if input.get("action_id").and_then(WireValue::as_utf16) != Some(action_id.as_slice())
+        || input.get("instance_id").and_then(WireValue::as_utf16) != Some(instance_id.as_slice())
     {
         return Err("ACTION_CONTEXT_MISMATCH");
     }
@@ -2644,12 +2883,12 @@ fn compute_action_objects_inner(
         .iter()
         .filter(|object| {
             object.get("kind").and_then(WireValue::as_string).as_deref() == Some("instances")
-                && object.get("id").and_then(WireValue::as_utf16) == Some(instance_id)
+                && object.get("id").and_then(WireValue::as_utf16) == Some(instance_id.as_slice())
         })
         .max_by_key(|object| integer(object, "revision").unwrap_or(0))
         .ok_or("INSTANCE_NOT_FOUND")?;
     let instance_value = instance.get("value").ok_or("INSTANCE_NOT_FOUND")?;
-    if instance_value.get("id").and_then(WireValue::as_utf16) != Some(instance_id)
+    if instance_value.get("id").and_then(WireValue::as_utf16) != Some(instance_id.as_slice())
         || instance_value.get("workspace_id") != context.get("workspace_id")
     {
         return Err("INSTANCE_SCOPE_MISMATCH");
@@ -2743,14 +2982,14 @@ fn compute_action_objects_inner(
         .iter()
         .filter(|scope| {
             (matches!(scope.get("instance_id"), Some(WireValue::Null))
-                || scope.get("instance_id").and_then(WireValue::as_utf16) == Some(instance_id))
+                || scope.get("instance_id").and_then(WireValue::as_utf16) == Some(instance_id.as_slice()))
                 && scope.get("expires_at").map_or(true, |at| {
                     matches!(at, WireValue::Null)
                         || at.as_number().is_some_and(|at| at > issued as f64)
                 })
         })
         .collect();
-    validate_role_policies(policy_payload, prior, issued, instance_id)?;
+    validate_role_policies(policy_payload, prior, issued, &instance_id)?;
     let mut roles = applicable
         .iter()
         .flat_map(|scope| {
@@ -2801,17 +3040,50 @@ fn compute_action_objects_inner(
         .map_err(|_| "INVALID_PAYLOAD")?;
     crate::full_manifest::validate_state_array_state(&manifest, &source_state)
         .map_err(|_| "STATE_ARRAY_TYPE_INVALID")?;
+    let eval_manifest = WireValue::Object(vec![(
+        "actions".encode_utf16().collect(),
+        manifest.get("actions").ok_or("INVALID_PAYLOAD")?.clone(),
+    )]);
+    let execution_time_ms = if let Some(guard_policy_wire) = policy_payload.get("guard_time") {
+        let _guard_policy = crate::guard_time::parse_guard_time_policy(guard_policy_wire)
+            .map_err(|_| "GUARD_TIME_POLICY_INVALID")?;
+        let window = crate::guard_time::derive_private_guard_time_window(
+            &eval_manifest,
+            &action_id,
+            &source_state,
+            input.get("body").ok_or("INVALID_PAYLOAD")?,
+            &auth,
+            &exact_inputs,
+        )
+        .map_err(|error| match error {
+            crate::guard_time::GuardTimeError::Unsupported => "PRIVATE_GUARD_TIME_UNSUPPORTED",
+            crate::guard_time::GuardTimeError::Empty => "CONSTRAINT_FAILED",
+            crate::guard_time::GuardTimeError::Invalid => "INVALID_PAYLOAD",
+        })?;
+        if let Some(supplied) = context.get("guard_time") {
+            let supplied = crate::guard_time::parse_guard_time_context(supplied)
+                .map_err(|_| "GUARD_TIME_CONTEXT_INVALID")?;
+            if supplied != window {
+                return Err("GUARD_TIME_CONTEXT_INVALID");
+            }
+        } else {
+            replace_field(context, "guard_time", window.to_wire()).map_err(|_| "INVALID_PAYLOAD")?;
+        }
+        Some(execution_time_override.unwrap_or(window.lower_ms))
+    } else {
+        if context.get("guard_time").is_some() {
+            return Err("GUARD_TIME_CONTEXT_INVALID");
+        }
+        None
+    };
     let interpreted = evaluate_action(
-        &WireValue::Object(vec![(
-            "actions".encode_utf16().collect(),
-            manifest.get("actions").ok_or("INVALID_PAYLOAD")?.clone(),
-        )]),
-        action_id,
+        &eval_manifest,
+        &action_id,
         &source_state,
         input.get("body").ok_or("INVALID_PAYLOAD")?,
         &auth,
         &exact_inputs,
-        None,
+        execution_time_ms,
     )
     .map_err(|_| "INVALID_PAYLOAD")?;
     if matches!(input.get("allocations"), Some(WireValue::Null)) {
@@ -3067,7 +3339,7 @@ fn compute_action_objects_inner(
     expected_objects.extend(head_changes);
     validate_action_workflows(
         &manifest,
-        instance_id,
+        &instance_id,
         digest,
         &action_id,
         prior,
@@ -4622,6 +4894,7 @@ mod tests {
             policy_hashes: Vec::new(),
             policy_effective_sequences: Vec::new(),
             commit_hashes: Vec::new(),
+            guard_time_enabled: false,
         };
         let make_context = |sequence: u64, action: &str, mode: &str, offset: u64, heads: Value| {
             let mut page = snapshot.clone();
@@ -5677,6 +5950,89 @@ mod tests {
                 assert_eq!(result, Ok(()), "{name}");
             }
         }
+    }
+
+    #[test]
+    fn guarded_action_replay_uses_proof_time_without_rewriting_signed_issued_at() {
+        let cases = parse_wire_json_js_bounded(
+            include_str!("../../../conformance/secure-engine-vectors.json").as_bytes(),
+            64,
+            2_000_000,
+        )
+        .unwrap();
+        let WireValue::Array(cases) = cases else { panic!("vector array") };
+        let case = cases.iter().find(|case| {
+            case.get("name").and_then(WireValue::as_string).as_deref()
+                == Some("action_control_revision")
+        }).unwrap();
+        let to_json = |value: &WireValue| -> Value {
+            serde_json::from_str(&canonical_wire_value(value, Path::SecureArtifact).unwrap()).unwrap()
+        };
+        let operation = to_json(case.get("operation").unwrap());
+        let mut context = to_json(case.get("context").unwrap());
+        let mut policy = to_json(case.get("policy").unwrap());
+        let mut prior = to_json(case.get("prior").unwrap());
+        let guards = &mut prior[0]["value"]["resolved_manifest"]["actions"][0]["variants"][0]["when"];
+        guards.as_array_mut().unwrap().push(json!({"op":"gte","left":{"from":"time"},"right":{"from":"literal","value":5}}));
+        guards.as_array_mut().unwrap().push(json!({"op":"lte","left":{"from":"time"},"right":{"from":"literal","value":9}}));
+        policy["payload"]["guard_time"] = json!({"v":1,"mode":"ALL_COMMITS","audience":"test.example","service_key":"S".repeat(43),"disclosure":"GUARD_WINDOW"});
+        context["guard_time"] = json!({"v":1,"lower_ms":5,"upper_ms":9});
+        let parse = |value: &Value| parse_wire_json_js_bounded(&serde_json::to_vec(value).unwrap(), 64, 2_000_000).unwrap();
+        let operation = parse(&operation);
+        let context = parse(&context);
+        let policy = parse(&policy);
+        let prior = match parse(&prior) { WireValue::Array(items) => items, _ => panic!("prior objects") };
+        let before_issued_at = context.get("issued_at").unwrap().clone();
+        assert_eq!(validate_action_state_slice_at_time(&operation, &context, &policy, &prior, Some(7)), Ok(()));
+        assert_eq!(context.get("issued_at"), Some(&before_issued_at));
+        assert!(validate_action_state_slice_at_time(&operation, &context, &policy, &prior, Some(4)).is_err());
+
+        let mut expiring_policy = to_json(&policy);
+        expiring_policy["payload"]["members"][0]["scopes"][0]["expires_at"] = json!(6);
+        let mut at_t_context = to_json(&context);
+        at_t_context["issued_at"] = json!(7);
+        let expiring_policy = parse(&expiring_policy);
+        let at_t_context = parse(&at_t_context);
+        let checked_at_t = crate::secure_action_delegation::resolve_action_scope(
+            &at_t_context,
+            expiring_policy.get("payload").unwrap(),
+            None,
+        )
+        .unwrap();
+        assert!(!checked_at_t.permits_action(), "a scope that expired before T cannot authorize replay");
+
+        let mut widened = to_json(&context);
+        widened["guard_time"] = json!({"v":1,"lower_ms":0,"upper_ms":9});
+        assert!(validate_action_state_slice_at_time(&operation, &parse(&widened), &policy, &prior, Some(7)).is_err());
+        let mut tampered = to_json(&operation);
+        tampered["objects"][0]["value"]["state"]["count"] = json!(99);
+        assert!(validate_action_state_slice_at_time(&parse(&tampered), &context, &policy, &prior, Some(7)).is_err());
+
+        let delegated_vectors = parse_wire_json_js_bounded(
+            include_str!("../../../conformance/action-delegation-vectors.json").as_bytes(),
+            64,
+            2_000_000,
+        )
+        .unwrap();
+        let WireValue::Array(delegated_vectors) = delegated_vectors else { panic!("delegation vectors") };
+        let delegated = delegated_vectors.iter().find(|item| {
+            item.get("name").and_then(WireValue::as_string).as_deref() == Some("valid_delegated")
+        }).unwrap();
+        let mut delegated_context = to_json(delegated.get("context").unwrap());
+        let mut delegated_policy = to_json(delegated.get("policy_payload").unwrap());
+        let mut delegated_operation = to_json(case.get("operation").unwrap());
+        let mut delegated_prior = to_json(case.get("prior").unwrap());
+        delegated_context["action_id"] = json!("alpha");
+        delegated_context["guard_time"] = json!({"v":1,"lower_ms":0,"upper_ms":9_007_199_254_740_991u64});
+        delegated_policy["guard_time"] = json!({"v":1,"mode":"ALL_COMMITS","audience":"test.example","service_key":"S".repeat(43),"disclosure":"GUARD_WINDOW"});
+        delegated_operation["input"]["action_id"] = json!("alpha");
+        delegated_prior[0]["value"]["resolved_manifest"]["actions"][0]["id"] = json!("alpha");
+        let delegated_context = parse(&delegated_context);
+        let delegated_policy = parse(&json!({"payload":delegated_policy}));
+        let delegated_operation = parse(&delegated_operation);
+        let delegated_prior = match parse(&delegated_prior) { WireValue::Array(items) => items, _ => panic!("prior") };
+        assert_eq!(integer(&delegated_context, "issued_at").unwrap(), 30);
+        assert_eq!(validate_action_state_slice_at_time(&delegated_operation, &delegated_context, &delegated_policy, &delegated_prior, None), Ok(()), "R=0 preparation must retain a valid delegated issued_at=30");
     }
 
     #[test]

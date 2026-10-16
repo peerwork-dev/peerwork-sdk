@@ -86,12 +86,18 @@ pub fn build_prepared_action_operation(
     signed_policy_wire: &[u8],
     authenticated_prior_objects: &[WireValue],
 ) -> Result<ValidatedPreparedAction, PreparedActionError> {
-    let (operation, _, _) = compute_operation(
+    let (operation, context, policy) = compute_operation(
         action_input_wire,
         context_wire,
         signed_policy_wire,
         authenticated_prior_objects,
     )?;
+    if policy.get("payload").and_then(|payload| payload.get("guard_time")).is_some() {
+        // This API returns no context for the caller to bind as AAD. Guarded
+        // actions must use the context-returning builder below.
+        let _ = context;
+        return Err(PreparedActionError::Unsupported);
+    }
     let operation_wire = canonical_wire_value(&operation, Path::SecureArtifact)
         .map_err(|_| PreparedActionError::Invalid)?;
     validate_prepared_action_operation(
@@ -188,7 +194,7 @@ fn compute_operation(
         parse_wire_json_bounded(wire, 64, MAX_WIRE).map_err(|_| PreparedActionError::Invalid)
     };
     let mut input = parse(action_input_wire)?;
-    let context = parse(context_wire)?;
+    let mut context = parse(context_wire)?;
     let policy = parse(signed_policy_wire)?;
     let mut candidates = Vec::new();
     if matches!(input.get("allocations"), Some(WireValue::Null)) {
@@ -215,7 +221,7 @@ fn compute_operation(
     }
     let objects = compute_action_objects_with_default_allocations(
         &mut input,
-        &context,
+        &mut context,
         &policy,
         authenticated_prior_objects,
         &candidates,

@@ -9,6 +9,7 @@ pub mod e2ee;
 #[allow(dead_code)]
 mod full_manifest;
 pub mod genesis_structure_policy;
+pub mod guard_time;
 #[allow(dead_code)]
 mod interpreter;
 #[allow(dead_code)]

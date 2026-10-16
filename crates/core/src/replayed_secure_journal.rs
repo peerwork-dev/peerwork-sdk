@@ -4,7 +4,7 @@
 
 use crate::{
     secure_chain::{CheckpointPin, OwnerPin},
-    secure_replay::{replay_basic_content_with_limit, ReplayError},
+    secure_replay::{replay_basic_content_with_guard_times, ReplayError},
     wire_json::WireValue,
 };
 use thiserror::Error;
@@ -175,6 +175,28 @@ pub fn replay_secure_journal_exact_with_limits(
     input: JournalReplayInput<'_>,
     limits: JournalReplayLimits,
 ) -> Result<ReplayedSecureJournal, JournalReplayError> {
+    replay_secure_journal_exact_with_guard_time_attestations_and_limits(input, limits, None)
+}
+
+/// Replays a journal with service attestations indexed by the signed commit
+/// hash. The legacy entrypoints above intentionally supply no proof evidence
+/// and therefore fail closed for journals that enable guard time.
+pub fn replay_secure_journal_exact_with_guard_time_attestations(
+    input: JournalReplayInput<'_>,
+    attestations: &std::collections::HashMap<String, Vec<u8>>,
+) -> Result<ReplayedSecureJournal, JournalReplayError> {
+    replay_secure_journal_exact_with_guard_time_attestations_and_limits(
+        input,
+        JournalReplayLimits::default(),
+        Some(attestations),
+    )
+}
+
+fn replay_secure_journal_exact_with_guard_time_attestations_and_limits(
+    input: JournalReplayInput<'_>,
+    limits: JournalReplayLimits,
+    attestations: Option<&std::collections::HashMap<String, Vec<u8>>>,
+) -> Result<ReplayedSecureJournal, JournalReplayError> {
     let owner = OwnerPin {
         actor_id: input.owner_actor_id,
         signing_key: input.owner_signing_key,
@@ -184,7 +206,7 @@ pub fn replay_secure_journal_exact_with_limits(
         head: input.final_head,
         policy_hash: input.final_policy_hash,
     };
-    let facts = replay_basic_content_with_limit(
+    let facts = replay_basic_content_with_guard_times(
         input.policy_wires,
         input.commit_wires,
         input.checkpoint_wire,
@@ -193,6 +215,7 @@ pub fn replay_secure_journal_exact_with_limits(
         Some(&final_pin),
         input.keyring_wire,
         limits.max_commits(),
+        attestations,
     )
     .map_err(|error| match error { ReplayError::ResourceLimit => JournalReplayError::ResourceLimit, _ => JournalReplayError::Invalid })?;
     // Replay may restore an authenticated archived PUBLIC prefix from signed
@@ -238,6 +261,77 @@ mod tests {
     use super::*;
     use crate::wire_json::{canonical_wire_value, parse_wire_json_bounded};
     use serde_json::Value;
+
+    #[test]
+    fn shared_typescript_guard_time_vector_replays_activation_and_rejects_missing_or_extra_proof() {
+        let vector: Value = serde_json::from_str(include_str!(
+            "../../../conformance/guard-time-attestation-vector.json"
+        ))
+        .unwrap();
+        let policies = [
+            serde_json::to_vec(&vector["old_policy"]).unwrap(),
+            serde_json::to_vec(&vector["policy"]).unwrap(),
+        ];
+        let policy_refs = policies.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        let commits = [
+            serde_json::to_vec(&vector["bootstrap"]).unwrap(),
+            serde_json::to_vec(&vector["commit"]).unwrap(),
+        ];
+        let commit_refs = commits.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        let checkpoint = serde_json::to_vec(&vector["checkpoint"]).unwrap();
+        let keyring = serde_json::to_vec(&vector["keyring"]).unwrap();
+        let workspace_id = vector["payload"]["workspace_id"].as_str().unwrap();
+        let owner_actor_id = vector["payload"]["actor_id"].as_str().unwrap();
+        let owner_signing_key = vector["payload"]["signing_key"].as_str().unwrap();
+        let final_sequence = vector["payload"]["result"]["sequence"].as_u64().unwrap();
+        let final_head = vector["payload"]["result"]["head"].as_str().unwrap();
+        let final_policy_hash = vector["payload"]["policy_hash"].as_str().unwrap();
+        let policy_wire = parse_wire_json_bounded(&policies[1], 64, 32 * 1024).unwrap();
+        let policy_payload = policy_wire.get("payload").unwrap();
+        assert!(crate::secure_action_delegation::verify_member_certificate_at(
+            policy_payload,
+            owner_actor_id,
+            vector["payload"]["admitted_at_ms"].as_u64().unwrap(),
+        )
+        .is_ok());
+        assert!(crate::secure_action_delegation::verify_member_certificate_at(
+            policy_payload,
+            owner_actor_id,
+            101_000,
+        )
+        .is_err());
+        let proof_wire = serde_json::to_vec(&serde_json::json!({
+            "payload": vector["payload"],
+            "signature": vector["signature"]
+        }))
+        .unwrap();
+        let mut proofs = std::collections::HashMap::new();
+        proofs.insert(vector["payload"]["commit_hash"].as_str().unwrap().to_owned(), proof_wire.clone());
+        let input = || JournalReplayInput {
+            policy_wires: &policy_refs,
+            commit_wires: &commit_refs,
+            checkpoint_wire: &checkpoint,
+            workspace_id,
+            owner_actor_id,
+            owner_signing_key,
+            final_sequence,
+            final_head: Some(final_head),
+            final_policy_hash,
+            keyring_wire: Some(&keyring),
+        };
+
+        let replayed = replay_secure_journal_exact_with_guard_time_attestations(input(), &proofs)
+            .unwrap();
+        assert_eq!(replayed.sequence(), 2);
+        assert_eq!(replayed.policy_hash(), final_policy_hash);
+        assert!(matches!(replay_secure_journal_exact(input()), Err(JournalReplayError::Invalid)));
+
+        proofs.insert("f".repeat(64), proof_wire);
+        assert!(matches!(
+            replay_secure_journal_exact_with_guard_time_attestations(input(), &proofs),
+            Err(JournalReplayError::Invalid)
+        ));
+    }
 
     #[test]
     fn signed_replay_receipts_bind_exact_final_checkpoint_and_skip_recovery() {
