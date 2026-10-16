@@ -1,0 +1,9 @@
+# T127 Windows protected-state owner follow-up
+
+Run [38849337969](https://github.com/peerwork-dev/peerwork-sdk/actions/runs/38849337969) passed the Windows ICU gate and core tests (104 passed, 0 failed, 1 ignored), but `peerwork-runtime` reported 121 passed, 46 failed, 3 ignored. Most failing tests reached the shared `protected_test_dir()` fixture and failed while `windows_fs::create_private_directory` created and reopened its directory; the two in-module Windows filesystem tests also failed in that helper. The current-user owner check itself is retained. The runner's token owner SID was not logged, so an owner/default-owner mismatch remains a hypothesis.
+
+This candidate sets SDDL owner `O:<TokenUser SID>` as well as the existing protected current-user DACL when creating private directories. For files, whose standard-library/tempfile creators do not accept a security descriptor, it opens the new file with `WRITE_OWNER`, verifies the reopened handle is the same non-reparse file, sets owner to `TokenUser`, and then runs the existing full handle/ACL checks. It applies this to both `create_or_check_file` and atomic-replacement temporary files. The workflow removes the temporary `/VERBOSE:LIB` rustflags injection while retaining the original ICU test, Cargo `-vv` capture, exit status, and failure diagnostics.
+
+Validation before hosted CI: `git diff --check` and Rust source formatting parse/check for the owned file. No local Windows execution was available. Windows ACL creation/reopen tests and full native consumers remain to be verified by the hosted workflow.
+
+Microsoft references: [owner of a new object](https://learn.microsoft.com/en-us/windows/win32/secauthz/owner-of-a-new-object), [security descriptor string format](https://learn.microsoft.com/en-us/windows/win32/secauthz/security-descriptor-string-format), [SetSecurityInfo](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-setsecurityinfo).

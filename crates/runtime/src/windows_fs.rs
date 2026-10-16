@@ -16,7 +16,7 @@ use windows_sys::Win32::Foundation::{
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo,
-    SDDL_REVISION_1, SE_FILE_OBJECT,
+    SetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
 };
 use windows_sys::Win32::Security::{
     AclSizeInformation, EqualSid, GetAce, GetAclInformation, GetLengthSid,
@@ -31,7 +31,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
     FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
     FILE_WRITE_DATA, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, OPEN_EXISTING,
-    READ_CONTROL,
+    READ_CONTROL, WRITE_OWNER,
 };
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -177,6 +177,54 @@ fn inspect(file: &File, directory: bool) -> io::Result<()> {
     Ok(())
 }
 
+fn set_current_user_owner(path: &Path, file: &File) -> io::Result<()> {
+    let handle = unsafe {
+        CreateFileW(
+            wide(path).as_ptr(),
+            WRITE_OWNER | READ_CONTROL | FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            null(),
+            OPEN_EXISTING,
+            FILE_FLAG_OPEN_REPARSE_POINT | FILE_ATTRIBUTE_NORMAL,
+            null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    let owner_handle = unsafe { File::from_raw_handle(handle) };
+    let mut expected: BY_HANDLE_FILE_INFORMATION = unsafe { zeroed() };
+    let mut actual: BY_HANDLE_FILE_INFORMATION = unsafe { zeroed() };
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut expected) } == 0
+        || unsafe { GetFileInformationByHandle(owner_handle.as_raw_handle(), &mut actual) } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    if expected.dwVolumeSerialNumber != actual.dwVolumeSerialNumber
+        || expected.nFileIndexHigh != actual.nFileIndexHigh
+        || expected.nFileIndexLow != actual.nFileIndexLow
+        || actual.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    {
+        return Err(denied());
+    }
+    let current = current_user_sid()?;
+    let result = unsafe {
+        SetSecurityInfo(
+            owner_handle.as_raw_handle(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION,
+            current.as_ptr().cast_mut().cast(),
+            null_mut(),
+            null_mut(),
+            null_mut(),
+        )
+    };
+    if result != ERROR_SUCCESS {
+        return Err(io::Error::from_raw_os_error(result as i32));
+    }
+    inspect(file, false)
+}
+
 fn open_nofollow(
     path: &Path,
     directory: bool,
@@ -290,7 +338,7 @@ pub fn create_private_directory(path: &Path) -> io::Result<()> {
         LocalFree(sid_string.cast());
         text
     };
-    let sddl: Vec<u16> = format!("D:P(A;OICI;FA;;;{sid_text})")
+    let sddl: Vec<u16> = format!("O:{sid_text}D:P(A;OICI;FA;;;{sid_text})")
         .encode_utf16()
         .chain(Some(0))
         .collect();
@@ -345,6 +393,7 @@ pub(crate) fn create_or_check_file(path: &Path) -> io::Result<()> {
         .open(path)
     {
         Ok(file) => {
+            set_current_user_owner(path, &file)?;
             inspect(&file, false)?;
             file.sync_all()?;
         }
@@ -371,6 +420,7 @@ pub(crate) fn atomic_replace(path: &Path, magic: &[u8], bytes: &[u8]) -> io::Res
     let mut temporary = tempfile::Builder::new()
         .prefix(".peerwork-state-")
         .tempfile_in(parent)?;
+    set_current_user_owner(temporary.path(), temporary.as_file())?;
     inspect(temporary.as_file(), false)?;
     temporary.as_file_mut().write_all(magic)?;
     temporary.as_file_mut().write_all(bytes)?;

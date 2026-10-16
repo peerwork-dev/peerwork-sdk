@@ -327,21 +327,8 @@ jobs:
         run: |
           Remove-Item Env:\ICU_DATA -ErrorAction SilentlyContinue
           $cargoLog = Join-Path $env:RUNNER_TEMP 'peerwork-windows-icu-cargo.log'
-          $rustflagsName = 'CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS'
-          $hadRustflags = Test-Path "Env:$rustflagsName"
-          $originalRustflags = [Environment]::GetEnvironmentVariable($rustflagsName, 'Process')
-          if ($hadRustflags) {
-            Set-Item "Env:$rustflagsName" "$originalRustflags -C link-arg=/VERBOSE:LIB"
-          } else {
-            Set-Item "Env:$rustflagsName" '-C link-arg=/VERBOSE:LIB'
-          }
           & cargo test -vv -p peerwork-core --locked js_locale::tests::pinned_node_locale_compare_vectors -- --exact *> $cargoLog
           $testExit = $LASTEXITCODE
-          if ($hadRustflags) {
-            Set-Item "Env:$rustflagsName" $originalRustflags
-          } else {
-            Remove-Item "Env:$rustflagsName" -ErrorAction SilentlyContinue
-          }
 
           if ($testExit -ne 0) {
             Write-Output 'Windows ICU link diagnostic: Cargo directives, rustc flags, linker library search, and unresolved symbols'
@@ -365,9 +352,8 @@ jobs:
               $usesPeerworkCore = $line -match '--extern(?:=|\s+)peerwork_core(?:=|\s|$)'
               $isTestHarness = $line -match '(?:^|\s)--test(?:\s|$)'
               $hasNativeSearch = $line -match '(?:-L\s+native=|-Lnative=)'
-              $hasVerboseLink = $line -match '(?i)/VERBOSE:LIB'
               $hasNoBundle = $line -match '(?:-l\s+|--link-arg=)static:-bundle='
-              Write-Output "ICU_RUSTC target=$targetName crate_type=$crateType test=$isTestHarness peerwork_core_extern=$usesPeerworkCore native_search=$hasNativeSearch bundle_disabled=$hasNoBundle verbose_link=$hasVerboseLink search_projects=$($nativeDirs -join ',') static_libraries=$($libraries -join ',')"
+              Write-Output "ICU_RUSTC target=$targetName crate_type=$crateType test=$isTestHarness peerwork_core_extern=$usesPeerworkCore native_search=$hasNativeSearch bundle_disabled=$hasNoBundle search_projects=$($nativeDirs -join ',') static_libraries=$($libraries -join ',')"
             }
 
             $expectedSymbols = 'udata_setFileAccess_78_peerwork|udata_setCommonData_78_peerwork|ucol_open_78_peerwork|ucol_strcoll_78_peerwork|ucol_close_78_peerwork'
