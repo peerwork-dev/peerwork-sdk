@@ -2,23 +2,13 @@
 
 ## Download experimental builds
 
-Version `0.1.1` builds are available as GitHub Actions artifacts from source
-commit [`ffa8483`](https://github.com/peerwork-dev/peerwork-sdk/commit/ffa848319cf66e74a11fc3c8faac1089a59cec49)
-in [successful workflow run 38863120132](https://github.com/peerwork-dev/peerwork-sdk/actions/runs/38863120132).
-These are experimental workflow artifacts, not a GitHub Release or registry
-publication. They expire on **2027-01-14**. GitHub may require repository
-access to download them.
-
-| Target | Actions artifact |
-| --- | --- |
-| Linux x64 (GNU/glibc) | [experimental-linux-x64-gnu](https://github.com/peerwork-dev/peerwork-sdk/actions/runs/38863120132/artifacts/12030571290) |
-| Linux x64 (GNU/glibc 2.28 baseline) | [experimental-linux-x64-gnu-glibc2_28](https://github.com/peerwork-dev/peerwork-sdk/actions/runs/38863120132/artifacts/12030037925) |
-| Linux x64 (musl) | [experimental-linux-x64-musl](https://github.com/peerwork-dev/peerwork-sdk/actions/runs/38863120132/artifacts/12031690788) |
-| Linux ARM64 (GNU) | [experimental-linux-arm64-gnu](https://github.com/peerwork-dev/peerwork-sdk/actions/runs/38863120132/artifacts/12030645366) |
-| Linux ARM64 (musl) | [experimental-linux-arm64-musl](https://github.com/peerwork-dev/peerwork-sdk/actions/runs/38863120132/artifacts/12030931295) |
-| macOS x64 | [experimental-darwin-x64](https://github.com/peerwork-dev/peerwork-sdk/actions/runs/38863120132/artifacts/12030763955) |
-| macOS ARM64 | [experimental-darwin-arm64](https://github.com/peerwork-dev/peerwork-sdk/actions/runs/38863120132/artifacts/12030492377) |
-| Windows x64 | [experimental-windows-x64](https://github.com/peerwork-dev/peerwork-sdk/actions/runs/38863120132/artifacts/12030414510) |
+Each successful main-branch native build is published as a versioned
+experimental prerelease on [GitHub Releases](https://github.com/peerwork-dev/peerwork-sdk/releases).
+Each prerelease links the exact source commit and successful native workflow
+run and contains all eight target artifacts. Prereleases are experimental;
+they are not stable releases and do not publish packages to PyPI or npm. Until
+the first prerelease is created, the verified version `0.1.1` artifacts remain available from
+[workflow run 38863120132](https://github.com/peerwork-dev/peerwork-sdk/actions/runs/38863120132).
 
 For Agent integration, start with the [Agent entry guide](docs/agent-entry.md)
 and see [platform support](docs/platform-support.md) for target details.
