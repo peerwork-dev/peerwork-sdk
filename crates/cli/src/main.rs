@@ -846,8 +846,7 @@ fn install_input_bindings(bytes: &[u8]) -> Result<Vec<u8>, (&'static str, String
 fn secure_owner_consumer_command(verb: &str, args: &[String]) -> Result<String, (&'static str, String)> {
     let pending = verb.ends_with("-pending") || verb.ends_with("-pending-offers") || verb.ends_with("-pending-deliveries") || verb == "owner-private-stage-list" || verb == "owner-private-install-list";
     let private_action_submit = verb == "owner-private-action-submit";
-    let valid_action_args = private_action_submit
-        && (args.len() == 3 || args.len() == 5 && args[3] == "--operation-id");
+    let valid_action_args = private_action_submit && private_action_operation_id(args).is_ok();
     if args.len() != if pending { 2 } else { 3 } && !valid_action_args {
         return Err(("USAGE", "secure owner-action-submit|owner-action-status|owner-action-retry|owner-action-pending|owner-private-action-submit CONFIG WORKSPACE INPUT_JSON_FILE [--operation-id OPERATION_ID]|owner-private-action-status|owner-private-action-retry|owner-private-action-pending|owner-install-begin|owner-install-continue|owner-install-pending|owner-private-stage-submit|owner-private-stage-continue|owner-private-stage-list|owner-private-install-begin|owner-private-install-begin-direct|owner-private-install-continue|owner-private-install-list|owner-admit-offer|owner-admit-retry-offer|owner-admit-pending-offers|owner-admit-deliver|owner-admit-retry-delivery|owner-admit-pending-deliveries|owner-private-admit-offer|owner-private-admit-retry-offer|owner-private-admit-pending-offers|owner-private-admit-deliver|owner-private-admit-retry-delivery|owner-private-admit-pending-deliveries CONFIG_JSON_FILE WORKSPACE_ID [INPUT_JSON_FILE|COMMAND_ID]".to_owned()));
     }
@@ -943,8 +942,8 @@ fn secure_owner_consumer_command(verb: &str, args: &[String]) -> Result<String, 
                     let bytes = fs::read(&args[2]).map_err(|e| ("ACTION_FILE", e.to_string()))?;
                     let input: PublicActionInput = serde_json::from_slice(&bytes)
                         .map_err(|_| ("ACTION_INPUT_INVALID", "invalid Owner action input".to_owned()))?;
-                    if args.len() == 5 {
-                        access.submit_new_json_with_operation_id(input, &args[4], &cancel)
+                    if let Some(operation_id) = private_action_operation_id(args).map_err(|_| ("USAGE", "invalid PRIVATE operation ID option".to_owned()))? {
+                        access.submit_new_json_with_operation_id(input, operation_id, &cancel)
                     } else {
                         access.submit_new_json_with_cancel(input, &cancel)
                     }
@@ -987,6 +986,30 @@ fn secure_owner_consumer_command(verb: &str, args: &[String]) -> Result<String, 
         _ => unreachable!(),
     };
     result.map_err(|e| (e.code(), e.to_string()))
+}
+
+fn private_action_operation_id(args: &[String]) -> Result<Option<&str>, ()> {
+    match args {
+        [_config, _workspace, _input] => Ok(None),
+        [_config, _workspace, _input, flag, operation_id]
+            if flag == "--operation-id" && !operation_id.is_empty() => Ok(Some(operation_id)),
+        _ => Err(()),
+    }
+}
+
+#[cfg(test)]
+mod operation_id_argument_tests {
+    use super::private_action_operation_id;
+
+    #[test]
+    fn private_action_submit_accepts_stable_operation_id_option_only_in_the_private_shape() {
+        let args = vec!["config".into(), "workspace".into(), "input".into(), "--operation-id".into(), "a".repeat(43)];
+        assert_eq!(private_action_operation_id(&args).unwrap(), Some("a".repeat(43).as_str()));
+        let legacy = vec!["config".into(), "workspace".into(), "input".into()];
+        assert_eq!(private_action_operation_id(&legacy).unwrap(), None);
+        let wrong_flag = vec!["config".into(), "workspace".into(), "input".into(), "--operation".into(), "a".repeat(43)];
+        assert!(private_action_operation_id(&wrong_flag).is_err());
+    }
 }
 
 fn public_catalog_command(verb: &str, args: &[String]) -> Result<String, (&'static str, String)> {

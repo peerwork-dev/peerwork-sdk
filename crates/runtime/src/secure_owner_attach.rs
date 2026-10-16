@@ -23,7 +23,7 @@ use peerwork_core::{
     },
     prepared_private_install::{canonical_package_source_material, package_source_identity_matches, prepare_multipart_orphan_package_stage_material, prepare_orphan_package_stage_material, verify_complete_package_source, normalize_package_source_proof, verify_saved_private_package_install_begin_with_disclosure, verify_saved_private_direct_install_begin_with_options, verify_saved_private_package_install_step, VerifiedMultipartOrphanMaterial, MAX_PACKAGE_SOURCE_PARTS},
     public_direct_install::{normalize_install_protocol_manifest, plan_public_install_snapshot, resolve_explicit_install_protocol, resolve_install_protocol_with_available},
-    replayed_secure_journal::{replay_secure_journal_exact, JournalReplayInput, StructureStatus},
+    replayed_secure_journal::StructureStatus,
     secure_keyring::SecretKeyring,
     wire_json::{canonical_wire_value, parse_wire_json_bounded, WireValue},
 };
@@ -6294,21 +6294,10 @@ fn replay_install_step_predecessor(
         "owner_id": input.expected_owner_actor_id, "owner_key": input.expected_owner_key_id,
         "sequence": sequence, "head": head, "policy_hash": policy_hash,
     })).map_err(|_| invalid())?;
-    let commits: Vec<_> = replayed.signed_commit_wires().get(..through).ok_or_else(invalid)?
-        .iter().map(Vec::as_slice).collect();
-    let mut policies = Vec::new();
-    for wire in replayed.signed_policy_wires() {
-        let policy = parse_wire_json_bounded(wire, 64, 196_608).map_err(|_| invalid())?;
-        if exact_u64(policy.get("payload").and_then(|value| value.get("effective_sequence")))
-            .ok_or_else(invalid)? <= sequence { policies.push(wire.as_slice()); }
-    }
     let ring_wire = ring.canonical_wire().map_err(|_| invalid())?;
-    let prefix = replay_secure_journal_exact(JournalReplayInput {
-        policy_wires: &policies, commit_wires: &commits, checkpoint_wire: &checkpoint,
-        workspace_id: &input.workspace_id, owner_actor_id: &input.expected_owner_actor_id,
-        owner_signing_key: &input.expected_owner_key_id, final_sequence: sequence,
-        final_head: Some(&head), final_policy_hash: &policy_hash, keyring_wire: Some(&ring_wire),
-    }).map_err(|_| invalid())?;
+    let prefix = replayed
+        .authenticated_prefix_replay(&checkpoint, Some(&ring_wire))
+        .map_err(|_| invalid())?;
     Ok((prefix, checkpoint))
 }
 
@@ -6387,28 +6376,10 @@ fn verify_exact_direct_install_begin(
         "sequence": prior_sequence, "head": predecessor, "policy_hash": prior_hash,
     });
     let checkpoint_wire = serde_json::to_vec(&checkpoint).map_err(|_| invalid())?;
-    let through = usize::try_from(prior_sequence).map_err(|_| invalid())?;
-    let commit_refs: Vec<&[u8]> = replayed.signed_commit_wires()
-        .get(..through).ok_or_else(invalid)?.iter().map(Vec::as_slice).collect();
-    let mut policies = Vec::new();
-    for wire in replayed.signed_policy_wires() {
-        let signed = parse_wire_json_bounded(wire, 64, 196_608).map_err(|_| invalid())?;
-        let effective = signed.get("payload").and_then(|p| p.get("effective_sequence"));
-        if exact_u64(effective).ok_or_else(invalid)? <= prior_sequence {
-            policies.push(wire.as_slice());
-        }
-    }
     let ring_wire = ring.canonical_wire().map_err(|_| invalid())?;
-    let prior = replay_secure_journal_exact(JournalReplayInput {
-        policy_wires: &policies, commit_wires: &commit_refs,
-        checkpoint_wire: &checkpoint_wire,
-        workspace_id: &input.workspace_id,
-        owner_actor_id: &input.expected_owner_actor_id,
-        owner_signing_key: &input.expected_owner_key_id,
-        final_sequence: prior_sequence, final_head: Some(&predecessor),
-        final_policy_hash: &prior_hash,
-        keyring_wire: Some(&ring_wire),
-    }).map_err(|_| invalid())?;
+    let prior = replayed
+        .authenticated_prefix_replay(&checkpoint_wire, Some(&ring_wire))
+        .map_err(|_| invalid())?;
     if prior.structure_status() != StructureStatus::Active {
         return Err(invalid());
     }
@@ -7914,6 +7885,7 @@ mod tests {
     use crate::{
         secure_action_access::PublicActionInput, secure_owner_create::SecureOwnerWorkspaceCreate,
     };
+    use peerwork_core::replayed_secure_journal::{replay_secure_journal_exact, JournalReplayInput};
     use std::{
         io::{BufRead, BufReader},
         process::{Child, Command, Stdio},

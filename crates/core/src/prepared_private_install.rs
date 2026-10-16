@@ -264,7 +264,7 @@ pub fn prepare_private_protocol_object_stage(
         .ok_or_else(bad)?;
     let epoch = number(policy, "epoch")?;
     let ceiling = number(policy, "protocol_format_ceiling")?;
-    let context = obj(vec![
+    let mut context_fields = vec![
         ("v", WireValue::Number(3.0)),
         ("workspace_id", s(&workspace)),
         ("sequence", WireValue::Number(sequence as f64)),
@@ -288,7 +288,14 @@ pub fn prepare_private_protocol_object_stage(
                 ("heads", WireValue::Array(vec![])),
             ]),
         ),
-    ]);
+    ];
+    if policy.get("guard_time").is_some() {
+        context_fields.push((
+            "guard_time",
+            crate::guard_time::GuardTimeContextV1::universal().to_wire(),
+        ));
+    }
+    let context = obj(context_fields);
     let operation = obj(vec![
         ("v", WireValue::Number(1.0)),
         ("kind", s("ADMIN")),
@@ -759,6 +766,12 @@ fn plan_stage(
         fields.push((
             "protocol_format_ceiling",
             WireValue::Number(number(policy, "protocol_format_ceiling")? as f64),
+        ));
+    }
+    if policy.get("guard_time").is_some() {
+        fields.push((
+            "guard_time",
+            crate::guard_time::GuardTimeContextV1::universal().to_wire(),
         ));
     }
     Ok(StagePlan {
@@ -1522,6 +1535,12 @@ fn prepare_private_package_install_begin_with_sources(
     } else {
         None
     };
+    if policy.get("guard_time").is_some() {
+        context_fields.push((
+            "guard_time",
+            crate::guard_time::GuardTimeContextV1::universal().to_wire(),
+        ));
+    }
     let context = obj(context_fields);
     let operation_wire =
         canonical_wire_value(&begin.operation, Path::SecureArtifact).map_err(|_| bad())?;
@@ -1875,6 +1894,12 @@ fn prepare_private_direct_install_begin_with_source(
     } else {
         None
     };
+    if policy.get("guard_time").is_some() {
+        context_fields.push((
+            "guard_time",
+            crate::guard_time::GuardTimeContextV1::universal().to_wire(),
+        ));
+    }
     let operation_wire =
         canonical_wire_value(&begin.operation, Path::SecureArtifact).map_err(|_| bad())?;
     let commit = sign_private_commit(
@@ -2303,6 +2328,12 @@ pub fn prepare_private_package_install_step(
     } else {
         None
     };
+    if payload.get("guard_time").is_some() {
+        fields.push((
+            "guard_time",
+            crate::guard_time::GuardTimeContextV1::universal().to_wire(),
+        ));
+    }
     let context = obj(fields);
     let operation_wire =
         canonical_wire_value(&operation, Path::SecureArtifact).map_err(|_| bad())?;
@@ -2439,7 +2470,8 @@ mod tests {
 
     fn signed(payload: &WireValue, signer: &SigningKey) -> Vec<u8> {
         let canonical = canonical_wire_value(payload, Path::SecureArtifact).unwrap();
-        let mut message = b"peerwork.secure.policy.v2\0".to_vec();
+        let version = payload.get("v").and_then(WireValue::as_number).unwrap() as u64;
+        let mut message = format!("peerwork.secure.policy.v{version}\0").into_bytes();
         message.extend_from_slice(canonical.as_bytes());
         canonical_wire_value(
             &obj(vec![
@@ -2463,11 +2495,20 @@ mod tests {
         let owner = actor_id(&signer.verifying_key().to_bytes());
         let policy = signed(
             &obj(vec![
-                ("v", WireValue::Number(2.0)),
+                ("v", WireValue::Number(3.0)),
                 ("workspace_id", s(&workspace)),
                 ("owner_id", s(&owner)),
                 ("signing_key", s(&owner_key)),
                 ("visibility", s("PRIVATE")),
+                ("structure_mode", s("STRUCTURED")),
+                ("protocol_format_ceiling", WireValue::Number(2.0)),
+                ("guard_time", obj(vec![
+                    ("v", WireValue::Number(1.0)),
+                    ("mode", s("ALL_COMMITS")),
+                    ("audience", s("test.example")),
+                    ("service_key", s(&"S".repeat(43))),
+                    ("disclosure", s("GUARD_WINDOW")),
+                ])),
                 ("epoch", WireValue::Number(1.0)),
                 ("effective_sequence", WireValue::Number(1.0)),
                 (
@@ -2590,6 +2631,14 @@ mod tests {
         )
         .unwrap());
         let payload = commit.get("payload").unwrap();
+        assert_eq!(
+            canonical_wire_value(payload.get("guard_time").unwrap(), Path::SecureArtifact).unwrap(),
+            canonical_wire_value(
+                &crate::guard_time::GuardTimeContextV1::universal().to_wire(),
+                Path::SecureArtifact,
+            ).unwrap(),
+            "guarded PRIVATE stage carries its authenticated universal context"
+        );
         let WireValue::Object(fields) = payload else {
             panic!("payload")
         };

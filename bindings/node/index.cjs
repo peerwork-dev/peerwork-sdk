@@ -618,7 +618,7 @@ exports.openSecureOwnerWorkspaces = options => {
   };
   const consumer = (kind, workspaceId) => {
     if (typeof workspaceId !== 'string' || !workspaceId) throw new TypeError('workspace ID is required');
-    const call = async (operation, input, commandId, signal) => {
+    const call = async (operation, input, commandId, signal, operationId) => {
       const handle = new binding.KernelCancelHandle();
       const onAbort = () => handle.cancel();
       if (signal?.aborted) onAbort();
@@ -626,7 +626,7 @@ exports.openSecureOwnerWorkspaces = options => {
       try {
         const result = JSON.parse(await binding.secureOwnerConsumerJson(kind, operation,
           strictCommandJson(config), workspaceId,
-          input === undefined ? undefined : strictCommandJson(input), commandId, handle));
+          input === undefined ? undefined : strictCommandJson(input), commandId, handle, operationId));
         if (result.ok !== true) {
           const error = new Error(result.message);
           error.code = result.code;
@@ -746,12 +746,17 @@ exports.openSecureOwnerWorkspaces = options => {
       pendingDeliveries: (options = {}) => call('pending_deliveries', undefined, undefined, options.signal),
     });
     return Object.freeze({
-      submit: (actionId, instanceId, body, options = {}) => call('submit', {
+      submit: (actionId, instanceId, body, options = {}) => {
+        if (options.operationId != null && (kind !== 'private_action' || typeof options.operationId !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(options.operationId))) {
+          throw new TypeError('operationId is a stable 43-character ID available only for guarded PRIVATE actions');
+        }
+        return call('submit', {
         action_id: actionId, instance_id: instanceId, body_json: strictCommandJson(body),
         exact_input_refs_json: options.exactInputRefs === undefined ? null : strictCommandJson(options.exactInputRefs),
         allocations_json: options.allocations === undefined ? null : strictCommandJson(options.allocations),
         command_id: options.commandId ?? null, issued_at_ms: options.issuedAtMs ?? null,
-      }, undefined, options.signal),
+        }, undefined, options.signal, options.operationId);
+      },
       reconcile: (commandId, options = {}) => call('reconcile', undefined, commandId, options.signal),
       retrySaved: (commandId, options = {}) => call('retry', undefined, commandId, options.signal),
       pending: (options = {}) => call('pending', undefined, undefined, options.signal),

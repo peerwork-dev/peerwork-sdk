@@ -8,6 +8,7 @@ pub mod protected_config;
 pub mod acquisition;
 pub mod kernel_access;
 pub mod kernel_client;
+pub mod public_protocol_publication;
 pub mod kernel_identity;
 pub mod kernel_intents;
 pub mod public_catalog;

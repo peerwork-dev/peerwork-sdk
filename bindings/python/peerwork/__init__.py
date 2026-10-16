@@ -666,7 +666,10 @@ class SecurePublicActionClient(SecureReadClient):
 
     def _action(self, operation: str, *, input_value: dict | None = None,
                 command_id: str | None = None,
+                operation_id: str | None = None,
                 cancel_handle: KernelCancelHandle | None = None) -> SecureActionResult | list[PendingSecureAction]:
+        if operation_id is not None:
+            raise ValueError("operation_id is available only for guarded PRIVATE Owner actions")
         config_json = json.dumps(self._config, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
         input_json = None if input_value is None else json.dumps(input_value, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
         result = json.loads(secure_public_action_json(operation, config_json, input_json, command_id, cancel_handle))
@@ -683,7 +686,8 @@ class SecurePublicActionClient(SecureReadClient):
                exact_input_refs: list[object] | None = None,
                allocations: list[object] | None = None,
                command_id: str | None = None,
-               issued_at_ms: int | None = None) -> SecureActionResult:
+               issued_at_ms: int | None = None,
+               operation_id: str | None = None) -> SecureActionResult:
         """Prepare once, save exact bytes, POST, and return PENDING."""
         value = {
             "action_id": action_id,
@@ -694,7 +698,7 @@ class SecurePublicActionClient(SecureReadClient):
             "command_id": command_id,
             "issued_at_ms": issued_at_ms,
         }
-        return cast(SecureActionResult, self._action("submit", input_value=value))
+        return cast(SecureActionResult, self._action("submit", input_value=value, operation_id=operation_id))
 
     def reconcile(self, command_id: str) -> SecureActionResult:
         return cast(SecureActionResult, self._action("reconcile", command_id=command_id))
@@ -707,11 +711,12 @@ class SecurePublicActionClient(SecureReadClient):
         return cast(list[PendingSecureAction], self._action("pending"))
 
     async def _action_async(self, operation: str, *, input_value: dict | None = None,
-                            command_id: str | None = None) -> SecureActionResult | list[PendingSecureAction]:
+                            command_id: str | None = None,
+                            operation_id: str | None = None) -> SecureActionResult | list[PendingSecureAction]:
         cancel_handle = KernelCancelHandle()
         worker = asyncio.create_task(asyncio.to_thread(
             self._action, operation, input_value=input_value,
-            command_id=command_id, cancel_handle=cancel_handle))
+            command_id=command_id, operation_id=operation_id, cancel_handle=cancel_handle))
         try:
             return await asyncio.shield(worker)
         except asyncio.CancelledError:
@@ -736,7 +741,8 @@ class SecurePublicActionClient(SecureReadClient):
                            exact_input_refs: list[object] | None = None,
                            allocations: list[object] | None = None,
                            command_id: str | None = None,
-                           issued_at_ms: int | None = None) -> SecureActionResult:
+                           issued_at_ms: int | None = None,
+                           operation_id: str | None = None) -> SecureActionResult:
         value = {
             "action_id": action_id,
             "instance_id": instance_id,
@@ -746,7 +752,7 @@ class SecurePublicActionClient(SecureReadClient):
             "command_id": command_id,
             "issued_at_ms": issued_at_ms,
         }
-        return cast(SecureActionResult, await self._action_async("submit", input_value=value))
+        return cast(SecureActionResult, await self._action_async("submit", input_value=value, operation_id=operation_id))
 
     async def retry_saved_async(self, command_id: str) -> SecureActionResult:
         return cast(SecureActionResult, await self._action_async("retry", command_id=command_id))
@@ -2118,12 +2124,15 @@ class OwnerWorkspaceActionClient(SecurePublicActionClient):
 
     def _action(self, operation: str, *, input_value: dict | None = None,
                 command_id: str | None = None,
+                operation_id: str | None = None,
                 cancel_handle: KernelCancelHandle | None = None) -> SecureActionResult | list[PendingSecureAction]:
+        if operation_id is not None and (self._kind != "private_action" or not isinstance(operation_id, str) or len(operation_id) != 43 or not all(c.isascii() and (c.isalnum() or c in "-_") for c in operation_id)):
+            raise ValueError("operation_id must be a 43-character stable ID for PRIVATE Owner actions")
         result = json.loads(secure_owner_consumer_json(self._kind, operation,
             json.dumps(self._owner_config, ensure_ascii=True, allow_nan=False, separators=(",", ":")),
             self._workspace_id,
             None if input_value is None else json.dumps(input_value, ensure_ascii=True, allow_nan=False, separators=(",", ":")),
-            command_id, cancel_handle))
+            command_id, cancel_handle, operation_id))
         if result["ok"] is not True:
             raise SecureActionError(result["code"], result["message"])
         value = result["value"]

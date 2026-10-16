@@ -19,7 +19,7 @@ use peerwork_core::{
         verify_saved_owner_private_format_transition, verify_saved_owner_public_format_upgrade,
         OwnerFormatPrepareError, OwnerFormatTransitionKind,
     },
-    replayed_secure_journal::{replay_secure_journal_exact, JournalReplayInput, StructureStatus},
+    replayed_secure_journal::StructureStatus,
     wire_json::WireValue,
 };
 use rand_core::{OsRng, RngCore};
@@ -302,27 +302,8 @@ fn result(
 fn source_objects_at_saved(
     source: &crate::secure_verified_read::TransportReplayedJournal,
     lifecycle: Option<&SecureLifecycle>,
-    row: &SavedTransition,
     checkpoint_wire: &[u8],
 ) -> Result<Vec<WireValue>, OwnerFormatTransitionError> {
-    let through = usize::try_from(row.source_sequence)
-        .map_err(|_| OwnerFormatTransitionError::Verification)?;
-    let commits = source.signed_commit_wires();
-    if commits.len() < through {
-        return Err(OwnerFormatTransitionError::Verification);
-    }
-    let commit_refs: Vec<&[u8]> = commits[..through].iter().map(Vec::as_slice).collect();
-    let mut policy_refs = Vec::new();
-    for wire in source.signed_policy_wires() {
-        let signed = peerwork_core::wire_json::parse_wire_json_bounded(wire, 64, 196_608)
-            .map_err(|_| OwnerFormatTransitionError::Verification)?;
-        let payload = signed
-            .get("payload")
-            .ok_or(OwnerFormatTransitionError::Verification)?;
-        if number(payload, "effective_sequence")? <= row.source_sequence {
-            policy_refs.push(wire.as_slice());
-        }
-    }
     let ring_wire = if let Some(lifecycle) = lifecycle {
         Some(
             lifecycle
@@ -334,19 +315,9 @@ fn source_objects_at_saved(
     } else {
         None
     };
-    let replay = replay_secure_journal_exact(JournalReplayInput {
-        policy_wires: &policy_refs,
-        commit_wires: &commit_refs,
-        checkpoint_wire,
-        workspace_id: source.replay().workspace_id(),
-        owner_actor_id: source.replay().owner_actor_id(),
-        owner_signing_key: source.replay().owner_signing_key(),
-        final_sequence: row.source_sequence,
-        final_head: Some(&row.source_head),
-        final_policy_hash: &row.source_policy_hash,
-        keyring_wire: ring_wire.as_deref().map(Vec::as_slice),
-    })
-    .map_err(|_| OwnerFormatTransitionError::Verification)?;
+    let replay = source
+        .authenticated_prefix_replay(checkpoint_wire, ring_wire.as_deref().map(Vec::as_slice))
+        .map_err(|_| OwnerFormatTransitionError::Verification)?;
     Ok(replay.objects().to_vec())
 }
 
@@ -702,7 +673,7 @@ impl SecureOwnerFormatTransition {
             let checkpoint=peerwork_core::canonical::canonical(&checkpoint,peerwork_core::canonical::Path::SecureArtifact)
                 .map_err(|_|OwnerFormatTransitionError::Packet)?;
             let packet=decode_base64url(&row.request_b64).map_err(|_|OwnerFormatTransitionError::Packet)?;
-            let historical_objects=source_objects_at_saved(source,lifecycle.as_ref(),&row,checkpoint.as_bytes())?;
+            let historical_objects=source_objects_at_saved(source,lifecycle.as_ref(),checkpoint.as_bytes())?;
             let proof=if let Some(lifecycle)=lifecycle.as_ref() {
                 let epoch=number(old_payload,"epoch")?;
                 let key=lifecycle.active_key(epoch).ok_or(OwnerFormatTransitionError::Identity)?;

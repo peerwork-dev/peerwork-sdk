@@ -460,6 +460,8 @@ export interface SecureActionOptions {
   allocations?: unknown[];
   commandId?: string;
   issuedAtMs?: number;
+  /** Required for PRIVATE workspaces with ALL_COMMITS guard-time policy; reuse the same ID after a lost response/restart. */
+  operationId?: string;
   signal?: AbortSignal;
 }
 export interface SecurePublicActionSession {

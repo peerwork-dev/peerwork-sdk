@@ -283,9 +283,7 @@ impl HttpTransport {
             .await
             .map_err(|_| TransportError::SubmittedUncertain)?;
         #[cfg(test)]
-        if path.starts_with("/api/workspace/v1/secure/workspaces/")
-            && TEST_DROP_NEXT_SECURE_POST_RESPONSE.swap(false, std::sync::atomic::Ordering::SeqCst)
-        {
+        if TEST_DROP_NEXT_SECURE_POST_RESPONSE.swap(false, std::sync::atomic::Ordering::SeqCst) {
             return Err(TransportError::SubmittedUncertain);
         }
         Ok(response)
@@ -377,6 +375,35 @@ impl HttpTransport {
             result = send => result.map_err(map_network_error)?,
         };
         read_bounded(response, max_response_bytes, cancel).await
+    }
+
+    /// Exact actor-authenticated PUBLIC workspace administration snapshot.
+    /// The response is ordinary JSON; callers must compare it to the
+    /// compiler-derived artifact and command-bound signed receipts.
+    pub(crate) async fn get_public_workspace_snapshot(
+        &self,
+        workspace_id: &str,
+        read_proof: &str,
+        cancel: &CancellationToken,
+    ) -> Result<ExactHttpResponse, TransportError> {
+        let path = format!("/api/workspace/v1/admin/workspaces/{workspace_id}");
+        if !valid_identity_token(workspace_id)
+            || read_proof.is_empty()
+            || read_proof.len() > 12_000
+        {
+            return Err(TransportError::InvalidOrigin);
+        }
+        let url = self.endpoint(&path)?;
+        let send = self
+            .client
+            .get(url)
+            .header("X-Peerwork-Read", read_proof)
+            .send();
+        let response = tokio::select! {
+            _ = cancel.cancelled() => return Err(TransportError::Cancelled),
+            result = send => result.map_err(|_| TransportError::Network)?,
+        };
+        read_bounded(response, MAX_COMMAND_RESPONSE_BYTES, cancel).await
     }
 
     /// Exact authenticated admission control GET. The signed read proof must

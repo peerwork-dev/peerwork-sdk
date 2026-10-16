@@ -691,11 +691,11 @@ fn secure_owner_create_json(
 }
 
 #[pyfunction]
-#[pyo3(signature = (kind, operation, config_json, workspace_id, input_json=None, command_id=None, cancel_handle=None))]
+#[pyo3(signature = (kind, operation, config_json, workspace_id, input_json=None, command_id=None, cancel_handle=None, operation_id=None))]
 fn secure_owner_consumer_json(
     py: Python<'_>, kind: &str, operation: &str, config_json: &str,
     workspace_id: &str, input_json: Option<&str>, command_id: Option<&str>,
-    cancel_handle: Option<PyRef<'_, KernelCancelHandle>>,
+    cancel_handle: Option<PyRef<'_, KernelCancelHandle>>, operation_id: Option<&str>,
 ) -> PyResult<String> {
     let kind = kind.to_owned();
     let operation = operation.to_owned();
@@ -703,6 +703,7 @@ fn secure_owner_consumer_json(
     let workspace_id = workspace_id.to_owned();
     let input_json = input_json.map(str::to_owned);
     let command_id = command_id.map(str::to_owned);
+    let operation_id = operation_id.map(str::to_owned);
     let cancel = cancel_handle.map(|handle| handle.token.clone()).unwrap_or_default();
     Ok(py.allow_threads(move || {
         let fail = |code: &str, message: &str| serde_json::json!({"ok":false,"code":code,"message":message}).to_string();
@@ -711,6 +712,9 @@ fn secure_owner_consumer_json(
             Err(_) => return fail("INPUT_INVALID", "invalid Owner configuration"),
         };
         let owner = SecureOwnerWorkspaceCreate::new(config);
+        if operation_id.is_some() && kind != "private_action" {
+            return fail("ACTION_INPUT_INVALID", "operation ID is available only for PRIVATE actions");
+        }
         let result = if kind == "public_action" {
             let access = match owner.public_action_access(&workspace_id) {
                 Ok(value) => value,
@@ -743,7 +747,11 @@ fn secure_owner_consumer_json(
                         Some(value) => value,
                         None => return fail("ACTION_INPUT_INVALID", "invalid Owner action input"),
                     };
-                    access.submit_new_json_with_cancel(input, &cancel)
+                    if let Some(operation_id) = operation_id.as_deref() {
+                        access.submit_new_json_with_operation_id(input, operation_id, &cancel)
+                    } else {
+                        access.submit_new_json_with_cancel(input, &cancel)
+                    }
                 }
                 "reconcile" | "retry" => match command_id.as_deref() {
                     Some(id) if operation == "reconcile" => access.reconcile_json_with_cancel(id, &cancel),

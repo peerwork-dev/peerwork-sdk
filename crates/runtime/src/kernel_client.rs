@@ -7,7 +7,7 @@ use crate::{
     kernel_intents::{
         JournalError, KernelIntentJournal, KernelPath, PendingKernelIntent, VerifiedPendingCommand,
     },
-    transport::{HttpTransport, TransportConfig, TransportError, MAX_DISCOVERY_BYTES},
+    transport::{ExactHttpResponse, HttpTransport, TransportConfig, TransportError, MAX_DISCOVERY_BYTES},
 };
 use peerwork_core::discovery::{parse_discovery_wire, ParsedDiscovery};
 use peerwork_core::prepared_command::prepare_signed_command_wire;
@@ -386,6 +386,27 @@ impl KernelClient {
         self.transport.trusted_origin()
     }
 
+    pub(crate) async fn read_public_workspace_snapshot(
+        &self,
+        identity: &KernelIdentity,
+        authority: &str,
+        workspace_id: &str,
+        cancel: &CancellationToken,
+    ) -> Result<ExactHttpResponse, KernelClientError> {
+        let path = format!("/api/workspace/v1/admin/workspaces/{workspace_id}");
+        let proof = crate::secure_journal_read::sign_read_proof(
+            &path,
+            &self.discovery,
+            identity,
+            authority,
+        )
+        .map_err(|_| KernelClientError::InvalidResult)?;
+        Ok(self
+            .transport
+            .get_public_workspace_snapshot(workspace_id, &proof, cancel)
+            .await?)
+    }
+
     pub fn discovery(&self) -> &ParsedDiscovery {
         &self.discovery
     }
@@ -519,6 +540,37 @@ impl KernelClient {
                 )?,
             ))),
             None => Ok(Some(KernelOperationStatus::Pending)),
+        }
+    }
+
+    /// Read the workspace CAS revision only from the signature-verified
+    /// result of this exact saved `protocol.publish` command. The general
+    /// result DTO keeps its existing public shape and instance revision
+    /// semantics.
+    pub fn verified_published_workspace_revision(
+        &self,
+        command_id: &str,
+        local_key_id: &str,
+    ) -> Result<Option<u64>, KernelClientError> {
+        let Some(saved) = self.journal.verified_pending(
+            command_id, local_key_id, self.discovery.audience_utf16(),
+        )? else { return Ok(None); };
+        let Some(verified) = self.journal.accepted_response(
+            &saved, self.discovery.receipt_public_key(),
+        )? else { return Ok(None); };
+        let command = parse_wire_json_bounded(
+            saved.proof.command_canonical_json().as_bytes(), 40, 180_000,
+        ).map_err(|_| KernelClientError::InvalidResult)?;
+        if required_text(&command, "action_id")? != "protocol.publish" {
+            return Err(KernelClientError::InvalidResult);
+        }
+        let result = parse_wire_json_bounded(
+            verified.result_canonical_json().as_bytes(), 12, 32 * 1024 * 1024,
+        ).map_err(|_| KernelClientError::InvalidResult)?;
+        match result.get("workspace_revision") {
+            Some(WireValue::Number(value)) if value.is_finite() && *value >= 1.0
+                && *value <= 9_007_199_254_740_991.0 && value.fract() == 0.0 => Ok(Some(*value as u64)),
+            _ => Err(KernelClientError::InvalidResult),
         }
     }
 

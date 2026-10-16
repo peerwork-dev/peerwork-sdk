@@ -897,6 +897,7 @@ pub struct SecureOwnerConsumerTask {
     workspace_id: String,
     input_json: Option<String>,
     command_id: Option<String>,
+    operation_id: Option<String>,
     cancel: KernelCancellationToken,
 }
 
@@ -906,6 +907,9 @@ impl Task for SecureOwnerConsumerTask {
 
     fn compute(&mut self) -> Result<Self::Output> {
         let fail = |code: &str, message: &str| serde_json::json!({"ok":false,"code":code,"message":message}).to_string();
+        if self.operation_id.is_some() && self.kind != "private_action" {
+            return Ok(fail("ACTION_INPUT_INVALID", "operation ID is available only for PRIVATE actions"));
+        }
         let config: SecureOwnerCreateConfig = match serde_json::from_str(&self.config_json) {
             Ok(value) => value,
             Err(_) => return Ok(fail("INPUT_INVALID", "invalid Owner configuration")),
@@ -946,7 +950,11 @@ impl Task for SecureOwnerConsumerTask {
                         Some(value) => value,
                         None => return Ok(fail("ACTION_INPUT_INVALID", "invalid Owner action input")),
                     };
-                    access.submit_new_json_with_cancel(input, &self.cancel)
+                    if let Some(operation_id) = self.operation_id.as_deref() {
+                        access.submit_new_json_with_operation_id(input, operation_id, &self.cancel)
+                    } else {
+                        access.submit_new_json_with_cancel(input, &self.cancel)
+                    }
                 }
                 "reconcile" => match self.command_id.as_deref() {
                     Some(id) => access.reconcile_json_with_cancel(id, &self.cancel),
@@ -1129,10 +1137,10 @@ pub fn public_catalog_json(
 pub fn secure_owner_consumer_json(
     kind: String, operation: String, config_json: String, workspace_id: String,
     input_json: Option<String>, command_id: Option<String>,
-    cancel_handle: Option<ClassInstance<KernelCancelHandle>>,
+    cancel_handle: Option<ClassInstance<KernelCancelHandle>>, operation_id: Option<String>,
 ) -> AsyncTask<SecureOwnerConsumerTask> {
     AsyncTask::new(SecureOwnerConsumerTask {
-        kind, operation, config_json, workspace_id, input_json, command_id,
+        kind, operation, config_json, workspace_id, input_json, command_id, operation_id,
         cancel: cancel_handle.map(|handle| handle.token.clone()).unwrap_or_default(),
     })
 }

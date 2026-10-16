@@ -16,7 +16,7 @@ use peerwork_core::{
     crypto::{base64url, decode_base64url},
     prepared_owner_coordination::{self as core, CoordinationPlan, CoordinationPrepareError},
     replayed_secure_journal::{
-        replay_secure_journal_exact, JournalReplayInput, ReplayedSecureJournal, StructureStatus,
+        ReplayedSecureJournal, StructureStatus,
     },
 };
 use rand_core::{OsRng, RngCore};
@@ -853,19 +853,6 @@ fn prefix(
     if !source.replay().contains_checkpoint(seq, Some(head), ph) {
         return Err(Error::Verification);
     }
-    let all = source.signed_commit_wires();
-    let through = usize::try_from(seq).map_err(|_| Error::Packet)?;
-    if through > all.len() {
-        return Err(Error::Verification);
-    }
-    let commits: Vec<_> = all[..through].iter().map(Vec::as_slice).collect();
-    let mut policies = vec![];
-    for w in source.signed_policy_wires() {
-        let p = parse(w)?;
-        if num(&p["payload"], "effective_sequence")? <= seq {
-            policies.push(w.as_slice());
-        }
-    }
     let ring = lifecycle
         .map(|l| {
             l.active_keyring_without_pending()
@@ -874,19 +861,9 @@ fn prefix(
                 .map_err(|_| Error::Identity)
         })
         .transpose()?;
-    replay_secure_journal_exact(JournalReplayInput {
-        policy_wires: &policies,
-        commit_wires: &commits,
-        checkpoint_wire: cp_wire,
-        workspace_id: source.replay().workspace_id(),
-        owner_actor_id: source.replay().owner_actor_id(),
-        owner_signing_key: source.replay().owner_signing_key(),
-        final_sequence: seq,
-        final_head: Some(head),
-        final_policy_hash: ph,
-        keyring_wire: ring.as_deref().map(Vec::as_slice),
-    })
-    .map_err(|_| Error::Verification)
+    source
+        .authenticated_prefix_replay(cp_wire, ring.as_deref().map(Vec::as_slice))
+        .map_err(|_| Error::Verification)
 }
 
 #[cfg(test)]

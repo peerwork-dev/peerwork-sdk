@@ -168,6 +168,95 @@ fn push_bounded(
 }
 
 impl TransportReplayedJournal {
+    /// Replay an exact historical prefix from this already authenticated
+    /// transport snapshot. Guard proofs are selected by the exact included
+    /// commit hashes so evidence for later commits cannot leak into prefix
+    /// verification.
+    pub(crate) fn authenticated_prefix_replay(
+        &self,
+        checkpoint_wire: &[u8],
+        keyring_wire: Option<&[u8]>,
+    ) -> Result<ReplayedSecureJournal, VerifiedReadError> {
+        let checkpoint = parse_wire_json_bounded(checkpoint_wire, 32, 8192)
+            .map_err(|_| VerifiedReadError::Content)?;
+        let canonical = canonical_wire_value(&checkpoint, Path::SecureArtifact)
+            .map_err(|_| VerifiedReadError::Content)?;
+        let sequence = checkpoint
+            .get("sequence")
+            .and_then(WireValue::as_number)
+            .filter(|n| {
+                n.is_finite() && *n >= 1.0 && *n <= 9_007_199_254_740_991.0 && n.fract() == 0.0
+            })
+            .ok_or(VerifiedReadError::Content)? as u64;
+        let head = checkpoint
+            .get("head")
+            .and_then(WireValue::as_string)
+            .ok_or(VerifiedReadError::Content)?;
+        let policy_hash = checkpoint
+            .get("policy_hash")
+            .and_then(WireValue::as_string)
+            .ok_or(VerifiedReadError::Content)?;
+        if checkpoint
+            .get("workspace_id")
+            .and_then(WireValue::as_string)
+            .as_deref()
+            != Some(self.replay.workspace_id())
+            || checkpoint
+                .get("owner_id")
+                .and_then(WireValue::as_string)
+                .as_deref()
+                != Some(self.replay.owner_actor_id())
+            || checkpoint
+                .get("owner_key")
+                .and_then(WireValue::as_string)
+                .as_deref()
+                != Some(self.replay.owner_signing_key())
+            || !self
+                .replay
+                .contains_checkpoint(sequence, Some(&head), &policy_hash)
+        {
+            return Err(VerifiedReadError::Content);
+        }
+        let through = usize::try_from(sequence).map_err(|_| VerifiedReadError::Content)?;
+        let commits = self
+            .signed_commit_wires
+            .get(..through)
+            .ok_or(VerifiedReadError::Content)?;
+        let mut policies = Vec::new();
+        for wire in &self.signed_policy_wires {
+            let signed = parse_wire_json_bounded(wire, 64, 196_608)
+                .map_err(|_| VerifiedReadError::Content)?;
+            let effective = signed
+                .get("payload")
+                .and_then(|p| p.get("effective_sequence"))
+                .and_then(WireValue::as_number)
+                .filter(|n| n.is_finite() && *n >= 1.0 && n.fract() == 0.0)
+                .ok_or(VerifiedReadError::Content)? as u64;
+            if effective <= sequence {
+                policies.push(wire.clone());
+            }
+        }
+        let proofs = guard_proofs_for_prefix(commits, &self.signed_guard_time_attestation_wires)?;
+        let policy_refs = policies.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        let commit_refs = commits.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        replay_with_budget(
+            JournalReplayInput {
+                policy_wires: &policy_refs,
+                commit_wires: &commit_refs,
+                checkpoint_wire: canonical.as_bytes(),
+                workspace_id: self.replay.workspace_id(),
+                owner_actor_id: self.replay.owner_actor_id(),
+                owner_signing_key: self.replay.owner_signing_key(),
+                final_sequence: sequence,
+                final_head: Some(&head),
+                final_policy_hash: &policy_hash,
+                keyring_wire,
+            },
+            self.budget,
+            &proofs,
+        )
+    }
+
     /// Reconstruct an exact historical ACTIVE predecessor only from a complete
     /// origin-bound replay that still contains its checkpoint. This remains a
     /// private install proof context; it does not publish an older read floor.
@@ -236,23 +325,7 @@ impl TransportReplayedJournal {
                 policies.push(wire.clone());
             }
         }
-        let mut proofs = Vec::new();
-        for wire in &self.signed_guard_time_attestation_wires {
-            let proof =
-                parse_wire_json_bounded(wire, 32, 8192).map_err(|_| VerifiedReadError::Content)?;
-            let result_sequence = proof
-                .get("payload")
-                .and_then(|p| p.get("result"))
-                .and_then(|r| r.get("sequence"))
-                .and_then(WireValue::as_number)
-                .filter(|n| {
-                    n.is_finite() && *n >= 1.0 && *n <= 9_007_199_254_740_991.0 && n.fract() == 0.0
-                })
-                .ok_or(VerifiedReadError::Content)? as u64;
-            if result_sequence <= sequence {
-                proofs.push(wire.clone());
-            }
-        }
+        let proofs = guard_proofs_for_prefix(&commits, &self.signed_guard_time_attestation_wires)?;
         let ring_wire = keyring
             .canonical_wire()
             .map_err(|_| VerifiedReadError::Content)?;
@@ -523,6 +596,30 @@ fn replay_with_budget(
     })
 }
 
+fn guard_proofs_for_prefix(
+    commits: &[Vec<u8>],
+    all_proofs: &[Vec<u8>],
+) -> Result<Vec<Vec<u8>>, VerifiedReadError> {
+    let included_hashes = commits
+        .iter()
+        .map(|wire| sha256_hex(wire))
+        .collect::<std::collections::HashSet<_>>();
+    let mut selected = Vec::new();
+    for wire in all_proofs {
+        let proof = parse_wire_json_bounded(wire, 32, 8192)
+            .map_err(|_| VerifiedReadError::Content)?;
+        let commit_hash = proof
+            .get("payload")
+            .and_then(|p| p.get("commit_hash"))
+            .and_then(WireValue::as_string)
+            .ok_or(VerifiedReadError::Content)?;
+        if included_hashes.contains(&commit_hash) {
+            selected.push(wire.clone());
+        }
+    }
+    Ok(selected)
+}
+
 pub(crate) fn collect_unverified_artifacts(
     pages: &AuthenticatedJournalPages<'_>,
     budget: SecureJournalReadBudget,
@@ -669,5 +766,106 @@ mod tests {
         ));
         assert_eq!(total, 3);
         assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn prefix_proof_selection_uses_exact_included_commit_hashes() {
+        let included = br#"{"v":1,"commit":"in-prefix"}"#.to_vec();
+        let later = br#"{"v":1,"commit":"later"}"#.to_vec();
+        let included_hash = sha256_hex(&included);
+        let later_hash = sha256_hex(&later);
+        let proof = |hash: &str| {
+            format!(r#"{{"payload":{{"commit_hash":"{hash}"}},"signature":"sig"}}"#)
+                .into_bytes()
+        };
+        let all = vec![proof(&included_hash), proof(&later_hash)];
+        let selected = guard_proofs_for_prefix(&[included], &all).unwrap();
+        assert_eq!(selected, vec![all[0].clone()]);
+        assert!(guard_proofs_for_prefix(
+            &[later], &[br#"{"payload":{}}"#.to_vec()]
+        )
+        .is_err());
+    }
+
+    #[test]
+    #[ignore = "requires the protected synthetic T154 TypeScript action vector"]
+    fn shared_typescript_action_vector_replays_authenticated_prefix_without_later_proofs() {
+        let path = std::env::var_os("PEERWORK_T154_GUARDED_ACTION_VECTOR")
+            .map(std::path::PathBuf::from)
+            .expect("set the protected synthetic TypeScript action vector path");
+        let vector: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let wire_array = |name: &str| -> Vec<Vec<u8>> {
+            vector[name].as_array().unwrap().iter()
+                .map(|value| serde_json::to_vec(value).unwrap()).collect()
+        };
+        let policies = wire_array("policies");
+        let commits = wire_array("commits");
+        let proofs = wire_array("guard_time_attestations");
+        let checkpoint_wire = serde_json::to_vec(&vector["checkpoint"]).unwrap();
+        let checkpoint = parse_wire_json_bounded(&checkpoint_wire, 32, 8192).unwrap();
+        let keyring = serde_json::to_vec(&vector["keyring"]).unwrap();
+        let policy_refs = policies.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        let commit_refs = commits.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        let workspace_id = checkpoint.get("workspace_id").and_then(WireValue::as_string).unwrap();
+        let owner_actor_id = checkpoint.get("owner_id").and_then(WireValue::as_string).unwrap();
+        let owner_signing_key = checkpoint.get("owner_key").and_then(WireValue::as_string).unwrap();
+        let final_head = checkpoint.get("head").and_then(WireValue::as_string).unwrap();
+        let final_policy_hash = checkpoint.get("policy_hash").and_then(WireValue::as_string).unwrap();
+        let replay = replay_with_budget(JournalReplayInput {
+            policy_wires: &policy_refs,
+            commit_wires: &commit_refs,
+            checkpoint_wire: &checkpoint_wire,
+            workspace_id: &workspace_id,
+            owner_actor_id: &owner_actor_id,
+            owner_signing_key: &owner_signing_key,
+            final_sequence: checkpoint.get("sequence").and_then(WireValue::as_number).unwrap() as u64,
+            final_head: Some(&final_head),
+            final_policy_hash: &final_policy_hash,
+            keyring_wire: Some(&keyring),
+        }, SecureJournalReadBudget::default(), &proofs).unwrap();
+        let prefix_proof = vector["guard_time_attestations"].as_array().unwrap().iter()
+            .find(|proof| proof["payload"]["result"]["sequence"] == 5).unwrap();
+        let mut prefix_checkpoint = prefix_proof["payload"]["result"].clone();
+        prefix_checkpoint["v"] = serde_json::json!(1);
+        let prefix_checkpoint_wire = serde_json::to_vec(&prefix_checkpoint).unwrap();
+        let prefix_checkpoint_value = parse_wire_json_bounded(&prefix_checkpoint_wire, 32, 8192).unwrap();
+        let prefix_wire = canonical_wire_value(&prefix_checkpoint_value, Path::SecureArtifact).unwrap();
+        let mut journal = TransportReplayedJournal {
+            origin: "http://localhost/".to_owned(), authority: "0".repeat(64),
+            source_actor_id: replay.owner_actor_id().to_owned(),
+            source_key_id: replay.owner_signing_key().to_owned(),
+            keyring_state: None, checkpoint_canonical_json: String::new(), grant_keyring_sha256: None,
+            signed_policy_wires: policies, signed_commit_wires: commits,
+            signed_guard_time_attestation_wires: proofs, replay,
+            budget: SecureJournalReadBudget::default(),
+        };
+        let prefix = journal.authenticated_prefix_replay(prefix_wire.as_bytes(), Some(&keyring)).unwrap();
+        assert_eq!(prefix.sequence(), 5);
+
+        let prefix_commits = journal.signed_commit_wires.get(..5).unwrap();
+        let included = guard_proofs_for_prefix(prefix_commits, &journal.signed_guard_time_attestation_wires).unwrap();
+        assert_eq!(included.len(), 4, "activation and commits through sequence 5 need four proofs");
+        let included_hash = prefix_commits.iter().map(|wire| sha256_hex(wire)).collect::<std::collections::HashSet<_>>();
+        let missing_index = journal.signed_guard_time_attestation_wires.iter().position(|wire| {
+            let value = parse_wire_json_bounded(wire, 32, 8192).unwrap();
+            let hash = value.get("payload").and_then(|p| p.get("commit_hash")).and_then(WireValue::as_string).unwrap();
+            included_hash.contains(&hash) && value.get("payload").and_then(|p| p.get("result")).and_then(|r| r.get("sequence")).and_then(WireValue::as_number) == Some(5.0)
+        }).unwrap();
+        let removed = journal.signed_guard_time_attestation_wires.remove(missing_index);
+        assert!(journal.authenticated_prefix_replay(prefix_wire.as_bytes(), Some(&keyring)).is_err());
+        journal.signed_guard_time_attestation_wires.push(removed);
+
+        let tamper_index = journal.signed_guard_time_attestation_wires.iter().position(|wire| {
+            let value = parse_wire_json_bounded(wire, 32, 8192).unwrap();
+            let hash = value.get("payload").and_then(|p| p.get("commit_hash")).and_then(WireValue::as_string).unwrap();
+            included_hash.contains(&hash)
+        }).unwrap();
+        let mut tampered = parse_wire_json_bounded(&journal.signed_guard_time_attestation_wires[tamper_index], 32, 8192).unwrap();
+        if let WireValue::Object(fields) = &mut tampered {
+            let signature = fields.iter_mut().find(|(name, _)| name.iter().copied().eq("signature".encode_utf16())).unwrap();
+            signature.1 = WireValue::String("invalid".encode_utf16().collect());
+        }
+        journal.signed_guard_time_attestation_wires[tamper_index] = canonical_wire_value(&tampered, Path::SecureArtifact).unwrap().into_bytes();
+        assert!(journal.authenticated_prefix_replay(prefix_wire.as_bytes(), Some(&keyring)).is_err());
     }
 }

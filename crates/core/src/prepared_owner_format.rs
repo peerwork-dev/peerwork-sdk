@@ -274,6 +274,12 @@ pub fn prepare_owner_private_format_transition(
             ]),
         ));
     }
+    if next_policy.get("guard_time").is_some() {
+        context.push((
+            "guard_time",
+            crate::guard_time::GuardTimeContextV1::universal().to_wire(),
+        ));
+    }
     let commit = sign_private_commit(
         &obj(context),
         operation_wire.as_bytes(),

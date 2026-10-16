@@ -436,6 +436,13 @@ pub fn packet(
     if policy["v"] == 3 {
         context["protocol_format_ceiling"] = policy["protocol_format_ceiling"].clone();
     }
+    if policy.get("guard_time").is_some() {
+        context["guard_time"] = json!({
+            "v": 1,
+            "lower_ms": 0,
+            "upper_ms": 9_007_199_254_740_991u64,
+        });
+    }
     let commit = if let Some(saved) = saved {
         let request: Value = serde_json::from_slice(saved).map_err(|_| bad())?;
         if bytes(&request)? != saved
