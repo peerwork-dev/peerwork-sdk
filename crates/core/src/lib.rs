@@ -70,7 +70,7 @@ pub mod wire_json;
 
 use serde::Serialize;
 
-pub const SDK_VERSION: &str = "0.0.1";
+pub const SDK_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub fn version() -> &'static str {
     SDK_VERSION
 }
