@@ -102,7 +102,7 @@ function transformGuard(value:any,namespace:string,symbols:SymbolMapping={roles:
   if(value?.op==='has_protocol_role')return {...value,role:mappedSymbol(namespace,value.role,symbols.roles)};
   if(value?.op==='has_capability')return {...value,capability:mappedSymbol(namespace,value.capability,symbols.capabilities)};
   if(value?.op==='exact_ref_list')return {...value,...(value.source==='state'?{path:statePath(value.path,namespace)}:{}),...(typeof value.schema==='string'?{schema:qualify(namespace,value.schema,80)}:{})};
-  if(value?.op==='eq')return {...value,left:transformSelector(value.left,namespace,true),right:transformSelector(value.right,namespace,true)};
+  if(['eq','lt','lte','gt','gte'].includes(value?.op))return {...value,left:transformSelector(value.left,namespace,true),right:transformSelector(value.right,namespace,true)};
   if(value?.op==='in')return {...value,value:transformSelector(value.value,namespace,true),set:value.set.map((item:any)=>transformSelector(item,namespace,true))};
   if(value?.op==='exact_ref')return {...value,ref:transformSelector(value.ref,namespace,true)};
   return structuredClone(value);

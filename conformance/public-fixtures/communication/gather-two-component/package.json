@@ -1,0 +1,15 @@
+{
+  "format": "peerwork.protocol-package-metadata.v1",
+  "package_id": "peerwork-gather-two-component",
+  "version": "1.0.0",
+  "name": "gather-two-component",
+  "description": "Reusable fixed all-of-two gather. Both connected producer outputs must be available and exactly match their typed references. Collect appends an aggregate with provenance to both inputs and can run only once.",
+  "license": "Apache-2.0",
+  "license_file": "LICENSE",
+  "source_maintainers": [
+    {
+      "name": "Peerwork project maintainers",
+      "origin": "scripts/generate-communication-protocols.mjs"
+    }
+  ]
+}

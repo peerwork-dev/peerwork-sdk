@@ -158,7 +158,8 @@ pub(crate) fn validate_manifest(manifest: &WireValue) -> Result<(), EvalError> {
 
 fn walk_manifest(value: &WireValue, depth: usize, nodes: &mut usize) -> Result<(), EvalError> {
     *nodes += 1;
-    if *nodes > 2048 || depth > 32 {
+    // Program structure has its own bounded budget; data values remain 2048 nodes.
+    if *nodes > 8192 || depth > 32 {
         return Err(EvalError::InvalidPayload);
     }
     match value {
@@ -1413,5 +1414,20 @@ mod tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod composition_budget_tests {
+    use super::*;
+    fn object_nodes(children: usize) -> WireValue {
+        WireValue::Object((0..children).map(|n| (format!("k{n}").encode_utf16().collect(), WireValue::Null)).collect())
+    }
+    #[test]
+    fn program_walk_budget_does_not_expand_runtime_values() {
+        assert!(walk_manifest(&object_nodes(8191), 0, &mut 0).is_ok());
+        assert!(walk_manifest(&object_nodes(8192), 0, &mut 0).is_err());
+        assert!(safe_value(&object_nodes(2047), 0, &mut 0).is_ok());
+        assert!(safe_value(&object_nodes(2048), 0, &mut 0).is_err());
     }
 }

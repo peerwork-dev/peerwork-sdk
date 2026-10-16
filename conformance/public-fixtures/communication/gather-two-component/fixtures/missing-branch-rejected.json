@@ -1,0 +1,21 @@
+{
+  "id": "missing-branch-rejected",
+  "action_id": "gather.collect",
+  "state": {},
+  "body": {},
+  "auth": {
+    "actorId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "workspaceRoles": [],
+    "protocolRoles": [
+      "COORDINATOR"
+    ],
+    "capabilities": [
+      "GATHER"
+    ]
+  },
+  "time_ms": 100,
+  "expected": {
+    "accepted": false,
+    "code": "INVALID_PAYLOAD"
+  }
+}

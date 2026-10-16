@@ -1,0 +1,15 @@
+{
+  "format": "peerwork.protocol-package-metadata.v1",
+  "package_id": "peerwork-request-delivery-shell",
+  "version": "1.0.0",
+  "name": "request-delivery-shell",
+  "description": "Encapsulates the request component and forwards its public delivery ports without exposing descendant action names to connecting packages.",
+  "license": "Apache-2.0",
+  "license_file": "LICENSE",
+  "source_maintainers": [
+    {
+      "name": "Peerwork project maintainers",
+      "origin": "scripts/generate-communication-protocols.mjs"
+    }
+  ]
+}

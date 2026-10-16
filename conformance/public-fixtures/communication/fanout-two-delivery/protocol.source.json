@@ -1,0 +1,88 @@
+{
+  "format": "peerwork.protocol-source.v2",
+  "semantics": "peerwork.kernel.v1",
+  "manifest": {
+    "name": "peerwork.fanout-two-delivery.v1",
+    "display_version": "1",
+    "semantics": "peerwork.kernel.v1",
+    "dependencies": [],
+    "protocol_roles": [],
+    "capabilities": [],
+    "role_conflicts": [],
+    "historical_role_conflicts": [],
+    "constraints": {},
+    "record_schemas": {},
+    "initial_state": {},
+    "actions": []
+  },
+  "imports": [
+    {
+      "alias": "left",
+      "package_digest": "db0769685fc710246f63f7e21ec4417cd3124796699f8a551e912a34fd1c6311",
+      "namespace": "left"
+    },
+    {
+      "alias": "right",
+      "package_digest": "db0769685fc710246f63f7e21ec4417cd3124796699f8a551e912a34fd1c6311",
+      "namespace": "right"
+    },
+    {
+      "alias": "gather",
+      "package_digest": "6386194dd26a18b4b99fcb13a71c8742be0e35bbf2759bc8317ad9b7c5a5281e",
+      "namespace": "gather"
+    }
+  ],
+  "parameters": [],
+  "exports": [],
+  "bindings": [],
+  "derive": [],
+  "interfaces": {
+    "outputs": [
+      {
+        "name": "aggregate",
+        "type": "exact_ref",
+        "selector": {
+          "from": "import",
+          "alias": "gather",
+          "output": "aggregate"
+        },
+        "available_when": {
+          "op": "eq",
+          "left": {
+            "from": "literal",
+            "value": true
+          },
+          "right": {
+            "from": "literal",
+            "value": true
+          }
+        },
+        "schema": "gather.comm.aggregate",
+        "scope": "INSTANCE"
+      }
+    ],
+    "inputs": []
+  },
+  "connections": [
+    {
+      "from": {
+        "import": "left",
+        "output": "delivered_artifact"
+      },
+      "to": {
+        "import": "gather",
+        "input": "left_result"
+      }
+    },
+    {
+      "from": {
+        "import": "right",
+        "output": "delivered_artifact"
+      },
+      "to": {
+        "import": "gather",
+        "input": "right_result"
+      }
+    }
+  ]
+}

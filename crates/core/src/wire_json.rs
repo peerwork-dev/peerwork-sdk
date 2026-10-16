@@ -222,16 +222,16 @@ fn parse_wire_json_with_mode(
 
 pub fn canonical_wire_json(input: &[u8], path: Path) -> Result<String, WireError> {
     let max_depth = match path {
-        Path::Kernel { max_depth } => max_depth,
+        Path::Kernel { max_depth } | Path::Structure { max_depth } => max_depth,
         Path::SecureArtifact => 2048,
     };
     let max_bytes = match path {
-        Path::Kernel { .. } => 32 * 1024 * 1024,
+        Path::Kernel { .. } | Path::Structure { .. } => 32 * 1024 * 1024,
         Path::SecureArtifact => 512 * 1024 * 1024,
     };
     let value = match path {
         Path::SecureArtifact => parse_wire_json_js_bounded(input, max_depth, max_bytes)?,
-        Path::Kernel { .. } => parse_wire_json_bounded(input, max_depth, max_bytes)?,
+        Path::Kernel { .. } | Path::Structure { .. } => parse_wire_json_bounded(input, max_depth, max_bytes)?,
     };
     canonical_wire_value(&value, path)
 }
@@ -555,9 +555,9 @@ fn encode(
     nodes: &mut usize,
     out: &mut String,
 ) -> Result<(), WireError> {
-    if let Path::Kernel { max_depth } = path {
+    if let Some((max_depth, max_nodes)) = path.kernel_bounds() {
         *nodes += 1;
-        if *nodes > 2048 || depth > max_depth {
+        if *nodes > max_nodes || depth > max_depth {
             return Err(WireError::BoundExceeded);
         }
     }
@@ -576,7 +576,7 @@ fn encode(
         }
         WireValue::String(units) => encode_string(units, out),
         WireValue::Array(items) => {
-            if matches!(path, Path::Kernel { .. }) && items.len() > 128 {
+            if path.kernel_bounds().is_some() && items.len() > 128 {
                 return Err(WireError::BoundExceeded);
             }
             out.push('[');
@@ -593,7 +593,7 @@ fn encode(
             sorted.sort_by(|(a, _), (b, _)| compare_keys(a, b, path));
             out.push('{');
             for (i, (key, value)) in sorted.into_iter().enumerate() {
-                if forbidden_key(key) || (key.is_empty() && matches!(path, Path::Kernel { .. })) {
+                if forbidden_key(key) || (key.is_empty() && path.kernel_bounds().is_some()) {
                     return Err(WireError::InvalidValue);
                 }
                 if i > 0 {
@@ -610,7 +610,7 @@ fn encode(
 }
 
 fn compare_keys(a: &[u16], b: &[u16], path: Path) -> Ordering {
-    if matches!(path, Path::Kernel { .. }) {
+    if path.kernel_bounds().is_some() {
         match (array_index(a), array_index(b)) {
             (Some(x), Some(y)) => return x.cmp(&y),
             (Some(_), None) => return Ordering::Less,

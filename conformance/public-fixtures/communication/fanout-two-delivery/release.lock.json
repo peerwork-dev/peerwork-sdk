@@ -1,0 +1,24 @@
+{
+  "format": "peerwork.protocol-lock.v1",
+  "compiler_version": "peerwork.protocol-compiler.v3",
+  "semantics": "peerwork.kernel.v1",
+  "dependencies": [
+    {
+      "alias": "left",
+      "package_digest": "db0769685fc710246f63f7e21ec4417cd3124796699f8a551e912a34fd1c6311",
+      "namespace": "left"
+    },
+    {
+      "alias": "right",
+      "package_digest": "db0769685fc710246f63f7e21ec4417cd3124796699f8a551e912a34fd1c6311",
+      "namespace": "right"
+    },
+    {
+      "alias": "gather",
+      "package_digest": "6386194dd26a18b4b99fcb13a71c8742be0e35bbf2759bc8317ad9b7c5a5281e",
+      "namespace": "gather"
+    }
+  ],
+  "baseline_bindings": {},
+  "output_protocol_digest": "8d12bec6235fcb053a56f6933afe0e84830dda153c4830b75bc68baeda18d5b5"
+}

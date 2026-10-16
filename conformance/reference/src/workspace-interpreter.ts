@@ -2,7 +2,7 @@ import {z} from 'zod';
 import {ApiError} from './errors.js';
 const byteLength=(value:string)=>new TextEncoder().encode(value).byteLength;
 
-const L={nodes:2048,depth:12,effects:16,records:8,relations:32,valueBytes:16_384,list:128,string:8_192,auth:64};
+const L={nodes:2048,astNodes:8192,depth:12,effects:16,records:8,relations:32,valueBytes:16_384,list:128,string:8_192,auth:64};
 const segment=z.string().min(1).max(80).refine(v=>!['__proto__','prototype','constructor'].includes(v));
 const path=z.array(segment).max(L.depth);
 const refShape=z.object({record_id:z.string().regex(/^[A-Za-z0-9_-]{43}$/),revision:z.number().int().positive()}).strict();
@@ -70,7 +70,7 @@ function validateActionInputs(contract:ActionInputs|undefined,body:unknown,exact
   else{const ref=refShape.safeParse(current);if(!ref.success)reject();const resolved=exactInputs.get(`${ref.data.record_id}:${ref.data.revision}`);if(!resolved||resolved.scope!==field.scope||(field.schema!=='*'&&resolved.schema!==field.schema))reject();}
  }
 }
-function walk(v:unknown,fn:(v:Record<string,unknown>)=>void,depth=0,n={v:0}){if(++n.v>L.nodes||depth>32)reject();if(Array.isArray(v))for(const x of v)walk(x,fn,depth+1,n);else if(v&&typeof v==='object'){const r=v as Record<string,unknown>;if(typeof r.from==='string')fn(r);for(const [k,x] of Object.entries(r)){if(['__proto__','prototype','constructor'].includes(k))reject();walk(x,fn,depth+1,n);}}}
+function walk(v:unknown,fn:(v:Record<string,unknown>)=>void,depth=0,n={v:0}){if(++n.v>L.astNodes||depth>32)reject();if(Array.isArray(v))for(const x of v)walk(x,fn,depth+1,n);else if(v&&typeof v==='object'){const r=v as Record<string,unknown>;if(typeof r.from==='string')fn(r);for(const [k,x] of Object.entries(r)){if(['__proto__','prototype','constructor'].includes(k))reject();walk(x,fn,depth+1,n);}}}
 
 export function validateResolvedManifest(value:unknown):ResolvedManifest{
  walk(value,s=>{if(s.from==='literal')safeValue(s.value);});const parsed=interpreterManifestSchema.safeParse(value);if(!parsed.success||parsed.data.actions.length>=64)reject();const ids=parsed.data.actions.map(a=>a.id);if(new Set(ids).size!==ids.length)reject();

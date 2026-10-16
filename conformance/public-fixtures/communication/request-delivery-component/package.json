@@ -1,0 +1,15 @@
+{
+  "format": "peerwork.protocol-package-metadata.v1",
+  "package_id": "peerwork-request-delivery-component",
+  "version": "1.0.0",
+  "name": "request-delivery-component",
+  "description": "Single immutable request, explicit recipient ACK, exact result delivery, requester cancellation and runtime-clock timeout. Requester and responder must differ. One exchange per instance; delivery ports must be connected to an artifact source.",
+  "license": "Apache-2.0",
+  "license_file": "LICENSE",
+  "source_maintainers": [
+    {
+      "name": "Peerwork project maintainers",
+      "origin": "scripts/generate-communication-protocols.mjs"
+    }
+  ]
+}

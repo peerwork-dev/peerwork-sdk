@@ -1,0 +1,8 @@
+{
+  "format": "peerwork.protocol-lock.v1",
+  "compiler_version": "peerwork.protocol-compiler.v3",
+  "semantics": "peerwork.kernel.v1",
+  "dependencies": [],
+  "baseline_bindings": {},
+  "output_protocol_digest": "9cb1d052c6c020b52aff492e083a9f81d5b3f8a4aa0d7fcfe4e36ff6bce430ea"
+}

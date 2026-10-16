@@ -413,3 +413,21 @@ fn hex(s: &str) -> Vec<u8> {
         .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
         .collect()
 }
+
+#[test]
+fn structured_node_budget_is_separate_from_data_and_remains_bounded() {
+    // Object itself counts as one node; avoid the independent list-length limit.
+    let object = |children: usize| Value::Object((0..children).map(|n| (format!("k{n}"), Value::Null)).collect());
+    let data_edge = object(2047);
+    assert!(canonical(&data_edge, Path::KERNEL).is_ok());
+    let structure = object(2048);
+    for path in [Path::KERNEL, Path::COMMAND, Path::RESPONSE] {
+        assert!(canonical(&structure, path).is_err());
+        assert!(canonical_wire_json(&serde_json::to_vec(&structure).unwrap(), path).is_err());
+    }
+    let edge = object(8191);
+    assert_eq!(canonical(&edge, Path::STRUCTURED).unwrap(), canonical_wire_json(&serde_json::to_vec(&edge).unwrap(), Path::STRUCTURED).unwrap());
+    let over = object(8192);
+    assert!(canonical(&over, Path::STRUCTURED).is_err());
+    assert!(canonical_wire_json(&serde_json::to_vec(&over).unwrap(), Path::STRUCTURED).is_err());
+}

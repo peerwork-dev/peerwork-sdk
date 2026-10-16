@@ -1,0 +1,15 @@
+{
+  "format": "peerwork.protocol-package-metadata.v1",
+  "package_id": "peerwork-artifact-request-delivery",
+  "version": "1.0.0",
+  "name": "artifact-request-delivery",
+  "description": "Executable artifact exchange: binds the reusable request component to the existing Wiki draft component. The result is the actual wiki.revision, never the delivery receipt. Output is unavailable if the draft changes after delivery; start a fresh exchange for another result.",
+  "license": "Apache-2.0",
+  "license_file": "LICENSE",
+  "source_maintainers": [
+    {
+      "name": "Peerwork project maintainers",
+      "origin": "scripts/generate-communication-protocols.mjs"
+    }
+  ]
+}

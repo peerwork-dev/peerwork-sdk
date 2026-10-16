@@ -1,0 +1,202 @@
+{
+  "kind": "sequence",
+  "id": "undelivered-branch-rejected",
+  "state": {},
+  "steps": [
+    {
+      "action_id": "left.exchange.request.open",
+      "body": {
+        "responder": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "message": "Return a reviewed document.",
+        "deadline": 1000
+      },
+      "auth": {
+        "actorId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "workspaceRoles": [],
+        "protocolRoles": [
+          "left.exchange.REQUESTER"
+        ],
+        "capabilities": [
+          "left.exchange.REQUEST"
+        ]
+      },
+      "time_ms": 100,
+      "expected": {
+        "accepted": true
+      },
+      "bind_refs": [
+        {
+          "name": "left_request",
+          "record_slot": "request"
+        }
+      ]
+    },
+    {
+      "action_id": "left.artifact.wiki.create",
+      "body": {
+        "title": "Delivered document",
+        "body": "Exact immutable revision."
+      },
+      "auth": {
+        "actorId": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "workspaceRoles": [],
+        "protocolRoles": [
+          "left.artifact.AUTHOR"
+        ],
+        "capabilities": [
+          "left.artifact.DRAFT"
+        ]
+      },
+      "time_ms": 100,
+      "expected": {
+        "accepted": true
+      },
+      "bind_refs": [
+        {
+          "name": "left_artifact",
+          "record_slot": "revision"
+        }
+      ]
+    },
+    {
+      "action_id": "left.exchange.request.ack",
+      "body": {},
+      "auth": {
+        "actorId": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "workspaceRoles": [],
+        "protocolRoles": [
+          "left.exchange.RESPONDER"
+        ],
+        "capabilities": [
+          "left.exchange.RESPOND"
+        ]
+      },
+      "time_ms": 100,
+      "expected": {
+        "accepted": true
+      },
+      "exact_inputs": [
+        "left_request"
+      ]
+    },
+    {
+      "action_id": "left.exchange.request.deliver",
+      "body": {
+        "result_ref": {
+          "$fixture_ref": "left_artifact"
+        },
+        "author_id": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+      },
+      "auth": {
+        "actorId": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "workspaceRoles": [],
+        "protocolRoles": [
+          "left.exchange.RESPONDER"
+        ],
+        "capabilities": [
+          "left.exchange.RESPOND"
+        ]
+      },
+      "time_ms": 100,
+      "expected": {
+        "accepted": true
+      },
+      "exact_inputs": [
+        "left_request",
+        "left_artifact"
+      ],
+      "bind_refs": [
+        {
+          "name": "left_delivery",
+          "record_slot": "delivery"
+        }
+      ]
+    },
+    {
+      "action_id": "right.exchange.request.open",
+      "body": {
+        "responder": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+        "message": "Return a reviewed document.",
+        "deadline": 1000
+      },
+      "auth": {
+        "actorId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "workspaceRoles": [],
+        "protocolRoles": [
+          "right.exchange.REQUESTER"
+        ],
+        "capabilities": [
+          "right.exchange.REQUEST"
+        ]
+      },
+      "time_ms": 100,
+      "expected": {
+        "accepted": true
+      },
+      "bind_refs": [
+        {
+          "name": "right_request",
+          "record_slot": "request"
+        }
+      ]
+    },
+    {
+      "action_id": "right.artifact.wiki.create",
+      "body": {
+        "title": "Delivered document",
+        "body": "Exact immutable revision."
+      },
+      "auth": {
+        "actorId": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+        "workspaceRoles": [],
+        "protocolRoles": [
+          "right.artifact.AUTHOR"
+        ],
+        "capabilities": [
+          "right.artifact.DRAFT"
+        ]
+      },
+      "time_ms": 100,
+      "expected": {
+        "accepted": true
+      },
+      "bind_refs": [
+        {
+          "name": "right_artifact",
+          "record_slot": "revision"
+        }
+      ]
+    },
+    {
+      "action_id": "gather.gather.collect",
+      "body": {
+        "left_ref": {
+          "$fixture_ref": "left_artifact"
+        },
+        "right_ref": {
+          "$fixture_ref": "right_artifact"
+        }
+      },
+      "auth": {
+        "actorId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "workspaceRoles": [],
+        "protocolRoles": [
+          "gather.COORDINATOR"
+        ],
+        "capabilities": [
+          "gather.GATHER"
+        ]
+      },
+      "time_ms": 100,
+      "expected": {
+        "accepted": false,
+        "code": "CONSTRAINT_FAILED"
+      },
+      "exact_inputs": [
+        "left_artifact",
+        "right_artifact"
+      ],
+      "bind_refs": []
+    }
+  ]
+}

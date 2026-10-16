@@ -7,7 +7,7 @@ export const SEMANTICS='peerwork.kernel.v1';
 export const limits=Object.freeze({
  outerBytes:262144,jwsBytes:250000,payloadBytes:180000,headerBytes:256,
  manifestBytes:65536,actionBytes:16384,recordBytes:16384,stateBytes:65536,
- dependencies:16,actions:64,nodes:2048,depth:12,guards:32,refs:32,effects:16,
+ dependencies:16,actions:64,nodes:2048,structuralNodes:8192,depth:12,guards:32,refs:32,effects:16,
  producedRecords:8,stringBytes:8192,listItems:128,protocols:128,
  instancesPerWorkspace:10000,instancesGlobal:100000,grantsPerInstance:128,
  objectsPerWorkspace:50000,objectsGlobal:1000000,bytesPerWorkspace:10*1024*1024,
@@ -95,16 +95,16 @@ export function validateStateArrayTypes(manifest:Pick<Manifest,'state_array_type
 }
 
 
-export function normalized(value:unknown,depth=0,nodes={n:0},maxDepth:number=limits.depth):unknown{
- if(++nodes.n>limits.nodes||depth>maxDepth)throw new ApiError('INVALID_PAYLOAD',400);
+export function normalized(value:unknown,depth=0,nodes={n:0},maxDepth:number=limits.depth,maxNodes:number=limits.nodes):unknown{
+ if(++nodes.n>maxNodes||depth>maxDepth)throw new ApiError('INVALID_PAYLOAD',400);
  if(value===null||typeof value==='boolean'||typeof value==='string')return value;
  if(typeof value==='number'){if(!Number.isSafeInteger(value))throw new ApiError('INVALID_PAYLOAD',400);return value;}
- if(Array.isArray(value)){if(value.length>limits.listItems)throw new ApiError('INVALID_PAYLOAD',400);return value.map(v=>normalized(v,depth+1,nodes,maxDepth));}
+ if(Array.isArray(value)){if(value.length>limits.listItems)throw new ApiError('INVALID_PAYLOAD',400);return value.map(v=>normalized(v,depth+1,nodes,maxDepth,maxNodes));}
  if(typeof value==='object'){
   const result:Record<string,unknown>={};
   for(const key of Object.keys(value as object).sort()){
    if(!key||['__proto__','prototype','constructor'].includes(key))throw new ApiError('INVALID_PAYLOAD',400);
-   result[key]=normalized((value as Record<string,unknown>)[key],depth+1,nodes,maxDepth);
+   result[key]=normalized((value as Record<string,unknown>)[key],depth+1,nodes,maxDepth,maxNodes);
   }
   return result;
  }
@@ -114,12 +114,12 @@ export function canonical(value:unknown){return JSON.stringify(normalized(value)
 // Persisted receipt envelopes add one level to an ordinarily bounded result.
 export function canonicalResponse(value:unknown){return JSON.stringify(normalized(value,0,{n:0},limits.depth+1));}
 export function canonicalCommand(value:unknown){return JSON.stringify(normalized(value,0,{n:0},40));}
-export function canonicalStructured(value:unknown){return JSON.stringify(normalized(value,0,{n:0},32));}
+export function canonicalStructured(value:unknown){return JSON.stringify(normalized(value,0,{n:0},32,limits.structuralNodes));}
 
 export function manifestCanonical(value:unknown){
  // Reject unsafe raw keys before schema parsing can discard them.
- normalized(value,0,{n:0},32);
- const manifest=manifestSchema.parse(value);canonical(manifest.initial_state);validateResolvedManifest({actions:manifest.actions});const encoded=JSON.stringify(normalized({semantics:SEMANTICS,manifest},0,{n:0},32));
+ normalized(value,0,{n:0},32,limits.structuralNodes);
+ const manifest=manifestSchema.parse(value);canonical(manifest.initial_state);validateResolvedManifest({actions:manifest.actions});const encoded=canonicalStructured({semantics:SEMANTICS,manifest});
  if(new TextEncoder().encode(encoded).byteLength>limits.manifestBytes)throw new ApiError('RESOURCE_EXHAUSTED',429);
  return {manifest,canonical:encoded};
 }

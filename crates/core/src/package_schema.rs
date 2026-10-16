@@ -524,8 +524,27 @@ fn validate_source_inner(source: &WireValue) -> Result<WireValue, PackageSchemaE
     if !v1 && !v2 || ascii(get(source, "semantics")?, 1, 80)? != SEMANTICS {
         return Err(Invalid);
     }
+    // Match the append defaults inserted by the TypeScript manifest schema.
+    // Normalize only action effects; literal business data stays opaque.
+    let mut source_manifest = get(source, "manifest")?.clone();
+    let WireValue::Array(mut actions) = get(&source_manifest, "actions")?.clone() else { return Err(Invalid); };
+    for action in &mut actions {
+        let WireValue::Array(mut variants) = get(action, "variants")?.clone() else { return Err(Invalid); };
+        for variant in &mut variants {
+            let WireValue::Array(mut effects) = get(variant, "effects")?.clone() else { return Err(Invalid); };
+            for effect in &mut effects {
+                if effect.get("op").and_then(WireValue::as_string).as_deref() == Some("append") {
+                    if effect.get("selectHead").is_none() { put(effect, "selectHead", WireValue::Bool(false))?; }
+                    if effect.get("relations").is_none() { put(effect, "relations", array(vec![]))?; }
+                }
+            }
+            put(variant, "effects", array(effects))?;
+        }
+        put(action, "variants", array(variants))?;
+    }
+    put(&mut source_manifest, "actions", array(actions))?;
     let manifest_canonical =
-        validate_full_manifest(get(source, "manifest")?).map_err(|e| match e {
+        validate_full_manifest(&source_manifest).map_err(|e| match e {
             ManifestError::Resource => Resource,
             _ => Invalid,
         })?;

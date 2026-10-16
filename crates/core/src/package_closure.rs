@@ -2980,6 +2980,42 @@ mod tests {
     }
 
     #[test]
+    fn communication_patterns_match_typescript_compilation_and_fixtures() {
+        let vectors: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../conformance/communication-pattern-vectors.json"
+        )).unwrap();
+        let vectors = vectors.as_array().unwrap();
+        assert!(vectors.len() >= 5, "components and executable patterns must all be represented");
+        let mut executable = 0;
+        for vector in vectors {
+            let name = vector["name"].as_str().unwrap();
+            assert!(vector["fixture_count"].as_u64().unwrap() > 0, "{name}: missing fixtures");
+            let encoded = serde_json::to_vec(&vector["closure"]).unwrap();
+            let closure = parse_wire_json_bounded(&encoded, 64, 6 * 1024 * 1024).unwrap();
+            let scanned = scan_package_closure(&closure).unwrap_or_else(|error| panic!("{name}: scan {error:?}"));
+            // Baseline compilation executes the component and inherited fixtures.
+            let compiled = compile_simple_baseline(&scanned).unwrap_or_else(|error| panic!("{name}: compile {error:?}"));
+            assert_eq!(compiled.protocol_digest, vector["protocol_digest"].as_str().unwrap(), "{name}: protocol digest");
+            assert_eq!(compiled.source_digest, vector["source_digest"].as_str().unwrap(), "{name}: source digest");
+            for (actual, key) in [(&compiled.manifest, "compiled_manifest"), (&compiled.compilation_lock, "compilation_lock")] {
+                let bytes = serde_json::to_vec(&vector[key]).unwrap();
+                let expected = parse_wire_json_bounded(&bytes, 64, 2_000_000).unwrap();
+                assert_eq!(canonical(actual).unwrap(), canonical(&expected).unwrap(), "{name}: {key}");
+            }
+            let WireValue::Array(ports) = field(field(&compiled.manifest, "execution_requirements").unwrap(), "ports").unwrap() else { panic!("{name}: missing requirements"); };
+            let complete = ports.iter().all(|port| port.get("required") != Some(&WireValue::Bool(true)) || port.get("bound") == Some(&WireValue::Bool(true)));
+            assert_eq!(complete, vector["interfaces_complete"].as_bool().unwrap(), "{name}: required ports");
+            if complete {
+                compile_package_material(&scanned, &WireValue::Object(vec![])).unwrap_or_else(|error| panic!("{name}: executable {error:?}"));
+                executable += 1;
+            } else {
+                assert!(compile_package_material(&scanned, &WireValue::Object(vec![])).is_err(), "{name}: unbound template installed");
+            }
+        }
+        assert!(executable >= 3, "exchange, fanout and publication patterns must execute");
+    }
+
+    #[test]
     fn tracked_public_proposal_adoption_compilation() {
         let vector: serde_json::Value = serde_json::from_str(include_str!(
             "../../../conformance/public-package-vectors.json"

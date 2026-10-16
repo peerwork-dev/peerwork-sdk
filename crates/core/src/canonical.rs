@@ -19,12 +19,21 @@ pub enum CanonicalError {
 pub enum Path {
     SecureArtifact,
     Kernel { max_depth: usize },
+    /// Bounded program structure; action/state data keep the Kernel budget.
+    Structure { max_depth: usize },
 }
 
 impl Path {
+    pub(crate) fn kernel_bounds(self) -> Option<(usize, usize)> {
+        match self {
+            Self::Kernel { max_depth } => Some((max_depth, 2048)),
+            Self::Structure { max_depth } => Some((max_depth, 8192)),
+            Self::SecureArtifact => None,
+        }
+    }
     pub const KERNEL: Self = Self::Kernel { max_depth: 12 };
     pub const COMMAND: Self = Self::Kernel { max_depth: 40 };
-    pub const STRUCTURED: Self = Self::Kernel { max_depth: 32 };
+    pub const STRUCTURED: Self = Self::Structure { max_depth: 32 };
     pub const RESPONSE: Self = Self::Kernel { max_depth: 13 };
 }
 
@@ -44,9 +53,9 @@ fn write_value(
     nodes: &mut usize,
     out: &mut String,
 ) -> Result<(), CanonicalError> {
-    if let Path::Kernel { max_depth } = path {
+    if let Some((max_depth, max_nodes)) = path.kernel_bounds() {
         *nodes += 1;
-        if *nodes > 2048 || depth > max_depth {
+        if *nodes > max_nodes || depth > max_depth {
             return Err(CanonicalError::BoundExceeded);
         }
     }
@@ -78,7 +87,7 @@ fn write_value(
             }
         }
         Value::Array(items) => {
-            if matches!(path, Path::Kernel { .. }) && items.len() > 128 {
+            if path.kernel_bounds().is_some() && items.len() > 128 {
                 return Err(CanonicalError::BoundExceeded);
             }
             out.push('[');
@@ -94,7 +103,7 @@ fn write_value(
             out.push('{');
             let mut keys: Vec<&String> = map.keys().collect();
             keys.sort_by(|a, b| {
-                if matches!(path, Path::Kernel { .. }) {
+                if path.kernel_bounds().is_some() {
                     // `normalized` inserts sorted keys into a JS object. JSON.stringify
                     // subsequently enumerates canonical array-index keys first.
                     match (array_index(a), array_index(b)) {
@@ -107,7 +116,7 @@ fn write_value(
                 a.encode_utf16().cmp(b.encode_utf16())
             });
             for (index, key) in keys.iter().enumerate() {
-                if key.is_empty() && matches!(path, Path::Kernel { .. })
+                if key.is_empty() && path.kernel_bounds().is_some()
                     || matches!(key.as_str(), "__proto__" | "prototype" | "constructor")
                 {
                     return Err(CanonicalError::InvalidValue);

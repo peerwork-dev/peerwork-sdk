@@ -1,0 +1,100 @@
+{
+  "format": "peerwork.protocol-source.v2",
+  "semantics": "peerwork.kernel.v1",
+  "manifest": {
+    "name": "peerwork.delivery-review-publication.v1",
+    "display_version": "1",
+    "semantics": "peerwork.kernel.v1",
+    "dependencies": [],
+    "protocol_roles": [],
+    "capabilities": [],
+    "role_conflicts": [],
+    "historical_role_conflicts": [],
+    "constraints": {},
+    "record_schemas": {},
+    "initial_state": {},
+    "actions": []
+  },
+  "imports": [
+    {
+      "alias": "exchange",
+      "package_digest": "db0769685fc710246f63f7e21ec4417cd3124796699f8a551e912a34fd1c6311",
+      "namespace": "exchange"
+    },
+    {
+      "alias": "review",
+      "package_digest": "417031fc818d97865fe446800a668234aac0f4e5247a5dccb9ec9928840128f0",
+      "namespace": "review"
+    }
+  ],
+  "parameters": [],
+  "exports": [],
+  "bindings": [],
+  "derive": [],
+  "interfaces": {
+    "outputs": [],
+    "inputs": []
+  },
+  "connections": [
+    {
+      "from": {
+        "import": "exchange",
+        "output": "delivered_artifact"
+      },
+      "to": {
+        "import": "review",
+        "input": "submitted_draft"
+      }
+    },
+    {
+      "from": {
+        "import": "exchange",
+        "output": "result_author"
+      },
+      "to": {
+        "import": "review",
+        "input": "submit_author"
+      }
+    },
+    {
+      "from": {
+        "import": "exchange",
+        "output": "delivered_artifact"
+      },
+      "to": {
+        "import": "review",
+        "input": "approved_draft"
+      }
+    },
+    {
+      "from": {
+        "import": "exchange",
+        "output": "result_author"
+      },
+      "to": {
+        "import": "review",
+        "input": "approve_author"
+      }
+    },
+    {
+      "from": {
+        "import": "exchange",
+        "output": "delivered_artifact"
+      },
+      "to": {
+        "import": "review",
+        "input": "published_draft"
+      }
+    },
+    {
+      "from": {
+        "import": "exchange",
+        "output": "delivered_artifact"
+      },
+      "to": {
+        "import": "review",
+        "input": "updated_draft"
+      }
+    }
+  ]
+}

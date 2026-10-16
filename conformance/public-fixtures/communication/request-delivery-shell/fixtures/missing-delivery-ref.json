@@ -1,0 +1,21 @@
+{
+  "id": "missing-delivery-ref",
+  "action_id": "request.request.deliver",
+  "state": {},
+  "body": {},
+  "auth": {
+    "actorId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "workspaceRoles": [],
+    "protocolRoles": [
+      "request.RESPONDER"
+    ],
+    "capabilities": [
+      "request.RESPOND"
+    ]
+  },
+  "time_ms": 100,
+  "expected": {
+    "accepted": false,
+    "code": "INVALID_PAYLOAD"
+  }
+}
