@@ -362,7 +362,9 @@ jobs:
               $usesPeerworkCore = $line -match '--extern(?:=|\s+)peerwork_core(?:=|\s|$)'
               $isTestHarness = $line -match '(?:^|\s)--test(?:\s|$)'
               $hasNativeSearch = $line -match '(?:-L\s+native=|-Lnative=)'
-              Write-Output "ICU_RUSTC target=$targetName crate_type=$crateType test=$isTestHarness peerwork_core_extern=$usesPeerworkCore native_search=$hasNativeSearch search_projects=$($nativeDirs -join ',') static_libraries=$($libraries -join ',')"
+              $hasVerboseLink = $line -match '(?i)/VERBOSE:LIB'
+              $hasNoBundle = $line -match '(?:-l\s+|--link-arg=)static:-bundle='
+              Write-Output "ICU_RUSTC target=$targetName crate_type=$crateType test=$isTestHarness peerwork_core_extern=$usesPeerworkCore native_search=$hasNativeSearch bundle_disabled=$hasNoBundle verbose_link=$hasVerboseLink search_projects=$($nativeDirs -join ',') static_libraries=$($libraries -join ',')"
             }
 
             $expectedSymbols = 'udata_setFileAccess_78_peerwork|udata_setCommonData_78_peerwork|ucol_open_78_peerwork|ucol_strcoll_78_peerwork|ucol_close_78_peerwork'
@@ -409,8 +411,13 @@ jobs:
             Write-Output "PEERWORK_CORE_RLIBS=$($coreRlibs.Count)"
             if ($dumpbin) {
               foreach ($rlib in $coreRlibs) {
-                $matches = @(& $dumpbin /linkermember:1 $rlib.FullName 2>&1 | Select-String -Pattern $expectedSymbols)
-                if ($matches.Count -eq 0) {
+                $dumpbinOutput = @(& $dumpbin /linkermember:1 $rlib.FullName 2>&1)
+                $dumpbinExit = $LASTEXITCODE
+                $matches = @($dumpbinOutput | Select-String -Pattern $expectedSymbols)
+                Write-Output "PEERWORK_CORE_RLIB_DUMPBIN $($rlib.Name) exit=$dumpbinExit symbol_matches=$($matches.Count)"
+                if ($dumpbinExit -ne 0) {
+                  $dumpbinOutput | Select-Object -First 5 | ForEach-Object { Write-Output "PEERWORK_CORE_RLIB_DUMPBIN_OUTPUT $_" }
+                } elseif ($matches.Count -eq 0) {
                   Write-Output "PEERWORK_CORE_RLIB_SYMBOLS_NONE $($rlib.Name)"
                 } else {
                   Write-Output "PEERWORK_CORE_RLIB_SYMBOLS $($rlib.Name)"

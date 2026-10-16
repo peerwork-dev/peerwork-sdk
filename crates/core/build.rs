@@ -183,9 +183,9 @@ fn build_msvc(source: &Path, target_triple: &str) {
         );
     }
     // MSVC's linker resolves static-library references in repeated passes.
-    println!("cargo:rustc-link-lib=static=icui18npeerwork");
-    println!("cargo:rustc-link-lib=static=icuucpeerwork");
-    println!("cargo:rustc-link-lib=static=icudatapeerwork");
+    println!("cargo:rustc-link-lib=static:-bundle=icui18npeerwork");
+    println!("cargo:rustc-link-lib=static:-bundle=icuucpeerwork");
+    println!("cargo:rustc-link-lib=static:-bundle=icudatapeerwork");
 }
 
 fn main() {
