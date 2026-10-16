@@ -2104,7 +2104,11 @@ fn replay_basic_content_depth(
                 .get("input")
                 .and_then(|input| input.get("install"))
                 .is_some();
-            let begin_action = string(payload, "action_id")? == "secure.structure.begin";
+            let begin_action = payload
+                .get("action_id")
+                .and_then(WireValue::as_string)
+                .as_deref()
+                == Some("secure.structure.begin");
             if kind == "ADMIN"
                 && (install_input
                     || !objects.is_empty()
