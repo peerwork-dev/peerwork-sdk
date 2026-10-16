@@ -759,6 +759,7 @@ pub(crate) fn prepare_new_private_commit(
         operation_wire,
         pins,
         None,
+        None,
     )
 }
 
@@ -774,6 +775,7 @@ pub(crate) fn prepare_new_private_commit_from_replay(
     context_wire: &[u8],
     operation_wire: &[u8],
     pins: &SecureCommitRequestPins<'_>,
+    operation: Option<(&str, &str)>,
 ) -> Result<PendingSecureIntent, NativePrepareError> {
     source
         .verified_read()
@@ -814,6 +816,7 @@ pub(crate) fn prepare_new_private_commit_from_replay(
         operation_wire,
         pins,
         Some((policy_wire, lifecycle.owner_key_id(), &action)),
+        operation,
     )
 }
 
@@ -1146,6 +1149,7 @@ pub(crate) fn prepare_private_action_from_replay(
     body_wire: &[u8],
     exact_refs_wire: &[u8],
     allocations_wire: &[u8],
+    operation: Option<(&str, &str)>,
 ) -> Result<PendingSecureIntent, NativePrepareError> {
     if issued_at > 9_007_199_254_740_991 {
         return Err(NativePrepareError::Context);
@@ -1283,6 +1287,7 @@ pub(crate) fn prepare_private_action_from_replay(
         built.context_wire(),
         built.action().operation_wire(),
         &pins,
+        operation,
     )
 }
 
@@ -1295,6 +1300,7 @@ fn prepare_new_private_commit_inner(
     operation_wire: &[u8],
     pins: &SecureCommitRequestPins<'_>,
     policy: Option<(&[u8], &str, &ValidatedPreparedAction)>,
+    operation: Option<(&str, &str)>,
 ) -> Result<PendingSecureIntent, NativePrepareError> {
     if identity.actor_id() != lifecycle.actor_id()
         || identity.actor_id() != journal.actor_id()
@@ -1347,7 +1353,7 @@ fn prepare_new_private_commit_inner(
     {
         return Err(NativePrepareError::Context);
     }
-    Ok(journal.prepare(SecurePacketInput {
+    let packet = SecurePacketInput {
         intent_id: proof.command_id(),
         path: proof.path(),
         action_id: proof.action_id(),
@@ -1355,7 +1361,13 @@ fn prepare_new_private_commit_inner(
         trusted_owner_key: Some(lifecycle.owner_key_id()),
         intent_digest: proof.commit_digest(),
         exact_request: authored.request_wire(),
-    })?)
+    };
+    Ok(match operation {
+        Some((operation_id, intent_sha256)) => {
+            journal.prepare_action_operation(packet, operation_id, intent_sha256)?
+        }
+        None => journal.prepare(packet)?,
+    })
 }
 
 #[cfg(test)]

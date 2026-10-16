@@ -90,6 +90,10 @@ struct Entry {
     accepted_install: Option<AcceptedPublicInstall>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     accepted_install_step: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    operation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    operation_intent_sha256: Option<String>,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -181,6 +185,33 @@ impl SecureIntentJournal {
         self.document.rows.contains_key(intent_id)
     }
 
+    /// Returns the immutable prepared command bound to a caller operation ID.
+    /// The returned command is reusable only when the complete caller intent
+    /// hash matches; callers must never prepare a replacement under this ID.
+    pub(crate) fn action_operation(
+        &self,
+        operation_id: &str,
+    ) -> Result<Option<(String, String)>, SecureIntentError> {
+        if !valid_operation_id(operation_id) {
+            return Err(SecureIntentError::Invalid);
+        }
+        let mut found = None;
+        for (intent_id, row) in &self.document.rows {
+            if row.operation_id.as_deref() == Some(operation_id) {
+                if found.is_some() {
+                    return Err(SecureIntentError::Incompatible);
+                }
+                found = Some((
+                    intent_id.clone(),
+                    row.operation_intent_sha256
+                        .clone()
+                        .ok_or(SecureIntentError::Incompatible)?,
+                ));
+            }
+        }
+        Ok(found)
+    }
+
     pub(crate) fn open(
         path: &Path,
         trusted_origin: &str,
@@ -233,7 +264,24 @@ impl SecureIntentJournal {
         &mut self,
         input: SecurePacketInput<'_>,
     ) -> Result<PendingSecureIntent, SecureIntentError> {
-        self.prepare_with_selection(input, None)
+        self.prepare_with_selection(input, None, None)
+    }
+
+    pub(crate) fn prepare_action_operation(
+        &mut self,
+        input: SecurePacketInput<'_>,
+        operation_id: &str,
+        operation_intent_sha256: &str,
+    ) -> Result<PendingSecureIntent, SecureIntentError> {
+        if !valid_operation_id(operation_id) || !valid_digest(operation_intent_sha256) {
+            return Err(SecureIntentError::Invalid);
+        }
+        if let Some((intent_id, digest)) = self.action_operation(operation_id)? {
+            if digest != operation_intent_sha256 || intent_id != input.intent_id {
+                return Err(SecureIntentError::Conflict);
+            }
+        }
+        self.prepare_with_selection(input, None, Some((operation_id, operation_intent_sha256)))
     }
 
     /// A migrated ACTION may already have an authenticated receipt after a
@@ -275,13 +323,14 @@ impl SecureIntentJournal {
         {
             return Err(SecureIntentError::Invalid);
         }
-        self.prepare_with_selection(input, Some(selection))
+        self.prepare_with_selection(input, Some(selection), None)
     }
 
     fn prepare_with_selection(
         &mut self,
         input: SecurePacketInput<'_>,
         selection: Option<PublicInstallSelection>,
+        operation: Option<(&str, &str)>,
     ) -> Result<PendingSecureIntent, SecureIntentError> {
         if !valid_id(input.intent_id)
             || !valid_secure_path(input.path)
@@ -307,6 +356,8 @@ impl SecureIntentJournal {
             public_install: selection,
             accepted_install: None,
             accepted_install_step: None,
+            operation_id: operation.map(|(id, _)| id.to_owned()),
+            operation_intent_sha256: operation.map(|(_, digest)| digest.to_owned()),
         };
         if let Some(existing) = self.document.rows.get(input.intent_id) {
             if existing.accepted_receipt.is_some() || existing.accepted_install.is_some() {
@@ -321,6 +372,15 @@ impl SecureIntentJournal {
         }
         if self.document.rows.len() == MAX_ENTRIES {
             return Err(SecureIntentError::TooLarge);
+        }
+        if let Some((operation_id, operation_digest)) = operation {
+            if self.document.rows.iter().any(|(id, existing)| {
+                id != input.intent_id && existing.operation_id.as_deref() == Some(operation_id)
+                    || existing.operation_id.as_deref() == Some(operation_id)
+                        && existing.operation_intent_sha256.as_deref() != Some(operation_digest)
+            }) {
+                return Err(SecureIntentError::Conflict);
+            }
         }
         let mut next = self.document.clone();
         next.rows.insert(input.intent_id.into(), entry);
@@ -1195,6 +1255,13 @@ fn valid_action(value: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
 }
+fn valid_operation_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+}
 fn valid_public_install_selection(value: &PublicInstallSelection) -> bool {
     if value.package_id.is_empty()
         || value.package_id.len() > 80
@@ -1252,6 +1319,15 @@ fn valid_row(id: &str, row: &Entry, actor_id: &str) -> bool {
             .as_deref()
             .is_some_and(|key| !valid_token(key))
         || !valid_digest(&row.intent_digest)
+        || row
+            .operation_id
+            .as_deref()
+            .is_some_and(|value| !valid_operation_id(value))
+        || row
+            .operation_intent_sha256
+            .as_deref()
+            .is_some_and(|value| !valid_digest(value))
+        || row.operation_id.is_some() != row.operation_intent_sha256.is_some()
         || !valid_digest(&row.request_sha256)
         || row.response_b64.len() > MAX_OBSERVATIONS
         || row
@@ -1354,6 +1430,53 @@ mod tests {
     };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+
+    #[test]
+    fn caller_operation_id_pins_one_exact_intent_across_reopen() {
+        let root = protected_test_dir();
+        #[cfg(unix)]
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let path = root.path().join("operation-anchor.state");
+        let actor = "a".repeat(43);
+        let workspace = "b".repeat(43);
+        let owner = "c".repeat(43);
+        let command = "d".repeat(43);
+        let origin = "http://127.0.0.1:45678/";
+        let request_path = format!("/api/workspace/v1/secure/workspaces/{workspace}/commits");
+        let intent_digest = "0".repeat(64);
+        let mut journal = SecureIntentJournal::open(&path, origin, &actor).unwrap();
+        let packet = || SecurePacketInput {
+            intent_id: &command,
+            path: &request_path,
+            action_id: "wiki.create",
+            workspace_id: Some(&workspace),
+            trusted_owner_key: Some(&owner),
+            intent_digest: &intent_digest,
+            exact_request: b"exact-author-signed-request",
+        };
+        let digest = "1".repeat(64);
+        journal
+            .prepare_action_operation(packet(), "publish-action-42", &digest)
+            .unwrap();
+        drop(journal);
+        let mut journal = SecureIntentJournal::open(&path, origin, &actor).unwrap();
+        assert_eq!(
+            journal.action_operation("publish-action-42").unwrap(),
+            Some((command.clone(), digest.clone()))
+        );
+        journal
+            .prepare_action_operation(packet(), "publish-action-42", &digest)
+            .unwrap();
+        assert!(matches!(
+            journal.prepare_action_operation(packet(), "publish-action-42", &"2".repeat(64)),
+            Err(SecureIntentError::Conflict)
+        ));
+        assert_eq!(journal.pending().len(), 1);
+        assert_eq!(
+            journal.exact_request(&command).unwrap(),
+            b"exact-author-signed-request"
+        );
+    }
 
     fn signed_append(
         identity: &KernelIdentity,
@@ -1822,6 +1945,7 @@ mod tests {
             &serde_json::to_vec(&native_context).unwrap(),
             &operation_wire,
             &pins,
+            None,
         )
         .unwrap();
         native_journal

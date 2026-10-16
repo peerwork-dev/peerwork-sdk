@@ -796,6 +796,7 @@ fn owner_consumer_help(verb: &str) -> Option<serde_json::Value> {
     let final_arg = if verb.ends_with("-list") || verb.ends_with("-pending") { "" }
         else if verb.ends_with("-continue") { if private_stage { " STAGE_ID" } else { " BEGIN_COMMAND_ID" } }
         else if verb.ends_with("-status") || verb.ends_with("-retry") { " COMMAND_ID" }
+        else if verb == "owner-private-action-submit" { " INPUT_JSON_FILE [--operation-id OPERATION_ID]" }
         else { " INPUT_JSON_FILE" };
     Some(serde_json::json!({
         "status":"HELP", "command":verb,
@@ -814,6 +815,7 @@ fn owner_consumer_help(verb: &str) -> Option<serde_json::Value> {
             "grants_json is a JSON string, chosen explicitly within the caller's authority using the selected protocol's actors/actions/roles/capabilities. No grants are defaulted.",
             "Direct input optionally accepts bindings as a JSON object (not bindings_json). Direct/staged BEGIN optionally accepts disclose as [{schema,fields:[...]}]; omission differs from explicit empty. Use only reviewed disclosure choices.",
             "Optional command_id is a caller-selected 43-character base64url ID; issued_at_ms is an integer. Workspace, instance, stage and BEGIN/action command IDs are different scopes; do not substitute them.",
+            "For a PRIVATE action under an enabled guard-time policy, pass a stable caller-chosen operation ID with --operation-id OPERATION_ID. Reuse it only for an exact retry of that action intent.",
             "Keep package material and signing sources in protected files. Continue the saved BEGIN until ACCEPTED, then owner-read and verify the selected instance/digest and ACTIVE state. For uncertain actions inspect pending/status and retry only the saved command."
         ]
     }))
@@ -843,8 +845,11 @@ fn install_input_bindings(bytes: &[u8]) -> Result<Vec<u8>, (&'static str, String
 
 fn secure_owner_consumer_command(verb: &str, args: &[String]) -> Result<String, (&'static str, String)> {
     let pending = verb.ends_with("-pending") || verb.ends_with("-pending-offers") || verb.ends_with("-pending-deliveries") || verb == "owner-private-stage-list" || verb == "owner-private-install-list";
-    if args.len() != if pending { 2 } else { 3 } {
-        return Err(("USAGE", "secure owner-action-submit|owner-action-status|owner-action-retry|owner-action-pending|owner-private-action-submit|owner-private-action-status|owner-private-action-retry|owner-private-action-pending|owner-install-begin|owner-install-continue|owner-install-pending|owner-private-stage-submit|owner-private-stage-continue|owner-private-stage-list|owner-private-install-begin|owner-private-install-begin-direct|owner-private-install-continue|owner-private-install-list|owner-admit-offer|owner-admit-retry-offer|owner-admit-pending-offers|owner-admit-deliver|owner-admit-retry-delivery|owner-admit-pending-deliveries|owner-private-admit-offer|owner-private-admit-retry-offer|owner-private-admit-pending-offers|owner-private-admit-deliver|owner-private-admit-retry-delivery|owner-private-admit-pending-deliveries CONFIG_JSON_FILE WORKSPACE_ID [INPUT_JSON_FILE|COMMAND_ID]".to_owned()));
+    let private_action_submit = verb == "owner-private-action-submit";
+    let valid_action_args = private_action_submit
+        && (args.len() == 3 || args.len() == 5 && args[3] == "--operation-id");
+    if args.len() != if pending { 2 } else { 3 } && !valid_action_args {
+        return Err(("USAGE", "secure owner-action-submit|owner-action-status|owner-action-retry|owner-action-pending|owner-private-action-submit CONFIG WORKSPACE INPUT_JSON_FILE [--operation-id OPERATION_ID]|owner-private-action-status|owner-private-action-retry|owner-private-action-pending|owner-install-begin|owner-install-continue|owner-install-pending|owner-private-stage-submit|owner-private-stage-continue|owner-private-stage-list|owner-private-install-begin|owner-private-install-begin-direct|owner-private-install-continue|owner-private-install-list|owner-admit-offer|owner-admit-retry-offer|owner-admit-pending-offers|owner-admit-deliver|owner-admit-retry-delivery|owner-admit-pending-deliveries|owner-private-admit-offer|owner-private-admit-retry-offer|owner-private-admit-pending-offers|owner-private-admit-deliver|owner-private-admit-retry-delivery|owner-private-admit-pending-deliveries CONFIG_JSON_FILE WORKSPACE_ID [INPUT_JSON_FILE|COMMAND_ID]".to_owned()));
     }
     let bytes = fs::read(&args[0]).map_err(|e| ("CONFIG_FILE", e.to_string()))?;
     let config: SecureOwnerCreateConfig = serde_json::from_slice(&bytes)
@@ -938,7 +943,11 @@ fn secure_owner_consumer_command(verb: &str, args: &[String]) -> Result<String, 
                     let bytes = fs::read(&args[2]).map_err(|e| ("ACTION_FILE", e.to_string()))?;
                     let input: PublicActionInput = serde_json::from_slice(&bytes)
                         .map_err(|_| ("ACTION_INPUT_INVALID", "invalid Owner action input".to_owned()))?;
-                    access.submit_new_json_with_cancel(input, &cancel)
+                    if args.len() == 5 {
+                        access.submit_new_json_with_operation_id(input, &args[4], &cancel)
+                    } else {
+                        access.submit_new_json_with_cancel(input, &cancel)
+                    }
                 }
                 "status" => access.reconcile_json_with_cancel(&args[2], &cancel),
                 "retry" => access.retry_saved_json_with_cancel(&args[2], &cancel),

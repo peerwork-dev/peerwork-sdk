@@ -21,14 +21,27 @@ pub enum JournalReplayError {
 
 /// Caller-selected complete replay commit count, including restored archives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct JournalReplayLimits { max_commits: usize }
+pub struct JournalReplayLimits {
+    max_commits: usize,
+}
 impl JournalReplayLimits {
     pub fn new(max_replay_commits: u64) -> Option<Self> {
-        usize::try_from(max_replay_commits).ok().filter(|n| *n > 0).map(|max_commits| Self { max_commits })
+        usize::try_from(max_replay_commits)
+            .ok()
+            .filter(|n| *n > 0)
+            .map(|max_commits| Self { max_commits })
     }
-    pub fn max_commits(self) -> usize { self.max_commits }
+    pub fn max_commits(self) -> usize {
+        self.max_commits
+    }
 }
-impl Default for JournalReplayLimits { fn default() -> Self { Self { max_commits: 102_400 } } }
+impl Default for JournalReplayLimits {
+    fn default() -> Self {
+        Self {
+            max_commits: 102_400,
+        }
+    }
+}
 
 /// Pins must come from the runtime's protected identity, configured workspace,
 /// and previously accepted checkpoint. The low-level verifier cannot attest
@@ -192,7 +205,7 @@ pub fn replay_secure_journal_exact_with_guard_time_attestations(
     )
 }
 
-fn replay_secure_journal_exact_with_guard_time_attestations_and_limits(
+pub fn replay_secure_journal_exact_with_guard_time_attestations_and_limits(
     input: JournalReplayInput<'_>,
     limits: JournalReplayLimits,
     attestations: Option<&std::collections::HashMap<String, Vec<u8>>>,
@@ -217,7 +230,10 @@ fn replay_secure_journal_exact_with_guard_time_attestations_and_limits(
         limits.max_commits(),
         attestations,
     )
-    .map_err(|error| match error { ReplayError::ResourceLimit => JournalReplayError::ResourceLimit, _ => JournalReplayError::Invalid })?;
+    .map_err(|error| match error {
+        ReplayError::ResourceLimit => JournalReplayError::ResourceLimit,
+        _ => JournalReplayError::Invalid,
+    })?;
     // Replay may restore an authenticated archived PUBLIC prefix from signed
     // migration fragments. Reuse its scanner result, not the original
     // truncated transport suffix, for the final checkpoint binding.
@@ -259,6 +275,7 @@ fn replay_secure_journal_exact_with_guard_time_attestations_and_limits(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::canonical::Path;
     use crate::wire_json::{canonical_wire_value, parse_wire_json_bounded};
     use serde_json::Value;
 
@@ -288,25 +305,35 @@ mod tests {
         let final_policy_hash = vector["payload"]["policy_hash"].as_str().unwrap();
         let policy_wire = parse_wire_json_bounded(&policies[1], 64, 32 * 1024).unwrap();
         let policy_payload = policy_wire.get("payload").unwrap();
-        assert!(crate::secure_action_delegation::verify_member_certificate_at(
-            policy_payload,
-            owner_actor_id,
-            vector["payload"]["admitted_at_ms"].as_u64().unwrap(),
-        )
-        .is_ok());
-        assert!(crate::secure_action_delegation::verify_member_certificate_at(
-            policy_payload,
-            owner_actor_id,
-            101_000,
-        )
-        .is_err());
+        assert!(
+            crate::secure_action_delegation::verify_member_certificate_at(
+                policy_payload,
+                owner_actor_id,
+                vector["payload"]["admitted_at_ms"].as_u64().unwrap(),
+            )
+            .is_ok()
+        );
+        assert!(
+            crate::secure_action_delegation::verify_member_certificate_at(
+                policy_payload,
+                owner_actor_id,
+                101_000,
+            )
+            .is_err()
+        );
         let proof_wire = serde_json::to_vec(&serde_json::json!({
             "payload": vector["payload"],
             "signature": vector["signature"]
         }))
         .unwrap();
         let mut proofs = std::collections::HashMap::new();
-        proofs.insert(vector["payload"]["commit_hash"].as_str().unwrap().to_owned(), proof_wire.clone());
+        proofs.insert(
+            vector["payload"]["commit_hash"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+            proof_wire.clone(),
+        );
         let input = || JournalReplayInput {
             policy_wires: &policy_refs,
             commit_wires: &commit_refs,
@@ -320,17 +347,195 @@ mod tests {
             keyring_wire: Some(&keyring),
         };
 
-        let replayed = replay_secure_journal_exact_with_guard_time_attestations(input(), &proofs)
-            .unwrap();
+        let replayed =
+            replay_secure_journal_exact_with_guard_time_attestations(input(), &proofs).unwrap();
         assert_eq!(replayed.sequence(), 2);
         assert_eq!(replayed.policy_hash(), final_policy_hash);
-        assert!(matches!(replay_secure_journal_exact(input()), Err(JournalReplayError::Invalid)));
+        assert!(matches!(
+            replay_secure_journal_exact(input()),
+            Err(JournalReplayError::Invalid)
+        ));
 
         proofs.insert("f".repeat(64), proof_wire);
         assert!(matches!(
             replay_secure_journal_exact_with_guard_time_attestations(input(), &proofs),
             Err(JournalReplayError::Invalid)
         ));
+    }
+
+    #[test]
+    fn shared_typescript_encrypted_guarded_action_replays_with_its_http_proofs() {
+        let vector: Value = serde_json::from_str(include_str!(
+            "../../../conformance/guarded-action-vector.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            vector["schema"],
+            "peerwork.guard-time-rust-action-vector.v1"
+        );
+        let policies = vector["policies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(serde_json::to_vec)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let commits = vector["commits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(serde_json::to_vec)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let policy_refs = policies.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        let commit_refs = commits.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        let proof_rows = vector["guard_time_attestations"].as_array().unwrap();
+        let proofs = proof_rows
+            .iter()
+            .map(|row| {
+                let hash = row["payload"]["commit_hash"].as_str().unwrap().to_owned();
+                (hash, serde_json::to_vec(row).unwrap())
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(proofs.len(), proof_rows.len());
+        let checkpoint = serde_json::to_vec(&vector["checkpoint"]).unwrap();
+        let keyring = serde_json::to_vec(&vector["keyring"]).unwrap();
+        let input = JournalReplayInput {
+            policy_wires: &policy_refs,
+            commit_wires: &commit_refs,
+            checkpoint_wire: &checkpoint,
+            workspace_id: vector["workspace_id"].as_str().unwrap(),
+            owner_actor_id: vector["checkpoint"]["owner_id"].as_str().unwrap(),
+            owner_signing_key: vector["checkpoint"]["owner_key"].as_str().unwrap(),
+            final_sequence: vector["checkpoint"]["sequence"].as_u64().unwrap(),
+            final_head: vector["checkpoint"]["head"].as_str(),
+            final_policy_hash: vector["checkpoint"]["policy_hash"].as_str().unwrap(),
+            keyring_wire: Some(&keyring),
+        };
+        let replay = replay_secure_journal_exact_with_guard_time_attestations(input, &proofs)
+            .expect("the complete TS-produced encrypted ACTION and service proof must replay");
+        assert_eq!(
+            replay.sequence(),
+            vector["checkpoint"]["sequence"].as_u64().unwrap()
+        );
+        assert_eq!(replay.head(), vector["checkpoint"]["head"].as_str());
+        let expected_objects_json = vector["expected_objects"]
+            .as_array()
+            .expect("TS-generated complete object oracle");
+        let mut expected_objects = expected_objects_json
+            .iter()
+            .map(|value| {
+                let bytes = serde_json::to_vec(value).unwrap();
+                let wire = parse_wire_json_bounded(&bytes, 64, 4 * 1024 * 1024).unwrap();
+                canonical_wire_value(&wire, Path::SecureArtifact).unwrap()
+            })
+            .collect::<Vec<_>>();
+        let mut actual_objects = replay
+            .objects()
+            .iter()
+            .map(|value| canonical_wire_value(value, Path::SecureArtifact).unwrap())
+            .collect::<Vec<_>>();
+        expected_objects.sort();
+        actual_objects.sort();
+        assert_eq!(actual_objects, expected_objects, "complete TS replay object oracle");
+        let action_sequence = vector["action_sequence"].as_u64().unwrap();
+        let action_commit = vector["commits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|commit| commit["payload"]["sequence"].as_u64() == Some(action_sequence))
+            .expect("TS fixture action commit");
+        let command_id = action_commit["payload"]["command_id"]
+            .as_str()
+            .unwrap();
+        let receipt = replay
+            .action_receipt(command_id)
+            .unwrap()
+            .expect("guarded ACTION receipt");
+        let action_proof_hash = proof_rows
+            .iter()
+            .find(|row| row["payload"]["result"]["sequence"].as_u64() == Some(action_sequence))
+            .and_then(|row| row["payload"]["commit_hash"].as_str())
+            .expect("service proof for guarded action");
+        assert_eq!(
+            receipt
+                .get("command_id")
+                .and_then(WireValue::as_string)
+                .as_deref(),
+            Some(command_id)
+        );
+        let expected_receipt = &vector["expected_receipt"];
+        assert_eq!(expected_receipt["sequence"].as_u64(), Some(action_sequence));
+        assert!(replay.contains_checkpoint(
+            action_sequence,
+            Some(expected_receipt["head"].as_str().unwrap()),
+            expected_receipt["policy_hash"].as_str().unwrap()
+        ));
+        let expected_attestation = parse_wire_json_bounded(
+            &serde_json::to_vec(&expected_receipt["guard_time_attestation"]).unwrap(),
+            32,
+            8192,
+        )
+        .unwrap();
+        let action_attestation = parse_wire_json_bounded(
+            proofs.get(action_proof_hash).unwrap(),
+            32,
+            8192,
+        )
+        .unwrap();
+        assert_eq!(
+            canonical_wire_value(&action_attestation, Path::SecureArtifact).unwrap(),
+            canonical_wire_value(&expected_attestation, Path::SecureArtifact).unwrap(),
+            "TS submit response service-proof oracle"
+        );
+        assert_eq!(receipt.get("sequence").and_then(WireValue::as_number), Some(action_sequence as f64));
+        assert_eq!(
+            receipt.get("commit_hash").and_then(WireValue::as_string).as_deref(),
+            expected_receipt["guard_time_attestation"]["payload"]["commit_hash"].as_str()
+        );
+        let effects = match receipt.get("effects") {
+            Some(WireValue::Array(rows)) if rows.len() == 1 => rows,
+            _ => panic!("guarded action replay must have one exact effect"),
+        };
+        let effect_id = effects[0]
+            .get("record_id")
+            .and_then(WireValue::as_string)
+            .expect("effect record id");
+        let expected_effect = expected_objects_json
+            .iter()
+            .find(|object| {
+                object["kind"] == "records"
+                    && object["id"].as_str() == Some(effect_id.as_str())
+            })
+            .expect("TS object oracle includes action record");
+        assert_eq!(
+            effects[0].get("entity_id").and_then(WireValue::as_string).as_deref(),
+            expected_effect["value"]["entity_id"].as_str()
+        );
+        assert_eq!(
+            effects[0].get("schema_ref").and_then(WireValue::as_string).as_deref(),
+            expected_effect["value"]["schema_ref"].as_str()
+        );
+        assert!(matches!(receipt.get("effects"), Some(WireValue::Array(rows)) if !rows.is_empty()));
+
+        let mut missing = proofs.clone();
+        missing.remove(action_proof_hash);
+        let missing_input = JournalReplayInput {
+            policy_wires: &policy_refs,
+            commit_wires: &commit_refs,
+            checkpoint_wire: &checkpoint,
+            workspace_id: vector["workspace_id"].as_str().unwrap(),
+            owner_actor_id: vector["checkpoint"]["owner_id"].as_str().unwrap(),
+            owner_signing_key: vector["checkpoint"]["owner_key"].as_str().unwrap(),
+            final_sequence: vector["checkpoint"]["sequence"].as_u64().unwrap(),
+            final_head: vector["checkpoint"]["head"].as_str(),
+            final_policy_hash: vector["checkpoint"]["policy_hash"].as_str().unwrap(),
+            keyring_wire: Some(&keyring),
+        };
+        assert!(
+            replay_secure_journal_exact_with_guard_time_attestations(missing_input, &missing)
+                .is_err()
+        );
     }
 
     #[test]
@@ -525,6 +730,8 @@ mod replay_limit_tests {
         assert_eq!(JournalReplayLimits::default().max_commits(), 102_400);
         assert!(JournalReplayLimits::new(0).is_none());
         assert_eq!(JournalReplayLimits::new(27).unwrap().max_commits(), 27);
-        if usize::BITS < 64 { assert!(JournalReplayLimits::new(u64::MAX).is_none()); }
+        if usize::BITS < 64 {
+            assert!(JournalReplayLimits::new(u64::MAX).is_none());
+        }
     }
 }

@@ -770,28 +770,34 @@ fn validate_page(
     if wire.is_empty() || wire.len() > MAX_PAGE {
         return Err(JournalReadError::TooLarge);
     }
-    let value =
-        parse_wire_json_bounded(wire, 64, MAX_PAGE).map_err(|_| JournalReadError::Incompatible)?;
-    if text(&value, "workspace_id")? != workspace || text(&value, "state")? != "ACTIVE" {
-        return Err(JournalReadError::Incompatible);
+    let value = parse_wire_json_bounded(wire, 64, MAX_PAGE)
+        .map_err(|_| incompatible_page("json-parse"))?;
+    if text(&value, "workspace_id").map_err(|_| incompatible_page("workspace-field"))?
+        != workspace
+        || text(&value, "state").map_err(|_| incompatible_page("state-field"))? != "ACTIVE"
+    {
+        return Err(incompatible_page("workspace-or-state-value"));
     }
-    let visibility = text(&value, "visibility")?;
+    let visibility = text(&value, "visibility").map_err(|_| incompatible_page("visibility-field"))?;
     if visibility != "PRIVATE" && visibility != "PUBLIC" {
-        return Err(JournalReadError::Incompatible);
+        return Err(incompatible_page("visibility-value"));
     }
     let cp = value
         .get("checkpoint")
-        .ok_or(JournalReadError::Incompatible)?;
-    if text(cp, "workspace_id")? != workspace || number(cp, "v")? != 1 {
-        return Err(JournalReadError::Incompatible);
+        .ok_or_else(|| incompatible_page("checkpoint-field"))?;
+    if text(cp, "workspace_id").map_err(|_| incompatible_page("checkpoint-workspace"))?
+        != workspace
+        || number(cp, "v").map_err(|_| incompatible_page("checkpoint-version"))? != 1
+    {
+        return Err(incompatible_page("checkpoint-identity-or-version"));
     }
-    let sequence = number(cp, "sequence")?;
-    let head = text(cp, "head")?;
+    let sequence = number(cp, "sequence").map_err(|_| incompatible_page("checkpoint-sequence"))?;
+    let head = text(cp, "head").map_err(|_| incompatible_page("checkpoint-head"))?;
     if sequence < 1 || sequence < after || !valid_hex(&head) {
-        return Err(JournalReadError::Incompatible);
+        return Err(incompatible_page("checkpoint-range-or-head"));
     }
     let checkpoint = canonical_wire_value(cp, CanonicalPath::SecureArtifact)
-        .map_err(|_| JournalReadError::Incompatible)?;
+        .map_err(|_| incompatible_page("checkpoint-canonical"))?;
     let policies = value
         .get("policies")
         .and_then(|v| {
@@ -801,15 +807,15 @@ fn validate_page(
                 None
             }
         })
-        .ok_or(JournalReadError::Incompatible)?;
+        .ok_or_else(|| incompatible_page("policies-field"))?;
     if policies.is_empty() || policies.len() > 1024 {
-        return Err(JournalReadError::Incompatible);
+        return Err(incompatible_page("policies-count"));
     }
     let policy_text = canonical_wire_value(
         &WireValue::Array(policies.clone()),
         CanonicalPath::SecureArtifact,
     )
-    .map_err(|_| JournalReadError::Incompatible)?;
+    .map_err(|_| incompatible_page("policies-canonical"))?;
     let commits = value
         .get("commits")
         .and_then(|v| {
@@ -819,38 +825,40 @@ fn validate_page(
                 None
             }
         })
-        .ok_or(JournalReadError::Incompatible)?;
+        .ok_or_else(|| incompatible_page("commits-field"))?;
     if commits.len() > 50 {
-        return Err(JournalReadError::Incompatible);
+        return Err(incompatible_page("commits-count"));
     }
     if let Some(first) = first {
         if checkpoint != first.checkpoint || policy_text != first.policies {
-            return Err(JournalReadError::Incompatible);
+            return Err(incompatible_page("snapshot-checkpoint-or-policies"));
         }
     }
     let mut last = after;
     for commit in commits {
         let payload = commit
             .get("payload")
-            .ok_or(JournalReadError::Incompatible)?;
-        if text(payload, "workspace_id")? != workspace {
-            return Err(JournalReadError::Incompatible);
+            .ok_or_else(|| incompatible_page("commit-payload"))?;
+        if text(payload, "workspace_id").map_err(|_| incompatible_page("commit-workspace"))?
+            != workspace
+        {
+            return Err(incompatible_page("commit-workspace-value"));
         }
-        let current = number(payload, "sequence")?;
+        let current = number(payload, "sequence").map_err(|_| incompatible_page("commit-sequence"))?;
         if current <= last || current > sequence {
-            return Err(JournalReadError::Incompatible);
+            return Err(incompatible_page("commit-sequence-range"));
         }
         last = current;
     }
     let next = match value.get("next") {
         Some(WireValue::Null) => None,
-        Some(v) => Some(value_u64(v)?),
-        _ => return Err(JournalReadError::Incompatible),
+        Some(v) => Some(value_u64(v).map_err(|_| incompatible_page("next-value"))?),
+        _ => return Err(incompatible_page("next-field")),
     };
     match next {
         Some(cursor) if !commits.is_empty() && cursor == last && cursor < sequence => {}
         None if last == sequence => {}
-        _ => return Err(JournalReadError::Incompatible),
+        _ => return Err(incompatible_page("next-consistency")),
     }
     Ok(PageFacts {
         checkpoint,
@@ -860,6 +868,16 @@ fn validate_page(
         last,
         commits: commits.len(),
     })
+}
+
+fn incompatible_page(stage: &str) -> JournalReadError {
+    #[cfg(test)]
+    if std::env::var_os("PEERWORK_DIAG_SECURE_PAGE").is_some() {
+        eprintln!("secure journal page incompatibility stage: {stage}");
+    }
+    #[cfg(not(test))]
+    let _ = stage;
+    JournalReadError::Incompatible
 }
 
 fn text(value: &WireValue, key: &str) -> Result<String, JournalReadError> {
@@ -939,6 +957,30 @@ mod tests {
             validate_page(&wrong_next, &workspace, 1, Some(&facts)),
             Err(JournalReadError::Incompatible)
         ));
+    }
+
+    #[test]
+    fn signed_guarded_action_history_fits_secure_journal_page_contract() {
+        let vector: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../conformance/guarded-action-vector.json"
+        ))
+        .unwrap();
+        let workspace = vector["workspace_id"].as_str().unwrap();
+        let page = serde_json::json!({
+            "workspace_id": workspace,
+            "state": "ACTIVE",
+            "visibility": "PRIVATE",
+            "policies": vector["policies"],
+            "commits": vector["commits"],
+            "guard_time_attestations": vector["guard_time_attestations"],
+            "checkpoint": vector["checkpoint"],
+            "next": null,
+        });
+        let wire = serde_json::to_vec(&page).unwrap();
+        let facts = validate_page(&wire, workspace, 0, None).unwrap();
+        assert_eq!(facts.sequence, vector["checkpoint"]["sequence"].as_u64().unwrap());
+        assert_eq!(facts.commits, vector["commits"].as_array().unwrap().len());
+        assert_eq!(facts.next, None);
     }
 
     #[test]

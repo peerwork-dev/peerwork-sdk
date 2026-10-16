@@ -221,7 +221,7 @@ impl SecurePublicActionAccess {
     }
 
     pub fn submit_new_json(&self, input: PublicActionInput) -> Result<String, PublicActionError> {
-        self.submit_new_json_with_cancel(input, &CancellationToken::new())
+        self.submit_new_json_with_operation_id(input, None, &CancellationToken::new())
     }
 
     pub fn submit_new_json_with_cancel(
@@ -229,7 +229,19 @@ impl SecurePublicActionAccess {
         input: PublicActionInput,
         cancel: &CancellationToken,
     ) -> Result<String, PublicActionError> {
-        let command_id = match input.command_id {
+        self.submit_new_json_with_operation_id(input, None, cancel)
+    }
+
+    /// Submit a guarded PRIVATE action under a caller-stable operation id.
+    /// The id is stored with the exact prepared request before network I/O.
+    pub fn submit_new_json_with_operation_id(
+        &self,
+        input: PublicActionInput,
+        operation_id: Option<&str>,
+        cancel: &CancellationToken,
+    ) -> Result<String, PublicActionError> {
+        let requested_command_id = input.command_id.clone();
+        let command_id = match requested_command_id.clone() {
             Some(value) => value,
             None => new_command_id()?,
         };
@@ -243,9 +255,6 @@ impl SecurePublicActionAccess {
         let profile = SecureReadProfile::new(self.config.clone());
         let result = profile.with_latest_replay(cancel, |source| {
             let (identity, lifecycle, mut journal, transport) = self.open_local(source)?;
-            if journal.contains_id(&command_id) {
-                return Err(PublicActionError::Intent(SecureIntentError::Conflict));
-            }
             let refs = input.exact_input_refs_json.as_deref().unwrap_or("[]");
             let allocations = input.allocations_json.as_deref().unwrap_or("null");
             let policy_wire = source
@@ -261,6 +270,86 @@ impl SecurePublicActionAccess {
             if visibility != self.required_mode {
                 return Err(PublicActionError::Input);
             }
+            let payload = policy.get("payload").ok_or(PublicActionError::Input)?;
+            let guarded = payload.get("guard_time").is_some();
+            let operation_binding = if visibility == "PRIVATE" && guarded {
+                let operation_id = operation_id.ok_or(PublicActionError::Input)?;
+                let intent = serde_json::to_vec(&serde_json::json!({
+                    "workspace_id": self.config.workspace_id,
+                    "actor_id": identity.actor_id(),
+                    "action_id": input.action_id,
+                    "instance_id": input.instance_id,
+                    "body_json": input.body_json,
+                    "exact_input_refs_json": refs,
+                    "allocations_json": allocations,
+                    "issued_at_ms": input.issued_at_ms,
+                }))
+                .map_err(|_| PublicActionError::Input)?;
+                let intent_digest = sha256_hex(&intent);
+                if let Some((saved_id, saved_digest)) = journal.action_operation(operation_id)? {
+                    if saved_digest != intent_digest
+                        || requested_command_id
+                            .as_ref()
+                            .is_some_and(|value| value != &saved_id)
+                    {
+                        return Err(PublicActionError::Intent(SecureIntentError::Conflict));
+                    }
+                    let accepted = match journal
+                        .accept_replayed_action(&saved_id, &identity, &transport, source)
+                    {
+                        Ok(accepted) => Some(accepted),
+                        Err(SecureIntentError::ReplayMismatch) => None,
+                        Err(error) => return Err(PublicActionError::Intent(error)),
+                    };
+                    if let Some(accepted) = accepted {
+                        return Ok(PublicActionResult {
+                            status: "ACCEPTED",
+                            command_id: accepted.intent_id,
+                            workspace_id: accepted.workspace_id,
+                            action_id: accepted.action_id,
+                            sequence: Some(accepted.sequence),
+                            commit_hash: Some(accepted.commit_hash),
+                            receipt_canonical_json: Some(accepted.receipt_canonical_json),
+                        });
+                    }
+                    let saved = saved_pins(&journal, &saved_id)?;
+                    let pins = saved.borrow();
+                    let runtime = Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .map_err(|_| PublicActionError::Runtime)?;
+                    match runtime.block_on(journal.submit_saved_commit_from_replay(
+                        &saved_id, &identity, &transport, source, &pins, cancel,
+                    )) {
+                        Ok(_) | Err(SecureIntentError::Transport(_)) => {}
+                        Err(error) => return Err(PublicActionError::Intent(error)),
+                    }
+                    return Ok(PublicActionResult {
+                        status: "PENDING",
+                        command_id: saved_id,
+                        workspace_id: self.config.workspace_id.clone(),
+                        action_id: input.action_id.clone(),
+                        sequence: None,
+                        commit_hash: None,
+                        receipt_canonical_json: None,
+                    });
+                }
+                Some((operation_id.to_owned(), intent_digest))
+            } else {
+                if journal.contains_id(&command_id) {
+                    return Err(PublicActionError::Intent(SecureIntentError::Conflict));
+                }
+                None
+            };
+            let command_id = if let Some((operation_id, _)) = &operation_binding {
+                if let Some((existing_id, _)) = journal.action_operation(operation_id)? {
+                    existing_id
+                } else {
+                    command_id.clone()
+                }
+            } else {
+                command_id.clone()
+            };
             match visibility.as_str() {
                 "PUBLIC" => prepare_public_action_from_replay(
                     &mut journal,
@@ -287,6 +376,9 @@ impl SecurePublicActionAccess {
                     input.body_json.as_bytes(),
                     refs.as_bytes(),
                     allocations.as_bytes(),
+                    operation_binding
+                        .as_ref()
+                        .map(|(id, digest)| (id.as_str(), digest.as_str())),
                 ),
                 _ => return Err(PublicActionError::Input),
             }?;
@@ -489,6 +581,17 @@ impl SecurePrivateActionAccess {
         cancel: &CancellationToken,
     ) -> Result<String, PublicActionError> {
         self.inner.submit_new_json_with_cancel(input, cancel)
+    }
+
+    /// Submit a guarded PRIVATE action under a caller-stable operation id.
+    pub fn submit_new_json_with_operation_id(
+        &self,
+        input: PublicActionInput,
+        operation_id: &str,
+        cancel: &CancellationToken,
+    ) -> Result<String, PublicActionError> {
+        self.inner
+            .submit_new_json_with_operation_id(input, Some(operation_id), cancel)
     }
 
     pub fn reconcile_json(&self, command_id: &str) -> Result<String, PublicActionError> {
@@ -790,5 +893,119 @@ mod private_action_tests {
             serde_json::from_slice(&response.bytes().await.unwrap()).unwrap()
         });
         assert_eq!(counts["commits"], 4);
+    }
+
+    #[test]
+    fn actual_guarded_private_http_operation_survives_process_restart() {
+        let (Ok(fixture_path), Ok(phase)) = (
+            std::env::var("PEERWORK_GUARDED_HTTP_FIXTURE"),
+            std::env::var("PEERWORK_GUARDED_HTTP_PHASE"),
+        ) else {
+            return;
+        };
+        assert!(phase == "submit" || phase == "recover");
+        let fixture: serde_json::Value =
+            serde_json::from_slice(&fs::read(&fixture_path).unwrap()).unwrap();
+        let text = |name: &str| fixture[name].as_str().expect("guarded HTTP fixture string");
+        let origin_value = text("origin");
+        let origin = if origin_value.ends_with('/') {
+            origin_value.to_owned()
+        } else {
+            format!("{origin_value}/")
+        };
+        let workspace_id = text("workspace_id");
+        let owner_actor_id = text("owner_actor_id");
+        let owner_key_id = text("owner_key_id");
+        let authority = text("authority");
+        let action_id = text("action_id");
+        let instance_id = text("instance_id");
+        let operation_id = text("operation_id");
+        let body_json = text("body_json");
+        let state_dir = std::path::Path::new(text("native_state_dir"));
+        fs::create_dir_all(state_dir).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(state_dir, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let identity_path = state_dir.join("identity.state");
+        if identity_path.exists() {
+            KernelIdentity::open(&identity_path).unwrap();
+        } else {
+            KernelIdentity::import_pkcs8_pem_file(
+                &identity_path,
+                std::path::Path::new(text("owner_pkcs8_pem_path")),
+            )
+            .unwrap();
+        }
+        let identity = KernelIdentity::open(&identity_path).unwrap();
+        let lifecycle_path = state_dir.join("lifecycle.state");
+        let mut lifecycle = SecureLifecycle::open(
+            &lifecycle_path,
+            &origin,
+            identity.actor_id(),
+            workspace_id,
+            owner_actor_id,
+            owner_key_id,
+        )
+        .unwrap();
+        if lifecycle.status().active_epochs.is_empty() {
+            lifecycle
+                .import_active_for_test(&fs::read(text("keyring_path")).unwrap())
+                .unwrap();
+        }
+        drop(lifecycle);
+        drop(identity);
+        let profile = SecureReadProfileConfig {
+            transport: Default::default(),
+            origin: origin.clone(),
+            state_dir: state_dir.to_path_buf(),
+            identity_path,
+            workspace_id: workspace_id.to_owned(),
+            owner_actor_id: Some(owner_actor_id.to_owned()),
+            owner_key_id: Some(owner_key_id.to_owned()),
+            authority: Some(authority.to_owned()),
+            required_features: vec![],
+            allow_loopback_http: true,
+            max_replay_artifact_bytes: 64 * 1024 * 1024,
+            max_replay_commits: crate::secure_verified_read::default_replay_commits(),
+        };
+        if phase == "submit" {
+            crate::transport::test_drop_next_secure_post_response();
+        }
+        let result: serde_json::Value = serde_json::from_str(
+            &SecurePrivateActionAccess::new(profile)
+                .submit_new_json_with_operation_id(
+                    PublicActionInput {
+                        action_id: action_id.to_owned(),
+                        instance_id: instance_id.to_owned(),
+                        body_json: body_json.to_owned(),
+                        exact_input_refs_json: None,
+                        allocations_json: None,
+                        command_id: None,
+                        issued_at_ms: None,
+                    },
+                    operation_id,
+                    &CancellationToken::new(),
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        let command_file = state_dir.join("guarded-command-id");
+        if phase == "submit" {
+            assert_eq!(result["status"], "PENDING");
+            fs::write(&command_file, result["command_id"].as_str().unwrap()).unwrap();
+        } else {
+            assert_eq!(result["status"], "ACCEPTED");
+            let first_id = fs::read_to_string(&command_file).unwrap();
+            assert_eq!(result["command_id"], first_id);
+            assert!(result["sequence"].as_u64().unwrap() >= 1);
+            let receipt: serde_json::Value = serde_json::from_str(
+                result["receipt_canonical_json"].as_str().unwrap(),
+            )
+            .unwrap();
+            assert_eq!(receipt["command_id"], first_id);
+            assert!(!receipt["effects"].as_array().unwrap().is_empty());
+        }
     }
 }

@@ -9,7 +9,7 @@ use peerwork_core::{
     canonical::Path,
     crypto::sha256_hex,
     replayed_secure_journal::{
-        replay_secure_journal_exact_with_limits, JournalReplayLimits, JournalReplayError, JournalReplayInput, ReplayedSecureJournal,
+        JournalReplayError, JournalReplayInput, JournalReplayLimits, ReplayedSecureJournal,
         StructureStatus,
     },
     secure_keyring::SecretKeyring,
@@ -21,13 +21,18 @@ use thiserror::Error;
 const MAX_PAGE: usize = 64 * 1024 * 1024;
 const DEFAULT_REPLAY_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_POLICIES: usize = 1024;
-pub(crate) fn default_replay_commits() -> u64 { 102_400 }
+pub(crate) fn default_replay_commits() -> u64 {
+    102_400
+}
 
 /// Bounded canonical artifacts from exact transport pages. This is only an
 /// input to signed grant and journal verification, never an authority token.
 pub(crate) struct UnverifiedSignedArtifacts {
     pub policy_wires: Vec<Vec<u8>>,
     pub commit_wires: Vec<Vec<u8>>,
+    /// Exact service-signed proofs from the same authenticated transport pages.
+    /// These remain untrusted until core replay verifies each commit binding.
+    pub guard_time_attestation_wires: Vec<Vec<u8>>,
 }
 
 /// Client memory budget for canonical policy and commit wires retained during
@@ -43,11 +48,18 @@ impl SecureJournalReadBudget {
     pub fn new(max_replay_artifact_bytes: u64) -> Option<Self> {
         Self::new_with_limits(max_replay_artifact_bytes, default_replay_commits())
     }
-    pub fn new_with_limits(max_replay_artifact_bytes: u64,
-            max_replay_commits: u64) -> Option<Self> {
+    pub fn new_with_limits(
+        max_replay_artifact_bytes: u64,
+        max_replay_commits: u64,
+    ) -> Option<Self> {
         JournalReplayLimits::new(max_replay_commits)?;
-        usize::try_from(max_replay_artifact_bytes).ok().filter(|n| *n > 0)?;
-        Some(Self { max_replay_artifact_bytes, max_replay_commits })
+        usize::try_from(max_replay_artifact_bytes)
+            .ok()
+            .filter(|n| *n > 0)?;
+        Some(Self {
+            max_replay_artifact_bytes,
+            max_replay_commits,
+        })
     }
 }
 
@@ -89,6 +101,7 @@ pub(crate) struct TransportReplayedJournal {
     grant_keyring_sha256: Option<String>,
     signed_policy_wires: Vec<Vec<u8>>,
     signed_commit_wires: Vec<Vec<u8>>,
+    signed_guard_time_attestation_wires: Vec<Vec<u8>>,
     replay: ReplayedSecureJournal,
     budget: SecureJournalReadBudget,
 }
@@ -167,58 +180,116 @@ impl TransportReplayedJournal {
             .map_err(|_| VerifiedReadError::Content)?;
         let canonical = canonical_wire_value(&checkpoint, Path::SecureArtifact)
             .map_err(|_| VerifiedReadError::Content)?;
-        let sequence = checkpoint.get("sequence").and_then(WireValue::as_number)
-            .filter(|n| n.is_finite() && *n >= 1.0 && *n <= 9_007_199_254_740_991.0
-                && n.fract() == 0.0)
+        let sequence = checkpoint
+            .get("sequence")
+            .and_then(WireValue::as_number)
+            .filter(|n| {
+                n.is_finite() && *n >= 1.0 && *n <= 9_007_199_254_740_991.0 && n.fract() == 0.0
+            })
             .ok_or(VerifiedReadError::Content)? as u64;
-        let head = checkpoint.get("head").and_then(WireValue::as_string)
+        let head = checkpoint
+            .get("head")
+            .and_then(WireValue::as_string)
             .ok_or(VerifiedReadError::Content)?;
-        let policy_hash = checkpoint.get("policy_hash").and_then(WireValue::as_string)
+        let policy_hash = checkpoint
+            .get("policy_hash")
+            .and_then(WireValue::as_string)
             .ok_or(VerifiedReadError::Content)?;
-        if checkpoint.get("workspace_id").and_then(WireValue::as_string).as_deref()
-                != Some(self.replay.workspace_id())
-            || checkpoint.get("owner_id").and_then(WireValue::as_string).as_deref()
+        if checkpoint
+            .get("workspace_id")
+            .and_then(WireValue::as_string)
+            .as_deref()
+            != Some(self.replay.workspace_id())
+            || checkpoint
+                .get("owner_id")
+                .and_then(WireValue::as_string)
+                .as_deref()
                 != Some(self.replay.owner_actor_id())
-            || checkpoint.get("owner_key").and_then(WireValue::as_string).as_deref()
+            || checkpoint
+                .get("owner_key")
+                .and_then(WireValue::as_string)
+                .as_deref()
                 != Some(self.replay.owner_signing_key())
-            || !self.replay.contains_checkpoint(sequence, Some(&head), &policy_hash)
-        { return Err(VerifiedReadError::Content); }
+            || !self
+                .replay
+                .contains_checkpoint(sequence, Some(&head), &policy_hash)
+        {
+            return Err(VerifiedReadError::Content);
+        }
         let through = usize::try_from(sequence).map_err(|_| VerifiedReadError::Content)?;
-        let commits = self.signed_commit_wires.get(..through)
-            .ok_or(VerifiedReadError::Content)?.to_vec();
+        let commits = self
+            .signed_commit_wires
+            .get(..through)
+            .ok_or(VerifiedReadError::Content)?
+            .to_vec();
         let mut policies = Vec::new();
         for wire in &self.signed_policy_wires {
             let signed = parse_wire_json_bounded(wire, 64, 196_608)
                 .map_err(|_| VerifiedReadError::Content)?;
-            let effective = signed.get("payload").and_then(|p| p.get("effective_sequence"))
+            let effective = signed
+                .get("payload")
+                .and_then(|p| p.get("effective_sequence"))
                 .and_then(WireValue::as_number)
                 .filter(|n| n.is_finite() && *n >= 1.0 && n.fract() == 0.0)
                 .ok_or(VerifiedReadError::Content)? as u64;
-            if effective <= sequence { policies.push(wire.clone()); }
+            if effective <= sequence {
+                policies.push(wire.clone());
+            }
         }
-        let ring_wire = keyring.canonical_wire().map_err(|_| VerifiedReadError::Content)?;
+        let mut proofs = Vec::new();
+        for wire in &self.signed_guard_time_attestation_wires {
+            let proof =
+                parse_wire_json_bounded(wire, 32, 8192).map_err(|_| VerifiedReadError::Content)?;
+            let result_sequence = proof
+                .get("payload")
+                .and_then(|p| p.get("result"))
+                .and_then(|r| r.get("sequence"))
+                .and_then(WireValue::as_number)
+                .filter(|n| {
+                    n.is_finite() && *n >= 1.0 && *n <= 9_007_199_254_740_991.0 && n.fract() == 0.0
+                })
+                .ok_or(VerifiedReadError::Content)? as u64;
+            if result_sequence <= sequence {
+                proofs.push(wire.clone());
+            }
+        }
+        let ring_wire = keyring
+            .canonical_wire()
+            .map_err(|_| VerifiedReadError::Content)?;
         let policy_refs = policies.iter().map(Vec::as_slice).collect::<Vec<_>>();
         let commit_refs = commits.iter().map(Vec::as_slice).collect::<Vec<_>>();
-        let replay = replay_with_budget(JournalReplayInput {
-            policy_wires: &policy_refs, commit_wires: &commit_refs,
-            checkpoint_wire: canonical.as_bytes(),
-            workspace_id: self.replay.workspace_id(),
-            owner_actor_id: self.replay.owner_actor_id(),
-            owner_signing_key: self.replay.owner_signing_key(),
-            final_sequence: sequence, final_head: Some(&head),
-            final_policy_hash: &policy_hash, keyring_wire: Some(&ring_wire),
-        }, self.budget)?;
+        let replay = replay_with_budget(
+            JournalReplayInput {
+                policy_wires: &policy_refs,
+                commit_wires: &commit_refs,
+                checkpoint_wire: canonical.as_bytes(),
+                workspace_id: self.replay.workspace_id(),
+                owner_actor_id: self.replay.owner_actor_id(),
+                owner_signing_key: self.replay.owner_signing_key(),
+                final_sequence: sequence,
+                final_head: Some(&head),
+                final_policy_hash: &policy_hash,
+                keyring_wire: Some(&ring_wire),
+            },
+            self.budget,
+            &proofs,
+        )?;
         if replay.structure_status() != StructureStatus::Active {
             return Err(VerifiedReadError::NotActive);
         }
         Ok(Self {
-            origin: self.origin.clone(), authority: self.authority.clone(),
+            origin: self.origin.clone(),
+            authority: self.authority.clone(),
             source_actor_id: self.source_actor_id.clone(),
             source_key_id: self.source_key_id.clone(),
             keyring_state: self.keyring_state,
             checkpoint_canonical_json: canonical,
             grant_keyring_sha256: self.grant_keyring_sha256.clone(),
-            signed_policy_wires: policies, signed_commit_wires: commits, replay, budget: self.budget,
+            signed_policy_wires: policies,
+            signed_commit_wires: commits,
+            signed_guard_time_attestation_wires: proofs,
+            replay,
+            budget: self.budget,
         })
     }
 
@@ -260,6 +331,9 @@ impl TransportReplayedJournal {
             .iter()
             .find(|wire| sha256_hex(wire) == policy_hash)
             .map(Vec::as_slice)
+    }
+    pub(crate) fn guard_time_attestations(&self) -> &[Vec<u8>] {
+        &self.signed_guard_time_attestation_wires
     }
     /// Exact signed artifacts already consumed by complete origin-bound replay.
     /// These bytes are only for composing a separately checked grant proof.
@@ -355,6 +429,7 @@ fn replay_authenticated_pages_with_material(
     let UnverifiedSignedArtifacts {
         policy_wires,
         commit_wires,
+        guard_time_attestation_wires,
     } = collect_unverified_artifacts(pages, budget)?;
     let checkpoint_wire = pages.checkpoint_canonical_json().as_bytes();
     let checkpoint = parse_wire_json_bounded(checkpoint_wire, 8, 4096)
@@ -390,18 +465,22 @@ fn replay_authenticated_pages_with_material(
         .map_err(|_| VerifiedReadError::Content)?;
     let policy_refs = policy_wires.iter().map(Vec::as_slice).collect::<Vec<_>>();
     let commit_refs = commit_wires.iter().map(Vec::as_slice).collect::<Vec<_>>();
-    let replay = replay_with_budget(JournalReplayInput {
-        policy_wires: &policy_refs,
-        commit_wires: &commit_refs,
-        checkpoint_wire,
-        workspace_id: pages.workspace_id(),
-        owner_actor_id: &owner_actor,
-        owner_signing_key: &owner_key,
-        final_sequence: sequence,
-        final_head: head.as_deref(),
-        final_policy_hash: &policy_hash,
-        keyring_wire: keyring_wire.as_deref().map(Vec::as_slice),
-    }, budget)?;
+    let replay = replay_with_budget(
+        JournalReplayInput {
+            policy_wires: &policy_refs,
+            commit_wires: &commit_refs,
+            checkpoint_wire,
+            workspace_id: pages.workspace_id(),
+            owner_actor_id: &owner_actor,
+            owner_signing_key: &owner_key,
+            final_sequence: sequence,
+            final_head: head.as_deref(),
+            final_policy_hash: &policy_hash,
+            keyring_wire: keyring_wire.as_deref().map(Vec::as_slice),
+        },
+        budget,
+        &guard_time_attestation_wires,
+    )?;
     Ok(TransportReplayedJournal {
         origin: pages.origin().to_owned(),
         authority: pages.authority().to_owned(),
@@ -412,14 +491,33 @@ fn replay_authenticated_pages_with_material(
         grant_keyring_sha256,
         signed_policy_wires: policy_wires,
         signed_commit_wires: commit_wires,
+        signed_guard_time_attestation_wires: guard_time_attestation_wires,
         replay,
         budget,
     })
 }
 
-fn replay_with_budget(input: JournalReplayInput<'_>, budget: SecureJournalReadBudget) -> Result<ReplayedSecureJournal, VerifiedReadError> {
-    let limits = JournalReplayLimits::new(budget.max_replay_commits).ok_or(VerifiedReadError::ResourceLimit)?;
-    replay_secure_journal_exact_with_limits(input, limits).map_err(|error| match error {
+fn replay_with_budget(
+    input: JournalReplayInput<'_>,
+    budget: SecureJournalReadBudget,
+    proof_wires: &[Vec<u8>],
+) -> Result<ReplayedSecureJournal, VerifiedReadError> {
+    let limits = JournalReplayLimits::new(budget.max_replay_commits)
+        .ok_or(VerifiedReadError::ResourceLimit)?;
+    let mut proofs = std::collections::HashMap::new();
+    for wire in proof_wires {
+        let proof =
+            parse_wire_json_bounded(wire, 32, 8192).map_err(|_| VerifiedReadError::Content)?;
+        let commit_hash = proof
+            .get("payload")
+            .and_then(|p| p.get("commit_hash"))
+            .and_then(WireValue::as_string)
+            .ok_or(VerifiedReadError::Content)?;
+        if proofs.insert(commit_hash, wire.clone()).is_some() {
+            return Err(VerifiedReadError::Content);
+        }
+    }
+    peerwork_core::replayed_secure_journal::replay_secure_journal_exact_with_guard_time_attestations_and_limits(input, limits, Some(&proofs)).map_err(|error| match error {
         JournalReplayError::ResourceLimit => VerifiedReadError::ResourceLimit,
         other => VerifiedReadError::Replay(other),
     })
@@ -433,9 +531,12 @@ pub(crate) fn collect_unverified_artifacts(
         .ok()
         .filter(|limit| *limit > 0)
         .ok_or(VerifiedReadError::ResourceLimit)?;
-    let max_commits = JournalReplayLimits::new(budget.max_replay_commits).ok_or(VerifiedReadError::ResourceLimit)?.max_commits();
+    let max_commits = JournalReplayLimits::new(budget.max_replay_commits)
+        .ok_or(VerifiedReadError::ResourceLimit)?
+        .max_commits();
     let mut policy_wires = Vec::<Vec<u8>>::new();
     let mut commit_wires = Vec::<Vec<u8>>::new();
+    let mut guard_time_attestation_wires = Vec::<Vec<u8>>::new();
     let mut total_bytes = 0usize;
     let mut first = true;
     pages
@@ -479,6 +580,26 @@ pub(crate) fn collect_unverified_artifacts(
                     max_artifact_bytes,
                 )?;
             }
+            if let Some(proofs) = page.get("guard_time_attestations") {
+                let WireValue::Array(proofs) = proofs else {
+                    return Err(JournalReadError::Incompatible);
+                };
+                for proof in proofs {
+                    let encoded = canonical_wire_value(proof, Path::SecureArtifact)
+                        .map_err(|_| JournalReadError::Incompatible)?
+                        .into_bytes();
+                    if encoded.len() > 8192 {
+                        return Err(JournalReadError::TooLarge);
+                    }
+                    push_bounded(
+                        &mut guard_time_attestation_wires,
+                        encoded,
+                        &mut total_bytes,
+                        max_commits,
+                        max_artifact_bytes,
+                    )?;
+                }
+            }
             Ok(())
         })
         .map_err(|error| match error {
@@ -488,6 +609,7 @@ pub(crate) fn collect_unverified_artifacts(
     Ok(UnverifiedSignedArtifacts {
         policy_wires,
         commit_wires,
+        guard_time_attestation_wires,
     })
 }
 
@@ -501,7 +623,12 @@ mod tests {
         let budget = SecureJournalReadBudget::new_with_limits(1024, 27).unwrap();
         assert_eq!(budget.max_replay_artifact_bytes, 1024);
         assert_eq!(budget.max_replay_commits, 27);
-        assert_eq!(SecureJournalReadBudget::new(1024).unwrap().max_replay_commits, 102_400);
+        assert_eq!(
+            SecureJournalReadBudget::new(1024)
+                .unwrap()
+                .max_replay_commits,
+            102_400
+        );
     }
     #[test]
     fn replay_artifact_buffer_overflow_refuses_before_insertion() {

@@ -4,6 +4,7 @@
 use crate::{
     canonical::Path,
     crypto::{actor_id, decode_base64url, sha256_hex, verify_secure_signed_wire},
+    guard_time::{parse_guard_time_context, parse_guard_time_policy},
     secure_action_delegation::resolve_action_scope,
     structure_delta::validate_projection_page,
     structure_policy::validate_structure_policy,
@@ -153,6 +154,12 @@ pub fn verify_prepared_secure_commit_request_with_policy(
         }
         _ => return Err(invalid()),
     };
+    if let Some(value) = policy_payload.get("guard_time") {
+        if pins.mode != "PRIVATE" || pins.version != 3 {
+            return Err(invalid());
+        }
+        parse_guard_time_policy(value).map_err(|_| invalid())?;
+    }
     if structured {
         validate_structure_policy(policy_payload.get("structure").ok_or_else(invalid)?)
             .map_err(|_| invalid())?;
@@ -209,6 +216,18 @@ fn verify_prepared_secure_commit_request_inner(
     exact_keys(commit, &["payload", "signature"])?;
     let payload = commit.get("payload").ok_or_else(invalid)?;
     let structured = authenticated_policy.is_some_and(|(_, structured)| structured);
+    let guard_time_enabled = match
+        authenticated_policy.and_then(|(policy, _)| policy.get("guard_time"))
+    {
+        Some(value) => {
+            if pins.mode != "PRIVATE" || pins.version != 3 {
+                return Err(invalid());
+            }
+            parse_guard_time_policy(value).map_err(|_| invalid())?;
+            true
+        }
+        None => false,
+    };
     let mut required = vec![
         "v",
         "workspace_id",
@@ -228,6 +247,9 @@ fn verify_prepared_secure_commit_request_inner(
     ];
     if pins.version == 3 {
         required.push("protocol_format_ceiling");
+    }
+    if guard_time_enabled {
+        required.push("guard_time");
     }
     if structured {
         required.push("structure");
@@ -252,6 +274,10 @@ fn verify_prepared_secure_commit_request_inner(
                 != pins.protocol_format_ceiling.unwrap_or(0)
     {
         return Err(invalid());
+    }
+    if guard_time_enabled {
+        parse_guard_time_context(payload.get("guard_time").ok_or_else(invalid)?)
+            .map_err(|_| invalid())?;
     }
     if structured {
         let envelope = payload.get("structure").ok_or_else(invalid)?;
@@ -698,5 +724,151 @@ mod tests {
             )
             .is_err());
         }
+    }
+
+    #[test]
+    fn guarded_private_request_retains_exact_policy_bound_window_context() {
+        let (base_wire, path, actor, key, workspace, _) = fixture();
+        let signing = SigningKey::from_bytes(&[7; 32]);
+        let guard_policy = json!({
+            "v": 1,
+            "mode": "ALL_COMMITS",
+            "audience": "test.example",
+            "service_key": "s".repeat(43),
+            "disclosure": "GUARD_WINDOW"
+        });
+        let signed_policy = |with_guard: bool| {
+            let mut payload = json!({
+                "v": 3,
+                "workspace_id": workspace,
+                "owner_id": actor,
+                "signing_key": key,
+                "effective_sequence": 1,
+                "epoch": 1,
+                "visibility": "PRIVATE",
+                "protocol_format_ceiling": 1,
+                "structure_mode": "NONE",
+                "members": [{
+                    "actor_id": actor,
+                    "role": "OWNER",
+                    "certificate": {"payload":{"signing_key":key}},
+                    "scopes": [{
+                        "instance_id":null,
+                        "actions":["discussion.post"],
+                        "protocol_roles":[],
+                        "capabilities":[]
+                    }]
+                }]
+            });
+            if with_guard {
+                payload["guard_time"] = guard_policy.clone();
+            }
+            let signature =
+                sign_canonical("peerwork.secure.policy.v3", &payload, &signing).unwrap();
+            serde_json::to_vec(&json!({"payload":payload,"signature":signature})).unwrap()
+        };
+        let guarded_policy_wire = signed_policy(true);
+        let parsed_policy =
+            parse_wire_json_bounded(&guarded_policy_wire, 64, COMMIT_LIMIT).unwrap();
+        let canonical_policy = canonical_wire_value(&parsed_policy, Path::SecureArtifact).unwrap();
+        let guarded_policy_hash = sha256_hex(canonical_policy.as_bytes());
+        let build_request = |mut window: Option<Value>, policy_hash: &str| {
+            let mut parsed: Value = serde_json::from_slice(&base_wire).unwrap();
+            let payload = &mut parsed["commit"]["payload"];
+            payload["policy_hash"] = json!(policy_hash);
+            if let Some(window) = window.take() {
+                payload["guard_time"] = window;
+            } else {
+                payload.as_object_mut().unwrap().remove("guard_time");
+            }
+            request_for(payload.clone())
+        };
+        let previous = "b".repeat(64);
+        macro_rules! pins {
+            ($policy_hash:expr) => {
+                SecureCommitRequestPins {
+                    actor_id: &actor,
+                    signing_key: &key,
+                    workspace_id: &workspace,
+                    policy_hash: $policy_hash,
+                    sequence: 2,
+                    previous: Some(&previous),
+                    epoch: 1,
+                    mode: "PRIVATE",
+                    version: 3,
+                    protocol_format_ceiling: Some(1),
+                }
+            };
+        }
+        let valid_window = json!({"v":1,"lower_ms":5,"upper_ms":9});
+        let valid_request = build_request(Some(valid_window.clone()), &guarded_policy_hash);
+        assert!(verify_secure_signed_wire(
+            &guarded_policy_wire,
+            "peerwork.secure.policy.v1",
+            &key
+        ).unwrap());
+        let guarded_wire_value =
+            parse_wire_json_bounded(&guarded_policy_wire, 64, COMMIT_LIMIT).unwrap();
+        assert_eq!(
+            canonical_wire_value(&guarded_wire_value, Path::SecureArtifact).unwrap(),
+            String::from_utf8(guarded_policy_wire.clone()).unwrap()
+        );
+        let valid_result = verify_prepared_secure_commit_request_with_policy(
+            &valid_request,
+            &path,
+            &pins!(&guarded_policy_hash),
+            &guarded_policy_wire,
+            &key,
+        );
+        assert!(valid_result.is_ok(), "{:?}", valid_result.err());
+        assert!(verify(
+            &valid_request,
+            &path,
+            &actor,
+            &key,
+            &workspace,
+            &guarded_policy_hash,
+        )
+        .is_err(), "policyless saved-request verification must fail closed");
+
+        let missing = build_request(None, &guarded_policy_hash);
+        assert!(verify_prepared_secure_commit_request_with_policy(
+            &missing,
+            &path,
+            &pins!(&guarded_policy_hash),
+            &guarded_policy_wire,
+            &key,
+        )
+        .is_err());
+        for invalid_window in [
+            json!({"v":1,"lower_ms":9,"upper_ms":5}),
+            json!({"v":1,"lower_ms":5,"upper_ms":9,"extra":true}),
+        ] {
+            let invalid_request = build_request(Some(invalid_window), &guarded_policy_hash);
+            assert!(verify_prepared_secure_commit_request_with_policy(
+                &invalid_request,
+                &path,
+                &pins!(&guarded_policy_hash),
+                &guarded_policy_wire,
+                &key,
+            )
+            .is_err());
+        }
+
+        let unguarded_policy_wire = signed_policy(false);
+        let parsed_unguarded =
+            parse_wire_json_bounded(&unguarded_policy_wire, 64, COMMIT_LIMIT).unwrap();
+        let unguarded_canonical =
+            canonical_wire_value(&parsed_unguarded, Path::SecureArtifact).unwrap();
+        let unguarded_hash = sha256_hex(unguarded_canonical.as_bytes());
+        let extra_window_request = build_request(Some(valid_window), &unguarded_hash);
+        assert!(verify_prepared_secure_commit_request_with_policy(
+            &extra_window_request,
+            &path,
+            &pins!(&unguarded_hash),
+            &unguarded_policy_wire,
+            &key,
+        )
+        .is_err(), "unguarded policy must reject an extra context field");
     }
 }

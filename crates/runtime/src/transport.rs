@@ -6,6 +6,15 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
+#[cfg(test)]
+static TEST_DROP_NEXT_SECURE_POST_RESPONSE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(test)]
+pub(crate) fn test_drop_next_secure_post_response() {
+    TEST_DROP_NEXT_SECURE_POST_RESPONSE.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
 pub(crate) const MAX_DISCOVERY_BYTES: usize = 256 * 1024;
 const MAX_COMMAND_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_SECURE_JOURNAL_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
@@ -270,9 +279,16 @@ impl HttpTransport {
             _ = cancel.cancelled() => return Err(TransportError::SubmittedUncertain),
             result = send => result.map_err(|_| TransportError::SubmittedUncertain)?,
         };
-        read_bounded(response, MAX_COMMAND_RESPONSE_BYTES, cancel)
+        let response = read_bounded(response, MAX_COMMAND_RESPONSE_BYTES, cancel)
             .await
-            .map_err(|_| TransportError::SubmittedUncertain)
+            .map_err(|_| TransportError::SubmittedUncertain)?;
+        #[cfg(test)]
+        if path.starts_with("/api/workspace/v1/secure/workspaces/")
+            && TEST_DROP_NEXT_SECURE_POST_RESPONSE.swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(TransportError::SubmittedUncertain);
+        }
+        Ok(response)
     }
 
     /// Submit a persisted exact admission packet with a fresh signed control
