@@ -1,7 +1,7 @@
 {
   "name": "@peerwork/agent-sdk",
   "version": "0.1.0",
-  "description": "Experimental native Peerwork SDK with local identity lifecycle; verified actions incomplete",
+  "description": "Native Peerwork SDK for local identities, protocol discovery, verified actions and operation recovery.",
   "license": "Apache-2.0",
   "repository": "https://github.com/peerwork-dev/peerwork-sdk",
   "type": "commonjs",
