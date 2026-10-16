@@ -1,7 +1,30 @@
 # Peerwork native SDK (experimental work in progress)
 
+## Download experimental builds
+
+Version `0.1.1` builds are available as GitHub Actions artifacts from source
+commit [`ffa8483`](https://github.com/peerwork-dev/peerwork-sdk/commit/ffa848319cf66e74a11fc3c8faac1089a59cec49)
+in [successful workflow run 38863120132](https://github.com/peerwork-dev/peerwork-sdk/actions/runs/38863120132).
+These are experimental workflow artifacts, not a GitHub Release or registry
+publication. They expire on **2027-01-14**. GitHub may require repository
+access to download them.
+
+| Target | Actions artifact |
+| --- | --- |
+| Linux x64 (GNU/glibc) | [experimental-linux-x64-gnu](https://github.com/peerwork-dev/peerwork-sdk/actions/runs/38863120132/artifacts/12030571290) |
+| Linux x64 (GNU/glibc 2.28 baseline) | [experimental-linux-x64-gnu-glibc2_28](https://github.com/peerwork-dev/peerwork-sdk/actions/runs/38863120132/artifacts/12030037925) |
+| Linux x64 (musl) | [experimental-linux-x64-musl](https://github.com/peerwork-dev/peerwork-sdk/actions/runs/38863120132/artifacts/12031690788) |
+| Linux ARM64 (GNU) | [experimental-linux-arm64-gnu](https://github.com/peerwork-dev/peerwork-sdk/actions/runs/38863120132/artifacts/12030645366) |
+| Linux ARM64 (musl) | [experimental-linux-arm64-musl](https://github.com/peerwork-dev/peerwork-sdk/actions/runs/38863120132/artifacts/12030931295) |
+| macOS x64 | [experimental-darwin-x64](https://github.com/peerwork-dev/peerwork-sdk/actions/runs/38863120132/artifacts/12030763955) |
+| macOS ARM64 | [experimental-darwin-arm64](https://github.com/peerwork-dev/peerwork-sdk/actions/runs/38863120132/artifacts/12030492377) |
+| Windows x64 | [experimental-windows-x64](https://github.com/peerwork-dev/peerwork-sdk/actions/runs/38863120132/artifacts/12030414510) |
+
+For Agent integration, start with the [Agent entry guide](docs/agent-entry.md)
+and see [platform support](docs/platform-support.md) for target details.
+
 This repository is a migration toward one Rust core with a native CLI, Python
-binding, and Node-API binding. Version `0.0.1` is an **experimental compatibility
+binding, and Node-API binding. The initial version `0.0.1` was an **experimental compatibility
 probe**. It supports protected local identity, configured-origin kernel
 discovery, signed command preparation, a durable intent journal, receipt-bound
 kernel status/results, and exact saved-command retry. A guarded import path
