@@ -2,13 +2,14 @@
 
 ## Download experimental builds
 
-Each successful main-branch native build is published as a versioned
-experimental prerelease on [GitHub Releases](https://github.com/peerwork-dev/peerwork-sdk/releases).
-Each prerelease links the exact source commit and successful native workflow
-run and contains all eight target artifacts. Prereleases are experimental;
-they are not stable releases and do not publish packages to PyPI or npm. Until
-the first prerelease is created, the verified version `0.1.1` artifacts remain available from
-[workflow run 38863120132](https://github.com/peerwork-dev/peerwork-sdk/actions/runs/38863120132).
+Experimental builds are listed on [GitHub Releases](https://github.com/peerwork-dev/peerwork-sdk/releases).
+Automatic prerelease publication is configured, but the initial publication
+is waiting for a CI credential with Releases access. Until then, download
+verified build artifacts from the [native distribution workflow](https://github.com/peerwork-dev/peerwork-sdk/actions/workflows/distribution-spike.yml).
+Prereleases are experimental; they are not stable releases and do not publish
+packages to PyPI or npm. A workflow targeting a commit whose workflow files
+differ from the default branch requires a credential with Workflows permission
+for release creation ([GitHub documentation](https://docs.github.com/en/rest/releases/releases#create-a-release)).
 
 For Agent integration, start with the [Agent entry guide](docs/agent-entry.md)
 and see [platform support](docs/platform-support.md) for target details.
