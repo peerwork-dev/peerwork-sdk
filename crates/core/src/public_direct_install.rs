@@ -97,6 +97,71 @@ fn policy_field_mut<'a>(value: &'a mut WireValue, key: &str) -> Result<&'a mut W
         .map(|(_, value)| value).ok_or(DirectInstallError::Invalid)
 }
 
+#[derive(Clone)]
+pub struct ProtocolPublicationDependency {
+    protocol_digest: String,
+    manifest: WireValue,
+}
+impl ProtocolPublicationDependency {
+    pub fn protocol_digest(&self) -> &str { &self.protocol_digest }
+    pub fn manifest(&self) -> &WireValue { &self.manifest }
+}
+#[derive(Clone)]
+pub struct ProtocolPublicationProvenance {
+    package_digest: String,
+    source_digest: String,
+    binding_digest: String,
+    compiler_version: String,
+    semantics: String,
+    lock: WireValue,
+}
+impl ProtocolPublicationProvenance {
+    pub fn package_digest(&self) -> &str { &self.package_digest }
+    pub fn source_digest(&self) -> &str { &self.source_digest }
+    pub fn binding_digest(&self) -> &str { &self.binding_digest }
+    pub fn compiler_version(&self) -> &str { &self.compiler_version }
+    pub fn semantics(&self) -> &str { &self.semantics }
+    pub fn compilation_lock(&self) -> &WireValue { &self.lock }
+}
+#[derive(Clone)]
+pub struct ProtocolPublicationArtifact {
+    wire: WireValue,
+    root_manifest: WireValue,
+    dependencies: Vec<ProtocolPublicationDependency>,
+    expected_resolved_digest: String,
+    provenance: ProtocolPublicationProvenance,
+}
+impl ProtocolPublicationArtifact {
+    fn from_wire(wire: WireValue) -> Result<Self, DirectInstallError> {
+        let string = |value: Option<&WireValue>| -> Result<String, DirectInstallError> {
+            value.and_then(WireValue::as_string).ok_or(DirectInstallError::Invalid)
+        };
+        if string(wire.get("format"))? != "peerwork.protocol-publication.v1" { return Err(DirectInstallError::Invalid); }
+        let root_manifest = wire.get("root_manifest").cloned().ok_or(DirectInstallError::Invalid)?;
+        let dependencies = array(wire.get("dependencies").ok_or(DirectInstallError::Invalid)?)?.iter().map(|row| {
+            Ok(ProtocolPublicationDependency {
+                protocol_digest: string(row.get("protocol_digest"))?,
+                manifest: row.get("manifest").cloned().ok_or(DirectInstallError::Invalid)?,
+            })
+        }).collect::<Result<Vec<_>, DirectInstallError>>()?;
+        let provenance_wire = wire.get("provenance").ok_or(DirectInstallError::Invalid)?;
+        let provenance = ProtocolPublicationProvenance {
+            package_digest: string(provenance_wire.get("package_digest"))?,
+            source_digest: string(provenance_wire.get("source_digest"))?,
+            binding_digest: string(provenance_wire.get("binding_digest"))?,
+            compiler_version: string(provenance_wire.get("compiler_version"))?,
+            semantics: string(provenance_wire.get("semantics"))?,
+            lock: provenance_wire.get("lock").cloned().ok_or(DirectInstallError::Invalid)?,
+        };
+        Ok(Self { expected_resolved_digest: string(wire.get("expected_resolved_digest"))?, wire, root_manifest, dependencies, provenance })
+    }
+    pub fn wire(&self) -> &WireValue { &self.wire }
+    pub fn root_manifest(&self) -> &WireValue { &self.root_manifest }
+    pub fn dependencies(&self) -> &[ProtocolPublicationDependency] { &self.dependencies }
+    pub fn expected_resolved_digest(&self) -> &str { &self.expected_resolved_digest }
+    pub fn provenance(&self) -> &ProtocolPublicationProvenance { &self.provenance }
+}
+
 pub struct PublicPackageCompilation {
     package_digest: String,
     package_id: String,
@@ -105,6 +170,7 @@ pub struct PublicPackageCompilation {
     manifest_wire: Vec<u8>,
     schema_order: Vec<Vec<u16>>,
     composition: Option<WireValue>,
+    publication_artifact: ProtocolPublicationArtifact,
 }
 impl PublicPackageCompilation {
     pub fn package_digest(&self) -> &str {
@@ -121,6 +187,10 @@ impl PublicPackageCompilation {
     }
     pub fn manifest_wire(&self) -> &[u8] {
         &self.manifest_wire
+    }
+    /// Compiler-owned unresolved root and exact connected dependencies for PUBLIC publication.
+    pub fn publication_artifact(&self) -> &ProtocolPublicationArtifact {
+        &self.publication_artifact
     }
     /// Restore only compiler schema enumeration for policy construction.
     /// Object canonical bytes/digests remain identical; signed array order does not.
@@ -273,6 +343,7 @@ pub(crate) fn compile_package_closure_with_bindings_at_ceiling(
         manifest_wire,
         schema_order: compiled.schema_order,
         composition: compiled.composition,
+        publication_artifact: ProtocolPublicationArtifact::from_wire(compiled.publication_artifact)?,
     })
 }
 
@@ -1637,7 +1708,12 @@ mod tests {
             ("resolved_manifest", obj(vec![("record_schemas", obj(vec![("own", obj(vec![])), ("outer.dep", obj(vec![]))]))])),
         ]))])];
         let before = canonical_wire_value(&WireValue::Array(added.clone()), Path::SecureArtifact).unwrap();
-        let mut compiled = PublicPackageCompilation { package_digest: String::new(), package_id: String::new(), package_version: String::new(), protocol_digest: String::new(), manifest_wire: vec![], composition: None,
+        let empty_publication = ProtocolPublicationArtifact {
+            wire: obj(vec![]), root_manifest: obj(vec![]), dependencies: vec![],
+            expected_resolved_digest: String::new(),
+            provenance: ProtocolPublicationProvenance { package_digest: String::new(), source_digest: String::new(), binding_digest: String::new(), compiler_version: String::new(), semantics: String::new(), lock: obj(vec![]) },
+        };
+        let mut compiled = PublicPackageCompilation { package_digest: String::new(), package_id: String::new(), package_version: String::new(), protocol_digest: String::new(), manifest_wire: vec![], composition: None, publication_artifact: empty_publication,
             schema_order: vec!["outer.dep".encode_utf16().collect(), "own".encode_utf16().collect()] };
         compiled.restore_policy_schema_order(&mut added).unwrap();
         let WireValue::Object(fields) = added[0].get("value").unwrap().get("manifest").unwrap().get("record_schemas").unwrap() else { panic!() };
@@ -1816,6 +1892,22 @@ mod tests {
     }
 
     #[test]
+    fn publication_artifact_matches_nondefault_parameter_and_derived_constraint_vector() {
+        let fixture = parse_wire_json_bounded(include_bytes!("../../../conformance/protocol-publication-parameter-closure.json"), 64, 65_536).unwrap();
+        let closure = canonical_wire_value(fixture.get("closure").unwrap(), Path::SecureArtifact).unwrap();
+        let bindings = canonical_wire_value(fixture.get("bindings").unwrap(), Path::SecureArtifact).unwrap();
+        let compiled = compile_public_package_closure_with_bindings(closure.as_bytes(), bindings.as_bytes()).unwrap();
+        assert_eq!(compiled.package_digest(), fixture.get("root_package_digest").and_then(WireValue::as_string).as_deref().unwrap());
+        assert_eq!(compiled.protocol_digest(), fixture.get("selected_protocol_digest").and_then(WireValue::as_string).as_deref().unwrap());
+        let publication = compiled.publication_artifact();
+        assert_eq!(publication.provenance().binding_digest(), "7e0c5a6ac29e3328cb20b9e42e015a61a4aed9484c093d61a44cc8c6b7c90632");
+        let constraints = publication.root_manifest().get("constraints").unwrap().get("discussion.post").unwrap();
+        assert_eq!(array(constraints).unwrap().len(), 1);
+        let expected = parse_wire_json_bounded(include_bytes!("../../../conformance/protocol-publication-parameter-artifact.json"), 64, 65_536).unwrap();
+        assert_eq!(canonical_wire_value(publication.wire(), Path::SecureArtifact).unwrap(), canonical_wire_value(&expected, Path::SecureArtifact).unwrap());
+    }
+
+    #[test]
     fn official_connected_proposal_task_closure_has_exact_composition_proof() {
         let fixture = parse_wire_json_bounded(
             include_bytes!("../../../conformance/official-proposal-task-composition.json"),
@@ -1850,6 +1942,28 @@ mod tests {
         assert_eq!(actual.len(), expected_closure.len());
         for (node, id) in actual.iter().zip(expected_closure) {
             assert_eq!(node.get("digest"), Some(id));
+        }
+        let publication = compiled.publication_artifact();
+        assert_eq!(publication.expected_resolved_digest(), compiled.protocol_digest());
+        assert_eq!(publication.provenance().package_digest(), compiled.package_digest());
+        assert_eq!(publication.provenance().source_digest(), publication.provenance().compilation_lock().get("source_digest").and_then(WireValue::as_string).as_deref().unwrap());
+        assert_eq!(publication.provenance().binding_digest().len(), 64);
+        let root_differences = ["name", "display_version", "semantics", "dependencies", "protocol_roles", "capabilities", "role_conflicts", "historical_role_conflicts", "constraints", "record_schemas", "initial_state", "format_version", "state_array_types", "state_exports", "actions", "execution_requirements"].into_iter().filter(|key| {
+            let left = publication.root_manifest().get(key);
+            let right = proof.get("source_manifest").and_then(|root| root.get(key));
+            match (left, right) { (Some(left), Some(right)) => canonical_wire_value(left, Path::SecureArtifact).ok() != canonical_wire_value(right, Path::SecureArtifact).ok(), (None, None) => false, _ => true }
+        }).collect::<Vec<_>>();
+        assert!(root_differences.is_empty(), "root differs from composition proof at {root_differences:?}");
+        assert_eq!(publication.provenance().compilation_lock().get("protocol_digest").and_then(WireValue::as_string).as_deref(), Some(compiled.protocol_digest()));
+        let publication_dependencies = publication.dependencies();
+        assert_eq!(publication_dependencies.len(), actual.len());
+        for (unit, composition_unit) in publication_dependencies.iter().zip(actual) {
+            assert_eq!(unit.protocol_digest(), composition_unit.get("digest").and_then(WireValue::as_string).as_deref().unwrap());
+            assert_eq!(Some(unit.manifest()), composition_unit.get("manifest"));
+        }
+        let expected_artifact = parse_wire_json_bounded(include_bytes!("../../../conformance/protocol-publication-parity-artifact.json"), 64, 65_536).unwrap();
+        for key in ["format", "root_manifest", "dependencies", "expected_resolved_digest", "provenance"] {
+            assert_eq!(canonical_wire_value(publication.wire().get(key).unwrap(), Path::SecureArtifact).unwrap(), canonical_wire_value(expected_artifact.get(key).unwrap(), Path::SecureArtifact).unwrap(), "publication artifact field {key}");
         }
         let built = build_direct_install_objects_with_composition(
             compiled.manifest_wire(),

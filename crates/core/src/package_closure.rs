@@ -419,6 +419,8 @@ pub(crate) fn inspect_exact_public_bundle(
 /// A caller must never turn this subset into a general publishability proof.
 pub(crate) struct SimpleCompilation {
     pub manifest: WireValue,
+    /// Exact compiler-owned publication root, dependency closure, and digest proof.
+    pub publication_artifact: WireValue,
     // TS compiler enumeration is separate from canonical digest ordering.
     pub schema_order: Vec<Vec<u16>>,
     pub source_digest: String,
@@ -2628,10 +2630,10 @@ fn compile_at(
             .map_err(|_| ClosureError::Invalid)?;
         let source_manifest = field(&source_wrapped, "manifest")?.clone();
         let mut dependencies = Vec::with_capacity(dependency_closure.len());
-        for id in dependency_closure {
-            let manifest = nodes.get(&id).ok_or(ClosureError::Missing)?.clone();
+        for id in &dependency_closure {
+            let manifest = nodes.get(id).ok_or(ClosureError::Missing)?.clone();
             dependencies.push(WireValue::Object(vec![
-                ("digest".encode_utf16().collect(), WireValue::String(id)),
+                ("digest".encode_utf16().collect(), WireValue::String(id.clone())),
                 ("manifest".encode_utf16().collect(), manifest),
             ]));
         }
@@ -2708,7 +2710,7 @@ fn compile_at(
             "dependencies".encode_utf16().collect(),
             field(&source, "imports")?.clone(),
         ),
-        ("bindings".encode_utf16().collect(), values),
+            ("bindings".encode_utf16().collect(), values.clone()),
         (
             "source_digest".encode_utf16().collect(),
             WireValue::String(source_digest.encode_utf16().collect()),
@@ -2718,11 +2720,35 @@ fn compile_at(
             WireValue::String(protocol_digest.encode_utf16().collect()),
         ),
     ]);
+    let binding_digest = sha256_hex(canonical_wire_value(&values, Path::SecureArtifact)
+        .map_err(|_| ClosureError::Invalid)?.as_bytes());
+    let publication_dependencies = dependency_closure.iter().map(|id| {
+        let manifest = nodes.get(id).cloned().ok_or(ClosureError::Missing)?;
+        Ok(WireValue::Object(vec![
+            ("protocol_digest".encode_utf16().collect(), WireValue::String(id.clone())),
+            ("manifest".encode_utf16().collect(), manifest),
+        ]))
+    }).collect::<Result<Vec<_>, ClosureError>>()?;
+    let publication_artifact = WireValue::Object(vec![
+        ("format".encode_utf16().collect(), WireValue::String("peerwork.protocol-publication.v1".encode_utf16().collect())),
+        ("root_manifest".encode_utf16().collect(), root.clone()),
+        ("dependencies".encode_utf16().collect(), WireValue::Array(publication_dependencies)),
+        ("expected_resolved_digest".encode_utf16().collect(), WireValue::String(protocol_digest.encode_utf16().collect())),
+        ("provenance".encode_utf16().collect(), WireValue::Object(vec![
+            ("package_digest".encode_utf16().collect(), WireValue::String(package_digest.encode_utf16().collect())),
+            ("source_digest".encode_utf16().collect(), WireValue::String(source_digest.encode_utf16().collect())),
+            ("binding_digest".encode_utf16().collect(), WireValue::String(binding_digest.encode_utf16().collect())),
+            ("compiler_version".encode_utf16().collect(), WireValue::String(compiler_version.encode_utf16().collect())),
+            ("semantics".encode_utf16().collect(), WireValue::String("peerwork.kernel.v1".encode_utf16().collect())),
+            ("lock".encode_utf16().collect(), compilation_lock.clone()),
+        ])),
+    ]);
     let mut seen_schemas = HashSet::new();
     let schema_order = schema_orders.into_values().flatten().chain(own_schema_order)
         .filter(|name| seen_schemas.insert(name.clone())).collect();
     Ok(SimpleCompilation {
         manifest,
+        publication_artifact,
         schema_order,
         source_digest,
         protocol_digest,
