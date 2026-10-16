@@ -3,10 +3,9 @@
 ## Download experimental builds
 
 Experimental builds are listed on [GitHub Releases](https://github.com/peerwork-dev/peerwork-sdk/releases).
-Automatic prerelease publication is configured, but the initial publication
-is blocked because GitHub rejected release creation for the historical build
-target. Until then, download
-verified build artifacts from the [native distribution workflow](https://github.com/peerwork-dev/peerwork-sdk/actions/workflows/distribution-spike.yml).
+Automatic experimental prerelease publication is configured for successful
+main-branch native builds. This first prerelease reuses an existing successful
+CI run.
 Prereleases are experimental; they are not stable releases and do not publish
 packages to PyPI or npm. A workflow targeting a commit whose workflow files
 differ from the default branch requires a credential with Workflows permission
