@@ -324,11 +324,24 @@ jobs:
         run: |
           Remove-Item Env:\ICU_DATA -ErrorAction SilentlyContinue
           $cargoLog = Join-Path $env:RUNNER_TEMP 'peerwork-windows-icu-cargo.log'
+          $rustflagsName = 'CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS'
+          $hadRustflags = Test-Path "Env:$rustflagsName"
+          $originalRustflags = [Environment]::GetEnvironmentVariable($rustflagsName, 'Process')
+          if ($hadRustflags) {
+            Set-Item "Env:$rustflagsName" "$originalRustflags -C link-arg=/VERBOSE:LIB"
+          } else {
+            Set-Item "Env:$rustflagsName" '-C link-arg=/VERBOSE:LIB'
+          }
           & cargo test -vv -p peerwork-core --locked js_locale::tests::pinned_node_locale_compare_vectors -- --exact *> $cargoLog
           $testExit = $LASTEXITCODE
+          if ($hadRustflags) {
+            Set-Item "Env:$rustflagsName" $originalRustflags
+          } else {
+            Remove-Item "Env:$rustflagsName" -ErrorAction SilentlyContinue
+          }
 
           if ($testExit -ne 0) {
-            Write-Output 'Windows ICU link diagnostic: selected Cargo directives and unresolved symbols'
+            Write-Output 'Windows ICU link diagnostic: Cargo directives, rustc flags, linker library search, and unresolved symbols'
             Get-Content -LiteralPath $cargoLog | Select-String -Pattern 'cargo:rustc-link-(?:search|lib)=|error LNK(?:2019|1120):'
 
             $archiveSpecs = @(
@@ -336,6 +349,22 @@ jobs:
               @{ Name = 'icuucpeerwork'; Project = 'common' },
               @{ Name = 'icui18npeerwork'; Project = 'i18n' }
             )
+            $rustcLines = @(Get-Content -LiteralPath $cargoLog | Select-String -Pattern 'Running .*rustc' | Where-Object { $_.Line -match 'peerwork_core|discovery|wire' } | Select-Object -First 20)
+            Write-Output "ICU_RELEVANT_RUSTC_COMMANDS=$($rustcLines.Count)"
+            foreach ($entry in $rustcLines) {
+              $line = $entry.Line
+              $targetName = 'unknown'
+              if ($line -match '--crate-name\s+([^ ]+)') { $targetName = $matches[1] }
+              $crateType = 'unspecified'
+              if ($line -match '--crate-type(?:=|\s+)(\w+)') { $crateType = $matches[1] }
+              $libraries = @($archiveSpecs | Where-Object { $line -match [regex]::Escape($_.Name) } | ForEach-Object { $_.Name })
+              $nativeDirs = @($archiveSpecs | Where-Object { $line -match ("(?i)icu[\\/]+source[\\/]+" + [regex]::Escape($_.Project) + "[\\/]+x64[\\/]+Release") } | ForEach-Object { $_.Project })
+              $usesPeerworkCore = $line -match '--extern(?:=|\s+)peerwork_core(?:=|\s|$)'
+              $isTestHarness = $line -match '(?:^|\s)--test(?:\s|$)'
+              $hasNativeSearch = $line -match '(?:-L\s+native=|-Lnative=)'
+              Write-Output "ICU_RUSTC target=$targetName crate_type=$crateType test=$isTestHarness peerwork_core_extern=$usesPeerworkCore native_search=$hasNativeSearch search_projects=$($nativeDirs -join ',') static_libraries=$($libraries -join ',')"
+            }
+
             $expectedSymbols = 'udata_setFileAccess_78_peerwork|udata_setCommonData_78_peerwork|ucol_open_78_peerwork|ucol_strcoll_78_peerwork|ucol_close_78_peerwork'
             $buildRoots = Get-ChildItem -LiteralPath 'target/debug/build' -Directory -Filter 'peerwork-core-*' -ErrorAction SilentlyContinue
             $archives = @{}
@@ -374,6 +403,28 @@ jobs:
               }
             } else {
               Write-Output 'ICU_DUMPBIN_UNAVAILABLE'
+            }
+
+            $coreRlibs = @(Get-ChildItem -LiteralPath 'target/debug/deps' -File -Filter 'libpeerwork_core-*.rlib' -ErrorAction SilentlyContinue | Select-Object -First 8)
+            Write-Output "PEERWORK_CORE_RLIBS=$($coreRlibs.Count)"
+            if ($dumpbin) {
+              foreach ($rlib in $coreRlibs) {
+                $matches = @(& $dumpbin /linkermember:1 $rlib.FullName 2>&1 | Select-String -Pattern $expectedSymbols)
+                if ($matches.Count -eq 0) {
+                  Write-Output "PEERWORK_CORE_RLIB_SYMBOLS_NONE $($rlib.Name)"
+                } else {
+                  Write-Output "PEERWORK_CORE_RLIB_SYMBOLS $($rlib.Name)"
+                  $matches | ForEach-Object { Write-Output $_.Line }
+                }
+              }
+            }
+
+            $linkTrace = @(Get-Content -LiteralPath $cargoLog | Select-String -Pattern '(?i)Searching .*icu(?:data|uc|i18n)peerwork\.lib|Loaded .*icu(?:data|uc|i18n)peerwork\.lib|Found .*?(?:udata_setFileAccess|udata_setCommonData|ucol_open|ucol_strcoll|ucol_close)_78_peerwork' | Select-Object -First 80)
+            if ($linkTrace.Count -eq 0) {
+              Write-Output 'ICU_LINKER_TRACE_MATCHES=0'
+            } else {
+              Write-Output "ICU_LINKER_TRACE_MATCHES=$($linkTrace.Count)"
+              $linkTrace | ForEach-Object { Write-Output $_.Line }
             }
           }
 
