@@ -2093,18 +2093,26 @@ fn replay_basic_content_depth(
                     }
                 }
             }
-            // An ACTION revision or an ordinary ADMIN/DELTA update can retain
-            // installed protocol provenance. The TS replay invokes strict
-            // install validation for every nonempty snapshot ADMIN operation;
-            // direct/composed installs need the same exact instance reproof.
+            // Ordinary ADMIN/DELTA updates can retain installed provenance.
+            // A nonempty snapshot, a claimed BEGIN, or an install input must
+            // still reprove the exact install even when other fields are malformed.
+            let structure_mode = payload
+                .get("structure")
+                .and_then(|structure| structure.get("mode"))
+                .and_then(WireValue::as_string);
+            let install_input = operation
+                .get("input")
+                .and_then(|input| input.get("install"))
+                .is_some();
+            let begin_action = string(payload, "action_id")? == "secure.structure.begin";
             if kind == "ADMIN"
-                && !objects.is_empty()
-                && payload
-                    .get("structure")
-                    .and_then(|structure| structure.get("mode"))
-                    .and_then(WireValue::as_string)
-                    .as_deref()
-                    != Some("DELTA")
+                && (install_input
+                    || !objects.is_empty()
+                        && (begin_action
+                            || matches!(
+                                structure_mode.as_deref(),
+                                Some("SNAPSHOT_BEGIN" | "SNAPSHOT_PAGE" | "SNAPSHOT_END")
+                            )))
             {
                 validate_signed_package_install(
                     &operation,
