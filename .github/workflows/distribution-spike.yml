@@ -475,7 +475,7 @@ jobs:
           [void][System.IO.Directory]::CreateDirectory($stateDir)
           $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
           $acl = New-Object System.Security.AccessControl.DirectorySecurity
-          $acl.SetSecurityDescriptorSddlForm("D:P(A;OICI;FA;;;$sid)")
+          $acl.SetSecurityDescriptorSddlForm("O:${sid}D:P(A;OICI;FA;;;$sid)")
           Set-Acl -LiteralPath $stateDir -AclObject $acl -ErrorAction Stop
           python tests/installed-protected-identity-smoke.py `
             --python "$env:RUNNER_TEMP\peerwork-wheel-consumer\Scripts\python.exe" `
