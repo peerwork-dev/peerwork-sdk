@@ -800,7 +800,7 @@ fn validate_source_inner(source: &WireValue) -> Result<WireValue, PackageSchemaE
         }
         if let Some(exports) = ifaces.get("input_exports") {
             let mut targets = Vec::new();
-            for export in arr(exports, 32, 0)? {
+            for export in arr(exports, 512, 0)? {
                 shape(export, &["name", "from"], &[])?;
                 let exported_name = name(get(export, "name")?, 120)?;
                 if inputs.contains(&exported_name) { return Err(Invalid); }
@@ -814,6 +814,7 @@ fn validate_source_inner(source: &WireValue) -> Result<WireValue, PackageSchemaE
                 }
                 targets.push((alias, input));
             }
+            if inputs.len() > 512 { return Err(Invalid); }
         }
         // Cross-field checks are applied to the normalized interface shape.
         for input in arr(ni.get("inputs").unwrap(), 32, 0)? {
@@ -1298,5 +1299,18 @@ mod tests {
         assert!(
             validate_input_field(&parse(r#"{"type":"exact_ref","input":"candidate"}"#)).is_err()
         );
+    }
+
+    #[test]
+    fn combined_public_inputs_share_the_512_port_bound() {
+        let make_source = |count: usize| {
+            let exports = (0..count)
+                .map(|index| format!(r#"{{"name":"public{index}","from":{{"import":"leaf","input":"input{index}"}}}}"#))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(r#"{{"format":"peerwork.protocol-source.v2","semantics":"peerwork.kernel.v1","manifest":{{"name":"bounded","display_version":"1","semantics":"peerwork.kernel.v1","dependencies":[],"record_schemas":{{}},"initial_state":{{}},"actions":[{{"id":"action0","reads":[],"writes":[],"revisionEffects":{{"control":false,"contentEntities":[]}},"variants":[{{"when":[],"effects":[]}}]}}]}},"imports":[{{"alias":"leaf","package_digest":"{}","namespace":"leaf"}}],"parameters":[],"exports":[],"bindings":[],"derive":[],"interfaces":{{"outputs":[],"inputs":[{{"action":"action0","variant":0,"name":"local","type":"actor_id","relation":"same_actor","body_path":["actor"],"required":true,"action_body":{{"fields":{{"actor":{{"type":"actor_id","input":"local"}}}},"required":["actor"],"additionalProperties":false}}}}],"action_bodies":[],"input_exports":[{}]}},"connections":[]}}"#, "a".repeat(64), exports)
+        };
+        assert!(normalize_and_validate_source(&parse(&make_source(511))).is_ok());
+        assert!(normalize_and_validate_source(&parse(&make_source(512))).is_err());
     }
 }
