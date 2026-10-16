@@ -1,5 +1,12 @@
 # Peerwork native SDK (experimental work in progress)
 
+[![Latest release](https://img.shields.io/github/v/release/peerwork-dev/peerwork-sdk?include_prereleases=true&sort=date&label=latest%20release)](https://github.com/peerwork-dev/peerwork-sdk/releases)
+
+**[Download the latest release →](https://github.com/peerwork-dev/peerwork-sdk/releases)**
+
+Linux x64/ARM64 (GNU and musl), macOS Intel/Apple silicon, and Windows x64;
+includes CLI, Python, and Node.js artifacts.
+
 ## Download experimental builds
 
 Experimental builds are listed on [GitHub Releases](https://github.com/peerwork-dev/peerwork-sdk/releases).
