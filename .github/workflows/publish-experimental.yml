@@ -172,9 +172,42 @@ jobs:
           SOURCE_RUN_ID: ${{ needs.validate_source.outputs.source_run_id }}
           RELEASE_VERSION: ${{ steps.release.outputs.version }}
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          DRAFT_RELEASE_ID: ${{ github.event.client_payload.draft_release_id || '' }}
         shell: bash
         run: |
           set -euo pipefail
+          if [[ -n "$DRAFT_RELEASE_ID" ]]; then
+            python - "$GH_REPOSITORY" "$DRAFT_RELEASE_ID" "$RELEASE_TAG" "$SOURCE_SHA" "$RUNNER_TEMP/experimental-release-assets" <<'PY'
+          import glob, json, os, pathlib, re, sys, urllib.error, urllib.parse, urllib.request
+          repo, release_id, tag, source_sha, assets_dir = sys.argv[1:]
+          if not re.fullmatch(r"[0-9]+", release_id):
+              raise SystemExit("invalid draft release ID")
+          headers = {"Authorization": "Bearer " + os.environ["GH_TOKEN"],
+                     "Accept": "application/vnd.github+json",
+                     "X-GitHub-Api-Version": "2022-11-28"}
+          base = f"https://api.github.com/repos/{repo}/releases/{release_id}"
+          request = urllib.request.Request(base, headers=headers)
+          with urllib.request.urlopen(request, timeout=20) as response:
+              release = json.load(response)
+          if (str(release.get("id")) != release_id or release.get("tag_name") != tag or
+              release.get("target_commitish") != source_sha or not release.get("draft") or
+              not release.get("prerelease") or release.get("assets")):
+              raise SystemExit("draft release identity/state mismatch; refusing upload")
+          upload_base = release["upload_url"].split("{", 1)[0]
+          for path in sorted(glob.glob(os.path.join(assets_dir, "*"))):
+              name = os.path.basename(path)
+              url = upload_base + "?name=" + urllib.parse.quote(name)
+              upload_headers = dict(headers, **{"Content-Type": "application/octet-stream"})
+              req = urllib.request.Request(url, data=pathlib.Path(path).read_bytes(),
+                                          headers=upload_headers, method="POST")
+              with urllib.request.urlopen(req, timeout=90) as response:
+                  result = json.load(response)
+              if result.get("name") != name or result.get("state") != "uploaded":
+                  raise SystemExit("asset upload response mismatch: " + name)
+              print(f"uploaded {name} ({result.get('size')} bytes)")
+          PY
+            exit 0
+          fi
           python - "$GH_REPOSITORY" "$RELEASE_TAG" "$RUNNER_TEMP/existing-release.json" <<'PY'
           import json, os, pathlib, sys, urllib.error, urllib.request
           repo, tag, output = sys.argv[1:]
