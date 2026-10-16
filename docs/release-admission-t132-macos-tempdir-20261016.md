@@ -22,6 +22,20 @@ not log their original temp paths, so the cause remains an inference.
 The macOS workflow now exports the physical `RUNNER_TEMP` path as `TMPDIR`
 before its workspace test/build and logs the selected temp base. This keeps
 the production path and symlink checks and all test assertions unchanged. The
-change has only diff/whitespace validation so far; hosted macOS results are
-required to confirm or reject the inference. No macOS artifact or runtime
-acceptance is claimed.
+ARM64 rerun on candidate SHA `9eb94aeadc4cb41c8f1e0be7ea5ec64a9ff4b3c2`
+confirmed the test-path change: the workspace suite passed 185 tests with 0
+failures and 4 ignored. The next `cargo build --release` failed while linking
+`peerwork-node-native` because the macOS linker reported undefined `_napi_*`
+symbols; the CLI, Python and Node installed-consumer checks were not reached.
+That log is retained at `/tmp/t132-sdk-macos-push-20261016/job-116842776350.log`.
+
+The Node native crate is a `cdylib` using `napi 2.16.17` without its
+`dyn-symbols` feature. On non-Windows targets the pinned `napi-sys 2.4.0`
+declares Node-API as external symbols. This candidate adds a build script only
+to that crate, gated to macOS, and emits Cargo's cdylib-only
+`-Wl,-undefined,dynamic_lookup` argument so Node-API imports can resolve from
+the host at load time. It adds no global linker flags or dependency and does
+not affect CLI/Python links. Cargo documents the cdylib-only build-script
+directive at <https://doc.rust-lang.org/cargo/reference/build-scripts.html#rustc-link-arg-cdylib>.
+The macOS addon load/import smoke must still pass on both architectures before
+this linker change is accepted as working; no result is claimed yet.
