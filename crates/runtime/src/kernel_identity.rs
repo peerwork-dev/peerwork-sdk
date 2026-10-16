@@ -403,6 +403,8 @@ mod tests {
         ));
 
         let bad_path = dir.path().join("bad.pem");
+        #[cfg(windows)]
+        crate::windows_fs::create_or_check_file(&bad_path).unwrap();
         for bad in [
             original[..original.len() - 1].to_vec(),
             [original.as_slice(), original.as_slice()].concat(),
