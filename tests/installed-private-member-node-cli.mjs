@@ -18,6 +18,15 @@ const actions=sdk.openSecurePrivateActions({origin:config.origin,stateDir:config
   transport:config.transport&&{requestTimeoutMs:config.transport.request_timeout_ms,
     additionalRootPemFiles:config.transport.additional_root_pem_files}});
 const before=await actions.pending();
+let submitted;
+if(fixture.new_action){
+  assert.match(fixture.operation_id,/^[A-Za-z0-9_-]{43}$/);
+  assert.equal(fixture.new_action.action_id,'wiki.create');
+  submitted=await actions.submit(fixture.new_action.action_id,fixture.new_action.instance_id,fixture.new_action.body,
+    {commandId:fixture.command_id,operationId:fixture.operation_id});
+  assert.equal(submitted.status,'PENDING');
+  assert.equal(submitted.command_id,fixture.command_id);
+}
 const reconciled=await actions.reconcile(fixture.command_id);
 assert.equal(reconciled.status,'ACCEPTED');
 assert.equal(reconciled.receipt.actor_id,fixture.member_actor_id);
@@ -35,8 +44,8 @@ cli('private-action-status');
 cli('private-action-retry');
 const after=await actions.pending();
 assert.ok(!after.some(x=>x.command_id===fixture.command_id));
-const result={status:'PASS',scope:'task-local native Node member reconcile and CLI status/exact saved retry; reused Python fixture, no bootstrap',
+const result={status:'PASS',scope:'locally installed native Node member submit/reconcile and CLI status/exact saved retry; reused Python fixture, no bootstrap',
   command_id:fixture.command_id,workspace_id:fixture.workspace_id,member_actor_id:fixture.member_actor_id,
-  node_status:reconciled.status,cli_status:'ACCEPTED',cli_retry:'ACCEPTED',pending_before:before.length,pending_after:after.length};
+  node_submit:submitted?.status??null,node_status:reconciled.status,cli_status:'ACCEPTED',cli_retry:'ACCEPTED',pending_before:before.length,pending_after:after.length};
 writeFileSync(outputPath,JSON.stringify(result,null,2)+'\n',{flag:'wx',mode:0o600});
 console.log(JSON.stringify(result));

@@ -48,8 +48,11 @@ client = peerwork.SecurePrivateActionClient(
     origin, state_dir, identity_path, workspace_id,
     owner_actor_id=owner_actor_id, owner_key_id=owner_key_id,
 )
+# Persist a unique 43-character base64url token before the first submit.
+# Reuse that saved token when reopening this same operation.
+operation_id = saved_operation_id
 pending = client.submit("discussion.post", instance_id, {"message": "Private hello"},
-                        operation_id="worker-a:message-42")
+                        operation_id=operation_id)
 result = client.reconcile(pending["command_id"])
 if result["status"] == "PENDING":
     result = client.retry_saved(pending["command_id"])

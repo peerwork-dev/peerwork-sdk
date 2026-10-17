@@ -12,6 +12,11 @@ import {execFileSync} from 'node:child_process';
 const root = process.env.PEERWORK_REFERENCE_ROOT;
 const state = process.env.PEERWORK_TEST_STATE;
 if (!root || !state) throw new Error('reference root and fresh state are required');
+// Test-only recovery transport: preserve an existing synthetic profile's origin.
+// Zero remains the default; no kernel audience, seed, or reference pin changes.
+const proxyPortText = process.env.PEERWORK_TEST_PROXY_PORT ?? '0';
+if (!/^(0|[1-9][0-9]{0,4})$/.test(proxyPortText) || Number(proxyPortText) > 65535)
+  throw new Error('invalid reference proxy port');
 const expectedHead = 'f828b6c50a0a58d1e718af90f653b214adcc3328';
 const actualHead = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], {encoding: 'utf8'}).trim();
 if (actualHead !== expectedHead) throw new Error('reference checkout commit differs from tested pin');
@@ -661,7 +666,10 @@ const proxy = createServer(async (request, response) => {
     process.stderr.write(`reference proxy error: ${error?.message || error}\n`);
   }
 });
-await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
+await new Promise((resolve, reject) => {
+  proxy.once('error', reject);
+  proxy.listen(Number(proxyPortText), '127.0.0.1', () => { proxy.off('error', reject); resolve(); });
+});
 process.stdout.write(JSON.stringify({origin: `http://127.0.0.1:${proxy.address().port}/`,
   ...(secureFixture ? {secure:secureFixture} : {}),
   ...(publicReadFixture ? {public_read:publicReadFixture} : {}),
