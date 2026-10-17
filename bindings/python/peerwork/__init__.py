@@ -66,6 +66,7 @@ from ._peerwork_native import (
     secure_read_profile_json,
     secure_private_read_json,
     secure_public_action_json,
+    secure_private_action_json,
     secure_public_install_json,
     secure_owner_create_json,
     secure_owner_consumer_json,
@@ -763,6 +764,120 @@ class SecurePublicActionClient(SecureReadClient):
 
 
 __all__ += ["SecurePublicActionClient", "SecureActionResult", "SecureActionReceipt", "PendingSecureAction", "SecureActionError"]
+
+
+class SecurePrivateActionClient(SecureReadClient):
+    """Submit PRIVATE member actions using an explicit protected read profile.
+
+    The native engine activates the selected PRIVATE workspace and persists the
+    exact prepared request before POST. A guarded PRIVATE action may require a
+    stable ``operation_id``; server-side role and capability checks still apply.
+    """
+
+    def _action(self, operation: str, *, input_value: dict | None = None,
+                command_id: str | None = None, operation_id: str | None = None,
+                cancel_handle: KernelCancelHandle | None = None) -> SecureActionResult | list[PendingSecureAction]:
+        config_json = json.dumps(self._config, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
+        input_json = None if input_value is None else json.dumps(input_value, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
+        result = json.loads(secure_private_action_json(
+            operation, config_json, input_json, command_id, operation_id, cancel_handle))
+        if result["ok"] is not True:
+            raise SecureActionError(result["code"], result["message"])
+        value = result["value"]
+        if operation == "pending":
+            return cast(list[PendingSecureAction], value)
+        receipt_json = value.pop("receipt_canonical_json")
+        value["receipt"] = None if receipt_json is None else json.loads(receipt_json)
+        return cast(SecureActionResult, value)
+
+    def submit(self, action_id: str, instance_id: str, body: object, *,
+               exact_input_refs: list[object] | None = None,
+               allocations: list[object] | None = None,
+               command_id: str | None = None, issued_at_ms: int | None = None,
+               operation_id: str | None = None) -> SecureActionResult:
+        """Prepare durably and submit one PRIVATE member action."""
+        value = {
+            "action_id": action_id,
+            "instance_id": instance_id,
+            "body_json": json.dumps(body, ensure_ascii=True, allow_nan=False, separators=(",", ":")),
+            "exact_input_refs_json": None if exact_input_refs is None else json.dumps(exact_input_refs, ensure_ascii=True, allow_nan=False, separators=(",", ":")),
+            "allocations_json": None if allocations is None else json.dumps(allocations, ensure_ascii=True, allow_nan=False, separators=(",", ":")),
+            "command_id": command_id,
+            "issued_at_ms": issued_at_ms,
+        }
+        return cast(SecureActionResult, self._action("submit", input_value=value, operation_id=operation_id))
+
+    def reconcile(self, command_id: str) -> SecureActionResult:
+        """Reconcile a saved command against a fresh signed PRIVATE replay."""
+        return cast(SecureActionResult, self._action("reconcile", command_id=command_id))
+
+    def resume(self, command_id: str) -> SecureActionResult:
+        """Resume by reconciling the exact previously saved command ID."""
+        return self.reconcile(command_id)
+
+    def retry_saved(self, command_id: str) -> SecureActionResult:
+        """Retry only the exact protected packet saved under ``command_id``."""
+        return cast(SecureActionResult, self._action("retry", command_id=command_id))
+
+    def pending(self) -> list[PendingSecureAction]:
+        """List unresolved PRIVATE action IDs from the selected local profile."""
+        return cast(list[PendingSecureAction], self._action("pending"))
+
+    async def _action_async(self, operation: str, *, input_value: dict | None = None,
+                            command_id: str | None = None,
+                            operation_id: str | None = None) -> SecureActionResult | list[PendingSecureAction]:
+        cancel_handle = KernelCancelHandle()
+        worker = asyncio.create_task(asyncio.to_thread(
+            self._action, operation, input_value=input_value,
+            command_id=command_id, operation_id=operation_id, cancel_handle=cancel_handle))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            cancel_handle.cancel()
+            while not worker.done():
+                try:
+                    await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    cancel_handle.cancel()
+                except Exception:
+                    break
+            try:
+                worker.result()
+            except Exception:
+                pass
+            raise
+
+    async def submit_async(self, action_id: str, instance_id: str, body: object, *,
+                           exact_input_refs: list[object] | None = None,
+                           allocations: list[object] | None = None,
+                           command_id: str | None = None, issued_at_ms: int | None = None,
+                           operation_id: str | None = None) -> SecureActionResult:
+        value = {
+            "action_id": action_id,
+            "instance_id": instance_id,
+            "body_json": json.dumps(body, ensure_ascii=True, allow_nan=False, separators=(",", ":")),
+            "exact_input_refs_json": None if exact_input_refs is None else json.dumps(exact_input_refs, ensure_ascii=True, allow_nan=False, separators=(",", ":")),
+            "allocations_json": None if allocations is None else json.dumps(allocations, ensure_ascii=True, allow_nan=False, separators=(",", ":")),
+            "command_id": command_id,
+            "issued_at_ms": issued_at_ms,
+        }
+        return cast(SecureActionResult, await self._action_async("submit", input_value=value, operation_id=operation_id))
+
+    async def reconcile_async(self, command_id: str) -> SecureActionResult:
+        return cast(SecureActionResult, await self._action_async("reconcile", command_id=command_id))
+
+    async def resume_async(self, command_id: str) -> SecureActionResult:
+        """Resume by reconciling the same durable command ID."""
+        return await self.reconcile_async(command_id)
+
+    async def retry_saved_async(self, command_id: str) -> SecureActionResult:
+        return cast(SecureActionResult, await self._action_async("retry", command_id=command_id))
+
+    async def pending_async(self) -> list[PendingSecureAction]:
+        return cast(list[PendingSecureAction], await self._action_async("pending"))
+
+
+__all__ += ["SecurePrivateActionClient"]
 
 
 class PublicInstallBeginResult(TypedDict):

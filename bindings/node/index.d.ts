@@ -473,6 +473,8 @@ export interface SecurePublicActionSession {
 }
 /** Uses a protected latest-read profile; an uncertain POST stays PENDING until signed replay. */
 export declare function openSecurePublicActions(options: SecureReadOptions): SecurePublicActionSession;
+/** Member PRIVATE actions; never falls back to Owner history or plaintext commands. */
+export declare function openSecurePrivateActions(options: SecureReadOptions): SecurePublicActionSession;
 
 export interface RecipientEnrollmentOptions {
   origin: string;

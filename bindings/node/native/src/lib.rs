@@ -6,7 +6,7 @@ use napi_derive::napi;
 use peerwork_runtime::kernel_access::KernelAccess;
 use peerwork_runtime::kernel_client::{KernelAcceptedResult, KernelOperationStatus};
 use peerwork_runtime::kernel_identity::KernelIdentity;
-use peerwork_runtime::secure_action_access::{PublicActionInput, SecurePublicActionAccess};
+use peerwork_runtime::secure_action_access::{PublicActionInput, SecurePrivateActionAccess, SecurePublicActionAccess};
 use peerwork_runtime::secure_public_admission::{PublicOfferInput, SecurePublicAdmission};
 use peerwork_runtime::secure_public_decision::{PublicDecisionConfig, SecurePublicDecision};
 use peerwork_runtime::secure_identity_directory::{IdentityDirectoryConfig, SecureIdentityDirectory};
@@ -447,6 +447,8 @@ pub fn secure_private_read_json(
 }
 
 pub struct SecureActionTask {
+    private: bool,
+    operation_id: Option<String>,
     operation: String,
     config_json: String,
     input_json: Option<String>,
@@ -461,8 +463,43 @@ impl Task for SecureActionTask {
     fn compute(&mut self) -> Result<Self::Output> {
         let config: SecureReadProfileConfig = serde_json::from_str(&self.config_json)
             .map_err(|_| napi::Error::from_reason("invalid secure action configuration"))?;
+        let result = if self.private {
+        let access = SecurePrivateActionAccess::new(config);
+        match self.operation.as_str() {
+            "submit" => {
+                let input: PublicActionInput = serde_json::from_str(
+                    self.input_json
+                        .as_deref()
+                        .ok_or_else(|| napi::Error::from_reason("action input is required"))?,
+                )
+                .map_err(|_| napi::Error::from_reason("invalid secure action input"))?;
+                match self.operation_id.as_deref() {
+                    Some(id) => access.submit_new_json_with_operation_id(input, id, &self.cancel),
+                    None => access.submit_new_json_with_cancel(input, &self.cancel),
+                }
+            }
+            "reconcile" => access.reconcile_json_with_cancel(
+                self.command_id
+                    .as_deref()
+                    .ok_or_else(|| napi::Error::from_reason("command ID is required"))?,
+                &self.cancel,
+            ),
+            "retry" => access.retry_saved_json_with_cancel(
+                self.command_id
+                    .as_deref()
+                    .ok_or_else(|| napi::Error::from_reason("command ID is required"))?,
+                &self.cancel,
+            ),
+            "pending" => access.list_pending_json_with_cancel(&self.cancel),
+            _ => {
+                return Err(napi::Error::from_reason(
+                    "unsupported secure action operation",
+                ))
+            }
+        }
+        } else {
         let access = SecurePublicActionAccess::new(config);
-        let result = match self.operation.as_str() {
+        match self.operation.as_str() {
             "submit" => {
                 let input: PublicActionInput = serde_json::from_str(
                     self.input_json
@@ -490,6 +527,7 @@ impl Task for SecureActionTask {
                     "unsupported secure action operation",
                 ))
             }
+        }
         };
         Ok(match result {
             Ok(value) => format!("{{\"ok\":true,\"value\":{value}}}"),
@@ -514,6 +552,8 @@ pub fn secure_public_action_json(
     cancel_handle: Option<ClassInstance<KernelCancelHandle>>,
 ) -> AsyncTask<SecureActionTask> {
     AsyncTask::new(SecureActionTask {
+        private: false,
+        operation_id: None,
         operation,
         config_json,
         input_json,
@@ -521,6 +561,18 @@ pub fn secure_public_action_json(
         cancel: cancel_handle
             .map(|handle| handle.token.clone())
             .unwrap_or_default(),
+    })
+}
+
+#[napi]
+pub fn secure_private_action_json(
+    operation: String, config_json: String, input_json: Option<String>,
+    command_id: Option<String>, operation_id: Option<String>,
+    cancel_handle: Option<ClassInstance<KernelCancelHandle>>,
+) -> AsyncTask<SecureActionTask> {
+    AsyncTask::new(SecureActionTask { private: true, operation_id, operation,
+        config_json, input_json, command_id,
+        cancel: cancel_handle.map(|handle| handle.token.clone()).unwrap_or_default(),
     })
 }
 

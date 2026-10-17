@@ -607,6 +607,24 @@ impl SecureRecipientEnrollment {
         })
     }
 
+    /// Validate an existing enrollment binding without creating identities or issuing HTTP.
+    pub(crate) fn validate_existing_context(&self) -> Result<(), RecipientEnrollmentError> {
+        match std::fs::symlink_metadata(&self.config.enrollment_state_path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(_) => return Err(RecipientEnrollmentError::Local),
+            Ok(_) => {}
+        }
+        let identity = KernelIdentity::open(&self.config.identity_path).map_err(|_| RecipientEnrollmentError::Identity)?;
+        let recipient = RecipientState::open(&self.config.recipient_path,&identity).map_err(|_| RecipientEnrollmentError::Identity)?;
+        let store = SecureStateStore::open(&self.config.enrollment_state_path).map_err(|_| RecipientEnrollmentError::Local)?;
+        let bytes = store.read_exact_secret().map_err(|_| RecipientEnrollmentError::Local)?.ok_or(RecipientEnrollmentError::Invalid)?;
+        let document: EnrollmentDocument = serde_json::from_slice(&bytes).map_err(|_| RecipientEnrollmentError::Invalid)?;
+        if document.v != 1 || document.origin != self.config.origin || document.actor_id != identity.actor_id() || document.signing_key_id != identity.key_id() || document.certificate_digest != certificate_digest(recipient.certificate())? {
+            return Err(RecipientEnrollmentError::Identity);
+        }
+        Ok(())
+    }
+
     /// Offline creation is explicit. A crash after identity creation may be
     /// retried: the already protected key is reopened, never regenerated.
     pub fn create_local(&self) -> Result<RecipientEnrollmentResult, RecipientEnrollmentError> {

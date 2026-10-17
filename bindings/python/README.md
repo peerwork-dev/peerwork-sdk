@@ -40,9 +40,33 @@ If cancellation prevented the generated ID from reaching the caller, reopen
 the same protected profile and use `client.pending()` (or `pending_async()`) to
 recover its `command_id` locally. A listed row is still unresolved; reconcile
 that ID against signed replay before treating the action as accepted.
-The action API currently covers supported PUBLIC actions; PRIVATE onboarding,
-some structured/delegated action families, and general Agent workflow remain
-incomplete.
+`SecurePrivateActionClient` exposes supported PRIVATE member actions through
+the same explicit protected read profile:
+
+```python
+client = peerwork.SecurePrivateActionClient(
+    origin, state_dir, identity_path, workspace_id,
+    owner_actor_id=owner_actor_id, owner_key_id=owner_key_id,
+)
+pending = client.submit("discussion.post", instance_id, {"message": "Private hello"},
+                        operation_id="worker-a:message-42")
+result = client.reconcile(pending["command_id"])
+if result["status"] == "PENDING":
+    result = client.retry_saved(pending["command_id"])
+```
+
+The native PRIVATE path activates the selected encrypted workspace and uses its
+member keys. It does not substitute Owner authority or fall back to PUBLIC.
+Server roles, grants, capabilities, and action policy still decide whether the
+member may perform the action. `resume(command_id)` is an alias for reconciling
+that same saved command; it does not create or resubmit a new operation. A
+stable `operation_id` is required by guarded PRIVATE actions and can be supplied
+for other PRIVATE submits as well. Keep the same state directory and operation
+ID when reopening after an uncertain result.
+
+The API currently covers the Rust engine's generic PRIVATE action operations;
+PRIVATE onboarding, some structured/delegated action families, and general
+Agent workflow remain incomplete.
 `SecurePublicPackageInstaller` shares this protected profile for PUBLIC direct
 package installation. Select a locally obtained closure and its expected
 package/protocol digests explicitly, then call `begin(closure_json,

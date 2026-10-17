@@ -369,18 +369,18 @@ exports.readSecurePrivateWorkspace = async options => {
 };
 
 /** Prepare PUBLIC actions and reconcile exact saved commands against signed replay. */
-exports.openSecurePublicActions = options => {
+const openSecureActions = (options, privateMode) => {
   const { config } = secureProfileOptions(options);
-  const invoke = async (operation, input, commandId, signal) => {
+  const invoke = async (operation, input, commandId, signal, operationId) => {
     const handle = new binding.KernelCancelHandle();
     const onAbort = () => handle.cancel();
     if (signal?.aborted) onAbort();
     signal?.addEventListener?.('abort', onAbort, { once: true });
     try {
-      const result = JSON.parse(await binding.securePublicActionJson(
-        operation, strictCommandJson(config), input === undefined ? undefined : strictCommandJson(input),
-        commandId, handle,
-      ));
+      const args = [operation, strictCommandJson(config), input === undefined ? undefined : strictCommandJson(input), commandId];
+      const result = JSON.parse(await (privateMode
+        ? binding.securePrivateActionJson(...args, operationId, handle)
+        : binding.securePublicActionJson(...args, handle)));
       if (result.ok !== true) {
         const error = new Error(result.message);
         error.code = result.code;
@@ -407,13 +407,18 @@ exports.openSecurePublicActions = options => {
         command_id: options.commandId ?? null,
         issued_at_ms: options.issuedAtMs ?? null,
       };
-      return invoke('submit', input, undefined, options.signal);
+      if (privateMode && options.operationId != null && (typeof options.operationId !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(options.operationId))) throw new TypeError('operationId must be a 43-character token');
+      return invoke('submit', input, undefined, options.signal, options.operationId);
     },
     reconcile: (commandId, options = {}) => invoke('reconcile', undefined, commandId, options.signal),
     retrySaved: (commandId, options = {}) => invoke('retry', undefined, commandId, options.signal),
     pending: (options = {}) => invoke('pending', undefined, undefined, options.signal),
   });
 };
+
+/** Uses the selected member profile, current PRIVATE keyring and policy scopes. */
+exports.openSecurePrivateActions = options => openSecureActions(options, true);
+exports.openSecurePublicActions = options => openSecureActions(options, false);
 
 /** Prepare, reconcile and read Owner-created workspaces from one protected root. */
 exports.openSecureOwnerWorkspaces = options => {

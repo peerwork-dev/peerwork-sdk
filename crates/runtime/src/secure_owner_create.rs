@@ -473,7 +473,21 @@ impl SecureOwnerWorkspaceCreate {
         if cancel.is_cancelled() {
             return Err(SecureOwnerCreateError::Cancelled);
         }
+        // Reject saved actor/service bindings before local key generation or enrollment POSTs.
+        let mut transport = TransportConfig::new(&self.config.origin).with_options(self.config.transport.clone());
+        transport.allow_loopback_http = self.config.allow_loopback_http;
+        HttpTransport::new(transport).map_err(|_| SecureOwnerCreateError::Enrollment(RecipientEnrollmentError::TransportConfiguration))?;
+        match fs::symlink_metadata(self.history_path()) {
+            Ok(_) => {
+                let identity = self.open_identity()?;
+                let store = SecureStateStore::open(&self.history_path()).map_err(|_| SecureOwnerCreateError::Local)?;
+                read_history(&store, &self.config, &identity)?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(SecureOwnerCreateError::Local),
+        }
         let enrollment = self.enrollment();
+        enrollment.validate_existing_context().map_err(SecureOwnerCreateError::Enrollment)?;
         enrollment
             .create_local()
             .map_err(SecureOwnerCreateError::Enrollment)?;
@@ -1319,6 +1333,42 @@ mod tests {
         io::{BufRead, BufReader},
         process::{Child, Command, Stdio},
     };
+
+    #[test]
+    fn owner_history_mismatch_precedes_recipient_creation_and_enrollment() {
+        let root = crate::test_support::protected_test_dir();
+        let state = root.path().join("owner");
+        create_private_state_directory(&state).unwrap();
+        let identity = KernelIdentity::create(&state.join("identity.state")).unwrap();
+        let config = SecureOwnerCreateConfig { transport: Default::default(), origin: "https://new.example".into(), state_dir: state.clone(), allow_loopback_http: false, max_replay_artifact_bytes: 64*1024*1024, max_replay_commits: 102400 };
+        let access = SecureOwnerWorkspaceCreate::new(config);
+        let history = OwnerHistory { version: 1, origin: "https://old.example".into(), actor_id: identity.actor_id().into(), signing_key_id: identity.key_id().into(), rows: BTreeMap::new() };
+        let store = SecureStateStore::open(&access.history_path()).unwrap();
+        write_history(&store,&history).unwrap(); drop(store); drop(identity);
+        let before = fs::read(access.identity_path()).unwrap();
+        let input: SecureOwnerCreateInput = serde_json::from_str(r#"{"name":"wrong context"}"#).unwrap();
+        assert!(matches!(access.prepare(input,&CancellationToken::new()),Err(SecureOwnerCreateError::Identity)));
+        assert_eq!(fs::read(access.identity_path()).unwrap(),before);
+        assert!(!access.recipient_path().exists());
+        assert!(!state.join("enrollment.state").exists());
+        assert!(!state.join("kernel.sqlite").exists());
+        // Same service, different actor: reject before creating recipient keys as well.
+        let identity = access.open_identity().unwrap();
+        let other_actor = OwnerHistory { version: 1, origin: access.config.origin.clone(), actor_id: base64url(&[91;32]), signing_key_id: identity.key_id().into(), rows: BTreeMap::new() };
+        let store = SecureStateStore::open(&access.history_path()).unwrap();
+        write_history(&store, &other_actor).unwrap(); drop(store); drop(identity);
+        let input = serde_json::from_str(r#"{"name":"wrong actor"}"#).unwrap();
+        assert!(matches!(access.prepare(input,&CancellationToken::new()),Err(SecureOwnerCreateError::Identity)));
+        assert_eq!(fs::read(access.identity_path()).unwrap(),before);
+        assert!(!access.recipient_path().exists());
+        assert!(!state.join("kernel.sqlite").exists());
+        // Saved history without its identity must not silently generate a replacement key.
+        fs::remove_file(access.identity_path()).unwrap();
+        let input = serde_json::from_str(r#"{"name":"missing saved identity"}"#).unwrap();
+        assert!(access.prepare(input,&CancellationToken::new()).is_err());
+        assert!(!access.identity_path().exists());
+        assert!(!access.recipient_path().exists());
+    }
 
     #[test]
     fn owner_create_omitted_visibility_defaults_to_private_and_public_stays_explicit() {

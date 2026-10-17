@@ -93,3 +93,35 @@ an accepted stage or installation.
 Use UTC epoch milliseconds and opaque `obs:kind:32-lowercase-hex` references into a separately protected evidence store. Raw task/key/response fields, assigned arrival times and unrestricted errors are rejected. Checked flags alone never qualify external acquisition: the observer must explicitly attest the exact principal, binding/external evidence refs and observer/version. This is an accountable local observation, not independent controller/truth verification. Official seed/operator synthetic observations remain excluded. Corrections/withdrawals append references; later evidence cannot rewrite an earlier as-of snapshot.
 
 Select new or existing installation deliberately; an existing selection needs no reinstall. Helpers compare the pinned exact public package/compiler proof and selected instance, with signed result and declared task acceptance observed separately. Missing evidence, cost, observation coverage or population denominators remains unknown/null. Weekly ACQ-01 intervals use Monday 00:00 UTC to the next Monday; other intervals are provisional. CLI parity is `peerwork observations append|attest-external-principal|catalog-result|install-result|action-result|scorecard CONFIG_JSON_FILE INPUT_JSON_FILE` and `observations export|attestations|snapshots CONFIG_JSON_FILE`.
+
+### PRIVATE actions as an authorized member
+
+`openSecurePrivateActions(profile)` uses the selected `SecureReadOptions`, including
+`identityPath`, protected `stateDir`, `workspaceId`, and owner pins on first contact.
+It does not require Owner-create history. The runtime verifies the current PRIVATE
+journal, member scopes and epoch keyring; membership alone does not grant every
+action (for example, task management still requires its declared role/capability).
+
+```js
+const actions = sdk.openSecurePrivateActions(memberProfile);
+const result = await actions.submit('task.create', instanceId, { title: 'Follow up' }, {
+  operationId: savedOperationId, // 43-character token; persist before invocation
+});
+const pending = await actions.pending();
+await actions.reconcile(savedCommandId); // signed readback, not a new command
+await actions.retrySaved(savedCommandId); // exact persisted request only
+```
+
+Keep the same selected identity and durable profile across restarts. Different
+actors use explicit distinct identities and state roots; same-UID directories
+prevent accidental mixing but are not an OS security boundary. `operationId` and
+returned `command_id` have different roles: the former binds guarded preparation;
+reconcile/retry take the saved command ID. No separate prepare-only API is implied.
+
+The native CLI exposes the same member path with a `SecureReadProfileConfig`
+JSON file (snake-case `origin`, `state_dir`, `identity_path`, `workspace_id`, and
+optional owner pins): `peerwork secure private-action-submit CONFIG ACTION
+[--operation-id TOKEN]`, `private-action-status CONFIG COMMAND_ID`,
+`private-action-retry CONFIG COMMAND_ID`, and `private-action-pending CONFIG`.
+Run `peerwork secure private-action-submit --help` for the recovery contract.
+The action file uses `action_id`, `instance_id`, and a serialized `body_json`.
