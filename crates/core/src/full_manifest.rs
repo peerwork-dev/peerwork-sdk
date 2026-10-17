@@ -1009,7 +1009,7 @@ mod tests {
     }
 
     #[test]
-    fn typescript_provenance_preset_validates_and_evaluates_import_revision() {
+    fn typescript_provenance_preset_validates_and_evaluates_import_create() {
         use crate::interpreter::{evaluate_action, InterpreterAuth};
         let fixture = parse_wire_json_js_bounded(
             include_bytes!("../../../conformance/provenance-wiki-v2-ts.json"),
@@ -1055,6 +1055,7 @@ mod tests {
         assert_eq!(payload.get("source_ref").and_then(WireValue::as_string).as_deref(), Some("archive:manual/42"));
         assert_eq!(payload.get("source_updated_at"), Some(&WireValue::Null));
         assert_eq!(payload.get("source_revision_at").and_then(WireValue::as_string).as_deref(), Some("1998-06-07T08:09:10.123456789-04:30"));
+        assert_eq!(payload.get("source_revision_sha256").and_then(WireValue::as_string).as_deref(), Some("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"));
         assert_eq!(payload.get("author").and_then(WireValue::as_string).as_deref(), Some(actor));
     }
 }
