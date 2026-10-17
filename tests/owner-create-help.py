@@ -22,7 +22,7 @@ with tempfile.TemporaryDirectory(prefix="peerwork-owner-create-help-") as tmp:
             "origin", "state_dir", "allow_loopback_http (optional, explicit opt-in)",
             "max_replay_artifact_bytes (optional)", "max_replay_commits (optional, default 102400)", "transport (optional: request_timeout_ms, additional_root_pem_files)"}
         assert set(payload["input_fields"]) == {
-            "name", "visibility (PUBLIC or PRIVATE)", "structured (optional)",
+            "name", "visibility (optional; defaults PRIVATE; PUBLIC is explicit opt-in)", "structured (optional)",
             "keep_encrypted_json (optional)", "coordination_version (optional)",
             "name_utf16 (optional only for an unpaired-surrogate name; mutually exclusive with nonempty name)"}
     invalid = subprocess.run([str(cli), "secure", "owner-create"], cwd=cwd,

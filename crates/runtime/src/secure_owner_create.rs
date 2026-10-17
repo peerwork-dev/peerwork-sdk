@@ -110,6 +110,8 @@ pub struct SecureOwnerCreateInput {
     /// When present, `name` must be empty; wrappers derive this internally.
     #[serde(default)]
     pub name_utf16: Option<Vec<u16>>,
+    /// Omitted JSON visibility defaults to encrypted PRIVATE; PUBLIC is opt-in.
+    #[serde(default = "default_visibility")]
     pub visibility: String,
     #[serde(default)]
     pub structured: bool,
@@ -117,6 +119,10 @@ pub struct SecureOwnerCreateInput {
     pub keep_encrypted_json: String,
     #[serde(default)]
     pub coordination_version: Option<u8>,
+}
+
+fn default_visibility() -> String {
+    "PRIVATE".into()
 }
 
 fn empty_keep_encrypted() -> String {
@@ -1313,6 +1319,47 @@ mod tests {
         io::{BufRead, BufReader},
         process::{Child, Command, Stdio},
     };
+
+    #[test]
+    fn owner_create_omitted_visibility_defaults_to_private_and_public_stays_explicit() {
+        let private: SecureOwnerCreateInput =
+            serde_json::from_str(r#"{"name":"Default privacy"}"#).unwrap();
+        assert_eq!(private.visibility, "PRIVATE");
+        validate_input(&private).unwrap();
+
+        let public: SecureOwnerCreateInput = serde_json::from_str(
+            r#"{"name":"Explicit public","visibility":"PUBLIC"}"#,
+        ).unwrap();
+        assert_eq!(public.visibility, "PUBLIC");
+        validate_input(&public).unwrap();
+
+        assert!(serde_json::from_str::<SecureOwnerCreateInput>(
+            r#"{"name":"Null is not omission","visibility":null}"#,
+        ).is_err());
+        assert!(serde_json::from_str::<SecureOwnerCreateInput>(
+            r#"{"name":"Unknown visibility","visibility":"UNLISTED"}"#,
+        ).map(|input| validate_input(&input).is_err()).unwrap_or(true));
+
+        let ids = std::array::from_fn(|index| base64url(&[index as u8 + 20; 32]));
+        let workspace = base64url(&[7; 32]);
+        let owner = base64url(&[8; 32]);
+        let private_objects = owner_bootstrap_objects_with_visibility(
+            "Default privacy", &workspace, &owner, 100, &ids,
+            &private.visibility,
+        ).unwrap();
+        assert_eq!(
+            private_objects.operation()["objects"][0]["value"]["visibility"],
+            "PRIVATE"
+        );
+        let public_objects = owner_bootstrap_objects_with_visibility(
+            "Explicit public", &workspace, &owner, 100, &ids,
+            &public.visibility,
+        ).unwrap();
+        assert_eq!(
+            public_objects.operation()["objects"][0]["value"]["visibility"],
+            "PUBLIC"
+        );
+    }
 
     #[test]
     fn owner_enrollment_errors_preserve_cause_and_pending_guidance() {

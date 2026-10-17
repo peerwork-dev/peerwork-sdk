@@ -728,7 +728,7 @@ fn owner_consumer_help(verb: &str) -> Option<serde_json::Value> {
             "command": verb,
             "usage": "secure owner-create CONFIG_JSON_FILE INPUT_JSON_FILE",
             "config_fields": ["origin", "state_dir", "allow_loopback_http (optional, explicit opt-in)", "max_replay_artifact_bytes (optional)", "max_replay_commits (optional, default 102400)", "transport (optional: request_timeout_ms, additional_root_pem_files)"],
-            "input_fields": ["name", "visibility (PUBLIC or PRIVATE)", "structured (optional)", "keep_encrypted_json (optional)", "coordination_version (optional)", "name_utf16 (optional only for an unpaired-surrogate name; mutually exclusive with nonempty name)"],
+            "input_fields": ["name", "visibility (optional; defaults PRIVATE; PUBLIC is explicit opt-in)", "structured (optional)", "keep_encrypted_json (optional)", "coordination_version (optional)", "name_utf16 (optional only for an unpaired-surrogate name; mutually exclusive with nonempty name)"],
             "files": "Pass local protected file paths as the two arguments. Help does not open either file or contact a service."
         }));
     }
