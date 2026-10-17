@@ -1007,4 +1007,54 @@ mod tests {
         ).unwrap();
         assert!(validate_full_manifest(&with_capability).is_ok());
     }
+
+    #[test]
+    fn typescript_provenance_preset_validates_and_evaluates_import_revision() {
+        use crate::interpreter::{evaluate_action, InterpreterAuth};
+        let fixture = parse_wire_json_js_bounded(
+            include_bytes!("../../../conformance/provenance-wiki-v2-ts.json"),
+            64,
+            65_536,
+        )
+        .unwrap();
+        let manifest = field(&fixture, "manifest").unwrap();
+        assert!(validate_full_manifest(manifest).is_ok());
+
+        let actor = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        let auth = InterpreterAuth {
+            actor_id: actor.into(),
+            workspace_roles: vec![],
+            protocol_roles: vec!["EDITOR".encode_utf16().collect()],
+            capabilities: vec!["IMPORT".encode_utf16().collect()],
+        };
+        let body = parse_wire_json_js_bounded(
+            br#"{"title":"Imported source","body":"Source body","source_ref":"archive:manual/42","source_author":"Source author","source_created_at":"1998-06-01T00:00:00Z","source_updated_at":null,"source_revision_at":"1998-06-07T08:09:10.123456789-04:30","source_revision_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}"#,
+            64,
+            32_768,
+        )
+        .unwrap();
+        let result = evaluate_action(
+            &WireValue::Object(vec![(
+                "actions".encode_utf16().collect(),
+                field(manifest, "actions").unwrap().clone(),
+            )]),
+            &"wiki.import_create".encode_utf16().collect::<Vec<_>>(),
+            &WireValue::Object(vec![]),
+            &body,
+            &auth,
+            &[],
+            None,
+        )
+        .unwrap();
+        assert_eq!(result.records.len(), 1);
+        assert_eq!(
+            result.records[0].get("schema").and_then(WireValue::as_string).as_deref(),
+            Some("wiki.document.v2")
+        );
+        let payload = result.records[0].get("payload").unwrap();
+        assert_eq!(payload.get("source_ref").and_then(WireValue::as_string).as_deref(), Some("archive:manual/42"));
+        assert_eq!(payload.get("source_updated_at"), Some(&WireValue::Null));
+        assert_eq!(payload.get("source_revision_at").and_then(WireValue::as_string).as_deref(), Some("1998-06-07T08:09:10.123456789-04:30"));
+        assert_eq!(payload.get("author").and_then(WireValue::as_string).as_deref(), Some(actor));
+    }
 }
