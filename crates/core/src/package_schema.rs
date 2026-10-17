@@ -1117,10 +1117,26 @@ fn expected(v: &WireValue) -> Result<(), PackageSchemaError> {
                 "headSelections",
                 "revisionEffects",
                 "evaluated_at",
+                "withdrawals",
             ],
         )?;
         if let Some(x) = v.get("evaluated_at") {
             bounded_int(x, 0.0, MAX_SAFE)?;
+        }
+        if let Some(WireValue::Array(withdrawals)) = v.get("withdrawals") {
+            // Empty optional collections are omitted from the canonical TS
+            // result; reject them rather than introducing another wire form.
+            if withdrawals.is_empty() || withdrawals.len() > 1 { return Err(Invalid); }
+            for withdrawal in withdrawals {
+                shape(withdrawal, &["target", "expectedMax", "expectedHead"], &[])?;
+                validate_exact_ref(get(withdrawal, "target")?)?;
+                bounded_int(get(withdrawal, "expectedMax")?, 1.0, MAX_SAFE)?;
+                if !matches!(get(withdrawal, "expectedHead")?, WireValue::Null) {
+                    validate_exact_ref(get(withdrawal, "expectedHead")?)?;
+                }
+            }
+        } else if v.get("withdrawals").is_some() {
+            return Err(Invalid);
         }
     } else {
         shape(v, &["accepted", "code"], &[])?;
@@ -1129,6 +1145,14 @@ fn expected(v: &WireValue) -> Result<(), PackageSchemaError> {
         }
         string_len(get(v, "code")?, 1, 80)?;
     }
+    Ok(())
+}
+fn validate_exact_ref(v: &WireValue) -> Result<(), PackageSchemaError> {
+    shape(v, &["recordId", "revision"], &[])?;
+    regex(get(v, "recordId")?, 43, 43, |s| {
+        s.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+    })?;
+    bounded_int(get(v, "revision")?, 1.0, MAX_SAFE)?;
     Ok(())
 }
 fn normalize_fixture(value: &WireValue) -> Result<WireValue, PackageSchemaError> {
@@ -1299,6 +1323,16 @@ mod tests {
         assert!(
             validate_input_field(&parse(r#"{"type":"exact_ref","input":"candidate"}"#)).is_err()
         );
+    }
+
+    #[test]
+    fn expected_withdrawal_result_is_nonempty_exact_and_typed() {
+        let valid = parse(r#"{"accepted":true,"withdrawals":[{"target":{"recordId":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","revision":2},"expectedMax":3,"expectedHead":null}]}"#);
+        assert!(expected(&valid).is_ok());
+        let empty = parse(r#"{"accepted":true,"withdrawals":[]}"#);
+        assert!(expected(&empty).is_err());
+        let malformed = parse(r#"{"accepted":true,"withdrawals":[{"target":{"recordId":"bad","revision":2},"expectedMax":3,"expectedHead":null}]}"#);
+        assert!(expected(&malformed).is_err());
     }
 
     #[test]

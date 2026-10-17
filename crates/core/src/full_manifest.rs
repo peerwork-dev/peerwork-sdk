@@ -80,6 +80,14 @@ pub(crate) fn validate_full_manifest(value: &WireValue) -> Result<String, Manife
                     if let Some(WireValue::Array(effects)) = variant.get("effects") {
                         for effect in effects {
                             if effect.get("op").and_then(WireValue::as_string).as_deref()
+                                == Some("withdraw")
+                                && !capabilities
+                                    .iter()
+                                    .any(|value| value == &"publication.withdraw".encode_utf16().collect::<Vec<_>>())
+                            {
+                                return Err(ManifestError::Invalid);
+                            }
+                            if effect.get("op").and_then(WireValue::as_string).as_deref()
                                 == Some("append")
                             {
                                 let schema = effect
@@ -159,7 +167,7 @@ fn validate_schemas(value: &WireValue) -> Result<(), ManifestError> {
                 || name.len() > 80
                 || !matches!(
                     kind.as_string().as_deref(),
-                    Some("string" | "integer" | "boolean" | "null" | "json")
+                    Some("string" | "integer" | "boolean" | "null" | "json" | "source_text" | "source_timestamp" | "source_sha256")
                 )
             {
                 return Err(ManifestError::Invalid);
@@ -228,7 +236,7 @@ fn validate_protection<'a>(
                 if rule.get("values").is_some()
                     || !matches!(
                         kind.as_str(),
-                        "string" | "integer" | "boolean" | "null" | "json"
+                        "string" | "integer" | "boolean" | "null" | "json" | "source_text" | "source_timestamp" | "source_sha256"
                     )
                 {
                     return Err(ManifestError::Invalid);
@@ -984,5 +992,19 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn provenance_scalar_fields_and_withdraw_capability_are_strictly_gated() {
+        let base = br#"{"name":"peerwork.wiki.provenance.v1","display_version":"1","semantics":"peerwork.kernel.v1","dependencies":[],"record_schemas":{"wiki.document.v2":{"type":"object","fields":{"source_text":"source_text","source_timestamp":"source_timestamp","source_sha256":"source_sha256"},"required":[],"max_bytes":16384}},"initial_state":{},"actions":[{"id":"wiki.withdraw","reads":[],"writes":[],"revisionEffects":{"control":true,"contentEntities":[]},"variants":[{"when":[],"effects":[{"op":"withdraw","target":{"from":"ref","source":"body","path":["target"],"scope":"INSTANCE","schema":"wiki.document.v2"},"expected_max":{"from":"body","path":["expected_max"]},"expected_head":{"from":"body","path":["expected_head"]}}]}]}]}"#;
+        let without_capability = parse_wire_json_js_bounded(base, 64, 32_768).unwrap();
+        assert_eq!(validate_full_manifest(&without_capability), Err(ManifestError::Invalid));
+
+        let with_capability = parse_wire_json_js_bounded(
+            br#"{"name":"peerwork.wiki.provenance.v1","display_version":"1","semantics":"peerwork.kernel.v1","dependencies":[],"capabilities":["publication.withdraw"],"record_schemas":{"wiki.document.v2":{"type":"object","fields":{"source_text":"source_text","source_timestamp":"source_timestamp","source_sha256":"source_sha256"},"required":[],"max_bytes":16384,"protection":{"v":1,"fields":{"source_text":{"protection":"e2ee","type":"source_text"},"source_timestamp":{"protection":"e2ee","type":"source_timestamp"},"source_sha256":{"protection":"e2ee","type":"source_sha256"}}}}},"initial_state":{},"actions":[{"id":"wiki.withdraw","reads":[],"writes":[],"revisionEffects":{"control":true,"contentEntities":[]},"variants":[{"when":[],"effects":[{"op":"withdraw","target":{"from":"ref","source":"body","path":["target"],"scope":"INSTANCE","schema":"wiki.document.v2"},"expected_max":{"from":"body","path":["expected_max"]},"expected_head":{"from":"body","path":["expected_head"]}}]}]}]}"#,
+            64,
+            32_768,
+        ).unwrap();
+        assert!(validate_full_manifest(&with_capability).is_ok());
     }
 }

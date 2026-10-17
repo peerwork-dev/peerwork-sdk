@@ -6,7 +6,7 @@ use crate::{
     canonical::Path,
     crypto::{decode_base64url, sha256_hex, verify_secure_signed_wire},
     e2ee::{open_content_wire, SealedContent},
-    interpreter::{evaluate_action, InterpreterAuth},
+    interpreter::{evaluate_action, EvalResult, InterpreterAuth},
     legacy_protocol_bindings::validate_legacy_protocol_bindings,
     migration_fragments::{assert_protocol_format_ceiling, inflate_fragments, MigrationBatch},
     protocol_object_source::{
@@ -33,6 +33,14 @@ use thiserror::Error;
 const MAX_CONTENT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_OBJECT_BYTES: usize = 98_304;
 type RoleHistory = HashMap<(Vec<u16>, Vec<u16>, Vec<u16>), HashSet<Vec<u16>>>;
+
+fn ensure_secure_effects_supported(interpreted: &EvalResult) -> Result<(), &'static str> {
+    if interpreted.withdrawals.is_empty() {
+        Ok(())
+    } else {
+        Err("PUBLICATION_WITHDRAWAL_UNSUPPORTED")
+    }
+}
 
 #[derive(Debug, Error)]
 pub(crate) enum ReplayError {
@@ -3086,6 +3094,10 @@ fn compute_action_objects_inner(
         execution_time_ms,
     )
     .map_err(|_| "INVALID_PAYLOAD")?;
+    // The generic interpreter can reproduce the signed effect contract, but
+    // native secure replay does not yet implement the publication lifecycle.
+    // Never accept a commit while silently dropping this effect.
+    ensure_secure_effects_supported(&interpreted)?;
     if matches!(input.get("allocations"), Some(WireValue::Null)) {
         let candidates = default_allocations.ok_or("ALLOCATION_INVALID")?;
         let count = interpreted.records.len();
@@ -4097,6 +4109,9 @@ fn validate_simple_record_schema(
         };
         let valid = match kind.as_str() {
             "string" => matches!(value, WireValue::String(_)),
+            "source_text" => matches!(value, WireValue::Null) || crate::source_provenance::valid_source_text(value),
+            "source_timestamp" => matches!(value, WireValue::Null) || crate::source_provenance::valid_source_timestamp(value),
+            "source_sha256" => matches!(value, WireValue::Null) || crate::source_provenance::valid_source_sha256(value),
             "integer" => value.as_number().is_some_and(|value| {
                 value.is_finite() && value.fract() == 0.0 && value.abs() <= 9_007_199_254_740_991.0
             }),
@@ -4389,6 +4404,52 @@ fn utf16<'a>(value: &'a WireValue, name: &str) -> Result<&'a [u16], ReplayError>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn secure_replay_rejects_unimplemented_publication_withdrawal() {
+        let interpreted = EvalResult {
+            next_state: WireValue::Object(vec![]),
+            records: vec![],
+            head_selections: vec![],
+            withdrawals: vec![WireValue::Null],
+            control_revision: true,
+            content_entities: vec![],
+            evaluated_at: None,
+        };
+        assert_eq!(
+            ensure_secure_effects_supported(&interpreted),
+            Err("PUBLICATION_WITHDRAWAL_UNSUPPORTED")
+        );
+        let ordinary = EvalResult { withdrawals: vec![], ..interpreted };
+        assert_eq!(ensure_secure_effects_supported(&ordinary), Ok(()));
+    }
+
+    #[test]
+    fn provenance_record_scalars_accept_null_and_validate_claims() {
+        let definition = crate::wire_json::parse_wire_json_bounded(
+            br#"{"type":"object","fields":{"source_text":"source_text","source_timestamp":"source_timestamp","source_sha256":"source_sha256"},"required":["source_text","source_timestamp","source_sha256"],"max_bytes":16384}"#,
+            64,
+            32_768,
+        ).unwrap();
+        let nulls = crate::wire_json::parse_wire_json_bounded(
+            br#"{"source_text":null,"source_timestamp":null,"source_sha256":null}"#,
+            64,
+            32_768,
+        ).unwrap();
+        assert!(validate_simple_record_schema(&nulls, &definition).is_ok());
+        let valid = crate::wire_json::parse_wire_json_bounded(
+            br#"{"source_text":"source note","source_timestamp":"1500-02-28T23:59:59.123456789-04:30","source_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
+            64,
+            32_768,
+        ).unwrap();
+        assert!(validate_simple_record_schema(&valid, &definition).is_ok());
+        let invalid = crate::wire_json::parse_wire_json_bounded(
+            br#"{"source_text":"source note","source_timestamp":"1900-02-29T00:00:00Z","source_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
+            64,
+            32_768,
+        ).unwrap();
+        assert_eq!(validate_simple_record_schema(&invalid, &definition), Err("RECORD_SCHEMA_INVALID"));
+    }
 
     #[test]
     fn hydrated_protocol_source_size_limit_is_reference_specific() {

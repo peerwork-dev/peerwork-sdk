@@ -528,6 +528,13 @@ fn accepted_result_matches(
             ]),
         ),
     ]);
+    if !observed.withdrawals.is_empty() {
+        insert_field(
+            &mut actual,
+            "withdrawals",
+            WireValue::Array(observed.withdrawals),
+        )?;
+    }
     if let Some(time) = observed.evaluated_at {
         insert_field(&mut actual, "evaluated_at", WireValue::Number(time as f64))?;
     }
@@ -540,6 +547,7 @@ fn accepted_result_matches(
             "headSelections",
             "revisionEffects",
             "evaluated_at",
+            "withdrawals",
         ]
         .contains(&name.as_str())
         {

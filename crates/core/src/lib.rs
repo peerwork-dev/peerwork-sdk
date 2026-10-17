@@ -57,6 +57,7 @@ mod secure_action_inputs;
 mod secure_action_relations;
 pub mod secure_keyring;
 pub mod secure_recipient;
+mod source_provenance;
 #[allow(dead_code)]
 mod secure_recovery;
 #[allow(dead_code)]

@@ -3,6 +3,7 @@
 
 use crate::{
     canonical::Path,
+    source_provenance::{valid_source_sha256, valid_source_text, valid_source_timestamp},
     wire_json::{canonical_wire_value, WireValue},
 };
 use std::collections::HashSet;
@@ -45,6 +46,7 @@ pub(crate) struct EvalResult {
     pub next_state: WireValue,
     pub records: Vec<WireValue>,
     pub head_selections: Vec<WireValue>,
+    pub withdrawals: Vec<WireValue>,
     pub control_revision: bool,
     pub content_entities: Vec<Vec<u16>>,
     pub evaluated_at: Option<u64>,
@@ -427,6 +429,12 @@ fn validate_effect(
                 validate_ref_selector(field(effect, key)?)?;
             }
         }
+        "withdraw" => {
+            shape(effect, &["op", "target", "expected_max", "expected_head"], &[])?;
+            validate_ref_selector(field(effect, "target")?)?;
+            select(field(effect, "expected_max")?)?;
+            select(field(effect, "expected_head")?)?;
+        }
         "append" => {
             shape(
                 effect,
@@ -540,6 +548,12 @@ fn validate_input_contract(contract: &WireValue) -> Result<(), EvalError> {
                     boolean(nullable)?;
                 }
             }
+            "source_text" | "source_timestamp" | "source_sha256" => {
+                shape(spec, &["type"], &["nullable"])?;
+                if let Some(nullable) = spec.get("nullable") {
+                    boolean(nullable)?;
+                }
+            }
             "enum" => {
                 shape(spec, &["type", "values"], &["nullable"])?;
                 let values = array(field(spec, "values")?)?;
@@ -622,6 +636,21 @@ fn validate_action_inputs(
                     .transpose()?
                     .unwrap_or(8192.0);
                 if String::from_utf16_lossy(text).len() as f64 > max {
+                    return Err(EvalError::InvalidPayload);
+                }
+            }
+            "source_text" => {
+                if !valid_source_text(value) {
+                    return Err(EvalError::InvalidPayload);
+                }
+            }
+            "source_timestamp" => {
+                if !valid_source_timestamp(value) {
+                    return Err(EvalError::InvalidPayload);
+                }
+            }
+            "source_sha256" => {
+                if !valid_source_sha256(value) {
                     return Err(EvalError::InvalidPayload);
                 }
             }
@@ -741,6 +770,7 @@ pub(crate) fn evaluate_action(
     let mut next_state = safe_value(state, 0, &mut 0)?;
     let mut records = Vec::new();
     let mut heads = Vec::new();
+    let mut withdrawals = Vec::new();
     let mut content_entities = Vec::new();
     for effect in array(field(matches[0], "effects")?)? {
         match ascii(field(effect, "op")?)?.as_str() {
@@ -759,6 +789,25 @@ pub(crate) fn evaluate_action(
                 heads.push(object(vec![
                     ("expected", ref_output(&expected)?),
                     ("target", ref_output(&target)?),
+                ]));
+            }
+            "withdraw" => {
+                let target = select(field(effect, "target")?, &mut ctx, false)?;
+                let expected_max = select(field(effect, "expected_max")?, &mut ctx, false)?;
+                let expected_max = expected_max.as_number().ok_or(EvalError::InvalidPayload)?;
+                if expected_max < 1.0 || expected_max > MAX_SAFE || expected_max.fract() != 0.0 {
+                    return Err(EvalError::InvalidPayload);
+                }
+                let expected_head = select(field(effect, "expected_head")?, &mut ctx, false)?;
+                let expected_head = if matches!(expected_head, WireValue::Null) {
+                    WireValue::Null
+                } else {
+                    ref_output(&expected_head)?
+                };
+                withdrawals.push(object(vec![
+                    ("target", ref_output(&target)?),
+                    ("expectedMax", WireValue::Number(expected_max)),
+                    ("expectedHead", expected_head),
                 ]));
             }
             "append" => {
@@ -833,6 +882,14 @@ pub(crate) fn evaluate_action(
             _ => return Err(EvalError::InvalidPayload),
         }
     }
+    let has_set = array(field(matches[0], "effects")?)?.iter().any(|effect| {
+        effect.get("op").and_then(WireValue::as_string).as_deref() == Some("set")
+    });
+    if withdrawals.len() > 1
+        || (!withdrawals.is_empty() && (!records.is_empty() || !heads.is_empty() || has_set))
+    {
+        return Err(EvalError::InvalidPayload);
+    }
     let evaluated_at = if ctx.used_time {
         Some(execution_time_ms.ok_or(EvalError::InvalidPayload)?)
     } else {
@@ -842,6 +899,7 @@ pub(crate) fn evaluate_action(
         next_state,
         records,
         head_selections: heads,
+        withdrawals,
         control_revision,
         content_entities,
         evaluated_at,
@@ -1467,6 +1525,48 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn source_provenance_inputs_accept_nullable_values_and_reject_bad_claims() {
+        let manifest = parse_wire_json_js_bounded(br#"{"actions":[{"id":"test.set","reads":[],"writes":[],"revisionEffects":{"control":false,"contentEntities":[]},"inputs":{"fields":{"source_text":{"type":"source_text","nullable":true},"source_timestamp":{"type":"source_timestamp","nullable":true},"source_sha256":{"type":"source_sha256","nullable":true}},"required":["source_text","source_timestamp","source_sha256"],"additionalProperties":false},"variants":[{"when":[],"effects":[]}]}]}"#, 64, 32_768).unwrap();
+        let auth = InterpreterAuth {
+            actor_id: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into(),
+            workspace_roles: vec![], protocol_roles: vec![], capabilities: vec![],
+        };
+        let call = |body: &[u8]| {
+            let body = parse_wire_json_js_bounded(body, 64, 32_768).unwrap();
+            evaluate_action(&manifest, &"test.set".encode_utf16().collect::<Vec<_>>(),
+                &WireValue::Object(vec![]), &body, &auth, &[], None)
+        };
+        assert!(call(br#"{"source_text":null,"source_timestamp":null,"source_sha256":null}"#).is_ok());
+        assert!(call(br#"{"source_text":"<source>","source_timestamp":"1500-02-28T23:59:59.123456789-04:30","source_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#).is_ok());
+        assert!(call(br#"{"source_text":"x","source_timestamp":"1900-02-29T00:00:00Z","source_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#).is_err());
+        assert!(call(br#"{"source_text":"x","source_timestamp":"2000-01-01T00:00:00Z","source_sha256":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#).is_err());
+    }
+
+    #[test]
+    fn withdrawal_evaluator_emits_the_typed_intent_and_rejects_mixed_effects() {
+        let manifest = parse_wire_json_js_bounded(br#"{"actions":[{"id":"test.set","reads":[],"writes":[],"revisionEffects":{"control":true,"contentEntities":[]},"variants":[{"when":[],"effects":[{"op":"withdraw","target":{"from":"ref","source":"body","path":["target"],"scope":"INSTANCE","schema":"wiki.document.v2"},"expected_max":{"from":"body","path":["expected_max"]},"expected_head":{"from":"body","path":["expected_head"]}}]}]}]}"#, 64, 32_768).unwrap();
+        let body = parse_wire_json_js_bounded(br#"{"target":{"record_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","revision":2},"expected_max":4,"expected_head":null}"#, 64, 32_768).unwrap();
+        let auth = InterpreterAuth {
+            actor_id: "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB".into(),
+            workspace_roles: vec![], protocol_roles: vec![], capabilities: vec![],
+        };
+        let exact = [ResolvedInput {
+            record_id: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into(), revision: 2,
+            schema: "wiki.document.v2".encode_utf16().collect(), payload: WireValue::Object(vec![]),
+            scope: "INSTANCE".into(), entity_id: None,
+        }];
+        let result = evaluate_action(&manifest, &"test.set".encode_utf16().collect::<Vec<_>>(),
+            &WireValue::Object(vec![]), &body, &auth, &exact, None).unwrap();
+        assert_eq!(canonical(&WireValue::Array(result.withdrawals.clone())),
+            r#"[{"expectedHead":null,"expectedMax":4,"target":{"recordId":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","revision":2}}]"#);
+        assert!(result.records.is_empty() && result.head_selections.is_empty());
+
+        let mixed = parse_wire_json_js_bounded(br#"{"actions":[{"id":"test.set","reads":[],"writes":[["x"]],"revisionEffects":{"control":true,"contentEntities":[]},"variants":[{"when":[],"effects":[{"op":"withdraw","target":{"from":"ref","source":"body","path":["target"],"scope":"INSTANCE","schema":"wiki.document.v2"},"expected_max":{"from":"body","path":["expected_max"]},"expected_head":{"from":"body","path":["expected_head"]}},{"op":"set","path":["x"],"value":{"from":"literal","value":1}}]}]}]}"#, 64, 32_768).unwrap();
+        assert!(evaluate_action(&mixed, &"test.set".encode_utf16().collect::<Vec<_>>(),
+            &WireValue::Object(vec![]), &body, &auth, &exact, None).is_err());
     }
 }
 
