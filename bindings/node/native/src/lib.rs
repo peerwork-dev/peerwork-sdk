@@ -1532,3 +1532,29 @@ pub fn acquisition_observations_json(operation: String, config_json: String,
     input_json: Option<String>) -> AsyncTask<AcquisitionObservationsTask> {
     AsyncTask::new(AcquisitionObservationsTask { operation, config_json, input_json })
 }
+
+// Shared context lifecycle; native worker owns all identity, state and network work.
+pub struct AgentContextTask {
+    operation: String, profile_path: String, expected_actor: String,
+    expected_service: String, request_json: Option<String>, cancel: KernelCancellationToken,
+}
+impl Task for AgentContextTask {
+    type Output = String;
+    type JsValue = String;
+    fn compute(&mut self) -> Result<String> {
+        Ok(peerwork_runtime::agent_context::agent_context_json(
+            &self.operation, Path::new(&self.profile_path), &self.expected_actor,
+            &self.expected_service, self.request_json.as_deref(), &self.cancel))
+    }
+    fn resolve(&mut self, _env: Env, output: String) -> Result<String> { Ok(output) }
+}
+#[napi]
+pub fn agent_context_json(
+    operation: String, profile_path: String, expected_actor: String,
+    expected_service: String, request_json: Option<String>,
+    cancel_handle: Option<ClassInstance<KernelCancelHandle>>,
+) -> AsyncTask<AgentContextTask> {
+    AsyncTask::new(AgentContextTask { operation, profile_path, expected_actor,
+        expected_service, request_json,
+        cancel: cancel_handle.map(|handle| handle.token.clone()).unwrap_or_default() })
+}

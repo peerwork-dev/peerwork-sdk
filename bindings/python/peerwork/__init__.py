@@ -54,6 +54,7 @@ _OMITTED_DISCLOSURE = _OmittedInstallOption()
 from ._peerwork_native import (
     KernelCancelHandle,
     acquisition_observations_json,
+    agent_context_json,
     capabilities_json,
     load_config_json,
     identity_create_json,
@@ -3143,3 +3144,233 @@ __all__ += ["AcquisitionObservations", "AcquisitionEvent", "AcquisitionAppendRes
             "StoredAcquisitionScorecard", "AcquisitionScorecardWindow"]
 
 __all__ += ["KernelError"]
+
+
+class AgentProtocolActionIntent(TypedDict):
+    kind: Literal["protocol.action"]
+    instance_id: str
+    action_id: str
+    values: JSONValue
+    refs: NotRequired[list[JSONValue]]
+
+
+class AgentBrowserApprovalIntent(TypedDict):
+    kind: Literal["browser.approve"]
+    reference: str
+    approve_writes: bool
+
+
+AgentIntent: TypeAlias = AgentProtocolActionIntent | AgentBrowserApprovalIntent
+
+
+class AgentContextError(RuntimeError):
+    """Native context refusal, retaining safe recovery/effect-certainty details."""
+
+    def __init__(self, envelope: dict):
+        super().__init__(envelope["message"])
+        self.envelope = envelope
+        self.operation_id = envelope.get("operation_id")
+        self.code = envelope["code"]
+        self.layer = envelope.get("layer")
+        self.effect_certainty = envelope.get("effect_certainty")
+        self.continuation = envelope.get("continuation")
+
+
+@dataclass(frozen=True, repr=False)
+class AgentContext:
+    """Pinned existing PRIVATE member context; no identity creation or enrollment.
+
+    Each call revalidates the profile and pins. Events cover verified action
+    receipts using an unchanged-checkpoint probe and full replay on updates.
+    Native PRIVATE browser approval is a separate operation producer.
+    """
+
+    _profile: str
+    _expected_actor: str
+    _expected_service: str
+    _descriptor_json: str
+
+    @property
+    def descriptor(self) -> dict:
+        """Return a safe descriptor copy, never keys or protected state paths."""
+        return json.loads(self._descriptor_json)
+
+    def _call(self, operation: str, request: dict | None = None,
+              cancel_handle: KernelCancelHandle | None = None) -> dict:
+        if request is not None:
+            request = dict(request, expected_fingerprint=self.descriptor["fingerprint"])
+        wire = None if request is None else json.dumps(
+            request, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
+        result = json.loads(agent_context_json(operation, self._profile,
+            self._expected_actor, self._expected_service, wire, cancel_handle))
+        if result["ok"] is not True:
+            raise AgentContextError(result)
+        return result["value"]
+
+    def discover(self, workspace_id: str, *, after: str | None = None, limit: int | None = None) -> dict:
+        """Verified installed protocol/action index; permission summaries are advisory."""
+        return self._call("discover", self._discovery_request(workspace_id, after, limit))
+
+    @staticmethod
+    def _discovery_request(workspace_id: str, after: str | None, limit: int | None) -> dict:
+        query = {key: value for key, value in {"after": after, "limit": limit}.items() if value is not None}
+        return {"workspace_id": workspace_id, "query": query}
+
+    @staticmethod
+    def _description_request(workspace_id: str, instance_id: str | None, action_id: str | None,
+                             record_id: str | None, revision: int | None, object_ref: dict | None) -> dict:
+        query = {key: value for key, value in {
+            "instance_id": instance_id, "action_id": action_id, "record_id": record_id,
+            "revision": revision, "object_ref": object_ref,
+        }.items() if value is not None}
+        return {"workspace_id": workspace_id, "query": query}
+
+    def describe(self, workspace_id: str, instance_id: str | None = None, *,
+                 action_id: str | None = None, record_id: str | None = None,
+                 revision: int | None = None, object_ref: dict | None = None) -> dict:
+        """Describe one instance/action or exact record/object revision; no latest substitution."""
+        return self._call("describe", self._description_request(
+            workspace_id, instance_id, action_id, record_id, revision, object_ref))
+
+    async def discover_async(self, workspace_id: str, *, after: str | None = None, limit: int | None = None) -> dict:
+        return await self._call_async("discover", self._discovery_request(workspace_id, after, limit))
+
+    async def describe_async(self, workspace_id: str, instance_id: str | None = None, *,
+                             action_id: str | None = None, record_id: str | None = None,
+                             revision: int | None = None, object_ref: dict | None = None) -> dict:
+        return await self._call_async("describe", self._description_request(
+            workspace_id, instance_id, action_id, record_id, revision, object_ref))
+
+    def inspect(self, workspace_id: str) -> dict:
+        return self._call("inspect", {"workspace_id": workspace_id})
+
+    def operate(self, workspace_id: str, intent: AgentIntent, operation_id: str) -> dict:
+        return self._call("operate", {"workspace_id": workspace_id,
+            "intent": intent, "operation_id": operation_id})
+
+    def recover(self, workspace_id: str, *, operation_id: str | None = None,
+                command_id: str | None = None) -> dict:
+        return self._call("recover", self._recovery_request(workspace_id, operation_id, command_id))
+
+    @staticmethod
+    def _recovery_request(workspace_id: str, operation_id: str | None,
+                          command_id: str | None) -> dict:
+        request = {"workspace_id": workspace_id}
+        if operation_id is not None:
+            request["operation_id"] = operation_id
+        if command_id is not None:
+            request["command_id"] = command_id
+        return request
+
+    def operations(self, workspace_id: str) -> dict:
+        return self._call("operations", {"workspace_id": workspace_id})
+
+    @staticmethod
+    def _event_request(workspace_id: str, **options) -> dict:
+        return {"workspace_id": workspace_id,
+                **{key: value for key, value in options.items() if value is not None}}
+
+    def events_sync(self, workspace_id: str) -> dict:
+        """Probe unchanged history or replay updates and enqueue receipts; not incremental sync."""
+        return self._call("events.sync", {"workspace_id": workspace_id})
+
+    def events_receive(self, workspace_id: str, consumer_id: str, *,
+                       filter_version: str, lease_ms: int = 30000,
+                       wait_ms: int = 0) -> dict:
+        """Receive a durable lease. Requested wait budget is up to 60 seconds, with cooperative cancellation."""
+        return self._call("events.receive", self._event_request(workspace_id,
+            consumer_id=consumer_id, filter_version=filter_version, lease_ms=lease_ms, wait_ms=wait_ms))
+
+    def events_ack(self, workspace_id: str, consumer_id: str, ack_token: str, *,
+                   filter_version: str) -> dict:
+        """Acknowledge delivery, never protocol task completion."""
+        return self._call("events.ack", self._event_request(workspace_id,
+            consumer_id=consumer_id, filter_version=filter_version, ack_token=ack_token))
+
+    def events_status(self, workspace_id: str) -> dict:
+        return self._call("events.status", {"workspace_id": workspace_id})
+
+    async def events_sync_async(self, workspace_id: str) -> dict:
+        return await self._call_async("events.sync", {"workspace_id": workspace_id})
+
+    async def events_receive_async(self, workspace_id: str, consumer_id: str, *,
+                             filter_version: str, lease_ms: int = 30000,
+                             wait_ms: int = 0) -> dict:
+        return await self._call_async("events.receive", self._event_request(workspace_id,
+            consumer_id=consumer_id, filter_version=filter_version, lease_ms=lease_ms, wait_ms=wait_ms))
+
+    async def events_ack_async(self, workspace_id: str, consumer_id: str, ack_token: str, *,
+                              filter_version: str) -> dict:
+        return await self._call_async("events.ack", self._event_request(workspace_id,
+            consumer_id=consumer_id, filter_version=filter_version, ack_token=ack_token))
+
+    async def events_status_async(self, workspace_id: str) -> dict:
+        return await self._call_async("events.status", {"workspace_id": workspace_id})
+
+    async def _call_async(self, operation: str, request: dict) -> dict:
+        # Snapshot caller values before handing work to the native worker.
+        request = json.loads(json.dumps(request, ensure_ascii=True, allow_nan=False))
+        cancel = KernelCancelHandle()
+        worker = asyncio.create_task(asyncio.to_thread(self._call, operation, request, cancel))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            cancel.cancel()
+            while not worker.done():
+                try:
+                    await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    cancel.cancel()
+                except Exception:
+                    break
+            try:
+                worker.result()
+            except Exception:
+                pass
+            raise
+
+    async def inspect_async(self, workspace_id: str) -> dict:
+        return await self._call_async("inspect", {"workspace_id": workspace_id})
+
+    async def operate_async(self, workspace_id: str, intent: AgentIntent, operation_id: str) -> dict:
+        return await self._call_async("operate", {"workspace_id": workspace_id,
+            "intent": intent, "operation_id": operation_id})
+
+    async def recover_async(self, workspace_id: str, *, operation_id: str | None = None,
+                            command_id: str | None = None) -> dict:
+        return await self._call_async("recover", self._recovery_request(workspace_id, operation_id, command_id))
+
+    async def operations_async(self, workspace_id: str) -> dict:
+        return await self._call_async("operations", {"workspace_id": workspace_id})
+
+
+def open_context(*, profile: str | Path, expected_actor: str, expected_service: str) -> AgentContext:
+    """Open an existing protected context offline, without creating local state."""
+    context = AgentContext(str(profile), expected_actor, expected_service, "{}")
+    value = context._call("open")
+    return AgentContext(str(profile), expected_actor, expected_service,
+                        json.dumps(value["context"], ensure_ascii=True, allow_nan=False))
+
+
+__all__ += ["AgentContext", "AgentContextError", "AgentProtocolActionIntent", "open_context"]
+
+
+def bind_context(*, profile: str | Path, expected_actor: str, expected_service: str,
+                 workspace_profiles: list[str | Path]) -> AgentContext:
+    """Explicitly create only a new protected context reference from existing profiles.
+
+    Existing target files are never overwritten; no identity or membership is created.
+    """
+    request = json.dumps({"workspace_profiles": [str(path) for path in workspace_profiles]},
+                         ensure_ascii=True, allow_nan=False)
+    result = json.loads(agent_context_json("bind", str(profile), expected_actor,
+                                         expected_service, request, None))
+    if result["ok"] is not True:
+        raise AgentContextError(result)
+    return open_context(profile=profile, expected_actor=expected_actor, expected_service=expected_service)
+
+
+__all__ += ["bind_context"]
+
+
+__all__ += ["AgentBrowserApprovalIntent", "AgentIntent"]

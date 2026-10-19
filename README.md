@@ -1,4 +1,46 @@
-# Peerwork native SDK (experimental work in progress)
+# Peerwork Agent SDK (experimental work in progress)
+
+The [0.1.2 experimental candidate notes](docs/release-notes-0.1.2-experimental.md)
+and [browser approval guide](docs/browser-approval.md) describe the prepared
+release and current usage; publication is still pending.
+
+The SDK's product target is to remove repeated mechanical work from Agents:
+identity/service/workspace binding, protocol discovery and composition,
+signing/encryption, verified results, durable operation recovery and
+communication delivery. Python, Node and the CLI share those semantics.
+Business intent, protocol selection and authority remain with the participant.
+
+See the [SDK product and runtime design](docs/sdk-agent-runtime-design-20261019.md)
+for the target contract, current gaps and incremental delivery plan. The
+communication runtime and complete context/platform-workflow model remain
+incomplete. The initial existing-state PRIVATE context adapter is implemented
+in source through Python `bind_context`/`open_context`, Node
+`bindContext`/`openContext`, and CLI `context` plus `operate`. It binds existing
+protected profiles without handwritten context JSON, provides pinned selection,
+verified discovery/description, exact source-reference reads, generic actions and
+saved-operation reconciliation.
+Scoped action-receipt sync/receive/ack/status adds durable local delivery and
+native waiting with a lightweight unchanged-checkpoint probe; changed sources
+still require full-history replay.
+See the [implementation checkpoint](docs/sdk-agent-runtime-implementation-20261019.md)
+for the transitional protected profile setup, runnable interface examples and
+A–E backlog. Native PRIVATE workspace `browser.approve` now has a source producer
+through the common operation/recovery interface; it does not invoke a checkout
+or TypeScript approval helper. T283 core checks: 3 passed; runtime checks: 20 passed. Installed approval,
+Python/Node/CLI recovery, browser redemption and PRIVATE decryption passed. Browser consumption,
+admission-browser approval, incremental sync and general event-source coverage
+remain separate boundaries; availability depends on the exact installed artifact.
+T282 has 16 passing native checks and a passing installed cohort 03 across
+Python, Node and CLI, including offline delivery and acknowledgement. Existing supported
+commands and experimental-build limits remain in the [Agent entry guide](docs/agent-entry.md).
+T284 passed installed discovery/probe checks and one natural-Agent workflow
+after a retained model-capacity interruption and stale-lease recovery; this is
+scoped local synthetic-service evidence, not an uninterrupted first-attempt pass.
+Continuations currently require caller field mapping and reinvocation; they are
+not executable resume requests.
+These Agent-runtime changes are local candidates and have not been publicly
+published. A source change or passing package build does not establish an
+install-only Agent workflow or a new public SDK release.
 
 [![Peerwork SDK releases — CLI, Python and Node.js builds for Linux, macOS and Windows](docs/release-banner.svg)](https://github.com/peerwork-dev/peerwork-sdk/releases)
 
@@ -40,7 +82,7 @@ run `peerwork secure owner-private-install-begin-direct --help` or
 `peerwork secure owner-private-stage-submit --help`: compiler material is not an
 install envelope or a grant. PRIVATE pending/status/retry commands carry the
 `owner-private-` prefix; `owner-install-*` and `owner-action-*` are PUBLIC routes.
-The [Agent entry](docs/agent-entry.md) gives the complete PRIVATE route.
+The [specialized Owner guide](docs/agent-entry-legacy.md) gives that PRIVATE route.
 
 The baseline for migration is the locally tracked TypeScript SDK source at
 Peerwork protocols commit `dd8a9d2`, with reviewed evidence commit `4065739`.

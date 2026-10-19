@@ -809,3 +809,60 @@ export declare function openAcquisitionObservations(options:{path:string;maxReco
 
 /** Redacted generic Kernel runtime failure. Argument shape errors retain TypeError. */
 export class KernelError extends Error { constructor(code: string, message: string); readonly code: string; }
+
+
+export interface AgentContextDescriptor {
+  schema: string; service_id: string; origin: string; actor_id: string;
+  key_id: string; workspaces: string[]; fingerprint: string;
+}
+export interface AgentContextResult {
+  schema: 'peerwork.agent-result.v1'; context: AgentContextDescriptor;
+  status: string; operation_id?: string | null; result?: unknown; continuation?: unknown;
+}
+export interface AgentProtocolActionIntent {
+  kind: 'protocol.action'; instance_id: string; action_id: string;
+  values: unknown; refs?: unknown[];
+}
+export interface AgentBrowserApprovalIntent {
+  kind: 'browser.approve'; reference: string; approve_writes: boolean;
+}
+export type AgentIntent = AgentProtocolActionIntent | AgentBrowserApprovalIntent;
+export interface AgentContext {
+  readonly descriptor: AgentContextDescriptor;
+  /** Bounded verified installed index; authority summaries are advisory. */
+  discover(workspaceId: string, options?: {after?: string; limit?: number; signal?: AbortSignal}): Promise<AgentContextResult>;
+  describe(workspaceId: string, options: {
+    instanceId?: string; actionId?: string; recordId?: string; revision?: number;
+    objectRef?: {kind: string; id: string; revision: number}; signal?: AbortSignal;
+  }): Promise<AgentContextResult>;
+  inspect(workspaceId: string, options?: {signal?: AbortSignal}): Promise<AgentContextResult>;
+  operate(workspaceId: string, intent: AgentIntent, operationId: string,
+    options?: {signal?: AbortSignal}): Promise<AgentContextResult>;
+  recover(workspaceId: string, options: {operationId?: string; commandId?: string; signal?: AbortSignal}): Promise<AgentContextResult>;
+  operations(workspaceId: string, options?: {signal?: AbortSignal}): Promise<AgentContextResult>;
+  /** Probe unchanged history; full verified replay on updates. Action receipts only, not incremental sync. */
+  eventsSync(workspaceId: string, options?: {signal?: AbortSignal}): Promise<AgentContextResult>;
+  /** Requested native wait budget up to 60000ms with cooperative cancellation; delivery is not task completion. */
+  eventsReceive(workspaceId: string, consumerId: string, options: {
+    filterVersion: string; leaseMs?: number; waitMs?: number; signal?: AbortSignal;
+  }): Promise<AgentContextResult>;
+  eventsAck(workspaceId: string, consumerId: string, ackToken: string, options: {
+    filterVersion: string; signal?: AbortSignal;
+  }): Promise<AgentContextResult>;
+  eventsStatus(workspaceId: string, options?: {
+    signal?: AbortSignal;
+  }): Promise<AgentContextResult>;
+}
+/** PRIVATE member adapter with action-receipt delivery and native browser approval. */
+export declare function openContext(options: {
+  profilePath: string; expectedActor: string; expectedService: string; signal?: AbortSignal;
+}): Promise<AgentContext>;
+export class AgentContextError extends Error {
+  readonly code: string; readonly layer?: string; readonly effect_certainty?: string;
+  readonly operation_id?: string; readonly continuation?: unknown; readonly envelope: Record<string, unknown>;
+}
+
+export declare function bindContext(options: {
+  profilePath: string; expectedActor: string; expectedService: string;
+  workspaceProfiles: string[]; signal?: AbortSignal;
+}): Promise<AgentContext>;

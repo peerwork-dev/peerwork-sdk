@@ -53,3 +53,14 @@ mod ts_migration;
 mod test_support;
 #[cfg(windows)]
 mod windows_fs;
+
+pub mod agent_context;
+pub mod agent_inbox;
+
+pub mod agent_events;
+
+mod agent_operations;
+
+pub mod agent_browser_approval;
+
+pub mod agent_discovery;

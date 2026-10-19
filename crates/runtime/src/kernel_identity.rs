@@ -172,6 +172,18 @@ impl KernelIdentity {
         let wire = store
             .read_exact_secret()?
             .ok_or(KernelIdentityError::NotFound)?;
+        Self::from_native_wire(&wire)
+    }
+
+    /// Inspect an existing identity without creating a lock or rewriting state.
+    pub(crate) fn inspect_existing(path: &Path) -> Result<Self, KernelIdentityError> {
+        let bytes = read_private_file_bounded(path, 1024)?;
+        let wire = bytes.strip_prefix(b"PEERWORK-NATIVE-SECURE-STATE\n1\n")
+            .ok_or(KernelIdentityError::Invalid)?;
+        Self::from_native_wire(wire)
+    }
+
+    fn from_native_wire(wire: &[u8]) -> Result<Self, KernelIdentityError> {
         let encoded_bytes = wire
             .strip_prefix(IDENTITY_PREFIX)
             .and_then(|value| value.strip_suffix(IDENTITY_SUFFIX))

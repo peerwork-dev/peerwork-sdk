@@ -155,11 +155,29 @@ try:
     assert record["value"]["payload"]["title"] == "Python PRIVATE member readback"
     assert record["value"]["payload"]["body"] == "Encrypted after member grant"
     assert counts(origin)["head_sequence"] == before_action["head_sequence"] + 1
+    if os.environ.get("PEERWORK_TEST_BROWSER_APPROVAL") == "1":
+        import runpy
+        runpy.run_path(str(SOURCE / "tests/installed-browser-approval.py"))["run"](
+            source=SOURCE, state=STATE, origin=origin, workspace_id=workspace_id,
+            recipient_dir=recipient_dir, actor_id=local["actor_id"], owner_pins=owner_pins,
+            instance_id=wiki_instance, node=NODE, post=post)
+    if os.environ.get("PEERWORK_TEST_AGENT_CONTEXT") == "1":
+        import runpy
+        runpy.run_path(str(SOURCE / "tests/installed-agent-context.py"))["run"](
+            state=STATE, origin=origin, workspace_id=workspace_id, recipient_dir=recipient_dir,
+            actor_id=local["actor_id"], owner_pins=owner_pins, instance_id=wiki_instance,
+            counts=counts, post=post, node=NODE, node_package=NODE_PACKAGE, cli=CLI)
     print(json.dumps(dict(status="PASS", workspace_id=workspace_id,
         owner_actor_id=owner_pins["actor_id"], recipient_actor_id=local["actor_id"],
         invite_id=offer["invite_id"], command_id=command_id, operation_id=operation_id,
         record_id=record_id, final_sequence=readback["sequence"],
         encrypted_private_member_action=True, exact_retry=True)))
+    if os.environ.get("PEERWORK_TEST_AGENT_TRIAL_HOLD") == "1":
+        import runpy
+        runpy.run_path(str(SOURCE / "tests/agent-trial/context-runtime-fixture.py"))["hold"](
+            state=STATE, origin=origin, workspace_id=workspace_id, recipient_dir=recipient_dir,
+            actor_id=local["actor_id"], owner_pins=owner_pins, instance_id=wiki_instance,
+            post=post, source=SOURCE, cli=CLI, node=NODE, node_package=NODE_PACKAGE)
 finally:
     server.terminate()
     try:

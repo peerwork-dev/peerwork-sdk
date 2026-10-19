@@ -83,7 +83,8 @@ if (process.env.PEERWORK_TEST_CATALOG === '1') {
 }
 const db = openKernel(join(state, 'control.sqlite'), 'reference-kernel');
 const kernel = new WorkspaceKernel(db, 'reference-kernel', Buffer.alloc(32, 71), Date.now, {}, catalogAdapter);
-const real = serve({fetch: createWorkspaceControlApp(kernel).fetch, hostname: '127.0.0.1', port: 0});
+const controlOptions = {}; // Test proxy supplies its public origin before announcing readiness.
+const real = serve({fetch: createWorkspaceControlApp(kernel, controlOptions).fetch, hostname: '127.0.0.1', port: 0});
 await new Promise(resolve => real.once('listening', resolve));
 const realOrigin = `http://127.0.0.1:${real.address().port}`;
 let secureFixture;
@@ -319,8 +320,31 @@ if (!Number.isSafeInteger(firstJournalDelayMs) || firstJournalDelayMs < 0 || fir
 let delayFirstJournal = firstJournalDelayMs > 0;
 let journalDelayStarted = false;
 let journalGetCount = 0;
+const journalProbeObservations = []; // Test-only transport metadata, never journal bodies.
+// Test transport outage: control endpoints remain usable, every service request
+// (including discovery outside /api) is refused and counted before forwarding.
+let testApiBlocked = false;
+let testBlockedApiAttempts = 0;
 const proxy = createServer(async (request, response) => {
   try {
+    if (request.method === 'POST' && ['/__test/block-api', '/__test/unblock-api'].includes(request.url)) {
+      testApiBlocked = request.url === '/__test/block-api';
+      if (testApiBlocked) testBlockedApiAttempts = 0;
+      response.writeHead(200, {'content-type': 'application/json'});
+      response.end(JSON.stringify({blocked:testApiBlocked, blocked_api_attempts:testBlockedApiAttempts}));
+      return;
+    }
+    if (request.url === '/__test/api-block-status' && request.method === 'GET') {
+      response.writeHead(200, {'content-type': 'application/json'});
+      response.end(JSON.stringify({blocked:testApiBlocked, blocked_api_attempts:testBlockedApiAttempts}));
+      return;
+    }
+    if (testApiBlocked && !request.url?.startsWith('/__test/')) {
+      testBlockedApiAttempts++;
+      response.writeHead(503, {'content-type': 'application/json'});
+      response.end(JSON.stringify({code:'TEST_API_BLOCKED'}));
+      return;
+    }
     if (request.url === '/__test/activate-protocol-cutover' && request.method === 'POST') {
       if (process.env.PEERWORK_TEST_OWNER_FORMAT !== '1') throw new Error('Owner format fixture unavailable');
       const {secureProtocolCutoverPreflightDigest} = await import(pathToFileURL(join(root, 'dist-workspace/src/workspace-secure-store.js')).href);
@@ -548,6 +572,11 @@ const proxy = createServer(async (request, response) => {
       response.end(JSON.stringify(totals));
       return;
     }
+    if (request.url === '/__test/journal-probes' && request.method === 'GET') {
+      response.writeHead(200, {'content-type':'application/json'});
+      response.end(JSON.stringify({requests:journalProbeObservations}));
+      return;
+    }
     if (request.url === '/__test/secure-counts') {
       const totals = {
         commits: db.prepare('SELECT count(*) n FROM secure_commits').get().n,
@@ -576,6 +605,16 @@ const proxy = createServer(async (request, response) => {
       body: request.method === 'GET' ? undefined : Buffer.concat(chunks),
     });
     let bytes = Buffer.from(await original.arrayBuffer());
+    if (request.method === 'GET' && request.url?.startsWith('/api/workspace/v1/secure/workspaces/') && request.url.includes('/journal?')) {
+      const query = new URL(request.url, 'http://test.invalid').searchParams;
+      let page;
+      try { page = JSON.parse(bytes.toString('utf8')); } catch {}
+      journalProbeObservations.push({after:query.get('after'), limit:query.get('limit'),
+        at_sequence:query.get('at_sequence'), status:original.status,
+        returned_commits:Array.isArray(page?.commits)?page.commits.length:null,
+        checkpoint_sequence:page?.checkpoint?.sequence??null});
+    }
+
     if (request.method === 'GET' && request.url?.startsWith('/api/workspace/v1/secure/identity-keys/')
         && serveStaleIdentityDirectory && original.status === 200) {
       const value = JSON.parse(bytes.toString('utf8'));
@@ -670,6 +709,7 @@ await new Promise((resolve, reject) => {
   proxy.once('error', reject);
   proxy.listen(Number(proxyPortText), '127.0.0.1', () => { proxy.off('error', reject); resolve(); });
 });
+controlOptions.controlOrigin = `http://127.0.0.1:${proxy.address().port}`;
 process.stdout.write(JSON.stringify({origin: `http://127.0.0.1:${proxy.address().port}/`,
   ...(secureFixture ? {secure:secureFixture} : {}),
   ...(publicReadFixture ? {public_read:publicReadFixture} : {}),

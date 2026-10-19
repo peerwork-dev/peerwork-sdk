@@ -440,6 +440,16 @@ impl HttpTransport {
         read_bounded(response, 220_000, cancel).await
     }
 
+    /// Fixed-origin exact browser request read; never accepts a caller URL.
+    pub(crate) async fn get_browser_approval_request(&self, workspace:&str, request:&str, proof:&str, cancel:&CancellationToken)->Result<ExactHttpResponse,TransportError> {
+        let valid=|v:&str|v.len()==43 && v.bytes().all(|b|b.is_ascii_alphanumeric() || matches!(b,b'-'|b'_'));
+        if !valid(workspace)||!valid(request)||proof.is_empty()||proof.len()>12000 { return Err(TransportError::InvalidOrigin); }
+        let path=format!("/api/workspace/v1/admin/workspaces/{workspace}/browser-requests/{request}");
+        let send=self.client.get(self.endpoint(&path)?).header("X-Peerwork-Read",proof).send();
+        let response=tokio::select! { _=cancel.cancelled()=>return Err(TransportError::Cancelled), result=send=>result.map_err(map_network_error)?, };
+        read_bounded(response,262_144,cancel).await
+    }
+
     /// Exact authenticated identity-directory read. A directory response is
     /// still untrusted until its signed chain and local continuity pin verify.
     pub(crate) async fn get_secure_identity_keys_exact(

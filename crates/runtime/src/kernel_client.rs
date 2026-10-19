@@ -574,6 +574,20 @@ impl KernelClient {
         }
     }
 
+    /// Browser producer may release its local code only after this exact
+    /// saved command and result have passed the ordinary receipt verifier.
+    pub(crate) fn verified_browser_approval_result(&self, command_id:&str, local_key_id:&str, request_id:&str, workspace_id:&str, expected_body:&str)->Result<Option<String>,KernelClientError> {
+        let saved=self.journal.verified_pending(command_id,local_key_id,self.discovery.audience_utf16())?.ok_or(KernelClientError::IntentNotFound)?;
+        let command=parse_wire_json_bounded(saved.proof.command_canonical_json().as_bytes(),40,180_000).map_err(|_|KernelClientError::InvalidResult)?;
+        let body=command.get("body").ok_or(KernelClientError::InvalidResult)?;
+        let expected=parse_wire_json_bounded(expected_body.as_bytes(),40,180_000).map_err(|_|KernelClientError::InvalidResult)?;
+        if required_text(&command,"action_id")? != "browser.session.approve" || body != &expected || required_text(body,"request_id")? != request_id { return Err(KernelClientError::InvalidResult); }
+        let Some(verified)=self.journal.accepted_response(&saved,self.discovery.receipt_public_key())? else { return Ok(None); };
+        let result=parse_wire_json_bounded(verified.result_canonical_json().as_bytes(),16,262_144).map_err(|_|KernelClientError::InvalidResult)?;
+        if required_text(&result,"request_id")? != request_id || required_text(&result,"workspace_id")? != workspace_id || required_text(&result,"status")? != "APPROVED" || result.get("device_session_id").is_some() || result.get("session_id").is_some() { return Err(KernelClientError::InvalidResult); }
+        Ok(Some(verified.result_canonical_json().to_owned()))
+    }
+
     /// Sends the exact durable request. Cancellation or an unreadable reply
     /// leaves the row pending; retrying this same ID is the recovery path.
     pub async fn submit_saved(

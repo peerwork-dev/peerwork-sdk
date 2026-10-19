@@ -1127,3 +1127,104 @@ exports.openAcquisitionObservations = options => {
     }),
   });
 };
+
+
+class AgentContextError extends Error {
+  constructor(envelope) {
+    super(envelope.message);
+    this.name = 'AgentContextError';
+    this.envelope = envelope;
+    this.operation_id = envelope.operation_id;
+    this.code = envelope.code;
+    this.layer = envelope.layer;
+    this.effect_certainty = envelope.effect_certainty;
+    this.continuation = envelope.continuation;
+  }
+}
+exports.AgentContextError = AgentContextError;
+/** Open existing protected member context offline; every call rechecks pins. */
+exports.openContext = async ({ profilePath, expectedActor, expectedService, signal }) => {
+  for (const [name, value] of Object.entries({ profilePath, expectedActor, expectedService })) {
+    if (typeof value !== 'string' || !value) throw new TypeError(`${name} is required`);
+  }
+  let expectedFingerprint;
+  const call = async (operation, request, abortSignal) => {
+    const wire = request === undefined ? undefined : strictCommandJson({
+      ...request, expected_fingerprint: expectedFingerprint,
+    });
+    const handle = new binding.KernelCancelHandle();
+    const onAbort = () => handle.cancel();
+    if (abortSignal?.aborted) onAbort();
+    abortSignal?.addEventListener('abort', onAbort, { once: true });
+    try {
+      const result = JSON.parse(await binding.agentContextJson(
+        operation, profilePath, expectedActor, expectedService, wire, handle));
+      if (result.ok !== true) throw new AgentContextError(result);
+      return result.value;
+    } finally {
+      abortSignal?.removeEventListener('abort', onAbort);
+    }
+  };
+  const opened = await call('open', undefined, signal);
+  expectedFingerprint = opened.context.fingerprint;
+  const descriptorJson = JSON.stringify(opened.context);
+  return Object.freeze({
+    get descriptor() { return JSON.parse(descriptorJson); },
+    discover: (workspaceId, options = {}) => {
+      const query = {};
+      if (options.after !== undefined) query.after = options.after;
+      if (options.limit !== undefined) query.limit = options.limit;
+      return call('discover', { workspace_id: workspaceId, query }, options.signal);
+    },
+    describe: (workspaceId, options) => {
+      const query = {};
+      if (options.instanceId !== undefined) query.instance_id = options.instanceId;
+      if (options.actionId !== undefined) query.action_id = options.actionId;
+      if (options.recordId !== undefined) query.record_id = options.recordId;
+      if (options.revision !== undefined) query.revision = options.revision;
+      if (options.objectRef !== undefined) query.object_ref = options.objectRef;
+      return call('describe', { workspace_id: workspaceId, query }, options.signal);
+    },
+    inspect: (workspaceId, options = {}) => call('inspect', { workspace_id: workspaceId }, options.signal),
+    operate: (workspaceId, intent, operationId, options = {}) => call('operate', {
+      workspace_id: workspaceId, intent, operation_id: operationId,
+    }, options.signal),
+    recover: (workspaceId, options = {}) => {
+      const request = { workspace_id: workspaceId };
+      if (options.operationId !== undefined) request.operation_id = options.operationId;
+      if (options.commandId !== undefined) request.command_id = options.commandId;
+      return call('recover', request, options.signal);
+    },
+    operations: (workspaceId, options = {}) => call('operations', { workspace_id: workspaceId }, options.signal),
+    eventsSync: (workspaceId, options = {}) => call('events.sync', { workspace_id: workspaceId }, options.signal),
+    eventsReceive: (workspaceId, consumerId, options = {}) => {
+      const request = { workspace_id: workspaceId, consumer_id: consumerId };
+      if (options.filterVersion !== undefined) request.filter_version = options.filterVersion;
+      request.lease_ms = options.leaseMs ?? 30000;
+      request.wait_ms = options.waitMs ?? 0;
+      return call('events.receive', request, options.signal);
+    },
+    eventsAck: (workspaceId, consumerId, ackToken, options = {}) => {
+      const request = { workspace_id: workspaceId, consumer_id: consumerId, ack_token: ackToken };
+      if (options.filterVersion !== undefined) request.filter_version = options.filterVersion;
+      return call('events.ack', request, options.signal);
+    },
+    eventsStatus: (workspaceId, options = {}) => call('events.status', { workspace_id: workspaceId }, options.signal),
+  });
+};
+
+/** Explicit no-overwrite binding of existing protected profiles; creates no identity. */
+exports.bindContext = async ({profilePath, expectedActor, expectedService, workspaceProfiles, signal}) => {
+  const handle = new binding.KernelCancelHandle();
+  const onAbort = () => handle.cancel();
+  if (signal?.aborted) onAbort();
+  signal?.addEventListener('abort', onAbort, {once: true});
+  try {
+    const result = JSON.parse(await binding.agentContextJson('bind', profilePath, expectedActor,
+      expectedService, strictCommandJson({workspace_profiles: workspaceProfiles}), handle));
+    if (result.ok !== true) throw new AgentContextError(result);
+    return await exports.openContext({profilePath, expectedActor, expectedService, signal});
+  } finally {
+    signal?.removeEventListener('abort', onAbort);
+  }
+};

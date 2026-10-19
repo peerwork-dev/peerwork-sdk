@@ -232,7 +232,7 @@ impl SecurePublicActionAccess {
         self.submit_new_json_with_operation_id(input, None, cancel)
     }
 
-    /// Submit a guarded PRIVATE action under a caller-stable operation id.
+    /// Submit a PRIVATE action under a caller-stable operation id.
     /// The id is stored with the exact prepared request before network I/O.
     pub fn submit_new_json_with_operation_id(
         &self,
@@ -272,7 +272,7 @@ impl SecurePublicActionAccess {
             }
             let payload = policy.get("payload").ok_or(PublicActionError::Input)?;
             let guarded = payload.get("guard_time").is_some();
-            let operation_binding = if visibility == "PRIVATE" && guarded {
+            let operation_binding = if visibility == "PRIVATE" && (guarded || operation_id.is_some()) {
                 let operation_id = operation_id.ok_or(PublicActionError::Input)?;
                 let intent = serde_json::to_vec(&serde_json::json!({
                     "workspace_id": self.config.workspace_id,
@@ -336,6 +336,10 @@ impl SecurePublicActionAccess {
                 }
                 Some((operation_id.to_owned(), intent_digest))
             } else {
+                // Never silently ignore the caller's durable operation binding.
+                if operation_id.is_some() {
+                    return Err(PublicActionError::Input);
+                }
                 if journal.contains_id(&command_id) {
                     return Err(PublicActionError::Intent(SecureIntentError::Conflict));
                 }
@@ -583,7 +587,7 @@ impl SecurePrivateActionAccess {
         self.inner.submit_new_json_with_cancel(input, cancel)
     }
 
-    /// Submit a guarded PRIVATE action under a caller-stable operation id.
+    /// Submit a PRIVATE action under a caller-stable operation id.
     pub fn submit_new_json_with_operation_id(
         &self,
         input: PublicActionInput,

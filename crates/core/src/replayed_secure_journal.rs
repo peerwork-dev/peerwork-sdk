@@ -117,26 +117,31 @@ impl ReplayedSecureJournal {
         head: Option<&str>,
         policy_hash: &str,
     ) -> bool {
-        let selected_policy = self
-            .policy_hashes
-            .iter()
+        self.checkpoint_at(sequence)
+            .is_some_and(|(_, selected_head, selected_policy)| {
+                selected_head == head && selected_policy == policy_hash
+            })
+    }
+
+    /// Project an exact historical checkpoint from this already verified chain.
+    /// This is not a resumable verifier or a new transport-origin proof. The
+    /// caller must retain the source/workspace/owner binding of this replay.
+    /// Sequence zero uses the initial policy, matching ancestor checks.
+    pub fn checkpoint_at(&self, sequence: u64) -> Option<(u64, Option<&str>, &str)> {
+        if sequence > self.sequence {
+            return None;
+        }
+        let policy = self.policy_hashes.iter()
             .zip(&self.policy_effective_sequences)
             .rev()
-            .find(|(_, effective_sequence)| **effective_sequence <= sequence.max(1))
-            .map(|(hash, _)| hash.as_str());
-        if sequence > self.sequence || selected_policy != Some(policy_hash) {
-            return false;
-        }
-        match sequence {
-            0 => head.is_none(),
-            _ => {
-                usize::try_from(sequence - 1)
-                    .ok()
-                    .and_then(|index| self.commit_hashes.get(index))
-                    .map(String::as_str)
-                    == head
-            }
-        }
+            .find(|(_, effective)| **effective <= sequence.max(1))
+            .map(|(hash, _)| hash.as_str())?;
+        let head = if sequence == 0 {
+            None
+        } else {
+            Some(self.commit_hashes.get(usize::try_from(sequence - 1).ok()?)?.as_str())
+        };
+        Some((sequence, head, policy))
     }
     pub fn structure_status(&self) -> StructureStatus {
         self.structure_status
@@ -351,6 +356,12 @@ mod tests {
             replay_secure_journal_exact_with_guard_time_attestations(input(), &proofs).unwrap();
         assert_eq!(replayed.sequence(), 2);
         assert_eq!(replayed.policy_hash(), final_policy_hash);
+        let prior = replayed.checkpoint_at(1).unwrap();
+        assert_eq!(prior.1, vector["payload"]["source"]["head"].as_str());
+        assert_eq!(prior.2, vector["payload"]["source"]["policy_hash"].as_str().unwrap());
+        assert_eq!(replayed.checkpoint_at(2), Some((2, Some(final_head), final_policy_hash)));
+        assert_ne!(prior.2, final_policy_hash);
+
         assert!(matches!(
             replay_secure_journal_exact(input()),
             Err(JournalReplayError::Invalid)
@@ -589,6 +600,8 @@ mod tests {
                 keyring_wire: Some(&keyring),
             };
             let replay = replay_secure_journal_exact(pins()).unwrap();
+
+
             assert_eq!(replay.sequence(), pins().final_sequence, "{name}");
             assert_eq!(replay.head(), pins().final_head, "{name}");
             assert!(replay.contains_checkpoint(
@@ -688,6 +701,18 @@ mod tests {
             keyring_wire: Some(&keyring),
         };
         let replay = replay_secure_journal_exact(pins()).unwrap();
+        let first_commit = parse_wire_json_bounded(&commits[0], 64, 1024 * 1024).unwrap();
+        let first_hash = crate::crypto::sha256_hex(canonical_wire_value(&first_commit, Path::SecureArtifact).unwrap().as_bytes());
+        let prior = replay.checkpoint_at(1).unwrap();
+        assert_eq!(prior.1, Some(first_hash.as_str()));
+        assert_eq!(prior.2, first_commit.get("payload").unwrap().get("policy_hash").unwrap().as_string().unwrap());
+        assert!(replay.contains_checkpoint(prior.0, prior.1, prior.2));
+        assert!(!replay.contains_checkpoint(prior.0, Some("wrong-head"), prior.2));
+        assert!(!replay.contains_checkpoint(prior.0, prior.1, "wrong-policy"));
+        assert_eq!(replay.checkpoint_at(2), Some((2, replay.head(), replay.policy_hash())));
+        assert_eq!(replay.checkpoint_at(0).unwrap().1, None);
+        assert!(replay.checkpoint_at(3).is_none());
+        assert!(replay.checkpoint_at(u64::MAX).is_none());
         let command = fixture["receipt"]["command_id"].as_str().unwrap();
         let receipt = replay.action_receipt(command).unwrap().unwrap();
         let expected = parse_wire_json_bounded(

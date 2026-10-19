@@ -1178,9 +1178,23 @@ fn acquisition_observations_json(py: Python<'_>, operation: String, config_json:
         &operation, &config_json, input_json.as_deref()))
 }
 
+#[pyfunction]
+#[pyo3(signature = (operation, profile_path, expected_actor, expected_service, request_json=None, cancel_handle=None))]
+fn agent_context_json(
+    py: Python<'_>, operation: String, profile_path: String,
+    expected_actor: String, expected_service: String, request_json: Option<String>,
+    cancel_handle: Option<PyRef<'_, KernelCancelHandle>>,
+) -> String {
+    let cancel = cancel_handle.map(|handle| handle.token.clone()).unwrap_or_default();
+    py.allow_threads(move || peerwork_runtime::agent_context::agent_context_json(
+        &operation, Path::new(&profile_path), &expected_actor, &expected_service,
+        request_json.as_deref(), &cancel))
+}
+
 #[pymodule]
 fn _peerwork_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(acquisition_observations_json, module)?)?;
+    module.add_function(wrap_pyfunction!(agent_context_json, module)?)?;
     module.add_function(wrap_pyfunction!(version, module)?)?;
     module.add_function(wrap_pyfunction!(capabilities_json, module)?)?;
     module.add_function(wrap_pyfunction!(load_config_json, module)?)?;

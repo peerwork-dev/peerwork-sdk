@@ -103,3 +103,5 @@ pub fn capability_manifest() -> CapabilityManifest {
         durable_recovery: false,
     }
 }
+
+pub mod browser_approval;
