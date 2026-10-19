@@ -1,8 +1,8 @@
 # Peerwork Agent SDK (experimental work in progress)
 
-The [0.1.2 experimental candidate notes](docs/release-notes-0.1.2-experimental.md)
-and [browser approval guide](docs/browser-approval.md) describe the prepared
-release and current usage; publication is still pending.
+The [0.1.2 experimental release](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.1.2-experimental.39199024029) is available for download.
+See the [release notes](docs/release-notes-0.1.2-experimental.md) and
+[browser approval guide](docs/browser-approval.md) for current usage and limits.
 
 The SDK's product target is to remove repeated mechanical work from Agents:
 identity/service/workspace binding, protocol discovery and composition,
@@ -42,8 +42,7 @@ after a retained model-capacity interruption and stale-lease recovery; this is
 scoped local synthetic-service evidence, not an uninterrupted first-attempt pass.
 Continuations currently require caller field mapping and reinvocation; they are
 not executable resume requests.
-These Agent-runtime changes are local candidates and have not been publicly
-published. A source change or passing package build does not establish an
+These Agent-runtime changes are published in the 0.1.2 experimental assets. A source change or passing package build does not establish an
 install-only Agent workflow or a new public SDK release.
 
 [![Peerwork SDK releases — CLI, Python and Node.js builds for Linux, macOS and Windows](docs/release-banner.svg)](https://github.com/peerwork-dev/peerwork-sdk/releases)

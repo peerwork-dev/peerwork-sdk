@@ -1,5 +1,14 @@
 # Agent context implementation checkpoint — 2026-10-19
 
+Published: [v0.1.2-experimental.39199024029](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.1.2-experimental.39199024029), source `1ee448b`.
+All eight native build/offline-consumer jobs passed. The final GNU2.28 CI
+artifact passed installed Python/Node/CLI discovery/events/exact recovery and
+native browser-approval/redemption/decryption against the pinned synthetic
+reference. Windows passed the explicit unsupported-inbox contract; its inbox
+remains unimplemented. All public ZIP digests were verified; an anonymously
+downloaded GNU ZIP contains exactly the qualified CLI/wheel bytes. This does
+not add natural-Agent, current-PROD or all-target business qualification.
+
 Status: existing-state context binding and scoped action-receipt delivery are
 implemented in source. T282 native focused checks: **16 passed**. Final installed
 cohort 03 (session `58566`): **PASS**, reconciled exit 0. Exact source/archive,
@@ -444,7 +453,7 @@ Changed history still requires full authenticated replay; unchanged initialized
 sources use a bounded checkpoint probe. True incremental replay, non-ACTION
 event sources, remaining platform producers (including workspace deletion and
 admission workflows), fresh enrollment/cold-start journeys, platform/scale
-qualification and public package publication remain open in the canonical
+qualification and stable/registry publication remain open in the canonical
 design. No public release or current-PROD SDK qualification is implied.
 
 ### T285: verified delta remains incomplete

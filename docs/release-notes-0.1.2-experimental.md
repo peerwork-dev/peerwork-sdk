@@ -1,8 +1,9 @@
 # Peerwork SDK 0.1.2 experimental candidate
 
-Publication status: prepared locally; public availability requires a successful
-native-distribution run and its published prerelease. This candidate is not a
-stable release and is not a PyPI/npm registry publication.
+Published: [v0.1.2-experimental.39199024029](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.1.2-experimental.39199024029). Source
+`1ee448b56feeac40b3ac385c79ab4942d033d7d8`; all eight native target jobs passed.
+Ten public assets include eight target ZIPs, SHA256SUMS and SOURCE.json. This is
+an experimental prerelease, not a stable or PyPI/npm registry publication.
 
 This release moves repeated Agent mechanics into a shared Rust runtime used by
 Python, Node and the standalone CLI:
