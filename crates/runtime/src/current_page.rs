@@ -333,6 +333,14 @@ mod tests {
         ))
         .unwrap();
         let dir = tempfile::tempdir().unwrap();
+        #[cfg(windows)]
+        let state_dir = {
+            let path = dir.path().join("state");
+            crate::windows_fs::create_private_directory(&path).unwrap();
+            path
+        };
+        #[cfg(not(windows))]
+        let state_dir = dir.path().to_path_buf();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -346,7 +354,7 @@ mod tests {
         let workspace = vector["pin"]["workspace"].as_str().unwrap().to_owned();
         let owner = vector["pin"]["ownerId"].as_str().unwrap();
         let owner_key = vector["pin"]["ownerKey"].as_str().unwrap();
-        let identity_path = dir.path().join("identity.state");
+        let identity_path = state_dir.as_path().join("identity.state");
         let identity = KernelIdentity::create(&identity_path).unwrap();
         let identity_key = identity.key_id().to_owned();
         let authority = sha256_hex(identity.actor_id().as_bytes());
@@ -355,12 +363,13 @@ mod tests {
             peerwork_core::discovery::parse_discovery_wire(discovery.to_string().as_bytes(), 65536)
                 .unwrap();
         {
-            let mut journal = KernelIntentJournal::open(&dir.path().join("kernel.sqlite")).unwrap();
+            let mut journal =
+                KernelIntentJournal::open(&state_dir.as_path().join("kernel.sqlite")).unwrap();
             journal.bind_discovery(&canonical_origin, &parsed).unwrap();
         }
         {
             let mut lifecycle = SecureLifecycle::open(
-                &dir.path().join("lifecycle.state"),
+                &state_dir.as_path().join("lifecycle.state"),
                 &canonical_origin,
                 identity.actor_id(),
                 &workspace,
@@ -375,11 +384,11 @@ mod tests {
         let cp = &vector["response"]["page"]["payload"]["checkpoint"];
         let profile = serde_json::json!({"version":1,"origin":origin,"identity_path":identity_path,"workspace_id":workspace,"authority":authority,"owner_actor_id":owner,"owner_key_id":owner_key,"required_features":[],"allow_loopback_http":true,"current":0,"staged":null,"staged_ready":false,"floor":{"sequence":cp["sequence"],"head":cp["head"],"policy_hash":cp["policy_hash"]}});
         {
-            let store = SecureStateStore::open(&dir.path().join("read.profile")).unwrap();
+            let store = SecureStateStore::open(&state_dir.as_path().join("read.profile")).unwrap();
             store.write_exact(profile.to_string().as_bytes()).unwrap();
         }
         // There is deliberately no read-0.state cached journal. Any replay would fail.
-        assert!(!dir.path().join("read-0.state").exists());
+        assert!(!state_dir.as_path().join("read-0.state").exists());
         let mut response = vector["response"].clone();
         let origin_for_server = origin.clone();
         let server_workspace = workspace.clone();
@@ -472,7 +481,7 @@ mod tests {
             }
             paths
         });
-        let input = serde_json::json!({"profile":{"origin":origin,"state_dir":dir.path(),"identity_path":identity_path,"workspace_id":workspace,"allow_loopback_http":true},"query":vector["query"]});
+        let input = serde_json::json!({"profile":{"origin":origin,"state_dir":state_dir.as_path(),"identity_path":identity_path,"workspace_id":workspace,"allow_loopback_http":true},"query":vector["query"]});
         let result: serde_json::Value = serde_json::from_str(&current_page_json(
             &input.to_string(),
             &CancellationToken::new(),
@@ -482,7 +491,10 @@ mod tests {
         assert_eq!(result["value"]["objects"].as_array().unwrap().len(), 2);
         assert_eq!(result["value"]["transport_metrics"]["requests"], 2);
         assert_eq!(server.join().unwrap().len(), 2);
-        assert!(dir.path().join("system-current-page.floor").exists());
-        assert!(!dir.path().join("read-0.state").exists());
+        assert!(state_dir
+            .as_path()
+            .join("system-current-page.floor")
+            .exists());
+        assert!(!state_dir.as_path().join("read-0.state").exists());
     }
 }
