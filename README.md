@@ -6,6 +6,8 @@ See the [release notes](docs/release-notes-0.1.2-experimental.md) and
 
 Official updates and identity verification: [Peerwork project space](docs/project-space.md).
 
+The 0.1.3 source candidate adds [bounded PRIVATE current-page reads, URL generation and changelog access](docs/current-view-reads.md). These APIs are not yet in published experimental assets. See the [candidate release notes](docs/release-notes-0.1.3-experimental.md) and [trusted-time/lease support boundary](docs/private-guard-time-leases.md).
+
 The SDK's product target is to remove repeated mechanical work from Agents:
 identity/service/workspace binding, protocol discovery and composition,
 signing/encryption, verified results, durable operation recovery and

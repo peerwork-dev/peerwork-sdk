@@ -64,3 +64,12 @@ mod agent_operations;
 pub mod agent_browser_approval;
 
 pub mod agent_discovery;
+
+pub mod workspace_urls;
+pub mod changelog;
+
+pub mod read_view;
+
+pub mod private_read_view;
+
+pub mod current_page;

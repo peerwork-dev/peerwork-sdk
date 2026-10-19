@@ -58,6 +58,34 @@ fn identity_cli_path(value: &str) -> Result<PathBuf, String> {
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.as_slice() {
+        [noun, help] if noun == "current" && help == "--help" => {
+            println!("{}",serde_json::json!({"schema":"peerwork.current-page-help.v1",
+                "usage":"peerwork current read REQUEST_JSON_FILE",
+                "assurance":"SERVICE_STRUCTURE_SELECTION",
+                "request":{"profile":{"origin":"pinned origin","state_dir":"existing protected workspace profile","identity_path":"existing identity","workspace_id":"selected workspace"},"query":{"kind":"records","instance_id":"selected instance","schema":"wiki.revision","limit":20}},
+                "queries":["get object_kind/id","instances limit/cursor","records instance_id/schema?/limit/cursor"],
+                "requirements":"Already active PRIVATE profile and existing STRUCTURED policy. No raw key input, Owner publisher, or full-journal fallback.",
+                "verification":"Service selects current objects; native code verifies original author signatures and decrypts content locally. Complete historical semantic replay remains a separate audit.",
+                "continuity":"Protected per-profile floor persists automatically. Reuse next cursor only with the same query and checkpoint."}));
+            ExitCode::SUCCESS
+        },
+        [noun, verb, request] if noun == "current" && verb == "read" => read_view_cli_mode(request,2),
+        [noun, help] if noun == "view" && help == "--help" => {
+            println!("{}", serde_json::json!({
+                "schema":"peerwork.read-view-help.v1",
+                "usage":"peerwork view read REQUEST_JSON_FILE",
+                "assurance":"AUTHORIZED_STATE",
+                "adoption":"The selected workspace must explicitly authorize and publish the read view. accept_authorized_state=true acknowledges publisher-attested state, not independent complete replay.",
+                "request":{"origin":"pinned Control origin","workspace_id":"selected workspace","owner_actor_id":"pinned Owner actor","owner_key_id":"pinned Owner signing key","audience":"configured service audience","service_key":"independently pinned discovery key","accept_authorized_state":true,"selection":{"kind":"get","object_kind":"workspaces","id":"exact workspace ID"}},
+                "list_selection":{"kind":"list","instance_id":"selected instance","schema":"wiki.revision","limit":20,"cursor":null},
+                "continuity":"Retain value.floor for subsequent reads and value.next for the same-root/query next page. An error is not an empty result. No journal fallback.",
+                "supported":"Anonymous PUBLIC current views; protected existing PRIVATE profiles use view private-read with {profile,accept_authorized_state:true,selection}. Default system structure reads use current read."
+            }));
+            ExitCode::SUCCESS
+        },
+        [noun, verb, request] if noun == "view" && verb == "read" => read_view_cli(request),
+        [noun, verb, request] if noun == "view" && verb == "private-read" => read_view_cli_mode(request,1),
+        [noun, rest @ ..] if noun == "url" || noun == "changelog" => navigation_cli(noun, rest),
         [noun, verb, rest @ ..] if noun == "context" => agent_context_command(verb, rest),
         [verb, rest @ ..] if verb == "operate" => agent_context_command("operate", rest),
         [noun, verb, rest @ ..] if noun == "config" && verb == "resolve" && rest.len() <= 1 => {
@@ -425,7 +453,7 @@ fn main() -> ExitCode {
             cli_result(public_catalog_command(verb, rest))
         }
         _ => {
-            let usage = r#"peerwork context --help | peerwork operate --help | peerwork config resolve [PATH] | observations attest-external-principal|append|catalog-result|install-result|action-result|scorecard CONFIG_JSON_FILE INPUT_JSON_FILE | observations export|attestations|snapshots CONFIG_JSON_FILE; transport options on kernel/snapshot/read/private-read/recipient/directory: --request-timeout-ms=N --additional-root-pem-file=PATH (repeatable); JSON clients accept transport:{request_timeout_ms:15000,additional_root_pem_files:[]}; version|capabilities|identity create IDENTITY_STATE_FILE|identity info IDENTITY_STATE_FILE|identity import-legacy-pem IDENTITY_STATE_FILE PROTECTED_PEM_FILE|identity import-legacy-owner-pem OWNER_CONFIG_JSON_FILE PROTECTED_PEM_FILE|identity import-seed-file IDENTITY_STATE_FILE PROTECTED_SEED_FILE|kernel open|prepare|pending|status|submit ORIGIN JOURNAL IDENTITY [COMMAND_FILE|COMMAND_ID] [--allow-loopback-http] [--authority=HEX] [--chunk-file=PATH|--chunk-stdin for prepare]; kernel migrate ORIGIN JOURNAL IDENTITY SOURCE BACKUP --trusted-signer=KEY_ID [--trusted-signer=KEY_ID ...]; secure read|private-read --origin=URL --state-dir=DIR --identity=PATH --workspace=ID [--owner-actor=ID --owner-key=ID] [--authority=HEX]; secure snapshot ORIGIN KERNEL_JOURNAL READ_STATE LIFECYCLE IDENTITY WORKSPACE AUTHORITY OWNER_ACTOR OWNER_KEY [--allow-loopback-http] [--max-replay-artifact-bytes=N]; secure action-submit|action-status|action-retry CONFIG_JSON_FILE ACTION_JSON_FILE|COMMAND_ID; secure action-pending CONFIG_JSON_FILE; secure private-action-submit|private-action-status|private-action-retry|private-action-pending --help; secure install-begin CONFIG_JSON_FILE INPUT_JSON_FILE | install-continue CONFIG_JSON_FILE BEGIN_COMMAND_ID | install-pending CONFIG_JSON_FILE; secure owner-prepare|owner-create CONFIG_JSON_FILE INPUT_JSON_FILE | owner-resume CONFIG_JSON_FILE COMMAND_ID | owner-operations CONFIG_JSON_FILE | owner-read CONFIG_JSON_FILE WORKSPACE_ID | owner-attach CONFIG_JSON_FILE INPUT_JSON_FILE | owner-attach-resume CONFIG_JSON_FILE ATTACH_ID | owner-attach-retain CONFIG_JSON_FILE ATTACH_ID EXPECTED_COMMAND_ID | owner-attachments CONFIG_JSON_FILE | owner-kernel-inspect CONFIG_JSON_FILE INPUT_JSON_FILE | owner-kernel-status CONFIG_JSON_FILE ATTACH_ID | owner-kernel-recover CONFIG_JSON_FILE ATTACH_ID COMMAND_ID | owner-stage-inspect CONFIG_JSON_FILE INPUT_JSON_FILE | owner-stage-multipart-inspect|owner-stage-multipart-attach CONFIG_JSON_FILE INPUT_JSON_FILE MATERIAL_JSON_FILE | owner-stage-recover CONFIG_JSON_FILE ATTACH_ID COMMAND_ID | owner-stage-orphan-inspect CONFIG_JSON_FILE INPUT_JSON_FILE | owner-stage-multipart-orphan-inspect|owner-stage-multipart-orphan-attach CONFIG_JSON_FILE INPUT_JSON_FILE MATERIAL_JSON_FILE | owner-stage-orphan-replan CONFIG_JSON_FILE ATTACH_ID ORIGINAL_COMMAND_ID [MATERIAL_JSON_FILE] | owner-object-stage-inspect CONFIG_JSON_FILE INPUT_JSON_FILE ORIGINAL_STAGE_COMMAND_ID OPTIONS_JSON_FILE MATERIAL_JSON_FILE | owner-object-stage-attach CONFIG_JSON_FILE INPUT_JSON_FILE ORIGINAL_STAGE_COMMAND_ID INSPECTED_TS_STATE_DIGEST OPTIONS_JSON_FILE MATERIAL_JSON_FILE | owner-object-stage-recover CONFIG_JSON_FILE ATTACH_ID ORIGINAL_STAGE_COMMAND_ID | owner-object-intent-candidates CONFIG_JSON_FILE SOURCE_INPUT_JSON_FILE | owner-object-intent-inspect CONFIG_JSON_FILE SOURCE_INPUT_JSON_FILE MARKER_SHA256 OPTIONS_JSON_FILE MATERIAL_JSON_FILE | owner-object-intent-attach CONFIG_JSON_FILE SOURCE_INPUT_JSON_FILE MARKER_SHA256 INSPECTED_TS_STATE_DIGEST OPTIONS_JSON_FILE MATERIAL_JSON_FILE | owner-object-intent-recover CONFIG_JSON_FILE ATTACH_ID MARKER_SHA256 | owner-direct-begin-inspect CONFIG_JSON_FILE INPUT_JSON_FILE COMMAND_ID OPTIONS_JSON_FILE MATERIAL_JSON_FILE | owner-direct-begin-attach CONFIG_JSON_FILE INPUT_JSON_FILE COMMAND_ID INSPECTED_TS_STATE_DIGEST OPTIONS_JSON_FILE MATERIAL_JSON_FILE | owner-direct-begin-recover CONFIG_JSON_FILE ATTACH_ID COMMAND_ID | owner-direct-packet-inspect CONFIG_JSON_FILE INPUT_JSON_FILE PACKET_COMMAND_ID OPTIONS_JSON_FILE MATERIAL_JSON_FILE | owner-direct-packet-attach CONFIG_JSON_FILE INPUT_JSON_FILE PACKET_COMMAND_ID INSPECTED_TS_STATE_DIGEST OPTIONS_JSON_FILE MATERIAL_JSON_FILE | owner-direct-packet-recover CONFIG_JSON_FILE ATTACH_ID PACKET_COMMAND_ID | owner-direct-completed-inspect CONFIG_JSON_FILE INPUT_JSON_FILE INSTANCE_ID OPTIONS_JSON_FILE MATERIAL_JSON_FILE | owner-direct-completed-attach CONFIG_JSON_FILE INPUT_JSON_FILE INSTANCE_ID INSPECTED_TS_STATE_DIGEST OPTIONS_JSON_FILE MATERIAL_JSON_FILE | owner-coordination-enable CONFIG_JSON_FILE WORKSPACE_ID INPUT_JSON_FILE | owner-coordination-resume CONFIG_JSON_FILE WORKSPACE_ID ORIGINAL_BEGIN_COMMAND_ID | owner-coordination-operations CONFIG_JSON_FILE WORKSPACE_ID | owner-format-submit CONFIG_JSON_FILE INPUT_JSON_FILE | owner-format-resume CONFIG_JSON_FILE WORKSPACE_ID COMMAND_ID | owner-format-history CONFIG_JSON_FILE WORKSPACE_ID | owner-action-submit|owner-action-status|owner-action-retry|owner-action-pending|owner-private-action-submit|owner-private-action-status|owner-private-action-retry|owner-private-action-pending|owner-install-begin|owner-install-continue|owner-install-pending|owner-private-stage-submit|owner-private-stage-continue|owner-private-stage-list|owner-private-install-begin|owner-private-install-begin-direct|owner-private-install-continue|owner-private-install-list|owner-admit-offer|owner-admit-retry-offer|owner-admit-pending-offers|owner-admit-deliver|owner-admit-retry-delivery|owner-admit-pending-deliveries|owner-private-admit-offer|owner-private-admit-retry-offer|owner-private-admit-pending-offers|owner-private-admit-deliver|owner-private-admit-retry-delivery|owner-private-admit-pending-deliveries CONFIG_JSON_FILE WORKSPACE_ID [INPUT_JSON_FILE|COMMAND_ID]; secure catalog-search CONFIG_JSON_FILE QUERY [AFTER] [LIMIT] | catalog-inspect CONFIG_JSON_FILE LOWERCASE_DIGEST; secure recipient-create|recipient-publish|recipient-pending|recipient-certificate|recipient-update|recipient-retry-update|recipient-pending-updates --origin=URL --state-dir=DIR [--mode=ROTATE|RENEW --expected-certificate-hash=HEX --update-id=ID] [--allow-loopback-http]; secure directory-lookup --origin=URL --state-dir=DIR --actor=ACTOR --key=KEY [--identity=PATH] [--allow-loopback-http]"#;
+            let usage = r#"peerwork current --help | peerwork current read REQUEST_JSON_FILE | peerwork view --help | peerwork context --help | peerwork operate --help | peerwork config resolve [PATH] | observations attest-external-principal|append|catalog-result|install-result|action-result|scorecard CONFIG_JSON_FILE INPUT_JSON_FILE | observations export|attestations|snapshots CONFIG_JSON_FILE; transport options on kernel/snapshot/read/private-read/recipient/directory: --request-timeout-ms=N --additional-root-pem-file=PATH (repeatable); JSON clients accept transport:{request_timeout_ms:15000,additional_root_pem_files:[]}; version|capabilities|identity create IDENTITY_STATE_FILE|identity info IDENTITY_STATE_FILE|identity import-legacy-pem IDENTITY_STATE_FILE PROTECTED_PEM_FILE|identity import-legacy-owner-pem OWNER_CONFIG_JSON_FILE PROTECTED_PEM_FILE|identity import-seed-file IDENTITY_STATE_FILE PROTECTED_SEED_FILE|kernel open|prepare|pending|status|submit ORIGIN JOURNAL IDENTITY [COMMAND_FILE|COMMAND_ID] [--allow-loopback-http] [--authority=HEX] [--chunk-file=PATH|--chunk-stdin for prepare]; kernel migrate ORIGIN JOURNAL IDENTITY SOURCE BACKUP --trusted-signer=KEY_ID [--trusted-signer=KEY_ID ...]; secure read|private-read --origin=URL --state-dir=DIR --identity=PATH --workspace=ID [--owner-actor=ID --owner-key=ID] [--authority=HEX]; secure snapshot ORIGIN KERNEL_JOURNAL READ_STATE LIFECYCLE IDENTITY WORKSPACE AUTHORITY OWNER_ACTOR OWNER_KEY [--allow-loopback-http] [--max-replay-artifact-bytes=N]; secure action-submit|action-status|action-retry CONFIG_JSON_FILE ACTION_JSON_FILE|COMMAND_ID; secure action-pending CONFIG_JSON_FILE; secure private-action-submit|private-action-status|private-action-retry|private-action-pending --help; secure install-begin CONFIG_JSON_FILE INPUT_JSON_FILE | install-continue CONFIG_JSON_FILE BEGIN_COMMAND_ID | install-pending CONFIG_JSON_FILE; secure owner-prepare|owner-create CONFIG_JSON_FILE INPUT_JSON_FILE | owner-resume CONFIG_JSON_FILE COMMAND_ID | owner-operations CONFIG_JSON_FILE | owner-read CONFIG_JSON_FILE WORKSPACE_ID | owner-attach CONFIG_JSON_FILE INPUT_JSON_FILE | owner-attach-resume CONFIG_JSON_FILE ATTACH_ID | owner-attach-retain CONFIG_JSON_FILE ATTACH_ID EXPECTED_COMMAND_ID | owner-attachments CONFIG_JSON_FILE | owner-kernel-inspect CONFIG_JSON_FILE INPUT_JSON_FILE | owner-kernel-status CONFIG_JSON_FILE ATTACH_ID | owner-kernel-recover CONFIG_JSON_FILE ATTACH_ID COMMAND_ID | owner-stage-inspect CONFIG_JSON_FILE INPUT_JSON_FILE | owner-stage-multipart-inspect|owner-stage-multipart-attach CONFIG_JSON_FILE INPUT_JSON_FILE MATERIAL_JSON_FILE | owner-stage-recover CONFIG_JSON_FILE ATTACH_ID COMMAND_ID | owner-stage-orphan-inspect CONFIG_JSON_FILE INPUT_JSON_FILE | owner-stage-multipart-orphan-inspect|owner-stage-multipart-orphan-attach CONFIG_JSON_FILE INPUT_JSON_FILE MATERIAL_JSON_FILE | owner-stage-orphan-replan CONFIG_JSON_FILE ATTACH_ID ORIGINAL_COMMAND_ID [MATERIAL_JSON_FILE] | owner-object-stage-inspect CONFIG_JSON_FILE INPUT_JSON_FILE ORIGINAL_STAGE_COMMAND_ID OPTIONS_JSON_FILE MATERIAL_JSON_FILE | owner-object-stage-attach CONFIG_JSON_FILE INPUT_JSON_FILE ORIGINAL_STAGE_COMMAND_ID INSPECTED_TS_STATE_DIGEST OPTIONS_JSON_FILE MATERIAL_JSON_FILE | owner-object-stage-recover CONFIG_JSON_FILE ATTACH_ID ORIGINAL_STAGE_COMMAND_ID | owner-object-intent-candidates CONFIG_JSON_FILE SOURCE_INPUT_JSON_FILE | owner-object-intent-inspect CONFIG_JSON_FILE SOURCE_INPUT_JSON_FILE MARKER_SHA256 OPTIONS_JSON_FILE MATERIAL_JSON_FILE | owner-object-intent-attach CONFIG_JSON_FILE SOURCE_INPUT_JSON_FILE MARKER_SHA256 INSPECTED_TS_STATE_DIGEST OPTIONS_JSON_FILE MATERIAL_JSON_FILE | owner-object-intent-recover CONFIG_JSON_FILE ATTACH_ID MARKER_SHA256 | owner-direct-begin-inspect CONFIG_JSON_FILE INPUT_JSON_FILE COMMAND_ID OPTIONS_JSON_FILE MATERIAL_JSON_FILE | owner-direct-begin-attach CONFIG_JSON_FILE INPUT_JSON_FILE COMMAND_ID INSPECTED_TS_STATE_DIGEST OPTIONS_JSON_FILE MATERIAL_JSON_FILE | owner-direct-begin-recover CONFIG_JSON_FILE ATTACH_ID COMMAND_ID | owner-direct-packet-inspect CONFIG_JSON_FILE INPUT_JSON_FILE PACKET_COMMAND_ID OPTIONS_JSON_FILE MATERIAL_JSON_FILE | owner-direct-packet-attach CONFIG_JSON_FILE INPUT_JSON_FILE PACKET_COMMAND_ID INSPECTED_TS_STATE_DIGEST OPTIONS_JSON_FILE MATERIAL_JSON_FILE | owner-direct-packet-recover CONFIG_JSON_FILE ATTACH_ID PACKET_COMMAND_ID | owner-direct-completed-inspect CONFIG_JSON_FILE INPUT_JSON_FILE INSTANCE_ID OPTIONS_JSON_FILE MATERIAL_JSON_FILE | owner-direct-completed-attach CONFIG_JSON_FILE INPUT_JSON_FILE INSTANCE_ID INSPECTED_TS_STATE_DIGEST OPTIONS_JSON_FILE MATERIAL_JSON_FILE | owner-coordination-enable CONFIG_JSON_FILE WORKSPACE_ID INPUT_JSON_FILE | owner-coordination-resume CONFIG_JSON_FILE WORKSPACE_ID ORIGINAL_BEGIN_COMMAND_ID | owner-coordination-operations CONFIG_JSON_FILE WORKSPACE_ID | owner-format-submit CONFIG_JSON_FILE INPUT_JSON_FILE | owner-format-resume CONFIG_JSON_FILE WORKSPACE_ID COMMAND_ID | owner-format-history CONFIG_JSON_FILE WORKSPACE_ID | owner-action-submit|owner-action-status|owner-action-retry|owner-action-pending|owner-private-action-submit|owner-private-action-status|owner-private-action-retry|owner-private-action-pending|owner-install-begin|owner-install-continue|owner-install-pending|owner-private-stage-submit|owner-private-stage-continue|owner-private-stage-list|owner-private-install-begin|owner-private-install-begin-direct|owner-private-install-continue|owner-private-install-list|owner-admit-offer|owner-admit-retry-offer|owner-admit-pending-offers|owner-admit-deliver|owner-admit-retry-delivery|owner-admit-pending-deliveries|owner-private-admit-offer|owner-private-admit-retry-offer|owner-private-admit-pending-offers|owner-private-admit-deliver|owner-private-admit-retry-delivery|owner-private-admit-pending-deliveries CONFIG_JSON_FILE WORKSPACE_ID [INPUT_JSON_FILE|COMMAND_ID]; secure catalog-search CONFIG_JSON_FILE QUERY [AFTER] [LIMIT] | catalog-inspect CONFIG_JSON_FILE LOWERCASE_DIGEST; secure recipient-create|recipient-publish|recipient-pending|recipient-certificate|recipient-update|recipient-retry-update|recipient-pending-updates --origin=URL --state-dir=DIR [--mode=ROTATE|RENEW --expected-certificate-hash=HEX --update-id=ID] [--allow-loopback-http]; secure directory-lookup --origin=URL --state-dir=DIR --actor=ACTOR --key=KEY [--identity=PATH] [--allow-loopback-http]"#;
             if matches!(args.as_slice(), [command] if command == "--help" || command == "-h" || command == "help") {
                 println!("{}", serde_json::json!({"status":"HELP", "usage":usage}));
                 ExitCode::SUCCESS
@@ -1898,4 +1926,91 @@ fn agent_context_command(operation: &str, args: &[String]) -> ExitCode {
     println!("{result}");
     if serde_json::from_str::<serde_json::Value>(&result).ok()
         .is_some_and(|value| value["ok"] == true) { ExitCode::SUCCESS } else { ExitCode::FAILURE }
+}
+
+fn navigation_cli(noun:&str,args:&[String])->ExitCode {
+ fn run(noun:&str,args:&[String])->Result<String,&'static str>{
+  let token=peerwork_runtime::KernelCancellationToken::new();
+  if noun=="url"{
+   let (kind,rest)=args.split_first().ok_or("USAGE")?;
+   let count=match kind.as_str(){"workspace"=>1,"instance"|"record"=>2,"thread"|"document"=>3,_=>return Err("USAGE")};
+   if rest.len()<count{return Err("USAGE")}
+   let mut input=serde_json::json!({"browser_origin":"https://peerwork.dev","control_origin":"https://api.peerwork.dev","workspace_id":rest[0],"kind":kind,"visibility":"PRIVATE"});
+   if kind=="record"{input["record_id"]=rest[1].clone().into()}else if count>=2{input["instance_id"]=rest[1].clone().into()}
+   if count==3{input["entity_id"]=rest[2].clone().into()}
+   let mut tail=&rest[count..];
+   while !tail.is_empty(){match tail{
+    [flag,more @ ..] if flag=="--public"=>{input["visibility"]="PUBLIC".into();tail=more},
+    [flag,more @ ..] if flag=="--allow-loopback-http"=>{input["allow_loopback_http"]=true.into();tail=more},
+    [flag,value,more @ ..] if flag=="--browser-origin"||flag=="--control-origin"=>{input[if flag=="--browser-origin"{"browser_origin"}else{"control_origin"}]=value.clone().into();tail=more},
+    _=>return Err("USAGE"),
+   }}
+   return Ok(peerwork_runtime::changelog::navigation_json("url",&input.to_string(),&token))
+  }
+  if args==["source"]{return Ok(peerwork_runtime::changelog::navigation_json("changelog.source","{}",&token))}
+  let mut tail=if args.first().is_some_and(|s|s=="read"){&args[1..]}else{return Err("USAGE")};
+  let mut input=serde_json::json!({});let mut checkpoint_path:Option<String>=None;
+  while !tail.is_empty(){match tail{
+   [flag,value,more @ ..] if flag=="--limit"||flag=="--offset"=>{let number=value.parse::<u64>().map_err(|_|"USAGE")?;input[if flag=="--limit"{"limit"}else{"offset"}]=number.into();tail=more},
+   [flag,value,more @ ..] if flag=="--source"||flag=="--checkpoint"=>{
+    let path=std::path::Path::new(value);if flag=="--checkpoint"{checkpoint_path=Some(value.clone());}
+    if path.exists(){let file=fs::File::open(path).map_err(|_|"NAVIGATION_FILE_INVALID")?;let mut bytes=Vec::new();file.take(32769).read_to_end(&mut bytes).map_err(|_|"NAVIGATION_FILE_INVALID")?;if bytes.len()>32768{return Err("NAVIGATION_FILE_INVALID")}
+     input[if flag=="--source"{"source"}else{"checkpoint"}]=serde_json::from_slice(&bytes).map_err(|_|"NAVIGATION_FILE_INVALID")?;
+    }else if flag=="--source"{return Err("NAVIGATION_FILE_INVALID")}
+    tail=more
+   },_=>return Err("USAGE"),
+  }}
+  let result=peerwork_runtime::changelog::navigation_json("changelog.read",&input.to_string(),&token);
+  if let Some(path)=checkpoint_path{
+   let v:serde_json::Value=serde_json::from_str(&result).map_err(|_|"NAVIGATION_RESULT_INVALID")?;
+   if v["ok"]==true{
+    use std::io::Write;let temporary=PathBuf::from(format!("{path}.peerwork-new"));let mut file=fs::OpenOptions::new().write(true).create_new(true).open(&temporary).map_err(|_|"NAVIGATION_CHECKPOINT_PENDING")?;
+    file.write_all(v["value"]["checkpoint"].to_string().as_bytes()).and_then(|_|file.sync_all()).map_err(|_|"NAVIGATION_CHECKPOINT_PENDING")?;fs::rename(temporary,path).map_err(|_|"NAVIGATION_CHECKPOINT_PENDING")?;
+   }
+  }
+  Ok(result)
+ }
+ let result=run(noun,args).unwrap_or_else(|code|serde_json::json!({"ok":false,"code":code,"message":"Use peerwork url workspace|instance|record WORKSPACE_ID [RESOURCE_ID] [--public] [--browser-origin URL] [--control-origin URL]; or peerwork changelog source|read [--limit N] [--source FILE] [--checkpoint FILE] [--offset N]"}).to_string());
+ let ok=serde_json::from_str::<serde_json::Value>(&result).is_ok_and(|v|v["ok"]==true);println!("{result}");if ok{ExitCode::SUCCESS}else{ExitCode::FAILURE}
+}
+
+
+fn read_view_cli(request_path: &str) -> ExitCode { read_view_cli_mode(request_path,0) }
+
+fn read_view_cli_mode(request_path: &str, mode: u8) -> ExitCode {
+    let fail = |code: &str, message: &str| {
+        println!("{}", serde_json::json!({"ok":false,"code":code,"message":message}));
+        ExitCode::FAILURE
+    };
+    if !fs::metadata(request_path).is_ok_and(|m| m.is_file()) {
+        return fail("READ_VIEW_REQUEST_FILE", "Read-view request must be a regular file");
+    }
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = match options.open(request_path) {
+        Ok(file) if file.metadata().is_ok_and(|m|m.is_file()) => file,
+        _ => return fail("READ_VIEW_REQUEST_FILE", "Use peerwork view read REQUEST_JSON_FILE"),
+    };
+    let mut bytes=Vec::new();
+    if file.take(65_537).read_to_end(&mut bytes).is_err() || bytes.len()>65_536 {
+        return fail("READ_VIEW_REQUEST_FILE", "Read-view request exceeds its file budget");
+    }
+    let request = match String::from_utf8(bytes) {
+        Ok(request) => request,
+        Err(_) => return fail("READ_VIEW_REQUEST_FILE", "Read-view request must be UTF-8 JSON"),
+    };
+    let cancel=KernelCancellationToken::new();
+    let _interrupts=match InterruptMonitor::start(cancel.clone()) {
+        Ok(monitor)=>monitor,
+        Err(_)=>return fail("INTERRUPT_HANDLER","Unable to install interrupt handler"),
+    };
+    let result=match mode {2=>peerwork_runtime::current_page::current_page_json(&request,&cancel),1=>peerwork_runtime::private_read_view::private_read_view_json(&request,&cancel),_=>peerwork_runtime::read_view::read_view_json(&request,&cancel)};
+    let ok=serde_json::from_str::<serde_json::Value>(&result).is_ok_and(|value|value["ok"]==true);
+    println!("{result}");
+    if ok {ExitCode::SUCCESS} else {ExitCode::FAILURE}
 }

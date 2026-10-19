@@ -384,6 +384,14 @@ impl SecureReadProfile {
         SecureReadAccess::new(self.read_config(profile, slot))
     }
 
+    /// Read only already-active local pins. This neither fetches nor replays history.
+    pub(crate) fn local_active_view_config(&self) -> Result<(SecureReadConfig, VerifiedReadFloor), SecureReadAccessError> {
+        let (_store, saved) = self.open_local_profile()?;
+        let slot = saved.current.ok_or(SecureReadAccessError::NotActive)?;
+        let floor = saved.floor.clone().ok_or(SecureReadAccessError::NotActive)?;
+        Ok((self.read_config(&saved, slot), floor))
+    }
+
     fn read_config(&self, profile: &ProfileDocument, slot: u8) -> SecureReadConfig {
         let state_dir = &self.config.state_dir;
         SecureReadConfig {

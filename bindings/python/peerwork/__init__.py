@@ -55,6 +55,10 @@ from ._peerwork_native import (
     KernelCancelHandle,
     acquisition_observations_json,
     agent_context_json,
+    navigation_json,
+    read_view_json,
+    private_read_view_json,
+    current_page_json,
     capabilities_json,
     load_config_json,
     identity_create_json,
@@ -81,6 +85,11 @@ from ._peerwork_native import (
 
 
 class CapabilityManifest(TypedDict):
+    workspace_url_generation: bool
+    anonymous_changelog_read: bool
+    public_authorized_state_read: bool
+    private_authorized_state_read: bool
+    private_system_current_page_read: bool
     version: str
     status: str
     wire_canonicalization: bool
@@ -593,6 +602,12 @@ class SecureReadClient:
         wire_transport = _transport_config(transport)
         if wire_transport is not None:
             self._config["transport"] = wire_transport
+
+    def current_pages(self) -> "CurrentPageClient":
+        """Open bounded system-selected reads using this already active profile."""
+        client = CurrentPageClient.__new__(CurrentPageClient)
+        client._profile = json.loads(json.dumps(self._config, ensure_ascii=True, allow_nan=False))
+        return client
 
     def _read(self, cancel_handle: KernelCancelHandle | None = None) -> VerifiedSecureWorkspace:
         config_json = json.dumps(self._config, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
@@ -3374,3 +3389,254 @@ __all__ += ["bind_context"]
 
 
 __all__ += ["AgentBrowserApprovalIntent", "AgentIntent"]
+
+
+class NavigationError(RuntimeError):
+    """URL validation or verified anonymous changelog read failed."""
+    def __init__(self, code: str, message: str):
+        self.code = code
+        super().__init__(message)
+
+
+def _navigation(operation: str, value: dict, cancel_handle=None):
+    result = json.loads(navigation_json(operation, json.dumps(value, ensure_ascii=True,
+        allow_nan=False, separators=(",", ":")), cancel_handle))
+    if result["ok"] is not True:
+        raise NavigationError(result["code"], result["message"])
+    return result["value"]
+
+
+class WorkspaceUrls:
+    """Generate browser links and separate journal endpoints; PRIVATE is the default."""
+    def __init__(self, *, browser_origin: str = "https://peerwork.dev",
+                 control_origin: str = "https://api.peerwork.dev", allow_loopback_http: bool = False):
+        self._origins = dict(browser_origin=browser_origin, control_origin=control_origin,
+                             allow_loopback_http=allow_loopback_http)
+
+    def build(self, workspace_id: str, *, visibility: Literal["PRIVATE", "PUBLIC"] = "PRIVATE",
+              kind: str = "workspace", instance_id: str | None = None,
+              record_id: str | None = None, entity_id: str | None = None) -> dict:
+        return _navigation("url", dict(self._origins, workspace_id=workspace_id,
+            visibility=visibility, kind=kind, instance_id=instance_id,
+            record_id=record_id, entity_id=entity_id))
+
+    def workspace(self, workspace_id: str, *, visibility: Literal["PRIVATE", "PUBLIC"] = "PRIVATE") -> str:
+        return self.build(workspace_id, visibility=visibility)["browser_url"]
+
+    def instance(self, workspace_id: str, instance_id: str, *, visibility: Literal["PRIVATE", "PUBLIC"] = "PRIVATE") -> str:
+        return self.build(workspace_id, visibility=visibility, kind="instance", instance_id=instance_id)["browser_url"]
+
+    def record(self, workspace_id: str, record_id: str, *, visibility: Literal["PRIVATE", "PUBLIC"] = "PRIVATE") -> str:
+        return self.build(workspace_id, visibility=visibility, kind="record", record_id=record_id)["browser_url"]
+
+
+class ChangelogClient:
+    """Anonymous owner-pinned PUBLIC changelog reader. No local identity is needed."""
+    def __init__(self, *, source: dict | None = None):
+        self.source = dict(source) if source is not None else self.official_source()
+
+    @staticmethod
+    def official_source() -> dict:
+        return _navigation("changelog.source", {})["source"]
+
+    def _read(self, _operation: str = "read", *, limit: int = 20, offset: int = 0,
+              checkpoint: dict | None = None, cancel_handle=None) -> dict:
+        return _navigation("changelog.read", dict(source=self.source, limit=limit,
+            offset=offset, checkpoint=checkpoint), cancel_handle)
+
+    def read(self, *, limit: int = 20, offset: int = 0, checkpoint: dict | None = None) -> dict:
+        """Read current selected heads; reuse checkpoint for continuity and paging."""
+        return self._read(limit=limit, offset=offset, checkpoint=checkpoint)
+
+    async def read_async(self, *, limit: int = 20, offset: int = 0,
+                         checkpoint: dict | None = None) -> dict:
+        return await _run_cancelled_async(self._read, "read", limit=limit,
+                                         offset=offset, checkpoint=checkpoint)
+
+__all__ += ["WorkspaceUrls", "ChangelogClient", "NavigationError"]
+
+
+class ReadViewError(RuntimeError):
+    """No current-view result was produced; an error never means an empty page."""
+    def __init__(self, code: str, message: str):
+        self.code = code
+        super().__init__(message)
+
+
+class AuthorizedViewRead(TypedDict):
+    transport_metrics: dict[str, int]
+    assurance: Literal["AUTHORIZED_STATE"]
+    coverage: str
+    checkpoint: dict
+    root_hash: str
+    floor: dict
+    objects: list[dict]
+    object: NotRequired[dict | None]
+    next: dict | None
+    metrics: dict
+
+
+class PublicReadViewClient:
+    """Opt-in PUBLIC state reads pinned to an Owner, service and workspace.
+
+    Requires an explicitly adopted and published read view. No identity is created
+    and no full-journal fallback occurs. Pass the returned floor for continuity;
+    a page cursor remains bound to its original root and query.
+    """
+    def __init__(self, *, origin: str, workspace_id: str, owner_actor_id: str,
+                 owner_key_id: str, audience: str, service_key: str,
+                 accept_authorized_state: Literal[True],
+                 transport: TransportOptions | None = None, allow_loopback_http: bool = False):
+        self._source = dict(origin=origin, workspace_id=workspace_id,
+            owner_actor_id=owner_actor_id, owner_key_id=owner_key_id,
+            audience=audience, service_key=service_key,
+            accept_authorized_state=accept_authorized_state,
+            allow_loopback_http=allow_loopback_http)
+        if transport is not None:
+            self._source["transport"] = transport._json_value()
+
+    def _read(self, _operation: str = "read", *, selection: dict,
+              floor: dict | None = None, cancel_handle=None) -> AuthorizedViewRead:
+        request = dict(self._source, selection=selection, floor=floor)
+        result = json.loads(read_view_json(json.dumps(request, ensure_ascii=True,
+            allow_nan=False, separators=(",", ":")), cancel_handle))
+        if result["ok"] is not True:
+            raise ReadViewError(result["code"], result["message"])
+        return cast(AuthorizedViewRead, result["value"])
+
+    def get(self, kind: str, object_id: str, *, floor: dict | None = None) -> AuthorizedViewRead:
+        return self._read(selection=dict(kind="get", object_kind=kind, id=object_id), floor=floor)
+
+    def list(self, instance_id: str, schema: str, *, limit: int = 20,
+             cursor: dict | None = None, floor: dict | None = None) -> AuthorizedViewRead:
+        return self._read(selection=dict(kind="list", instance_id=instance_id,
+            schema=schema, limit=limit, cursor=cursor), floor=floor)
+
+    async def get_async(self, kind: str, object_id: str, *, floor: dict | None = None) -> AuthorizedViewRead:
+        return await _run_cancelled_async(self._read, "read",
+            selection=dict(kind="get", object_kind=kind, id=object_id), floor=floor)
+
+    async def list_async(self, instance_id: str, schema: str, *, limit: int = 20,
+                         cursor: dict | None = None, floor: dict | None = None) -> AuthorizedViewRead:
+        return await _run_cancelled_async(self._read, "read",
+            selection=dict(kind="list", instance_id=instance_id, schema=schema,
+                           limit=limit, cursor=cursor), floor=floor)
+
+
+__all__ += ["PublicReadViewClient", "AuthorizedViewRead", "ReadViewError"]
+
+
+class PrivateReadViewClient(PublicReadViewClient):
+    """Bounded PRIVATE reads from an already active protected workspace profile.
+
+    Owner/service pins and epoch keys come from protected native state. No history
+    replay or key activation occurs. A successful read persists a separate view
+    floor without changing the independently verified journal floor.
+    """
+    def __init__(self, origin: str, state_dir: str, identity_path: str,
+                 workspace_id: str, *, accept_authorized_state: Literal[True],
+                 owner_actor_id: str | None = None, owner_key_id: str | None = None,
+                 authority: str | None = None, required_features: tuple[str, ...] = (),
+                 allow_loopback_http: bool = False, transport: TransportOptions | None = None):
+        profile = SecureReadClient(origin, state_dir, identity_path, workspace_id,
+            owner_actor_id=owner_actor_id, owner_key_id=owner_key_id, authority=authority,
+            required_features=required_features, allow_loopback_http=allow_loopback_http,
+            transport=transport)
+        self._profile = json.loads(json.dumps(profile._config, ensure_ascii=True, allow_nan=False))
+        self._accept_authorized_state = accept_authorized_state
+
+    def _read(self, _operation: str = "read", *, selection: dict,
+              floor: dict | None = None, cancel_handle=None) -> AuthorizedViewRead:
+        request = dict(profile=self._profile, accept_authorized_state=self._accept_authorized_state,
+                       selection=selection, floor=floor)
+        result = json.loads(private_read_view_json(json.dumps(request, ensure_ascii=True,
+            allow_nan=False, separators=(",", ":")), cancel_handle))
+        if result["ok"] is not True:
+            raise ReadViewError(result["code"], result["message"])
+        return cast(AuthorizedViewRead, result["value"])
+
+
+__all__ += ["PrivateReadViewClient"]
+
+
+class CurrentPageRead(TypedDict):
+    assurance: Literal["SERVICE_STRUCTURE_SELECTION"]
+    checkpoint: dict
+    policy: dict
+    floor: dict
+    objects: list[dict]
+    object: NotRequired[dict | None]
+    next: dict | None
+    metrics: dict
+    transport_metrics: dict[str, int]
+
+
+class CurrentPageClient:
+    """Bounded current reads from an already active protected PRIVATE profile.
+
+    The service selects current objects using the existing disclosed structure.
+    Native code verifies original author signatures and decrypts content locally.
+    This assurance is SERVICE_STRUCTURE_SELECTION, not complete historical replay.
+    No Owner publisher, new key import, or journal replay is required.
+    """
+    def __init__(self, origin: str, state_dir: str, identity_path: str,
+                 workspace_id: str, *, owner_actor_id: str | None = None,
+                 owner_key_id: str | None = None, authority: str | None = None,
+                 required_features: tuple[str, ...] = (), allow_loopback_http: bool = False,
+                 transport: TransportOptions | None = None):
+        profile = SecureReadClient(origin, state_dir, identity_path, workspace_id,
+            owner_actor_id=owner_actor_id, owner_key_id=owner_key_id, authority=authority,
+            required_features=required_features, allow_loopback_http=allow_loopback_http,
+            transport=transport)
+        self._profile = json.loads(json.dumps(profile._config, ensure_ascii=True, allow_nan=False))
+
+    def _read(self, _operation: str = "read", *, query: dict,
+              floor: dict | None = None, cancel_handle=None) -> CurrentPageRead:
+        result = json.loads(current_page_json(json.dumps(dict(profile=self._profile,
+            query=query, floor=floor), ensure_ascii=True, allow_nan=False,
+            separators=(",", ":")), cancel_handle))
+        if result["ok"] is not True:
+            raise ReadViewError(result["code"], result["message"])
+        return cast(CurrentPageRead, result["value"])
+
+    def get(self, kind: str, object_id: str, *, floor: dict | None = None) -> CurrentPageRead:
+        return self._read(query=dict(kind="get", object_kind=kind, id=object_id), floor=floor)
+
+    def instances(self, *, limit: int = 20, cursor: dict | None = None,
+                  floor: dict | None = None) -> CurrentPageRead:
+        query = dict(kind="instances", limit=limit)
+        if cursor is not None: query["cursor"] = cursor
+        return self._read(query=query, floor=floor)
+
+    @staticmethod
+    def _records_query(instance_id: str, schema: str | None, limit: int, cursor: dict | None) -> dict:
+        query = dict(kind="records", instance_id=instance_id, limit=limit)
+        if schema is not None: query["schema"] = schema
+        if cursor is not None: query["cursor"] = cursor
+        return query
+
+    def records(self, instance_id: str, schema: str | None = None, *, limit: int = 20,
+                cursor: dict | None = None, floor: dict | None = None) -> CurrentPageRead:
+        return self._read(query=self._records_query(instance_id, schema, limit, cursor), floor=floor)
+
+    list = records
+
+    async def get_async(self, kind: str, object_id: str, *, floor: dict | None = None) -> CurrentPageRead:
+        return await _run_cancelled_async(self._read, "read",
+            query=dict(kind="get", object_kind=kind, id=object_id), floor=floor)
+
+    async def instances_async(self, *, limit: int = 20, cursor: dict | None = None,
+                              floor: dict | None = None) -> CurrentPageRead:
+        query = dict(kind="instances", limit=limit)
+        if cursor is not None: query["cursor"] = cursor
+        return await _run_cancelled_async(self._read, "read", query=query, floor=floor)
+
+    async def records_async(self, instance_id: str, schema: str | None = None, *, limit: int = 20,
+                            cursor: dict | None = None, floor: dict | None = None) -> CurrentPageRead:
+        return await _run_cancelled_async(self._read, "read",
+            query=self._records_query(instance_id, schema, limit, cursor), floor=floor)
+
+    list_async = records_async
+
+
+__all__ += ["CurrentPageClient", "CurrentPageRead"]

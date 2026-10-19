@@ -81,6 +81,11 @@ pub fn version() -> &'static str {
 pub struct CapabilityManifest {
     pub version: &'static str,
     pub status: &'static str,
+    pub workspace_url_generation: bool,
+    pub anonymous_changelog_read: bool,
+    pub public_authorized_state_read: bool,
+    pub private_authorized_state_read: bool,
+    pub private_system_current_page_read: bool,
     pub wire_canonicalization: bool,
     pub signed_artifact_verification: bool,
     pub receipt_verification: bool,
@@ -94,6 +99,11 @@ pub fn capability_manifest() -> CapabilityManifest {
     CapabilityManifest {
         version: SDK_VERSION,
         status: "experimental",
+        workspace_url_generation: true,
+        anonymous_changelog_read: true,
+        public_authorized_state_read: true,
+        private_authorized_state_read: true,
+        private_system_current_page_read: true,
         wire_canonicalization: true,
         signed_artifact_verification: true,
         receipt_verification: true,
@@ -105,3 +115,9 @@ pub fn capability_manifest() -> CapabilityManifest {
 }
 
 pub mod browser_approval;
+
+pub mod read_view;
+
+pub mod selected_author;
+
+pub mod current_page;

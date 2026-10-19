@@ -382,6 +382,22 @@ impl KernelClient {
         })
     }
 
+    /// Refresh discovery only after locating the existing protected service pin.
+    pub(crate) async fn open_existing(transport_config: TransportConfig, journal_path: &Path,
+        required_features: &[Vec<u16>], cancel: &CancellationToken) -> Result<Self, KernelClientError> {
+        if !journal_path.is_file() { return Err(KernelClientError::InvalidResult); }
+        let transport = HttpTransport::new(transport_config)?;
+        let mut journal = KernelIntentJournal::open(journal_path)?;
+        journal.require_discovery_pin(transport.trusted_origin())?;
+        let response = transport.discovery(cancel).await?;
+        if !(200..300).contains(&response.status) { return Err(KernelClientError::DiscoveryStatus); }
+        let discovery = parse_discovery_wire(&response.wire, MAX_DISCOVERY_BYTES)
+            .map_err(|_| KernelClientError::UnsupportedDiscovery)?;
+        if !discovery.supports_required_features(required_features) { return Err(KernelClientError::UnsupportedDiscovery); }
+        journal.bind_discovery(transport.trusted_origin(), &discovery)?;
+        Ok(Self { transport, journal, discovery })
+    }
+
     pub fn origin(&self) -> &str {
         self.transport.trusted_origin()
     }

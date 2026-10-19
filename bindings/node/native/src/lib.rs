@@ -1558,3 +1558,58 @@ pub fn agent_context_json(
         expected_service, request_json,
         cancel: cancel_handle.map(|handle| handle.token.clone()).unwrap_or_default() })
 }
+
+// All URL rules and anonymous changelog transport/verification remain native-owned.
+pub struct NavigationTask { operation:String,input:String,cancel:KernelCancellationToken }
+impl Task for NavigationTask {
+ type Output=String;type JsValue=String;
+ fn compute(&mut self)->Result<String>{Ok(peerwork_runtime::changelog::navigation_json(&self.operation,&self.input,&self.cancel))}
+ fn resolve(&mut self,_env:Env,value:String)->Result<String>{Ok(value)}
+}
+#[napi]
+pub fn navigation_json(operation:String,input_json:String,cancel_handle:Option<ClassInstance<KernelCancelHandle>>)->AsyncTask<NavigationTask>{
+ AsyncTask::new(NavigationTask{operation,input:input_json,cancel:cancel_handle.map(|h|h.token.clone()).unwrap_or_default()})
+}
+
+/// Opt-in current-state reads; proof checks and bounded transport are native-owned.
+pub struct ReadViewTask { input: String, cancel: KernelCancellationToken }
+impl Task for ReadViewTask {
+    type Output = String;
+    type JsValue = String;
+    fn compute(&mut self) -> Result<String> {
+        Ok(peerwork_runtime::read_view::read_view_json(&self.input, &self.cancel))
+    }
+    fn resolve(&mut self, _env: Env, value: String) -> Result<String> { Ok(value) }
+}
+#[napi]
+pub fn read_view_json(input_json: String, cancel_handle: Option<ClassInstance<KernelCancelHandle>>) -> AsyncTask<ReadViewTask> {
+    AsyncTask::new(ReadViewTask { input: input_json, cancel: cancel_handle.map(|handle| handle.token.clone()).unwrap_or_default() })
+}
+
+/// Existing protected-profile keys and pins stay inside the runtime.
+pub struct PrivateReadViewTask { input: String, cancel: KernelCancellationToken }
+impl Task for PrivateReadViewTask {
+    type Output = String; type JsValue = String;
+    fn compute(&mut self) -> Result<String> {
+        Ok(peerwork_runtime::private_read_view::private_read_view_json(&self.input, &self.cancel))
+    }
+    fn resolve(&mut self, _env: Env, value: String) -> Result<String> { Ok(value) }
+}
+#[napi]
+pub fn private_read_view_json(input_json: String, cancel_handle: Option<ClassInstance<KernelCancelHandle>>) -> AsyncTask<PrivateReadViewTask> {
+    AsyncTask::new(PrivateReadViewTask { input: input_json, cancel: cancel_handle.map(|handle| handle.token.clone()).unwrap_or_default() })
+}
+
+/// System structure selection; protected keys, signatures and transport remain native-owned.
+pub struct CurrentPageTask { input: String, cancel: KernelCancellationToken }
+impl Task for CurrentPageTask {
+    type Output = String; type JsValue = String;
+    fn compute(&mut self) -> Result<String> {
+        Ok(peerwork_runtime::current_page::current_page_json(&self.input, &self.cancel))
+    }
+    fn resolve(&mut self, _env: Env, value: String) -> Result<String> { Ok(value) }
+}
+#[napi]
+pub fn current_page_json(input_json: String, cancel_handle: Option<ClassInstance<KernelCancelHandle>>) -> AsyncTask<CurrentPageTask> {
+    AsyncTask::new(CurrentPageTask { input: input_json, cancel: cancel_handle.map(|handle| handle.token.clone()).unwrap_or_default() })
+}

@@ -1228,3 +1228,123 @@ exports.bindContext = async ({profilePath, expectedActor, expectedService, works
     signal?.removeEventListener('abort', onAbort);
   }
 };
+
+
+async function navigation(operation, input, signal) {
+  const cancel = new binding.KernelCancelHandle();
+  const abort = () => cancel.cancel();
+  if (signal?.aborted) abort();
+  signal?.addEventListener('abort', abort, {once:true});
+  try {
+    const result = JSON.parse(await binding.navigationJson(operation, strictCommandJson(input), cancel));
+    if (result.ok !== true) { const error = new Error(result.message); error.code = result.code; throw error; }
+    return result.value;
+  } finally { signal?.removeEventListener('abort', abort); }
+}
+class WorkspaceUrls {
+  constructor({browserOrigin='https://peerwork.dev',controlOrigin='https://api.peerwork.dev',allowLoopbackHttp=false}={}) {
+    this._origins={browser_origin:browserOrigin,control_origin:controlOrigin,allow_loopback_http:allowLoopbackHttp};
+  }
+  build(workspaceId,{visibility='PRIVATE',kind='workspace',instanceId=null,recordId=null,entityId=null}={}) {
+    return navigation('url',{...this._origins,workspace_id:workspaceId,visibility,kind,instance_id:instanceId,record_id:recordId,entity_id:entityId});
+  }
+  async workspace(workspaceId,options={}) { return (await this.build(workspaceId,options)).browser_url; }
+  async instance(workspaceId,instanceId,options={}) { return (await this.build(workspaceId,{...options,kind:'instance',instanceId})).browser_url; }
+  async record(workspaceId,recordId,options={}) { return (await this.build(workspaceId,{...options,kind:'record',recordId})).browser_url; }
+}
+class ChangelogClient {
+  constructor({source}={}) { this.source=source ? JSON.parse(strictCommandJson(source)) : null; }
+  static async officialSource() { return (await navigation('changelog.source',{})).source; }
+  async read({limit=20,offset=0,checkpoint=null,signal}={}) {
+    const source=this.source ?? await ChangelogClient.officialSource();
+    return navigation('changelog.read',{source,limit,offset,checkpoint},signal);
+  }
+}
+exports.WorkspaceUrls=WorkspaceUrls;
+exports.ChangelogClient=ChangelogClient;
+
+
+class ReadViewError extends Error {
+  constructor(result) { super(result.message); this.name='ReadViewError'; this.code=result.code; }
+}
+class PublicReadViewClient {
+  constructor({origin,workspaceId,ownerActorId,ownerKeyId,audience,serviceKey,
+               acceptAuthorizedState,transport,allowLoopbackHttp=false}) {
+    this._source=JSON.parse(strictCommandJson({origin,workspace_id:workspaceId,
+      owner_actor_id:ownerActorId,owner_key_id:ownerKeyId,audience,service_key:serviceKey,
+      accept_authorized_state:acceptAuthorizedState,allow_loopback_http:allowLoopbackHttp,
+      ...(transport ? {transport:transportJsonValue(transport)} : {})}));
+  }
+  async _read(selection,{floor=null,signal}={}) {
+    const cancel=new binding.KernelCancelHandle(),abort=()=>cancel.cancel();
+    if(signal?.aborted)abort();
+    signal?.addEventListener('abort',abort,{once:true});
+    try {
+      const result=JSON.parse(await binding.readViewJson(strictCommandJson({...this._source,selection,floor}),cancel));
+      if(result.ok!==true)throw new ReadViewError(result);
+      return result.value;
+    } finally { signal?.removeEventListener('abort',abort); }
+  }
+  get(kind,id,options={}) { return this._read({kind:'get',object_kind:kind,id},options); }
+  list(instanceId,schema,{limit=20,cursor=null,...options}={}) {
+    return this._read({kind:'list',instance_id:instanceId,schema,limit,cursor},options);
+  }
+}
+exports.PublicReadViewClient=PublicReadViewClient;
+exports.ReadViewError=ReadViewError;
+
+
+class PrivateReadViewClient {
+  constructor(options) {
+    const {acceptAuthorizedState,...profileOptions}=JSON.parse(strictCommandJson(options));
+    const {config}=secureProfileOptions(profileOptions);
+    this._profile=JSON.parse(strictCommandJson(config));
+    this._acceptAuthorizedState=acceptAuthorizedState;
+  }
+  async _read(selection,{floor=null,signal}={}) {
+    const cancel=new binding.KernelCancelHandle(),abort=()=>cancel.cancel();
+    if(signal?.aborted)abort();
+    signal?.addEventListener('abort',abort,{once:true});
+    try {
+      const result=JSON.parse(await binding.privateReadViewJson(strictCommandJson({profile:this._profile,
+        accept_authorized_state:this._acceptAuthorizedState,selection,floor}),cancel));
+      if(result.ok!==true)throw new ReadViewError(result);
+      return result.value;
+    } finally {signal?.removeEventListener('abort',abort);}
+  }
+  get(kind,id,options={}) {return this._read({kind:'get',object_kind:kind,id},options);}
+  list(instanceId,schema,{limit=20,cursor=null,...options}={}) {
+    return this._read({kind:'list',instance_id:instanceId,schema,limit,cursor},options);
+  }
+}
+exports.PrivateReadViewClient=PrivateReadViewClient;
+
+
+/** Bounded system structure selection with original-author verification and local decryption. */
+class CurrentPageClient {
+  constructor(options) {
+    const {config}=secureProfileOptions(options);
+    this._profile=JSON.parse(strictCommandJson(config));
+  }
+  async _read(query,{floor=null,signal}={}) {
+    const cancel=new binding.KernelCancelHandle(),abort=()=>cancel.cancel();
+    if(signal?.aborted)abort();
+    signal?.addEventListener('abort',abort,{once:true});
+    try {
+      const result=JSON.parse(await binding.currentPageJson(strictCommandJson({profile:this._profile,query,floor}),cancel));
+      if(result.ok!==true)throw new ReadViewError(result);
+      return result.value;
+    } finally {signal?.removeEventListener('abort',abort);}
+  }
+  get(kind,id,options={}) {return this._read({kind:'get',object_kind:kind,id},options);}
+  instances({limit=20,cursor=null,...options}={}) {
+    return this._read({kind:'instances',limit,...(cursor===null?{}:{cursor})},options);
+  }
+  records(instanceId,schema,{limit=20,cursor=null,...options}={}) {
+    return this._read({kind:'records',instance_id:instanceId,...(schema==null?{}:{schema}),
+      limit,...(cursor===null?{}:{cursor})},options);
+  }
+  list(instanceId,schema,options={}) {return this.records(instanceId,schema,options);}
+}
+exports.CurrentPageClient=CurrentPageClient;
+exports.openCurrentPages=(options)=>new CurrentPageClient(options);

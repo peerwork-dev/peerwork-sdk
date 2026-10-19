@@ -10,6 +10,11 @@ export declare function loadConfig(path?: string): Promise<ClientConfig>;
 /** Experimental native kernel command client; secure-agent replay remains incomplete. */
 export declare function version(): string;
 export interface CapabilityManifest {
+  workspace_url_generation: boolean;
+  anonymous_changelog_read: boolean;
+  public_authorized_state_read: boolean;
+  private_authorized_state_read: boolean;
+  private_system_current_page_read: boolean;
   version: string;
   status: string;
   wire_canonicalization: boolean;
@@ -866,3 +871,94 @@ export declare function bindContext(options: {
   profilePath: string; expectedActor: string; expectedService: string;
   workspaceProfiles: string[]; signal?: AbortSignal;
 }): Promise<AgentContext>;
+
+
+export interface WorkspaceLinkOptions {
+  visibility?: 'PRIVATE' | 'PUBLIC'; kind?: 'workspace' | 'instance' | 'record' | 'thread' | 'document';
+  instanceId?: string | null; recordId?: string | null; entityId?: string | null;
+}
+export interface WorkspaceLink {
+  browser_url: string; journal_url: string; browser_origin: string; control_origin: string;
+  workspace_id: string; visibility: 'PRIVATE' | 'PUBLIC'; kind: string;
+}
+export declare class WorkspaceUrls {
+  constructor(options?: {browserOrigin?:string;controlOrigin?:string;allowLoopbackHttp?:boolean});
+  build(workspaceId:string,options?:WorkspaceLinkOptions):Promise<WorkspaceLink>;
+  workspace(workspaceId:string,options?:WorkspaceLinkOptions):Promise<string>;
+  instance(workspaceId:string,instanceId:string,options?:WorkspaceLinkOptions):Promise<string>;
+  record(workspaceId:string,recordId:string,options?:WorkspaceLinkOptions):Promise<string>;
+}
+export interface ChangelogSource {
+  origin:string; browser_origin:string; control_origin:string; workspace_id:string;
+  owner_actor_id:string; owner_key_id:string; instance_id:string|null;
+  allow_loopback_http?:boolean; transport?:{request_timeout_ms?:number;additional_root_pem_files?:string[]};
+}
+export interface ChangelogCheckpoint {
+  origin:string;workspace_id:string;owner_actor_id:string;owner_key_id:string;instance_id:string;
+  sequence:number;head:string|null;policy_hash:string;
+}
+export interface ChangelogEntry {
+  record_id:string;entity_id:string;revision:number;instance_id:string;title:string;body:string;
+  author_actor_id:string;created_at:number;url:string;
+}
+export interface ChangelogRead {
+  source:ChangelogSource;instance_id:string;url:string;checkpoint:ChangelogCheckpoint;
+  entries:ChangelogEntry[];next_offset:number|null;total_entries:number;
+  verification:'SIGNED_JOURNAL_REPLAY';freshness:'SERVER_OBSERVATION';identity_required:false;
+}
+export declare class ChangelogClient {
+  constructor(options?:{source?:ChangelogSource});
+  static officialSource():Promise<ChangelogSource>;
+  read(options?:{limit?:number;offset?:number;checkpoint?:ChangelogCheckpoint|null;signal?:AbortSignal}):Promise<ChangelogRead>;
+}
+
+
+export interface ReadViewFloor {
+  root_hash:string;root_number:number;generation:number;
+  checkpoint:{v:1;workspace_id:string;owner_id:string;owner_key:string;sequence:number;head:string|null;policy_hash:string};
+}
+export interface ReadViewCursor {v:1;root_hash:string;query_hash:string;after:string}
+export interface AuthorizedViewRead {
+  assurance:'AUTHORIZED_STATE';coverage:string;checkpoint:ReadViewFloor['checkpoint'];
+  root_hash:string;floor:ReadViewFloor;objects:Array<Record<string,unknown>>;
+  object?:Record<string,unknown>|null;next:ReadViewCursor|null;metrics:Record<string,number|string>;
+  transport_metrics:{requests:number;response_bytes:number};
+}
+export declare class ReadViewError extends Error {readonly code:string}
+/** Requires explicit workspace adoption; never reads the complete journal as fallback. */
+export declare class PublicReadViewClient {
+  constructor(options:{origin:string;workspaceId:string;ownerActorId:string;ownerKeyId:string;
+    audience:string;serviceKey:string;acceptAuthorizedState:true;
+    transport?:TransportOptions;allowLoopbackHttp?:boolean});
+  get(kind:string,id:string,options?:{floor?:ReadViewFloor|null;signal?:AbortSignal}):Promise<AuthorizedViewRead>;
+  list(instanceId:string,schema:string,options?:{limit?:number;cursor?:ReadViewCursor|null;
+    floor?:ReadViewFloor|null;signal?:AbortSignal}):Promise<AuthorizedViewRead>;
+}
+
+/** Current PRIVATE reads use only already-active protected profile keys and pins. */
+export declare class PrivateReadViewClient {
+  constructor(options:Omit<SecureReadOptions,'signal'|'maxReplayArtifactBytes'|'maxReplayCommits'> & {acceptAuthorizedState:true});
+  get(kind:string,id:string,options?:{floor?:ReadViewFloor|null;signal?:AbortSignal}):Promise<AuthorizedViewRead>;
+  list(instanceId:string,schema:string,options?:{limit?:number;cursor?:ReadViewCursor|null;floor?:ReadViewFloor|null;signal?:AbortSignal}):Promise<AuthorizedViewRead>;
+}
+
+
+export interface CurrentPageFloor {sequence:number;head:string;policy_hash:string}
+export interface CurrentPageCursor {v:1;sequence:number;head:string;query_hash:string;after:string}
+export interface CurrentPageRead {
+  assurance:'SERVICE_STRUCTURE_SELECTION';checkpoint:ReadViewFloor['checkpoint'];policy:Record<string,unknown>;
+  floor:CurrentPageFloor;objects:Array<Record<string,unknown>>;object?:Record<string,unknown>|null;
+  next:CurrentPageCursor|null;metrics:Record<string,number>;
+  transport_metrics:{requests:number;response_bytes:number};
+}
+export interface CurrentPageOptions {floor?:CurrentPageFloor|null;signal?:AbortSignal}
+export interface CurrentPageListOptions extends CurrentPageOptions {limit?:number;cursor?:CurrentPageCursor|null}
+/** Existing active protected profile required; no Owner publisher or journal fallback. */
+export declare class CurrentPageClient {
+  constructor(options:Omit<SecureReadOptions,'signal'|'maxReplayArtifactBytes'|'maxReplayCommits'>);
+  get(kind:'workspaces'|'instances'|'protocols'|'records',id:string,options?:CurrentPageOptions):Promise<CurrentPageRead>;
+  instances(options?:CurrentPageListOptions):Promise<CurrentPageRead>;
+  records(instanceId:string,schema?:string,options?:CurrentPageListOptions):Promise<CurrentPageRead>;
+  list(instanceId:string,schema?:string,options?:CurrentPageListOptions):Promise<CurrentPageRead>;
+}
+export declare function openCurrentPages(options:ConstructorParameters<typeof CurrentPageClient>[0]):CurrentPageClient;

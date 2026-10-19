@@ -73,6 +73,16 @@ impl SecureLifecycle {
         owner_actor_id: &str,
         owner_key_id: &str,
     ) -> Result<Self, SecureLifecycleError> {
+        Self::open_mode(path, origin, actor_id, workspace_id, owner_actor_id, owner_key_id, false)
+    }
+
+    pub(crate) fn open_existing(path: &Path, origin: &str, actor_id: &str, workspace_id: &str,
+        owner_actor_id: &str, owner_key_id: &str) -> Result<Self, SecureLifecycleError> {
+        Self::open_mode(path, origin, actor_id, workspace_id, owner_actor_id, owner_key_id, true)
+    }
+
+    fn open_mode(path: &Path, origin: &str, actor_id: &str, workspace_id: &str,
+        owner_actor_id: &str, owner_key_id: &str, existing: bool) -> Result<Self, SecureLifecycleError> {
         if !valid_origin(origin)
             || ![actor_id, workspace_id, owner_actor_id, owner_key_id]
                 .iter()
@@ -94,6 +104,7 @@ impl SecureLifecycle {
         if let Some(bytes) = state.store.read_exact_secret()? {
             state.decode(&bytes)?;
         } else {
+            if existing { return Err(SecureLifecycleError::Invalid); }
             // PUBLIC reads may have no local epoch key. Persist the explicit
             // trust-on-first-open origin/owner pins before accepting a read,
             // so a later caller cannot silently repin an empty lifecycle.
@@ -161,6 +172,9 @@ impl SecureLifecycle {
         }
         self.active.as_ref()
     }
+
+    /// Existing active keys only; a pending rotation never grants read authority.
+    pub(crate) fn active_read_keyring(&self) -> Option<&SecretKeyring> { self.active.as_ref() }
 
     /// The pending ring may decrypt a candidate journal during verification,
     /// but its presence does not authorize key promotion, reads, or actions.

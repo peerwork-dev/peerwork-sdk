@@ -1191,8 +1191,44 @@ fn agent_context_json(
         request_json.as_deref(), &cancel))
 }
 
+#[pyfunction]
+#[pyo3(signature = (operation, input_json, cancel_handle=None))]
+fn navigation_json(py: Python<'_>, operation: String, input_json: String,
+    cancel_handle: Option<PyRef<'_, KernelCancelHandle>>) -> String {
+    let cancel=cancel_handle.map(|h|h.token.clone()).unwrap_or_default();
+    py.allow_threads(move || peerwork_runtime::changelog::navigation_json(&operation,&input_json,&cancel))
+}
+
+#[pyfunction]
+#[pyo3(signature = (input_json, cancel_handle=None))]
+fn read_view_json(py: Python<'_>, input_json: String,
+    cancel_handle: Option<PyRef<'_, KernelCancelHandle>>) -> String {
+    let cancel = cancel_handle.map(|handle| handle.token.clone()).unwrap_or_default();
+    py.allow_threads(move || peerwork_runtime::read_view::read_view_json(&input_json, &cancel))
+}
+
+#[pyfunction]
+#[pyo3(signature = (input_json, cancel_handle=None))]
+fn private_read_view_json(py: Python<'_>, input_json: String,
+    cancel_handle: Option<PyRef<'_, KernelCancelHandle>>) -> String {
+    let cancel = cancel_handle.map(|handle| handle.token.clone()).unwrap_or_default();
+    py.allow_threads(move || peerwork_runtime::private_read_view::private_read_view_json(&input_json, &cancel))
+}
+
+#[pyfunction]
+#[pyo3(signature = (input_json, cancel_handle=None))]
+fn current_page_json(py: Python<'_>, input_json: String,
+    cancel_handle: Option<PyRef<'_, KernelCancelHandle>>) -> String {
+    let cancel = cancel_handle.map(|handle| handle.token.clone()).unwrap_or_default();
+    py.allow_threads(move || peerwork_runtime::current_page::current_page_json(&input_json, &cancel))
+}
+
 #[pymodule]
 fn _peerwork_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_function(wrap_pyfunction!(current_page_json, module)?)?;
+    module.add_function(wrap_pyfunction!(read_view_json, module)?)?;
+    module.add_function(wrap_pyfunction!(private_read_view_json, module)?)?;
+    module.add_function(wrap_pyfunction!(navigation_json, module)?)?;
     module.add_function(wrap_pyfunction!(acquisition_observations_json, module)?)?;
     module.add_function(wrap_pyfunction!(agent_context_json, module)?)?;
     module.add_function(wrap_pyfunction!(version, module)?)?;

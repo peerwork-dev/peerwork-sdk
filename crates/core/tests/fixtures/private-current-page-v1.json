@@ -1,0 +1,2780 @@
+{
+  "response": {
+    "page": {
+      "payload": {
+        "v": 1,
+        "workspace_id": "tUHF8rW1IUK40N7tHu3brdD_MRwbe1BfY4u8LifOYLs",
+        "origin": "https://api.example.test",
+        "audience": "current-page-test",
+        "service_key": "lHXGzw7aNAV1KNhpR4HsySrWOdfivSd2HtPvdJJL6wc",
+        "nonce": "eMAK-EQvb0Jk9lInXutzohL-msimhNJMPeZADYidK3k",
+        "checkpoint": {
+          "v": 1,
+          "workspace_id": "tUHF8rW1IUK40N7tHu3brdD_MRwbe1BfY4u8LifOYLs",
+          "owner_id": "gjzLXyXFuyQ0UESg-UD2sTiSnu5L_WOWlsMY28KEGc4",
+          "owner_key": "MJHGnZrx6nJ_heCLgzp9wejxWw-84AsgcNoNyOF_hpc",
+          "sequence": 4,
+          "head": "fbb0bfe135ed87556186d5bc5b97a4f305c544da1d3a89e1800c62a865da5973",
+          "policy_hash": "d96ddac0d364f368f6baac1aa7fb6271f1e4945e681914da072610ef81a37312"
+        },
+        "policy_hash": "d96ddac0d364f368f6baac1aa7fb6271f1e4945e681914da072610ef81a37312",
+        "epoch": 1,
+        "query": {
+          "kind": "records",
+          "instance_id": "Woq9iCyC5t-SPQr9YJBo7Kh0IXWFyO-biJb8zTKNovk",
+          "limit": 2
+        },
+        "selections": [
+          {
+            "kind": "records",
+            "id": "O9wpL-4jXpHzuPok8ZIDCI4gjRwaYM2yR_28m9BbynY",
+            "commit_hashes": [
+              "cca17e981af50258e2fd640e13432a5926a8ca9c6a2d045b0411606cdc154e87"
+            ],
+            "structure": {
+              "record_id": "O9wpL-4jXpHzuPok8ZIDCI4gjRwaYM2yR_28m9BbynY",
+              "entity_id": "B4AVk28b8AICUsblcxndlgFKf9190ktJ5em29xlpYuI",
+              "revision": 1,
+              "instance_id": "Woq9iCyC5t-SPQr9YJBo7Kh0IXWFyO-biJb8zTKNovk",
+              "protocol_digest": "e31188a871138c8065682517931fba8c3fbd288516cda6c7aad88ff70c135c17",
+              "schema_ref": "discussion.message",
+              "actor_id": "gjzLXyXFuyQ0UESg-UD2sTiSnu5L_WOWlsMY28KEGc4",
+              "created": 1792415348182,
+              "fields": {
+                "author": "gjzLXyXFuyQ0UESg-UD2sTiSnu5L_WOWlsMY28KEGc4",
+                "reply_to": null
+              }
+            }
+          },
+          {
+            "kind": "records",
+            "id": "VCM5qgqDgYhJFMpk8grypDzD7t81TuS_T-xeeBQ4CO4",
+            "commit_hashes": [
+              "87c7b471208c4d7ed0b79e99e1f1e86c09f2b03adebbfa2454322ff88af09cea"
+            ],
+            "structure": {
+              "record_id": "VCM5qgqDgYhJFMpk8grypDzD7t81TuS_T-xeeBQ4CO4",
+              "entity_id": "n3tq9F5j2Vj0cUqMPm7u_N5ilzxqccsnJ47qEfQMcis",
+              "revision": 1,
+              "instance_id": "Woq9iCyC5t-SPQr9YJBo7Kh0IXWFyO-biJb8zTKNovk",
+              "protocol_digest": "e31188a871138c8065682517931fba8c3fbd288516cda6c7aad88ff70c135c17",
+              "schema_ref": "discussion.message",
+              "actor_id": "gjzLXyXFuyQ0UESg-UD2sTiSnu5L_WOWlsMY28KEGc4",
+              "created": 1792415348055,
+              "fields": {
+                "author": "gjzLXyXFuyQ0UESg-UD2sTiSnu5L_WOWlsMY28KEGc4",
+                "reply_to": null
+              }
+            }
+          }
+        ],
+        "next": {
+          "v": 1,
+          "sequence": 4,
+          "head": "fbb0bfe135ed87556186d5bc5b97a4f305c544da1d3a89e1800c62a865da5973",
+          "query_hash": "2253bc877c3420a0e88f0b1d7e000fd84735a249d4d5a6c76fdba0ffc956eefa",
+          "after": "VCM5qgqDgYhJFMpk8grypDzD7t81TuS_T-xeeBQ4CO4"
+        },
+        "observed_at": 1792415348344,
+        "expires_at": 1792415408344
+      },
+      "signature": "gG5gowqRW3xST5AmtyRhpqPrbjfOz2F37VGIxC6TPQ_pfM_YOvxDzn8S8btZwIwWPDQbv0a0d9d3btBrkRucBQ"
+    },
+    "policy": {
+      "payload": {
+        "effective_sequence": 1,
+        "epoch": 1,
+        "issued_at": 1792415347857,
+        "members": [
+          {
+            "actor_id": "gjzLXyXFuyQ0UESg-UD2sTiSnu5L_WOWlsMY28KEGc4",
+            "certificate": {
+              "payload": {
+                "actor_id": "gjzLXyXFuyQ0UESg-UD2sTiSnu5L_WOWlsMY28KEGc4",
+                "encryption_key": {
+                  "crv": "P-256",
+                  "kty": "EC",
+                  "x": "1pjvyqKGgdfyODJ8ZEibsPK1pr9m5857PxD1cnPZb38",
+                  "y": "wJ74Vg2rd0hU64b5A6aOXZfcctjlNFTQgQww62e-PAc"
+                },
+                "encryption_key_id": "_0usyz6cUxKBsVyHlyIdOLfJiYcNYi6G53WRoicfz7M",
+                "expires_at": 1824037747808,
+                "issued_at": 1792415347808,
+                "signing_key": "MJHGnZrx6nJ_heCLgzp9wejxWw-84AsgcNoNyOF_hpc",
+                "v": 1
+              },
+              "signature": "VRd_UyjoWfDw0YPGjGnnXlzdxFC1B6f2VplqybBPZUx4SdaNP99DKwkfq4QUZZ7Y_K6Ck_xpBF-44H-gnYzsCQ"
+            },
+            "role": "OWNER",
+            "scopes": [
+              {
+                "actions": [
+                  "discussion.post",
+                  "discussion.reply",
+                  "discussion.summarize"
+                ],
+                "capabilities": [
+                  "POST",
+                  "SUMMARIZE"
+                ],
+                "instance_id": "Woq9iCyC5t-SPQr9YJBo7Kh0IXWFyO-biJb8zTKNovk",
+                "protocol_roles": [
+                  "CONTRIBUTOR",
+                  "EDITOR"
+                ]
+              },
+              {
+                "actions": [
+                  "wiki.create",
+                  "wiki.revise",
+                  "wiki.branch",
+                  "wiki.select_head"
+                ],
+                "capabilities": [
+                  "EDIT"
+                ],
+                "instance_id": "5t1Prxhe6ODou0JWqeQP_fYksPbpx2aPuArrZzhgeOA",
+                "protocol_roles": [
+                  "EDITOR"
+                ]
+              },
+              {
+                "actions": [
+                  "task.create",
+                  "task.update",
+                  "task.report"
+                ],
+                "capabilities": [
+                  "MANAGE",
+                  "REPORT"
+                ],
+                "instance_id": "d5AiuzZMFyvyyj2Y9e1i0CxOk4VCgEZZqXirAbjYxqw",
+                "protocol_roles": [
+                  "MANAGER",
+                  "CONTRIBUTOR"
+                ]
+              },
+              {
+                "actions": [
+                  "service.PROPOSE",
+                  "service.SETTLE",
+                  "service.DELIVER",
+                  "service.NOTE"
+                ],
+                "capabilities": [
+                  "PROPOSE",
+                  "SETTLE",
+                  "DELIVER",
+                  "NOTE"
+                ],
+                "instance_id": "Ecn-VuKHqLFYayU73EwvtKGyu-BXpBwIYWKarlh_Hsk",
+                "protocol_roles": [
+                  "REQUESTER"
+                ]
+              },
+              {
+                "actions": [
+                  "service.REPORTED_AUTHORIZATION",
+                  "service.REPORTED_DELIVERY"
+                ],
+                "capabilities": [
+                  "REPORT"
+                ],
+                "instance_id": "ZVU4EfUlf24vbWg-a7xs24hx6vG7np3vOBb8wRi7hPY",
+                "protocol_roles": [
+                  "BRIDGE"
+                ]
+              },
+              {
+                "actions": [
+                  "outputs.select_pinned",
+                  "outputs.select_following"
+                ],
+                "capabilities": [
+                  "SELECT"
+                ],
+                "instance_id": "FGm-1x_L0Z89I8eJZVXV3nohgW9SB0x4c_89_z4dHME",
+                "protocol_roles": [
+                  "CURATOR"
+                ]
+              }
+            ]
+          }
+        ],
+        "owner_id": "gjzLXyXFuyQ0UESg-UD2sTiSnu5L_WOWlsMY28KEGc4",
+        "previous_policy": null,
+        "protocol_format_ceiling": 1,
+        "signing_key": "MJHGnZrx6nJ_heCLgzp9wejxWw-84AsgcNoNyOF_hpc",
+        "structure": {
+          "disclosure": [
+            {
+              "fields": [
+                "reply_to",
+                "author"
+              ],
+              "protocol_digest": "e31188a871138c8065682517931fba8c3fbd288516cda6c7aad88ff70c135c17",
+              "schema": "discussion.message"
+            },
+            {
+              "fields": [
+                "author"
+              ],
+              "protocol_digest": "e31188a871138c8065682517931fba8c3fbd288516cda6c7aad88ff70c135c17",
+              "schema": "wiki.revision"
+            },
+            {
+              "fields": [
+                "author",
+                "parent"
+              ],
+              "protocol_digest": "05300473589495f96080b96c78962acc0c0ecc8bf1ae82d84f214042a6d30ca2",
+              "schema": "wiki.revision"
+            },
+            {
+              "fields": [
+                "status",
+                "assignee",
+                "author",
+                "parent"
+              ],
+              "protocol_digest": "834f9b1ee62ad016c1be9067dfaa96dba71cfbacbed02487fe9ab9afcb5f8e50",
+              "schema": "task.revision"
+            },
+            {
+              "fields": [
+                "task_ref",
+                "author"
+              ],
+              "protocol_digest": "834f9b1ee62ad016c1be9067dfaa96dba71cfbacbed02487fe9ab9afcb5f8e50",
+              "schema": "task.report"
+            },
+            {
+              "fields": [],
+              "protocol_digest": "81ef3b74557ddaa685318c860374c3de01243f69c18804fe6fbc923c176f62da",
+              "schema": "service.message"
+            },
+            {
+              "fields": [],
+              "protocol_digest": "81ef3b74557ddaa685318c860374c3de01243f69c18804fe6fbc923c176f62da",
+              "schema": "service.scope"
+            },
+            {
+              "fields": [],
+              "protocol_digest": "81ef3b74557ddaa685318c860374c3de01243f69c18804fe6fbc923c176f62da",
+              "schema": "service.approval"
+            },
+            {
+              "fields": [],
+              "protocol_digest": "81ef3b74557ddaa685318c860374c3de01243f69c18804fe6fbc923c176f62da",
+              "schema": "service.delivery"
+            },
+            {
+              "fields": [],
+              "protocol_digest": "81ef3b74557ddaa685318c860374c3de01243f69c18804fe6fbc923c176f62da",
+              "schema": "service.note"
+            },
+            {
+              "fields": [],
+              "protocol_digest": "84c9b0d5f74522d7b6ad89a1f97c509f49aad1ecac2701c4f93dd1bc2c3defa1",
+              "schema": "service.external_report"
+            },
+            {
+              "fields": [],
+              "protocol_digest": "e8bd3597e1f41683a4c579c71694a6784c6acb3c39de50c0b3064144debdad9b",
+              "schema": "outputs.selection"
+            }
+          ],
+          "instances": [
+            {
+              "instance_id": "Woq9iCyC5t-SPQr9YJBo7Kh0IXWFyO-biJb8zTKNovk",
+              "protocol_digest": "e31188a871138c8065682517931fba8c3fbd288516cda6c7aad88ff70c135c17"
+            },
+            {
+              "instance_id": "5t1Prxhe6ODou0JWqeQP_fYksPbpx2aPuArrZzhgeOA",
+              "protocol_digest": "05300473589495f96080b96c78962acc0c0ecc8bf1ae82d84f214042a6d30ca2"
+            },
+            {
+              "instance_id": "d5AiuzZMFyvyyj2Y9e1i0CxOk4VCgEZZqXirAbjYxqw",
+              "protocol_digest": "834f9b1ee62ad016c1be9067dfaa96dba71cfbacbed02487fe9ab9afcb5f8e50"
+            },
+            {
+              "instance_id": "Ecn-VuKHqLFYayU73EwvtKGyu-BXpBwIYWKarlh_Hsk",
+              "protocol_digest": "81ef3b74557ddaa685318c860374c3de01243f69c18804fe6fbc923c176f62da"
+            },
+            {
+              "instance_id": "ZVU4EfUlf24vbWg-a7xs24hx6vG7np3vOBb8wRi7hPY",
+              "protocol_digest": "84c9b0d5f74522d7b6ad89a1f97c509f49aad1ecac2701c4f93dd1bc2c3defa1"
+            },
+            {
+              "instance_id": "FGm-1x_L0Z89I8eJZVXV3nohgW9SB0x4c_89_z4dHME",
+              "protocol_digest": "e8bd3597e1f41683a4c579c71694a6784c6acb3c39de50c0b3064144debdad9b"
+            }
+          ],
+          "protocols": [
+            {
+              "actions": {
+                "discussion.post": {
+                  "capabilities": [
+                    "POST"
+                  ],
+                  "heads": "NONE",
+                  "roles": [
+                    "CONTRIBUTOR"
+                  ],
+                  "schemas": [
+                    "discussion.message"
+                  ]
+                },
+                "discussion.reply": {
+                  "capabilities": [
+                    "POST"
+                  ],
+                  "heads": "NONE",
+                  "roles": [
+                    "CONTRIBUTOR"
+                  ],
+                  "schemas": [
+                    "discussion.message"
+                  ]
+                },
+                "discussion.summarize": {
+                  "capabilities": [
+                    "SUMMARIZE"
+                  ],
+                  "heads": "APPEND",
+                  "roles": [
+                    "EDITOR"
+                  ],
+                  "schemas": [
+                    "wiki.revision"
+                  ]
+                }
+              },
+              "protocol_digest": "e31188a871138c8065682517931fba8c3fbd288516cda6c7aad88ff70c135c17",
+              "schemas": {
+                "discussion.message": {
+                  "fields": {
+                    "author": {
+                      "protection": "server_readable",
+                      "type": "actor"
+                    },
+                    "message": {
+                      "protection": "e2ee",
+                      "type": "string"
+                    },
+                    "reply_to": {
+                      "protection": "server_readable",
+                      "type": "optional_reference"
+                    }
+                  },
+                  "required": [
+                    "message",
+                    "reply_to",
+                    "author"
+                  ]
+                },
+                "wiki.revision": {
+                  "fields": {
+                    "author": {
+                      "protection": "server_readable",
+                      "type": "actor"
+                    },
+                    "body": {
+                      "protection": "e2ee",
+                      "type": "string"
+                    },
+                    "source_refs": {
+                      "protection": "e2ee",
+                      "type": "json"
+                    },
+                    "title": {
+                      "protection": "e2ee",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "title",
+                    "body",
+                    "source_refs",
+                    "author"
+                  ]
+                }
+              },
+              "v": 1
+            },
+            {
+              "actions": {
+                "wiki.branch": {
+                  "capabilities": [
+                    "EDIT"
+                  ],
+                  "heads": "NONE",
+                  "roles": [
+                    "EDITOR"
+                  ],
+                  "schemas": [
+                    "wiki.revision"
+                  ]
+                },
+                "wiki.create": {
+                  "capabilities": [
+                    "EDIT"
+                  ],
+                  "heads": "APPEND",
+                  "roles": [
+                    "EDITOR"
+                  ],
+                  "schemas": [
+                    "wiki.revision"
+                  ]
+                },
+                "wiki.revise": {
+                  "capabilities": [
+                    "EDIT"
+                  ],
+                  "heads": "APPEND",
+                  "roles": [
+                    "EDITOR"
+                  ],
+                  "schemas": [
+                    "wiki.revision"
+                  ]
+                },
+                "wiki.select_head": {
+                  "capabilities": [
+                    "EDIT"
+                  ],
+                  "heads": "SELECT",
+                  "roles": [
+                    "EDITOR"
+                  ],
+                  "schemas": []
+                }
+              },
+              "protocol_digest": "05300473589495f96080b96c78962acc0c0ecc8bf1ae82d84f214042a6d30ca2",
+              "schemas": {
+                "wiki.revision": {
+                  "fields": {
+                    "author": {
+                      "protection": "server_readable",
+                      "type": "actor"
+                    },
+                    "body": {
+                      "protection": "e2ee",
+                      "type": "string"
+                    },
+                    "parent": {
+                      "protection": "server_readable",
+                      "type": "optional_reference"
+                    },
+                    "title": {
+                      "protection": "e2ee",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "title",
+                    "body",
+                    "author",
+                    "parent"
+                  ]
+                }
+              },
+              "v": 1
+            },
+            {
+              "actions": {
+                "task.create": {
+                  "capabilities": [
+                    "MANAGE"
+                  ],
+                  "heads": "APPEND",
+                  "roles": [
+                    "MANAGER"
+                  ],
+                  "schemas": [
+                    "task.revision"
+                  ],
+                  "task_transition": [
+                    {
+                      "from": null,
+                      "to": "OPEN"
+                    }
+                  ]
+                },
+                "task.report": {
+                  "capabilities": [
+                    "REPORT"
+                  ],
+                  "heads": "NONE",
+                  "roles": [
+                    "CONTRIBUTOR"
+                  ],
+                  "schemas": [
+                    "task.report"
+                  ]
+                },
+                "task.update": {
+                  "capabilities": [
+                    "MANAGE"
+                  ],
+                  "heads": "APPEND",
+                  "roles": [
+                    "MANAGER"
+                  ],
+                  "schemas": [
+                    "task.revision"
+                  ],
+                  "task_transition": [
+                    {
+                      "from": "OPEN",
+                      "to": "IN_PROGRESS"
+                    },
+                    {
+                      "from": "IN_PROGRESS",
+                      "to": "DONE"
+                    },
+                    {
+                      "from": "OPEN",
+                      "to": "CANCELED"
+                    },
+                    {
+                      "from": "IN_PROGRESS",
+                      "to": "CANCELED"
+                    }
+                  ]
+                }
+              },
+              "protocol_digest": "834f9b1ee62ad016c1be9067dfaa96dba71cfbacbed02487fe9ab9afcb5f8e50",
+              "schemas": {
+                "task.report": {
+                  "fields": {
+                    "author": {
+                      "protection": "server_readable",
+                      "type": "actor"
+                    },
+                    "evidence_refs": {
+                      "protection": "e2ee",
+                      "type": "json"
+                    },
+                    "kind": {
+                      "protection": "e2ee",
+                      "type": "string"
+                    },
+                    "summary": {
+                      "protection": "e2ee",
+                      "type": "string"
+                    },
+                    "task_ref": {
+                      "protection": "server_readable",
+                      "type": "reference"
+                    }
+                  },
+                  "required": [
+                    "task_ref",
+                    "kind",
+                    "summary",
+                    "evidence_refs",
+                    "author"
+                  ]
+                },
+                "task.revision": {
+                  "fields": {
+                    "assignee": {
+                      "protection": "server_readable",
+                      "type": "optional_actor"
+                    },
+                    "author": {
+                      "protection": "server_readable",
+                      "type": "actor"
+                    },
+                    "description": {
+                      "protection": "e2ee",
+                      "type": "string"
+                    },
+                    "note": {
+                      "protection": "e2ee",
+                      "type": "string"
+                    },
+                    "parent": {
+                      "protection": "server_readable",
+                      "type": "optional_reference"
+                    },
+                    "status": {
+                      "protection": "server_readable",
+                      "type": "task_status"
+                    },
+                    "title": {
+                      "protection": "e2ee",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "title",
+                    "description",
+                    "status",
+                    "assignee",
+                    "note",
+                    "author",
+                    "parent"
+                  ]
+                }
+              },
+              "v": 1
+            },
+            {
+              "actions": {
+                "service.DELIVER": {
+                  "capabilities": [
+                    "DELIVER"
+                  ],
+                  "heads": "NONE",
+                  "roles": [
+                    "TRUSTED"
+                  ],
+                  "schemas": [
+                    "service.delivery"
+                  ]
+                },
+                "service.NOTE": {
+                  "capabilities": [
+                    "NOTE"
+                  ],
+                  "heads": "NONE",
+                  "roles": [],
+                  "schemas": [
+                    "service.note"
+                  ]
+                },
+                "service.PROPOSE": {
+                  "capabilities": [
+                    "PROPOSE"
+                  ],
+                  "heads": "APPEND",
+                  "roles": [],
+                  "schemas": [
+                    "service.message",
+                    "service.scope"
+                  ]
+                },
+                "service.SETTLE": {
+                  "capabilities": [
+                    "SETTLE"
+                  ],
+                  "heads": "NONE",
+                  "roles": [],
+                  "schemas": [
+                    "service.approval",
+                    "service.message"
+                  ]
+                }
+              },
+              "protocol_digest": "81ef3b74557ddaa685318c860374c3de01243f69c18804fe6fbc923c176f62da",
+              "schemas": {
+                "service.approval": {
+                  "fields": {
+                    "action_context": {
+                      "protection": "e2ee",
+                      "type": "string"
+                    },
+                    "author": {
+                      "protection": "e2ee",
+                      "type": "string"
+                    },
+                    "executor_actor": {
+                      "protection": "e2ee",
+                      "type": "string"
+                    },
+                    "scope_ref": {
+                      "protection": "e2ee",
+                      "type": "json"
+                    }
+                  },
+                  "required": [
+                    "scope_ref",
+                    "executor_actor",
+                    "action_context",
+                    "author"
+                  ]
+                },
+                "service.delivery": {
+                  "fields": {
+                    "approval_ref": {
+                      "protection": "e2ee",
+                      "type": "json"
+                    },
+                    "artifact_refs": {
+                      "protection": "e2ee",
+                      "type": "json"
+                    },
+                    "author": {
+                      "protection": "e2ee",
+                      "type": "string"
+                    },
+                    "summary": {
+                      "protection": "e2ee",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "approval_ref",
+                    "artifact_refs",
+                    "summary",
+                    "author"
+                  ]
+                },
+                "service.message": {
+                  "fields": {
+                    "author": {
+                      "protection": "e2ee",
+                      "type": "string"
+                    },
+                    "kind": {
+                      "protection": "e2ee",
+                      "type": "string"
+                    },
+                    "text": {
+                      "protection": "e2ee",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "text",
+                    "author"
+                  ]
+                },
+                "service.note": {
+                  "fields": {
+                    "author": {
+                      "protection": "e2ee",
+                      "type": "string"
+                    },
+                    "evidence_refs": {
+                      "protection": "e2ee",
+                      "type": "json"
+                    },
+                    "kind": {
+                      "protection": "e2ee",
+                      "type": "string"
+                    },
+                    "summary": {
+                      "protection": "e2ee",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "summary",
+                    "evidence_refs",
+                    "author"
+                  ]
+                },
+                "service.scope": {
+                  "fields": {
+                    "author": {
+                      "protection": "e2ee",
+                      "type": "string"
+                    },
+                    "scope": {
+                      "protection": "e2ee",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "scope",
+                    "author"
+                  ]
+                }
+              },
+              "v": 1
+            },
+            {
+              "actions": {
+                "service.REPORTED_AUTHORIZATION": {
+                  "capabilities": [
+                    "REPORT"
+                  ],
+                  "heads": "NONE",
+                  "roles": [
+                    "BRIDGE"
+                  ],
+                  "schemas": [
+                    "service.external_report"
+                  ]
+                },
+                "service.REPORTED_DELIVERY": {
+                  "capabilities": [
+                    "REPORT"
+                  ],
+                  "heads": "NONE",
+                  "roles": [
+                    "BRIDGE"
+                  ],
+                  "schemas": [
+                    "service.external_report"
+                  ]
+                }
+              },
+              "protocol_digest": "84c9b0d5f74522d7b6ad89a1f97c509f49aad1ecac2701c4f93dd1bc2c3defa1",
+              "schemas": {
+                "service.external_report": {
+                  "fields": {
+                    "external_ref": {
+                      "protection": "e2ee",
+                      "type": "string"
+                    },
+                    "grants_external_authority": {
+                      "protection": "e2ee",
+                      "type": "boolean"
+                    },
+                    "kind": {
+                      "protection": "e2ee",
+                      "type": "string"
+                    },
+                    "reporter": {
+                      "protection": "e2ee",
+                      "type": "string"
+                    },
+                    "summary": {
+                      "protection": "e2ee",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "external_ref",
+                    "summary",
+                    "reporter",
+                    "grants_external_authority"
+                  ]
+                }
+              },
+              "v": 1
+            },
+            {
+              "actions": {
+                "outputs.select_following": {
+                  "capabilities": [
+                    "SELECT"
+                  ],
+                  "heads": "NONE",
+                  "roles": [
+                    "CURATOR"
+                  ],
+                  "schemas": [
+                    "outputs.selection"
+                  ]
+                },
+                "outputs.select_pinned": {
+                  "capabilities": [
+                    "SELECT"
+                  ],
+                  "heads": "NONE",
+                  "roles": [
+                    "CURATOR"
+                  ],
+                  "schemas": [
+                    "outputs.selection"
+                  ]
+                }
+              },
+              "protocol_digest": "e8bd3597e1f41683a4c579c71694a6784c6acb3c39de50c0b3064144debdad9b",
+              "schemas": {
+                "outputs.selection": {
+                  "fields": {
+                    "collection": {
+                      "protection": "e2ee",
+                      "type": "string"
+                    },
+                    "entity_id": {
+                      "protection": "e2ee",
+                      "type": "json"
+                    },
+                    "label": {
+                      "protection": "e2ee",
+                      "type": "string"
+                    },
+                    "mode": {
+                      "protection": "e2ee",
+                      "type": "string"
+                    },
+                    "selector_actor": {
+                      "protection": "e2ee",
+                      "type": "string"
+                    },
+                    "summary": {
+                      "protection": "e2ee",
+                      "type": "string"
+                    },
+                    "target_ref": {
+                      "protection": "e2ee",
+                      "type": "json"
+                    }
+                  },
+                  "required": [
+                    "collection",
+                    "mode",
+                    "label",
+                    "summary",
+                    "target_ref",
+                    "entity_id",
+                    "selector_actor"
+                  ]
+                }
+              },
+              "v": 1
+            }
+          ],
+          "v": 1
+        },
+        "structure_mode": "STRUCTURED",
+        "v": 3,
+        "version": 1,
+        "visibility": "PRIVATE",
+        "workspace_id": "tUHF8rW1IUK40N7tHu3brdD_MRwbe1BfY4u8LifOYLs"
+      },
+      "signature": "hY94wqKAtqMAv2UBn6l9fZ7F6-p3FOSbTeorsZ860T82loB7A_UBLEHDFa8N8EWSjj_G3SARlRW3BI_caOodCw"
+    },
+    "evidence": [
+      {
+        "commit": {
+          "payload": {
+            "action_id": "discussion.post",
+            "actor_id": "gjzLXyXFuyQ0UESg-UD2sTiSnu5L_WOWlsMY28KEGc4",
+            "body": {
+              "alg": "A256GCM",
+              "chunks": [
+                "8Y2ye1FXnf3Akm6yg-Q4jAei3464C7BLPkehSBcANy90qqmEtLNVUoFx0pODFejqIttNGepG569vsrGlRoyEKsN9_HQoIQJ0J4mFoT3xcqKxT52agjn3W1BIunK2j42ZrsXfN1zfiUH6eDXIr3PdYs5lmAZnaRjMaxxLP7m4c1I5_huZ9LDcP2uUSlne40FhGowBX8qh3Hr54xkg5Di_jengA0LPdJbcSZQLqACzjFzWSUSzQd72UdJYvFh0-Smjt29K1IW_7yYVIVIEiHAgKH9SemVbOkn4PKAX0k26nYaxLwUn_QV4VT7Fclxhs2F06ALi0he5_BERvcQQy2UQDZI4m9TFhdHj5Sx2j9wJ9lBFnE71VIgT44q-uv8_hEmeceJIprViW4pl77drCDhFiJitBeI1iZxdImU9Yll9FEamfjR5tlcSWncXJ5YGJ4_NOXDz60iKfprHjv5vrj35hGrZq3ZFjJ6zDnvbQo96RO9p2lvZhjnKMgGgNa3NeCLaouSIPWeC4f3KcKfmEh3SEaXhnRNjbFCPr5DhMNADBkPLCBB3x7vwjJrJT4fXUYYYRkZVSRqr7ONo2cDCE6YrQ8sNh1LquRca-u3yxq6OlSzEueJtJTLrbdhh-Cx52gVHmVTJIHTK4RC_VWN5Ke9-r-QsoIGLvFc_ywU2zQodHgBPJd4CmmOKen1fbn7EFYfF1MwtoVP3mvtIf-31cVMUE2hnxgp5i814_az8hIYvEw9p3E8M4SmeqWa1i609HwU313KzCj9o-5PFmTVexIrnLoMVKT2kFAnWAh_7QEVEmi1DnJqEMNFgGaIwNghm5wLFqpEttNKHiQ20HMOF7DPnyN81udElBHk5OumzTXBWnW4Ps-b5v83I33uG2NXhiu7s5mqola72JJL0ePH_CVxF6s2N9LzCf8mmtfr8JZxQtUIAfUauPPdb_NklkfR40MMWyTUEnQsSuTduCYcEym9_OOSerHsOg7JtsB97HpQa36IKO0IXV9xrZhe_r71vkvsr8x6Ualu1tqCD4uCDxDrMKpfwP59et6pXqxiWjBKhRSVTaGVC3c7CKAo7dfiemBXGa2FIeGGlmoOG55m8yG9LsPqP2ufxfgfepTRrKosUjA6cB4IFY0RG2KVUJJWDBDKJqtT0X5WaYx3DfPr7OqCUy3r5T4R4vztI1shWkgVxA2lVNgml_hrhqon6PNNk3yka_Nq_SV95wEu9DUdMjZqgnpvN618Xd698Ihs7wPDw_eM6Ai-OO7DVflNLDUxcaytC9NUaEdW9378lKjI4zDOVAPpNOJASWWoKvPMvuQoJPiB8KNZL5WGqzCmN-Y24AlXUhYl-FjJ1UQOj0ZyorEgjDaG_VBSEblLeqc2DF1aT1QcMTggpaJGojc7E1owdNEbRrEYMbE1imyONZYMXwm7TRIXsa2M8Yk4_vKJbPtISov9jS2nQdNGThKhLyou2oQz3zvkk0ieX587fTBiEgjrz3ZdUM06voGnS4e3qCbCEsxkk3FhU11a7d_L0yCd61CPNWHZBATCWsUG5wB7Ib0fn7nlAMigKcnCaQ7zTwEnyTj4Uk9TiooEFO53h3_wASiZQEJYbnNwt2cDkpcZkEQKEGRl_c5-zkO34wWhd7cKSzEQpi_HCWbHuebYSmq77ItyZ0jLmvsf-3iO4fVJoXNTxXFEgLQva3DTShNd0xTzIXNyHJVrxdexh-7bcAcxz4bfAqN5y5RxBZsz4BlS8d3yrVUOvSKh_BafM58jv_6BGWTWKIumLuT1Nq8AauTh1ilLN56QpgyrEfjjhM45UJ4_ZXPi9k8EjwNaFpu1hydOJg-HGsRoon4f1aaefC1pyWI9OGq4_AKVKqVS6dzY_lZ0EF03nHltNK7KzqjoFM2N4ta6KaIvVL9nAdQ6laBsi4UrxzBMPCHF2dFpGq09UlpvuDZcOvEqeCoqoyKX-PL6TlwOG4f1eRNakTyKFu6hl20_nYBwG3I5GbaA0fTZEMdYqYDBsO3Bon_x9uyOzx-o"
+              ],
+              "nonce": "dwedKk_uxCuf4W3D",
+              "v": 1
+            },
+            "command_id": "9z69R_A7VIrPpAiNuCu_x91E0V6sHujDQHdNN2GWgyQ",
+            "delegation": null,
+            "epoch": 1,
+            "instance_id": "Woq9iCyC5t-SPQr9YJBo7Kh0IXWFyO-biJb8zTKNovk",
+            "issued_at": 1792415348182,
+            "mode": "PRIVATE",
+            "policy_hash": "d96ddac0d364f368f6baac1aa7fb6271f1e4945e681914da072610ef81a37312",
+            "previous": "87c7b471208c4d7ed0b79e99e1f1e86c09f2b03adebbfa2454322ff88af09cea",
+            "protocol_format_ceiling": 1,
+            "sequence": 3,
+            "signing_key": "MJHGnZrx6nJ_heCLgzp9wejxWw-84AsgcNoNyOF_hpc",
+            "structure": {
+              "heads": [],
+              "mode": "DELTA",
+              "records": [
+                {
+                  "actor_id": "gjzLXyXFuyQ0UESg-UD2sTiSnu5L_WOWlsMY28KEGc4",
+                  "created": 1792415348182,
+                  "entity_id": "B4AVk28b8AICUsblcxndlgFKf9190ktJ5em29xlpYuI",
+                  "fields": {
+                    "author": "gjzLXyXFuyQ0UESg-UD2sTiSnu5L_WOWlsMY28KEGc4",
+                    "reply_to": null
+                  },
+                  "instance_id": "Woq9iCyC5t-SPQr9YJBo7Kh0IXWFyO-biJb8zTKNovk",
+                  "protocol_digest": "e31188a871138c8065682517931fba8c3fbd288516cda6c7aad88ff70c135c17",
+                  "record_id": "O9wpL-4jXpHzuPok8ZIDCI4gjRwaYM2yR_28m9BbynY",
+                  "revision": 1,
+                  "schema_ref": "discussion.message"
+                }
+              ],
+              "v": 1
+            },
+            "v": 3,
+            "workspace_id": "tUHF8rW1IUK40N7tHu3brdD_MRwbe1BfY4u8LifOYLs"
+          },
+          "signature": "ajlBWQTRpB8fvV5KUa4deYo90woSKDcrhJamboVb9AuLtOTLxLf8NwWCufrNgu_ae4KEupHQbdtQP2PFmeI3Dg"
+        },
+        "policy": {
+          "payload": {
+            "effective_sequence": 1,
+            "epoch": 1,
+            "issued_at": 1792415347857,
+            "members": [
+              {
+                "actor_id": "gjzLXyXFuyQ0UESg-UD2sTiSnu5L_WOWlsMY28KEGc4",
+                "certificate": {
+                  "payload": {
+                    "actor_id": "gjzLXyXFuyQ0UESg-UD2sTiSnu5L_WOWlsMY28KEGc4",
+                    "encryption_key": {
+                      "crv": "P-256",
+                      "kty": "EC",
+                      "x": "1pjvyqKGgdfyODJ8ZEibsPK1pr9m5857PxD1cnPZb38",
+                      "y": "wJ74Vg2rd0hU64b5A6aOXZfcctjlNFTQgQww62e-PAc"
+                    },
+                    "encryption_key_id": "_0usyz6cUxKBsVyHlyIdOLfJiYcNYi6G53WRoicfz7M",
+                    "expires_at": 1824037747808,
+                    "issued_at": 1792415347808,
+                    "signing_key": "MJHGnZrx6nJ_heCLgzp9wejxWw-84AsgcNoNyOF_hpc",
+                    "v": 1
+                  },
+                  "signature": "VRd_UyjoWfDw0YPGjGnnXlzdxFC1B6f2VplqybBPZUx4SdaNP99DKwkfq4QUZZ7Y_K6Ck_xpBF-44H-gnYzsCQ"
+                },
+                "role": "OWNER",
+                "scopes": [
+                  {
+                    "actions": [
+                      "discussion.post",
+                      "discussion.reply",
+                      "discussion.summarize"
+                    ],
+                    "capabilities": [
+                      "POST",
+                      "SUMMARIZE"
+                    ],
+                    "instance_id": "Woq9iCyC5t-SPQr9YJBo7Kh0IXWFyO-biJb8zTKNovk",
+                    "protocol_roles": [
+                      "CONTRIBUTOR",
+                      "EDITOR"
+                    ]
+                  },
+                  {
+                    "actions": [
+                      "wiki.create",
+                      "wiki.revise",
+                      "wiki.branch",
+                      "wiki.select_head"
+                    ],
+                    "capabilities": [
+                      "EDIT"
+                    ],
+                    "instance_id": "5t1Prxhe6ODou0JWqeQP_fYksPbpx2aPuArrZzhgeOA",
+                    "protocol_roles": [
+                      "EDITOR"
+                    ]
+                  },
+                  {
+                    "actions": [
+                      "task.create",
+                      "task.update",
+                      "task.report"
+                    ],
+                    "capabilities": [
+                      "MANAGE",
+                      "REPORT"
+                    ],
+                    "instance_id": "d5AiuzZMFyvyyj2Y9e1i0CxOk4VCgEZZqXirAbjYxqw",
+                    "protocol_roles": [
+                      "MANAGER",
+                      "CONTRIBUTOR"
+                    ]
+                  },
+                  {
+                    "actions": [
+                      "service.PROPOSE",
+                      "service.SETTLE",
+                      "service.DELIVER",
+                      "service.NOTE"
+                    ],
+                    "capabilities": [
+                      "PROPOSE",
+                      "SETTLE",
+                      "DELIVER",
+                      "NOTE"
+                    ],
+                    "instance_id": "Ecn-VuKHqLFYayU73EwvtKGyu-BXpBwIYWKarlh_Hsk",
+                    "protocol_roles": [
+                      "REQUESTER"
+                    ]
+                  },
+                  {
+                    "actions": [
+                      "service.REPORTED_AUTHORIZATION",
+                      "service.REPORTED_DELIVERY"
+                    ],
+                    "capabilities": [
+                      "REPORT"
+                    ],
+                    "instance_id": "ZVU4EfUlf24vbWg-a7xs24hx6vG7np3vOBb8wRi7hPY",
+                    "protocol_roles": [
+                      "BRIDGE"
+                    ]
+                  },
+                  {
+                    "actions": [
+                      "outputs.select_pinned",
+                      "outputs.select_following"
+                    ],
+                    "capabilities": [
+                      "SELECT"
+                    ],
+                    "instance_id": "FGm-1x_L0Z89I8eJZVXV3nohgW9SB0x4c_89_z4dHME",
+                    "protocol_roles": [
+                      "CURATOR"
+                    ]
+                  }
+                ]
+              }
+            ],
+            "owner_id": "gjzLXyXFuyQ0UESg-UD2sTiSnu5L_WOWlsMY28KEGc4",
+            "previous_policy": null,
+            "protocol_format_ceiling": 1,
+            "signing_key": "MJHGnZrx6nJ_heCLgzp9wejxWw-84AsgcNoNyOF_hpc",
+            "structure": {
+              "disclosure": [
+                {
+                  "fields": [
+                    "reply_to",
+                    "author"
+                  ],
+                  "protocol_digest": "e31188a871138c8065682517931fba8c3fbd288516cda6c7aad88ff70c135c17",
+                  "schema": "discussion.message"
+                },
+                {
+                  "fields": [
+                    "author"
+                  ],
+                  "protocol_digest": "e31188a871138c8065682517931fba8c3fbd288516cda6c7aad88ff70c135c17",
+                  "schema": "wiki.revision"
+                },
+                {
+                  "fields": [
+                    "author",
+                    "parent"
+                  ],
+                  "protocol_digest": "05300473589495f96080b96c78962acc0c0ecc8bf1ae82d84f214042a6d30ca2",
+                  "schema": "wiki.revision"
+                },
+                {
+                  "fields": [
+                    "status",
+                    "assignee",
+                    "author",
+                    "parent"
+                  ],
+                  "protocol_digest": "834f9b1ee62ad016c1be9067dfaa96dba71cfbacbed02487fe9ab9afcb5f8e50",
+                  "schema": "task.revision"
+                },
+                {
+                  "fields": [
+                    "task_ref",
+                    "author"
+                  ],
+                  "protocol_digest": "834f9b1ee62ad016c1be9067dfaa96dba71cfbacbed02487fe9ab9afcb5f8e50",
+                  "schema": "task.report"
+                },
+                {
+                  "fields": [],
+                  "protocol_digest": "81ef3b74557ddaa685318c860374c3de01243f69c18804fe6fbc923c176f62da",
+                  "schema": "service.message"
+                },
+                {
+                  "fields": [],
+                  "protocol_digest": "81ef3b74557ddaa685318c860374c3de01243f69c18804fe6fbc923c176f62da",
+                  "schema": "service.scope"
+                },
+                {
+                  "fields": [],
+                  "protocol_digest": "81ef3b74557ddaa685318c860374c3de01243f69c18804fe6fbc923c176f62da",
+                  "schema": "service.approval"
+                },
+                {
+                  "fields": [],
+                  "protocol_digest": "81ef3b74557ddaa685318c860374c3de01243f69c18804fe6fbc923c176f62da",
+                  "schema": "service.delivery"
+                },
+                {
+                  "fields": [],
+                  "protocol_digest": "81ef3b74557ddaa685318c860374c3de01243f69c18804fe6fbc923c176f62da",
+                  "schema": "service.note"
+                },
+                {
+                  "fields": [],
+                  "protocol_digest": "84c9b0d5f74522d7b6ad89a1f97c509f49aad1ecac2701c4f93dd1bc2c3defa1",
+                  "schema": "service.external_report"
+                },
+                {
+                  "fields": [],
+                  "protocol_digest": "e8bd3597e1f41683a4c579c71694a6784c6acb3c39de50c0b3064144debdad9b",
+                  "schema": "outputs.selection"
+                }
+              ],
+              "instances": [
+                {
+                  "instance_id": "Woq9iCyC5t-SPQr9YJBo7Kh0IXWFyO-biJb8zTKNovk",
+                  "protocol_digest": "e31188a871138c8065682517931fba8c3fbd288516cda6c7aad88ff70c135c17"
+                },
+                {
+                  "instance_id": "5t1Prxhe6ODou0JWqeQP_fYksPbpx2aPuArrZzhgeOA",
+                  "protocol_digest": "05300473589495f96080b96c78962acc0c0ecc8bf1ae82d84f214042a6d30ca2"
+                },
+                {
+                  "instance_id": "d5AiuzZMFyvyyj2Y9e1i0CxOk4VCgEZZqXirAbjYxqw",
+                  "protocol_digest": "834f9b1ee62ad016c1be9067dfaa96dba71cfbacbed02487fe9ab9afcb5f8e50"
+                },
+                {
+                  "instance_id": "Ecn-VuKHqLFYayU73EwvtKGyu-BXpBwIYWKarlh_Hsk",
+                  "protocol_digest": "81ef3b74557ddaa685318c860374c3de01243f69c18804fe6fbc923c176f62da"
+                },
+                {
+                  "instance_id": "ZVU4EfUlf24vbWg-a7xs24hx6vG7np3vOBb8wRi7hPY",
+                  "protocol_digest": "84c9b0d5f74522d7b6ad89a1f97c509f49aad1ecac2701c4f93dd1bc2c3defa1"
+                },
+                {
+                  "instance_id": "FGm-1x_L0Z89I8eJZVXV3nohgW9SB0x4c_89_z4dHME",
+                  "protocol_digest": "e8bd3597e1f41683a4c579c71694a6784c6acb3c39de50c0b3064144debdad9b"
+                }
+              ],
+              "protocols": [
+                {
+                  "actions": {
+                    "discussion.post": {
+                      "capabilities": [
+                        "POST"
+                      ],
+                      "heads": "NONE",
+                      "roles": [
+                        "CONTRIBUTOR"
+                      ],
+                      "schemas": [
+                        "discussion.message"
+                      ]
+                    },
+                    "discussion.reply": {
+                      "capabilities": [
+                        "POST"
+                      ],
+                      "heads": "NONE",
+                      "roles": [
+                        "CONTRIBUTOR"
+                      ],
+                      "schemas": [
+                        "discussion.message"
+                      ]
+                    },
+                    "discussion.summarize": {
+                      "capabilities": [
+                        "SUMMARIZE"
+                      ],
+                      "heads": "APPEND",
+                      "roles": [
+                        "EDITOR"
+                      ],
+                      "schemas": [
+                        "wiki.revision"
+                      ]
+                    }
+                  },
+                  "protocol_digest": "e31188a871138c8065682517931fba8c3fbd288516cda6c7aad88ff70c135c17",
+                  "schemas": {
+                    "discussion.message": {
+                      "fields": {
+                        "author": {
+                          "protection": "server_readable",
+                          "type": "actor"
+                        },
+                        "message": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "reply_to": {
+                          "protection": "server_readable",
+                          "type": "optional_reference"
+                        }
+                      },
+                      "required": [
+                        "message",
+                        "reply_to",
+                        "author"
+                      ]
+                    },
+                    "wiki.revision": {
+                      "fields": {
+                        "author": {
+                          "protection": "server_readable",
+                          "type": "actor"
+                        },
+                        "body": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "source_refs": {
+                          "protection": "e2ee",
+                          "type": "json"
+                        },
+                        "title": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "title",
+                        "body",
+                        "source_refs",
+                        "author"
+                      ]
+                    }
+                  },
+                  "v": 1
+                },
+                {
+                  "actions": {
+                    "wiki.branch": {
+                      "capabilities": [
+                        "EDIT"
+                      ],
+                      "heads": "NONE",
+                      "roles": [
+                        "EDITOR"
+                      ],
+                      "schemas": [
+                        "wiki.revision"
+                      ]
+                    },
+                    "wiki.create": {
+                      "capabilities": [
+                        "EDIT"
+                      ],
+                      "heads": "APPEND",
+                      "roles": [
+                        "EDITOR"
+                      ],
+                      "schemas": [
+                        "wiki.revision"
+                      ]
+                    },
+                    "wiki.revise": {
+                      "capabilities": [
+                        "EDIT"
+                      ],
+                      "heads": "APPEND",
+                      "roles": [
+                        "EDITOR"
+                      ],
+                      "schemas": [
+                        "wiki.revision"
+                      ]
+                    },
+                    "wiki.select_head": {
+                      "capabilities": [
+                        "EDIT"
+                      ],
+                      "heads": "SELECT",
+                      "roles": [
+                        "EDITOR"
+                      ],
+                      "schemas": []
+                    }
+                  },
+                  "protocol_digest": "05300473589495f96080b96c78962acc0c0ecc8bf1ae82d84f214042a6d30ca2",
+                  "schemas": {
+                    "wiki.revision": {
+                      "fields": {
+                        "author": {
+                          "protection": "server_readable",
+                          "type": "actor"
+                        },
+                        "body": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "parent": {
+                          "protection": "server_readable",
+                          "type": "optional_reference"
+                        },
+                        "title": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "title",
+                        "body",
+                        "author",
+                        "parent"
+                      ]
+                    }
+                  },
+                  "v": 1
+                },
+                {
+                  "actions": {
+                    "task.create": {
+                      "capabilities": [
+                        "MANAGE"
+                      ],
+                      "heads": "APPEND",
+                      "roles": [
+                        "MANAGER"
+                      ],
+                      "schemas": [
+                        "task.revision"
+                      ],
+                      "task_transition": [
+                        {
+                          "from": null,
+                          "to": "OPEN"
+                        }
+                      ]
+                    },
+                    "task.report": {
+                      "capabilities": [
+                        "REPORT"
+                      ],
+                      "heads": "NONE",
+                      "roles": [
+                        "CONTRIBUTOR"
+                      ],
+                      "schemas": [
+                        "task.report"
+                      ]
+                    },
+                    "task.update": {
+                      "capabilities": [
+                        "MANAGE"
+                      ],
+                      "heads": "APPEND",
+                      "roles": [
+                        "MANAGER"
+                      ],
+                      "schemas": [
+                        "task.revision"
+                      ],
+                      "task_transition": [
+                        {
+                          "from": "OPEN",
+                          "to": "IN_PROGRESS"
+                        },
+                        {
+                          "from": "IN_PROGRESS",
+                          "to": "DONE"
+                        },
+                        {
+                          "from": "OPEN",
+                          "to": "CANCELED"
+                        },
+                        {
+                          "from": "IN_PROGRESS",
+                          "to": "CANCELED"
+                        }
+                      ]
+                    }
+                  },
+                  "protocol_digest": "834f9b1ee62ad016c1be9067dfaa96dba71cfbacbed02487fe9ab9afcb5f8e50",
+                  "schemas": {
+                    "task.report": {
+                      "fields": {
+                        "author": {
+                          "protection": "server_readable",
+                          "type": "actor"
+                        },
+                        "evidence_refs": {
+                          "protection": "e2ee",
+                          "type": "json"
+                        },
+                        "kind": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "summary": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "task_ref": {
+                          "protection": "server_readable",
+                          "type": "reference"
+                        }
+                      },
+                      "required": [
+                        "task_ref",
+                        "kind",
+                        "summary",
+                        "evidence_refs",
+                        "author"
+                      ]
+                    },
+                    "task.revision": {
+                      "fields": {
+                        "assignee": {
+                          "protection": "server_readable",
+                          "type": "optional_actor"
+                        },
+                        "author": {
+                          "protection": "server_readable",
+                          "type": "actor"
+                        },
+                        "description": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "note": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "parent": {
+                          "protection": "server_readable",
+                          "type": "optional_reference"
+                        },
+                        "status": {
+                          "protection": "server_readable",
+                          "type": "task_status"
+                        },
+                        "title": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "title",
+                        "description",
+                        "status",
+                        "assignee",
+                        "note",
+                        "author",
+                        "parent"
+                      ]
+                    }
+                  },
+                  "v": 1
+                },
+                {
+                  "actions": {
+                    "service.DELIVER": {
+                      "capabilities": [
+                        "DELIVER"
+                      ],
+                      "heads": "NONE",
+                      "roles": [
+                        "TRUSTED"
+                      ],
+                      "schemas": [
+                        "service.delivery"
+                      ]
+                    },
+                    "service.NOTE": {
+                      "capabilities": [
+                        "NOTE"
+                      ],
+                      "heads": "NONE",
+                      "roles": [],
+                      "schemas": [
+                        "service.note"
+                      ]
+                    },
+                    "service.PROPOSE": {
+                      "capabilities": [
+                        "PROPOSE"
+                      ],
+                      "heads": "APPEND",
+                      "roles": [],
+                      "schemas": [
+                        "service.message",
+                        "service.scope"
+                      ]
+                    },
+                    "service.SETTLE": {
+                      "capabilities": [
+                        "SETTLE"
+                      ],
+                      "heads": "NONE",
+                      "roles": [],
+                      "schemas": [
+                        "service.approval",
+                        "service.message"
+                      ]
+                    }
+                  },
+                  "protocol_digest": "81ef3b74557ddaa685318c860374c3de01243f69c18804fe6fbc923c176f62da",
+                  "schemas": {
+                    "service.approval": {
+                      "fields": {
+                        "action_context": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "author": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "executor_actor": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "scope_ref": {
+                          "protection": "e2ee",
+                          "type": "json"
+                        }
+                      },
+                      "required": [
+                        "scope_ref",
+                        "executor_actor",
+                        "action_context",
+                        "author"
+                      ]
+                    },
+                    "service.delivery": {
+                      "fields": {
+                        "approval_ref": {
+                          "protection": "e2ee",
+                          "type": "json"
+                        },
+                        "artifact_refs": {
+                          "protection": "e2ee",
+                          "type": "json"
+                        },
+                        "author": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "summary": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "approval_ref",
+                        "artifact_refs",
+                        "summary",
+                        "author"
+                      ]
+                    },
+                    "service.message": {
+                      "fields": {
+                        "author": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "kind": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "text": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "text",
+                        "author"
+                      ]
+                    },
+                    "service.note": {
+                      "fields": {
+                        "author": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "evidence_refs": {
+                          "protection": "e2ee",
+                          "type": "json"
+                        },
+                        "kind": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "summary": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "summary",
+                        "evidence_refs",
+                        "author"
+                      ]
+                    },
+                    "service.scope": {
+                      "fields": {
+                        "author": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "scope": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "scope",
+                        "author"
+                      ]
+                    }
+                  },
+                  "v": 1
+                },
+                {
+                  "actions": {
+                    "service.REPORTED_AUTHORIZATION": {
+                      "capabilities": [
+                        "REPORT"
+                      ],
+                      "heads": "NONE",
+                      "roles": [
+                        "BRIDGE"
+                      ],
+                      "schemas": [
+                        "service.external_report"
+                      ]
+                    },
+                    "service.REPORTED_DELIVERY": {
+                      "capabilities": [
+                        "REPORT"
+                      ],
+                      "heads": "NONE",
+                      "roles": [
+                        "BRIDGE"
+                      ],
+                      "schemas": [
+                        "service.external_report"
+                      ]
+                    }
+                  },
+                  "protocol_digest": "84c9b0d5f74522d7b6ad89a1f97c509f49aad1ecac2701c4f93dd1bc2c3defa1",
+                  "schemas": {
+                    "service.external_report": {
+                      "fields": {
+                        "external_ref": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "grants_external_authority": {
+                          "protection": "e2ee",
+                          "type": "boolean"
+                        },
+                        "kind": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "reporter": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "summary": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "external_ref",
+                        "summary",
+                        "reporter",
+                        "grants_external_authority"
+                      ]
+                    }
+                  },
+                  "v": 1
+                },
+                {
+                  "actions": {
+                    "outputs.select_following": {
+                      "capabilities": [
+                        "SELECT"
+                      ],
+                      "heads": "NONE",
+                      "roles": [
+                        "CURATOR"
+                      ],
+                      "schemas": [
+                        "outputs.selection"
+                      ]
+                    },
+                    "outputs.select_pinned": {
+                      "capabilities": [
+                        "SELECT"
+                      ],
+                      "heads": "NONE",
+                      "roles": [
+                        "CURATOR"
+                      ],
+                      "schemas": [
+                        "outputs.selection"
+                      ]
+                    }
+                  },
+                  "protocol_digest": "e8bd3597e1f41683a4c579c71694a6784c6acb3c39de50c0b3064144debdad9b",
+                  "schemas": {
+                    "outputs.selection": {
+                      "fields": {
+                        "collection": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "entity_id": {
+                          "protection": "e2ee",
+                          "type": "json"
+                        },
+                        "label": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "mode": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "selector_actor": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "summary": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "target_ref": {
+                          "protection": "e2ee",
+                          "type": "json"
+                        }
+                      },
+                      "required": [
+                        "collection",
+                        "mode",
+                        "label",
+                        "summary",
+                        "target_ref",
+                        "entity_id",
+                        "selector_actor"
+                      ]
+                    }
+                  },
+                  "v": 1
+                }
+              ],
+              "v": 1
+            },
+            "structure_mode": "STRUCTURED",
+            "v": 3,
+            "version": 1,
+            "visibility": "PRIVATE",
+            "workspace_id": "tUHF8rW1IUK40N7tHu3brdD_MRwbe1BfY4u8LifOYLs"
+          },
+          "signature": "hY94wqKAtqMAv2UBn6l9fZ7F6-p3FOSbTeorsZ860T82loB7A_UBLEHDFa8N8EWSjj_G3SARlRW3BI_caOodCw"
+        }
+      },
+      {
+        "commit": {
+          "payload": {
+            "action_id": "discussion.post",
+            "actor_id": "gjzLXyXFuyQ0UESg-UD2sTiSnu5L_WOWlsMY28KEGc4",
+            "body": {
+              "alg": "A256GCM",
+              "chunks": [
+                "XY9J1WhkHyr_IAuFtmrrZPZFwebGC_7TPMO4Vri35vDdYRAfO9jH7RwLKtRwt14OsIFB8jck6A1ioavYSxTaVL3cRS01Zc8r4gN5-JyZYGMl0JNbRLFJwnCKNTOkEB5ujjMn3WvWHxp72IMRE_PdZO8B5DepkvbG3tO8Ey48OiE03_ZnMCHhhho2MfyF_ejiYCoA8fDWjssyP9HBvB_QZBCG6SQi5YYLccLa7WA1BSzojDdvHEbQDGNHC6_r-70yRMjDCf1JXrzD13lmMQ6qoLS04mrCF7ZM_PsLDocxGioybPZRdeBQtSmEJZSsSrgz_2jJ9uvygWmPHswCMWWEJ5RaeZC8wE_U_9ueW3kJI74RI0FeSPteHAGUUvhcznNR9nCyolsSiZs_z16PCEDvJHwPMKO6XZhT4CktKF0j1E6hhAtevzmrruF8yYG5BIKNxBhGtmqtOXDf9xmBp3tj82t9oXSL4zXGVSSvV3XFHyOw_Aj4VSXMuJISyuwrKOzYzUV8DQ89Rh27mOfQAu42JxxdtDSUy_eKnfZCnyNy2QZU5KKJcn93gdGLisIPNzGlnvRUgcMMfJqYqT_96w7L7noW2BBm9E0tb66HvCRYYctHUYUTF0XoPfRYr7RQ6E7vOpkWJxzAY76q04va5G2Bd_7SDa-hqv2kkHnZeW_DxsTmioIVj5JSzKVAygEPjG7rL4hWOoIgWNNsALdXl604tVUoldC9gPX-8A549yeaIBSRoNxO6J6Yq2MqcIQFYNyB8cK8HZ-dxNoDBBQtl20bz_4XLaSKmwYExiEhJVhoEQf0Qx19TDuBpN2_mjzxkTTqu8QYa5cUUHBNaHc_onngT_nrBp71rMGMkSF10e7PQiVQ8uiX0aRe3xwJ527oyl5innjmFh_i3jbhbwMTjPd2N6oP65wOc5DpplF4-ZOjgBdM9o_vBLJv51_EsKJcUm6ejuY6thPssZ5-5B5NxWfIHKXzfgTfxhs85x_nJZ9iAj1fvhuzuYRsnFOD9BzAKuhBePMtP4LhmuX4SzNNJqSk97f-MpPwk0r62Zc_uxLG--9J_rUPtTy4QDk6JdvBaCSEZWLFrVOTteTu0kuBFRzVExWWy7oHySs2Wx0wbZNNO8YrlSK3SQJmnJ7NMRyLepRvGmsGgMkUESFwDjPY7k3J0CnhoS_XuapwP3pDh5Py7xvJ4iDzDQrAb-5bH8K9oaxmlR4Y0zDmWmUJHfBjMfKLXxwofqPj0uU5HVCrHGWVIfvrqHSaSyEihWi439T3nmY9clEUpwiGIoQFy0TkAVHvXBoJ8V-DQ9xO2QIdkDoJRBdYXfsK4HcqGdp39GK8QBXNwfULAhCLdwvsEJeGVlpj8z4Le1R_tUm4XavdDMUQm3ezUaXAvH_dHw3maK9DOQTeXwvB9Q_3OMPoWpDPVdkb9hDsekL05rwknqepBldSY0FFFJDZSYyNrL-fbICeDK6C7fGK3kZGkfGR01-1H3l-ZBYJNIurGcssOZW66ln-a9pvboN5f-wa0EWHQk5NzEvL-cW4NILeVO5PTWWJAxV8ldxoqSkqN4P7QjEjoDh-z8QLwsw8k8nPh_WK7OhyeW1lPFlSI0HjF4SflsGiGpRucu1ASgC_836st-gNjF4P0D-St2X1w8O4smd8uHjP22wpZDWPH1O_K-8hK6T20P1y8ejltFxkBKDs8N9EbppeTVMJXRXbRI43-GsrKimXZSgdpls_Cx2-feUXXIXZZDWREaDQ578WnCn9WnnS4Js6xW5_DrfcGvXHT_4prctpMVaiAloTUab6tUrp4hS07X7QSSmAy4wtDNPB7L2g0rTWs2vHfr7jPiTp2MVrGzBVXw15Yh73bOWkYd8iQMvKQAbG49Uzv-6uhLt4lxsCQLXb9JF03BTJ5lag_Njnk6wp2X2lReUuB6tabJhUk54YxdHxjBjqtHgcm08f8hQaAJuBmhbPeY_lAiS7HKopwwUfWHUXk2gr64HgcEkdMTeka94sTBauxHrMNGAX3PfZOS0"
+              ],
+              "nonce": "vJPKFyH0P2wa1B89",
+              "v": 1
+            },
+            "command_id": "ozjKBKpBGabhajNiChZttaYzv1MCwGCTT2gD4S6-z14",
+            "delegation": null,
+            "epoch": 1,
+            "instance_id": "Woq9iCyC5t-SPQr9YJBo7Kh0IXWFyO-biJb8zTKNovk",
+            "issued_at": 1792415348055,
+            "mode": "PRIVATE",
+            "policy_hash": "d96ddac0d364f368f6baac1aa7fb6271f1e4945e681914da072610ef81a37312",
+            "previous": "9924679bdd416df617f8a09c70ba2c5b442bc70b68c505b7027f406c9a9b5ee5",
+            "protocol_format_ceiling": 1,
+            "sequence": 2,
+            "signing_key": "MJHGnZrx6nJ_heCLgzp9wejxWw-84AsgcNoNyOF_hpc",
+            "structure": {
+              "heads": [],
+              "mode": "DELTA",
+              "records": [
+                {
+                  "actor_id": "gjzLXyXFuyQ0UESg-UD2sTiSnu5L_WOWlsMY28KEGc4",
+                  "created": 1792415348055,
+                  "entity_id": "n3tq9F5j2Vj0cUqMPm7u_N5ilzxqccsnJ47qEfQMcis",
+                  "fields": {
+                    "author": "gjzLXyXFuyQ0UESg-UD2sTiSnu5L_WOWlsMY28KEGc4",
+                    "reply_to": null
+                  },
+                  "instance_id": "Woq9iCyC5t-SPQr9YJBo7Kh0IXWFyO-biJb8zTKNovk",
+                  "protocol_digest": "e31188a871138c8065682517931fba8c3fbd288516cda6c7aad88ff70c135c17",
+                  "record_id": "VCM5qgqDgYhJFMpk8grypDzD7t81TuS_T-xeeBQ4CO4",
+                  "revision": 1,
+                  "schema_ref": "discussion.message"
+                }
+              ],
+              "v": 1
+            },
+            "v": 3,
+            "workspace_id": "tUHF8rW1IUK40N7tHu3brdD_MRwbe1BfY4u8LifOYLs"
+          },
+          "signature": "FBkErNoI-TqWBTI6KTSFuNqSh-A0QNd-cH_H_BIjCNrHqwrh_8GooOj5C4NZh_CihwTFSmDgV69rKnZkKQQ5AQ"
+        },
+        "policy": {
+          "payload": {
+            "effective_sequence": 1,
+            "epoch": 1,
+            "issued_at": 1792415347857,
+            "members": [
+              {
+                "actor_id": "gjzLXyXFuyQ0UESg-UD2sTiSnu5L_WOWlsMY28KEGc4",
+                "certificate": {
+                  "payload": {
+                    "actor_id": "gjzLXyXFuyQ0UESg-UD2sTiSnu5L_WOWlsMY28KEGc4",
+                    "encryption_key": {
+                      "crv": "P-256",
+                      "kty": "EC",
+                      "x": "1pjvyqKGgdfyODJ8ZEibsPK1pr9m5857PxD1cnPZb38",
+                      "y": "wJ74Vg2rd0hU64b5A6aOXZfcctjlNFTQgQww62e-PAc"
+                    },
+                    "encryption_key_id": "_0usyz6cUxKBsVyHlyIdOLfJiYcNYi6G53WRoicfz7M",
+                    "expires_at": 1824037747808,
+                    "issued_at": 1792415347808,
+                    "signing_key": "MJHGnZrx6nJ_heCLgzp9wejxWw-84AsgcNoNyOF_hpc",
+                    "v": 1
+                  },
+                  "signature": "VRd_UyjoWfDw0YPGjGnnXlzdxFC1B6f2VplqybBPZUx4SdaNP99DKwkfq4QUZZ7Y_K6Ck_xpBF-44H-gnYzsCQ"
+                },
+                "role": "OWNER",
+                "scopes": [
+                  {
+                    "actions": [
+                      "discussion.post",
+                      "discussion.reply",
+                      "discussion.summarize"
+                    ],
+                    "capabilities": [
+                      "POST",
+                      "SUMMARIZE"
+                    ],
+                    "instance_id": "Woq9iCyC5t-SPQr9YJBo7Kh0IXWFyO-biJb8zTKNovk",
+                    "protocol_roles": [
+                      "CONTRIBUTOR",
+                      "EDITOR"
+                    ]
+                  },
+                  {
+                    "actions": [
+                      "wiki.create",
+                      "wiki.revise",
+                      "wiki.branch",
+                      "wiki.select_head"
+                    ],
+                    "capabilities": [
+                      "EDIT"
+                    ],
+                    "instance_id": "5t1Prxhe6ODou0JWqeQP_fYksPbpx2aPuArrZzhgeOA",
+                    "protocol_roles": [
+                      "EDITOR"
+                    ]
+                  },
+                  {
+                    "actions": [
+                      "task.create",
+                      "task.update",
+                      "task.report"
+                    ],
+                    "capabilities": [
+                      "MANAGE",
+                      "REPORT"
+                    ],
+                    "instance_id": "d5AiuzZMFyvyyj2Y9e1i0CxOk4VCgEZZqXirAbjYxqw",
+                    "protocol_roles": [
+                      "MANAGER",
+                      "CONTRIBUTOR"
+                    ]
+                  },
+                  {
+                    "actions": [
+                      "service.PROPOSE",
+                      "service.SETTLE",
+                      "service.DELIVER",
+                      "service.NOTE"
+                    ],
+                    "capabilities": [
+                      "PROPOSE",
+                      "SETTLE",
+                      "DELIVER",
+                      "NOTE"
+                    ],
+                    "instance_id": "Ecn-VuKHqLFYayU73EwvtKGyu-BXpBwIYWKarlh_Hsk",
+                    "protocol_roles": [
+                      "REQUESTER"
+                    ]
+                  },
+                  {
+                    "actions": [
+                      "service.REPORTED_AUTHORIZATION",
+                      "service.REPORTED_DELIVERY"
+                    ],
+                    "capabilities": [
+                      "REPORT"
+                    ],
+                    "instance_id": "ZVU4EfUlf24vbWg-a7xs24hx6vG7np3vOBb8wRi7hPY",
+                    "protocol_roles": [
+                      "BRIDGE"
+                    ]
+                  },
+                  {
+                    "actions": [
+                      "outputs.select_pinned",
+                      "outputs.select_following"
+                    ],
+                    "capabilities": [
+                      "SELECT"
+                    ],
+                    "instance_id": "FGm-1x_L0Z89I8eJZVXV3nohgW9SB0x4c_89_z4dHME",
+                    "protocol_roles": [
+                      "CURATOR"
+                    ]
+                  }
+                ]
+              }
+            ],
+            "owner_id": "gjzLXyXFuyQ0UESg-UD2sTiSnu5L_WOWlsMY28KEGc4",
+            "previous_policy": null,
+            "protocol_format_ceiling": 1,
+            "signing_key": "MJHGnZrx6nJ_heCLgzp9wejxWw-84AsgcNoNyOF_hpc",
+            "structure": {
+              "disclosure": [
+                {
+                  "fields": [
+                    "reply_to",
+                    "author"
+                  ],
+                  "protocol_digest": "e31188a871138c8065682517931fba8c3fbd288516cda6c7aad88ff70c135c17",
+                  "schema": "discussion.message"
+                },
+                {
+                  "fields": [
+                    "author"
+                  ],
+                  "protocol_digest": "e31188a871138c8065682517931fba8c3fbd288516cda6c7aad88ff70c135c17",
+                  "schema": "wiki.revision"
+                },
+                {
+                  "fields": [
+                    "author",
+                    "parent"
+                  ],
+                  "protocol_digest": "05300473589495f96080b96c78962acc0c0ecc8bf1ae82d84f214042a6d30ca2",
+                  "schema": "wiki.revision"
+                },
+                {
+                  "fields": [
+                    "status",
+                    "assignee",
+                    "author",
+                    "parent"
+                  ],
+                  "protocol_digest": "834f9b1ee62ad016c1be9067dfaa96dba71cfbacbed02487fe9ab9afcb5f8e50",
+                  "schema": "task.revision"
+                },
+                {
+                  "fields": [
+                    "task_ref",
+                    "author"
+                  ],
+                  "protocol_digest": "834f9b1ee62ad016c1be9067dfaa96dba71cfbacbed02487fe9ab9afcb5f8e50",
+                  "schema": "task.report"
+                },
+                {
+                  "fields": [],
+                  "protocol_digest": "81ef3b74557ddaa685318c860374c3de01243f69c18804fe6fbc923c176f62da",
+                  "schema": "service.message"
+                },
+                {
+                  "fields": [],
+                  "protocol_digest": "81ef3b74557ddaa685318c860374c3de01243f69c18804fe6fbc923c176f62da",
+                  "schema": "service.scope"
+                },
+                {
+                  "fields": [],
+                  "protocol_digest": "81ef3b74557ddaa685318c860374c3de01243f69c18804fe6fbc923c176f62da",
+                  "schema": "service.approval"
+                },
+                {
+                  "fields": [],
+                  "protocol_digest": "81ef3b74557ddaa685318c860374c3de01243f69c18804fe6fbc923c176f62da",
+                  "schema": "service.delivery"
+                },
+                {
+                  "fields": [],
+                  "protocol_digest": "81ef3b74557ddaa685318c860374c3de01243f69c18804fe6fbc923c176f62da",
+                  "schema": "service.note"
+                },
+                {
+                  "fields": [],
+                  "protocol_digest": "84c9b0d5f74522d7b6ad89a1f97c509f49aad1ecac2701c4f93dd1bc2c3defa1",
+                  "schema": "service.external_report"
+                },
+                {
+                  "fields": [],
+                  "protocol_digest": "e8bd3597e1f41683a4c579c71694a6784c6acb3c39de50c0b3064144debdad9b",
+                  "schema": "outputs.selection"
+                }
+              ],
+              "instances": [
+                {
+                  "instance_id": "Woq9iCyC5t-SPQr9YJBo7Kh0IXWFyO-biJb8zTKNovk",
+                  "protocol_digest": "e31188a871138c8065682517931fba8c3fbd288516cda6c7aad88ff70c135c17"
+                },
+                {
+                  "instance_id": "5t1Prxhe6ODou0JWqeQP_fYksPbpx2aPuArrZzhgeOA",
+                  "protocol_digest": "05300473589495f96080b96c78962acc0c0ecc8bf1ae82d84f214042a6d30ca2"
+                },
+                {
+                  "instance_id": "d5AiuzZMFyvyyj2Y9e1i0CxOk4VCgEZZqXirAbjYxqw",
+                  "protocol_digest": "834f9b1ee62ad016c1be9067dfaa96dba71cfbacbed02487fe9ab9afcb5f8e50"
+                },
+                {
+                  "instance_id": "Ecn-VuKHqLFYayU73EwvtKGyu-BXpBwIYWKarlh_Hsk",
+                  "protocol_digest": "81ef3b74557ddaa685318c860374c3de01243f69c18804fe6fbc923c176f62da"
+                },
+                {
+                  "instance_id": "ZVU4EfUlf24vbWg-a7xs24hx6vG7np3vOBb8wRi7hPY",
+                  "protocol_digest": "84c9b0d5f74522d7b6ad89a1f97c509f49aad1ecac2701c4f93dd1bc2c3defa1"
+                },
+                {
+                  "instance_id": "FGm-1x_L0Z89I8eJZVXV3nohgW9SB0x4c_89_z4dHME",
+                  "protocol_digest": "e8bd3597e1f41683a4c579c71694a6784c6acb3c39de50c0b3064144debdad9b"
+                }
+              ],
+              "protocols": [
+                {
+                  "actions": {
+                    "discussion.post": {
+                      "capabilities": [
+                        "POST"
+                      ],
+                      "heads": "NONE",
+                      "roles": [
+                        "CONTRIBUTOR"
+                      ],
+                      "schemas": [
+                        "discussion.message"
+                      ]
+                    },
+                    "discussion.reply": {
+                      "capabilities": [
+                        "POST"
+                      ],
+                      "heads": "NONE",
+                      "roles": [
+                        "CONTRIBUTOR"
+                      ],
+                      "schemas": [
+                        "discussion.message"
+                      ]
+                    },
+                    "discussion.summarize": {
+                      "capabilities": [
+                        "SUMMARIZE"
+                      ],
+                      "heads": "APPEND",
+                      "roles": [
+                        "EDITOR"
+                      ],
+                      "schemas": [
+                        "wiki.revision"
+                      ]
+                    }
+                  },
+                  "protocol_digest": "e31188a871138c8065682517931fba8c3fbd288516cda6c7aad88ff70c135c17",
+                  "schemas": {
+                    "discussion.message": {
+                      "fields": {
+                        "author": {
+                          "protection": "server_readable",
+                          "type": "actor"
+                        },
+                        "message": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "reply_to": {
+                          "protection": "server_readable",
+                          "type": "optional_reference"
+                        }
+                      },
+                      "required": [
+                        "message",
+                        "reply_to",
+                        "author"
+                      ]
+                    },
+                    "wiki.revision": {
+                      "fields": {
+                        "author": {
+                          "protection": "server_readable",
+                          "type": "actor"
+                        },
+                        "body": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "source_refs": {
+                          "protection": "e2ee",
+                          "type": "json"
+                        },
+                        "title": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "title",
+                        "body",
+                        "source_refs",
+                        "author"
+                      ]
+                    }
+                  },
+                  "v": 1
+                },
+                {
+                  "actions": {
+                    "wiki.branch": {
+                      "capabilities": [
+                        "EDIT"
+                      ],
+                      "heads": "NONE",
+                      "roles": [
+                        "EDITOR"
+                      ],
+                      "schemas": [
+                        "wiki.revision"
+                      ]
+                    },
+                    "wiki.create": {
+                      "capabilities": [
+                        "EDIT"
+                      ],
+                      "heads": "APPEND",
+                      "roles": [
+                        "EDITOR"
+                      ],
+                      "schemas": [
+                        "wiki.revision"
+                      ]
+                    },
+                    "wiki.revise": {
+                      "capabilities": [
+                        "EDIT"
+                      ],
+                      "heads": "APPEND",
+                      "roles": [
+                        "EDITOR"
+                      ],
+                      "schemas": [
+                        "wiki.revision"
+                      ]
+                    },
+                    "wiki.select_head": {
+                      "capabilities": [
+                        "EDIT"
+                      ],
+                      "heads": "SELECT",
+                      "roles": [
+                        "EDITOR"
+                      ],
+                      "schemas": []
+                    }
+                  },
+                  "protocol_digest": "05300473589495f96080b96c78962acc0c0ecc8bf1ae82d84f214042a6d30ca2",
+                  "schemas": {
+                    "wiki.revision": {
+                      "fields": {
+                        "author": {
+                          "protection": "server_readable",
+                          "type": "actor"
+                        },
+                        "body": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "parent": {
+                          "protection": "server_readable",
+                          "type": "optional_reference"
+                        },
+                        "title": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "title",
+                        "body",
+                        "author",
+                        "parent"
+                      ]
+                    }
+                  },
+                  "v": 1
+                },
+                {
+                  "actions": {
+                    "task.create": {
+                      "capabilities": [
+                        "MANAGE"
+                      ],
+                      "heads": "APPEND",
+                      "roles": [
+                        "MANAGER"
+                      ],
+                      "schemas": [
+                        "task.revision"
+                      ],
+                      "task_transition": [
+                        {
+                          "from": null,
+                          "to": "OPEN"
+                        }
+                      ]
+                    },
+                    "task.report": {
+                      "capabilities": [
+                        "REPORT"
+                      ],
+                      "heads": "NONE",
+                      "roles": [
+                        "CONTRIBUTOR"
+                      ],
+                      "schemas": [
+                        "task.report"
+                      ]
+                    },
+                    "task.update": {
+                      "capabilities": [
+                        "MANAGE"
+                      ],
+                      "heads": "APPEND",
+                      "roles": [
+                        "MANAGER"
+                      ],
+                      "schemas": [
+                        "task.revision"
+                      ],
+                      "task_transition": [
+                        {
+                          "from": "OPEN",
+                          "to": "IN_PROGRESS"
+                        },
+                        {
+                          "from": "IN_PROGRESS",
+                          "to": "DONE"
+                        },
+                        {
+                          "from": "OPEN",
+                          "to": "CANCELED"
+                        },
+                        {
+                          "from": "IN_PROGRESS",
+                          "to": "CANCELED"
+                        }
+                      ]
+                    }
+                  },
+                  "protocol_digest": "834f9b1ee62ad016c1be9067dfaa96dba71cfbacbed02487fe9ab9afcb5f8e50",
+                  "schemas": {
+                    "task.report": {
+                      "fields": {
+                        "author": {
+                          "protection": "server_readable",
+                          "type": "actor"
+                        },
+                        "evidence_refs": {
+                          "protection": "e2ee",
+                          "type": "json"
+                        },
+                        "kind": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "summary": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "task_ref": {
+                          "protection": "server_readable",
+                          "type": "reference"
+                        }
+                      },
+                      "required": [
+                        "task_ref",
+                        "kind",
+                        "summary",
+                        "evidence_refs",
+                        "author"
+                      ]
+                    },
+                    "task.revision": {
+                      "fields": {
+                        "assignee": {
+                          "protection": "server_readable",
+                          "type": "optional_actor"
+                        },
+                        "author": {
+                          "protection": "server_readable",
+                          "type": "actor"
+                        },
+                        "description": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "note": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "parent": {
+                          "protection": "server_readable",
+                          "type": "optional_reference"
+                        },
+                        "status": {
+                          "protection": "server_readable",
+                          "type": "task_status"
+                        },
+                        "title": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "title",
+                        "description",
+                        "status",
+                        "assignee",
+                        "note",
+                        "author",
+                        "parent"
+                      ]
+                    }
+                  },
+                  "v": 1
+                },
+                {
+                  "actions": {
+                    "service.DELIVER": {
+                      "capabilities": [
+                        "DELIVER"
+                      ],
+                      "heads": "NONE",
+                      "roles": [
+                        "TRUSTED"
+                      ],
+                      "schemas": [
+                        "service.delivery"
+                      ]
+                    },
+                    "service.NOTE": {
+                      "capabilities": [
+                        "NOTE"
+                      ],
+                      "heads": "NONE",
+                      "roles": [],
+                      "schemas": [
+                        "service.note"
+                      ]
+                    },
+                    "service.PROPOSE": {
+                      "capabilities": [
+                        "PROPOSE"
+                      ],
+                      "heads": "APPEND",
+                      "roles": [],
+                      "schemas": [
+                        "service.message",
+                        "service.scope"
+                      ]
+                    },
+                    "service.SETTLE": {
+                      "capabilities": [
+                        "SETTLE"
+                      ],
+                      "heads": "NONE",
+                      "roles": [],
+                      "schemas": [
+                        "service.approval",
+                        "service.message"
+                      ]
+                    }
+                  },
+                  "protocol_digest": "81ef3b74557ddaa685318c860374c3de01243f69c18804fe6fbc923c176f62da",
+                  "schemas": {
+                    "service.approval": {
+                      "fields": {
+                        "action_context": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "author": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "executor_actor": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "scope_ref": {
+                          "protection": "e2ee",
+                          "type": "json"
+                        }
+                      },
+                      "required": [
+                        "scope_ref",
+                        "executor_actor",
+                        "action_context",
+                        "author"
+                      ]
+                    },
+                    "service.delivery": {
+                      "fields": {
+                        "approval_ref": {
+                          "protection": "e2ee",
+                          "type": "json"
+                        },
+                        "artifact_refs": {
+                          "protection": "e2ee",
+                          "type": "json"
+                        },
+                        "author": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "summary": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "approval_ref",
+                        "artifact_refs",
+                        "summary",
+                        "author"
+                      ]
+                    },
+                    "service.message": {
+                      "fields": {
+                        "author": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "kind": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "text": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "text",
+                        "author"
+                      ]
+                    },
+                    "service.note": {
+                      "fields": {
+                        "author": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "evidence_refs": {
+                          "protection": "e2ee",
+                          "type": "json"
+                        },
+                        "kind": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "summary": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "summary",
+                        "evidence_refs",
+                        "author"
+                      ]
+                    },
+                    "service.scope": {
+                      "fields": {
+                        "author": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "scope": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "scope",
+                        "author"
+                      ]
+                    }
+                  },
+                  "v": 1
+                },
+                {
+                  "actions": {
+                    "service.REPORTED_AUTHORIZATION": {
+                      "capabilities": [
+                        "REPORT"
+                      ],
+                      "heads": "NONE",
+                      "roles": [
+                        "BRIDGE"
+                      ],
+                      "schemas": [
+                        "service.external_report"
+                      ]
+                    },
+                    "service.REPORTED_DELIVERY": {
+                      "capabilities": [
+                        "REPORT"
+                      ],
+                      "heads": "NONE",
+                      "roles": [
+                        "BRIDGE"
+                      ],
+                      "schemas": [
+                        "service.external_report"
+                      ]
+                    }
+                  },
+                  "protocol_digest": "84c9b0d5f74522d7b6ad89a1f97c509f49aad1ecac2701c4f93dd1bc2c3defa1",
+                  "schemas": {
+                    "service.external_report": {
+                      "fields": {
+                        "external_ref": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "grants_external_authority": {
+                          "protection": "e2ee",
+                          "type": "boolean"
+                        },
+                        "kind": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "reporter": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "summary": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "external_ref",
+                        "summary",
+                        "reporter",
+                        "grants_external_authority"
+                      ]
+                    }
+                  },
+                  "v": 1
+                },
+                {
+                  "actions": {
+                    "outputs.select_following": {
+                      "capabilities": [
+                        "SELECT"
+                      ],
+                      "heads": "NONE",
+                      "roles": [
+                        "CURATOR"
+                      ],
+                      "schemas": [
+                        "outputs.selection"
+                      ]
+                    },
+                    "outputs.select_pinned": {
+                      "capabilities": [
+                        "SELECT"
+                      ],
+                      "heads": "NONE",
+                      "roles": [
+                        "CURATOR"
+                      ],
+                      "schemas": [
+                        "outputs.selection"
+                      ]
+                    }
+                  },
+                  "protocol_digest": "e8bd3597e1f41683a4c579c71694a6784c6acb3c39de50c0b3064144debdad9b",
+                  "schemas": {
+                    "outputs.selection": {
+                      "fields": {
+                        "collection": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "entity_id": {
+                          "protection": "e2ee",
+                          "type": "json"
+                        },
+                        "label": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "mode": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "selector_actor": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "summary": {
+                          "protection": "e2ee",
+                          "type": "string"
+                        },
+                        "target_ref": {
+                          "protection": "e2ee",
+                          "type": "json"
+                        }
+                      },
+                      "required": [
+                        "collection",
+                        "mode",
+                        "label",
+                        "summary",
+                        "target_ref",
+                        "entity_id",
+                        "selector_actor"
+                      ]
+                    }
+                  },
+                  "v": 1
+                }
+              ],
+              "v": 1
+            },
+            "structure_mode": "STRUCTURED",
+            "v": 3,
+            "version": 1,
+            "visibility": "PRIVATE",
+            "workspace_id": "tUHF8rW1IUK40N7tHu3brdD_MRwbe1BfY4u8LifOYLs"
+          },
+          "signature": "hY94wqKAtqMAv2UBn6l9fZ7F6-p3FOSbTeorsZ860T82loB7A_UBLEHDFa8N8EWSjj_G3SARlRW3BI_caOodCw"
+        }
+      }
+    ]
+  },
+  "query": {
+    "kind": "records",
+    "instance_id": "Woq9iCyC5t-SPQr9YJBo7Kh0IXWFyO-biJb8zTKNovk",
+    "limit": 2
+  },
+  "nonce": "eMAK-EQvb0Jk9lInXutzohL-msimhNJMPeZADYidK3k",
+  "pin": {
+    "workspace": "tUHF8rW1IUK40N7tHu3brdD_MRwbe1BfY4u8LifOYLs",
+    "ownerId": "gjzLXyXFuyQ0UESg-UD2sTiSnu5L_WOWlsMY28KEGc4",
+    "ownerKey": "MJHGnZrx6nJ_heCLgzp9wejxWw-84AsgcNoNyOF_hpc",
+    "origin": "https://api.example.test",
+    "audience": "current-page-test",
+    "serviceKey": "lHXGzw7aNAV1KNhpR4HsySrWOdfivSd2HtPvdJJL6wc"
+  },
+  "keyring": {
+    "v": 1,
+    "workspace_id": "tUHF8rW1IUK40N7tHu3brdD_MRwbe1BfY4u8LifOYLs",
+    "keys": [
+      {
+        "epoch": 1,
+        "key": "wBk_O6L1_SFtLO5BMoplY5t3hx7Pvrhcf5D82egN2mc"
+      }
+    ]
+  }
+}

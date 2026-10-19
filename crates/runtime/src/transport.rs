@@ -221,6 +221,70 @@ impl HttpTransport {
         read_bounded(response, MAX_DISCOVERY_BYTES, cancel).await
     }
 
+    /// Bounded anonymous read-view artifacts only. Never falls back to journal access.
+    pub(crate) async fn get_public_read_view(&self, workspace: &str, artifact: &str, parameter: &str, max_bytes: usize, cancel: &CancellationToken) -> Result<ExactHttpResponse, TransportError> {
+        let token = |v: &str| v.len() == 43 && v.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
+        let hash = |v: &str| v.len() == 64 && v.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+        let observe = artifact == "observe";
+        let valid = if observe { token(parameter) && max_bytes <= 2*1024*1024 } else {
+            (artifact.strip_prefix("nodes/").is_some_and(hash) || artifact.strip_prefix("commits/").is_some_and(hash)) && hash(parameter) && max_bytes <= 2*1024*1024+196608
+        };
+        if !token(workspace) || !valid { return Err(TransportError::InvalidOrigin); }
+        let mut url = self.endpoint(&format!("/api/workspace/v1/public/workspaces/{workspace}/read-view/{artifact}"))?;
+        url.query_pairs_mut().append_pair(if observe { "nonce" } else { "root" }, parameter);
+        let response = tokio::select! {
+            _ = cancel.cancelled() => return Err(TransportError::Cancelled),
+            result = self.client.get(url).header("Cache-Control", "no-store").send() => result.map_err(map_network_error)?,
+        };
+        read_bounded(response, max_bytes, cancel).await
+    }
+
+    /// Signed protected-profile reads; path construction is fixed and independently bounded.
+    pub(crate) async fn get_secure_read_view(&self, workspace: &str, artifact: &str,
+        parameter: &str, proof: &str, max_bytes: usize, cancel: &CancellationToken)
+        -> Result<ExactHttpResponse,TransportError> {
+        let token=|v:&str| v.len()==43 && v.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'_'||b==b'-');
+        let hash=|v:&str| v.len()==64 && v.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b));
+        let observe=artifact=="observe";
+        let valid=if observe {token(parameter)&&max_bytes<=2*1024*1024} else {
+            (artifact.strip_prefix("nodes/").is_some_and(hash)||artifact.strip_prefix("commits/").is_some_and(hash))
+                &&hash(parameter)&&max_bytes<=2*1024*1024+196608};
+        if !token(workspace)||!valid||proof.is_empty()||proof.len()>12000 {return Err(TransportError::InvalidOrigin)}
+        let mut url=self.endpoint(&format!("/api/workspace/v1/secure/workspaces/{workspace}/read-view/{artifact}"))?;
+        url.query_pairs_mut().append_pair(if observe {"nonce"} else {"root"},parameter);
+        let response=tokio::select! {
+            _=cancel.cancelled()=>return Err(TransportError::Cancelled),
+            result=self.client.get(url).header("X-Peerwork-Read",proof).header("Cache-Control","no-store").send()=>result.map_err(map_network_error)?,
+        };
+        read_bounded(response,max_bytes,cancel).await
+    }
+
+    /// Owner/publisher-signed read-model artifact publication. The body has its own signed command ID.
+    pub(crate) async fn post_read_view_publication(&self, body:&[u8], proof:&str,
+        cancel:&CancellationToken) -> Result<ExactHttpResponse,TransportError> {
+        if body.len()>8*1024*1024||proof.is_empty()||proof.len()>12000{return Err(TransportError::ResponseTooLarge)}
+        let url=self.endpoint("/api/workspace/v1/read-model/publications")?;
+        let response=tokio::select! {
+            _=cancel.cancelled()=>return Err(TransportError::Cancelled),
+            result=self.client.post(url).header("X-Peerwork-Read",proof).header("Content-Type","application/json").body(body.to_vec()).send()=>result.map_err(map_network_error)?,
+        };
+        read_bounded(response,2*1024*1024,cancel).await
+    }
+
+    /// System-maintained structure page with original encrypted author evidence.
+    pub(crate) async fn get_secure_current_page(&self, workspace:&str, nonce:&str, query:&str,
+        proof:&str, cancel:&CancellationToken) -> Result<ExactHttpResponse,TransportError> {
+        let token=|v:&str|v.len()==43&&v.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'_'||b==b'-');
+        if !token(workspace)||!token(nonce)||query.len()>6000||query.is_empty()||!query.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'_'||b==b'-')||proof.is_empty()||proof.len()>16000{return Err(TransportError::InvalidOrigin)}
+        let mut url=self.endpoint(&format!("/api/workspace/v1/secure/workspaces/{workspace}/current-page"))?;
+        url.query_pairs_mut().append_pair("nonce",nonce).append_pair("query",query);
+        let response=tokio::select! {
+            _=cancel.cancelled()=>return Err(TransportError::Cancelled),
+            result=self.client.get(url).header("X-Peerwork-Read",proof).header("Cache-Control","no-store").send()=>result.map_err(map_network_error)?,
+        };
+        read_bounded(response,8*1024*1024,cancel).await
+    }
+
     /// Anonymous public catalog GET. A caller must validate projected listing
     /// fields separately and re-hash exact package bytes before selection.
     pub(crate) async fn get_public_catalog(
@@ -375,6 +439,15 @@ impl HttpTransport {
             result = send => result.map_err(map_network_error)?,
         };
         read_bounded(response, max_response_bytes, cancel).await
+    }
+
+    /// Anonymous journal bytes. Only the shared signed replay can authorize content.
+    pub(crate) async fn get_public_journal_exact(&self, workspace:&str, after:u64, cancel:&CancellationToken)->Result<ExactHttpResponse,TransportError>{
+        if !valid_identity_token(workspace){return Err(TransportError::InvalidOrigin)}
+        let path=format!("/api/workspace/v1/public/secure/workspaces/{workspace}/journal?after={after}&limit=50");
+        let send=self.client.get(self.endpoint(&path)?).send();
+        let response=tokio::select!{_ = cancel.cancelled()=>return Err(TransportError::Cancelled),result=send=>result.map_err(map_network_error)?};
+        read_bounded(response,8*1024*1024,cancel).await
     }
 
     /// Exact actor-authenticated PUBLIC workspace administration snapshot.

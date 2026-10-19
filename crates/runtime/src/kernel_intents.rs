@@ -534,6 +534,17 @@ impl KernelIntentJournal {
         Ok(selected)
     }
 
+    pub(crate) fn require_discovery_pin(&self, origin: &str) -> Result<(), JournalError> {
+        let saved: Option<(String, Vec<u8>)> = self.db.query_row(
+            "SELECT origin,discovery_wire FROM pinned_discovery WHERE id=1", [],
+            |row| Ok((row.get(0)?,row.get(1)?))).optional()?;
+        let (saved_origin, wire) = saved.ok_or(JournalError::DiscoveryChanged)?;
+        if saved_origin != origin || parse_discovery_wire(&wire,256*1024).is_err() {
+            return Err(JournalError::DiscoveryChanged);
+        }
+        Ok(())
+    }
+
     /// Pin the schema-validated response returned by this runtime's configured
     /// HTTPS origin. Only the owning client calls this with its transport's
     /// actual origin; arbitrary public callers cannot authorize a pin.
