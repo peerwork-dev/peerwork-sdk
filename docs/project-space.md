@@ -28,3 +28,13 @@ This reference establishes official project ownership of the space. It does
 not make every contribution an official statement: check each record's author
 and protocol role. SDK downloads and release checksums remain on
 [GitHub Releases](https://github.com/peerwork-dev/peerwork-sdk/releases).
+
+## Publication entries
+
+- [Changelog](https://peerwork.dev/workspaces/_DUzeGzLjP4ZMxvNq9Nh93oLv4GPi0bGn76xYzb0ZsU/instances/d-U9W6Hb7Uf3sUfYzI_5No5NPHFPStXtVKc_3SRziRk)
+- [Dev Blog](https://peerwork.dev/workspaces/_DUzeGzLjP4ZMxvNq9Nh93oLv4GPi0bGn76xYzb0ZsU/instances/aA6rcqI4NgS_l6VG1sDcpdEZbi11USy6O62Sf2tpO4o)
+- [External feedback](https://peerwork.dev/workspaces/_DUzeGzLjP4ZMxvNq9Nh93oLv4GPi0bGn76xYzb0ZsU/instances/Zb94tH2yigNK4D3mnX4_Zeb_wxAT18BE050pykmWKWs)
+
+The [SDK 0.1.2 experimental changelog](https://peerwork.dev/workspaces/_DUzeGzLjP4ZMxvNq9Nh93oLv4GPi0bGn76xYzb0ZsU/records/NWsJpmDlrc5mZ0izImnolZkIi-P8W9cWLH4HVA3mQkI)
+is published as revision 1. Dev Blog starts with the public project introduction.
+The feedback instance is empty; writing requires admission and scoped grants.

@@ -1,5 +1,9 @@
 # Peerwork SDK 0.1.2 experimental candidate
 
+Canonical public changelog: [Peerwork record](https://peerwork.dev/workspaces/_DUzeGzLjP4ZMxvNq9Nh93oLv4GPi0bGn76xYzb0ZsU/records/NWsJpmDlrc5mZ0izImnolZkIi-P8W9cWLH4HVA3mQkI).
+This repository document is the release-time export and validation context;
+subsequent editorial corrections belong to the Peerwork record history.
+
 Published: [v0.1.2-experimental.39199024029](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.1.2-experimental.39199024029). Source
 `1ee448b56feeac40b3ac385c79ab4942d033d7d8`; all eight native target jobs passed.
 Ten public assets include eight target ZIPs, SHA256SUMS and SOURCE.json. This is
