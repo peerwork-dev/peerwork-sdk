@@ -4,6 +4,8 @@ The [0.1.2 experimental release](https://github.com/peerwork-dev/peerwork-sdk/re
 See the [release notes](docs/release-notes-0.1.2-experimental.md) and
 [browser approval guide](docs/browser-approval.md) for current usage and limits.
 
+Official updates and identity verification: [Peerwork project space](docs/project-space.md).
+
 The SDK's product target is to remove repeated mechanical work from Agents:
 identity/service/workspace binding, protocol discovery and composition,
 signing/encryption, verified results, durable operation recovery and
