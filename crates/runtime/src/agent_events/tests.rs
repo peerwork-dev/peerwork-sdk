@@ -46,8 +46,9 @@ fn real_signed_replay_receipt_retains_all_exact_effects() {
     let decoded: Value = serde_json::from_slice(&event.payload).unwrap();
     assert_eq!(decoded, f["receipt"]);
     assert_eq!(decoded["effects"].as_array().unwrap().len(), 2);
+    assert!(!replay.contains_checkpoint(2, Some("wrong-head"), replay.policy_hash()));
     let dir = crate::test_support::protected_test_dir();
-    let mut inbox = AgentInbox::open(
+    let opened = AgentInbox::open(
         &dir.path().join("events.sqlite"),
         &InboxBinding {
             service: "fixture-service".into(),
@@ -57,8 +58,13 @@ fn real_signed_replay_receipt_retains_all_exact_effects() {
             context_fingerprint: "fixture-transport-not-qualified".into(),
         },
         InboxLimits::default(),
-    )
-    .unwrap();
+    );
+    if cfg!(not(unix)) {
+        assert!(matches!(opened, Err(InboxError::Unsupported)));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        return;
+    }
+    let mut inbox = opened.unwrap();
     inbox
         .ingest_verified(VerifiedInboxBatch {
             prior_cursor: None,
@@ -75,7 +81,6 @@ fn real_signed_replay_receipt_retains_all_exact_effects() {
         serde_json::from_slice::<Value>(&delivery.payload).unwrap(),
         f["receipt"]
     );
-    assert!(!replay.contains_checkpoint(2, Some("wrong-head"), replay.policy_hash()));
 }
 fn config(path: &std::path::Path) -> SecureReadProfileConfig {
     SecureReadProfileConfig {
@@ -134,12 +139,19 @@ fn local_delivery_ack_status_need_no_discovery_and_missing_store_is_noncreating(
     // Test-only source construction: production creation remains gated by
     // authenticated replay. No discovery service exists at invalid.example.
     let (binding, _, _) = local_binding(&cfg, "fp").unwrap();
-    let mut inbox = AgentInbox::open(
+    let opened = AgentInbox::open(
         &cfg.state_dir.join("agent-events.sqlite"),
         &binding,
         InboxLimits::default(),
-    )
-    .unwrap();
+    );
+    if cfg!(not(unix)) {
+        assert!(matches!(opened, Err(InboxError::Unsupported)));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), before);
+        assert!(!cfg.state_dir.join("agent-events.sqlite").exists());
+        assert!(!cfg.state_dir.join("kernel.sqlite").exists());
+        return;
+    }
+    let mut inbox = opened.unwrap();
     let wire = parse_wire_json_bounded(
         br#"{"commit_hash":"hash","command_id":"cmd","actor_id":"actor","effects":[]}"#,
         32,
@@ -272,14 +284,9 @@ fn backlog_over_one_batch_resumes_without_skipping_receipts() {
         source: SOURCE.into(),
         context_fingerprint: "fp".into(),
     };
-    let mut inbox = AgentInbox::open(
-        &dir.path().join("inbox.sqlite"),
-        &binding,
-        InboxLimits::default(),
-    )
-    .unwrap();
     let mut after = 0;
     let mut prior = None;
+    let mut batches = Vec::new();
     let mut collected = Vec::new();
     for expected_count in [256, 44] {
         let receipts = (1u64..=603).map(|seq| {
@@ -300,13 +307,11 @@ fn backlog_over_one_batch_resumes_without_skipping_receipts() {
         assert_eq!(through, if after == 0 { 512 } else { 603 });
         collected.extend(events.iter().map(|event| event.event_id.clone()));
         let cursor = through.to_string();
-        inbox
-            .ingest_verified(VerifiedInboxBatch {
-                prior_cursor: prior,
-                next_cursor: cursor.clone(),
-                events,
-            })
-            .unwrap();
+        batches.push(VerifiedInboxBatch {
+            prior_cursor: prior,
+            next_cursor: cursor.clone(),
+            events,
+        });
         prior = Some(cursor);
         after = through;
     }
@@ -316,6 +321,22 @@ fn backlog_over_one_batch_resumes_without_skipping_receipts() {
             .map(|i| format!("event-{}", i * 2))
             .collect::<Vec<_>>()
     );
+    // The projection above runs on every platform. Persistence must fail closed
+    // without creating state where private SQLite protection is unsupported.
+    let opened = AgentInbox::open(
+        &dir.path().join("inbox.sqlite"),
+        &binding,
+        InboxLimits::default(),
+    );
+    if cfg!(not(unix)) {
+        assert!(matches!(opened, Err(InboxError::Unsupported)));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        return;
+    }
+    let mut inbox = opened.unwrap();
+    for batch in batches {
+        inbox.ingest_verified(batch).unwrap();
+    }
     assert_eq!(inbox.status().unwrap().retained_events, 300);
     assert_eq!(
         inbox.status().unwrap().verified_cursor.as_deref(),

@@ -332,6 +332,8 @@ fn validate_config(
     // binding projection: upgrading producers must preserve pending recovery.
     descriptor["discovery"] = json!({"schema":"peerwork.agent-discovery.v1","operations":["discover","describe"],"verification":"authenticated_full_replay","execution":"not_evaluated"});
     descriptor["producers"] = json!(["protocol.action", "browser.approve"]);
+    // Capability metadata must not alter the frozen context binding.
+    descriptor["events"]["platform_supported"] = json!(cfg!(unix));
     Ok(Context {
         descriptor,
         actor,

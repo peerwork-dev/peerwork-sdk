@@ -16,6 +16,10 @@ Python, Node and the standalone CLI:
   approval; no TypeScript checkout/helper is required.
 - A durable action-receipt inbox provides independent consumers, leases,
   redelivery, local acknowledgement, cancellation and native bounded waiting.
+  This inbox currently supports Unix (Linux/macOS) only. Windows event storage
+  deliberately returns `UNSUPPORTED_PLATFORM`; a Windows package build does not
+  imply event-delivery support. The context descriptor exposes
+  `events.platform_supported` independently of its stable binding fingerprint.
 - An unchanged-checkpoint probe avoids transferring unchanged commit history.
   Backlogs over 256 receipts progress in bounded batches with exact verified
   partial cursors rather than permanent batch-size backpressure.

@@ -312,6 +312,16 @@ command, actor, commit and effects. Canonical receipt text is retained as an
 expert exactness field; normal callers need not decode packets or byte arrays.
 This does not cover arbitrary journal, admission, browser or external events.
 
+The durable event inbox currently has a Unix-only storage implementation
+(Linux/macOS); Windows event storage returns `UNSUPPORTED_PLATFORM`. This is a
+feature boundary, not a rejection of every other Windows SDK capability.
+`context.events.platform_supported` describes the compiled storage path and is
+added after fingerprint calculation, so capability reporting does not invalidate
+existing contexts, pending operations or inbox bindings. A `true` value still
+requires valid protected paths and does not establish installed qualification for
+every Unix target. Non-Unix tests assert the unsupported result rather than
+pretending that inbox delivery ran.
+
 `events_sync` / `eventsSync` / `event-sync` use an authenticated unchanged-checkpoint
 probe after initialization: a signed journal request starts at the saved sequence
 with limit 1. Matching checkpoint/owner/policy binding, no commits and no next

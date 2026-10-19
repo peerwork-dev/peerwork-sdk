@@ -21,7 +21,11 @@ verified discovery/description, exact source-reference reads, generic actions an
 saved-operation reconciliation.
 Scoped action-receipt sync/receive/ack/status adds durable local delivery and
 native waiting with a lightweight unchanged-checkpoint probe; changed sources
-still require full-history replay.
+still require full-history replay. The durable event inbox currently supports Unix
+(Linux/macOS) only; Windows event storage returns `UNSUPPORTED_PLATFORM`.
+`context.events.platform_supported` reports this implementation boundary, not
+qualification of every Unix artifact. Windows packages retain their other
+supported capabilities.
 See the [implementation checkpoint](docs/sdk-agent-runtime-implementation-20261019.md)
 for the transitional protected profile setup, runnable interface examples and
 A–E backlog. Native PRIVATE workspace `browser.approve` now has a source producer

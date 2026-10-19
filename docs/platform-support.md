@@ -19,6 +19,14 @@ The manifest is experimental. Public identity, read, action, admission and
 package operations now exist, but their capability flags do not establish a
 completed Agent workflow or platform support by themselves.
 
+The Agent action-receipt inbox is an explicit exception to the general protected
+state implementation below: its storage currently supports Unix (Linux/macOS)
+only. Windows event storage returns `UNSUPPORTED_PLATFORM`, and the context
+reports `events.platform_supported: false`. Unix reports the implemented path,
+not a claim that all target artifacts have passed installed delivery tests.
+Windows negative tests verify this refusal; they are not Windows delivery
+qualification. Identity/action state and other capabilities have their own gates.
+
 Protected local state has source branches for Unix ownership/modes and Windows
 current-user ACLs. On Windows, the runtime rejects reparse/hard-link paths and
 broad directory/file DACLs, holds an OS file lock, atomically replaces state,
