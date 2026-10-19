@@ -72,7 +72,7 @@ jobs:
       - name: Test shared core and build native artifacts
         run: |
           cargo test --workspace --locked
-          cargo build --release --locked -p peerwork-cli -p peerwork-node-native -p peerwork-python-native
+          cargo build --release --locked -p peerwork-cli -p peerwork-node-native
           python -m pip install 'maturin==1.15.0'
           cd bindings/python
           maturin build --release --locked --out ../../dist/wheels
@@ -328,8 +328,8 @@ jobs:
         run: |
           export TMPDIR="$(cd "$RUNNER_TEMP" && pwd -P)"
           printf 'MACOS_TEST_TMPDIR=%s\n' "$TMPDIR"
-          cargo test --workspace --locked
-          cargo build --release --locked -p peerwork-cli -p peerwork-node-native -p peerwork-python-native
+          cargo test --workspace --release --locked
+          cargo build --release --locked -p peerwork-cli -p peerwork-node-native
           python -m pip install 'maturin==1.15.0'
           cd bindings/python
           maturin build --release --locked --out ../../dist/wheels
@@ -499,7 +499,7 @@ jobs:
           Remove-Item Env:\ICU_DATA -ErrorAction SilentlyContinue
           cargo test --workspace --locked
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo build --release --locked -p peerwork-cli -p peerwork-node-native -p peerwork-python-native
+          cargo build --release --locked -p peerwork-cli -p peerwork-node-native
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m pip install 'maturin==1.15.0'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

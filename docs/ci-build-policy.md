@@ -46,11 +46,17 @@ exact-source failed-job retry. Retry the failed job instead of rebuilding
 successful platforms.
 
 Mac builds set the deployment target before the first Cargo command: 10.12 for
-Intel and 11.0 for ARM64, matching the prior experimental wheel defaults. CLI,
-Node and Python release crates are selected in the same Cargo build before
-maturin packages the wheel. This removes a known environment mismatch;
-whether it eliminates a second dependency build must be measured on the next
-actual native candidate. No macOS speedup is claimed from a YAML change.
+Intel and 11.0 for ARM64, matching the prior experimental wheel defaults. The macOS candidate runs the complete Rust workspace tests with `--release`,
+so their compatible dependencies can be reused by the CLI/Node release build;
+routine Linux checks retain the debug-profile tests. Python compilation remains
+under maturin: version 1.15 adds `-undefined dynamic_lookup` to the entire macOS
+dependency graph through `CARGO_ENCODED_RUSTFLAGS`. That creates a genuinely
+different build configuration. Its target outputs are cached alongside the
+CLI/Node configuration; the CLI/Node linker settings remain separate. Merely
+including the Python crate in the ordinary Cargo build would omit maturin's
+required macOS link setup and is not used. Actual graph reuse and elapsed-time
+savings still require the next native candidate; no measured macOS speedup is
+claimed from a YAML change.
 
 ## Publication and existing candidates
 
@@ -74,8 +80,10 @@ external recovery requirements for that exact candidate.
 The retained Intel job `118115788378` took approximately 34m27s: debug compilation
 10m05s, CLI/Node release compilation 11m04s, Python release compilation 10m46s,
 and approximately 28 seconds executing tests/doc tests. The same native
-dependencies appeared in all three compile phases. Peak CPU/RAM and the exact
-Cargo fingerprint reason were not measured. Cache hit rates and actual time
+dependencies appeared in all three compile phases. Peak CPU/RAM were not measured. Inspection of the pinned
+[maturin 1.15 source](https://github.com/PyO3/maturin/blob/v1.15.0/src/compile.rs)
+confirmed its global macOS linker-flag injection; the original runner did not
+record Cargo fingerprint diagnostics. Cache hit rates and actual time
 savings require subsequent runner evidence.
 
 Validate a policy change without launching a full matrix:
