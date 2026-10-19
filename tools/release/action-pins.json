@@ -4,6 +4,11 @@
     "ref": "v4",
     "repository": "actions/attest"
   },
+  "cache": {
+    "commit": "0057852bfaa89a56745cba8c7296529d2fc39830",
+    "ref": "v4",
+    "repository": "actions/cache"
+  },
   "checkout": {
     "commit": "11d5960a326750d5838078e36cf38b85af677262",
     "ref": "v4",

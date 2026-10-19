@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       source_run_id:
-        description: Successful main-branch Experimental native distribution run to promote
+        description: Successful explicit main-branch native candidate run to promote
         required: true
         type: string
   repository_dispatch:
@@ -39,6 +39,9 @@ jobs:
       source_sha: ${{ steps.validate.outputs.source_sha }}
       source_run_id: ${{ steps.validate.outputs.source_run_id }}
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
       - name: Validate successful native run and complete artifact set
         id: validate
         env:
@@ -51,27 +54,12 @@ jobs:
           [[ "$SOURCE_RUN_ID" =~ ^[0-9]+$ ]]
           gh api "repos/$GH_REPOSITORY/actions/runs/$SOURCE_RUN_ID" > "$RUNNER_TEMP/source-run.json"
           run_path=$(gh api "repos/$GH_REPOSITORY/actions/workflows/$(jq -r .workflow_id "$RUNNER_TEMP/source-run.json")" --jq .path)
-          test "$run_path" = ".github/workflows/distribution-spike.yml"
-          jq -e --arg repo "$GH_REPOSITORY" '
-            .event == "push" and .head_branch == "main" and
-            .head_repository.full_name == $repo and .conclusion == "success"
-          ' "$RUNNER_TEMP/source-run.json" >/dev/null
           gh api "repos/$GH_REPOSITORY/actions/runs/$SOURCE_RUN_ID/artifacts?per_page=100" > "$RUNNER_TEMP/source-artifacts.json"
-          jq -e '
-            .total_count == 8 and
-            ([.artifacts[].name] | sort) == [
-              "experimental-darwin-arm64",
-              "experimental-darwin-x64",
-              "experimental-linux-arm64-gnu",
-              "experimental-linux-arm64-musl",
-              "experimental-linux-x64-gnu",
-              "experimental-linux-x64-gnu-glibc2_28",
-              "experimental-linux-x64-musl",
-              "experimental-windows-x64"
-            ] and all(.artifacts[]; .expired == false)
-          ' "$RUNNER_TEMP/source-artifacts.json" >/dev/null
-          echo "source_sha=$(jq -r .head_sha "$RUNNER_TEMP/source-run.json")" >> "$GITHUB_OUTPUT"
-          echo "source_run_id=$SOURCE_RUN_ID" >> "$GITHUB_OUTPUT"
+          python tools/release/experimental-source.py \
+            --run "$RUNNER_TEMP/source-run.json" \
+            --artifacts "$RUNNER_TEMP/source-artifacts.json" \
+            --repository "$GH_REPOSITORY" --run-id "$SOURCE_RUN_ID" \
+            --workflow-path "$run_path" --github-output "$GITHUB_OUTPUT"
 
   publish_prerelease:
     needs: validate_source
