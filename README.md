@@ -1,12 +1,12 @@
 # Peerwork Agent SDK (experimental work in progress)
 
-The [0.1.2 experimental release](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.1.2-experimental.39199024029) is available for download.
-See the [release notes](docs/release-notes-0.1.2-experimental.md) and
+The [0.1.3 experimental release](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.1.3-experimental.39262775293) is available for download.
+See the [release notes](docs/release-notes-0.1.3-experimental.md) and
 [browser approval guide](docs/browser-approval.md) for current usage and limits.
 
 Official updates and identity verification: [Peerwork project space](docs/project-space.md).
 
-The 0.1.3 source candidate adds [bounded PRIVATE current-page reads, URL generation and changelog access](docs/current-view-reads.md). These APIs are not yet in published experimental assets. See the [candidate release notes](docs/release-notes-0.1.3-experimental.md) and [trusted-time/lease support boundary](docs/private-guard-time-leases.md).
+Published 0.1.3 includes [bounded PRIVATE current-page reads, URL generation and changelog access](docs/current-view-reads.md). The 0.1.4 source candidate adds [trusted transaction-time bounded leases and Owner activation](docs/private-guard-time-leases.md); its binary availability follows the exact qualified experimental release.
 
 The SDK's product target is to remove repeated mechanical work from Agents:
 identity/service/workspace binding, protocol discovery and composition,
@@ -154,3 +154,17 @@ Protected configuration discovery is opt-in and read-only: Python `config = peer
 Selection is explicit helper path, then `PEERWORK_CONFIG`, then Linux `$XDG_CONFIG_HOME/peerwork/config.json` (or `$HOME/.config/peerwork/config.json` when XDG is unset), macOS `$HOME/Library/Application Support/peerwork/config.json`, or Windows `%APPDATA%/peerwork/config.json`. The selected file must contain only `{"origin":"https://control.example","state_dir":"state"}`. Node returns `{origin, stateDir}`. Relative state paths resolve against the config file directory, never the working directory; parent traversal is rejected by protected path rules. Explicit file paths and `PEERWORK_CONFIG` may be relative to the current directory. OS location roots must be absolute. An empty selected environment value, missing/unsafe file, unknown/duplicate field, or invalid origin fails closed with a `CONFIG_*` code; no fallback occurs after selection.
 
 The config is bounded to 16 KiB, must be an owner-protected regular file without symlinks/hardlinks, and its directory and existing state directory (or immediate parent for new state) must meet the native protected-directory rules. On Unix use private directories and mode 0600 or stricter files; read-only private config directories/files are supported. The resolver creates no directories, locks, identity, authority defaults or network requests and never reads identity state. HTTPS origins cannot contain credentials, non-root paths, query or fragment. Loopback HTTP remains available only through the existing explicitly configured constructors, with their explicit opt-in; discovery adds no bypass flag. macOS/Windows selection conventions are source-defined, with execution pending platform gates.
+
+## Trusted transaction-time bounded leases
+
+Native SDK 0.1.4 adds checked `time_add` guards plus explicit Owner
+`guard_time` / `guardTime` enable, resume and history operations. See the
+[platform guide](https://peerwork.dev/docs/private-guard-time),
+[compatibility details](docs/private-guard-time-leases.md) and
+[complete Python example](examples/private-bounded-lease/README.md).
+The example uses the official SDK and an installable package closure; it does
+not require product source or raw signing/epoch-key transfer. New arithmetic
+histories require compatible full-replay clients. Experimental binary
+availability follows the exact release and its SOURCE.json, not this source
+candidate. Time-derived encrypted effects and automatic signer rotation are
+not implemented.

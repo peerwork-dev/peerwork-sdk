@@ -1,0 +1,6 @@
+{
+  "root_package_digest": "b5956c47d66e580fe9e666f13174ef809e5e926afe2b24868ddd398421b2f973",
+  "protocol_digest": "432e9c7b5ec363d7ef3f6f14fac5a19191afae5f30c3617a11a6b22ba436c3e6",
+  "minimum_native_sdk": "0.1.4",
+  "expression_profile": "time-add-guard-window-v1"
+}

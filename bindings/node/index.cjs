@@ -778,6 +778,7 @@ exports.openSecureOwnerWorkspaces = options => {
     create: (input, { signal } = {}) => invoke('create', createInput(input), undefined, undefined, signal),
     resume: (commandId, { signal } = {}) => invoke('resume', undefined, commandId, undefined, signal),
     operations: ({ signal } = {}) => invoke('operations', undefined, undefined, undefined, signal),
+    guardTime: workspaceId => new OwnerWorkspaceGuardTimeClient(config, workspaceId),
     enableCoordination: (workspaceId, input = {}, { signal } = {}) => invoke(
       'coordination_enable', coordinationInput(input), undefined, workspaceId, signal),
     resumeCoordination: (workspaceId, beginCommandId, { signal } = {}) => invoke(
@@ -1348,3 +1349,33 @@ class CurrentPageClient {
 }
 exports.CurrentPageClient=CurrentPageClient;
 exports.openCurrentPages=(options)=>new CurrentPageClient(options);
+
+
+/** Explicit Owner guard-time consent and exact durable recovery; no content-key input. */
+class OwnerWorkspaceGuardTimeClient {
+  constructor(config, workspaceId) {
+    this._config=JSON.parse(strictCommandJson(config));
+    this._workspaceId=workspaceId;
+  }
+  async _call(operation,input,{signal}={}) {
+    const cancel=new binding.KernelCancelHandle(),abort=()=>cancel.cancel();
+    if(signal?.aborted)abort();
+    signal?.addEventListener('abort',abort,{once:true});
+    try {
+      const result=JSON.parse(await binding.ownerGuardTimeJson(strictCommandJson(this._config),
+        operation,strictCommandJson({workspace_id:this._workspaceId,...input}),cancel));
+      if(result.ok!==true){const error=new Error(result.message);error.code=result.code;throw error;}
+      return result.value;
+    } finally {signal?.removeEventListener('abort',abort);}
+  }
+  enable(input,options={}) {
+    const allowed=['expectedPolicyHash','audience','serviceKey','disclosure','operationId'];
+    if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).some(key=>!allowed.includes(key)))throw new TypeError('Guard-time activation requires explicit policy hash, service pins and GUARD_WINDOW consent');
+    return this._call('enable',{expected_policy_hash:input.expectedPolicyHash,audience:input.audience,
+      service_key:input.serviceKey,disclosure:input.disclosure,
+      ...(input.operationId===undefined?{}:{operation_id:input.operationId})},options);
+  }
+  resume(operationId,options={}) {return this._call('resume',{operation_id:operationId},options);}
+  history(options={}) {return this._call('history',{},options);}
+}
+exports.OwnerWorkspaceGuardTimeClient=OwnerWorkspaceGuardTimeClient;

@@ -86,6 +86,8 @@ pub struct CapabilityManifest {
     pub public_authorized_state_read: bool,
     pub private_authorized_state_read: bool,
     pub private_system_current_page_read: bool,
+    pub owner_guard_time_enable: bool,
+    pub private_time_add_guard_windows: bool,
     pub wire_canonicalization: bool,
     pub signed_artifact_verification: bool,
     pub receipt_verification: bool,
@@ -104,6 +106,8 @@ pub fn capability_manifest() -> CapabilityManifest {
         public_authorized_state_read: true,
         private_authorized_state_read: true,
         private_system_current_page_read: true,
+        owner_guard_time_enable: true,
+        private_time_add_guard_windows: true,
         wire_canonicalization: true,
         signed_artifact_verification: true,
         receipt_verification: true,
@@ -121,3 +125,5 @@ pub mod read_view;
 pub mod selected_author;
 
 pub mod current_page;
+
+pub mod prepared_owner_guard_time;

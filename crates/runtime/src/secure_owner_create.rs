@@ -430,6 +430,10 @@ impl SecureOwnerWorkspaceCreate {
         ))
     }
 
+    pub(crate) fn guard_time_profile(&self, workspace_id:&str)->Result<SecureReadProfileConfig,SecureOwnerCreateError> {
+        self.created_profile_config(workspace_id,"PRIVATE")
+    }
+
     fn created_profile_config(
         &self,
         workspace_id: &str,

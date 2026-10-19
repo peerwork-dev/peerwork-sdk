@@ -15,6 +15,8 @@ export interface CapabilityManifest {
   public_authorized_state_read: boolean;
   private_authorized_state_read: boolean;
   private_system_current_page_read: boolean;
+  owner_guard_time_enable: boolean;
+  private_time_add_guard_windows: boolean;
   version: string;
   status: string;
   wire_canonicalization: boolean;
@@ -321,7 +323,32 @@ export interface OwnerFormatTransitionResult {
   sequence: number | null;
   policy_hash: string | null;
 }
+export interface OwnerGuardTimeResult {
+  operation_id: string;
+  command_id: string;
+  workspace_id: string;
+  status: 'PENDING' | 'ACCEPTED' | 'ALREADY_ENABLED';
+  sequence: number | null;
+  head: string | null;
+  policy_hash: string | null;
+}
+export interface OwnerGuardTimeEnableInput {
+  expectedPolicyHash: string;
+  audience: string;
+  serviceKey: string;
+  disclosure: 'GUARD_WINDOW';
+  operationId?: string;
+}
+export declare class OwnerWorkspaceGuardTimeClient {
+  /** Bound to the selected protected Owner; use owner.guardTime(workspaceId). */
+  private constructor();
+  enable(input: OwnerGuardTimeEnableInput, options?: {signal?: AbortSignal}): Promise<OwnerGuardTimeResult>;
+  resume(operationId: string, options?: {signal?: AbortSignal}): Promise<OwnerGuardTimeResult>;
+  /** Local protected history; does not refresh remote acceptance. */
+  history(options?: {signal?: AbortSignal}): Promise<OwnerGuardTimeResult[]>;
+}
 export interface SecureOwnerWorkspaceSession {
+  guardTime(workspaceId: string): OwnerWorkspaceGuardTimeClient;
   prepare(input: SecureOwnerWorkspaceInput, options?: {signal?: AbortSignal}): Promise<SecureOwnerWorkspaceResult>;
   create(input: SecureOwnerWorkspaceInput, options?: {signal?: AbortSignal}): Promise<SecureOwnerWorkspaceResult>;
   resume(commandId: string, options?: {signal?: AbortSignal}): Promise<SecureOwnerWorkspaceResult>;

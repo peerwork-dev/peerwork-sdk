@@ -1613,3 +1613,39 @@ impl Task for CurrentPageTask {
 pub fn current_page_json(input_json: String, cancel_handle: Option<ClassInstance<KernelCancelHandle>>) -> AsyncTask<CurrentPageTask> {
     AsyncTask::new(CurrentPageTask { input: input_json, cancel: cancel_handle.map(|handle| handle.token.clone()).unwrap_or_default() })
 }
+
+pub struct OwnerGuardTimeTask {
+    config: String,
+    operation: String,
+    input: String,
+    cancel: KernelCancellationToken,
+}
+impl Task for OwnerGuardTimeTask {
+    type Output = String;
+    type JsValue = String;
+    fn compute(&mut self) -> Result<String> {
+        Ok(peerwork_runtime::owner_guard_time::owner_guard_time_json(
+            &self.config,
+            &self.operation,
+            &self.input,
+            &self.cancel,
+        ))
+    }
+    fn resolve(&mut self, _env: Env, value: String) -> Result<String> {
+        Ok(value)
+    }
+}
+#[napi]
+pub fn owner_guard_time_json(
+    config_json: String,
+    operation: String,
+    input_json: String,
+    cancel_handle: Option<ClassInstance<KernelCancelHandle>>,
+) -> AsyncTask<OwnerGuardTimeTask> {
+    AsyncTask::new(OwnerGuardTimeTask {
+        config: config_json,
+        operation,
+        input: input_json,
+        cancel: cancel_handle.map(|h| h.token.clone()).unwrap_or_default(),
+    })
+}

@@ -1,11 +1,10 @@
-# Peerwork SDK 0.1.3 experimental candidate
+# Peerwork SDK 0.1.3 experimental
 
-Status: source candidate; native CI, public release artifacts and final installed
-artifact acceptance are pending. The currently published build remains
-[0.1.2 experimental.39199024029](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.1.2-experimental.39199024029).
-A source version or local package build is not a public release.
+Published: [v0.1.3-experimental.39262775293](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.1.3-experimental.39262775293).
+Source: `1799109a088eda2e30ec106141cec4686149e9cb`; native distribution run
+`39262775293`; publisher run `39267026531`. All eight native targets passed.
 
-This candidate adds bounded PRIVATE current-page reads through the shared Rust
+This release adds bounded PRIVATE current-page reads through the shared Rust
 engine and Python, Node and CLI interfaces. `CurrentPageClient` uses an existing
 active protected profile and the SYSTEM-maintained readable structure projection.
 It verifies pinned service query/checkpoint evidence, Owner policy, selected
@@ -27,14 +26,16 @@ Changelog limits bound returned entries, not history transfer. Separate optional
 adoption and `AUTHORIZED_STATE` assurance; they are not the default PRIVATE path.
 
 See [current-page usage and limits](current-view-reads.md) and
-[trusted time and lease support](private-guard-time-leases.md). This candidate
+[trusted time and lease support](private-guard-time-leases.md). This release
 adds no bounded-duration lease extension, public native Owner guard-time
 activation facade, automatic signer-key rotation, incremental event replay or
 new Windows durable event-inbox support. Ordinary audit/write/read/watch paths
 retain their existing full verification requirements.
 
-Publication must use one successful eight-artifact native CI run, with matching
-source/version metadata, public checksums, and installed Python/Node/CLI
-qualification from the produced artifacts. Platform success and actual public
-asset URLs will be recorded after those gates pass. Publication to GitHub
-experimental releases does not imply a stable release or PyPI/npm registry upload.
+The release contains eight target ZIPs, SOURCE.json and SHA256SUMS. The public
+GNU glibc 2.28 archive was downloaded anonymously and its CLI, Python wheel and
+Node packages matched the exact CI packages used for installed PRIVATE reads,
+pagination, cross-interface cursors and cancellation acceptance. Those checks
+made no journal requests. All eight public ZIP digests match SHA256SUMS.
+Publication to GitHub experimental releases does not imply a stable release or
+PyPI/npm registry upload.

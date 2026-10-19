@@ -324,13 +324,15 @@ fn apply_guard(
     } else {
         (right, left, false)
     };
-    if !is_direct_time(time) || selector_has_time(other) {
+    if selector_has_time(other) {
         return Err(GuardTimeError::Unsupported);
     }
+    let offset = time_offset(time, manifest, action_id, state, body, auth, exact_inputs)?;
+    window.upper_ms = window.upper_ms.min(MAX_SAFE_INTEGER - offset);
     let resolved =
         resolve_guard_time_operand(manifest, action_id, state, body, auth, exact_inputs, other)
             .map_err(|_| GuardTimeError::Invalid)?;
-    let bound = safe_integer_value(&resolved)?;
+    let bound = i128::from(safe_integer_value(&resolved)?) - i128::from(offset);
     let normalized = if time_on_left {
         op.as_str()
     } else {
@@ -340,19 +342,56 @@ fn apply_guard(
     Ok(())
 }
 
-fn intersect(window: &mut GuardTimeContextV1, op: &str, bound: i64) -> Result<(), GuardTimeError> {
+fn time_offset(
+    value: &WireValue,
+    manifest: &WireValue,
+    action_id: &[u16],
+    state: &WireValue,
+    body: &WireValue,
+    auth: &InterpreterAuth,
+    inputs: &[ResolvedInput],
+) -> Result<u64, GuardTimeError> {
+    if is_direct_time(value) {
+        return Ok(0);
+    }
+    if text(value, "from")? != "time_add" {
+        return Err(GuardTimeError::Unsupported);
+    }
+    let timestamp = value.get("timestamp").ok_or(GuardTimeError::Invalid)?;
+    let milliseconds = value.get("milliseconds").ok_or(GuardTimeError::Invalid)?;
+    if !selector_has_time(timestamp) || selector_has_time(milliseconds) {
+        return Err(GuardTimeError::Unsupported);
+    }
+    let resolved =
+        resolve_guard_time_operand(manifest, action_id, state, body, auth, inputs, milliseconds)
+            .map_err(|_| GuardTimeError::Invalid)?;
+    let duration = safe_integer_value(&resolved)?;
+    if duration < 0 {
+        return Err(GuardTimeError::Unsupported);
+    }
+    let offset = time_offset(timestamp, manifest, action_id, state, body, auth, inputs)?
+        .checked_add(duration as u64)
+        .ok_or(GuardTimeError::Empty)?;
+    if offset > MAX_SAFE_INTEGER {
+        return Err(GuardTimeError::Empty);
+    }
+    Ok(offset)
+}
+fn intersect(window: &mut GuardTimeContextV1, op: &str, bound: i128) -> Result<(), GuardTimeError> {
+    let mut lower = i128::from(window.lower_ms);
+    let mut upper = i128::from(window.upper_ms);
     match op {
-        "lt" if bound <= 0 => return Err(GuardTimeError::Empty),
-        "lt" => window.upper_ms = window.upper_ms.min((bound - 1) as u64),
-        "lte" if bound < 0 => return Err(GuardTimeError::Empty),
-        "lte" => window.upper_ms = window.upper_ms.min(bound as u64),
-        "gt" if bound >= MAX_SAFE_INTEGER as i64 => return Err(GuardTimeError::Empty),
-        "gt" if bound < 0 => {}
-        "gt" => window.lower_ms = window.lower_ms.max((bound + 1) as u64),
-        "gte" if bound <= 0 => {}
-        "gte" => window.lower_ms = window.lower_ms.max(bound as u64),
+        "lt" => upper = upper.min(bound - 1),
+        "lte" => upper = upper.min(bound),
+        "gt" => lower = lower.max(bound + 1),
+        "gte" => lower = lower.max(bound),
         _ => return Err(GuardTimeError::Unsupported),
     }
+    if lower > upper {
+        return Err(GuardTimeError::Empty);
+    }
+    window.lower_ms = lower as u64;
+    window.upper_ms = upper as u64;
     Ok(())
 }
 
@@ -374,7 +413,10 @@ fn is_direct_time(value: &WireValue) -> bool {
 fn selector_has_time(value: &WireValue) -> bool {
     match value.get("from").and_then(WireValue::as_string).as_deref() {
         Some("time") => true,
-        Some("time_add") => true,
+        Some("time_add") => {
+            value.get("timestamp").is_some_and(selector_has_time)
+                || value.get("milliseconds").is_some_and(selector_has_time)
+        }
         Some("object") => value
             .get("fields")
             .and_then(|v| {
@@ -413,7 +455,21 @@ fn guard_has_time(guard: &WireValue) -> bool {
 }
 
 fn effect_has_time(effect: &WireValue) -> bool {
-    effect.get("value").is_some_and(selector_has_time)
+    [
+        "value",
+        "expected",
+        "target",
+        "expected_max",
+        "expected_head",
+    ]
+    .iter()
+    .any(|k| effect.get(k).is_some_and(selector_has_time))
+        || array_or_empty(effect.get("relations"))
+            .iter()
+            .any(|r| r.get("target").is_some_and(selector_has_time))
+        || effect
+            .get("entity")
+            .is_some_and(|e| e.get("parent").is_some_and(selector_has_time))
 }
 
 fn safe_integer_value(value: &WireValue) -> Result<i64, GuardTimeError> {
@@ -598,7 +654,13 @@ mod tests {
         let time_add = manifest(
             json!({"op":"gt","left":{"from":"time_add","timestamp":{"from":"time"},"milliseconds":{"from":"literal","value":1}},"right":{"from":"literal","value":0}}),
         );
-        assert_eq!(derive(&time_add), Err(GuardTimeError::Unsupported));
+        assert_eq!(
+            derive(&time_add),
+            Ok(GuardTimeContextV1 {
+                lower_ms: 0,
+                upper_ms: MAX_SAFE_INTEGER - 1
+            })
+        );
     }
 
     #[test]
@@ -639,10 +701,9 @@ mod tests {
         .unwrap();
         assert_eq!(vector["schema"], "peerwork.guard-time-rust-vector.v1");
         let payload = wire(vector["payload"].clone());
-        let policy = parse_guard_time_policy(
-            &wire(vector["policy"]["payload"]["guard_time"].clone()),
-        )
-        .unwrap();
+        let policy =
+            parse_guard_time_policy(&wire(vector["policy"]["payload"]["guard_time"].clone()))
+                .unwrap();
         let proof = serde_json::json!({
             "payload": vector["payload"],
             "signature": vector["signature"]
@@ -654,11 +715,7 @@ mod tests {
         let mut changed = vector["payload"].clone();
         changed["admitted_at_ms"] = serde_json::json!(1001);
         assert_eq!(
-            verify_guard_time_attestation(
-                &proof_wire,
-                &policy,
-                &wire(changed),
-            ),
+            verify_guard_time_attestation(&proof_wire, &policy, &wire(changed),),
             Err(GuardTimeError::Invalid)
         );
     }
@@ -683,14 +740,8 @@ mod tests {
             crate::interpreter::validate_manifest(&manifest).unwrap();
             let action = "t".encode_utf16().collect::<Vec<_>>();
             let empty = wire(json!({}));
-            let actual = derive_private_guard_time_window(
-                &manifest,
-                &action,
-                &empty,
-                &empty,
-                &auth(),
-                &[],
-            );
+            let actual =
+                derive_private_guard_time_window(&manifest, &action, &empty, &empty, &auth(), &[]);
             if vector["window"].is_null() {
                 assert_eq!(actual, Err(GuardTimeError::Empty), "{name}");
             } else {
@@ -724,5 +775,97 @@ mod tests {
             }
         }
         assert_eq!(compared, 288);
+    }
+    #[test]
+    fn time_add_bounded_lease_cross_language_vectors() {
+        let fixture: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "../../../conformance/guard-time-add-vectors.json"
+        ))
+        .unwrap();
+        assert_eq!(fixture["profile"], "time-add-guard-window-v1");
+        for case in fixture["cases"].as_array().unwrap() {
+            let manifest = wire(case["manifest"].clone());
+            let state = wire(case["state"].clone());
+            let body = wire(case["body"].clone());
+            let action = case["action_id"]
+                .as_str()
+                .unwrap()
+                .encode_utf16()
+                .collect::<Vec<_>>();
+            let derived =
+                derive_private_guard_time_window(&manifest, &action, &state, &body, &auth(), &[]);
+            if let Some(error) = case["error"].as_str() {
+                assert_eq!(
+                    derived.unwrap_err(),
+                    match error {
+                        "CONSTRAINT_FAILED" => GuardTimeError::Empty,
+                        "PRIVATE_GUARD_TIME_UNSUPPORTED" => GuardTimeError::Unsupported,
+                        _ => panic!("unknown fixture error"),
+                    },
+                    "{}",
+                    case["name"]
+                );
+                continue;
+            }
+            let actual = derived.unwrap();
+            assert_eq!(
+                (actual.lower_ms, actual.upper_ms),
+                (
+                    case["window"]["lower_ms"].as_u64().unwrap(),
+                    case["window"]["upper_ms"].as_u64().unwrap()
+                ),
+                "{}",
+                case["name"]
+            );
+            for time in [actual.lower_ms, actual.upper_ms] {
+                assert!(
+                    crate::interpreter::evaluate_action(
+                        &manifest,
+                        &action,
+                        &state,
+                        &body,
+                        &auth(),
+                        &[],
+                        Some(time)
+                    )
+                    .is_ok(),
+                    "{} at {}",
+                    case["name"],
+                    time
+                );
+            }
+            if actual.lower_ms > 0 {
+                assert!(
+                    crate::interpreter::evaluate_action(
+                        &manifest,
+                        &action,
+                        &state,
+                        &body,
+                        &auth(),
+                        &[],
+                        Some(actual.lower_ms - 1)
+                    )
+                    .is_err(),
+                    "{} below",
+                    case["name"]
+                );
+            }
+            if actual.upper_ms < MAX_SAFE_INTEGER {
+                assert!(
+                    crate::interpreter::evaluate_action(
+                        &manifest,
+                        &action,
+                        &state,
+                        &body,
+                        &auth(),
+                        &[],
+                        Some(actual.upper_ms + 1)
+                    )
+                    .is_err(),
+                    "{} above",
+                    case["name"]
+                );
+            }
+        }
     }
 }

@@ -74,6 +74,7 @@ from ._peerwork_native import (
     secure_private_action_json,
     secure_public_install_json,
     secure_owner_create_json,
+    owner_guard_time_json,
     secure_owner_consumer_json,
     public_catalog_json,
     secure_recipient_enrollment_json,
@@ -90,6 +91,8 @@ class CapabilityManifest(TypedDict):
     public_authorized_state_read: bool
     private_authorized_state_read: bool
     private_system_current_page_read: bool
+    owner_guard_time_enable: bool
+    private_time_add_guard_windows: bool
     version: str
     status: str
     wire_canonicalization: bool
@@ -1895,6 +1898,10 @@ class SecureOwnerWorkspaceClient:
     def private_package_installer(self, workspace_id: str) -> "OwnerWorkspacePrivatePackageInstaller":
         return OwnerWorkspacePrivatePackageInstaller(self._config, workspace_id)
 
+    def guard_time(self, workspace_id: str) -> "OwnerWorkspaceGuardTimeClient":
+        """Owner-signed guard-time activation with explicit pins, consent and durable recovery."""
+        return OwnerWorkspaceGuardTimeClient(self._config, workspace_id)
+
     def public_admission(self, workspace_id: str) -> "OwnerWorkspaceAdmissionClient":
         return OwnerWorkspaceAdmissionClient(self._config, workspace_id)
 
@@ -3640,3 +3647,70 @@ class CurrentPageClient:
 
 
 __all__ += ["CurrentPageClient", "CurrentPageRead"]
+
+
+class OwnerGuardTimeResult(TypedDict):
+    operation_id: str
+    command_id: str
+    workspace_id: str
+    status: Literal["PENDING", "ACCEPTED", "ALREADY_ENABLED"]
+    sequence: int | None
+    head: str | None
+    policy_hash: str | None
+
+
+class OwnerWorkspaceGuardTimeClient:
+    """Activate ALL_COMMITS using the existing protected Owner; no raw key input.
+
+    Persist the caller's operation_id before enable. If PENDING or interrupted,
+    resume that same ID; history recovers locally saved IDs without a new POST.
+    """
+
+    def __init__(self, owner_config: dict, workspace_id: str):
+        self._config = dict(owner_config)
+        self._workspace_id = workspace_id
+
+    def _call(self, operation: str, input_value: dict,
+              cancel_handle: KernelCancelHandle | None = None):
+        result = json.loads(owner_guard_time_json(
+            json.dumps(self._config, ensure_ascii=True, separators=(",", ":")),
+            operation, json.dumps(input_value, ensure_ascii=True, separators=(",", ":")),
+            cancel_handle))
+        if result["ok"] is not True:
+            raise OwnerWorkspaceError(result["code"], result["message"])
+        return result["value"]
+
+    def enable(self, *, expected_policy_hash: str, audience: str, service_key: str,
+               disclosure: Literal["GUARD_WINDOW"], operation_id: str | None = None) -> OwnerGuardTimeResult:
+        """Explicit Owner consent; pins must match authenticated discovery and the current policy."""
+        value = dict(workspace_id=self._workspace_id, expected_policy_hash=expected_policy_hash,
+            audience=audience, service_key=service_key, disclosure=disclosure)
+        if operation_id is not None:
+            value["operation_id"] = operation_id
+        return cast(OwnerGuardTimeResult, self._call("enable", value))
+
+    def resume(self, operation_id: str) -> OwnerGuardTimeResult:
+        return cast(OwnerGuardTimeResult, self._call("resume",
+            dict(workspace_id=self._workspace_id, operation_id=operation_id)))
+
+    def history(self) -> list[OwnerGuardTimeResult]:
+        """Protected local operations; PENDING is not proof of remote acceptance."""
+        return cast(list[OwnerGuardTimeResult], self._call("history", dict(workspace_id=self._workspace_id)))
+
+    async def enable_async(self, *, expected_policy_hash: str, audience: str, service_key: str,
+                           disclosure: Literal["GUARD_WINDOW"], operation_id: str | None = None) -> OwnerGuardTimeResult:
+        value = dict(workspace_id=self._workspace_id, expected_policy_hash=expected_policy_hash,
+            audience=audience, service_key=service_key, disclosure=disclosure)
+        if operation_id is not None:
+            value["operation_id"] = operation_id
+        return cast(OwnerGuardTimeResult, await _run_cancelled_async(self._call, "enable", value))
+
+    async def resume_async(self, operation_id: str) -> OwnerGuardTimeResult:
+        return cast(OwnerGuardTimeResult, await _run_cancelled_async(self._call, "resume",
+            dict(workspace_id=self._workspace_id, operation_id=operation_id)))
+
+    async def history_async(self) -> list[OwnerGuardTimeResult]:
+        return cast(list[OwnerGuardTimeResult], await _run_cancelled_async(self._call, "history",
+            dict(workspace_id=self._workspace_id)))
+
+__all__ += ["OwnerWorkspaceGuardTimeClient", "OwnerGuardTimeResult"]

@@ -1,0 +1,577 @@
+{
+  "name": "peerwork.example.private-bounded-lease.v1",
+  "display_version": "1",
+  "semantics": "peerwork.kernel.v1",
+  "dependencies": [],
+  "protocol_roles": [
+    "LEASE_ACTOR"
+  ],
+  "capabilities": [
+    "LEASE"
+  ],
+  "role_conflicts": [],
+  "historical_role_conflicts": [],
+  "record_schemas": {},
+  "initial_state": {
+    "holder": null,
+    "generation": 0,
+    "expires_at": 0,
+    "last_result": null
+  },
+  "actions": [
+    {
+      "id": "lease.claim",
+      "reads": [
+        [
+          "holder"
+        ],
+        [
+          "generation"
+        ],
+        [
+          "expires_at"
+        ]
+      ],
+      "writes": [
+        [
+          "holder"
+        ],
+        [
+          "generation"
+        ],
+        [
+          "expires_at"
+        ]
+      ],
+      "revisionEffects": {
+        "control": true,
+        "contentEntities": []
+      },
+      "variants": [
+        {
+          "when": [
+            {
+              "op": "has_protocol_role",
+              "role": "LEASE_ACTOR"
+            },
+            {
+              "op": "has_capability",
+              "capability": "LEASE"
+            },
+            {
+              "op": "eq",
+              "left": {
+                "from": "body",
+                "path": [
+                  "expected_generation"
+                ]
+              },
+              "right": {
+                "from": "state",
+                "path": [
+                  "generation"
+                ]
+              }
+            },
+            {
+              "op": "eq",
+              "left": {
+                "from": "state",
+                "path": [
+                  "holder"
+                ]
+              },
+              "right": {
+                "from": "literal",
+                "value": null
+              }
+            },
+            {
+              "op": "gt",
+              "left": {
+                "from": "body",
+                "path": [
+                  "generation"
+                ]
+              },
+              "right": {
+                "from": "state",
+                "path": [
+                  "generation"
+                ]
+              }
+            },
+            {
+              "op": "lte",
+              "left": {
+                "from": "time_add",
+                "timestamp": {
+                  "from": "time"
+                },
+                "milliseconds": {
+                  "from": "literal",
+                  "value": 1000
+                }
+              },
+              "right": {
+                "from": "body",
+                "path": [
+                  "expires_at"
+                ]
+              }
+            },
+            {
+              "op": "lte",
+              "left": {
+                "from": "body",
+                "path": [
+                  "expires_at"
+                ]
+              },
+              "right": {
+                "from": "time_add",
+                "timestamp": {
+                  "from": "time"
+                },
+                "milliseconds": {
+                  "from": "literal",
+                  "value": 60000
+                }
+              }
+            }
+          ],
+          "effects": [
+            {
+              "op": "set",
+              "path": [
+                "holder"
+              ],
+              "value": {
+                "from": "auth",
+                "field": "actorId"
+              }
+            },
+            {
+              "op": "set",
+              "path": [
+                "generation"
+              ],
+              "value": {
+                "from": "body",
+                "path": [
+                  "generation"
+                ]
+              }
+            },
+            {
+              "op": "set",
+              "path": [
+                "expires_at"
+              ],
+              "value": {
+                "from": "body",
+                "path": [
+                  "expires_at"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "lease.renew",
+      "reads": [
+        [
+          "holder"
+        ],
+        [
+          "generation"
+        ],
+        [
+          "expires_at"
+        ]
+      ],
+      "writes": [
+        [
+          "expires_at"
+        ]
+      ],
+      "revisionEffects": {
+        "control": true,
+        "contentEntities": []
+      },
+      "variants": [
+        {
+          "when": [
+            {
+              "op": "has_protocol_role",
+              "role": "LEASE_ACTOR"
+            },
+            {
+              "op": "has_capability",
+              "capability": "LEASE"
+            },
+            {
+              "op": "eq",
+              "left": {
+                "from": "body",
+                "path": [
+                  "expected_generation"
+                ]
+              },
+              "right": {
+                "from": "state",
+                "path": [
+                  "generation"
+                ]
+              }
+            },
+            {
+              "op": "eq",
+              "left": {
+                "from": "state",
+                "path": [
+                  "holder"
+                ]
+              },
+              "right": {
+                "from": "auth",
+                "field": "actorId"
+              }
+            },
+            {
+              "op": "lt",
+              "left": {
+                "from": "time"
+              },
+              "right": {
+                "from": "state",
+                "path": [
+                  "expires_at"
+                ]
+              }
+            },
+            {
+              "op": "gt",
+              "left": {
+                "from": "body",
+                "path": [
+                  "expires_at"
+                ]
+              },
+              "right": {
+                "from": "state",
+                "path": [
+                  "expires_at"
+                ]
+              }
+            },
+            {
+              "op": "lte",
+              "left": {
+                "from": "time_add",
+                "timestamp": {
+                  "from": "time"
+                },
+                "milliseconds": {
+                  "from": "literal",
+                  "value": 1000
+                }
+              },
+              "right": {
+                "from": "body",
+                "path": [
+                  "expires_at"
+                ]
+              }
+            },
+            {
+              "op": "lte",
+              "left": {
+                "from": "body",
+                "path": [
+                  "expires_at"
+                ]
+              },
+              "right": {
+                "from": "time_add",
+                "timestamp": {
+                  "from": "time"
+                },
+                "milliseconds": {
+                  "from": "literal",
+                  "value": 60000
+                }
+              }
+            }
+          ],
+          "effects": [
+            {
+              "op": "set",
+              "path": [
+                "expires_at"
+              ],
+              "value": {
+                "from": "body",
+                "path": [
+                  "expires_at"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "lease.reclaim",
+      "reads": [
+        [
+          "holder"
+        ],
+        [
+          "generation"
+        ],
+        [
+          "expires_at"
+        ]
+      ],
+      "writes": [
+        [
+          "holder"
+        ],
+        [
+          "generation"
+        ],
+        [
+          "expires_at"
+        ]
+      ],
+      "revisionEffects": {
+        "control": true,
+        "contentEntities": []
+      },
+      "variants": [
+        {
+          "when": [
+            {
+              "op": "has_protocol_role",
+              "role": "LEASE_ACTOR"
+            },
+            {
+              "op": "has_capability",
+              "capability": "LEASE"
+            },
+            {
+              "op": "eq",
+              "left": {
+                "from": "body",
+                "path": [
+                  "expected_generation"
+                ]
+              },
+              "right": {
+                "from": "state",
+                "path": [
+                  "generation"
+                ]
+              }
+            },
+            {
+              "op": "gte",
+              "left": {
+                "from": "time"
+              },
+              "right": {
+                "from": "state",
+                "path": [
+                  "expires_at"
+                ]
+              }
+            },
+            {
+              "op": "gt",
+              "left": {
+                "from": "body",
+                "path": [
+                  "generation"
+                ]
+              },
+              "right": {
+                "from": "state",
+                "path": [
+                  "generation"
+                ]
+              }
+            },
+            {
+              "op": "lte",
+              "left": {
+                "from": "time_add",
+                "timestamp": {
+                  "from": "time"
+                },
+                "milliseconds": {
+                  "from": "literal",
+                  "value": 1000
+                }
+              },
+              "right": {
+                "from": "body",
+                "path": [
+                  "expires_at"
+                ]
+              }
+            },
+            {
+              "op": "lte",
+              "left": {
+                "from": "body",
+                "path": [
+                  "expires_at"
+                ]
+              },
+              "right": {
+                "from": "time_add",
+                "timestamp": {
+                  "from": "time"
+                },
+                "milliseconds": {
+                  "from": "literal",
+                  "value": 60000
+                }
+              }
+            }
+          ],
+          "effects": [
+            {
+              "op": "set",
+              "path": [
+                "holder"
+              ],
+              "value": {
+                "from": "auth",
+                "field": "actorId"
+              }
+            },
+            {
+              "op": "set",
+              "path": [
+                "generation"
+              ],
+              "value": {
+                "from": "body",
+                "path": [
+                  "generation"
+                ]
+              }
+            },
+            {
+              "op": "set",
+              "path": [
+                "expires_at"
+              ],
+              "value": {
+                "from": "body",
+                "path": [
+                  "expires_at"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "lease.use",
+      "reads": [
+        [
+          "holder"
+        ],
+        [
+          "generation"
+        ],
+        [
+          "expires_at"
+        ]
+      ],
+      "writes": [
+        [
+          "last_result"
+        ]
+      ],
+      "revisionEffects": {
+        "control": true,
+        "contentEntities": []
+      },
+      "variants": [
+        {
+          "when": [
+            {
+              "op": "has_protocol_role",
+              "role": "LEASE_ACTOR"
+            },
+            {
+              "op": "has_capability",
+              "capability": "LEASE"
+            },
+            {
+              "op": "eq",
+              "left": {
+                "from": "body",
+                "path": [
+                  "expected_generation"
+                ]
+              },
+              "right": {
+                "from": "state",
+                "path": [
+                  "generation"
+                ]
+              }
+            },
+            {
+              "op": "eq",
+              "left": {
+                "from": "state",
+                "path": [
+                  "holder"
+                ]
+              },
+              "right": {
+                "from": "auth",
+                "field": "actorId"
+              }
+            },
+            {
+              "op": "lt",
+              "left": {
+                "from": "time"
+              },
+              "right": {
+                "from": "state",
+                "path": [
+                  "expires_at"
+                ]
+              }
+            }
+          ],
+          "effects": [
+            {
+              "op": "set",
+              "path": [
+                "last_result"
+              ],
+              "value": {
+                "from": "body",
+                "path": [
+                  "result"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

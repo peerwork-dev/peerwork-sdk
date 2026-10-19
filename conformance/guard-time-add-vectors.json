@@ -1,0 +1,904 @@
+{
+  "profile": "time-add-guard-window-v1",
+  "cases": [
+    {
+      "name": "claim-inclusive-min-max",
+      "manifest": {
+        "actions": [
+          {
+            "id": "lease",
+            "reads": [
+              [
+                "expires_at"
+              ]
+            ],
+            "writes": [
+              [
+                "result"
+              ]
+            ],
+            "revisionEffects": {
+              "control": true,
+              "contentEntities": []
+            },
+            "variants": [
+              {
+                "when": [
+                  {
+                    "op": "lte",
+                    "left": {
+                      "from": "time_add",
+                      "timestamp": {
+                        "from": "time"
+                      },
+                      "milliseconds": {
+                        "from": "literal",
+                        "value": 10
+                      }
+                    },
+                    "right": {
+                      "from": "body",
+                      "path": [
+                        "expires_at"
+                      ]
+                    }
+                  },
+                  {
+                    "op": "gte",
+                    "left": {
+                      "from": "time_add",
+                      "timestamp": {
+                        "from": "time"
+                      },
+                      "milliseconds": {
+                        "from": "literal",
+                        "value": 20
+                      }
+                    },
+                    "right": {
+                      "from": "body",
+                      "path": [
+                        "expires_at"
+                      ]
+                    }
+                  }
+                ],
+                "effects": [
+                  {
+                    "op": "set",
+                    "path": [
+                      "result"
+                    ],
+                    "value": {
+                      "from": "literal",
+                      "value": true
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "action_id": "lease",
+      "state": {
+        "expires_at": 40,
+        "result": null
+      },
+      "body": {
+        "expires_at": 100
+      },
+      "auth": {
+        "actorId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "capabilities": []
+      },
+      "exact_inputs": [],
+      "window": {
+        "v": 1,
+        "lower_ms": 80,
+        "upper_ms": 90
+      }
+    },
+    {
+      "name": "renew-before-old-expiry",
+      "manifest": {
+        "actions": [
+          {
+            "id": "lease",
+            "reads": [
+              [
+                "expires_at"
+              ]
+            ],
+            "writes": [
+              [
+                "result"
+              ]
+            ],
+            "revisionEffects": {
+              "control": true,
+              "contentEntities": []
+            },
+            "variants": [
+              {
+                "when": [
+                  {
+                    "op": "lte",
+                    "left": {
+                      "from": "time_add",
+                      "timestamp": {
+                        "from": "time"
+                      },
+                      "milliseconds": {
+                        "from": "literal",
+                        "value": 10
+                      }
+                    },
+                    "right": {
+                      "from": "body",
+                      "path": [
+                        "expires_at"
+                      ]
+                    }
+                  },
+                  {
+                    "op": "gte",
+                    "left": {
+                      "from": "time_add",
+                      "timestamp": {
+                        "from": "time"
+                      },
+                      "milliseconds": {
+                        "from": "literal",
+                        "value": 30
+                      }
+                    },
+                    "right": {
+                      "from": "body",
+                      "path": [
+                        "expires_at"
+                      ]
+                    }
+                  },
+                  {
+                    "op": "lt",
+                    "left": {
+                      "from": "time"
+                    },
+                    "right": {
+                      "from": "state",
+                      "path": [
+                        "expires_at"
+                      ]
+                    }
+                  },
+                  {
+                    "op": "gt",
+                    "left": {
+                      "from": "body",
+                      "path": [
+                        "expires_at"
+                      ]
+                    },
+                    "right": {
+                      "from": "state",
+                      "path": [
+                        "expires_at"
+                      ]
+                    }
+                  }
+                ],
+                "effects": [
+                  {
+                    "op": "set",
+                    "path": [
+                      "result"
+                    ],
+                    "value": {
+                      "from": "literal",
+                      "value": true
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "action_id": "lease",
+      "state": {
+        "expires_at": 40,
+        "result": null
+      },
+      "body": {
+        "expires_at": 60
+      },
+      "auth": {
+        "actorId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "capabilities": []
+      },
+      "exact_inputs": [],
+      "window": {
+        "v": 1,
+        "lower_ms": 30,
+        "upper_ms": 39
+      }
+    },
+    {
+      "name": "reclaim-at-old-expiry",
+      "manifest": {
+        "actions": [
+          {
+            "id": "lease",
+            "reads": [
+              [
+                "expires_at"
+              ]
+            ],
+            "writes": [
+              [
+                "result"
+              ]
+            ],
+            "revisionEffects": {
+              "control": true,
+              "contentEntities": []
+            },
+            "variants": [
+              {
+                "when": [
+                  {
+                    "op": "lte",
+                    "left": {
+                      "from": "time_add",
+                      "timestamp": {
+                        "from": "time"
+                      },
+                      "milliseconds": {
+                        "from": "literal",
+                        "value": 10
+                      }
+                    },
+                    "right": {
+                      "from": "body",
+                      "path": [
+                        "expires_at"
+                      ]
+                    }
+                  },
+                  {
+                    "op": "gte",
+                    "left": {
+                      "from": "time_add",
+                      "timestamp": {
+                        "from": "time"
+                      },
+                      "milliseconds": {
+                        "from": "literal",
+                        "value": 30
+                      }
+                    },
+                    "right": {
+                      "from": "body",
+                      "path": [
+                        "expires_at"
+                      ]
+                    }
+                  },
+                  {
+                    "op": "gte",
+                    "left": {
+                      "from": "time"
+                    },
+                    "right": {
+                      "from": "state",
+                      "path": [
+                        "expires_at"
+                      ]
+                    }
+                  }
+                ],
+                "effects": [
+                  {
+                    "op": "set",
+                    "path": [
+                      "result"
+                    ],
+                    "value": {
+                      "from": "literal",
+                      "value": true
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "action_id": "lease",
+      "state": {
+        "expires_at": 40,
+        "result": null
+      },
+      "body": {
+        "expires_at": 60
+      },
+      "auth": {
+        "actorId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "capabilities": []
+      },
+      "exact_inputs": [],
+      "window": {
+        "v": 1,
+        "lower_ms": 40,
+        "upper_ms": 50
+      }
+    },
+    {
+      "name": "maximum-safe-expiry-clips-all-operand-overflow",
+      "manifest": {
+        "actions": [
+          {
+            "id": "lease",
+            "reads": [
+              [
+                "expires_at"
+              ]
+            ],
+            "writes": [
+              [
+                "result"
+              ]
+            ],
+            "revisionEffects": {
+              "control": true,
+              "contentEntities": []
+            },
+            "variants": [
+              {
+                "when": [
+                  {
+                    "op": "lte",
+                    "left": {
+                      "from": "time_add",
+                      "timestamp": {
+                        "from": "time"
+                      },
+                      "milliseconds": {
+                        "from": "literal",
+                        "value": 1
+                      }
+                    },
+                    "right": {
+                      "from": "body",
+                      "path": [
+                        "expires_at"
+                      ]
+                    }
+                  },
+                  {
+                    "op": "gte",
+                    "left": {
+                      "from": "time_add",
+                      "timestamp": {
+                        "from": "time"
+                      },
+                      "milliseconds": {
+                        "from": "literal",
+                        "value": 2
+                      }
+                    },
+                    "right": {
+                      "from": "body",
+                      "path": [
+                        "expires_at"
+                      ]
+                    }
+                  }
+                ],
+                "effects": [
+                  {
+                    "op": "set",
+                    "path": [
+                      "result"
+                    ],
+                    "value": {
+                      "from": "literal",
+                      "value": true
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "action_id": "lease",
+      "state": {
+        "expires_at": 40,
+        "result": null
+      },
+      "body": {
+        "expires_at": 9007199254740991
+      },
+      "auth": {
+        "actorId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "capabilities": []
+      },
+      "exact_inputs": [],
+      "window": {
+        "v": 1,
+        "lower_ms": 9007199254740989,
+        "upper_ms": 9007199254740989
+      }
+    },
+    {
+      "name": "negative-bound-bigint-subtraction",
+      "manifest": {
+        "actions": [
+          {
+            "id": "lease",
+            "reads": [
+              [
+                "expires_at"
+              ]
+            ],
+            "writes": [
+              [
+                "result"
+              ]
+            ],
+            "revisionEffects": {
+              "control": true,
+              "contentEntities": []
+            },
+            "variants": [
+              {
+                "when": [
+                  {
+                    "op": "gte",
+                    "left": {
+                      "from": "time_add",
+                      "timestamp": {
+                        "from": "time"
+                      },
+                      "milliseconds": {
+                        "from": "literal",
+                        "value": 9007199254740991
+                      }
+                    },
+                    "right": {
+                      "from": "literal",
+                      "value": -9007199254740991
+                    }
+                  }
+                ],
+                "effects": [
+                  {
+                    "op": "set",
+                    "path": [
+                      "result"
+                    ],
+                    "value": {
+                      "from": "literal",
+                      "value": true
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "action_id": "lease",
+      "state": {
+        "expires_at": 40,
+        "result": null
+      },
+      "body": {
+        "expires_at": 100
+      },
+      "auth": {
+        "actorId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "capabilities": []
+      },
+      "exact_inputs": [],
+      "window": {
+        "v": 1,
+        "lower_ms": 0,
+        "upper_ms": 0
+      }
+    },
+    {
+      "name": "overflow-domain-clipped",
+      "manifest": {
+        "actions": [
+          {
+            "id": "lease",
+            "reads": [
+              [
+                "expires_at"
+              ]
+            ],
+            "writes": [
+              [
+                "result"
+              ]
+            ],
+            "revisionEffects": {
+              "control": true,
+              "contentEntities": []
+            },
+            "variants": [
+              {
+                "when": [
+                  {
+                    "op": "gte",
+                    "left": {
+                      "from": "time_add",
+                      "timestamp": {
+                        "from": "time"
+                      },
+                      "milliseconds": {
+                        "from": "literal",
+                        "value": 10
+                      }
+                    },
+                    "right": {
+                      "from": "literal",
+                      "value": 0
+                    }
+                  }
+                ],
+                "effects": [
+                  {
+                    "op": "set",
+                    "path": [
+                      "result"
+                    ],
+                    "value": {
+                      "from": "literal",
+                      "value": true
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "action_id": "lease",
+      "state": {
+        "expires_at": 40,
+        "result": null
+      },
+      "body": {
+        "expires_at": 100
+      },
+      "auth": {
+        "actorId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "capabilities": []
+      },
+      "exact_inputs": [],
+      "window": {
+        "v": 1,
+        "lower_ms": 0,
+        "upper_ms": 9007199254740981
+      }
+    },
+    {
+      "name": "impossible-expiry-before-offset",
+      "manifest": {
+        "actions": [
+          {
+            "id": "lease",
+            "reads": [
+              [
+                "expires_at"
+              ]
+            ],
+            "writes": [
+              [
+                "result"
+              ]
+            ],
+            "revisionEffects": {
+              "control": true,
+              "contentEntities": []
+            },
+            "variants": [
+              {
+                "when": [
+                  {
+                    "op": "lte",
+                    "left": {
+                      "from": "time_add",
+                      "timestamp": {
+                        "from": "time"
+                      },
+                      "milliseconds": {
+                        "from": "literal",
+                        "value": 1
+                      }
+                    },
+                    "right": {
+                      "from": "literal",
+                      "value": 0
+                    }
+                  }
+                ],
+                "effects": [
+                  {
+                    "op": "set",
+                    "path": [
+                      "result"
+                    ],
+                    "value": {
+                      "from": "literal",
+                      "value": true
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "action_id": "lease",
+      "state": {
+        "expires_at": 40,
+        "result": null
+      },
+      "body": {
+        "expires_at": 100
+      },
+      "auth": {
+        "actorId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "capabilities": []
+      },
+      "exact_inputs": [],
+      "error": "CONSTRAINT_FAILED"
+    },
+    {
+      "name": "invalid-min-max",
+      "manifest": {
+        "actions": [
+          {
+            "id": "lease",
+            "reads": [
+              [
+                "expires_at"
+              ]
+            ],
+            "writes": [
+              [
+                "result"
+              ]
+            ],
+            "revisionEffects": {
+              "control": true,
+              "contentEntities": []
+            },
+            "variants": [
+              {
+                "when": [
+                  {
+                    "op": "lte",
+                    "left": {
+                      "from": "time_add",
+                      "timestamp": {
+                        "from": "time"
+                      },
+                      "milliseconds": {
+                        "from": "literal",
+                        "value": 20
+                      }
+                    },
+                    "right": {
+                      "from": "body",
+                      "path": [
+                        "expires_at"
+                      ]
+                    }
+                  },
+                  {
+                    "op": "gte",
+                    "left": {
+                      "from": "time_add",
+                      "timestamp": {
+                        "from": "time"
+                      },
+                      "milliseconds": {
+                        "from": "literal",
+                        "value": 10
+                      }
+                    },
+                    "right": {
+                      "from": "body",
+                      "path": [
+                        "expires_at"
+                      ]
+                    }
+                  }
+                ],
+                "effects": [
+                  {
+                    "op": "set",
+                    "path": [
+                      "result"
+                    ],
+                    "value": {
+                      "from": "literal",
+                      "value": true
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "action_id": "lease",
+      "state": {
+        "expires_at": 40,
+        "result": null
+      },
+      "body": {
+        "expires_at": 100
+      },
+      "auth": {
+        "actorId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "capabilities": []
+      },
+      "exact_inputs": [],
+      "error": "CONSTRAINT_FAILED"
+    },
+    {
+      "name": "negative-duration",
+      "manifest": {
+        "actions": [
+          {
+            "id": "lease",
+            "reads": [
+              [
+                "expires_at"
+              ]
+            ],
+            "writes": [
+              [
+                "result"
+              ]
+            ],
+            "revisionEffects": {
+              "control": true,
+              "contentEntities": []
+            },
+            "variants": [
+              {
+                "when": [
+                  {
+                    "op": "lte",
+                    "left": {
+                      "from": "time_add",
+                      "timestamp": {
+                        "from": "time"
+                      },
+                      "milliseconds": {
+                        "from": "literal",
+                        "value": -1
+                      }
+                    },
+                    "right": {
+                      "from": "body",
+                      "path": [
+                        "expires_at"
+                      ]
+                    }
+                  }
+                ],
+                "effects": [
+                  {
+                    "op": "set",
+                    "path": [
+                      "result"
+                    ],
+                    "value": {
+                      "from": "literal",
+                      "value": true
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "action_id": "lease",
+      "state": {
+        "expires_at": 40,
+        "result": null
+      },
+      "body": {
+        "expires_at": 100
+      },
+      "auth": {
+        "actorId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "capabilities": []
+      },
+      "exact_inputs": [],
+      "error": "PRIVATE_GUARD_TIME_UNSUPPORTED"
+    },
+    {
+      "name": "both-sides-timed",
+      "manifest": {
+        "actions": [
+          {
+            "id": "lease",
+            "reads": [
+              [
+                "expires_at"
+              ]
+            ],
+            "writes": [
+              [
+                "result"
+              ]
+            ],
+            "revisionEffects": {
+              "control": true,
+              "contentEntities": []
+            },
+            "variants": [
+              {
+                "when": [
+                  {
+                    "op": "lte",
+                    "left": {
+                      "from": "time_add",
+                      "timestamp": {
+                        "from": "time"
+                      },
+                      "milliseconds": {
+                        "from": "literal",
+                        "value": 1
+                      }
+                    },
+                    "right": {
+                      "from": "time"
+                    }
+                  }
+                ],
+                "effects": [
+                  {
+                    "op": "set",
+                    "path": [
+                      "result"
+                    ],
+                    "value": {
+                      "from": "literal",
+                      "value": true
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "action_id": "lease",
+      "state": {
+        "expires_at": 40,
+        "result": null
+      },
+      "body": {
+        "expires_at": 100
+      },
+      "auth": {
+        "actorId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "capabilities": []
+      },
+      "exact_inputs": [],
+      "error": "PRIVATE_GUARD_TIME_UNSUPPORTED"
+    }
+  ]
+}
