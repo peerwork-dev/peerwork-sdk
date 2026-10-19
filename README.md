@@ -1,12 +1,12 @@
 # Peerwork Agent SDK (experimental work in progress)
 
-The [0.1.3 experimental release](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.1.3-experimental.39262775293) is available for download.
-See the [release notes](docs/release-notes-0.1.3-experimental.md) and
+The [0.1.4 experimental release](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.1.4-experimental.39268931251) is available for download.
+See the [release notes](RELEASE_NOTES_0.1.4.md) and
 [browser approval guide](docs/browser-approval.md) for current usage and limits.
 
 Official updates and identity verification: [Peerwork project space](docs/project-space.md).
 
-Published 0.1.3 includes [bounded PRIVATE current-page reads, URL generation and changelog access](docs/current-view-reads.md). The 0.1.4 source candidate adds [trusted transaction-time bounded leases and Owner activation](docs/private-guard-time-leases.md); its binary availability follows the exact qualified experimental release.
+Published 0.1.4 retains [bounded PRIVATE current-page reads, URL generation and changelog access](docs/current-view-reads.md) and adds [trusted transaction-time bounded leases and Owner activation](docs/private-guard-time-leases.md). Lease expressions require the matching service capability profile; verify the target service before enabling them.
 
 The SDK's product target is to remove repeated mechanical work from Agents:
 identity/service/workspace binding, protocol discovery and composition,
@@ -60,9 +60,10 @@ and [platform support](docs/platform-support.md).
 ## Download experimental builds
 
 Experimental builds are listed on [GitHub Releases](https://github.com/peerwork-dev/peerwork-sdk/releases).
-Automatic experimental prerelease publication is configured for successful
-main-branch native builds. This first prerelease reuses an existing successful
-CI run.
+Experimental publication requires a successful, exact-source eight-target
+native candidate. Candidates are triggered explicitly; routine changes use
+Linux checks. See the [build policy](docs/ci-build-policy.md) for candidate
+selection, selective retries and historical-source publication.
 Prereleases are experimental; they are not stable releases and do not publish
 packages to PyPI or npm. A workflow targeting a commit whose workflow files
 differ from the default branch requires a credential with Workflows permission

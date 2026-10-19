@@ -68,12 +68,21 @@ pull request, tag-ref run, failed/partial cohort or substituted workflow is
 rejected. Release assembly checks out the verified historical source SHA.
 
 This keeps older main-push candidates eligible for publication after selective
-retry. In particular, SDK 0.1.4 source
-`fdb2f09f3eeead3fb19cc22f905c6e2066000b75`, run `39268931251`, remains pending
-its missing macOS ARM artifact; these CI changes neither complete that run nor
-publish a replacement SDK. GitHub UI retries or API retries require appropriate
-Actions write access. The known runner-capacity cancellation and API 403 remain
-external recovery requirements for that exact candidate.
+retry. SDK 0.1.4 source `fdb2f09f3eeead3fb19cc22f905c6e2066000b75`,
+run `39268931251`, passed all eight targets after a selective macOS ARM retry
+and is published as [v0.1.4-experimental.39268931251](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.1.4-experimental.39268931251).
+The other seven accepted artifacts were retained. Anonymous GNU downloads
+matched the previously accepted installed CLI, Python and Node packages.
+
+The automatic publisher failed release creation with HTTP 403. The authorized
+direct API fallback published the same verified cohort; this does not establish
+that automatic publication succeeded. Historical commits whose workflow files
+differ from the default branch require a release credential with Workflows
+permission ([GitHub documentation](https://docs.github.com/en/rest/releases/releases#create-a-release)).
+Actions retries separately require appropriate Actions write access. Preserve
+the original failed operation and reconcile tag, draft and publisher status
+before a manual handoff; do not rebuild successful targets to bypass a
+publication-permission failure.
 
 ## Measured baseline and validation
 
