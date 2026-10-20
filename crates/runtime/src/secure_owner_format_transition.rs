@@ -494,7 +494,7 @@ impl SecureOwnerFormatTransition {
                     .map_err(|_| OwnerFormatTransitionError::Verification)?;
                 let identity = KernelIdentity::open(&self.config.identity_path)
                     .map_err(|_| OwnerFormatTransitionError::Identity)?;
-                if source.origin() != self.config.origin
+                if !self.config.matches_verified_origin(source.origin())
                     || source.source_actor_id() != identity.actor_id()
                     || source.source_key_id() != identity.key_id()
                     || source.replay().workspace_id() != self.config.workspace_id
@@ -644,7 +644,7 @@ impl SecureOwnerFormatTransition {
         let selected=SecureReadProfile::new(self.config.clone()).with_latest_replay(cancel,|source| {
             source.verified_read().map_err(|_| OwnerFormatTransitionError::Verification)?;
             let identity=KernelIdentity::open(&self.config.identity_path).map_err(|_| OwnerFormatTransitionError::Identity)?;
-            if source.origin()!=self.config.origin || source.source_actor_id()!=identity.actor_id()
+            if !crate::secure_read_profile::canonical_origin_matches(&self.config.origin, source.origin()) || source.source_actor_id()!=identity.actor_id()
                 || source.source_key_id()!=identity.key_id() || source.replay().owner_actor_id()!=identity.actor_id()
                 || source.replay().owner_signing_key()!=identity.key_id()
             { return Err(OwnerFormatTransitionError::Identity); }

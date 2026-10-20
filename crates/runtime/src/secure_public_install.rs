@@ -305,7 +305,7 @@ impl SecurePublicPackageInstall {
                 .map_err(|_| PublicPackageInstallError::Identity)?;
             if identity.actor_id() != source.replay().owner_actor_id()
                 || identity.key_id() != source.replay().owner_signing_key()
-                || source.origin() != self.config.origin
+                || !self.config.matches_verified_origin(source.origin())
                 || source.replay().workspace_id() != self.config.workspace_id
             {
                 return Err(PublicPackageInstallError::Identity);

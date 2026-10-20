@@ -419,7 +419,7 @@ fn run(
     check_service(&config, &options, cancel)?;
     SecureReadProfile::new(config.clone()).with_latest_replay(cancel,|source|->R<Value>{
  source.verified_read().map_err(|_|fail("GUARD_TIME_SOURCE_UNVERIFIED"))?;
- if source.origin()!=config.origin||source.source_actor_id()!=identity.actor_id()||source.source_key_id()!=identity.key_id()||source.replay().owner_actor_id()!=identity.actor_id()||source.replay().owner_signing_key()!=identity.key_id()||source.replay().structure_status()==StructureStatus::Seeding{return Err(fail("GUARD_TIME_OWNER_REQUIRED"))}
+ if !crate::secure_read_profile::canonical_origin_matches(&config.origin, source.origin())||source.source_actor_id()!=identity.actor_id()||source.source_key_id()!=identity.key_id()||source.replay().owner_actor_id()!=identity.actor_id()||source.replay().owner_signing_key()!=identity.key_id()||source.replay().structure_status()==StructureStatus::Seeding{return Err(fail("GUARD_TIME_OWNER_REQUIRED"))}
  let lifecycle=SecureLifecycle::open_existing(&config.state_dir.join("lifecycle.state"),source.origin(),identity.actor_id(),&workspace,identity.actor_id(),identity.key_id()).map_err(|_|fail("GUARD_TIME_ACTIVE_KEY_REQUIRED"))?;
  let ring=lifecycle.active_keyring_without_pending().ok_or(fail("GUARD_TIME_PENDING_KEY_TRANSITION"))?;
  let (store,mut doc)=open_history(&config,&identity)?;

@@ -200,7 +200,7 @@ impl SecureIdentityDirectory {
         let client = KernelClient::open(transport, &self.config.kernel_journal_path, &[], cancel)
             .await
             .map_err(|_| IdentityDirectoryError::Transport)?;
-        if client.origin() != self.config.origin {
+        if !crate::secure_read_profile::canonical_origin_matches(&self.config.origin, client.origin()) {
             return Err(IdentityDirectoryError::Continuity);
         }
         let path = format!("/api/workspace/v1/secure/identity-keys/{target_actor_id}");

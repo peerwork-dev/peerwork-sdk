@@ -112,7 +112,7 @@ try{
   if(kind==='proof')row.proof.payload.admitted_at_ms++;
   if(kind==='foreign-workspace')row.workspace_id=secureToken();
   const dir=snapshot('legacy-bad-'+kind,modified),bound=inputs('bad-'+kind,dir,metadata),before=posts;
-  const response=await command(['secure','owner-attach',bound.config,bound.input],false);assert.equal(response.error.code,'SOURCE_GUARD_TIME_INVALID');
+  const response=await command(['secure','owner-attach',bound.config,bound.input],false);assert.equal(response.error.code,kind==='foreign-workspace'?'SOURCE_SCOPE_CONFLICT':'SOURCE_GUARD_TIME_INVALID');
   const history=await command(['secure','owner-attachments',bound.config]);assert.equal(history.value.length,0);assert.equal(posts,before);
   result.cases.push({name:kind,status:'PASS',additional_commit_posts:0});
  }

@@ -395,7 +395,7 @@ fn try_unchanged_probe(
             crate::kernel_client::KernelClient::open(transport, &journal, &features, cancel)
                 .await
                 .ok()?;
-        if client.origin() != config.origin {
+        if !crate::secure_read_profile::canonical_origin_matches(&config.origin, client.origin()) {
             return None;
         }
         let path = format!(

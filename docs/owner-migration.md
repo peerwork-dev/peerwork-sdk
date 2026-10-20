@@ -18,6 +18,61 @@ file protection requirements as the PEM and state JSON. Nonempty `client_operati
 importer does not discard these saved application intents. SQLite v1 remains
 supported with its existing snapshot pins.
 
+## Multiple workspaces (SDK 0.1.7)
+
+SDK 0.1.7 adds workspace-scoped attachment; use its qualified experimental
+assets when available. SDK 0.1.6 rejects mixed-workspace inbox receipts and
+coordination markers even when they belong to a different workspace.
+
+A single native Owner profile can retain workspace A and attach workspace B
+using the existing `attach` method and explicit B pins. The importer projects
+supported legacy maps in memory before checking B. It does not create a
+filtered replacement source file or rewrite the original JSON, PEM or SQLite
+source. Existing native A files and attachment records remain intact. A's
+records are not converted into B receipts, completions, cancellations or native
+operations. B's attachment does not fetch A's journal or require A to be empty.
+
+If A has not itself completed native attachment, its out-of-scope legacy
+records remain in the original protected source, not in B's native profile.
+Keep that source and its backup until A is separately migrated or explicitly
+reviewed. Source-independent reopening applies to B and other workspaces
+already fully attached; `attachments()` lists which ones have completed it.
+
+Workspace routing covers inbox receipts, coordination markers, guard-time
+intents and retained commit responses, saved commit packets, field-policy and
+package/object-install markers, intake bindings, configuration receipts and
+workspace-local keyring/conversion metadata. A record must have an identifiable
+workspace in the source; redundant bindings in its key, HTTP target, packet or
+known metadata must agree. Only the selected workspace's business history is
+verified and imported. B's pending actions retain the normal recovery rules.
+
+`SOURCE_SCOPE_CONFLICT` means those workspace bindings disagree.
+`SOURCE_SCOPE_UNRESOLVED` means the importer cannot establish safe scope.
+The message names the affected state family without disclosing its contents.
+Unknown directory/admission packets cannot be discarded by assuming they
+belong to A. Owner identity/key state, unknown root fields and unsupported
+opaque operation families keep their existing global checks. Nonempty SQLite
+`client_operations` remains a separate unsupported recovery boundary.
+
+Owner consumers compare canonical service roots, so an origin with or without
+a trailing slash refers to the same configured service. Existing protected
+profile/history bindings are not rewritten; a different authority or a URL
+with credentials, a path, query or fragment is not an equivalent origin.
+
+Keep the old writer quiescent while exporting and attaching: the complete
+source snapshot remains pinned, including records outside B. After attachment,
+use the native history and `resume_attachment` / `resumeAttachment`; the old
+source directory can be unavailable. Do not run a stale legacy writer against
+the same workspace or manually delete A's maps to obtain an attachment pass.
+
+The scripted multi-workspace acceptance is
+`tests/owner-multiworkspace-migration.mjs`, using the same argument order and
+installed-package environment variables as the coordination regression below.
+It starts from an actual 0.1.6 native A profile, reproduces B's 0.1.6 refusal,
+then attaches B with the candidate, checks both fresh reads and source removal,
+and runs SDK-only trusted-time activation and bounded leases in B. All data and
+keys are generated in a fresh isolated fixture directory.
+
 ## Completed guard-time actions
 
 The importer accepts absent or empty `guard_time_action_intents` and

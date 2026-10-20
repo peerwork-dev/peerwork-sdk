@@ -63,6 +63,7 @@ static TEST_STOP_AFTER_IMPORTED_MULTIPART_STAGE_ROW: AtomicBool = AtomicBool::ne
 mod object_stage;
 mod guard_time_source;
 mod coordination_source;
+mod workspace_source;
 pub use coordination_source::HistoricalCoordinationIntent;
 pub use object_stage::{HistoricalObjectStagePendingInventory, HistoricalObjectStageIntentInventory, HistoricalObjectStageIntentCandidate};
 
@@ -232,6 +233,10 @@ pub enum HistoricalOwnerAttachError {
     SourceChanged,
     #[error("legacy Owner state has unresolved operations that require the original client")]
     SourceUnresolved,
+    #[error("cannot determine workspace scope for legacy {0}; retain the original state and resolve its original operation")]
+    SourceScopeUnresolved(&'static str),
+    #[error("conflicting workspace bindings in legacy {0}")]
+    SourceScopeConflict(&'static str),
     #[error("legacy guard-time work is pending; recover its exact saved operation in the original TypeScript Owner (timed actions use resumeGuardTimeAction), then stop that client and retry attachment; do not clear pending state")]
     GuardTimePending,
     #[error("legacy guard-time state is malformed, belongs to another workspace, or does not match verified signed history")]
@@ -281,6 +286,8 @@ impl HistoricalOwnerAttachError {
             Self::Input => "INPUT_INVALID",
             Self::SourceChanged => "SOURCE_CHANGED",
             Self::SourceUnresolved => "SOURCE_UNRESOLVED",
+            Self::SourceScopeUnresolved(_) => "SOURCE_SCOPE_UNRESOLVED",
+            Self::SourceScopeConflict(_) => "SOURCE_SCOPE_CONFLICT",
             Self::GuardTimePending => "SOURCE_GUARD_TIME_PENDING",
             Self::GuardTimeInvalid => "SOURCE_GUARD_TIME_INVALID",
             Self::CoordinationInvalid => "SOURCE_COORDINATION_INVALID",
@@ -3842,7 +3849,7 @@ impl SecureHistoricalOwnerAttach {
             transport_config.allow_loopback_http = self.config.allow_loopback_http;
             let transport = HttpTransport::new(transport_config)
                 .map_err(|_| HistoricalOwnerAttachError::Verification)?;
-            if transport.trusted_origin() != self.config.origin {
+            if !crate::secure_read_profile::canonical_origin_matches(&self.config.origin, transport.trusted_origin()) {
                 return Err(HistoricalOwnerAttachError::Verification);
             }
             let runtime = Builder::new_current_thread().enable_all().build()
@@ -7593,6 +7600,7 @@ fn parse_legacy_source_selected_install_inner(
         {
             return Err(HistoricalOwnerAttachError::SourceChanged);
         }
+        workspace_source::project(&mut value, input)?;
         if !confirmed_browser_approvals(value.get("admission_browser_approvals"), input)
             || !completed_signed_cache(value.get("intake_closures"))
             || !completed_signed_cache(value.get("application_decisions"))

@@ -217,6 +217,11 @@ impl SecureIntentJournal {
         trusted_origin: &str,
         actor_id: &str,
     ) -> Result<Self, SecureIntentError> {
+        // Persist the same canonical service root used by the transport. Older
+        // documents already require canonical origins; this does not rewrite
+        // their pins or the exact saved request bytes.
+        let origin = Url::parse(trusted_origin).map_err(|_| SecureIntentError::Invalid)?;
+        let trusted_origin = origin.as_str();
         if !valid_origin(trusted_origin) || !valid_token(actor_id) {
             return Err(SecureIntentError::Invalid);
         }
@@ -1441,10 +1446,11 @@ mod tests {
         let workspace = "b".repeat(43);
         let owner = "c".repeat(43);
         let command = "d".repeat(43);
-        let origin = "http://127.0.0.1:45678/";
+        let origin = "http://127.0.0.1:45678";
         let request_path = format!("/api/workspace/v1/secure/workspaces/{workspace}/commits");
         let intent_digest = "0".repeat(64);
         let mut journal = SecureIntentJournal::open(&path, origin, &actor).unwrap();
+        assert_eq!(journal.document.trusted_origin, "http://127.0.0.1:45678/");
         let packet = || SecurePacketInput {
             intent_id: &command,
             path: &request_path,
@@ -1459,7 +1465,7 @@ mod tests {
             .prepare_action_operation(packet(), "publish-action-42", &digest)
             .unwrap();
         drop(journal);
-        let mut journal = SecureIntentJournal::open(&path, origin, &actor).unwrap();
+        let mut journal = SecureIntentJournal::open(&path, "http://127.0.0.1:45678/", &actor).unwrap();
         assert_eq!(
             journal.action_operation("publish-action-42").unwrap(),
             Some((command.clone(), digest.clone()))

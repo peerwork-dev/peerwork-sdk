@@ -1557,7 +1557,7 @@ impl SecurePrivatePackageInstall {
                     .map_err(|_| PrivatePackageInstallError::Identity)?;
                 let identity = KernelIdentity::open(&self.config.identity_path)
                     .map_err(|_| PrivatePackageInstallError::Identity)?;
-                if source.origin() != self.config.origin
+                if !self.config.matches_verified_origin(source.origin())
                     || source.source_actor_id() != identity.actor_id()
                     || source.source_key_id() != identity.key_id()
                     || source.replay().owner_actor_id() != identity.actor_id()
@@ -1812,7 +1812,7 @@ impl SecurePrivatePackageInstall {
                     .map_err(|_| PrivatePackageInstallError::Identity)?;
                 let identity = KernelIdentity::open(&self.config.identity_path)
                     .map_err(|_| PrivatePackageInstallError::Identity)?;
-                if source.origin() != self.config.origin
+                if !self.config.matches_verified_origin(source.origin())
                     || source.source_actor_id() != identity.actor_id()
                     || source.source_key_id() != identity.key_id()
                     || source.replay().owner_actor_id() != identity.actor_id()
@@ -2952,7 +2952,7 @@ impl SecurePrivatePackageInstall {
             .map_err(|_| PrivatePackageInstallError::Identity)?;
         let identity = KernelIdentity::open(&self.config.identity_path)
             .map_err(|_| PrivatePackageInstallError::Identity)?;
-        if source.origin() != self.config.origin
+        if !self.config.matches_verified_origin(source.origin())
             || source.source_actor_id() != identity.actor_id()
             || source.source_key_id() != identity.key_id()
             || source.replay().workspace_id() != self.config.workspace_id

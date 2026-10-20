@@ -1,0 +1,20 @@
+// Installed Node package only. Attach B to an existing native Owner of A.
+import {createRequire} from 'node:module';
+import {readFileSync,renameSync,writeFileSync} from 'node:fs';
+import {dirname} from 'node:path';
+import assert from 'node:assert/strict';
+const [packageRoot,configPath,inputPath,metadataPath]=process.argv.slice(2);
+const require=createRequire(packageRoot+'/package.json'),sdk=require('@peerwork/agent-sdk');
+const config=JSON.parse(readFileSync(configPath)),input=JSON.parse(readFileSync(inputPath)),meta=JSON.parse(readFileSync(metadataPath));
+const options={origin:config.origin,stateDir:config.state_dir,allowLoopbackHttp:config.allow_loopback_http};
+const source=Object.fromEntries(Object.entries(input).map(([k,v])=>[k.replace(/_([a-z])/g,(_,c)=>c.toUpperCase()),v]));
+const progress=stage=>writeFileSync(configPath+'.progress.json',JSON.stringify({stage,utc:new Date().toISOString()})+'\n',{mode:0o600});
+progress('read-A-before');const owner=sdk.openSecureOwnerWorkspaces(options),before=await owner.read(meta.workspace_a);
+progress('attach-B');
+const attached=await owner.attach(source);assert.equal(attached.status,'ATTACHED');assert.deepEqual(attached.coordination_intents,[]);
+assert.equal((await owner.attach(source)).attach_id,attached.attach_id);
+const directory=dirname(input.protected_ts_state_path);renameSync(directory,directory+'-removed');
+const reopened=sdk.openSecureOwnerWorkspaces(options);assert.equal((await reopened.resumeAttachment(attached.attach_id)).status,'ATTACHED');
+progress('reopen-A-and-B');const after=await reopened.read(meta.workspace_a);assert.equal(after.head,before.head);assert.equal(after.sequence,before.sequence);
+const b=await reopened.read(meta.workspace_b);assert(JSON.stringify(b).includes('Existing canary ticket'));assert.equal((await reopened.attachments()).length,2);
+console.log(JSON.stringify({status:'PASS',fresh_A_B_reads:true,source_unavailable:true,same_attachment:true}));

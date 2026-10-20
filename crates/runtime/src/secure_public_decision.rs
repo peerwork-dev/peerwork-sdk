@@ -467,7 +467,7 @@ impl SecurePublicDecision {
             max_replay_commits: self.config.max_replay_commits,
         };
         SecureReadProfile::new(profile).with_latest_replay(cancel, |source| {
-            if source.origin() != self.config.origin
+            if !crate::secure_read_profile::canonical_origin_matches(&self.config.origin, source.origin())
                 || source.authority() != self.config.authority
                 || source.source_actor_id() != identity.actor_id()
                 || source.source_key_id() != identity.key_id()
@@ -928,7 +928,7 @@ impl SecurePublicDecision {
             max_replay_commits: self.config.max_replay_commits,
         };
         SecureReadProfile::new(profile).with_latest_replay(cancel, |source| {
-            if source.origin() != self.config.origin
+            if !crate::secure_read_profile::canonical_origin_matches(&self.config.origin, source.origin())
                 || source.authority() != self.config.authority
                 || source.source_actor_id() != identity.actor_id()
                 || source.source_key_id() != identity.key_id()
@@ -1324,7 +1324,7 @@ impl SecurePublicDecision {
                 cancel,
             ))
             .map_err(|_| PublicDecisionError::Transport)?;
-        if client.origin() != self.config.origin {
+        if !crate::secure_read_profile::canonical_origin_matches(&self.config.origin, client.origin()) {
             return Err(PublicDecisionError::Identity);
         }
         Ok((runtime, client))

@@ -63,7 +63,7 @@ try{
   if(name==='foreign-workspace'){value.coordination_intents[secureToken()+'.send.'+orphanId]=value.coordination_intents[orphanKey];delete value.coordination_intents[orphanKey];}
   if(name==='pending-packet')value.pending[secureToken()]={path:'/original/saved',body:{}};
   const dir=snapshot(name+'-source',value),bound=bind(name,dir),rejected=await command(['secure','owner-attach',bound.config,bound.input],false);
-  assert.equal(rejected.error.code,name==='pending-packet'?'SOURCE_COORDINATION_PENDING':'SOURCE_COORDINATION_INVALID');
+  assert.equal(rejected.error.code,name==='pending-packet'?'SOURCE_COORDINATION_PENDING':name==='foreign-workspace'?'SOURCE_SCOPE_UNRESOLVED':'SOURCE_COORDINATION_INVALID');
   assert.deepEqual((await command(['secure','owner-attachments',bound.config])).value,[]);assert.equal(posts,before);report.cases.push({name,status:'PASS',new_commit_posts:0});
  }
  const dir=snapshot('valid-source'),bound=bind('valid',dir),attached=(await command(['secure','owner-attach',bound.config,bound.input])).value;

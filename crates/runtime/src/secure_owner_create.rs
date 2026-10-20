@@ -641,7 +641,7 @@ impl SecureOwnerWorkspaceCreate {
         drop(identity);
         let json = profile.read_latest_json_with_cancel(cancel)?;
         profile.with_pinned_replay(cancel, |latest| {
-            if latest.origin() != self.config.origin
+            if !crate::secure_read_profile::canonical_origin_matches(&self.config.origin, latest.origin())
                 || latest.replay().workspace_id() != workspace_id
                 || !latest.replay().contains_checkpoint(
                     1,
@@ -957,7 +957,7 @@ impl SecureOwnerWorkspaceCreate {
             .ok_or(SecureOwnerCreateError::ResourceLimit)?;
         let replay = replay_authenticated_pages_with_budget(&pages, &lifecycle, budget)
             .map_err(|e| match e { VerifiedReadError::ResourceLimit => SecureOwnerCreateError::ResourceLimit, _ => SecureOwnerCreateError::Verification })?;
-        if replay.origin() != self.config.origin
+        if !crate::secure_read_profile::canonical_origin_matches(&self.config.origin, replay.origin())
             || replay.source_actor_id() != identity.actor_id()
             || replay.source_key_id() != identity.key_id()
             || replay.replay().workspace_id() != row.workspace_id
@@ -995,7 +995,7 @@ impl SecureOwnerWorkspaceCreate {
             .read_latest_json_with_cancel(cancel)
             .map_err(SecureOwnerCreateError::from)?;
         profile.with_pinned_replay(cancel, |latest| {
-            if latest.origin() != self.config.origin
+            if !crate::secure_read_profile::canonical_origin_matches(&self.config.origin, latest.origin())
                 || latest.replay().workspace_id() != row.workspace_id
                 || !latest.replay().contains_checkpoint(
                     1,

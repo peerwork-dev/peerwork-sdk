@@ -185,7 +185,7 @@ impl SecurePublicAdmission {
         SecureReadProfile::new(self.config.clone()).with_latest_replay(cancel, |source| {
             let identity = KernelIdentity::open(&self.config.identity_path)
                 .map_err(|_| PublicAdmissionRuntimeError::Identity)?;
-            if source.origin() != self.config.origin
+            if !self.config.matches_verified_origin(source.origin())
                 || source.replay().workspace_id() != self.config.workspace_id
                 || source.replay().owner_actor_id() != identity.actor_id()
                 || source.replay().owner_signing_key() != identity.key_id()
@@ -370,7 +370,7 @@ impl SecurePublicAdmission {
         SecureReadProfile::new(self.config.clone()).with_latest_replay(cancel, |source| {
             let identity = KernelIdentity::open(&self.config.identity_path)
                 .map_err(|_| PublicAdmissionRuntimeError::Identity)?;
-            if source.origin() != self.config.origin
+            if !self.config.matches_verified_origin(source.origin())
                 || source.replay().workspace_id() != self.config.workspace_id
                 || source.replay().owner_actor_id() != identity.actor_id()
                 || source.replay().owner_signing_key() != identity.key_id()
@@ -942,7 +942,7 @@ impl SecurePublicAdmission {
         SecureReadProfile::new(self.config.clone()).with_latest_replay(cancel, |source| {
             let identity = KernelIdentity::open(&self.config.identity_path)
                 .map_err(|_| PublicAdmissionRuntimeError::Identity)?;
-            if source.origin() != self.config.origin
+            if !self.config.matches_verified_origin(source.origin())
                 || source.replay().workspace_id() != self.config.workspace_id
                 || source.replay().owner_actor_id() != identity.actor_id()
                 || source.replay().owner_signing_key() != identity.key_id()

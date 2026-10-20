@@ -753,7 +753,7 @@ impl SecureRecipientEnrollment {
             KernelClient::open(transport, &self.config.kernel_journal_path, &[], cancel)
                 .await
                 .map_err(map_kernel)?;
-        if client.origin() != self.config.origin {
+        if !crate::secure_read_profile::canonical_origin_matches(&self.config.origin, client.origin()) {
             return Err(RecipientEnrollmentError::Identity);
         }
         if document.registration_command_id.is_none() {

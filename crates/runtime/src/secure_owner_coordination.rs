@@ -341,7 +341,7 @@ impl SecureOwnerCoordination {
         source: &TransportReplayedJournal,
         identity: &KernelIdentity,
     ) -> Result<()> {
-        if source.origin() != self.config.origin
+        if !self.config.matches_verified_origin(source.origin())
             || source.source_actor_id() != identity.actor_id()
             || source.source_key_id() != identity.key_id()
             || source.replay().workspace_id() != self.config.workspace_id

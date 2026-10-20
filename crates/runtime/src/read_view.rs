@@ -79,7 +79,7 @@ fn run(input: &str, cancel: &CancellationToken) -> Result<WireValue, ReadViewErr
     transport_config.allow_loopback_http = config.allow_loopback_http;
     let transport = HttpTransport::new(transport_config).map_err(map_transport)?;
     // The authority signs the exact origin without a trailing slash.
-    if transport.trusted_origin().trim_end_matches('/') != config.origin {
+    if !crate::secure_read_profile::canonical_origin_matches(&config.origin, transport.trusted_origin()) {
         return Err(ReadViewError("INVALID_ORIGIN"));
     }
     let runtime = tokio::runtime::Builder::new_current_thread()

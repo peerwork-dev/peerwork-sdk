@@ -39,6 +39,22 @@ pub struct SecureReadProfileConfig {
     pub max_replay_commits: u64,
 }
 
+impl SecureReadProfileConfig {
+    /// Compare the configured service root with the transport's canonical URL,
+    /// without changing protected legacy profile/history origin bindings.
+    pub(crate) fn matches_verified_origin(&self, verified: &str) -> bool {
+        canonical_origin_matches(&self.origin, verified)
+    }
+}
+
+pub(crate) fn canonical_origin_matches(configured: &str, verified: &str) -> bool {
+    let Ok(origin) = reqwest::Url::parse(configured) else { return false; };
+    matches!(origin.scheme(), "http" | "https")
+        && origin.username().is_empty() && origin.password().is_none()
+        && origin.path() == "/" && origin.query().is_none() && origin.fragment().is_none()
+        && origin.as_str() == verified
+}
+
 fn default_replay_budget() -> u64 {
     64 * 1024 * 1024
 }
@@ -728,5 +744,21 @@ mod tests {
         assert_eq!(pending[0]["action_id"], "discussion.post");
         assert_eq!(pending[0]["request_sha256"], sha256_hex(request));
         assert_eq!(pending[0]["commit_hash"], commit_hash);
+    }
+}
+
+#[cfg(test)]
+mod canonical_origin_tests {
+    use super::canonical_origin_matches;
+    #[test]
+    fn service_root_equivalence_does_not_admit_other_authorities_or_paths() {
+        assert!(canonical_origin_matches("https://example.com", "https://example.com/"));
+        assert!(canonical_origin_matches("https://example.com/", "https://example.com/"));
+        assert!(canonical_origin_matches("https://EXAMPLE.com:443", "https://example.com/"));
+        for input in ["http://example.com", "https://other.example", "https://example.com:444",
+            "https://u@example.com", "https://u:p@example.com", "https://example.com/path",
+            "https://example.com/?q=1", "https://example.com/#fragment"] {
+            assert!(!canonical_origin_matches(input, "https://example.com/"), "{input}");
+        }
     }
 }
