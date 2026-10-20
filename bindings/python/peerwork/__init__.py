@@ -1048,6 +1048,15 @@ class RecipientEnrollmentResult(TypedDict):
     directory_entry_hash: str | None
 
 
+class LegacyRecipientImportResult(TypedDict):
+    status: Literal["IMPORTED", "ALREADY_IMPORTED"]
+    actor_id: str
+    signing_key_id: str
+    certificate_digest: str
+    historical_certificates: int
+    source_digest: str
+
+
 class RecipientKeyUpdateResult(TypedDict):
     status: Literal["PENDING", "PUBLISHED"]
     update_id: str
@@ -1082,19 +1091,33 @@ class SecureRecipientEnrollmentClient:
     def _enroll(self, operation: str,
                 cancel_handle: KernelCancelHandle | None = None, *,
                 mode: str | None = None, expected_certificate_hash: str | None = None,
-                update_id: str | None = None) -> RecipientEnrollmentResult | RecipientKeyUpdateResult | list[RecipientKeyUpdateResult] | str | None:
+                update_id: str | None = None, input_value: dict | None = None) -> RecipientEnrollmentResult | LegacyRecipientImportResult | RecipientKeyUpdateResult | list[RecipientKeyUpdateResult] | str | None:
         result = json.loads(secure_recipient_enrollment_json(
             operation, self._origin, self._state_dir,
             self._allow_loopback_http, cancel_handle, mode, expected_certificate_hash, update_id,
             None if self._transport is None else json.dumps(_transport_config(self._transport),
-                ensure_ascii=True, allow_nan=False, separators=(",", ":"))))
+                ensure_ascii=True, allow_nan=False, separators=(",", ":")),
+            None if input_value is None else json.dumps(input_value, ensure_ascii=True, allow_nan=False)))
         if result["ok"] is not True:
             raise RecipientEnrollmentError(result["code"], result["message"])
-        return cast(RecipientEnrollmentResult | RecipientKeyUpdateResult | list[RecipientKeyUpdateResult] | str | None, result["value"])
+        return cast(RecipientEnrollmentResult | LegacyRecipientImportResult | RecipientKeyUpdateResult | list[RecipientKeyUpdateResult] | str | None, result["value"])
 
     def create_local(self) -> RecipientEnrollmentResult:
         """Create or reopen protected signing and recipient keys offline."""
         return cast(RecipientEnrollmentResult, self._enroll("create_local"))
+
+    def import_legacy_keys(self, protected_ts_state_path: str, *, expected_actor_id: str,
+                           expected_signing_key_id: str, expected_source_digest: str) -> LegacyRecipientImportResult:
+        """Import pinned existing member credentials offline; no membership or pending-work migration."""
+        return cast(LegacyRecipientImportResult, self._enroll("import_legacy_keys", input_value=dict(
+            protected_ts_state_path=protected_ts_state_path, expected_actor_id=expected_actor_id,
+            expected_signing_key_id=expected_signing_key_id, expected_source_digest=expected_source_digest)))
+
+    async def import_legacy_keys_async(self, protected_ts_state_path: str, *, expected_actor_id: str,
+                                      expected_signing_key_id: str, expected_source_digest: str) -> LegacyRecipientImportResult:
+        return await asyncio.to_thread(self.import_legacy_keys, protected_ts_state_path,
+            expected_actor_id=expected_actor_id, expected_signing_key_id=expected_signing_key_id,
+            expected_source_digest=expected_source_digest)
 
     def publish(self) -> RecipientEnrollmentResult:
         """Register then publish the signed certificate; pending is not success."""
@@ -1189,7 +1212,7 @@ class SecureRecipientEnrollmentClient:
                 pass
             raise
 
-__all__ += ["SecureRecipientEnrollmentClient", "RecipientEnrollmentResult", "RecipientKeyUpdateResult", "RecipientEnrollmentError"]
+__all__ += ["SecureRecipientEnrollmentClient", "RecipientEnrollmentResult", "RecipientKeyUpdateResult", "LegacyRecipientImportResult", "RecipientEnrollmentError"]
 
 
 class OwnerCoordinationProgress(TypedDict):

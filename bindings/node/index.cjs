@@ -901,7 +901,7 @@ exports.openSecureRecipientEnrollment = options => {
     throw new TypeError('recipient enrollment requires origin and stateDir');
   }
   const transportJson = options.transport === undefined ? undefined : strictCommandJson(transportJsonValue(options.transport));
-  const invoke = async (operation, signal, mode, expectedCertificateHash, updateId) => {
+  const invoke = async (operation, signal, mode, expectedCertificateHash, updateId, input) => {
     const handle = new binding.KernelCancelHandle();
     const onAbort = () => handle.cancel();
     if (signal?.aborted) onAbort();
@@ -909,7 +909,7 @@ exports.openSecureRecipientEnrollment = options => {
     try {
       const result = JSON.parse(await binding.secureRecipientEnrollmentJson(
         operation, options.origin, options.stateDir,
-        options.allowLoopbackHttp ?? false, handle, mode, expectedCertificateHash, updateId, transportJson,
+        options.allowLoopbackHttp ?? false, handle, mode, expectedCertificateHash, updateId, transportJson, input === undefined ? undefined : strictCommandJson(input),
       ));
       if (result.ok !== true) {
         const error = new Error(result.message);
@@ -923,6 +923,17 @@ exports.openSecureRecipientEnrollment = options => {
   };
   return Object.freeze({
     createLocal: () => invoke('create_local'),
+    importLegacyKeys: (input) => {
+      const keys = ['protectedTsStatePath', 'expectedActorId', 'expectedSigningKeyId', 'expectedSourceDigest'];
+      if (!input || Object.keys(input).some(k => !keys.includes(k)) ||
+          keys.some(k => typeof input[k] !== 'string' || !input[k])) {
+        throw new TypeError('legacy import requires explicit source path and actor/key/digest pins');
+      }
+      return invoke('import_legacy_keys', undefined, undefined, undefined, undefined, {
+        protected_ts_state_path: input.protectedTsStatePath, expected_actor_id: input.expectedActorId,
+        expected_signing_key_id: input.expectedSigningKeyId, expected_source_digest: input.expectedSourceDigest,
+      });
+    },
     publish: (options = {}) => invoke('publish', options.signal),
     pending: () => invoke('pending'),
     certificateJson: () => invoke('certificate'),

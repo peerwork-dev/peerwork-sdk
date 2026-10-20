@@ -2,6 +2,8 @@
 //! signed directory publication are separate durable operations. None grants
 //! workspace membership or accepts an invitation.
 
+pub use crate::secure_recipient_state::{LegacyRecipientImportInput, LegacyRecipientImportResult};
+
 use crate::{
     kernel_client::{KernelClient, KernelClientError, KernelOperationStatus},
     kernel_identity::{KernelIdentity, KernelIdentityError},
@@ -101,6 +103,14 @@ pub enum RecipientEnrollmentError {
     Verification,
     #[error("protected local recipient state failed")]
     Local,
+    #[error("legacy recipient source is invalid or its key/certificate bindings do not verify")]
+    LegacyInvalid,
+    #[error("selected legacy recipient source digest changed")]
+    LegacyChanged,
+    #[error("recover the original legacy key update before importing recipient keys")]
+    LegacyPending,
+    #[error("existing native recipient keys differ; select an empty recipient profile with the same signing identity")]
+    LegacyConflict,
     #[error("server rejected recipient enrollment with HTTP {0}")]
     ServerRejected(u16),
     #[error("system clock or random source failed")]
@@ -120,6 +130,10 @@ impl RecipientEnrollmentError {
             Self::DiscoveryStatus => "DISCOVERY_FAILED",
             Self::Verification => "VERIFICATION_FAILED",
             Self::Local => "LOCAL_STATE_FAILED",
+            Self::LegacyInvalid => "RECIPIENT_IMPORT_INVALID",
+            Self::LegacyChanged => "SOURCE_CHANGED",
+            Self::LegacyPending => "SOURCE_KEY_UPDATE_PENDING",
+            Self::LegacyConflict => "RECIPIENT_IMPORT_CONFLICT",
             Self::ServerRejected(_) => "SERVER_REJECTED",
             Self::ClockOrEntropy => "CLOCK_OR_ENTROPY",
             Self::Cancelled => "CANCELLED",
@@ -172,6 +186,21 @@ pub struct SecureRecipientEnrollment {
 impl SecureRecipientEnrollment {
     pub fn new(config: RecipientEnrollmentConfig) -> Self {
         Self { config }
+    }
+
+    /// Import only pinned legacy recipient credentials, including historical keys.
+    /// Never creates a signing identity, publishes, or activates a workspace ring.
+    pub fn import_legacy_keys(&self, input: &LegacyRecipientImportInput)
+        -> Result<LegacyRecipientImportResult, RecipientEnrollmentError> {
+        let identity = KernelIdentity::open(&self.config.identity_path).map_err(|_| RecipientEnrollmentError::Local)?;
+        RecipientState::import_legacy_keys(&self.config.recipient_path, &identity, input).map_err(|error| match error {
+            RecipientStateError::SourceChanged => RecipientEnrollmentError::LegacyChanged,
+            RecipientStateError::SourcePending => RecipientEnrollmentError::LegacyPending,
+            RecipientStateError::ImportConflict => RecipientEnrollmentError::LegacyConflict,
+            RecipientStateError::IdentityChanged => RecipientEnrollmentError::Identity,
+            RecipientStateError::Store(_) => RecipientEnrollmentError::Local,
+            _ => RecipientEnrollmentError::LegacyInvalid,
+        })
     }
 
     /// Export only the self-signed public certificate for an explicit owner

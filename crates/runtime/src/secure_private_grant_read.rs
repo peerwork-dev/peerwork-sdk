@@ -1,4 +1,4 @@
-//! Recipient-scoped PRIVATE grant acquisition from authenticated transport.
+//! Recipient-scoped PRIVATE direct or accepted-invitation grant acquisition.
 //! No grant-list label or page artifact authorizes plaintext by itself.
 
 use crate::{
@@ -181,7 +181,24 @@ impl SecurePrivateDirectGrantRead {
         if response.status != 200 || response.wire.len() > MAX_GRANTS_RESPONSE {
             return Err(SecurePrivateDirectGrantReadError::Transport);
         }
-        let grant_wire = select_direct_grant(&response.wire, &selection, config)?;
+        let grant_wire = select_direct_grant(&response.wire, &selection, config)
+            .or_else(|_| select_grant(&response.wire, &selection, config, true))?;
+        let grant_value = parse_wire_json_bounded(&grant_wire, 32, MAX_GRANTS_RESPONSE)
+            .map_err(|_| SecurePrivateDirectGrantReadError::GrantInvalid)?;
+        let invitation = match grant_value.get("payload").and_then(|p|p.get("invite_id")) {
+            Some(WireValue::Null) => None,
+            Some(value) => {
+                let invite_id=value.as_string().ok_or(SecurePrivateDirectGrantReadError::GrantInvalid)?;
+                let path=format!("/api/workspace/v1/secure/invitations/{invite_id}");
+                let proof=sign_read_proof(&path,client.discovery(),&identity,&config.authority)
+                    .map_err(|_| SecurePrivateDirectGrantReadError::Transport)?;
+                let control=runtime.block_on(client.transport().get_secure_invitation_exact(&path,&proof,cancel))
+                    .map_err(|_| transport_or_cancel(cancel))?;
+                if control.status!=200 { return Err(SecurePrivateDirectGrantReadError::Transport); }
+                Some(invitation_evidence(&control.wire,&grant_wire)?)
+            },
+            None => return Err(SecurePrivateDirectGrantReadError::GrantInvalid),
+        };
         let mut lifecycle = SecureLifecycle::open(
             &config.lifecycle_path,
             client.origin(),
@@ -227,7 +244,7 @@ impl SecurePrivateDirectGrantRead {
                     checkpoint: pages.checkpoint_canonical_json().as_bytes(),
                     grant: &grant_wire,
                     certificate: &selection.certificate_wire,
-                    invitation: None,
+                    invitation: invitation.as_ref().map(|(offer,decision)|(offer.as_slice(),decision.as_slice())),
                     delegation: None,
                 },
                 &recipient,
@@ -333,6 +350,22 @@ pub(crate) fn select_direct_grant(
     selection: &MemberSelection,
     config: &SecureReadConfig,
 ) -> Result<Vec<u8>, SecurePrivateDirectGrantReadError> {
+    select_grant(response, selection, config, false)
+}
+
+fn invitation_evidence(response: &[u8], selected_grant: &[u8])
+    -> Result<(Vec<u8>,Vec<u8>),SecurePrivateDirectGrantReadError> {
+    let value=parse_wire_json_bounded(response,80,220_000).map_err(|_|SecurePrivateDirectGrantReadError::Verification)?;
+    let wire=|name| value.get(name).and_then(|v|canonical_wire_value(v,CanonicalPath::SecureArtifact).ok())
+        .map(String::into_bytes).ok_or(SecurePrivateDirectGrantReadError::Verification);
+    if wire("grant")?!=selected_grant { return Err(SecurePrivateDirectGrantReadError::Verification); }
+    // These remain untrusted until SecureGrantPending verifies the Owner's
+    // offer, recipient's ACCEPT and grant against full signed current history.
+    Ok((wire("offer")?,wire("decision")?))
+}
+
+fn select_grant(response: &[u8], selection: &MemberSelection, config: &SecureReadConfig,
+    invitation: bool) -> Result<Vec<u8>, SecurePrivateDirectGrantReadError> {
     let value = parse_wire_json_bounded(response, 32, MAX_GRANTS_RESPONSE)
         .map_err(|_| SecurePrivateDirectGrantReadError::GrantInvalid)?;
     if value
@@ -363,7 +396,8 @@ pub(crate) fn select_direct_grant(
             .get("recipient")
             .and_then(|value| canonical_wire_value(value, CanonicalPath::SecureArtifact).ok());
         if payload.get("epoch").and_then(WireValue::as_number) == Some(selection.epoch as f64)
-            && matches!(payload.get("invite_id"), Some(WireValue::Null))
+            && (matches!(payload.get("invite_id"), Some(WireValue::Null)) || invitation && payload.get("invite_id")
+                .and_then(WireValue::as_string).is_some_and(|id|id.len()==43 && id.bytes().all(|b|b.is_ascii_alphanumeric() || matches!(b,b'-'|b'_'))))
             && matches!(payload.get("delegation"), Some(WireValue::Null))
             && recipient.as_deref() == std::str::from_utf8(&selection.certificate_wire).ok()
         {

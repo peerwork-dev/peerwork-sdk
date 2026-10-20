@@ -1207,6 +1207,7 @@ pub struct SecureEnrollmentTask {
     expected_certificate_hash: Option<String>,
     update_id: Option<String>,
     transport_json: Option<String>,
+    input_json: Option<String>,
     cancel: KernelCancellationToken,
 }
 
@@ -1223,6 +1224,15 @@ impl Task for SecureEnrollmentTask {
         config.transport = self.transport_json.as_deref().map(serde_json::from_str).transpose().map_err(|_| napi::Error::from_reason("invalid transport options"))?.unwrap_or_default();
         config.transport.validate().map_err(|_| napi::Error::from_reason("invalid transport options"))?;
         let access = SecureRecipientEnrollment::new(config);
+        if self.operation == "import_legacy_keys" {
+            return Ok(match self.input_json.as_deref().and_then(|v| serde_json::from_str(v).ok()) {
+                Some(input) => match access.import_legacy_keys(&input) {
+                    Ok(value) => serde_json::json!({"ok":true,"value":value}).to_string(),
+                    Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
+                },
+                None => serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"explicit legacy source and identity/digest pins are required"}).to_string(),
+            });
+        }
         if self.operation == "certificate" {
             return Ok(match access.certificate_json() {
                 Ok(value) => serde_json::json!({"ok":true,"value":value}).to_string(),
@@ -1293,6 +1303,7 @@ pub fn secure_recipient_enrollment_json(
     expected_certificate_hash: Option<String>,
     update_id: Option<String>,
     transport_json: Option<String>,
+    input_json: Option<String>,
 ) -> AsyncTask<SecureEnrollmentTask> {
     AsyncTask::new(SecureEnrollmentTask {
         operation,
@@ -1303,6 +1314,7 @@ pub fn secure_recipient_enrollment_json(
         expected_certificate_hash,
         update_id,
         transport_json,
+        input_json,
         cancel: cancel_handle
             .map(|handle| handle.token.clone())
             .unwrap_or_default(),

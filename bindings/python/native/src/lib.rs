@@ -982,7 +982,7 @@ fn public_catalog_json(
 }
 
 #[pyfunction]
-#[pyo3(signature = (operation, origin, state_dir, allow_loopback_http=false, cancel_handle=None, mode=None, expected_certificate_hash=None, update_id=None, transport_json=None))]
+#[pyo3(signature = (operation, origin, state_dir, allow_loopback_http=false, cancel_handle=None, mode=None, expected_certificate_hash=None, update_id=None, transport_json=None, input_json=None))]
 fn secure_recipient_enrollment_json(
     py: Python<'_>,
     operation: &str,
@@ -994,12 +994,14 @@ fn secure_recipient_enrollment_json(
     expected_certificate_hash: Option<&str>,
     update_id: Option<&str>,
     transport_json: Option<&str>,
+    input_json: Option<&str>,
 ) -> PyResult<String> {
     let mut config =
         RecipientEnrollmentConfig::for_state_dir(origin.to_owned(), Path::new(state_dir));
     config.allow_loopback_http = allow_loopback_http;
     config.transport = transport_json.map(serde_json::from_str).transpose().map_err(|_| pyo3::exceptions::PyValueError::new_err("invalid transport options"))?.unwrap_or_default();
     config.transport.validate().map_err(|_| pyo3::exceptions::PyValueError::new_err("invalid transport options"))?;
+    let input_json = input_json.map(str::to_owned);
     let operation = operation.to_owned();
     let mode = mode.map(str::to_owned);
     let expected_certificate_hash = expected_certificate_hash.map(str::to_owned);
@@ -1009,6 +1011,15 @@ fn secure_recipient_enrollment_json(
         .unwrap_or_default();
     Ok(py.allow_threads(move || {
         let access = SecureRecipientEnrollment::new(config);
+        if operation == "import_legacy_keys" {
+            return match input_json.as_deref().and_then(|v| serde_json::from_str(v).ok()) {
+                Some(input) => match access.import_legacy_keys(&input) {
+                    Ok(value) => serde_json::json!({"ok":true,"value":value}).to_string(),
+                    Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
+                },
+                None => serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"explicit legacy source and identity/digest pins are required"}).to_string(),
+            };
+        }
         if operation == "certificate" {
             return match access.certificate_json() {
                 Ok(value) => serde_json::json!({"ok":true,"value":value}).to_string(),

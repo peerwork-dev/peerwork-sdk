@@ -540,9 +540,25 @@ export interface RecipientKeyUpdateResult {
   directory_version: number;
   directory_head: string;
 }
+export interface LegacyRecipientImportInput {
+  protectedTsStatePath: string;
+  expectedActorId: string;
+  expectedSigningKeyId: string;
+  expectedSourceDigest: string;
+}
+export interface LegacyRecipientImportResult {
+  status: 'IMPORTED' | 'ALREADY_IMPORTED';
+  actor_id: string;
+  signing_key_id: string;
+  certificate_digest: string;
+  historical_certificates: number;
+  source_digest: string;
+}
 export interface SecureRecipientEnrollmentSession {
   /** Protected local key creation only; no network or membership grant. */
   createLocal(): Promise<RecipientEnrollmentResult>;
+  /** Credential-only pinned import; no network, membership or pending-operation import. */
+  importLegacyKeys(input: LegacyRecipientImportInput): Promise<LegacyRecipientImportResult>;
   /** Reuses protected exact registration/publication bytes after uncertain replies. */
   publish(options?: { signal?: AbortSignal }): Promise<RecipientEnrollmentResult>;
   /** Local progress only; a pending status is not directory acceptance. */

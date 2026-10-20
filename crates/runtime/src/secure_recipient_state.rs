@@ -11,6 +11,9 @@ use std::path::Path;
 use thiserror::Error;
 use zeroize::{Zeroize, Zeroizing};
 
+mod legacy;
+pub use legacy::{LegacyRecipientImportInput, LegacyRecipientImportResult};
+
 const MAGIC: &[u8] = b"PEERWORK-NATIVE-RECIPIENT\n1\n";
 const MAGIC_V2: &[u8] = b"PEERWORK-NATIVE-RECIPIENT\n2\n";
 const MAX_CERT: usize = 16_384;
@@ -24,6 +27,12 @@ pub enum RecipientStateError {
     Recipient(#[from] RecipientError),
     #[error("recipient identity already exists")]
     AlreadyExists,
+    #[error("selected legacy recipient source changed")]
+    SourceChanged,
+    #[error("legacy recipient key update requires recovery")]
+    SourcePending,
+    #[error("existing native recipient keys differ; select an empty recipient profile with the same signing identity")]
+    ImportConflict,
     #[error("recipient identity does not exist")]
     NotFound,
     #[error("recipient identity state is invalid")]
