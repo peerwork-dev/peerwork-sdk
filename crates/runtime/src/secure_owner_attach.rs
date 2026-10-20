@@ -61,6 +61,7 @@ static TEST_STOP_AFTER_ORPHAN_REPLAN_INTENT: AtomicBool = AtomicBool::new(false)
 static TEST_STOP_AFTER_IMPORTED_MULTIPART_STAGE_ROW: AtomicBool = AtomicBool::new(false);
 
 mod object_stage;
+mod guard_time_source;
 pub use object_stage::{HistoricalObjectStagePendingInventory, HistoricalObjectStageIntentInventory, HistoricalObjectStageIntentCandidate};
 
 const MAX_SOURCE: usize = 64 * 1024 * 1024;
@@ -227,6 +228,10 @@ pub enum HistoricalOwnerAttachError {
     SourceChanged,
     #[error("legacy Owner state has unresolved operations that require the original client")]
     SourceUnresolved,
+    #[error("legacy guard-time work is pending; reopen the original TypeScript Owner and resumeGuardTimeAction(workspaceId, operationId), then retry attachment with the unchanged Owner; do not clear pending state")]
+    GuardTimePending,
+    #[error("legacy guard-time state is malformed, belongs to another workspace, or does not match verified signed history")]
+    GuardTimeInvalid,
     #[error("protected native Owner identity conflicts with imported Owner")]
     Identity,
     #[error("another protected Owner workspace binding conflicts")]
@@ -268,6 +273,8 @@ impl HistoricalOwnerAttachError {
             Self::Input => "INPUT_INVALID",
             Self::SourceChanged => "SOURCE_CHANGED",
             Self::SourceUnresolved => "SOURCE_UNRESOLVED",
+            Self::GuardTimePending => "SOURCE_GUARD_TIME_PENDING",
+            Self::GuardTimeInvalid => "SOURCE_GUARD_TIME_INVALID",
             Self::Identity => "IDENTITY_CHANGED",
             Self::Conflict => "ATTACH_CONFLICT",
             Self::NotFound => "NOT_FOUND",
@@ -562,6 +569,7 @@ struct AttachHistory {
 }
 
 struct LegacySource {
+    guard_time: Vec<Zeroizing<Vec<u8>>>,
     visibility: String,
     ring: Option<SecretKeyring>,
     sequence: u64,
@@ -2071,6 +2079,7 @@ impl SecureHistoricalOwnerAttach {
             }
             let scratch_owner = KernelIdentity::open(&scratch.join("identity.state"))
                 .map_err(|_| HistoricalOwnerAttachError::Identity)?;
+            guard_time_source::verify(&source.guard_time, &replayed, input)?;
             verify(&replayed, &scratch_owner)
         })();
         // Explicitly report cleanup failure on success, cancellation or
@@ -2396,6 +2405,15 @@ impl SecureHistoricalOwnerAttach {
         // Validate the complete signed target selection before an immutable
         // PREPARED row, pending ring, or optional secure ACTION can be written.
         self.preflight_kernel_source(&input, cancel, Some(&input.kernel_pending_command_ids))?;
+        if !source.guard_time.is_empty() {
+            let _guard_lock = SecureStateStore::open(&root.join("owner-attach-recovery.state"))
+                .map_err(|_| HistoricalOwnerAttachError::Local)?;
+            self.with_preflight_replay(&input, &source, cancel, |_, _| Ok(()))?;
+            let (_, ts_after, pem_after, intent_after) = self.inspect_sources(&input)?;
+            if (ts_after, pem_after, intent_after) != (ts_digest.clone(), pem_digest.clone(), intent_digest.clone()) {
+                return Err(HistoricalOwnerAttachError::SourceChanged);
+            }
+        }
         let mut multipart_plan = None;
         let mut orphan_plan = None;
         let stage_preflight_lock = if source.completed_package_stage.is_some()
@@ -2652,6 +2670,7 @@ impl SecureHistoricalOwnerAttach {
                     HistoricalOwnerAttachError::Verification
                 }
             })?;
+        guard_time_source::verify(&source.guard_time, &replayed, &row.input)?;
         if let Some(plan) = completed_direct_plan.as_ref() {
             let selected = plan.source.completed_install_intent.as_ref()
                 .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
@@ -7525,6 +7544,8 @@ fn parse_legacy_source_selected_install_inner(
             "admission_browser_approvals",
             "admission_browser_revocations",
             "configuration_receipts",
+            "guard_time_action_intents",
+            "guard_time_post_responses",
         ];
         if root_fields.iter().any(|(key, _)| {
             !KNOWN
@@ -7557,6 +7578,7 @@ fn parse_legacy_source_selected_install_inner(
             return Err(HistoricalOwnerAttachError::SourceUnresolved);
         }
         let retained_inbox_receipts = parse_inbox_receipts(value.get("inbox_receipts"), input)?;
+        let guard_time = guard_time_source::parse(&value, input)?;
         let stage_marker = completed_package_stage_marker(value.get("package_stage_intents"), input)?;
         let pending_package_stage = parse_pending_package_stage(value.get("pending"), stage_marker.as_ref(), input)?;
         let completed_package_stage = if pending_package_stage.is_some() { None } else { stage_marker };
@@ -7801,6 +7823,7 @@ fn parse_legacy_source_selected_install_inner(
             }
         }
         Ok(LegacySource {
+            guard_time,
             visibility: if ring.is_some() { "PRIVATE" } else { "PUBLIC" }.into(),
             ring,
             sequence,
@@ -12517,6 +12540,7 @@ mod tests {
             let ring_wire = canonical_wire_value(local.get("keyring").unwrap(),
                 CanonicalPath::SecureArtifact).unwrap();
             let source = LegacySource {
+                guard_time: Vec::new(),
                 visibility: "PRIVATE".into(),
                 ring: Some(SecretKeyring::parse_wire(ring_wire.as_bytes()).unwrap()),
                 sequence: exact_u64(checkpoint.get("sequence")).unwrap(),

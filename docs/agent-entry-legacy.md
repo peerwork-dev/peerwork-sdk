@@ -1,5 +1,7 @@
 # Specialized Owner and historical-source SDK guide
 
+For an existing TypeScript Owner, follow the [migration and recovery guide](owner-migration.md) before attachment. Guard-time cache support requires a compatible published SDK; pending work retains its original recovery path.
+
 Use this guide only when the operator explicitly selects a specialized Owner,
 historical-source or configuration-lookup workflow. For the existing-member
 context path, start at [Agent entry](agent-entry.md). The source guide below is

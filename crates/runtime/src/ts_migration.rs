@@ -22,6 +22,7 @@ const MAX_TOTAL_BYTES: usize = 256 * 1024 * 1024;
 const CONTEXT_SQL: &str =
     "CREATE TABLE client_context(id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL)";
 const INTENTS_SQL: &str = "CREATE TABLE client_intents(command_id TEXT PRIMARY KEY,jws TEXT NOT NULL,intent_digest TEXT NOT NULL,command TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('PENDING','ACCEPTED')),response TEXT,created INTEGER NOT NULL,updated INTEGER NOT NULL)";
+const OPERATIONS_SQL: &str = "CREATE TABLE client_operations(workspace_id TEXT NOT NULL,operation_id TEXT NOT NULL,intent TEXT NOT NULL,created INTEGER NOT NULL,PRIMARY KEY(workspace_id,operation_id))";
 
 #[derive(Debug, Error)]
 pub enum TsMigrationError {
@@ -61,6 +62,7 @@ struct TsStoredRow {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TsSnapshot {
+    version: i64,
     context: String,
     rows: Vec<TsStoredRow>,
 }
@@ -114,6 +116,8 @@ fn source_snapshot_digest(path: &Path, allow_pending: bool) -> Result<String, Ts
         return Err(TsMigrationError::Incompatible);
     }
     let mut bytes = Vec::new();
+    // Preserve existing v1 pins; distinguish the supported empty v2 store.
+    if first.version == 2 { bytes.extend_from_slice(b"peerwork.ts.snapshot.v2\0"); }
     for field in [&first.context]
         .into_iter()
         .chain(first.rows.iter().flat_map(|row| {
@@ -239,20 +243,25 @@ fn checked_backup_snapshot(
 fn read_snapshot(db: &Connection) -> Result<TsSnapshot, TsMigrationError> {
     let app: i64 = db.pragma_query_value(None, "application_id", |row| row.get(0))?;
     let version: i64 = db.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if app != TS_APPLICATION_ID || version != 1 {
+    if app != TS_APPLICATION_ID || !matches!(version, 1 | 2) {
         return Err(TsMigrationError::Incompatible);
     }
     let objects: Vec<(String, String, String)> = db
         .prepare("SELECT type,name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name")?
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
         .collect::<Result<_, _>>()?;
-    if objects
-        != [
+    let mut expected = vec![
             ("table".into(), "client_context".into(), CONTEXT_SQL.into()),
             ("table".into(), "client_intents".into(), INTENTS_SQL.into()),
-        ]
-    {
+        ];
+    if version == 2 { expected.push(("table".into(), "client_operations".into(), OPERATIONS_SQL.into())); }
+    if objects != expected {
         return Err(TsMigrationError::Incompatible);
+    }
+    // The operation-intent table has no general import/recovery bridge yet.
+    // Accept its genuinely empty shape; never silently discard saved intents.
+    if version == 2 && db.query_row("SELECT count(*) FROM client_operations", [], |row| row.get::<_, i64>(0))? != 0 {
+        return Err(TsMigrationError::Unresolved);
     }
     let check: String = db.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
     if check != "ok" {
@@ -300,6 +309,7 @@ fn read_snapshot(db: &Connection) -> Result<TsSnapshot, TsMigrationError> {
         rows.push(row);
     }
     Ok(TsSnapshot {
+        version,
         context: context.clone(),
         rows,
     })
@@ -933,6 +943,26 @@ mod tests {
             Err(TsMigrationError::Incompatible)
         ));
         assert!(!backup_path.exists());
+    }
+
+    #[test]
+    fn current_v2_empty_operation_table_is_accepted_but_saved_operations_are_not_discarded() {
+        let dir = private_dir();
+        let path = dir.path().join("current.sqlite");
+        let db = Connection::open(&path).unwrap();
+        db.execute_batch(&format!("{CONTEXT_SQL}; {INTENTS_SQL}; PRAGMA application_id={TS_APPLICATION_ID}; PRAGMA user_version=1;" )).unwrap();
+        db.execute("INSERT INTO client_context VALUES(1,?1)", ["selected-context"]).unwrap();
+        let old = read_snapshot(&db).unwrap();
+        db.execute_batch(&format!("{OPERATIONS_SQL}; PRAGMA user_version=2;")).unwrap();
+        let current = read_snapshot(&db).unwrap();
+        assert_eq!(current.rows, old.rows);
+        assert_eq!(current.context, old.context);
+        assert_ne!(current.version, old.version);
+        db.execute("INSERT INTO client_operations VALUES('workspace','operation','{}',1)", []).unwrap();
+        assert!(matches!(read_snapshot(&db), Err(TsMigrationError::Unresolved)));
+        db.execute("DELETE FROM client_operations", []).unwrap();
+        db.execute_batch("CREATE TABLE extra(value TEXT)").unwrap();
+        assert!(matches!(read_snapshot(&db), Err(TsMigrationError::Incompatible)));
     }
 
     #[test]
