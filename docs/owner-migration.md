@@ -5,12 +5,13 @@ client-state migration, not workspace ownership transfer. Stop the old client
 before inspection and keep its protected state, PKCS#8 PEM and SQLite intent
 database together and unchanged throughout attachment.
 
-The [published SDK 0.1.6 experimental release](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.1.6-experimental.39360326627)
-includes the coordination-marker support below and the SDK 0.1.5 guard-time/SQLite
-fixes. Use this exact release or a qualified successor for nonempty
-`coordination_intents`; 0.1.5 does not cover that boundary. Inspect `SOURCE.json`
-and `SHA256SUMS` to pin the binary source and integrity. These GitHub assets do
-not imply stable PyPI/npm availability.
+The [published SDK 0.1.7 experimental release](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.1.7-experimental.39401632909)
+includes workspace-scoped attachment and the earlier coordination-marker,
+guard-time and SQLite compatibility fixes. Use 0.1.7 or a qualified successor
+when a legacy Owner holds records from multiple workspaces; 0.1.6 does not
+support that attachment boundary. Inspect `SOURCE.json` and `SHA256SUMS` for
+binary source and integrity. GitHub experimental assets do not imply stable
+PyPI/npm availability.
 
 The current TypeScript SQLite v2 journal is accepted when its operation-intent
 table is empty. The selected exported SQLite file must meet the same private
@@ -20,8 +21,8 @@ supported with its existing snapshot pins.
 
 ## Multiple workspaces (SDK 0.1.7)
 
-SDK 0.1.7 adds workspace-scoped attachment; use its qualified experimental
-assets when available. SDK 0.1.6 rejects mixed-workspace inbox receipts and
+SDK 0.1.7 adds workspace-scoped attachment in the published experimental
+assets. SDK 0.1.6 rejects mixed-workspace inbox receipts and
 coordination markers even when they belong to a different workspace.
 
 A single native Owner profile can retain workspace A and attach workspace B

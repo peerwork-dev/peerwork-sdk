@@ -42,5 +42,12 @@ cases cover conflicting scope, unknown/shared operations and selected-workspace
 pending work. Installed Python additionally enables trusted time in existing B
 and runs claim, renewal, expiry/reclaim and stale-generation rejection through
 the native SDK. This is scripted synthetic engineering acceptance, not a natural
-Agent workflow trial. Published availability requires the actual release assets
-and checksum verification, not these source notes alone.
+Agent workflow trial. All eight native targets passed. The exact GNU CI packages
+passed the multi-workspace/lease, guard-time migration and coordination
+migration workflows. The public GNU archive was downloaded anonymously and
+its CLI, wheel and Node packages matched the consumed CI packages byte-for-byte;
+the remaining seven archive digests matched the release checksum manifest.
+
+Published assets: [v0.1.7-experimental.39401632909](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.1.7-experimental.39401632909).
+Source: `535e3e8f77dc28d44b7f02bb3a8cb9ca68d3188c`.
+Stable PyPI/npm publication is not implied.
