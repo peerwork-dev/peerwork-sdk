@@ -1,9 +1,10 @@
 # Import an existing PRIVATE member's recipient keys
 
-SDK 0.1.8 source adds credential import for members already using the legacy
-TypeScript client. SDK 0.1.7 has no public entry point for this import. Use the
-qualified 0.1.8 experimental assets once published; source availability alone
-is not an installed-package qualification.
+The [published SDK 0.1.8 experimental release](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.1.8-experimental.39420081848) adds
+credential import for members already using the legacy TypeScript client. SDK
+0.1.7 has no public entry point for this import. Use these exact assets or a
+qualified successor and verify `SOURCE.json` and `SHA256SUMS`. GitHub experimental
+availability does not imply stable PyPI/npm publication.
 
 The import retains the selected Ed25519 signing identity and imports the existing
 P-256 recipient key, its signed certificate and the certificate-key history.

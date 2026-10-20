@@ -39,5 +39,13 @@ and Node import and retry; CLI imports separate workspace profiles, reopens
 without the source directories and submits authorized writes under the original
 identities. The checks also reject cross-worker source selection and corrupted
 invitation decision signatures. This is scripted engineering acceptance, not a
-natural Agent workflow trial. Published availability requires the actual release
-assets and checksum verification, not these source notes alone.
+natural Agent workflow trial. All eight native targets passed. The exact GNU CI
+packages passed all 41 cases across the member migration, multi-workspace/lease,
+guard-time migration and coordination migration workflows. The public GNU archive
+was downloaded anonymously; its CLI, wheel and Node packages matched the consumed
+CI packages byte-for-byte. The remaining seven archive digests matched the release
+checksum manifest.
+
+Published assets: [v0.1.8-experimental.39420081848](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.1.8-experimental.39420081848).
+Source: `b238caee2f6137041ea902563276396e37b2520c`.
+Stable PyPI/npm publication is not implied.
