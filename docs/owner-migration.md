@@ -5,9 +5,12 @@ client-state migration, not workspace ownership transfer. Stop the old client
 before inspection and keep its protected state, PKCS#8 PEM and SQLite intent
 database together and unchanged throughout attachment.
 
-The guard-time cache compatibility below is implemented in SDK 0.1.5 source.
-Use the exact published experimental release when available; source changes
-and local tests alone do not establish downloadable binary availability.
+The [published SDK 0.1.6 experimental release](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.1.6-experimental.39360326627)
+includes the coordination-marker support below and the SDK 0.1.5 guard-time/SQLite
+fixes. Use this exact release or a qualified successor for nonempty
+`coordination_intents`; 0.1.5 does not cover that boundary. Inspect `SOURCE.json`
+and `SHA256SUMS` to pin the binary source and integrity. These GitHub assets do
+not imply stable PyPI/npm availability.
 
 The current TypeScript SQLite v2 journal is accepted when its operation-intent
 table is empty. The selected exported SQLite file must meet the same private
@@ -73,7 +76,9 @@ Attachment results and `owner.attachments()` include `coordination_intents`:
 
 An attachment with a packetless retained marker can reopen and read normally;
 its local marker remains unresolved until explicitly reviewed. Keep the old
-client stopped. Once attachment is complete, the source directory can be
+client stopped. Use SDK 0.1.6 or later for every process opening this migrated
+native profile; older native versions cannot read the new retained-marker
+history format. Once attachment is complete, the source directory can be
 unavailable without losing the retained marker or its explicit local decision.
 
 To retire a selected retained marker, pin the exact values returned by the

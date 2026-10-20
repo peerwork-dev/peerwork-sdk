@@ -1,6 +1,6 @@
 # SDK 0.1.6 experimental — safe coordination marker migration
 
-This candidate adds the Owner migration support absent from the 0.1.5
+This release adds the Owner migration support absent from the 0.1.5
 experimental cohort. It archives completed `coordination_intents` only after
 matching the authenticated Owner, item, signed operation and reconstructed input
 hash. Dispositions retain their expected-version binding. Recovery-excluded
@@ -25,5 +25,12 @@ completed disposition markers and one packetless send using genuine TypeScript
 clients. It compares the exact prior cohort with the corrected native code,
 checks source removal/fresh handles, archive proof references, hash-pinned local
 retirement and zero new commit POSTs. Installed Python, Node and CLI acceptance
-and published artifact checks are separate release gates; source notes alone do
-not establish downloadable availability.
+passed. All eight native release targets passed. The public GNU archive was
+downloaded anonymously and its CLI, wheel and Node packages matched the CI
+packages consumed by these tests byte-for-byte; the remaining seven archive
+digests matched the release checksum manifest. This is scripted synthetic
+acceptance, not a natural Agent workflow trial.
+
+Published assets: [v0.1.6-experimental.39360326627](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.1.6-experimental.39360326627).
+Source: `9058a51269ba172578ff376a00ff349d5de3507e`.
+Stable PyPI/npm publication is not implied.
