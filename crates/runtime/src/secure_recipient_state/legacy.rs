@@ -126,7 +126,9 @@ mod tests {
     use std::fs;
     #[cfg(unix)] use std::os::unix::fs::PermissionsExt;
     fn write(path:&Path,value:&Value) -> String {
-        let bytes=serde_json::to_vec(value).unwrap();fs::write(path,&bytes).unwrap();
+        let bytes=serde_json::to_vec(value).unwrap();
+        #[cfg(windows)] crate::windows_fs::create_or_check_file(path).unwrap();
+        fs::write(path,&bytes).unwrap();
         #[cfg(unix)] fs::set_permissions(path,fs::Permissions::from_mode(0o600)).unwrap();
         sha256_hex(&bytes)
     }
