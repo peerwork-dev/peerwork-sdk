@@ -832,6 +832,7 @@ exports.openSecureOwnerWorkspaces = options => {
     recoverKernelCommand: (attachId, commandId, { signal } = {}) => invoke('kernel_recover', undefined, commandId, attachId, signal),
     resumeAttachment: (attachId, { signal } = {}) => invoke('resume_attachment', undefined, attachId, undefined, signal),
     retainPendingAction: (attachId, expectedCommandId, { signal } = {}) => invoke('retain_pending_action', undefined, expectedCommandId, attachId, signal),
+    retireCoordinationIntent: (attachId, markerKey, expectedInputHash, { signal } = {}) => invoke('coordination_marker_retire', { attach_id: attachId, marker_key: markerKey, expected_input_hash: expectedInputHash }, undefined, undefined, signal),
     attachments: ({ signal } = {}) => invoke('attachments', undefined, undefined, undefined, signal),
     submitFormatTransition: (input, { signal } = {}) => invoke('format_submit', formatTransitionInput(input), undefined, undefined, signal),
     resumeFormatTransition: (workspaceId, commandId, { signal } = {}) => invoke('format_resume', undefined, commandId, workspaceId, signal),

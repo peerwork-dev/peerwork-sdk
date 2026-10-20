@@ -889,6 +889,7 @@ impl SecureHistoricalOwnerAttach {
         };
         self.save_object_stage_plan(&input, &manifest, &options_wire, &material_wire)?;
         let row = SavedAttach {
+            coordination_intents: Vec::new(),
             input,
             visibility: source.visibility,
             ts_state_sha256: digest,

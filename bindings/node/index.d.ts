@@ -203,7 +203,13 @@ export interface HistoricalOwnerAttachmentInput {
   /** Required with either selected stage ID; digest of the whole TS state file. */
   expectedTsStateDigest?: string;
 }
+export interface HistoricalCoordinationIntent {
+  marker_key: string; input_hash: string; action: string;
+  status: "ARCHIVED_COMPLETED" | "RETAINED_UNRESOLVED" | "RETIRED_LOCAL";
+  proof_sequence: number | null; proof_commit_hash: string | null;
+}
 export interface HistoricalOwnerAttachmentResult {
+  coordination_intents: HistoricalCoordinationIntent[];
   attach_id: string;
   workspace_id: string;
   provenance: 'HISTORICAL_TS_OWNER';
@@ -415,6 +421,8 @@ export interface SecureOwnerWorkspaceSession {
   /** Retain one exact signed legacy Owner ACTION without submitting or resolving it. */
   retainPendingAction(attachId: string, expectedCommandId: string, options?: {signal?: AbortSignal}): Promise<HistoricalOwnerAttachmentResult>;
   resumeAttachment(attachId: string, options?: {signal?: AbortSignal}): Promise<HistoricalOwnerAttachmentResult>;
+  /** Retire a retained packetless local marker; sends no message or cancellation. */
+  retireCoordinationIntent(attachId: string, markerKey: string, expectedInputHash: string, options?: {signal?: AbortSignal}): Promise<HistoricalOwnerAttachmentResult>;
   /** Protected local PREPARED/ATTACHED history; PREPARED is not accepted. */
   attachments(options?: {signal?: AbortSignal}): Promise<HistoricalOwnerAttachmentResult[]>;
   submitFormatTransition(input: OwnerFormatTransitionInput, options?: {signal?: AbortSignal}): Promise<OwnerFormatTransitionResult>;

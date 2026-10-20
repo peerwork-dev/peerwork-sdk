@@ -666,7 +666,7 @@ impl Task for SecureOwnerCreateTask {
             Ok(value) => value,
             Err(_) => return Ok(serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid Owner configuration"}).to_string()),
         };
-        if matches!(self.operation.as_str(), "attach" | "resume_attachment" | "retain_pending_action" | "attachments" | "kernel_inspect" | "kernel_status" | "kernel_recover" | "stage_inspect" | "stage_multipart_inspect" | "stage_multipart_attach" | "stage_recover" | "orphan_inspect" | "orphan_multipart_inspect" | "orphan_multipart_attach" | "orphan_replan" | "direct_begin_inspect" | "direct_begin_attach" | "direct_begin_recover" | "direct_completed_inspect" | "direct_completed_attach" | "object_stage_inspect" | "object_stage_attach" | "object_stage_recover" | "object_intent_candidates" | "object_intent_inspect" | "object_intent_attach" | "object_intent_recover") {
+        if matches!(self.operation.as_str(), "attach" | "resume_attachment" | "retain_pending_action" | "coordination_marker_retire" | "attachments" | "kernel_inspect" | "kernel_status" | "kernel_recover" | "stage_inspect" | "stage_multipart_inspect" | "stage_multipart_attach" | "stage_recover" | "orphan_inspect" | "orphan_multipart_inspect" | "orphan_multipart_attach" | "orphan_replan" | "direct_begin_inspect" | "direct_begin_attach" | "direct_begin_recover" | "direct_completed_inspect" | "direct_completed_attach" | "object_stage_inspect" | "object_stage_attach" | "object_stage_recover" | "object_intent_candidates" | "object_intent_inspect" | "object_intent_attach" | "object_intent_recover") {
             let access = SecureHistoricalOwnerAttach::new(config);
             let result = match self.operation.as_str() {
                 "attach" => {
@@ -684,6 +684,7 @@ impl Task for SecureOwnerCreateTask {
                     (Some(attach_id), Some(id)) => access.retain_pending_action(attach_id, id, &self.cancel).map(|value| serde_json::to_string(&value).expect("attachment result serializes")),
                     _ => return Ok(serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"attachment and pending action command IDs are required"}).to_string()),
                 },
+                "coordination_marker_retire" => access.retire_coordination_marker_json(self.input_json.as_deref().unwrap_or(""), &self.cancel).map(|value| serde_json::to_string(&value).expect("attachment result serializes")),
                 "attachments" => access.attachments().map(|value| serde_json::to_string(&value).expect("attachment history serializes")),
                 "kernel_inspect" => {
                     let input: HistoricalOwnerAttachInput = match self.input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {

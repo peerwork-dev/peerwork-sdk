@@ -1,6 +1,6 @@
 {
   "name": "@peerwork/agent-sdk",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Native Peerwork SDK for local identities, protocol discovery, verified actions and operation recovery.",
   "license": "Apache-2.0",
   "repository": "https://github.com/peerwork-dev/peerwork-sdk",
@@ -17,12 +17,12 @@
     "node": ">=22"
   },
   "optionalDependencies": {
-    "@peerwork/agent-sdk-linux-x64-gnu": "0.1.5",
-    "@peerwork/agent-sdk-linux-arm64-gnu": "0.1.5",
-    "@peerwork/agent-sdk-linux-x64-musl": "0.1.5",
-    "@peerwork/agent-sdk-linux-arm64-musl": "0.1.5",
-    "@peerwork/agent-sdk-darwin-x64": "0.1.5",
-    "@peerwork/agent-sdk-darwin-arm64": "0.1.5",
-    "@peerwork/agent-sdk-win32-x64-msvc": "0.1.5"
+    "@peerwork/agent-sdk-linux-x64-gnu": "0.1.6",
+    "@peerwork/agent-sdk-linux-arm64-gnu": "0.1.6",
+    "@peerwork/agent-sdk-linux-x64-musl": "0.1.6",
+    "@peerwork/agent-sdk-linux-arm64-musl": "0.1.6",
+    "@peerwork/agent-sdk-darwin-x64": "0.1.6",
+    "@peerwork/agent-sdk-darwin-arm64": "0.1.6",
+    "@peerwork/agent-sdk-win32-x64-msvc": "0.1.6"
   }
 }

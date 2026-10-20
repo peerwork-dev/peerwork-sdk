@@ -1215,7 +1215,17 @@ class OwnerWorkspaceResult(TypedDict):
     head: str | None
 
 
+class HistoricalCoordinationIntent(TypedDict):
+    marker_key: str
+    input_hash: str
+    action: str
+    status: Literal["ARCHIVED_COMPLETED", "RETAINED_UNRESOLVED", "RETIRED_LOCAL"]
+    proof_sequence: int | None
+    proof_commit_hash: str | None
+
+
 class HistoricalOwnerAttachmentResult(TypedDict):
+    coordination_intents: list[HistoricalCoordinationIntent]
     attach_id: str
     workspace_id: str
     provenance: Literal["HISTORICAL_TS_OWNER"]
@@ -1827,6 +1837,19 @@ class SecureOwnerWorkspaceClient:
         return cast(HistoricalOwnerAttachmentResult,
             self._owner("retain_pending_action", command_id=expected_command_id,
                         workspace_id=attach_id))
+
+    def retire_coordination_intent(self, attach_id: str, marker_key: str,
+                                   expected_input_hash: str) -> HistoricalOwnerAttachmentResult:
+        """Retire only a retained local marker; no message or cancellation is sent."""
+        return cast(HistoricalOwnerAttachmentResult, self._owner("coordination_marker_retire",
+            input_value=dict(attach_id=attach_id, marker_key=marker_key,
+                             expected_input_hash=expected_input_hash)))
+
+    async def retire_coordination_intent_async(self, attach_id: str, marker_key: str,
+                                               expected_input_hash: str) -> HistoricalOwnerAttachmentResult:
+        return cast(HistoricalOwnerAttachmentResult, await _run_cancelled_async(self._owner,
+            "coordination_marker_retire", input_value=dict(attach_id=attach_id,
+                marker_key=marker_key, expected_input_hash=expected_input_hash)))
 
     def attachments(self) -> list[HistoricalOwnerAttachmentResult]:
         """Protected local attachment history; PREPARED is not remote acceptance."""

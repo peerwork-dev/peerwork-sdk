@@ -62,6 +62,8 @@ static TEST_STOP_AFTER_IMPORTED_MULTIPART_STAGE_ROW: AtomicBool = AtomicBool::ne
 
 mod object_stage;
 mod guard_time_source;
+mod coordination_source;
+pub use coordination_source::HistoricalCoordinationIntent;
 pub use object_stage::{HistoricalObjectStagePendingInventory, HistoricalObjectStageIntentInventory, HistoricalObjectStageIntentCandidate};
 
 const MAX_SOURCE: usize = 64 * 1024 * 1024;
@@ -113,6 +115,8 @@ pub struct HistoricalOwnerAttachInput {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct HistoricalOwnerAttachResult {
+    #[serde(default)]
+    pub coordination_intents: Vec<HistoricalCoordinationIntent>,
     pub attach_id: String,
     pub workspace_id: String,
     pub provenance: String,
@@ -228,10 +232,14 @@ pub enum HistoricalOwnerAttachError {
     SourceChanged,
     #[error("legacy Owner state has unresolved operations that require the original client")]
     SourceUnresolved,
-    #[error("legacy guard-time work is pending; reopen the original TypeScript Owner and resumeGuardTimeAction(workspaceId, operationId), then retry attachment with the unchanged Owner; do not clear pending state")]
+    #[error("legacy guard-time work is pending; recover its exact saved operation in the original TypeScript Owner (timed actions use resumeGuardTimeAction), then stop that client and retry attachment; do not clear pending state")]
     GuardTimePending,
     #[error("legacy guard-time state is malformed, belongs to another workspace, or does not match verified signed history")]
     GuardTimeInvalid,
+    #[error("legacy coordination markers or their signed input hashes are invalid or conflicting")]
+    CoordinationInvalid,
+    #[error("legacy coordination markers coexist with pending packets or specialized installation recovery; recover those original operations first")]
+    CoordinationPending,
     #[error("protected native Owner identity conflicts with imported Owner")]
     Identity,
     #[error("another protected Owner workspace binding conflicts")]
@@ -275,6 +283,8 @@ impl HistoricalOwnerAttachError {
             Self::SourceUnresolved => "SOURCE_UNRESOLVED",
             Self::GuardTimePending => "SOURCE_GUARD_TIME_PENDING",
             Self::GuardTimeInvalid => "SOURCE_GUARD_TIME_INVALID",
+            Self::CoordinationInvalid => "SOURCE_COORDINATION_INVALID",
+            Self::CoordinationPending => "SOURCE_COORDINATION_PENDING",
             Self::Identity => "IDENTITY_CHANGED",
             Self::Conflict => "ATTACH_CONFLICT",
             Self::NotFound => "NOT_FOUND",
@@ -309,6 +319,8 @@ impl From<crate::secure_read_access::SecureReadAccessError> for HistoricalOwnerA
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SavedAttach {
+    #[serde(default)]
+    coordination_intents: Vec<HistoricalCoordinationIntent>,
     input: HistoricalOwnerAttachInput,
     #[serde(default = "private_visibility")]
     visibility: String,
@@ -569,6 +581,7 @@ struct AttachHistory {
 }
 
 struct LegacySource {
+    coordination: Vec<coordination_source::Marker>,
     guard_time: Vec<Zeroizing<Vec<u8>>>,
     visibility: String,
     ring: Option<SecretKeyring>,
@@ -2193,6 +2206,7 @@ impl SecureHistoricalOwnerAttach {
         if history.rows.len() >= MAX_HISTORY { return Err(HistoricalOwnerAttachError::Local); }
         let id = plan.attach_id.clone();
         let row = SavedAttach {
+            coordination_intents: Vec::new(),
             input, visibility: source.visibility,
             ts_state_sha256: ts_digest, owner_pem_sha256: pem_digest,
             ts_intent_sha256: intent_digest,
@@ -2309,6 +2323,7 @@ impl SecureHistoricalOwnerAttach {
         if history.rows.len() >= MAX_HISTORY { return Err(HistoricalOwnerAttachError::Local); }
         let id = plan.attach_id.clone();
         history.rows.insert(id.clone(), SavedAttach {
+            coordination_intents: Vec::new(),
             input, visibility: source.visibility,
             ts_state_sha256: ts_digest, owner_pem_sha256: pem_digest,
             ts_intent_sha256: intent_digest,
@@ -2405,10 +2420,13 @@ impl SecureHistoricalOwnerAttach {
         // Validate the complete signed target selection before an immutable
         // PREPARED row, pending ring, or optional secure ACTION can be written.
         self.preflight_kernel_source(&input, cancel, Some(&input.kernel_pending_command_ids))?;
-        if !source.guard_time.is_empty() {
+        let mut coordination_intents = Vec::new();
+        if !source.guard_time.is_empty() || !source.coordination.is_empty() {
             let _guard_lock = SecureStateStore::open(&root.join("owner-attach-recovery.state"))
                 .map_err(|_| HistoricalOwnerAttachError::Local)?;
-            self.with_preflight_replay(&input, &source, cancel, |_, _| Ok(()))?;
+            coordination_intents = self.with_preflight_replay(&input, &source, cancel, |replayed, _| {
+                coordination_source::classify(&source.coordination, replayed, &input)
+            })?;
             let (_, ts_after, pem_after, intent_after) = self.inspect_sources(&input)?;
             if (ts_after, pem_after, intent_after) != (ts_digest.clone(), pem_digest.clone(), intent_digest.clone()) {
                 return Err(HistoricalOwnerAttachError::SourceChanged);
@@ -2520,6 +2538,7 @@ impl SecureHistoricalOwnerAttach {
         let id = random_token()?;
         let retained_action_command_id = input.retain_pending_action_command_id.clone();
         let row = SavedAttach {
+            coordination_intents,
             input,
             visibility: source.visibility,
             ts_state_sha256: ts_digest,
@@ -2671,6 +2690,9 @@ impl SecureHistoricalOwnerAttach {
                 }
             })?;
         guard_time_source::verify(&source.guard_time, &replayed, &row.input)?;
+        if coordination_source::classify(&source.coordination, &replayed, &row.input)? != row.coordination_intents {
+            return Err(HistoricalOwnerAttachError::SourceChanged);
+        }
         if let Some(plan) = completed_direct_plan.as_ref() {
             let selected = plan.source.completed_install_intent.as_ref()
                 .ok_or(HistoricalOwnerAttachError::SourceUnresolved)?;
@@ -5151,6 +5173,7 @@ fn summary(id: &str, row: &SavedAttach) -> HistoricalOwnerAttachResult {
         && !row.pending_direct_install_complete;
     let object_stage_unresolved = row.pending_object_stage.as_ref().is_some_and(|stage| !stage.complete);
     HistoricalOwnerAttachResult {
+        coordination_intents: row.coordination_intents.clone(),
         attach_id: id.into(),
         workspace_id: row.input.workspace_id.clone(),
         provenance: "HISTORICAL_TS_OWNER".into(),
@@ -7579,6 +7602,11 @@ fn parse_legacy_source_selected_install_inner(
         }
         let retained_inbox_receipts = parse_inbox_receipts(value.get("inbox_receipts"), input)?;
         let guard_time = guard_time_source::parse(&value, input)?;
+        let coordination = coordination_source::parse(&value, input)?;
+        if !coordination.is_empty() && (selected_install_command_id.is_some()
+            || selected_completed_install_instance_id.is_some() || selected_object_stage.is_some()) {
+            return Err(HistoricalOwnerAttachError::CoordinationPending);
+        }
         let stage_marker = completed_package_stage_marker(value.get("package_stage_intents"), input)?;
         let pending_package_stage = parse_pending_package_stage(value.get("pending"), stage_marker.as_ref(), input)?;
         let completed_package_stage = if pending_package_stage.is_some() { None } else { stage_marker };
@@ -7675,7 +7703,6 @@ fn parse_legacy_source_selected_install_inner(
         // Retain all unsupported exact signed intents in the legacy source;
         // never silently discard them during a one-workspace attach.
         for key in [
-            "coordination_intents",
             "field_policy_intents",
             "intake_intents",
             "application_intents",
@@ -7823,6 +7850,7 @@ fn parse_legacy_source_selected_install_inner(
             }
         }
         Ok(LegacySource {
+            coordination,
             guard_time,
             visibility: if ring.is_some() { "PRIVATE" } else { "PUBLIC" }.into(),
             ring,
@@ -12540,6 +12568,7 @@ mod tests {
             let ring_wire = canonical_wire_value(local.get("keyring").unwrap(),
                 CanonicalPath::SecureArtifact).unwrap();
             let source = LegacySource {
+                coordination: Vec::new(),
                 guard_time: Vec::new(),
                 visibility: "PRIVATE".into(),
                 ring: Some(SecretKeyring::parse_wire(ring_wire.as_bytes()).unwrap()),
@@ -12650,6 +12679,7 @@ mod tests {
             assert_eq!(plan.command_id, command);
             assert_eq!(plan.attach_id.len(), 43);
             let row = SavedAttach {
+                coordination_intents: Vec::new(),
                 input: input.clone(), visibility: parsed_source.visibility.clone(),
                 ts_state_sha256: ts_digest, owner_pem_sha256: pem_digest,
                 ts_intent_sha256: intent_digest,
