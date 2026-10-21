@@ -778,6 +778,7 @@ exports.openSecureOwnerWorkspaces = options => {
     create: (input, { signal } = {}) => invoke('create', createInput(input), undefined, undefined, signal),
     resume: (commandId, { signal } = {}) => invoke('resume', undefined, commandId, undefined, signal),
     operations: ({ signal } = {}) => invoke('operations', undefined, undefined, undefined, signal),
+    memberScopes: workspaceId => new OwnerWorkspaceMemberScopesClient(config, workspaceId),
     guardTime: workspaceId => new OwnerWorkspaceGuardTimeClient(config, workspaceId),
     enableCoordination: (workspaceId, input = {}, { signal } = {}) => invoke(
       'coordination_enable', coordinationInput(input), undefined, workspaceId, signal),
@@ -1463,3 +1464,38 @@ exports.protocolCompatibility = ({requiredProducers, signal}) =>
 
 exports.resumeProtocolPlan = ({profile, operationId, signal}) =>
   exports.applyProtocolPlan({profile, operationId, signal});
+
+
+class OwnerWorkspaceMemberScopesClient {
+  constructor(config,workspaceId) {
+    this._config=JSON.parse(strictCommandJson(config));this._workspaceId=workspaceId;
+  }
+  async _call(operation,input,{signal}={}) {
+    const cancel=new binding.KernelCancelHandle(),abort=()=>cancel.cancel();
+    if(signal?.aborted)abort();signal?.addEventListener('abort',abort,{once:true});
+    try {
+      const result=JSON.parse(await binding.ownerMemberScopesJson(strictCommandJson(this._config),operation,
+        strictCommandJson({workspace_id:this._workspaceId,...input}),cancel));
+      if(result.ok!==true){const error=new Error(result.message);error.code=result.code;
+        if(result.diagnostic){error.diagnostic=result.diagnostic;Object.assign(error,result.diagnostic);}throw error;}
+      return result.value;
+    } finally {signal?.removeEventListener('abort',abort);}
+  }
+  inspect(actorId,options={}) {return this._call('inspect',{actor_id:actorId},options);}
+  set(actorId,input,options={}) {
+    const snapshot=JSON.parse(strictCommandJson(input));
+    if(!snapshot||typeof snapshot!=='object'||Array.isArray(snapshot)||
+      Object.keys(snapshot).some(k=>!['expectedPolicyHash','scopes','operationId'].includes(k))||
+      !Object.hasOwn(snapshot,'expectedPolicyHash')||!Object.hasOwn(snapshot,'scopes')) {
+      throw new TypeError('Scope replacement requires expectedPolicyHash and the complete scopes list');
+    }
+    return this._call('set',{actor_id:actorId,expected_policy_hash:snapshot.expectedPolicyHash,
+      scopes:snapshot.scopes,...(snapshot.operationId===undefined?{}:{operation_id:snapshot.operationId})},options);
+  }
+  /** Refresh signed acceptance only; never POST. */
+  recover(operationId,options={}) {return this._call('recover',{operation_id:operationId},options);}
+  /** Explicitly retry the original immutable packet, after reconciliation. */
+  retrySaved(operationId,options={}) {return this._call('retry',{operation_id:operationId},options);}
+  history(options={}) {return this._call('history',{},options);}
+}
+exports.OwnerWorkspaceMemberScopesClient=OwnerWorkspaceMemberScopesClient;

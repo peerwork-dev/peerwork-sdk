@@ -474,7 +474,7 @@ pub(crate) fn with_profile_json(operation:&str,profile:&SecureReadProfileConfig,
 
 pub(crate) const DEFAULT_GUARDED_PRODUCERS:&[&str]=&[
     "protocol.action", "workspace.invitation.finalize", "protocol.install",
-    "owner.guard_time.enable", "owner.guard_time.resume",
+    "owner.guard_time.enable", "owner.guard_time.resume", "secure.member.scopes",
 ];
 pub(crate) fn supports_guarded_producers(names:&[String])->bool {
     !names.is_empty() && names.len()<=32 && names.iter().all(|s|DEFAULT_GUARDED_PRODUCERS.contains(&s.as_str()))

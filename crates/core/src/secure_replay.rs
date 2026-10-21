@@ -2090,6 +2090,16 @@ fn replay_basic_content_depth(
             if objects.len() > 128 {
                 return Err(ReplayError::Invalid);
             }
+            if string(payload,"action_id")? == "secure.member.scopes" {
+                let old=old_policy_payload.ok_or(ReplayError::Invalid)?;
+                let old_hash=previous_policy_hash.as_deref().ok_or(ReplayError::Invalid)?;
+                crate::member_scopes::validate_transition(old,commit_policy_payload,payload,&operation,old_hash,&prior_objects).map_err(|_|ReplayError::Invalid)?;
+                let at=integer(payload,"issued_at")?;
+                for object in prior_objects.iter().filter(|o|o.get("kind").and_then(WireValue::as_string).as_deref()==Some("instances")) {
+                    let instance=object.get("id").and_then(WireValue::as_utf16).ok_or(ReplayError::Invalid)?;
+                    validate_role_policies_with_history(commit_policy_payload,&prior_objects,at,Some(instance),&mut role_history).map_err(|_|ReplayError::Invalid)?;
+                }
+            }
             let object_stage =
                 kind == "ADMIN" && string(payload, "action_id")? == "secure.protocol-object.stage";
             let package_stage =
@@ -4051,6 +4061,19 @@ fn validate_role_policies_with_history(
             }
             history.insert(key, past);
         }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_member_scope_roles(policies:&[WireValue],candidate:&WireValue,objects:&[WireValue])->Result<(),&'static str>{
+    let mut history=RoleHistory::new();
+    for policy in policies {
+        validate_role_policies_with_history(policy,objects,integer(policy,"issued_at").map_err(|_|"MEMBER_SCOPES_INVALID")?,None,&mut history)?;
+    }
+    let at=integer(candidate,"issued_at").map_err(|_|"MEMBER_SCOPES_INVALID")?;
+    for object in objects.iter().filter(|o|o.get("kind").and_then(WireValue::as_string).as_deref()==Some("instances")) {
+        let id=object.get("id").and_then(WireValue::as_utf16).ok_or("MEMBER_SCOPES_INVALID")?;
+        validate_role_policies_with_history(candidate,objects,at,Some(id),&mut history)?;
     }
     Ok(())
 }

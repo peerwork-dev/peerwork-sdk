@@ -2,6 +2,7 @@
 //! until journal replay, authority checks, and durable operation recovery are ported.
 
 pub mod bootstrap_objects;
+pub mod member_scopes;
 pub mod canonical;
 pub mod crypto;
 pub mod discovery;
@@ -93,6 +94,7 @@ pub struct CapabilityManifest {
     pub private_authorized_state_read: bool,
     pub private_system_current_page_read: bool,
     pub owner_guard_time_enable: bool,
+    pub owner_member_scopes: bool,
     pub private_time_add_guard_windows: bool,
     pub wire_canonicalization: bool,
     pub signed_artifact_verification: bool,
@@ -118,6 +120,7 @@ pub fn capability_manifest() -> CapabilityManifest {
         private_authorized_state_read: true,
         private_system_current_page_read: true,
         owner_guard_time_enable: true,
+        owner_member_scopes: true,
         private_time_add_guard_windows: true,
         wire_canonicalization: true,
         signed_artifact_verification: true,

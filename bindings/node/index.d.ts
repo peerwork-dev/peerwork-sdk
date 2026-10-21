@@ -21,6 +21,7 @@ export interface CapabilityManifest {
   private_authorized_state_read: boolean;
   private_system_current_page_read: boolean;
   owner_guard_time_enable: boolean;
+  owner_member_scopes: boolean;
   private_time_add_guard_windows: boolean;
   version: string;
   status: string;
@@ -360,6 +361,7 @@ export declare class OwnerWorkspaceGuardTimeClient {
   history(options?: {signal?: AbortSignal}): Promise<OwnerGuardTimeResult[]>;
 }
 export interface SecureOwnerWorkspaceSession {
+  memberScopes(workspaceId: string): OwnerWorkspaceMemberScopesClient;
   guardTime(workspaceId: string): OwnerWorkspaceGuardTimeClient;
   prepare(input: SecureOwnerWorkspaceInput, options?: {signal?: AbortSignal}): Promise<SecureOwnerWorkspaceResult>;
   create(input: SecureOwnerWorkspaceInput, options?: {signal?: AbortSignal}): Promise<SecureOwnerWorkspaceResult>;
@@ -1040,3 +1042,38 @@ export function applyProtocolPlan(options: {profile: SecureReadOptions; plan?: P
 export function protocolCompatibility(options: {requiredProducers: string[]; signal?: AbortSignal}): Promise<Record<string, unknown>>;
 
 export function resumeProtocolPlan(options: {profile: SecureReadOptions; operationId: string; signal?: AbortSignal}): Promise<Record<string, unknown>>;
+
+
+export interface MemberScope {
+  instance_id: string | null;
+  actions: string[];
+  protocol_roles: string[];
+  capabilities: string[];
+  expires_at?: number | null;
+}
+export interface MemberScopeInspection {
+  workspace_id: string; actor_id: string; role: string; read: true;
+  scopes: MemberScope[]; policy_hash: string;
+  checkpoint: {v: number; workspace_id: string; owner_id: string; owner_key: string;
+    sequence: number; head: string | null; policy_hash: string};
+  instances: {instance_id: string; protocol_digest: string; entrypoint: string | null;
+    actions: string[]; protocol_roles: string[]; capabilities: string[];
+    role_conflicts: string[][]; historical_role_conflicts: string[][]}[];
+}
+export interface MemberScopeUpdateResult {
+  operation_id: string; command_id: string; workspace_id: string;
+  status: 'PENDING' | 'ACCEPTED' | 'UNCHANGED' | 'SUPERSEDED';
+  sequence: number | null; head: string | null; policy_hash: string | null;
+}
+export declare class OwnerWorkspaceMemberScopesClient {
+  private constructor();
+  inspect(actorId: string, options?: {signal?: AbortSignal}): Promise<MemberScopeInspection>;
+  /** Replaces the entire target list. Use [] to revoke writes while preserving membership/keys. */
+  set(actorId: string, input: {expectedPolicyHash: string; scopes: MemberScope[]; operationId?: string},
+    options?: {signal?: AbortSignal}): Promise<MemberScopeUpdateResult>;
+  /** Reconcile from authenticated journal without submitting anything. */
+  recover(operationId: string, options?: {signal?: AbortSignal}): Promise<MemberScopeUpdateResult>;
+  retrySaved(operationId: string, options?: {signal?: AbortSignal}): Promise<MemberScopeUpdateResult>;
+  /** Local protected history; does not refresh acceptance. */
+  history(options?: {signal?: AbortSignal}): Promise<MemberScopeUpdateResult[]>;
+}

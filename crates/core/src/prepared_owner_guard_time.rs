@@ -1,4 +1,4 @@
-//! Owner-only guard-time enablement with explicit disclosure and service pins. This author does not establish source
+//! Shared Owner policy authoring for guard-time activation and member scopes. This author does not establish source
 //! authority: callers must supply the current policy/checkpoint from complete
 //! authenticated replay and persist the returned exact packet before POST.
 
@@ -91,13 +91,68 @@ fn set(value: &mut WireValue, key: &str, next: WireValue) -> Result<(), OwnerFor
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum PolicyUpdate<'a> {
+    GuardTime(&'a [u8]),
+    MemberScopes { actor: &'a str, scopes: &'a [u8] },
+}
+
+pub fn prepare_owner_guard_time_enable(
+    guard_policy_wire: &[u8],
+    signed_policy_wire: &[u8],
+    checkpoint_wire: &[u8],
+    prior_objects: &[WireValue],
+    epoch_key: &[u8; 32],
+    signer: &SigningKey,
+    command_id: &str,
+    issued_at_ms: u64,
+) -> Result<PreparedOwnerFormatTransition, OwnerFormatPrepareError> {
+    prepare_policy_update(
+        PolicyUpdate::GuardTime(guard_policy_wire),
+        signed_policy_wire,
+        checkpoint_wire,
+        prior_objects,
+        epoch_key,
+        signer,
+        command_id,
+        issued_at_ms,
+    )
+}
+
+/// Complete replay and historical-role preflight remain runtime responsibilities.
+pub fn prepare_owner_member_scopes(
+    actor: &str,
+    scopes_wire: &[u8],
+    signed_policy_wire: &[u8],
+    checkpoint_wire: &[u8],
+    prior_objects: &[WireValue],
+    epoch_key: &[u8; 32],
+    signer: &SigningKey,
+    command_id: &str,
+    issued_at_ms: u64,
+) -> Result<PreparedOwnerFormatTransition, OwnerFormatPrepareError> {
+    prepare_policy_update(
+        PolicyUpdate::MemberScopes {
+            actor,
+            scopes: scopes_wire,
+        },
+        signed_policy_wire,
+        checkpoint_wire,
+        prior_objects,
+        epoch_key,
+        signer,
+        command_id,
+        issued_at_ms,
+    )
+}
+
 /// The runtime must separately prove that `signed_policy_wire` and
 /// `checkpoint_wire` are the current complete origin-bound replay result, that
 /// every retained protocol respects the current format ceiling, and that there is
 /// no in-flight Owner intent or pending epoch transition.
 #[allow(clippy::too_many_arguments)]
-pub fn prepare_owner_guard_time_enable(
-    guard_policy_wire: &[u8],
+fn prepare_policy_update(
+    update: PolicyUpdate<'_>,
     signed_policy_wire: &[u8],
     checkpoint_wire: &[u8],
     prior_objects: &[WireValue],
@@ -148,7 +203,7 @@ pub fn prepare_owner_guard_time_enable(
     {
         return Err(bad());
     }
-    if old_v != 3 || policy.get("guard_time").is_some() {
+    if old_v != 3 {
         return Err(bad());
     }
     let ceiling = number(policy, "protocol_format_ceiling")?;
@@ -159,12 +214,48 @@ pub fn prepare_owner_guard_time_enable(
         return Err(bad());
     }
     assert_protocol_format_ceiling(prior_objects, ceiling).map_err(|_| bad())?;
-    let guard = parse_wire_json_bounded(guard_policy_wire, 8, 8192).map_err(|_| bad())?;
-    crate::guard_time::parse_guard_time_policy(&guard).map_err(|_| bad())?;
-    let action = "secure.guard-time.enable";
-    let input = obj(vec![]);
     let mut next_policy = policy.clone();
-    set(&mut next_policy, "guard_time", guard)?;
+    let (action, input) = match update {
+        PolicyUpdate::GuardTime(wire) => {
+            if policy.get("guard_time").is_some() {
+                return Err(bad());
+            }
+            let guard = parse_wire_json_bounded(wire, 8, 8192).map_err(|_| bad())?;
+            crate::guard_time::parse_guard_time_policy(&guard).map_err(|_| bad())?;
+            set(&mut next_policy, "guard_time", guard)?;
+            ("secure.guard-time.enable", obj(vec![]))
+        }
+        PolicyUpdate::MemberScopes { actor, scopes } => {
+            if !token(actor) {
+                return Err(bad());
+            }
+            let scopes = parse_wire_json_bounded(scopes, 16, 65536).map_err(|_| bad())?;
+            crate::member_scopes::validate_permissions(&scopes, prior_objects)
+                .map_err(|_| bad())?;
+            let Some(WireValue::Array(members)) = policy.get("members") else {
+                return Err(bad());
+            };
+            let mut members = members.clone();
+            let member = members
+                .iter_mut()
+                .find(|m| {
+                    m.get("actor_id").and_then(WireValue::as_string).as_deref() == Some(actor)
+                })
+                .ok_or_else(bad)?;
+            if member.get("scopes") == Some(&scopes) {
+                return Err(bad());
+            }
+            set(member, "scopes", scopes)?;
+            set(&mut next_policy, "members", WireValue::Array(members))?;
+            (
+                "secure.member.scopes",
+                obj(vec![
+                    ("member_id", s(actor)),
+                    ("expected_policy_hash", s(&old_policy_hash)),
+                ]),
+            )
+        }
+    };
     set(
         &mut next_policy,
         "version",
@@ -274,13 +365,61 @@ pub fn prepare_owner_guard_time_enable(
     })
 }
 
+pub fn verify_saved_owner_guard_time_enable(
+    saved: &[u8],
+    guard: &[u8],
+    policy: &[u8],
+    checkpoint: &[u8],
+    objects: &[WireValue],
+    key: &[u8; 32],
+    signer: &SigningKey,
+    id: &str,
+    issued: u64,
+) -> Result<PreparedOwnerFormatTransition, OwnerFormatPrepareError> {
+    verify_saved_policy_update(
+        saved,
+        PolicyUpdate::GuardTime(guard),
+        policy,
+        checkpoint,
+        objects,
+        key,
+        signer,
+        id,
+        issued,
+    )
+}
+pub fn verify_saved_owner_member_scopes(
+    saved: &[u8],
+    actor: &str,
+    scopes: &[u8],
+    policy: &[u8],
+    checkpoint: &[u8],
+    objects: &[WireValue],
+    key: &[u8; 32],
+    signer: &SigningKey,
+    id: &str,
+    issued: u64,
+) -> Result<PreparedOwnerFormatTransition, OwnerFormatPrepareError> {
+    verify_saved_policy_update(
+        saved,
+        PolicyUpdate::MemberScopes { actor, scopes },
+        policy,
+        checkpoint,
+        objects,
+        key,
+        signer,
+        id,
+        issued,
+    )
+}
+
 /// Reprove a persisted encrypted request against the exact old replay source.
 /// Fresh authoring is used only to recompute deterministic policy/context;
 /// the saved ciphertext/nonce remain the sole bytes returned for retry.
 #[allow(clippy::too_many_arguments)]
-pub fn verify_saved_owner_guard_time_enable(
+fn verify_saved_policy_update(
     saved_request_wire: &[u8],
-    guard_policy_wire: &[u8],
+    update: PolicyUpdate<'_>,
     signed_policy_wire: &[u8],
     checkpoint_wire: &[u8],
     prior_objects: &[WireValue],
@@ -293,8 +432,8 @@ pub fn verify_saved_owner_guard_time_enable(
     if saved_request_wire.is_empty() || saved_request_wire.len() > 220_000 {
         return Err(bad());
     }
-    let expected = prepare_owner_guard_time_enable(
-        guard_policy_wire,
+    let expected = prepare_policy_update(
+        update,
         signed_policy_wire,
         checkpoint_wire,
         prior_objects,

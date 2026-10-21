@@ -80,3 +80,5 @@ pub mod operation_diagnostics;
 mod agent_admission;
 
 pub mod protocol_workbench;
+
+pub mod owner_member_scopes;

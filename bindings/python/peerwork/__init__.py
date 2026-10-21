@@ -76,6 +76,7 @@ from ._peerwork_native import (
     secure_public_install_json,
     secure_owner_create_json,
     owner_guard_time_json,
+    owner_member_scopes_json,
     secure_owner_consumer_json,
     public_catalog_json,
     secure_recipient_enrollment_json,
@@ -98,6 +99,7 @@ class CapabilityManifest(TypedDict):
     private_authorized_state_read: bool
     private_system_current_page_read: bool
     owner_guard_time_enable: bool
+    owner_member_scopes: bool
     private_time_add_guard_windows: bool
     version: str
     status: str
@@ -1962,6 +1964,9 @@ class SecureOwnerWorkspaceClient:
 
     def private_package_installer(self, workspace_id: str) -> "OwnerWorkspacePrivatePackageInstaller":
         return OwnerWorkspacePrivatePackageInstaller(self._config, workspace_id)
+
+    def member_scopes(self, workspace_id: str) -> "OwnerWorkspaceMemberScopesClient":
+        return OwnerWorkspaceMemberScopesClient(self._config, workspace_id)
 
     def guard_time(self, workspace_id: str) -> "OwnerWorkspaceGuardTimeClient":
         """Owner-signed guard-time activation with explicit pins, consent and durable recovery."""
@@ -3940,3 +3945,56 @@ async def resume_protocol_plan_async(profile: dict, operation_id: str) -> dict:
 
 
 __all__ += ["resume_protocol_plan", "resume_protocol_plan_async"]
+
+
+class OwnerWorkspaceMemberScopesClient:
+    """Owner-only PRIVATE scope replacement; keys and signing remain native-owned."""
+    def __init__(self, owner_config: dict, workspace_id: str):
+        self._config = dict(owner_config)
+        self._workspace_id = workspace_id
+
+    def _call(self, operation: str, input_value: dict,
+              cancel_handle: KernelCancelHandle | None = None):
+        result = json.loads(owner_member_scopes_json(json.dumps(self._config, ensure_ascii=True),
+            operation, json.dumps(dict(workspace_id=self._workspace_id, **input_value), ensure_ascii=True), cancel_handle))
+        if result["ok"] is not True:
+            error = OwnerWorkspaceError(result["code"], result["message"])
+            error.diagnostic = result.get("diagnostic")
+            raise error
+        return result["value"]
+
+    def inspect(self, actor_id: str) -> dict:
+        return self._call("inspect", dict(actor_id=actor_id))
+
+    def set(self, actor_id: str, *, expected_policy_hash: str, scopes: list[dict], operation_id: str | None = None) -> dict:
+        value = dict(actor_id=actor_id, expected_policy_hash=expected_policy_hash, scopes=scopes)
+        if operation_id is not None: value["operation_id"] = operation_id
+        return self._call("set", value)
+
+    def recover(self, operation_id: str) -> dict:
+        return self._call("recover", dict(operation_id=operation_id))
+
+    def retry_saved(self, operation_id: str) -> dict:
+        return self._call("retry", dict(operation_id=operation_id))
+
+    def history(self) -> list[dict]:
+        return self._call("history", {})
+
+    async def inspect_async(self, actor_id: str) -> dict:
+        return await _run_cancelled_async(self._call, "inspect", input_value=dict(actor_id=actor_id))
+
+    async def set_async(self, actor_id: str, *, expected_policy_hash: str, scopes: list[dict], operation_id: str | None = None) -> dict:
+        value = dict(actor_id=actor_id, expected_policy_hash=expected_policy_hash, scopes=scopes)
+        if operation_id is not None: value["operation_id"] = operation_id
+        return await _run_cancelled_async(self._call, "set", input_value=value)
+
+    async def recover_async(self, operation_id: str) -> dict:
+        return await _run_cancelled_async(self._call, "recover", input_value=dict(operation_id=operation_id))
+
+    async def retry_saved_async(self, operation_id: str) -> dict:
+        return await _run_cancelled_async(self._call, "retry", input_value=dict(operation_id=operation_id))
+
+    async def history_async(self) -> list[dict]:
+        return await _run_cancelled_async(self._call, "history", input_value={})
+
+__all__ += ["OwnerWorkspaceMemberScopesClient"]

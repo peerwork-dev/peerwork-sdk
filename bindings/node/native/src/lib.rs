@@ -1673,3 +1673,39 @@ impl Task for ProtocolWorkbenchTask {
 pub fn protocol_workbench_json(operation:String,input_json:String,cancel_handle:Option<ClassInstance<KernelCancelHandle>>)->AsyncTask<ProtocolWorkbenchTask>{
     AsyncTask::new(ProtocolWorkbenchTask{operation,input:input_json,cancel:cancel_handle.map(|h|h.token.clone()).unwrap_or_default()})
 }
+
+pub struct OwnerMemberScopesTask {
+    config: String,
+    operation: String,
+    input: String,
+    cancel: KernelCancellationToken,
+}
+impl Task for OwnerMemberScopesTask {
+    type Output = String;
+    type JsValue = String;
+    fn compute(&mut self) -> Result<String> {
+        Ok(peerwork_runtime::owner_member_scopes::owner_member_scopes_json(
+            &self.config,
+            &self.operation,
+            &self.input,
+            &self.cancel,
+        ))
+    }
+    fn resolve(&mut self, _env: Env, value: String) -> Result<String> {
+        Ok(value)
+    }
+}
+#[napi]
+pub fn owner_member_scopes_json(
+    config_json: String,
+    operation: String,
+    input_json: String,
+    cancel_handle: Option<ClassInstance<KernelCancelHandle>>,
+) -> AsyncTask<OwnerMemberScopesTask> {
+    AsyncTask::new(OwnerMemberScopesTask {
+        config: config_json,
+        operation,
+        input: input_json,
+        cancel: cancel_handle.map(|h| h.token.clone()).unwrap_or_default(),
+    })
+}
