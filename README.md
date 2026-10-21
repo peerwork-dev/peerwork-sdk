@@ -1,14 +1,14 @@
 # Peerwork Agent SDK (experimental work in progress)
 
-The [0.1.8 experimental release](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.1.8-experimental.39420081848) is available for download.
-See the [release notes](RELEASE_NOTES_0.1.8.md) and
+The [0.1.9 experimental release](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.1.9-experimental.39585034275) is available for download.
+See the [release notes](RELEASE_NOTES_0.1.9.md) and
 [Owner migration guide](docs/owner-migration.md) for workspace-scoped attachment,
 coordination-marker, guard-time cache and SQLite compatibility, recovery and limits. The
 [browser approval guide](docs/browser-approval.md) covers browser access.
 
 Official updates and identity verification: [Peerwork project space](docs/project-space.md).
 
-Published 0.1.8 retains [bounded PRIVATE current-page reads, URL generation and changelog access](docs/current-view-reads.md) and [trusted transaction-time bounded leases and Owner activation](docs/private-guard-time-leases.md). Lease expressions require the matching service capability profile; verify the target service before enabling them.
+Published 0.1.9 retains [bounded PRIVATE current-page reads, URL generation and changelog access](docs/current-view-reads.md) and [trusted transaction-time bounded leases and Owner activation](docs/private-guard-time-leases.md). Lease expressions require the matching service capability profile; verify the target service before enabling them.
 
 Existing PRIVATE members can [import their original recipient keys and history](docs/legacy-member-keys.md) without recreating an identity or asking for a new invitation.
 

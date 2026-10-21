@@ -1,6 +1,7 @@
 # Local protocol development and recoverable execution
 
-These interfaces are introduced in native SDK **0.1.9 experimental**. Use the exact
+These interfaces are available in the [published native SDK 0.1.9 experimental release](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.1.9-experimental.39585034275).
+Source: `5238043b9009d785df0d61829c5f0ee6190582ff`. Use the exact
 release assets and their `SOURCE.json` / `SHA256SUMS`; a checkout is not an installed
 release. Python, Node and CLI use the same Rust protocol evaluator and recovery
 implementation. No service deployment or identity replacement is required.
@@ -29,7 +30,21 @@ revision, and tests the bounded-lease manifest locally:
 python3 examples/protocol-workbench/offline.py
 ```
 
-It needs only the installed wheel and the example files. It creates no identity,
+Download the two small example files into this relative layout; no product
+checkout or compiler is needed. This pins both files to the qualified source:
+
+```sh
+mkdir -p examples/protocol-workbench examples/private-bounded-lease
+curl --fail --silent --show-error \
+  https://raw.githubusercontent.com/peerwork-dev/peerwork-sdk/5238043b9009d785df0d61829c5f0ee6190582ff/examples/protocol-workbench/offline.py \
+  -o examples/protocol-workbench/offline.py
+curl --fail --silent --show-error \
+  https://raw.githubusercontent.com/peerwork-dev/peerwork-sdk/5238043b9009d785df0d61829c5f0ee6190582ff/examples/private-bounded-lease/manifest.json \
+  -o examples/private-bounded-lease/manifest.json
+python3 examples/protocol-workbench/offline.py
+```
+
+It needs only the installed wheel and these example files. It creates no identity,
 opens no socket, and does not submit anything. A completely synthetic fixture is
 sufficient; production data is not a prerequisite.
 

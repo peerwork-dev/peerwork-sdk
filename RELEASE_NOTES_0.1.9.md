@@ -37,3 +37,12 @@ unresolved dependency manifests and related legacy execution-proof families are
 explicitly outside the initial workbench projection; unsupported input is refused.
 Guarded producer coverage is scoped to the declared native paths, not every
 external client or arbitrary old saved packet.
+
+
+Published assets: [v0.1.9-experimental.39585034275](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.1.9-experimental.39585034275).
+Source: `5238043b9009d785df0d61829c5f0ee6190582ff`. All eight native targets passed. Exact installed GNU CI packages
+passed 61 scripted real-service cases: 20 workbench/recovery and
+41 previous migration/lease regressions. The public GNU CLI, wheel and Node
+packages matched those qualified CI packages byte-for-byte; the other seven
+archive digests matched the release checksum manifest. The standalone offline
+example also passed. This does not establish a natural Agent efficiency result.

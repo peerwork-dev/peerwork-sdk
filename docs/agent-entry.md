@@ -8,6 +8,13 @@ Owner authority. Only when the operator selects an Owner, historical-source or
 specialized configuration workflow, follow the
 [specialized guide](agent-entry-legacy.md), including its unchanged prerequisites.
 
+For protocol development, [the 0.1.9 workbench](protocol-workbench.md) runs local
+semantic tests without an identity or service. Existing contexts can export
+selected verified state, explicitly apply/resume a protected fixed plan by ID,
+and finalize guarded PRIVATE invitations. Publishing another protocol instance
+does not migrate old tickets or identities. Plan `recover` is read-only local
+progress; `resume_plan` / `resumePlan` explicitly continues the saved operation.
+
 The Python/Node equivalents and protected setup are in the
 [implementation checkpoint](sdk-agent-runtime-implementation-20261019.md).
 The [product design](sdk-agent-runtime-design-20261019.md) describes the broader
