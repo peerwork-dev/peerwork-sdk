@@ -18,6 +18,10 @@ recover invitation completion through the existing pinned Agent Context.
   missing-guard finalize packets can receive one explicitly authorized successor
   only after authenticated intrinsic-inadmissibility and history checks. Original
   packets and identity remain intact.
+* Revalidate completed plan children and reconstruct their results from signed
+  history before continuing or reporting completion. Forged local completion
+  cursors cannot skip required steps. Python asynchronous guard-time enable,
+  history and resume now reach their native implementations correctly.
 * Inspect local producer compatibility, reject unknown declared activation
   requirements, and receive structured, privacy-preserving rejection diagnostics
   instead of an unexplained HTTP status.

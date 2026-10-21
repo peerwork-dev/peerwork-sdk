@@ -138,6 +138,16 @@ mod error_code_tests {
     use super::*;
 
     #[test]
+    fn shared_action_intent_digest_pins_semantics_and_expected_revision(){
+        let mut input=PublicActionInput{action_id:"append".into(),instance_id:"instance".into(),body_json:r#"{"message":"one"}"#.into(),
+            exact_input_refs_json:None,allocations_json:None,command_id:None,issued_at_ms:None};
+        let original=action_intent_digest("workspace","actor",&input,Some(0)).unwrap();
+        assert_ne!(original,action_intent_digest("workspace","actor",&input,Some(1)).unwrap());
+        assert_ne!(original,action_intent_digest("workspace","different",&input,Some(0)).unwrap());
+        input.body_json=r#"{"message":"two"}"#.into();
+        assert_ne!(original,action_intent_digest("workspace","actor",&input,Some(0)).unwrap());
+    }
+    #[test]
     fn protected_intent_refusals_have_recoverable_public_codes() {
         for (source, expected) in [
             (SecureIntentError::Conflict, "INTENT_CONFLICT"),
@@ -289,19 +299,7 @@ impl SecurePublicActionAccess {
             let guarded = payload.get("guard_time").is_some();
             let operation_binding = if visibility == "PRIVATE" && (guarded || operation_id.is_some()) {
                 let operation_id = operation_id.ok_or(PublicActionError::Input)?;
-                let mut intent_value = serde_json::json!({
-                    "workspace_id": self.config.workspace_id,
-                    "actor_id": identity.actor_id(),
-                    "action_id": input.action_id,
-                    "instance_id": input.instance_id,
-                    "body_json": input.body_json,
-                    "exact_input_refs_json": refs,
-                    "allocations_json": allocations,
-                    "issued_at_ms": input.issued_at_ms,
-                });
-                if let Some(revision)=expected_revision {intent_value["expected_instance_revision"]=serde_json::json!(revision);}
-                let intent=serde_json::to_vec(&intent_value).map_err(|_|PublicActionError::Input)?;
-                let intent_digest = sha256_hex(&intent);
+                let intent_digest=action_intent_digest(&self.config.workspace_id,identity.actor_id(),&input,expected_revision)?;
                 if let Some((saved_id, saved_digest)) = journal.action_operation(operation_id)? {
                     if saved_digest != intent_digest
                         || requested_command_id
@@ -636,6 +634,30 @@ impl SecurePrivateActionAccess {
         self.inner.submit_new_json_with_checkpoint(input,Some(operation_id),expected_revision,expected_checkpoint,cancel)
     }
 
+    /// Verify a completed plan prefix against one already authenticated replay.
+    /// This never prepares or transmits a packet and ignores cached result DTOs.
+    pub(crate) fn verify_completed_plan_actions(
+        &self,source:&TransportReplayedJournal,steps:&[(String,PublicActionInput,u64)],
+    )->Result<Vec<PublicActionResult>,PublicActionError>{
+        let (identity,_lifecycle,mut journal,transport)=self.inner.open_local(source)?;
+        let mut results=Vec::with_capacity(steps.len());
+        for (operation_id,input,revision) in steps {
+            let (command_id,saved_digest)=journal.action_operation(operation_id)?.ok_or(SecureIntentError::NotFound)?;
+            if saved_digest!=action_intent_digest(&self.inner.config.workspace_id,identity.actor_id(),input,Some(*revision))? {
+                return Err(PublicActionError::Intent(SecureIntentError::Conflict))
+            }
+            if saved_pins(&journal,&command_id)?.mode!="PRIVATE" {return Err(PublicActionError::Input)}
+            let accepted=journal.accept_replayed_action(&command_id,&identity,&transport,source)?;
+            if accepted.workspace_id!=self.inner.config.workspace_id||accepted.action_id!=input.action_id {
+                return Err(PublicActionError::Intent(SecureIntentError::ReplayMismatch))
+            }
+            results.push(PublicActionResult{status:"ACCEPTED",command_id:accepted.intent_id,workspace_id:accepted.workspace_id,
+                action_id:accepted.action_id,sequence:Some(accepted.sequence),commit_hash:Some(accepted.commit_hash),
+                receipt_canonical_json:Some(accepted.receipt_canonical_json)});
+        }
+        Ok(results)
+    }
+
     pub fn reconcile_json(&self, command_id: &str) -> Result<String, PublicActionError> {
         self.inner.reconcile_json(command_id)
     }
@@ -670,6 +692,16 @@ impl SecurePrivateActionAccess {
     ) -> Result<String, PublicActionError> {
         self.inner.list_pending_json_with_cancel(cancel)
     }
+}
+
+// The producer and plan recovery share the exact same durable intent binding.
+fn action_intent_digest(workspace:&str,actor:&str,input:&PublicActionInput,expected_revision:Option<u64>)->Result<String,PublicActionError>{
+    let mut intent=serde_json::json!({"workspace_id":workspace,"actor_id":actor,"action_id":input.action_id,
+        "instance_id":input.instance_id,"body_json":input.body_json,
+        "exact_input_refs_json":input.exact_input_refs_json.as_deref().unwrap_or("[]"),
+        "allocations_json":input.allocations_json.as_deref().unwrap_or("null"),"issued_at_ms":input.issued_at_ms});
+    if let Some(revision)=expected_revision {intent["expected_instance_revision"]=serde_json::json!(revision);}
+    Ok(sha256_hex(&serde_json::to_vec(&intent).map_err(|_|PublicActionError::Input)?))
 }
 
 fn new_command_id() -> Result<String, PublicActionError> {

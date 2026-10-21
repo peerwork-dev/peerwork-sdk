@@ -224,6 +224,18 @@ fn apply(input:&str,cancel:&CancellationToken)->R<String>{
     let profile=SecureReadProfile::new(config.clone());
     let actions=crate::secure_action_access::SecurePrivateActionAccess::new(config.clone());
     let fresh=||->R<W>{profile.with_latest_replay(cancel,|source|parse(&export_from(source,actor,&instances,time)?))};
+    // A persisted prefix must be authenticated before any later step can POST.
+    // Reuse this replay's fixture for the first new step's dependency precheck.
+    let mut resumed_fixture=if progress.next_step>0&&progress.next_step<steps.len(){
+        let completed=plan_completed_inputs(steps,progress.next_step,&operation_id,&claimed)?;
+        let (current,results)=profile.with_latest_replay(cancel,|source|->R<_>{
+            let results=actions.verify_completed_plan_actions(source,&completed)?;
+            Ok((parse(&export_from(source,actor,&instances,time)?)?,results))
+        })?;
+        progress.results=results.into_iter().map(|v|serde_json::to_value(v).map_err(|_|WorkbenchError::State)).collect::<R<Vec<_>>>()?;
+        saved.operations.insert(operation_id.clone(),progress.clone());persist(&saved)?;
+        Some(current)
+    }else{None};
     while progress.next_step<steps.len() {
         let i=progress.next_step;let step=&steps[i];
         let child=plan_child(&operation_id,&claimed,i);
@@ -231,7 +243,7 @@ fn apply(input:&str,cancel:&CancellationToken)->R<String>{
             journal.action_operation(&child).map_err(|_|WorkbenchError::State)?.is_some()};
         let mut expected_checkpoint=None;
         if !already_prepared {
-            let current=fresh()?;
+            let current=match resumed_fixture.take(){Some(value)=>value,None=>fresh()?};
             expected_checkpoint=Some(string(get(get(&current,"provenance")?,"source_digest")?)?);
             let actual=dependency_digest(&current)?; let expected=string(&checkpoints[i])?;
             if actual!=expected{progress.review_required=true;saved.operations.insert(operation_id.clone(),progress.clone());persist(&saved)?;return Err(WorkbenchError::Stale{operation_id:operation_id.clone(),completed_steps:i,results:progress.results.clone(),expected,actual})}
@@ -241,11 +253,8 @@ fn apply(input:&str,cancel:&CancellationToken)->R<String>{
             simulate_json(&wire(&obj(vec![("schema",text("peerwork.protocol-simulation.v1")),("fixture",current),
                 ("steps",W::Array(vec![step.clone()]))]))?)?;
         }
-        let input=crate::secure_action_access::PublicActionInput{
-            action_id:string(get(step,"action_id")?)?,instance_id:string(get(step,"instance_id")?)?,
-            body_json:wire(get(step,"body")?)?,exact_input_refs_json:Some(wire(get(step,"exact_input_refs")?)?),
-            allocations_json:Some(wire(get(step,"allocations")?)?),command_id:None,issued_at_ms:None,
-        };
+        resumed_fixture=None;
+        let input=plan_action_input(step)?;
         let raw=actions.submit_new_json_with_checkpoint(input,&child,Some(integer(get(step,"expected_instance_revision")?)?),expected_checkpoint.as_deref(),cancel)?;
         let result:Value=serde_json::from_str(&raw).map_err(|_|WorkbenchError::State)?;
         if result["status"]!="ACCEPTED" {
@@ -260,14 +269,36 @@ fn apply(input:&str,cancel:&CancellationToken)->R<String>{
         let current=fresh()?; let actual=dependency_digest(&current)?;let expected=string(&checkpoints[i+1])?;
         if actual!=expected{progress.review_required=true;saved.operations.insert(operation_id.clone(),progress.clone());persist(&saved)?;return Err(WorkbenchError::OutcomeChanged{operation_id:operation_id.clone(),completed_steps:progress.next_step,results:progress.results.clone(),expected,actual})}
     }
-    // Even an already completed local record is checked against authenticated
-    // live state; a cached cursor alone is not a new acceptance proof.
-    let actual=dependency_digest(&fresh()?)?;let expected=string(checkpoints.last().ok_or(WorkbenchError::State)?)?;
+    // Reuse one final authenticated replay for both the predicted frontier and
+    // every completed child. The local cursor/result DTO is never authority.
+    let completed=plan_completed_inputs(steps,progress.next_step,&operation_id,&claimed)?;
+    let (actual,verified_results)=profile.with_latest_replay(cancel,|source|->R<_>{
+        let results=actions.verify_completed_plan_actions(source,&completed)?;
+        let current=parse(&export_from(source,actor,&instances,time)?)?;
+        Ok((dependency_digest(&current)?,results))
+    })?;
+    progress.results=verified_results.into_iter().map(|v|serde_json::to_value(v).map_err(|_|WorkbenchError::State)).collect::<R<Vec<_>>>()?;
+    saved.operations.insert(operation_id.clone(),progress.clone());persist(&saved)?;
+    let expected=string(checkpoints.last().ok_or(WorkbenchError::State)?)?;
     if actual!=expected{progress.review_required=true;saved.operations.insert(operation_id.clone(),progress.clone());persist(&saved)?;return Err(WorkbenchError::OutcomeChanged{operation_id:operation_id.clone(),completed_steps:progress.next_step,results:progress.results.clone(),expected,actual})}
     if progress.review_required {progress.review_required=false;saved.operations.insert(operation_id.clone(),progress.clone());persist(&saved)?;}
     Ok(json!({"schema":"peerwork.protocol-plan-progress.v1","status":"VERIFIED","operation_id":operation_id,
         "plan_digest":claimed,"completed_steps":progress.next_step,"results":progress.results,
         "atomic":false,"verification":"signed_history"}).to_string())
+}
+
+fn plan_completed_inputs(steps:&[W],count:usize,operation_id:&str,claimed:&str)->R<Vec<(String,crate::secure_action_access::PublicActionInput,u64)>>{
+    steps.iter().enumerate().take(count).map(|(i,step)|Ok((
+        plan_child(operation_id,claimed,i),plan_action_input(step)?,integer(get(step,"expected_instance_revision")?)?
+    ))).collect()
+}
+
+fn plan_action_input(step:&W)->R<crate::secure_action_access::PublicActionInput>{
+    Ok(crate::secure_action_access::PublicActionInput{
+        action_id:string(get(step,"action_id")?)?,instance_id:string(get(step,"instance_id")?)?,
+        body_json:wire(get(step,"body")?)?,exact_input_refs_json:Some(wire(get(step,"exact_input_refs")?)?),
+        allocations_json:Some(wire(get(step,"allocations")?)?),command_id:None,issued_at_ms:None,
+    })
 }
 
 fn checked_plan_digest(plan:&W)->R<String>{

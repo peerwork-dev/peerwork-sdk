@@ -118,6 +118,11 @@ try{
  await expectCode(()=>native.guardTime(ws).enable({expectedPolicyHash:journal.checkpoint.policy_hash,audience:discovery.audience,serviceKey:discovery.receipt_public_key,disclosure:'GUARD_WINDOW',requiredProducers:['unqualified.maintenance']}),'PRODUCER_UNSUPPORTED');
  assert.equal(requests,beforeCoverage,'unsupported producer activation contacted service');
  pass('guard-time-enable-refuses-unqualified-producer-before-network');
+ const asyncBefore=posts,asyncConsumer=await execFile(python,[new URL('unified-workbench-consumer.py',import.meta.url).pathname,save('python-async-guard.json',{
+   mode:'async-guard',owner_config:{origin:nativeOrigin,state_dir:nativeRoot,allow_loopback_http:true},workspace_id:ws,
+   enable:{expected_policy_hash:journal.checkpoint.policy_hash,audience:discovery.audience,service_key:discovery.receipt_public_key,disclosure:'GUARD_WINDOW',operation_id:'a'.repeat(43),required_producers:['unknown.maintenance']}
+ })],{timeout:120000,maxBuffer:1048576});
+ assert.equal(JSON.parse(asyncConsumer.stdout).status,'PASS');assert.equal(posts,asyncBefore);pass('python-async-guard-activation-history-resume-native-contract');
  const beforeLegacy=await native.read(ws);
  const old=await command(['secure','owner-private-admit-deliver',config,ws,offers[2]],{executable:oldCli,ok:false});assert(old.code||old.ok===false,'released producer unexpectedly succeeded');
  const pending=await command(['secure','owner-private-admit-pending-deliveries',config,ws],{executable:oldCli});assert.equal(pending.length,1);const oldGrant=pending[0].grant_id;
@@ -177,10 +182,40 @@ try{
  const pyResume=await execFile(python,[new URL('unified-workbench-consumer.py',import.meta.url).pathname,save('python-resume.json',{mode:'resume',profile:snake,operation_id:operationId})],{timeout:120000,maxBuffer:16*1024*1024});assert.deepEqual(JSON.parse(pyResume.stdout),applied);assert.equal(posts,beforeApplyRetry);
  assert.equal((await native.read(ws)).objects.filter(o=>o.kind==='records'&&o.value?.payload?.title==='Planned installed ticket').length,1);
  pass('real-export-plan-apply-retry-idempotent-signed-history');
+ // Negative integrity test: corrupt only local progress metadata in this
+ // generated workspace, retaining the real signed receipt. A fresh apply must
+ // rebuild the result from its child journal and authenticated replay.
+ const planStatePath=join(profile.stateDir,'plan-operations.state'),planMagic=Buffer.from('PEERWORK-NATIVE-SECURE-STATE\n1\n');
+ const writePlanState=document=>writeFileSync(planStatePath,Buffer.concat([planMagic,Buffer.from(JSON.stringify(document))]),{mode:0o600});
+ const pristinePlanState=readFileSync(planStatePath),corruptResult=readNativeState(planStatePath);
+ const receiptBefore=corruptResult.operations[operationId].results[0].receipt_canonical_json;
+ corruptResult.operations[operationId].results[0].command_id='Z'.repeat(43);writePlanState(corruptResult);
+ const beforeCorruptRetry=posts;
+ try{assert.deepEqual(await sdk.applyProtocolPlan({profile,operationId}),applied);assert.equal(posts,beforeCorruptRetry);assert.equal(readNativeState(planStatePath).operations[operationId].results[0].receipt_canonical_json,receiptBefore);}
+ finally{writeFileSync(planStatePath,pristinePlanState,{mode:0o600});}
+ pass('cached-result-command-tamper-rebuilt-from-signed-child-without-post');
  const staleFixture=await sdk.exportProtocolFixture({profile,instanceIds:[wiki],timeMs}),stalePlan=await sdk.planProtocolActions({fixture:staleFixture,steps:[{...steps[0],body:{title:'Must never submit',body:'stale'}}],seed:'stale-plan'});
  const actions=native.privateActions(ws),write=await actions.submit('wiki.create',wiki,{title:'Intervening action',body:'Makes plan stale'},{operationId:secureToken()});assert.equal((await actions.reconcile(write.command_id)).status,'ACCEPTED');
  const beforeStale=posts;await expectCode(()=>sdk.applyProtocolPlan({profile,plan:stalePlan,operationId:'stale-plan'}),'PLAN_STALE');assert.equal(posts,beforeStale);
  pass('intervening-state-rejects-stale-plan-before-post');
+ // A real receipt from another root operation cannot justify skipping a step
+ // that this plan never prepared or submitted.
+ const pristineStaleState=readFileSync(planStatePath),forgedProgress=readNativeState(planStatePath);
+ forgedProgress.operations['stale-plan'].next_step=1;forgedProgress.operations['stale-plan'].results=[clone(applied.results[0])];writePlanState(forgedProgress);
+ const beforeForgedRetry=posts;
+ try{await expectCode(()=>sdk.applyProtocolPlan({profile,operationId:'stale-plan'}),'INTENT_NOT_FOUND');assert.equal(posts,beforeForgedRetry);}
+ finally{writeFileSync(planStatePath,pristineStaleState,{mode:0o600});}
+ pass('forged-completed-step-with-another-real-receipt-cannot-return-verified');
+ const partialPlan=await sdk.planProtocolActions({fixture:staleFixture,steps:[
+  {...steps[0],body:{title:'Missing predecessor',body:'must be verified'}},
+  {...steps[0],body:{title:'Forbidden successor',body:'must never submit'}}],seed:'forged-partial'});
+ await expectCode(()=>sdk.applyProtocolPlan({profile,plan:partialPlan,operationId:'forged-partial'}),'PLAN_STALE');
+ const pristinePartialState=readFileSync(planStatePath),forgedPartial=readNativeState(planStatePath);
+ forgedPartial.operations['forged-partial'].next_step=1;forgedPartial.operations['forged-partial'].results=[clone(applied.results[0])];writePlanState(forgedPartial);
+ const beforePartialRetry=posts;
+ try{await expectCode(()=>sdk.applyProtocolPlan({profile,operationId:'forged-partial'}),'INTENT_NOT_FOUND');assert.equal(posts,beforePartialRetry);}
+ finally{writeFileSync(planStatePath,pristinePartialState,{mode:0o600});}
+ pass('forged-partial-prefix-rejected-before-any-successor-submission');
  // Freeze an old, authentic journal response, commit a content-only action by
  // another original actor, then deliver that old response to the precheck.
  // The author must detect its newer checkpoint before preparing any packet.

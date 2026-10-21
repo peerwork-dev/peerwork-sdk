@@ -67,6 +67,13 @@ the published source/tag/checksums to that run. A routine Linux check, fork,
 pull request, tag-ref run, failed/partial cohort or substituted workflow is
 rejected. Release assembly checks out the verified historical source SHA.
 
+Sources explicitly withheld in `.github/experimental-release-holds.json` cannot
+be published, even if all of their native builds succeed. The publication
+validator reads that registry from the default branch before checking out a
+historical source. Holds retain build evidence and leave other historical
+qualified cohorts eligible; a successful build alone does not override final
+acceptance.
+
 This keeps older main-push candidates eligible for publication after selective
 retry. SDK 0.1.4 source `fdb2f09f3eeead3fb19cc22f905c6e2066000b75`,
 run `39268931251`, passed all eight targets after a selective macOS ARM retry

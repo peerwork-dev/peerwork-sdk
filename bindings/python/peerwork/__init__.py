@@ -3829,15 +3829,15 @@ class OwnerWorkspaceGuardTimeClient:
             value["operation_id"] = operation_id
         if required_producers is not None:
             value["required_producers"] = required_producers
-        return cast(OwnerGuardTimeResult, await _run_cancelled_async(self._call, "enable", value))
+        return cast(OwnerGuardTimeResult, await _run_cancelled_async(self._call, "enable", input_value=value))
 
     async def resume_async(self, operation_id: str) -> OwnerGuardTimeResult:
         return cast(OwnerGuardTimeResult, await _run_cancelled_async(self._call, "resume",
-            dict(workspace_id=self._workspace_id, operation_id=operation_id)))
+            input_value=dict(workspace_id=self._workspace_id, operation_id=operation_id)))
 
     async def history_async(self) -> list[OwnerGuardTimeResult]:
         return cast(list[OwnerGuardTimeResult], await _run_cancelled_async(self._call, "history",
-            dict(workspace_id=self._workspace_id)))
+            input_value=dict(workspace_id=self._workspace_id)))
 
 __all__ += ["OwnerWorkspaceGuardTimeClient", "OwnerGuardTimeResult"]
 
