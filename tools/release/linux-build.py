@@ -17,12 +17,21 @@ def download(url,path,digest):
         while data:=response.read(1024*1024):stream.write(data);value.update(data)
     if value.hexdigest()!=digest:raise ReleaseError('Linux bootstrap input checksum mismatch')
 
+def rustup_installer_url(inputs,target):
+    pinned=inputs.get('rustup','')
+    if not re.fullmatch(r'[0-9]+[.][0-9]+[.][0-9]+',pinned):
+        raise ReleaseError('immutable Rust bootstrap version required')
+    triple=inputs['linux'][target]['rust_target']
+    if not re.fullmatch(r'(x86_64|aarch64)-unknown-linux-(gnu|musl)',triple):
+        raise ReleaseError('invalid Rust bootstrap target')
+    return 'https://static.rust-lang.org/rustup/archive/'+pinned+'/'+triple+'/rustup-init'
+
 def launch(root,target,tag):
     service_gate_config(os.environ)
     check(root,tag);inputs=json.loads((root/'tools/release/build-inputs.json').read_text());p=inputs['linux'][target]
     bootstrap=root/'.release-bootstrap';bootstrap.mkdir(exist_ok=True)
     installer=bootstrap/'rustup-init'
-    download('https://static.rust-lang.org/rustup/dist/'+p['rust_target']+'/rustup-init',installer,p['rustup_sha256']);installer.chmod(0o755)
+    download(rustup_installer_url(inputs,target),installer,p['rustup_sha256']);installer.chmod(0o755)
     if target.endswith('gnu'):
         image=p['image']
         if not re.fullmatch(r'quay.io/pypa/manylinux_2_28_(x86_64|aarch64)@sha256:[0-9a-f]{64}',image):raise ReleaseError('immutable manylinux2.28 image required')

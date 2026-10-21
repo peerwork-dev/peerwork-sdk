@@ -127,8 +127,8 @@ jobs:
             test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.28"
             export PATH="/opt/rh/gcc-toolset-14/root/usr/bin:/opt/python/cp311-cp311/bin:$PATH"
             mkdir -p /tmp/peerwork-gnu-tools dist
-            curl -fsSL --retry 3 https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init -o /tmp/peerwork-gnu-tools/rustup-init
-            echo "dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71  /tmp/peerwork-gnu-tools/rustup-init" | sha256sum -c -
+            curl -fsSL --retry 3 https://static.rust-lang.org/rustup/archive/1.28.2/x86_64-unknown-linux-gnu/rustup-init -o /tmp/peerwork-gnu-tools/rustup-init
+            echo "20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c  /tmp/peerwork-gnu-tools/rustup-init" | sha256sum -c -
             chmod 755 /tmp/peerwork-gnu-tools/rustup-init
             export RUSTUP_HOME=/tmp/peerwork-gnu-tools/rustup CARGO_HOME=/tmp/peerwork-gnu-tools/cargo
             /tmp/peerwork-gnu-tools/rustup-init -y --no-modify-path --default-toolchain 1.89.0 --profile minimal
@@ -184,13 +184,13 @@ jobs:
             arch: x86_64
             rust_target: x86_64-unknown-linux-musl
             rootfs_sha256: 27694aaa55fd7a9e3ef596e0ad4eb66802308bb20172b17030cd5f4d8ae9bac2
-            rustup_sha256: 331228566cc931f32cd684f9bebc5956a5e5d7394c8d5de595f196a658ab98e6
+            rustup_sha256: e6599a1c7be58a2d8eaca66a80e0dc006d87bbcf780a58b7343d6e14c1605cb2
           - runner: ubuntu-24.04-arm
             target: linux-arm64-musl
             arch: aarch64
             rust_target: aarch64-unknown-linux-musl
             rootfs_sha256: 821565fa8f3953eefd12497b166b4b50add2f7c57fb312e75862f5867e06fefe
-            rustup_sha256: 1ddf36182ac5d1782dbeefcb9bea7f5f9412d88f4a0d5047b1564a223624e8c6
+            rustup_sha256: a97c8f56d7462908695348dd8c71ea6740c138ce303715793a690503a94fc9a9
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -200,7 +200,7 @@ jobs:
           mkdir -p dist
           curl -fL --retry 3 https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/${{ matrix.arch }}/alpine-minirootfs-3.22.6-${{ matrix.arch }}.tar.gz -o dist/alpine-minirootfs.tar.gz
           echo '${{ matrix.rootfs_sha256 }}  dist/alpine-minirootfs.tar.gz' | sha256sum -c -
-          curl -fL --retry 3 https://static.rust-lang.org/rustup/dist/${{ matrix.rust_target }}/rustup-init -o dist/rustup-init
+          curl -fL --retry 3 https://static.rust-lang.org/rustup/archive/1.28.2/${{ matrix.rust_target }}/rustup-init -o dist/rustup-init
           echo '${{ matrix.rustup_sha256 }}  dist/rustup-init' | sha256sum -c -
           chmod 755 dist/rustup-init
           docker import dist/alpine-minirootfs.tar.gz peerwork-alpine:3.22.6-${{ matrix.arch }}

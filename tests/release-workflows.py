@@ -129,6 +129,18 @@ class WorkflowGuards(unittest.TestCase):
         for target,p in inputs['linux'].items():
             self.assertRegex(p['rustup_sha256'],r'^[0-9a-f]{64}$')
             if target.endswith('gnu'):self.assertRegex(p['image'],r'^quay.io/pypa/manylinux_2_28_(x86_64|aarch64)@sha256:[0-9a-f]{64}$')
+    def test_bootstrap_url_and_checksum_are_both_immutable(self):
+        bootstrap=load('linux-build')
+        inputs=json.loads((ROOT/'tools/release/build-inputs.json').read_text())
+        workflow=(ROOT/'.github/workflows/distribution-spike.yml').read_text()
+        self.assertNotIn('rustup/dist/',workflow)
+        for target,p in inputs['linux'].items():
+            url=bootstrap.rustup_installer_url(inputs,target)
+            self.assertIn('/rustup/archive/'+inputs['rustup']+'/',url)
+            self.assertIn(p['rustup_sha256'],workflow) if target!='linux-arm64-gnu' else None
+        for invalid in ['', 'latest', '../latest', '1.28.2/../../dist']:
+            with self.assertRaises(version.ReleaseError):
+                bootstrap.rustup_installer_url(dict(inputs,rustup=invalid),'linux-x64-gnu')
     def test_failed_native_byte_reproduction_blocks_assembly(self):
         directory=self.work/'replicas';directory.mkdir()
         for replica in ['1','2']:
