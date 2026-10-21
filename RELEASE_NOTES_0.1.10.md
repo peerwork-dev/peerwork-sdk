@@ -1,4 +1,4 @@
-# Native SDK 0.1.10 experimental candidate
+# Native SDK 0.1.10 experimental
 
 Adds Owner member scope management to Node, Python and CLI, including PRIVATE
 workspaces with ALL_COMMITS trusted transaction time. Reuses the existing
@@ -19,3 +19,13 @@ PRIVATE wire v3 and an existing usable Owner profile. Empty scopes revoke write
 authority, not previously disclosed content. Source availability is separate from
 published native assets; experimental GitHub releases are separate from stable
 npm/PyPI distribution.
+
+Published assets: [v0.1.10-experimental.39612152629](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.1.10-experimental.39612152629).
+Source: `0c390a76344e95785bacdb47f2edbe5522dada28`. All eight native targets passed.
+The exact installed GNU CI CLI, Python wheel and Node packages passed 59
+scripted real-service cases, including 14 member scope workflows and
+45 previous workbench, guard-time/lease and Owner migration regressions.
+The public GNU packages matched the qualified CI bytes; all other native archive
+digests matched SHA256SUMS. The shared workspace suite passed 428 checks, with
+7 fixture-dependent checks skipped. These are synthetic engineering checks,
+not a natural Agent trial or an external workspace migration.

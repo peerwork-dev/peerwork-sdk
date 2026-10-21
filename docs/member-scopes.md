@@ -1,6 +1,7 @@
 # Updating PRIVATE member permissions
 
-The native SDK adds an Owner-bound `secure.member.scopes` producer in **0.1.10**.
+The native SDK adds an Owner-bound `secure.member.scopes` producer in the [published **0.1.10 experimental release**](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.1.10-experimental.39612152629).
+Source: `0c390a76344e95785bacdb47f2edbe5522dada28`.
 It uses the service's existing commit endpoint. No service change, identity
 migration, invitation or key rotation is required for an already attached Owner.
 The producer supports PRIVATE wire-v3 policies, including `guard_time` with
@@ -10,6 +11,26 @@ Availability is confirmed by the exact published experimental release and its
 `SOURCE.json`; a source version alone is not an available installation. See
 [release notes](../RELEASE_NOTES_0.1.10.md). Experimental GitHub assets are separate
 from stable npm/PyPI publication.
+
+## Installing the matching native packages
+
+Download the artifact for your operating system, CPU and libc from the exact
+release linked above and verify its checksum. Experimental archives contain the
+Node wrapper **and** its platform package. Install both from the same 0.1.10
+archive; updating only the JS wrapper can leave an older native implementation.
+For example, after extracting the Linux x64 GNU archive:
+
+```sh
+npm install --offline --ignore-scripts --no-audit --no-fund \
+  /path/to/extracted/dist/peerwork-agent-sdk-0.1.10.tgz \
+  /path/to/extracted/dist/peerwork-agent-sdk-linux-x64-gnu-0.1.10.tgz
+node -e 'const s=require("@peerwork/agent-sdk"); if(s.version()!=="0.1.10" || !s.capabilities().owner_member_scopes) process.exit(1)'
+```
+
+Use the actual extraction directory and selected platform suffix. Node requires
+version 22 or newer. The same archive supplies the matching Python wheel and CLI.
+Check the installed runtime before opening the existing Owner profile; replacing
+client binaries does not require replacing the identity or application state.
 
 ## Node
 
@@ -48,7 +69,9 @@ instance's catalog. Do not assume `claim`, `WORKER`, or `CLAIM` exist in a built
 protocol. `set` replaces the target member's **entire** scopes list; preserve
 other desired scopes explicitly. `scopes: []` revokes writes while retaining
 membership, certificates and existing read/decryption keys. It does not retract
-previously disclosed content or remove a member. A null `instance_id` uses the
+previously disclosed content or remove a member. Updating an Owner target
+retains its inherent Owner administrative authority; scope revocation does not
+transfer or remove ownership. A null `instance_id` uses the
 existing workspace-wide scope semantics; select an exact instance for narrower
 authority. Optional `expires_at` is an absolute millisecond timestamp.
 
