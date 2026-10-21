@@ -34,6 +34,13 @@ class SourceCohort(unittest.TestCase):
                 self.validate(run=dict(self.run, **change))
         with self.assertRaises(ValueError):
             self.validate(workflow_path='.github/workflows/checks.yml')
+    def test_explicitly_withheld_source_cannot_publish_with_successful_builds(self):
+        import json
+        held = json.loads((ROOT/'.github/experimental-release-holds.json').read_text())
+        for sha in held['sources']:
+            with self.subTest(sha=sha), self.assertRaisesRegex(ValueError, 'withheld'):
+                self.validate(run=dict(self.run, head_sha=sha))
+
     def test_missing_duplicate_expired_or_extra_artifact(self):
         for kind in ['missing', 'duplicate', 'expired', 'extra', 'count']:
             a = copy.deepcopy(self.artifacts)

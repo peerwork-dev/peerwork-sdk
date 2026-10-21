@@ -12,6 +12,19 @@ ARTIFACTS = {
 }
 
 def validate(run, artifacts, repository, run_id, workflow_path):
+    # This validator runs from the default branch before checking out a source
+    # cohort. Preserve historical publication except explicitly withheld sources.
+    holds_path = Path(__file__).resolve().parents[2]/'.github/experimental-release-holds.json'
+    if holds_path.exists():
+        holds = json.loads(holds_path.read_text())
+        if (set(holds) != {'version', 'sources'} or holds['version'] != 1
+            or not isinstance(holds['sources'], dict)
+            or any(not re.fullmatch(r'[0-9a-f]{40}', k) or not isinstance(v, str) or not v
+                   for k, v in holds['sources'].items())):
+            raise ValueError('invalid experimental publication hold registry')
+        if run.get('head_sha') in holds['sources']:
+            raise ValueError('source is explicitly withheld from experimental publication')
+
     if (workflow_path != '.github/workflows/distribution-spike.yml'
         or run.get('id') != run_id
         or run.get('event') not in {'push', 'workflow_dispatch'}
