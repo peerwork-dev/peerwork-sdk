@@ -10,6 +10,11 @@ export declare function loadConfig(path?: string): Promise<ClientConfig>;
 /** Experimental native kernel command client; secure-agent replay remains incomplete. */
 export declare function version(): string;
 export interface CapabilityManifest {
+  protocol_offline_simulation: boolean;
+  protocol_verified_export: boolean;
+  protocol_plan_apply: boolean;
+  guarded_invitation_finalize: boolean;
+  producer_compatibility_report: boolean;
   workspace_url_generation: boolean;
   anonymous_changelog_read: boolean;
   public_authorized_state_read: boolean;
@@ -339,6 +344,7 @@ export interface OwnerGuardTimeResult {
   policy_hash: string | null;
 }
 export interface OwnerGuardTimeEnableInput {
+  requiredProducers?: string[];
   expectedPolicyHash: string;
   audience: string;
   serviceKey: string;
@@ -882,7 +888,8 @@ export interface AgentProtocolActionIntent {
 export interface AgentBrowserApprovalIntent {
   kind: 'browser.approve'; reference: string; approve_writes: boolean;
 }
-export type AgentIntent = AgentProtocolActionIntent | AgentBrowserApprovalIntent;
+export interface AgentInvitationFinalizeIntent { kind: 'workspace.invitation.finalize'; invite_id: string; saved_grant_id?: string }
+export type AgentIntent = AgentProtocolActionIntent | AgentBrowserApprovalIntent | AgentInvitationFinalizeIntent;
 export interface AgentContext {
   readonly descriptor: AgentContextDescriptor;
   /** Bounded verified installed index; authority summaries are advisory. */
@@ -894,7 +901,10 @@ export interface AgentContext {
   inspect(workspaceId: string, options?: {signal?: AbortSignal}): Promise<AgentContextResult>;
   operate(workspaceId: string, intent: AgentIntent, operationId: string,
     options?: {signal?: AbortSignal}): Promise<AgentContextResult>;
-  recover(workspaceId: string, options: {operationId?: string; commandId?: string; signal?: AbortSignal}): Promise<AgentContextResult>;
+  recover(workspaceId: string, options: {operationId?: string; commandId?: string; recovery?: {mode: 'reconcile' | 'safe'; maxSubmissions?: 0 | 1}; signal?: AbortSignal}): Promise<AgentContextResult>;
+  exportFixture(workspaceId: string, options: {instanceIds: string[]; timeMs: number; cached?: boolean; signal?: AbortSignal}): Promise<ProtocolFixture>;
+  applyPlan(workspaceId: string, plan: ProtocolActionPlan | undefined, operationId: string, options?: {signal?: AbortSignal}): Promise<Record<string, unknown>>;
+  resumePlan(workspaceId: string, operationId: string, options?: {signal?: AbortSignal}): Promise<Record<string, unknown>>;
   operations(workspaceId: string, options?: {signal?: AbortSignal}): Promise<AgentContextResult>;
   /** Probe unchanged history; full verified replay on updates. Action receipts only, not incremental sync. */
   eventsSync(workspaceId: string, options?: {signal?: AbortSignal}): Promise<AgentContextResult>;
@@ -916,6 +926,7 @@ export declare function openContext(options: {
 export class AgentContextError extends Error {
   readonly code: string; readonly layer?: string; readonly effect_certainty?: string;
   readonly operation_id?: string; readonly continuation?: unknown; readonly envelope: Record<string, unknown>;
+  readonly stage?: string; readonly constraint?: string; readonly retryability?: string; readonly recovery_hints?: unknown;
 }
 
 export declare function bindContext(options: {
@@ -1013,3 +1024,19 @@ export declare class CurrentPageClient {
   list(instanceId:string,schema?:string,options?:CurrentPageListOptions):Promise<CurrentPageRead>;
 }
 export declare function openCurrentPages(options:ConstructorParameters<typeof CurrentPageClient>[0]):CurrentPageClient;
+
+/** Offline fixture and results never establish production authorization or acceptance. */
+export type ProtocolFixture = Record<string, unknown>;
+export interface ProtocolTestStep { instance_id: string; action_id: string; body?: unknown; expected_instance_revision?: number; exact_input_refs?: unknown[]; allocations?: unknown[]; actor_id?: string; time_ms?: number }
+export interface ProtocolSimulationResult { schema: 'peerwork.protocol-simulation-result.v1'; simulated: true; authoritative: false; assumptions: string[]; steps: Array<Record<string, unknown>>; fixture: ProtocolFixture; fixture_digest: string; input_fixture_digest: string }
+export interface ProtocolActionPlan { schema: 'peerwork.protocol-plan.v1'; engine_version: string; fixture: ProtocolFixture; steps: ProtocolTestStep[]; plan_digest: string; simulated: true; authoritative: false }
+export class ProtocolWorkbenchError extends Error { readonly envelope: Record<string, unknown>; readonly code: string; readonly stage?: string; readonly step?: number; readonly action_id?: string; readonly constraint?: string; readonly effect_certainty?: string; readonly retryability?: string }
+export function buildProtocolFixture(options: {protocols: Array<{instance_id: string; manifest: unknown; state?: unknown}>; actors?: Array<Record<string, unknown>>; seed?: string; timeMs?: number; signal?: AbortSignal}): Promise<ProtocolFixture>;
+export function simulateProtocol(options: {fixture: ProtocolFixture; steps: ProtocolTestStep[]; seed?: string; signal?: AbortSignal}): Promise<ProtocolSimulationResult>;
+export function planProtocolActions(options: {fixture: ProtocolFixture; steps: ProtocolTestStep[]; seed?: string; signal?: AbortSignal}): Promise<ProtocolActionPlan>;
+export function exportProtocolFixture(options: {profile: SecureReadOptions; instanceIds: string[]; timeMs: number; cached?: boolean; signal?: AbortSignal}): Promise<ProtocolFixture>;
+export function applyProtocolPlan(options: {profile: SecureReadOptions; plan?: ProtocolActionPlan; operationId: string; signal?: AbortSignal}): Promise<Record<string, unknown>>;
+
+export function protocolCompatibility(options: {requiredProducers: string[]; signal?: AbortSignal}): Promise<Record<string, unknown>>;
+
+export function resumeProtocolPlan(options: {profile: SecureReadOptions; operationId: string; signal?: AbortSignal}): Promise<Record<string, unknown>>;

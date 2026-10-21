@@ -907,6 +907,9 @@ impl SecureOwnerWorkspaceCreate {
                 Err(SecureIntentError::Transport(TransportError::Cancelled)) => {
                     return Ok(summary(command, &row))
                 }
+                Err(SecureIntentError::Rejected(rejection)) => {
+                    return Err(SecureOwnerCreateError::ServerRejected(rejection.http_status))
+                }
                 Err(SecureIntentError::ServerRejected(code)) => {
                     return Err(SecureOwnerCreateError::ServerRejected(code))
                 }

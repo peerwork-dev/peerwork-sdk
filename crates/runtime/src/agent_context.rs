@@ -46,12 +46,20 @@ struct Request {
     operation_id: Option<String>,
     command_id: Option<String>,
     intent: Option<Value>,
+    recovery: Option<RecoveryOptions>,
+    workbench_input: Option<String>,
     query: Option<crate::agent_discovery::DiscoveryQuery>,
     consumer_id: Option<String>,
     filter_version: Option<String>,
     lease_ms: Option<u64>,
     wait_ms: Option<u64>,
     ack_token: Option<String>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RecoveryOptions {
+    mode: String,
+    #[serde(default)] max_submissions: u8,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -185,8 +193,9 @@ fn validate_lifecycle(config: &SecureReadProfileConfig, actor: &str) -> Result<(
     let mut b = bytes
         .strip_prefix(b"PEERWORK-SECURE-KEYRING\n1\n")
         .ok_or_else(|| error("CONTEXT_STATE", "invalid key history"))?;
+    let canonical_origin=reqwest::Url::parse(&config.origin).map_err(|_|error("CONTEXT_BINDING","invalid saved origin"))?;
     for expected in [
-        config.origin.as_str(),
+        canonical_origin.as_str(),
         actor,
         config.workspace_id.as_str(),
         config.owner_actor_id.as_deref().unwrap_or(""),
@@ -519,6 +528,16 @@ fn browser_error(e: crate::agent_browser_approval::BrowserApprovalRuntimeError) 
         certainty: e.effect_certainty(),
     }
 }
+fn admission_error(e: crate::agent_admission::AdmissionOperationError) -> Error {
+    let detail=e.detail();
+    Error { code:e.code().into(), message:detail.to_string(), layer:"admission", certainty:"unknown" }
+}
+fn action_error(e: crate::secure_action_access::PublicActionError) -> Error {
+    if let crate::secure_action_access::PublicActionError::Intent(crate::secure_intents::SecureIntentError::Rejected(detail))=&e {
+        return runtime_error(e.code(), detail.envelope().to_string());
+    }
+    runtime_error(e.code(), e.to_string())
+}
 fn pending_operations(
     config: &SecureReadProfileConfig,
     access: &SecurePrivateActionAccess,
@@ -543,6 +562,12 @@ fn pending_operations(
                 .iter()
                 .cloned(),
         );
+    let admission=crate::agent_admission::operations(config,fp).map_err(admission_error)?;
+    rows.as_array_mut().ok_or_else(|| error("RESULT_ENCODING", "pending operation array required"))?
+        .extend(admission.as_array().ok_or_else(|| error("RESULT_ENCODING", "admission operation array required"))?.iter().cloned());
+    let plans=crate::protocol_workbench::pending_plans(config).map_err(|e|runtime_error(e.code(),e.envelope().to_string()))?;
+    rows.as_array_mut().ok_or_else(||error("RESULT_ENCODING","pending operation array required"))?
+        .extend(plans.as_array().ok_or_else(||error("RESULT_ENCODING","plan operation array required"))?.iter().cloned());
     Ok(rows)
 }
 fn legacy_action_operation(
@@ -588,6 +613,8 @@ fn execute(
             | "events.receive"
             | "events.ack"
             | "events.status"
+            | "workbench.export"
+            | "workbench.apply"
     ) {
         return Err(error(
             "UNSUPPORTED_PRODUCER",
@@ -600,7 +627,7 @@ fn execute(
     if operation == "open" {
         return Ok(out);
     }
-    if request.is_some_and(|r| r.len() > 1024 * 1024) {
+    if request.is_some_and(|r| r.len() > if operation.starts_with("workbench."){8*1024*1024}else{1024*1024}) {
         return Err(error("REQUEST_LIMIT", "request exceeds one MiB"));
     }
     let r: Request = serde_json::from_str(
@@ -638,6 +665,20 @@ fn execute(
                 cancel,
             )?;
             json!({"state":state,"pending":pending})
+        }
+        "workbench.export" | "workbench.apply" => {
+            let raw=crate::protocol_workbench::with_profile_json(if operation=="workbench.export"{"export"}else{"apply"},
+                &config,r.workbench_input.as_deref().ok_or_else(||error("REQUEST_INVALID","workbench input required"))?,cancel);
+            let parsed=peerwork_core::wire_json::parse_wire_json_bounded(raw.as_bytes(),64,8*1024*1024)
+                .map_err(|_|runtime_error("RESULT_ENCODING","invalid workbench envelope".into()))?;
+            if !matches!(parsed.get("ok"),Some(peerwork_core::wire_json::WireValue::Bool(true))) {
+                let detail:Value=serde_json::from_str(&raw).map_err(|_|runtime_error("RESULT_ENCODING","invalid workbench refusal".into()))?;
+                return Err(runtime_error(detail["code"].as_str().unwrap_or("WORKBENCH_FAILED"),raw));
+            }
+            let value=parsed.get("value").ok_or_else(||runtime_error("RESULT_ENCODING","workbench value missing".into()))?;
+            let value=peerwork_core::wire_json::canonical_wire_value(value,peerwork_core::canonical::Path::SecureArtifact)
+                .map_err(|_|runtime_error("RESULT_ENCODING","invalid workbench result".into()))?;
+            json!({"workbench_json":value})
         }
         "operations" => pending_operations(
             &config,
@@ -692,8 +733,18 @@ fn execute(
                     decode(
                         access
                             .submit_new_json_with_operation_id(action, id, cancel)
-                            .map_err(|e| runtime_error(e.code(), e.to_string()))?,
+                            .map_err(action_error)?,
                     )?
+                }
+                Some("workspace.invitation.finalize") => {
+                    let selected: crate::agent_admission::FinalizeIntent=serde_json::from_value(intent.clone())
+                        .map_err(|_|error("ACTION_INPUT_INVALID","invalid invitation finalization intent"))?;
+                    if selected.kind!="workspace.invitation.finalize" {return Err(error("ACTION_INPUT_INVALID","invalid invitation kind"))}
+                    if legacy_action_operation(&config,&context.actor,id)? {return Err(error("INTENT_CONFLICT","operation id belongs to protocol.action"))}
+                    crate::agent_operations::bind(&config,&context.actor,id,"workspace.invitation.finalize",&intent)
+                        .map_err(|e|error(e.code(),&e.to_string()))?;
+                    crate::agent_admission::run(config.clone(),out["context"]["fingerprint"].as_str().unwrap(),id,
+                        Some(intent),false,cancel).map_err(admission_error)?
                 }
                 Some("browser.approve") => {
                     let intent: BrowserIntent = serde_json::from_value(intent).map_err(|_| {
@@ -733,7 +784,7 @@ fn execute(
                 _ => {
                     return Err(error(
                         "UNSUPPORTED_PRODUCER",
-                        "supported producers: protocol.action, browser.approve",
+                        "supported producers: protocol.action, browser.approve, workspace.invitation.finalize",
                     ))
                 }
             }
@@ -752,7 +803,24 @@ fn execute(
                 .transpose()
                 .map_err(|e| error(e.code(), &e.to_string()))?
                 .flatten();
-            if indexed_kind.as_deref() == Some("browser.approve")
+            if indexed_kind.as_deref()==Some("protocol.plan.apply") {
+                if r.recovery.as_ref().is_some_and(|v|v.mode!="reconcile"||v.max_submissions!=0){
+                    return Err(runtime_error("RECOVERY_MODE_UNSUPPORTED",json!({"stage":"recover","effect_certainty":"unknown",
+                        "retryability":"explicit_apply","continuation":{"operation":"workbench.apply","workspace_id":r.workspace_id,"operation_id":r.operation_id},
+                        "message":"plan recovery is read-only; explicitly apply the saved plan to continue"}).to_string()))
+                }
+                crate::protocol_workbench::recover_plan(&config,r.operation_id.as_deref().unwrap(),cancel)
+                    .map_err(|e|runtime_error(e.code(),e.envelope().to_string()))?
+            } else if indexed_kind.as_deref() == Some("workspace.invitation.finalize") {
+                let safe=match &r.recovery {
+                    None=>false,
+                    Some(options) if options.mode=="reconcile"&&options.max_submissions==0=>false,
+                    Some(options) if options.mode=="safe"&&options.max_submissions==1=>true,
+                    _=>return Err(error("REQUEST_INVALID","recovery mode must be reconcile with zero submissions or safe with max_submissions=1")),
+                };
+                crate::agent_admission::run(config.clone(),out["context"]["fingerprint"].as_str().unwrap(),
+                    r.operation_id.as_deref().unwrap(),None,safe,cancel).map_err(admission_error)?
+            } else if indexed_kind.as_deref() == Some("browser.approve")
                 || crate::agent_browser_approval::has_operation(
                     config.clone(),
                     out["context"]["fingerprint"].as_str().unwrap(),
@@ -788,7 +856,7 @@ fn execute(
                 decode(
                     access
                         .reconcile_json_with_cancel(&command, cancel)
-                        .map_err(|e| runtime_error(e.code(), e.to_string()))?,
+                        .map_err(action_error)?,
                 )?
             }
         }
@@ -864,12 +932,14 @@ fn execute(
                 "saved operation belongs to a different workspace".into(),
             ));
         }
+        let plan = result["kind"] == "protocol.plan.apply";
         let browser = result["kind"] == "browser.approve";
-        let accepted =
-            result["status"] == "ACCEPTED" && (!browser || result["verification"] == "verified");
+        let admission = result["kind"] == "workspace.invitation.finalize";
+        let accepted = (result["status"] == "ACCEPTED" && (!browser || result["verification"] == "verified"))
+            || (admission && result["status"] == "AUTHORIZED" && result["verification"] == "verified");
         out["status"] = json!(if accepted { "verified" } else { "pending" });
         out["evidence"] = json!({"acceptance":if accepted{"accepted"}else{"unknown"},"verification":if accepted{"verified"}else{"pending"},"sequence":result["sequence"],"commit_hash":result["commit_hash"]});
-        if accepted && browser {
+        if accepted && (browser || admission) {
             out["refs"] = json!([]);
         } else if accepted {
             let receipt: Value =
@@ -880,7 +950,10 @@ fn execute(
             out["refs"] = receipt["effects"].clone();
             out["receipt"] = receipt;
         }
-        out["continuation"] = json!({"operation":"recover","workspace_id":r.workspace_id,"command_id":result["command_id"]});
+        if plan {out["effect_certainty"]=json!("unknown");out["evidence"]=json!({"acceptance":"unknown","verification":"pending","freshness":"LOCAL_ONLY"});}
+        out["continuation"] = if plan {result["continuation"].clone()} else if admission {
+            json!({"operation":"recover","workspace_id":r.workspace_id,"operation_id":result["operation_id"]})
+        } else {json!({"operation":"recover","workspace_id":r.workspace_id,"command_id":result["command_id"]})};
     }
     out["result"] = result;
     Ok(out)
@@ -894,7 +967,30 @@ pub fn agent_context_json(
     request_json: Option<&str>,
     cancel: &CancellationToken,
 ) -> String {
-    match execute(operation,profile_path,expected_actor,expected_service,request_json,cancel){Ok(value)=>json!({"ok":true,"value":value}),Err(e)=>{let continuation=request_json.and_then(|v|serde_json::from_str::<Value>(v).ok()).map(|v|if operation.starts_with("events."){json!({"operation":operation,"workspace_id":v["workspace_id"],"consumer_id":v["consumer_id"],"filter_version":v["filter_version"]})}else{json!({"operation":"recover","workspace_id":v["workspace_id"],"operation_id":v["operation_id"],"command_id":v["command_id"]})});json!({"ok":false,"code":e.code,"message":e.message,"layer":e.layer,"effect_certainty":e.certainty,"continuation":continuation})}}.to_string()
+    match execute(operation,profile_path,expected_actor,expected_service,request_json,cancel) {
+        Ok(value)=>json!({"ok":true,"value":value}),
+        Err(e)=>{
+            let request=request_json.and_then(|v|serde_json::from_str::<Value>(v).ok()).unwrap_or(Value::Null);
+            let continuation=if operation.starts_with("events.") {
+                json!({"operation":operation,"workspace_id":request["workspace_id"],"consumer_id":request["consumer_id"],"filter_version":request["filter_version"]})
+            } else if request["operation_id"].is_string() {
+                json!({"operation":"recover","workspace_id":request["workspace_id"],"operation_id":request["operation_id"]})
+            } else {json!({"operation":"recover","workspace_id":request["workspace_id"],"command_id":request["command_id"]})};
+            let detail=serde_json::from_str::<Value>(&e.message).ok().filter(|v|v.is_object());
+            let mut envelope=json!({"ok":false,"schema":"peerwork.operation-error.v1","code":e.code,
+                "message":e.message,"layer":e.layer,"effect_certainty":e.certainty,
+                "stage":if e.certainty=="not_sent"{"inspect"}else{"reconcile"},
+                "operation_id":request["operation_id"],"constraint":Value::Null,
+                "retryability":if e.certainty=="not_sent"{"correct_input"}else{"reconcile_only"},
+                "recovery_hints":[{"action":"recover","precondition":"same_saved_operation"}],"continuation":continuation});
+            if let Some(detail)=detail {
+                for key in ["stage","constraint","retryability","effect_certainty","recovery_hints","http_status","response_digest","completed_steps","results","dependency_diff","continuation"] {
+                    if let Some(value)=detail.get(key){envelope[key]=value.clone();}
+                }
+            }
+            envelope
+        }
+    }.to_string()
 }
 
 #[cfg(test)]

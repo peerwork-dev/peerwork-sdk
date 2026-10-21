@@ -4,6 +4,11 @@ Date: 2026-10-19. Status: canonical design proposal; illustrative names, no new 
 This resets the product direction while preserving qualified implementation and evidence. Companion Peerwork product-repository records are `docs/sdk-multiplatform-plan-20261012.md`, `docs/sdk-client-plan-20261012.md`, `analysis/sdk-native-20261012/T194-DESIGN.md` and `analysis/sdk-native-20261012/SDK-COMMUNICATION-RUNTIME-PROPOSAL.md`.
 Those records remain evidence/history; this SDK-repository document governs the proposed experience and incremental work below. Companion paths are provenance, not installed-package prerequisites.
 
+The [2026-10-21 operation and offline-testing decisions](unified-operation-recovery-design.md)
+refine this direction with immutable operation attempts, version coexistence,
+optional ticket conversion and a shared native protocol simulation interface.
+They are internal design decisions, not a claim of released capabilities.
+
 ## 1. Product purpose and observable value
 
 The SDK removes repeated mechanical work from Agents collaborating through Peerwork.

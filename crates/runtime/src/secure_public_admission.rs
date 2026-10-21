@@ -114,6 +114,8 @@ pub enum PublicAdmissionRuntimeError {
     Transport,
     #[error("server rejected signed offer with HTTP {0}")]
     ServerRejected(u16),
+    #[error(transparent)]
+    Rejected(crate::operation_diagnostics::ServerRejection),
     #[error("system clock is invalid")]
     Clock,
     #[error("async runtime could not start")]
@@ -130,6 +132,7 @@ impl PublicAdmissionRuntimeError {
             Self::Intent(SecureIntentError::NotFound) => "INTENT_NOT_FOUND",
             Self::Intent(SecureIntentError::TooLarge) => "RESOURCE_LIMIT",
             Self::Intent(SecureIntentError::Transport(_)) | Self::Transport => "TRANSPORT_FAILED",
+            Self::Rejected(detail) | Self::Intent(SecureIntentError::Rejected(detail)) => detail.code,
             Self::Intent(SecureIntentError::ServerRejected(_)) | Self::ServerRejected(_) => {
                 "SERVER_REJECTED"
             }
@@ -181,7 +184,25 @@ impl SecurePublicAdmission {
         invite_id: &str,
         cancel: &CancellationToken,
     ) -> Result<String, PublicAdmissionRuntimeError> {
+        self.deliver_operation_json_with_cancel(invite_id, None, cancel)
+    }
+
+    pub(crate) fn deliver_operation_json_with_cancel(
+        &self, invite_id: &str, operation: Option<(&str, &str)>, cancel: &CancellationToken,
+    ) -> Result<String, PublicAdmissionRuntimeError> {
         let path = delivery_path(invite_id)?;
+        if let Some((id, digest)) = operation {
+            let identity = KernelIdentity::open(&self.config.identity_path)
+                .map_err(|_| PublicAdmissionRuntimeError::Identity)?;
+            let journal = SecureIntentJournal::open(&self.config.state_dir.join("admission-intents.state"),
+                &self.config.origin, identity.actor_id())?;
+            let saved = journal.action_operation(id)?;
+            drop(journal);
+            if let Some((grant, saved_digest)) = saved {
+                if saved_digest != digest { return Err(SecureIntentError::Conflict.into()); }
+                return self.retry_delivery_json_with_cancel(&grant, cancel);
+            }
+        }
         SecureReadProfile::new(self.config.clone()).with_latest_replay(cancel, |source| {
             let identity = KernelIdentity::open(&self.config.identity_path)
                 .map_err(|_| PublicAdmissionRuntimeError::Identity)?;
@@ -286,15 +307,14 @@ impl SecurePublicAdmission {
                     SecureIntentError::Conflict,
                 ));
             }
-            journal.prepare(SecurePacketInput {
-                intent_id: prepared.grant_id(),
-                path: &path,
-                action_id: "secure.invite.finalize",
-                workspace_id: Some(&self.config.workspace_id),
-                trusted_owner_key: Some(identity.key_id()),
-                intent_digest: prepared.grant_hash(),
-                exact_request: prepared.request_wire(),
-            })?;
+            let packet = SecurePacketInput {
+                intent_id: prepared.grant_id(), path: &path, action_id: "secure.invite.finalize",
+                workspace_id: Some(&self.config.workspace_id), trusted_owner_key: Some(identity.key_id()),
+                intent_digest: prepared.grant_hash(), exact_request: prepared.request_wire(),
+            };
+            if let Some((id, digest)) = operation {
+                journal.prepare_action_operation(packet, id, digest)?;
+            } else { journal.prepare(packet)?; }
             self.post_saved_delivery(&mut journal, prepared.grant_id(), &path, &identity, cancel)?;
             serde_json::to_string(&PublicDeliveryResult {
                 status: "PENDING".into(),
@@ -363,9 +383,19 @@ impl SecurePublicAdmission {
     }
 
     pub fn retry_delivery_json_with_cancel(
-        &self,
-        grant_id: &str,
-        cancel: &CancellationToken,
+        &self, grant_id: &str, cancel: &CancellationToken,
+    ) -> Result<String, PublicAdmissionRuntimeError> {
+        self.delivery_status_json(grant_id, true, cancel)
+    }
+
+    pub(crate) fn reconcile_delivery_json_with_cancel(
+        &self, grant_id: &str, cancel: &CancellationToken,
+    ) -> Result<String, PublicAdmissionRuntimeError> {
+        self.delivery_status_json(grant_id, false, cancel)
+    }
+
+    fn delivery_status_json(
+        &self, grant_id: &str, submit: bool, cancel: &CancellationToken,
     ) -> Result<String, PublicAdmissionRuntimeError> {
         SecureReadProfile::new(self.config.clone()).with_latest_replay(cancel, |source| {
             let identity = KernelIdentity::open(&self.config.identity_path)
@@ -603,14 +633,30 @@ impl SecurePublicAdmission {
                 {
                     return Err(PublicAdmissionRuntimeError::Input);
                 }
-                return serde_json::to_string(&PublicDeliveryResult {
-                    status: "AUTHORIZED".into(),
-                    invite_id,
-                    grant_id: grant_id.into(),
-                    workspace_id: self.config.workspace_id.clone(),
-                    grant_hash,
-                })
-                .map_err(|_| PublicAdmissionRuntimeError::Encoding);
+                return Ok(serde_json::json!({"status":"AUTHORIZED", "invite_id":invite_id,
+                    "grant_id":grant_id,"workspace_id":self.config.workspace_id,"grant_hash":grant_hash,
+                    "command_id":cp.get("command_id").and_then(WireValue::as_string),
+                    "sequence":sequence,"commit_hash":commit_hash,"verification":"verified"}).to_string());
+            }
+            // A missing mandatory context is an intrinsically inadmissible
+            // packet under the immutable v3 guard-time policy. We have checked
+            // its signatures, decrypted intent, immutable invitation/ACCEPT and
+            // complete authenticated history above. This is not a deduction
+            // from an HTTP 409 or from a merely absent command.
+            if self.private_mode && cp.get("guard_time").is_none() {
+                if let Some(predecessor) = pp.get("previous_policy").and_then(WireValue::as_string)
+                    .and_then(|h| source.signed_policy_by_hash(&h)) {
+                    if let Ok(proof) = peerwork_core::prepared_public_admission::verify_inadmissible_guarded_delivery(
+                        &saved,predecessor,identity.actor_id(),identity.key_id(),&self.config.workspace_id) {
+                        return Ok(serde_json::json!({"status":"REPLACEMENT_SAFE", "invite_id":invite_id,
+                            "grant_id":grant_id,"workspace_id":self.config.workspace_id,"grant_hash":grant_hash,
+                            "proof":{"kind":"immutable_policy_packet_inadmissible","constraint":"guard_time.required",
+                            "verifier":proof.verifier,"command_id":proof.command_id,"request_digest":proof.request_digest,
+                            "predecessor_policy_hash":proof.predecessor_policy_hash,"policy_hash":proof.policy_hash,
+                            "verified_through":source.replay().sequence(),"verified_head":source.replay().head()},
+                            "effect_certainty":"not_accepted","future_acceptance":"closed"}).to_string());
+                    }
+                }
             }
             let current_policy_hash = source.replay().policy_hash();
             if sequence != source.replay().sequence().saturating_add(1)
@@ -627,7 +673,7 @@ impl SecurePublicAdmission {
             {
                 return Err(PublicAdmissionRuntimeError::Input);
             }
-            self.post_saved_delivery(&mut journal, grant_id, &path, &identity, cancel)?;
+            if submit { self.post_saved_delivery(&mut journal, grant_id, &path, &identity, cancel)?; }
             serde_json::to_string(&PublicDeliveryResult {
                 status: "PENDING".into(),
                 invite_id,
@@ -820,7 +866,7 @@ impl SecurePublicAdmission {
                     journal.observe_response(grant_id, &response.wire)?;
                 }
                 if !(200..300).contains(&response.status) {
-                    return Err(PublicAdmissionRuntimeError::ServerRejected(response.status));
+                    return Err(PublicAdmissionRuntimeError::Rejected(crate::operation_diagnostics::ServerRejection::from_response(response.status, &response.wire)));
                 }
             }
             Err(TransportError::SubmittedUncertain) => {}
@@ -873,7 +919,7 @@ impl SecurePublicAdmission {
             )
             .map_err(|_| PublicAdmissionRuntimeError::Transport)?;
         if response.status != 200 {
-            return Err(PublicAdmissionRuntimeError::ServerRejected(response.status));
+            return Err(PublicAdmissionRuntimeError::Rejected(crate::operation_diagnostics::ServerRejection::from_response(response.status, &response.wire)));
         }
         parse_wire_json_js_bounded(&response.wire, 80, 220_000)
             .map_err(|_| PublicAdmissionRuntimeError::Input)
@@ -1127,7 +1173,7 @@ impl SecurePublicAdmission {
                     journal.observe_response(invite_id, &response.wire)?;
                 }
                 if !(200..300).contains(&response.status) {
-                    return Err(PublicAdmissionRuntimeError::ServerRejected(response.status));
+                    return Err(PublicAdmissionRuntimeError::Rejected(crate::operation_diagnostics::ServerRejection::from_response(response.status, &response.wire)));
                 }
             }
             Err(TransportError::SubmittedUncertain) => {}

@@ -84,7 +84,7 @@ pub(crate) fn bind(
         || !id
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
-        || !matches!(kind, "protocol.action" | "browser.approve")
+        || !matches!(kind, "protocol.action" | "browser.approve" | "workspace.invitation.finalize" | "protocol.plan.apply")
     {
         return Err(OperationIndexError::Input);
     }
@@ -143,6 +143,9 @@ mod tests {
         let intent = json!({"kind":"protocol.action","values":{"a":1,"b":2}});
         bind(&config, "actor", "logical", "protocol.action", &intent).unwrap();
         bind(&config, "actor", "logical", "protocol.action", &intent).unwrap();
+        bind(&config,"actor","plan","protocol.plan.apply",&json!({"plan_digest":"first"})).unwrap();
+        assert!(matches!(bind(&config,"actor","plan","workspace.invitation.finalize",&json!({"invite_id":"other"})),Err(OperationIndexError::Conflict)));
+        assert!(matches!(bind(&config,"actor","plan","protocol.plan.apply",&json!({"plan_digest":"other"})),Err(OperationIndexError::Conflict)));
         assert_eq!(
             kind(&config, "actor", "logical").unwrap().as_deref(),
             Some("protocol.action")
@@ -171,6 +174,9 @@ mod tests {
             kind(&config, "different-actor", "logical"),
             Err(OperationIndexError::Context)
         ));
+        bind(&config,"actor","plan","protocol.plan.apply",&json!({"plan_digest":"first"})).unwrap();
+        assert!(matches!(bind(&config,"actor","plan","workspace.invitation.finalize",&json!({"invite_id":"other"})),Err(OperationIndexError::Conflict)));
+        assert!(matches!(bind(&config,"actor","plan","protocol.plan.apply",&json!({"plan_digest":"other"})),Err(OperationIndexError::Conflict)));
         assert_eq!(
             kind(&config, "actor", "logical").unwrap().as_deref(),
             Some("protocol.action")

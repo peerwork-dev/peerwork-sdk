@@ -1257,6 +1257,7 @@ fn owner_guard_time_json(
 
 #[pymodule]
 fn _peerwork_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_function(wrap_pyfunction!(protocol_workbench_json, module)?)?;
     module.add_function(wrap_pyfunction!(owner_guard_time_json, module)?)?;
     module.add_function(wrap_pyfunction!(current_page_json, module)?)?;
     module.add_function(wrap_pyfunction!(read_view_json, module)?)?;
@@ -1288,4 +1289,12 @@ fn _peerwork_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(secure_public_decision_json, module)?)?;
     module.add_class::<KernelCancelHandle>()?;
     Ok(())
+}
+
+#[pyfunction]
+#[pyo3(signature = (operation, input_json, cancel_handle=None))]
+fn protocol_workbench_json(py:Python<'_>,operation:String,input_json:String,
+    cancel_handle:Option<PyRef<'_,KernelCancelHandle>>)->String {
+    let cancel=cancel_handle.map(|h|h.token.clone()).unwrap_or_default();
+    py.allow_threads(move||peerwork_runtime::protocol_workbench::workbench_json(&operation,&input_json,&cancel))
 }

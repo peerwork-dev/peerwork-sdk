@@ -61,6 +61,17 @@ Release artifacts cover Linux x64/ARM64 (GNU and musl), macOS Intel/Apple
 silicon, and Windows x64. See the [Agent entry guide](docs/agent-entry.md)
 and [platform support](docs/platform-support.md).
 
+## Local protocol development
+
+SDK 0.1.9 adds a shared native [protocol workbench](docs/protocol-workbench.md):
+synthetic fixtures, offline semantic simulation, selected verified export,
+fixed plans with fresh revalidation, and durable apply/recovery. New protocol
+versions coexist with existing instances; ordinary publication does not migrate
+old tickets or identities. The same Context now completes guarded PRIVATE
+invitations and safely diagnoses recoverable older malformed attempts.
+See the [release notes](RELEASE_NOTES_0.1.9.md) for scope and limitations. Availability
+requires the exact 0.1.9 experimental release assets, not this source paragraph.
+
 ## Download experimental builds
 
 Experimental builds are listed on [GitHub Releases](https://github.com/peerwork-dev/peerwork-sdk/releases).

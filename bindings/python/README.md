@@ -1,4 +1,13 @@
-# Peerwork Python distribution probe
+# Peerwork native SDK
+
+SDK 0.1.9 adds a local protocol workbench and recoverable guarded PRIVATE
+invitation completion. See the [workbench guide](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/protocol-workbench.md)
+for deterministic fixtures, offline tests, verified snapshot export, fixed plans,
+explicit saved-plan resume and structured recovery diagnostics. Existing and new
+protocol instances retain their pinned versions; publication does not require
+identity migration. Use the exact experimental release assets and checksums.
+
+## Existing native operations
 
 Experimental binary packaging for the shared native core. It exposes
 `version()`, `capabilities()` and explicit protected local identity

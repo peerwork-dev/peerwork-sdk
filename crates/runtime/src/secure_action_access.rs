@@ -82,6 +82,8 @@ pub enum PublicActionError {
     Entropy,
     #[error("native action preparation failed")]
     Prepare,
+    #[error("selected instance revision changed before preparation")]
+    RevisionConflict,
     #[error("saved secure action failed verification or persistence: {0}")]
     Intent(#[from] SecureIntentError),
     #[error("configured transport could not be opened")]
@@ -100,6 +102,7 @@ impl PublicActionError {
             Self::Input => "ACTION_INPUT_INVALID",
             Self::Entropy => "ENTROPY_UNAVAILABLE",
             Self::Prepare => "ACTION_PREPARE_FAILED",
+            Self::RevisionConflict => "PLAN_STALE",
             Self::Intent(error) => match error {
                 SecureIntentError::Conflict => "INTENT_CONFLICT",
                 SecureIntentError::NotFound => "INTENT_NOT_FOUND",
@@ -114,6 +117,7 @@ impl PublicActionError {
                 }
                 SecureIntentError::Transport(_) => "TRANSPORT_FAILED",
                 SecureIntentError::ServerRejected(_) => "SERVER_REJECTED",
+                SecureIntentError::Rejected(detail) => detail.code,
                 SecureIntentError::ReplayMismatch => "VERIFICATION_FAILED",
             },
             Self::Transport => "TRANSPORT_FAILED",
@@ -235,10 +239,21 @@ impl SecurePublicActionAccess {
     /// Submit a PRIVATE action under a caller-stable operation id.
     /// The id is stored with the exact prepared request before network I/O.
     pub fn submit_new_json_with_operation_id(
-        &self,
-        input: PublicActionInput,
-        operation_id: Option<&str>,
+        &self, input: PublicActionInput, operation_id: Option<&str>, cancel: &CancellationToken,
+    ) -> Result<String, PublicActionError> {
+        self.submit_new_json_with_revision(input, operation_id, None, cancel)
+    }
+
+    pub fn submit_new_json_with_revision(
+        &self, input: PublicActionInput, operation_id: Option<&str>, expected_revision: Option<u64>,
         cancel: &CancellationToken,
+    ) -> Result<String, PublicActionError> {
+        self.submit_new_json_with_checkpoint(input,operation_id,expected_revision,None,cancel)
+    }
+
+    pub(crate) fn submit_new_json_with_checkpoint(
+        &self, input: PublicActionInput, operation_id: Option<&str>, expected_revision: Option<u64>,
+        expected_checkpoint:Option<&str>, cancel: &CancellationToken,
     ) -> Result<String, PublicActionError> {
         let requested_command_id = input.command_id.clone();
         let command_id = match requested_command_id.clone() {
@@ -274,7 +289,7 @@ impl SecurePublicActionAccess {
             let guarded = payload.get("guard_time").is_some();
             let operation_binding = if visibility == "PRIVATE" && (guarded || operation_id.is_some()) {
                 let operation_id = operation_id.ok_or(PublicActionError::Input)?;
-                let intent = serde_json::to_vec(&serde_json::json!({
+                let mut intent_value = serde_json::json!({
                     "workspace_id": self.config.workspace_id,
                     "actor_id": identity.actor_id(),
                     "action_id": input.action_id,
@@ -283,8 +298,9 @@ impl SecurePublicActionAccess {
                     "exact_input_refs_json": refs,
                     "allocations_json": allocations,
                     "issued_at_ms": input.issued_at_ms,
-                }))
-                .map_err(|_| PublicActionError::Input)?;
+                });
+                if let Some(revision)=expected_revision {intent_value["expected_instance_revision"]=serde_json::json!(revision);}
+                let intent=serde_json::to_vec(&intent_value).map_err(|_|PublicActionError::Input)?;
                 let intent_digest = sha256_hex(&intent);
                 if let Some((saved_id, saved_digest)) = journal.action_operation(operation_id)? {
                     if saved_digest != intent_digest
@@ -354,6 +370,18 @@ impl SecurePublicActionAccess {
             } else {
                 command_id.clone()
             };
+            // This check is inside the SAME verified source closure as packet
+            // authoring. Content-only writes need not change control revision.
+            if expected_checkpoint.is_some_and(|expected|expected!=sha256_hex(source.checkpoint_canonical_json().as_bytes())) {
+                return Err(PublicActionError::RevisionConflict)
+            }
+            if let Some(expected)=expected_revision {
+                let current=source.replay().objects().iter().filter(|o|o.get("kind").and_then(WireValue::as_string).as_deref()==Some("instances")
+                    &&o.get("id").and_then(WireValue::as_string).as_deref()==Some(input.instance_id.as_str()))
+                    .max_by_key(|o|o.get("revision").and_then(WireValue::as_number).unwrap_or(0.0) as u64)
+                    .and_then(|o|o.get("value")).and_then(|v|v.get("revision")).and_then(WireValue::as_number);
+                if current!=Some(expected as f64){return Err(PublicActionError::RevisionConflict)}
+            }
             match visibility.as_str() {
                 "PUBLIC" => prepare_public_action_from_replay(
                     &mut journal,
@@ -596,6 +624,16 @@ impl SecurePrivateActionAccess {
     ) -> Result<String, PublicActionError> {
         self.inner
             .submit_new_json_with_operation_id(input, Some(operation_id), cancel)
+    }
+
+    pub fn submit_new_json_with_revision(&self,input:PublicActionInput,operation_id:&str,
+        expected_revision:Option<u64>,cancel:&CancellationToken)->Result<String,PublicActionError>{
+        self.inner.submit_new_json_with_revision(input,Some(operation_id),expected_revision,cancel)
+    }
+
+    pub(crate) fn submit_new_json_with_checkpoint(&self,input:PublicActionInput,operation_id:&str,
+        expected_revision:Option<u64>,expected_checkpoint:Option<&str>,cancel:&CancellationToken)->Result<String,PublicActionError>{
+        self.inner.submit_new_json_with_checkpoint(input,Some(operation_id),expected_revision,expected_checkpoint,cancel)
     }
 
     pub fn reconcile_json(&self, command_id: &str) -> Result<String, PublicActionError> {

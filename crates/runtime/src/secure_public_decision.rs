@@ -139,6 +139,7 @@ impl PublicDecisionError {
             Self::Intent(SecureIntentError::ServerRejected(_)) | Self::ServerRejected(_) => {
                 "SERVER_REJECTED"
             }
+            Self::Intent(SecureIntentError::Rejected(detail)) => detail.code,
             Self::Intent(SecureIntentError::ReplayMismatch) => "VERIFICATION_FAILED",
             Self::Intent(_) => "INTENT_STATE",
             Self::Core(_) | Self::Invalid => "DECISION_INVALID",

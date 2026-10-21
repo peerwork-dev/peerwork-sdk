@@ -75,3 +75,8 @@ pub mod private_read_view;
 pub mod current_page;
 
 pub mod owner_guard_time;
+pub mod operation_diagnostics;
+
+mod agent_admission;
+
+pub mod protocol_workbench;

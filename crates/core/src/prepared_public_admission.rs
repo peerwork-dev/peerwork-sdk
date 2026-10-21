@@ -36,6 +36,70 @@ pub struct PreparedAdmissionPacket {
     artifact_hash: String,
 }
 
+/// Closure of these exact bytes under the qualified v3 ALL_COMMITS contract.
+/// This is not whole-operation nonacceptance, an invitation authorization, or
+/// verified history. The caller must separately verify replay, ACCEPT and the
+/// decrypted intent, and account for every other attempt before replacement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InadmissibleGuardedDelivery {
+    pub request_digest: String,
+    pub predecessor_policy_hash: String,
+    pub policy_hash: String,
+    pub command_id: String,
+    pub verifier: &'static str,
+}
+
+pub fn verify_inadmissible_guarded_delivery(
+    request_wire: &[u8], authenticated_predecessor_policy: &[u8],
+    expected_owner_actor: &str, expected_owner_key: &str, expected_workspace: &str,
+) -> Result<InadmissibleGuardedDelivery, PublicAdmissionError> {
+    let bad = || PublicAdmissionError::Invalid;
+    let request = crate::wire_json::parse_wire_json_bounded(request_wire, 80, 220_000).map_err(|_| bad())?;
+    let prior = crate::wire_json::parse_wire_json_bounded(authenticated_predecessor_policy, 64, 196_608).map_err(|_| bad())?;
+    if request.object_len() != Some(3) { return Err(bad()); }
+    let policy = request.get("policy").ok_or_else(bad)?;
+    let grant = request.get("grant").ok_or_else(bad)?;
+    let commit = request.get("commit").ok_or_else(bad)?;
+    for (artifact, domain) in [(&prior,"peerwork.secure.policy.v3"), (policy,"peerwork.secure.policy.v3"),
+        (grant,"peerwork.secure.key-grant.v1"), (commit,"peerwork.secure.commit.v3")] {
+        if !verify_secure_signed_wire(canonical_wire_value(artifact, Path::SecureArtifact).map_err(|_|bad())?.as_bytes(),
+            domain, expected_owner_key).map_err(|_|bad())? { return Err(bad()); }
+    }
+    let old = prior.get("payload").ok_or_else(bad)?;
+    let next = policy.get("payload").ok_or_else(bad)?;
+    let gp = grant.get("payload").ok_or_else(bad)?;
+    let cp = commit.get("payload").ok_or_else(bad)?;
+    for payload in [old, next] {
+        if unsigned(payload,"v")? != 3 || string(payload,"visibility")? != "PRIVATE"
+            || string(payload,"workspace_id")? != expected_workspace
+            || string(payload,"owner_id")? != expected_owner_actor
+            || string(payload,"signing_key")? != expected_owner_key { return Err(bad()); }
+    }
+    for payload in [gp, cp] {
+        if string(payload,"workspace_id")? != expected_workspace || string(payload,"actor_id")? != expected_owner_actor
+            || string(payload,"signing_key")? != expected_owner_key { return Err(bad()); }
+    }
+    let previous_guard = crate::guard_time::parse_guard_time_policy(old.get("guard_time").ok_or_else(bad)?).map_err(|_|bad())?;
+    let next_guard = crate::guard_time::parse_guard_time_policy(next.get("guard_time").ok_or_else(bad)?).map_err(|_|bad())?;
+    let predecessor_policy_hash = sha256_hex(canonical_wire_value(&prior,Path::SecureArtifact).map_err(|_|bad())?.as_bytes());
+    let policy_hash = sha256_hex(canonical_wire_value(policy,Path::SecureArtifact).map_err(|_|bad())?.as_bytes());
+    let sequence = unsigned(cp,"sequence")?;
+    let command_id = string(cp,"command_id")?;
+    if previous_guard != next_guard || unsigned(cp,"v")? != 3 || unsigned(gp,"v")? != 1
+        || string(cp,"action_id")? != "secure.invite.finalize" || string(cp,"mode")? != "PRIVATE"
+        || cp.get("guard_time").is_some() || !token(&command_id)
+        || string(next,"previous_policy")? != predecessor_policy_hash
+        || unsigned(next,"version")? != unsigned(old,"version")?.checked_add(1).ok_or_else(bad)?
+        || unsigned(next,"effective_sequence")? != sequence || sequence <= unsigned(old,"effective_sequence")?
+        || unsigned(old,"epoch")? == 0 || unsigned(next,"epoch")? != unsigned(old,"epoch")?
+        || unsigned(cp,"epoch")? != unsigned(next,"epoch")? || unsigned(gp,"epoch")? != unsigned(next,"epoch")?
+        || string(cp,"policy_hash")? != policy_hash || string(gp,"policy_hash")? != policy_hash {
+        return Err(bad());
+    }
+    Ok(InadmissibleGuardedDelivery { request_digest: sha256_hex(request_wire), predecessor_policy_hash,
+        policy_hash, command_id, verifier: "peerwork.v3.guard-time-required.v1" })
+}
+
 /// A recipient acknowledgement of an already verified grant and complete
 /// signed checkpoint. This packet alone never proves membership or read
 /// authority; the caller must bind both inputs to authenticated replay.
@@ -444,6 +508,12 @@ fn prepare_delivery(
     ];
     if let Some(ceiling) = next_payload.get("protocol_format_ceiling") {
         context_fields.push(("protocol_format_ceiling", ceiling.clone()));
+    }
+    // The complete context is AEAD associated data. Mandatory policy fields
+    // must be installed before encryption, not patched into a signed packet.
+    if let Some(guard) = crate::guard_time::administrative_guard_context(&next_payload).map_err(|_| bad())? {
+        if active_keyring.is_none() { return Err(bad()); }
+        context_fields.push(("guard_time", guard));
     }
     if next_payload
         .get("structure_mode")
@@ -1193,6 +1263,107 @@ mod tests {
         e2ee::{hpke_open_wire, KeyBox},
         secure_recipient::SecretRecipient,
     };
+
+    #[test]
+    fn private_finalize_binds_guard_time_before_aead_and_signature() {
+        let now = 1_700_000_000_000;
+        let owner = SigningKey::from_bytes(&[17; 32]);
+        let member = SigningKey::from_bytes(&[19; 32]);
+        let recipient = SecretRecipient::generate().unwrap();
+        let certificate = serde_json::to_vec(&recipient.certify(&member, now).unwrap()).unwrap();
+        let workspace = base64url(&[13; 32]);
+        let actor = actor_id(&owner.verifying_key().to_bytes());
+        let key = base64url(&owner.verifying_key().to_bytes());
+        let ring = SecretKeyring::new_private(&workspace, 1).unwrap();
+        for guarded in [false, true] {
+            let mut payload = object(vec![
+                ("v", WireValue::Number(3.0)), ("workspace_id", s(&workspace)),
+                ("owner_id", s(&actor)), ("signing_key", s(&key)),
+                ("version", WireValue::Number(1.0)), ("previous_policy", WireValue::Null),
+                ("effective_sequence", WireValue::Number(1.0)), ("visibility", s("PRIVATE")),
+                ("epoch", WireValue::Number(1.0)), ("members", WireValue::Array(vec![])),
+                ("issued_at", WireValue::Number(now as f64)), ("structure_mode", s("NONE")),
+                ("protocol_format_ceiling", WireValue::Number(1.0)),
+            ]);
+            if guarded {
+                set(&mut payload, "guard_time", object(vec![
+                    ("v", WireValue::Number(1.0)), ("mode", s("ALL_COMMITS")),
+                    ("audience", s("https://fixture.invalid")), ("service_key", s(&base64url(&[23; 32]))),
+                    ("disclosure", s("GUARD_WINDOW")),
+                ])).unwrap();
+            }
+            let policy = sign_payload(payload, "peerwork.secure.policy.v3", &owner).unwrap();
+            let wire = canonical_wire_value(&policy, Path::SecureArtifact).unwrap();
+            let checkpoint = object(vec![
+                ("v", WireValue::Number(1.0)), ("workspace_id", s(&workspace)),
+                ("owner_id", s(&actor)), ("owner_key", s(&key)),
+                ("sequence", WireValue::Number(1.0)), ("head", s(&"a".repeat(64))),
+                ("policy_hash", s(&sha256_hex(wire.as_bytes()))),
+            ]);
+            let offer = prepare_private_offer_utf16(wire.as_bytes(), &certificate,
+                br#"[{"instance_id":null,"actions":[],"protocol_roles":[],"capabilities":[]}]"#,
+                &[], Some(&base64url(&[14; 32])), now+1, now+86_400_000, &owner).unwrap();
+            let decision = prepare_public_decision(offer.artifact_wire(), &actor, &key,
+                &member, "ACCEPT", now+2).unwrap();
+            let checkpoint = canonical_wire_value(&checkpoint, Path::SecureArtifact).unwrap();
+            let prepared = prepare_private_delivery(wire.as_bytes(), checkpoint.as_bytes(),
+                offer.artifact_wire(), decision.artifact_wire(), now+3, &owner, &ring).unwrap();
+            let request = parse_wire_json_js_bounded(prepared.request_wire(), 80, 220_000).unwrap();
+            let commit = request.get("commit").unwrap();
+            let commit_wire = canonical_wire_value(commit, Path::SecureArtifact).unwrap();
+            assert!(verify_secure_signed_wire(commit_wire.as_bytes(), "peerwork.secure.commit.v3", &key).unwrap());
+            let payload = commit.get("payload").unwrap();
+            assert_eq!(payload.get("guard_time").is_some(), guarded);
+            let WireValue::Object(fields) = payload else { panic!("payload") };
+            let context = WireValue::Object(fields.iter().filter(|(k,_)| !["mode","body"].iter()
+                .any(|n| k.iter().copied().eq(n.encode_utf16()))).cloned().collect());
+            let aad = canonical_wire_value(&context, Path::SecureArtifact).unwrap();
+            let sealed = canonical_wire_value(payload.get("body").unwrap(), Path::SecureArtifact).unwrap();
+            let sealed: crate::e2ee::SealedContent = serde_json::from_str(&sealed).unwrap();
+            let clear = crate::e2ee::open_content_wire(ring.key_at(1).unwrap(), &sealed, aad.as_bytes()).unwrap();
+            let operation = parse_wire_json_js_bounded(&clear, 32, 196_608).unwrap();
+            assert_eq!(operation.get("kind").and_then(WireValue::as_string).as_deref(), Some("ADMIN"));
+            if guarded {
+                assert_eq!(crate::guard_time::parse_guard_time_context(payload.get("guard_time").unwrap()).unwrap(),
+                    crate::guard_time::GuardTimeContextV1::universal());
+                let WireValue::Object(mut fields) = context else { unreachable!() };
+                fields.retain(|(k,_)| !k.iter().copied().eq("guard_time".encode_utf16()));
+                let wrong_aad = canonical_wire_value(&WireValue::Object(fields), Path::SecureArtifact).unwrap();
+                assert!(crate::e2ee::open_content_wire(ring.key_at(1).unwrap(), &sealed, wrong_aad.as_bytes()).is_err());
+                assert!(verify_inadmissible_guarded_delivery(prepared.request_wire(), wire.as_bytes(), &actor, &key, &workspace).is_err());
+                // Reproduce the old producer exactly: missing guard context,
+                // encrypted against that incomplete AAD, then correctly signed.
+                let mut legacy_payload = payload.clone();
+                let WireValue::Object(fields) = &mut legacy_payload else { unreachable!() };
+                fields.retain(|(k,_)| !k.iter().copied().eq("guard_time".encode_utf16()));
+                let legacy_body = crate::e2ee::seal_content_wire(ring.key_at(1).unwrap(), &clear, wrong_aad.as_bytes()).unwrap();
+                let legacy_body = parse_wire_json_js_bounded(&serde_json::to_vec(&legacy_body).unwrap(),32,196_608).unwrap();
+                set(&mut legacy_payload,"body",legacy_body).unwrap();
+                let legacy_commit = sign_payload(legacy_payload.clone(),"peerwork.secure.commit.v3",&owner).unwrap();
+                let mut legacy_request = request.clone(); set(&mut legacy_request,"commit",legacy_commit).unwrap();
+                let legacy_wire = canonical_wire_value(&legacy_request,Path::SecureArtifact).unwrap();
+                let proof = verify_inadmissible_guarded_delivery(legacy_wire.as_bytes(),wire.as_bytes(),&actor,&key,&workspace).unwrap();
+                assert_eq!(proof.request_digest,sha256_hex(legacy_wire.as_bytes()));
+                assert_eq!(proof.predecessor_policy_hash,sha256_hex(wire.as_bytes()));
+                assert!(verify_inadmissible_guarded_delivery(legacy_wire.as_bytes(),wire.as_bytes(),&actor,&key,&base64url(&[99;32])).is_err());
+                let mut wrong_action = legacy_payload;
+                set(&mut wrong_action,"action_id",s("different.action")).unwrap();
+                let mut wrong_request = legacy_request.clone();
+                set(&mut wrong_request,"commit",sign_payload(wrong_action,"peerwork.secure.commit.v3",&owner).unwrap()).unwrap();
+                assert!(verify_inadmissible_guarded_delivery(canonical_wire_value(&wrong_request,Path::SecureArtifact).unwrap().as_bytes(),wire.as_bytes(),&actor,&key,&workspace).is_err());
+                let mut unguarded_prior = policy.get("payload").unwrap().clone();
+                let WireValue::Object(fields) = &mut unguarded_prior else { unreachable!() };
+                fields.retain(|(k,_)| !k.iter().copied().eq("guard_time".encode_utf16()));
+                let unguarded_prior = sign_payload(unguarded_prior,"peerwork.secure.policy.v3",&owner).unwrap();
+                assert!(verify_inadmissible_guarded_delivery(legacy_wire.as_bytes(),canonical_wire_value(&unguarded_prior,Path::SecureArtifact).unwrap().as_bytes(),&actor,&key,&workspace).is_err());
+                let mut tampered = legacy_request;
+                let mut forged_policy = tampered.get("policy").unwrap().clone();
+                set(&mut forged_policy,"signature",s(&base64url(&[0;64]))).unwrap();
+                set(&mut tampered,"policy",forged_policy).unwrap();
+                assert!(verify_inadmissible_guarded_delivery(canonical_wire_value(&tampered,Path::SecureArtifact).unwrap().as_bytes(),wire.as_bytes(),&actor,&key,&workspace).is_err());
+            }
+        }
+    }
 
     #[test]
     fn signed_v2_policy_offer_uses_v2_domain_and_rejects_wrong_domain() {

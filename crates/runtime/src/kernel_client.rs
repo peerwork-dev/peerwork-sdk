@@ -398,6 +398,19 @@ impl KernelClient {
         Ok(Self { transport, journal, discovery })
     }
 
+    /// Open an existing protected pin without discovery HTTP. Only cached
+    /// historical read verification uses this; no freshness is established.
+    pub(crate) fn open_cached(transport_config: TransportConfig, journal_path: &Path,
+        required_features: &[Vec<u16>], cancel: &CancellationToken) -> Result<Self, KernelClientError> {
+        if cancel.is_cancelled() { return Err(TransportError::Cancelled.into()); }
+        if !journal_path.is_file() { return Err(KernelClientError::InvalidResult); }
+        let transport = HttpTransport::new(transport_config)?;
+        let journal = KernelIntentJournal::open(journal_path)?;
+        let discovery = journal.pinned_discovery(transport.trusted_origin())?;
+        if !discovery.supports_required_features(required_features) { return Err(KernelClientError::UnsupportedDiscovery); }
+        Ok(Self { transport, journal, discovery })
+    }
+
     pub fn origin(&self) -> &str {
         self.transport.trusted_origin()
     }
@@ -691,6 +704,21 @@ mod tests {
             "protocol_features":features
         }))
         .unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cached_open_uses_only_existing_origin_pin_and_refuses_missing_or_wrong_source() {
+        let dir=crate::test_support::protected_test_dir();let path=dir.path().join("kernel.sqlite");
+        let config=||TransportConfig::new("https://example.invalid");
+        assert!(KernelClient::open_cached(config(),&path,&[],&CancellationToken::new()).is_err());
+        assert!(!path.exists());
+        let parsed=parse_discovery_wire(&discovery_wire(&key_id(&[7;32]),&["base"]),MAX_DISCOVERY_BYTES).unwrap();
+        let mut journal=KernelIntentJournal::open(&path).unwrap();journal.bind_discovery("https://example.invalid/",&parsed).unwrap();drop(journal);
+        let client=KernelClient::open_cached(config(),&path,&["base".encode_utf16().collect()],&CancellationToken::new()).unwrap();
+        assert_eq!(client.discovery().receipt_public_key(),parsed.receipt_public_key());drop(client);
+        assert!(KernelClient::open_cached(TransportConfig::new("https://another.invalid"),&path,&[],&CancellationToken::new()).is_err());
+        assert!(KernelClient::open_cached(config(),&path,&["missing".encode_utf16().collect()],&CancellationToken::new()).is_err());
     }
 
     #[cfg(unix)]

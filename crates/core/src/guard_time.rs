@@ -82,6 +82,16 @@ pub fn parse_guard_time_policy(value: &WireValue) -> Result<GuardTimePolicyV1, G
     })
 }
 
+/// A time-independent ADMIN producer must bind this context before AEAD and
+/// signature creation. This validates the authenticated policy; it never adds
+/// authority or changes invitation/certificate expiry constraints.
+pub fn administrative_guard_context(policy_payload: &WireValue) -> Result<Option<WireValue>, GuardTimeError> {
+    policy_payload.get("guard_time").map(|policy| {
+        parse_guard_time_policy(policy)?;
+        Ok(GuardTimeContextV1::universal().to_wire())
+    }).transpose()
+}
+
 pub fn parse_guard_time_context(value: &WireValue) -> Result<GuardTimeContextV1, GuardTimeError> {
     exact(value, &["v", "lower_ms", "upper_ms"])?;
     if number(value, "v")? != 1 {

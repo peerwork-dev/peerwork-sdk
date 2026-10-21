@@ -4655,7 +4655,11 @@ impl SecureHistoricalOwnerAttach {
                         | Err(SecureIntentError::ServerRejected(500..=599)) => {
                             Err(HistoricalOwnerAttachError::PendingActionRetry)
                         }
-                        Err(SecureIntentError::ServerRejected(_))
+                        Err(SecureIntentError::Rejected(ref rejection)) if rejection.http_status >= 500 => {
+                            Err(HistoricalOwnerAttachError::PendingActionRetry)
+                        }
+                        Err(SecureIntentError::Rejected(_))
+                        | Err(SecureIntentError::ServerRejected(_))
                         | Err(SecureIntentError::ReplayMismatch) => {
                             Err(HistoricalOwnerAttachError::PendingActionConflict)
                         }

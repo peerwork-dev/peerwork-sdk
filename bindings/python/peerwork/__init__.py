@@ -52,6 +52,7 @@ _OMITTED_BINDINGS = _OmittedInstallOption()
 _OMITTED_DISCLOSURE = _OmittedInstallOption()
 
 from ._peerwork_native import (
+    protocol_workbench_json,
     KernelCancelHandle,
     acquisition_observations_json,
     agent_context_json,
@@ -86,6 +87,11 @@ from ._peerwork_native import (
 
 
 class CapabilityManifest(TypedDict):
+    protocol_offline_simulation: bool
+    protocol_verified_export: bool
+    protocol_plan_apply: bool
+    guarded_invitation_finalize: bool
+    producer_compatibility_report: bool
     workspace_url_generation: bool
     anonymous_changelog_read: bool
     public_authorized_state_read: bool
@@ -605,6 +611,19 @@ class SecureReadClient:
         wire_transport = _transport_config(transport)
         if wire_transport is not None:
             self._config["transport"] = wire_transport
+
+    def export_fixture(self, instance_ids: list[str], *, time_ms: int, cached: bool = False) -> dict:
+        """Export selected verified data without copying identity or recipient keys."""
+        return export_protocol_fixture(self._config, instance_ids, time_ms=time_ms, cached=cached)
+
+    async def export_fixture_async(self, instance_ids: list[str], *, time_ms: int, cached: bool = False) -> dict:
+        return await export_protocol_fixture_async(self._config, instance_ids, time_ms=time_ms, cached=cached)
+
+    def apply_plan(self, plan: dict, operation_id: str) -> dict:
+        return apply_protocol_plan(self._config, plan, operation_id)
+
+    async def apply_plan_async(self, plan: dict, operation_id: str) -> dict:
+        return await apply_protocol_plan_async(self._config, plan, operation_id)
 
     def current_pages(self) -> "CurrentPageClient":
         """Open bounded system-selected reads using this already active profile."""
@@ -3228,7 +3247,13 @@ class AgentBrowserApprovalIntent(TypedDict):
     approve_writes: bool
 
 
-AgentIntent: TypeAlias = AgentProtocolActionIntent | AgentBrowserApprovalIntent
+class AgentInvitationFinalizeIntent(TypedDict):
+    kind: Literal["workspace.invitation.finalize"]
+    invite_id: str
+    saved_grant_id: NotRequired[str]
+
+
+AgentIntent: TypeAlias = AgentProtocolActionIntent | AgentBrowserApprovalIntent | AgentInvitationFinalizeIntent
 
 
 class AgentContextError(RuntimeError):
@@ -3242,6 +3267,10 @@ class AgentContextError(RuntimeError):
         self.layer = envelope.get("layer")
         self.effect_certainty = envelope.get("effect_certainty")
         self.continuation = envelope.get("continuation")
+        self.stage = envelope.get("stage")
+        self.constraint = envelope.get("constraint")
+        self.retryability = envelope.get("retryability")
+        self.recovery_hints = envelope.get("recovery_hints")
 
 
 @dataclass(frozen=True, repr=False)
@@ -3317,8 +3346,11 @@ class AgentContext:
             "intent": intent, "operation_id": operation_id})
 
     def recover(self, workspace_id: str, *, operation_id: str | None = None,
-                command_id: str | None = None) -> dict:
-        return self._call("recover", self._recovery_request(workspace_id, operation_id, command_id))
+                command_id: str | None = None, recovery: dict | None = None) -> dict:
+        request = self._recovery_request(workspace_id, operation_id, command_id)
+        if recovery is not None:
+            request["recovery"] = recovery
+        return self._call("recover", request)
 
     @staticmethod
     def _recovery_request(workspace_id: str, operation_id: str | None,
@@ -3329,6 +3361,45 @@ class AgentContext:
         if command_id is not None:
             request["command_id"] = command_id
         return request
+
+    def export_fixture(self, workspace_id: str, instance_ids: list[str], *,
+                       time_ms: int, cached: bool = False) -> dict:
+        """Export selected verified instances using this pinned existing identity."""
+        request = {"instance_ids": instance_ids, "time_ms": time_ms, "cached": cached}
+        result = self._call("workbench.export", {"workspace_id": workspace_id,
+            "workbench_input": json.dumps(request, ensure_ascii=True, allow_nan=False)})
+        return json.loads(result["result"]["workbench_json"])
+
+    def apply_plan(self, workspace_id: str, plan: dict | None, operation_id: str) -> dict:
+        """Revalidate a fixed plan and resume the same durable operation on retry."""
+        request = {"operation_id": operation_id}
+        if plan is not None:
+            request["plan"] = plan
+        result = self._call("workbench.apply", {"workspace_id": workspace_id,
+            "workbench_input": json.dumps(request, ensure_ascii=True, allow_nan=False)})
+        return json.loads(result["result"]["workbench_json"])
+
+    async def export_fixture_async(self, workspace_id: str, instance_ids: list[str], *,
+                                   time_ms: int, cached: bool = False) -> dict:
+        request = {"instance_ids": instance_ids, "time_ms": time_ms, "cached": cached}
+        result = await self._call_async("workbench.export", {"workspace_id": workspace_id,
+            "workbench_input": json.dumps(request, ensure_ascii=True, allow_nan=False)})
+        return json.loads(result["result"]["workbench_json"])
+
+    async def apply_plan_async(self, workspace_id: str, plan: dict | None, operation_id: str) -> dict:
+        request = {"operation_id": operation_id}
+        if plan is not None:
+            request["plan"] = plan
+        result = await self._call_async("workbench.apply", {"workspace_id": workspace_id,
+            "workbench_input": json.dumps(request, ensure_ascii=True, allow_nan=False)})
+        return json.loads(result["result"]["workbench_json"])
+
+    def resume_plan(self, workspace_id: str, operation_id: str) -> dict:
+        """Explicitly continue the original protected saved plan; this can submit steps."""
+        return self.apply_plan(workspace_id, None, operation_id)
+
+    async def resume_plan_async(self, workspace_id: str, operation_id: str) -> dict:
+        return await self.apply_plan_async(workspace_id, None, operation_id)
 
     def operations(self, workspace_id: str) -> dict:
         return self._call("operations", {"workspace_id": workspace_id})
@@ -3405,8 +3476,11 @@ class AgentContext:
             "intent": intent, "operation_id": operation_id})
 
     async def recover_async(self, workspace_id: str, *, operation_id: str | None = None,
-                            command_id: str | None = None) -> dict:
-        return await self._call_async("recover", self._recovery_request(workspace_id, operation_id, command_id))
+                            command_id: str | None = None, recovery: dict | None = None) -> dict:
+        request = self._recovery_request(workspace_id, operation_id, command_id)
+        if recovery is not None:
+            request["recovery"] = recovery
+        return await self._call_async("recover", request)
 
     async def operations_async(self, workspace_id: str) -> dict:
         return await self._call_async("operations", {"workspace_id": workspace_id})
@@ -3727,12 +3801,15 @@ class OwnerWorkspaceGuardTimeClient:
         return result["value"]
 
     def enable(self, *, expected_policy_hash: str, audience: str, service_key: str,
-               disclosure: Literal["GUARD_WINDOW"], operation_id: str | None = None) -> OwnerGuardTimeResult:
+               disclosure: Literal["GUARD_WINDOW"], operation_id: str | None = None,
+               required_producers: list[str] | None = None) -> OwnerGuardTimeResult:
         """Explicit Owner consent; pins must match authenticated discovery and the current policy."""
         value = dict(workspace_id=self._workspace_id, expected_policy_hash=expected_policy_hash,
             audience=audience, service_key=service_key, disclosure=disclosure)
         if operation_id is not None:
             value["operation_id"] = operation_id
+        if required_producers is not None:
+            value["required_producers"] = required_producers
         return cast(OwnerGuardTimeResult, self._call("enable", value))
 
     def resume(self, operation_id: str) -> OwnerGuardTimeResult:
@@ -3744,11 +3821,14 @@ class OwnerWorkspaceGuardTimeClient:
         return cast(list[OwnerGuardTimeResult], self._call("history", dict(workspace_id=self._workspace_id)))
 
     async def enable_async(self, *, expected_policy_hash: str, audience: str, service_key: str,
-                           disclosure: Literal["GUARD_WINDOW"], operation_id: str | None = None) -> OwnerGuardTimeResult:
+                           disclosure: Literal["GUARD_WINDOW"], operation_id: str | None = None,
+               required_producers: list[str] | None = None) -> OwnerGuardTimeResult:
         value = dict(workspace_id=self._workspace_id, expected_policy_hash=expected_policy_hash,
             audience=audience, service_key=service_key, disclosure=disclosure)
         if operation_id is not None:
             value["operation_id"] = operation_id
+        if required_producers is not None:
+            value["required_producers"] = required_producers
         return cast(OwnerGuardTimeResult, await _run_cancelled_async(self._call, "enable", value))
 
     async def resume_async(self, operation_id: str) -> OwnerGuardTimeResult:
@@ -3760,3 +3840,103 @@ class OwnerWorkspaceGuardTimeClient:
             dict(workspace_id=self._workspace_id)))
 
 __all__ += ["OwnerWorkspaceGuardTimeClient", "OwnerGuardTimeResult"]
+
+
+class ProtocolWorkbenchError(RuntimeError):
+    """Local semantic diagnostics or a resumable online plan refusal."""
+    def __init__(self, envelope: dict):
+        super().__init__(envelope.get("message", envelope.get("code", "Protocol test failed")))
+        self.envelope = envelope
+        self.code = envelope["code"]
+        self.stage = envelope.get("stage")
+        self.step = envelope.get("step")
+        self.action_id = envelope.get("action_id")
+        self.constraint = envelope.get("constraint")
+        self.effect_certainty = envelope.get("effect_certainty")
+        self.retryability = envelope.get("retryability")
+
+
+def _workbench(operation: str, request: dict, cancel_handle=None) -> dict:
+    wire = json.dumps(request, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
+    envelope = json.loads(protocol_workbench_json(operation, wire, cancel_handle))
+    if envelope["ok"] is not True:
+        raise ProtocolWorkbenchError(envelope)
+    return envelope["value"]
+
+
+def protocol_compatibility(required_producers: list[str]) -> dict:
+    """Local producer coverage; service and other writer versions need independent qualification."""
+    return _workbench("compatibility", {"required_producers": required_producers})
+
+
+def build_protocol_fixture(protocols: list[dict], *, actors: list[dict] | None = None,
+                           seed: str | None = None, time_ms: int | None = None) -> dict:
+    """Create synthetic local data without identity, network or workspace access."""
+    request = {"schema": "peerwork.protocol-fixture.v1", "protocols": protocols}
+    for name, value in (("actors", actors), ("seed", seed), ("time_ms", time_ms)):
+        if value is not None:
+            request[name] = value
+    return _workbench("fixture", request)
+
+
+def simulate_protocol(fixture: dict, steps: list[dict], *, seed: str | None = None) -> dict:
+    """Run the real native evaluator offline. Results are never commit receipts."""
+    request = {"schema": "peerwork.protocol-simulation.v1", "fixture": fixture, "steps": steps}
+    if seed is not None:
+        request["seed"] = seed
+    return _workbench("simulate", request)
+
+
+def plan_protocol_actions(fixture: dict, steps: list[dict], *, seed: str | None = None) -> dict:
+    """Freeze semantic actions and intermediate dependencies after offline execution."""
+    request = {"schema": "peerwork.protocol-simulation.v1", "fixture": fixture, "steps": steps}
+    if seed is not None:
+        request["seed"] = seed
+    return _workbench("plan", request)
+
+
+def export_protocol_fixture(profile: dict, instance_ids: list[str], *, time_ms: int,
+                            cached: bool = False) -> dict:
+    """Export selected decrypted state from verified replay; cached=True uses no HTTP."""
+    return _workbench("export", {"profile": profile, "instance_ids": instance_ids,
+                                 "time_ms": time_ms, "cached": cached})
+
+
+def apply_protocol_plan(profile: dict, plan: dict | None, operation_id: str) -> dict:
+    """Revalidate and resume the same explicit plan. Cross-instance steps are non-atomic."""
+    return _workbench("apply", {"profile": profile, "operation_id": operation_id, **({} if plan is None else {"plan": plan})})
+
+
+async def simulate_protocol_async(fixture: dict, steps: list[dict], *, seed: str | None = None) -> dict:
+    return await asyncio.to_thread(simulate_protocol, fixture, steps, seed=seed)
+
+
+async def export_protocol_fixture_async(profile: dict, instance_ids: list[str], *, time_ms: int,
+                                       cached: bool = False) -> dict:
+    return await _run_cancelled_async(_workbench, "export", request={
+        "profile": profile, "instance_ids": instance_ids, "time_ms": time_ms, "cached": cached})
+
+
+async def apply_protocol_plan_async(profile: dict, plan: dict | None, operation_id: str) -> dict:
+    return await _run_cancelled_async(_workbench, "apply", request={
+        "profile": profile, "operation_id": operation_id, **({} if plan is None else {"plan": plan})})
+
+
+__all__ += ["ProtocolWorkbenchError", "build_protocol_fixture", "simulate_protocol",
+            "simulate_protocol_async", "plan_protocol_actions", "export_protocol_fixture",
+            "export_protocol_fixture_async", "apply_protocol_plan", "apply_protocol_plan_async"]
+
+__all__ += ["AgentInvitationFinalizeIntent"]
+
+__all__ += ["protocol_compatibility"]
+
+def resume_protocol_plan(profile: dict, operation_id: str) -> dict:
+    """Explicitly resume the exact native saved plan under its original operation ID."""
+    return apply_protocol_plan(profile, None, operation_id)
+
+
+async def resume_protocol_plan_async(profile: dict, operation_id: str) -> dict:
+    return await apply_protocol_plan_async(profile, None, operation_id)
+
+
+__all__ += ["resume_protocol_plan", "resume_protocol_plan_async"]

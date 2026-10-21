@@ -1662,3 +1662,14 @@ pub fn owner_guard_time_json(
         cancel: cancel_handle.map(|h| h.token.clone()).unwrap_or_default(),
     })
 }
+
+pub struct ProtocolWorkbenchTask {operation:String,input:String,cancel:KernelCancellationToken}
+impl Task for ProtocolWorkbenchTask {
+    type Output=String;type JsValue=String;
+    fn compute(&mut self)->Result<String>{Ok(peerwork_runtime::protocol_workbench::workbench_json(&self.operation,&self.input,&self.cancel))}
+    fn resolve(&mut self,_env:Env,value:String)->Result<String>{Ok(value)}
+}
+#[napi]
+pub fn protocol_workbench_json(operation:String,input_json:String,cancel_handle:Option<ClassInstance<KernelCancelHandle>>)->AsyncTask<ProtocolWorkbenchTask>{
+    AsyncTask::new(ProtocolWorkbenchTask{operation,input:input_json,cancel:cancel_handle.map(|h|h.token.clone()).unwrap_or_default()})
+}

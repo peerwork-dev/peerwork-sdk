@@ -34,6 +34,7 @@ pub mod prepared_secure_action;
 pub mod prepared_secure_author;
 pub mod prepared_secure_bootstrap;
 pub mod prepared_secure_request;
+pub mod protocol_simulation;
 #[allow(dead_code)]
 mod protocol_composition;
 #[allow(dead_code)]
@@ -81,6 +82,11 @@ pub fn version() -> &'static str {
 pub struct CapabilityManifest {
     pub version: &'static str,
     pub status: &'static str,
+    pub protocol_offline_simulation: bool,
+    pub protocol_verified_export: bool,
+    pub protocol_plan_apply: bool,
+    pub guarded_invitation_finalize: bool,
+    pub producer_compatibility_report: bool,
     pub workspace_url_generation: bool,
     pub anonymous_changelog_read: bool,
     pub public_authorized_state_read: bool,
@@ -101,6 +107,11 @@ pub fn capability_manifest() -> CapabilityManifest {
     CapabilityManifest {
         version: SDK_VERSION,
         status: "experimental",
+        protocol_offline_simulation: true,
+        protocol_verified_export: true,
+        protocol_plan_apply: true,
+        guarded_invitation_finalize: true,
+        producer_compatibility_report: true,
         workspace_url_generation: true,
         anonymous_changelog_read: true,
         public_authorized_state_read: true,

@@ -1152,6 +1152,10 @@ class AgentContextError extends Error {
     this.layer = envelope.layer;
     this.effect_certainty = envelope.effect_certainty;
     this.continuation = envelope.continuation;
+    this.stage = envelope.stage;
+    this.constraint = envelope.constraint;
+    this.retryability = envelope.retryability;
+    this.recovery_hints = envelope.recovery_hints;
   }
 }
 exports.AgentContextError = AgentContextError;
@@ -1206,7 +1210,26 @@ exports.openContext = async ({ profilePath, expectedActor, expectedService, sign
       const request = { workspace_id: workspaceId };
       if (options.operationId !== undefined) request.operation_id = options.operationId;
       if (options.commandId !== undefined) request.command_id = options.commandId;
+      if (options.recovery !== undefined) request.recovery = {
+        mode: options.recovery.mode,
+        max_submissions: options.recovery.maxSubmissions ?? 0,
+      };
       return call('recover', request, options.signal);
+    },
+    exportFixture: async (workspaceId, {instanceIds, timeMs, cached = false, signal}) => {
+      const value = await call('workbench.export', {workspace_id: workspaceId,
+        workbench_input: strictCommandJson({instance_ids: instanceIds, time_ms: timeMs, cached})}, signal);
+      return JSON.parse(value.result.workbench_json);
+    },
+    applyPlan: async (workspaceId, plan, operationId, {signal} = {}) => {
+      const value = await call('workbench.apply', {workspace_id: workspaceId,
+        workbench_input: strictCommandJson({operation_id: operationId, ...(plan === undefined ? {} : {plan})})}, signal);
+      return JSON.parse(value.result.workbench_json);
+    },
+    resumePlan: async (workspaceId, operationId, {signal} = {}) => {
+      const value = await call('workbench.apply', {workspace_id: workspaceId,
+        workbench_input: strictCommandJson({operation_id: operationId})}, signal);
+      return JSON.parse(value.result.workbench_json);
     },
     operations: (workspaceId, options = {}) => call('operations', { workspace_id: workspaceId }, options.signal),
     eventsSync: (workspaceId, options = {}) => call('events.sync', { workspace_id: workspaceId }, options.signal),
@@ -1381,13 +1404,62 @@ class OwnerWorkspaceGuardTimeClient {
     } finally {signal?.removeEventListener('abort',abort);}
   }
   enable(input,options={}) {
-    const allowed=['expectedPolicyHash','audience','serviceKey','disclosure','operationId'];
+    const allowed=['expectedPolicyHash','audience','serviceKey','disclosure','operationId','requiredProducers'];
     if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).some(key=>!allowed.includes(key)))throw new TypeError('Guard-time activation requires explicit policy hash, service pins and GUARD_WINDOW consent');
     return this._call('enable',{expected_policy_hash:input.expectedPolicyHash,audience:input.audience,
       service_key:input.serviceKey,disclosure:input.disclosure,
-      ...(input.operationId===undefined?{}:{operation_id:input.operationId})},options);
+      ...(input.operationId===undefined?{}:{operation_id:input.operationId}),
+      ...(input.requiredProducers===undefined?{}:{required_producers:input.requiredProducers})},options);
   }
   resume(operationId,options={}) {return this._call('resume',{operation_id:operationId},options);}
   history(options={}) {return this._call('history',{},options);}
 }
 exports.OwnerWorkspaceGuardTimeClient=OwnerWorkspaceGuardTimeClient;
+
+class ProtocolWorkbenchError extends Error {
+  constructor(envelope) {
+    super(envelope.message || envelope.code);
+    this.name = 'ProtocolWorkbenchError';
+    this.envelope = envelope;
+    for (const key of ['code', 'stage', 'step', 'action_id', 'constraint', 'effect_certainty', 'retryability']) this[key] = envelope[key];
+  }
+}
+exports.ProtocolWorkbenchError = ProtocolWorkbenchError;
+async function protocolWorkbench(operation, request, signal) {
+  const cancel = new binding.KernelCancelHandle();
+  const abort = () => cancel.cancel();
+  if (signal?.aborted) abort();
+  signal?.addEventListener('abort', abort, {once: true});
+  try {
+    const envelope = JSON.parse(await binding.protocolWorkbenchJson(operation, strictCommandJson(request), cancel));
+    if (envelope.ok !== true) throw new ProtocolWorkbenchError(envelope);
+    return envelope.value;
+  } finally { signal?.removeEventListener('abort', abort); }
+}
+exports.buildProtocolFixture = ({protocols, actors, seed, timeMs, signal}) => {
+  const request = {schema:'peerwork.protocol-fixture.v1', protocols};
+  if (actors !== undefined) request.actors = actors;
+  if (seed !== undefined) request.seed = seed;
+  if (timeMs !== undefined) request.time_ms = timeMs;
+  return protocolWorkbench('fixture', request, signal);
+};
+exports.simulateProtocol = ({fixture, steps, seed, signal}) => {
+  const request = {schema:'peerwork.protocol-simulation.v1', fixture, steps};
+  if (seed !== undefined) request.seed = seed;
+  return protocolWorkbench('simulate', request, signal);
+};
+exports.planProtocolActions = ({fixture, steps, seed, signal}) => {
+  const request = {schema:'peerwork.protocol-simulation.v1', fixture, steps};
+  if (seed !== undefined) request.seed = seed;
+  return protocolWorkbench('plan', request, signal);
+};
+exports.exportProtocolFixture = ({profile, instanceIds, timeMs, cached = false, signal}) =>
+  protocolWorkbench('export', {profile:secureProfileOptions(profile).config, instance_ids:instanceIds, time_ms:timeMs, cached}, signal);
+exports.applyProtocolPlan = ({profile, plan, operationId, signal}) =>
+  protocolWorkbench('apply', {profile:secureProfileOptions(profile).config, operation_id:operationId, ...(plan === undefined ? {} : {plan})}, signal);
+
+exports.protocolCompatibility = ({requiredProducers, signal}) =>
+  protocolWorkbench('compatibility', {required_producers: requiredProducers}, signal);
+
+exports.resumeProtocolPlan = ({profile, operationId, signal}) =>
+  exports.applyProtocolPlan({profile, operationId, signal});

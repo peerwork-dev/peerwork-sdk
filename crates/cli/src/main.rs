@@ -58,6 +58,18 @@ fn identity_cli_path(value: &str) -> Result<PathBuf, String> {
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.as_slice() {
+        [noun,help] if noun=="protocol" && help=="--help" => {
+            println!("{}",serde_json::json!({"schema":"peerwork.protocol-workbench-help.v1",
+                "usage":"peerwork protocol compatibility|fixture|simulate|export|plan|apply REQUEST_JSON_FILE",
+                "offline":["fixture","simulate","plan"],"local_cached_export":"export with cached=true verifies the existing local snapshot without HTTP",
+                "simulation":"Real native protocol evaluator; simulated=true and authoritative=false. Never a commit receipt.",
+                "workflow":"Synthetic fixture or one verified export -> simulate and repair locally -> plan -> fresh revalidation and resumable apply",
+                "coexistence":"Install a new protocol version in a separate instance; old tickets remain on their exact source.",
+                "privacy":"Real exports and plans contain decrypted business data. Keep them in protected local files; no production private keys are exported.",
+                "apply":"Use one stable operation_id and the exact plan on every resume. Cross-instance steps are not atomic; release old authority before activating a new claim."}));
+            ExitCode::SUCCESS
+        },
+        [noun,operation,path] if noun=="protocol" && ["compatibility","fixture","simulate","export","plan","apply"].contains(&operation.as_str())=>protocol_workbench_cli(operation,path),
         [noun,help] if noun=="guard-time" && help=="--help" => {
             println!("{}",serde_json::json!({"schema":"peerwork.owner-guard-time-help.v1",
                 "usage":"peerwork guard-time enable|resume|history REQUEST_JSON_FILE",
@@ -1893,7 +1905,8 @@ mod private_member_cli_tests {
 fn agent_context_command(operation: &str, args: &[String]) -> ExitCode {
     let operation = match operation {
         "event-sync" => "events.sync", "event-receive" => "events.receive",
-        "event-ack" => "events.ack", "event-status" => "events.status", other => other,
+        "event-ack" => "events.ack", "event-status" => "events.status",
+        "export-fixture" => "workbench.export", "apply-plan" => "workbench.apply", other => other,
     };
     let help = serde_json::json!({
         "schema":"peerwork.agent-cli-help.v1",
@@ -1908,7 +1921,7 @@ fn agent_context_command(operation: &str, args: &[String]) -> ExitCode {
         "context_pinning":"Retain value.context.fingerprint from open/bind and include expected_fingerprint in every subsequent request. It is optional for legacy CLI compatibility; omitting it does not pin continuity across invocations. Python/Node handles inject it automatically.",
         "common_request_fields":{"workspace_id":"selected workspace", "expected_fingerprint":"fingerprint retained from open/bind"},
         "continuation":"A continuation is a next-operation descriptor, not an executable request. Select its operation as the CLI verb (events.receive maps to context event-receive), copy the required request fields, retain the original context fingerprint and caller-selected lease/wait budgets. Do not pass the operation field inside request JSON. On STALE_LEASE receive the same consumer again and acknowledge only the newly returned token; never reuse an expired token.",
-        "supported":["bind", "open", "discover", "describe", "inspect", "operations", "recover", "protocol.action", "browser.approve", "events.sync", "events.receive", "events.ack", "events.status"],
+        "supported":["bind", "open", "discover", "describe", "inspect", "operations", "recover", "protocol.action", "browser.approve", "workspace.invitation.finalize", "workbench.export", "workbench.apply", "events.sync", "events.receive", "events.ack", "events.status"],
         "unsupported":["admission-browser approval producer", "non-action event sources", "incremental sync", "PUBLIC actions"],
         "events":"Verified action receipts only. Initialized unchanged sources use a signed checkpoint probe; updates require full-history replay (incremental:false). Requested receive wait_ms budget is up to 60000ms, with cooperative cancellation. Leases may redeliver; ack is delivery acceptance, never task completion.",
         "requests":{
@@ -2086,4 +2099,22 @@ fn owner_guard_time_cli(operation: &str, request_path: &str) -> ExitCode {
         &request["config"].to_string(),operation,&request["input"].to_string(),&cancel);
     let ok=serde_json::from_str::<serde_json::Value>(&result).is_ok_and(|v|v["ok"]==true);
     println!("{result}");if ok{ExitCode::SUCCESS}else{ExitCode::FAILURE}
+}
+
+
+fn protocol_workbench_cli(operation:&str,path:&str)->ExitCode {
+    let mut options=fs::OpenOptions::new();options.read(true);
+    #[cfg(unix)] {use std::os::unix::fs::OpenOptionsExt;options.custom_flags(libc::O_NONBLOCK);}
+    let file=match options.open(path){Ok(f) if f.metadata().is_ok_and(|m|m.is_file())=>f,
+        _=>{println!("{}",serde_json::json!({"ok":false,"code":"WORKBENCH_INPUT_FILE","message":"Use a regular bounded UTF-8 JSON request file"}));return ExitCode::FAILURE;}};
+    let mut bytes=Vec::new();
+    if file.take(4*1024*1024+1).read_to_end(&mut bytes).is_err()||bytes.len()>4*1024*1024 {
+        println!("{}",serde_json::json!({"ok":false,"code":"WORKBENCH_LIMIT"}));return ExitCode::FAILURE;
+    }
+    let input=match String::from_utf8(bytes){Ok(v)=>v,Err(_)=>{println!("{}",serde_json::json!({"ok":false,"code":"WORKBENCH_INPUT_INVALID"}));return ExitCode::FAILURE;}};
+    let cancel=KernelCancellationToken::new();
+    let _interrupts=match InterruptMonitor::start(cancel.clone()){Ok(v)=>v,Err(_)=>{println!("{}",serde_json::json!({"ok":false,"code":"INTERRUPT_HANDLER"}));return ExitCode::FAILURE;}};
+    let result=peerwork_runtime::protocol_workbench::workbench_json(operation,&input,&cancel);
+    let ok=result.starts_with(r#"{"ok":true,"#);
+    println!("{result}");if ok {ExitCode::SUCCESS}else{ExitCode::FAILURE}
 }

@@ -535,14 +535,17 @@ impl KernelIntentJournal {
     }
 
     pub(crate) fn require_discovery_pin(&self, origin: &str) -> Result<(), JournalError> {
+        self.pinned_discovery(origin).map(|_| ())
+    }
+
+    /// Only the already authenticated local pin; this does not assert freshness.
+    pub(crate) fn pinned_discovery(&self, origin: &str) -> Result<ParsedDiscovery, JournalError> {
         let saved: Option<(String, Vec<u8>)> = self.db.query_row(
             "SELECT origin,discovery_wire FROM pinned_discovery WHERE id=1", [],
             |row| Ok((row.get(0)?,row.get(1)?))).optional()?;
         let (saved_origin, wire) = saved.ok_or(JournalError::DiscoveryChanged)?;
-        if saved_origin != origin || parse_discovery_wire(&wire,256*1024).is_err() {
-            return Err(JournalError::DiscoveryChanged);
-        }
-        Ok(())
+        if saved_origin != origin { return Err(JournalError::DiscoveryChanged); }
+        parse_discovery_wire(&wire,256*1024).map_err(|_|JournalError::DiscoveryChanged)
     }
 
     /// Pin the schema-validated response returned by this runtime's configured

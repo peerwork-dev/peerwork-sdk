@@ -722,6 +722,7 @@ impl PrivatePackageInstallError {
             Self::State(SecureStateError::TooLarge) => "RESOURCE_LIMIT",
             Self::State(SecureStateError::Busy) => "STATE_BUSY",
             Self::State(_) => "INSTALL_STATE",
+            Self::Intent(SecureIntentError::Rejected(detail)) => detail.code,
             Self::Intent(_) => "INTENT_STATE",
             Self::Entropy => "ENTROPY_UNAVAILABLE",
             Self::Transport => "TRANSPORT_FAILED",

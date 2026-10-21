@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tokio_util::sync::CancellationToken;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SecureReadProfileConfig {
     #[serde(default)]
@@ -318,7 +318,7 @@ impl SecureReadProfile {
             .ok_or_else(|| E::from(SecureReadAccessError::Profile))?;
         let access = self.access(&saved, slot);
         let (replayed, checked) = access
-            .replay_checked_generation(cancel, Some(floor), false)
+            .replay_checked_cached_generation(cancel, floor)
             .map_err(E::from)?;
         if &checked != floor {
             return Err(E::from(SecureReadAccessError::Profile));

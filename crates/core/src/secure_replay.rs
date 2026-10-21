@@ -2850,6 +2850,19 @@ pub(crate) fn compute_action_objects_with_default_allocations(
     compute_action_objects_inner(input, context, policy, prior, Some(candidates), None)
 }
 
+/// Fixture-only adapter: simulated time is not admission evidence. Production
+/// preparation continues to use its existing entry points above.
+pub(crate) fn simulate_action_objects(
+    input: &mut WireValue,
+    context: &mut WireValue,
+    policy: &WireValue,
+    prior: &[WireValue],
+    candidates: &[WireValue],
+    time_ms: u64,
+) -> Result<WireValue, &'static str> {
+    compute_action_objects_inner(input, context, policy, prior, Some(candidates), Some(time_ms))
+}
+
 fn compute_action_objects_inner(
     input: &mut WireValue,
     context: &mut WireValue,
@@ -4073,7 +4086,7 @@ fn fields_object(fields: Vec<(&str, WireValue)>) -> WireValue {
     )
 }
 
-fn validate_simple_record_schema(
+pub(crate) fn validate_simple_record_schema(
     payload: &WireValue,
     definition: &WireValue,
 ) -> Result<(), &'static str> {

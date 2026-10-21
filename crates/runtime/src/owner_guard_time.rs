@@ -50,6 +50,8 @@ struct EnableInput {
     disclosure: String,
     #[serde(default)]
     operation_id: Option<String>,
+    #[serde(default, skip_serializing_if="Option::is_none")]
+    required_producers: Option<Vec<String>>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -355,6 +357,9 @@ fn run(
     let (workspace, id, mut input) = match operation {
         "enable" => {
             let i: EnableInput = parse(input_json)?;
+            if i.required_producers.as_ref().is_some_and(|names|!crate::protocol_workbench::supports_guarded_producers(names)) {
+                return Err(fail("PRODUCER_UNSUPPORTED"));
+            }
             if !digest(&i.expected_policy_hash)
                 || i.disclosure != "GUARD_WINDOW"
                 || !read_view::token(&i.service_key)

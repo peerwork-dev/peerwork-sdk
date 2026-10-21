@@ -289,11 +289,8 @@ pub fn prepare_private_protocol_object_stage(
             ]),
         ),
     ];
-    if policy.get("guard_time").is_some() {
-        context_fields.push((
-            "guard_time",
-            crate::guard_time::GuardTimeContextV1::universal().to_wire(),
-        ));
+    if let Some(guard) = crate::guard_time::administrative_guard_context(policy).map_err(|_| bad())? {
+        context_fields.push(("guard_time", guard));
     }
     let context = obj(context_fields);
     let operation = obj(vec![
@@ -768,11 +765,8 @@ fn plan_stage(
             WireValue::Number(number(policy, "protocol_format_ceiling")? as f64),
         ));
     }
-    if policy.get("guard_time").is_some() {
-        fields.push((
-            "guard_time",
-            crate::guard_time::GuardTimeContextV1::universal().to_wire(),
-        ));
+    if let Some(guard) = crate::guard_time::administrative_guard_context(policy).map_err(|_| bad())? {
+        fields.push(("guard_time", guard));
     }
     Ok(StagePlan {
         context: obj(fields),
@@ -1535,11 +1529,8 @@ fn prepare_private_package_install_begin_with_sources(
     } else {
         None
     };
-    if policy.get("guard_time").is_some() {
-        context_fields.push((
-            "guard_time",
-            crate::guard_time::GuardTimeContextV1::universal().to_wire(),
-        ));
+    if let Some(guard) = crate::guard_time::administrative_guard_context(policy).map_err(|_| bad())? {
+        context_fields.push(("guard_time", guard));
     }
     let context = obj(context_fields);
     let operation_wire =
@@ -1894,11 +1885,8 @@ fn prepare_private_direct_install_begin_with_source(
     } else {
         None
     };
-    if policy.get("guard_time").is_some() {
-        context_fields.push((
-            "guard_time",
-            crate::guard_time::GuardTimeContextV1::universal().to_wire(),
-        ));
+    if let Some(guard) = crate::guard_time::administrative_guard_context(policy).map_err(|_| bad())? {
+        context_fields.push(("guard_time", guard));
     }
     let operation_wire =
         canonical_wire_value(&begin.operation, Path::SecureArtifact).map_err(|_| bad())?;
@@ -2328,11 +2316,8 @@ pub fn prepare_private_package_install_step(
     } else {
         None
     };
-    if payload.get("guard_time").is_some() {
-        fields.push((
-            "guard_time",
-            crate::guard_time::GuardTimeContextV1::universal().to_wire(),
-        ));
+    if let Some(guard) = crate::guard_time::administrative_guard_context(payload).map_err(|_| bad())? {
+        fields.push(("guard_time", guard));
     }
     let context = obj(fields);
     let operation_wire =

@@ -58,6 +58,8 @@ pub enum SecureIntentError {
     Transport(#[from] TransportError),
     #[error("server rejected the saved secure request with HTTP {0}")]
     ServerRejected(u16),
+    #[error(transparent)]
+    Rejected(crate::operation_diagnostics::ServerRejection),
     #[error("completed signed replay does not bind this saved action")]
     ReplayMismatch,
 }
@@ -766,7 +768,7 @@ impl SecureIntentJournal {
             self.observe_response(intent_id, &response.wire)?;
         }
         if !(200..300).contains(&response.status) {
-            return Err(SecureIntentError::ServerRejected(response.status));
+            return Err(SecureIntentError::Rejected(crate::operation_diagnostics::ServerRejection::from_response(response.status, &response.wire)));
         }
         self.document
             .rows
@@ -834,7 +836,7 @@ impl SecureIntentJournal {
             self.observe_response(intent_id, &response.wire)?;
         }
         if !(200..300).contains(&response.status) {
-            return Err(SecureIntentError::ServerRejected(response.status));
+            return Err(SecureIntentError::Rejected(crate::operation_diagnostics::ServerRejection::from_response(response.status, &response.wire)));
         }
         self.document
             .rows
@@ -957,7 +959,7 @@ impl SecureIntentJournal {
             self.observe_response(intent_id, &response.wire)?;
         }
         if !(200..300).contains(&response.status) {
-            return Err(SecureIntentError::ServerRejected(response.status));
+            return Err(SecureIntentError::Rejected(crate::operation_diagnostics::ServerRejection::from_response(response.status, &response.wire)));
         }
         self.document
             .rows
@@ -1024,7 +1026,7 @@ impl SecureIntentJournal {
             self.observe_response(intent_id, &response.wire)?;
         }
         if !(200..300).contains(&response.status) {
-            return Err(SecureIntentError::ServerRejected(response.status));
+            return Err(SecureIntentError::Rejected(crate::operation_diagnostics::ServerRejection::from_response(response.status, &response.wire)));
         }
         self.document
             .rows

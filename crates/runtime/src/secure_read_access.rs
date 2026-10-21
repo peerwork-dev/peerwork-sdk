@@ -67,6 +67,8 @@ pub enum SecureReadAccessError {
     Profile,
     #[error("secure journal read or saved page check failed")]
     ReadFailed,
+    #[error("a complete protected cached generation and discovery pin are required")]
+    CachedUnavailable,
     #[error("secure journal exceeded the selected resource budget")]
     ResourceLimit,
     #[error("signed journal verification failed or this history is not yet supported")]
@@ -89,6 +91,7 @@ impl SecureReadAccessError {
             Self::Lifecycle => "LIFECYCLE_PIN_CHANGED",
             Self::Profile => "PROFILE_STATE",
             Self::ReadFailed => "READ_FAILED",
+            Self::CachedUnavailable => "CACHED_STATE_UNAVAILABLE",
             Self::ResourceLimit => "RESOURCE_LIMIT",
             Self::VerificationFailed => "VERIFICATION_FAILED",
             Self::NotActive => "NOT_ACTIVE",
@@ -233,7 +236,7 @@ impl SecureReadAccess {
         floor: Option<&VerifiedReadFloor>,
         reset_inactive: bool,
     ) -> Result<(TransportReplayedJournal, VerifiedReadFloor), SecureReadAccessError> {
-        self.replay_checked_generation_inner(cancel, floor, reset_inactive, true)
+        self.replay_checked_generation_inner(cancel, floor, reset_inactive, true, false)
     }
 
     /// Install continuation may inspect fully replayed SEEDING state as a
@@ -244,7 +247,7 @@ impl SecureReadAccess {
         cancel: &CancellationToken,
         floor: &VerifiedReadFloor,
     ) -> Result<(TransportReplayedJournal, VerifiedReadFloor), SecureReadAccessError> {
-        self.replay_checked_generation_inner(cancel, Some(floor), true, false)
+        self.replay_checked_generation_inner(cancel, Some(floor), true, false, false)
     }
 
     /// Historical Owner import uses a protected pending ring to verify the
@@ -254,8 +257,13 @@ impl SecureReadAccess {
         &self,
         cancel: &CancellationToken,
     ) -> Result<TransportReplayedJournal, SecureReadAccessError> {
-        self.replay_checked_generation_inner(cancel, None, true, false)
+        self.replay_checked_generation_inner(cancel, None, true, false, false)
             .map(|(replayed, _)| replayed)
+    }
+
+    pub(crate) fn replay_checked_cached_generation(&self, cancel:&CancellationToken,
+        floor:&VerifiedReadFloor) -> Result<(TransportReplayedJournal,VerifiedReadFloor),SecureReadAccessError> {
+        self.replay_checked_generation_inner(cancel,Some(floor),false,true,true)
     }
 
     fn replay_checked_generation_inner(
@@ -264,10 +272,13 @@ impl SecureReadAccess {
         floor: Option<&VerifiedReadFloor>,
         reset_inactive: bool,
         require_active: bool,
+        cached_only: bool,
     ) -> Result<(TransportReplayedJournal, VerifiedReadFloor), SecureReadAccessError> {
         if cancel.is_cancelled() {
             return Err(SecureReadAccessError::Cancelled);
         }
+        if cached_only && [&self.config.kernel_journal_path,&self.config.read_state_path,&self.config.lifecycle_path]
+            .iter().any(|path|!path.is_file()) {return Err(SecureReadAccessError::CachedUnavailable)}
         let budget = SecureJournalReadBudget::new_with_limits(self.config.max_replay_artifact_bytes, self.config.max_replay_commits)
             .ok_or(SecureReadAccessError::ResourceLimit)?;
         let identity = KernelIdentity::open(&self.config.identity_path)
@@ -281,19 +292,17 @@ impl SecureReadAccess {
             .iter()
             .map(|feature| feature.encode_utf16().collect::<Vec<_>>())
             .collect::<Vec<_>>();
-        let client = runtime
-            .block_on(KernelClient::open(
-                transport,
-                &self.config.kernel_journal_path,
-                &features,
-                cancel,
-            ))
-            .map_err(|error| {
+        let opened = if cached_only {
+            KernelClient::open_cached(transport,&self.config.kernel_journal_path,&features,cancel)
+        } else {
+            runtime.block_on(KernelClient::open(transport,&self.config.kernel_journal_path,&features,cancel))
+        };
+        let client = opened.map_err(|error| {
                 if cancel.is_cancelled() {
                     SecureReadAccessError::Cancelled
                 } else {
                     let _ = error;
-                    SecureReadAccessError::Discovery
+                    if cached_only {SecureReadAccessError::CachedUnavailable} else {SecureReadAccessError::Discovery}
                 }
             })?;
         let mut reader = SecureJournalRead::open(
@@ -315,6 +324,7 @@ impl SecureReadAccess {
             if cancel.is_cancelled() {
                 return Err(SecureReadAccessError::Cancelled);
             }
+            if cached_only {return Err(SecureReadAccessError::CachedUnavailable)}
             runtime
                 .block_on(reader.fetch_next(&client, &identity, cancel))
                 .map_err(map_read_error)?;

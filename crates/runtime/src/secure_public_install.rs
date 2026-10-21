@@ -141,6 +141,7 @@ impl PublicPackageInstallError {
                 }
                 SecureIntentError::Transport(_) => "TRANSPORT_FAILED",
                 SecureIntentError::ServerRejected(_) => "SERVER_REJECTED",
+                SecureIntentError::Rejected(detail) => detail.code,
                 SecureIntentError::ReplayMismatch => "VERIFICATION_FAILED",
             },
             Self::Transport => "TRANSPORT_FAILED",

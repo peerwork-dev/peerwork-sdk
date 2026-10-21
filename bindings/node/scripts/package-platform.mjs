@@ -59,6 +59,6 @@ const metadata = {
 if (libc) metadata.libc = [libc];
 writeFileSync(join(dir, 'package.json'), `${JSON.stringify(metadata, null, 2)}\n`);
 writeFileSync(join(dir, 'index.cjs'), "'use strict';\nmodule.exports = require('./index.node');\n");
-writeFileSync(join(dir, 'README.md'), `# ${metadata.name}\n\nExperimental platform binary. No verified operations yet.\n`);
+writeFileSync(join(dir, 'README.md'), `# ${metadata.name}\n\nExperimental platform binary. See the root SDK package for scoped verified operations and limits.\n`);
 copyFileSync(new URL('../LICENSE', import.meta.url), join(dir, 'LICENSE'));
 console.log(`${metadata.name}: ${basename(library)} -> ${dir}`);
