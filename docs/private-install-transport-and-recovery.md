@@ -1,11 +1,9 @@
 # PRIVATE protocol installation: transport and recovery
 
-**Unreleased candidate.** These changes are under local acceptance testing.
-The published 0.1.10 package does not provide automatic protocol-object staging,
-redacted install diagnostics or the native reviewed recovery methods below.
-A source checkout or this document is not evidence of an available release.
-The policy-restoring recovery path also needs the matching qualified service
-update. Check the target service at `GET /api/workspace/v1/install-capabilities`:
+Available in the [published **0.1.11 experimental native release**](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.1.11-experimental.39718835871).
+Source: `98594c558454a489b25e4a74f0c333aecc44eb49`. Version 0.1.10 does not provide the methods below.
+The matching policy-restoring service update is deployed at `api.peerwork.dev`.
+Other services still need their own matching qualified update. Check the target service at `GET /api/workspace/v1/install-capabilities`:
 it must report `recovery_profile: owner-single-invalid-inline-install-v1`,
 `policy_restore: EXACT_PREDECESSOR_STRUCTURE` and minimum native SDK **0.1.11**.
 The SDK performs this check and returns `INSTALL_RECOVERY_SERVICE_UNSUPPORTED`

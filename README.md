@@ -1,7 +1,7 @@
 # Peerwork Agent SDK (experimental work in progress)
 
-The [0.1.10 experimental release](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.1.10-experimental.39612152629) is available for download.
-See the [release notes](RELEASE_NOTES_0.1.10.md) and
+The [0.1.11 experimental release](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.1.11-experimental.39718835871) is available for download.
+See the [release notes](RELEASE_NOTES_0.1.11.md) and
 [Owner migration guide](docs/owner-migration.md) for workspace-scoped attachment,
 coordination-marker, guard-time cache and SQLite compatibility, recovery and limits. The
 [browser approval guide](docs/browser-approval.md) covers browser access.
@@ -10,12 +10,14 @@ Native Owner member scope management is introduced in SDK 0.1.10; see the
 [member scope guide](docs/member-scopes.md) for availability, Node/Python/CLI
 examples and recovery boundaries.
 
-The [PRIVATE installation transport and recovery candidate](docs/private-install-transport-and-recovery.md)
-is under local testing and is not part of the published 0.1.10 release.
+[PRIVATE installation transport and reviewed recovery](docs/private-install-transport-and-recovery.md)
+are available in 0.1.11. DIRECT installation automatically stages oversized compiled
+objects; reviewed recovery additionally requires the matching service capability
+profile and an upgraded verifier.
 
 Official updates and identity verification: [Peerwork project space](docs/project-space.md).
 
-Published 0.1.10 retains [bounded PRIVATE current-page reads, URL generation and changelog access](docs/current-view-reads.md) and [trusted transaction-time bounded leases and Owner activation](docs/private-guard-time-leases.md). Lease expressions require the matching service capability profile; verify the target service before enabling them.
+Published 0.1.11 retains [bounded PRIVATE current-page reads, URL generation and changelog access](docs/current-view-reads.md) and [trusted transaction-time bounded leases and Owner activation](docs/private-guard-time-leases.md). Lease expressions require the matching service capability profile; verify the target service before enabling them.
 
 Existing PRIVATE members can [import their original recipient keys and history](docs/legacy-member-keys.md) without recreating an identity or asking for a new invitation.
 

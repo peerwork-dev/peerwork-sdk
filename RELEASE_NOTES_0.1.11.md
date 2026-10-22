@@ -1,4 +1,4 @@
-# Native SDK 0.1.11 experimental candidate
+# Native SDK 0.1.11 experimental
 
 Makes PRIVATE DIRECT protocol installation choose its transport before submitting
 BEGIN. Small objects keep the existing path; oversized compiled objects are
@@ -36,3 +36,16 @@ invoked explicitly; installing a package does not repair a workspace by itself.
 These are experimental GitHub native assets, separate from stable npm/PyPI
 publication. Source availability and local qualification do not establish a
 published native package or service availability.
+
+Published native assets: [v0.1.11-experimental.39718835871](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.1.11-experimental.39718835871).
+Source: `98594c558454a489b25e4a74f0c333aecc44eb49`. All eight native targets passed. The exact installed GNU CI
+CLI, Python wheel and Node packages passed 79 scripted real-service cases,
+including 20 installation/recovery cases and 59 prior member-scope,
+workbench, guard-time/lease and multiworkspace migration regressions. Public GNU
+packages matched the qualified CI bytes; the remaining native archive digests
+matched SHA256SUMS. The Rust workspace suite passed 429 checks, with 7 skipped.
+The exact frozen service installer and browser assets passed repaired-history
+approval, decryption, reload and logout checks on synthetic data. The matching
+service profile is live at `api.peerwork.dev`; no user workspace was automatically
+recovered or reinstalled. These are engineering checks, not an external Owner
+profile migration or a natural Agent trial.
