@@ -624,6 +624,15 @@ exports.openSecureOwnerWorkspaces = options => {
   const consumer = (kind, workspaceId) => {
     if (typeof workspaceId !== 'string' || !workspaceId) throw new TypeError('workspace ID is required');
     const call = async (operation, input, commandId, signal, operationId) => {
+      const required = kind === 'private_install'
+        ? ['begin', 'begin_direct', 'continue', 'installs'].includes(operation) ? 'private_install_auto_transport'
+          : ['diagnose', 'recovery_plan', 'recover_invalid'].includes(operation) ? 'private_install_reviewed_recovery' : null
+        : null;
+      if (required && JSON.parse(binding.capabilitiesJson())[required] !== true) {
+        const error = new Error('Install the matching Node wrapper and platform package from one SDK release archive');
+        error.code = 'SDK_NATIVE_VERSION_MISMATCH';
+        throw error;
+      }
       const handle = new binding.KernelCancelHandle();
       const onAbort = () => handle.cancel();
       if (signal?.aborted) onAbort();
@@ -727,6 +736,12 @@ exports.openSecureOwnerWorkspaces = options => {
           issued_at_ms: options.issuedAtMs ?? null,
         }, undefined, options.signal);
       },
+      diagnose: (beginCommandId, options = {}) => call('diagnose', undefined, beginCommandId, options.signal),
+      recoveryPlan: (beginCommandId, options = {}) => call('recovery_plan', undefined, beginCommandId, options.signal),
+      recoverInvalid: (beginCommandId, options) => call('recover_invalid', {
+        begin_command_id: beginCommandId, expected_review_hash: options?.expectedReviewHash,
+        operation_id: options?.operationId,
+      }, undefined, options?.signal),
       continueInstall: (beginCommandId, options = {}) => call('continue', undefined, beginCommandId, options.signal),
       installs: (options = {}) => call('installs', undefined, undefined, options.signal),
     });

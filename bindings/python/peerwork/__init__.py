@@ -100,6 +100,8 @@ class CapabilityManifest(TypedDict):
     private_system_current_page_read: bool
     owner_guard_time_enable: bool
     owner_member_scopes: bool
+    private_install_auto_transport: bool
+    private_install_reviewed_recovery: bool
     private_time_add_guard_windows: bool
     version: str
     status: str
@@ -2460,7 +2462,7 @@ class PrivatePackageInstallProgress(TypedDict):
     status: Literal["PENDING", "ACCEPTED"]
     begin_command_id: str
     step_command_id: str
-    step_action_id: Literal["secure.structure.begin", "secure.structure.page", "secure.structure.end"]
+    step_action_id: Literal["secure.protocol-object.stage", "secure.structure.begin", "secure.structure.page", "secure.structure.end"]
     workspace_id: str
     protocol_digest: str
     instance_id: str
@@ -2475,6 +2477,9 @@ class SavedPrivatePackageInstall(TypedDict):
     instance_id: str
     protocol_digest: str
     locally_saved: bool
+    phase: NotRequired[Literal["OBJECT_STAGING"]]
+    saved_steps: NotRequired[int]
+    recovered_by: NotRequired[str]
 
 
 class PrivateFieldDisclosure(TypedDict):
@@ -2494,6 +2499,45 @@ def _selected_disclosure(value: object) -> list[PrivateFieldDisclosure]:
     return cast(list[PrivateFieldDisclosure], value)
 
 
+# Functional syntax retains the wire key "class", a Python reserved word.
+PrivateInstallDiagnostic = TypedDict("PrivateInstallDiagnostic", {
+    "schema": Literal["peerwork.install-diagnostic.v1"],
+    "begin_command_id": str,
+    "verified": bool,
+    "submitted": Literal[False],
+    "prior_sequence": NotRequired[int],
+    "fresh_sequence": NotRequired[int],
+    "structure_state": NotRequired[str],
+    "begin_in_verified_history": NotRequired[bool],
+    "code": NotRequired[Literal["VERIFICATION_FAILED"]],
+    "stage": NotRequired[str],
+    "class": NotRequired[str],
+    "check": NotRequired[str],
+    "sequence": NotRequired[int | None],
+})
+
+
+class PrivateInstallRecoveryPlan(TypedDict):
+    schema: Literal["peerwork.install-recovery-plan.v1"]
+    original_begin_id: str
+    review_hash: str
+    submitted: Literal[False]
+    recovery: NotRequired[dict[str, JSONValue]]
+    target_structure_hash: NotRequired[str]
+    new_begin_required: NotRequired[Literal[True]]
+    status: NotRequired[Literal["RECOVERED", "PENDING"]]
+    operation_id: NotRequired[str]
+
+
+class PrivateInstallRecoveryProgress(TypedDict):
+    schema: Literal["peerwork.install-recovery-progress.v1"]
+    original_begin_id: str
+    operation_id: str
+    status: Literal["PENDING", "ACCEPTED"]
+    phase: Literal["RECOVERY", "SNAPSHOT", "ACTIVE"]
+    new_begin_required: Literal[True]
+
+
 class PrivatePackageInstallError(RuntimeError):
     def __init__(self, code: str, message: str):
         super().__init__(message)
@@ -2509,7 +2553,12 @@ class OwnerWorkspacePrivatePackageInstaller(OwnerWorkspacePrivatePackageStager):
 
     def _install(self, operation: str, *, input_value: dict | None = None,
                  begin_command_id: str | None = None,
-                 cancel_handle: KernelCancelHandle | None = None) -> PrivatePackageInstallProgress | list[SavedPrivatePackageInstall]:
+                 cancel_handle: KernelCancelHandle | None = None) -> PrivatePackageInstallProgress | list[SavedPrivatePackageInstall] | PrivateInstallDiagnostic | PrivateInstallRecoveryPlan | PrivateInstallRecoveryProgress:
+        required = ("private_install_auto_transport" if operation in ("begin", "begin_direct", "continue", "installs")
+                    else "private_install_reviewed_recovery")
+        if required is not None and not capabilities().get(required, False):
+            raise PrivatePackageInstallError("SDK_NATIVE_VERSION_MISMATCH",
+                "Install the matching Python wrapper and native extension from one SDK release archive")
         result = json.loads(secure_owner_consumer_json("private_install", operation,
             json.dumps(self._owner_config, ensure_ascii=True, allow_nan=False, separators=(",", ":")),
             self._workspace_id,
@@ -2553,6 +2602,30 @@ class OwnerWorkspacePrivatePackageInstaller(OwnerWorkspacePrivatePackageStager):
     def continue_install(self, begin_command_id: str) -> PrivatePackageInstallProgress:
         return cast(PrivatePackageInstallProgress, self._install("continue", begin_command_id=begin_command_id))
 
+    def diagnose(self, begin_command_id: str) -> PrivateInstallDiagnostic:
+        """Verify the candidate without signing, POSTing or replacing ACTIVE."""
+        return cast(PrivateInstallDiagnostic, self._install("diagnose", begin_command_id=begin_command_id))
+
+    def recovery_plan(self, begin_command_id: str) -> PrivateInstallRecoveryPlan:
+        """Read-only reviewed range; never exports private record bodies or keys."""
+        return cast(PrivateInstallRecoveryPlan, self._install("recovery_plan", begin_command_id=begin_command_id))
+
+    def recover_invalid(self, begin_command_id: str, *, expected_review_hash: str,
+                        operation_id: str) -> PrivateInstallRecoveryProgress:
+        return cast(PrivateInstallRecoveryProgress, self._install("recover_invalid", input_value={
+            "begin_command_id": begin_command_id, "expected_review_hash": expected_review_hash,
+            "operation_id": operation_id}))
+
+    async def recovery_plan_async(self, begin_command_id: str) -> PrivateInstallRecoveryPlan:
+        return cast(PrivateInstallRecoveryPlan, await _run_cancelled_async(self._install,
+            "recovery_plan", begin_command_id=begin_command_id))
+
+    async def recover_invalid_async(self, begin_command_id: str, *, expected_review_hash: str,
+                                    operation_id: str) -> PrivateInstallRecoveryProgress:
+        return cast(PrivateInstallRecoveryProgress, await _run_cancelled_async(self._install,
+            "recover_invalid", input_value={"begin_command_id": begin_command_id,
+            "expected_review_hash": expected_review_hash, "operation_id": operation_id}))
+
     def installs(self) -> list[SavedPrivatePackageInstall]:
         """Recover saved BEGIN IDs locally; rows do not establish acceptance."""
         return cast(list[SavedPrivatePackageInstall], self._install("installs"))
@@ -2594,6 +2667,10 @@ class OwnerWorkspacePrivatePackageInstaller(OwnerWorkspacePrivatePackageStager):
         return cast(PrivatePackageInstallProgress, await _run_cancelled_async(self._install,
             "continue", begin_command_id=begin_command_id))
 
+    async def diagnose_async(self, begin_command_id: str) -> PrivateInstallDiagnostic:
+        return cast(PrivateInstallDiagnostic, await _run_cancelled_async(self._install,
+            "diagnose", begin_command_id=begin_command_id))
+
     async def installs_async(self) -> list[SavedPrivatePackageInstall]:
         return cast(list[SavedPrivatePackageInstall], await _run_cancelled_async(self._install,
             "installs"))
@@ -2605,7 +2682,7 @@ __all__ += ["SecureOwnerWorkspaceClient", "OwnerCoordinationProgress", "OwnerWor
             "OwnerWorkspacePrivatePackageStager", "PrivatePackageStageResult",
             "SavedPrivatePackageStage", "PrivatePackageStageError",
             "OwnerWorkspacePrivatePackageInstaller", "PrivatePackageInstallProgress",
-            "SavedPrivatePackageInstall", "PrivateFieldDisclosure", "PrivatePackageInstallError"]
+            "SavedPrivatePackageInstall", "PrivateFieldDisclosure", "PrivatePackageInstallError", "PrivateInstallDiagnostic", "PrivateInstallRecoveryPlan", "PrivateInstallRecoveryProgress"]
 
 
 class VerifiedIdentityCertificate(TypedDict):

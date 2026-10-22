@@ -38,6 +38,10 @@ use thiserror::Error;
 use tokio::runtime::Builder;
 use tokio_util::sync::CancellationToken;
 
+mod automatic;
+mod recovery;
+pub use recovery::InvalidInstallRecoveryInput;
+
 #[cfg(test)]
 static TEST_CRASH_AFTER_BEGIN_ROW: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
@@ -686,8 +690,22 @@ pub enum PrivatePackageInstallError {
     Input,
     #[error("install BEGIN command ID is already saved; use exact continuation")]
     DuplicateBegin,
+    #[error("original invalid BEGIN is retained as recovered history; start a new install operation")]
+    RecoveredBegin,
+    #[error("service does not support reviewed single-BEGIN policy-restoring recovery; a matching service update is required")]
+    RecoveryServiceUnsupported,
+    #[error("recovery review no longer matches the exact signed source; inspect a fresh recovery plan")]
+    RecoveryReviewConflict,
+    #[error("recovery operation ID or original BEGIN conflicts with a saved recovery; resume the original operation")]
+    RecoveryOperationConflict,
+    #[error(transparent)]
+    Recovery(#[from] peerwork_core::private_install_recovery::InstallRecoveryError),
     #[error("native package staging proof failed")]
     Plan,
+    #[error("inline install object is {bytes} bytes, exceeding the {limit}-byte wire limit; use authenticated protocol-object staging before a new BEGIN")]
+    InlineObjectTooLarge { bytes: usize, limit: usize },
+    #[error("large protocol requires signed-protocol-object-source-v1 and an existing PRIVATE-v3 STRUCTURED workspace; no installation packet was submitted")]
+    ObjectSourceUnsupported,
     #[error("protected stage state failed: {0}")]
     State(#[from] SecureStateError),
     #[error("protected exact command intent failed: {0}")]
@@ -707,6 +725,7 @@ impl From<PrivateInstallError> for PrivatePackageInstallError {
     fn from(error: PrivateInstallError) -> Self {
         match error {
             PrivateInstallError::Resource => Self::State(SecureStateError::TooLarge),
+            PrivateInstallError::InlineObjectTooLarge { bytes, limit } => Self::InlineObjectTooLarge { bytes, limit },
             _ => Self::Plan,
         }
     }
@@ -718,7 +737,15 @@ impl PrivatePackageInstallError {
             Self::Identity => "IDENTITY_STATE",
             Self::Input => "INSTALL_INPUT_INVALID",
             Self::DuplicateBegin => "INSTALL_COMMAND_EXISTS",
+            Self::RecoveredBegin => "INSTALL_RECOVERED_NEW_BEGIN_REQUIRED",
+            Self::RecoveryServiceUnsupported => "INSTALL_RECOVERY_SERVICE_UNSUPPORTED",
+            Self::RecoveryReviewConflict => "INSTALL_RECOVERY_REVIEW_CONFLICT",
+            Self::RecoveryOperationConflict => "INSTALL_RECOVERY_OPERATION_CONFLICT",
+            Self::Recovery(peerwork_core::private_install_recovery::InstallRecoveryError::Verification { .. }) => "VERIFICATION_FAILED",
+            Self::Recovery(_) => "INSTALL_PLAN_FAILED",
             Self::Plan => "INSTALL_PLAN_FAILED",
+            Self::InlineObjectTooLarge { .. } => "INSTALL_OBJECT_TOO_LARGE",
+            Self::ObjectSourceUnsupported => "INSTALL_OBJECT_SOURCE_UNSUPPORTED",
             Self::State(SecureStateError::TooLarge) => "RESOURCE_LIMIT",
             Self::State(SecureStateError::Busy) => "STATE_BUSY",
             Self::State(_) => "INSTALL_STATE",
@@ -775,7 +802,7 @@ pub struct PrivatePackageInstallBeginInput {
     pub issued_at_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PrivateDirectInstallBeginInput {
     pub closure_json: String,
@@ -878,6 +905,8 @@ struct InstallRow {
     steps: Vec<InstallStep>,
     #[serde(default)]
     accepted: Option<AcceptedInstall>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    recovered_by: Option<String>,
 }
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -1252,7 +1281,8 @@ impl SecurePrivatePackageInstall {
                 max_replay_artifact_bytes: self.config.max_replay_artifact_bytes,
             max_replay_commits: self.config.max_replay_commits,
             });
-            let (fresh, _) = access.replay_checked_install_generation(cancel, &floor)?;
+            let (fresh, _) = access.replay_checked_install_generation(cancel, &floor)
+                .map_err(|e|e.verification_stage("install.fresh"))?;
             if fresh.origin() != prior.origin()
                 || fresh.authority() != prior.authority()
                 || fresh.replay().workspace_id() != prior.replay().workspace_id()
@@ -1402,13 +1432,20 @@ impl SecurePrivatePackageInstall {
                     "protocol_digest":row.protocol_digest,
                     "locally_saved":true
                 });
+                if let Some(recovery_id) = &row.recovered_by {
+                    item["recovered_by"] = serde_json::Value::String(recovery_id.clone());
+                }
                 if let Some(stage_id) = &row.stage_id {
                     item["stage_id"] = serde_json::Value::String(stage_id.clone());
                 }
                 Ok(item)
             })
             .collect();
-        let rows = rows?;
+        let mut rows = rows?;
+        drop(doc); drop(store);
+        for row in self.automatic_saved_rows(&identity)? {
+            if !rows.iter().any(|saved| saved["begin_command_id"] == row["begin_command_id"]) { rows.push(row); }
+        }
         serde_json::to_string(&rows).map_err(|_| PrivatePackageInstallError::Encoding)
     }
 
@@ -1499,7 +1536,7 @@ impl SecurePrivatePackageInstall {
             commit_hash: imported.commit_hash, policy_hash: imported.policy_hash,
             snapshot_json: imported.snapshot_json,
             protocol_digest: imported.protocol_digest,
-            steps: imported.steps, accepted: None,
+            steps: imported.steps, accepted: None, recovered_by: None,
         };
         let store = SecureStateStore::open(
             &self.config.state_dir.join("private-install-operations.state"),
@@ -1676,7 +1713,7 @@ impl SecurePrivatePackageInstall {
                     || doc
                         .rows
                         .values()
-                        .any(|existing| existing.accepted.is_none())
+                        .any(|existing| existing.accepted.is_none() && existing.recovered_by.is_none())
                     || doc.rows.contains_key(&command_id)
                 {
                     return Err(PrivatePackageInstallError::Input);
@@ -1703,7 +1740,7 @@ impl SecurePrivatePackageInstall {
                     snapshot_json,
                     protocol_digest: prepared.protocol_digest().to_owned(),
                     steps: Vec::new(),
-                    accepted: None,
+                    accepted: None, recovered_by: None,
                 };
                 doc.rows.insert(command_id.clone(), row);
                 doc.save(&store)?;
@@ -1854,7 +1891,7 @@ impl SecurePrivatePackageInstall {
                 let disclose_json = serde_json::to_string(input.disclose.as_deref().unwrap_or(&[]))
                     .map_err(|_| PrivatePackageInstallError::Input)?;
                 let bindings_json = input.bindings_json.as_deref().unwrap_or("{}");
-                let prepared = prepare_private_direct_install_begin_with_options(
+                let prepared = match prepare_private_direct_install_begin_with_options(
                     input.closure_json.as_bytes(),
                     bindings_json.as_bytes(),
                     &input.expected_root_package_digest,
@@ -1870,123 +1907,197 @@ impl SecurePrivatePackageInstall {
                     issued_at,
                     identity.signing_key(),
                     key,
-                )?;
-                let store = SecureStateStore::open(
-                    &self
-                        .config
-                        .state_dir
-                        .join("private-install-operations.state"),
-                )?;
-                let mut doc = InstallDocument::open(
-                    &store,
-                    &self.config,
-                    identity.actor_id(),
-                    identity.key_id(),
-                )?;
-                if doc.rows.len() >= 16
-                    || doc
-                        .rows
-                        .values()
-                        .any(|existing| existing.accepted.is_none())
-                    || doc.rows.contains_key(&command_id)
-                {
-                    return Err(PrivatePackageInstallError::Input);
-                }
-                let snapshot_json =
-                    canonical_wire_value(prepared.snapshot(), CanonicalPath::SecureArtifact)
-                        .map_err(|_| PrivatePackageInstallError::Plan)?;
-                let row = InstallRow {
-                    import_attach_id: None, native_object_plan_id: None,
-                    source_kind: Some(InstallSourceKind::Direct),
-                    staged_object_source_json: None,
-                    stage_id: None,
-                    direct_source: Some(DirectInstallSource {
-                        material_b64: base64url(input.closure_json.as_bytes()),
-                        bindings_json: Some(bindings_json.to_owned()),
-                        source_checkpoint_json: source.checkpoint_canonical_json().to_owned(),
-                        root_package_digest: input.expected_root_package_digest.clone(),
-                        object_source_json: None,
-                    }),
-                    instance_id: input.instance_id.clone(),
-                    entrypoint: input.entrypoint.clone(),
-                    grants_json: input.grants_json.clone(),
-                    disclose_json: Some(disclose_json),
-                    issued_at_ms: issued_at,
-                    request_b64: base64url(prepared.request_wire()),
-                    commit_hash: prepared.commit_hash().to_owned(),
-                    policy_hash: prepared.policy_hash().to_owned(),
-                    snapshot_json,
-                    protocol_digest: prepared.protocol_digest().to_owned(),
-                    steps: Vec::new(),
-                    accepted: None,
-                };
-                doc.rows.insert(command_id.clone(), row);
-                doc.save(&store)?;
-                test_crash_after_begin_row()?;
-                let mut journal = SecureIntentJournal::open(
-                    &self.config.state_dir.join("private-install-intents.state"),
-                    source.origin(),
-                    identity.actor_id(),
-                )?;
-                let path = format!(
-                    "/api/workspace/v1/secure/workspaces/{}/commits",
-                    self.config.workspace_id,
-                );
-                journal.prepare(SecurePacketInput {
-                    intent_id: &command_id,
-                    path: &path,
-                    action_id: "secure.structure.begin",
-                    workspace_id: Some(&self.config.workspace_id),
-                    trusted_owner_key: Some(identity.key_id()),
-                    intent_digest: prepared.commit_hash(),
-                    exact_request: prepared.request_wire(),
-                })?;
-                if journal.exact_request(&command_id)? != prepared.request_wire()
-                    || journal.intent_digest(&command_id)? != prepared.commit_hash()
-                {
-                    return Err(PrivatePackageInstallError::Plan);
-                }
-                let mut transport_config = TransportConfig::new(self.config.origin.clone()).with_options(self.config.transport.clone());
-                transport_config.allow_loopback_http = self.config.allow_loopback_http;
-                let transport = HttpTransport::new(transport_config)
-                    .map_err(|_| PrivatePackageInstallError::Transport)?;
-                if transport.trusted_origin() != source.origin() {
-                    return Err(PrivatePackageInstallError::Transport);
-                }
-                let runtime = Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .map_err(|_| PrivatePackageInstallError::Runtime)?;
-                match runtime.block_on(transport.post_exact(
-                    &path,
-                    prepared.request_wire().to_vec(),
-                    cancel,
-                )) {
-                    Ok(response) => {
-                        if !response.wire.is_empty() {
-                            journal.observe_response(&command_id, &response.wire)?;
-                        }
-                        if !(200..300).contains(&response.status) {
-                            return Err(PrivatePackageInstallError::ServerRejected(
-                                response.status,
-                            ));
-                        }
+                ) {
+                    Ok(prepared) => prepared,
+                    Err(PrivateInstallError::InlineObjectTooLarge { .. }) => {
+                        return self.start_automatic_direct_install(&input, source, &identity, key, &command_id, issued_at, cancel);
                     }
-                    Err(TransportError::SubmittedUncertain) => {}
-                    Err(_) => return Err(PrivatePackageInstallError::Transport),
-                }
-                Ok(PrivatePackageInstallProgress {
-                    status: "PENDING",
-                    begin_command_id: command_id.clone(),
-                    step_command_id: command_id,
-                    step_action_id: "secure.structure.begin",
-                    workspace_id: self.config.workspace_id.clone(),
-                    protocol_digest: prepared.protocol_digest().to_owned(),
-                    instance_id: prepared.instance_id().to_owned(),
-                    commit_hash: prepared.commit_hash().to_owned(),
-                })
+                    Err(error) => return Err(error.into()),
+                };
+                self.save_and_post_direct_begin(&input, source, &identity, &command_id,
+                    issued_at, &prepared, None, cancel)
             })?;
         serde_json::to_string(&result).map_err(|_| PrivatePackageInstallError::Encoding)
+    }
+
+    fn save_and_post_direct_begin(
+        &self, input: &PrivateDirectInstallBeginInput, source: &TransportReplayedJournal,
+        identity: &KernelIdentity, command_id: &str, issued_at: u64,
+        prepared: &peerwork_core::prepared_private_install::PreparedPrivatePackageInstallBegin,
+        object_source_json: Option<&str>, cancel: &CancellationToken,
+    ) -> Result<PrivatePackageInstallProgress, PrivatePackageInstallError> {
+        if object_source_json.is_none() && !self.automatic_saved_rows(identity)?.is_empty() {
+            return Err(PrivatePackageInstallError::Input);
+        }
+        let command_id = command_id.to_owned();
+        let bindings_json = input.bindings_json.as_deref().unwrap_or("{}");
+        let disclose_json = serde_json::to_string(input.disclose.as_deref().unwrap_or(&[]))
+            .map_err(|_| PrivatePackageInstallError::Input)?;
+        let store = SecureStateStore::open(
+            &self
+                .config
+                .state_dir
+                .join("private-install-operations.state"),
+        )?;
+        let mut doc = InstallDocument::open(
+            &store,
+            &self.config,
+            identity.actor_id(),
+            identity.key_id(),
+        )?;
+        if doc.rows.len() >= 16
+            || doc
+                .rows
+                .values()
+                .any(|existing| existing.accepted.is_none() && existing.recovered_by.is_none())
+            || doc.rows.contains_key(&command_id)
+        {
+            return Err(PrivatePackageInstallError::Input);
+        }
+        let snapshot_json =
+            canonical_wire_value(prepared.snapshot(), CanonicalPath::SecureArtifact)
+                .map_err(|_| PrivatePackageInstallError::Plan)?;
+        let row = InstallRow {
+            import_attach_id: None, native_object_plan_id: object_source_json.map(|_| command_id.clone()),
+            source_kind: Some(InstallSourceKind::Direct),
+            staged_object_source_json: object_source_json.map(str::to_owned),
+            stage_id: None,
+            direct_source: Some(DirectInstallSource {
+                material_b64: base64url(input.closure_json.as_bytes()),
+                bindings_json: Some(bindings_json.to_owned()),
+                source_checkpoint_json: source.checkpoint_canonical_json().to_owned(),
+                root_package_digest: input.expected_root_package_digest.clone(),
+                object_source_json: object_source_json.map(str::to_owned),
+            }),
+            instance_id: input.instance_id.clone(),
+            entrypoint: input.entrypoint.clone(),
+            grants_json: input.grants_json.clone(),
+            disclose_json: Some(disclose_json),
+            issued_at_ms: issued_at,
+            request_b64: base64url(prepared.request_wire()),
+            commit_hash: prepared.commit_hash().to_owned(),
+            policy_hash: prepared.policy_hash().to_owned(),
+            snapshot_json,
+            protocol_digest: prepared.protocol_digest().to_owned(),
+            steps: Vec::new(),
+            accepted: None, recovered_by: None,
+        };
+        doc.rows.insert(command_id.clone(), row);
+        doc.save(&store)?;
+        test_crash_after_begin_row()?;
+        let mut journal = SecureIntentJournal::open(
+            &self.config.state_dir.join("private-install-intents.state"),
+            source.origin(),
+            identity.actor_id(),
+        )?;
+        let path = format!(
+            "/api/workspace/v1/secure/workspaces/{}/commits",
+            self.config.workspace_id,
+        );
+        journal.prepare(SecurePacketInput {
+            intent_id: &command_id,
+            path: &path,
+            action_id: "secure.structure.begin",
+            workspace_id: Some(&self.config.workspace_id),
+            trusted_owner_key: Some(identity.key_id()),
+            intent_digest: prepared.commit_hash(),
+            exact_request: prepared.request_wire(),
+        })?;
+        if journal.exact_request(&command_id)? != prepared.request_wire()
+            || journal.intent_digest(&command_id)? != prepared.commit_hash()
+        {
+            return Err(PrivatePackageInstallError::Plan);
+        }
+        let mut transport_config = TransportConfig::new(self.config.origin.clone()).with_options(self.config.transport.clone());
+        transport_config.allow_loopback_http = self.config.allow_loopback_http;
+        let transport = HttpTransport::new(transport_config)
+            .map_err(|_| PrivatePackageInstallError::Transport)?;
+        if transport.trusted_origin() != source.origin() {
+            return Err(PrivatePackageInstallError::Transport);
+        }
+        let runtime = Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| PrivatePackageInstallError::Runtime)?;
+        match runtime.block_on(transport.post_exact(
+            &path,
+            prepared.request_wire().to_vec(),
+            cancel,
+        )) {
+            Ok(response) => {
+                if !response.wire.is_empty() {
+                    journal.observe_response(&command_id, &response.wire)?;
+                }
+                if !(200..300).contains(&response.status) {
+                    return Err(PrivatePackageInstallError::ServerRejected(
+                        response.status,
+                    ));
+                }
+            }
+            Err(TransportError::SubmittedUncertain) => {}
+            Err(_) => return Err(PrivatePackageInstallError::Transport),
+        }
+        Ok(PrivatePackageInstallProgress {
+            status: "PENDING",
+            begin_command_id: command_id.clone(),
+            step_command_id: command_id,
+            step_action_id: "secure.structure.begin",
+            workspace_id: self.config.workspace_id.clone(),
+            protocol_digest: prepared.protocol_digest().to_owned(),
+            instance_id: prepared.instance_id().to_owned(),
+            commit_hash: prepared.commit_hash().to_owned(),
+        })
+
+    }
+
+    /// Fetch and fully verify the candidate without signing or POSTing. A
+    /// diagnostic report is not authority to continue an imported install.
+    pub fn diagnose_install_json_with_cancel(
+        &self,
+        begin_id: &str,
+        cancel: &CancellationToken,
+    ) -> Result<String, PrivatePackageInstallError> {
+        if !token(begin_id) {
+            return Err(PrivatePackageInstallError::Input);
+        }
+        let result = self.with_install_replay(cancel, |prior, fresh| {
+            let identity = KernelIdentity::open(&self.config.identity_path)
+                .map_err(|_| PrivatePackageInstallError::Identity)?;
+            let store = SecureStateStore::open(
+                &self.config.state_dir.join("private-install-operations.state"),
+            )?;
+            let doc = InstallDocument::open(
+                &store, &self.config, identity.actor_id(), identity.key_id(),
+            )?;
+            let row = doc.rows.get(begin_id).ok_or(PrivatePackageInstallError::Input)?;
+            let wire = decode_base64url(&row.request_b64).map_err(|_| PrivatePackageInstallError::Plan)?;
+            let request = parse_wire_json_bounded(&wire, 64, 220_000)
+                .map_err(|_| PrivatePackageInstallError::Plan)?;
+            let payload = request.get("commit").and_then(|commit| commit.get("payload"))
+                .ok_or(PrivatePackageInstallError::Plan)?;
+            let bound = scalar(payload, "command_id")? == begin_id
+                && fresh.replay().contains_checkpoint(
+                    number(payload, "sequence")?, Some(&row.commit_hash), &row.policy_hash,
+                );
+            Ok(serde_json::json!({
+                "schema":"peerwork.install-diagnostic.v1", "begin_command_id":begin_id,
+                "prior_sequence":prior.replay().sequence(), "fresh_sequence":fresh.replay().sequence(),
+                "structure_state":format!("{:?}",fresh.replay().structure_status()),
+                "begin_in_verified_history":bound, "verified":true, "submitted":false,
+            }))
+        });
+        let report = match result {
+            Ok(report) => report,
+            Err(PrivatePackageInstallError::Read(SecureReadAccessError::VerificationDetail {
+                stage, class, check, sequence,
+            })) => serde_json::json!({
+                "schema":"peerwork.install-diagnostic.v1", "begin_command_id":begin_id,
+                "verified":false, "submitted":false, "code":"VERIFICATION_FAILED",
+                "stage":stage, "class":class, "check":check, "sequence":sequence,
+            }),
+            Err(error) => return Err(error),
+        };
+        serde_json::to_string(&report).map_err(|_| PrivatePackageInstallError::Encoding)
     }
 
     pub fn continue_install_json(
@@ -2000,6 +2111,9 @@ impl SecurePrivatePackageInstall {
         begin_id: &str,
         cancel: &CancellationToken,
     ) -> Result<String, PrivatePackageInstallError> {
+        if self.has_automatic_direct_install(begin_id)? {
+            return self.continue_automatic_direct_install(begin_id, cancel);
+        }
         self.continue_install_for_attach(begin_id, None, cancel)
     }
 
@@ -2050,6 +2164,7 @@ impl SecurePrivatePackageInstall {
                 .get(begin_id)
                 .cloned()
                 .ok_or(PrivatePackageInstallError::Input)?;
+            if row.recovered_by.is_some() { return Err(PrivatePackageInstallError::RecoveredBegin); }
             if row.import_attach_id.as_deref() != expected_import_attach_id {
                 return Err(PrivatePackageInstallError::Plan);
             }
@@ -2229,7 +2344,9 @@ impl SecurePrivatePackageInstall {
                         .as_ref()
                         .ok_or(PrivatePackageInstallError::Identity)?;
                     if let Some(proof_json) = source.object_source_json.as_ref() {
-                        if row.import_attach_id.is_none() { return Err(PrivatePackageInstallError::Identity); }
+                        if row.import_attach_id.is_none() && row.native_object_plan_id.as_deref() != Some(begin_id) {
+                            return Err(PrivatePackageInstallError::Identity);
+                        }
                         let proof = parse_wire_json_bounded(proof_json.as_bytes(), 64, 220_000).map_err(|_| PrivatePackageInstallError::Plan)?;
                         peerwork_core::prepared_private_install::verify_completed_protocol_object_source(&proof, prior.replay())?;
                         peerwork_core::prepared_private_install::verify_saved_private_direct_install_begin_with_object_source(
@@ -2846,7 +2963,7 @@ impl SecurePrivatePackageInstall {
             .rows
             .get(stage_id)
             .ok_or(PrivatePackageInstallError::Input)?;
-        if row.import_attach_id.as_deref() != expected_import_attach_id {
+            if row.import_attach_id.as_deref() != expected_import_attach_id {
             return Err(PrivatePackageInstallError::Plan);
         }
         let material = decode_base64url(&row.material_b64)
@@ -3051,7 +3168,7 @@ impl SecurePrivatePackageInstall {
             .get(stage_id)
             .cloned()
             .ok_or(PrivatePackageInstallError::Identity)?;
-        if row.import_attach_id.as_deref() != expected_import_attach_id {
+            if row.import_attach_id.as_deref() != expected_import_attach_id {
             return Err(PrivatePackageInstallError::Plan);
         }
         if input.command_id.is_some() && row.steps.first().map(|step| step.command_id.as_str()) != Some(command_id)
@@ -3312,7 +3429,7 @@ mod tests {
             issued_at_ms: 1, request_b64: "e30".into(),
             commit_hash: "c".repeat(64), policy_hash: "p".repeat(64),
             snapshot_json: "{}".into(), protocol_digest: "d".repeat(64),
-            steps: vec![], accepted: None,
+            steps: vec![], accepted: None, recovered_by: None,
         };
         // Existing rows omit the additive field; protected serialization must
         // retain both sources when a combined imported row is reopened.

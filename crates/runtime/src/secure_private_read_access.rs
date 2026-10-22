@@ -49,7 +49,7 @@ impl SecurePrivateReadAccess {
         let profile = SecureReadProfile::new(self.config.clone());
         match profile.read_latest_json_with_cancel(cancel) {
             Ok(value) => return Ok(value),
-            Err(SecureReadAccessError::NotActive | SecureReadAccessError::VerificationFailed) => {}
+            Err(SecureReadAccessError::NotActive | SecureReadAccessError::VerificationFailed | SecureReadAccessError::VerificationDetail{..}) => {}
             Err(error) => return Err(error.into()),
         }
         let read = profile.private_grant_read_config()?;

@@ -1080,6 +1080,21 @@ impl Task for SecureOwnerConsumerTask {
                     };
                     access.submit_direct_begin_json_with_cancel(input, &self.cancel)
                 }
+                "recovery_plan" => match self.command_id.as_deref() {
+                    Some(id) => access.invalid_install_recovery_plan_json(id, &self.cancel),
+                    None => return Ok(fail("INSTALL_INPUT_INVALID", "original begin ID is required")),
+                },
+                "recover_invalid" => {
+                    let input: peerwork_runtime::secure_private_install::InvalidInstallRecoveryInput = match self.input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {
+                        Some(value) => value,
+                        None => return Ok(fail("INSTALL_INPUT_INVALID", "recovery requires original BEGIN, reviewed hash and stable operation ID")),
+                    };
+                    access.recover_invalid_install_json(input, &self.cancel)
+                }
+                "diagnose" => match self.command_id.as_deref() {
+                    Some(id) => access.diagnose_install_json_with_cancel(id, &self.cancel),
+                    None => return Ok(fail("INSTALL_INPUT_INVALID", "begin command ID is required")),
+                },
                 "continue" => match self.command_id.as_deref() {
                     Some(id) => access.continue_install_json_with_cancel(id, &self.cancel),
                     None => return Ok(fail("INSTALL_INPUT_INVALID", "begin command ID is required")),

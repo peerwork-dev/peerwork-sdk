@@ -15,6 +15,12 @@ pub enum JournalReplayError {
     ResourceLimit,
     #[error("signed journal or its exact final pins did not validate")]
     Invalid,
+    #[error("signed replay failed (class={class}, sequence={sequence:?}, check={check})")]
+    Detailed {
+        class: &'static str,
+        sequence: Option<u64>,
+        check: &'static str,
+    },
     #[error("structured journal is still seeding")]
     Seeding,
 }
@@ -237,7 +243,10 @@ pub fn replay_secure_journal_exact_with_guard_time_attestations_and_limits(
     )
     .map_err(|error| match error {
         ReplayError::ResourceLimit => JournalReplayError::ResourceLimit,
-        _ => JournalReplayError::Invalid,
+        ReplayError::Content { sequence, check } => JournalReplayError::Detailed{class:"content",sequence:Some(sequence),check},
+        ReplayError::Chain(crate::secure_chain::ChainError::Rollback) => JournalReplayError::Detailed{class:"checkpoint",sequence:None,check:"chain.floor"},
+        ReplayError::Chain(_) => JournalReplayError::Detailed{class:"chain",sequence:None,check:"chain.signature_or_link"},
+        ReplayError::Invalid => JournalReplayError::Invalid,
     })?;
     // Replay may restore an authenticated archived PUBLIC prefix from signed
     // migration fragments. Reuse its scanner result, not the original

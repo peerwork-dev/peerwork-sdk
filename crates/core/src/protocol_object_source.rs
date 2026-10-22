@@ -257,6 +257,69 @@ pub(crate) fn validate_object_source_proof(proof: &WireValue) -> Result<(), Obje
     Ok(())
 }
 
+/// Pure bounded source construction. Signed ancestry and Owner authority must
+/// be established by the caller before authoring any staging packet.
+pub(crate) fn prepare_protocol_object_source(
+    value: &WireValue, source: &WireValue,
+) -> Result<(WireValue, Vec<WireValue>), ObjectSourceError> {
+    checkpoint(source)?;
+    let workspace = scalar(field(source, "workspace_id")?)?;
+    let protocol = scalar(field(value, "digest")?)?;
+    if !digest(&protocol) { return Err(ObjectSourceError::Invalid); }
+    value_shape(value, &workspace, &protocol)?;
+    let text = canonical(value)?;
+    if text.is_empty() || text.len() > VALUE_BYTES { return Err(ObjectSourceError::Resource); }
+    let value_hash = sha256_hex(text.as_bytes());
+    let id = source_id(source, &protocol, &value_hash)?;
+    let mut parts = Vec::new();
+    let mut descriptors = Vec::new();
+    let mut offset = 0;
+    while offset < text.len() {
+        if parts.len() >= PARTS { return Err(ObjectSourceError::Resource); }
+        let index = parts.len();
+        let part_id = object_part_id(source, &id, index)?;
+        let mut low = offset + 1;
+        let mut high = (offset + PART_BYTES).min(text.len());
+        let mut chosen = None;
+        while low <= high {
+            let middle = low + (high - low) / 2;
+            let mut end = middle;
+            while end > offset && !text.is_char_boundary(end) { end -= 1; }
+            let piece = &text[offset..end];
+            let part = object(vec![
+                ("kind", string("protocol_object_part")), ("id", string(&part_id)),
+                ("revision", WireValue::Number(1.0)), ("provenance", string("AUTHOR_SIGNED")),
+                ("value", object(vec![
+                    ("v", WireValue::Number(1.0)), ("workspace_id", string(&workspace)),
+                    ("source_id", string(&id)), ("index", WireValue::Number(index as f64)),
+                    ("bytes", WireValue::Number(piece.len() as f64)),
+                    ("sha256", string(&sha256_hex(piece.as_bytes()))), ("text", string(piece)),
+                ])),
+            ]);
+            if end > offset && canonical(&part)?.len() <= OBJECT_BYTES {
+                chosen = Some((end, part)); low = middle + 1;
+            } else { high = middle - 1; }
+        }
+        let (end, part) = chosen.ok_or(ObjectSourceError::Resource)?;
+        validate_object_part(&part)?;
+        let v = field(&part, "value")?;
+        descriptors.push(object(vec![
+            ("id", string(&part_id)), ("index", WireValue::Number(index as f64)),
+            ("sha256", field(v, "sha256")?.clone()), ("bytes", field(v, "bytes")?.clone()),
+        ]));
+        parts.push(part); offset = end;
+    }
+    let proof = object(vec![
+        ("v", WireValue::Number(1.0)), ("workspace_id", string(&workspace)),
+        ("source", source.clone()), ("source_id", string(&id)),
+        ("protocol_digest", string(&protocol)), ("value_sha256", string(&value_hash)),
+        ("bytes", WireValue::Number(text.len() as f64)), ("parts", WireValue::Array(descriptors)),
+    ]);
+    validate_object_source_proof(&proof)?;
+    if canonical(&read_protocol_object_source(&proof, &parts)?)? != text { return Err(ObjectSourceError::Mismatch); }
+    Ok((proof, parts))
+}
+
 pub(crate) fn read_protocol_object_source(
     proof: &WireValue,
     objects: &[WireValue],

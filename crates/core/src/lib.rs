@@ -44,6 +44,7 @@ mod protocol_object_source;
 mod protocol_package_source;
 pub mod public_catalog_package;
 pub mod public_direct_install;
+pub mod private_install_recovery;
 pub mod receipt;
 pub mod receipt_wire;
 pub mod replayed_secure_journal;
@@ -95,6 +96,8 @@ pub struct CapabilityManifest {
     pub private_system_current_page_read: bool,
     pub owner_guard_time_enable: bool,
     pub owner_member_scopes: bool,
+    pub private_install_auto_transport: bool,
+    pub private_install_reviewed_recovery: bool,
     pub private_time_add_guard_windows: bool,
     pub wire_canonicalization: bool,
     pub signed_artifact_verification: bool,
@@ -121,6 +124,8 @@ pub fn capability_manifest() -> CapabilityManifest {
         private_system_current_page_read: true,
         owner_guard_time_enable: true,
         owner_member_scopes: true,
+        private_install_auto_transport: true,
+        private_install_reviewed_recovery: true,
         private_time_add_guard_windows: true,
         wire_canonicalization: true,
         signed_artifact_verification: true,

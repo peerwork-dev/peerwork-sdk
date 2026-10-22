@@ -10,6 +10,9 @@ Native Owner member scope management is introduced in SDK 0.1.10; see the
 [member scope guide](docs/member-scopes.md) for availability, Node/Python/CLI
 examples and recovery boundaries.
 
+The [PRIVATE installation transport and recovery candidate](docs/private-install-transport-and-recovery.md)
+is under local testing and is not part of the published 0.1.10 release.
+
 Official updates and identity verification: [Peerwork project space](docs/project-space.md).
 
 Published 0.1.10 retains [bounded PRIVATE current-page reads, URL generation and changelog access](docs/current-view-reads.md) and [trusted transaction-time bounded leases and Owner activation](docs/private-guard-time-leases.md). Lease expressions require the matching service capability profile; verify the target service before enabling them.

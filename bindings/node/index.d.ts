@@ -22,6 +22,8 @@ export interface CapabilityManifest {
   private_system_current_page_read: boolean;
   owner_guard_time_enable: boolean;
   owner_member_scopes: boolean;
+  private_install_auto_transport: boolean;
+  private_install_reviewed_recovery: boolean;
   private_time_add_guard_windows: boolean;
   version: string;
   status: string;
@@ -767,7 +769,7 @@ export interface PrivatePackageInstallProgress {
   status: 'PENDING' | 'ACCEPTED';
   begin_command_id: string;
   step_command_id: string;
-  step_action_id: 'secure.structure.begin' | 'secure.structure.page' | 'secure.structure.end';
+  step_action_id: 'secure.protocol-object.stage' | 'secure.structure.begin' | 'secure.structure.page' | 'secure.structure.end';
   workspace_id: string;
   protocol_digest: string;
   instance_id: string;
@@ -781,6 +783,44 @@ export interface SavedPrivatePackageInstall {
   instance_id: string;
   protocol_digest: string;
   locally_saved: boolean;
+  recovered_by?: string;
+  phase?: 'OBJECT_STAGING';
+  saved_steps?: number;
+}
+/** Redacted replay evidence only; never an install or action receipt. */
+export interface PrivateInstallDiagnostic {
+  schema: 'peerwork.install-diagnostic.v1';
+  begin_command_id: string;
+  verified: boolean;
+  submitted: false;
+  prior_sequence?: number;
+  fresh_sequence?: number;
+  structure_state?: string;
+  begin_in_verified_history?: boolean;
+  code?: 'VERIFICATION_FAILED';
+  stage?: string;
+  class?: string;
+  check?: string;
+  sequence?: number | null;
+}
+export interface PrivateInstallRecoveryPlan {
+  schema: 'peerwork.install-recovery-plan.v1';
+  original_begin_id: string;
+  review_hash: string;
+  recovery?: {v: 1; reason: 'INVALID_ENCRYPTED_OPERATION'; base: Record<string, PackageJsonValue>; through: Record<string, PackageJsonValue>; excluded_root: string};
+  target_structure_hash?: string;
+  new_begin_required?: true;
+  submitted: false;
+  status?: 'RECOVERED' | 'PENDING';
+  operation_id?: string;
+}
+export interface PrivateInstallRecoveryProgress {
+  schema: 'peerwork.install-recovery-progress.v1';
+  original_begin_id: string;
+  operation_id: string;
+  status: 'PENDING' | 'ACCEPTED';
+  phase: 'RECOVERY' | 'SNAPSHOT' | 'ACTIVE';
+  new_begin_required: true;
 }
 export interface SecurePrivatePackageInstaller {
   begin(selection: PrivatePackageInstallSelection,
@@ -789,6 +829,11 @@ export interface SecurePrivatePackageInstaller {
   beginDirect(selection: PrivateDirectInstallSelection,
     options?: {commandId?: string; issuedAtMs?: number; signal?: AbortSignal}): Promise<PrivatePackageInstallProgress>;
   continueInstall(beginCommandId: string, options?: {signal?: AbortSignal}): Promise<PrivatePackageInstallProgress>;
+  /** Read-only full replay; never signs or POSTs, or advances the ACTIVE slot. */
+  diagnose(beginCommandId: string, options?: {signal?: AbortSignal}): Promise<PrivateInstallDiagnostic>;
+  recoveryPlan(beginCommandId: string, options?: {signal?: AbortSignal}): Promise<PrivateInstallRecoveryPlan>;
+  /** Explicit Owner review; repeat the exact IDs/hash after PENDING or an uncertain response. */
+  recoverInvalid(beginCommandId: string, options: {expectedReviewHash: string; operationId: string; signal?: AbortSignal}): Promise<PrivateInstallRecoveryProgress>;
   /** Local saved BEGIN IDs; listing does not establish service acceptance or ACTIVE status. */
   installs(options?: {signal?: AbortSignal}): Promise<SavedPrivatePackageInstall[]>;
 }

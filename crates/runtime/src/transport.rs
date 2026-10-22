@@ -227,6 +227,15 @@ impl HttpTransport {
         read_bounded(response,16384,cancel).await
     }
 
+    pub(crate) async fn install_capabilities(&self, cancel: &CancellationToken) -> Result<ExactHttpResponse, TransportError> {
+        let url = self.endpoint("/api/workspace/v1/install-capabilities")?;
+        let response = tokio::select! {
+            _ = cancel.cancelled() => return Err(TransportError::Cancelled),
+            result = self.client.get(url).send() => result.map_err(map_network_error)?,
+        };
+        read_bounded(response, 16_384, cancel).await
+    }
+
     /// Bounded anonymous read-view artifacts only. Never falls back to journal access.
     pub(crate) async fn get_public_read_view(&self, workspace: &str, artifact: &str, parameter: &str, max_bytes: usize, cancel: &CancellationToken) -> Result<ExactHttpResponse, TransportError> {
         let token = |v: &str| v.len() == 43 && v.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');

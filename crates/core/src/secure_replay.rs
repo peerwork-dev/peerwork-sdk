@@ -50,8 +50,8 @@ pub(crate) enum ReplayError {
     Chain(#[from] ChainError),
     #[error("content or object history is invalid")]
     Invalid,
-    #[error("signed content at sequence {0} is invalid")]
-    Content(u64),
+    #[error("signed content failed at sequence {sequence} during {check}")]
+    Content { sequence: u64, check: &'static str },
 }
 
 fn same_wire(left: &WireValue, right: &WireValue) -> Result<bool, ReplayError> {
@@ -1840,11 +1840,27 @@ fn replay_basic_content_depth(
                     return Err(ReplayError::Invalid);
                 }
                 let prefix_policies = &policy_wires[..prefix_policy_count];
+                // The invalid BEGIN may itself introduce a policy. Its policy
+                // belongs to the failure probe, not to the older base replay.
+                // The complete outer header scan still verifies every policy.
+                let base_policy_count = prefix_policies
+                    .iter()
+                    .take_while(|wire| {
+                        parse_wire_json_js_bounded(wire, 64, 32 * 1024 * 1024)
+                            .ok()
+                            .and_then(|policy| policy.get("payload").cloned())
+                            .and_then(|payload| integer(&payload, "effective_sequence").ok())
+                            .is_some_and(|effective| effective <= segment.base)
+                    })
+                    .count();
+                if base_policy_count == 0 {
+                    return Err(ReplayError::Invalid);
+                }
                 let base_checkpoint_wire =
                     canonical_wire_value(&base_checkpoint, Path::SecureArtifact)
                         .map_err(|_| ReplayError::Invalid)?;
                 replay_basic_content_depth(
-                    prefix_policies,
+                    &prefix_policies[..base_policy_count],
                     &commit_wires[..commit_index],
                     base_checkpoint_wire.as_bytes(),
                     workspace_id,
@@ -1871,7 +1887,7 @@ fn replay_basic_content_depth(
                     depth + 1,
                     max_commits,
                 ) {
-                    Err(ReplayError::Content(failed)) if failed == sequence => {}
+                    Err(ReplayError::Content { sequence: failed, .. }) if failed == sequence => {}
                     _ => return Err(ReplayError::Invalid),
                 }
             }
@@ -1896,6 +1912,7 @@ fn replay_basic_content_depth(
                 integer(payload, "epoch")?,
             )?;
         }
+        let mut check = "content.decrypt";
         let step = (|| -> Result<(), ReplayError> {
             let operation = if mode == "PRIVATE" {
                 let epoch = integer(payload, "epoch")?;
@@ -1977,6 +1994,7 @@ fn replay_basic_content_depth(
                 return Err(ReplayError::Invalid);
             }
             let signed_operation = operation.clone();
+            check = "install.hydration";
             let (operation, object_source) = hydrate_signed_protocol_install(
                 operation,
                 payload,
@@ -2020,16 +2038,16 @@ fn replay_basic_content_depth(
                 };
                 if changed {
                     let envelope = payload.get("structure").ok_or(ReplayError::Invalid)?;
+                    let action = string(payload, "action_id")?;
                     if string(envelope, "mode")? != "SNAPSHOT_BEGIN"
-                        || !matches!(
-                            string(payload, "action_id")?.as_str(),
-                            "secure.structure.begin" | "secure.fields.begin"
-                        )
+                        || !(matches!(action.as_str(), "secure.structure.begin" | "secure.fields.begin")
+                            || action == "secure.recover" && payload.get("recovery").is_some())
                     {
                         return Err(ReplayError::Invalid);
                     }
                 }
             }
+            check = "structure.snapshot";
             validate_signed_structure_slice(
                 &operation,
                 payload,
@@ -2065,6 +2083,7 @@ fn replay_basic_content_depth(
             }
             // These are only local preconditions. Full operation evaluation still
             // happens before any trusted journal result may be constructed.
+            check = "operation.shape";
             let input = operation.get("input").ok_or(ReplayError::Invalid)?;
             match kind.as_str() {
                 "BOOTSTRAP" if !operations.is_empty() => return Err(ReplayError::Invalid),
@@ -2100,6 +2119,7 @@ fn replay_basic_content_depth(
                     validate_role_policies_with_history(commit_policy_payload,&prior_objects,at,Some(instance),&mut role_history).map_err(|_|ReplayError::Invalid)?;
                 }
             }
+            check = "admin.preflight";
             let object_stage =
                 kind == "ADMIN" && string(payload, "action_id")? == "secure.protocol-object.stage";
             let package_stage =
@@ -2128,7 +2148,7 @@ fn replay_basic_content_depth(
                 )?;
             } else if kind == "ADMIN" {
                 validate_admin_preflight(&operation, payload, &latest_revisions)
-                    .map_err(|_| ReplayError::Invalid)?;
+                    .map_err(|error| ReplayError::Content { sequence, check: error.check() })?;
             } else if kind == "ACTION" {
                 let hash = string(payload, "policy_hash")?;
                 let policy = policies.get(hash.as_str()).ok_or(ReplayError::Invalid)?;
@@ -2264,7 +2284,9 @@ fn replay_basic_content_depth(
             }
             let mut batch = HashSet::new();
             for (object_index, object) in objects.iter().enumerate() {
+                check = "object.size";
                 validate_replayed_object_size(object, object_index, object_source.as_ref())?;
+                check = "object.shape";
                 let object_kind = utf16(object, "kind")?;
                 let id = utf16(object, "id")?;
                 let revision = integer(object, "revision")?;
@@ -2311,6 +2333,7 @@ fn replay_basic_content_depth(
                     && !package_stage
                     && !object_stage
                 {
+                    check = "protocol.manifest";
                     let format_ceiling = if integer(payload, "v")? == 3 {
                         integer(payload, "protocol_format_ceiling")?
                     } else {
@@ -2350,6 +2373,7 @@ fn replay_basic_content_depth(
                                 Some("SNAPSHOT_BEGIN" | "SNAPSHOT_PAGE" | "SNAPSHOT_END")
                             )))
             {
+                check = "install.provenance";
                 validate_signed_package_install(
                     &operation,
                     payload,
@@ -2371,6 +2395,7 @@ fn replay_basic_content_depth(
                     .ok_or(ReplayError::Invalid)?;
                 let mut candidate = prior_objects.clone();
                 candidate.extend(objects.iter().cloned());
+                check = "structure.object_bindings";
                 crate::structure_bindings::validate_object_bindings(contract, &candidate)
                     .map_err(|_| ReplayError::Invalid)?;
             }
@@ -2380,6 +2405,7 @@ fn replay_basic_content_depth(
                     .and_modify(|prior| *prior = (*prior).max(revision))
                     .or_insert(revision);
             }
+            check = "roles.policy";
             prior_objects.extend(objects.iter().cloned());
             let hash = string(payload, "policy_hash")?;
             let policy = policies.get(hash.as_str()).ok_or(ReplayError::Invalid)?;
@@ -2494,8 +2520,8 @@ fn replay_basic_content_depth(
             Ok(())
         })();
         step.map_err(|error| match error {
-            ReplayError::Chain(_) | ReplayError::Content(_) | ReplayError::ResourceLimit => error,
-            ReplayError::Invalid => ReplayError::Content(sequence),
+            ReplayError::Chain(_) | ReplayError::Content { .. } | ReplayError::ResourceLimit => error,
+            ReplayError::Invalid => ReplayError::Content { sequence, check },
         })?;
     }
     if let Some(batch) = migration_batch {
@@ -2712,6 +2738,17 @@ enum AdminPreflightError {
     Workspace,
     #[error("OBJECT_REVISION_INVALID")]
     Revision,
+}
+
+impl AdminPreflightError {
+    fn check(&self) -> &'static str {
+        match self {
+            Self::Kind => "admin.kind",
+            Self::Value => "admin.value",
+            Self::Workspace => "admin.workspace",
+            Self::Revision => "admin.revision",
+        }
+    }
 }
 
 /// Source-matched generic ADMIN preflight. Protocol object manifest, role,

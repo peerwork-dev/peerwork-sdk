@@ -31,8 +31,22 @@ pub enum PrivateInstallError {
     Invalid,
     #[error("package material exceeds the supported resource budget")]
     Resource,
+    #[error("inline install object is {bytes} bytes, exceeding the {limit}-byte wire limit; use authenticated protocol-object staging")]
+    InlineObjectTooLarge { bytes: usize, limit: usize },
     #[error("OS entropy or encrypted packet authoring failed")]
     Author,
+}
+
+fn validate_install_wire_objects(objects: &[WireValue]) -> Result<(), PrivateInstallError> {
+    for object in objects {
+        let bytes = canonical_wire_value(object, Path::SecureArtifact)
+            .map_err(|_| PrivateInstallError::Invalid)?.len();
+        let limit = crate::protocol_object_source::OBJECT_BYTES;
+        if bytes > limit {
+            return Err(PrivateInstallError::InlineObjectTooLarge { bytes, limit });
+        }
+    }
+    Ok(())
 }
 
 /// Validate candidate proof bytes only; signed stage ancestry remains mandatory.
@@ -70,7 +84,14 @@ pub fn verify_protocol_object_source_prefix(
         || !prior.contains_checkpoint(base, Some(&string(source, "head")?), prior.policy_hash()) {
         return Err(bad());
     }
-    let start = usize::try_from(base).map_err(|_| bad())?;
+    // Recovery retains signed commit numbering while omitting excluded
+    // operations from the content projection. Select the verified suffix by
+    // its length rather than treating a commit sequence as an array offset.
+    // A recovery inside the staging range cannot count as a staged part.
+    for recovery in prior.recoveries() {
+        if number(recovery, "marker_sequence")? > base { return Err(bad()); }
+    }
+    let start = prior.operations().len().checked_sub(count).ok_or_else(bad)?;
     let operations = prior.operations().get(start..).ok_or_else(bad)?;
     if operations.len() != count { return Err(bad()); }
     for (index, (operation, descriptor)) in operations.iter().zip(parts).enumerate() {
@@ -202,7 +223,7 @@ pub fn verify_saved_private_protocol_object_stage(
     let payload = commit.get("payload").ok_or_else(bad)?;
     let issued_at = number(payload, "issued_at")?;
     if number(policy, "issued_at")? > issued_at { return Err(bad()); }
-    let expected = obj(vec![("v", WireValue::Number(3.0)), ("workspace_id", s(&string(source, "workspace_id")?)),
+    let mut expected = obj(vec![("v", WireValue::Number(3.0)), ("workspace_id", s(&string(source, "workspace_id")?)),
         ("sequence", WireValue::Number((number(&current, "sequence")? + 1) as f64)),
         ("previous", s(&string(&current, "head")?)), ("policy_hash", s(&policy_hash)),
         ("epoch", WireValue::Number(number(policy, "epoch")? as f64)), ("actor_id", s(&actor)),
@@ -211,6 +232,9 @@ pub fn verify_saved_private_protocol_object_stage(
         ("protocol_format_ceiling", WireValue::Number(number(policy, "protocol_format_ceiling")? as f64)),
         ("structure", obj(vec![("v", WireValue::Number(1.0)), ("mode", s("DELTA")),
             ("records", WireValue::Array(vec![])), ("heads", WireValue::Array(vec![]))]))]);
+    if let Some(guard) = crate::guard_time::administrative_guard_context(policy).map_err(|_| bad())? {
+        upsert(&mut expected, "guard_time", guard)?;
+    }
     let WireValue::Object(fields) = payload else { return Err(bad()); };
     let context = WireValue::Object(fields.iter().filter(|(key, _)| !["body", "mode"].iter()
         .any(|name| key.iter().copied().eq(name.encode_utf16()))).cloned().collect());
@@ -226,6 +250,39 @@ pub fn verify_saved_private_protocol_object_stage(
             ("part_index", WireValue::Number(part_index as f64))]))])), ("objects", WireValue::Array(vec![part.clone()]))]);
     if canonical_wire_value(&operation, Path::SecureArtifact).map_err(|_| bad())?.as_bytes() != plaintext.as_slice() { return Err(bad()); }
     Ok(sha256_hex(commit_wire.as_bytes()))
+}
+
+pub struct PreparedPrivateProtocolObjectSource {
+    pub proof: WireValue,
+    pub parts: Vec<WireValue>,
+}
+
+/// Plan a complete source from the exact selected compiler value. This pure
+/// proposal grants no authority; runtime must supply the authenticated source.
+#[allow(clippy::too_many_arguments)]
+pub fn plan_private_direct_object_source(
+    material: &[u8], bindings: &[u8], root: &str, protocol: &str,
+    checkpoint: &[u8], policy: &[u8], prior: &[WireValue], instance: &str,
+    entrypoint: &str, grants: &[u8], disclose: &[u8], signing_key: &SigningKey,
+) -> Result<PreparedPrivateProtocolObjectSource, PrivateInstallError> {
+    let bad = || PrivateInstallError::Invalid;
+    let source = parse_wire_json_bounded(checkpoint, 32, 8192).map_err(|_| bad())?;
+    let signed = parse_wire_json_bounded(policy, 64, 196_608).map_err(|_| bad())?;
+    let payload = signed.get("payload").ok_or_else(bad)?;
+    let ceiling = number(payload, "protocol_format_ceiling")?;
+    let bindings_value = parse_wire_json_bounded(bindings, 32, 65_536).map_err(|_| bad())?;
+    let compiled = compile_package_closure_with_bindings_at_ceiling(material, &bindings_value, ceiling).map_err(|_| bad())?;
+    if compiled.package_digest() != root || compiled.protocol_digest() != protocol { return Err(bad()); }
+    let mut built = build_direct_install_objects_with_composition_at_ceiling(
+        compiled.manifest_wire(), compiled.composition(), protocol,
+        &string(&source, "workspace_id")?, instance, entrypoint, number(payload, "issued_at")?, ceiling,
+    ).map_err(|_| bad())?;
+    compiled.restore_policy_schema_order(&mut built.added).map_err(|_| bad())?;
+    let value = built.added.first().and_then(|p| p.get("value")).ok_or_else(bad)?;
+    let (proof, parts) = crate::protocol_object_source::prepare_protocol_object_source(value, &source).map_err(|_| bad())?;
+    verify_private_protocol_object_stage_material(material, bindings, root, protocol, &proof, &parts,
+        policy, prior, instance, entrypoint, grants, disclose, signing_key)?;
+    Ok(PreparedPrivateProtocolObjectSource { proof, parts })
 }
 
 /// Author one retained original object-source part after the caller proves its
@@ -1457,6 +1514,7 @@ fn prepare_private_package_install_begin_with_sources(
         if canonical_wire_value(&wire_added[0], Path::SecureArtifact).map_err(|_| bad())?.len()
             > crate::protocol_object_source::OBJECT_BYTES { return Err(PrivateInstallError::Resource); }
     }
+    validate_install_wire_objects(&wire_added)?;
     let begin =
         build_direct_install_begin(&end, &wire_added, instance_id, &digest, entrypoint, &snapshot)
             .map_err(|_| bad())?;
@@ -1797,6 +1855,7 @@ fn prepare_private_direct_install_begin_with_source(
         if canonical_wire_value(&wire_added[0], Path::SecureArtifact).map_err(|_| bad())?.len()
             > crate::protocol_object_source::OBJECT_BYTES { return Err(PrivateInstallError::Resource); }
     }
+    validate_install_wire_objects(&wire_added)?;
     let begin = build_direct_install_begin(
         &current,
         &wire_added,
@@ -2717,5 +2776,26 @@ mod tests {
         assert!(canonical_package_source_material(
             serde_json::to_string(&changed).unwrap().as_bytes(), source_wire.as_bytes(),
         ).is_err());
+    }
+}
+
+#[cfg(test)]
+mod install_wire_limit_tests {
+    use super::*;
+
+    #[test]
+    fn exact_canonical_byte_limit_is_checked_before_authoring() {
+        let make = |text: String| obj(vec![("value", s(&text))]);
+        let empty_bytes = canonical_wire_value(&make(String::new()), Path::SecureArtifact).unwrap().len();
+        let limit = crate::protocol_object_source::OBJECT_BYTES;
+        let exact = make("x".repeat(limit - empty_bytes));
+        assert!(validate_install_wire_objects(&[exact]).is_ok());
+        let too_big = make("x".repeat(limit - empty_bytes + 1));
+        assert_eq!(validate_install_wire_objects(&[too_big]),
+            Err(PrivateInstallError::InlineObjectTooLarge { bytes: limit + 1, limit }));
+        // UTF-8 byte count, not Rust character count or JS UTF-16 length.
+        let unicode = make("界".repeat(limit / 3));
+        assert!(matches!(validate_install_wire_objects(&[unicode]),
+            Err(PrivateInstallError::InlineObjectTooLarge { .. })));
     }
 }

@@ -257,7 +257,7 @@ impl SecureReadProfile {
             let (json, floor) =
                 match access.read_checked_generation(cancel, profile.floor.as_ref(), false) {
                     Ok(checked) => checked,
-                    Err(error @ SecureReadAccessError::VerificationFailed) => {
+                    Err(error @ (SecureReadAccessError::VerificationFailed | SecureReadAccessError::VerificationDetail{..})) => {
                         // A complete but invalid candidate must not be resumed forever.
                         // Keep the last verified slot and floor; the next read starts a
                         // new signed snapshot after the remote source recovers.
@@ -319,7 +319,7 @@ impl SecureReadProfile {
         let access = self.access(&saved, slot);
         let (replayed, checked) = access
             .replay_checked_cached_generation(cancel, floor)
-            .map_err(E::from)?;
+            .map_err(|error| E::from(error.verification_stage("profile.cached")))?;
         if &checked != floor {
             return Err(E::from(SecureReadAccessError::Profile));
         }
@@ -660,10 +660,9 @@ mod tests {
         })
         .await
         .unwrap();
-        assert_eq!(
-            refusal.unwrap_err(),
-            SecureReadAccessError::VerificationFailed
-        );
+        assert!(matches!(refusal.unwrap_err(),
+            SecureReadAccessError::VerificationDetail { class: "checkpoint", check: "chain.floor", .. }
+        ));
         let store = SecureStateStore::open(&config.state_dir.join("read.profile")).unwrap();
         let saved: ProfileDocument =
             serde_json::from_slice(&store.read_exact().unwrap().unwrap()).unwrap();

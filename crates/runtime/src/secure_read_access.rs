@@ -73,6 +73,13 @@ pub enum SecureReadAccessError {
     ResourceLimit,
     #[error("signed journal verification failed or this history is not yet supported")]
     VerificationFailed,
+    #[error("signed journal verification failed (stage={stage}, class={class}, check={check}, sequence={sequence:?})")]
+    VerificationDetail {
+        stage: &'static str,
+        class: &'static str,
+        check: &'static str,
+        sequence: Option<u64>,
+    },
     #[error("secure workspace is not active for verified reads")]
     NotActive,
     #[error("secure read was cancelled")]
@@ -84,6 +91,13 @@ pub enum SecureReadAccessError {
 }
 
 impl SecureReadAccessError {
+    pub(crate) fn verification_stage(self, stage: &'static str) -> Self {
+        match self {
+            Self::VerificationDetail { class, check, sequence, .. } =>
+                Self::VerificationDetail { stage, class, check, sequence },
+            other => other,
+        }
+    }
     pub fn code(&self) -> &'static str {
         match self {
             Self::Discovery => "DISCOVERY_FAILED",
@@ -93,7 +107,7 @@ impl SecureReadAccessError {
             Self::ReadFailed => "READ_FAILED",
             Self::CachedUnavailable => "CACHED_STATE_UNAVAILABLE",
             Self::ResourceLimit => "RESOURCE_LIMIT",
-            Self::VerificationFailed => "VERIFICATION_FAILED",
+            Self::VerificationFailed | Self::VerificationDetail{..} => "VERIFICATION_FAILED",
             Self::NotActive => "NOT_ACTIVE",
             Self::Cancelled => "CANCELLED",
             Self::Runtime => "RUNTIME_FAILED",
@@ -346,14 +360,14 @@ impl SecureReadAccess {
             .map_err(map_read_error)?;
         let replayed = replay_authenticated_pages_with_budget(&pages, &lifecycle, budget)
             .map_err(map_verify_error)?;
-        if floor.is_some_and(|saved| {
+        if let Some(saved) = floor.filter(|saved| {
             !replayed.replay().contains_checkpoint(
                 saved.sequence,
                 saved.head.as_deref(),
                 &saved.policy_hash,
             )
         }) {
-            return Err(SecureReadAccessError::VerificationFailed);
+            return Err(SecureReadAccessError::VerificationDetail{stage:"checkpoint.floor",class:"checkpoint",check:"chain.floor",sequence:Some(saved.sequence)});
         }
         if require_active {
             replayed.verified_read().map_err(map_verify_error)?;
@@ -412,7 +426,10 @@ fn map_verify_error(error: VerifiedReadError) -> SecureReadAccessError {
         VerifiedReadError::ResourceLimit => SecureReadAccessError::ResourceLimit,
         VerifiedReadError::NotActive => SecureReadAccessError::NotActive,
         VerifiedReadError::Page(error) => map_read_error(error),
-        _ => SecureReadAccessError::VerificationFailed,
+        VerifiedReadError::Replay(peerwork_core::replayed_secure_journal::JournalReplayError::Detailed{class,sequence,check}) => SecureReadAccessError::VerificationDetail{stage:"journal.replay",class,sequence,check},
+        VerifiedReadError::Replay(_) => SecureReadAccessError::VerificationDetail{stage:"journal.replay",class:"replay",sequence:None,check:"journal.shape"},
+        VerifiedReadError::Identity => SecureReadAccessError::VerificationDetail{stage:"journal.provenance",class:"identity",sequence:None,check:"source.binding"},
+        VerifiedReadError::Content => SecureReadAccessError::VerificationDetail{stage:"journal.artifacts",class:"shape",sequence:None,check:"artifact.shape"},
     }
 }
 

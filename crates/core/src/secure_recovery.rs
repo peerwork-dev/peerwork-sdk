@@ -207,6 +207,39 @@ fn v3_range(
     Ok(())
 }
 
+/// Narrow policy restoration for a single invalid install BEGIN. Membership,
+/// epoch keys, format and guard-time cannot change through this disposition.
+pub(crate) fn validate_install_recovery_policy(
+    current: &WireValue, next: &WireValue, base: &WireValue,
+    first: &WireValue, recovery: &WireValue,
+) -> Result<()> {
+    let same = |a: &WireValue, b: &WireValue| -> Result<bool> {
+        Ok(canonical_wire_value(a, Path::SecureArtifact).map_err(|_| InvalidRecovery)?
+            == canonical_wire_value(b, Path::SecureArtifact).map_err(|_| InvalidRecovery)?)
+    };
+    let current_structure = current.get("structure").unwrap_or(&WireValue::Null);
+    let next_structure = next.get("structure").unwrap_or(&WireValue::Null);
+    if same(current_structure, next_structure)? { return Ok(()); }
+    let base_cp = field(recovery, "base")?;
+    let through_cp = field(recovery, "through")?;
+    if number(current, "v")? != 3 || number(next, "v")? != 3 || number(base, "v")? != 3
+        || text(current, "visibility")? != "PRIVATE"
+        || text(next, "structure_mode")? != "STRUCTURED" || text(base, "structure_mode")? != "STRUCTURED"
+        || number(through_cp, "sequence")? != number(base_cp, "sequence")? + 1
+        || number(first, "sequence")? != number(through_cp, "sequence")?
+        || text(first, "action_id")? != "secure.structure.begin"
+        || text(first, "policy_hash")? != text(through_cp, "policy_hash")?
+        || !same(next_structure, field(base, "structure")?)?
+    { return Err(InvalidRecovery); }
+    let fixed = |p: &WireValue| -> Result<WireValue> {
+        let WireValue::Object(fields) = p else { return Err(InvalidRecovery); };
+        Ok(WireValue::Object(fields.iter().filter(|(key, _)| !["structure", "issued_at", "version", "previous_policy", "effective_sequence"]
+            .iter().any(|name| key.iter().copied().eq(name.encode_utf16()))).cloned().collect()))
+    };
+    if !same(&fixed(current)?, &fixed(next)?)? { return Err(InvalidRecovery); }
+    Ok(())
+}
+
 pub(crate) fn preflight_recovery(
     policy_wires: &[&[u8]],
     commit_wires: &[&[u8]],
@@ -332,6 +365,10 @@ pub(crate) fn preflight_recovery(
                 return Err(InvalidRecovery);
             }
             v3_range(&commits, base, through, &chain.owner_id, &chain.owner_key)?;
+            let current = policies.get(text(through_cp, "policy_hash")?.as_str()).ok_or(InvalidRecovery)?;
+            let base_policy = policies.get(text(base_cp, "policy_hash")?.as_str()).ok_or(InvalidRecovery)?;
+            validate_install_recovery_policy(field(current, "payload")?, policy,
+                field(base_policy, "payload")?, &commits[base_index + 1], r)?;
         }
         segments.push(RecoverySegment {
             base,
