@@ -1,5 +1,11 @@
 # Authorize a workspace browser with the native SDK
 
+> Historical legacy-mode guide. Its online execution/install/admission APIs are
+> retired on the current service. Use the [current SDK integration](../README.md),
+> [backend access](backend-structure-access-candidate.md) and
+> [explicit legacy migration](legacy-space-migration-candidate.md) guides.
+> An SDK upgrade does not re-enable these old endpoints.
+
 Availability: the new Agent-context producer is prepared for the 0.1.2 experimental
 candidate. Older published 0.1.1 experimental artifacts do not contain it. Use
 an artifact that actually exports `open_context`/`openContext`/`context operate`.

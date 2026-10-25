@@ -1,8 +1,10 @@
-# Canonical body-key epochs — unreleased candidate
+# Canonical body-key epochs
 
-This document describes source and local development packages, not a published
-SDK or deployed production capability. It extends the candidate
-[access workflow](backend-structure-access-candidate.md).
+Service support: production `backend-structure-v1`, deployed 2026-10-25.
+SDK/CLI support: [0.2.1 release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.2.1) for Linux x86_64
+GNU (glibc 2.28+), Node 22+ and Python 3.11+. Require the named capability in
+service discovery. Other binary platforms are not part of this release.
+The historical `-candidate` filename is retained to preserve documentation links.
 
 ## Model
 

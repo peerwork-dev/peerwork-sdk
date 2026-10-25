@@ -1,11 +1,10 @@
-# Retained-history key delivery (unreleased source candidate)
+# Retained-history key delivery
 
-This is an unreleased candidate for `backend-structure-v1`. It requires the
-service capability `owner-retained-key-delivery-v1`, PostgreSQL schema8, native
-key-cache schema4 and native intent-journal schema6. Current local0.1.11 package
-filenames are development artifacts. They do not establish support in published
-SDK0.1.11 or production. Service, SDK/CLI, browser assets and public documentation
-must be delivered together before production use.
+Service support: production `backend-structure-v1`, deployed 2026-10-25.
+SDK/CLI support: [0.2.1 release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.2.1) for Linux x86_64
+GNU (glibc 2.28+), Node 22+ and Python 3.11+. Require the named capability in
+service discovery. Other binary platforms are not part of this release.
+The historical `-candidate` filename is retained to preserve documentation links.
 
 ## One Owner operation
 

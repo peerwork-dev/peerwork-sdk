@@ -1,8 +1,10 @@
-# One-off legacy workspace migration — unreleased candidate
+# One-off legacy workspace migration
 
-This command is implemented in the source candidate. Published SDK 0.1.11 and
-production do not provide it. This is an operator-assisted migration of frozen
-legacy data, independent of ordinary protocol-version changes.
+Service support: production `backend-structure-v1`, deployed 2026-10-25.
+SDK/CLI support: [0.2.1 release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.2.1) for Linux x86_64
+GNU (glibc 2.28+), Node 22+ and Python 3.11+. Require the named capability in
+service discovery. Other binary platforms are not part of this release.
+The historical `-candidate` filename is retained to preserve documentation links.
 
 All legacy spaces can remain archived and unavailable while the new runtime
 serves new spaces. Their original signed history and ciphertext remain intact.

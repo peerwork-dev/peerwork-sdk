@@ -1,9 +1,10 @@
-# Workspace deletion — source candidate
+# Workspace deletion
 
-This capability is implemented and under local qualification. This document does
-not establish production availability or a released SDK version. Require
-`durable-workspace-deletion-v1` in discovery; legacy deletion endpoints remain
-retired. The supported execution profile is `backend-structure-v1`.
+Service support: production `backend-structure-v1`, deployed 2026-10-25.
+SDK/CLI support: [0.2.1 release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.2.1) for Linux x86_64
+GNU (glibc 2.28+), Node 22+ and Python 3.11+. Require the named capability in
+service discovery. Other binary platforms are not part of this release.
+The historical `-candidate` filename is retained to preserve documentation links.
 
 ## Submit once and wait
 

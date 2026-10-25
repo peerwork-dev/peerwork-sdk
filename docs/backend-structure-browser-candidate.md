@@ -1,11 +1,10 @@
-# Browser access — unreleased candidate
+# Browser access
 
-This is source and local qualification work. It does not announce a deployed
-service, published SDK release or finished PUBLIC workflow. The matching service
-advertises `browser-structure-access-v1`, `owner-pinned-browser-access-v1`
-and `owner-approved-key-floor-v1` in addition to the current structure,
-access and body-key capabilities. Local development packages still carry a
-0.1.11 development version; they must not replace published 0.1.11 artifacts.
+Service support: production `backend-structure-v1`, deployed 2026-10-25.
+SDK/CLI support: [0.2.1 release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.2.1) for Linux x86_64
+GNU (glibc 2.28+), Node 22+ and Python 3.11+. Require the named capability in
+service discovery. Other binary platforms are not part of this release.
+The historical `-candidate` filename is retained to preserve documentation links.
 
 ## Open and approve
 

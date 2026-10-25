@@ -1,9 +1,10 @@
-# Member-authored PUBLIC actions — unreleased candidate
+# Member-authored PUBLIC actions
 
-This capability is not yet deployed or published as an SDK release. It requires
-`backend-structure-v1` and service capability `member-public-actions-v1`.
-The source candidate uses PostgreSQL schema9, with an explicit additive8-to9
-migration. Local0.1.11 development artifacts must not replace published0.1.11.
+Service support: production `backend-structure-v1`, deployed 2026-10-25.
+SDK/CLI support: [0.2.1 release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.2.1) for Linux x86_64
+GNU (glibc 2.28+), Node 22+ and Python 3.11+. Require the named capability in
+service discovery. Other binary platforms are not part of this release.
+The historical `-candidate` filename is retained to preserve documentation links.
 
 A member can execute a granted protocol action and publish selected outputs in
 one signed transaction. The Owner does not review or republish each message.

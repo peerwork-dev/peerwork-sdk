@@ -1,5 +1,11 @@
 # PRIVATE protocol installation: transport and recovery
 
+> Historical legacy-mode guide. Its online execution/install/admission APIs are
+> retired on the current service. Use the [current SDK integration](../README.md),
+> [backend access](backend-structure-access-candidate.md) and
+> [explicit legacy migration](legacy-space-migration-candidate.md) guides.
+> An SDK upgrade does not re-enable these old endpoints.
+
 Available in the [published **0.1.11 experimental native release**](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.1.11-experimental.39718835871).
 Source: `98594c558454a489b25e4a74f0c333aecc44eb49`. Version 0.1.10 does not provide the methods below.
 The matching policy-restoring service update is deployed at `api.peerwork.dev`.

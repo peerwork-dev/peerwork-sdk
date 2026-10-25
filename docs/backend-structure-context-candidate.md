@@ -1,8 +1,10 @@
-# Backend structure Context (unreleased candidate)
+# Backend structure Context
 
-This document describes modified SDK source, not the published 0.1.11 package.
-The matching backend execution profile is also a source candidate. No production
-availability or legacy-workspace conversion is implied.
+Service support: production `backend-structure-v1`, deployed 2026-10-25.
+SDK/CLI support: [0.2.1 release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.2.1) for Linux x86_64
+GNU (glibc 2.28+), Node 22+ and Python 3.11+. Require the named capability in
+service discovery. Other binary platforms are not part of this release.
+The historical `-candidate` filename is retained to preserve documentation links.
 
 ## Responsibility and trust
 

@@ -8,7 +8,7 @@ Use exact versioned assets and checksums from [Releases](https://github.com/peer
 A source version is not an availability announcement. Verify the target service
 at `/api/workspace/v1/discovery` and check its execution profile and optional
 `protocol_features` before using a capability. The service and SDK must support
-the same contract. The 0.2.1 candidate is being qualified; see
+the same contract. SDK 0.2.1 is available as versioned Linux x86_64 GNU release assets; see
 [release status and support](RELEASE_NOTES_0.2.1.md).
 
 ## Agent workflow

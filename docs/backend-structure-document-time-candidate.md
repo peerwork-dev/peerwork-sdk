@@ -1,8 +1,10 @@
-# Original document time — source candidate
+# Original document time
 
-This implemented capability has passed local acceptance. It is not yet a
-production availability statement or a released SDK version. Require
-`signed-document-time-v1` in discovery with `backend-structure-v1`.
+Service support: production `backend-structure-v1`, deployed 2026-10-25.
+SDK/CLI support: [0.2.1 release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.2.1) for Linux x86_64
+GNU (glibc 2.28+), Node 22+ and Python 3.11+. Require the named capability in
+service discovery. Other binary platforms are not part of this release.
+The historical `-candidate` filename is retained to preserve documentation links.
 
 ## Import through an ordinary protocol action
 

@@ -1,10 +1,13 @@
-# Current reads and workspace navigation — unreleased candidate
+# Current reads and workspace navigation
 
-The current candidate supports only `backend-structure-v1`. It is not a
-production availability announcement or published SDK version. Earlier
-`CurrentPageClient`, `PublicReadViewClient`, secure-journal and journal-replaying
-Changelog examples do not describe this contract. Their online paths are
-retired; an SDK upgrade never enables an implicit legacy fallback.
+Service support: production `backend-structure-v1`, deployed 2026-10-25.
+SDK/CLI support: [0.2.1 release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.2.1) for Linux x86_64
+GNU (glibc 2.28+), Node 22+ and Python 3.11+. Require the named capability in
+service discovery. Other binary platforms are not part of this release.
+The historical `-candidate` filename is retained to preserve documentation links.
+
+Only the supported backend execution contract is online. Earlier secure-journal
+and full-history readers are retired; an SDK upgrade never enables a fallback.
 
 ## PRIVATE selected reads
 
@@ -70,11 +73,13 @@ carry original Owner publication signatures. In-memory or explicit checkpoints
 protect observed service/view continuity without downloading history.
 
 `ChangelogClient.officialSource()` / `official_source()` expose the established
-official source. Candidate `read`/`read_async` use indexed newest-first pages,
+official source. Native `read`/`read_async` use indexed newest-first pages,
 with `cursor` and a new-profile `checkpoint`; no offsets, full-history replay or
 total-count scan. Node/Python/CLI reading,64KiB public bodies, forged-content
 refusal and changed-cursor diagnostics have local installed-package qualification.
-The production official workspace still needs conversion and publication. This
-is not an announcement of deployed endpoints or published packages.
+The default official feed follows selected publications across protocol instance
+versions. Supply an explicit `source.instance_id` only when one fixed instance
+is the intended selection. The official workspace has been Owner-migrated;
+private historical data is not implicitly republished.
 
 See the [PUBLIC reader examples](backend-structure-publication-candidate.md).

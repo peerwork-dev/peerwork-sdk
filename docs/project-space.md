@@ -17,12 +17,12 @@ Start from the `peerwork-dev/peerwork-sdk` repository under the official GitHub
 organization, rather than a file copied into an arbitrary workspace. For a
 specific citation, use a GitHub permalink to the published reference revision.
 
-Verify the workspace's complete signed public journal, then compare its Owner
-actor and key with this reference. A signed journal proves key control and
-history integrity; a workspace title, an “admin” label, or a self-published
-fingerprint does not establish official affiliation. The public viewer may
-verify the journal without independently pinning its Owner to this reference;
-this document does not claim an automatic official-identity badge.
+The current publication reader verifies fresh service selection receipts and
+the selected Owner publication signatures. Compare the Owner actor and key with
+this reference. A workspace title or self-published fingerprint does not establish
+official affiliation. Old journal-replay readers are retired. A source author's
+signature, a publisher's explicit disclosure and project affiliation are
+different claims; the reader preserves these distinctions.
 
 This reference establishes official project ownership of the space. It does
 not make every contribution an official statement: check each record's author
@@ -31,10 +31,13 @@ and protocol role. SDK downloads and release checksums remain on
 
 ## Publication entries
 
-- [Changelog](https://peerwork.dev/workspaces/_DUzeGzLjP4ZMxvNq9Nh93oLv4GPi0bGn76xYzb0ZsU/instances/d-U9W6Hb7Uf3sUfYzI_5No5NPHFPStXtVKc_3SRziRk)
+- [Changelog](https://peerwork.dev/workspaces/_DUzeGzLjP4ZMxvNq9Nh93oLv4GPi0bGn76xYzb0ZsU/instances/6kmjr5aT1n20ynkF33CyfALW4naIkRCs7BMXw8vINaM)
 - [Dev Blog](https://peerwork.dev/workspaces/_DUzeGzLjP4ZMxvNq9Nh93oLv4GPi0bGn76xYzb0ZsU/instances/aA6rcqI4NgS_l6VG1sDcpdEZbi11USy6O62Sf2tpO4o)
 - [External feedback](https://peerwork.dev/workspaces/_DUzeGzLjP4ZMxvNq9Nh93oLv4GPi0bGn76xYzb0ZsU/instances/Zb94tH2yigNK4D3mnX4_Zeb_wxAT18BE050pykmWKWs)
 
-The [SDK 0.1.2 experimental changelog](https://peerwork.dev/workspaces/_DUzeGzLjP4ZMxvNq9Nh93oLv4GPi0bGn76xYzb0ZsU/records/NWsJpmDlrc5mZ0izImnolZkIi-P8W9cWLH4HVA3mQkI)
-is published as revision 1. Dev Blog starts with the public project introduction.
-The feedback instance is empty; writing requires admission and scoped grants.
+[Backend structure execution and SDK 0.2.1](https://peerwork.dev/workspaces/_DUzeGzLjP4ZMxvNq9Nh93oLv4GPi0bGn76xYzb0ZsU/instances/6kmjr5aT1n20ynkF33CyfALW4naIkRCs7BMXw8vINaM/records/Kf1hMKWSq7AHEkNUmxtRFpmVvJQZcagOH-Af4pZVbBY?revision=1)
+is an explicitly published selected entry. Legacy history remains preserved
+under the Owner-authorized migration. Public views expose only newly selected
+entries; old memberships, drafts and publication choices are not automatically
+restored. Historical Dev Blog and feedback instance IDs identify archived
+protocol versions, not an assertion that their contents are currently published.

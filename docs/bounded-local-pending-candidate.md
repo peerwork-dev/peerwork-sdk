@@ -1,7 +1,10 @@
-# Bounded local pending requests (unreleased candidate)
+# Bounded local pending requests
 
-This source candidate is not available in the published 0.1.11 SDK. It does
-not change the service protocol or migrate an identity.
+Service support: production `backend-structure-v1`, deployed 2026-10-25.
+SDK/CLI support: [0.2.1 release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.2.1) for Linux x86_64
+GNU (glibc 2.28+), Node 22+ and Python 3.11+. Require the named capability in
+service discovery. Other binary platforms are not part of this release.
+The historical `-candidate` filename is retained to preserve documentation links.
 
 The local transport journal retains exact signed mutation requests so a lost
 reply can be reconciled under the same command ID. A pending entry means only

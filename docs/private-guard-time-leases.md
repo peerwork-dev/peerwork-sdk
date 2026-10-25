@@ -1,5 +1,11 @@
 # Bounded PRIVATE leases using trusted transaction time
 
+> Historical legacy-mode guide. Its online execution/install/admission APIs are
+> retired on the current service. Use the [current SDK integration](../README.md),
+> [backend access](backend-structure-access-candidate.md) and
+> [explicit legacy migration](legacy-space-migration-candidate.md) guides.
+> An SDK upgrade does not re-enable these old endpoints.
+
 This guide covers the `time-add-guard-window-v1` expression profile on top of
 `signed-private-guard-time-v1`. It expresses bounded acquisition, renewal and
 reclaim using the same signed transaction admission time **T**. The expiry is

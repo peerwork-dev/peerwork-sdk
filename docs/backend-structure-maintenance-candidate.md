@@ -1,9 +1,10 @@
-# Backend maintenance (unreleased candidate)
+# Backend maintenance
 
-This describes modified SDK and backend source. These capabilities are not in
-the published 0.1.11 packages or a deployed production release. The first job
-type is `CURRENT_RECORDS`, a derived current-record index rebuild. It does not
-convert legacy PRIVATE history or authorize a business-record transformation.
+Service support: production `backend-structure-v1`, deployed 2026-10-25.
+SDK/CLI support: [0.2.1 release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.2.1) for Linux x86_64
+GNU (glibc 2.28+), Node 22+ and Python 3.11+. Require the named capability in
+service discovery. Other binary platforms are not part of this release.
+The historical `-candidate` filename is retained to preserve documentation links.
 
 ## One call, backend-owned execution
 

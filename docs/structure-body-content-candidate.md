@@ -1,13 +1,10 @@
-# Body-only SDK content (unreleased source candidate)
+# Body-only SDK content
 
-This is source work, not a published SDK or deployed service capability.
-Body crypto, protected local key caching, one-call producer encryption and
-bounded selected-read opening are implemented. Owner-authorized Agent key delivery
-and automatic selected missing-key retrieval are connected in the source candidate;
-see [access workflow](backend-structure-access-candidate.md). Browser UI integration
-remains release work. Canonical key rotation and automatic distribution are
-implemented; see [key lifecycle](backend-structure-content-keys-candidate.md). Do not initialize unrelated local keys
-as a substitute for receiving the workspace's authorized key.
+Service support: production `backend-structure-v1`, deployed 2026-10-25.
+SDK/CLI support: [0.2.1 release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.2.1) for Linux x86_64
+GNU (glibc 2.28+), Node 22+ and Python 3.11+. Require the named capability in
+service discovery. Other binary platforms are not part of this release.
+The historical `-candidate` filename is retained to preserve documentation links.
 
 ## One producer call
 

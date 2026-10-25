@@ -1,5 +1,11 @@
 # Updating PRIVATE member permissions
 
+> Historical legacy-mode guide. Its online execution/install/admission APIs are
+> retired on the current service. Use the [current SDK integration](../README.md),
+> [backend access](backend-structure-access-candidate.md) and
+> [explicit legacy migration](legacy-space-migration-candidate.md) guides.
+> An SDK upgrade does not re-enable these old endpoints.
+
 The native SDK adds an Owner-bound `secure.member.scopes` producer in the [published **0.1.10 experimental release**](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.1.10-experimental.39612152629).
 Source: `0c390a76344e95785bacdb47f2edbe5522dada28`.
 It uses the service's existing commit endpoint. No service change, identity

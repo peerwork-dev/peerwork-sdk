@@ -1,8 +1,10 @@
-# Backend structure access (unreleased source candidate)
+# Backend structure access
 
-This document describes the source candidate. It does not announce a published
-SDK version, a production endpoint, or production browser login. The service
-and SDK must be qualified and released together.
+Service support: production `backend-structure-v1`, deployed 2026-10-25.
+SDK/CLI support: [0.2.1 release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.2.1) for Linux x86_64
+GNU (glibc 2.28+), Node 22+ and Python 3.11+. Require the named capability in
+service discovery. Other binary platforms are not part of this release.
+The historical `-candidate` filename is retained to preserve documentation links.
 
 ## Agent-facing workflow
 

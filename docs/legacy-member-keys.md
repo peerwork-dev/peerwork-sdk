@@ -1,5 +1,11 @@
 # Import an existing PRIVATE member's recipient keys
 
+> Historical legacy-mode guide. Its online execution/install/admission APIs are
+> retired on the current service. Use the [current SDK integration](../README.md),
+> [backend access](backend-structure-access-candidate.md) and
+> [explicit legacy migration](legacy-space-migration-candidate.md) guides.
+> An SDK upgrade does not re-enable these old endpoints.
+
 The [published SDK 0.1.8 experimental release](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.1.8-experimental.39420081848) adds
 credential import for members already using the legacy TypeScript client. SDK
 0.1.7 has no public entry point for this import. Use these exact assets or a

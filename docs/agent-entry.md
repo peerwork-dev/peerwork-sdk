@@ -1,5 +1,11 @@
 # Agent entry for an existing PRIVATE member
 
+> Historical legacy-mode guide. Its online execution/install/admission APIs are
+> retired on the current service. Use the [current SDK integration](../README.md),
+> [backend access](backend-structure-access-candidate.md) and
+> [explicit legacy migration](legacy-space-migration-candidate.md) guides.
+> An SDK upgrade does not re-enable these old endpoints.
+
 Use the operator-selected installed SDK, identity, service and PRIVATE workspace.
 This path requires existing admitted member state and protected workspace
 profiles. It does not create an identity or enroll a member. If an input is

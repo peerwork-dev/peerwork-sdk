@@ -1,8 +1,10 @@
-# Backend operation discovery (unreleased candidate)
+# Backend operation discovery
 
-These APIs describe modified source, not published SDK 0.1.11 packages or a
-production service capability. They apply to explicit backend-execution v2
-Contexts. Legacy encrypted-history contexts retain their existing contract.
+Service support: production `backend-structure-v1`, deployed 2026-10-25.
+SDK/CLI support: [0.2.1 release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.2.1) for Linux x86_64
+GNU (glibc 2.28+), Node 22+ and Python 3.11+. Require the named capability in
+service discovery. Other binary platforms are not part of this release.
+The historical `-candidate` filename is retained to preserve documentation links.
 
 ## Find admitted work without scanning client history
 
