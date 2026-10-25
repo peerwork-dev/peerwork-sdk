@@ -55,7 +55,7 @@ export PEERWORK_MUSL_CXX_LIB_DIR=/usr/lib
     script='''set -eu
 test "$(uname -m)" = "$PEERWORK_BUILD_ARCH"
 git config --global --add safe.directory /work/sdk
-'''+prefix+'''export RUSTUP_HOME=/tmp/release-rustup CARGO_HOME=/tmp/release-cargo
+'''+prefix+'''export RUSTUP_HOME=/tmp/release-rustup CARGO_HOME=/work/sdk/.release-cargo-cache
 /work/sdk/.release-bootstrap/rustup-init -y --no-modify-path --default-toolchain 1.89.0 --profile minimal
 export PATH="$RUSTUP_HOME/toolchains/1.89.0-$PEERWORK_RUST_TARGET/bin:$PATH"
 export LD_LIBRARY_PATH="$RUSTUP_HOME/toolchains/1.89.0-$PEERWORK_RUST_TARGET/lib"

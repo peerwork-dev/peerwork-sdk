@@ -13,9 +13,12 @@ pub struct ChangelogSource{
  #[serde(default)]pub allow_loopback_http:bool,
  #[serde(default)]pub transport:TransportOptions,
 }
+// The official feed follows selected publications across protocol versions.
+// Callers may explicitly pin one instance; the project default must not pin an
+// old protocol instance and silently hide the next release.
 pub fn official_source()->ChangelogSource{ChangelogSource{
  origin:"https://peerwork.dev".into(),browser_origin:"https://peerwork.dev".into(),control_origin:"https://api.peerwork.dev".into(),
- workspace_id:"_DUzeGzLjP4ZMxvNq9Nh93oLv4GPi0bGn76xYzb0ZsU".into(),owner_actor_id:"g4h4CplPUi4dCpjT69jLjC9CyG-zkGDpCMj4RSoUcWM".into(),owner_key_id:"xoIfxp8-t6D5Vy1kC-DaT82g5hlFH8H2JmOYNWZYhxM".into(),instance_id:Some("d-U9W6Hb7Uf3sUfYzI_5No5NPHFPStXtVKc_3SRziRk".into()),allow_loopback_http:false,transport:TransportOptions::default()}}
+ workspace_id:"_DUzeGzLjP4ZMxvNq9Nh93oLv4GPi0bGn76xYzb0ZsU".into(),owner_actor_id:"g4h4CplPUi4dCpjT69jLjC9CyG-zkGDpCMj4RSoUcWM".into(),owner_key_id:"xoIfxp8-t6D5Vy1kC-DaT82g5hlFH8H2JmOYNWZYhxM".into(),instance_id:None,allow_loopback_http:false,transport:TransportOptions::default()}}
 #[derive(Clone,Debug,Deserialize,Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChangelogCheckpoint(pub publication_read::Checkpoint);
@@ -49,6 +52,6 @@ pub fn navigation_json(operation:&str,input:&str,cancel:&CancellationToken)->Str
 }
 #[cfg(test)]mod tests{
  use super::*;
- #[test]fn official_source_is_explicit_and_has_no_identity(){let v=navigation_json("changelog.source","{}",&CancellationToken::new());let v:Value=serde_json::from_str(&v).unwrap();assert_eq!(v["ok"],true);assert_eq!(v["value"]["source"]["origin"],"https://peerwork.dev");assert!(v.to_string().find("identity_path").is_none());}
+ #[test]fn official_source_is_explicit_and_has_no_identity(){let v=navigation_json("changelog.source","{}",&CancellationToken::new());let v:Value=serde_json::from_str(&v).unwrap();assert_eq!(v["ok"],true);assert_eq!(v["value"]["source"]["origin"],"https://peerwork.dev");assert!(v.to_string().find("identity_path").is_none());assert!(v["value"]["source"]["instance_id"].is_null());}
  #[test]fn invalid_inputs_do_not_fetch(){for input in [r#"{"limit":0}"#,r#"{"limit":101}"#,r#"{"unexpected":true}"#]{let v:Value=serde_json::from_str(&navigation_json("changelog.read",input,&CancellationToken::new())).unwrap();assert_eq!(v["ok"],false);}}
 }

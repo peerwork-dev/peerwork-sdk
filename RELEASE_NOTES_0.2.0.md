@@ -1,6 +1,7 @@
 # SDK 0.2.0 — backend structure execution
 
-Status: source candidate; package publication and production cutover are pending.
+Status: superseded source candidate; no 0.2.0 package release was published.
+Use the 0.2.1 release notes for the delivery candidate.
 This file is updated with verified artifact links and support when delivered.
 
 This release changes the execution contract to `backend-structure-v1`. Rules
