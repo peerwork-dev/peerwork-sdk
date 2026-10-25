@@ -84,6 +84,21 @@ fn identity_create_json(path: &str) -> PyResult<String> {
 }
 
 #[pyfunction]
+fn prepare_owner_checkpoint_json(py:Python<'_>,request:String)->String{
+    py.allow_threads(move||peerwork_runtime::owner_checkpoint::prepare_owner_checkpoint_json(&request))
+}
+
+#[pyfunction]
+fn inspect_owner_cache_json(py:Python<'_>,request:String)->String{
+    py.allow_threads(move||peerwork_runtime::owner_cache_review::inspect_owner_cache_json(&request))
+}
+
+#[pyfunction]
+fn plan_owner_checkpoint_from_cache_json(py:Python<'_>,request:String)->String{py.allow_threads(move||peerwork_runtime::owner_cache_plan::plan_owner_checkpoint_from_cache_json(&request))}
+#[pyfunction]
+fn prepare_owner_checkpoint_from_cache_json(py:Python<'_>,request:String)->String{py.allow_threads(move||peerwork_runtime::owner_cache_checkpoint::prepare_owner_checkpoint_from_cache_json(&request))}
+
+#[pyfunction]
 fn identity_open_json(path: &str) -> PyResult<String> {
     let identity = KernelIdentity::open(Path::new(path))
         .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(format!(
@@ -122,20 +137,12 @@ fn identity_import_pkcs8_pem_json(path: &str, pem_file: &str) -> PyResult<String
 
 #[pyfunction]
 fn identity_import_owner_pem_json(config_file: &str, pem_file: &str) -> PyResult<String> {
-    let config_bytes = std::fs::read(config_file)
-        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("Owner config could not be read"))?;
-    let config: SecureOwnerCreateConfig = serde_json::from_slice(&config_bytes)
-        .map_err(|_| pyo3::exceptions::PyValueError::new_err("invalid Owner configuration"))?;
-    let identity = import_legacy_owner_identity(&config, Path::new(pem_file))
-        .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))?;
-    Ok(format!(
-        "{{\"actor_id\":\"{}\",\"key_id\":\"{}\"}}",
-        identity.actor_id(), identity.key_id()
-    ))
+    Err(pyo3::exceptions::PyRuntimeError::new_err("LEGACY_MODE_RETIRED: select an explicit identity seed or PKCS8 PEM file"))
 }
 
 fn accepted_json(result: KernelAcceptedResult) -> serde_json::Value {
-    serde_json::json!({
+    let browser_reference=result.browser_approval_reference();
+    let mut value = serde_json::json!({
         "command_id": result.command_id,
         "workspace_id": result.workspace_id,
         "protocol_digest": result.protocol_digest,
@@ -144,7 +151,14 @@ fn accepted_json(result: KernelAcceptedResult) -> serde_json::Value {
         "revision": result.revision,
         "produced_record_ids": result.produced_record_ids,
         "catalog": result.catalog,
-    })
+    });
+    if let Some(reference)=browser_reference{value.as_object_mut().unwrap().insert("browser_approval_reference".into(),serde_json::json!(reference));}
+    if let Some(history)=result.key_history {value.as_object_mut().unwrap().insert("key_history".into(),serde_json::json!(history));}
+    if let Some(contents)=result.opened_contents {value.as_object_mut().unwrap().insert("opened_contents".into(),serde_json::json!(contents));}
+    if let Some(structure) = result.structure_result_json {
+        value.as_object_mut().unwrap().insert("structure_result_json".into(), serde_json::Value::String(structure));
+    }
+    value
 }
 
 #[pyclass]
@@ -186,6 +200,7 @@ fn kernel_json(
     trusted_signer_key_ids: Option<Vec<String>>,
     transport_json: Option<&str>,
 ) -> PyResult<String> {
+    if !peerwork_runtime::runtime_contract::supports_kernel_operation(operation){return Ok(peerwork_runtime::runtime_contract::retired_json());}
     let cancel = cancel_handle
         .map(|handle| handle.token.clone())
         .unwrap_or_default();
@@ -217,12 +232,35 @@ fn kernel_json(
             "pending" => serde_json::json!(access.pending_with_cancel(&cancel).map_err(peerwork_runtime::kernel_access::KernelPublicError::from)?.into_iter().map(|row| {
                 serde_json::json!({"command_id": row.command_id, "intent_digest": row.intent_digest, "created_at_ms": row.created_at_ms})
             }).collect::<Vec<_>>()),
+            "pending_page" => access.pending_page_json_with_cancel(command_json.as_deref().unwrap_or("{}"),&cancel)?,
+            "request_access" => access.request_access_json(command_json.as_deref().unwrap_or("{}"),&cancel)?,
+            "accept_content_keys" => access.accept_content_keys_json(command_json.as_deref().unwrap_or("{}"),&cancel)?,
+            "ensure_local_content_key" => access.ensure_local_content_key_json(command_json.as_deref().unwrap_or("{}"),&cancel)?,
+            "build_pending_index" => serde_json::json!(access.build_pending_index_with_cancel(&cancel).map_err(peerwork_runtime::kernel_access::KernelPublicError::from)?),
             "status" => {
                 let id = command_id.as_deref().ok_or_else(|| peerwork_runtime::kernel_access::KernelPublicError::from("command ID is required"))?;
                 match access.status_with_cancel(id, &cancel).map_err(peerwork_runtime::kernel_access::KernelPublicError::from)? {
                     None => serde_json::json!({"state": "NOT_FOUND"}),
                     Some(KernelOperationStatus::Pending) => serde_json::json!({"state": "PENDING"}),
-                    Some(KernelOperationStatus::Accepted(accepted)) => serde_json::json!({"state": "ACCEPTED", "result": accepted_json(accepted)}),
+                    Some(KernelOperationStatus::Accepted(accepted)) => serde_json::json!({"state":accepted.outcome_state(),"result":accepted_json(accepted)}),
+                }
+            }
+            "execute_structure_intent" | "publish_selected_record" | "authorize_access" | "rotate_content_key" | "coordinate_content_keys" => {
+                let intent = command_json.as_deref().ok_or_else(|| peerwork_runtime::kernel_access::KernelPublicError::from("business intent is required"))?;
+                match (if operation=="coordinate_content_keys"{access.coordinate_content_keys_json(intent,&cancel)}else if operation=="rotate_content_key"{access.rotate_content_key_json(intent,&cancel)}else{(if operation=="publish_selected_record"{access.publish_selected_record_with_cancel(intent.as_bytes(),&cancel)}else if operation=="authorize_access"{access.authorize_access_with_cancel(intent.as_bytes(),&cancel)}else{access.execute_structure_intent_with_cancel(intent.as_bytes(),&cancel)}).map_err(peerwork_runtime::kernel_access::KernelPublicError::from)})? {
+                    peerwork_runtime::kernel_client::StructureIntentOutcome::Accepted(result) => serde_json::json!({"state":result.outcome_state(),"result":accepted_json(result)}),
+                    peerwork_runtime::kernel_client::StructureIntentOutcome::Completed{command_id,result}=>serde_json::json!({"state":"COMPLETED","command_id":command_id,"result":accepted_json(result)}),
+                    peerwork_runtime::kernel_client::StructureIntentOutcome::Pending {command_id,code,phase,retryable,recovery} =>
+                        serde_json::json!({"state":"PENDING","command_id":command_id,"code":code,"phase":phase,"retryable":retryable,"recovery":recovery,"effect_certainty":if phase=="KEY_DELIVERY"{"COMMITTED"}else if phase=="PREPARATION"{"NOT_SUBMITTED"}else{"UNKNOWN"}}),
+                }
+            }
+            "resume_structure_intent" => {
+                let id=command_id.as_deref().ok_or_else(||peerwork_runtime::kernel_access::KernelPublicError::from("command ID is required"))?;
+                match access.resume_structure_intent_with_cancel(id,&cancel).map_err(peerwork_runtime::kernel_access::KernelPublicError::from)? {
+                    peerwork_runtime::kernel_client::StructureIntentOutcome::Accepted(result)=>serde_json::json!({"state":result.outcome_state(),"result":accepted_json(result)}),
+                    peerwork_runtime::kernel_client::StructureIntentOutcome::Completed{command_id,result}=>serde_json::json!({"state":"COMPLETED","command_id":command_id,"result":accepted_json(result)}),
+                    peerwork_runtime::kernel_client::StructureIntentOutcome::Pending{command_id,code,phase,retryable,recovery}=>
+                        serde_json::json!({"state":"PENDING","command_id":command_id,"code":code,"phase":phase,"retryable":retryable,"recovery":recovery,"effect_certainty":if phase=="KEY_DELIVERY"{"COMMITTED"}else if phase=="PREPARATION"{"NOT_SUBMITTED"}else{"UNKNOWN"}}),
                 }
             }
             "submit_saved" => {
@@ -250,23 +288,7 @@ fn secure_read_json(
     config_json: &str,
     cancel_handle: Option<PyRef<'_, KernelCancelHandle>>,
 ) -> PyResult<String> {
-    let config: SecureReadConfig = serde_json::from_str(config_json).map_err(|_| {
-        pyo3::exceptions::PyValueError::new_err("invalid secure read configuration")
-    })?;
-    let cancel = cancel_handle
-        .map(|handle| handle.token.clone())
-        .unwrap_or_default();
-    Ok(py.allow_threads(move || {
-        match SecureReadAccess::new(config).read_json_with_cancel(&cancel) {
-            Ok(value) => format!("{{\"ok\":true,\"value\":{value}}}"),
-            Err(error) => serde_json::json!({
-                "ok": false,
-                "code": error.code(),
-                "message": error.to_string(),
-            })
-            .to_string(),
-        }
-    }))
+    Ok(peerwork_runtime::runtime_contract::retired_json())
 }
 
 #[pyfunction]
@@ -276,23 +298,7 @@ fn secure_read_profile_json(
     config_json: &str,
     cancel_handle: Option<PyRef<'_, KernelCancelHandle>>,
 ) -> PyResult<String> {
-    let config: SecureReadProfileConfig = serde_json::from_str(config_json).map_err(|_| {
-        pyo3::exceptions::PyValueError::new_err("invalid secure read profile configuration")
-    })?;
-    let cancel = cancel_handle
-        .map(|handle| handle.token.clone())
-        .unwrap_or_default();
-    Ok(py.allow_threads(move || {
-        match SecureReadProfile::new(config).read_latest_json_with_cancel(&cancel) {
-            Ok(value) => format!("{{\"ok\":true,\"value\":{value}}}"),
-            Err(error) => serde_json::json!({
-                "ok": false,
-                "code": error.code(),
-                "message": error.to_string(),
-            })
-            .to_string(),
-        }
-    }))
+    Ok(peerwork_runtime::runtime_contract::retired_json())
 }
 
 #[pyfunction]
@@ -302,23 +308,7 @@ fn secure_private_read_json(
     config_json: &str,
     cancel_handle: Option<PyRef<'_, KernelCancelHandle>>,
 ) -> PyResult<String> {
-    let config: SecureReadProfileConfig = serde_json::from_str(config_json).map_err(|_| {
-        pyo3::exceptions::PyValueError::new_err("invalid secure private read configuration")
-    })?;
-    let cancel = cancel_handle
-        .map(|handle| handle.token.clone())
-        .unwrap_or_default();
-    Ok(py.allow_threads(move || {
-        match SecurePrivateReadAccess::new(config).activate_and_read_json_with_cancel(&cancel) {
-            Ok(value) => format!("{{\"ok\":true,\"value\":{value}}}"),
-            Err(error) => serde_json::json!({
-                "ok": false,
-                "code": error.code(),
-                "message": error.to_string(),
-            })
-            .to_string(),
-        }
-    }))
+    Ok(peerwork_runtime::runtime_contract::retired_json())
 }
 
 #[pyfunction]
@@ -331,41 +321,7 @@ fn secure_public_action_json(
     command_id: Option<&str>,
     cancel_handle: Option<PyRef<'_, KernelCancelHandle>>,
 ) -> PyResult<String> {
-    let config: SecureReadProfileConfig = serde_json::from_str(config_json).map_err(|_| {
-        pyo3::exceptions::PyValueError::new_err("invalid secure action configuration")
-    })?;
-    let input: Option<PublicActionInput> = input_json
-        .map(serde_json::from_str)
-        .transpose()
-        .map_err(|_| pyo3::exceptions::PyValueError::new_err("invalid secure action input"))?;
-    let operation = operation.to_owned();
-    let command_id = command_id.map(str::to_owned);
-    let cancel = cancel_handle
-        .map(|handle| handle.token.clone())
-        .unwrap_or_default();
-    Ok(py.allow_threads(move || {
-        let access = SecurePublicActionAccess::new(config);
-        let result = match operation.as_str() {
-            "submit" => match input {
-                Some(value) => access.submit_new_json_with_cancel(value, &cancel),
-                None => return serde_json::json!({"ok":false,"code":"ACTION_INPUT_INVALID","message":"action input is required"}).to_string(),
-            },
-            "reconcile" => match command_id.as_deref() {
-                Some(id) => access.reconcile_json_with_cancel(id, &cancel),
-                None => return serde_json::json!({"ok":false,"code":"ACTION_INPUT_INVALID","message":"command ID is required"}).to_string(),
-            },
-            "retry" => match command_id.as_deref() {
-                Some(id) => access.retry_saved_json_with_cancel(id, &cancel),
-                None => return serde_json::json!({"ok":false,"code":"ACTION_INPUT_INVALID","message":"command ID is required"}).to_string(),
-            },
-            "pending" => access.list_pending_json_with_cancel(&cancel),
-            _ => return serde_json::json!({"ok":false,"code":"ACTION_INPUT_INVALID","message":"unsupported secure action operation"}).to_string(),
-        };
-        match result {
-            Ok(value) => format!("{{\"ok\":true,\"value\":{value}}}"),
-            Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
-        }
-    }))
+    Ok(peerwork_runtime::runtime_contract::retired_json())
 }
 
 #[pyfunction]
@@ -379,45 +335,7 @@ fn secure_private_action_json(
     operation_id: Option<&str>,
     cancel_handle: Option<PyRef<'_, KernelCancelHandle>>,
 ) -> PyResult<String> {
-    let config: SecureReadProfileConfig = serde_json::from_str(config_json).map_err(|_| {
-        pyo3::exceptions::PyValueError::new_err("invalid secure private action configuration")
-    })?;
-    let input: Option<PublicActionInput> = input_json
-        .map(serde_json::from_str)
-        .transpose()
-        .map_err(|_| pyo3::exceptions::PyValueError::new_err("invalid secure private action input"))?;
-    let operation = operation.to_owned();
-    let command_id = command_id.map(str::to_owned);
-    let operation_id = operation_id.map(str::to_owned);
-    let cancel = cancel_handle
-        .map(|handle| handle.token.clone())
-        .unwrap_or_default();
-    Ok(py.allow_threads(move || {
-        let access = SecurePrivateActionAccess::new(config);
-        let result = match operation.as_str() {
-            "submit" => match input {
-                Some(value) => match operation_id.as_deref() {
-                    Some(id) => access.submit_new_json_with_operation_id(value, id, &cancel),
-                    None => access.submit_new_json_with_cancel(value, &cancel),
-                },
-                None => return serde_json::json!({"ok":false,"code":"ACTION_INPUT_INVALID","message":"action input is required"}).to_string(),
-            },
-            "reconcile" => match command_id.as_deref() {
-                Some(id) => access.reconcile_json_with_cancel(id, &cancel),
-                None => return serde_json::json!({"ok":false,"code":"ACTION_INPUT_INVALID","message":"command ID is required"}).to_string(),
-            },
-            "retry" => match command_id.as_deref() {
-                Some(id) => access.retry_saved_json_with_cancel(id, &cancel),
-                None => return serde_json::json!({"ok":false,"code":"ACTION_INPUT_INVALID","message":"command ID is required"}).to_string(),
-            },
-            "pending" => access.list_pending_json_with_cancel(&cancel),
-            _ => return serde_json::json!({"ok":false,"code":"ACTION_INPUT_INVALID","message":"unsupported secure private action operation"}).to_string(),
-        };
-        match result {
-            Ok(value) => format!("{{\"ok\":true,\"value\":{value}}}"),
-            Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
-        }
-    }))
+    Ok(peerwork_runtime::runtime_contract::retired_json())
 }
 
 #[pyfunction]
@@ -430,37 +348,7 @@ fn secure_public_install_json(
     begin_command_id: Option<&str>,
     cancel_handle: Option<PyRef<'_, KernelCancelHandle>>,
 ) -> PyResult<String> {
-    let config: SecureReadProfileConfig = serde_json::from_str(config_json).map_err(|_| {
-        pyo3::exceptions::PyValueError::new_err("invalid PUBLIC install configuration")
-    })?;
-    let input: Option<PublicPackageInstallInput> = input_json
-        .map(serde_json::from_str)
-        .transpose()
-        .map_err(|_| pyo3::exceptions::PyValueError::new_err("invalid PUBLIC install input"))?;
-    let operation = operation.to_owned();
-    let begin_command_id = begin_command_id.map(str::to_owned);
-    let cancel = cancel_handle
-        .map(|handle| handle.token.clone())
-        .unwrap_or_default();
-    Ok(py.allow_threads(move || {
-        let access = SecurePublicPackageInstall::new(config);
-        let result = match operation.as_str() {
-            "begin" => match input {
-                Some(value) => access.submit_begin_json_with_cancel(value, &cancel),
-                None => return serde_json::json!({"ok":false,"code":"INSTALL_INPUT_INVALID","message":"install input is required"}).to_string(),
-            },
-            "continue" => match begin_command_id.as_deref() {
-                Some(id) => access.continue_install_json_with_cancel(id, &cancel),
-                None => return serde_json::json!({"ok":false,"code":"INSTALL_INPUT_INVALID","message":"begin command ID is required"}).to_string(),
-            },
-            "pending" => access.list_pending_json_with_cancel(&cancel),
-            _ => return serde_json::json!({"ok":false,"code":"INSTALL_INPUT_INVALID","message":"unsupported PUBLIC install operation"}).to_string(),
-        };
-        match result {
-            Ok(value) => format!("{{\"ok\":true,\"value\":{value}}}"),
-            Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
-        }
-    }))
+    Ok(peerwork_runtime::runtime_contract::retired_json())
 }
 
 #[pyfunction]
@@ -474,275 +362,7 @@ fn secure_owner_create_json(
     workspace_id: Option<&str>,
     cancel_handle: Option<PyRef<'_, KernelCancelHandle>>,
 ) -> PyResult<String> {
-    let operation = operation.to_owned();
-    let config_json = config_json.to_owned();
-    let input_json = input_json.map(str::to_owned);
-    let command_id = command_id.map(str::to_owned);
-    let workspace_id = workspace_id.map(str::to_owned);
-    let cancel = cancel_handle.map(|handle| handle.token.clone()).unwrap_or_default();
-    Ok(py.allow_threads(move || {
-        let config: SecureOwnerCreateConfig = match serde_json::from_str(&config_json) {
-            Ok(value) => value,
-            Err(_) => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid Owner configuration"}).to_string(),
-        };
-        if matches!(operation.as_str(), "attach" | "resume_attachment" | "retain_pending_action" | "coordination_marker_retire" | "attachments" | "kernel_inspect" | "kernel_status" | "kernel_recover" | "stage_inspect" | "stage_multipart_inspect" | "stage_multipart_attach" | "stage_recover" | "orphan_inspect" | "orphan_multipart_inspect" | "orphan_multipart_attach" | "orphan_replan" | "direct_begin_inspect" | "direct_begin_attach" | "direct_begin_recover" | "direct_completed_inspect" | "direct_completed_attach" | "object_stage_inspect" | "object_stage_attach" | "object_stage_recover" | "object_intent_candidates" | "object_intent_inspect" | "object_intent_attach" | "object_intent_recover") {
-            let access = SecureHistoricalOwnerAttach::new(config);
-            let result = match operation.as_str() {
-                "attach" => {
-                    let input: HistoricalOwnerAttachInput = match input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {
-                        Some(value) => value,
-                        None => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid Owner attachment input"}).to_string(),
-                    };
-                    access.attach(input, &cancel).map(|value| serde_json::to_string(&value).expect("attachment result serializes"))
-                }
-                "resume_attachment" => match command_id.as_deref() {
-                    Some(id) => access.resume_attachment(id, &cancel).map(|value| serde_json::to_string(&value).expect("attachment result serializes")),
-                    None => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"attachment ID is required"}).to_string(),
-                },
-                "retain_pending_action" => match (workspace_id.as_deref(), command_id.as_deref()) {
-                    (Some(attach_id), Some(id)) => access.retain_pending_action(attach_id, id, &cancel).map(|value| serde_json::to_string(&value).expect("attachment result serializes")),
-                    _ => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"attachment and pending action command IDs are required"}).to_string(),
-                },
-                "coordination_marker_retire" => access.retire_coordination_marker_json(input_json.as_deref().unwrap_or(""), &cancel).map(|value| serde_json::to_string(&value).expect("attachment result serializes")),
-                "attachments" => access.attachments().map(|value| serde_json::to_string(&value).expect("attachment history serializes")),
-                "kernel_inspect" => {
-                    let input: HistoricalOwnerAttachInput = match input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {
-                        Some(value) => value,
-                        None => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid kernel inspection input"}).to_string(),
-                    };
-                    access.inspect_kernel_pending(&input, &cancel).map(|value| serde_json::to_string(&value).expect("kernel inventory serializes"))
-                }
-                "kernel_status" => match command_id.as_deref() {
-                    Some(attach_id) => access.kernel_command_status(attach_id).map(|value| serde_json::to_string(&value).expect("kernel status serializes")),
-                    None => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"attachment ID is required"}).to_string(),
-                },
-                "kernel_recover" => match (workspace_id.as_deref(), command_id.as_deref()) {
-                    (Some(attach_id), Some(id)) => access.recover_kernel_command(attach_id, id, &cancel).map(|value| serde_json::to_string(&value).expect("kernel recovery status serializes")),
-                    _ => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"attachment and kernel command IDs are required"}).to_string(),
-                },
-                "direct_begin_inspect" | "direct_begin_attach" | "direct_completed_inspect" | "direct_completed_attach" | "object_stage_inspect" | "object_stage_attach" | "object_intent_inspect" | "object_intent_attach" => {
-                    let completed = operation.starts_with("direct_completed_");
-                    let object_stage = operation.starts_with("object_stage_");
-                    let marker_intent = operation.starts_with("object_intent_");
-                    let selection_key = if marker_intent { "selected_marker_hash" } else if completed { "selected_instance_id" } else { "selected_command_id" };
-                    let (input, selected, digest, options, material) = match direct_install_request(input_json.as_deref(), selection_key) {
-                        Some(value) => value,
-                        None => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid direct install input"}).to_string(),
-                    };
-                    if operation.ends_with("_inspect") {
-                        if digest.is_some() { return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"direct install inspection must not select a TS state digest"}).to_string(); }
-                        if marker_intent {
-                            access.inspect_object_stage_intent(&input, &selected, &options, &material, &cancel)
-                                .map(|value| serde_json::to_string(&value).expect("marker intent inventory serializes"))
-                        } else if object_stage {
-                            access.inspect_pending_object_stage(&input, &selected, &options, &material, &cancel)
-                                .map(|value| serde_json::to_string(&value).expect("object stage inventory serializes"))
-                        } else if completed {
-                            access.inspect_completed_direct_install(&input, &selected, &options, &material, &cancel)
-                                .map(|value| serde_json::to_string(&value).expect("completed direct inventory serializes"))
-                        } else {
-                            access.inspect_pending_direct_install_begin(&input, &selected, &options, &material, &cancel)
-                                .map(|value| serde_json::to_string(&value).expect("direct packet inventory serializes"))
-                        }
-                    } else {
-                        let Some(digest) = digest else { return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"direct install attach requires inspected TS state digest"}).to_string(); };
-                        if marker_intent {
-                            access.attach_object_stage_intent(input, &selected, &digest, &options, &material, &cancel)
-                                .map(|value| serde_json::to_string(&value).expect("attachment result serializes"))
-                        } else if object_stage {
-                            access.attach_pending_object_stage(input, &selected, &digest, &options, &material, &cancel)
-                                .map(|value| serde_json::to_string(&value).expect("attachment result serializes"))
-                        } else if completed {
-                            access.attach_completed_direct_install(input, &selected, &digest, &options, &material, &cancel)
-                                .map(|value| serde_json::to_string(&value).expect("attachment result serializes"))
-                        } else {
-                            access.attach_pending_direct_install_begin(input, &selected, &digest, &options, &material, &cancel)
-                                .map(|value| serde_json::to_string(&value).expect("attachment result serializes"))
-                        }
-                    }
-                },
-                "direct_begin_recover" => match (workspace_id.as_deref(), command_id.as_deref()) {
-                    (Some(attach_id), Some(id)) => access.recover_pending_direct_install_begin(attach_id, id, &cancel)
-                        .map(|value| serde_json::to_string(&value).expect("attachment result serializes")),
-                    _ => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"attachment and selected direct packet IDs are required"}).to_string(),
-                },
-                "object_intent_candidates" => {
-                    let input: HistoricalOwnerAttachInput = match input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {
-                        Some(value) => value,
-                        None => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid marker source input"}).to_string(),
-                    };
-                    if cancel.is_cancelled() { return serde_json::json!({"ok":false,"code":"CANCELLED","message":"cancelled"}).to_string(); }
-                    access.object_stage_intent_candidates(&input).map(|value| serde_json::to_string(&value).expect("marker candidates serialize"))
-                },
-                "object_intent_recover" => match (workspace_id.as_deref(), command_id.as_deref()) {
-                    (Some(attach_id), Some(hash)) => access.recover_object_stage_intent(attach_id, hash, &cancel)
-                        .map(|value| serde_json::to_string(&value).expect("attachment result serializes")),
-                    _ => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"attachment ID and selected marker hash are required"}).to_string(),
-                },
-                "object_stage_recover" => match (workspace_id.as_deref(), command_id.as_deref()) {
-                    (Some(attach_id), Some(id)) => access.recover_pending_object_stage(attach_id, id, &cancel)
-                        .map(|value| serde_json::to_string(&value).expect("attachment result serializes")),
-                    _ => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"attachment and original object stage IDs are required"}).to_string(),
-                },
-                "stage_inspect" => {
-                    let input: HistoricalOwnerAttachInput = match input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {
-                        Some(value) => value,
-                        None => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid package stage inspection input"}).to_string(),
-                    };
-                    access.inspect_pending_package_stage(&input, &cancel).map(|value| serde_json::to_string(&value).expect("package stage inventory serializes"))
-                },
-                "stage_multipart_inspect" => {
-                    let (input, material) = match multipart_stage_request(input_json.as_deref()) {
-                        Some(value) => value,
-                        None => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid multipart stage inspection input"}).to_string(),
-                    };
-                    access.inspect_pending_package_stage_with_material(&input, &material, &cancel)
-                        .map(|value| serde_json::to_string(&value).expect("package stage inventory serializes"))
-                },
-                "stage_multipart_attach" => {
-                    let (input, material) = match multipart_stage_request(input_json.as_deref()) {
-                        Some(value) => value,
-                        None => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid multipart stage attachment input"}).to_string(),
-                    };
-                    access.attach_pending_package_stage_with_material(input, &material, &cancel)
-                        .map(|value| serde_json::to_string(&value).expect("attachment result serializes"))
-                },
-                "stage_recover" => match (workspace_id.as_deref(), command_id.as_deref()) {
-                    (Some(attach_id), Some(id)) => access.recover_pending_package_stage(attach_id, id, &cancel).map(|value| serde_json::to_string(&value).expect("attachment result serializes")),
-                    _ => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"attachment and package stage command IDs are required"}).to_string(),
-                },
-                "orphan_inspect" => {
-                    let input: HistoricalOwnerAttachInput = match input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {
-                        Some(value) => value,
-                        None => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid orphan stage inspection input"}).to_string(),
-                    };
-                    access.inspect_orphan_package_stage(&input, &cancel).map(|value| serde_json::to_string(&value).expect("orphan stage inventory serializes"))
-                },
-                "orphan_multipart_inspect" => {
-                    let (input, material) = match multipart_stage_request(input_json.as_deref()) {
-                        Some((input, material)) if input.selected_pending_package_stage_command_id.is_none()
-                            && input.selected_orphan_package_stage_command_id.is_none()
-                            && input.expected_ts_state_digest.is_none() => (input, material),
-                        _ => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid multipart orphan inspection input"}).to_string(),
-                    };
-                    access.inspect_multipart_orphan_package_stage_with_material(&input, &material, &cancel)
-                        .map(|value| serde_json::to_string(&value).expect("orphan stage inventory serializes"))
-                },
-                "orphan_multipart_attach" => {
-                    let (input, material) = match multipart_stage_request(input_json.as_deref()) {
-                        Some((input, material)) if input.selected_pending_package_stage_command_id.is_none()
-                            && input.selected_orphan_package_stage_command_id.is_some()
-                            && input.expected_ts_state_digest.is_some() => (input, material),
-                        _ => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid multipart orphan attachment input"}).to_string(),
-                    };
-                    access.attach_pending_package_stage_with_material(input, &material, &cancel)
-                        .map(|value| serde_json::to_string(&value).expect("attachment result serializes"))
-                },
-                "orphan_replan" => match (workspace_id.as_deref(), command_id.as_deref()) {
-                    (Some(attach_id), Some(id)) => {
-                        let material: Option<String> = match input_json.as_deref() {
-                            Some(wire) => match serde_json::from_str::<String>(wire) {
-                                Ok(value) if !value.is_empty() => Some(value),
-                                _ => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid orphan replan material"}).to_string(),
-                            },
-                            None => None,
-                        };
-                        access.replan_orphan_package_stage(attach_id, id, material.as_deref(), &cancel).map(|value| serde_json::to_string(&value).expect("attachment result serializes"))
-                    }
-                    _ => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"attachment and original stage command IDs are required"}).to_string(),
-                },
-                _ => unreachable!(),
-            };
-            return match result {
-                Ok(value) => format!("{{\"ok\":true,\"value\":{value}}}"),
-                Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
-            };
-        }
-        if matches!(operation.as_str(), "coordination_enable" | "coordination_resume" | "coordination_operations") {
-            let input: Option<OwnerCoordinationEnableInput> = if operation == "coordination_enable" {
-                match input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {
-                    Some(value) => Some(value),
-                    None => { return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid Owner coordination input"}).to_string(); },
-                }
-            } else { None };
-            let Some(workspace) = workspace_id.as_deref() else {
-                return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"workspace ID is required"}).to_string();
-            };
-            if operation == "coordination_resume" && command_id.is_none() {
-                return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"original coordination BEGIN command ID is required"}).to_string();
-            }
-            let access = match SecureOwnerWorkspaceCreate::new(config).coordination_access(workspace) {
-                Ok(value) => value,
-                Err(error) => return serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
-            };
-            let result = match operation.as_str() {
-                "coordination_enable" => access.enable_json_with_cancel(input.expect("enable input parsed"), &cancel),
-                "coordination_resume" => access.resume_json_with_cancel(command_id.as_deref().expect("BEGIN ID checked"), &cancel),
-                "coordination_operations" => access.operations_json(),
-                _ => unreachable!(),
-            };
-            return match result {
-                Ok(value) => format!("{{\"ok\":true,\"value\":{value}}}"),
-                Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
-            };
-        }
-        if matches!(operation.as_str(), "format_submit" | "format_resume" | "format_history") {
-            let input: Option<OwnerFormatTransitionInput> = if operation == "format_submit" {
-                match input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {
-                    Some(value) => Some(value),
-                    None => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid Owner format transition input"}).to_string(),
-                }
-            } else { None };
-            let selected_workspace = input.as_ref().map(|value| value.workspace_id.as_str())
-                .or(workspace_id.as_deref());
-            let Some(selected_workspace) = selected_workspace else {
-                return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"workspace ID is required"}).to_string();
-            };
-            let access = match SecureOwnerWorkspaceCreate::new(config)
-                .format_transition_access(selected_workspace) {
-                Ok(value) => value,
-                Err(error) => return serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
-            };
-            let result = match operation.as_str() {
-                "format_submit" => access.submit_json_with_cancel(input.expect("submit input parsed"), &cancel),
-                "format_resume" => match command_id.as_deref() {
-                    Some(id) => access.resume_json_with_cancel(id, &cancel),
-                    None => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"transition command ID is required"}).to_string(),
-                },
-                "format_history" => access.history_json(),
-                _ => unreachable!(),
-            };
-            return match result {
-                Ok(value) => format!("{{\"ok\":true,\"value\":{value}}}"),
-                Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
-            };
-        }
-        let access = SecureOwnerWorkspaceCreate::new(config);
-        let result = match operation.as_str() {
-            "prepare" | "create" => {
-                let input: SecureOwnerCreateInput = match input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {
-                    Some(value) => value,
-                    None => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"invalid Owner creation input"}).to_string(),
-                };
-                if operation == "prepare" { access.prepare(input, &cancel) } else { access.create(input, &cancel) }
-                    .map(|value| serde_json::to_string(&value).expect("Owner result serializes"))
-            }
-            "resume" => match command_id.as_deref() {
-                Some(id) => access.resume(id, &cancel).map(|value| serde_json::to_string(&value).expect("Owner result serializes")),
-                None => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"command ID is required"}).to_string(),
-            },
-            "operations" => access.operations().map(|value| serde_json::to_string(&value).expect("Owner result serializes")),
-            "read" => match workspace_id.as_deref() {
-                Some(id) => access.read_workspace_json(id, &cancel),
-                None => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"workspace ID is required"}).to_string(),
-            },
-            _ => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"unsupported Owner operation"}).to_string(),
-        };
-        match result {
-            Ok(value) => format!("{{\"ok\":true,\"value\":{value}}}"),
-            Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
-        }
-    }))
+    Ok(peerwork_runtime::runtime_contract::retired_json())
 }
 
 #[pyfunction]
@@ -752,218 +372,7 @@ fn secure_owner_consumer_json(
     workspace_id: &str, input_json: Option<&str>, command_id: Option<&str>,
     cancel_handle: Option<PyRef<'_, KernelCancelHandle>>, operation_id: Option<&str>,
 ) -> PyResult<String> {
-    let kind = kind.to_owned();
-    let operation = operation.to_owned();
-    let config_json = config_json.to_owned();
-    let workspace_id = workspace_id.to_owned();
-    let input_json = input_json.map(str::to_owned);
-    let command_id = command_id.map(str::to_owned);
-    let operation_id = operation_id.map(str::to_owned);
-    let cancel = cancel_handle.map(|handle| handle.token.clone()).unwrap_or_default();
-    Ok(py.allow_threads(move || {
-        let fail = |code: &str, message: &str| serde_json::json!({"ok":false,"code":code,"message":message}).to_string();
-        let config: SecureOwnerCreateConfig = match serde_json::from_str(&config_json) {
-            Ok(value) => value,
-            Err(_) => return fail("INPUT_INVALID", "invalid Owner configuration"),
-        };
-        let owner = SecureOwnerWorkspaceCreate::new(config);
-        if operation_id.is_some() && kind != "private_action" {
-            return fail("ACTION_INPUT_INVALID", "operation ID is available only for PRIVATE actions");
-        }
-        let result = if kind == "public_action" {
-            let access = match owner.public_action_access(&workspace_id) {
-                Ok(value) => value,
-                Err(error) => return fail(error.code(), &error.to_string()),
-            };
-            match operation.as_str() {
-                "submit" => {
-                    let input: PublicActionInput = match input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {
-                        Some(value) => value,
-                        None => return fail("ACTION_INPUT_INVALID", "invalid Owner action input"),
-                    };
-                    access.submit_new_json_with_cancel(input, &cancel)
-                }
-                "reconcile" | "retry" => match command_id.as_deref() {
-                    Some(id) if operation == "reconcile" => access.reconcile_json_with_cancel(id, &cancel),
-                    Some(id) => access.retry_saved_json_with_cancel(id, &cancel),
-                    None => return fail("ACTION_INPUT_INVALID", "command ID is required"),
-                },
-                "pending" => access.list_pending_json_with_cancel(&cancel),
-                _ => return fail("ACTION_INPUT_INVALID", "unsupported Owner action operation"),
-            }.map_err(|error| (error.code(), error.to_string()))
-        } else if kind == "private_action" {
-            let access = match owner.private_action_access(&workspace_id) {
-                Ok(value) => value,
-                Err(error) => return fail(error.code(), &error.to_string()),
-            };
-            match operation.as_str() {
-                "submit" => {
-                    let input: PublicActionInput = match input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {
-                        Some(value) => value,
-                        None => return fail("ACTION_INPUT_INVALID", "invalid Owner action input"),
-                    };
-                    if let Some(operation_id) = operation_id.as_deref() {
-                        access.submit_new_json_with_operation_id(input, operation_id, &cancel)
-                    } else {
-                        access.submit_new_json_with_cancel(input, &cancel)
-                    }
-                }
-                "reconcile" | "retry" => match command_id.as_deref() {
-                    Some(id) if operation == "reconcile" => access.reconcile_json_with_cancel(id, &cancel),
-                    Some(id) => access.retry_saved_json_with_cancel(id, &cancel),
-                    None => return fail("ACTION_INPUT_INVALID", "command ID is required"),
-                },
-                "pending" => access.list_pending_json_with_cancel(&cancel),
-                _ => return fail("ACTION_INPUT_INVALID", "unsupported Owner action operation"),
-            }.map_err(|error| (error.code(), error.to_string()))
-        } else if kind == "public_install" {
-            let access = match owner.public_install_access(&workspace_id) {
-                Ok(value) => value,
-                Err(error) => return fail(error.code(), &error.to_string()),
-            };
-            match operation.as_str() {
-                "begin" => {
-                    let input: PublicPackageInstallInput = match input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {
-                        Some(value) => value,
-                        None => return fail("INSTALL_INPUT_INVALID", "invalid Owner package input"),
-                    };
-                    access.submit_begin_json_with_cancel(input, &cancel)
-                }
-                "continue" => match command_id.as_deref() {
-                    Some(id) => access.continue_install_json_with_cancel(id, &cancel),
-                    None => return fail("INSTALL_INPUT_INVALID", "begin command ID is required"),
-                },
-                "pending" => access.list_pending_json_with_cancel(&cancel),
-                _ => return fail("INSTALL_INPUT_INVALID", "unsupported Owner install operation"),
-            }.map_err(|error| (error.code(), error.to_string()))
-        } else if kind == "private_stage" {
-            let access = match owner.private_install_access(&workspace_id) {
-                Ok(value) => value,
-                Err(error) => return fail(error.code(), &error.to_string()),
-            };
-            match operation.as_str() {
-                "stage" => {
-                    let input: PrivatePackageStageInput = match input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {
-                        Some(value) => value,
-                        None => return fail("INSTALL_INPUT_INVALID", "invalid PRIVATE stage input"),
-                    };
-                    access.stage_package_json_with_cancel(input, &cancel)
-                }
-                "continue" => match command_id.as_deref() {
-                    Some(id) => access.continue_stage_json_with_cancel(id, &cancel),
-                    None => return fail("INSTALL_INPUT_INVALID", "stage ID is required"),
-                },
-                "stages" => access.stages_json(),
-                _ => return fail("INSTALL_INPUT_INVALID", "unsupported PRIVATE stage operation"),
-            }.map_err(|error| (error.code(), error.to_string()))
-        } else if kind == "private_install" {
-            let access = match owner.private_install_access(&workspace_id) {
-                Ok(value) => value,
-                Err(error) => return fail(error.code(), &error.to_string()),
-            };
-            match operation.as_str() {
-                "begin" => {
-                    let input: PrivatePackageInstallBeginInput = match input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {
-                        Some(value) => value,
-                        None => return fail("INSTALL_INPUT_INVALID", "invalid PRIVATE install input"),
-                    };
-                    access.submit_begin_json_with_cancel(input, &cancel)
-                }
-                "begin_direct" => {
-                    let input: PrivateDirectInstallBeginInput = match input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {
-                        Some(value) => value,
-                        None => return fail("INSTALL_INPUT_INVALID", "invalid PRIVATE direct install input"),
-                    };
-                    access.submit_direct_begin_json_with_cancel(input, &cancel)
-                }
-                "recovery_plan" => match command_id.as_deref() {
-                    Some(id) => access.invalid_install_recovery_plan_json(id, &cancel),
-                    None => return fail("INSTALL_INPUT_INVALID", "original begin ID is required"),
-                },
-                "recover_invalid" => {
-                    let input: peerwork_runtime::secure_private_install::InvalidInstallRecoveryInput = match input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {
-                        Some(value) => value,
-                        None => return fail("INSTALL_INPUT_INVALID", "recovery requires original BEGIN, reviewed hash and stable operation ID"),
-                    };
-                    access.recover_invalid_install_json(input, &cancel)
-                }
-                "diagnose" => match command_id.as_deref() {
-                    Some(id) => access.diagnose_install_json_with_cancel(id, &cancel),
-                    None => return fail("INSTALL_INPUT_INVALID", "begin command ID is required"),
-                },
-                "continue" => match command_id.as_deref() {
-                    Some(id) => access.continue_install_json_with_cancel(id, &cancel),
-                    None => return fail("INSTALL_INPUT_INVALID", "begin command ID is required"),
-                },
-                "installs" => access.installs_json(),
-                _ => return fail("INSTALL_INPUT_INVALID", "unsupported PRIVATE install operation"),
-            }.map_err(|error| (error.code(), error.to_string()))
-        } else if kind == "public_admission" {
-            let access = match owner.public_admission_access(&workspace_id) {
-                Ok(value) => value,
-                Err(error) => return fail(error.code(), &error.to_string()),
-            };
-            match operation.as_str() {
-                "offer" => {
-                    let input: PublicOfferInput = match input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {
-                        Some(value) => value,
-                        None => return fail("ADMISSION_INPUT_INVALID", "invalid Owner offer input"),
-                    };
-                    access.submit_offer_json_with_cancel(input, &cancel)
-                }
-                "retry_offer" => match command_id.as_deref() {
-                    Some(id) => access.retry_offer_json_with_cancel(id, &cancel),
-                    None => return fail("ADMISSION_INPUT_INVALID", "invite ID is required"),
-                },
-                "pending_offers" => access.pending_offers_json(),
-                "deliver" => match command_id.as_deref() {
-                    Some(id) => access.deliver_accepted_json_with_cancel(id, &cancel),
-                    None => return fail("ADMISSION_INPUT_INVALID", "invite ID is required"),
-                },
-                "retry_delivery" => match command_id.as_deref() {
-                    Some(id) => access.retry_delivery_json_with_cancel(id, &cancel),
-                    None => return fail("ADMISSION_INPUT_INVALID", "grant ID is required"),
-                },
-                "pending_deliveries" => access.pending_deliveries_json(),
-                _ => return fail("ADMISSION_INPUT_INVALID", "unsupported Owner admission operation"),
-            }.map_err(|error| (error.code(), error.to_string()))
-        } else if kind == "private_admission" {
-            let access = match owner.private_admission_access(&workspace_id) {
-                Ok(value) => value,
-                Err(error) => return fail(error.code(), &error.to_string()),
-            };
-            match operation.as_str() {
-                "offer" => {
-                    let input: PublicOfferInput = match input_json.as_deref().and_then(|wire| serde_json::from_str(wire).ok()) {
-                        Some(value) => value,
-                        None => return fail("ADMISSION_INPUT_INVALID", "invalid Owner offer input"),
-                    };
-                    access.submit_offer_json_with_cancel(input, &cancel)
-                }
-                "retry_offer" => match command_id.as_deref() {
-                    Some(id) => access.retry_offer_json_with_cancel(id, &cancel),
-                    None => return fail("ADMISSION_INPUT_INVALID", "invite ID is required"),
-                },
-                "pending_offers" => access.pending_offers_json(),
-                "deliver" => match command_id.as_deref() {
-                    Some(id) => access.deliver_accepted_json_with_cancel(id, &cancel),
-                    None => return fail("ADMISSION_INPUT_INVALID", "invite ID is required"),
-                },
-                "retry_delivery" => match command_id.as_deref() {
-                    Some(id) => access.retry_delivery_json_with_cancel(id, &cancel),
-                    None => return fail("ADMISSION_INPUT_INVALID", "grant ID is required"),
-                },
-                "pending_deliveries" => access.pending_deliveries_json(),
-                _ => return fail("ADMISSION_INPUT_INVALID", "unsupported Owner admission operation"),
-            }.map_err(|error| (error.code(), error.to_string()))
-        } else {
-            return fail("INPUT_INVALID", "unsupported Owner consumer");
-        };
-        match result {
-            Ok(value) => format!("{{\"ok\":true,\"value\":{value}}}"),
-            Err((code, message)) => fail(code, &message),
-        }
-    }))
+    Ok(peerwork_runtime::runtime_contract::retired_json())
 }
 
 #[pyfunction]
@@ -973,27 +382,7 @@ fn public_catalog_json(
     query: Option<&str>, after: Option<&str>, limit: Option<u8>, digest: Option<&str>,
     cancel_handle: Option<PyRef<'_, KernelCancelHandle>>,
 ) -> PyResult<String> {
-    let config: PublicCatalogConfig = serde_json::from_str(config_json)
-        .map_err(|_| pyo3::exceptions::PyValueError::new_err("invalid catalog configuration"))?;
-    let operation = operation.to_owned();
-    let query = query.map(str::to_owned);
-    let after = after.map(str::to_owned);
-    let digest = digest.map(str::to_owned);
-    let cancel = cancel_handle.map(|handle| handle.token.clone()).unwrap_or_default();
-    Ok(py.allow_threads(move || {
-        let catalog = PublicCatalog::new(config);
-        let result = match operation.as_str() {
-            "search" => catalog.search(query.as_deref().unwrap_or(""), after.as_deref(), limit.unwrap_or(20), &cancel)
-                .map(|value| serde_json::to_string(&value).expect("catalog result serializes")),
-            "inspect" => catalog.inspect_exact(digest.as_deref().unwrap_or(""), &cancel)
-                .map(|value| serde_json::to_string(&value).expect("catalog result serializes")),
-            _ => return serde_json::json!({"ok":false,"code":"CATALOG_INPUT_INVALID","message":"unsupported catalog operation"}).to_string(),
-        };
-        match result {
-            Ok(value) => format!("{{\"ok\":true,\"value\":{value}}}"),
-            Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
-        }
-    }))
+    Ok(peerwork_runtime::runtime_contract::retired_json())
 }
 
 #[pyfunction]
@@ -1011,77 +400,7 @@ fn secure_recipient_enrollment_json(
     transport_json: Option<&str>,
     input_json: Option<&str>,
 ) -> PyResult<String> {
-    let mut config =
-        RecipientEnrollmentConfig::for_state_dir(origin.to_owned(), Path::new(state_dir));
-    config.allow_loopback_http = allow_loopback_http;
-    config.transport = transport_json.map(serde_json::from_str).transpose().map_err(|_| pyo3::exceptions::PyValueError::new_err("invalid transport options"))?.unwrap_or_default();
-    config.transport.validate().map_err(|_| pyo3::exceptions::PyValueError::new_err("invalid transport options"))?;
-    let input_json = input_json.map(str::to_owned);
-    let operation = operation.to_owned();
-    let mode = mode.map(str::to_owned);
-    let expected_certificate_hash = expected_certificate_hash.map(str::to_owned);
-    let update_id = update_id.map(str::to_owned);
-    let cancel = cancel_handle
-        .map(|handle| handle.token.clone())
-        .unwrap_or_default();
-    Ok(py.allow_threads(move || {
-        let access = SecureRecipientEnrollment::new(config);
-        if operation == "import_legacy_keys" {
-            return match input_json.as_deref().and_then(|v| serde_json::from_str(v).ok()) {
-                Some(input) => match access.import_legacy_keys(&input) {
-                    Ok(value) => serde_json::json!({"ok":true,"value":value}).to_string(),
-                    Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
-                },
-                None => serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"explicit legacy source and identity/digest pins are required"}).to_string(),
-            };
-        }
-        if operation == "certificate" {
-            return match access.certificate_json() {
-                Ok(value) => serde_json::json!({"ok":true,"value":value}).to_string(),
-                Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
-            };
-        }
-        if operation == "update_key" {
-            return match (mode.as_deref(), expected_certificate_hash.as_deref()) {
-                (Some(mode), Some(hash)) => match access.update_key_with_cancel(mode, hash, update_id.as_deref(), &cancel) {
-                    Ok(value) => serde_json::json!({"ok":true,"value":value}).to_string(),
-                    Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
-                },
-                _ => serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"mode and expected certificate hash are required"}).to_string(),
-            };
-        }
-        if operation == "retry_key_update" {
-            return match update_id.as_deref() {
-                Some(id) => match access.retry_key_update_with_cancel(id, &cancel) {
-                    Ok(value) => serde_json::json!({"ok":true,"value":value}).to_string(),
-                    Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
-                },
-                None => serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"update ID is required"}).to_string(),
-            };
-        }
-        if operation == "pending_key_updates" {
-            return match access.pending_key_updates() {
-                Ok(value) => serde_json::json!({"ok":true,"value":value}).to_string(),
-                Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
-            };
-        }
-        if operation == "key_updates" {
-            return match access.key_updates() {
-                Ok(value) => serde_json::json!({"ok":true,"value":value}).to_string(),
-                Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
-            };
-        }
-        let result = match operation.as_str() {
-            "create_local" => access.create_local().map(Some),
-            "publish" => access.publish_with_cancel(&cancel).map(Some),
-            "pending" => access.pending(),
-            _ => return serde_json::json!({"ok":false,"code":"INPUT_INVALID","message":"unsupported recipient enrollment operation"}).to_string(),
-        };
-        match result {
-            Ok(value) => serde_json::json!({"ok":true,"value":value}).to_string(),
-            Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
-        }
-    }))
+    Ok(peerwork_runtime::runtime_contract::retired_json())
 }
 
 #[pyfunction]
@@ -1097,27 +416,7 @@ fn secure_identity_directory_json(
     cancel_handle: Option<PyRef<'_, KernelCancelHandle>>,
     transport_json: Option<&str>,
 ) -> PyResult<String> {
-    let config = IdentityDirectoryConfig {
-            transport: transport_json.map(serde_json::from_str).transpose().map_err(|_| pyo3::exceptions::PyValueError::new_err("invalid transport options"))?.unwrap_or_default(),
-        origin: origin.to_owned(),
-        identity_path: Path::new(identity_path).to_path_buf(),
-        kernel_journal_path: Path::new(state_dir).join("kernel.sqlite"),
-        pins_path: Path::new(state_dir).join("identity-directory.state"),
-        allow_loopback_http,
-    };
-    let target_actor_id = target_actor_id.to_owned();
-    let target_signing_key_id = target_signing_key_id.to_owned();
-    let cancel = cancel_handle
-        .map(|handle| handle.token.clone())
-        .unwrap_or_default();
-    Ok(py.allow_threads(move || {
-        match SecureIdentityDirectory::new(config).lookup_certificate_with_cancel(
-            &target_actor_id, &target_signing_key_id, &cancel,
-        ) {
-            Ok(value) => serde_json::json!({"ok":true,"value":value}).to_string(),
-            Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
-        }
-    }))
+    Ok(peerwork_runtime::runtime_contract::retired_json())
 }
 
 #[pyfunction]
@@ -1131,32 +430,7 @@ fn secure_public_admission_json(
     grant_id: Option<&str>,
     cancel_handle: Option<PyRef<'_, KernelCancelHandle>>,
 ) -> PyResult<String> {
-    let config: SecureReadProfileConfig = serde_json::from_str(config_json).map_err(|_| {
-        pyo3::exceptions::PyValueError::new_err("invalid PUBLIC admission configuration")
-    })?;
-    let input: Option<PublicOfferInput> = input_json
-        .map(serde_json::from_str)
-        .transpose()
-        .map_err(|_| pyo3::exceptions::PyValueError::new_err("invalid PUBLIC offer input"))?;
-    let operation = operation.to_owned();
-    let invite_id = invite_id.map(str::to_owned);
-    let grant_id = grant_id.map(str::to_owned);
-    let cancel = cancel_handle
-        .map(|handle| handle.token.clone())
-        .unwrap_or_default();
-    Ok(py.allow_threads(move || {
-        let access = SecurePublicAdmission::new(config);
-        let result = match operation.as_str() {
-            "offer" => match input { Some(value) => access.submit_offer_json_with_cancel(value, &cancel), None => return serde_json::json!({"ok":false,"code":"ADMISSION_INPUT_INVALID","message":"offer input is required"}).to_string() },
-            "retry_offer" => match invite_id.as_deref() { Some(id) => access.retry_offer_json_with_cancel(id, &cancel), None => return serde_json::json!({"ok":false,"code":"ADMISSION_INPUT_INVALID","message":"invite ID is required"}).to_string() },
-            "pending_offers" => access.pending_offers_json(),
-            "deliver" => match invite_id.as_deref() { Some(id) => access.deliver_accepted_json_with_cancel(id, &cancel), None => return serde_json::json!({"ok":false,"code":"ADMISSION_INPUT_INVALID","message":"invite ID is required"}).to_string() },
-            "retry_delivery" => match grant_id.as_deref() { Some(id) => access.retry_delivery_json_with_cancel(id, &cancel), None => return serde_json::json!({"ok":false,"code":"ADMISSION_INPUT_INVALID","message":"grant ID is required"}).to_string() },
-            "pending_deliveries" => access.pending_deliveries_json(),
-            _ => return serde_json::json!({"ok":false,"code":"ADMISSION_INPUT_INVALID","message":"unsupported PUBLIC admission operation"}).to_string(),
-        };
-        match result { Ok(value) => format!("{{\"ok\":true,\"value\":{value}}}"), Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string() }
-    }))
+    Ok(peerwork_runtime::runtime_contract::retired_json())
 }
 
 #[pyfunction]
@@ -1169,40 +443,14 @@ fn secure_public_decision_json(
     decision: Option<&str>,
     cancel_handle: Option<PyRef<'_, KernelCancelHandle>>,
 ) -> PyResult<String> {
-    let config: PublicDecisionConfig = serde_json::from_str(config_json).map_err(|_| {
-        pyo3::exceptions::PyValueError::new_err("invalid PUBLIC decision configuration")
-    })?;
-    let operation = operation.to_owned();
-    let invite_id = invite_id.map(str::to_owned);
-    let decision = decision.map(str::to_owned);
-    let cancel = cancel_handle
-        .map(|handle| handle.token.clone())
-        .unwrap_or_default();
-    Ok(py.allow_threads(move || {
-        let config = match config.resolve_default_authority() {
-            Ok(value) => value,
-            Err(error) => return serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string(),
-        };
-        let access = SecurePublicDecision::new(config);
-        let result = match operation.as_str() {
-            "decide" => match (invite_id.as_deref(), decision.as_deref()) { (Some(id), Some(value)) => access.decide_json_with_cancel(id, value, &cancel), _ => return serde_json::json!({"ok":false,"code":"DECISION_INVALID","message":"invite ID and decision are required"}).to_string() },
-            "retry_decision" => match invite_id.as_deref() { Some(id) => access.retry_json_with_cancel(id, &cancel), None => return serde_json::json!({"ok":false,"code":"DECISION_INVALID","message":"invite ID is required"}).to_string() },
-            "pending_decisions" => access.pending_json(),
-            "receive" => match invite_id.as_deref() { Some(id) => access.receive_json_with_cancel(id, &cancel), None => return serde_json::json!({"ok":false,"code":"DECISION_INVALID","message":"invite ID is required"}).to_string() },
-            "retry_receive" => match invite_id.as_deref() { Some(id) => access.retry_receive_json_with_cancel(id, &cancel), None => return serde_json::json!({"ok":false,"code":"DECISION_INVALID","message":"invite ID is required"}).to_string() },
-            "pending_receipts" => access.pending_receipts_json(),
-            _ => return serde_json::json!({"ok":false,"code":"DECISION_INVALID","message":"unsupported PUBLIC decision operation"}).to_string(),
-        };
-        match result { Ok(value) => format!("{{\"ok\":true,\"value\":{value}}}"), Err(error) => serde_json::json!({"ok":false,"code":error.code(),"message":error.to_string()}).to_string() }
-    }))
+    Ok(peerwork_runtime::runtime_contract::retired_json())
 }
 
 #[pyfunction]
 #[pyo3(signature = (operation, config_json, input_json=None))]
 fn acquisition_observations_json(py: Python<'_>, operation: String, config_json: String,
     input_json: Option<String>) -> String {
-    py.allow_threads(move || peerwork_runtime::acquisition::acquisition_json(
-        &operation, &config_json, input_json.as_deref()))
+    peerwork_runtime::runtime_contract::retired_json()
 }
 
 #[pyfunction]
@@ -1230,24 +478,21 @@ fn navigation_json(py: Python<'_>, operation: String, input_json: String,
 #[pyo3(signature = (input_json, cancel_handle=None))]
 fn read_view_json(py: Python<'_>, input_json: String,
     cancel_handle: Option<PyRef<'_, KernelCancelHandle>>) -> String {
-    let cancel = cancel_handle.map(|handle| handle.token.clone()).unwrap_or_default();
-    py.allow_threads(move || peerwork_runtime::read_view::read_view_json(&input_json, &cancel))
+    peerwork_runtime::runtime_contract::retired_json()
 }
 
 #[pyfunction]
 #[pyo3(signature = (input_json, cancel_handle=None))]
 fn private_read_view_json(py: Python<'_>, input_json: String,
     cancel_handle: Option<PyRef<'_, KernelCancelHandle>>) -> String {
-    let cancel = cancel_handle.map(|handle| handle.token.clone()).unwrap_or_default();
-    py.allow_threads(move || peerwork_runtime::private_read_view::private_read_view_json(&input_json, &cancel))
+    peerwork_runtime::runtime_contract::retired_json()
 }
 
 #[pyfunction]
 #[pyo3(signature = (input_json, cancel_handle=None))]
 fn current_page_json(py: Python<'_>, input_json: String,
     cancel_handle: Option<PyRef<'_, KernelCancelHandle>>) -> String {
-    let cancel = cancel_handle.map(|handle| handle.token.clone()).unwrap_or_default();
-    py.allow_threads(move || peerwork_runtime::current_page::current_page_json(&input_json, &cancel))
+    peerwork_runtime::runtime_contract::retired_json()
 }
 
 #[pyfunction]
@@ -1259,15 +504,7 @@ fn owner_guard_time_json(
     input_json: String,
     cancel_handle: Option<PyRef<'_, KernelCancelHandle>>,
 ) -> String {
-    let cancel = cancel_handle.map(|h| h.token.clone()).unwrap_or_default();
-    py.allow_threads(move || {
-        peerwork_runtime::owner_guard_time::owner_guard_time_json(
-            &config_json,
-            &operation,
-            &input_json,
-            &cancel,
-        )
-    })
+    peerwork_runtime::runtime_contract::retired_json()
 }
 
 #[pyfunction]
@@ -1279,15 +516,7 @@ fn owner_member_scopes_json(
     input_json: String,
     cancel_handle: Option<PyRef<'_, KernelCancelHandle>>,
 ) -> String {
-    let cancel = cancel_handle.map(|h| h.token.clone()).unwrap_or_default();
-    py.allow_threads(move || {
-        peerwork_runtime::owner_member_scopes::owner_member_scopes_json(
-            &config_json,
-            &operation,
-            &input_json,
-            &cancel,
-        )
-    })
+    peerwork_runtime::runtime_contract::retired_json()
 }
 
 #[pymodule]
@@ -1305,6 +534,10 @@ fn _peerwork_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(capabilities_json, module)?)?;
     module.add_function(wrap_pyfunction!(load_config_json, module)?)?;
     module.add_function(wrap_pyfunction!(identity_create_json, module)?)?;
+    module.add_function(wrap_pyfunction!(prepare_owner_checkpoint_json, module)?)?;
+    module.add_function(wrap_pyfunction!(inspect_owner_cache_json, module)?)?;
+    module.add_function(wrap_pyfunction!(plan_owner_checkpoint_from_cache_json, module)?)?;
+    module.add_function(wrap_pyfunction!(prepare_owner_checkpoint_from_cache_json, module)?)?;
     module.add_function(wrap_pyfunction!(identity_open_json, module)?)?;
     module.add_function(wrap_pyfunction!(identity_import_seed_json, module)?)?;
     module.add_function(wrap_pyfunction!(identity_import_pkcs8_pem_json, module)?)?;

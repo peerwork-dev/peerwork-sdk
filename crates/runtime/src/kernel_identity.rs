@@ -168,11 +168,11 @@ impl KernelIdentity {
         {
             return Err(KernelIdentityError::NotFound);
         }
-        let store = SecureStateStore::open(path)?;
-        let wire = store
-            .read_exact_secret()?
-            .ok_or(KernelIdentityError::NotFound)?;
-        Self::from_native_wire(&wire)
+        // Identity creation/import never replaces an existing target. Reading
+        // immutable identity bytes must not take the mutable-state writer lock
+        // or make concurrent SDK operations fail with Busy. Retain the exact
+        // protected-file, bounded-read, magic and seed validation below.
+        Self::inspect_existing(path)
     }
 
     /// Inspect an existing identity without creating a lock or rewriting state.

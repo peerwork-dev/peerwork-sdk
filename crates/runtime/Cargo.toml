@@ -6,6 +6,7 @@ rust-version.workspace = true
 license = "Apache-2.0"
 
 [dependencies]
+aes-gcm = "0.10"
 peerwork-core = { path = "../core" }
 ed25519-dalek = { version = "2", features = ["pem"] }
 rand_core = { version = "0.6", features = ["getrandom"] }

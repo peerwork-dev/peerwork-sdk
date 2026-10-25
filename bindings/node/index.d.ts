@@ -10,6 +10,10 @@ export declare function loadConfig(path?: string): Promise<ClientConfig>;
 /** Experimental native kernel command client; secure-agent replay remains incomplete. */
 export declare function version(): string;
 export interface CapabilityManifest {
+  backend_structure_execution: boolean;
+  backend_current_state_reads: boolean;
+  backend_durable_recovery: boolean;
+  legacy_online_modes: 'RETIRED';
   protocol_offline_simulation: boolean;
   protocol_verified_export: boolean;
   protocol_plan_apply: boolean;
@@ -17,6 +21,7 @@ export interface CapabilityManifest {
   producer_compatibility_report: boolean;
   workspace_url_generation: boolean;
   anonymous_changelog_read: boolean;
+  anonymous_publication_read: boolean;
   public_authorized_state_read: boolean;
   private_authorized_state_read: boolean;
   private_system_current_page_read: boolean;
@@ -61,6 +66,9 @@ export interface KernelAccessOptions {
 }
 export interface PendingIntent { command_id: string; intent_digest: string; created_at_ms: number }
 export interface AcceptedResult {
+  key_history?: {job_id: string; through_epoch: number; state: 'READY' | 'PENDING' | 'UNAVAILABLE'; code: string | null};
+  browser_approval_reference?: string;
+  opened_contents?: OpenedStructureBody[];
   command_id: string;
   workspace_id: string | null;
   protocol_digest: string | null;
@@ -69,6 +77,86 @@ export interface AcceptedResult {
   revision: number | null;
   produced_record_ids: string[];
   catalog: CatalogAcceptedResult | null;
+  /** Verified service-maintained structure; does not assert independent history replay. */
+  structure?: BackendStructureResult;
+}
+export interface OpenedStructureBody {
+  record_id: string; revision: number; source_command_id: string; record_index: number; key_id: string | null;
+  state: 'OPENED' | 'NO_CONTENT' | 'KEY_UNAVAILABLE' | 'AUTHENTICATION_FAILED' | 'BODY_INVALID' | 'KEY_STATE_INVALID' | 'UNSUPPORTED_ENCODING';
+  text: string | null; assurance: 'AUTHOR_SIGNATURE_AND_AEAD' | 'AUTHOR_PUBLIC_SIGNATURE' | null;
+}
+export interface StructureMaintenanceResult {
+  job_id: string; workspace_id: string; instance_id: string; unsettled: boolean; kind: 'CURRENT_RECORDS'; actor_id: string; membership_id: string;
+  command_id: string; intent_digest: string; protocol_digest: string;
+  base_revision: number; base_event_revision: number; source_generation: string; target_generation: string;
+  deadline_at: number; created_at: number; completed_at: number | null; activation_sequence: number | null;
+  state: 'BUILDING' | 'CLEANUP' | 'DONE'; phase: 'HEADS' | 'CLEANUP' | 'DONE';
+  status: 'ORDERED' | 'APPLIED' | 'REJECTED_NO_EFFECT' | 'VERIFICATION_BLOCKED';
+  scanned_records: number; scanned_heads: number; evidence_digest: string;
+  error_code: string | null; cleanup_pending: boolean;
+  source?: {actor_id: string; command_id: string; intent_digest: string; author_intent: string} | null;
+}
+export interface StructureOperationRef { job_id: string; instance_id: string; protocol_digest: string; workspace_id?: string }
+export type StructureListedOperation = (StructureMaintenanceResult & {source_key: string; source_verification: 'VERIFIED'}) | (StructureOperationRef & {
+  workspace_id: string; actor_id: string; command_id: string; intent_digest: string; kind: 'CURRENT_RECORDS'; unsettled: boolean;
+  source_key: string; source_verification: 'BLOCKED'; status: 'VERIFICATION_BLOCKED'; observed_status: string;
+  error_code: 'STRUCTURE_MAINTENANCE_SOURCE_INVALID'; recovery: 'INSPECT_SELECTED_OPERATION';
+});
+export interface BackendStructureResult {
+  workspace_alias?:string|null;
+  deletion?: WorkspaceDeletionProgress;
+  deletions?: WorkspaceDeletionProgress[];
+  owner_id?: string;
+  delivery?: {epoch: number; publication_id: string; revision: number; status: 'PENDING' | 'COMPLETE'};
+  content_key_head?: {workspace_id: string; key_id: string; epoch: number; revision: number; rotation_required: boolean; exposure_tracked?: boolean; rotate_before: number | null; owner_id: string; command_id: string; intent_digest: string; usable?: boolean; author_intent?: string} | null;
+  effect_certainty?: 'COMMITTED' | 'NOT_APPLIED';
+  error?: {phase: string; code: string; http_status?: number; retryable: boolean; recovery: string};
+  maintenance?: StructureMaintenanceResult;
+  operations?: StructureListedOperation[];
+  name?: string;
+  visibility?: 'PRIVATE';
+  workspace_revision?: number;
+  activation?: {actor_id: string; intent_digest: string; authorization: string; accepted_at: number};
+  membership?: {role: 'OWNER' | 'MEMBER'; membership_id?: string; expires_at?: number | null};
+  profile: 'backend-structure-v1';
+  assurance: 'BACKEND_CURRENT_STATE';
+  workspace_id: string | null;
+  instance_id?: string;
+  protocol_digest?: string;
+  revision?: number;
+  event_revision?: number;
+  state?: unknown;
+  members?: {membership_id: string; actor_id: string; role: string; state: 'ACTIVE' | 'REVOKED'; created_at: number; revoked_at: number | null}[];
+  instance?: {instance_id: string; protocol_digest: string; revision: number; event_revision: number; state: unknown; manifest: unknown};
+  instances?: {instance_id: string; protocol_digest: string; revision: number; event_revision: number; created_at: number; protocol_name?: string; protocol_version?: string}[];
+  records?: {record_id: string; entity_id: string; revision: number; created_at?:number; schema: string; structure: unknown; sealed_content: unknown; source: StructureRecordSource; source_key: string}[];
+  events?: {sequence: number; instance_id: string | null; kind: string; record_id: string | null; actor_id: string; created_at: number; summary: Record<string, unknown>; source_key: string}[];
+  sources?: Record<string, {actor_id: string; command_id: string; intent_digest: string; author_intent: string} | null>;
+  frontier?: Record<string, number>;
+  next_cursor?: string | null;
+  checkpoint?: number;
+  observer_checkpoint?: number;
+  consistency?: 'LIVE_KEYSET' | 'IF_UNCHANGED';
+  publication_revision?: number;
+  publication_state?: 'PUBLIC' | 'WITHDRAWN';
+  created_at?: number;
+  member_actor_id?: string;
+  membership_id?: string;
+  membership_state?: 'ACTIVE' | 'REVOKED';
+  grant_id?: string;
+  grant_actor_id?: string;
+  grant_revision?: number;
+  grant_state?: 'ACTIVE' | 'REVOKED';
+  grant?: Record<string, unknown> | null;
+  manifest?: unknown;
+  structure?: unknown;
+  sealed_content?: ({algorithm: 'A256GCM'; key_id: string; nonce: string; aad_digest: string} & ({ciphertext: string; ciphertext_chunks?: never} | {ciphertext_chunks: string[]; ciphertext?: never})) | null;
+  source?: StructureRecordSource;
+  author_intent?: string;
+  produced_record_ids?: string[];
+  status?: 'APPLIED' | 'REJECTED_NO_EFFECT' | 'NOT_FOUND' | 'ORDERED' | 'COMMITTED_RESULT_UNAVAILABLE';
+  recovery?: 'RESUBMIT_EXACT_INTENT' | 'RESUBMIT_SAME_INTENT';
+  response?: {command_id: string; receipt: string; result: BackendStructureResult};
 }
 export type CatalogAcceptedResult =
   | { kind: 'namespace_claim'; namespace: string }
@@ -76,13 +164,63 @@ export type CatalogAcceptedResult =
   | { kind: 'upload_chunk'; upload_id: string; index: number; received_bytes: number; state: 'STAGING' | 'READY' }
   | { kind: 'package_publish'; namespace: string; package_id: string; version: string; bundle_digest: string; published: number };
 export interface TsMigrationReport { pending_count: number; accepted_count: number }
+export interface StructureIntentRequest {
+  /** Encrypted locally before any submission; never included as plaintext in the signed wire. */
+  plaintext_contents?: {record_index: number; text: string}[];
+  action: 'structure.workspace.delete' | 'structure.workspace.deletion.get' | 'structure.workspace.deletions.read' | 'structure.record.withdraw' | 'structure.publication.set' | 'structure.publication.entry.set' | 'structure.access.approval.get' | 'structure.access.end' | 'structure.instance.resolve' | 'structure.access.authorize' | 'structure.content-key.set' | 'structure.content-key.get' | 'structure.content-key.deliver' | 'structure.content-key.delivery.get' | 'structure.content-keys.read' | 'structure.workspace.create' | 'structure.workspace.get' | 'structure.adopt' | 'structure.action' | 'structure.instance.get' | 'structure.record.get' | 'structure.operation.get'
+    | 'structure.member.set' | 'structure.grant.set' | 'structure.grant.revoke' | 'structure.grant.get'
+    | 'structure.members.read' | 'structure.instances.read' | 'structure.records.read' | 'structure.events.read'
+    | 'structure.maintenance.rebuild' | 'structure.maintenance.get' | 'structure.maintenance.cancel' | 'structure.operations.read' | 'structure.content-key.history.deliver' | 'structure.content-key.history.get' | 'structure.content-key.history.jobs.read' | 'structure.publication.entry.withdraw' | 'structure.publication.policy.get' | 'structure.publication.policy.set' | 'structure.publication.prepare.get';
+  body: Record<string, unknown>;
+  /** Choose command_id or idempotency_key. Reuse it with identical business fields to recover. */
+  command_id?: string;
+  idempotency_key?: string;
+  workspace_id?: string | null;
+  instance_id?: string | null;
+  protocol_digest?: string | null;
+  expected_workspace_revision?: number | null;
+  expected_instance_revision?: number | null;
+  exact_input_refs?: Record<string, unknown>[];
+}
+export type StructureIntentOutcome = {state: 'ACCEPTED' | 'REJECTED' | 'COMMITTED'; result: AcceptedResult} | {state: 'COMPLETED'; command_id: string; result: AcceptedResult} | {
+  state: 'PENDING'; command_id: string; code: string; phase: string; retryable: boolean; effect_certainty: 'NOT_SUBMITTED' | 'COMMITTED' | 'UNKNOWN';
+  recovery: 'RESUME_SAME_INTENT' | 'NEW_READ' | 'OBSERVE_SAME_OPERATION' | 'CONTINUE_KEY_ROTATION';
+};
+export interface AccessWriteSelection {instance_id: string; protocol_digest: string; action_id: string}
+export interface DeviceAccessRequest {workspace_id: string; label: string; kind?: 'AGENT' | 'BROWSER'; write?: AccessWriteSelection | null}
+export interface DeviceAccessApproval {
+  include_history?: boolean;
+  workspace_id: string; request_jws: string; mode?: 'SESSION' | 'KEYS_ONLY'; ttl_ms?: number | null;
+  deliver_content_keys?: boolean; follow_current_key?: boolean; key_ids?: string[]; expected_workspace_revision?: number | null;
+  selected_write?: (AccessWriteSelection & {protocol_roles?: string[]; capabilities?: string[]}) | null;
+}
+export interface ContentKeyAcceptance {
+  workspace_id: string; owner_id: string; key_ids: string[];
+  current_key_id?: string | null; expected_current_key_id?: string | null;
+}
 export interface KernelSession extends IdentityInfo {
   origin: string;
   /** Saves an exact signed request but performs no POST. */
   prepare(command: Record<string, unknown>, options?: {uploadChunk?: Buffer | Uint8Array; signal?: AbortSignal}): Promise<PendingIntent>;
   pending(options?: {signal?: AbortSignal}): Promise<PendingIntent[]>;
-  status(commandId: string, options?: {signal?: AbortSignal}): Promise<{state: 'NOT_FOUND' | 'PENDING'} | {state: 'ACCEPTED'; result: AcceptedResult}>;
+  /** Local, LIVE keyset page; verifies at most 32 unresolved packets. */
+  pendingPage(options?: {after?: string; preparationsAfter?: string; limit?: number; signal?: AbortSignal}): Promise<{items: PendingIntent[]; next_after: string | null; consistency: 'LIVE_KEYSET'; preparations: {items: {command_id: string; workspace_id: string | null; kind: 'INTENT' | 'ACCESS' | 'PUBLICATION'; phase: 'PREPARATION'; effect_certainty: 'NOT_SUBMITTED'; recovery: 'RESUME_SAME_INTENT'}[]; next_after: string | null; consistency: 'LIVE_KEYSET'}}>;
+  /** Explicit legacy local index maintenance, resumable by calling again. */
+  buildPendingIndex(options?: {signal?: AbortSignal}): Promise<{complete: boolean; scanned_rows: number}>;
+  /** Owner-publish a fresh key epoch; repeats reconcile the original command. */
+  coordinateContentKeys(selection: {workspace_id: string}, options?: {signal?: AbortSignal}): Promise<StructureIntentOutcome>;
+  rotateContentKey(selection: {workspace_id: string; idempotency_key: string}, options?: {signal?: AbortSignal}): Promise<StructureIntentOutcome>;
+  /** Explicit local key creation only; does not grant access or deliver it to other readers. */
+  ensureLocalContentKey(workspaceId: string, options?: {signal?: AbortSignal}): Promise<{workspace_id: string; key_id: string}>;
+  requestAccess(selection: DeviceAccessRequest, options?: {signal?: AbortSignal}): Promise<{profile: 'backend-structure-v1'; workspace_id: string; actor_id: string; request_id: string; recipient_key_id: string; expires_at: number; request_jws: string; state: 'AWAITING_OWNER_APPROVAL'}>;
+  publishSelectedRecord(selection: PublicationSnapshotSelection, options?: {signal?: AbortSignal}): Promise<StructureIntentOutcome>;
+  authorizeAccess(selection: DeviceAccessApproval, options?: {signal?: AbortSignal}): Promise<StructureIntentOutcome>;
+  acceptContentKeys(selection: ContentKeyAcceptance, options?: {signal?: AbortSignal}): Promise<{profile: 'backend-structure-v1'; workspace_id: string; state: 'IMPORTED'; key_ids: string[]; current_key_id: string | null; source_count: number}>;
+  status(commandId: string, options?: {signal?: AbortSignal}): Promise<{state: 'NOT_FOUND' | 'PENDING'} | {state: 'ACCEPTED' | 'REJECTED' | 'COMMITTED'; result: AcceptedResult}>;
   submitSaved(commandId: string, options?: {signal?: AbortSignal}): Promise<AcceptedResult>;
+  /** Obtains signed service time, signs/saves/submits intent and verifies its outcome. Never replays workspace history. */
+  executeStructureIntent(intent: StructureIntentRequest, options?: {signal?: AbortSignal}): Promise<StructureIntentOutcome>;
+  resumeStructureIntent(commandId: string, options?: {signal?: AbortSignal}): Promise<StructureIntentOutcome>;
   /** Imports a quiesced TypeScript client store and retains a verified online backup. */
   migrateTsStore(sourcePath: string, backupPath: string, trustedSignerKeyIds: string[], options?: {signal?: AbortSignal}): Promise<TsMigrationReport>;
 }
@@ -917,42 +1055,65 @@ export interface AcquisitionObservations {
 export declare function openAcquisitionObservations(options:{path:string;maxRecords?:number;maxStoreBytes?:number}):AcquisitionObservations;
 
 /** Redacted generic Kernel runtime failure. Argument shape errors retain TypeError. */
-export class KernelError extends Error { constructor(code: string, message: string); readonly code: string; }
+export class KernelError extends Error { constructor(code: string, message: string, details?: Record<string, unknown> | null); readonly code: string; readonly details: Record<string, unknown> | null; readonly httpStatus?: number; readonly serverCode?: string; readonly phase?: string; readonly retryable?: boolean; readonly recovery?: string; }
 
 
 export interface AgentContextDescriptor {
   schema: string; service_id: string; origin: string; actor_id: string;
   key_id: string; workspaces: string[]; fingerprint: string;
+  execution_profile?: 'backend-structure-v1';
 }
 export interface AgentContextResult {
+  key_history?: AcceptedResult['key_history'];
+  browser_approval_reference?: string;
+  opened_contents?: OpenedStructureBody[];
   schema: 'peerwork.agent-result.v1'; context: AgentContextDescriptor;
   status: string; operation_id?: string | null; result?: unknown; continuation?: unknown;
+  command_id?: string; observation_command_id?: string;
 }
 export interface AgentProtocolActionIntent {
+  document_times?:DocumentTimeSelection[];
+  plaintext_contents?: {record_index: number; text: string}[];
   kind: 'protocol.action'; instance_id: string; action_id: string;
   values: unknown; refs?: unknown[];
+  /** Required by backend-execution v2 contexts; no implicit revision rebase. */
+  protocol_digest?: string; expected_instance_revision?: number;
+  contents?: {record_index: number; body: NonNullable<BackendStructureResult['sealed_content']>}[];
 }
+export interface AgentStructureIntent { kind: 'structure.intent'; request: StructureIntentRequest }
 export interface AgentBrowserApprovalIntent {
   kind: 'browser.approve'; reference: string; approve_writes: boolean;
 }
 export interface AgentInvitationFinalizeIntent { kind: 'workspace.invitation.finalize'; invite_id: string; saved_grant_id?: string }
-export type AgentIntent = AgentProtocolActionIntent | AgentBrowserApprovalIntent | AgentInvitationFinalizeIntent;
+export type AgentIntent = AgentProtocolActionIntent | AgentBrowserApprovalIntent | AgentInvitationFinalizeIntent | AgentStructureIntent;
 export interface AgentContext {
+  requestAccess(workspaceId: string, selection: Omit<DeviceAccessRequest, 'workspace_id'>, options?: {signal?: AbortSignal}): Promise<AgentContextResult>;
+  authorizeAccess(workspaceId: string, selection: Omit<DeviceAccessApproval, 'workspace_id'>, options?: {signal?: AbortSignal}): Promise<AgentContextResult>;
+  publishSelectedRecord(workspaceId: string, selection: Omit<PublicationSnapshotSelection, 'workspace_id'>, options?: {signal?: AbortSignal}): Promise<AgentContextResult>;
+  coordinateContentKeys(workspaceId: string, options?: {signal?: AbortSignal}): Promise<AgentContextResult>;
+  rotateContentKey(workspaceId: string, selection: {idempotency_key: string}, options?: {signal?: AbortSignal}): Promise<AgentContextResult>;
+  acceptContentKeys(workspaceId: string, selection: Omit<ContentKeyAcceptance, 'workspace_id'>, options?: {signal?: AbortSignal}): Promise<AgentContextResult>;
   readonly descriptor: AgentContextDescriptor;
   /** Bounded verified installed index; authority summaries are advisory. */
   discover(workspaceId: string, options?: {after?: string; limit?: number; signal?: AbortSignal}): Promise<AgentContextResult>;
   describe(workspaceId: string, options: {
-    instanceId?: string; actionId?: string; recordId?: string; revision?: number;
+    instanceId?: string; protocolDigest?: string; actionId?: string; recordId?: string; revision?: number;
     objectRef?: {kind: string; id: string; revision: number}; signal?: AbortSignal;
   }): Promise<AgentContextResult>;
   inspect(workspaceId: string, options?: {signal?: AbortSignal}): Promise<AgentContextResult>;
+  /** v2: workspace-scoped backend intent, signed and verified without journal replay. */
+  executeStructureIntent(workspaceId: string, intent: StructureIntentRequest,
+    options?: {signal?: AbortSignal}): Promise<AgentContextResult>;
+  /** Read-only follow from a fresh device/state directory; never resubmits the original mutation. */
+  followOperation(workspaceId: string, operation: StructureOperationRef | WorkspaceDeletionRef, options?: {signal?: AbortSignal}): Promise<AgentContextResult>;
   operate(workspaceId: string, intent: AgentIntent, operationId: string,
     options?: {signal?: AbortSignal}): Promise<AgentContextResult>;
   recover(workspaceId: string, options: {operationId?: string; commandId?: string; recovery?: {mode: 'reconcile' | 'safe'; maxSubmissions?: 0 | 1}; signal?: AbortSignal}): Promise<AgentContextResult>;
   exportFixture(workspaceId: string, options: {instanceIds: string[]; timeMs: number; cached?: boolean; signal?: AbortSignal}): Promise<ProtocolFixture>;
   applyPlan(workspaceId: string, plan: ProtocolActionPlan | undefined, operationId: string, options?: {signal?: AbortSignal}): Promise<Record<string, unknown>>;
   resumePlan(workspaceId: string, operationId: string, options?: {signal?: AbortSignal}): Promise<Record<string, unknown>>;
-  operations(workspaceId: string, options?: {signal?: AbortSignal}): Promise<AgentContextResult>;
+  /** v2: bounded current operation page; MINE/OPEN by default, no local history scan. */
+  operations(workspaceId: string, options?: {after?: string; limit?: number; scope?: 'MINE' | 'WORKSPACE'; view?: 'OPEN' | 'HISTORY'; signal?: AbortSignal}): Promise<AgentContextResult>;
   /** Probe unchanged history; full verified replay on updates. Action receipts only, not incremental sync. */
   eventsSync(workspaceId: string, options?: {signal?: AbortSignal}): Promise<AgentContextResult>;
   /** Requested native wait budget up to 60000ms with cooperative cancellation; delivery is not task completion. */
@@ -971,6 +1132,7 @@ export declare function openContext(options: {
   profilePath: string; expectedActor: string; expectedService: string; signal?: AbortSignal;
 }): Promise<AgentContext>;
 export class AgentContextError extends Error {
+  readonly server_code?: string; readonly http_status?: number;
   readonly code: string; readonly layer?: string; readonly effect_certainty?: string;
   readonly operation_id?: string; readonly continuation?: unknown; readonly envelope: Record<string, unknown>;
   readonly stage?: string; readonly constraint?: string; readonly retryability?: string; readonly recovery_hints?: unknown;
@@ -980,22 +1142,30 @@ export declare function bindContext(options: {
   profilePath: string; expectedActor: string; expectedService: string;
   workspaceProfiles: string[]; signal?: AbortSignal;
 }): Promise<AgentContext>;
+/** v2 reference binding is offline and never creates an identity or membership. */
+export declare function bindStructureContext(options: {
+  profilePath: string; expectedActor: string; expectedService: string; origin: string;
+  identityPath: string; journalPath: string; workspaceIds: string[]; authority?: string;
+  requiredFeatures?: string[]; allowLoopbackHttp?: boolean; transport?: TransportOptions; signal?: AbortSignal;
+}): Promise<AgentContext>;
 
 
 export interface WorkspaceLinkOptions {
-  visibility?: 'PRIVATE' | 'PUBLIC'; kind?: 'workspace' | 'instance' | 'record' | 'thread' | 'document';
-  instanceId?: string | null; recordId?: string | null; entityId?: string | null;
+  /** Registered alias returned by a verified workspace create/get result. No lookup or access grant. */
+  workspaceAlias?:string|null;
+  visibility?: 'PRIVATE' | 'PUBLIC'; kind?: 'workspace' | 'instance' | 'record';
+  instanceId?: string | null; recordId?: string | null; entityId?: string | null; revision?: number | null;
 }
 export interface WorkspaceLink {
-  browser_url: string; journal_url: string; browser_origin: string; control_origin: string;
-  workspace_id: string; visibility: 'PRIVATE' | 'PUBLIC'; kind: string;
+  execution_profile:'backend-structure-v1'; browser_url:string; commands_url:string; context_endpoint:string; public_read_endpoint:string; browser_origin:string; control_origin:string;
+  workspace_id: string; workspace_alias:string|null; visibility: 'PRIVATE' | 'PUBLIC'; kind: string;
 }
 export declare class WorkspaceUrls {
   constructor(options?: {browserOrigin?:string;controlOrigin?:string;allowLoopbackHttp?:boolean});
   build(workspaceId:string,options?:WorkspaceLinkOptions):Promise<WorkspaceLink>;
   workspace(workspaceId:string,options?:WorkspaceLinkOptions):Promise<string>;
   instance(workspaceId:string,instanceId:string,options?:WorkspaceLinkOptions):Promise<string>;
-  record(workspaceId:string,recordId:string,options?:WorkspaceLinkOptions):Promise<string>;
+  record(workspaceId:string,recordId:string,options:WorkspaceLinkOptions & {instanceId:string;revision:number}):Promise<string>;
 }
 export interface ChangelogSource {
   origin:string; browser_origin:string; control_origin:string; workspace_id:string;
@@ -1003,22 +1173,14 @@ export interface ChangelogSource {
   allow_loopback_http?:boolean; transport?:{request_timeout_ms?:number;additional_root_pem_files?:string[]};
 }
 export interface ChangelogCheckpoint {
-  origin:string;workspace_id:string;owner_actor_id:string;owner_key_id:string;instance_id:string;
-  sequence:number;head:string|null;policy_hash:string;
+  profile:'backend-structure-v1';control_origin:string;workspace_id:string;owner_actor_id:string;owner_key_id:string;audience:string;service_key:string;publication_revision:number;
 }
-export interface ChangelogEntry {
-  record_id:string;entity_id:string;revision:number;instance_id:string;title:string;body:string;
-  author_actor_id:string;created_at:number;url:string;
-}
-export interface ChangelogRead {
-  source:ChangelogSource;instance_id:string;url:string;checkpoint:ChangelogCheckpoint;
-  entries:ChangelogEntry[];next_offset:number|null;total_entries:number;
-  verification:'SIGNED_JOURNAL_REPLAY';freshness:'SERVER_OBSERVATION';identity_required:false;
-}
+export interface ChangelogEntry {record_id:string;revision:number;instance_id:string;title:string;body:string;author_actor_id:string|null;created_at:number|null;source_signer_actor_id:string;attribution_assurance:'OWNER_ATTESTED_CONVERSION'|'OWNER_ATTESTED_RECORD_SOURCE'|'AUTHOR_SIGNED_PUBLIC_ACTION';document_time?:DocumentTime|null;document_time_assurance?:'AUTHOR_SIGNATURE'|'PUBLISHER_ATTESTATION'|null;submitted_at?:number;published_at:number;url:string}
+export interface ChangelogRead {source:ChangelogSource;checkpoint:ChangelogCheckpoint;entries:ChangelogEntry[];next_cursor:string|null;verification:'OWNER_PUBLICATION_SIGNATURES'|'AUTHOR_AND_OWNER_POLICY_SIGNATURES';freshness:'SERVICE_CURRENT_SELECTION';identity_required:false;metrics:{discovery_requests:number;public_requests:number;history_reads:0}}
 export declare class ChangelogClient {
   constructor(options?:{source?:ChangelogSource});
   static officialSource():Promise<ChangelogSource>;
-  read(options?:{limit?:number;offset?:number;checkpoint?:ChangelogCheckpoint|null;signal?:AbortSignal}):Promise<ChangelogRead>;
+  read(options?:{limit?:number;cursor?:string|null;checkpoint?:ChangelogCheckpoint|null;signal?:AbortSignal}):Promise<ChangelogRead>;
 }
 
 
@@ -1121,4 +1283,121 @@ export declare class OwnerWorkspaceMemberScopesClient {
   retrySaved(operationId: string, options?: {signal?: AbortSignal}): Promise<MemberScopeUpdateResult>;
   /** Local protected history; does not refresh acceptance. */
   history(options?: {signal?: AbortSignal}): Promise<MemberScopeUpdateResult[]>;
+}
+export interface OwnerCheckpointPreparation {
+  status: 'PREPARED_OFFLINE';
+  workspace_id: string;
+  conversion_id: string;
+  pages: number;
+  records: number;
+  mapping_digest: string;
+  preparation_digest: string;
+  output_path: string;
+  network_requests: 0;
+  reused?: boolean;
+  body_key_status: 'AVAILABLE' | 'NOT_REQUIRED' | 'UNAVAILABLE' | 'INTEGRITY_FAILED';
+  body_key_recovery_needed?: boolean;
+}
+/** Select mapped structure and encrypt bodies from a protected JSONL current
+ * export. No network requests, history replay or source identity changes. */
+export function prepareOwnerCheckpoint(options: {
+  identityPath: string; expectedActor: string; origin: string; audience: string;
+  sourcePath: string; planPath: string; outputPath: string; contentKeysPath?: string;
+  allowLoopbackHttp?: boolean;
+}): Promise<OwnerCheckpointPreparation>;
+
+/** Pause all Owner operations before inspecting the selected ACTIVE cache.
+ * Writes a protected local field/type report, never returns business values. */
+export function inspectOwnerCache(options: {
+  stateDir: string; workspaceId: string; reportPath: string; expectedActor?: string;cacheSelection?:'ACTIVE'|'RECOVERY'|'INSTALL';refreshSource?:boolean;
+}): Promise<{
+  status: 'LOCAL_REVIEW_READY'; mapping_confirmed: false; network_requests: number|null;source_refresh_requested:boolean;
+  identity_copied: false; original_cache_unchanged: true;
+  protocol_count: number; instance_count: number; record_count: number;
+  source_frontier: {sequence: number; head: string | null; policy_hash: string};
+  report_path: string; report_sha256: string;
+}>;
+
+/** Unreleased offline conversion candidate; pause selected Owner operations. */
+export function planOwnerCheckpointFromCache(options: {
+ stateDir:string;workspaceId:string;expectedActor:string;cacheSelection?:'ACTIVE'|'RECOVERY'|'INSTALL';refreshSource?:boolean;snapshotSha256:string;name:string;planPath:string;
+}):Promise<{status:'POLICY_MAPPING_READY';policy:'BODY_ENCRYPTED_STRUCTURE_READABLE';instance_count:number;
+ schema_count:number;encrypted_body_field_count:number;required_backend_features:string[];plan_path:string;
+ plaintext_body_persisted:false;network_requests:number|null;source_refresh_requested:boolean;source_frontier:Record<string,unknown>}>;
+/** No plaintext source snapshot or identity copy is created. */
+export function prepareOwnerCheckpointFromCache(options: {
+ stateDir:string;workspaceId:string;expectedActor:string;cacheSelection?:'ACTIVE'|'RECOVERY'|'INSTALL';refreshSource?:boolean;planPath:string;outputPath:string;origin:string;audience:string;allowLoopbackHttp?:boolean;
+}):Promise<Omit<OwnerCheckpointPreparation,'network_requests'> & {network_requests:number|null;source_refresh_requested:boolean;source_mode:'VERIFIED_OWNER_CACHE_MEMORY';plaintext_source_persisted:false;identity_copied:false;
+ context_binding:{execution_profile:'backend-structure-v1';expected_actor:string;authority:string;audience:string;workspace_ids:string[]}}>;
+
+export interface PublicationBody {format:'PUBLIC_UTF8_BASE64';chunks:string[]}
+/** Explicit public body, <=65536 UTF-8 bytes; no network side effects. */
+export declare function publicationBody(text:string):PublicationBody;
+
+export interface PublicationRead {result:{kind:'WORKSPACE'|'ENTRIES'|'ENTRY';workspace_id:string;entries?:(Record<string,unknown>&{record_id:string;instance_id:string;text:string;url:string})[];next_cursor?:string|null;[key:string]:unknown};checkpoint:ChangelogCheckpoint;assurance:'PUBLISHER_SIGNATURE_AND_SERVICE_SELECTION';identity_required:false;metrics:{discovery_requests:number;public_requests:number;history_reads:0}}
+export interface PublicationReadOptions {instanceId?:string|null;limit?:number;cursor?:string|null;checkpoint?:ChangelogCheckpoint|null;order?:'RECORD_ID_ASC'|'PUBLISHED_DESC';signal?:AbortSignal}
+export declare class PublicationReader {
+ constructor(options:{controlOrigin:string;browserOrigin:string;workspaceId:string;ownerActorId:string;ownerKeyId:string;audience?:string;serviceKey?:string;transport?:TransportOptions;allowLoopbackHttp?:boolean});
+ workspace(options?:Omit<PublicationReadOptions,'instanceId'|'cursor'>):Promise<PublicationRead>;
+ list(options?:PublicationReadOptions):Promise<PublicationRead>;
+ get(recordId:string,options?:Omit<PublicationReadOptions,'cursor'>):Promise<PublicationRead>;
+}
+
+export interface PublicationSnapshotSelection {
+  workspace_id: string; instance_id: string; protocol_digest: string; record_id: string; revision: number;
+  idempotency_key: string; expected_publication_revision?: number | null; title: string;
+  disclosure: 'PUBLISH_SELECTED_CONTENT'; body: {from: 'RECORD'} | {from: 'TEXT'; text: string};
+}
+
+/** Atomically execute a granted protocol action and explicitly publish selected outputs. */
+export interface PublicActionIntent extends StructureIntentRequest {
+ action:'structure.action'; instance_id:string; protocol_digest:string; expected_instance_revision:number;
+ plaintext_contents?:never;
+ body:{action_id:string;structure:unknown;document_times?:DocumentTimeSelection[];publication:{policy_revision:number;disclosure:'PUBLISH_ACTION_AND_SELECTED_RECORDS';entries:{record_index:number;title:string;body:PublicationBody}[]}};
+}
+
+export interface PublicActionPolicyIntent extends StructureIntentRequest {
+ action:'structure.publication.policy.set';instance_id:string;protocol_digest:string;
+ body:{state:'ACTIVE'|'DISABLED';expected_policy_revision:number;actions:string[];disclosure:'ALLOW_AUTHOR_SIGNED_ACTION_PUBLICATION'};
+}
+export interface PublicEntryWithdrawal extends StructureIntentRequest {
+ action:'structure.publication.entry.withdraw';instance_id:string;protocol_digest:string;
+ body:{record_id:string;expected_publication_revision:number};
+}
+
+/** Withdraw one immutable version. Author or Owner; never selects an older head.
+ * This removes online access and publication, while retaining signed evidence. */
+export interface RecordWithdrawal extends StructureIntentRequest {
+ action:'structure.record.withdraw';instance_id:string;protocol_digest:string;
+ expected_instance_revision:number;
+ body:{record_id:string;revision:number};
+}
+
+/** One Owner authorization closes access and schedules bounded backend purge.
+ * Native execute/resume waits for signed completion within the shared budget. */
+export interface WorkspaceDeletion extends StructureIntentRequest {
+ action:'structure.workspace.delete';workspace_id:string;expected_workspace_revision:number;
+ body:{confirm_workspace_id:string};
+}
+
+export interface WorkspaceDeletionProgress {
+ workspace_id:string;owner_id:string;command_id:string;intent_digest:string;
+ job_id:string;kind:'WORKSPACE_DELETE';base_revision:number;created_at:number;
+ status:'ORDERED'|'APPLIED'|'VERIFICATION_BLOCKED';phase:string;removed_rows:number;
+ completed_at:number|null;error_code:string|null;
+ backups:'NOT_TRACKED';independent_copies:'NOT_RECALLABLE';
+ source?:{actor_id:string;command_id:string;intent_digest:string;author_intent:string}|null;
+ source_verification?:'VERIFIED'|'BLOCKED';
+}
+
+/** A fresh Owner Context follows this backend task without the original journal. */
+export interface WorkspaceDeletionRef {kind:'WORKSPACE_DELETE';command_id:string;workspace_id?:string}
+
+/** Author claims about the imported document, separate from service admission. */
+export interface DocumentTime {created_at:string|null;updated_at:string|null}
+export interface DocumentTimeSelection {record_index:number;created_at?:string|null;updated_at?:string|null}
+export interface StructureRecordSource {actor_id:string;command_id:string;intent_digest:string;record_index:number;document_time?:DocumentTime;assurance?:string;legacy_source?:Record<string,unknown>}
+export interface DocumentImportAction extends StructureIntentRequest {
+ action:'structure.action';instance_id:string;protocol_digest:string;expected_instance_revision:number;
+ body:{action_id:string;structure:unknown;document_times:DocumentTimeSelection[];publication?:never};
 }

@@ -104,6 +104,24 @@ impl SecureReadProfile {
         Self { config }
     }
 
+    /// Locate only an already-active selected cache. This does not enroll,
+    /// refresh, attach an identity or reconcile unrelated Owner operations.
+    pub(crate) fn cached_export_config(state_dir:&Path,identity_path:&Path,workspace:&str)
+        ->Result<(SecureReadProfileConfig,u8),SecureReadAccessError>{
+        let path=state_dir.join("read.profile");
+        if !path.is_file(){return Err(SecureReadAccessError::CachedUnavailable);}
+        let store=SecureStateStore::open(&path).map_err(|_|SecureReadAccessError::Profile)?;
+        let bytes=store.read_exact().map_err(|_|SecureReadAccessError::Profile)?.ok_or(SecureReadAccessError::CachedUnavailable)?;
+        if bytes.len()>16384{return Err(SecureReadAccessError::Profile);}
+        let saved:ProfileDocument=serde_json::from_slice(&bytes).map_err(|_|SecureReadAccessError::Profile)?;
+        if !saved.valid()||saved.workspace_id!=workspace||saved.identity_path!=identity_path||saved.floor.is_none(){return Err(SecureReadAccessError::Profile);}
+        let slot=saved.current.ok_or(SecureReadAccessError::NotActive)?;
+        Ok((SecureReadProfileConfig{transport:Default::default(),origin:saved.origin,state_dir:state_dir.into(),identity_path:saved.identity_path,
+            workspace_id:saved.workspace_id,owner_actor_id:Some(saved.owner_actor_id),owner_key_id:Some(saved.owner_key_id),authority:Some(saved.authority),
+            required_features:saved.required_features,allow_loopback_http:saved.allow_loopback_http,max_replay_artifact_bytes:default_replay_budget(),
+            max_replay_commits:crate::secure_verified_read::default_replay_commits()},slot))
+    }
+
     /// Observe an existing profile without creating or refreshing it. Owner
     /// attachment checks these exact pins and floor against provisional full
     /// replay before any imported ring becomes active.

@@ -1,0 +1,36 @@
+name: Selected Linux SDK cohort
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Exact version tag matching this checkout
+        required: true
+        default: v0.2.0
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+jobs:
+  linux_x64_gnu:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11.9'
+      - name: Build the selected glibc 2.28 cohort and verify installed interfaces
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: python tools/release/linux-build.py --target linux-x64-gnu --tag "$RELEASE_TAG"
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: .release-ci/linux-x64-gnu/*
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: sdk-linux-x64-gnu
+          path: .release-ci/linux-x64-gnu/*
+          if-no-files-found: error

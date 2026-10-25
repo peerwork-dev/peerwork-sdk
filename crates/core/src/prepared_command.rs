@@ -55,7 +55,8 @@ pub fn prepare_signed_command_wire(
     let kid = key_id(&public);
     let actor = actor_id(&public);
     validate_command_schema(command, discovery.audience_utf16(), &actor).map_err(|_| invalid())?;
-    let command_canonical = canonical_wire_value(command, Path::COMMAND).map_err(|_| invalid())?;
+    let command_canonical =
+        canonical_wire_value(command, command_canonical_path(command)).map_err(|_| invalid())?;
     if command_canonical.len() > 180_000 {
         return Err(invalid());
     }
@@ -166,6 +167,32 @@ fn validate_catalog_chunk(body: &WireValue, chunk: &[u8]) -> Result<(), ()> {
     Ok(())
 }
 
+fn carries_program(command: &WireValue) -> bool {
+    matches!(
+        command
+            .get("action_id")
+            .or_else(|| command.get("action"))
+            .and_then(WireValue::as_string)
+            .as_deref(),
+        Some(
+            "protocol.publish"
+                | "admin.draft.create"
+                | "admin.draft.update"
+                | "protocol.package.derive.preview"
+                | "structure.adopt"
+                | "structure.checkpoint.instance"
+        )
+    )
+}
+/// Protocol-bearing commands have a structural budget. Ordinary state/action
+/// inputs retain the smaller data budget.
+pub fn command_canonical_path(command: &WireValue) -> Path {
+    if carries_program(command) {
+        Path::Structure { max_depth: 40 }
+    } else {
+        Path::COMMAND
+    }
+}
 fn validate_command_schema(command: &WireValue, audience: &[u16], actor: &str) -> Result<(), ()> {
     const FIELDS: [&str; 17] = [
         "v",
@@ -282,23 +309,26 @@ fn validate_command_schema(command: &WireValue, audience: &[u16], actor: &str) -
         }
     }
     let body = command.get("body").ok_or(())?;
-    let special = matches!(
-        command
-            .get("action_id")
+    if command
+        .get("action_id")
+        .and_then(WireValue::as_string)
+        .is_some_and(|action| crate::structure_execution::is_structure_action(&action))
+        && body
+            .get("profile")
             .and_then(WireValue::as_string)
-            .as_deref(),
-        Some(
-            "protocol.publish"
-                | "admin.draft.create"
-                | "admin.draft.update"
-                | "protocol.package.derive.preview"
-        )
-    );
+            .as_deref()
+            != Some(crate::structure_execution::PROFILE)
+    {
+        return Err(());
+    }
+    let special = carries_program(command);
     validate_json_strings(body)?;
     canonical_wire_value(
         body,
-        Path::Kernel {
-            max_depth: if special { 32 } else { 12 },
+        if special {
+            Path::STRUCTURED
+        } else {
+            Path::KERNEL
         },
     )
     .map_err(|_| ())?;
@@ -355,6 +385,117 @@ pub struct CommandPins<'a> {
     pub audience_utf16: &'a [u16],
 }
 
+/// Authenticated external authorship, deliberately distinct from a locally
+/// prepared command. Peers may use any valid JSON member order accepted by the
+/// service. Signature bytes stay exact; duplicate members and schema/domain/
+/// audience mismatches still fail. This cannot authorize local journal replay.
+pub struct VerifiedStructureAuthorIntent {
+    command: WireValue,
+    actor: String,
+    id: String,
+    action: String,
+    digest: String,
+    workspace: Option<String>,
+    protocol: Option<String>,
+}
+impl VerifiedStructureAuthorIntent {
+    pub fn command(&self) -> &WireValue {
+        &self.command
+    }
+    pub fn actor_id(&self) -> &str {
+        &self.actor
+    }
+    pub fn command_id(&self) -> &str {
+        &self.id
+    }
+    pub fn action_id(&self) -> &str {
+        &self.action
+    }
+    pub fn intent_digest(&self) -> &str {
+        &self.digest
+    }
+    pub fn workspace_id(&self) -> Option<&str> {
+        self.workspace.as_deref()
+    }
+    pub fn protocol_digest(&self) -> Option<&str> {
+        self.protocol.as_deref()
+    }
+    pub fn business_intent_digest(&self) -> Option<String> {
+        let WireValue::Object(mut fields) = self.command.clone() else {
+            return None;
+        };
+        fields.retain(|(key, _)| {
+            !["issued_at", "expires_at"]
+                .iter()
+                .any(|name| key.iter().copied().eq(name.encode_utf16()))
+        });
+        let command = WireValue::Object(fields);
+        Some(sha256_hex(
+            canonical_wire_value(&command, command_canonical_path(&command))
+                .ok()?
+                .as_bytes(),
+        ))
+    }
+}
+pub fn verify_structure_author_intent(
+    jws: &str,
+    audience_utf16: &[u16],
+) -> Result<VerifiedStructureAuthorIntent, PreparedCommandError> {
+    let invalid = || PreparedCommandError::Invalid;
+    if jws.len() > 250_000 || audience_utf16.is_empty() || audience_utf16.len() > 200 {
+        return Err(invalid());
+    }
+    let parts: Vec<_> = jws.split('.').collect();
+    if parts.len() != 3 {
+        return Err(invalid());
+    }
+    let header = decode_base64url(parts[0]).map_err(|_| invalid())?;
+    let payload = decode_base64url(parts[1]).map_err(|_| invalid())?;
+    let signature: [u8; 64] = decode_base64url(parts[2])
+        .map_err(|_| invalid())?
+        .try_into()
+        .map_err(|_| invalid())?;
+    let header = parse_wire_json_bounded(&header, 3, 256).map_err(|_| invalid())?;
+    let kid = string(&header, "kid").ok_or_else(invalid)?;
+    if header.object_len() != Some(3)
+        || string(&header, "alg").as_deref() != Some("EdDSA")
+        || string(&header, "typ").as_deref() != Some(COMMAND_TYPE)
+    {
+        return Err(invalid());
+    }
+    let key = verifying_key(&kid).map_err(|_| invalid())?;
+    key.verify(
+        format!("{}.{}", parts[0], parts[1]).as_bytes(),
+        &Signature::from_bytes(&signature),
+    )
+    .map_err(|_| invalid())?;
+    let command = parse_wire_json_bounded(&payload, 40, 180_000).map_err(|_| invalid())?;
+    let actor = actor_id(&key.to_bytes());
+    validate_command_schema(&command, audience_utf16, &actor).map_err(|_| invalid())?;
+    let action = string(&command, "action_id").ok_or_else(invalid)?;
+    if !(crate::structure_execution::is_structure_mutation(&action)
+        || crate::structure_execution::is_owner_checkpoint_evidence(&action))
+        || command
+            .get("body")
+            .and_then(|b| b.get("profile"))
+            .and_then(WireValue::as_string)
+            .as_deref()
+            != Some(crate::structure_execution::PROFILE)
+        || string(&command, "path").as_deref() != Some("/api/workspace/v1/commands")
+    {
+        return Err(invalid());
+    }
+    Ok(VerifiedStructureAuthorIntent {
+        actor,
+        id: string(&command, "command_id").ok_or_else(invalid)?,
+        action,
+        digest: sha256_hex(jws.as_bytes()),
+        workspace: nullable_string(&command, "workspace_id").ok_or_else(invalid)?,
+        protocol: nullable_string(&command, "protocol_digest").ok_or_else(invalid)?,
+        command,
+    })
+}
+
 /// Private-constructor evidence bound to a verified signature and exact HTTP body.
 #[derive(Debug, Clone)]
 pub struct VerifiedPreparedCommand {
@@ -371,6 +512,33 @@ pub struct VerifiedPreparedCommand {
 }
 
 impl VerifiedPreparedCommand {
+    /// Stable business intent for the explicitly renewable backend mutations.
+    /// Only authorization timestamps are excluded. No state, CAS, encrypted
+    /// bytes, actor, command ID or source pin can change during renewal.
+    pub fn structure_business_intent(&self) -> Option<String> {
+        if !crate::structure_execution::is_structure_mutation(&self.action_id) {
+            return None;
+        }
+        let command =
+            parse_wire_json_bounded(self.command_canonical_json.as_bytes(), 40, 180_000).ok()?;
+        if command.get("body")?.get("profile")?.as_string().as_deref()
+            != Some(crate::structure_execution::PROFILE)
+        {
+            return None;
+        }
+        let WireValue::Object(mut fields) = command else {
+            return None;
+        };
+        fields.retain(|(key, _)| {
+            !["issued_at", "expires_at"]
+                .iter()
+                .any(|excluded| key.iter().copied().eq(excluded.encode_utf16()))
+        });
+        let command = WireValue::Object(fields);
+        let canonical = canonical_wire_value(&command, command_canonical_path(&command)).ok()?;
+        Some(sha256_hex(canonical.as_bytes()))
+    }
+
     /// Canonical payload from the authenticated, schema-validated JWS.
     /// This is a public low-level Rust getter; language bindings must project
     /// only their audited redacted result fields.
@@ -445,7 +613,7 @@ pub fn verify_prepared_command_wire(
     let expected_actor = actor_id(&key.to_bytes());
     validate_command_schema(&payload, pins.audience_utf16, &expected_actor)
         .map_err(|_| invalid())?;
-    if canonical_wire_value(&payload, Path::COMMAND)
+    if canonical_wire_value(&payload, command_canonical_path(&payload))
         .map_err(|_| invalid())?
         .as_bytes()
         != payload_bytes.as_slice()

@@ -67,6 +67,8 @@ pub enum SecureReadAccessError {
     Profile,
     #[error("secure journal read or saved page check failed")]
     ReadFailed,
+    #[error("source journal read failed at {stage} (class={class}, status={http_status:?})")]
+    ReadDetail{stage:&'static str,class:&'static str,http_status:Option<u16>},
     #[error("a complete protected cached generation and discovery pin are required")]
     CachedUnavailable,
     #[error("secure journal exceeded the selected resource budget")]
@@ -104,7 +106,7 @@ impl SecureReadAccessError {
             Self::Identity => "IDENTITY_STATE",
             Self::Lifecycle => "LIFECYCLE_PIN_CHANGED",
             Self::Profile => "PROFILE_STATE",
-            Self::ReadFailed => "READ_FAILED",
+            Self::ReadFailed|Self::ReadDetail{..} => "READ_FAILED",
             Self::CachedUnavailable => "CACHED_STATE_UNAVAILABLE",
             Self::ResourceLimit => "RESOURCE_LIMIT",
             Self::VerificationFailed | Self::VerificationDetail{..} => "VERIFICATION_FAILED",
@@ -250,7 +252,7 @@ impl SecureReadAccess {
         floor: Option<&VerifiedReadFloor>,
         reset_inactive: bool,
     ) -> Result<(TransportReplayedJournal, VerifiedReadFloor), SecureReadAccessError> {
-        self.replay_checked_generation_inner(cancel, floor, reset_inactive, true, false)
+        self.replay_checked_generation_inner(cancel, floor, reset_inactive, true, false, false)
     }
 
     /// Install continuation may inspect fully replayed SEEDING state as a
@@ -261,7 +263,7 @@ impl SecureReadAccess {
         cancel: &CancellationToken,
         floor: &VerifiedReadFloor,
     ) -> Result<(TransportReplayedJournal, VerifiedReadFloor), SecureReadAccessError> {
-        self.replay_checked_generation_inner(cancel, Some(floor), true, false, false)
+        self.replay_checked_generation_inner(cancel, Some(floor), true, false, false, false)
     }
 
     /// Historical Owner import uses a protected pending ring to verify the
@@ -271,13 +273,31 @@ impl SecureReadAccess {
         &self,
         cancel: &CancellationToken,
     ) -> Result<TransportReplayedJournal, SecureReadAccessError> {
-        self.replay_checked_generation_inner(cancel, None, true, false, false)
+        self.replay_checked_generation_inner(cancel, None, true, false, false, false)
             .map(|(replayed, _)| replayed)
     }
 
     pub(crate) fn replay_checked_cached_generation(&self, cancel:&CancellationToken,
         floor:&VerifiedReadFloor) -> Result<(TransportReplayedJournal,VerifiedReadFloor),SecureReadAccessError> {
-        self.replay_checked_generation_inner(cancel,Some(floor),false,true,true)
+        self.replay_checked_generation_inner(cancel,Some(floor),false,true,true,false)
+    }
+
+    /// Owner-only offline conversion consumes authenticated business objects,
+    /// not an online read/action proof. Legacy pending key/index activation is
+    /// never promoted; complete signatures, decryption and saved-floor ancestry
+    /// are still verified by the same reader before the caller may sign a new
+    /// execution-model attestation.
+    pub(crate) fn replay_cached_owner_conversion(&self,cancel:&CancellationToken,floor:&VerifiedReadFloor)
+        ->Result<TransportReplayedJournal,SecureReadAccessError>{
+        self.replay_checked_generation_inner(cancel,Some(floor),false,false,true,false).map(|(source,_)|source)
+    }
+
+    /// Explicit one-way migration export from the original pinned source.
+    /// This uses a caller-owned temporary cache and never runs legacy writes,
+    /// promotes a lifecycle, or enables legacy ordinary SDK entry points.
+    pub(crate) fn refresh_owner_conversion_source(&self,cancel:&CancellationToken,floor:&VerifiedReadFloor)
+        ->Result<TransportReplayedJournal,SecureReadAccessError>{
+        self.replay_checked_generation_inner(cancel,Some(floor),true,false,false,true).map(|(source,_)|source)
     }
 
     fn replay_checked_generation_inner(
@@ -287,6 +307,7 @@ impl SecureReadAccess {
         reset_inactive: bool,
         require_active: bool,
         cached_only: bool,
+        migration_source_time:bool,
     ) -> Result<(TransportReplayedJournal, VerifiedReadFloor), SecureReadAccessError> {
         if cancel.is_cancelled() {
             return Err(SecureReadAccessError::Cancelled);
@@ -339,9 +360,8 @@ impl SecureReadAccess {
                 return Err(SecureReadAccessError::Cancelled);
             }
             if cached_only {return Err(SecureReadAccessError::CachedUnavailable)}
-            runtime
-                .block_on(reader.fetch_next(&client, &identity, cancel))
-                .map_err(map_read_error)?;
+            if migration_source_time{runtime.block_on(reader.fetch_owner_conversion_page(&client,&identity,cancel))}
+            else{runtime.block_on(reader.fetch_next(&client,&identity,cancel))}.map_err(map_read_error)?;
         }
         if cancel.is_cancelled() {
             return Err(SecureReadAccessError::Cancelled);
@@ -417,6 +437,10 @@ fn map_read_error(error: JournalReadError) -> SecureReadAccessError {
         JournalReadError::Transport(TransportError::Cancelled) => SecureReadAccessError::Cancelled,
         JournalReadError::Transport(TransportError::ResponseTooLarge)
         | JournalReadError::TooLarge => SecureReadAccessError::ResourceLimit,
+        JournalReadError::ServerRejected(status)=>SecureReadAccessError::ReadDetail{stage:"source.journal",class:"HTTP_REFUSAL",http_status:Some(status)},
+        JournalReadError::Incompatible=>SecureReadAccessError::ReadDetail{stage:"source.journal",class:"INVALID_PAGE",http_status:None},
+        JournalReadError::Transport(TransportError::Timeout)=>SecureReadAccessError::ReadDetail{stage:"source.transport",class:"TIMEOUT",http_status:None},
+        JournalReadError::Transport(TransportError::Network)=>SecureReadAccessError::ReadDetail{stage:"source.transport",class:"NETWORK",http_status:None},
         _ => SecureReadAccessError::ReadFailed,
     }
 }

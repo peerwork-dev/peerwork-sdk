@@ -105,6 +105,7 @@ fn execute(operation:&str,input:&str,cancel:&CancellationToken)->R<String>{
 }
 /// Shared envelope for Python, Node and CLI. Core wire JSON remains lossless.
 pub fn workbench_json(operation:&str,input:&str,cancel:&CancellationToken)->String{
+    if matches!(operation,"export"|"apply"){return crate::runtime_contract::retired_json();}
     match execute(operation,input,cancel) {Ok(v)=>format!("{{\"ok\":true,\"value\":{v}}}"),Err(e)=>e.envelope().to_string()}
 }
 
@@ -424,7 +425,7 @@ mod tests {
         let cancel=CancellationToken::new();cancel.cancel();
         for op in ["fixture","simulate","plan","apply","export"] {
             let result:Value=serde_json::from_str(&workbench_json(op,"not JSON",&cancel)).unwrap();
-            assert_eq!(result["code"],"CANCELLED");assert_eq!(result["effect_certainty"],"not_sent");
+            if matches!(op,"apply"|"export"){assert_eq!(result["code"],"LEGACY_MODE_RETIRED");assert_eq!(result["required_execution_profile"],"backend-structure-v1");}else{assert_eq!(result["code"],"CANCELLED");assert_eq!(result["effect_certainty"],"not_sent");}
         }
     }
     #[test]

@@ -46,6 +46,36 @@ exports.loadConfig = async path => {
 exports.version = binding.version;
 exports.capabilities = () => JSON.parse(binding.capabilitiesJson());
 exports.createIdentity = async path => JSON.parse(await binding.identityCreateJson(path));
+/** Prepare an explicitly mapped Owner checkpoint entirely offline. Private
+ * source rows and keys stay in protected local files; returns metadata only. */
+exports.prepareOwnerCheckpoint = async options => {
+  const input={identity_path:options.identityPath,expected_actor:options.expectedActor,origin:options.origin,audience:options.audience,
+    source_path:options.sourcePath,plan_path:options.planPath,output_path:options.outputPath,...(options.contentKeysPath===undefined?{}:{content_keys_path:options.contentKeysPath}),
+    allow_loopback_http:options.allowLoopbackHttp??false};
+  const result=JSON.parse(await binding.prepareOwnerCheckpointJson(strictCommandJson(input)));
+  if(result.ok!==true){const error=new Error(result.code);Object.assign(error,result);throw error;}return result.value;
+};
+/** Owner-local cache review. Pause watchers first; private fields stay in the report. */
+exports.inspectOwnerCache = async options => {
+  const input={state_dir:options.stateDir,workspace_id:options.workspaceId,report_path:options.reportPath,cache_selection:options.cacheSelection??'ACTIVE',refresh_source:options.refreshSource??false,
+    ...(options.expectedActor===undefined?{}:{expected_actor:options.expectedActor})};
+  const result=JSON.parse(await binding.inspectOwnerCacheJson(strictCommandJson(input)));
+  if(result.ok!==true){const error=new Error(result.code);Object.assign(error,result);throw error;}return result.value;
+};
+/** Generate a policy mapping locally; bodies never enter the plan. */
+exports.planOwnerCheckpointFromCache = async options => {
+ const input={state_dir:options.stateDir,workspace_id:options.workspaceId,expected_actor:options.expectedActor,cache_selection:options.cacheSelection??'ACTIVE',refresh_source:options.refreshSource??false,
+  snapshot_sha256:options.snapshotSha256,name:options.name,plan_path:options.planPath};
+ const result=JSON.parse(await binding.planOwnerCheckpointFromCacheJson(strictCommandJson(input)));
+ if(result.ok!==true){const error=new Error(result.code);Object.assign(error,result);throw error;}return result.value;
+};
+/** Verify selected cache, map in memory, and persist signed structure/ciphertext only. */
+exports.prepareOwnerCheckpointFromCache = async options => {
+ const input={state_dir:options.stateDir,workspace_id:options.workspaceId,expected_actor:options.expectedActor,cache_selection:options.cacheSelection??'ACTIVE',refresh_source:options.refreshSource??false,
+  plan_path:options.planPath,output_path:options.outputPath,origin:options.origin,audience:options.audience,allow_loopback_http:options.allowLoopbackHttp??false};
+ const result=JSON.parse(await binding.prepareOwnerCheckpointFromCacheJson(strictCommandJson(input)));
+ if(result.ok!==true){const error=new Error(result.code);Object.assign(error,result);throw error;}return result.value;
+};
 exports.openIdentity = async path => {
   try {
     return JSON.parse(await binding.identityOpenJson(path));
@@ -153,7 +183,7 @@ function selectedDisclosure(selection) {
 }
 
 class KernelError extends Error {
-  constructor(code, message) { super(message); this.name = 'KernelError'; this.code = code; }
+  constructor(code, message, details) { super(message); this.name = 'KernelError'; this.code = code; this.details = details ?? null; this.httpStatus = details?.http_status; this.serverCode = details?.server_code; this.phase = details?.phase; this.retryable = details?.retryable; this.recovery = details?.recovery; }
 }
 exports.KernelError = KernelError;
 
@@ -173,7 +203,15 @@ exports.openKernel = async options => {
         allowLoopbackHttp, authority, commandJson, commandId, uploadChunk, handle,
         migrationSource, migrationBackup, trustedSignerKeyIds, transportJson,
       ));
-      if (value?.ok === false) throw new KernelError(value.code, value.message);
+      if (value?.ok === false) throw new KernelError(value.code, value.message, value.details);
+      // This field is emitted only after native signature, source, intent,
+      // profile and assurance verification. No workspace history is loaded.
+      for (const accepted of [value, value?.result]) {
+        if (accepted && typeof accepted.structure_result_json === 'string') {
+          accepted.structure = JSON.parse(accepted.structure_result_json);
+          delete accepted.structure_result_json;
+        }
+      }
       return value;
     } finally {
       abortSignal?.removeEventListener('abort', onAbort);
@@ -188,8 +226,19 @@ exports.openKernel = async options => {
       return call('prepare', strictCommandJson(command), undefined, chunk === undefined ? undefined : Buffer.from(chunk), options.signal);
     },
     pending: (options = {}) => call('pending', undefined, undefined, undefined, options.signal),
+    pendingPage: (options = {}) => call('pending_page', strictCommandJson({after: options.after ?? null, preparations_after: options.preparationsAfter ?? null, limit: options.limit ?? 32}), undefined, undefined, options.signal),
+    buildPendingIndex: (options = {}) => call('build_pending_index', undefined, undefined, undefined, options.signal),
+    requestAccess: (selection, options = {}) => call('request_access', strictCommandJson(selection), undefined, undefined, options.signal),
+    publishSelectedRecord: (selection, options = {}) => call('publish_selected_record', strictCommandJson(selection), undefined, undefined, options.signal),
+    authorizeAccess: (selection, options = {}) => call('authorize_access', strictCommandJson(selection), undefined, undefined, options.signal),
+    coordinateContentKeys: (selection, options = {}) => call('coordinate_content_keys', strictCommandJson(selection), undefined, undefined, options.signal),
+    rotateContentKey: (selection, options = {}) => call('rotate_content_key', strictCommandJson(selection), undefined, undefined, options.signal),
+    acceptContentKeys: (selection, options = {}) => call('accept_content_keys', strictCommandJson(selection), undefined, undefined, options.signal),
+    ensureLocalContentKey: (workspaceId, options = {}) => call('ensure_local_content_key', strictCommandJson({workspace_id: workspaceId}), undefined, undefined, options.signal),
     status: (commandId, options = {}) => call('status', undefined, commandId, undefined, options.signal),
     submitSaved: (commandId, options = {}) => call('submit_saved', undefined, commandId, undefined, options.signal),
+    executeStructureIntent: (intent, options = {}) => call('execute_structure_intent', strictCommandJson(intent), undefined, undefined, options.signal),
+    resumeStructureIntent: (commandId, options = {}) => call('resume_structure_intent', undefined, commandId, undefined, options.signal),
     migrateTsStore: (sourcePath, backupPath, trustedSignerKeyIds, options = {}) => {
       if (typeof sourcePath !== 'string' || typeof backupPath !== 'string' ||
           !Array.isArray(trustedSignerKeyIds) || trustedSignerKeyIds.length === 0 ||
@@ -1169,6 +1218,8 @@ class AgentContextError extends Error {
     this.effect_certainty = envelope.effect_certainty;
     this.continuation = envelope.continuation;
     this.stage = envelope.stage;
+    this.server_code = envelope.server_code;
+    this.http_status = envelope.http_status;
     this.constraint = envelope.constraint;
     this.retryability = envelope.retryability;
     this.recovery_hints = envelope.recovery_hints;
@@ -1212,6 +1263,7 @@ exports.openContext = async ({ profilePath, expectedActor, expectedService, sign
     describe: (workspaceId, options) => {
       const query = {};
       if (options.instanceId !== undefined) query.instance_id = options.instanceId;
+      if (options.protocolDigest !== undefined) query.protocol_digest = options.protocolDigest;
       if (options.actionId !== undefined) query.action_id = options.actionId;
       if (options.recordId !== undefined) query.record_id = options.recordId;
       if (options.revision !== undefined) query.revision = options.revision;
@@ -1219,6 +1271,25 @@ exports.openContext = async ({ profilePath, expectedActor, expectedService, sign
       return call('describe', { workspace_id: workspaceId, query }, options.signal);
     },
     inspect: (workspaceId, options = {}) => call('inspect', { workspace_id: workspaceId }, options.signal),
+    requestAccess: (workspaceId, selection, options = {}) => call('request.access', {workspace_id: workspaceId, query: selection}, options.signal),
+    authorizeAccess: (workspaceId, selection, options = {}) => call('authorize.access', {workspace_id: workspaceId, query: selection}, options.signal),
+    publishSelectedRecord: (workspaceId, selection, options = {}) => call('publish.record', {workspace_id: workspaceId, query: selection}, options.signal),
+    coordinateContentKeys: (workspaceId, options = {}) => call('coordinate.keys', {workspace_id: workspaceId, query: {}}, options.signal),
+    rotateContentKey: (workspaceId, selection, options = {}) => call('rotate.key', {workspace_id: workspaceId, query: selection}, options.signal),
+    acceptContentKeys: (workspaceId, selection, options = {}) => call('accept.keys', {workspace_id: workspaceId, query: selection}, options.signal),
+    executeStructureIntent: (workspaceId, intent, options = {}) => call('execute.structure', {
+      workspace_id: workspaceId, intent,
+    }, options.signal),
+    followOperation: (workspaceId, operation, options = {}) => {
+      const selected = JSON.parse(strictCommandJson(operation));
+      if (selected.kind === 'WORKSPACE_DELETE') return call('follow.operation', {workspace_id: workspaceId, intent: {
+        action: 'structure.workspace.deletion.get', workspace_id: selected.workspace_id ?? workspaceId, body: {command_id: selected.command_id},
+      }}, options.signal);
+      return call('follow.operation', {workspace_id: workspaceId, intent: {
+        action: 'structure.maintenance.get', workspace_id: selected.workspace_id ?? workspaceId,
+        instance_id: selected.instance_id, protocol_digest: selected.protocol_digest, body: {job_id: selected.job_id},
+      }}, options.signal);
+    },
     operate: (workspaceId, intent, operationId, options = {}) => call('operate', {
       workspace_id: workspaceId, intent, operation_id: operationId,
     }, options.signal),
@@ -1247,7 +1318,11 @@ exports.openContext = async ({ profilePath, expectedActor, expectedService, sign
         workbench_input: strictCommandJson({operation_id: operationId})}, signal);
       return JSON.parse(value.result.workbench_json);
     },
-    operations: (workspaceId, options = {}) => call('operations', { workspace_id: workspaceId }, options.signal),
+    operations: (workspaceId, options = {}) => {
+      const query = {};
+      for (const key of ['after', 'limit', 'scope', 'view']) if (options[key] !== undefined) query[key] = options[key];
+      return call('operations', {workspace_id: workspaceId, ...(Object.keys(query).length ? {query} : {})}, options.signal);
+    },
     eventsSync: (workspaceId, options = {}) => call('events.sync', { workspace_id: workspaceId }, options.signal),
     eventsReceive: (workspaceId, consumerId, options = {}) => {
       const request = { workspace_id: workspaceId, consumer_id: consumerId };
@@ -1281,6 +1356,29 @@ exports.bindContext = async ({profilePath, expectedActor, expectedService, works
   }
 };
 
+/** Explicit backend profile; uses an existing identity, no legacy replay or enrollment. */
+exports.bindStructureContext = async ({profilePath, expectedActor, expectedService, origin,
+  identityPath, journalPath, workspaceIds, authority, requiredFeatures = [],
+  allowLoopbackHttp = false, transport, signal}) => {
+  const config = {schema: 'peerwork.agent-context.v2', execution_profile: 'backend-structure-v1',
+    service_id: expectedService, origin, identity_path: identityPath, kernel_journal_path: journalPath,
+    workspaces: workspaceIds, required_features: requiredFeatures, allow_loopback_http: allowLoopbackHttp};
+  if (authority !== undefined) config.authority = authority;
+  if (transport !== undefined) config.transport = transportJsonValue(transport);
+  const handle = new binding.KernelCancelHandle();
+  const onAbort = () => handle.cancel();
+  if (signal?.aborted) onAbort();
+  signal?.addEventListener('abort', onAbort, {once: true});
+  try {
+    const result = JSON.parse(await binding.agentContextJson('bind.structure', profilePath, expectedActor,
+      expectedService, strictCommandJson(config), handle));
+    if (result.ok !== true) throw new AgentContextError(result);
+    return await exports.openContext({profilePath, expectedActor, expectedService, signal});
+  } finally {
+    signal?.removeEventListener('abort', onAbort);
+  }
+};
+
 
 async function navigation(operation, input, signal) {
   const cancel = new binding.KernelCancelHandle();
@@ -1289,7 +1387,7 @@ async function navigation(operation, input, signal) {
   signal?.addEventListener('abort', abort, {once:true});
   try {
     const result = JSON.parse(await binding.navigationJson(operation, strictCommandJson(input), cancel));
-    if (result.ok !== true) { const error = new Error(result.message); error.code = result.code; throw error; }
+    if (result.ok !== true) { const error = new Error(result.message); Object.assign(error,{code:result.code,phase:result.phase,retryable:result.retryable,recovery:result.recovery}); throw error; }
     return result.value;
   } finally { signal?.removeEventListener('abort', abort); }
 }
@@ -1297,8 +1395,8 @@ class WorkspaceUrls {
   constructor({browserOrigin='https://peerwork.dev',controlOrigin='https://api.peerwork.dev',allowLoopbackHttp=false}={}) {
     this._origins={browser_origin:browserOrigin,control_origin:controlOrigin,allow_loopback_http:allowLoopbackHttp};
   }
-  build(workspaceId,{visibility='PRIVATE',kind='workspace',instanceId=null,recordId=null,entityId=null}={}) {
-    return navigation('url',{...this._origins,workspace_id:workspaceId,visibility,kind,instance_id:instanceId,record_id:recordId,entity_id:entityId});
+  build(workspaceId,{visibility='PRIVATE',kind='workspace',instanceId=null,recordId=null,entityId=null,revision=null,workspaceAlias=null}={}) {
+    return navigation('url',{...this._origins,workspace_id:workspaceId,workspace_alias:workspaceAlias,visibility,kind,instance_id:instanceId,record_id:recordId,entity_id:entityId,revision});
   }
   async workspace(workspaceId,options={}) { return (await this.build(workspaceId,options)).browser_url; }
   async instance(workspaceId,instanceId,options={}) { return (await this.build(workspaceId,{...options,kind:'instance',instanceId})).browser_url; }
@@ -1307,9 +1405,9 @@ class WorkspaceUrls {
 class ChangelogClient {
   constructor({source}={}) { this.source=source ? JSON.parse(strictCommandJson(source)) : null; }
   static async officialSource() { return (await navigation('changelog.source',{})).source; }
-  async read({limit=20,offset=0,checkpoint=null,signal}={}) {
+  async read({limit=20,cursor=null,checkpoint=null,signal}={}) {
     const source=this.source ?? await ChangelogClient.officialSource();
-    return navigation('changelog.read',{source,limit,offset,checkpoint},signal);
+    return navigation('changelog.read',{source,limit,cursor,checkpoint},signal);
   }
 }
 exports.WorkspaceUrls=WorkspaceUrls;
@@ -1514,3 +1612,29 @@ class OwnerWorkspaceMemberScopesClient {
   history(options={}) {return this._call('history',{},options);}
 }
 exports.OwnerWorkspaceMemberScopesClient=OwnerWorkspaceMemberScopesClient;
+
+/** Encode an explicitly public body. This performs no network operation. */
+exports.publicationBody = text => {
+  if(typeof text!=='string')throw new TypeError('Public body must be text');
+  const bytes=Buffer.from(text,'utf8');
+  if(bytes.toString('utf8')!==text)throw new TypeError('Public body must contain valid Unicode');
+  if(bytes.length>65536){const error=new RangeError('Public body exceeds 65536 UTF-8 bytes');error.code='CONTENT_TOO_LARGE';throw error;}
+  return {format:'PUBLIC_UTF8_BASE64',chunks:bytes.toString('base64url').match(/.{1,8192}/g)??[]};
+};
+
+/** Anonymous bounded PUBLIC snapshots; source pins contain no identity secrets. */
+class PublicationReader {
+  constructor({controlOrigin,browserOrigin,workspaceId,ownerActorId,ownerKeyId,audience=null,serviceKey=null,transport,allowLoopbackHttp=false}) {
+    this._source=JSON.parse(strictCommandJson({control_origin:controlOrigin,browser_origin:browserOrigin,workspace_id:workspaceId,owner_actor_id:ownerActorId,owner_key_id:ownerKeyId,audience,service_key:serviceKey,allow_loopback_http:allowLoopbackHttp,...(transport?{transport:transportJsonValue(transport)}:{})}));
+    this._checkpoint=null;
+  }
+  async _read(kind,{instanceId=null,recordId=null,limit=20,cursor=null,checkpoint=this._checkpoint,order='RECORD_ID_ASC',signal}={}) {
+    const value=await navigation('publication.read',{source:this._source,kind,instance_id:instanceId,record_id:recordId,limit,cursor,checkpoint,order},signal);
+    if(this._checkpoint&&value.checkpoint.publication_revision<this._checkpoint.publication_revision){const error=new Error('Public view regressed below the observed revision');error.code='PUBLIC_CHECKPOINT_CHANGED';throw error;}
+    this._checkpoint=value.checkpoint;return value;
+  }
+  workspace(options={}) {return this._read('WORKSPACE',options);}
+  list(options={}) {return this._read('ENTRIES',options);}
+  get(recordId,options={}) {return this._read('ENTRY',{...options,recordId});}
+}
+exports.PublicationReader=PublicationReader;

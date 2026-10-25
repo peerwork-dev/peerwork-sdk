@@ -7,8 +7,10 @@ pub mod interrupts;
 pub mod protected_config;
 pub mod acquisition;
 pub mod kernel_access;
+pub mod runtime_contract;
 pub mod kernel_client;
 pub mod public_protocol_publication;
+pub mod publication_read;
 pub mod kernel_identity;
 pub mod kernel_intents;
 pub mod public_catalog;
@@ -82,3 +84,11 @@ mod agent_admission;
 pub mod protocol_workbench;
 
 pub mod owner_member_scopes;
+pub mod owner_checkpoint;
+pub mod owner_cache_review;
+
+pub mod owner_cache_checkpoint;
+
+pub mod owner_cache_plan;
+
+pub mod legacy_migration;

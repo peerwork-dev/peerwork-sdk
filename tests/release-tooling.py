@@ -29,6 +29,7 @@ class ReleaseGuards(unittest.TestCase):
         paths += [p+'/Cargo.toml' for p in version.read_toml(ROOT/'Cargo.toml')['workspace']['members']]
         for name in paths:
             dest=self.root/name;dest.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(ROOT/name,dest)
+        version.sync(self.root,'0.0.1')
         self.output=Path(self.temporary.name)/'assets';self.output.mkdir()
         self.binary=bytearray(64);self.binary[:6]=b'\x7fELF\x02\x01';struct.pack_into('<H',self.binary,18,62)
         self.cli=self.output/'peerwork';self.cli.write_bytes(self.binary)

@@ -86,6 +86,8 @@ pub struct ReplayedSecureJournal {
     policy_effective_sequences: Vec<u64>,
     commit_hashes: Vec<String>,
     objects: Vec<WireValue>,
+    object_sources: Vec<WireValue>,
+    historical_role_claims:Vec<WireValue>,
     operations: Vec<WireValue>,
     recoveries: Vec<WireValue>,
     action_receipts: Vec<WireValue>,
@@ -163,6 +165,10 @@ impl ReplayedSecureJournal {
     pub fn objects(&self) -> &[WireValue] {
         &self.objects
     }
+    /// Association with the authenticated commit that supplied each exact object.
+    /// This does not establish the semantics of a later Owner transformation.
+    pub fn object_sources(&self) -> &[WireValue] { &self.object_sources }
+    pub fn historical_role_claims(&self)->&[WireValue]{&self.historical_role_claims}
     pub fn operations(&self) -> &[WireValue] {
         &self.operations
     }
@@ -277,6 +283,8 @@ pub fn replay_secure_journal_exact_with_guard_time_attestations_and_limits(
         policy_effective_sequences: chain.policy_effective_sequences,
         commit_hashes: chain.commit_hashes,
         objects: facts.objects,
+        object_sources: facts.object_sources,
+        historical_role_claims:facts.historical_role_claims,
         operations: facts.operations,
         recoveries: facts.recoveries,
         action_receipts: facts.action_receipts,
@@ -458,6 +466,17 @@ mod tests {
         expected_objects.sort();
         actual_objects.sort();
         assert_eq!(actual_objects, expected_objects, "complete TS replay object oracle");
+        assert_eq!(replay.object_sources().len(),replay.objects().len());
+        for object in replay.objects() {
+            let source=replay.object_sources().iter().find(|row| ["kind","id","revision"].iter().all(|key|row.get(key)==object.get(key))).expect("every restored object is tied to a verified supplying commit");
+            let sequence=source.get("sequence").and_then(WireValue::as_number).unwrap() as usize;
+            let commit=parse_wire_json_bounded(&commits[sequence-1],64,196608).unwrap();
+            assert_eq!(source.get("actor_id"),commit.get("payload").unwrap().get("actor_id"));
+            let digest=crate::crypto::sha256_hex(canonical_wire_value(object,Path::SecureArtifact).unwrap().as_bytes());
+            assert_eq!(source.get("object_digest").and_then(WireValue::as_string).as_deref(),Some(digest.as_str()));
+            assert_eq!(source.get("commit_hash").and_then(WireValue::as_string).as_deref(),replay.checkpoint_at(sequence as u64).unwrap().1);
+        }
+
         let action_sequence = vector["action_sequence"].as_u64().unwrap();
         let action_commit = vector["commits"]
             .as_array()

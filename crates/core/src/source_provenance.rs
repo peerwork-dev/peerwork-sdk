@@ -31,7 +31,7 @@ pub(crate) fn valid_source_timestamp(value: &WireValue) -> bool {
     valid_source_timestamp_str(&text)
 }
 
-pub(crate) fn valid_source_timestamp_str(text: &str) -> bool {
+pub fn valid_source_timestamp_str(text: &str) -> bool {
     let bytes = text.as_bytes();
     if bytes.len() < 20 || bytes.get(4) != Some(&b'-') || bytes.get(7) != Some(&b'-')
         || bytes.get(10) != Some(&b'T') || bytes.get(13) != Some(&b':')

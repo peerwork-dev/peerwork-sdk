@@ -2,7 +2,7 @@
 //! prepared-command proof and durable journal binding before this is exposed.
 
 use reqwest::{redirect::Policy, Certificate, Client, Proxy, Url};
-use std::time::Duration;
+use std::time::{Duration,Instant};
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
@@ -134,6 +134,7 @@ pub struct ExactHttpResponse {
 pub struct HttpTransport {
     origin: Url,
     client: Client,
+    migration_source_clock:std::sync::Mutex<Option<(u64,Instant)>>,
     #[cfg(test)]
     journal_get_probe: std::sync::Mutex<Option<Vec<String>>>,
 }
@@ -189,6 +190,7 @@ impl HttpTransport {
         Ok(Self {
             origin,
             client,
+            migration_source_clock:std::sync::Mutex::new(None),
             #[cfg(test)]
             journal_get_probe: std::sync::Mutex::new(None),
         })
@@ -208,23 +210,57 @@ impl HttpTransport {
         self.origin.as_str()
     }
 
+    fn observe_migration_source_time(&self,response:&reqwest::Response){
+        if !response.status().is_success(){return;}
+        let value=response.headers().get("X-Peerwork-Server-Time").and_then(|h|h.to_str().ok()).and_then(|s|s.parse::<u64>().ok());
+        if let Some(value)=value.filter(|v|*v>0&&*v<=9_007_199_254_680_991){if let Ok(mut clock)=self.migration_source_clock.lock(){*clock=Some((value,Instant::now()));}}
+    }
+    /// Fresh TLS-bound source time for one-way migration GET proofs only.
+    /// Ordinary commands still require their signed structure context.
+    pub(crate) fn migration_source_time_ms(&self)->Option<u64>{
+        let clock=self.migration_source_clock.lock().ok()?;let (time,observed)=clock.as_ref()?;let elapsed=observed.elapsed().as_millis();if elapsed>60_000{return None;}time.checked_add(elapsed as u64)
+    }
+
     pub async fn discovery(
         &self,
         cancel: &CancellationToken,
     ) -> Result<ExactHttpResponse, TransportError> {
         let url = self.endpoint("/api/workspace/v1/discovery")?;
-        let send = self.client.get(url).send();
+        let send = self.client.get(url).header("Cache-Control","no-cache, no-store").send();
         let response = tokio::select! {
             _ = cancel.cancelled() => return Err(TransportError::Cancelled),
             result = send => result.map_err(map_network_error)?,
         };
+        self.observe_migration_source_time(&response);
         read_bounded(response, MAX_DISCOVERY_BYTES, cancel).await
+    }
+
+    /// One anonymous selected publication page; never a journal fallback.
+    pub(crate) async fn get_publication(&self,query:&[(String,String)],cancel:&CancellationToken)->Result<ExactHttpResponse,TransportError>{
+        if query.len()>8||query.iter().any(|(k,v)|k.len()>32||v.len()>8192){return Err(TransportError::InvalidOrigin);}
+        let mut url=self.endpoint("/api/workspace/v1/structure/public")?;
+        {let mut pairs=url.query_pairs_mut();for(k,v)in query{pairs.append_pair(k,v);}}
+        let response=tokio::select!{_=cancel.cancelled()=>return Err(TransportError::Cancelled),result=self.client.get(url).header("Cache-Control","no-store").send()=>result.map_err(map_network_error)?};
+        read_bounded(response,1_048_576,cancel).await
     }
 
     pub(crate) async fn guard_time_capabilities(&self,cancel:&CancellationToken)->Result<ExactHttpResponse,TransportError> {
         let url=self.endpoint("/api/workspace/v1/guard-time-capabilities")?;
         let response=tokio::select!{_=cancel.cancelled()=>return Err(TransportError::Cancelled),result=self.client.get(url).send()=>result.map_err(map_network_error)?};
         read_bounded(response,16384,cancel).await
+    }
+
+    pub(crate) async fn structure_context(&self, nonce: &str, cancel: &CancellationToken) -> Result<ExactHttpResponse, TransportError> {
+        if nonce.len()!=43 || !nonce.bytes().all(|b| b.is_ascii_alphanumeric() || b==b'_' || b==b'-') {
+            return Err(TransportError::InvalidOrigin);
+        }
+        let mut url=self.endpoint("/api/workspace/v1/structure/context")?;
+        url.query_pairs_mut().append_pair("nonce",nonce);
+        let response=tokio::select! {
+            _=cancel.cancelled()=>return Err(TransportError::Cancelled),
+            result=self.client.get(url).header("Cache-Control","no-store").send()=>result.map_err(map_network_error)?,
+        };
+        read_bounded(response,8192,cancel).await
     }
 
     pub(crate) async fn install_capabilities(&self, cancel: &CancellationToken) -> Result<ExactHttpResponse, TransportError> {
@@ -453,6 +489,7 @@ impl HttpTransport {
             _ = cancel.cancelled() => return Err(TransportError::Cancelled),
             result = send => result.map_err(map_network_error)?,
         };
+        self.observe_migration_source_time(&response);
         read_bounded(response, max_response_bytes, cancel).await
     }
 
@@ -737,6 +774,17 @@ mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+
+    #[tokio::test]
+    async fn migration_source_clock_uses_service_time_and_monotonic_expiry(){
+        let (origin,server)=one_response(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nX-Peerwork-Server-Time: 1230000000000\r\nConnection: close\r\n\r\n{}").await;
+        let transport=HttpTransport::new(local_config(origin)).unwrap();assert!(transport.migration_source_time_ms().is_none());transport.discovery(&CancellationToken::new()).await.unwrap();server.await.unwrap();let now=transport.migration_source_time_ms().unwrap();assert!((1230000000000..1230000002000).contains(&now));
+        *transport.migration_source_clock.lock().unwrap()=Some((1230000000000,Instant::now()-Duration::from_secs(61)));assert!(transport.migration_source_time_ms().is_none());
+    }
+    #[tokio::test]
+    async fn migration_source_clock_rejects_missing_invalid_and_error_response_headers(){
+        for response in [b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}".as_slice(),b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nX-Peerwork-Server-Time: -1\r\nConnection: close\r\n\r\n{}",b"HTTP/1.1 503 Unavailable\r\nContent-Length: 2\r\nX-Peerwork-Server-Time: 1230000000000\r\nConnection: close\r\n\r\n{}"]{let (origin,server)=one_response(response).await;let transport=HttpTransport::new(local_config(origin)).unwrap();transport.discovery(&CancellationToken::new()).await.unwrap();server.await.unwrap();assert!(transport.migration_source_time_ms().is_none());}
+    }
 
     #[test]
     fn explicit_proxy_selection_is_opt_in_and_config_takes_precedence() {

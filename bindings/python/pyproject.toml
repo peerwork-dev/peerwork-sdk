@@ -5,7 +5,7 @@ build-backend = "maturin"
 [project]
 name = "peerwork-sdk"
 dynamic = ["version"]
-description = "Experimental native Peerwork SDK with local identity lifecycle; verified actions incomplete"
+description = "Native Peerwork SDK for signed structure actions, E2EE bodies, access and durable recovery"
 requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = ["LICENSE", "peerwork/LLVM-LICENSE.txt"]
@@ -16,3 +16,5 @@ classifiers = ["Programming Language :: Python :: 3", "Programming Language :: P
 manifest-path = "native/Cargo.toml"
 module-name = "peerwork._peerwork_native"
 python-source = "."
+
+exclude = ["**/__pycache__/**", "**/*.pyc"]

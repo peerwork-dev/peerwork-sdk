@@ -1,7 +1,5 @@
-name: Peerwork verified release
+name: Full platform release (manual)
 on:
-  push:
-    tags: ['v*', '!v*-experimental.*']
   workflow_dispatch:
     inputs:
       publish:

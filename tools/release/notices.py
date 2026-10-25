@@ -7,7 +7,7 @@ def platform(root: Path,target: str,path: Path):
     if target not in TARGETS:raise ReleaseError('unknown notice target')
     files=tar_members(path)
     expected={'package/LICENSE':(root/'bindings/node/LICENSE').read_bytes(),
-        'package/README.md':('# @peerwork/agent-sdk-'+target+'\n\nExperimental platform binary. No verified operations yet.\n').encode()}
+        'package/README.md':('# @peerwork/agent-sdk-'+target+'\n\nExperimental platform binary. See the root SDK package for scoped verified operations and limits.\n').encode()}
     if target.endswith('musl'):expected['package/LLVM-LICENSE.txt']=(root/'third_party/llvm-20.1.8-LICENSE.txt').read_bytes()
     for name,data in expected.items():
         if files.get(name)!=data:raise ReleaseError('platform source notice or generated README substitution')

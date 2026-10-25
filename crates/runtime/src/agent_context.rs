@@ -16,6 +16,8 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
+#[path = "agent_structure_context.rs"]
+mod structure;
 const MAGIC: &[u8] = b"PEERWORK-NATIVE-SECURE-STATE\n1\n";
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -413,7 +415,6 @@ fn bind(
     request: Option<&str>,
     cancel: &CancellationToken,
 ) -> Result<Value> {
-    use std::io::Write;
     let wire = request
         .filter(|v| v.len() <= 64 * 1024)
         .ok_or_else(|| error("REQUEST_INVALID", "bounded bind request required"))?;
@@ -465,6 +466,11 @@ fn bind(
         .map_err(|_| error("CONTEXT_CONFIG", "invalid context references"))?;
     // Entire existing context is checked before even a temporary file exists.
     let context = validate_config(&target, cfg, actor, service)?;
+    persist_context(&target, parent, value.to_string().as_bytes(), cancel)?;
+    Ok(json!({"schema":"peerwork.agent-result.v1","context":context.descriptor,"status":"bound","local_only":true}))
+}
+fn persist_context(target: &Path, parent: &Path, wire: &[u8], cancel: &CancellationToken) -> Result<()> {
+    use std::io::Write;
     if cancel.is_cancelled() {
         return Err(error("CANCELLED", "binding cancelled before persistence"));
     }
@@ -474,7 +480,7 @@ fn bind(
     crate::windows_fs::create_or_check_file(temporary.path())
         .map_err(|_| error("CONTEXT_STATE", "cannot protect context file"))?;
     temporary
-        .write_all(value.to_string().as_bytes())
+        .write_all(wire)
         .map_err(|_| error("CONTEXT_STATE", "cannot write context references"))?;
     temporary
         .as_file()
@@ -495,9 +501,7 @@ fn bind(
                 "context file was committed; reopen this target explicitly before retrying binding",
             )
         })?;
-    Ok(
-        json!({"schema":"peerwork.agent-result.v1","context":context.descriptor,"status":"bound","local_only":true}),
-    )
+    Ok(())
 }
 fn event_error(e: crate::agent_events::AgentEventsError) -> Error {
     Error {
@@ -598,365 +602,24 @@ fn execute(
         return Err(error("CANCELLED", "operation cancelled"));
     }
     if operation == "bind" {
-        return bind(profile_path, actor, service, request, cancel);
+        return Err(error(crate::runtime_contract::RETIRED_CODE,crate::runtime_contract::RETIRED_MESSAGE));
     }
-    if !matches!(
-        operation,
-        "open"
-            | "inspect"
-            | "discover"
-            | "describe"
-            | "operate"
-            | "recover"
-            | "operations"
-            | "events.sync"
-            | "events.receive"
-            | "events.ack"
-            | "events.status"
-            | "workbench.export"
-            | "workbench.apply"
-    ) {
-        return Err(error(
-            "UNSUPPORTED_PRODUCER",
-            "unsupported context operation",
-        ));
+    if operation == "bind.structure" {
+        return structure::bind(profile_path, actor, service, request, cancel);
     }
-    let context = load(profile_path, actor, service)?;
-    let mut out =
-        json!({"schema":"peerwork.agent-result.v1","context":context.descriptor,"status":"ready"});
-    if operation == "open" {
-        return Ok(out);
+    // The explicit v2 boundary selects backend execution. Never reinterpret a
+    // v1 encrypted-history profile or require its replay to open a new space.
+    let cwd = std::env::current_dir().map_err(|_| error("CONTEXT_PATH", "current directory unavailable"))?;
+    let selected = path(profile_path, &cwd)?;
+    let config_wire = raw(&selected, 64 * 1024)?;
+    #[derive(Deserialize)]
+    struct Version { schema: String }
+    let version: Version = serde_json::from_slice(&config_wire)
+        .map_err(|_| error("CONTEXT_CONFIG", "invalid context schema"))?;
+    if version.schema == "peerwork.agent-context.v2" {
+        return structure::execute(operation, &selected, &config_wire, actor, service, request, cancel);
     }
-    if request.is_some_and(|r| r.len() > if operation.starts_with("workbench."){8*1024*1024}else{1024*1024}) {
-        return Err(error("REQUEST_LIMIT", "request exceeds one MiB"));
-    }
-    let r: Request = serde_json::from_str(
-        request.ok_or_else(|| error("REQUEST_INVALID", "workspace request required"))?,
-    )
-    .map_err(|_| error("REQUEST_INVALID", "invalid structured request"))?;
-    if r.expected_fingerprint
-        .as_deref()
-        .is_some_and(|expected| out["context"]["fingerprint"].as_str() != Some(expected))
-    {
-        return Err(error(
-            "CONTEXT_CHANGED",
-            "selected context bindings changed; explicitly reopen before proceeding",
-        ));
-    }
-    let config = context
-        .profiles
-        .get(&r.workspace_id)
-        .ok_or_else(|| error("CONTEXT_WORKSPACE", "workspace is not selected"))?
-        .clone();
-    let access = SecurePrivateActionAccess::new(config.clone());
-    out["workspace_id"] = json!(r.workspace_id);
-    out["operation_id"] = json!(r.operation_id);
-    let result = match operation {
-        "inspect" => {
-            let state = decode(
-                SecurePrivateReadAccess::new(config.clone())
-                    .activate_and_read_json_with_cancel(cancel)
-                    .map_err(|e| runtime_error(e.code(), e.to_string()))?,
-            )?;
-            let pending = pending_operations(
-                &config,
-                &access,
-                out["context"]["fingerprint"].as_str().unwrap(),
-                cancel,
-            )?;
-            json!({"state":state,"pending":pending})
-        }
-        "workbench.export" | "workbench.apply" => {
-            let raw=crate::protocol_workbench::with_profile_json(if operation=="workbench.export"{"export"}else{"apply"},
-                &config,r.workbench_input.as_deref().ok_or_else(||error("REQUEST_INVALID","workbench input required"))?,cancel);
-            let parsed=peerwork_core::wire_json::parse_wire_json_bounded(raw.as_bytes(),64,8*1024*1024)
-                .map_err(|_|runtime_error("RESULT_ENCODING","invalid workbench envelope".into()))?;
-            if !matches!(parsed.get("ok"),Some(peerwork_core::wire_json::WireValue::Bool(true))) {
-                let detail:Value=serde_json::from_str(&raw).map_err(|_|runtime_error("RESULT_ENCODING","invalid workbench refusal".into()))?;
-                return Err(runtime_error(detail["code"].as_str().unwrap_or("WORKBENCH_FAILED"),raw));
-            }
-            let value=parsed.get("value").ok_or_else(||runtime_error("RESULT_ENCODING","workbench value missing".into()))?;
-            let value=peerwork_core::wire_json::canonical_wire_value(value,peerwork_core::canonical::Path::SecureArtifact)
-                .map_err(|_|runtime_error("RESULT_ENCODING","invalid workbench result".into()))?;
-            json!({"workbench_json":value})
-        }
-        "operations" => pending_operations(
-            &config,
-            &access,
-            out["context"]["fingerprint"].as_str().unwrap(),
-            cancel,
-        )?,
-        "operate" => {
-            let id = r
-                .operation_id
-                .as_deref()
-                .filter(|v| !v.is_empty())
-                .ok_or_else(|| error("REQUEST_INVALID", "stable operation_id required"))?;
-            let mut intent = r
-                .intent
-                .ok_or_else(|| error("REQUEST_INVALID", "intent required"))?;
-            match intent.get("kind").and_then(Value::as_str) {
-                Some("protocol.action") => {
-                    let action = input(serde_json::from_value(intent.clone()).map_err(|_| {
-                        error("ACTION_INPUT_INVALID", "invalid protocol.action intent")
-                    })?)?;
-                    if intent.get("refs").is_none_or(Value::is_null) {
-                        intent["refs"] = json!([]);
-                    }
-                    if crate::agent_browser_approval::has_operation(
-                        config.clone(),
-                        out["context"]["fingerprint"].as_str().unwrap(),
-                        Some(id),
-                        None,
-                    )
-                    .map_err(browser_error)?
-                    {
-                        return Err(error(
-                            "INTENT_CONFLICT",
-                            "operation id already belongs to browser.approve",
-                        ));
-                    }
-                    // Legacy rows predate the common index. Their original
-                    // digest must reject an edited retry before any backfill.
-                    let indexed = crate::agent_operations::kind(&config, &context.actor, id)
-                        .map_err(|e| error(e.code(), &e.to_string()))?;
-                    if indexed.is_some() || !legacy_action_operation(&config, &context.actor, id)? {
-                        crate::agent_operations::bind(
-                            &config,
-                            &context.actor,
-                            id,
-                            "protocol.action",
-                            &intent,
-                        )
-                        .map_err(|e| error(e.code(), &e.to_string()))?;
-                    }
-                    decode(
-                        access
-                            .submit_new_json_with_operation_id(action, id, cancel)
-                            .map_err(action_error)?,
-                    )?
-                }
-                Some("workspace.invitation.finalize") => {
-                    let selected: crate::agent_admission::FinalizeIntent=serde_json::from_value(intent.clone())
-                        .map_err(|_|error("ACTION_INPUT_INVALID","invalid invitation finalization intent"))?;
-                    if selected.kind!="workspace.invitation.finalize" {return Err(error("ACTION_INPUT_INVALID","invalid invitation kind"))}
-                    if legacy_action_operation(&config,&context.actor,id)? {return Err(error("INTENT_CONFLICT","operation id belongs to protocol.action"))}
-                    crate::agent_operations::bind(&config,&context.actor,id,"workspace.invitation.finalize",&intent)
-                        .map_err(|e|error(e.code(),&e.to_string()))?;
-                    crate::agent_admission::run(config.clone(),out["context"]["fingerprint"].as_str().unwrap(),id,
-                        Some(intent),false,cancel).map_err(admission_error)?
-                }
-                Some("browser.approve") => {
-                    let intent: BrowserIntent = serde_json::from_value(intent).map_err(|_| {
-                        error("ACTION_INPUT_INVALID", "invalid browser.approve intent")
-                    })?;
-                    if intent.reference.is_empty() || intent.reference.len() > 300 {
-                        return Err(error(
-                            "ACTION_INPUT_INVALID",
-                            "bounded browser approval reference required",
-                        ));
-                    }
-                    if legacy_action_operation(&config, &context.actor, id)? {
-                        return Err(error(
-                            "INTENT_CONFLICT",
-                            "operation id already belongs to protocol.action",
-                        ));
-                    }
-                    let normalized = json!({"kind":intent.kind,"reference":intent.reference,"approve_writes":intent.approve_writes});
-                    crate::agent_operations::bind(
-                        &config,
-                        &context.actor,
-                        id,
-                        "browser.approve",
-                        &normalized,
-                    )
-                    .map_err(|e| error(e.code(), &e.to_string()))?;
-                    crate::agent_browser_approval::approve(
-                        config,
-                        out["context"]["fingerprint"].as_str().unwrap(),
-                        &intent.reference,
-                        intent.approve_writes,
-                        id,
-                        cancel,
-                    )
-                    .map_err(browser_error)?
-                }
-                _ => {
-                    return Err(error(
-                        "UNSUPPORTED_PRODUCER",
-                        "supported producers: protocol.action, browser.approve, workspace.invitation.finalize",
-                    ))
-                }
-            }
-        }
-        "recover" => {
-            if r.operation_id.is_some() == r.command_id.is_some() {
-                return Err(error(
-                    "REQUEST_INVALID",
-                    "select exactly one operation_id or command_id",
-                ));
-            }
-            let indexed_kind = r
-                .operation_id
-                .as_deref()
-                .map(|id| crate::agent_operations::kind(&config, &context.actor, id))
-                .transpose()
-                .map_err(|e| error(e.code(), &e.to_string()))?
-                .flatten();
-            if indexed_kind.as_deref()==Some("protocol.plan.apply") {
-                if r.recovery.as_ref().is_some_and(|v|v.mode!="reconcile"||v.max_submissions!=0){
-                    return Err(runtime_error("RECOVERY_MODE_UNSUPPORTED",json!({"stage":"recover","effect_certainty":"unknown",
-                        "retryability":"explicit_apply","continuation":{"operation":"workbench.apply","workspace_id":r.workspace_id,"operation_id":r.operation_id},
-                        "message":"plan recovery is read-only; explicitly apply the saved plan to continue"}).to_string()))
-                }
-                crate::protocol_workbench::recover_plan(&config,r.operation_id.as_deref().unwrap(),cancel)
-                    .map_err(|e|runtime_error(e.code(),e.envelope().to_string()))?
-            } else if indexed_kind.as_deref() == Some("workspace.invitation.finalize") {
-                let safe=match &r.recovery {
-                    None=>false,
-                    Some(options) if options.mode=="reconcile"&&options.max_submissions==0=>false,
-                    Some(options) if options.mode=="safe"&&options.max_submissions==1=>true,
-                    _=>return Err(error("REQUEST_INVALID","recovery mode must be reconcile with zero submissions or safe with max_submissions=1")),
-                };
-                crate::agent_admission::run(config.clone(),out["context"]["fingerprint"].as_str().unwrap(),
-                    r.operation_id.as_deref().unwrap(),None,safe,cancel).map_err(admission_error)?
-            } else if indexed_kind.as_deref() == Some("browser.approve")
-                || crate::agent_browser_approval::has_operation(
-                    config.clone(),
-                    out["context"]["fingerprint"].as_str().unwrap(),
-                    r.operation_id.as_deref(),
-                    r.command_id.as_deref(),
-                )
-                .map_err(browser_error)?
-            {
-                crate::agent_browser_approval::recover(
-                    config,
-                    out["context"]["fingerprint"].as_str().unwrap(),
-                    r.operation_id.as_deref(),
-                    r.command_id.as_deref(),
-                    cancel,
-                )
-                .map_err(browser_error)?
-            } else {
-                let command = if let Some(id) = r.command_id {
-                    id
-                } else {
-                    let journal = SecureIntentJournal::open(
-                        &config.state_dir.join("action-intents.state"),
-                        &config.origin,
-                        &context.actor,
-                    )
-                    .map_err(|e| runtime_error("INTENT_STATE", e.to_string()))?;
-                    journal
-                        .action_operation(r.operation_id.as_deref().unwrap())
-                        .map_err(|e| runtime_error("INTENT_STATE", e.to_string()))?
-                        .ok_or_else(|| error("INTENT_NOT_FOUND", "operation has no saved command"))?
-                        .0
-                };
-                decode(
-                    access
-                        .reconcile_json_with_cancel(&command, cancel)
-                        .map_err(action_error)?,
-                )?
-            }
-        }
-        "discover" | "describe" => crate::agent_discovery::discover(
-            config,
-            r.query.unwrap_or_default(),
-            operation == "describe",
-            cancel,
-        )
-        .map_err(|e| Error {
-            code: e.code().into(),
-            message: e.to_string(),
-            layer: "discovery",
-            certainty: "not_sent",
-        })?,
-        "events.sync" => crate::agent_events::sync(
-            config,
-            out["context"]["fingerprint"].as_str().unwrap(),
-            cancel,
-        )
-        .map_err(event_error)?,
-        "events.status" => {
-            crate::agent_events::status(config, out["context"]["fingerprint"].as_str().unwrap())
-                .map_err(event_error)?
-        }
-        "events.receive" => {
-            let (consumer, filter) = consumer_params(&r)?;
-            let lease = r
-                .lease_ms
-                .ok_or_else(|| error("REQUEST_INVALID", "lease_ms required"))?;
-            let wait = r
-                .wait_ms
-                .ok_or_else(|| error("REQUEST_INVALID", "wait_ms required"))?;
-            crate::agent_events::receive(
-                config,
-                out["context"]["fingerprint"].as_str().unwrap(),
-                consumer,
-                filter,
-                lease,
-                wait,
-                cancel,
-            )
-            .map_err(event_error)?
-        }
-        "events.ack" => {
-            let (consumer, filter) = consumer_params(&r)?;
-            let token = r
-                .ack_token
-                .as_deref()
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| error("REQUEST_INVALID", "ack_token required"))?;
-            crate::agent_events::ack(
-                config,
-                out["context"]["fingerprint"].as_str().unwrap(),
-                consumer,
-                filter,
-                token,
-            )
-            .map_err(event_error)?
-        }
-        _ => unreachable!(),
-    };
-    if operation.starts_with("events.") {
-        if let Some(status) = result.get("status").and_then(Value::as_str) {
-            out["status"] = json!(status);
-        }
-        out["continuation"] = json!({"operation":operation,"workspace_id":r.workspace_id,"consumer_id":r.consumer_id,"filter_version":r.filter_version});
-    }
-    if matches!(operation, "operate" | "recover") {
-        if result["workspace_id"].as_str() != Some(r.workspace_id.as_str()) {
-            return Err(runtime_error(
-                "CONTEXT_BINDING",
-                "saved operation belongs to a different workspace".into(),
-            ));
-        }
-        let plan = result["kind"] == "protocol.plan.apply";
-        let browser = result["kind"] == "browser.approve";
-        let admission = result["kind"] == "workspace.invitation.finalize";
-        let accepted = (result["status"] == "ACCEPTED" && (!browser || result["verification"] == "verified"))
-            || (admission && result["status"] == "AUTHORIZED" && result["verification"] == "verified");
-        out["status"] = json!(if accepted { "verified" } else { "pending" });
-        out["evidence"] = json!({"acceptance":if accepted{"accepted"}else{"unknown"},"verification":if accepted{"verified"}else{"pending"},"sequence":result["sequence"],"commit_hash":result["commit_hash"]});
-        if accepted && (browser || admission) {
-            out["refs"] = json!([]);
-        } else if accepted {
-            let receipt: Value =
-                serde_json::from_str(result["receipt_canonical_json"].as_str().ok_or_else(
-                    || runtime_error("RESULT_ENCODING", "verified receipt missing".into()),
-                )?)
-                .map_err(|_| runtime_error("RESULT_ENCODING", "invalid verified receipt".into()))?;
-            out["refs"] = receipt["effects"].clone();
-            out["receipt"] = receipt;
-        }
-        if plan {out["effect_certainty"]=json!("unknown");out["evidence"]=json!({"acceptance":"unknown","verification":"pending","freshness":"LOCAL_ONLY"});}
-        out["continuation"] = if plan {result["continuation"].clone()} else if admission {
-            json!({"operation":"recover","workspace_id":r.workspace_id,"operation_id":result["operation_id"]})
-        } else {json!({"operation":"recover","workspace_id":r.workspace_id,"command_id":result["command_id"]})};
-    }
-    out["result"] = result;
-    Ok(out)
+    Err(error(crate::runtime_contract::RETIRED_CODE,crate::runtime_contract::RETIRED_MESSAGE))
 }
 /// Thin bindings must preserve this versioned success/error envelope.
 pub fn agent_context_json(
@@ -971,7 +634,9 @@ pub fn agent_context_json(
         Ok(value)=>json!({"ok":true,"value":value}),
         Err(e)=>{
             let request=request_json.and_then(|v|serde_json::from_str::<Value>(v).ok()).unwrap_or(Value::Null);
-            let continuation=if operation.starts_with("events.") {
+            let continuation=if operation=="follow.operation" {
+                structure::follow_error_continuation(&request)
+            }else if operation.starts_with("events.") {
                 json!({"operation":operation,"workspace_id":request["workspace_id"],"consumer_id":request["consumer_id"],"filter_version":request["filter_version"]})
             } else if request["operation_id"].is_string() {
                 json!({"operation":"recover","workspace_id":request["workspace_id"],"operation_id":request["operation_id"]})
@@ -984,7 +649,7 @@ pub fn agent_context_json(
                 "retryability":if e.certainty=="not_sent"{"correct_input"}else{"reconcile_only"},
                 "recovery_hints":[{"action":"recover","precondition":"same_saved_operation"}],"continuation":continuation});
             if let Some(detail)=detail {
-                for key in ["stage","constraint","retryability","effect_certainty","recovery_hints","http_status","response_digest","completed_steps","results","dependency_diff","continuation"] {
+                for key in ["stage","server_code","constraint","retryability","effect_certainty","recovery_hints","http_status","response_digest","completed_steps","results","dependency_diff","continuation"] {
                     if let Some(value)=detail.get(key){envelope[key]=value.clone();}
                 }
             }
@@ -1014,7 +679,7 @@ mod tests {
         let p = root.path().join("context.json");
         write(
             &p,
-            &json!({"schema":"peerwork.agent-context.v1","service_id":"test","origin":"https://example.invalid","identity_path":"identity.state","workspaces":{}}),
+            &json!({"schema":"peerwork.agent-context.v2","execution_profile":"backend-structure-v1","service_id":"test","origin":"https://example.invalid","identity_path":"identity.state","kernel_journal_path":"operations.sqlite","workspaces":["space"]}),
         );
         (root, p, actor)
     }
@@ -1056,7 +721,7 @@ mod tests {
         let fingerprint = first["value"]["context"]["fingerprint"].as_str().unwrap();
         write(
             &p,
-            &json!({"schema":"peerwork.agent-context.v1","service_id":"test","origin":"https://changed.invalid/","identity_path":"identity.state","workspaces":{}}),
+            &json!({"schema":"peerwork.agent-context.v2","execution_profile":"backend-structure-v1","service_id":"test","origin":"https://changed.invalid/","identity_path":"identity.state","kernel_journal_path":"operations.sqlite","workspaces":["space"]}),
         );
         let before = std::fs::read_dir(root.path()).unwrap().count();
         let request =
@@ -1084,10 +749,10 @@ mod tests {
     fn bind_refuses_missing_references_and_never_overwrites() {
         let (root, existing, actor) = fixture();
         let target = root.path().join("bound.json");
-        let request = json!({"workspace_profiles":["missing-read-profile.json"]}).to_string();
+        let request = json!({"schema":"peerwork.agent-context.v2","execution_profile":"backend-structure-v1","service_id":"test","origin":"https://example.invalid/","identity_path":"missing-identity.state","kernel_journal_path":"operations.sqlite","workspaces":[]}).to_string();
         let before = std::fs::read_dir(root.path()).unwrap().count();
         let failure: Value = serde_json::from_str(&agent_context_json(
-            "bind",
+            "bind.structure",
             &target,
             &actor,
             "test",
@@ -1100,7 +765,7 @@ mod tests {
         assert_eq!(before, std::fs::read_dir(root.path()).unwrap().count());
         let original = std::fs::read(&existing).unwrap();
         let failure: Value = serde_json::from_str(&agent_context_json(
-            "bind",
+            "bind.structure",
             &existing,
             &actor,
             "test",
@@ -1131,7 +796,7 @@ mod tests {
         assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), before);
     }
     #[test]
-    fn workspace_identity_mismatch_fails_before_state_creation() {
+    fn retired_workspace_profile_is_not_reinterpreted_or_imported() {
         let (root, p, actor) = fixture();
         let other = root.path().join("other.state");
         KernelIdentity::create(&other).unwrap();
@@ -1143,7 +808,7 @@ mod tests {
             &p,
             &json!({"schema":"peerwork.agent-context.v1","service_id":"test","origin":"https://example.invalid/","identity_path":"identity.state","workspaces":{"space":{"profile_path":"workspace.json"}}}),
         );
-        assert_eq!(call(&p, &actor, "test")["code"], "CONTEXT_BINDING");
+        assert_eq!(call(&p, &actor, "test")["code"], "LEGACY_MODE_RETIRED");
         assert!(!root.path().join("must-not-create").exists());
     }
     #[test]

@@ -258,7 +258,8 @@ fn validate_protection<'a>(
                             }
                         }
                     }
-                    "actor"
+                    "string" | "integer" | "boolean" | "null" | "json" | "source_text" | "source_timestamp" | "source_sha256"
+                    | "actor"
                     | "optional_actor"
                     | "reference"
                     | "optional_reference"
@@ -279,7 +280,8 @@ fn validate_protection<'a>(
                     }
                     _ => return Err(ManifestError::Invalid),
                 }
-                stored == "json"
+                (matches!(kind.as_str(),"string"|"integer"|"boolean"|"null"|"json"|"source_text"|"source_timestamp"|"source_sha256")&&stored==kind)
+                    || (!matches!(kind.as_str(),"string"|"integer"|"boolean"|"null"|"json"|"source_text"|"source_timestamp"|"source_sha256") && (stored == "json"
                     || matches!(
                         kind.as_str(),
                         "actor"
@@ -292,7 +294,7 @@ fn validate_protection<'a>(
                     ) && stored == "string"
                     || kind == "optional_actor" && matches!(stored.as_str(), "string" | "null")
                     || kind == "timestamp" && matches!(stored.as_str(), "integer" | "null")
-                    || kind == "counter" && stored == "integer"
+                    || kind == "counter" && stored == "integer"))
             }
             _ => return Err(ManifestError::Invalid),
         };

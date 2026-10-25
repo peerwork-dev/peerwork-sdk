@@ -1280,6 +1280,8 @@ fn validate_signed_package_install(
 pub(crate) struct ReplayFacts {
     pub chain: HeaderChainFacts,
     pub operations: Vec<WireValue>,
+    pub object_sources: Vec<WireValue>,
+    pub historical_role_claims:Vec<WireValue>,
     pub objects: Vec<WireValue>,
     pub object_count: usize,
     pub legacy: bool,
@@ -1621,6 +1623,7 @@ fn replay_basic_content_depth(
     let mut structure_progress = None;
     let mut previous_policy_hash: Option<String> = None;
     let mut operations = Vec::with_capacity(commit_wires.len());
+    let mut object_sources = Vec::new();
     let mut recoveries = Vec::new();
     let mut action_receipts = Vec::new();
     let mut legacy = false;
@@ -2406,6 +2409,17 @@ fn replay_basic_content_depth(
                     .or_insert(revision);
             }
             check = "roles.policy";
+            for object in objects {
+                object_sources.push(fields_object(vec![
+                    ("kind", object.get("kind").ok_or(ReplayError::Invalid)?.clone()),
+                    ("id", object.get("id").ok_or(ReplayError::Invalid)?.clone()),
+                    ("revision", object.get("revision").ok_or(ReplayError::Invalid)?.clone()),
+                    ("sequence", WireValue::Number(sequence as f64)),
+                    ("commit_hash", string_value(chain.commit_hashes.get(commit_index).ok_or(ReplayError::Invalid)?)),
+                    ("actor_id", payload.get("actor_id").ok_or(ReplayError::Invalid)?.clone()),
+                    ("object_digest", string_value(&sha256_hex(canonical_wire_value(object, Path::SecureArtifact).map_err(|_|ReplayError::Invalid)?.as_bytes()))),
+                ]));
+            }
             prior_objects.extend(objects.iter().cloned());
             let hash = string(payload, "policy_hash")?;
             let policy = policies.get(hash.as_str()).ok_or(ReplayError::Invalid)?;
@@ -2566,9 +2580,16 @@ fn replay_basic_content_depth(
     let structured = integer(final_payload, "v")? == 2
         || integer(final_payload, "v")? == 3
             && string(final_payload, "structure_mode")? == "STRUCTURED";
+    let mut historical_role_claims:Vec<_>=role_history.into_iter().map(|((instance,protocol,actor),roles)|{
+        let mut roles:Vec<_>=roles.into_iter().collect();roles.sort();
+        fields_object(vec![("instance_id",WireValue::String(instance)),("protocol_digest",WireValue::String(protocol)),("actor_id",WireValue::String(actor)),("roles",WireValue::Array(roles.into_iter().map(WireValue::String).collect()))])
+    }).collect();
+    historical_role_claims.sort_by_key(|row|canonical_wire_value(row,Path::SecureArtifact).unwrap_or_default());
     Ok(ReplayFacts {
         chain,
         operations,
+        object_sources,
+        historical_role_claims,
         objects: prior_objects,
         object_count: seen_objects.len(),
         legacy,

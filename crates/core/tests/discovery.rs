@@ -62,3 +62,22 @@ fn persisted_discovery_only_allows_additive_features_and_limits() {
     duplicate_feature["protocol_features"] = json!(["alpha", "alpha"]);
     assert!(!parse(&duplicate_feature).permits_update_from(&before));
 }
+
+#[test]
+fn structure_discovery_preserves_security_pins_without_pinning_operational_configuration(){
+    let base=json!({"semantics":"peerwork.kernel.v1","audience":"structure-test",
+        "command_type":"peerwork.kernel-command.v1+jws","receipt_type":"peerwork.kernel-receipt.v1+jws",
+        "receipt_public_key":key_id(&[33;32]),"limits":{"jwsBytes":250000,"commandsPerMinute":1200},
+        "protocol_features":["backend-structure-v1"],"execution_profiles":["backend-structure-v1"],
+        "legacy_modes":"RETIRED","event_order":"WORKSPACE_COMMIT",
+        "storage":{"engine":"PostgreSQL","capacity_reservation":{"bytes_block":65536}},
+        "admission":{"scope":"PROCESS","persistence":"EPHEMERAL_ABUSE_LIMIT","limits":{"actor":1200}}});
+    let parse=|value:&serde_json::Value|{let wire=serde_json::to_vec(value).unwrap();parse_discovery_wire(&wire,wire.len()).unwrap()};
+    let before=parse(&base);let mut configured=base.clone();configured["limits"]["commandsPerMinute"]=json!(600);configured["admission"]["limits"]["actor"]=json!(600);
+    assert!(parse(&configured).permits_update_from(&before));
+    let mut dropped=base.clone();dropped.as_object_mut().unwrap().remove("event_order");assert!(!parse(&dropped).permits_update_from(&before));
+    let mut key=base.clone();key["receipt_public_key"]=json!(key_id(&[34;32]));assert!(!parse(&key).permits_update_from(&before));
+    for (field,value) in [("event_order",json!("GLOBAL_ALLOCATION")),("legacy_modes",json!("ENABLED")),("execution_profiles",json!(["legacy"])),("storage",json!(true))]{
+        let mut invalid=base.clone();invalid[field]=value;let wire=serde_json::to_vec(&invalid).unwrap();assert!(parse_discovery_wire(&wire,wire.len()).is_err());
+    }
+}

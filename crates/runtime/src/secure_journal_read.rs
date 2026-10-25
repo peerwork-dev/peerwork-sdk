@@ -380,6 +380,12 @@ impl SecureJournalRead {
         max_response_bytes: usize,
         cancel: &CancellationToken,
     ) -> Result<UnverifiedJournalProgress, JournalReadError> {
+        self.fetch_next_with_clock(client,identity,max_response_bytes,cancel,false).await
+    }
+    pub(crate) async fn fetch_owner_conversion_page(&mut self,client:&KernelClient,identity:&KernelIdentity,cancel:&CancellationToken)->Result<UnverifiedJournalProgress,JournalReadError>{
+        self.fetch_next_with_clock(client,identity,MAX_PAGE,cancel,true).await
+    }
+    async fn fetch_next_with_clock(&mut self,client:&KernelClient,identity:&KernelIdentity,max_response_bytes:usize,cancel:&CancellationToken,source_time:bool)->Result<UnverifiedJournalProgress,JournalReadError>{
         if max_response_bytes == 0 || max_response_bytes > MAX_PAGE {
             return Err(JournalReadError::TooLarge);
         }
@@ -397,12 +403,8 @@ impl SecureJournalRead {
         let response = loop {
             let path =
                 journal_path_with_limit(&self.document.workspace_id, after, last, request_limit);
-            let proof = sign_read_proof(
-                &path,
-                client.discovery(),
-                identity,
-                &self.document.authority,
-            )?;
+            let proof=if source_time{sign_read_proof_at(&path,client.discovery(),identity,&self.document.authority,client.transport().migration_source_time_ms().ok_or(JournalReadError::Clock)?)?}
+            else{sign_read_proof(&path,client.discovery(),identity,&self.document.authority)?};
             match client
                 .transport()
                 .get_secure_journal_exact(&path, &proof, max_response_bytes, cancel)
@@ -719,6 +721,10 @@ pub(crate) fn sign_read_proof(
     if now > (MAX_SAFE - 60_000) as u128 {
         return Err(JournalReadError::Clock);
     }
+    sign_read_proof_at(path,discovery,identity,authority,now as u64)
+}
+fn sign_read_proof_at(path:&str,discovery:&ParsedDiscovery,identity:&KernelIdentity,authority:&str,now:u64)->Result<String,JournalReadError>{
+    if !valid_hex(authority)||now>MAX_SAFE-60_000{return Err(JournalReadError::Clock)}
     let mut nonce = [0u8; 32];
     OsRng
         .try_fill_bytes(&mut nonce)

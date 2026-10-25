@@ -42,11 +42,14 @@ mod protocol_composition;
 mod protocol_object_source;
 #[allow(dead_code)]
 mod protocol_package_source;
+pub mod public_output;
+pub mod document_time;
 pub mod public_catalog_package;
 pub mod public_direct_install;
 pub mod private_install_recovery;
 pub mod receipt;
 pub mod receipt_wire;
+pub mod structure_context;
 pub mod replayed_secure_journal;
 #[allow(dead_code)]
 mod secure_chain;
@@ -60,7 +63,7 @@ mod secure_action_inputs;
 mod secure_action_relations;
 pub mod secure_keyring;
 pub mod secure_recipient;
-mod source_provenance;
+pub mod source_provenance;
 #[allow(dead_code)]
 mod secure_recovery;
 #[allow(dead_code)]
@@ -82,6 +85,10 @@ pub fn version() -> &'static str {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CapabilityManifest {
+    pub backend_structure_execution: bool,
+    pub backend_current_state_reads: bool,
+    pub backend_durable_recovery: bool,
+    pub legacy_online_modes: &'static str,
     pub version: &'static str,
     pub status: &'static str,
     pub protocol_offline_simulation: bool,
@@ -91,6 +98,7 @@ pub struct CapabilityManifest {
     pub producer_compatibility_report: bool,
     pub workspace_url_generation: bool,
     pub anonymous_changelog_read: bool,
+    pub anonymous_publication_read: bool,
     pub public_authorized_state_read: bool,
     pub private_authorized_state_read: bool,
     pub private_system_current_page_read: bool,
@@ -110,27 +118,32 @@ pub struct CapabilityManifest {
 
 pub fn capability_manifest() -> CapabilityManifest {
     CapabilityManifest {
+        backend_structure_execution: true,
+        backend_current_state_reads: true,
+        backend_durable_recovery: true,
+        legacy_online_modes: "RETIRED",
         version: SDK_VERSION,
         status: "experimental",
         protocol_offline_simulation: true,
-        protocol_verified_export: true,
-        protocol_plan_apply: true,
-        guarded_invitation_finalize: true,
+        protocol_verified_export: false,
+        protocol_plan_apply: false,
+        guarded_invitation_finalize: false,
         producer_compatibility_report: true,
         workspace_url_generation: true,
         anonymous_changelog_read: true,
-        public_authorized_state_read: true,
-        private_authorized_state_read: true,
-        private_system_current_page_read: true,
-        owner_guard_time_enable: true,
-        owner_member_scopes: true,
-        private_install_auto_transport: true,
-        private_install_reviewed_recovery: true,
-        private_time_add_guard_windows: true,
+        anonymous_publication_read: true,
+        public_authorized_state_read: false,
+        private_authorized_state_read: false,
+        private_system_current_page_read: false,
+        owner_guard_time_enable: false,
+        owner_member_scopes: false,
+        private_install_auto_transport: false,
+        private_install_reviewed_recovery: false,
+        private_time_add_guard_windows: false,
         wire_canonicalization: true,
         signed_artifact_verification: true,
         receipt_verification: true,
-        verified_public_workspace_reads: true,
+        verified_public_workspace_reads: false,
         verified_workspace_reads: false,
         safe_actions: false,
         durable_recovery: false,
@@ -146,3 +159,11 @@ pub mod selected_author;
 pub mod current_page;
 
 pub mod prepared_owner_guard_time;
+
+pub mod structure_execution;
+pub mod structure_content;
+pub mod structure_access;
+
+pub mod structure_key_delivery;
+
+pub mod structure_retained_keys;

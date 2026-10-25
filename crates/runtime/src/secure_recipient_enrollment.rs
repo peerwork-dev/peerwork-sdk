@@ -1171,13 +1171,13 @@ fn map_kernel(error: KernelClientError) -> RecipientEnrollmentError {
             RecipientEnrollmentError::ServerRejected(status)
         }
         KernelClientError::DiscoveryStatus => RecipientEnrollmentError::DiscoveryStatus,
-        KernelClientError::UnsupportedDiscovery | KernelClientError::InvalidResult
-            | KernelClientError::InvalidCommand => RecipientEnrollmentError::Verification,
+        KernelClientError::UnsupportedDiscovery | KernelClientError::UnsupportedStructureProfile | KernelClientError::InvalidResult
+            | KernelClientError::InvalidCommand | KernelClientError::InvalidDocumentTime => RecipientEnrollmentError::Verification,
         KernelClientError::Store(JournalError::DiscoveryChanged) => RecipientEnrollmentError::Identity,
         KernelClientError::Store(JournalError::InvalidReceipt) => RecipientEnrollmentError::Verification,
         KernelClientError::Store(JournalError::InvalidIntent | JournalError::IntentConflict)
             | KernelClientError::IntentNotFound | KernelClientError::Migration(_) => RecipientEnrollmentError::Invalid,
-        KernelClientError::Store(_) => RecipientEnrollmentError::Local,
+        KernelClientError::HistoryDeliveryBlocked{..} | KernelClientError::CryptoPrerequisitePending{..} | KernelClientError::PrerequisitePending{..} | KernelClientError::OperationRefused(_) | KernelClientError::Store(_) | KernelClientError::ContentKey(_) | KernelClientError::LegacyModeRetired | KernelClientError::Access(_) | KernelClientError::AccessState(_) => RecipientEnrollmentError::Local,
     }
 }
 

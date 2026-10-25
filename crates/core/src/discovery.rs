@@ -27,6 +27,9 @@ pub struct ParsedDiscovery {
     protocol_features: Vec<Vec<u16>>,
     limits: Vec<(Vec<u16>, f64)>,
     manifest_language: Option<Vec<u16>>,
+    execution_profiles: Option<Vec<Vec<u16>>>,
+    legacy_modes: Option<String>,
+    event_order: Option<String>,
     canonical_context: String,
     raw_wire: Vec<u8>,
 }
@@ -55,6 +58,9 @@ impl ParsedDiscovery {
         if self.audience_utf16 != previous.audience_utf16
             || self.receipt_public_key != previous.receipt_public_key
             || self.manifest_language != previous.manifest_language
+            || previous.legacy_modes.as_ref().is_some_and(|value|self.legacy_modes.as_ref()!=Some(value))
+            || previous.event_order.as_ref().is_some_and(|value|self.event_order.as_ref()!=Some(value))
+            || previous.execution_profiles.as_ref().is_some_and(|profiles|self.execution_profiles.as_ref().map_or(true,|next|profiles.iter().any(|profile|!next.contains(profile))))
             || !all_unique(&self.protocol_features)
             || !all_unique(&previous.protocol_features)
             || !previous
@@ -67,7 +73,7 @@ impl ParsedDiscovery {
         previous.limits.iter().all(|(name, value)| {
             self.limits
                 .iter()
-                .any(|(next_name, next_value)| next_name == name && next_value == value)
+                .any(|(next_name, next_value)| next_name == name && (next_value == value || name.iter().copied().eq("commandsPerMinute".encode_utf16())))
         })
     }
     pub fn canonical_context(&self) -> &str {
@@ -103,7 +109,7 @@ pub fn parse_discovery_wire(
         "receipt_public_key",
         "limits",
     ];
-    let optional = ["protocol_features", "manifest_language"];
+    let optional = ["protocol_features", "manifest_language", "execution_profiles", "legacy_modes", "event_order", "admission", "storage", "extensions"];
     if required.iter().any(|field| value.get(field).is_none())
         || fields.iter().any(|(name, _)| {
             !required
@@ -177,6 +183,36 @@ pub fn parse_discovery_wire(
             Some(units.to_vec())
         }
     };
+    let execution_profiles=match value.get("execution_profiles") {
+        None=>None,
+        Some(WireValue::Array(profiles)) if !profiles.is_empty()&&profiles.len()<=8=>{
+            let mut parsed=Vec::with_capacity(profiles.len());
+            for profile in profiles {
+                let units=profile.as_utf16().ok_or(DiscoveryError::Invalid)?;
+                if units.is_empty()||units.len()>80{return Err(DiscoveryError::Invalid);}
+                parsed.push(units.to_vec());
+            }
+            if !all_unique(&parsed)||!parsed.contains(&"backend-structure-v1".encode_utf16().collect()){return Err(DiscoveryError::Invalid);}
+            Some(parsed)
+        },
+        _=>return Err(DiscoveryError::Invalid),
+    };
+    let legacy_modes=match value.get("legacy_modes") {
+        None=>None,
+        Some(mode) if mode.as_string().as_deref()==Some("RETIRED")=>Some("RETIRED".into()),
+        _=>return Err(DiscoveryError::Invalid),
+    };
+    if execution_profiles.is_some()!=legacy_modes.is_some(){return Err(DiscoveryError::Invalid);}
+    let event_order=match value.get("event_order") {
+        None=>None,
+        Some(order) if order.as_string().as_deref()==Some("WORKSPACE_COMMIT")=>Some("WORKSPACE_COMMIT".into()),
+        _=>return Err(DiscoveryError::Invalid),
+    };
+    // Operational metadata is bounded and retained, but does not authorize an
+    // action or pin an internal DB engine. Cryptographic/ordering domains do.
+    for name in ["admission","storage","extensions"] {
+        if value.get(name).is_some_and(|metadata|!matches!(metadata,WireValue::Object(_))){return Err(DiscoveryError::Invalid);}
+    }
     let canonical_context =
         canonical_wire_value(&value, Path::KERNEL).map_err(|_| DiscoveryError::Invalid)?;
     Ok(ParsedDiscovery {
@@ -185,6 +221,9 @@ pub fn parse_discovery_wire(
         protocol_features,
         limits,
         manifest_language,
+        execution_profiles,
+        legacy_modes,
+        event_order,
         canonical_context,
         raw_wire: wire.to_vec(),
     })

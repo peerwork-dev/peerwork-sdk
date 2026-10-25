@@ -63,6 +63,10 @@ from ._peerwork_native import (
     capabilities_json,
     load_config_json,
     identity_create_json,
+    prepare_owner_checkpoint_json,
+    inspect_owner_cache_json,
+    plan_owner_checkpoint_from_cache_json,
+    prepare_owner_checkpoint_from_cache_json,
     identity_open_json,
     identity_import_seed_json,
     identity_import_pkcs8_pem_json,
@@ -88,6 +92,10 @@ from ._peerwork_native import (
 
 
 class CapabilityManifest(TypedDict):
+    backend_structure_execution: bool
+    backend_current_state_reads: bool
+    backend_durable_recovery: bool
+    legacy_online_modes: Literal['RETIRED']
     protocol_offline_simulation: bool
     protocol_verified_export: bool
     protocol_plan_apply: bool
@@ -189,7 +197,27 @@ CatalogAcceptedResult = (
 )
 
 
+class OpenedStructureBody(TypedDict):
+    record_id: str
+    revision: int
+    source_command_id: str
+    record_index: int
+    key_id: str | None
+    state: Literal["OPENED", "NO_CONTENT", "KEY_UNAVAILABLE", "AUTHENTICATION_FAILED", "BODY_INVALID", "KEY_STATE_INVALID", "UNSUPPORTED_ENCODING"]
+    text: str | None
+    assurance: Literal["AUTHOR_SIGNATURE_AND_AEAD"] | None
+
+
+class KeyHistoryReadiness(TypedDict):
+    job_id: str
+    through_epoch: int
+    state: Literal["READY", "PENDING", "UNAVAILABLE"]
+    code: str | None
+
 class AcceptedResult(TypedDict):
+    key_history: NotRequired[KeyHistoryReadiness]
+    browser_approval_reference: NotRequired[str]
+    opened_contents: NotRequired[list[OpenedStructureBody]]
     command_id: str
     workspace_id: str | None
     protocol_digest: str | None
@@ -198,6 +226,7 @@ class AcceptedResult(TypedDict):
     revision: int | None
     produced_record_ids: list[str]
     catalog: CatalogAcceptedResult | None
+    structure: NotRequired[dict[str, JSONValue]]
 
 
 class StatusNotFound(TypedDict):
@@ -209,11 +238,30 @@ class StatusPending(TypedDict):
 
 
 class StatusAccepted(TypedDict):
-    state: Literal["ACCEPTED"]
+    state: Literal["ACCEPTED", "REJECTED", "COMMITTED"]
     result: AcceptedResult
 
 
 KernelStatus = StatusNotFound | StatusPending | StatusAccepted
+
+
+class StructureIntentPending(TypedDict):
+    state: Literal["PENDING"]
+    command_id: str
+    code: str
+    phase: str
+    retryable: bool
+    recovery: Literal["RESUME_SAME_INTENT", "NEW_READ", "OBSERVE_SAME_OPERATION"]
+
+
+class StructureIntentCompleted(TypedDict):
+    state: Literal["COMPLETED"]
+    command_id: str
+    result: AcceptedResult
+
+
+StructureIntentOutcome = StatusAccepted | StructureIntentPending | StructureIntentCompleted
+
 
 
 class TsMigrationReport(TypedDict):
@@ -262,7 +310,7 @@ class SecureActionPending(TypedDict):
 
 
 class SecureActionAccepted(TypedDict):
-    status: Literal["ACCEPTED"]
+    status: Literal["ACCEPTED", "REJECTED", "COMMITTED"]
     command_id: str
     workspace_id: str
     action_id: str
@@ -300,6 +348,76 @@ def capabilities() -> CapabilityManifest:
 def create_identity(path: str) -> IdentityInfo:
     """Explicitly create a protected local signing identity; no enrollment occurs."""
     return cast(IdentityInfo, json.loads(identity_create_json(path)))
+
+
+def prepare_owner_checkpoint(*, identity_path: str, expected_actor: str, origin: str,
+                             audience: str, source_path: str, plan_path: str,
+                             output_path: str, content_keys_path: str | None = None,
+                             allow_loopback_http: bool = False) -> dict:
+    """Prepare a mapped Owner checkpoint offline; return metadata, never keys.
+
+    The protected JSONL input is an explicit current-state export. Business
+    fields require allowlisted paths in the plan; selected body text is encrypted.
+    Reopening the same output verifies and reuses its exact signed bytes.
+    """
+    request = dict(identity_path=identity_path, expected_actor=expected_actor,
+                   origin=origin, audience=audience, source_path=source_path,
+                   plan_path=plan_path, output_path=output_path,
+                   content_keys_path=content_keys_path,
+                   allow_loopback_http=allow_loopback_http)
+    result = json.loads(prepare_owner_checkpoint_json(json.dumps(request)))
+    if not result.get("ok"):
+        error = RuntimeError(result.get("code", "CHECKPOINT_PREPARATION_FAILED"))
+        for key in ("code", "stage", "effect_certainty", "recovery", "diagnostic"):
+            setattr(error, key, result.get(key))
+        raise error
+    return result["value"]
+
+
+def inspect_owner_cache(*, state_dir: str, workspace_id: str, report_path: str,
+                        expected_actor: str | None = None, cache_selection: Literal["ACTIVE", "RECOVERY", "INSTALL"] = "ACTIVE", refresh_source: bool = False) -> dict:
+    """Pause Owner operations first. Review only a selected verified ACTIVE cache.
+
+    The private report stays inside the Owner directory. No refresh, submission,
+    identity export or disclosure of field values occurs.
+    """
+    result = json.loads(inspect_owner_cache_json(json.dumps(dict(
+        state_dir=state_dir, workspace_id=workspace_id, report_path=report_path,
+        expected_actor=expected_actor,cache_selection=cache_selection,refresh_source=refresh_source))))
+    if not result.get("ok"):
+        error = RuntimeError(result.get("code", "OWNER_CACHE_REVIEW_FAILED"))
+        for key in ("code", "stage", "effect_certainty", "diagnostic"):
+            setattr(error, key, result.get(key))
+        raise error
+    return result["value"]
+
+
+def _cached_conversion_result(value: str) -> dict:
+    result = json.loads(value)
+    if not result.get("ok"):
+        error = RuntimeError(result.get("code", "CHECKPOINT_CACHE_FAILED"))
+        for key in ("code", "stage", "effect_certainty", "diagnostic"):
+            setattr(error, key, result.get(key))
+        raise error
+    return result["value"]
+
+
+def plan_owner_checkpoint_from_cache(*, state_dir: str, workspace_id: str,
+        expected_actor: str, snapshot_sha256: str, name: str, plan_path: str, cache_selection: Literal["ACTIVE", "RECOVERY", "INSTALL"] = "ACTIVE", refresh_source: bool = False) -> dict:
+    """Generate a protected body/structure mapping without persisting body values."""
+    return _cached_conversion_result(plan_owner_checkpoint_from_cache_json(json.dumps(dict(
+        state_dir=state_dir, workspace_id=workspace_id, expected_actor=expected_actor,
+        snapshot_sha256=snapshot_sha256, name=name, plan_path=plan_path,cache_selection=cache_selection,refresh_source=refresh_source))))
+
+
+def prepare_owner_checkpoint_from_cache(*, state_dir: str, workspace_id: str,
+        expected_actor: str, plan_path: str, output_path: str, origin: str,
+        audience: str, allow_loopback_http: bool = False, cache_selection: Literal["ACTIVE", "RECOVERY", "INSTALL"] = "ACTIVE", refresh_source: bool = False) -> dict:
+    """Verify selected cache and persist signed structure/ciphertext, no plaintext source."""
+    return _cached_conversion_result(prepare_owner_checkpoint_from_cache_json(json.dumps(dict(
+        state_dir=state_dir, workspace_id=workspace_id, expected_actor=expected_actor,
+        plan_path=plan_path, output_path=output_path, origin=origin, audience=audience,
+        allow_loopback_http=allow_loopback_http,cache_selection=cache_selection,refresh_source=refresh_source))))
 
 
 class IdentityError(RuntimeError):
@@ -361,9 +479,15 @@ async def import_legacy_owner_identity_async(config_file: str, pem_file: str) ->
 
 class KernelError(RuntimeError):
     """Redacted native Kernel failure with a stable machine-readable code."""
-    def __init__(self, code: str, message: str):
+    def __init__(self, code: str, message: str, details: dict | None = None):
         super().__init__(message)
         self.code = code
+        self.details = details
+        self.http_status = details.get("http_status") if details else None
+        self.server_code = details.get("server_code") if details else None
+        self.phase = details.get("phase") if details else None
+        self.retryable = details.get("retryable") if details else None
+        self.recovery = details.get("recovery") if details else None
 
 
 class KernelClient:
@@ -406,7 +530,13 @@ class KernelClient:
         ))
 
         if isinstance(value, dict) and value.get("ok") is False:
-            raise KernelError(value["code"], value["message"])
+            raise KernelError(value["code"], value["message"], value.get("details"))
+        # Native verification pins the exact request, service, profile and
+        # assurance before exposing authorized structural data to this binding.
+        if isinstance(value, dict):
+            for accepted in (value, value.get("result")):
+                if isinstance(accepted, dict) and isinstance(accepted.get("structure_result_json"), str):
+                    accepted["structure"] = json.loads(accepted.pop("structure_result_json"))
         return value
 
     async def _call_async(self, operation: str, *, command: dict | None = None,
@@ -453,12 +583,61 @@ class KernelClient:
     def pending(self) -> list[PendingIntent]:
         return cast(list[PendingIntent], self._call("pending"))
 
+    def pending_page(self, *, after: str | None = None, preparations_after: str | None = None, limit: int = 32) -> dict:
+        return cast(dict, self._call("pending_page", command={"after": after, "preparations_after": preparations_after, "limit": limit}))
+
+    def build_pending_index(self) -> dict:
+        """Explicit bounded legacy locator maintenance; never submits requests."""
+        return cast(dict, self._call("build_pending_index"))
+
+    def request_access(self, selection: dict) -> dict:
+        """Create a platform-time-bound request; recipient keys stay in protected native state."""
+        return cast(dict, self._call("request_access", command=selection))
+
+    def publish_selected_record(self, selection: dict) -> StructureIntentOutcome:
+        return cast(StructureIntentOutcome, self._call("publish_selected_record", command=selection))
+
+    async def publish_selected_record_async(self, selection: dict) -> StructureIntentOutcome:
+        return cast(StructureIntentOutcome, await self._call_async("publish_selected_record", command=selection))
+
+    def authorize_access(self, selection: dict) -> StructureIntentOutcome:
+        """Owner approval with durable exact-packet recovery; read-only by default."""
+        return cast(StructureIntentOutcome, self._call("authorize_access", command=selection))
+
+    def accept_content_keys(self, selection: dict) -> dict:
+        """Verify selected Owner key deliveries and import them atomically."""
+        return cast(dict, self._call("accept_content_keys", command=selection))
+
+    def coordinate_content_keys(self, selection: dict) -> StructureIntentOutcome:
+        return cast(StructureIntentOutcome, self._call("coordinate_content_keys", command=selection))
+
+    async def coordinate_content_keys_async(self, selection: dict) -> StructureIntentOutcome:
+        return cast(StructureIntentOutcome, await self._call_async("coordinate_content_keys", command=selection))
+
+    def rotate_content_key(self, selection: dict) -> StructureIntentOutcome:
+        """Owner-select a fresh canonical body key with durable operation recovery."""
+        return cast(StructureIntentOutcome, self._call("rotate_content_key", command=selection))
+
+    async def rotate_content_key_async(self, selection: dict) -> StructureIntentOutcome:
+        return cast(StructureIntentOutcome, await self._call_async("rotate_content_key", command=selection))
+
+    def ensure_local_content_key(self, workspace_id: str) -> dict:
+        """Create/reopen a local body key; does not grant access or deliver it."""
+        return cast(dict, self._call("ensure_local_content_key", command={"workspace_id": workspace_id}))
+
     def status(self, command_id: str) -> KernelStatus:
         return cast(KernelStatus, self._call("status", command_id=command_id))
 
     def submit_saved(self, command_id: str) -> AcceptedResult:
         """POST saved bytes and require a verified, command-bound receipt."""
         return cast(AcceptedResult, self._call("submit_saved", command_id=command_id))
+
+    def execute_structure_intent(self, intent: dict) -> StructureIntentOutcome:
+        """Sign and submit business intent using verified service time and durable recovery."""
+        return cast(StructureIntentOutcome, self._call("execute_structure_intent", command=intent))
+
+    def resume_structure_intent(self, command_id: str) -> StructureIntentOutcome:
+        return cast(StructureIntentOutcome, self._call("resume_structure_intent", command_id=command_id))
 
     def migrate_ts_store(self, source_path: str, backup_path: str,
                          trusted_signer_key_ids: list[str]) -> TsMigrationReport:
@@ -482,11 +661,35 @@ class KernelClient:
     async def pending_async(self) -> list[PendingIntent]:
         return cast(list[PendingIntent], await self._call_async("pending"))
 
+    async def pending_page_async(self, *, after: str | None = None, preparations_after: str | None = None, limit: int = 32) -> dict:
+        return cast(dict, await self._call_async("pending_page", command={"after": after, "preparations_after": preparations_after, "limit": limit}))
+
+    async def build_pending_index_async(self) -> dict:
+        return cast(dict, await self._call_async("build_pending_index"))
+
+    async def request_access_async(self, selection: dict) -> dict:
+        return cast(dict, await self._call_async("request_access", command=selection))
+
+    async def authorize_access_async(self, selection: dict) -> StructureIntentOutcome:
+        return cast(StructureIntentOutcome, await self._call_async("authorize_access", command=selection))
+
+    async def accept_content_keys_async(self, selection: dict) -> dict:
+        return cast(dict, await self._call_async("accept_content_keys", command=selection))
+
+    async def ensure_local_content_key_async(self, workspace_id: str) -> dict:
+        return cast(dict, await self._call_async("ensure_local_content_key", command={"workspace_id": workspace_id}))
+
     async def status_async(self, command_id: str) -> KernelStatus:
         return cast(KernelStatus, await self._call_async("status", command_id=command_id))
 
     async def submit_saved_async(self, command_id: str) -> AcceptedResult:
         return cast(AcceptedResult, await self._call_async("submit_saved", command_id=command_id))
+
+    async def execute_structure_intent_async(self, intent: dict) -> StructureIntentOutcome:
+        return cast(StructureIntentOutcome, await self._call_async("execute_structure_intent", command=intent))
+
+    async def resume_structure_intent_async(self, command_id: str) -> StructureIntentOutcome:
+        return cast(StructureIntentOutcome, await self._call_async("resume_structure_intent", command_id=command_id))
 
     async def migrate_ts_store_async(self, source_path: str, backup_path: str,
                                      trusted_signer_key_ids: list[str]) -> TsMigrationReport:
@@ -572,7 +775,7 @@ __all__ = ["version", "capabilities", "IdentityError", "create_identity", "open_
            "CapabilityManifest", "IdentityInfo", "KernelInfo", "PendingIntent",
            "NamespaceClaimResult", "UploadBeginResult", "UploadChunkResult",
            "PackagePublishResult", "CatalogAcceptedResult", "AcceptedResult",
-           "StatusNotFound", "StatusPending", "StatusAccepted", "KernelStatus",
+           "StatusNotFound", "StatusPending", "StatusAccepted", "KernelStatus", "StructureIntentOutcome", "StructureIntentPending", "StructureIntentCompleted",
            "TsMigrationReport"]
 __all__ += ["import_legacy_identity_pem", "import_legacy_identity_pem_async",
             "import_legacy_owner_identity", "import_legacy_owner_identity_async"]
@@ -3316,11 +3519,21 @@ __all__ += ["KernelError"]
 
 
 class AgentProtocolActionIntent(TypedDict):
+    document_times: NotRequired[list[JSONValue]]
+    plaintext_contents: NotRequired[list[JSONValue]]
     kind: Literal["protocol.action"]
     instance_id: str
     action_id: str
     values: JSONValue
     refs: NotRequired[list[JSONValue]]
+    protocol_digest: NotRequired[str]
+    expected_instance_revision: NotRequired[int]
+    contents: NotRequired[list[JSONValue]]
+
+
+class AgentStructureIntent(TypedDict):
+    kind: Literal["structure.intent"]
+    request: dict
 
 
 class AgentBrowserApprovalIntent(TypedDict):
@@ -3335,7 +3548,7 @@ class AgentInvitationFinalizeIntent(TypedDict):
     saved_grant_id: NotRequired[str]
 
 
-AgentIntent: TypeAlias = AgentProtocolActionIntent | AgentBrowserApprovalIntent | AgentInvitationFinalizeIntent
+AgentIntent: TypeAlias = AgentProtocolActionIntent | AgentBrowserApprovalIntent | AgentInvitationFinalizeIntent | AgentStructureIntent
 
 
 class AgentContextError(RuntimeError):
@@ -3350,6 +3563,8 @@ class AgentContextError(RuntimeError):
         self.effect_certainty = envelope.get("effect_certainty")
         self.continuation = envelope.get("continuation")
         self.stage = envelope.get("stage")
+        self.server_code = envelope.get("server_code")
+        self.http_status = envelope.get("http_status")
         self.constraint = envelope.get("constraint")
         self.retryability = envelope.get("retryability")
         self.recovery_hints = envelope.get("recovery_hints")
@@ -3359,9 +3574,9 @@ class AgentContextError(RuntimeError):
 class AgentContext:
     """Pinned existing PRIVATE member context; no identity creation or enrollment.
 
-    Each call revalidates the profile and pins. Events cover verified action
-    receipts using an unchanged-checkpoint probe and full replay on updates.
-    Native PRIVATE browser approval is a separate operation producer.
+    v1 retains encrypted-history replay and existing operation producers.
+    Explicit v2 contexts execute and query backend-maintained structure with
+    service and author proofs. They never load the legacy workspace journal.
     """
 
     _profile: str
@@ -3397,31 +3612,95 @@ class AgentContext:
 
     @staticmethod
     def _description_request(workspace_id: str, instance_id: str | None, action_id: str | None,
-                             record_id: str | None, revision: int | None, object_ref: dict | None) -> dict:
+                             record_id: str | None, revision: int | None, object_ref: dict | None,
+                             protocol_digest: str | None = None) -> dict:
         query = {key: value for key, value in {
             "instance_id": instance_id, "action_id": action_id, "record_id": record_id,
-            "revision": revision, "object_ref": object_ref,
+            "revision": revision, "object_ref": object_ref, "protocol_digest": protocol_digest,
         }.items() if value is not None}
         return {"workspace_id": workspace_id, "query": query}
 
     def describe(self, workspace_id: str, instance_id: str | None = None, *,
                  action_id: str | None = None, record_id: str | None = None,
-                 revision: int | None = None, object_ref: dict | None = None) -> dict:
+                 revision: int | None = None, object_ref: dict | None = None,
+                 protocol_digest: str | None = None) -> dict:
         """Describe one instance/action or exact record/object revision; no latest substitution."""
         return self._call("describe", self._description_request(
-            workspace_id, instance_id, action_id, record_id, revision, object_ref))
+            workspace_id, instance_id, action_id, record_id, revision, object_ref, protocol_digest))
 
     async def discover_async(self, workspace_id: str, *, after: str | None = None, limit: int | None = None) -> dict:
         return await self._call_async("discover", self._discovery_request(workspace_id, after, limit))
 
     async def describe_async(self, workspace_id: str, instance_id: str | None = None, *,
                              action_id: str | None = None, record_id: str | None = None,
-                             revision: int | None = None, object_ref: dict | None = None) -> dict:
+                             revision: int | None = None, object_ref: dict | None = None,
+                             protocol_digest: str | None = None) -> dict:
         return await self._call_async("describe", self._description_request(
-            workspace_id, instance_id, action_id, record_id, revision, object_ref))
+            workspace_id, instance_id, action_id, record_id, revision, object_ref, protocol_digest))
 
     def inspect(self, workspace_id: str) -> dict:
         return self._call("inspect", {"workspace_id": workspace_id})
+
+    def request_access(self, workspace_id: str, selection: dict) -> dict:
+        return self._call("request.access", {"workspace_id": workspace_id, "query": selection})
+
+    def authorize_access(self, workspace_id: str, selection: dict) -> dict:
+        return self._call("authorize.access", {"workspace_id": workspace_id, "query": selection})
+
+    def publish_selected_record(self, workspace_id: str, selection: dict) -> dict:
+        """Publish one verified selected record into an already-public Owner view."""
+        return self._call("publish.record", {"workspace_id": workspace_id, "query": selection})
+
+    async def publish_selected_record_async(self, workspace_id: str, selection: dict) -> dict:
+        return await self._call_async("publish.record", {"workspace_id": workspace_id, "query": selection})
+
+    def coordinate_content_keys(self, workspace_id: str) -> dict:
+        return self._call("coordinate.keys", {"workspace_id": workspace_id, "query": {}})
+
+    async def coordinate_content_keys_async(self, workspace_id: str) -> dict:
+        return await self._call_async("coordinate.keys", {"workspace_id": workspace_id, "query": {}})
+
+    def rotate_content_key(self, workspace_id: str, selection: dict) -> dict:
+        return self._call("rotate.key", {"workspace_id": workspace_id, "query": selection})
+
+    async def rotate_content_key_async(self, workspace_id: str, selection: dict) -> dict:
+        return await self._call_async("rotate.key", {"workspace_id": workspace_id, "query": selection})
+
+    def accept_content_keys(self, workspace_id: str, selection: dict) -> dict:
+        return self._call("accept.keys", {"workspace_id": workspace_id, "query": selection})
+
+    async def request_access_async(self, workspace_id: str, selection: dict) -> dict:
+        return await self._call_async("request.access", {"workspace_id": workspace_id, "query": selection})
+
+    async def authorize_access_async(self, workspace_id: str, selection: dict) -> dict:
+        return await self._call_async("authorize.access", {"workspace_id": workspace_id, "query": selection})
+
+    async def accept_content_keys_async(self, workspace_id: str, selection: dict) -> dict:
+        return await self._call_async("accept.keys", {"workspace_id": workspace_id, "query": selection})
+
+    def execute_structure_intent(self, workspace_id: str, intent: dict) -> dict:
+        """v2: execute a selected backend intent without replaying workspace history."""
+        return self._call("execute.structure", {"workspace_id": workspace_id, "intent": intent})
+
+    async def execute_structure_intent_async(self, workspace_id: str, intent: dict) -> dict:
+        return await self._call_async("execute.structure", {"workspace_id": workspace_id, "intent": intent})
+
+    @staticmethod
+    def _follow_request(workspace_id: str, operation: dict) -> dict:
+        selected = dict(operation)
+        if selected.get("kind") == "WORKSPACE_DELETE":
+            return {"workspace_id": workspace_id, "intent": {"action": "structure.workspace.deletion.get",
+                "workspace_id": selected.get("workspace_id", workspace_id), "body": {"command_id": selected["command_id"]}}}
+        return {"workspace_id": workspace_id, "intent": {"action": "structure.maintenance.get",
+            "workspace_id": selected.get("workspace_id", workspace_id), "instance_id": selected["instance_id"],
+            "protocol_digest": selected["protocol_digest"], "body": {"job_id": selected["job_id"]}}}
+
+    def follow_operation(self, workspace_id: str, operation: dict) -> dict:
+        """Follow backend progress without importing or resubmitting the original mutation."""
+        return self._call("follow.operation", self._follow_request(workspace_id, operation))
+
+    async def follow_operation_async(self, workspace_id: str, operation: dict) -> dict:
+        return await self._call_async("follow.operation", self._follow_request(workspace_id, operation))
 
     def operate(self, workspace_id: str, intent: AgentIntent, operation_id: str) -> dict:
         return self._call("operate", {"workspace_id": workspace_id,
@@ -3483,8 +3762,15 @@ class AgentContext:
     async def resume_plan_async(self, workspace_id: str, operation_id: str) -> dict:
         return await self.apply_plan_async(workspace_id, None, operation_id)
 
-    def operations(self, workspace_id: str) -> dict:
-        return self._call("operations", {"workspace_id": workspace_id})
+    def operations(self, workspace_id: str, *, after: str | None = None, limit: int | None = None,
+                   scope: Literal["MINE", "WORKSPACE"] | None = None, view: Literal["OPEN", "HISTORY"] | None = None) -> dict:
+        """v2: bounded backend operation page, MINE/OPEN by default."""
+        return self._call("operations", self._operations_request(workspace_id, after, limit, scope, view))
+
+    @staticmethod
+    def _operations_request(workspace_id: str, after: str | None, limit: int | None, scope: str | None, view: str | None) -> dict:
+        query = {key: value for key, value in {"after": after, "limit": limit, "scope": scope, "view": view}.items() if value is not None}
+        return {"workspace_id": workspace_id, **({"query": query} if query else {})}
 
     @staticmethod
     def _event_request(workspace_id: str, **options) -> dict:
@@ -3564,8 +3850,9 @@ class AgentContext:
             request["recovery"] = recovery
         return await self._call_async("recover", request)
 
-    async def operations_async(self, workspace_id: str) -> dict:
-        return await self._call_async("operations", {"workspace_id": workspace_id})
+    async def operations_async(self, workspace_id: str, *, after: str | None = None, limit: int | None = None,
+                               scope: Literal["MINE", "WORKSPACE"] | None = None, view: Literal["OPEN", "HISTORY"] | None = None) -> dict:
+        return await self._call_async("operations", self._operations_request(workspace_id, after, limit, scope, view))
 
 
 def open_context(*, profile: str | Path, expected_actor: str, expected_service: str) -> AgentContext:
@@ -3576,7 +3863,7 @@ def open_context(*, profile: str | Path, expected_actor: str, expected_service: 
                         json.dumps(value["context"], ensure_ascii=True, allow_nan=False))
 
 
-__all__ += ["AgentContext", "AgentContextError", "AgentProtocolActionIntent", "open_context"]
+__all__ += ["AgentContext", "AgentContextError", "AgentProtocolActionIntent", "AgentStructureIntent", "open_context"]
 
 
 def bind_context(*, profile: str | Path, expected_actor: str, expected_service: str,
@@ -3597,13 +3884,40 @@ def bind_context(*, profile: str | Path, expected_actor: str, expected_service: 
 __all__ += ["bind_context"]
 
 
+def bind_structure_context(*, profile: str | Path, expected_actor: str, expected_service: str,
+                           origin: str, identity_path: str | Path, journal_path: str | Path,
+                           workspace_ids: list[str], authority: str | None = None,
+                           required_features: list[str] | None = None, allow_loopback_http: bool = False,
+                           transport: TransportOptions | None = None) -> AgentContext:
+    """Bind explicit backend execution to an existing identity, without legacy replay or enrollment."""
+    config = {"schema": "peerwork.agent-context.v2", "execution_profile": "backend-structure-v1",
+              "service_id": expected_service, "origin": origin, "identity_path": str(identity_path),
+              "kernel_journal_path": str(journal_path), "workspaces": workspace_ids,
+              "required_features": required_features or [], "allow_loopback_http": allow_loopback_http}
+    if authority is not None:
+        config["authority"] = authority
+    if transport is not None:
+        config["transport"] = _transport_config(transport)
+    result = json.loads(agent_context_json("bind.structure", str(profile), expected_actor, expected_service,
+                                         json.dumps(config, ensure_ascii=True, allow_nan=False), None))
+    if result["ok"] is not True:
+        raise AgentContextError(result)
+    return open_context(profile=profile, expected_actor=expected_actor, expected_service=expected_service)
+
+
+__all__ += ["bind_structure_context"]
+
+
 __all__ += ["AgentBrowserApprovalIntent", "AgentIntent"]
 
 
 class NavigationError(RuntimeError):
     """URL validation or verified anonymous changelog read failed."""
-    def __init__(self, code: str, message: str):
+    def __init__(self, code: str, message: str, *, phase=None, retryable=False, recovery=None):
         self.code = code
+        self.phase = phase
+        self.retryable = retryable
+        self.recovery = recovery
         super().__init__(message)
 
 
@@ -3611,12 +3925,12 @@ def _navigation(operation: str, value: dict, cancel_handle=None):
     result = json.loads(navigation_json(operation, json.dumps(value, ensure_ascii=True,
         allow_nan=False, separators=(",", ":")), cancel_handle))
     if result["ok"] is not True:
-        raise NavigationError(result["code"], result["message"])
+        raise NavigationError(result["code"], result["message"], phase=result.get("phase"), retryable=result.get("retryable", False), recovery=result.get("recovery"))
     return result["value"]
 
 
 class WorkspaceUrls:
-    """Generate browser links and separate journal endpoints; PRIVATE is the default."""
+    """Generate current browser/API locators; PRIVATE is the default."""
     def __init__(self, *, browser_origin: str = "https://peerwork.dev",
                  control_origin: str = "https://api.peerwork.dev", allow_loopback_http: bool = False):
         self._origins = dict(browser_origin=browser_origin, control_origin=control_origin,
@@ -3624,19 +3938,19 @@ class WorkspaceUrls:
 
     def build(self, workspace_id: str, *, visibility: Literal["PRIVATE", "PUBLIC"] = "PRIVATE",
               kind: str = "workspace", instance_id: str | None = None,
-              record_id: str | None = None, entity_id: str | None = None) -> dict:
-        return _navigation("url", dict(self._origins, workspace_id=workspace_id,
+              record_id: str | None = None, entity_id: str | None = None, revision: int | None = None, workspace_alias: str | None = None) -> dict:
+        return _navigation("url", dict(self._origins, workspace_id=workspace_id, workspace_alias=workspace_alias,
             visibility=visibility, kind=kind, instance_id=instance_id,
-            record_id=record_id, entity_id=entity_id))
+            record_id=record_id, entity_id=entity_id, revision=revision))
 
-    def workspace(self, workspace_id: str, *, visibility: Literal["PRIVATE", "PUBLIC"] = "PRIVATE") -> str:
-        return self.build(workspace_id, visibility=visibility)["browser_url"]
+    def workspace(self, workspace_id: str, *, visibility: Literal["PRIVATE", "PUBLIC"] = "PRIVATE", workspace_alias: str | None = None) -> str:
+        return self.build(workspace_id, visibility=visibility, workspace_alias=workspace_alias)["browser_url"]
 
-    def instance(self, workspace_id: str, instance_id: str, *, visibility: Literal["PRIVATE", "PUBLIC"] = "PRIVATE") -> str:
-        return self.build(workspace_id, visibility=visibility, kind="instance", instance_id=instance_id)["browser_url"]
+    def instance(self, workspace_id: str, instance_id: str, *, visibility: Literal["PRIVATE", "PUBLIC"] = "PRIVATE", workspace_alias: str | None = None) -> str:
+        return self.build(workspace_id, visibility=visibility, kind="instance", instance_id=instance_id, workspace_alias=workspace_alias)["browser_url"]
 
-    def record(self, workspace_id: str, record_id: str, *, visibility: Literal["PRIVATE", "PUBLIC"] = "PRIVATE") -> str:
-        return self.build(workspace_id, visibility=visibility, kind="record", record_id=record_id)["browser_url"]
+    def record(self, workspace_id: str, record_id: str, *, instance_id: str, revision: int, visibility: Literal["PRIVATE", "PUBLIC"] = "PRIVATE", workspace_alias: str | None = None) -> str:
+        return self.build(workspace_id, visibility=visibility, kind="record", instance_id=instance_id, record_id=record_id, revision=revision, workspace_alias=workspace_alias)["browser_url"]
 
 
 class ChangelogClient:
@@ -3648,19 +3962,19 @@ class ChangelogClient:
     def official_source() -> dict:
         return _navigation("changelog.source", {})["source"]
 
-    def _read(self, _operation: str = "read", *, limit: int = 20, offset: int = 0,
+    def _read(self, _operation: str = "read", *, limit: int = 20, cursor: str | None = None,
               checkpoint: dict | None = None, cancel_handle=None) -> dict:
         return _navigation("changelog.read", dict(source=self.source, limit=limit,
-            offset=offset, checkpoint=checkpoint), cancel_handle)
+            cursor=cursor, checkpoint=checkpoint), cancel_handle)
 
-    def read(self, *, limit: int = 20, offset: int = 0, checkpoint: dict | None = None) -> dict:
+    def read(self, *, limit: int = 20, cursor: str | None = None, checkpoint: dict | None = None) -> dict:
         """Read current selected heads; reuse checkpoint for continuity and paging."""
-        return self._read(limit=limit, offset=offset, checkpoint=checkpoint)
+        return self._read(limit=limit, cursor=cursor, checkpoint=checkpoint)
 
-    async def read_async(self, *, limit: int = 20, offset: int = 0,
+    async def read_async(self, *, limit: int = 20, cursor: str | None = None,
                          checkpoint: dict | None = None) -> dict:
         return await _run_cancelled_async(self._read, "read", limit=limit,
-                                         offset=offset, checkpoint=checkpoint)
+                                         cursor=cursor, checkpoint=checkpoint)
 
 __all__ += ["WorkspaceUrls", "ChangelogClient", "NavigationError"]
 
@@ -3931,6 +4245,8 @@ class ProtocolWorkbenchError(RuntimeError):
         self.envelope = envelope
         self.code = envelope["code"]
         self.stage = envelope.get("stage")
+        self.server_code = envelope.get("server_code")
+        self.http_status = envelope.get("http_status")
         self.step = envelope.get("step")
         self.action_id = envelope.get("action_id")
         self.constraint = envelope.get("constraint")
@@ -4075,3 +4391,51 @@ class OwnerWorkspaceMemberScopesClient:
         return await _run_cancelled_async(self._call, "history", input_value={})
 
 __all__ += ["OwnerWorkspaceMemberScopesClient"]
+
+
+def publication_body(text: str) -> dict:
+    """Encode an explicitly public body, without making a network request."""
+    import base64
+    if not isinstance(text, str):
+        raise TypeError("Public body must be text")
+    data = text.encode("utf-8", errors="strict")
+    if len(data) > 65536:
+        raise ValueError("CONTENT_TOO_LARGE: public body exceeds 65536 UTF-8 bytes")
+    encoded = base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+    return {"format": "PUBLIC_UTF8_BASE64", "chunks": [encoded[i:i+8192] for i in range(0, len(encoded), 8192)]}
+
+
+class PublicationReader:
+    """Anonymous selected PUBLIC pages with Owner pins and no journal fallback."""
+    def __init__(self, *, control_origin: str, browser_origin: str, workspace_id: str, owner_actor_id: str, owner_key_id: str, audience: str | None = None, service_key: str | None = None, transport: TransportOptions | None = None, allow_loopback_http: bool = False):
+        self._source = dict(control_origin=control_origin, browser_origin=browser_origin, workspace_id=workspace_id, owner_actor_id=owner_actor_id, owner_key_id=owner_key_id, audience=audience, service_key=service_key, allow_loopback_http=allow_loopback_http)
+        if transport is not None:
+            self._source["transport"] = _transport_config(transport)
+        self._checkpoint = None
+
+    def _read(self, kind: str, *, instance_id: str | None = None, record_id: str | None = None, limit: int = 20, cursor: str | None = None, checkpoint: dict | None = None, order: str = "RECORD_ID_ASC", cancel_handle=None) -> dict:
+        value = _navigation("publication.read", dict(source=self._source, kind=kind, instance_id=instance_id, record_id=record_id, limit=limit, cursor=cursor, checkpoint=checkpoint if checkpoint is not None else self._checkpoint, order=order), cancel_handle)
+        if self._checkpoint is not None and value["checkpoint"]["publication_revision"] < self._checkpoint["publication_revision"]:
+            raise NavigationError("PUBLIC_CHECKPOINT_CHANGED", "Public view regressed below the observed revision")
+        self._checkpoint = value["checkpoint"]
+        return value
+
+    def workspace(self, **options) -> dict:
+        return self._read("WORKSPACE", **options)
+
+    def list(self, **options) -> dict:
+        return self._read("ENTRIES", **options)
+
+    def get(self, record_id: str, **options) -> dict:
+        return self._read("ENTRY", record_id=record_id, **options)
+
+    async def workspace_async(self, **options) -> dict:
+        return await _run_cancelled_async(self._read, "WORKSPACE", **options)
+
+    async def list_async(self, **options) -> dict:
+        return await _run_cancelled_async(self._read, "ENTRIES", **options)
+
+    async def get_async(self, record_id: str, **options) -> dict:
+        return await _run_cancelled_async(self._read, "ENTRY", record_id=record_id, **options)
+
+__all__ += ["PublicationReader", "publication_body"]
