@@ -632,6 +632,10 @@ class KernelClient:
         """POST saved bytes and require a verified, command-bound receipt."""
         return cast(AcceptedResult, self._call("submit_saved", command_id=command_id))
 
+    def migrate_archive(self, selection: dict) -> StructureIntentOutcome:
+        """Owner self-service migration with native upload, backend activation and exact resume."""
+        return cast(StructureIntentOutcome, self._call("migrate_archive", command=selection))
+
     def execute_structure_intent(self, intent: dict) -> StructureIntentOutcome:
         """Sign and submit business intent using verified service time and durable recovery."""
         return cast(StructureIntentOutcome, self._call("execute_structure_intent", command=intent))
@@ -684,6 +688,9 @@ class KernelClient:
 
     async def submit_saved_async(self, command_id: str) -> AcceptedResult:
         return cast(AcceptedResult, await self._call_async("submit_saved", command_id=command_id))
+
+    async def migrate_archive_async(self, selection: dict) -> StructureIntentOutcome:
+        return cast(StructureIntentOutcome, await self._call_async("migrate_archive", command=selection))
 
     async def execute_structure_intent_async(self, intent: dict) -> StructureIntentOutcome:
         return cast(StructureIntentOutcome, await self._call_async("execute_structure_intent", command=intent))

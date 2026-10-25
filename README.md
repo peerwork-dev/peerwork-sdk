@@ -93,3 +93,5 @@ publication are not silently restored.
 
 Use the [offline protocol workbench](docs/protocol-workbench.md) for local
 fixtures and simulation. Simulation is not a production commit receipt.
+
+Owner self-service legacy migration: see [the migration guide](docs/legacy-space-migration-candidate.md). SDK 0.2.2 provides one native `migrateArchive` / `migrate_archive` / `kernel migrate-archive` operation with durable continuation; do not ask users to arrange an operator import. Require the advertised service capability.

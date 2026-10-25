@@ -24,6 +24,9 @@ mod structure_access_client;
 pub use structure_access_client::{StructureAccessRequest,StructureAccessApproval,StructureKeyAcceptance};
 #[path = "structure_parent_client.rs"]
 mod structure_parent_client;
+#[path="archive_migration_client.rs"]
+mod archive_migration_client;
+pub use archive_migration_client::ArchiveMigrationSelection;
 #[path = "structure_intent.rs"]
 mod structure_intent;
 pub use structure_intent::StructureIntentOutcome;
@@ -54,6 +57,8 @@ pub(crate) fn validate_public_wire(command:&WireValue)->Result<(),KernelClientEr
 
 #[derive(Debug, Error)]
 pub enum KernelClientError {
+    #[error("{0}")]
+    ArchiveMigration(&'static str),
     #[error("legacy execution is retired; use backend-structure-v1")]
     LegacyModeRetired,
     #[error(transparent)]

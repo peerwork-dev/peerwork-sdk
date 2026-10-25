@@ -36,7 +36,7 @@ pub(crate) struct ParentSelection {
     pub wire:Zeroizing<String>,
 }
 fn binding(id:&str,identity:&KernelIdentity,origin:&str,audience:&[u16],authority:&str,kind:&str,workspace:Option<&str>)->Result<String,JournalError>{
-    if !valid_token(id)||!matches!(kind,"INTENT"|"ACCESS"|"PUBLICATION")||authority.len()>4096 {
+    if !valid_token(id)||!matches!(kind,"INTENT"|"ACCESS"|"PUBLICATION"|"ARCHIVE_MIGRATION"|"ARCHIVE_ARTIFACT")||authority.len()>4096 {
         return Err(JournalError::InvalidIntent);
     }
     let audience=String::from_utf16(audience).map_err(|_|JournalError::InvalidIntent)?;
@@ -100,7 +100,7 @@ impl KernelIntentJournal {
         // replace the winner, even before any signed child packet exists.
         let tx=self.db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let inserted=tx.execute("INSERT INTO kernel_parent_operations VALUES(?1,?2,?3) ON CONFLICT(command_id) DO NOTHING",params![id,aad,sealed])?;
-        if inserted==1 {
+        if inserted==1&&kind!="ARCHIVE_ARTIFACT" {
             tx.execute("INSERT INTO kernel_parent_preparations SELECT ?1,?2 WHERE NOT EXISTS(SELECT 1 FROM kernel_intents WHERE command_id=?1)",params![id,identity.key_id()])?;
         }
         tx.commit()?;

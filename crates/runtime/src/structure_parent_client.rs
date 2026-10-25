@@ -87,6 +87,9 @@ impl KernelClient {
     }
     pub(crate) async fn resume_structure_parent_until(&mut self,identity:&KernelIdentity,authority:&str,id:&str,workspace:Option<&str>,cancel:&CancellationToken,deadline:Instant)
         ->Result<StructureIntentOutcome,KernelClientError>{
+        if let Some(parent)=self.journal.parent_selection(id,identity,self.origin(),self.discovery.audience_utf16(),authority,workspace)?{
+            if parent.kind=="ARCHIVE_MIGRATION"{let selection=serde_json::from_str(&parent.wire).map_err(|_|JournalError::IncompatibleStore)?;return Box::pin(self.migrate_archive_until(identity,authority,selection,cancel,Instant::now()+Duration::from_secs(180))).await;}
+        }
         if self.journal.verified_pending(id,identity.key_id(),self.discovery.audience_utf16())?.is_some(){
             let result=tokio::time::timeout_at(deadline,self.resume_saved_structure_intent(identity,authority,id,workspace,cancel)).await;
             return self.parent_result(identity,id,result);

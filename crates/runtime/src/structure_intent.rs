@@ -306,7 +306,7 @@ impl KernelClient {
         Ok(pending(&command_id,"IN_PROGRESS","MAINTENANCE",true))
     }
 
-    async fn fresh_structure_context(&self,cancel:&CancellationToken)->Result<peerwork_core::structure_context::VerifiedStructureContext,KernelClientError>{
+    pub(super) async fn fresh_structure_context(&self,cancel:&CancellationToken)->Result<peerwork_core::structure_context::VerifiedStructureContext,KernelClientError>{
         let mut nonce=[0u8;32];OsRng.try_fill_bytes(&mut nonce).map_err(|_|KernelClientError::InvalidCommand)?;
         let nonce=base64url(&nonce);let started=Instant::now();let response=self.transport.structure_context(&nonce,cancel).await?;
         if response.status==404{return Err(KernelClientError::UnsupportedStructureProfile);}
@@ -491,7 +491,7 @@ impl KernelClient {
     /// Fresh selected reads are verified in memory. They are not an ever-
     /// growing archive of pages/events in the local mutation outbox. Explicit
     /// caller IDs/keys retain the durable historical-query behavior.
-    async fn submit_structure_read(&self,signed:&SignedPreparedCommand,cancel:&CancellationToken)->Result<KernelAcceptedResult,KernelClientError>{
+    pub(super) async fn submit_structure_read(&self,signed:&SignedPreparedCommand,cancel:&CancellationToken)->Result<KernelAcceptedResult,KernelClientError>{
         let response=self.transport.post_exact(signed.proof().path(),signed.http_body().to_vec(),cancel).await?;
         let proof=verify_http_response_for_prepared(&response.wire,signed.proof(),self.discovery.receipt_public_key());
         if !(200..300).contains(&response.status)&&proof.is_err(){

@@ -213,6 +213,8 @@ export interface KernelSession extends IdentityInfo {
   /** Explicit local key creation only; does not grant access or deliver it to other readers. */
   ensureLocalContentKey(workspaceId: string, options?: {signal?: AbortSignal}): Promise<{workspace_id: string; key_id: string}>;
   requestAccess(selection: DeviceAccessRequest, options?: {signal?: AbortSignal}): Promise<{profile: 'backend-structure-v1'; workspace_id: string; actor_id: string; request_id: string; recipient_key_id: string; expires_at: number; request_jws: string; state: 'AWAITING_OWNER_APPROVAL'}>;
+  /** Owner self-service migration; backend validates and activates without an operator. */
+  migrateArchive(selection: {workspace_id: string; idempotency_key: string; checkpoint_path?: string; state_dir?: string; plan_path?: string; read_only_snapshot?: boolean; name?: string}, options?: {signal?: AbortSignal}): Promise<StructureIntentOutcome>;
   publishSelectedRecord(selection: PublicationSnapshotSelection, options?: {signal?: AbortSignal}): Promise<StructureIntentOutcome>;
   authorizeAccess(selection: DeviceAccessApproval, options?: {signal?: AbortSignal}): Promise<StructureIntentOutcome>;
   acceptContentKeys(selection: ContentKeyAcceptance, options?: {signal?: AbortSignal}): Promise<{profile: 'backend-structure-v1'; workspace_id: string; state: 'IMPORTED'; key_ids: string[]; current_key_id: string | null; source_count: number}>;

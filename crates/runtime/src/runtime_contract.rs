@@ -5,7 +5,7 @@ pub const RETIRED_MESSAGE:&str="legacy execution is retired; use backend-structu
 
 pub fn supports_kernel_operation(operation:&str)->bool{
     matches!(operation,"open"|"prepare"|"status"|"pending"|"pending_page"|"build_pending_index"
-        |"publish_selected_record"|"coordinate_content_keys"|"rotate_content_key"|"ensure_local_content_key"|"request_access"|"authorize_access"|"accept_content_keys"|"submit_saved"|"execute_structure_intent"|"resume_structure_intent")
+        |"publish_selected_record"|"coordinate_content_keys"|"rotate_content_key"|"ensure_local_content_key"|"request_access"|"authorize_access"|"accept_content_keys"|"submit_saved"|"execute_structure_intent"|"migrate_archive"|"resume_structure_intent")
 }
 
 pub fn retired_json()->String{

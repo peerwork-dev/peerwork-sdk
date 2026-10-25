@@ -56,12 +56,14 @@ impl From<KernelAccessError> for KernelPublicError {
         use crate::kernel_intents::JournalError as J;
         use crate::transport::TransportError as T;
         use KernelAccessError as A;
-        if let A::Client(C::OperationRefused(refusal))=&error{return Self{code:"OPERATION_REJECTED",message:"the service confirmed refusal; inspect the phase, code and recovery details",details:Some(serde_json::json!(refusal))};}
+        if let A::Client(C::ArchiveMigration(code))=&error{return Self{code:*code,message:"archive migration could not proceed; preserve the original operation and inspect the selected source",details:Some(serde_json::json!({"phase":"MIGRATION_PREPARATION","effect_certainty":"NOT_SUBMITTED","retryable":false,"recovery":"INSPECT_SOURCE_AND_RESUME_OR_CORRECT_INPUT"}))};}
+        if let A::Client(C::OperationRefused(refusal))=&error{return Self{code:"OPERATION_REJECTED",message:if refusal.phase=="LOCAL_PREPARATION"{"local migration preparation failed; inspect the original code and reuse the verified source capsule"}else{"the service confirmed refusal; inspect the phase, code and recovery details"},details:Some(serde_json::json!(refusal))};}
         if let A::Client(C::HistoryDeliveryBlocked{job_id,workspace_id,code,retryable})=&error{return Self{code:"HISTORY_KEY_DELIVERY_BLOCKED",message:"the selected Owner key-history job needs attention; other job results remain saved",details:Some(serde_json::json!({"phase":"HISTORY_KEY_DELIVERY","job_id":job_id,"workspace_id":workspace_id,"server_code":code,"retryable":retryable,"effect_certainty":"UNKNOWN","recovery":"CONTINUE_OWNER_KEY_WORKER"}))};}
         if let A::Client(C::CryptoPrerequisitePending{command_id,workspace_id,code,retryable})=&error{return Self{code:"CRYPTO_PREREQUISITE_PENDING",message:"the original Owner crypto prerequisite requires reconciliation",details:Some(serde_json::json!({"phase":"KEY_HEAD_ROTATION","command_id":command_id,"workspace_id":workspace_id,"server_code":code,"effect_certainty":"UNKNOWN","retryable":retryable,"recovery":"RESUME_ORIGINAL_PREREQUISITE"}))};}
         if let A::Client(C::PrerequisitePending{command_id,workspace_id})=&error{return Self{code:"PREREQUISITE_PENDING",message:"body-key initialization needs reconciliation of its saved command",details:Some(serde_json::json!({"phase":"KEY_HEAD_INITIALIZATION","command_id":command_id,"workspace_id":workspace_id,"effect_certainty":"UNKNOWN","retryable":true,"recovery":"RESUME_ORIGINAL_PREREQUISITE"}))};}
         let details=if let A::Client(C::ServerRejected(status))=&error{Some(serde_json::json!({"http_status":status,"phase":"HTTP_REQUEST","effect_certainty":"UNKNOWN","retryable":*status>=500||*status==429,"recovery":"RECONCILE_ORIGINAL_INTENT"}))}else if matches!(&error,A::Client(C::InvalidDocumentTime)){Some(serde_json::json!({"phase":"VALIDATION","server_code":"DOCUMENT_TIME_INVALID","effect_certainty":"NOT_SUBMITTED","retryable":false,"recovery":"CORRECT_DOCUMENT_TIMES"}))}else{None};
         let (code, message) = match error {
+            A::Client(C::ArchiveMigration(code)) => (code,"archive migration preparation failed"),
             A::Client(C::HistoryDeliveryBlocked{..}) => ("HISTORY_KEY_DELIVERY_BLOCKED", "inspect the selected historical key job"),
             A::Client(C::CryptoPrerequisitePending{..}) => ("CRYPTO_PREREQUISITE_PENDING", "reconcile the saved Owner crypto prerequisite"),
             A::Client(C::PrerequisitePending{..}) => ("PREREQUISITE_PENDING", "reconcile the saved body-key prerequisite command"),
@@ -329,6 +331,14 @@ impl KernelAccess {
             }).await;
             Ok::<_,KernelClientError>(outcome)
         })?)
+    }
+
+    pub fn migrate_archive_with_cancel(&self,wire:&[u8],cancel:&CancellationToken)->Result<crate::kernel_client::StructureIntentOutcome,KernelAccessError>{
+        let deadline=tokio::time::Instant::now()+std::time::Duration::from_secs(180);
+        let identity=self.identity()?;let authority=self.authority_override.clone().unwrap_or_else(||sha256_hex(identity.actor_id().as_bytes()));
+        let selection=serde_json::from_slice(wire).map_err(|_|KernelClientError::InvalidCommand)?;
+        let runtime=self.runtime()?;let mut client=self.open_client_until(&runtime,cancel,deadline)?;
+        Ok(runtime.block_on(client.migrate_archive_until(&identity,&authority,selection,cancel,deadline))?)
     }
 
     fn access_recipient_path(&self,origin:&str)->PathBuf{

@@ -372,6 +372,25 @@ impl HttpTransport {
         read_bounded(response, max_response_bytes, cancel).await
     }
 
+    /// Bulk transfer is bound by a core-verified Owner command and digest.
+    /// Never export a database credential or redirect a signed request.
+    pub(crate) async fn migration_upload(&self,jws:&str,bytes:Vec<u8>,cancel:&CancellationToken)->Result<ExactHttpResponse,TransportError>{
+        if jws.len()>32768||bytes.len()>64*1024*1024{return Err(TransportError::InvalidOrigin);}
+        let request=self.client.post(self.endpoint("/api/workspace/v1/structure/migration-upload")?).header("X-Peerwork-Migration-JWS",jws).header("Content-Type","application/octet-stream").body(bytes).send();
+        let response=tokio::select!{_=cancel.cancelled()=>return Err(TransportError::SubmittedUncertain),result=request=>result.map_err(|_|TransportError::SubmittedUncertain)?};
+        read_bounded(response,MAX_COMMAND_RESPONSE_BYTES,cancel).await
+    }
+    pub(crate) async fn migration_source(&self,jws:&str,cancel:&CancellationToken)->Result<(ExactHttpResponse,Vec<u8>),TransportError>{
+        if jws.len()>32768{return Err(TransportError::InvalidOrigin);}
+        let request=self.client.post(self.endpoint("/api/workspace/v1/structure/migration-source")?).header("X-Peerwork-Migration-JWS",jws).send();
+        let response=tokio::select!{_=cancel.cancelled()=>return Err(TransportError::Cancelled),result=request=>result.map_err(map_network_error)?};
+        if !response.status().is_success(){return Ok((read_bounded(response,MAX_COMMAND_RESPONSE_BYTES,cancel).await?,vec![]));}
+        let receipt=response.headers().get("X-Peerwork-Migration-Receipt").and_then(|v|v.to_str().ok()).filter(|s|s.len()<=32768).ok_or(TransportError::InvalidOrigin)?;
+        let wire=peerwork_core::crypto::decode_base64url(receipt).map_err(|_|TransportError::InvalidOrigin)?;
+        let bytes=read_bounded(response,64*1024*1024,cancel).await?;
+        Ok((ExactHttpResponse{status:bytes.status,wire},bytes.wire))
+    }
+
     /// Internal primitive only. The caller must first bind a core-authenticated
     /// prepared command to the exact pending SQLite row and pinned discovery.
     pub(crate) async fn post_exact(

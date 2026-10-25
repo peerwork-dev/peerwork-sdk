@@ -229,6 +229,7 @@ exports.openKernel = async options => {
     pendingPage: (options = {}) => call('pending_page', strictCommandJson({after: options.after ?? null, preparations_after: options.preparationsAfter ?? null, limit: options.limit ?? 32}), undefined, undefined, options.signal),
     buildPendingIndex: (options = {}) => call('build_pending_index', undefined, undefined, undefined, options.signal),
     requestAccess: (selection, options = {}) => call('request_access', strictCommandJson(selection), undefined, undefined, options.signal),
+    migrateArchive: (selection, options = {}) => call('migrate_archive', strictCommandJson(selection), undefined, undefined, options.signal),
     publishSelectedRecord: (selection, options = {}) => call('publish_selected_record', strictCommandJson(selection), undefined, undefined, options.signal),
     authorizeAccess: (selection, options = {}) => call('authorize_access', strictCommandJson(selection), undefined, undefined, options.signal),
     coordinateContentKeys: (selection, options = {}) => call('coordinate_content_keys', strictCommandJson(selection), undefined, undefined, options.signal),

@@ -1177,7 +1177,7 @@ fn map_kernel(error: KernelClientError) -> RecipientEnrollmentError {
         KernelClientError::Store(JournalError::InvalidReceipt) => RecipientEnrollmentError::Verification,
         KernelClientError::Store(JournalError::InvalidIntent | JournalError::IntentConflict)
             | KernelClientError::IntentNotFound | KernelClientError::Migration(_) => RecipientEnrollmentError::Invalid,
-        KernelClientError::HistoryDeliveryBlocked{..} | KernelClientError::CryptoPrerequisitePending{..} | KernelClientError::PrerequisitePending{..} | KernelClientError::OperationRefused(_) | KernelClientError::Store(_) | KernelClientError::ContentKey(_) | KernelClientError::LegacyModeRetired | KernelClientError::Access(_) | KernelClientError::AccessState(_) => RecipientEnrollmentError::Local,
+        KernelClientError::ArchiveMigration(_) | KernelClientError::HistoryDeliveryBlocked{..} | KernelClientError::CryptoPrerequisitePending{..} | KernelClientError::PrerequisitePending{..} | KernelClientError::OperationRefused(_) | KernelClientError::Store(_) | KernelClientError::ContentKey(_) | KernelClientError::LegacyModeRetired | KernelClientError::Access(_) | KernelClientError::AccessState(_) => RecipientEnrollmentError::Local,
     }
 }
 
