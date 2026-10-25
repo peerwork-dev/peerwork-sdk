@@ -1,5 +1,7 @@
 name: Selected Linux SDK cohort
 on:
+  push:
+    tags: ['v*', '!v*-experimental.*']
   workflow_dispatch:
     inputs:
       tag:
@@ -24,7 +26,7 @@ jobs:
           python-version: '3.11.9'
       - name: Build the selected glibc 2.28 cohort and verify installed interfaces
         env:
-          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: python tools/release/linux-build.py --target linux-x64-gnu --tag "$RELEASE_TAG"
       - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
         with:
