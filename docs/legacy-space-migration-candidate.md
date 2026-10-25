@@ -116,6 +116,15 @@ history sizes finish in a fixed duration. Ordinary actions do not replay history
 and retain their existing deadlines. Local verified capsules and signed files
 are reused after interruption. A backend restart resumes its accepted jobs.
 
+Only active jobs count toward the per-Owner concurrency limit; completed
+metadata does not consume that budget. Always resume an unknown original
+outcome first. If the Owner explicitly chooses a corrected new operation, it
+may supersede an upload-only predecessor. Queued or importing jobs cannot be
+superseded. Temporary source exports and unqueued uploads expire after 24 hours
+of inactivity, with bounded cleanup. This does not expire identity keys,
+verified local capsules or queued/running imports. After an expired unqueued
+upload, select the retained signed checkpoint with a new explicit operation key.
+
 ## Result, privacy and limitations
 
 The supported default is an explicit `READ_ONLY_SNAPSHOT`: retained record

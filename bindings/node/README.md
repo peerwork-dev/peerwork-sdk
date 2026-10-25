@@ -1,6 +1,6 @@
 # Peerwork native Node SDK
 
-SDK 0.2.1 targets `backend-structure-v1`. Business structure is readable to the
+SDK 0.2.3 targets `backend-structure-v1`. Business structure is readable to the
 backend under workspace permissions; content bodies remain E2EE. Workspaces
 and ordinary actions are PRIVATE by default.
 

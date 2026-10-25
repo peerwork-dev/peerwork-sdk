@@ -1,6 +1,6 @@
 # Peerwork native Python SDK
 
-SDK 0.2.1 targets `backend-structure-v1`: backend-executed business structure,
+SDK 0.2.3 targets `backend-structure-v1`: backend-executed business structure,
 E2EE content bodies, PRIVATE workspaces/actions by default. Python requires
 3.11 or newer. Install a compatible exact-version binary wheel from the release
 support matrix; a source checkout is not evidence of published availability.

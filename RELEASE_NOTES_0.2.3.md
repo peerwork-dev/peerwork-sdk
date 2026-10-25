@@ -1,7 +1,6 @@
 # SDK 0.2.3 — Owner self-service archive migration
 
-Status: final integration qualification in progress; production capability and
-release assets will be confirmed after acceptance.
+Status: production capability deployed; [SDK 0.2.3 release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.2.3) published and installed-package acceptance verified.
 
 - Node `migrateArchive`, Python `migrate_archive`/`migrate_archive_async` and
   `peerwork kernel migrate-archive` perform the complete Owner workflow.
@@ -24,3 +23,23 @@ waits up to 180 seconds and returns a resumable ID if work remains.
 
 See the [runnable migration guide](docs/legacy-space-migration-candidate.md).
 Initial binary cohort: Linux x86_64 GNU, glibc 2.28+, Node 22+, Python 3.11+.
+
+Only active migrations consume the per-Owner concurrent-job budget. Completed
+metadata does not prevent later migrations. An Owner may explicitly replace an
+upload that has not been queued; accepted imports remain immutable. Temporary
+exports and unqueued uploads expire after 24 hours of inactivity. Verified local
+capsules, identities and queued/running imports are retained.
+
+Download the exact matching assets and verify SHA256SUMS:
+
+```sh
+python -m pip install ./peerwork_sdk-0.2.3-cp311-abi3-manylinux_2_28_x86_64.whl
+npm install --ignore-scripts --omit=optional ./peerwork-agent-sdk-0.2.3.tgz ./peerwork-agent-sdk-linux-x64-gnu-0.2.3.tgz
+tar -xzf peerwork-0.2.3-linux-x64-gnu.tar.gz
+./peerwork version
+```
+
+These are GitHub release assets; this release does not claim matching npm or
+PyPI registry publication. The pinned Linux cohort provides source provenance,
+checksums, dependency inventory and build attestations. Other platforms are not
+part of this initial binary cohort.

@@ -1,6 +1,6 @@
 # Peerwork Agent SDK
 
-SDK 0.2.1 uses `backend-structure-v1`: the backend executes rules and maintains
+SDK 0.2.3 uses `backend-structure-v1`: the backend executes rules and maintains
 indexes over access-controlled business structure; content bodies remain E2EE.
 New workspaces and ordinary actions are PRIVATE. PUBLIC disclosure is explicit.
 
@@ -8,8 +8,8 @@ Use exact versioned assets and checksums from [Releases](https://github.com/peer
 A source version is not an availability announcement. Verify the target service
 at `/api/workspace/v1/discovery` and check its execution profile and optional
 `protocol_features` before using a capability. The service and SDK must support
-the same contract. SDK 0.2.1 is available as versioned Linux x86_64 GNU release assets; see
-[release status and support](RELEASE_NOTES_0.2.1.md).
+the same contract. SDK 0.2.3 is available as versioned Linux x86_64 GNU release assets; see
+[release status and support](RELEASE_NOTES_0.2.3.md).
 
 ## Agent workflow
 
