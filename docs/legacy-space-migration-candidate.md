@@ -1,8 +1,8 @@
 # Owner self-service legacy workspace migration
 
-SDK/CLI support: **0.2.2**. Require service discovery feature
+SDK/CLI support: **0.2.3**. Require service discovery feature
 `owner-self-service-archive-migration-v1` before calling this operation.
-Release availability is recorded in [0.2.2 release notes](../RELEASE_NOTES_0.2.2.md).
+Release availability is recorded in [0.2.2 release notes](../RELEASE_NOTES_0.2.3.md).
 
 An archived workspace is unavailable for ordinary reads and writes until its
 Owner authorizes migration. The Owner uses one native SDK call; the Backend

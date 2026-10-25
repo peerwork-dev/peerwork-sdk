@@ -1,7 +1,7 @@
 # SDK 0.2.2 — Owner self-service archive migration
 
-Status: source and integration qualification in progress; release assets and
-production capability are not yet declared available.
+Status: source-only validation candidate, superseded by 0.2.3 before package publication.
+Use [SDK 0.2.3](RELEASE_NOTES_0.2.3.md) for the supported release.
 
 - Node `migrateArchive`, Python `migrate_archive`/`migrate_archive_async` and
   `peerwork kernel migrate-archive` perform the complete Owner workflow.

@@ -253,6 +253,9 @@ impl KernelClient {
         signed: &SignedPreparedCommand,
         response: &ExactHttpResponse,
     ) -> Result<KernelAcceptedResult> {
+        if !(200..300).contains(&response.status) {
+            return Err(KernelClientError::ServerRejected(response.status));
+        }
         let proof = verify_http_response_for_prepared(
             &response.wire,
             signed.proof(),
@@ -320,6 +323,25 @@ impl KernelClient {
                 code: "MIGRATION_IN_PROGRESS",
                 phase: "MIGRATION",
                 retryable: true,
+                recovery: "RESUME_SAME_INTENT",
+            }),
+            Ok(Err(KernelClientError::ServerRejected(401 | 403 | 429 | 500..=599))) => {
+                Ok(StructureIntentOutcome::Pending {
+                    command_id: id,
+                    code: "MIGRATION_SERVICE_UNAVAILABLE",
+                    phase: "MIGRATION",
+                    retryable: true,
+                    recovery: "RESUME_SAME_INTENT",
+                })
+            }
+            Ok(Err(
+                KernelClientError::InvalidResult
+                | KernelClientError::Store(JournalError::InvalidReceipt),
+            )) => Ok(StructureIntentOutcome::Pending {
+                command_id: id,
+                code: "VERIFICATION_FAILED",
+                phase: "MIGRATION",
+                retryable: false,
                 recovery: "RESUME_SAME_INTENT",
             }),
             Ok(Err(KernelClientError::ArchiveMigration(code))) => Err(
