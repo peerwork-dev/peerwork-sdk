@@ -1,0 +1,758 @@
+{
+  "name": "peerwork.tasks.body-e2ee",
+  "display_version": "2.0.0",
+  "semantics": "peerwork.kernel.v1",
+  "dependencies": [],
+  "initial_state": {},
+  "protocol_roles": [
+    "MANAGER",
+    "CONTRIBUTOR"
+  ],
+  "capabilities": [
+    "CREATE",
+    "UPDATE",
+    "REPORT",
+    "CONTINUE"
+  ],
+  "record_schemas": {
+    "task.revision": {
+      "type": "object",
+      "fields": {
+        "title": "string",
+        "status": "string",
+        "assignee": "string",
+        "author": "string",
+        "parent": "json",
+        "origin": "json"
+      },
+      "required": [
+        "title",
+        "status",
+        "assignee",
+        "author",
+        "parent",
+        "origin"
+      ],
+      "max_bytes": 4096,
+      "workflow": {
+        "v": 1,
+        "status_field": "status",
+        "parent_field": "parent",
+        "assignee_field": "assignee",
+        "states": [
+          "OPEN",
+          "IN_PROGRESS",
+          "BLOCKED",
+          "DONE",
+          "CANCELLED"
+        ],
+        "transitions": [
+          {
+            "action": "task.create",
+            "from": null,
+            "to": "OPEN"
+          },
+          {
+            "action": "task.continue",
+            "from": null,
+            "to": "OPEN"
+          },
+          {
+            "action": "task.continue",
+            "from": null,
+            "to": "IN_PROGRESS"
+          },
+          {
+            "action": "task.continue",
+            "from": null,
+            "to": "BLOCKED"
+          },
+          {
+            "action": "task.update",
+            "from": "OPEN",
+            "to": "OPEN"
+          },
+          {
+            "action": "task.update",
+            "from": "OPEN",
+            "to": "IN_PROGRESS"
+          },
+          {
+            "action": "task.update",
+            "from": "OPEN",
+            "to": "BLOCKED"
+          },
+          {
+            "action": "task.update",
+            "from": "OPEN",
+            "to": "DONE"
+          },
+          {
+            "action": "task.update",
+            "from": "OPEN",
+            "to": "CANCELLED"
+          },
+          {
+            "action": "task.update",
+            "from": "IN_PROGRESS",
+            "to": "OPEN"
+          },
+          {
+            "action": "task.update",
+            "from": "IN_PROGRESS",
+            "to": "IN_PROGRESS"
+          },
+          {
+            "action": "task.update",
+            "from": "IN_PROGRESS",
+            "to": "BLOCKED"
+          },
+          {
+            "action": "task.update",
+            "from": "IN_PROGRESS",
+            "to": "DONE"
+          },
+          {
+            "action": "task.update",
+            "from": "IN_PROGRESS",
+            "to": "CANCELLED"
+          },
+          {
+            "action": "task.update",
+            "from": "BLOCKED",
+            "to": "OPEN"
+          },
+          {
+            "action": "task.update",
+            "from": "BLOCKED",
+            "to": "IN_PROGRESS"
+          },
+          {
+            "action": "task.update",
+            "from": "BLOCKED",
+            "to": "BLOCKED"
+          },
+          {
+            "action": "task.update",
+            "from": "BLOCKED",
+            "to": "DONE"
+          },
+          {
+            "action": "task.update",
+            "from": "BLOCKED",
+            "to": "CANCELLED"
+          }
+        ]
+      },
+      "protection": {
+        "v": 1,
+        "fields": {
+          "title": {
+            "protection": "server_readable",
+            "type": "string"
+          },
+          "status": {
+            "protection": "server_readable",
+            "type": "enum",
+            "values": [
+              "OPEN",
+              "IN_PROGRESS",
+              "BLOCKED",
+              "DONE",
+              "CANCELLED"
+            ]
+          },
+          "assignee": {
+            "protection": "server_readable",
+            "type": "optional_actor"
+          },
+          "author": {
+            "protection": "server_readable",
+            "type": "actor"
+          },
+          "parent": {
+            "protection": "server_readable",
+            "type": "optional_reference"
+          },
+          "origin": {
+            "protection": "server_readable",
+            "type": "optional_reference"
+          }
+        }
+      }
+    },
+    "task.report": {
+      "type": "object",
+      "fields": {
+        "task_ref": "json",
+        "kind": "string",
+        "author": "string"
+      },
+      "required": [
+        "task_ref",
+        "kind",
+        "author"
+      ],
+      "max_bytes": 2048
+    }
+  },
+  "actions": [
+    {
+      "id": "task.create",
+      "reads": [],
+      "writes": [],
+      "revisionEffects": {
+        "control": false,
+        "contentEntities": [
+          "task"
+        ]
+      },
+      "variants": [
+        {
+          "when": [
+            {
+              "op": "has_capability",
+              "capability": "CREATE"
+            },
+            {
+              "op": "or",
+              "rules": [
+                {
+                  "op": "has_protocol_role",
+                  "role": "MANAGER"
+                },
+                {
+                  "op": "and",
+                  "rules": [
+                    {
+                      "op": "has_protocol_role",
+                      "role": "CONTRIBUTOR"
+                    },
+                    {
+                      "op": "eq",
+                      "left": {
+                        "from": "body",
+                        "path": [
+                          "assignee"
+                        ]
+                      },
+                      "right": {
+                        "from": "auth",
+                        "field": "actorId"
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "effects": [
+            {
+              "op": "append",
+              "schema": "task.revision",
+              "value": {
+                "from": "object",
+                "fields": {
+                  "title": {
+                    "from": "body",
+                    "path": [
+                      "title"
+                    ]
+                  },
+                  "status": {
+                    "from": "literal",
+                    "value": "OPEN"
+                  },
+                  "assignee": {
+                    "from": "body",
+                    "path": [
+                      "assignee"
+                    ]
+                  },
+                  "author": {
+                    "from": "auth",
+                    "field": "actorId"
+                  },
+                  "parent": {
+                    "from": "literal",
+                    "value": null
+                  },
+                  "origin": {
+                    "from": "literal",
+                    "value": null
+                  }
+                }
+              },
+              "relations": [],
+              "entity": {
+                "mode": "new",
+                "slot": "task"
+              },
+              "selectHead": true
+            }
+          ]
+        }
+      ],
+      "inputs": {
+        "fields": {
+          "title": {
+            "type": "string",
+            "maxBytes": 1024
+          },
+          "assignee": {
+            "type": "actor_id"
+          }
+        },
+        "required": [
+          "title",
+          "assignee"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "id": "task.update",
+      "reads": [],
+      "writes": [],
+      "revisionEffects": {
+        "control": false,
+        "contentEntities": [
+          "task"
+        ]
+      },
+      "variants": [
+        {
+          "when": [
+            {
+              "op": "has_capability",
+              "capability": "UPDATE"
+            },
+            {
+              "op": "or",
+              "rules": [
+                {
+                  "op": "has_protocol_role",
+                  "role": "MANAGER"
+                },
+                {
+                  "op": "and",
+                  "rules": [
+                    {
+                      "op": "has_protocol_role",
+                      "role": "CONTRIBUTOR"
+                    },
+                    {
+                      "op": "eq",
+                      "left": {
+                        "from": "resolved_payload",
+                        "ref": {
+                          "from": "ref",
+                          "source": "body",
+                          "path": [
+                            "task_ref"
+                          ],
+                          "scope": "INSTANCE"
+                        },
+                        "path": [
+                          "assignee"
+                        ]
+                      },
+                      "right": {
+                        "from": "auth",
+                        "field": "actorId"
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "in",
+              "value": {
+                "from": "resolved_payload",
+                "ref": {
+                  "from": "ref",
+                  "source": "body",
+                  "path": [
+                    "task_ref"
+                  ],
+                  "scope": "INSTANCE"
+                },
+                "path": [
+                  "status"
+                ]
+              },
+              "set": [
+                {
+                  "from": "literal",
+                  "value": "OPEN"
+                },
+                {
+                  "from": "literal",
+                  "value": "IN_PROGRESS"
+                },
+                {
+                  "from": "literal",
+                  "value": "BLOCKED"
+                }
+              ]
+            }
+          ],
+          "effects": [
+            {
+              "op": "append",
+              "schema": "task.revision",
+              "value": {
+                "from": "object",
+                "fields": {
+                  "title": {
+                    "from": "resolved_payload",
+                    "ref": {
+                      "from": "ref",
+                      "source": "body",
+                      "path": [
+                        "task_ref"
+                      ],
+                      "scope": "INSTANCE"
+                    },
+                    "path": [
+                      "title"
+                    ]
+                  },
+                  "status": {
+                    "from": "body",
+                    "path": [
+                      "status"
+                    ]
+                  },
+                  "assignee": {
+                    "from": "resolved_payload",
+                    "ref": {
+                      "from": "ref",
+                      "source": "body",
+                      "path": [
+                        "task_ref"
+                      ],
+                      "scope": "INSTANCE"
+                    },
+                    "path": [
+                      "assignee"
+                    ]
+                  },
+                  "author": {
+                    "from": "auth",
+                    "field": "actorId"
+                  },
+                  "parent": {
+                    "from": "ref",
+                    "source": "body",
+                    "path": [
+                      "task_ref"
+                    ],
+                    "scope": "INSTANCE"
+                  },
+                  "origin": {
+                    "from": "resolved_payload",
+                    "ref": {
+                      "from": "ref",
+                      "source": "body",
+                      "path": [
+                        "task_ref"
+                      ],
+                      "scope": "INSTANCE"
+                    },
+                    "path": [
+                      "origin"
+                    ]
+                  }
+                }
+              },
+              "relations": [],
+              "entity": {
+                "mode": "revise",
+                "slot": "task",
+                "parent": {
+                  "from": "ref",
+                  "source": "body",
+                  "path": [
+                    "task_ref"
+                  ],
+                  "scope": "INSTANCE"
+                }
+              },
+              "selectHead": true
+            }
+          ]
+        }
+      ],
+      "inputs": {
+        "fields": {
+          "task_ref": {
+            "type": "exact_ref",
+            "schema": "task.revision",
+            "scope": "INSTANCE"
+          },
+          "status": {
+            "type": "enum",
+            "values": [
+              "OPEN",
+              "IN_PROGRESS",
+              "BLOCKED",
+              "DONE",
+              "CANCELLED"
+            ]
+          }
+        },
+        "required": [
+          "task_ref",
+          "status"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "id": "task.report",
+      "reads": [],
+      "writes": [],
+      "revisionEffects": {
+        "control": false,
+        "contentEntities": []
+      },
+      "variants": [
+        {
+          "when": [
+            {
+              "op": "has_capability",
+              "capability": "REPORT"
+            },
+            {
+              "op": "or",
+              "rules": [
+                {
+                  "op": "has_protocol_role",
+                  "role": "MANAGER"
+                },
+                {
+                  "op": "and",
+                  "rules": [
+                    {
+                      "op": "has_protocol_role",
+                      "role": "CONTRIBUTOR"
+                    },
+                    {
+                      "op": "eq",
+                      "left": {
+                        "from": "resolved_payload",
+                        "ref": {
+                          "from": "ref",
+                          "source": "body",
+                          "path": [
+                            "task_ref"
+                          ],
+                          "scope": "INSTANCE"
+                        },
+                        "path": [
+                          "assignee"
+                        ]
+                      },
+                      "right": {
+                        "from": "auth",
+                        "field": "actorId"
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "effects": [
+            {
+              "op": "append",
+              "schema": "task.report",
+              "value": {
+                "from": "object",
+                "fields": {
+                  "task_ref": {
+                    "from": "ref",
+                    "source": "body",
+                    "path": [
+                      "task_ref"
+                    ],
+                    "scope": "INSTANCE"
+                  },
+                  "kind": {
+                    "from": "body",
+                    "path": [
+                      "kind"
+                    ]
+                  },
+                  "author": {
+                    "from": "auth",
+                    "field": "actorId"
+                  }
+                }
+              },
+              "relations": [
+                {
+                  "kind": "reports_on",
+                  "target": {
+                    "from": "ref",
+                    "source": "body",
+                    "path": [
+                      "task_ref"
+                    ],
+                    "scope": "INSTANCE"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "inputs": {
+        "fields": {
+          "task_ref": {
+            "type": "exact_ref",
+            "schema": "task.revision",
+            "scope": "INSTANCE"
+          },
+          "kind": {
+            "type": "enum",
+            "values": [
+              "PROGRESS",
+              "DELIVERY",
+              "BLOCKER"
+            ]
+          }
+        },
+        "required": [
+          "task_ref",
+          "kind"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "id": "task.continue",
+      "reads": [],
+      "writes": [],
+      "revisionEffects": {
+        "control": false,
+        "contentEntities": [
+          "task"
+        ]
+      },
+      "variants": [
+        {
+          "when": [
+            {
+              "op": "has_protocol_role",
+              "role": "MANAGER"
+            },
+            {
+              "op": "has_capability",
+              "capability": "CONTINUE"
+            },
+            {
+              "op": "exact_ref",
+              "ref": {
+                "from": "ref",
+                "source": "body",
+                "path": [
+                  "origin_ref"
+                ],
+                "scope": "WORKSPACE"
+              }
+            },
+            {
+              "op": "in",
+              "value": {
+                "from": "body",
+                "path": [
+                  "status"
+                ]
+              },
+              "set": [
+                {
+                  "from": "literal",
+                  "value": "OPEN"
+                },
+                {
+                  "from": "literal",
+                  "value": "IN_PROGRESS"
+                },
+                {
+                  "from": "literal",
+                  "value": "BLOCKED"
+                }
+              ]
+            }
+          ],
+          "effects": [
+            {
+              "op": "append",
+              "schema": "task.revision",
+              "value": {
+                "from": "object",
+                "fields": {
+                  "title": {
+                    "from": "body",
+                    "path": [
+                      "title"
+                    ]
+                  },
+                  "status": {
+                    "from": "body",
+                    "path": [
+                      "status"
+                    ]
+                  },
+                  "assignee": {
+                    "from": "body",
+                    "path": [
+                      "assignee"
+                    ]
+                  },
+                  "author": {
+                    "from": "auth",
+                    "field": "actorId"
+                  },
+                  "parent": {
+                    "from": "literal",
+                    "value": null
+                  },
+                  "origin": {
+                    "from": "ref",
+                    "source": "body",
+                    "path": [
+                      "origin_ref"
+                    ],
+                    "scope": "WORKSPACE"
+                  }
+                }
+              },
+              "relations": [
+                {
+                  "kind": "continues",
+                  "target": {
+                    "from": "ref",
+                    "source": "body",
+                    "path": [
+                      "origin_ref"
+                    ],
+                    "scope": "WORKSPACE"
+                  }
+                }
+              ],
+              "entity": {
+                "mode": "new",
+                "slot": "task"
+              },
+              "selectHead": true
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

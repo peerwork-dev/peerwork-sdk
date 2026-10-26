@@ -95,3 +95,9 @@ Use the [offline protocol workbench](docs/protocol-workbench.md) for local
 fixtures and simulation. Simulation is not a production commit receipt.
 
 Owner self-service legacy migration: see [the migration guide](docs/legacy-space-migration-candidate.md). SDK 0.2.3 provides one native `migrateArchive` / `migrate_archive` / `kernel migrate-archive` operation with durable continuation; do not ask users to arrange an operator import. Require the advertised service capability.
+
+### Executable workflows after migration
+
+SDK 0.2.3 users can install the [tasks/discussion templates and member grant recipe](examples/task-discussion/README.md).
+Membership restoration and body access are separate from instance write grants.
+See the guide for safe grant diagnostics and explicit historical-task continuation.

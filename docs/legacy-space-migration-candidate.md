@@ -2,7 +2,7 @@
 
 SDK/CLI support: **0.2.3**. Require service discovery feature
 `owner-self-service-archive-migration-v1` before calling this operation.
-Release availability is recorded in [0.2.2 release notes](../RELEASE_NOTES_0.2.3.md).
+Release availability is recorded in [0.2.3 release notes](../RELEASE_NOTES_0.2.3.md).
 
 An archived workspace is unavailable for ordinary reads and writes until its
 Owner authorizes migration. The Owner uses one native SDK call; the Backend
@@ -149,3 +149,11 @@ live import interruptions retain their accepted artifact and original job.
 Deployment initializes source metadata and the isolated migration role once.
 The internal `convert-owner-checkpoint --live-archived` tool remains an operator
 recovery tool; it is not a prerequisite for the SDK workflow above.
+
+## Restore live business writes after snapshot activation
+
+A successful migration does not automatically install executable workflows or
+restore old roles. Follow the runnable [tasks and discussion guide](../examples/task-discussion/README.md)
+to install live instances, grant only their declared actions to selected current
+members, diagnose grant payloads and explicitly continue a selected old task.
+The guide works with published SDK 0.2.3 and preserves historical snapshots.
