@@ -180,6 +180,7 @@ fn carries_program(command: &WireValue) -> bool {
                 | "admin.draft.update"
                 | "protocol.package.derive.preview"
                 | "structure.adopt"
+                | "structure.protocol.register"
                 | "structure.checkpoint.instance"
         )
     )

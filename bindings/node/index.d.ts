@@ -12,6 +12,7 @@ export declare function version(): string;
 export interface CapabilityManifest {
   backend_structure_execution: boolean;
   backend_current_state_reads: boolean;
+  protocol_role_bundles: boolean;
   backend_durable_recovery: boolean;
   legacy_online_modes: 'RETIRED';
   protocol_offline_simulation: boolean;
@@ -106,6 +107,12 @@ export type StructureListedOperation = (StructureMaintenanceResult & {source_key
   error_code: 'STRUCTURE_MAINTENANCE_SOURCE_INVALID'; recovery: 'INSPECT_SELECTED_OPERATION';
 });
 export interface BackendStructureResult {
+  package_digest?: string;
+  activated?: boolean;
+  bundle_header?: ProtocolBundleHeader;
+  resources?: Record<string, {path: string; sha256: string; bytes: number; media_type: string; content: string}>;
+  runtime?: {actor_id: string; role: string; grant_id: string; granted_actions: string[]; tools: {name: string; action: string; input_schema: Record<string, unknown>}[]; instructions_resource: string; context: string[]};
+
   capacity?:StorageCapacity;
   warnings?:StorageWarning[];
   workspace_alias?:string|null;
@@ -172,7 +179,7 @@ export interface TsMigrationReport { pending_count: number; accepted_count: numb
 export interface StructureIntentRequest {
   /** Encrypted locally before any submission; never included as plaintext in the signed wire. */
   plaintext_contents?: {record_index: number; text: string}[];
-  action: 'structure.workspace.delete' | 'structure.workspace.deletion.get' | 'structure.workspace.deletions.read' | 'structure.record.withdraw' | 'structure.publication.set' | 'structure.publication.entry.set' | 'structure.access.approval.get' | 'structure.access.end' | 'structure.instance.resolve' | 'structure.access.authorize' | 'structure.content-key.set' | 'structure.content-key.get' | 'structure.content-key.deliver' | 'structure.content-key.delivery.get' | 'structure.content-keys.read' | 'structure.workspace.create' | 'structure.workspace.get' | 'structure.adopt' | 'structure.action' | 'structure.instance.get' | 'structure.record.get' | 'structure.operation.get'
+  action: 'structure.protocol.register' | 'structure.protocol.resolve' | 'structure.protocol.resource.get' | 'structure.workspace.delete' | 'structure.workspace.deletion.get' | 'structure.workspace.deletions.read' | 'structure.record.withdraw' | 'structure.publication.set' | 'structure.publication.entry.set' | 'structure.access.approval.get' | 'structure.access.end' | 'structure.instance.resolve' | 'structure.access.authorize' | 'structure.content-key.set' | 'structure.content-key.get' | 'structure.content-key.deliver' | 'structure.content-key.delivery.get' | 'structure.content-keys.read' | 'structure.workspace.create' | 'structure.workspace.get' | 'structure.adopt' | 'structure.action' | 'structure.instance.get' | 'structure.record.get' | 'structure.operation.get'
     | 'structure.member.set' | 'structure.grant.set' | 'structure.grant.revoke' | 'structure.grant.get'
     | 'structure.members.read' | 'structure.instances.read' | 'structure.records.read' | 'structure.events.read'
     | 'structure.maintenance.rebuild' | 'structure.maintenance.get' | 'structure.maintenance.cancel' | 'structure.operations.read' | 'structure.content-key.history.deliver' | 'structure.content-key.history.get' | 'structure.content-key.history.jobs.read' | 'structure.publication.entry.withdraw' | 'structure.publication.policy.get' | 'structure.publication.policy.set' | 'structure.publication.prepare.get';
@@ -1407,4 +1414,27 @@ export interface StructureRecordSource {actor_id:string;command_id:string;intent
 export interface DocumentImportAction extends StructureIntentRequest {
  action:'structure.action';instance_id:string;protocol_digest:string;expected_instance_revision:number;
  body:{action_id:string;structure:unknown;document_times:DocumentTimeSelection[];publication?:never};
+}
+
+export interface ProtocolBundle {
+  format: 'peerwork.protocol-bundle.v1';
+  metadata: {package_id: string; version: string; description: string; license: string; credits: {name: string; url: string}[]};
+  manifest: Record<string, unknown>;
+  roles: Record<string, {instructions: string; tools: {name: string; action: string}[]; context: ('goal' | 'selected_state' | 'updates')[]}>;
+  resources: Record<string, {media_type: 'text/markdown' | 'text/plain' | 'application/json'; text: string}>;
+  dependencies: {package_digest: string}[];
+}
+export type ProtocolSelection = {workspace_id: string} & ({instance_id: string; package_digest?: never} | {package_digest: string; instance_id?: never});
+export declare function inspectProtocolBundle(bundle: ProtocolBundle): {package_digest: string; protocol_digest: string; bundle_header: ProtocolBundleHeader; submitted: false};
+export declare function protocols(kernel: KernelSession): {
+  inspect(selection: ProtocolSelection & {include_resources?: boolean}, options?: {signal?: AbortSignal}): Promise<StructureIntentOutcome>;
+  role(selection: {workspace_id: string; instance_id: string; role: string}, options?: {signal?: AbortSignal}): Promise<StructureIntentOutcome>;
+  register(selection: {workspace_id: string; bundle: ProtocolBundle; idempotency_key: string}, options?: {signal?: AbortSignal}): Promise<StructureIntentOutcome>;
+  adopt(selection: {workspace_id: string; idempotency_key: string; bootstrap_grant?: Record<string, unknown>} & ({bundle: ProtocolBundle; package_digest?: never} | {package_digest: string; bundle?: never}), options?: {signal?: AbortSignal}): Promise<StructureIntentOutcome>;
+  resume(commandId: string, options?: {signal?: AbortSignal}): Promise<StructureIntentOutcome>;
+};
+
+export interface ProtocolBundleHeader extends Omit<ProtocolBundle, 'resources'> {
+  protocol_digest: string;
+  resources: Record<string, {sha256: string; bytes: number; media_type: string}>;
 }

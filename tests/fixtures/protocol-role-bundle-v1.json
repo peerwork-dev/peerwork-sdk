@@ -1,0 +1,164 @@
+{
+  "bundle": {
+    "format": "peerwork.protocol-bundle.v1",
+    "metadata": {
+      "package_id": "test-cooperation",
+      "version": "1.0.0",
+      "description": "Protocol bundle test",
+      "license": "Apache-2.0",
+      "credits": []
+    },
+    "manifest": {
+      "name": "bounded-structured-claim",
+      "display_version": "1",
+      "semantics": "peerwork.kernel.v1",
+      "dependencies": [],
+      "protocol_roles": [
+        "WORKER"
+      ],
+      "capabilities": [],
+      "role_conflicts": [],
+      "historical_role_conflicts": [],
+      "constraints": {},
+      "record_schemas": {
+        "claim": {
+          "type": "object",
+          "fields": {
+            "status": "string"
+          },
+          "required": [
+            "status"
+          ],
+          "max_bytes": 256
+        }
+      },
+      "initial_state": {
+        "holder": null,
+        "expires_at": 0
+      },
+      "actions": [
+        {
+          "id": "claim",
+          "reads": [
+            [
+              "holder"
+            ],
+            [
+              "expires_at"
+            ]
+          ],
+          "writes": [
+            [
+              "holder"
+            ],
+            [
+              "expires_at"
+            ]
+          ],
+          "revisionEffects": {
+            "control": true,
+            "contentEntities": []
+          },
+          "variants": [
+            {
+              "when": [
+                {
+                  "op": "eq",
+                  "left": {
+                    "from": "state",
+                    "path": [
+                      "holder"
+                    ]
+                  },
+                  "right": {
+                    "from": "literal",
+                    "value": null
+                  }
+                }
+              ],
+              "effects": [
+                {
+                  "op": "set",
+                  "path": [
+                    "holder"
+                  ],
+                  "value": {
+                    "from": "auth",
+                    "field": "actorId"
+                  }
+                },
+                {
+                  "op": "set",
+                  "path": [
+                    "expires_at"
+                  ],
+                  "value": {
+                    "from": "time_add",
+                    "timestamp": {
+                      "from": "time"
+                    },
+                    "milliseconds": {
+                      "from": "body",
+                      "path": [
+                        "ttl_ms"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "op": "append",
+                  "schema": "claim",
+                  "selectHead": false,
+                  "value": {
+                    "from": "literal",
+                    "value": {
+                      "status": "claimed"
+                    }
+                  },
+                  "relations": []
+                }
+              ]
+            }
+          ],
+          "inputs": {
+            "fields": {
+              "ttl_ms": {
+                "type": "integer",
+                "minimum": 10,
+                "maximum": 1000
+              }
+            },
+            "required": [
+              "ttl_ms"
+            ],
+            "additionalProperties": false
+          }
+        }
+      ]
+    },
+    "roles": {
+      "WORKER": {
+        "instructions": "roles/worker.md",
+        "tools": [
+          {
+            "name": "claim_work",
+            "action": "claim"
+          }
+        ],
+        "context": [
+          "goal",
+          "updates"
+        ]
+      }
+    },
+    "resources": {
+      "roles/worker.md": {
+        "media_type": "text/markdown",
+        "text": "Claim useful work, share findings, and validate your result."
+      }
+    },
+    "dependencies": []
+  },
+  "package_digest": "37bf7ac2ad66ead10a438cdb4aa307b844bf4ab09ceff5b2c6e8dcf506273099",
+  "protocol_digest": "48476ebcd457627b8dc21b72213cc79879625a2738f87a144a03eaf3a1a78f6c"
+}

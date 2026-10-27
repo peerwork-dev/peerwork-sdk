@@ -57,12 +57,25 @@ fn identity_cli_path(value: &str) -> Result<PathBuf, String> {
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().is_some_and(|noun| !["identity","kernel","context","protocol","conversion","legacy-migrate","url","changelog","publication","config","version","capabilities","--help","-h"].contains(&noun.as_str()))
+    if args.first().is_some_and(|noun| !["identity","kernel","context","bundle","protocol","conversion","legacy-migrate","url","changelog","publication","config","version","capabilities","--help","-h"].contains(&noun.as_str()))
         ||args.first().is_some_and(|noun|noun=="publication")&&args.get(1).map(String::as_str)!=Some("read")
         ||args.get(1).is_some_and(|verb|args.first().is_some_and(|noun|noun=="identity")&&verb=="import-legacy-owner-pem") {
         println!("{}",peerwork_runtime::runtime_contract::retired_json());return ExitCode::FAILURE;
     }
     match args.as_slice() {
+        [noun, verb, path] if noun == "bundle" && verb == "inspect" => {
+            let result = (|| -> Result<serde_json::Value, ()> {
+                let mut bytes = Vec::new();
+                fs::File::open(path).map_err(|_| ())?.take(114689).read_to_end(&mut bytes).map_err(|_| ())?;
+                if bytes.len() > 114688 { return Err(()); }
+                let input = peerwork_core::strict_json::parse_strict_json(&bytes).map_err(|_| ())?;
+                peerwork_core::protocol_bundle::inspect(&input).map_err(|_| ())
+            })();
+            match result {
+                Ok(value) => { println!("{}", serde_json::json!({"ok":true,"value":value})); ExitCode::SUCCESS },
+                Err(()) => { println!("{}", serde_json::json!({"ok":false,"code":"PROTOCOL_BUNDLE_INVALID"})); ExitCode::FAILURE },
+            }
+        },
         [noun,help] if noun=="legacy-migrate"&&["--help","-h"].contains(&help.as_str())=>{
             println!("{}",serde_json::json!({"schema":"peerwork.legacy-migration-help.v1","availability":"EXPLICIT_OWNER_OFFLINE_TOOL","usage":"peerwork legacy-migrate request-source|capture-source|capture-cache REQUEST_JSON_FILE","source":"Owner signs recipient/service/snapshot binding; operator exports encrypted rows from frozen archive without old HTTP runtime; Owner verifies once and seals a local capsule.","mapping":"peerwork conversion plan-cache and prepare-cache accept capsule_path; read_only_snapshot:true selects an inert historical representation.","limits":"One-off operator-assisted migration. PLAIN_PUBLIC and unfinished old derived indexes require READ_ONLY_SNAPSHOT. Unclassified withdrawals are rejected. Old business workflows, grants, member keys and PUBLIC publication are not automatically restored.","recovery":"Keep the capsule, exact signed checkpoint and local generated body-key cache. Plan/prepare reuse the capsule without replaying old history. Operator resumes the same file by committed byte offset.","documentation":"docs/legacy-space-migration-candidate.md"}));ExitCode::SUCCESS
         },
@@ -525,7 +538,7 @@ fn main() -> ExitCode {
             cli_result(public_catalog_command(verb, rest))
         }
         _ => {
-            let usage = "peerwork identity create|info FILE; kernel intent|migrate-archive|resume-intent ORIGIN JOURNAL IDENTITY SELECTION_FILE_OR_OPERATION_ID [--authority=PIN] [--allow-loopback-http]; kernel access-request|access-approve|content-keys|publish-record ORIGIN JOURNAL IDENTITY FILE; conversion plan-cache|prepare-cache FILE; legacy-migrate request-source|capture-source|capture-cache FILE; protocol --help; url workspace|instance|record; changelog source|read; publication read --source FILE. Current online contract: backend-structure-v1. Legacy online modes are retired.";
+            let usage = "peerwork identity create|info FILE; bundle inspect BUNDLE_JSON; kernel protocol-inspect|protocol-role|protocol-register|protocol-adopt ORIGIN JOURNAL IDENTITY SELECTION_JSON; kernel intent|migrate-archive|resume-intent ORIGIN JOURNAL IDENTITY SELECTION_FILE_OR_OPERATION_ID [--authority=PIN] [--allow-loopback-http]; kernel access-request|access-approve|content-keys|publish-record ORIGIN JOURNAL IDENTITY FILE; conversion plan-cache|prepare-cache FILE; legacy-migrate request-source|capture-source|capture-cache FILE; protocol --help; url workspace|instance|record; changelog source|read; publication read --source FILE. Current online contract: backend-structure-v1. Legacy online modes are retired.";
             if matches!(args.as_slice(), [command] if command == "--help" || command == "-h" || command == "help") {
                 println!("{}", serde_json::json!({"status":"HELP", "usage":usage}));
                 ExitCode::SUCCESS
@@ -1809,6 +1822,9 @@ fn accepted_json(result: KernelAcceptedResult) -> serde_json::Value {
 }
 
 fn kernel_command(verb: &str, args: &[String]) -> Result<serde_json::Value, peerwork_runtime::kernel_access::KernelPublicError> {
+    if matches!(verb, "protocol-inspect" | "protocol-role" | "protocol-register" | "protocol-adopt") {
+        return protocol_kernel_command(verb, args);
+    }
     if !["open","prepare","status","submit","intent","migrate-archive","resume-intent","pending","pending-page","build-pending-index","local-content-key","access-request","access-approve","publish-record","rotate-content-key","coordinate-content-keys","content-keys"].contains(&verb){
         return Err(peerwork_runtime::kernel_access::KernelPublicError{code:peerwork_runtime::runtime_contract::RETIRED_CODE,message:peerwork_runtime::runtime_contract::RETIRED_MESSAGE,details:None});
     }
@@ -2276,4 +2292,42 @@ fn owner_member_scopes_cli(operation: &str, request_path: &str) -> ExitCode {
         &request["config"].to_string(),operation,&request["input"].to_string(),&cancel);
     let ok=serde_json::from_str::<serde_json::Value>(&result).is_ok_and(|v|v["ok"]==true);
     println!("{result}");if ok{ExitCode::SUCCESS}else{ExitCode::FAILURE}
+}
+
+// Thin CLI selection adapter. All signing/submission/recovery stays in the SDK.
+fn protocol_kernel_command(verb: &str, args: &[String]) -> Result<serde_json::Value, peerwork_runtime::kernel_access::KernelPublicError> {
+    let (mut args, transport) = transport_arguments(args).map_err(|_| "invalid transport")?;
+    let mut authority = None;
+    let mut allow_loopback_http = false;
+    args.retain(|arg| {
+        if arg == "--allow-loopback-http" { allow_loopback_http = true; false }
+        else if let Some(pin) = arg.strip_prefix("--authority=") { authority = Some(pin.to_owned()); false }
+        else { true }
+    });
+    if args.len() != 4 { return Err("protocol operation requires ORIGIN JOURNAL IDENTITY SELECTION_FILE".into()); }
+    let mut bytes = Vec::new();
+    fs::File::open(&args[3]).map_err(|_| "selection cannot be read")?.take(170001).read_to_end(&mut bytes).map_err(|_| "selection cannot be read")?;
+    if bytes.len() > 170000 { return Err("selection exceeds limit".into()); }
+    let mut selection = peerwork_core::strict_json::parse_strict_json(&bytes).map_err(|_| "invalid selection")?;
+    let object = selection.as_object_mut().ok_or("invalid selection")?;
+    let workspace = object.remove("workspace_id").ok_or("workspace_id is required")?;
+    let key = object.remove("idempotency_key");
+    let action = match verb {
+        "protocol-inspect" => { object.insert("view".into(), serde_json::json!("inspect")); object.entry("include_resources").or_insert(serde_json::json!(true)); "structure.protocol.resolve" },
+        "protocol-role" => { object.insert("view".into(), serde_json::json!("runtime")); object.insert("include_resources".into(), serde_json::json!(true)); "structure.protocol.resolve" },
+        "protocol-register" => "structure.protocol.register",
+        _ => "structure.adopt",
+    };
+    if let Some(bundle) = object.get("bundle") { peerwork_core::protocol_bundle::inspect(bundle).map_err(|_| "invalid protocol bundle")?; }
+    let mut intent = serde_json::json!({"action":action,"workspace_id":workspace,"body":selection});
+    if let Some(key) = key { intent["idempotency_key"] = key; }
+    let access = KernelAccess::new(&args[0], &args[1], &args[2], &["protocol-role-bundles-v1".into()], allow_loopback_http).with_authority(authority).with_transport_options(transport);
+    let cancel = peerwork_runtime::KernelCancellationToken::new();
+    let _interrupts = InterruptMonitor::start(cancel.clone()).map_err(|_| "unable to install interrupt handler")?;
+    let result = access.execute_structure_intent_with_cancel(&serde_json::to_vec(&intent).map_err(|_| "invalid intent")?, &cancel).map_err(peerwork_runtime::kernel_access::KernelPublicError::from)?;
+    match result {
+        peerwork_runtime::kernel_client::StructureIntentOutcome::Accepted(result) => Ok(serde_json::json!({"state":result.outcome_state(),"result":accepted_json(result)})),
+        peerwork_runtime::kernel_client::StructureIntentOutcome::Completed{command_id,result} => Ok(serde_json::json!({"state":"COMPLETED","command_id":command_id,"result":accepted_json(result)})),
+        peerwork_runtime::kernel_client::StructureIntentOutcome::Pending{command_id,code,phase,retryable,recovery} => Ok(serde_json::json!({"state":"PENDING","command_id":command_id,"code":code,"phase":phase,"retryable":retryable,"recovery":recovery,"effect_certainty":if phase=="PREPARATION"{"NOT_SUBMITTED"}else{"UNKNOWN"}})),
+    }
 }

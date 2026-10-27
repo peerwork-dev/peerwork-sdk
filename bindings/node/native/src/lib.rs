@@ -988,3 +988,9 @@ pub fn owner_member_scopes_json(
         cancel: cancel_handle.map(|h| h.token.clone()).unwrap_or_default(),
     })
 }
+
+#[napi]
+pub fn protocol_bundle_inspect_json(input_json:String)->String{
+ let result=peerwork_core::strict_json::parse_strict_json(input_json.as_bytes()).ok().and_then(|v|peerwork_core::protocol_bundle::inspect(&v).ok());
+ match result{Some(value)=>serde_json::json!({"ok":true,"value":value}),None=>serde_json::json!({"ok":false,"code":"PROTOCOL_BUNDLE_INVALID","message":"invalid or oversized protocol bundle"})}.to_string()
+}

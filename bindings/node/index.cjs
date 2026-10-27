@@ -1650,3 +1650,41 @@ class PublicationReader {
   get(recordId,options={}) {return this._read('ENTRY',{...options,recordId});}
 }
 exports.PublicationReader=PublicationReader;
+
+/** Inspect an immutable protocol bundle offline. This checks its contract and
+ * authored hashes; use the actual Backend compiler to validate business rules. */
+exports.inspectProtocolBundle = bundle => {
+  const response = JSON.parse(binding.protocolBundleInspectJson(strictCommandJson(bundle)));
+  if (response.ok !== true) throw Object.assign(new Error(response.message), {code: response.code});
+  return response.value;
+};
+/** Protocol reads retain the SDK outcome envelope, including PENDING recovery.
+ * Full inspection and selected role instructions each need one signed read. */
+exports.protocols = kernel => Object.freeze({
+  inspect: (selection, options = {}) => kernel.executeStructureIntent({
+    action: 'structure.protocol.resolve', workspace_id: selection.workspace_id,
+    body: {...selectionBody(selection), view: 'inspect', include_resources: selection.include_resources ?? true},
+  }, options),
+  role: (selection, options = {}) => kernel.executeStructureIntent({
+    action: 'structure.protocol.resolve', workspace_id: selection.workspace_id,
+    body: {instance_id: selection.instance_id, view: 'runtime', role: selection.role, include_resources: true},
+  }, options),
+  register: (selection, options = {}) => {
+    exports.inspectProtocolBundle(selection.bundle);
+    return kernel.executeStructureIntent({action: 'structure.protocol.register', workspace_id: selection.workspace_id,
+      idempotency_key: selection.idempotency_key, body: {bundle: selection.bundle}}, options);
+  },
+  adopt: (selection, options = {}) => {
+    if ((selection.bundle === undefined) === (selection.package_digest === undefined)) throw new TypeError('Select exactly one bundle or package_digest');
+    if (selection.bundle !== undefined) exports.inspectProtocolBundle(selection.bundle);
+    return kernel.executeStructureIntent({action: 'structure.adopt', workspace_id: selection.workspace_id,
+      idempotency_key: selection.idempotency_key,
+      body: {...(selection.bundle === undefined ? {package_digest: selection.package_digest} : {bundle: selection.bundle}),
+        ...(selection.bootstrap_grant === undefined ? {} : {bootstrap_grant: selection.bootstrap_grant})}}, options);
+  },
+  resume: (commandId, options = {}) => kernel.resumeStructureIntent(commandId, options),
+});
+function selectionBody(selection) {
+  if (Boolean(selection.instance_id) === Boolean(selection.package_digest)) throw new TypeError('Select exactly one instance_id or package_digest');
+  return selection.instance_id ? {instance_id: selection.instance_id} : {package_digest: selection.package_digest};
+}

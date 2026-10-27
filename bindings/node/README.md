@@ -47,3 +47,7 @@ and whole-workspace deletion use native waiting/recovery and backend cleanup.
 Legacy `Secure*` online execution is retired. See the
 [current integration guide](https://github.com/peerwork-dev/peerwork-sdk/blob/main/README.md)
 and [one-off Owner migration](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/legacy-space-migration-candidate.md).
+
+Candidate API: [immutable protocol and role access](../../docs/protocol-role-bundles.md)
+(`inspectProtocolBundle`, `protocols`). Requires a matching unreleased native
+build and the advertised `protocol-role-bundles-v1` service feature.

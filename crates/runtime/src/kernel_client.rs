@@ -343,6 +343,9 @@ impl KernelAcceptedResult {
             }
             _ => None,
         };
+        if structured && (action.starts_with("structure.protocol.") || action=="structure.adopt" && (body.get("bundle").is_some() || body.get("package_digest").is_some())) {
+            peerwork_core::protocol_bundle::verify_result(&result,&command,prepared.audience_utf16()).map_err(|_|KernelClientError::InvalidResult)?;
+        }
         let structure_result_json = if structured {
             require_equal(&required_text(&result, "profile")?, peerwork_core::structure_execution::PROFILE)?;
             require_equal(&required_text(&result, "assurance")?, "BACKEND_CURRENT_STATE")?;

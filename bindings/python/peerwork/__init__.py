@@ -95,6 +95,7 @@ from ._peerwork_native import (
 class CapabilityManifest(TypedDict):
     backend_structure_execution: bool
     backend_current_state_reads: bool
+    protocol_role_bundles: bool
     backend_durable_recovery: bool
     legacy_online_modes: Literal['RETIRED']
     protocol_offline_simulation: bool
@@ -4462,3 +4463,52 @@ class PublicationReader:
         return await _run_cancelled_async(self._read, "ENTRY", record_id=record_id, **options)
 
 __all__ += ["PublicationReader", "publication_body"]
+
+
+def inspect_protocol_bundle(bundle: dict) -> dict:
+    """Offline contract/hash inspection; does not execute business rules."""
+    from . import _peerwork_native
+    value = json.loads(_peerwork_native.protocol_bundle_inspect_json(
+        json.dumps(bundle, ensure_ascii=True, allow_nan=False, separators=(",", ":"))))
+    if value.get("ok") is not True:
+        raise KernelError(value["code"], value["message"])
+    return value["value"]
+
+
+class ProtocolClient:
+    """Immutable protocol inspection and adoption; preserve PENDING envelopes."""
+
+    def __init__(self, kernel: KernelClient):
+        self.kernel = kernel
+
+    def inspect(self, workspace_id: str, *, package_digest: str | None = None,
+                instance_id: str | None = None, include_resources: bool = True) -> StructureIntentOutcome:
+        if bool(package_digest) == bool(instance_id):
+            raise ValueError("Select exactly one instance_id or package_digest")
+        body = {"instance_id": instance_id} if instance_id else {"package_digest": package_digest}
+        return self.kernel.execute_structure_intent({"action": "structure.protocol.resolve", "workspace_id": workspace_id,
+            "body": {**body, "view": "inspect", "include_resources": include_resources}})
+
+    def role(self, workspace_id: str, instance_id: str, role: str) -> StructureIntentOutcome:
+        return self.kernel.execute_structure_intent({"action": "structure.protocol.resolve", "workspace_id": workspace_id,
+            "body": {"instance_id": instance_id, "view": "runtime", "role": role, "include_resources": True}})
+
+    def register(self, workspace_id: str, bundle: dict, *, idempotency_key: str) -> StructureIntentOutcome:
+        inspect_protocol_bundle(bundle)
+        return self.kernel.execute_structure_intent({"action": "structure.protocol.register", "workspace_id": workspace_id,
+            "idempotency_key": idempotency_key, "body": {"bundle": bundle}})
+
+    def adopt(self, workspace_id: str, *, idempotency_key: str, bundle: dict | None = None,
+              package_digest: str | None = None, bootstrap_grant: dict | None = None) -> StructureIntentOutcome:
+        if (bundle is None) == (package_digest is None):
+            raise ValueError("Select exactly one bundle or package_digest")
+        if bundle is not None:
+            inspect_protocol_bundle(bundle)
+        body = {"bundle": bundle} if bundle is not None else {"package_digest": package_digest}
+        if bootstrap_grant is not None:
+            body["bootstrap_grant"] = bootstrap_grant
+        return self.kernel.execute_structure_intent({"action": "structure.adopt", "workspace_id": workspace_id,
+            "idempotency_key": idempotency_key, "body": body})
+
+    def resume(self, command_id: str) -> StructureIntentOutcome:
+        return self.kernel.resume_structure_intent(command_id)

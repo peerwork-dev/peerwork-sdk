@@ -2,6 +2,7 @@
 //! until journal replay, authority checks, and durable operation recovery are ported.
 
 pub mod bootstrap_objects;
+pub mod protocol_bundle;
 pub mod member_scopes;
 pub mod canonical;
 pub mod crypto;
@@ -87,6 +88,7 @@ pub fn version() -> &'static str {
 pub struct CapabilityManifest {
     pub backend_structure_execution: bool,
     pub backend_current_state_reads: bool,
+    pub protocol_role_bundles: bool,
     pub backend_durable_recovery: bool,
     pub owner_self_service_archive_migration: bool,
     pub legacy_online_modes: &'static str,
@@ -121,6 +123,7 @@ pub fn capability_manifest() -> CapabilityManifest {
     CapabilityManifest {
         backend_structure_execution: true,
         backend_current_state_reads: true,
+        protocol_role_bundles: true,
         backend_durable_recovery: true,
         owner_self_service_archive_migration: true,
         legacy_online_modes: "RETIRED",

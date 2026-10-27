@@ -521,6 +521,7 @@ fn owner_member_scopes_json(
 
 #[pymodule]
 fn _peerwork_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_function(wrap_pyfunction!(protocol_bundle_inspect_json, module)?)?;
     module.add_function(wrap_pyfunction!(protocol_workbench_json, module)?)?;
     module.add_function(wrap_pyfunction!(owner_guard_time_json, module)?)?;
     module.add_function(wrap_pyfunction!(owner_member_scopes_json, module)?)?;
@@ -566,4 +567,10 @@ fn protocol_workbench_json(py:Python<'_>,operation:String,input_json:String,
     cancel_handle:Option<PyRef<'_,KernelCancelHandle>>)->String {
     let cancel=cancel_handle.map(|h|h.token.clone()).unwrap_or_default();
     py.allow_threads(move||peerwork_runtime::protocol_workbench::workbench_json(&operation,&input_json,&cancel))
+}
+
+#[pyfunction]
+fn protocol_bundle_inspect_json(input_json:String)->String{
+ let result=peerwork_core::strict_json::parse_strict_json(input_json.as_bytes()).ok().and_then(|v|peerwork_core::protocol_bundle::inspect(&v).ok());
+ match result{Some(value)=>serde_json::json!({"ok":true,"value":value}),None=>serde_json::json!({"ok":false,"code":"PROTOCOL_BUNDLE_INVALID","message":"invalid or oversized protocol bundle"})}.to_string()
 }
