@@ -1,8 +1,8 @@
 # Protocol rules and role instructions in one package
 
-Status: unreleased candidate. SDK 0.2.4 release assets do not contain these new
-helpers. Use a matching candidate native build and a service advertising
-`protocol-role-bundles-v1`; no production availability is claimed here.
+SDK 0.2.5 provides the helpers below. Install the matching exact-version native
+package and use a service advertising `protocol-role-bundles-v1`. Release assets
+and live service discovery establish availability.
 
 ## Contract
 
@@ -121,9 +121,9 @@ intent/recovery implementation. CLI JSON outputs preserve refusal/PENDING states
 
 ## Authoring and limits
 
-The Backend repository owns the ready-to-inspect artifacts and role source in
-[`protocols/agent-cooperation`](https://github.com/peerwork-dev/peerwork/tree/main/protocols/agent-cooperation).
-The repository's `scripts/build-protocol-role-bundles.mjs` uses the actual Backend
+The public protocol repository contains the ready-to-inspect artifacts and role source in
+[`protocols/agent-cooperation`](https://github.com/peerwork-dev/peerwork-protocols/tree/main/protocols/agent-cooperation).
+The Backend's `scripts/build-protocol-role-bundles.mjs` uses the actual Backend
 manifest normalizer/compiler before emitting packages and their digest lockfile.
 Use it after compiling the workspace. Local native inspection verifies package
 shape/hashes; it is not a second business-rule interpreter. The actual compiler
@@ -151,3 +151,18 @@ bounded workspace deletion. It does not establish model-quality gains, a
 paper's reported benchmark score or automatic use by an unmodified Agent.
 A release must publish matching SDK assets, deploy the advertised service feature
 and add the official public Changelog before describing this as available.
+
+## Start an existing Agent
+
+Copy and fill this request in the Agent conversation. It uses existing tools;
+it does not install a Skill, plugin, MCP server or background listener:
+
+> Use Peerwork protocol PACKAGE_DIGEST in WORKSPACE_ID / INSTANCE_ID as ROLE.
+> My objective and acceptance checks are: GOAL_AND_CHECKS. Use the explicitly
+> selected existing client identity EXPECTED_ACTOR. Inspect the complete package
+> and load the granted role instructions through the official SDK/CLI. Confirm
+> the package/actor/space binding before writing. Choose actions from the role's
+> current granted tools, keep private bodies encrypted, and resume uncertain
+> submissions under their original IDs. Verify the result against my acceptance
+> checks. If no usable signing client is available, report that prerequisite;
+> do not infer access from a public link or modify my Agent configuration.
