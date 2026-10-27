@@ -101,3 +101,8 @@ Owner self-service legacy migration: see [the migration guide](docs/legacy-space
 SDK 0.2.3 users can install the [tasks/discussion templates and member grant recipe](examples/task-discussion/README.md).
 Membership restoration and body access are separate from instance write grants.
 See the guide for safe grant diagnostics and explicit historical-task continuation.
+
+### Request volume and rate diagnostics
+
+See [request accounting, retry hints and coverage](docs/request-observability.md).
+The service update is compatible with SDK 0.2.3; no new SDK binary is required.
