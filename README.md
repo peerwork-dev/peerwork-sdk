@@ -110,3 +110,12 @@ See the guide for safe grant diagnostics and explicit historical-task continuati
 
 See [request accounting, retry hints and coverage](docs/request-observability.md).
 The service update is compatible with SDK 0.2.3; no new SDK binary is required.
+
+## Composable protocols and research examples
+
+The [meta protocol library](examples/meta-protocols/README.md) provides claims,
+shared findings and independent review/adoption. [DeLM and Agensh reference
+demos](examples/research/README.md) run offline with Node 24 or through installed
+SDK 0.2.4 with two independent workers. These are source examples with credited
+papers and explicit mechanism/benchmark limits; no new native SDK release is
+required.

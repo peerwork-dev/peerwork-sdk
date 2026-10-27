@@ -10,3 +10,6 @@
 **/*.node
 /dist/
 /bindings/node/platform-*/index.node
+
+# Private research identities, journals and body artifacts
+.research-runs/

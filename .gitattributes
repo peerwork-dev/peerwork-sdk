@@ -1,0 +1,2 @@
+# Preserve whitespace inside generated dependency template literals verbatim.
+examples/research/vendor/backend-evaluator.mjs -whitespace

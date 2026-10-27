@@ -8,6 +8,8 @@ on:
       - 'Cargo.lock'
       - 'crates/**'
       - 'bindings/**'
+      - 'examples/meta-protocols/**'
+      - 'examples/research/**'
       - 'conformance/**'
       - 'third_party/**'
       - 'tests/**'
@@ -20,6 +22,8 @@ on:
       - 'Cargo.lock'
       - 'crates/**'
       - 'bindings/**'
+      - 'examples/meta-protocols/**'
+      - 'examples/research/**'
       - 'conformance/**'
       - 'third_party/**'
       - 'tests/**'
@@ -67,5 +71,10 @@ jobs:
           python tests/release-workflows.py
           python -m compileall -q bindings/python/peerwork
           node --check bindings/node/index.cjs
+      - name: Test composable protocols and durable example host
+        run: |
+          node --test --test-isolation=none tests/research/protocols.test.mjs tests/research/host.test.mjs
+          node examples/research/delm/run.mjs --offline
+          node examples/research/agensh/run.mjs --offline
       - name: Test shared core, runtime and native bindings
         run: cargo test --workspace --locked
