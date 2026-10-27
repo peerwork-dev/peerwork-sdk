@@ -10,7 +10,16 @@ const config = JSON.parse(readFileSync(process.argv[2], "utf8"));
 for (const recipe of ["delm", "agensh"]) {
   const directory = join(config.directory, recipe);
   mkdirSync(directory, { mode: 0o700 });
-  const binding = await setup(config, directory);
+  // Exercise both an existing Owner/workspace and the documented fresh default.
+  const recipeConfig =
+    recipe === "agensh"
+      ? {
+          origin: config.origin,
+          allowLoopbackHttp: true,
+          timeoutMs: config.timeoutMs,
+        }
+      : config;
+  const binding = await setup(recipeConfig, directory);
   const result = await runLive(recipe, binding.bindingPath);
   assert.equal(result.total, 17);
   assert.equal(result.independent_processes, true);
