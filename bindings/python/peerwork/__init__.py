@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import warnings
 from dataclasses import dataclass
 from collections.abc import Mapping
 from pathlib import Path
@@ -215,6 +216,7 @@ class KeyHistoryReadiness(TypedDict):
     code: str | None
 
 class AcceptedResult(TypedDict):
+    warnings: NotRequired[list[dict[str, JSONValue]]]
     key_history: NotRequired[KeyHistoryReadiness]
     browser_approval_reference: NotRequired[str]
     opened_contents: NotRequired[list[OpenedStructureBody]]
@@ -509,6 +511,7 @@ class KernelClient:
         self.allow_loopback_http = allow_loopback_http
         self.authority = authority
         self.transport = transport
+        self._storage_warnings: dict[str, str] = {}
 
     def _call(self, operation: str, *, command: dict | None = None,
               command_id: str | None = None,
@@ -537,6 +540,19 @@ class KernelClient:
             for accepted in (value, value.get("result")):
                 if isinstance(accepted, dict) and isinstance(accepted.get("structure_result_json"), str):
                     accepted["structure"] = json.loads(accepted.pop("structure_result_json"))
+                    if "warnings" in accepted["structure"]:
+                        accepted["warnings"] = accepted["structure"]["warnings"]
+                    quota, workspace = accepted["structure"].get("capacity"), accepted.get("workspace_id")
+                    if isinstance(quota, dict) and workspace and quota.get("status") in ("OK", "WARNING", "CRITICAL") and isinstance(quota.get("percent_used"), int) and isinstance(quota.get("remaining_write_bytes"), int):
+                        previous = self._storage_warnings.get(workspace)
+                        if quota["status"] != "OK" and previous != quota["status"]:
+                            try:
+                                warnings.warn(f"WORKSPACE_STORAGE_NEAR_LIMIT: workspace {workspace}, {quota['percent_used']}% used; {quota['remaining_write_bytes']} bytes available for ordinary writes.", RuntimeWarning, stacklevel=2)
+                            except RuntimeWarning:
+                                pass  # Warning-as-error must not hide an already verified outcome.
+                        if len(self._storage_warnings) >= 64 and workspace not in self._storage_warnings:
+                            self._storage_warnings.pop(next(iter(self._storage_warnings)))
+                        self._storage_warnings[workspace] = quota["status"]
         return value
 
     async def _call_async(self, operation: str, *, command: dict | None = None,

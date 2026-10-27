@@ -1799,7 +1799,12 @@ fn accepted_json(result: KernelAcceptedResult) -> serde_json::Value {
     if let Some(reference)=browser_reference{value.as_object_mut().unwrap().insert("browser_approval_reference".into(),serde_json::json!(reference));}
     if let Some(history)=result.key_history {value.as_object_mut().unwrap().insert("key_history".into(),serde_json::json!(history));}
     if let Some(contents)=result.opened_contents {value.as_object_mut().unwrap().insert("opened_contents".into(),serde_json::json!(contents));}
-    if let Some(structure)=result.structure_result_json {value.as_object_mut().unwrap().insert("structure".into(),serde_json::from_str(&structure).expect("verified structure result JSON"));}
+    if let Some(structure)=result.structure_result_json {
+        let structure:serde_json::Value=serde_json::from_str(&structure).expect("verified structure result JSON");
+        if let Some(warnings)=structure.get("warnings"){value.as_object_mut().unwrap().insert("warnings".into(),warnings.clone());}
+        if let Some(capacity)=structure.get("capacity"){if capacity["status"]=="WARNING"||capacity["status"]=="CRITICAL"{eprintln!("WORKSPACE_STORAGE_NEAR_LIMIT: {}% used; {} bytes available for ordinary writes.",capacity["percent_used"],capacity["remaining_write_bytes"]);}}
+        value.as_object_mut().unwrap().insert("structure".into(),structure);
+    }
     value
 }
 

@@ -191,6 +191,7 @@ exports.KernelError = KernelError;
 exports.openKernel = async options => {
   const { origin, journalPath, identityPath, requiredFeatures = [], allowLoopbackHttp = false, authority, signal, transport } = options;
   const transportJson = transport === undefined ? undefined : strictCommandJson(transportJsonValue(transport));
+  const storageWarnings = new Map();
   const call = async (operation, commandJson, commandId, uploadChunk, abortSignal,
                       migrationSource, migrationBackup, trustedSignerKeyIds) => {
     const handle = new binding.KernelCancelHandle();
@@ -210,6 +211,16 @@ exports.openKernel = async options => {
         if (accepted && typeof accepted.structure_result_json === 'string') {
           accepted.structure = JSON.parse(accepted.structure_result_json);
           delete accepted.structure_result_json;
+          if (Array.isArray(accepted.structure.warnings)) accepted.warnings = accepted.structure.warnings;
+          const quota = accepted.structure.capacity, workspace = accepted.workspace_id;
+          if (quota && workspace && ['OK','WARNING','CRITICAL'].includes(quota.status) && Number.isSafeInteger(quota.percent_used) && Number.isSafeInteger(quota.remaining_write_bytes)) {
+            const previous = storageWarnings.get(workspace);
+            if (quota.status !== 'OK' && previous !== quota.status) process.emitWarning(
+              `Workspace ${workspace} storage ${quota.status}: ${quota.percent_used}% used; ${quota.remaining_write_bytes} bytes available for ordinary writes.`,
+              {code:'WORKSPACE_STORAGE_NEAR_LIMIT'});
+            if (storageWarnings.size >= 64 && !storageWarnings.has(workspace)) storageWarnings.delete(storageWarnings.keys().next().value);
+            storageWarnings.set(workspace, quota.status);
+          }
         }
       }
       return value;

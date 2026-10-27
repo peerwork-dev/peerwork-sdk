@@ -1167,6 +1167,7 @@ fn map_kernel(error: KernelClientError) -> RecipientEnrollmentError {
             TransportError::Network | TransportError::Timeout | TransportError::SubmittedUncertain =>
                 RecipientEnrollmentError::Transport,
         },
+        KernelClientError::ServerResource(_) => RecipientEnrollmentError::ServerRejected(429),
         KernelClientError::ServerRejected(status) => {
             RecipientEnrollmentError::ServerRejected(status)
         }

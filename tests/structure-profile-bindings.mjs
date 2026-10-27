@@ -57,6 +57,17 @@ test('Node local pending APIs preserve pagination and explicit maintenance throu
  const progress=await kernel.buildPendingIndex();assert.equal(progress.complete,false);assert.equal(progress.scanned_rows,2048);
  assert.equal((await kernel.ensureLocalContentKey('space')).key_id,'local-key');
  assert.deepEqual(calls.map(c=>c.operation),['open','pending_page','pending_page','build_pending_index','ensure_local_content_key']);
- assert.deepEqual(calls[1].request,{after:null,limit:32});assert.deepEqual(calls[2].request,{after:'pending',limit:1});
+ assert.deepEqual(calls[1].request,{after:null,preparations_after:null,limit:32});assert.deepEqual(calls[2].request,{after:'pending',preparations_after:null,limit:1});
  assert.deepEqual(calls[4].request,{workspace_id:'space'});
+});
+
+test('verified storage notices are surfaced once per level and reset after capacity recovery',async()=>{
+ let level='WARNING';const notices=[];
+ const binding={KernelCancelHandle:class{cancel(){}},kernelJson:async operation=>JSON.stringify(operation==='open'?{actor_id:'selected',key_id:'key'}:{state:'ACCEPTED',result:{workspace_id:'space',structure_result_json:JSON.stringify({capacity:{status:level,percent_used:level==='OK'?9:level==='CRITICAL'?96:81,remaining_write_bytes:100},...(level==='OK'?{}:{warnings:[{code:'WORKSPACE_STORAGE_NEAR_LIMIT',severity:level}]})})}})};
+ const realRequire=createRequire(import.meta.url),require=name=>name==='native-test'?binding:realRequire(name);require.resolve=()=> 'native-test';const exports={};
+ vm.runInNewContext(readFileSync(new URL('../bindings/node/index.cjs',import.meta.url),'utf8'),{exports,require,process:{platform:'linux',arch:'x64',report:{getReport:()=>({header:{glibcVersionRuntime:'2.36'}})},emitWarning:(message,options)=>notices.push({message,code:options.code})},Buffer});
+ const client=await exports.openKernel({origin:'https://example.invalid',journalPath:'/selected/journal',identityPath:'/selected/identity'});
+ const call=()=>client.executeStructureIntent(Object.assign(Object.create(null),{action:'structure.workspace.get',workspace_id:'space',body:Object.create(null)}));
+ const first=await call();assert.equal(first.result.warnings[0].code,'WORKSPACE_STORAGE_NEAR_LIMIT');await call();assert.equal(notices.length,1);
+ level='CRITICAL';await call();assert.equal(notices.length,2);level='OK';await call();assert.equal(notices.length,2);level='WARNING';await call();assert.equal(notices.length,3);
 });

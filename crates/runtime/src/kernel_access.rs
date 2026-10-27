@@ -61,6 +61,7 @@ impl From<KernelAccessError> for KernelPublicError {
         if let A::Client(C::HistoryDeliveryBlocked{job_id,workspace_id,code,retryable})=&error{return Self{code:"HISTORY_KEY_DELIVERY_BLOCKED",message:"the selected Owner key-history job needs attention; other job results remain saved",details:Some(serde_json::json!({"phase":"HISTORY_KEY_DELIVERY","job_id":job_id,"workspace_id":workspace_id,"server_code":code,"retryable":retryable,"effect_certainty":"UNKNOWN","recovery":"CONTINUE_OWNER_KEY_WORKER"}))};}
         if let A::Client(C::CryptoPrerequisitePending{command_id,workspace_id,code,retryable})=&error{return Self{code:"CRYPTO_PREREQUISITE_PENDING",message:"the original Owner crypto prerequisite requires reconciliation",details:Some(serde_json::json!({"phase":"KEY_HEAD_ROTATION","command_id":command_id,"workspace_id":workspace_id,"server_code":code,"effect_certainty":"UNKNOWN","retryable":retryable,"recovery":"RESUME_ORIGINAL_PREREQUISITE"}))};}
         if let A::Client(C::PrerequisitePending{command_id,workspace_id})=&error{return Self{code:"PREREQUISITE_PENDING",message:"body-key initialization needs reconciliation of its saved command",details:Some(serde_json::json!({"phase":"KEY_HEAD_INITIALIZATION","command_id":command_id,"workspace_id":workspace_id,"effect_certainty":"UNKNOWN","retryable":true,"recovery":"RESUME_ORIGINAL_PREREQUISITE"}))};}
+        if let A::Client(C::ServerResource(code))=&error{return Self{code:*code,message:"service reported resource pressure; preserve the original operation and recover after capacity is available",details:Some(serde_json::json!({"http_status":429,"server_code":code,"phase":"HTTP_REQUEST","diagnostic_trust":"UNVERIFIED_HTTP","effect_certainty":"UNKNOWN","retryable":false,"recovery":"RESUME_AFTER_CAPACITY_AVAILABLE"}))};}
         let details=if let A::Client(C::ServerRejected(status))=&error{Some(serde_json::json!({"http_status":status,"phase":"HTTP_REQUEST","effect_certainty":"UNKNOWN","retryable":*status>=500||*status==429,"recovery":"RECONCILE_ORIGINAL_INTENT"}))}else if matches!(&error,A::Client(C::InvalidDocumentTime)){Some(serde_json::json!({"phase":"VALIDATION","server_code":"DOCUMENT_TIME_INVALID","effect_certainty":"NOT_SUBMITTED","retryable":false,"recovery":"CORRECT_DOCUMENT_TIMES"}))}else{None};
         let (code, message) = match error {
             A::Client(C::ArchiveMigration(code)) => (code,"archive migration preparation failed"),
@@ -158,6 +159,7 @@ impl From<KernelAccessError> for KernelPublicError {
             ),
             A::Client(C::OperationRefused(_))=>unreachable!("handled above"),
             A::Client(C::IntentNotFound) => ("NOT_FOUND", "saved kernel command was not found"),
+            A::Client(C::ServerResource(_))=>unreachable!("handled above"),
             A::Client(C::ServerRejected(_)) => (
                 "SERVICE_REJECTED",
                 "kernel service rejected the saved command",

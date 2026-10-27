@@ -65,7 +65,10 @@ export interface KernelAccessOptions {
   signal?: AbortSignal;
 }
 export interface PendingIntent { command_id: string; intent_digest: string; created_at_ms: number }
+export interface StorageCapacity {limit_bytes:number;write_limit_bytes:number;used_bytes:number;remaining_write_bytes:number;limit_objects:number;write_limit_objects:number;used_objects:number;remaining_write_objects:number;percent_used:number;status:'OK'|'WARNING'|'CRITICAL';warning_percent:number;critical_percent:number;security_headroom_bytes:number;usage_basis:'COMMITTED_LOGICAL_ROWS'}
+export interface StorageWarning {code:'WORKSPACE_STORAGE_NEAR_LIMIT';severity:'WARNING'|'CRITICAL';workspace_id:string;used_bytes:number;write_limit_bytes:number;remaining_write_bytes:number;percent_used:number}
 export interface AcceptedResult {
+  warnings?:StorageWarning[];
   key_history?: {job_id: string; through_epoch: number; state: 'READY' | 'PENDING' | 'UNAVAILABLE'; code: string | null};
   browser_approval_reference?: string;
   opened_contents?: OpenedStructureBody[];
@@ -103,6 +106,8 @@ export type StructureListedOperation = (StructureMaintenanceResult & {source_key
   error_code: 'STRUCTURE_MAINTENANCE_SOURCE_INVALID'; recovery: 'INSPECT_SELECTED_OPERATION';
 });
 export interface BackendStructureResult {
+  capacity?:StorageCapacity;
+  warnings?:StorageWarning[];
   workspace_alias?:string|null;
   deletion?: WorkspaceDeletionProgress;
   deletions?: WorkspaceDeletionProgress[];

@@ -122,6 +122,7 @@ impl KernelClient {
                 let (code,retryable)=match error{
                     KernelClientError::Transport(TransportError::Cancelled)=>("CANCELLED",true),
                     KernelClientError::Transport(TransportError::Network|TransportError::Timeout|TransportError::SubmittedUncertain)=>("OUTCOME_UNKNOWN",true),
+                    KernelClientError::ServerResource(code)=>(code,false),
                     KernelClientError::ServerRejected(429)=>("RATE_LIMITED",true),
                     KernelClientError::ServerRejected(401|403)=>("UNVERIFIED_AUTHORIZATION_RESPONSE",true),
                     KernelClientError::ServerRejected(500..=599)=>("SERVICE_UNAVAILABLE",true),
@@ -212,6 +213,7 @@ impl KernelClient {
                     KernelClientError::Store(JournalError::IntentConflict)=>("COMMAND_CONFLICT",false),
                     KernelClientError::Store(JournalError::InvalidReceipt)|KernelClientError::InvalidResult=>("VERIFICATION_FAILED",false),
                     KernelClientError::UnsupportedStructureProfile=>("CAPABILITY_UNAVAILABLE",false),
+                    KernelClientError::ServerResource(code)=>(code,false),
                     KernelClientError::ServerRejected(429)=>("RATE_LIMITED",true),
                     KernelClientError::ServerRejected(401|403)=>("UNVERIFIED_AUTHORIZATION_RESPONSE",true),
                     KernelClientError::ServerRejected(500..=599)=>("SERVICE_UNAVAILABLE",true),
@@ -310,7 +312,7 @@ impl KernelClient {
         let mut nonce=[0u8;32];OsRng.try_fill_bytes(&mut nonce).map_err(|_|KernelClientError::InvalidCommand)?;
         let nonce=base64url(&nonce);let started=Instant::now();let response=self.transport.structure_context(&nonce,cancel).await?;
         if response.status==404{return Err(KernelClientError::UnsupportedStructureProfile);}
-        if !(200..300).contains(&response.status){return Err(KernelClientError::ServerRejected(response.status));}
+        if !(200..300).contains(&response.status){return Err(classify_http_rejection(response.status,&response.wire));}
         if started.elapsed()>Duration::from_secs(30){return Err(TransportError::Timeout.into());}
         verify_structure_context(&response.wire,&nonce,self.discovery.audience_utf16(),self.discovery.receipt_public_key()).map_err(|_|JournalError::InvalidReceipt.into())
     }
@@ -497,7 +499,7 @@ impl KernelClient {
         if !(200..300).contains(&response.status)&&proof.is_err(){
             let has_receipt=parse_wire_json_bounded(&response.wire,33,1024*1024).is_ok_and(|v|v.get("receipt").is_some());
             if has_receipt{return Err(JournalError::InvalidReceipt.into());}
-            return Err(KernelClientError::ServerRejected(response.status));
+            return Err(classify_http_rejection(response.status,&response.wire));
         }
         let proof=proof.map_err(|_|KernelClientError::Store(JournalError::InvalidReceipt))?;
         KernelAcceptedResult::from_verified(proof,signed.proof(),None)
@@ -563,6 +565,7 @@ impl KernelClient {
                     let (code,phase,retryable)=match error {
                         KernelClientError::Store(JournalError::InvalidReceipt)|KernelClientError::InvalidResult=>("VERIFICATION_FAILED","VERIFICATION",false),
                         KernelClientError::Transport(TransportError::Cancelled)=>("CANCELLED","SUBMISSION",true),
+                        KernelClientError::ServerResource(code)=>(code,"SUBMISSION",false),
                         KernelClientError::ServerRejected(429)=>("RATE_LIMITED","SUBMISSION",true),
                         KernelClientError::ServerRejected(401|403)=>("UNVERIFIED_AUTHORIZATION_RESPONSE","HTTP_RESPONSE",true),
                         KernelClientError::ServerRejected(409)=>("COMMAND_CONFLICT","SUBMISSION",false),

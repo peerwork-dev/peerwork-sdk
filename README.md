@@ -1,3 +1,7 @@
+SDK **0.2.4** adds resource-quota diagnostics and early storage warnings.
+See [release notes](RELEASE_NOTES_0.2.4.md). Selected binary support is Linux x86_64 GNU,
+glibc 2.28+, Node 22+ and Python 3.11+.
+
 # Peerwork Agent SDK
 
 SDK 0.2.3 uses `backend-structure-v1`: the backend executes rules and maintains

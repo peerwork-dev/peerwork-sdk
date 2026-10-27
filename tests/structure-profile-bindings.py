@@ -31,7 +31,7 @@ class StructureBinding(unittest.TestCase):
         def dispatch(operation, *args):
             calls.append(operation)
             if operation == "pending_page":
-                self.assertEqual(json.loads(args[6]), {"after": "cursor", "limit": 1})
+                self.assertEqual(json.loads(args[6]), {"after": "cursor", "preparations_after": None, "limit": 1})
                 return json.dumps({"items": [], "next_after": "next", "consistency": "LIVE_KEYSET"})
             if operation == "build_pending_index":
                 return json.dumps({"complete": False, "scanned_rows": 2048})

@@ -91,12 +91,32 @@ pub enum KernelClientError {
     IntentNotFound,
     #[error("server rejected the saved command with HTTP {0}")]
     ServerRejected(u16),
+    /// Unverified HTTP diagnostic only: never finalizes a durable operation.
+    #[error("server reported resource pressure: {0}; recover the original operation after capacity is available")]
+    ServerResource(&'static str),
     #[error("verified result has an unsupported public summary shape")]
     InvalidResult,
     #[error("command does not match pinned discovery, local identity, or supported signed shape")]
     InvalidCommand,
     #[error("document_times requires1..8 unique record_index selections0..7 and at least one strict RFC3339 created_at or updated_at per selection")]
     InvalidDocumentTime,
+}
+
+fn classify_http_rejection(status:u16,wire:&[u8])->KernelClientError{
+    if status==429&&wire.len()<=8192 {
+        if let Ok(value)=parse_wire_json_bounded(wire,8,128){
+            let code=value.get("error").and_then(|v|v.get("code")).and_then(WireValue::as_string);
+            let resource=match code.as_deref(){
+                Some("RESOURCE_EXHAUSTED")=>Some("RESOURCE_EXHAUSTED"),
+                Some("CAPACITY_RESERVATION_EXHAUSTED")=>Some("CAPACITY_RESERVATION_EXHAUSTED"),
+                Some("TRANSACTION_WORK_LIMIT")=>Some("TRANSACTION_WORK_LIMIT"),
+                Some("MIGRATION_TEMPORARY_CAPACITY")=>Some("MIGRATION_TEMPORARY_CAPACITY"),
+                Some("MIGRATION_OWNER_JOB_LIMIT")=>Some("MIGRATION_OWNER_JOB_LIMIT"),_=>None,
+            };
+            if let Some(code)=resource{return KernelClientError::ServerResource(code);}
+        }
+    }
+    KernelClientError::ServerRejected(status)
 }
 
 #[derive(Debug,Clone,Serialize)]
@@ -802,7 +822,7 @@ impl KernelClient {
         if !(200..300).contains(&response.status)&&proof.is_err(){
             let has_receipt=parse_wire_json_bounded(&response.wire,33,1024*1024).is_ok_and(|v|v.get("receipt").is_some());
             if has_receipt{return Err(JournalError::InvalidReceipt.into());}
-            return Err(KernelClientError::ServerRejected(response.status));
+            return Err(classify_http_rejection(response.status,&response.wire));
         }
         proof.map_err(|_|KernelClientError::Store(JournalError::InvalidReceipt))?;
         let proof=self.journal.record_verified_response(&saved,&response.wire,self.discovery.receipt_public_key())?;
@@ -1643,4 +1663,16 @@ pub use structure_publication_snapshot::{PublicationSnapshotSelection,Publicatio
  use super::*;use serde_json::json;
  fn publication(text:&str)->serde_json::Value{let encoded=peerwork_core::crypto::base64url(text.as_bytes());json!({"policy_revision":1,"disclosure":"PUBLISH_ACTION_AND_SELECTED_RECORDS","entries":[{"record_index":0,"title":"Public note","body":{"format":"PUBLIC_UTF8_BASE64","chunks":encoded.as_bytes().chunks(8192).map(|v|std::str::from_utf8(v).unwrap()).collect::<Vec<_>>()}}]})}
  #[test]fn public_action_preflight_is_explicit_bounded_and_has_unique_output_indices(){let good=publication(&"x".repeat(65536));assert!(validate_public_action(&good).is_ok());assert!(validate_public_action(&publication(&"x".repeat(65537))).is_err());let mut duplicate=good.clone();duplicate["entries"].as_array_mut().unwrap().push(good["entries"][0].clone());assert!(validate_public_action(&duplicate).is_err());let mut implicit=publication("text");implicit["disclosure"]=json!("IMPLICIT");assert!(validate_public_action(&implicit).is_err());}
+}
+
+#[cfg(test)]
+mod quota_diagnostic_tests {
+ use super::*;
+ #[test]
+ fn resource_http_diagnostics_are_not_frequency_throttling_or_commit_proof(){
+  assert!(matches!(classify_http_rejection(429,br#"{"error":{"code":"RESOURCE_EXHAUSTED"}}"#),KernelClientError::ServerResource("RESOURCE_EXHAUSTED")));
+  assert!(matches!(classify_http_rejection(429,br#"{"error":{"code":"ADMISSION_RATE_LIMITED"}}"#),KernelClientError::ServerRejected(429)));
+  assert!(matches!(classify_http_rejection(503,br#"{"error":{"code":"RESOURCE_EXHAUSTED"}}"#),KernelClientError::ServerRejected(503)));
+  assert!(matches!(classify_http_rejection(429,b"gateway"),KernelClientError::ServerRejected(429)));
+ }
 }
