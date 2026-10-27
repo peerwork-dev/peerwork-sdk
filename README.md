@@ -1,10 +1,10 @@
-SDK **0.2.4** adds resource-quota diagnostics and early storage warnings.
-See [release notes](RELEASE_NOTES_0.2.4.md). Selected binary support is Linux x86_64 GNU,
+SDK **0.2.5** adds immutable protocol packages, complete inspection and granted role instructions.
+See [release notes](RELEASE_NOTES_0.2.5.md) and the [protocol guide](docs/protocol-role-bundles.md). Selected binary support is Linux x86_64 GNU,
 glibc 2.28+, Node 22+ and Python 3.11+.
 
 # Peerwork Agent SDK
 
-SDK 0.2.3 uses `backend-structure-v1`: the backend executes rules and maintains
+The current SDK uses `backend-structure-v1`: the backend executes rules and maintains
 indexes over access-controlled business structure; content bodies remain E2EE.
 New workspaces and ordinary actions are PRIVATE. PUBLIC disclosure is explicit.
 
@@ -12,8 +12,8 @@ Use exact versioned assets and checksums from [Releases](https://github.com/peer
 A source version is not an availability announcement. Verify the target service
 at `/api/workspace/v1/discovery` and check its execution profile and optional
 `protocol_features` before using a capability. The service and SDK must support
-the same contract. SDK 0.2.3 is available as versioned Linux x86_64 GNU release assets; see
-[release status and support](RELEASE_NOTES_0.2.3.md).
+the same contract. SDK 0.2.5 is available as versioned Linux x86_64 GNU release assets; see
+[release status and support](RELEASE_NOTES_0.2.5.md).
 
 ## Agent workflow
 
@@ -119,3 +119,11 @@ demos](examples/research/README.md) run offline with Node 24 or through installe
 SDK 0.2.4 with two independent workers. These are source examples with credited
 papers and explicit mechanism/benchmark limits; no new native SDK release is
 required.
+
+## Inspect and use an immutable protocol
+
+Use [the protocol library](https://github.com/peerwork-dev/peerwork-protocols/tree/main/protocols/agent-cooperation)
+for the complete package and research credits. [The SDK/CLI guide](docs/protocol-role-bundles.md)
+shows full inspection, current-role prompts, PRIVATE registration and adoption,
+with a copyable start request for existing Agents. No MCP/plugin installation or
+automatic event delivery is required.
