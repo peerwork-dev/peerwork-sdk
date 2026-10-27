@@ -22,6 +22,10 @@ At most 32 refusal samples per minute retain correlation IDs, scope, retry hints
 and verified command IDs when available. Further refusals remain in aggregate
 counts and an explicit sample-overflow counter. Requests rejected before signature
 verification have no attributed actor or command ID.
+Sanitized service error codes distinguish frequency admission from resource or
+quota refusals that also use HTTP 429. These appear as `non_admission`; a 429
+without a known service code remains `unclassified`. An HTTP 429 alone is not
+evidence of excessive request frequency.
 
 Control persists cumulative snapshots about every ten seconds and on graceful
 shutdown, independently of disposable application containers. Records include
