@@ -27,7 +27,7 @@ class CodexHost {
   this.process.on('event',v=>{const p=v.params??{};if(p.threadId!==this.config.thread_id)return;if(v.method==='turn/started'){this.activeTurn=p.turn?.id;this.execution='BUSY';}if(v.method==='turn/completed'){this.activeTurn=null;this.execution='IDLE';}if(v.method==='thread/status/changed'){const s=p.status?.type;if(s==='idle')this.execution='IDLE';if(s==='systemError'||s==='notLoaded')this.execution='OFFLINE';}});
   this.process.on('closed',()=>{this.execution='OFFLINE';});
   await this.process.rpc('initialize',{clientInfo:{name:'peerwork_delivery',title:'Peerwork delivery',version:'1'},capabilities:{experimentalApi:true}});this.process.write({jsonrpc:'2.0',method:'initialized'});
-  const r=await this.process.rpc('thread/resume',{threadId:this.config.thread_id});if(r.thread?.id!==this.config.thread_id)throw new DeliveryError('HOST_BINDING_MISMATCH');
+  const r=await this.process.rpc('thread/resume',{threadId:this.config.thread_id,excludeTurns:true});if(r.thread?.id!==this.config.thread_id)throw new DeliveryError('HOST_BINDING_MISMATCH');
   await this.health();return this;
  }
  async health(){
@@ -56,15 +56,16 @@ class CodexHost {
 class AntigravityCliHost {
  constructor(config){if(typeof config.conversation_id!=='string'||!config.conversation_id)throw new DeliveryError('HOST_THREAD_REQUIRED');this.config=config;this.host='ANTIGRAVITY_CLI';this.destination={host:this.host,conversation_id:config.conversation_id};this.mode='IDLE_ONLY';this.execution='OFFLINE';this.proven=false;}
  async start(){
-  this.process=new JsonProcess(this.config.command??['agy','--conversation',this.config.conversation_id,'--input-format','stream-json','--output-format','stream-json'],this.config).start();
+  const command=this.config.command??['agy'];if(command.some(v=>['--conversation','--continue','-c','--input-format','--output-format'].includes(v)))throw new DeliveryError('HOST_COMMAND_BINDING_CONFLICT');
+  this.process=new JsonProcess([...command,'--conversation',this.config.conversation_id,'--input-format','stream-json','--output-format','stream-json'],this.config).start();
   this.execution='IDLE';this.process.on('closed',()=>{this.execution='OFFLINE';});
   this.process.on('event',v=>{
    if(v.event==='result')this.execution='IDLE';
-   const conversation=v.conversation_id??v.result?.conversation_id;
+   const conversation=v.conversation_id??v.step_update?.conversation_id??v.result?.conversation_id;
    if(conversation&&conversation!==this.config.conversation_id){this.current?.reject(new DeliveryError('HOST_BINDING_MISMATCH'));this.current=null;this.close();return;}
    // A successful pipe write alone is never a host receipt. First real turn
    // activity or result on this sequential input channel provides evidence.
-   if(this.current&&['step_start','step_update','result'].includes(v.event)){
+   if(this.current&&conversation===this.config.conversation_id&&(v.event==='result'||v.event==='step_update'&&v.step_update?.step_type==='user_input'&&v.step_update?.state==='DONE')){
     const pending=this.current;this.current=null;clearTimeout(pending.timer);
     if(v.event==='result'&&v.result?.status==='ERROR')pending.reject(new DeliveryError('HOST_RPC_REJECTED'));
     else{this.proven=true;pending.resolve({state:'HOST_ACCEPTED',receipt:this.config.conversation_id});}
