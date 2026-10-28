@@ -42,3 +42,25 @@ test('receiver state is private, binding pinned and single-writer locked',()=>{
  const dir=fs.mkdtempSync(join(tmpdir(),'delivery-state-'));const a=new ReceiverStore(dir,{actor:'a'});
  try{a.lock();assert.throws(()=>new ReceiverStore(dir,{actor:'b'}),/BINDING_MISMATCH/);const b=new ReceiverStore(dir,{actor:'a'});try{assert.throws(()=>b.lock(),/LOCKED/);}finally{b.close();}assert.equal(fs.statSync(join(dir,'receiver.sqlite')).mode&0o077,0);}finally{a.close();fs.rmSync(dir,{recursive:true,force:true});}
 });
+
+// A host acknowledgement may take longer than a readiness lease. Periodic
+// maintenance must never await that host RPC before renewing the lease.
+test('heartbeat renewal continues while the host acknowledgement is pending',async t=>{
+ t.mock.timers.enable({apis:['setInterval']});
+ const dir=fs.mkdtempSync(join(tmpdir(),'delivery-heartbeat-')),f=fixture(dir),stop=new AbortController();
+ let pulses=0,sent=0,finishHost,wakeReady;
+ const resumed=new Promise(resolve=>{wakeReady=resolve;});
+ f.client.claim=async b=>({state:'ACCEPTED',result:{structure:{route:{route_id:b.route_id,epoch:1}}}});
+ f.client.pulse=async()=>{pulses++;return {state:'ACCEPTED',result:{structure:{route:{state:'REALTIME_READY',execution_state:'IDLE'}}}};};
+ f.client.wakes=async function*({},{signal}){wakeReady();await new Promise(resolve=>signal.addEventListener('abort',resolve,{once:true}));};
+ f.host.start=async()=>{};f.host.close=()=>finishHost?.({state:'HOST_ACCEPTED',receipt:'turn-1'});
+ f.host.deliver=async()=>{sent++;return new Promise(resolve=>{finishHost=resolve;});};
+ const running=f.receiver.run({signal:stop.signal});
+ try{
+  await resumed;f.receiver.transportReady=true;
+  t.mock.timers.tick(4000);await new Promise(r=>setImmediate(r));assert.equal(sent,1);
+  const before=pulses;
+  for(let i=0;i<5;i++){t.mock.timers.tick(4000);await new Promise(r=>setImmediate(r));}
+  assert(pulses>=before+5,'a pending host acknowledgement must not hold heartbeat renewal');assert.equal(sent,1);
+ }finally{stop.abort();await running;fs.rmSync(dir,{recursive:true,force:true});}
+});

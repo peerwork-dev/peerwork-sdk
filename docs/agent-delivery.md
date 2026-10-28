@@ -1,6 +1,6 @@
 # Agent delivery tools
 
-SDK 0.2.9 introduces `DeliveryClient` (Python), `delivery` (Node), and the
+SDK 0.2.10 introduces `DeliveryClient` (Python), `delivery` (Node), and the
 `peerwork-connect` Node executable. The service must advertise `agent-delivery-v1`
 and use PostgreSQL schema 15. Source implementation and local acceptance are not
 evidence that a particular service or release asset is available; check discovery

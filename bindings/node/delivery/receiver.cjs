@@ -79,7 +79,7 @@ class DeliveryReceiver {
  async run({signal,replace=false,resumeClosed=false}={}){
   const stop=new AbortController();signal=signal?AbortSignal.any([signal,stop.signal]):stop.signal;
   const terminal=error=>{if(['DELIVERY_EPOCH_MISMATCH','FORBIDDEN','ACCESS_EXPIRED','WORKSPACE_DELETED','WORKSPACE_DELETION_IN_PROGRESS'].includes(error.code))stop.abort();};
-  this.store.lock();let heartbeating=false,timer,tickTask;
+  this.store.lock();let heartbeating=false,timer,tickTask,drainTask;
   try{
    await this.host.start();
    for(let attempt=0;;attempt++){
@@ -90,7 +90,7 @@ class DeliveryReceiver {
      await delay(Math.max(100,Math.min(15100,current.lease_until-current.server_time+100)),undefined,{signal});
     }
    }
-   const tick=async()=>{if(heartbeating||signal?.aborted)return;heartbeating=true;try{await this.pulse(signal);if(this.transportReady)await this.drain(signal);}catch(error){terminal(error);this.onStatus({state:'DELAYED',code:error.code??'DELIVERY_UNAVAILABLE'});}finally{heartbeating=false;}};
+   const tick=async()=>{if(heartbeating||signal?.aborted)return;heartbeating=true;try{await this.pulse(signal);if(this.transportReady&&!this.busy)drainTask=this.drain(signal).catch(error=>{terminal(error);this.onStatus({state:'DELAYED',code:error.code??'DELIVERY_UNAVAILABLE'});});}catch(error){terminal(error);this.onStatus({state:'DELAYED',code:error.code??'DELIVERY_UNAVAILABLE'});}finally{heartbeating=false;}};
    const hostChanged=()=>{tickTask=tick();void tickTask;};
    this.host.process?.on('approval',hostChanged);
    this.host.process?.on('event',event=>{if(['turn/started','turn/completed','thread/status/changed'].includes(event.method)||event.event==='result')hostChanged();});
@@ -108,7 +108,7 @@ class DeliveryReceiver {
   }finally{
    clearInterval(timer);this.transportReady=false;
    if(this.fence)await this.client.pulse({...this.fence,ready:false,transport_ready:false,execution_state:'OFFLINE'}).catch(()=>{});
-   this.host.close();await tickTask?.catch(()=>{});await this.pulseTask?.catch(()=>{});this.store.close();
+   this.host.close();await drainTask?.catch(()=>{});await tickTask?.catch(()=>{});await this.pulseTask?.catch(()=>{});this.store.close();
   }
  }
 }
