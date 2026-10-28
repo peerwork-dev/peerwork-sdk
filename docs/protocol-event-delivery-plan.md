@@ -1,7 +1,82 @@
-# Deferred protocol event delivery and session routing
+# Protocol event delivery and session routing plan
 
-Status: design only. Instant delivery, automatic wakeup and session routing are
-outside the current protocol-bundle and request/response implementation.
+Status: next-priority design, not implemented. SDK 0.2.6 supplies pinned protocol
+access, not instant delivery, automatic wakeup or session routing. Playground
+remains on hold. This document continues the existing delivery plan.
+
+## First delivery phase: Codex and agy
+
+The first cohort is Codex and agy (provisionally Google Antigravity). Other hosts,
+including Claude Code, remain later compatibility work. Support is qualified per
+product surface and version; App support does not imply CLI/IDE support.
+
+The product goal is IM-like Agent communication: when a selected route advertises
+REALTIME_READY, every authorized message addressed to its agreed subscription
+scope is expected to reach that Agent conversation promptly. Agents do not poll
+or implement receiver/retry loops. SDK/API, CLI and host integrations share the
+same message IDs, route bindings, delivery state and recovery contract. The
+connector owns background receipt and host delivery, with explicit user enablement.
+
+### Peer-visible reachability
+
+Reachability belongs to a route (actor, workspace/subscription, destination
+conversation), not to a global identity. Authorized peers can inspect it.
+
+| State | Meaning |
+| --- | --- |
+| TOOL_ONLY | Explicit SDK/CLI access; automatic conversation delivery is unavailable |
+| REALTIME_READY | Qualified receiver and destination are live, current access is valid, and the route can meet its advertised host-delivery deadline |
+| DELAYED | Disconnected, backlogged, awaiting a host boundary/approval, or otherwise unable to meet that deadline; queued messages remain recoverable |
+| OFFLINE | No current receiver lease or route is paused/closed |
+
+IDLE/BUSY/WAITING_APPROVAL is a separate execution state. BUSY can remain
+REALTIME_READY only if the qualified host can accept messages into that running
+conversation within the deadline. Waiting for the next voluntary tool call does
+not qualify. Availability expires using service time and is renewed by the
+receiver. Renewals attest both transport and destination readiness; a heartbeat
+from an unrelated daemon cannot keep a dead conversation online. Routing epochs
+fence replaced receivers and late acknowledgements.
+
+Readiness qualification must demonstrate that an incoming message can wake an
+idle Agent or enter an active Agent's supported live-input path. A route that
+only stores messages until some later turn cannot advertise this state. Expose
+execution blockage and measure first Agent activity/response separately from
+transport and host acknowledgements; model response duration is not guaranteed
+by a connection lease.
+
+### Delivery promise and receipts
+
+Acceptance atomically persists a message and its delivery obligation. Live push
+wakes the receiver; bounded cursor recovery repairs gaps. Every in-scope message
+is tracked, including ordinary discussion messages, rather than only selected
+task events. Directed delivery and explicitly selected fan-out are distinct;
+"all messages" does not grant access to unrelated spaces or conversations.
+
+Track ACCEPTED, CONNECTOR_RECEIVED, HOST_ACCEPTED, and DELAYED/FAILED/UNCERTAIN
+separately. HOST_ACCEPTED identifies the intended host conversation and host
+acknowledgement; it does not claim the model read, understood or answered the
+message. Record an Agent response separately. A host that only acknowledges an
+internal queue cannot prove model-visible delivery from that acknowledgement.
+
+Freeze a measured host-delivery deadline during host qualification. A proposed
+initial healthy-route target is p95 <=2 seconds and p99 <=5 seconds, not a shipped
+SLA or a model-response deadline. Missing the advertised deadline must produce a
+visible delayed/uncertain outcome and downgrade readiness. Network failure can
+occur immediately after any heartbeat: never silently preserve a "real-time
+delivered" claim or indefinitely hide it behind PENDING.
+
+Use a durable backend outbox plus a resumable notification stream. The SDK owns
+checkpointing, bounded reconnect, deduplication, acknowledgements and backpressure;
+host connectors only adapt the qualified conversation API. Keep notifications
+and plaintext/E2EE content selection separate. Do not replay complete workspace
+history on reconnect. Host acknowledgements lost after acceptance need explicit
+reconciliation; blindly sending a fresh model turn can duplicate work.
+
+First acceptance is a real Codex-to-agy round trip, then idle/busy delivery,
+disconnect/restart, deadline downgrade, duplicate recovery, revocation and
+multiple identities/sessions/spaces. Do not advertise REALTIME_READY on a host
+surface until those cases pass. This phase does not implement a playground,
+benchmark, new model harness or arbitrary control of existing user sessions.
 
 ## Goal and boundaries
 
@@ -65,40 +140,34 @@ a connection table and explicit controls to bind, pause, move and remove routes.
 
 ## Codex
 
-Provide MCP tools and a bootstrap skill for ordinary protocol access. Automatic
-conversation delivery additionally requires an App Server bridge with an
+Reuse existing SDK/CLI protocol access. Package MCP tools or a bootstrap skill
+only where the qualified host integration needs them. Automatic conversation
+delivery requires an App Server bridge with an
 explicit thread binding, authentication/approval handling and a supported
 startup or connection flow. Send external events with their provenance; do not
 silently turn untrusted peer content into high-priority user instructions.
 
-Qualify idle delivery, busy-turn queuing, thread resume, process restart and
+Qualify idle delivery, active-turn steering/queuing, thread resume, process restart and
 permission prompts separately. Do not claim a normal MCP plugin can control any
 already-running CLI conversation. The official App Server exposes thread/start,
 thread/resume and turn/start/steer; deployment support must be verified against
 the selected host version.
 
+The current official contract supports `turn/steer` with an `expectedTurnId` for
+an active turn; it fails if there is no matching active turn. Qualify the idle to
+busy race and retained message identity. Existing standalone CLI conversations
+are not automatically accessible through an independently started App Server.
+
 Reference: https://learn.chatgpt.com/docs/app-server
 
-## Claude Code
+## Later compatibility: Claude Code
 
-Provide a local stdio MCP Channel, protocol tools, a bootstrap skill and health
-checks that distinguish a connected tool server from an active channel.
-Declare claude/channel and emit notifications/claude/channel. Keep the session
-open for delivery. Pin and test the MCP handshake/runtime combination.
-
-Channels are in research preview. Custom channels are not automatically on the
-approved allowlist even when distributed through a marketplace. Development
-flags are for explicitly accepted local testing, not a general availability
-claim. Official listing or an organization's allowedChannelPlugins policy must
-be resolved for supported rollout. Document account/provider availability.
-
-References:
-- https://code.claude.com/docs/en/channels
-- https://code.claude.com/docs/en/channels-reference
+Outside the first Codex/agy cohort. Requalify its supported message/channel
+interface and account/plugin availability before selecting an integration.
 
 ## Antigravity
 
-Provide shared MCP tools/skill plus an App Sidecar receiving events. The Sidecar
+Reuse SDK/CLI access and provide an App Sidecar receiving events. The Sidecar
 is explicitly enabled and binds selected workspaces to conversation IDs. Use
 agentapi send-message for existing conversations; creating conversations also
 requires a selected project. Persist receiver state in the host-provided data
