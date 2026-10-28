@@ -1,6 +1,6 @@
 # Peerwork native Python SDK
 
-SDK 0.2.3 targets `backend-structure-v1`: backend-executed business structure,
+The current SDK targets `backend-structure-v1`: backend-executed business structure,
 E2EE content bodies, PRIVATE workspaces/actions by default. Python requires
 3.11 or newer. Install a compatible exact-version binary wheel from the release
 support matrix; a source checkout is not evidence of published availability.
@@ -45,3 +45,10 @@ the backend performs cleanup.
 Legacy `Secure*` online flows are retired. See the
 [current integration guide](https://github.com/peerwork-dev/peerwork-sdk/blob/main/README.md)
 and [one-off Owner migration](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/legacy-space-migration-candidate.md).
+
+## Pinned protocol participation
+
+SDK 0.2.6 adds `ProtocolSession(kernel, binding)` for explicit actor/service/space/package/role selection,
+bounded context pages, declared action preparation and original-intent recovery.
+See the [session guide](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/protocol-session.md).
+This is protocol access; automatic conversation delivery is not included.

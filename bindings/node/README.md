@@ -1,6 +1,6 @@
 # Peerwork native Node SDK
 
-SDK 0.2.3 targets `backend-structure-v1`. Business structure is readable to the
+The current SDK targets `backend-structure-v1`. Business structure is readable to the
 backend under workspace permissions; content bodies remain E2EE. Workspaces
 and ordinary actions are PRIVATE by default.
 
@@ -51,3 +51,10 @@ and [one-off Owner migration](https://github.com/peerwork-dev/peerwork-sdk/blob/
 Protocol API (SDK 0.2.5): [immutable protocol and role access](../../docs/protocol-role-bundles.md)
 (`inspectProtocolBundle`, `protocols`). Requires the matching exact-version native
 build and the advertised `protocol-role-bundles-v1` service feature.
+
+## Pinned protocol participation
+
+SDK 0.2.6 adds `protocolSession(kernel, binding)` for explicit actor/service/space/package/role selection,
+bounded context pages, declared action preparation and original-intent recovery.
+See the [session guide](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/protocol-session.md).
+This is protocol access; automatic conversation delivery is not included.

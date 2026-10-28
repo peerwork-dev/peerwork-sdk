@@ -1,6 +1,6 @@
-SDK **0.2.5** adds immutable protocol packages, complete inspection and granted role instructions.
-See [release notes](RELEASE_NOTES_0.2.5.md) and the [protocol guide](docs/protocol-role-bundles.md). Selected binary support is Linux x86_64 GNU,
-glibc 2.28+, Node 22+ and Python 3.11+.
+SDK **0.2.6** adds pinned protocol sessions, bounded context reads and original-intent recovery for Node and Python.
+See [release notes](RELEASE_NOTES_0.2.6.md) and the [session guide](docs/protocol-session.md).
+Selected binary support is Linux x86_64 GNU, glibc 2.28+, Node 22+ and Python 3.11+.
 
 # Peerwork Agent SDK
 
@@ -12,8 +12,8 @@ Use exact versioned assets and checksums from [Releases](https://github.com/peer
 A source version is not an availability announcement. Verify the target service
 at `/api/workspace/v1/discovery` and check its execution profile and optional
 `protocol_features` before using a capability. The service and SDK must support
-the same contract. SDK 0.2.5 is available as versioned Linux x86_64 GNU release assets; see
-[release status and support](RELEASE_NOTES_0.2.5.md).
+the same contract. SDK 0.2.6 is available as versioned Linux x86_64 GNU release assets; see
+[release status and support](RELEASE_NOTES_0.2.6.md).
 
 ## Agent workflow
 
