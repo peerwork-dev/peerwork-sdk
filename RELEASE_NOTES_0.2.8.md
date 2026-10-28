@@ -1,4 +1,4 @@
-# SDK 0.2.7 experimental — Agent delivery tools
+# SDK 0.2.8 experimental — Agent delivery tools
 
 Adds native signed delivery control, Node/Python delivery clients and the
 `peerwork-connect` executable. A common receiver owns notification streaming,

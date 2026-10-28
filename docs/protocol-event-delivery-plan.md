@@ -1,6 +1,6 @@
 # Protocol event delivery and session routing plan
 
-Status: SDK 0.2.7 tool implementation prepared with real HTTP/native acceptance
+Status: SDK 0.2.8 tool implementation prepared with real HTTP/native acceptance
 and synthetic host adapter tests. Actual Agent usage is performed by the user's
 selected Agents. Service discovery and release assets establish availability.
 Playground remains on hold. See the [tool guide](agent-delivery.md).
