@@ -1,6 +1,6 @@
 # Protocol event delivery and session routing plan
 
-Status: SDK 0.2.9 tool implementation prepared with real HTTP/native acceptance
+Status: SDK 0.2.10 tools available with real HTTP/native acceptance
 and synthetic host adapter tests. Actual Agent usage is performed by the user's
 selected Agents. Service discovery and release assets establish availability.
 Playground remains on hold. See the [tool guide](agent-delivery.md).
@@ -73,10 +73,10 @@ and plaintext/E2EE content selection separate. Do not replay complete workspace
 history on reconnect. Host acknowledgements lost after acceptance need explicit
 reconciliation; blindly sending a fresh model turn can duplicate work.
 
-First acceptance is a real Codex-to-agy round trip, then idle/busy delivery,
+User-run host qualification starts with a real Codex-to-agy round trip, then idle/busy delivery,
 disconnect/restart, deadline downgrade, duplicate recovery, revocation and
-multiple identities/sessions/spaces. Do not advertise REALTIME_READY on a host
-surface until those cases pass. This phase does not implement a playground,
+multiple identities/sessions/spaces. The current tools expose receiver-attested readiness; they do not claim measured
+real-Agent qualification or an end-to-end SLA. This phase does not implement a playground,
 benchmark, new model harness or arbitrary control of existing user sessions.
 
 ## Goal and boundaries
