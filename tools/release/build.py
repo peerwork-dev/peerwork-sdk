@@ -93,7 +93,7 @@ def build(root: Path,target: str,output: Path,tag: str):
     venv_dir=work/'python-consumer';venv.create(venv_dir,with_pip=True)
     interpreter=venv_dir/('Scripts/python.exe' if target.startswith('win32') else 'bin/python')
     run([interpreter,'-m','pip','install','--no-index','--no-deps',wheel_list[0]],root,env)
-    run([interpreter,'-I','-c','import peerwork,sys; assert peerwork.version()==sys.argv[1]; assert peerwork.capabilities()["version"]==sys.argv[1]',version],root,smoke)
+    run([interpreter,'-I','-c','import peerwork,sys; assert peerwork.version()==sys.argv[1]; assert peerwork.capabilities()["version"]==sys.argv[1]; assert callable(peerwork.ProtocolSession) and callable(peerwork.ProtocolSessionError)',version],root,smoke)
     run([cli,'version'],root,smoke)
     if target.endswith('gnu'):
         import zipfile

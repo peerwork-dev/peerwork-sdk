@@ -4512,3 +4512,7 @@ class ProtocolClient:
 
     def resume(self, command_id: str) -> StructureIntentOutcome:
         return self.kernel.resume_structure_intent(command_id)
+
+
+from .protocol_session import ProtocolSession, ProtocolSessionError
+__all__ += ["ProtocolClient", "inspect_protocol_bundle", "ProtocolSession", "ProtocolSessionError"]

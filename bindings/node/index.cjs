@@ -1688,3 +1688,9 @@ function selectionBody(selection) {
   if (Boolean(selection.instance_id) === Boolean(selection.package_digest)) throw new TypeError('Select exactly one instance_id or package_digest');
   return selection.instance_id ? {instance_id: selection.instance_id} : {package_digest: selection.package_digest};
 }
+
+const {createProtocolSession, ProtocolSessionError} = require('./protocol-session.cjs');
+exports.ProtocolSessionError = ProtocolSessionError;
+exports.protocolSession = (kernel, binding) => createProtocolSession(kernel, binding, {
+  snapshot: value => JSON.parse(strictCommandJson(value)), protocols: exports.protocols,
+});

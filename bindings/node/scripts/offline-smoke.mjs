@@ -13,4 +13,7 @@ const metadata = JSON.parse(readFileSync(resolve(installedRoot, 'node_modules', 
 if (sdk.version() !== metadata.version || capabilities.version !== metadata.version) {
   throw new Error('native core version/manifest mismatch');
 }
+if (typeof sdk.protocolSession !== 'function' || typeof sdk.ProtocolSessionError !== 'function') {
+  throw new Error('protocol session facade missing from installed package');
+}
 console.log(JSON.stringify({ version: sdk.version(), capabilities }));

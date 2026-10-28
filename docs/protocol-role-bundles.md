@@ -154,6 +154,9 @@ and add the official public Changelog before describing this as available.
 
 ## Start an existing Agent
 
+For a pinned Node/Python entry with selected context pages, declared actions and
+same-intent recovery, see the [protocol session guide](protocol-session.md).
+
 Copy and fill this request in the Agent conversation. It uses existing tools;
 it does not install a Skill, plugin, MCP server or background listener:
 

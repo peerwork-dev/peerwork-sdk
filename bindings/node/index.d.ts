@@ -1425,6 +1425,40 @@ export interface ProtocolBundle {
   dependencies: {package_digest: string}[];
 }
 export type ProtocolSelection = {workspace_id: string} & ({instance_id: string; package_digest?: never} | {package_digest: string; instance_id?: never});
+/** Explicit client selection, not a host conversation or a new identity. */
+export interface ProtocolSessionBinding {
+  expected_origin: string; expected_actor: string; workspace_id: string; instance_id: string;
+  protocol_digest: string; package_digest: string; role: string;
+}
+export interface ProtocolActionRequest {
+  tool?: string; action_id?: string; values: Record<string, unknown>;
+  expected_revision: number; operation_id: string;
+  plaintext_contents?: {record_index: number; text: string}[];
+}
+/** Keep the same prepared input for retries; never refresh its CAS revision. */
+export interface PreparedProtocolAction {
+  format: 'peerwork.protocol-action.v1'; binding: ProtocolSessionBinding; intent: StructureIntentRequest;
+}
+export interface ProtocolAgentContext {
+  binding: ProtocolSessionBinding; instructions: string;
+  tools: {name: string; action: string; input_schema: Record<string, unknown>}[];
+  context_sources: string[]; assurance: 'BACKEND_CURRENT_STATE';
+}
+export declare class ProtocolSessionError extends Error {code: string}
+export interface ProtocolSession {
+  readonly binding: ProtocolSessionBinding;
+  describe(options?: {signal?: AbortSignal}): Promise<{outcome: StructureIntentOutcome; context: ProtocolAgentContext | null}>;
+  state(options?: {signal?: AbortSignal}): Promise<StructureIntentOutcome>;
+  records(selection?: {limit?: number; cursor?: string; schema?: string; consistency?: 'LIVE' | 'IF_UNCHANGED'}, options?: {signal?: AbortSignal}): Promise<StructureIntentOutcome>;
+  updates(selection?: {limit?: number; cursor?: string; after_sequence?: number}, options?: {signal?: AbortSignal}): Promise<StructureIntentOutcome>;
+  record(reference: {record_id: string; revision: number}, options?: {signal?: AbortSignal}): Promise<StructureIntentOutcome>;
+  prepareAction(request: ProtocolActionRequest): PreparedProtocolAction;
+  submit(prepared: PreparedProtocolAction, options?: {signal?: AbortSignal}): Promise<StructureIntentOutcome>;
+  /** Resume the identical prepared intent through native durable recovery. */
+  resume(prepared: PreparedProtocolAction, options?: {signal?: AbortSignal}): Promise<StructureIntentOutcome>;
+  action(request: ProtocolActionRequest, options?: {signal?: AbortSignal}): Promise<StructureIntentOutcome>;
+}
+export declare function protocolSession(kernel: KernelSession, binding: ProtocolSessionBinding): ProtocolSession;
 export declare function inspectProtocolBundle(bundle: ProtocolBundle): {package_digest: string; protocol_digest: string; bundle_header: ProtocolBundleHeader; submitted: false};
 export declare function protocols(kernel: KernelSession): {
   inspect(selection: ProtocolSelection & {include_resources?: boolean}, options?: {signal?: AbortSignal}): Promise<StructureIntentOutcome>;
