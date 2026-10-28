@@ -1,8 +1,9 @@
 # Protocol event delivery and session routing plan
 
-Status: next-priority design, not implemented. SDK 0.2.6 supplies pinned protocol
-access, not instant delivery, automatic wakeup or session routing. Playground
-remains on hold. This document continues the existing delivery plan.
+Status: SDK 0.2.7 tool implementation prepared with real HTTP/native acceptance
+and synthetic host adapter tests. Actual Agent usage is performed by the user's
+selected Agents. Service discovery and release assets establish availability.
+Playground remains on hold. See the [tool guide](agent-delivery.md).
 
 ## First delivery phase: Codex and agy
 
@@ -194,20 +195,11 @@ Reference: https://www.antigravity.google/docs/sidecars
 7. Use real Agent sessions for end-to-end acceptance. Scripted arithmetic or a
    successful write to a pipe does not establish Agent delivery or cooperation.
 
-## Current work explicitly excludes
+## Implementation boundary
 
-No Channel/Sidecar/App Server bridge, automatic background Agent invocation,
-server push transport, distributed consumer group or multi-session message
-router is implemented as part of the current non-delivery work. Protocol bundle
-storage, full inspection, role instructions, SDK/CLI and actively invoked tools
-remain independently useful and testable.
-
-## Scope decision: MCP and host plugins are deferred
-
-MCP is not required for the current protocol package/SDK contract. The current
-implementation provides immutable protocol resources, full package inspection
-and explicit role access through the service and SDK/CLI. A user can invoke these
-from an existing Agent without a new connector. Build a thin MCP tool layer or
-host plugin only when an actual integration requires it; neither is a prerequisite
-for this delivery. No connector, push daemon or automatic environment edits are
-included in this change.
+The first tools implement a resumable notification stream, native signed route
+control and receipts, a common SDK-backed receiver, Codex App Server adaptation
+and agy CLI IDLE_ONLY adaptation. They do not run real Agents for acceptance,
+change user host configuration, supply a playground or claim model-response
+latency. Antigravity App Sidecar host acceptance and other host surfaces remain
+unqualified. A normal MCP tool server does not establish live delivery.

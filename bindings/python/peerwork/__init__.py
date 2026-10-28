@@ -4516,3 +4516,6 @@ class ProtocolClient:
 
 from .protocol_session import ProtocolSession, ProtocolSessionError
 __all__ += ["ProtocolClient", "inspect_protocol_bundle", "ProtocolSession", "ProtocolSessionError"]
+
+from .delivery import DeliveryClient
+__all__ += ["DeliveryClient"]

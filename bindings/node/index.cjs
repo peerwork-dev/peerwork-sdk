@@ -1694,3 +1694,7 @@ exports.ProtocolSessionError = ProtocolSessionError;
 exports.protocolSession = (kernel, binding) => createProtocolSession(kernel, binding, {
   snapshot: value => JSON.parse(strictCommandJson(value)), protocols: exports.protocols,
 });
+
+const deliveryClient = require("./delivery/client.cjs");
+exports.DeliveryError = deliveryClient.DeliveryError;
+exports.delivery = (kernel, binding) => deliveryClient.createDeliveryClient(kernel, binding, {session: exports.protocolSession, snapshot: value => JSON.parse(strictCommandJson(value))});

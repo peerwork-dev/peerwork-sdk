@@ -74,6 +74,7 @@ jobs:
       - name: Test composable protocols and durable example host
         run: |
           node tests/protocol-session.test.cjs
+          node tests/delivery/tools.test.cjs
           node --test --test-isolation=none tests/research/protocols.test.mjs tests/research/host.test.mjs
           node examples/research/delm/run.mjs --offline
           node examples/research/agensh/run.mjs --offline

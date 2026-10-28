@@ -179,7 +179,7 @@ export interface TsMigrationReport { pending_count: number; accepted_count: numb
 export interface StructureIntentRequest {
   /** Encrypted locally before any submission; never included as plaintext in the signed wire. */
   plaintext_contents?: {record_index: number; text: string}[];
-  action: 'structure.protocol.register' | 'structure.protocol.resolve' | 'structure.protocol.resource.get' | 'structure.workspace.delete' | 'structure.workspace.deletion.get' | 'structure.workspace.deletions.read' | 'structure.record.withdraw' | 'structure.publication.set' | 'structure.publication.entry.set' | 'structure.access.approval.get' | 'structure.access.end' | 'structure.instance.resolve' | 'structure.access.authorize' | 'structure.content-key.set' | 'structure.content-key.get' | 'structure.content-key.deliver' | 'structure.content-key.delivery.get' | 'structure.content-keys.read' | 'structure.workspace.create' | 'structure.workspace.get' | 'structure.adopt' | 'structure.action' | 'structure.instance.get' | 'structure.record.get' | 'structure.operation.get'
+  action: 'structure.delivery.route.claim' | 'structure.delivery.route.close' | 'structure.delivery.route.get' | 'structure.delivery.routes.read' | 'structure.delivery.inbox.read' | 'structure.delivery.receipt.get' | 'structure.delivery.stream.get' | 'structure.delivery.pulse' | 'structure.delivery.ack' | 'structure.protocol.register' | 'structure.protocol.resolve' | 'structure.protocol.resource.get' | 'structure.workspace.delete' | 'structure.workspace.deletion.get' | 'structure.workspace.deletions.read' | 'structure.record.withdraw' | 'structure.publication.set' | 'structure.publication.entry.set' | 'structure.access.approval.get' | 'structure.access.end' | 'structure.instance.resolve' | 'structure.access.authorize' | 'structure.content-key.set' | 'structure.content-key.get' | 'structure.content-key.deliver' | 'structure.content-key.delivery.get' | 'structure.content-keys.read' | 'structure.workspace.create' | 'structure.workspace.get' | 'structure.adopt' | 'structure.action' | 'structure.instance.get' | 'structure.record.get' | 'structure.operation.get'
     | 'structure.member.set' | 'structure.grant.set' | 'structure.grant.revoke' | 'structure.grant.get'
     | 'structure.members.read' | 'structure.instances.read' | 'structure.records.read' | 'structure.events.read'
     | 'structure.maintenance.rebuild' | 'structure.maintenance.get' | 'structure.maintenance.cancel' | 'structure.operations.read' | 'structure.content-key.history.deliver' | 'structure.content-key.history.get' | 'structure.content-key.history.jobs.read' | 'structure.publication.entry.withdraw' | 'structure.publication.policy.get' | 'structure.publication.policy.set' | 'structure.publication.prepare.get';
@@ -1472,3 +1472,27 @@ export interface ProtocolBundleHeader extends Omit<ProtocolBundle, 'resources'> 
   protocol_digest: string;
   resources: Record<string, {sha256: string; bytes: number; media_type: string}>;
 }
+
+export interface DeliveryFence {route_id: string; epoch: number; receiver_id: string}
+export interface DeliveryRoute {
+  route_id: string; actor_id: string; instance_id: string; package_digest: string;
+  role: string; epoch: number; host: string; mode: 'LIVE' | 'IDLE_ONLY' | 'TOOL_ONLY';
+  state: 'REALTIME_READY' | 'DELAYED' | 'OFFLINE' | 'TOOL_ONLY';
+  execution_state: 'IDLE' | 'BUSY' | 'WAITING_APPROVAL' | 'OFFLINE';
+  lease_until: number; server_time: number; assurance: 'RECEIVER_ATTESTED';
+  host_checkpoint: number; received_checkpoint: number; uncertain_sequence: number | null;
+}
+export interface DeliveryClient {
+  readonly binding: ProtocolSessionBinding;
+  claim(selection: {route_id: string; receiver_id: string; expected_epoch: number | null; destination_digest: string; host: 'CODEX_APP_SERVER' | 'ANTIGRAVITY_APP' | 'ANTIGRAVITY_CLI'; mode: 'LIVE' | 'IDLE_ONLY' | 'TOOL_ONLY'; include_self?: boolean; replace?: boolean; resume_closed?: boolean}, options: {operation_id: string; signal?: AbortSignal}): Promise<StructureIntentOutcome>;
+  close(fence: DeliveryFence, options: {operation_id: string; signal?: AbortSignal}): Promise<StructureIntentOutcome>;
+  get(routeId: string, options?: {signal?: AbortSignal}): Promise<StructureIntentOutcome>;
+  routes(selection?: {limit?: number; after?: string | null}, options?: {signal?: AbortSignal}): Promise<StructureIntentOutcome>;
+  receipt(routeId: string, sequence: number, options?: {signal?: AbortSignal}): Promise<StructureIntentOutcome>;
+  pulse(selection: DeliveryFence & {ready: boolean; transport_ready: boolean; execution_state: DeliveryRoute['execution_state']}, options?: {signal?: AbortSignal}): Promise<StructureIntentOutcome>;
+  ack(selection: DeliveryFence & {sequence: number; stage: 'CONNECTOR_RECEIVED' | 'HOST_ACCEPTED' | 'UNCERTAIN'; host_receipt?: string; resolve_uncertain?: boolean}, options?: {signal?: AbortSignal}): Promise<StructureIntentOutcome>;
+  inbox(selection: DeliveryFence & {limit?: number}, options?: {signal?: AbortSignal}): Promise<StructureIntentOutcome>;
+  wakes(fence: DeliveryFence, options?: {signal?: AbortSignal}): AsyncIterable<{event: 'ready' | 'wake'}>;
+}
+export declare class DeliveryError extends Error {code: string; outcome?: StructureIntentOutcome}
+export declare function delivery(kernel: KernelSession, binding: ProtocolSessionBinding): DeliveryClient;

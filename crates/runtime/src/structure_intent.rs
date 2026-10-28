@@ -327,6 +327,7 @@ impl KernelClient {
         if fields.iter().any(|(key, _)| !allowed.iter().any(|name| key.iter().copied().eq(name.encode_utf16()))) { return Err(invalid()); }
         let action = request.get("action").and_then(WireValue::as_string).ok_or_else(invalid)?;
         if !is_structure_action(&action) { return Err(invalid()); }
+        if action.starts_with("structure.delivery.")&&!self.discovery.protocol_features().contains(&"agent-delivery-v1".encode_utf16().collect::<Vec<_>>()){return Err(KernelClientError::UnsupportedStructureProfile);}
         if (action.starts_with("structure.protocol.")||action=="structure.adopt"&&(request.get("body").and_then(|b|b.get("bundle")).is_some()||request.get("body").and_then(|b|b.get("package_digest")).is_some()))&&!self.discovery.protocol_features().contains(&"protocol-role-bundles-v1".encode_utf16().collect::<Vec<_>>()){return Err(KernelClientError::UnsupportedStructureProfile);}
         if matches!(action.as_str(),"structure.workspace.delete"|"structure.workspace.deletion.get"|"structure.workspace.deletions.read")&&!self.discovery.protocol_features().contains(&"durable-workspace-deletion-v1".encode_utf16().collect::<Vec<_>>()){return Err(KernelClientError::UnsupportedStructureProfile);}
         if action=="structure.record.withdraw"&&!self.discovery.protocol_features().contains(&"selected-record-withdrawal-v1".encode_utf16().collect::<Vec<_>>()){return Err(KernelClientError::UnsupportedStructureProfile);}
