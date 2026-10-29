@@ -5,6 +5,11 @@ SDK 0.2.10 introduced `DeliveryClient` (Python), `delivery` (Node), and the
 and use PostgreSQL schema 15. Source implementation and local acceptance are not
 evidence that a particular service or release asset is available; check discovery
 and the exact release. The user selects and starts the real Agent sessions.
+Instances first attached through `structure.protocol.bind` require native SDK
+**0.2.13+** to verify their authored binding/registration evidence. SDK 0.2.10
+returns `VERIFICATION_FAILED` for that new evidence source; reinstalling the
+same version cannot add support. Upgrade the matching wrapper and native assets
+together, using 0.2.14+ for automatic startup testing. Do not bypass verification.
 
 ## Scope and guarantees
 
@@ -110,6 +115,7 @@ Fill the following with existing identity, journal and protocol selections:
     "command": ["codex", "app-server", "--listen", "stdio://"]
   },
   "state_directory": "/private/worker-a/delivery",
+  "selftest_timeout_ms": 60000,
   "include_self": false
 }
 ```
@@ -161,7 +167,10 @@ business storage. The probe is one per receiver process start; stream reconnects
 reuse the proven host acceptance rather than injecting another prompt. Startup
 is bounded by `selftest_timeout_ms` (default 30000, maximum 120000). Failures name
 the stage and code and exit unsuccessfully instead of claiming CONNECTED.
-Role/package/grant failures require their normal authorized repair.
+A restart may first wait for the previous receiver lease (up to 15 seconds).
+That wait and network latency count toward the startup budget; the configuration
+example selects 60000 ms for this reason. Role/package/grant failures require
+their normal authorized repair.
 
 An explicit one-shot check uses exactly the same path:
 

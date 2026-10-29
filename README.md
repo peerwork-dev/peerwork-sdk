@@ -1,5 +1,6 @@
-SDK **0.2.14** adds Owner-authorized role-bundle attachment to existing instances, with signed selection diagnostics and preserved tasks, permissions and E2EE keys.
-See [release notes](RELEASE_NOTES_0.2.14.md) and the [existing-instance guide](docs/existing-instance-protocol-binding.md).
+SDK **0.2.14** adds automatic receiving self-tests: `peerwork-connect run` verifies its selected role, real receiving channel and host input acceptance before reporting connected.
+See [release notes](RELEASE_NOTES_0.2.14.md) and the [delivery guide](docs/agent-delivery.md#automatic-startup-self-test).
+Existing instances first attached through `structure.protocol.bind` require SDK **0.2.13+** for evidence verification; see the [existing-instance guide](docs/existing-instance-protocol-binding.md).
 Selected binary support is Linux x86_64 GNU, glibc 2.28+, Node 22+ and Python 3.11+; the receiver requires Node 24.
 
 # Peerwork Agent SDK
