@@ -21,6 +21,11 @@ A missing binding is not transport uncertainty or evidence of a failed write.
 An executable delivery route requires a bound package and a currently granted
 role. Retrying a failed claim cannot supply the missing package.
 
+The optional `manifest.package` field is **not** this role-bundle binding.
+First attachment preserves the existing manifest, including a null package field.
+Use the verified `protocols.inspect/role` result's `package_digest` and
+`evidence.binding` to inspect the actual binding.
+
 ## Owner preparation
 
 1. Select the existing workspace, instance and execution digest explicitly.
@@ -38,6 +43,19 @@ role. Retrying a failed claim cannot supply the missing package.
    Package metadata uses its own semantic version; it does not rewrite the
    existing manifest's display version. An unrelated research example package
    cannot attach to a task instance with a different execution digest.
+
+Read the manifest through the existing signed API even while no bundle is bound:
+
+```javascript
+const resolved = await kernel.executeStructureIntent({
+  action: 'structure.instance.resolve', workspace_id: workspaceId,
+  body: {instance_id: instanceId},
+});
+// Require an ACCEPTED outcome before using the selected data.
+const current = resolved.result.structure.instance;
+const manifest = current.manifest;
+const expectedProtocolDigest = current.protocol_digest;
+```
 
 No signing/body keys or private record plaintext need to leave the Owner's
 existing environment. Other workspace members cannot perform the attachment.
@@ -112,7 +130,8 @@ intent and its target instance, package and execution digests. Older bundle
 verifiers do not understand this new source form; do not disable verification.
 
 ```javascript
-const role = await protocols.role({
+const memberProtocols = sdk.protocols(memberKernel); // participant's own identity
+const role = await memberProtocols.role({
   workspace_id: workspaceId, instance_id: instanceId, role: selectedRole,
 });
 // Select package_digest from the verified result. Keep expected_origin,

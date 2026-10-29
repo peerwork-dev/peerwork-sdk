@@ -17,3 +17,5 @@ is access controlled and executed by the backend. Legacy online modes are retire
 Historical dated results and old `Secure*` API guides describe earlier versions;
 they do not establish current endpoint or package support. Filenames ending in
 `-candidate` are retained for links; each current guide states its actual support.
+
+- [Attach a role bundle to an existing instance](existing-instance-protocol-binding.md)
