@@ -44,7 +44,7 @@ async function serveBridge(config){
    let result;
    if(method==='health')result={health:await host.health(),destination:host.destination};
    if(method==='requests')result={requests:await host.requests()};
-   if(method==='respond'){await host.respond(body.id,body.result);result={status:'HOST_RESPONSE_SENT'};}
+   if(method==='respond'){if(config.allow_permission_responses!==true)throw new DeliveryError('BRIDGE_PERMISSION_RESPONSE_DISABLED');await host.respond(body.id,body.result);result={status:'HOST_RESPONSE_SENT'};}
    if(method==='receipt'){const row=ledger.find(r=>r.key===hash([body.binding,body.message_id]));if(!row||row.wire_digest!==body.body_hash)throw new DeliveryError('HOST_INPUT_CONFLICT');result={status:row.status,...row.status==='DONE'?{receipt:row.receipt}:{}};}
    if(method==='resolve'){const row=ledger.find(r=>r.key===hash([body.binding,body.message_id]));if(!row||!['SENDING','UNKNOWN'].includes(row.status)||inflight.has(row.key))throw new DeliveryError('DELIVERY_NOT_UNCERTAIN');if(body.confirmed_not_sent===true&&!body.host_receipt)row.status='NOT_SENT';else if(typeof body.host_receipt==='string'&&body.host_receipt.length>0&&body.host_receipt.length<=128&&!body.confirmed_not_sent){row.status='DONE';row.receipt={state:host.mode==='TOOL_ONLY'?'HOST_QUEUED':'HOST_ACCEPTED',receipt:body.host_receipt};}else throw new DeliveryError('DELIVERY_RESOLUTION_REQUIRED');save();result={status:'RESOLUTION_SAVED'};}
    if(method==='deliver'){

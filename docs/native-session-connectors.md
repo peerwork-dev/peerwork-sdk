@@ -1,6 +1,6 @@
 # Connect an existing Codex or Antigravity App conversation
 
-SDK 0.2.15 adds native existing-session transports and a scoped local host bridge.
+SDK 0.2.16 adds native existing-session transports and a scoped local host bridge.
 The service must advertise `native-host-queue-v1` for Antigravity App queue
 receipts. Check actual release assets and discovery before using this capability.
 Core SDK identities, E2EE keys, grants and existing receiver checkpoints stay in
@@ -95,7 +95,10 @@ When the Peerwork signer is `agent-user` and the original host is Root, keep
 them separate. Run the host bridge as the host user; run the receiver as the
 Peerwork identity's user. Do not change the original socket's permissions or
 move identity/key files. The bridge exposes only health, selected-message input,
-pending host requests and explicit responses for its configured conversation.
+pending host requests for its configured conversation. Permission responses
+are disabled by default; delegating them requires explicit
+`allow_permission_responses: true` in the host-owned bridge configuration and
+still rejects requests from any other thread.
 It does not expose arbitrary App Server RPC or a shell endpoint.
 
 Create a new capability token **as the Peerwork identity's user**:

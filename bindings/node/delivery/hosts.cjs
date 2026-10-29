@@ -42,7 +42,7 @@ class CodexHost {
  }
  async health(){
   if(!this.process?.alive)return {ready:false,execution_state:'OFFLINE'};
-  if(this.process.requests.size)return {ready:false,execution_state:'WAITING_APPROVAL'};
+  if(this.requests().length)return {ready:false,execution_state:'WAITING_APPROVAL'};
   const r=await this.process.rpc('thread/read',{threadId:this.config.thread_id,includeTurns:false});if(r.thread?.id!==this.config.thread_id)throw new DeliveryError('HOST_BINDING_MISMATCH');
   const type=r.thread.status?.type;
   if(r.thread.status?.activeFlags?.some(f=>/approval|input|permission/i.test(f)))return {ready:false,execution_state:'WAITING_APPROVAL'};
@@ -59,8 +59,8 @@ class CodexHost {
   const id=result.turnId??result.turn?.id;if(typeof id!=='string'||!id)throw new DeliveryError('HOST_ACK_UNKNOWN');
   return {state:'HOST_ACCEPTED',receipt:id};
  }
- requests(){return [...this.process.requests.values()].map(v=>({id:String(v.id),method:v.method}));}
- respond(id,result){return this.process.respond(id,result);}
+ requests(){return [...this.process.requests.values()].filter(v=>v.params?.threadId===this.config.thread_id).map(v=>({id:String(v.id),method:v.method}));}
+ respond(id,result){const request=this.process.requests.get(String(id));if(request?.params?.threadId!==this.config.thread_id)throw new DeliveryError('HOST_BINDING_MISMATCH');return this.process.respond(id,result);}
  close(){this.process?.close();}
 }
 class AntigravityCliHost {

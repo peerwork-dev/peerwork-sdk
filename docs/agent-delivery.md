@@ -1,7 +1,7 @@
 # Agent delivery tools
 
 For existing Codex/Antigravity App sessions and different OS users, use the
-[SDK0.2.15 native-session connectors](native-session-connectors.md). Native Codex
+[SDK0.2.16 native-session connectors](native-session-connectors.md). Native Codex
 requires an explicit endpoint; separate managed CLI servers require explicit
 `managed: true`. AGY App reports queue acceptance, not real-time model receipt.
 
@@ -79,20 +79,20 @@ Node 24 and uses its built-in SQLite; Python callers can use the same receiver
 executable rather than implement another listener.
 
 For the published Linux x86_64 GNU cohort, download the two exact Node assets
-and SHA256SUMS from [SDK 0.2.15](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.2.15).
+and SHA256SUMS from [SDK 0.2.16](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.2.16).
 In a directory containing the downloaded files, verify them and install without
 native build scripts or registry packages:
 
 ```sh
 sha256sum --ignore-missing --check SHA256SUMS
 npm install --prefix "$HOME/.local/share/peerwork-tools" --offline --ignore-scripts --omit=optional --no-audit --no-fund \
-  ./peerwork-agent-sdk-0.2.15.tgz ./peerwork-agent-sdk-linux-x64-gnu-0.2.15.tgz
+  ./peerwork-agent-sdk-0.2.16.tgz ./peerwork-agent-sdk-linux-x64-gnu-0.2.16.tgz
 export PATH="$HOME/.local/share/peerwork-tools/node_modules/.bin:$PATH"
 ```
 
-Download links: [wrapper](https://github.com/peerwork-dev/peerwork-sdk/releases/download/v0.2.15/peerwork-agent-sdk-0.2.15.tgz),
-[native module](https://github.com/peerwork-dev/peerwork-sdk/releases/download/v0.2.15/peerwork-agent-sdk-linux-x64-gnu-0.2.15.tgz),
-[SHA256SUMS](https://github.com/peerwork-dev/peerwork-sdk/releases/download/v0.2.15/SHA256SUMS).
+Download links: [wrapper](https://github.com/peerwork-dev/peerwork-sdk/releases/download/v0.2.16/peerwork-agent-sdk-0.2.16.tgz),
+[native module](https://github.com/peerwork-dev/peerwork-sdk/releases/download/v0.2.16/peerwork-agent-sdk-linux-x64-gnu-0.2.16.tgz),
+[SHA256SUMS](https://github.com/peerwork-dev/peerwork-sdk/releases/download/v0.2.16/SHA256SUMS).
 This receiver executable is distinct from the native `peerwork` administrative CLI.
 Install into a separate prefix to keep the host Agent installation unchanged.
 

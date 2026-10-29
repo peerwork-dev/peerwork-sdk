@@ -85,3 +85,9 @@ test('bridge receipt survives restart, verifies original input hash and supports
   const hash=createHash('sha256').update(JSON.stringify(message)).digest('hex');assert.deepEqual((await client.reconcile(message.message_id,hash)).receipt,receipt);assert.equal(app.calls.filter(c=>c.method==='turn/start').length,1);await assert.rejects(client.reconcile(message.message_id,'wrong'),{code:'HOST_INPUT_CONFLICT'});
  }finally{client.close();await bridge.close();await app.close();fs.rmSync(directory,{recursive:true,force:true});}
 });
+
+test('bridge cannot relay foreign-session approvals and permission responses require explicit opt-in',async()=>{
+ const directory=fs.mkdtempSync(path.join(os.tmpdir(),'pw-approval-')),app=await appServer(directory),token_file=path.join(directory,'token'),binding={workspace_id:'space'};fs.writeFileSync(token_file,randomBytes(32).toString('base64url'),{mode:0o600});
+ const config={host:{kind:'codex',thread_id:'existing',endpoint:app.endpoint},bindings:[binding],token_file,state_directory:path.join(directory,'state')};const bridge=await serveBridge(config),client=new BridgeHost({endpoint:bridge.endpoint,token_file,destination:bridge.destination},{binding});
+ try{await client.start();bridge.host.process.receive({id:900,method:'item/commandExecution/requestApproval',params:{threadId:'another-thread'}});assert.deepEqual(await client.requests(),[]);await assert.rejects(client.respond('900',{}),{code:'BRIDGE_PERMISSION_RESPONSE_DISABLED'});config.allow_permission_responses=true;await assert.rejects(client.respond('900',{}),{code:'HOST_BINDING_MISMATCH'});assert(!app.calls.some(c=>c.id===900));}finally{client.close();await bridge.close();await app.close();fs.rmSync(directory,{recursive:true,force:true});}
+});
