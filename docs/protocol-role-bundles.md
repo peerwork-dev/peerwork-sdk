@@ -172,7 +172,7 @@ it does not install a Skill, plugin, MCP server or background listener:
 
 ## Existing bare-manifest instances
 
-SDK 0.2.12 and service feature `owner-protocol-bundle-binding-v1` add an explicit
+SDK 0.2.13 and service feature `owner-protocol-bundle-binding-v1` add an explicit
 Owner first-attachment path that preserves the exact execution rules and existing
 tasks/grants. See the [existing-instance guide](existing-instance-protocol-binding.md).
 A previously selected immutable bundle cannot be replaced by this operation.

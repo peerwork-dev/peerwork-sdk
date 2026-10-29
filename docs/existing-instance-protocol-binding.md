@@ -1,6 +1,6 @@
 # Attach role instructions to an existing instance
 
-SDK 0.2.12 introduces an Owner-authorized **first** bundle attachment through
+SDK 0.2.13 introduces an Owner-authorized **first** bundle attachment through
 `ProtocolClient.bind` (Python), `protocols(kernel).bind` (Node), and the native
 CLI's existing `kernel intent` command. The service must advertise
 `owner-protocol-bundle-binding-v1`; check actual release assets and discovery.
@@ -106,7 +106,7 @@ are not retained. Revisions, keys, identity and task data are not migrated.
 
 ## Participant role and receiver selection
 
-After successful attachment, each participant uses SDK 0.2.12 or later to resolve
+After successful attachment, each participant uses SDK 0.2.13 or later to resolve
 its own existing role. The new SDK verifies the Owner's exact first-attachment
 intent and its target instance, package and execution digests. Older bundle
 verifiers do not understand this new source form; do not disable verification.
