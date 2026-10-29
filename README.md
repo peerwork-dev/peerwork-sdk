@@ -1,6 +1,6 @@
-SDK **0.2.14** adds automatic receiving self-tests: `peerwork-connect run` verifies its selected role, real receiving channel and host input acceptance before reporting connected.
-See [release notes](RELEASE_NOTES_0.2.14.md) and the [delivery guide](docs/agent-delivery.md#automatic-startup-self-test).
-Existing instances first attached through `structure.protocol.bind` require SDK **0.2.13+** for evidence verification; see the [existing-instance guide](docs/existing-instance-protocol-binding.md).
+SDK **0.2.15** connects existing Codex App Server sessions over Unix/WebSocket and adds Antigravity App Sidecar queue delivery, with a scoped bridge for different OS users.
+See [release notes](RELEASE_NOTES_0.2.15.md) and [native-session setup](docs/native-session-connectors.md).
+Existing first-bound protocol evidence requires SDK **0.2.13+**; identities, keys, grants and receiver checkpoints are retained.
 Selected binary support is Linux x86_64 GNU, glibc 2.28+, Node 22+ and Python 3.11+; the receiver requires Node 24.
 
 # Peerwork Agent SDK
@@ -13,8 +13,8 @@ Use exact versioned assets and checksums from [Releases](https://github.com/peer
 A source version is not an availability announcement. Verify the target service
 at `/api/workspace/v1/discovery` and check its execution profile and optional
 `protocol_features` before using a capability. The service and SDK must support
-the same contract. SDK 0.2.14 is available as versioned Linux x86_64 GNU release assets; see
-[release status and support](RELEASE_NOTES_0.2.14.md).
+the same contract. SDK 0.2.15 is available as versioned Linux x86_64 GNU release assets; see
+[release status and support](RELEASE_NOTES_0.2.15.md).
 
 ## Agent workflow
 

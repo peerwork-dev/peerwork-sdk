@@ -1,5 +1,11 @@
 # Agent delivery tools
 
+For existing Codex/Antigravity App sessions and different OS users, use the
+[SDK0.2.15 native-session connectors](native-session-connectors.md). Native Codex
+requires an explicit endpoint; separate managed CLI servers require explicit
+`managed: true`. AGY App reports queue acceptance, not real-time model receipt.
+
+
 SDK 0.2.10 introduced `DeliveryClient` (Python), `delivery` (Node), and the
 `peerwork-connect` Node executable. The service must advertise `agent-delivery-v1`
 and use PostgreSQL schema 15. Source implementation and local acceptance are not
@@ -46,9 +52,9 @@ completion is claimed.
 
 | Connector | Interface | Availability behavior |
 | --- | --- | --- |
-| `codex` | Codex App Server stdio, explicit existing thread ID | Starts an idle turn; steers an active turn only when its exact turn ID is known; pauses for host approval/input |
+| `codex` | Existing App Server Unix/WebSocket, explicit endpoint/thread ID | Starts an idle turn; steers an active turn only when its exact turn ID is known; pauses for host approval/input |
 | `agy-cli` | Antigravity CLI continuous stream-json, explicit conversation ID | IDLE_ONLY; first host activity establishes receipt; busy turns queue with DELAYED status |
-| Antigravity App | `agentapi` Sidecar | Not qualified by this release; a queue/CLI exit alone does not establish real-time conversation acceptance |
+| `agy-app` | Native App Sidecar `agentapi send-message`, existing conversation | QUEUED_ONLY; no model/real-time acceptance claimed |
 
 Protocol adapter tests use synthetic host peers. They do not establish that an
 arbitrary installed host/version, model account or already-running UI/CLI
@@ -73,20 +79,20 @@ Node 24 and uses its built-in SQLite; Python callers can use the same receiver
 executable rather than implement another listener.
 
 For the published Linux x86_64 GNU cohort, download the two exact Node assets
-and SHA256SUMS from [SDK 0.2.14](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.2.14).
+and SHA256SUMS from [SDK 0.2.15](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.2.15).
 In a directory containing the downloaded files, verify them and install without
 native build scripts or registry packages:
 
 ```sh
 sha256sum --ignore-missing --check SHA256SUMS
 npm install --prefix "$HOME/.local/share/peerwork-tools" --offline --ignore-scripts --omit=optional --no-audit --no-fund \
-  ./peerwork-agent-sdk-0.2.14.tgz ./peerwork-agent-sdk-linux-x64-gnu-0.2.14.tgz
+  ./peerwork-agent-sdk-0.2.15.tgz ./peerwork-agent-sdk-linux-x64-gnu-0.2.15.tgz
 export PATH="$HOME/.local/share/peerwork-tools/node_modules/.bin:$PATH"
 ```
 
-Download links: [wrapper](https://github.com/peerwork-dev/peerwork-sdk/releases/download/v0.2.14/peerwork-agent-sdk-0.2.14.tgz),
-[native module](https://github.com/peerwork-dev/peerwork-sdk/releases/download/v0.2.14/peerwork-agent-sdk-linux-x64-gnu-0.2.14.tgz),
-[SHA256SUMS](https://github.com/peerwork-dev/peerwork-sdk/releases/download/v0.2.14/SHA256SUMS).
+Download links: [wrapper](https://github.com/peerwork-dev/peerwork-sdk/releases/download/v0.2.15/peerwork-agent-sdk-0.2.15.tgz),
+[native module](https://github.com/peerwork-dev/peerwork-sdk/releases/download/v0.2.15/peerwork-agent-sdk-linux-x64-gnu-0.2.15.tgz),
+[SHA256SUMS](https://github.com/peerwork-dev/peerwork-sdk/releases/download/v0.2.15/SHA256SUMS).
 This receiver executable is distinct from the native `peerwork` administrative CLI.
 Install into a separate prefix to keep the host Agent installation unchanged.
 
@@ -112,7 +118,7 @@ Fill the following with existing identity, journal and protocol selections:
   "host": {
     "kind": "codex",
     "thread_id": "SELECTED_CODEX_THREAD_ID",
-    "command": ["codex", "app-server", "--listen", "stdio://"]
+    "endpoint": "unix:///private/codex/app-server-control.sock"
   },
   "state_directory": "/private/worker-a/delivery",
   "selftest_timeout_ms": 60000,
@@ -120,7 +126,7 @@ Fill the following with existing identity, journal and protocol selections:
 }
 ```
 
-For agy select `{"kind":"agy-cli","conversation_id":"SELECTED_CONVERSATION_ID"}`.
+For an explicitly managed agy CLI select `{"kind":"agy-cli","managed":true,"conversation_id":"SELECTED_CONVERSATION_ID"}`.
 The tool starts the configured continuous conversation process. It does not
 attach to any unrelated terminal or infer the most recent conversation. For Codex, a custom `command` is the full App Server executable/argument array.
 For agy it is an executable/argument prefix; the connector appends the pinned

@@ -1481,7 +1481,7 @@ export interface DeliveryRoute {
   route_id: string; actor_id: string; instance_id: string; package_digest: string;
   role: string; epoch: number; host: string; mode: 'LIVE' | 'IDLE_ONLY' | 'TOOL_ONLY';
   state: 'REALTIME_READY' | 'DELAYED' | 'OFFLINE' | 'TOOL_ONLY';
-  execution_state: 'IDLE' | 'BUSY' | 'WAITING_APPROVAL' | 'OFFLINE';
+  execution_state: 'IDLE' | 'BUSY' | 'WAITING_APPROVAL' | 'UNKNOWN' | 'OFFLINE';
   lease_until: number; server_time: number; assurance: 'RECEIVER_ATTESTED';
   host_checkpoint: number; received_checkpoint: number; uncertain_sequence: number | null;
 }
@@ -1493,7 +1493,7 @@ export interface DeliveryClient {
   routes(selection?: {limit?: number; after?: string | null}, options?: {signal?: AbortSignal}): Promise<StructureIntentOutcome>;
   receipt(routeId: string, sequence: number, options?: {signal?: AbortSignal}): Promise<StructureIntentOutcome>;
   pulse(selection: DeliveryFence & {ready: boolean; transport_ready: boolean; execution_state: DeliveryRoute['execution_state']}, options?: {signal?: AbortSignal}): Promise<StructureIntentOutcome>;
-  ack(selection: DeliveryFence & {sequence: number; stage: 'CONNECTOR_RECEIVED' | 'HOST_ACCEPTED' | 'UNCERTAIN'; host_receipt?: string; resolve_uncertain?: boolean}, options?: {signal?: AbortSignal}): Promise<StructureIntentOutcome>;
+  ack(selection: DeliveryFence & {sequence: number; stage: 'CONNECTOR_RECEIVED' | 'HOST_ACCEPTED' | 'HOST_QUEUED' | 'UNCERTAIN'; host_receipt?: string; resolve_uncertain?: boolean}, options?: {signal?: AbortSignal}): Promise<StructureIntentOutcome>;
   inbox(selection: DeliveryFence & {limit?: number}, options?: {signal?: AbortSignal}): Promise<StructureIntentOutcome>;
   wakes(fence: DeliveryFence, options?: {signal?: AbortSignal}): AsyncIterable<{event: 'ready' | 'wake'}>;
 }

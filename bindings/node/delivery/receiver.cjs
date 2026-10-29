@@ -31,12 +31,12 @@ class DeliveryReceiver {
   let receipt;
   try{
    receipt=await this.host.deliver(probe);
-   if(receipt?.state!=='HOST_ACCEPTED'||typeof receipt.receipt!=='string'||!receipt.receipt)throw new DeliveryError('HOST_ACK_UNKNOWN');
+   if(!['HOST_ACCEPTED','HOST_QUEUED'].includes(receipt?.state)||receipt.state==='HOST_QUEUED'&&this.host.mode!=='TOOL_ONLY'||typeof receipt.receipt!=='string'||!receipt.receipt)throw new DeliveryError('HOST_ACK_UNKNOWN');
   }catch(error){
-   this.reportSelftest('HOST',{status:error.code==='HOST_NOT_READY'?'FAILED':'UNCERTAIN',code:error.code??'HOST_ACK_UNKNOWN'});throw error;
+   this.reportSelftest('HOST',{status:['HOST_NOT_READY','HOST_NOT_SENT','HOST_INBOX_FULL','HOST_INPUT_TOO_LARGE'].includes(error.code)?'FAILED':'UNCERTAIN',code:error.code??'HOST_ACK_UNKNOWN'});throw error;
   }
   if(signal.aborted){this.reportSelftest('HOST',{status:'HOST_ACCEPTED',host_receipt:receipt.receipt});throw signal.reason;}
-  this.reportSelftest('HOST_ACCEPTED',{status:'HOST_ACCEPTED',host_receipt:receipt.receipt,model_response:'NOT_ATTESTED'});
+  this.reportSelftest(receipt.state,{status:receipt.state,host_receipt:receipt.receipt,host_delivery:receipt.state,model_response:'NOT_ATTESTED'});
   this.selftestPassed=true;return this.testReport;
  }
  async claim({signal,replace=false,resumeClosed=false}={}){
@@ -58,7 +58,7 @@ class DeliveryReceiver {
   const out=await this.client.pulse({...this.fence,ready:this.selftestPassed&&health.ready&&!uncertain&&!this.blocked,execution_state:health.execution_state,transport_ready:this.transportReady},{signal});
   const route=result(out).route;
   this.lastStatus={route_id:route.route_id,state:route.state,execution_state:route.execution_state,
-   connection_state:!this.transportReady||health.execution_state==='OFFLINE'?'DISCONNECTED':!this.selftestPassed?'SELF_TESTING':uncertain||this.blocked?'DEGRADED':'CONNECTED',selftest:this.testReport};
+   connection_state:!this.transportReady||health.execution_state==='OFFLINE'?'DISCONNECTED':!this.selftestPassed?'SELF_TESTING':uncertain||this.blocked?'DEGRADED':this.host.mode==='TOOL_ONLY'?'QUEUED_ONLY':'CONNECTED',selftest:this.testReport};
   this.onStatus(this.lastStatus);return route;
  }
  async frame(event,signal){
@@ -79,8 +79,16 @@ class DeliveryReceiver {
     if(signal?.aborted)return;const row=this.store.delivery(event.sequence);
     if(row.status==='ACKED')continue;
     result(await this.client.ack({...this.fence,sequence:event.sequence,stage:'CONNECTOR_RECEIVED'},{signal}));
-    if(['HOST_ACCEPTED','HOST_CONFIRMED'].includes(row.status)){
-     result(await this.client.ack({...this.fence,sequence:event.sequence,stage:'HOST_ACCEPTED',host_receipt:row.receipt,resolve_uncertain:row.status==='HOST_CONFIRMED'},{signal}));this.store.mark(event.sequence,'ACKED');continue;
+    if(['HOST_ACCEPTED','HOST_QUEUED','HOST_CONFIRMED'].includes(row.status)){
+     result(await this.client.ack({...this.fence,sequence:event.sequence,stage:row.status==='HOST_QUEUED'||row.status==='HOST_CONFIRMED'&&this.host.mode==='TOOL_ONLY'?'HOST_QUEUED':'HOST_ACCEPTED',host_receipt:row.receipt,resolve_uncertain:true},{signal}));this.store.mark(event.sequence,'ACKED');continue;
+    }
+    if((row.status==='HOST_SENDING'||row.status==='UNCERTAIN')&&this.host.reconcile){
+     const proof=await this.host.reconcile(this.client.binding.workspace_id+':'+this.fence.route_id+':'+event.sequence,row.body_hash);
+     if(proof.status==='DONE'&&['HOST_ACCEPTED','HOST_QUEUED'].includes(proof.receipt?.state)&&proof.receipt.receipt){
+      const stage=proof.receipt.state;this.store.mark(event.sequence,'HOST_CONFIRMED',proof.receipt.receipt);
+      result(await this.client.ack({...this.fence,sequence:event.sequence,stage,host_receipt:proof.receipt.receipt,resolve_uncertain:true},{signal}));this.store.mark(event.sequence,'ACKED');continue;
+     }
+     if(proof.status==='NOT_SENT'){this.store.mark(event.sequence,'RETRY_CONFIRMED');row.status='RETRY_CONFIRMED';}
     }
     if(row.status==='HOST_SENDING'||row.status==='UNCERTAIN'){
      this.store.mark(event.sequence,'UNCERTAIN');result(await this.client.ack({...this.fence,sequence:event.sequence,stage:'UNCERTAIN'},{signal}));this.onStatus({state:'DELAYED',code:'HOST_ACK_UNKNOWN',sequence:event.sequence});return;
@@ -93,18 +101,19 @@ class DeliveryReceiver {
     try{receipt=await this.host.deliver(frame);}catch(error){
      // A definite local precondition failure did not write a prompt. A lost
      // host response is kept uncertain, never automatically injected again.
-     if(error.code==='HOST_NOT_READY'){this.store.mark(event.sequence,'RECEIVED');return;}
+     if(['HOST_NOT_READY','HOST_NOT_SENT','HOST_INBOX_FULL','HOST_INPUT_TOO_LARGE'].includes(error.code)){this.store.mark(event.sequence,'RECEIVED');return;}
      this.store.mark(event.sequence,'UNCERTAIN');await this.client.ack({...this.fence,sequence:event.sequence,stage:'UNCERTAIN'},{signal});throw error;
     }
-    if(receipt.state!=='HOST_ACCEPTED'||!receipt.receipt)throw new DeliveryError('HOST_ACK_UNKNOWN');
-    this.store.mark(event.sequence,'HOST_ACCEPTED',receipt.receipt);
-    result(await this.client.ack({...this.fence,sequence:event.sequence,stage:'HOST_ACCEPTED',host_receipt:receipt.receipt,resolve_uncertain:row.status==='RETRY_CONFIRMED'},{signal}));this.store.mark(event.sequence,'ACKED');this.store.prune();
+    if(!['HOST_ACCEPTED','HOST_QUEUED'].includes(receipt.state)||receipt.state==='HOST_QUEUED'&&this.host.mode!=='TOOL_ONLY'||!receipt.receipt)throw new DeliveryError('HOST_ACK_UNKNOWN');
+    this.store.mark(event.sequence,receipt.state,receipt.receipt);
+    result(await this.client.ack({...this.fence,sequence:event.sequence,stage:receipt.state,host_receipt:receipt.receipt,resolve_uncertain:row.status==='RETRY_CONFIRMED'},{signal}));this.store.mark(event.sequence,'ACKED');this.store.prune();
    }
    return inbox.more;
   }finally{this.busy=false;}
  }
- resolve(sequence,{host_receipt,confirmed_not_sent=false}={}){
+ async resolve(sequence,{host_receipt,confirmed_not_sent=false}={}){
   const row=this.store.delivery(sequence);if(!row||!['HOST_SENDING','UNCERTAIN'].includes(row.status))throw new DeliveryError('DELIVERY_NOT_UNCERTAIN');
+  if(this.host.resolve)await this.host.resolve(this.client.binding.workspace_id+':'+this.fence.route_id+':'+sequence,{host_receipt,confirmed_not_sent});
   if(host_receipt)this.store.mark(sequence,'HOST_CONFIRMED',host_receipt);
   else if(confirmed_not_sent)this.store.mark(sequence,'RETRY_CONFIRMED');else throw new DeliveryError('DELIVERY_RESOLUTION_REQUIRED');
  }

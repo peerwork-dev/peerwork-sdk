@@ -4,7 +4,7 @@ const {DeliveryReceiver,resolveSelftest}=require('../../bindings/node/delivery/r
 const {ReceiverStore}=require('../../bindings/node/delivery/store.cjs');
 const fake=[process.execPath,join(__dirname,'fake-host.cjs')];
 test('Codex tool binds one thread, starts idle and steers its exact active turn',async()=>{
- const host=new CodexHost({thread_id:'thread-1',command:fake});try{
+ const host=new CodexHost({thread_id:'thread-1',command:fake,managed:true});try{
   await host.start();assert.deepEqual(await host.health(),{ready:true,execution_state:'IDLE'});
   assert.equal((await host.deliver({message_id:'first'})).receipt,'turn-1');
   assert.equal((await host.health()).execution_state,'BUSY');
@@ -12,12 +12,12 @@ test('Codex tool binds one thread, starts idle and steers its exact active turn'
  }finally{host.close();}
 });
 test('agy tool is idle-only and requires actual host activity, not a pipe-write receipt',async()=>{
- const host=new AntigravityCliHost({conversation_id:'agy-1',command:fake});try{
+ const host=new AntigravityCliHost({conversation_id:'agy-1',command:fake,managed:true});try{
   await host.start();assert.equal((await host.health()).ready,false);
   const pending=host.deliver({message_id:'first'});await new Promise(r=>setImmediate(r));assert.equal((await host.health()).execution_state,'BUSY');
   const receipt=await pending;assert.equal(receipt.state,'HOST_ACCEPTED');assert.equal((await host.health()).ready,false);
   await new Promise(r=>setTimeout(r,50));assert.equal((await host.health()).ready,true);
-  assert.equal(host.mode,'IDLE_ONLY');assert.throws(()=>createHost({kind:'agy-app'}),/UNQUALIFIED/);
+  assert.equal(host.mode,'IDLE_ONLY');assert.throws(()=>createHost({kind:'agy-app'}),/HOST_THREAD_REQUIRED/);
  }finally{host.close();}
 });
 function fixture(directory,{loseHost=false,loseAck=false}={}){
@@ -35,7 +35,7 @@ test('lost backend acknowledgement resumes the saved host receipt without sendin
 test('unknown host effects stay uncertain across restart and require explicit resolution',async()=>{
  const dir=fs.mkdtempSync(join(tmpdir(),'delivery-uncertain-'));let f=fixture(dir,{loseHost:true});
  try{await assert.rejects(f.receiver.drain());assert.equal(f.calls(),1);await f.receiver.drain();assert.equal(f.calls(),1);f.receiver.store.close();
-  f=fixture(dir);await f.receiver.drain();assert.equal(f.calls(),0);f.receiver.resolve(1,{host_receipt:'verified-turn'});await f.receiver.drain();assert.equal(f.calls(),0);assert.equal(f.receiver.store.delivery(1).status,'ACKED');
+  f=fixture(dir);await f.receiver.drain();assert.equal(f.calls(),0);await f.receiver.resolve(1,{host_receipt:'verified-turn'});await f.receiver.drain();assert.equal(f.calls(),0);assert.equal(f.receiver.store.delivery(1).status,'ACKED');
  }finally{f.receiver.store.close();fs.rmSync(dir,{recursive:true,force:true});}
 });
 test('receiver state is private, binding pinned and single-writer locked',()=>{
