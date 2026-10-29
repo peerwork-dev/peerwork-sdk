@@ -178,8 +178,8 @@ An explicit one-shot check uses exactly the same path:
 peerwork-connect selftest /private/worker-a/delivery.json
 ```
 
-It prints a PASS report and then stops its receiver, marking the route offline;
-it does not leave a receiver running. Preserve the same private receiver state
+It prints a PASS report and then stops its receiver; a shutdown heartbeat or
+lease expiry marks the route offline. It does not leave a receiver running. Preserve the same private receiver state
 when subsequently invoking `run`. Neither this command nor startup self-testing
 proves model comprehension, future delivery latency, peer-to-peer round trip or
 that all encrypted body keys are available. Actual messages still undergo native
@@ -278,3 +278,14 @@ their actual round trip; these tools do not claim those measurements in advance.
 > and permissions. Use native SDK actions to reply, preserving operation IDs.
 > Report your route reachability and uncertain deliveries; do not build another
 > polling loop, change global Agent instructions or bypass host approvals.
+
+## Workspace capacity
+
+The production database default is 100 MiB per workspace (104,857,600 bytes).
+Existing smaller workspace limits were raised to that floor; higher quotas are
+preserved. One MiB is reserved for security operations, leaving 99 MiB for
+ordinary writes. Current usage, object limits and permissions are unchanged;
+global capacity bounds still apply. Signed `structure.workspace.get` capacity
+is authoritative for the selected workspace. The quota update requires neither
+a service restart nor an SDK upgrade. Startup self-tests append no business
+record and do not consume the business inbox.
