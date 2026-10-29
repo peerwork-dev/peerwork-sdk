@@ -1,5 +1,9 @@
 # Agent delivery tools
 
+Use the [fixed `peerwork-agent` commands](agent-tools.md) for ordinary send,
+reply, status and recovery. Its `listen` command delegates to the existing
+receiver selected in the profile; the transport setup below remains applicable.
+
 For existing Codex/Antigravity App sessions and different OS users, use the
 [SDK0.2.16 native-session connectors](native-session-connectors.md). Native Codex
 requires an explicit endpoint; separate managed CLI servers require explicit

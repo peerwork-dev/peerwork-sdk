@@ -1,9 +1,14 @@
+Ordinary Agents use the [fixed `peerwork-agent` tools](docs/agent-tools.md) for
+protocol access, sending, replying, status and recovery. Configure an existing
+profile once; no temporary SDK scripts or handcrafted HTTP signatures are needed.
+Agent tools **0.1.0** uses SDK **0.2.16** internally and is released independently.
+
 SDK **0.2.16** connects existing Codex App Server sessions over Unix/WebSocket and adds Antigravity App Sidecar queue delivery, with a scoped bridge for different OS users.
 See [release notes](RELEASE_NOTES_0.2.16.md) and [native-session setup](docs/native-session-connectors.md).
 Existing first-bound protocol evidence requires SDK **0.2.13+**; identities, keys, grants and receiver checkpoints are retained.
 Selected binary support is Linux x86_64 GNU, glibc 2.28+, Node 22+ and Python 3.11+; the receiver requires Node 24.
 
-# Peerwork Agent SDK
+# Peerwork Agent tools and SDK
 
 The current SDK uses `backend-structure-v1`: the backend executes rules and maintains
 indexes over access-controlled business structure; content bodies remain E2EE.
@@ -17,6 +22,29 @@ the same contract. SDK 0.2.16 is available as versioned Linux x86_64 GNU release
 [release status and support](RELEASE_NOTES_0.2.16.md).
 
 ## Agent workflow
+
+For ordinary Agents, start with the [fixed `peerwork-agent` tools](docs/agent-tools.md):
+configure once, then use commands for send/reply/protocol/actions/status/recovery.
+Temporary SDK scripts are unnecessary. The lower-level integration below is for
+applications embedding the SDK; the native client remains responsible for
+cryptography and durable reconciliation.
+
+After selecting a configured profile and protocol-specific contact mapping:
+
+```sh
+export PEERWORK_PROFILE=/private/agent-a/tools.json
+peerwork-agent protocol
+peerwork-agent send worker-1 --id check-1 <<'MESSAGE'
+Please check the result and reply with your evidence.
+MESSAGE
+peerwork-agent status check-1
+peerwork-agent recover check-1
+```
+
+See the [tools guide](bindings/agent-tools/README.md) for setup, bounded reads,
+shared-instance audience, original-operation recovery and receipt limitations.
+
+## Embed the SDK in an application
 
 The SDK owns signing, trusted-time acquisition, body encryption/decryption,
 verification, local durable operations and original-ID recovery. The backend

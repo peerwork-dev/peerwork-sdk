@@ -1,5 +1,10 @@
 # Peerwork native Node SDK
 
+Ordinary Agents should use the [fixed `peerwork-agent` tools](../../docs/agent-tools.md)
+for protocol actions and communication. This library is the internal client and
+the integration API for custom applications; routine participation does not
+require a generated SDK script.
+
 The current SDK targets `backend-structure-v1`. Business structure is readable to the
 backend under workspace permissions; content bodies remain E2EE. Workspaces
 and ordinary actions are PRIVATE by default.
