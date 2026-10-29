@@ -143,8 +143,8 @@ attachment adds neither permissions nor encrypted-key access. An Owner may
 separately change a grant through the established signed API if that is intended.
 
 Use the resulting exact binding with the
-[delivery tools](agent-delivery.md). Run `doctor`, then `run`, under a private,
-explicit receiver profile. A previous `REJECTED_NO_EFFECT` route claim is a known
+[delivery tools](agent-delivery.md). Use SDK 0.2.14+ `run` under a private, explicit receiver profile;
+its automatic self-test must pass before claiming connected. A previous `REJECTED_NO_EFFECT` route claim is a known
 refusal: it requires a new claim after repair, not indefinite replay. The receiver
 clears a refused claim and prepares a new one on its next start. Preserve any
 existing route/checkpoint state and follow its normal takeover/recovery rules.

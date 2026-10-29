@@ -3,8 +3,8 @@
 // SPDX-License-Identifier: Apache-2.0
 const fs=require('node:fs'),path=require('node:path'),net=require('node:net'),{createInterface}=require('node:readline');
 if(Number(process.versions.node.split('.')[0])<24){console.error(JSON.stringify({status:'FAILED',code:'CONNECTOR_REQUIRES_NODE_24'}));process.exit(1);}
-const sdk=require('../index.cjs'),{DeliveryReceiver}=require('./receiver.cjs'),{createHost}=require('./hosts.cjs'),{result,DeliveryError}=require('./client.cjs');
-const usage='peerwork-connect <doctor|run|status|routes|receipt|close|requests|respond|resolve> CONFIG.json [arguments]';
+const sdk=require('../index.cjs'),{DeliveryReceiver,resolveSelftest}=require('./receiver.cjs'),{createHost}=require('./hosts.cjs'),{result,DeliveryError}=require('./client.cjs');
+const usage='peerwork-connect <doctor|selftest|run|status|routes|receipt|close|requests|respond|resolve|resolve-selftest> CONFIG.json [arguments]';
 async function control(socket,request){
  return new Promise((resolve,reject)=>{const client=net.connect(socket),timer=setTimeout(()=>{client.destroy();reject(new DeliveryError('RECEIVER_CONTROL_TIMEOUT'));},5000);let text='';
   client.on('connect',()=>client.write(JSON.stringify(request)+'\n'));client.on('data',data=>{text+=data.toString();if(text.length>65536){client.destroy();reject(new DeliveryError('RECEIVER_CONTROL_INVALID'));}});client.on('end',()=>{clearTimeout(timer);try{const out=JSON.parse(text);out.error?reject(new DeliveryError(out.error,out.outcome)):resolve(out);}catch(error){reject(error);}});client.on('error',error=>{clearTimeout(timer);reject(error);});
@@ -22,20 +22,28 @@ async function main(){
  const kernel=await sdk.openKernel({...config.kernel,requiredFeatures:[...new Set([...(config.kernel.requiredFeatures??[]),'agent-delivery-v1','protocol-role-bundles-v1'])]}),session=sdk.protocolSession(kernel,config.binding),client=sdk.delivery(kernel,config.binding);
  if(command==='doctor'){
   const described=await session.describe();result(described.outcome);const host=createHost(config.host);
-  try{await host.start();const health=await host.health();console.log(JSON.stringify({status:'PASS',version:sdk.version(),host:host.host,mode:host.mode,host_health:health,model_turn_started:false}));}finally{host.close();}return;
+  try{await host.start();const health=await host.health();console.log(JSON.stringify({status:'PASS',scope:'PRECHECK_ONLY',connection_state:'UNVERIFIED',version:sdk.version(),host:host.host,mode:host.mode,host_health:health,model_turn_started:false}));}finally{host.close();}return;
  }
  if(command==='routes'){console.log(JSON.stringify(await client.routes()));return;}
- if(command==='status'||command==='receipt'){
+ if(command==='status'||command==='receipt'||command==='resolve-selftest'){
   if(!fs.existsSync(path.join(config.state_directory,'receiver.sqlite')))throw new DeliveryError('RECEIVER_NOT_BOUND');
   const {ReceiverStore}=require('./store.cjs'),host=createHost(config.host),store=new ReceiverStore(config.state_directory,{binding:client.binding,host:host.destination??host.config,includeSelf:config.include_self??false});
   try{const route=store.get('route');if(!route)throw new DeliveryError('RECEIVER_NOT_BOUND');
-   if(command==='status')console.log(JSON.stringify({outcome:await client.get(route.route_id),pending:store.pending()}));
+   if(command==='status'){
+    const outcome=await client.get(route.route_id),remote=result(outcome).route,selftest=store.get('selftest');
+    const connection_state=remote.state==='OFFLINE'?'DISCONNECTED':selftest?.status!=='PASS'?'UNVERIFIED':remote.state==='REALTIME_READY'?'CONNECTED':'DEGRADED';
+    console.log(JSON.stringify({outcome,pending:store.pending(),connection_state,selftest}));
+   }
    else if(command==='receipt')console.log(JSON.stringify(await client.receipt(route.route_id,Number(args[0]))));
+   else if(command==='resolve-selftest'){
+    if(args.length!==1)throw new DeliveryError('SELFTEST_RESOLUTION_REQUIRED');
+    store.lock();console.log(JSON.stringify(resolveSelftest(store,args[0]==='--confirmed-not-sent'?{confirmed_not_sent:true}:{host_receipt:args[0]})));
+   }
    else throw new DeliveryError('CLOSE_REQUIRES_RUNNING_RECEIVER_CONTROL');
   }finally{store.close();}return;
  }
- if(command!=='run')throw new DeliveryError(usage);
- const host=createHost(config.host),receiver=new DeliveryReceiver({client,session,host,stateDirectory:config.state_directory,includeSelf:config.include_self??false,onStatus:s=>console.log(JSON.stringify(s))}),abort=new AbortController();
+ if(!['run','selftest'].includes(command))throw new DeliveryError(usage);
+ const host=createHost(config.host),receiver=new DeliveryReceiver({client,session,host,stateDirectory:config.state_directory,includeSelf:config.include_self??false,selftestTimeoutMs:config.selftest_timeout_ms??30000,onStatus:s=>console.log(JSON.stringify(s))}),abort=new AbortController();
  let server;
  const respond=async request=>{
   if(request.method==='requests')return {requests:host.requests()};
@@ -51,7 +59,8 @@ async function main(){
   server=net.createServer(client=>{client.setTimeout(5000,()=>client.destroy());let text='';client.on('data',data=>{text+=data.toString();if(text.length>65536){client.destroy();return;}if(text.includes('\n')){client.removeAllListeners('data');Promise.resolve().then(()=>respond(JSON.parse(text.trim()))).then(v=>client.end(JSON.stringify(v)),e=>client.end(JSON.stringify({error:e.code??'RECEIVER_CONTROL_INVALID',outcome:e.outcome??null})));}});});
   await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(socket,resolve);});fs.chmodSync(socket,0o600);
   process.once('SIGTERM',()=>abort.abort());process.once('SIGINT',()=>abort.abort());
-  await receiver.run({signal:abort.signal,replace:args.includes('--replace'),resumeClosed:args.includes('--resume-closed')});
+  const report=await receiver.run({signal:abort.signal,replace:args.includes('--replace'),resumeClosed:args.includes('--resume-closed'),selftestOnly:command==='selftest'});
+  if(command==='selftest')console.log(JSON.stringify({status:'PASS',selftest:report,receiver_stopped:true}));
  }finally{abort.abort();server?.close();if(fs.existsSync(socket))fs.unlinkSync(socket);}
 }
 main().catch(error=>{console.error(JSON.stringify({status:'FAILED',code:error.code??'CONNECTOR_FAILED',outcome:error.outcome??null}));process.exitCode=1;});
