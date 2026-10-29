@@ -13,6 +13,8 @@ export interface CapabilityManifest {
   backend_structure_execution: boolean;
   backend_current_state_reads: boolean;
   protocol_role_bundles: boolean;
+  owner_protocol_bundle_binding: boolean;
+  agent_delivery: boolean;
   backend_durable_recovery: boolean;
   legacy_online_modes: 'RETIRED';
   protocol_offline_simulation: boolean;
@@ -179,7 +181,7 @@ export interface TsMigrationReport { pending_count: number; accepted_count: numb
 export interface StructureIntentRequest {
   /** Encrypted locally before any submission; never included as plaintext in the signed wire. */
   plaintext_contents?: {record_index: number; text: string}[];
-  action: 'structure.delivery.route.claim' | 'structure.delivery.route.close' | 'structure.delivery.route.get' | 'structure.delivery.routes.read' | 'structure.delivery.inbox.read' | 'structure.delivery.receipt.get' | 'structure.delivery.stream.get' | 'structure.delivery.pulse' | 'structure.delivery.ack' | 'structure.protocol.register' | 'structure.protocol.resolve' | 'structure.protocol.resource.get' | 'structure.workspace.delete' | 'structure.workspace.deletion.get' | 'structure.workspace.deletions.read' | 'structure.record.withdraw' | 'structure.publication.set' | 'structure.publication.entry.set' | 'structure.access.approval.get' | 'structure.access.end' | 'structure.instance.resolve' | 'structure.access.authorize' | 'structure.content-key.set' | 'structure.content-key.get' | 'structure.content-key.deliver' | 'structure.content-key.delivery.get' | 'structure.content-keys.read' | 'structure.workspace.create' | 'structure.workspace.get' | 'structure.adopt' | 'structure.action' | 'structure.instance.get' | 'structure.record.get' | 'structure.operation.get'
+  action: 'structure.delivery.route.claim' | 'structure.delivery.route.close' | 'structure.delivery.route.get' | 'structure.delivery.routes.read' | 'structure.delivery.inbox.read' | 'structure.delivery.receipt.get' | 'structure.delivery.stream.get' | 'structure.delivery.pulse' | 'structure.delivery.ack' | 'structure.protocol.bind' | 'structure.protocol.register' | 'structure.protocol.resolve' | 'structure.protocol.resource.get' | 'structure.workspace.delete' | 'structure.workspace.deletion.get' | 'structure.workspace.deletions.read' | 'structure.record.withdraw' | 'structure.publication.set' | 'structure.publication.entry.set' | 'structure.access.approval.get' | 'structure.access.end' | 'structure.instance.resolve' | 'structure.access.authorize' | 'structure.content-key.set' | 'structure.content-key.get' | 'structure.content-key.deliver' | 'structure.content-key.delivery.get' | 'structure.content-keys.read' | 'structure.workspace.create' | 'structure.workspace.get' | 'structure.adopt' | 'structure.action' | 'structure.instance.get' | 'structure.record.get' | 'structure.operation.get'
     | 'structure.member.set' | 'structure.grant.set' | 'structure.grant.revoke' | 'structure.grant.get'
     | 'structure.members.read' | 'structure.instances.read' | 'structure.records.read' | 'structure.events.read'
     | 'structure.maintenance.rebuild' | 'structure.maintenance.get' | 'structure.maintenance.cancel' | 'structure.operations.read' | 'structure.content-key.history.deliver' | 'structure.content-key.history.get' | 'structure.content-key.history.jobs.read' | 'structure.publication.entry.withdraw' | 'structure.publication.policy.get' | 'structure.publication.policy.set' | 'structure.publication.prepare.get';
@@ -1464,6 +1466,7 @@ export declare function protocols(kernel: KernelSession): {
   inspect(selection: ProtocolSelection & {include_resources?: boolean}, options?: {signal?: AbortSignal}): Promise<StructureIntentOutcome>;
   role(selection: {workspace_id: string; instance_id: string; role: string}, options?: {signal?: AbortSignal}): Promise<StructureIntentOutcome>;
   register(selection: {workspace_id: string; bundle: ProtocolBundle; idempotency_key: string}, options?: {signal?: AbortSignal}): Promise<StructureIntentOutcome>;
+  bind(selection: {workspace_id: string; instance_id: string; protocol_digest: string; idempotency_key: string} & ({bundle: ProtocolBundle; package_digest?: never} | {package_digest: string; bundle?: never}), options?: {signal?: AbortSignal}): Promise<StructureIntentOutcome>;
   adopt(selection: {workspace_id: string; idempotency_key: string; bootstrap_grant?: Record<string, unknown>} & ({bundle: ProtocolBundle; package_digest?: never} | {package_digest: string; bundle?: never}), options?: {signal?: AbortSignal}): Promise<StructureIntentOutcome>;
   resume(commandId: string, options?: {signal?: AbortSignal}): Promise<StructureIntentOutcome>;
 };

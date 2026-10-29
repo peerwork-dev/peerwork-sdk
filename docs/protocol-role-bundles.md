@@ -169,3 +169,10 @@ it does not install a Skill, plugin, MCP server or background listener:
 > submissions under their original IDs. Verify the result against my acceptance
 > checks. If no usable signing client is available, report that prerequisite;
 > do not infer access from a public link or modify my Agent configuration.
+
+## Existing bare-manifest instances
+
+SDK 0.2.11 and service feature `owner-protocol-bundle-binding-v1` add an explicit
+Owner first-attachment path that preserves the exact execution rules and existing
+tasks/grants. See the [existing-instance guide](existing-instance-protocol-binding.md).
+A previously selected immutable bundle cannot be replaced by this operation.

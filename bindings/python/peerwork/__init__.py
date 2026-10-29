@@ -4498,6 +4498,19 @@ class ProtocolClient:
         return self.kernel.execute_structure_intent({"action": "structure.protocol.register", "workspace_id": workspace_id,
             "idempotency_key": idempotency_key, "body": {"bundle": bundle}})
 
+    def bind(self, workspace_id: str, instance_id: str, protocol_digest: str, *,
+             idempotency_key: str, bundle: dict | None = None,
+             package_digest: str | None = None) -> StructureIntentOutcome:
+        """Owner-authorized first attachment; execution and existing grants stay fixed."""
+        if (bundle is None) == (package_digest is None):
+            raise ValueError("Select exactly one bundle or package_digest")
+        if bundle is not None:
+            inspect_protocol_bundle(bundle)
+        selected = {"bundle": bundle} if bundle is not None else {"package_digest": package_digest}
+        return self.kernel.execute_structure_intent({"action": "structure.protocol.bind", "workspace_id": workspace_id,
+            "idempotency_key": idempotency_key,
+            "body": {"instance_id": instance_id, "protocol_digest": protocol_digest, **selected}})
+
     def adopt(self, workspace_id: str, *, idempotency_key: str, bundle: dict | None = None,
               package_digest: str | None = None, bootstrap_grant: dict | None = None) -> StructureIntentOutcome:
         if (bundle is None) == (package_digest is None):

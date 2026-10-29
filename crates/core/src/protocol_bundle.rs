@@ -43,15 +43,15 @@ pub fn build_header(input:&Value)->Result<Value>{
  Ok(json!({"format":b.format,"metadata":b.metadata,"manifest":b.manifest,"protocol_digest":protocol,"roles":b.roles,"resources":resources,"dependencies":b.dependencies}))
 }
 pub fn inspect(input:&Value)->Result<Value>{let header=build_header(input)?;Ok(json!({"package_digest":sha256_hex(encoded(&header)?.as_bytes()),"protocol_digest":header["protocol_digest"],"bundle_header":header,"submitted":false}))}
-fn authored(source:&Value,audience:&[u16],workspace:&str,header:&Value,digest:&str,binding:bool)->Result<()>{
+fn authored(source:&Value,audience:&[u16],workspace:&str,header:&Value,digest:&str,binding:Option<&str>)->Result<()>{
  let proof=verify_structure_author_intent(text(source,"author_intent")?,audience).map_err(|_|BundleError)?;
  if proof.actor_id()!=text(source,"actor_id")?||proof.command_id()!=text(source,"command_id")?||proof.intent_digest()!=text(source,"intent_digest")?||proof.workspace_id()!=Some(workspace){return Err(BundleError)}
  let c=canonical_wire_value(proof.command(),crate::prepared_command::command_canonical_path(proof.command())).map_err(|_|BundleError)?;let c:Value=serde_json::from_str(&c).map_err(|_|BundleError)?;let body=&c["body"];
- if binding{
-  if proof.action_id()!="structure.adopt"{return Err(BundleError)}
+ if let Some(instance)=binding{
+  if proof.action_id()=="structure.protocol.bind"{if body["instance_id"].as_str()!=Some(instance)||body["protocol_digest"]!=header["protocol_digest"]{return Err(BundleError)}}else if proof.action_id()!="structure.adopt"{return Err(BundleError)}
   if let Some(selected)=body["package_digest"].as_str(){if selected!=digest{return Err(BundleError)}}else{same(&build_header(&body["bundle"])?,header)?;}
  }else{
-  if !matches!(proof.action_id(),"structure.protocol.register"|"structure.adopt"){return Err(BundleError)}
+  if !matches!(proof.action_id(),"structure.protocol.register"|"structure.protocol.bind"|"structure.adopt"){return Err(BundleError)}
   same(&build_header(&body["bundle"])?,header)?;
  }
  Ok(())
@@ -61,15 +61,16 @@ pub fn verify_result(result:&WireValue,command:&WireValue,audience:&[u16])->Resu
  let c:Value=serde_json::from_str(&canonical_wire_value(command,crate::prepared_command::command_canonical_path(command)).map_err(|_|BundleError)?).map_err(|_|BundleError)?;
  if r["status"].as_str().is_some_and(|s|matches!(s,"REJECTED_NO_EFFECT"|"COMMITTED_RESULT_UNAVAILABLE")){return Ok(())}
  let action=text(&c,"action_id")?;let body=&c["body"];
- if matches!(action,"structure.protocol.register"|"structure.adopt"){
+ if matches!(action,"structure.protocol.register"|"structure.protocol.bind"|"structure.adopt"){
   if let Some(bundle)=body.get("bundle"){let h=build_header(bundle)?;if text(&r,"package_digest")?!=sha256_hex(encoded(&h)?.as_bytes())||r["protocol_digest"]!=h["protocol_digest"]{return Err(BundleError)}}
   else if let Some(d)=body["package_digest"].as_str(){if text(&r,"package_digest")?!=d{return Err(BundleError)}}
+  if action=="structure.protocol.bind"&&(r["instance_id"]!=body["instance_id"]||r["protocol_digest"]!=body["protocol_digest"]){return Err(BundleError)}
  }else if action=="structure.protocol.resolve"{
   let h=&r["bundle_header"];let d=text(&r,"package_digest")?;
   if sha256_hex(encoded(h)?.as_bytes())!=d||r["protocol_digest"]!=h["protocol_digest"]||sha256_hex(encoded(&json!({"semantics":"peerwork.kernel.v1","manifest":h["manifest"]}))?.as_bytes())!=text(h,"protocol_digest")?{return Err(BundleError)}
   if body["package_digest"].as_str().is_some_and(|selected|selected!=d){return Err(BundleError)}
-  let workspace=text(&c,"workspace_id")?;authored(&r["evidence"]["registration"],audience,workspace,h,d,false)?;
-  if let Some(instance)=body["instance_id"].as_str(){let b=&r["evidence"]["binding"];if b["instance_id"].as_str()!=Some(instance){return Err(BundleError)}authored(&b["source"],audience,workspace,h,d,true)?;}
+  let workspace=text(&c,"workspace_id")?;authored(&r["evidence"]["registration"],audience,workspace,h,d,None)?;
+  if let Some(instance)=body["instance_id"].as_str(){let b=&r["evidence"]["binding"];if b["instance_id"].as_str()!=Some(instance){return Err(BundleError)}authored(&b["source"],audience,workspace,h,d,Some(instance))?;}
   if body["view"].as_str()==Some("runtime"){
    let role=text(body,"role")?;let runtime=&r["runtime"];let declared=&h["roles"][role];
    if runtime["actor_id"]!=c["actor_id"]||runtime["role"]!=body["role"]||runtime["instructions_resource"]!=declared["instructions"]||runtime["context"]!=declared["context"]{return Err(BundleError)}

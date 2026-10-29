@@ -1297,7 +1297,7 @@ dependencies = [
 
 [[package]]
 name = "peerwork-cli"
-version = "0.2.10"
+version = "0.2.11"
 dependencies = [
  "libc",
  "peerwork-core",
@@ -1307,7 +1307,7 @@ dependencies = [
 
 [[package]]
 name = "peerwork-core"
-version = "0.2.10"
+version = "0.2.11"
 dependencies = [
  "aes-gcm 0.10.3",
  "base64 0.22.1",
@@ -1323,7 +1323,7 @@ dependencies = [
 
 [[package]]
 name = "peerwork-node-native"
-version = "0.2.10"
+version = "0.2.11"
 dependencies = [
  "napi",
  "napi-derive",
@@ -1334,7 +1334,7 @@ dependencies = [
 
 [[package]]
 name = "peerwork-python-native"
-version = "0.2.10"
+version = "0.2.11"
 dependencies = [
  "peerwork-core",
  "peerwork-runtime",
@@ -1344,7 +1344,7 @@ dependencies = [
 
 [[package]]
 name = "peerwork-runtime"
-version = "0.2.10"
+version = "0.2.11"
 dependencies = [
  "aes-gcm 0.10.3",
  "ed25519-dalek",

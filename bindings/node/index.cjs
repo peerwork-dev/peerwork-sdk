@@ -1674,6 +1674,14 @@ exports.protocols = kernel => Object.freeze({
     return kernel.executeStructureIntent({action: 'structure.protocol.register', workspace_id: selection.workspace_id,
       idempotency_key: selection.idempotency_key, body: {bundle: selection.bundle}}, options);
   },
+  bind: (selection, options = {}) => {
+    if ((selection.bundle === undefined) === (selection.package_digest === undefined)) throw new TypeError('Select exactly one bundle or package_digest');
+    if (selection.bundle !== undefined) exports.inspectProtocolBundle(selection.bundle);
+    return kernel.executeStructureIntent({action: 'structure.protocol.bind', workspace_id: selection.workspace_id,
+      idempotency_key: selection.idempotency_key,
+      body: {instance_id: selection.instance_id, protocol_digest: selection.protocol_digest,
+        ...(selection.bundle === undefined ? {package_digest: selection.package_digest} : {bundle: selection.bundle})}}, options);
+  },
   adopt: (selection, options = {}) => {
     if ((selection.bundle === undefined) === (selection.package_digest === undefined)) throw new TypeError('Select exactly one bundle or package_digest');
     if (selection.bundle !== undefined) exports.inspectProtocolBundle(selection.bundle);
