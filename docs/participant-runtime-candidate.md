@@ -28,6 +28,16 @@ multiplexes native futures, shares the verified discovery/time anchor and HTTP
 pool, and bounds real work independently of how many callers are waiting.
 No SQLite transaction is held across network awaits.
 
+Explicit resident sessions keep at most two idle WAL connections: one native
+journal and an optional existing body-key store. Actual calls still open and
+validate their protected stores and select current keys. The keepers never
+serve authorization, business rows or key material, create/migrate databases,
+or hold a read/write transaction; an unavailable optional keeper does not block
+an unrelated structure read. `metrics().http.resident_databases` reports only
+whether those handles currently exist. FULL synchronous commits and the default
+automatic WAL checkpoints remain enabled. After owned work stops, engine close
+awaits the keepers' normal final checkpoint/close before releasing ownership.
+
 ## Program contract implemented so far
 
 | Entry | Candidate behavior |
@@ -82,6 +92,13 @@ choices and reconciles the original command after a lost acceptance response.
 Closing a tool connection or exhausting the caller's wait budget does not cancel
 admitted work. Stopping the engine ends active execution and leaves exact durable
 recovery state for reopening.
+
+The scheduler reads/decrypts a selected queued request once and retains that
+validated value for execution. After a successful outcome transaction commits,
+the local caller receives the exact value that was encrypted and written,
+without an immediate read/decrypt of its own new write. Selected reads and
+restarts still authenticate persisted input and outcome bytes; durable admission,
+the running marker, signed-packet storage and outcome commits remain unchanged.
 
 `ADMITTED`, `RUNNING`, `PENDING` and `BLOCKED` are local execution observations.
 They are not recipient or model evidence. Service acceptance and business
@@ -1262,8 +1279,12 @@ ICU MSVC projects follow Cargo's `crt-static` target feature for both release
 and debug runtime metadata; other library consumers retain their selected CRT
 choice. The candidate audit rejects VC++ redistributable, Node/Python and
 external ICU DLL imports. Native ICU collation is also checked against the
-pinned Node24/ICU78.3 corpus on each selected target. This is not yet an actual
-Windows result for the new link mode.
+pinned Node24/ICU78.3 corpus on each selected target. The Windows-only candidate
+at source `2cd174c2` passed native tests and installed-process qualification.
+Its downloaded archive and binary hashes were verified, and its actual imports
+contain only the declared Windows system DLLs/API sets, with no VC++ runtime
+DLL import. This is selected-platform candidate evidence, not a public release
+or qualification of the other platforms at that source.
 
 GNU qualification now records required GLIBC, GLIBCXX and CXXABI symbol
 versions as well as loader imports. The preceding audited Linux candidate
@@ -1275,3 +1296,12 @@ notice coverage and final release packaging remain separate checks.
 A qualification push marked `[native:win32-x64-msvc]` runs the changed Windows
 link mode alone. Unmarked pushes/dispatches retain the three-platform matrix.
 A selected-platform result never attests the whole release cohort.
+
+For maintainer attribution only, `PEERWORK_PROGRAM_MATRIX_PHASES=1` adds
+per-send completed-phase counter deltas to matrix samples. Each identity has
+one sender per round; metrics snapshots sit outside its acceptance interval.
+Task-local execution spans exclude separate watch/ACK work. Operation-store
+counters are reported separately and must be checked for exactly one operation
+before attribution. Counter resets are explicit null/non-monotonic values;
+nested phases overlap and lifetime maxima are not subtracted. This mode always
+disables acceptance-target qualification, even in an optimized build.

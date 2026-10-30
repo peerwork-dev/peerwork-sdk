@@ -1060,7 +1060,7 @@ pub(crate) fn ensure_private_parent(path: &Path) -> Result<(), JournalError> {
 
 #[cfg(unix)]
 pub(crate) fn create_or_check_private_file(path: &Path) -> Result<(), JournalError> {
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    use std::os::unix::fs::OpenOptionsExt;
     match OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -1071,6 +1071,12 @@ pub(crate) fn create_or_check_private_file(path: &Path) -> Result<(), JournalErr
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(error) => return Err(error.into()),
     }
+    check_private_database_file(path)
+}
+
+#[cfg(unix)]
+pub(crate) fn check_private_database_file(path: &Path) -> Result<(), JournalError> {
+    use std::os::unix::fs::MetadataExt;
     let meta = fs::symlink_metadata(path).map_err(|_| JournalError::Protection)?;
     if !meta.is_file()
         || meta.file_type().is_symlink()
@@ -1094,7 +1100,30 @@ pub(crate) fn create_or_check_private_file(path: &Path) -> Result<(), JournalErr
 }
 
 #[cfg(windows)]
-fn check_private_sidecars(path: &Path) -> Result<(), JournalError> {
+pub(crate) fn check_private_database_file(path: &Path) -> Result<(), JournalError> {
+    crate::windows_fs::open_private_read(path).map(drop).map_err(|_|JournalError::Protection)
+}
+
+#[cfg(not(any(unix,windows)))]
+pub(crate) fn check_private_database_file(_: &Path) -> Result<(), JournalError> {
+    Err(JournalError::UnsupportedPlatform)
+}
+
+#[cfg(unix)]
+pub(crate) fn check_private_sidecars(path: &Path) -> Result<(), JournalError> {
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let mut name=path.as_os_str().to_os_string();name.push(suffix);
+        match fs::symlink_metadata(Path::new(&name)) {
+            Ok(_)=>check_private_database_file(Path::new(&name))?,
+            Err(e) if e.kind()==std::io::ErrorKind::NotFound=>{},
+            Err(_)=>return Err(JournalError::Protection),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+pub(crate) fn check_private_sidecars(path: &Path) -> Result<(), JournalError> {
     use std::ffi::OsString;
     for suffix in ["-wal", "-shm", "-journal"] {
         let mut name = OsString::from(path.as_os_str());
@@ -1106,7 +1135,7 @@ fn check_private_sidecars(path: &Path) -> Result<(), JournalError> {
 }
 
 #[cfg(windows)]
-fn create_missing_private_wal_sidecars(path: &Path) -> Result<(), JournalError> {
+pub(crate) fn create_missing_private_wal_sidecars(path: &Path) -> Result<(), JournalError> {
     use std::ffi::OsString;
     // SQLite creates these on first WAL use. Pre-create only missing entries
     // under the protected parent so they inherit the same verified owner and
@@ -1117,6 +1146,11 @@ fn create_missing_private_wal_sidecars(path: &Path) -> Result<(), JournalError> 
         create_or_check_private_file(Path::new(&name))?;
     }
     Ok(())
+}
+
+#[cfg(not(any(unix,windows)))]
+pub(crate) fn check_private_sidecars(_: &Path) -> Result<(), JournalError> {
+    Err(JournalError::UnsupportedPlatform)
 }
 
 #[cfg(not(any(unix, windows)))]

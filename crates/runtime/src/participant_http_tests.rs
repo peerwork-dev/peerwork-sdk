@@ -303,6 +303,40 @@ async fn program_archive_migration_uses_bound_source_and_resumes_lost_admission(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires explicit synthetic PostgreSQL and real product HTTP fixture"]
+async fn resident_idle_wal_lifetime_closes_before_restart_and_bad_keys_do_not_block_structure() {
+    let service=Service::start();
+    let temp=crate::test_support::protected_test_dir();
+    let config=configuration(temp.path(),&service.origin);
+    let client=ParticipantClient::open(config.clone()).await.unwrap();
+    let created=mutate(&client,"keeper-create","structure.workspace.create",&Scope::default(),json!({"name":"Resident WAL lifecycle"})).await;
+    let scope=Scope{workspace_id:Some(created["workspace_id"].as_str().unwrap().into()),..Default::default()};
+    let initialized=client.request(Invoke::new("keeper-key","participant.keys.initialize",scope.clone(),json!({}))).await.unwrap();
+    assert_eq!(initialized["effect_certainty"],"LOCAL_ONLY");
+    selected(&client,"structure.workspace.get",&scope,json!({})).await;
+    tokio::time::timeout(Duration::from_secs(3),async{
+        loop{if client.metrics().await.unwrap()["active_tasks"]==0{break;}tokio::time::sleep(Duration::from_millis(10)).await;}
+    }).await.unwrap();
+    assert_eq!(client.metrics().await.unwrap()["http"]["resident_databases"],json!({"journal":true,"body_keys":true}));
+    let key_path=std::fs::read_dir(temp.path()).unwrap().map(|e|e.unwrap().path()).find(|p|p.file_name().unwrap().to_string_lossy().ends_with(".content-keys.sqlite")).unwrap();
+    let wal=|path:&std::path::Path|{let mut name=path.as_os_str().to_os_string();name.push("-wal");PathBuf::from(name)};
+    assert!(wal(&config.journal_path).exists());
+    assert!(wal(&key_path).exists());
+    client.close().await.unwrap();
+    assert!(!wal(&config.journal_path).exists(),"normal shutdown must await the final journal checkpoint/close");
+    assert!(!wal(&key_path).exists(),"body-key keeper must not outlive state ownership");
+    // A keeper is optional, not a new prerequisite for structure-only work.
+    std::fs::write(&key_path,b"synthetic corrupt key database").unwrap();
+    let reopened=ParticipantClient::open(config).await.unwrap();
+    let metadata=selected(&reopened,"structure.workspace.get",&scope,json!({})).await;
+    assert_eq!(metadata["workspace_id"],created["workspace_id"]);
+    assert_eq!(reopened.metrics().await.unwrap()["http"]["resident_databases"]["body_keys"],false);
+    assert_eq!(reopened.operation("keeper-create").await.unwrap().state,"ACCEPTED");
+    assert_eq!(service.counts().await["actions"]["structure.workspace.create"],1);
+    reopened.close().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires explicit synthetic PostgreSQL and real product HTTP fixture"]
 async fn program_root_http_async_scope_and_exact_operation_restart() {
     let service = Service::start();
     let temp = crate::test_support::protected_test_dir();
