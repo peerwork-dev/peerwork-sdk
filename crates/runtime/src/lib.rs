@@ -113,3 +113,6 @@ pub mod owner_cache_checkpoint;
 pub mod owner_cache_plan;
 
 pub mod legacy_migration;
+
+#[cfg(test)]
+mod participant_live_host_tests;

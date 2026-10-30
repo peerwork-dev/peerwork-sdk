@@ -6,13 +6,13 @@ use std::{
     process::{Child, Command, Stdio},
 };
 
-struct Service {
+pub(crate) struct Service {
     child: Child,
-    origin: String,
+    pub(crate) origin: String,
     bootstrap: Value,
 }
 impl Service {
-    fn start() -> Self {
+    pub(crate) fn start() -> Self {
         Self::fixture("participant-service.mjs")
     }
     fn fixture(name: &str) -> Self {
@@ -60,7 +60,7 @@ impl Service {
             .error_for_status()
             .unwrap();
     }
-    async fn counts(&self) -> Value {
+    pub(crate) async fn counts(&self) -> Value {
         let text = reqwest::get(format!("{}/__test/counts", self.origin))
             .await
             .unwrap()
@@ -86,7 +86,7 @@ impl Drop for Service {
         let _ = self.child.wait();
     }
 }
-fn configuration(directory: &std::path::Path, origin: &str) -> ParticipantConfig {
+pub(crate) fn configuration(directory: &std::path::Path, origin: &str) -> ParticipantConfig {
     let path = directory.join("identity");
     let identity = KernelIdentity::create(&path).unwrap();
     let mut config =
@@ -114,7 +114,7 @@ async fn wait_terminal(client: &ParticipantClient, id: &str) -> Operation {
     .await
     .expect("operation did not become terminal")
 }
-fn structure(op: &Operation) -> Value {
+pub(crate) fn structure(op: &Operation) -> Value {
     assert_eq!(
         op.state,
         "ACCEPTED",
@@ -805,7 +805,7 @@ async fn test_claim_proof(client: &ParticipantClient, scope: &Scope, body: &mut 
     .unwrap());
 }
 
-async fn mutate(
+pub(crate) async fn mutate(
     client: &ParticipantClient,
     id: &str,
     action: &str,
@@ -828,7 +828,12 @@ async fn mutate(
         wait_terminal(client, id).await
     })
 }
-async fn selected(client: &ParticipantClient, action: &str, scope: &Scope, body: Value) -> Value {
+pub(crate) async fn selected(
+    client: &ParticipantClient,
+    action: &str,
+    scope: &Scope,
+    body: Value,
+) -> Value {
     let value = client
         .request(Invoke::new("selection", action, scope.clone(), body))
         .await
@@ -1128,7 +1133,7 @@ async fn program_management_key_handoff_publication_and_offline_result() {
     worker.close().await.unwrap();
     owner.close().await.unwrap();
 }
-fn install_synthetic_key(
+pub(crate) fn install_synthetic_key(
     config: &ParticipantConfig,
     workspace: &str,
     secret: &[u8; 32],

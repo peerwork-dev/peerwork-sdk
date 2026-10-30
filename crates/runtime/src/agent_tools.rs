@@ -83,7 +83,13 @@ pub struct AgentProfile {
 }
 impl AgentProfile {
     pub fn load(path: &Path) -> Result<Self> {
-        let value = private_json(path, 65536).map_err(|_| invalid("AGENT_PROFILE_NOT_PRIVATE"))?;
+        // Resolve only the caller's relative spelling. Do not canonicalize
+        // symlinks away: the existing native file/parent ownership and link
+        // checks still apply to the selected profile.
+        let absolute =
+            std::path::absolute(path).map_err(|_| invalid("AGENT_PROFILE_PATH_INVALID"))?;
+        let value =
+            private_json(&absolute, 65536).map_err(|_| invalid("AGENT_PROFILE_NOT_PRIVATE"))?;
         let profile: Self =
             serde_json::from_value(value).map_err(|_| invalid("AGENT_PROFILE_INVALID"))?;
         profile.validate()?;
@@ -722,5 +728,60 @@ mod tests {
         );
         assert!(!inbox.to_string().contains("ciphertext"));
         assert_eq!(inbox["items"][0]["authority"], "EXTERNAL_PEER_DATA");
+    }
+    #[test]
+    fn relative_profile_paths_preserve_ownership_and_symlink_checks() {
+        let cwd = std::env::current_dir().unwrap();
+        let directory = tempfile::Builder::new()
+            .prefix(".peerwork-profile-test-")
+            .tempdir_in(&cwd)
+            .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
+        #[cfg(windows)]
+        crate::windows_fs::set_current_user_owner_for_new_directory(directory.path()).unwrap();
+        let file = directory.path().join("agent.json");
+        let profile = AgentProfile {
+            format: "peerwork.agent-profile.v1".into(),
+            endpoint_path: directory.path().join("endpoint.json"),
+            expected_origin: "https://example.invalid/".into(),
+            expected_actor: "A".repeat(43),
+            scopes: BTreeMap::new(),
+            contacts: BTreeMap::new(),
+            protocols: BTreeMap::new(),
+        };
+        crate::communication_host::write_private(&file, &serde_json::to_vec(&profile).unwrap())
+            .unwrap();
+        let relative = file.strip_prefix(&cwd).unwrap();
+        assert_eq!(
+            AgentProfile::load(relative).unwrap().expected_actor,
+            profile.expected_actor
+        );
+        assert_eq!(
+            AgentProfile::load(&file).unwrap().endpoint_path,
+            profile.endpoint_path
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let link = directory.path().join("link.json");
+            std::os::unix::fs::symlink(&file, &link).unwrap();
+            assert_eq!(
+                AgentProfile::load(link.strip_prefix(&cwd).unwrap())
+                    .err()
+                    .unwrap()
+                    .code,
+                "AGENT_PROFILE_NOT_PRIVATE"
+            );
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+            assert_eq!(
+                AgentProfile::load(relative).err().unwrap().code,
+                "AGENT_PROFILE_NOT_PRIVATE"
+            );
+        }
     }
 }

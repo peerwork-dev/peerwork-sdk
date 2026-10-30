@@ -987,3 +987,47 @@ upgrading unsupported pre-v2 bridge journals and changing physical host/session
 bindings are separate pending work. The native owner-v2 to owner-v3 metadata
 upgrade described above preserves its original journal pin. Unsupported legacy files are retained; this
 command does not claim to import those formats or resolve old uncertainties.
+
+
+## Candidate qualification tools
+
+The maintainer-only ignored tests in `participant_live_host_tests.rs` separate
+real host use from SDK/service measurements. They are not runtime dependencies
+or an automatic user-harness installer. They use an explicit local synthetic
+PostgreSQL/HTTP fixture and generated identities, never a production profile.
+
+`program_master_existing_session_and_native_agent_reply` additionally requires
+an explicitly selected protected `PEERWORK_LIVE_HOST_CONFIG`, an unused absolute
+`PEERWORK_LIVE_HOST_STATE_DIR`, a unique `PEERWORK_LIVE_HOST_NONCE`, and
+`PEERWORK_LIVE_HOST_REPORT` **inside that state directory**. The configuration
+uses the existing Codex/AGY adapter schema; no model process/thread is created.
+The test sends one E2EE Ping through the native tool surface. The actual existing
+Agent must reply using its protected generated Worker profile and the native
+`reply` tool. A matching sender-signed, decrypted PONG with the original
+`reply_to` is required; a host ACK alone cannot pass. A reused state root/result
+is refused. Preserve failed-run state and reconcile its original outcome before
+attempting another input. Completed test state may be removed after the owned
+runtime/bridge are terminal and the verified result has been retained.
+
+The report distinguishes service acceptance, receiver-store observation, host
+fact and actual reply. Its observation times share one monotonic clock and
+include observer scheduling; they are not isolated internal phase spans.
+A real existing Codex round trip passed on2026-10-30 with one HTTP send per
+message and zero journal reads. That single unoptimized local-service sample
+observed acceptance in716ms, receiver storage in976ms and PONG in46.3s, including
+model/tool scheduling and a rejected relative-profile-path attempt. It does not
+qualify IM percentiles, fresh-Agent first use, a production WAN path or AGY.
+
+The profile-file loading issue from that use is corrected: CLI profile paths
+may be absolute or relative to the process working directory. The selected
+file/parent still must satisfy native ownership, permission and symlink checks;
+profile endpoint/identity bindings remain explicit absolute configuration.
+
+`two_program_warm_mail_latency_and_request_counts` uses
+`PEERWORK_PROGRAM_LATENCY_REPORT` in a protected report directory. It separates
+one first send from32 subsequent samples and requires every accepted sample to
+arrive and decrypt. Reports retain every sample, actual send/discovery/context
+counts, build mode and the observation basis. There is no host/model input.
+Unoptimized or local two-program results cannot qualify the full1–8-participant
+release gate. Run the same selected test against an optimized build before
+attributing debug-build cryptographic cost to the architecture.
