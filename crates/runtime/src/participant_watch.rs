@@ -245,6 +245,8 @@ struct Slot {
     next_keys: Instant,
     report_retry: Instant,
     report_code: Option<String>,
+    prefer_consumed_ack: bool,
+    custody_ack_not_before: Option<Instant>,
 }
 impl Slot {
     fn missing_keys(&mut self) {
@@ -578,7 +580,7 @@ pub(crate) async fn run(
                         }
                         let next_after=if items.len()==limit{items.last().and_then(|v|v["sequence"].as_u64())}else{None};
                         Ok(WatchSnapshot{presence:slot.presence.local(),reporting_code:slot.report_code.clone(),workspace_id:options.workspace_id.clone(),mailbox_id:options.mailbox_id.clone(),generation:slot.generation,state:slot.state.clone(),receiver_link_verified:slot.link_verified,model_response:"NOT_ATTESTED".into(),code:slot.code.clone(),checkpoint:cursor.as_ref().map(|c|c.item).unwrap_or(0),control_checkpoint:cursor.and_then(|c|c.control),items,next_after,
-                            receiver_ack_pending:!store.acknowledgements(&options.workspace_id,&options.mailbox_id,false)?.is_empty(),
+                            receiver_ack_pending:store.receiver_ack_pending(&options.workspace_id,&options.mailbox_id)?,
                             application_ack_pending:!store.acknowledgements(&options.workspace_id,&options.mailbox_id,true)?.is_empty(),stream_id:slot.stream_id.clone(),disconnects:slot.disconnects})
                     })();let _=reply.send(value);
                 },
@@ -618,6 +620,10 @@ pub(crate) async fn run(
                         let ids=page.items().iter().filter_map(|item| match item.message()?.content(){peerwork_core::communication::MessageContent::WorkspaceE2ee{body}=>Some(body.key_id.clone()),_=>None}).collect::<std::collections::BTreeSet<_>>().into_iter().collect::<Vec<_>>();
                         let known=access.cached_mail_keys(&page.mailbox().workspace_id,&ids).unwrap_or_default();
                         store.ingest_with_keys(&identity,&page,64*1024*1024,&known).map(|cursor|{
+                        // Wake consumers immediately. Only custody upload has
+                        // a short non-extending coalescing window; an explicit
+                        // application consume can acknowledge both facts.
+                        if !page.items().is_empty()&&slot.custody_ack_not_before.is_none(){slot.custody_ack_not_before=Some(Instant::now()+Duration::from_millis(25));}
                         if let Some(p)=slot.binding.pins.as_mut(){p.after_sequence=cursor.item;p.after_control_sequence=cursor.control;}
                         if !slot.link_verified{slot.next_control=Instant::now();slot.presence.version=slot.presence.version.saturating_add(1);}
                         if store.key_missing(&slot.binding.options.workspace_id).unwrap_or(true){slot.missing_keys();}
@@ -686,7 +692,10 @@ pub(crate) async fn run(
                                 let stage=if consumed{"APPLICATION_CONSUMED"}else{"RECEIVER_STORED"};
                                 let expected=items.iter().map(|(sequence,id)|json!({"sequence":sequence,"delivery_id":id})).collect::<Vec<_>>();
                                 if value["stage"]!=stage||value["acknowledged"]!=json!(expected){s.fail(Failure{no_effect:false,code:"ACK_RESULT_INVALID".into(),retryable:false});}
-                                else if let Err(e)=store.acknowledged(&s.binding.options.workspace_id,&s.binding.options.mailbox_id,&items,consumed){s.fail(Failure::code(&e.code));}else{s.failures=0;s.notify();}
+                                else if let Err(e)=store.acknowledged(&s.binding.options.workspace_id,&s.binding.options.mailbox_id,&items,consumed){s.fail(Failure::code(&e.code));}else{
+                                    if store.receiver_ack_pending(&s.binding.options.workspace_id,&s.binding.options.mailbox_id).is_ok_and(|pending|!pending){s.custody_ack_not_before=None;}
+                                    s.failures=0;s.notify();
+                                }
                             },Err(mut e)=>{if e.code=="MAILBOX_LEASE_EXPIRED"{s.lease_until=None;e.retryable=true;}s.fail(e)}}},
                             Work::Keys(workspace,selected,value)=>{
                                 let mut data=match value{Ok(v)=>v,Err(e)=>json!({"state":if matches!(e.code.as_str(),"CONTENT_KEY_STATE"|"VERIFICATION_FAILED"){"INVALID"}else{"UNKNOWN"},"key_id":null,"epoch":null,"code":e.code})};
@@ -885,19 +894,38 @@ pub(crate) async fn run(
                         )
                     }))
                 } else {
-                    let stored =
-                        store.acknowledgements(&options.workspace_id, &options.mailbox_id, false);
-                    let selected = stored.and_then(|v| {
-                        if v.is_empty() {
-                            store
-                                .acknowledgements(&options.workspace_id, &options.mailbox_id, true)
-                                .map(|v| (v, true))
+                    let selected = (|| {
+                        let consumed = store.acknowledgements(
+                            &options.workspace_id,
+                            &options.mailbox_id,
+                            true,
+                        )?;
+                        let stored = if s
+                            .custody_ack_not_before
+                            .is_some_and(|at| Instant::now() < at)
+                        {
+                            Vec::new()
                         } else {
-                            Ok((v, false))
-                        }
-                    });
+                            store.acknowledgements(
+                                &options.workspace_id,
+                                &options.mailbox_id,
+                                false,
+                            )?
+                        };
+                        Ok::<_, crate::participant::ParticipantError>(
+                            if !consumed.is_empty() && (s.prefer_consumed_ack || stored.is_empty())
+                            {
+                                (consumed, true)
+                            } else {
+                                (stored, false)
+                            },
+                        )
+                    })();
                     match selected {
                         Ok((items, consumed)) if !items.is_empty() => {
+                            // Alternate ready stages under mixed sustained load;
+                            // neither custody nor application ACKs may starve.
+                            s.prefer_consumed_ack = !consumed;
                             fence["stage"] = json!(if consumed {
                                 "APPLICATION_CONSUMED"
                             } else {
@@ -1101,6 +1129,8 @@ fn slot(binding: Binding) -> Slot {
         next_keys: Instant::now(),
         report_retry: Instant::now(),
         report_code: None,
+        prefer_consumed_ack: true,
+        custody_ack_not_before: None,
     }
 }
 

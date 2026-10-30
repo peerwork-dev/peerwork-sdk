@@ -1242,6 +1242,14 @@ async fn native_program_mail_crypto_reply_sse_and_original_packet_recovery() {
     );
     let message_id = sent["message_id"].as_str().unwrap();
     assert_eq!(sent["status"], "APPLIED");
+    let journal = rusqlite::Connection::open_with_flags(
+        &owner_config.journal_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    assert_eq!(journal.query_row("SELECT count(*) FROM kernel_intent_attempts",[],|r|r.get::<_,u64>(0)).unwrap(),0,
+        "a fresh encrypted send must not create an expired placeholder attempt and immediately renew it");
+    drop(journal);
     let claim=mutate(&worker,"worker-claim","structure.mailbox.claim",&scope,json!({"mailbox_id":worker_box["mailbox_id"],"receiver_id":test_receiver("R"),"expected_epoch":null,"destination_digest":"d".repeat(64)})).await;
     let fence = json!({"mailbox_id":worker_box["mailbox_id"],"receiver_id":test_receiver("R"),"epoch":claim["mailbox"]["epoch"]});
     let mut pulse = fence.clone();
@@ -1446,13 +1454,12 @@ async fn native_program_mail_crypto_reply_sse_and_original_packet_recovery() {
     local
         .consume(&ws, &pins.mailbox_id, &[local_first.clone()])
         .unwrap();
-    assert!(
-        local
-            .acknowledgements(&ws, &pins.mailbox_id, true)
-            .unwrap()
-            .is_empty(),
-        "app consumption cannot overtake durable custody ACK upload"
+    assert_eq!(
+        local.acknowledgements(&ws, &pins.mailbox_id, true).unwrap(),
+        vec![local_first.clone()],
+        "explicit consumption can upload custody and consumption atomically"
     );
+    assert!(local.receiver_ack_pending(&ws, &pins.mailbox_id).unwrap());
     drop(local);
     let mut local = crate::participant_inbox::InboxStore::open(
         &worker_config.state_directory.join("manual-inbox"),
@@ -1555,16 +1562,12 @@ async fn native_program_mail_crypto_reply_sse_and_original_packet_recovery() {
     );
     let first = inbox["items"][0].clone();
     let mut ack = fence.clone();
-    ack["stage"] = json!("RECEIVER_STORED");
     ack["items"] = json!([{"sequence":first["sequence"],"delivery_id":first["delivery_id"]}]);
-    selected(&worker, "structure.mailbox.ack", &scope, ack.clone()).await;
-    local
-        .acknowledged(&ws, &pins.mailbox_id, &[local_first.clone()], false)
-        .unwrap();
     assert_eq!(
         local.acknowledgements(&ws, &pins.mailbox_id, true).unwrap(),
         vec![local_first.clone()]
     );
+    assert!(local.receiver_ack_pending(&ws, &pins.mailbox_id).unwrap());
     ack["stage"] = json!("APPLICATION_CONSUMED");
     selected(&worker, "structure.mailbox.ack", &scope, ack).await;
     local

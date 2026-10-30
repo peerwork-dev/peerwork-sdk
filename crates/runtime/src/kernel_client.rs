@@ -426,13 +426,17 @@ pub(crate) struct KernelClientSeed {
     transport: HttpTransport,
     discovery: ParsedDiscovery,
 }
-impl KernelClientSeed{pub(crate) fn metrics(&self)->serde_json::Value{self.transport.metrics()}}
+impl KernelClientSeed{
+    pub(crate) fn metrics(&self)->serde_json::Value{self.transport.metrics()}
+    pub(crate) fn phase(&self,phase:crate::transport::ClientPhase)->crate::transport::PhaseTimer{self.transport.phase(phase)}
+}
 
 impl KernelClient {
     pub(crate) fn session_seed(&self)->KernelClientSeed{
         KernelClientSeed{transport:self.transport.clone(),discovery:self.discovery.clone()}
     }
     pub(crate) fn from_session_seed(seed:&KernelClientSeed,journal_path:&Path)->Result<Self,KernelClientError>{
+        let _phase=seed.transport.phase(crate::transport::ClientPhase::SessionOpen);
         let mut journal=KernelIntentJournal::open(journal_path)?;
         journal.bind_discovery(seed.transport.trusted_origin(),&seed.discovery)?;
         Ok(Self{transport:seed.transport.clone(),journal,discovery:seed.discovery.clone(),content_keys_path:None,access_recipient_path:None})
@@ -831,6 +835,7 @@ impl KernelClient {
         local_key_id: &str,
         cancel: &CancellationToken,
     ) -> Result<KernelAcceptedResult, KernelClientError> {
+        let loading=self.transport.phase(crate::transport::ClientPhase::SavedLoad);
         let saved = self
             .journal
             .verified_pending(command_id, local_key_id, self.discovery.audience_utf16())?
@@ -845,20 +850,28 @@ impl KernelClient {
             self.open_selected_structure_bodies(&mut result,saved.proof.action_id(),local_key_id)?;
             return Ok(result);
         }
+        drop(loading);
+        let sending=self.transport.phase(crate::transport::ClientPhase::HttpRoundtrip);
         let response = self
             .transport
             .post_exact(saved.proof.path(), saved.body.clone(), cancel)
             .await?;
-        let proof=verify_http_response_for_prepared(&response.wire,&saved.proof,self.discovery.receipt_public_key());
+        drop(sending);
+        let _verifying=self.transport.phase(crate::transport::ClientPhase::ResponseVerifyStore);
         // HTTP status alone never finalizes a durable operation. A refusal or
         // restricted-result acknowledgment must verify under the pinned key.
-        if !(200..300).contains(&response.status)&&proof.is_err(){
-            let has_receipt=parse_wire_json_bounded(&response.wire,33,1024*1024).is_ok_and(|v|v.get("receipt").is_some());
-            if has_receipt{return Err(JournalError::InvalidReceipt.into());}
-            return Err(classify_http_rejection(response.status,&response.wire));
-        }
-        proof.map_err(|_|KernelClientError::Store(JournalError::InvalidReceipt))?;
-        let proof=self.journal.record_verified_response(&saved,&response.wire,self.discovery.receipt_public_key())?;
+        // The journal authenticates before its transaction; use that verified
+        // proof once rather than validating the same response twice.
+        let proof=match self.journal.record_verified_response(&saved,&response.wire,self.discovery.receipt_public_key()) {
+            Ok(proof)=>proof,
+            Err(error)=>{
+                if !(200..300).contains(&response.status)&&matches!(&error,JournalError::InvalidReceipt){
+                    let has_receipt=parse_wire_json_bounded(&response.wire,33,1024*1024).is_ok_and(|v|v.get("receipt").is_some());
+                    if !has_receipt{return Err(classify_http_rejection(response.status,&response.wire));}
+                }
+                return Err(error.into());
+            }
+        };
         let mut public = KernelAcceptedResult::from_verified(proof, &saved.proof, catalog_begin)?;
         self.open_selected_structure_bodies(&mut public,saved.proof.action_id(),local_key_id)?;
         Ok(public)

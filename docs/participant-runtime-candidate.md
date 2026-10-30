@@ -45,7 +45,7 @@ No SQLite transaction is held across network awaits.
 | `consume(options, references)` | Persist explicit local application consumption and automatically upload its fenced ACK. |
 | `delivery_status(options, reference)` | Select local receiver host evidence and independent upload state; never repeat a host input. |
 | `unwatch(options)` / `ProgramWatch::stop()` | Pause durable reception/renewals; retain messages, claims and unknown-operation recovery data. |
-| `metrics()` | Observe engine bounds and cumulative HTTP prerequisite/request counters. |
+| `metrics()` | Observe engine bounds, cumulative HTTP counters and bounded local phase timers. |
 | `close()` | Owner-only shutdown; cancel and await owned work before releasing state locks. |
 
 The native operation catalog lives in `peerwork_core::structure_execution`;
@@ -1106,3 +1106,36 @@ agent-response steps and16.7s in seven tool steps over125.3s overall. An explici
 test-session `--effort low` comparison still observed42.8s/25.7s replies; no
 global/model configuration was changed. Neither two-sample result is a latency
 guarantee or a substitute for host delivery measurement.
+
+The native engine now exposes nine fixed `http.local_phases` counters through
+`metrics()`: session open, body preparation, packet preparation, saved-packet
+loading, HTTP roundtrip, response verification/store, admission reservation,
+running-state store and completion store. Each reports count, cumulative
+microseconds and lifetime maximum, using a monotonic clock and completed scope
+exits including errors/cancellation. Concurrent/nested spans can overlap;
+snapshots are observations, not a new signed clock or transaction. Never
+subtract their maxima or treat an aggregate average as a percentile. No body,
+key, operation ID or arbitrary caller-supplied label is recorded.
+
+The matrix report keeps before/after counter snapshots per anonymous participant
+index. `PEERWORK_PROGRAM_MATRIX_CASES` and `PEERWORK_PROGRAM_MATRIX_ROUNDS` permit
+explicit shortened diagnostic runs; the defaults remain1/2/4/8 and33 rounds.
+Shortened/debug runs do not qualify the release gate.
+
+The candidate removes a throwaway signature before applying verified service
+time and authenticates durable HTTP responses once inside the journal before
+recording them. Final packet validation, cached-result business-input equality,
+original packet recovery and response authenticity remain mandatory.
+Fresh encrypted payloads acquire verified service time before electing their
+durable packet, avoiding an immediately expired placeholder attempt and its
+unnecessary authorization archive. A producer that just saved its own typed
+packet does not decrypt/re-sign that same winner; conflicting/concurrent and
+resumed producers still verify, decrypt and compare the original saved bytes.
+Older pending attempts retain their original renewal/recovery path and history.
+Application consumption can now acknowledge custody cumulatively: the SDK
+persists the consume request, uploads its fenced ACK and only records remote
+confirmation after verifying that response. Background custody ACKs get a
+non-extending25ms coalescing window, while item/host notification remains
+immediate. Unconsumed custody and consumption batches alternate under mixed
+load and each indexed selection remains bounded to32. A local consume, queued
+ACK or host acceptance still does not prove that a model read or replied.

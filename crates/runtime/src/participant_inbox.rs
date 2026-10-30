@@ -116,6 +116,8 @@ impl InboxStore {
             CREATE INDEX IF NOT EXISTS inbox_ready ON inbox_items(workspace,mailbox,consume_requested,sequence);
             CREATE INDEX IF NOT EXISTS inbox_stored_ack ON inbox_items(workspace,mailbox,stored_uploaded,sequence);
             CREATE INDEX IF NOT EXISTS inbox_consumed_ack ON inbox_items(workspace,mailbox,stored_uploaded,consume_requested,consumed_uploaded,sequence);
+            CREATE INDEX IF NOT EXISTS inbox_custody_only_ack ON inbox_items(workspace,mailbox,stored_uploaded,consume_requested,sequence);
+            CREATE INDEX IF NOT EXISTS inbox_cumulative_ack ON inbox_items(workspace,mailbox,consume_requested,consumed_uploaded,sequence);
             CREATE INDEX IF NOT EXISTS inbox_item_frames ON inbox_items(frame);
             CREATE INDEX IF NOT EXISTS inbox_cursor_frame ON inbox_mailboxes(last_frame);
             CREATE TABLE IF NOT EXISTS inbox_subjects(workspace TEXT NOT NULL,mailbox TEXT NOT NULL,kind TEXT NOT NULL,subject TEXT NOT NULL,revision INTEGER NOT NULL,sequence INTEGER NOT NULL,PRIMARY KEY(workspace,mailbox,kind,subject,revision,sequence));
@@ -855,9 +857,9 @@ impl InboxStore {
         consumed: bool,
     ) -> Result<Vec<(u64, String)>> {
         let sql = if consumed {
-            "SELECT sequence,delivery_id FROM inbox_items WHERE workspace=?1 AND mailbox=?2 AND stored_uploaded=1 AND consume_requested=1 AND consumed_uploaded=0 ORDER BY sequence LIMIT 32"
+            "SELECT sequence,delivery_id FROM inbox_items WHERE workspace=?1 AND mailbox=?2 AND consume_requested=1 AND consumed_uploaded=0 ORDER BY sequence LIMIT 32"
         } else {
-            "SELECT sequence,delivery_id FROM inbox_items WHERE workspace=?1 AND mailbox=?2 AND stored_uploaded=0 ORDER BY sequence LIMIT 32"
+            "SELECT sequence,delivery_id FROM inbox_items WHERE workspace=?1 AND mailbox=?2 AND stored_uploaded=0 AND consume_requested=0 ORDER BY sequence LIMIT 32"
         };
         let result = self
             .db
@@ -868,6 +870,9 @@ impl InboxStore {
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(db_error)?;
         Ok(result)
+    }
+    pub fn receiver_ack_pending(&self, workspace: &str, mailbox: &str) -> Result<bool> {
+        self.db.query_row("SELECT EXISTS(SELECT 1 FROM inbox_items WHERE workspace=?1 AND mailbox=?2 AND stored_uploaded=0)",params![workspace,mailbox],|r|r.get(0)).map_err(db_error)
     }
     pub fn acknowledged(
         &mut self,
@@ -884,7 +889,7 @@ impl InboxStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(db_error)?;
         let sql = if consumed {
-            "UPDATE inbox_items SET consumed_uploaded=1 WHERE workspace=?1 AND mailbox=?2 AND sequence=?3 AND delivery_id=?4 AND stored_uploaded=1 AND consume_requested=1"
+            "UPDATE inbox_items SET stored_uploaded=1,consumed_uploaded=1 WHERE workspace=?1 AND mailbox=?2 AND sequence=?3 AND delivery_id=?4 AND consume_requested=1"
         } else {
             "UPDATE inbox_items SET stored_uploaded=1 WHERE workspace=?1 AND mailbox=?2 AND sequence=?3 AND delivery_id=?4"
         };

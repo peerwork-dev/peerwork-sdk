@@ -181,6 +181,7 @@ impl KernelClient {
         cancel: &CancellationToken,
     ) -> Result<StructureIntentOutcome, KernelClientError> {
         let started=Instant::now();
+        let preparing=self.transport.phase(crate::transport::ClientPhase::BodyPrepare);
         let (command_id, mut command, durable) = self.structure_command(identity, authority, intent_wire)?;
         let request=parse_wire_json_bounded(intent_wire,38,peerwork_core::structure_content::MAX_BODY_REQUEST_BYTES).map_err(|_|KernelClientError::InvalidCommand)?;
         if (request.get("plaintext_contents").is_some()||request.get("plaintext_message").is_some()) && self.journal.verified_pending(&command_id,identity.key_id(),self.discovery.audience_utf16())?.is_none(){
@@ -189,9 +190,16 @@ impl KernelClient {
                 crate::kernel_intents::StructureContentKeys::open(&self.content_key_store_path(),self.content_config())?.has_pinned_selected(identity.key_id(),&workspace)?
             }else{false};
             if !pinned_message{Box::pin(self.ensure_structure_content_ready(identity,authority,&workspace,cancel)).await?;}
+            // A new encrypted packet must be frozen with verified time, not
+            // the constructor's offline validation placeholders. Otherwise
+            // every fresh message immediately archives/renews its own packet.
+            let context=self.fresh_structure_context(cancel).await?;
+            set(&mut command,"issued_at",WireValue::Number(context.server_time_ms() as f64));
+            set(&mut command,"expires_at",WireValue::Number(context.expires_at_ms() as f64));
         }
         let mut persisted = if request.get("plaintext_message").is_some(){self.prepare_plaintext_message(identity,&request,&mut command,cancel)?}
             else{self.prepare_plaintext_contents(identity,intent_wire,&mut command,cancel)?};
+        drop(preparing);
         let mut phase="SUBMISSION";
         let result = tokio::time::timeout(Duration::from_secs(30),async {
             let outcome=self.drive_structure_intent(identity,command.clone(),durable,&mut persisted,cancel).await?;
@@ -515,7 +523,10 @@ impl KernelClient {
             let prepared=prepare_signed_command_wire(command,identity.signing_key(),&self.discovery,None).map_err(|_|KernelClientError::InvalidCommand)?;
             if cancel.is_cancelled(){return Err(TransportError::Cancelled.into());}
             match self.journal.prepare(&command_id,KernelPath::Command,prepared.jws(),prepared.http_body()){
-                Ok(_)|Err(JournalError::IntentConflict)=>(),Err(e)=>return Err(e.into()),
+                // The typed freshly signed bytes were just durably elected.
+                // Do not decrypt/re-sign our own winner. A competing producer
+                // still takes the verified saved-winner path below.
+                Ok(_)=>return Ok(true),Err(JournalError::IntentConflict)=>(),Err(e)=>return Err(e.into()),
             }
         }
         let saved=self.journal.verified_pending(&command_id,identity.key_id(),self.discovery.audience_utf16())?.ok_or(JournalError::IncompatibleStore)?;
@@ -557,7 +568,7 @@ impl KernelClient {
             let signed=prepare_signed_command_wire(command,identity.signing_key(),&self.discovery,None).map_err(|_|KernelClientError::InvalidCommand)?;
             if cancel.is_cancelled(){return Err(TransportError::Cancelled.into());}
             match self.journal.prepare(&context.command_id,KernelPath::Command,signed.jws(),signed.http_body()){
-                Ok(_)|Err(JournalError::IntentConflict)=>(),Err(e)=>return Err(e.into()),
+                Ok(_)=>return Ok(true),Err(JournalError::IntentConflict)=>(),Err(e)=>return Err(e.into()),
             }
         }
         let saved=self.journal.verified_pending(&context.command_id,identity.key_id(),self.discovery.audience_utf16())?.ok_or(JournalError::IncompatibleStore)?;
@@ -594,13 +605,20 @@ impl KernelClient {
         persisted: &mut bool,
         cancel: &CancellationToken,
     ) -> Result<StructureIntentOutcome, KernelClientError> {
-        let candidate=prepare_signed_command_wire(&command,identity.signing_key(),&self.discovery,None).map_err(|_|KernelClientError::InvalidCommand)?;
-        let command_id=candidate.proof().command_id().to_owned();
+        let preparing=self.transport.phase(crate::transport::ClientPhase::PacketPrepare);
+        // The intent constructor already selected the original ID. Do not
+        // sign a throwaway packet before adding trusted authorization time.
+        // The final signed packet still performs complete core validation.
+        let command_id=required_text(&command,"command_id")?;
         let saved=if durable{self.journal.verified_pending(&command_id,identity.key_id(),self.discovery.audience_utf16())?}else{None};
         if let Some(saved)=&saved {
-            if !same_request(&saved.proof,candidate.proof())? {return Err(JournalError::IntentConflict.into());}
             *persisted=true;
             if let Some(proof)=self.journal.accepted_response(saved,self.discovery.receipt_public_key())? {
+                // A cached acceptance may only satisfy this exact business
+                // request. Pending work is compared against the final packet
+                // below, before any submission.
+                let candidate=prepare_signed_command_wire(&command,identity.signing_key(),&self.discovery,None).map_err(|_|KernelClientError::InvalidCommand)?;
+                if !same_request(&saved.proof,candidate.proof())? {return Err(JournalError::IntentConflict.into());}
                 return Ok(StructureIntentOutcome::Accepted(KernelAcceptedResult::from_verified(proof,&saved.proof,None)?));
             }
         }
@@ -635,6 +653,7 @@ impl KernelClient {
         }
         *persisted=true;
         }
+        drop(preparing);
         for attempt in 0..2 {
             let result=if durable{self.submit_saved(&command_id,identity.key_id(),cancel).await}else{self.submit_structure_read(&signed,cancel).await};
             match result {
@@ -671,6 +690,47 @@ mod tests {
     impl Drop for Server { fn drop(&mut self) { let _=self.0.kill();let _=self.0.wait(); } }
     fn accepted(outcome: StructureIntentOutcome) -> KernelAcceptedResult {
         match outcome { StructureIntentOutcome::Accepted(result)=>result,other=>panic!("expected accepted outcome: {other:?}") }
+    }
+
+    #[test]
+    fn competing_message_plaintexts_cannot_share_a_saved_winner(){
+        use crate::kernel_intents::StructureContentKeys;
+        use std::sync::{Arc,Barrier};
+        let state=crate::test_support::protected_test_dir();let path=state.path().join("messages.sqlite");
+        let identity=KernelIdentity::create(&state.path().join("identity")).unwrap();
+        let discovery_wire=serde_json::to_vec(&json!({"semantics":"peerwork.kernel.v1","audience":"message-race",
+            "protocol_features":["canonical-content-key-epochs-v1",peerwork_core::communication::FEATURE],
+            "command_type":"peerwork.kernel-command.v1+jws","receipt_type":"peerwork.kernel-receipt.v1+jws",
+            "receipt_public_key":peerwork_core::crypto::key_id(&ed25519_dalek::SigningKey::from_bytes(&[22;32]).verifying_key().to_bytes()),"limits":{"max":1}})).unwrap();
+        let discovery=peerwork_core::discovery::parse_discovery_wire(&discovery_wire,discovery_wire.len()).unwrap();
+        let mut journal=crate::kernel_intents::KernelIntentJournal::open(&path).unwrap();journal.bind_discovery("https://example.invalid/",&discovery).unwrap();drop(journal);
+        let workspace="W".repeat(43);
+        let mut keys=StructureContentKeys::open(&path.with_extension("content-keys.sqlite"),TransportConfig::new("https://example.invalid")).unwrap();
+        keys.ensure_current(identity.key_id(),&workspace).unwrap();drop(keys);
+        let barrier=Arc::new(Barrier::new(2));let mut workers=Vec::new();
+        for plaintext in ["First competing private message","Second competing private message"]{
+            let path=path.clone();let identity=identity.clone();let workspace=workspace.clone();let barrier=barrier.clone();
+            workers.push(std::thread::spawn(move||{
+                let input=json!({"action":"structure.message.send","workspace_id":workspace,"idempotency_key":"competing-message",
+                    "body":{"conversation_id":"C".repeat(43),"reply_to":null,"reply_address":null,"recipients":[{"mailbox_id":"M".repeat(43),"membership_id":"N".repeat(43)}],"content":{"mode":"WORKSPACE_E2EE"}},"plaintext_message":plaintext});
+                let wire=serde_json::to_vec(&input).unwrap();let cancel=CancellationToken::new();
+                let mut client=KernelClient::open_cached(TransportConfig::new("https://example.invalid"),&path,&[],&cancel).unwrap();
+                let authority=sha256_hex(identity.actor_id().as_bytes());let (_,mut command,_)=client.structure_command(&identity,&authority,&wire).unwrap();
+                let request=parse_wire_json_bounded(&wire,38,peerwork_core::structure_content::MAX_BODY_REQUEST_BYTES).unwrap();
+                barrier.wait();match client.prepare_plaintext_message(&identity,&request,&mut command,&cancel){
+                    Ok(true)=>Some((plaintext.to_owned(),canonical_wire_value(&command,CanonicalPath::COMMAND).unwrap())),
+                    Err(KernelClientError::Store(JournalError::IntentConflict))=>None,
+                    other=>panic!("unexpected election result: {other:?}"),
+                }
+            }));
+        }
+        let winners=workers.into_iter().filter_map(|h|h.join().unwrap()).collect::<Vec<_>>();assert_eq!(winners.len(),1);
+        let command=parse_wire_json_bounded(winners[0].1.as_bytes(),40,180000).unwrap();
+        let signed=prepare_signed_command_wire(&command,identity.signing_key(),&discovery,None).unwrap();
+        let author=peerwork_core::prepared_command::verify_structure_author_intent(signed.jws(),discovery.audience_utf16()).unwrap();
+        let keys=StructureContentKeys::open(&path.with_extension("content-keys.sqlite"),TransportConfig::new("https://example.invalid")).unwrap();
+        assert_eq!(keys.open_message(identity.key_id(),&author).unwrap().as_slice(),winners[0].0.as_bytes());
+        let db=rusqlite::Connection::open(&path).unwrap();assert_eq!(db.query_row("SELECT count(*) FROM kernel_intents",[],|r|r.get::<_,u64>(0)).unwrap(),1);
     }
 
     #[test]

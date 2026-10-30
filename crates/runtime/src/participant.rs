@@ -1164,7 +1164,9 @@ async fn engine_loop(
                                 crate::participant_migration::resolve(&sources,&workspace,&source_id,"validation",name)?;
                             }
                         }
+                        let reserving=access.phase(crate::transport::ClientPhase::AdmissionReserve);
                         let op=match existing{Some(op)=>op,None=>store.reserve(&context.namespace,&request,&identity,config.max_pending,config.max_stored_bytes)?};
+                        drop(reserving);
                         let (done_tx,done_rx)=oneshot::channel();
                         if op.is_terminal(){let _=done_tx.send(op.clone());}
                         else{let list=waiters.entry((context.namespace,request.operation_id)).or_default();list.retain(|w|!w.is_closed());if list.len()<16{list.push(done_tx);}}
@@ -1224,6 +1226,7 @@ async fn engine_loop(
             _=tick.tick()=>{},
         }
         retry_persistence.retain(|key, value| {
+            let _phase = access.phase(crate::transport::ClientPhase::CompletionStore);
             match store.finish(&key.0, &key.1, &identity, value) {
                 Ok(op) => {
                     active.remove(key);
@@ -1258,9 +1261,11 @@ async fn engine_loop(
                 Ok(v) => v,
                 Err(_) => break,
             };
+            let running = access.phase(crate::transport::ClientPhase::RunningStore);
             if store.running(&key.0, &key.1).is_err() {
                 break;
             }
+            drop(running);
             active.insert(key.clone());
             if crate::participant_actions::maintenance(&request.action) {
                 maintenance.insert(key.clone());

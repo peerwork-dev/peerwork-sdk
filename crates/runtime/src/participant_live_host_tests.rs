@@ -187,7 +187,19 @@ async fn one_to_eight_program_concurrent_mail_latency() {
     let root = crate::test_support::protected_test_dir();
     let service = Service::start();
     let mut cases = Vec::new();
-    for size in [1usize, 2, 4, 8] {
+    let sizes = std::env::var("PEERWORK_PROGRAM_MATRIX_CASES")
+        .map(|s| {
+            s.split(',')
+                .map(|s| s.parse::<usize>().unwrap())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|_| vec![1, 2, 4, 8]);
+    assert!(!sizes.is_empty() && sizes.iter().all(|s| [1, 2, 4, 8].contains(s)));
+    let rounds = std::env::var("PEERWORK_PROGRAM_MATRIX_ROUNDS")
+        .map(|s| s.parse::<usize>().unwrap())
+        .unwrap_or(33);
+    assert!((2..=33).contains(&rounds));
+    for size in sizes {
         let mut configs = Vec::new();
         let mut clients = Vec::new();
         for member in 0..size {
@@ -270,9 +282,13 @@ async fn one_to_eight_program_concurrent_mail_latency() {
             receivers.push(receiver);
         }
         let before = service.counts().await;
+        let mut before_metrics = Vec::new();
+        for client in &clients {
+            before_metrics.push(client.metrics().await.unwrap()["http"].clone());
+        }
         let mut samples = Vec::new();
         // First round is reported separately. All32 warm rounds remain eligible.
-        for round in 0..33 {
+        for round in 0..rounds {
             let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(size));
             let round_start = Instant::now();
             let mut jobs = tokio::task::JoinSet::new();
@@ -334,6 +350,10 @@ async fn one_to_eight_program_concurrent_mail_latency() {
                 .collect();
         }
         let after = service.counts().await;
+        let mut after_metrics = Vec::new();
+        for client in &clients {
+            after_metrics.push(client.metrics().await.unwrap()["http"].clone());
+        }
         let warm = samples
             .iter()
             .filter(|s| s["round"] != 0)
@@ -347,6 +367,7 @@ async fn one_to_eight_program_concurrent_mail_latency() {
                 .unwrap_or(0);
         cases.push(json!({"participants":size,"warm_samples":warm.len(),"samples":samples,
             "warm_accepted":accepted,"warm_receiver_observed":observed,"send_http_count":send_count,
+            "client_metrics_before":before_metrics,"client_metrics_after":after_metrics,
             "discovery_http_count":after["discovery"].as_u64().unwrap_or(0)-before["discovery"].as_u64().unwrap_or(0),
             "context_http_count":after["context"].as_u64().unwrap_or(0)-before["context"].as_u64().unwrap_or(0),
             "journal_reads":after["journal_reads"],
@@ -356,7 +377,7 @@ async fn one_to_eight_program_concurrent_mail_latency() {
             &report,
             &json!({"format":"peerwork.program-matrix.v1","state":"MEASURING","cases":cases}),
         );
-        assert_eq!(send_count, (33 * size) as u64);
+        assert_eq!(send_count, (rounds * size) as u64);
         assert_eq!(after["journal_reads"], 0);
         drop(receivers);
         for client in clients {

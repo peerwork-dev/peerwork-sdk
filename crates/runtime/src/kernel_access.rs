@@ -351,6 +351,9 @@ impl KernelAccess {
     pub fn session_metrics(&self)->serde_json::Value{
         self.session.as_ref().and_then(|s|s.seed.lock().ok()?.as_ref().map(|(seed,_)|seed.metrics())).unwrap_or_else(||serde_json::json!({"scope":"SESSION_CUMULATIVE","http_requests_started":0}))
     }
+    pub(crate) fn phase(&self,phase:crate::transport::ClientPhase)->Option<crate::transport::PhaseTimer>{
+        self.session.as_ref().and_then(|s|s.seed.lock().ok()?.as_ref().map(|(seed,_)|seed.phase(phase)))
+    }
 
     fn identity(&self) -> Result<KernelIdentity, KernelAccessError> {
         if let Some(session)=&self.session{

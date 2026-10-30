@@ -8,7 +8,23 @@ use tokio_util::sync::CancellationToken;
 use std::sync::{Arc,atomic::{AtomicU64,Ordering}};
 
 #[derive(Default)]
-struct TransportMetrics{requests:AtomicU64,discovery:AtomicU64,context:AtomicU64,elapsed_us:AtomicU64}
+struct TransportMetrics{requests:AtomicU64,discovery:AtomicU64,context:AtomicU64,elapsed_us:AtomicU64,phases:[PhaseMetric;9]}
+
+#[derive(Default)]
+struct PhaseMetric { count:AtomicU64, elapsed_us:AtomicU64, max_us:AtomicU64 }
+#[derive(Clone,Copy)]
+pub(crate) enum ClientPhase { SessionOpen, BodyPrepare, PacketPrepare, SavedLoad, HttpRoundtrip, ResponseVerifyStore, AdmissionReserve, RunningStore, CompletionStore }
+const PHASE_NAMES:[&str;9]=["session_open","body_prepare","packet_prepare","saved_load","http_roundtrip","response_verify_store","admission_reserve","running_store","completion_store"];
+pub(crate) struct PhaseTimer { metrics:Arc<TransportMetrics>, phase:ClientPhase, started:Instant }
+impl Drop for PhaseTimer {
+    fn drop(&mut self){
+        let elapsed=self.started.elapsed().as_micros().min(u64::MAX as u128) as u64;
+        let metric=&self.metrics.phases[self.phase as usize];
+        metric.elapsed_us.fetch_add(elapsed,Ordering::Relaxed);
+        metric.max_us.fetch_max(elapsed,Ordering::Relaxed);
+        metric.count.fetch_add(1,Ordering::Relaxed);
+    }
+}
 
 #[cfg(test)]
 static TEST_DROP_NEXT_SECURE_POST_RESPONSE: std::sync::atomic::AtomicBool =
@@ -197,7 +213,11 @@ impl HttpTransport {
         self.metrics.requests.fetch_add(1,Ordering::Relaxed);let started=Instant::now();let out=future.await;
         self.metrics.elapsed_us.fetch_add(started.elapsed().as_micros().min(u64::MAX as u128) as u64,Ordering::Relaxed);out
     }
-    pub(crate) fn metrics(&self)->serde_json::Value{serde_json::json!({"scope":"SESSION_CUMULATIVE","http_requests_started":self.metrics.requests.load(Ordering::Relaxed),"discovery_requests":self.metrics.discovery.load(Ordering::Relaxed),"context_requests":self.metrics.context.load(Ordering::Relaxed),"http_response_headers_elapsed_us":self.metrics.elapsed_us.load(Ordering::Relaxed)})}
+    pub(crate) fn phase(&self,phase:ClientPhase)->PhaseTimer{PhaseTimer{metrics:self.metrics.clone(),phase,started:Instant::now()}}
+    pub(crate) fn metrics(&self)->serde_json::Value{
+        let phases:serde_json::Map<String,serde_json::Value>=PHASE_NAMES.iter().zip(&self.metrics.phases).map(|(name,metric)|((*name).into(),serde_json::json!({"count":metric.count.load(Ordering::Relaxed),"elapsed_us":metric.elapsed_us.load(Ordering::Relaxed),"max_us":metric.max_us.load(Ordering::Relaxed)}))).collect();
+        serde_json::json!({"scope":"SESSION_CUMULATIVE","http_requests_started":self.metrics.requests.load(Ordering::Relaxed),"discovery_requests":self.metrics.discovery.load(Ordering::Relaxed),"context_requests":self.metrics.context.load(Ordering::Relaxed),"http_response_headers_elapsed_us":self.metrics.elapsed_us.load(Ordering::Relaxed),"local_phases":phases,"local_phase_basis":"monotonic completed spans, including failed/cancelled scope exits; concurrent spans may overlap; maxima are lifetime, not delta maxima"})
+    }
     pub fn new(mut config: TransportConfig) -> Result<Self, TransportError> {
         let extra_roots = if let Some(options) = &config.client_options {
             options.validate()?; config.timeout = Duration::from_millis(options.request_timeout_ms); options.roots()?
