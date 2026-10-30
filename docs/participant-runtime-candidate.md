@@ -293,14 +293,36 @@ A confirmed no-effect heartbeat outside its issuance window refreshes nonce-boun
 service time once before retrying the same fence. The browser/system wall clock
 never supplies authorization time.
 
+Mailbox claims use an independent receiver device key retained encrypted in the
+inbox. The actor's signing key alone cannot adopt another initialized receiver.
+The inner continuity proof binds the service audience, actor, workspace, mailbox,
+receiver, destination, expected epoch, replacement flag and `claim_command_id`;
+the service requires that ID to equal the outer command. A refused proof cannot
+be reused under a new command after lease expiry. Exact original-command retry
+returns its original refusal or acceptance. Claims add no per-message proof or
+history scan. The authorized mailbox view exposes the receiver public key.
+
+Expired custody does not authorize replacing lost call evidence. A fresh state
+root targeting an initialized mailbox is blocked with
+`MAILBOX_STATE_RECOVERY_REQUIRED`; restore or explicitly transfer the original
+receiver state. Missing local receiver keys return
+`RECEIVER_CONTINUITY_KEY_MISSING` and `RESTORE_ORIGINAL_RECEIVER_STATE`, without
+creating a new receiver. This is a cooperating-client continuity rule, not a
+security boundary against someone who can copy all protected local secrets.
+For low-level explicit `structure.mailbox.claim` calls, prepare the device proof
+for `body.claim_command_id`; Participant selects that same native command ID.
+Ordinary programs use `watch` and do not construct or sign these claims.
+
 Dropping a notification handle leaves durable reception and recovery running.
 Explicit `unwatch` stops local dispatch and renewals; its last remote lease expires
 within 15 seconds. It does not delete service messages or original claims. Reattach
 the same binding to resume. A consumer ID identifies a stable program endpoint;
 do not use a generic program label as proof of an actual Agent host session.
 Selected host dispatch is integrated below. Safe rebind, old-call takeover and real Agent-host qualification remain pending.
-A previously rejected BUSY claim currently requires explicit original-claim
-recovery work; it is not silently replaced with a new command.
+A verified signed no-effect BUSY claim may advance the next durable claim ID
+for the same original receiver. An unknown outcome retains its exact ID/packet.
+A foreign receiver remains blocked after lease expiry; a new ID does not grant
+custody of another receiver's uncertain calls.
 
 Paused descriptors are bounded to 256 retained bindings, with eight enabled
 scopes. Their original receiver and claim identity are retained. Invalid persisted
@@ -421,6 +443,23 @@ leases and selective ACK, without waiting for remote storage ACK before eligible
 local input.
 
 ## Native host-user bridge candidate
+
+Bridge journal identity is independent of its current allowed grant set. Stop
+the local bridge, edit the protected configuration and run
+`peerwork bridge set-grants BRIDGE.json EXPECTED_REVISION`, then restart it.
+`BRIDGE_READY` exposes the current `grant_revision`. A stale revision or a live
+bridge refuses the update. Empty grants revoke all clients; prior credentials
+then fail authorization. Regranting access restores the same original call
+lookup, without reinjection. New principals receive separate scoped credentials
+in the derived endpoint descriptor. Worker client RPC has no grant-update API.
+
+Owner-v3 stores a stable journal pin separately from versioned grants. Existing
+owner-v2 metadata retains its exact old AEAD pin when upgraded after validating
+the original journal. No historical call/key rewriting or bulk replay occurs.
+Missing owner/keys/journal fail closed; unsupported older formats remain retained.
+This operation changes grants only: physical host/session changes still require
+an explicit separate recovery path. Revocation does not erase retained uncertain
+calls or prove model consumption.
 
 `peerwork bridge run BRIDGE.json` runs the bridge under the OS user who owns the
 selected host session. This candidate adds no Node/Python runtime requirement.
@@ -944,6 +983,7 @@ continues reading fresh E2EE mail with the original key paths, and retains the
 original host input count instead of reinjecting those old calls.
 
 Cross-host/key relocation, converting the published Node receiver/bridge format,
-upgrading earlier unpublished bridge journals and changing physical host/session
-bindings are separate pending work. Unsupported legacy files are retained; this
+upgrading unsupported pre-v2 bridge journals and changing physical host/session
+bindings are separate pending work. The native owner-v2 to owner-v3 metadata
+upgrade described above preserves its original journal pin. Unsupported legacy files are retained; this
 command does not claim to import those formats or resolve old uncertainties.

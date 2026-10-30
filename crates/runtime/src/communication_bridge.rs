@@ -41,6 +41,29 @@ fn sync_directory(path: &Path) -> R<()> {
     let _ = path;
     Ok(())
 }
+fn replace_descriptor(path: &Path, value: &Value) -> R<()> {
+    let bytes = value.to_string();
+    #[cfg(windows)]
+    {
+        crate::windows_fs::atomic_replace(path, &[], bytes.as_bytes())
+            .map_err(|_| "BRIDGE_STATE_FAILED")?;
+    }
+    #[cfg(not(windows))]
+    {
+        use std::io::Write;
+        let parent = path.parent().ok_or("BRIDGE_ENDPOINT_INVALID")?;
+        let mut file = tempfile::Builder::new()
+            .prefix(".peerwork-bridge-")
+            .tempfile_in(parent)
+            .map_err(|_| "BRIDGE_STATE_FAILED")?;
+        file.write_all(bytes.as_bytes())
+            .and_then(|_| file.as_file().sync_all())
+            .map_err(|_| "BRIDGE_STATE_FAILED")?;
+        file.persist(path).map_err(|_| "BRIDGE_STATE_FAILED")?;
+        sync_directory(parent)?;
+    }
+    Ok(())
+}
 fn digest_value(value: &Value) -> String {
     peerwork_core::crypto::sha256_hex(value.to_string().as_bytes())
 }
@@ -123,7 +146,6 @@ impl BridgeConfig {
     fn validate(&mut self) -> R<()> {
         if self.format != "peerwork.host-bridge.v1"
             || !self.state_directory.is_absolute()
-            || self.bindings.is_empty()
             || self.bindings.len() > 32
         {
             return Err("BRIDGE_CONFIG_INVALID");
@@ -164,9 +186,125 @@ impl BridgeConfig {
         Ok(())
     }
 }
+// Journal identity stays fixed when the host user changes allowed grants.
+// Owner-v2 conversion retains its exact old AEAD pin; no call is reencrypted,
+// cleared, or inferred to be NOT_SENT during the metadata upgrade.
+fn read_owner(bytes: &[u8]) -> R<Value> {
+    let mut value: Value = serde_json::from_slice(bytes).map_err(|_| "BRIDGE_STATE_INVALID")?;
+    if value["format"] == "peerwork.bridge-owner.v2" {
+        if value.as_object().is_none_or(|o| o.len() != 6) {
+            return Err("BRIDGE_STATE_INVALID");
+        }
+        let phase = value
+            .as_object_mut()
+            .and_then(|o| o.remove("phase"))
+            .ok_or("BRIDGE_JOURNAL_UPGRADE_REQUIRED")?;
+        let journal_pin = digest_value(&value);
+        value["format"] = json!("peerwork.bridge-owner.v3");
+        value["phase"] = phase;
+        value["journal_pin"] = json!(journal_pin);
+        value["grant_revision"] = json!(1);
+    }
+    if value["format"] != "peerwork.bridge-owner.v3"
+        || value.as_object().is_none_or(|o| o.len() != 8)
+        || !matches!(value["phase"].as_str(), Some("INITIALIZING" | "ACTIVE"))
+        || value["bridge_id"].as_str().is_none_or(|id| !token(id))
+        || !hash(&value["journal_pin"])
+        || value["grant_revision"]
+            .as_u64()
+            .is_none_or(|n| n == 0 || n >= 9_007_199_254_740_991)
+    {
+        return Err("BRIDGE_JOURNAL_UPGRADE_REQUIRED");
+    }
+    let grants: Vec<BridgeGrant> =
+        serde_json::from_value(value["bindings"].clone()).map_err(|_| "BRIDGE_STATE_INVALID")?;
+    if grants.len() > 32 || grants.windows(2).any(|w| w[0] >= w[1]) {
+        return Err("BRIDGE_STATE_INVALID");
+    }
+    for grant in &grants {
+        grant.validate()?;
+    }
+    Ok(value)
+}
+fn new_owner(config: &BridgeConfig, destination: &Value) -> R<Value> {
+    let bridge_id = random_token()?;
+    let pin = digest_value(
+        &json!({"format":"peerwork.bridge-journal.v1","host":config.host,"destination":destination,"bridge_id":bridge_id}),
+    );
+    Ok(
+        json!({"format":"peerwork.bridge-owner.v3","host":config.host,"destination":destination,"bridge_id":bridge_id,
+        "journal_pin":pin,"phase":"INITIALIZING","grant_revision":1,"bindings":config.bindings}),
+    )
+}
+/// Host-user administration only. The bridge must be stopped; clients never
+/// receive this operation or the owner token. An exact revision guards stale
+/// edits, while original uncertain evidence remains on its original journal.
+pub fn set_grants(mut config: BridgeConfig, expected_revision: u64) -> R<Value> {
+    config.validate()?;
+    let owner = SecureStateStore::open(&config.state_directory.join("bridge-owner.state"))
+        .map_err(|_| "BRIDGE_STATE_ALREADY_OWNED")?;
+    let bytes = owner
+        .read_exact()
+        .map_err(|_| "BRIDGE_STATE_INVALID")?
+        .ok_or("BRIDGE_OWNER_MISSING")?;
+    let mut saved = read_owner(&bytes)?;
+    if saved["phase"] != "ACTIVE" {
+        return Err("BRIDGE_INITIALIZATION_INCOMPLETE");
+    }
+    if saved["host"] != config.host {
+        return Err("BRIDGE_BINDING_CHANGED_REQUIRES_REVIEW");
+    }
+    let revision = saved["grant_revision"]
+        .as_u64()
+        .ok_or("BRIDGE_STATE_INVALID")?;
+    if revision != expected_revision {
+        return Err("BRIDGE_GRANT_REVISION_MISMATCH");
+    }
+    let credential = crate::secure_state::read_private_file_bounded(
+        &config.state_directory.join("bridge-token"),
+        43,
+    )
+    .map_err(|_| "BRIDGE_TOKEN_MISSING")?;
+    if std::str::from_utf8(&credential)
+        .ok()
+        .is_none_or(|v| !token(v))
+    {
+        return Err("BRIDGE_TOKEN_INVALID");
+    }
+    if !config
+        .state_directory
+        .join("bridge.sqlite")
+        .metadata()
+        .is_ok_and(|m| m.len() > 0)
+    {
+        return Err("BRIDGE_STATE_MISSING");
+    }
+    let _journal = store::Store::open(
+        &config.state_directory,
+        saved["journal_pin"]
+            .as_str()
+            .ok_or("BRIDGE_STATE_INVALID")?,
+        false,
+    )?;
+    let bindings = serde_json::to_value(&config.bindings).map_err(|_| "BRIDGE_GRANT_INVALID")?;
+    if saved["bindings"] != bindings {
+        if revision >= 9_007_199_254_740_990 {
+            return Err("BRIDGE_GRANT_REVISION_EXHAUSTED");
+        }
+        saved["bindings"] = bindings;
+        saved["grant_revision"] = json!(revision + 1);
+    }
+    owner
+        .write_exact(saved.to_string().as_bytes())
+        .map_err(|_| "BRIDGE_STATE_FAILED")?;
+    Ok(
+        json!({"state":"BRIDGE_GRANTS_UPDATED","grant_revision":saved["grant_revision"],"grant_count":config.bindings.len(),"journal_identity":"PRESERVED"}),
+    )
+}
 #[derive(Clone, Serialize, Deserialize)]
 pub struct BridgeReady {
     pub state: String,
+    pub grant_revision: u64,
     pub adapter: Value,
     pub adapters: Vec<Value>,
     pub endpoint_file: PathBuf,
@@ -601,66 +739,40 @@ pub async fn serve(
             sync_directory(&config.state_directory)?;
         }
         let mut host = Host::open(config.host.clone(), executor)?;
-        let base = json!({"format":"peerwork.bridge-owner.v2","host":config.host,"destination":host.destination,"bindings":config.bindings});
-        let initializing;
         let pin = match saved_owner {
-            Some(old) => {
-                let mut saved: Value =
-                    serde_json::from_slice(&old).map_err(|_| "BRIDGE_STATE_INVALID")?;
-                initializing = match saved
-                    .as_object_mut()
-                    .and_then(|o| o.remove("phase"))
-                    .and_then(|v| v.as_str().map(str::to_owned))
-                    .as_deref()
-                {
-                    Some("INITIALIZING") => true,
-                    Some("ACTIVE") => false,
-                    _ => return Err("BRIDGE_JOURNAL_UPGRADE_REQUIRED"),
-                };
-                if !initializing
-                    && !config
-                        .state_directory
-                        .join("bridge.sqlite")
-                        .metadata()
-                        .is_ok_and(|m| m.len() > 0)
-                {
-                    return Err("BRIDGE_STATE_MISSING");
-                }
-                let id = saved
-                    .as_object_mut()
-                    .and_then(|o| o.remove("bridge_id"))
-                    .and_then(|v| v.as_str().map(str::to_owned))
-                    .filter(|id| self::token(id))
-                    .ok_or("BRIDGE_BINDING_CHANGED_REQUIRES_REVIEW")?;
-                if saved != base {
-                    return Err("BRIDGE_BINDING_CHANGED_REQUIRES_REVIEW");
-                }
-                saved["bridge_id"] = json!(id);
-                saved
-            }
+            Some(bytes) => read_owner(&bytes)?,
             None => {
-                if config
-                    .state_directory
-                    .join("bridge.sqlite")
-                    .metadata()
-                    .is_ok_and(|m| m.len() > 0)
-                {
-                    return Err("BRIDGE_OWNER_MISSING");
-                }
-                let mut saved = base;
-                saved["bridge_id"] = json!(random_token()?);
-                initializing = true;
-                let mut pending = saved.clone();
-                pending["phase"] = json!("INITIALIZING");
+                let saved = new_owner(&config, &host.destination)?;
                 owner
-                    .write_exact(pending.to_string().as_bytes())
+                    .write_exact(saved.to_string().as_bytes())
                     .map_err(|_| "BRIDGE_STATE_FAILED")?;
                 saved
             }
         };
+        if pin["host"] != config.host || pin["destination"] != host.destination {
+            return Err("BRIDGE_BINDING_CHANGED_REQUIRES_REVIEW");
+        }
+        if pin["bindings"]
+            != serde_json::to_value(&config.bindings).map_err(|_| "BRIDGE_GRANT_INVALID")?
+        {
+            return Err("BRIDGE_GRANT_UPDATE_REQUIRED");
+        }
+        let initializing = pin["phase"] == "INITIALIZING";
+        if !initializing
+            && !config
+                .state_directory
+                .join("bridge.sqlite")
+                .metadata()
+                .is_ok_and(|m| m.len() > 0)
+        {
+            return Err("BRIDGE_STATE_MISSING");
+        }
         host.destination["bridge_id"] = pin["bridge_id"].clone();
-        let mut store =
-            store::Store::open(&config.state_directory, &digest_value(&pin), initializing)?;
+        let mut store = store::Store::open(
+            &config.state_directory,
+            pin["journal_pin"].as_str().ok_or("BRIDGE_STATE_INVALID")?,
+            initializing,
+        )?;
         let token_file = config.state_directory.join("bridge-token");
         if !token_file.exists() {
             write_private(&token_file, worker_token.as_bytes())?;
@@ -713,8 +825,17 @@ pub async fn serve(
         let endpoint_file = config.state_directory.join("bridge-endpoint.json");
         let descriptor = json!({"format":"peerwork.host-bridge-endpoint.v1","endpoint":worker_endpoint,"bridge_id":pin["bridge_id"],"adapters":adapters});
         if endpoint_file.exists() {
-            if private_json(&endpoint_file, 131072)? != descriptor {
+            let previous = private_json(&endpoint_file, 131072)?;
+            if previous["format"] != descriptor["format"]
+                || previous["endpoint"] != descriptor["endpoint"]
+                || previous["bridge_id"] != descriptor["bridge_id"]
+            {
                 return Err("BRIDGE_ENDPOINT_INVALID");
+            }
+            if previous != descriptor {
+                // The saved, explicitly authorized grant revision selected
+                // these adapters. Replace only this derived descriptor.
+                replace_descriptor(&endpoint_file, &descriptor)?;
             }
         } else {
             write_private(&endpoint_file, descriptor.to_string().as_bytes())?;
@@ -728,6 +849,9 @@ pub async fn serve(
         let _ = init_tx.send(Ok((
             BridgeReady {
                 state: "BRIDGE_READY".into(),
+                grant_revision: pin["grant_revision"]
+                    .as_u64()
+                    .ok_or("BRIDGE_STATE_INVALID")?,
                 adapter,
                 adapters,
                 endpoint_file,
@@ -798,7 +922,18 @@ pub fn cli(args: &[String]) -> Value {
     let run = || -> R<Value> {
         if args.is_empty() || args == ["--help"] {
             return Ok(
-                json!({"state":"HELP","availability":"UNRELEASED_CANDIDATE","runtime_dependencies":[],"usage":"peerwork bridge run CONFIG.json","scope":"Explicit existing host and identity/space/mailbox grants; no permission responses or new Agent."}),
+                json!({"state":"HELP","availability":"UNRELEASED_CANDIDATE","runtime_dependencies":[],"usage":"peerwork bridge run CONFIG.json | set-grants CONFIG.json EXPECTED_REVISION","scope":"Explicit existing host and identity/space/mailbox grants; no permission responses or new Agent."}),
+            );
+        }
+        if let [verb, path, revision] = args {
+            if verb != "set-grants" {
+                return Err("BRIDGE_ARGUMENT_INVALID");
+            }
+            let config = serde_json::from_value(private_json(Path::new(path), 65536)?)
+                .map_err(|_| "BRIDGE_CONFIG_INVALID")?;
+            return set_grants(
+                config,
+                revision.parse().map_err(|_| "BRIDGE_ARGUMENT_INVALID")?,
             );
         }
         let [verb, path] = args else {

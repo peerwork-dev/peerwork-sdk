@@ -166,7 +166,11 @@ impl MailSession {
     }
 }
 pub(crate) enum Command {
-    Bindings{namespace:String,capability:Capability,reply:oneshot::Sender<Result<Vec<WatchOptions>>>},
+    Bindings {
+        namespace: String,
+        capability: Capability,
+        reply: oneshot::Sender<Result<Vec<WatchOptions>>>,
+    },
     Host {
         namespace: String,
         options: WatchOptions,
@@ -199,7 +203,9 @@ pub(crate) enum Command {
 }
 pub(crate) fn reject(command: Command, e: ParticipantError) {
     match command {
-        Command::Bindings{reply,..}=>{let _=reply.send(Err(e));},
+        Command::Bindings { reply, .. } => {
+            let _ = reply.send(Err(e));
+        }
         Command::Host { reply, .. } => {
             let _ = reply.send(Err(e));
         }
@@ -352,12 +358,20 @@ fn scope_refusal(code: &str) -> bool {
             | "MAILBOX_NOT_FOUND"
             | "MAILBOX_EPOCH_MISMATCH"
             | "MAILBOX_LEASE_EXPIRED"
+            | "MAILBOX_STATE_RECOVERY_REQUIRED"
+            | "MAILBOX_CONTINUITY_PROOF_INVALID"
             | "WORKSPACE_NOT_FOUND"
             | "WORKSPACE_ARCHIVED"
             | "WORKSPACE_DELETING"
     )
 }
-fn validate_claim(binding: &Binding, wire: &str, actor: &str, origin: &str, audience:&str) -> Result<()> {
+fn validate_claim(
+    binding: &Binding,
+    wire: &str,
+    actor: &str,
+    origin: &str,
+    audience: &str,
+) -> Result<()> {
     let request = parse_wire_json_bounded(wire.as_bytes(), 8, 8192)
         .map_err(|_| error("WATCH_CLAIM_STATE_INVALID"))?;
     let expected = binding
@@ -367,13 +381,24 @@ fn validate_claim(binding: &Binding, wire: &str, actor: &str, origin: &str, audi
     let body = request
         .get("body")
         .ok_or_else(|| error("WATCH_CLAIM_STATE_INVALID"))?;
-    let value:Value=serde_json::from_str(&canonical_wire_value(body,peerwork_core::canonical::Path::STRUCTURED).map_err(|_|error("WATCH_CLAIM_STATE_INVALID"))?).map_err(|_|error("WATCH_CLAIM_STATE_INVALID"))?;
-    peerwork_core::communication::verify_receiver_claim_proof(audience,actor,&binding.options.workspace_id,&value).map_err(|_|error("WATCH_CLAIM_STATE_INVALID"))?;
+    let value: Value = serde_json::from_str(
+        &canonical_wire_value(body, peerwork_core::canonical::Path::STRUCTURED)
+            .map_err(|_| error("WATCH_CLAIM_STATE_INVALID"))?,
+    )
+    .map_err(|_| error("WATCH_CLAIM_STATE_INVALID"))?;
+    peerwork_core::communication::verify_receiver_claim_proof(
+        audience,
+        actor,
+        &binding.options.workspace_id,
+        &value,
+    )
+    .map_err(|_| error("WATCH_CLAIM_STATE_INVALID"))?;
     if request.object_len() != Some(4)
         || text(&request, "action").as_deref() != Some("structure.mailbox.claim")
         || text(&request, "workspace_id").as_deref() != Some(&binding.options.workspace_id)
         || text(&request, "command_id").as_deref() != Some(&binding.claim_id)
-        || body.object_len() != Some(6)
+        || body.object_len() != Some(7)
+        || text(body, "claim_command_id").as_deref() != Some(&binding.claim_id)
         || text(body, "mailbox_id").as_deref() != Some(&binding.options.mailbox_id)
         || text(body, "receiver_id").as_deref() != Some(&binding.receiver)
         || text(body, "destination_digest").as_deref() != Some(&expected)
@@ -626,7 +651,7 @@ pub(crate) async fn run(
                                     }
                                     let epoch=mailbox["epoch"].as_u64().unwrap_or(0);
                                     if epoch>0&&mailbox["receiver_id"]!=s.binding.receiver{s.fail(Failure{no_effect:false,code:"MAILBOX_STATE_RECOVERY_REQUIRED".into(),retryable:false});continue;}
-                                    let mut body=json!({"mailbox_id":s.binding.options.mailbox_id,"receiver_id":s.binding.receiver,"expected_epoch":if epoch==0{None}else{Some(epoch)},"destination_digest":target,"replace":false});
+                                    let mut body=json!({"claim_command_id":s.binding.claim_id,"mailbox_id":s.binding.options.mailbox_id,"receiver_id":s.binding.receiver,"expected_epoch":if epoch==0{None}else{Some(epoch)},"destination_digest":target,"replace":false});
                                     match store.receiver_proof(&identity,&s.binding,&body){Ok(proof)=>body["continuity_proof"]=json!(proof),Err(e)=>{s.fail(Failure{no_effect:false,code:e.code,retryable:false});continue;}}
                                     let wire=json!({"action":"structure.mailbox.claim","workspace_id":s.binding.options.workspace_id,"command_id":s.binding.claim_id,"body":body}).to_string();
                                     match store.freeze_claim(&s.binding,&wire){Ok(())=>s.binding.claim_wire=Some(wire),Err(e)=>s.fail(Failure{no_effect:false,code:e.code,retryable:false})}
@@ -941,7 +966,13 @@ pub(crate) async fn run(
                     }
                 }
             } else if let Some(wire) = &s.binding.claim_wire {
-                if let Err(e) = validate_claim(&s.binding, wire, identity.actor_id(), &origin,&String::from_utf16(store.audience()).unwrap_or_default()) {
+                if let Err(e) = validate_claim(
+                    &s.binding,
+                    wire,
+                    identity.actor_id(),
+                    &origin,
+                    &String::from_utf16(store.audience()).unwrap_or_default(),
+                ) {
                     s.fail(Failure {
                         no_effect: false,
                         code: e.code,

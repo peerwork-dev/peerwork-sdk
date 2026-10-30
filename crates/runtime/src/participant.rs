@@ -184,7 +184,12 @@ impl Invoke {
     }
     pub(crate) fn wire(&self, namespace: &str, actor: &str, origin: &str, durable: bool) -> Value {
         let mut v = json!({"action":self.action,"workspace_id":self.scope.workspace_id,"instance_id":self.scope.instance_id,"protocol_digest":self.scope.protocol_digest,"body":self.body,"exact_input_refs":self.exact_input_refs});
-        if durable {
+        if self.action == "structure.mailbox.claim" {
+            // The device proof authorizes this exact command, including a
+            // refused claim. A different operation cannot reuse it at the same
+            // receiver epoch after lease expiry.
+            v["command_id"] = self.body["claim_command_id"].clone();
+        } else if durable {
             v["idempotency_key"] = json!(format!(
                 "participant:{}",
                 sha256_hex(
@@ -901,26 +906,58 @@ impl ParticipantClient {
     }
     // Connector-only boundary. Local client credentials cannot manufacture
     // host evidence through the public JSONL/MCP operation catalog.
-    pub(crate) async fn host_operation(&self,options:&WatchOptions,operation:crate::participant_inbox::HostOperation)->Result<crate::participant_inbox::HostReply>{
+    pub(crate) async fn host_operation(
+        &self,
+        options: &WatchOptions,
+        operation: crate::participant_inbox::HostOperation,
+    ) -> Result<crate::participant_inbox::HostReply> {
         options.authorize(&self.capability)?;
-        let(tx,rx)=oneshot::channel();
-        self.send(Command::Watch{context:self.context(),request:crate::participant_watch::Command::Host{namespace:self.namespace.clone(),options:options.clone(),operation,reply:tx}})?;
-        rx.await.map_err(|_|ParticipantError::unavailable())?
+        let (tx, rx) = oneshot::channel();
+        self.send(Command::Watch {
+            context: self.context(),
+            request: crate::participant_watch::Command::Host {
+                namespace: self.namespace.clone(),
+                options: options.clone(),
+                operation,
+                reply: tx,
+            },
+        })?;
+        rx.await.map_err(|_| ParticipantError::unavailable())?
     }
     /// Selected receiver-attested host facts, independent of remote acceptance
     /// and application consumption. This never invokes or retries a host call.
-    pub async fn delivery_status(&self, options:&WatchOptions, item:DeliveryReference)->Result<Value>{
-        match self.host_operation(options,crate::participant_inbox::HostOperation::Status{item}).await?{
-            crate::participant_inbox::HostReply::Status(value)=>Ok(value),
-            _=>Err(ParticipantError::local("HOST_STATE_INVALID","HOST_OBSERVATION")),
+    pub async fn delivery_status(
+        &self,
+        options: &WatchOptions,
+        item: DeliveryReference,
+    ) -> Result<Value> {
+        match self
+            .host_operation(
+                options,
+                crate::participant_inbox::HostOperation::Status { item },
+            )
+            .await?
+        {
+            crate::participant_inbox::HostReply::Status(value) => Ok(value),
+            _ => Err(ParticipantError::local(
+                "HOST_STATE_INVALID",
+                "HOST_OBSERVATION",
+            )),
         }
     }
     /// Bounded local configured scopes owned by this exact client namespace.
     /// This does not claim a mailbox or grant access to another profile.
-    pub async fn watch_bindings(&self)->Result<Vec<WatchOptions>> {
-        let(tx,rx)=oneshot::channel();
-        self.send(Command::Watch{context:self.context(),request:crate::participant_watch::Command::Bindings{namespace:self.namespace.clone(),capability:self.capability.clone(),reply:tx}})?;
-        rx.await.map_err(|_|ParticipantError::unavailable())?
+    pub async fn watch_bindings(&self) -> Result<Vec<WatchOptions>> {
+        let (tx, rx) = oneshot::channel();
+        self.send(Command::Watch {
+            context: self.context(),
+            request: crate::participant_watch::Command::Bindings {
+                namespace: self.namespace.clone(),
+                capability: self.capability.clone(),
+                reply: tx,
+            },
+        })?;
+        rx.await.map_err(|_| ParticipantError::unavailable())?
     }
     pub async fn inbox(
         &self,
@@ -1021,7 +1058,10 @@ impl ProgramWatch {
         &self.options
     }
     pub(crate) async fn changed(&mut self) -> Result<()> {
-        self.signals.recv().await.ok_or_else(ParticipantError::unavailable)
+        self.signals
+            .recv()
+            .await
+            .ok_or_else(ParticipantError::unavailable)
     }
     pub async fn next(&mut self) -> Result<WatchSnapshot> {
         self.changed().await?;

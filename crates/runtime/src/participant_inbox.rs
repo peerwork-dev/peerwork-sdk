@@ -25,7 +25,12 @@ fn failure(code: &str) -> ParticipantError {
         code: code.into(),
         phase: "INBOX_STATE".into(),
         effect_certainty: "UNKNOWN".into(),
-        recovery: "RETAIN_CURSOR_AND_RECONNECT".into(),
+        recovery: if code.starts_with("RECEIVER_CONTINUITY_KEY_") {
+            "RESTORE_ORIGINAL_RECEIVER_STATE"
+        } else {
+            "RETAIN_CURSOR_AND_RECONNECT"
+        }
+        .into(),
         operation_id: None,
     }
 }
@@ -1453,5 +1458,50 @@ mod tests {
             store.watch_bindings().err().unwrap().code,
             "INBOX_STATE_INVALID"
         );
+    }
+    #[test]
+    fn device_key_survives_reopen_and_missing_state_never_rotates_receiver() {
+        let directory = crate::test_support::protected_test_dir();
+        let identity = KernelIdentity::create(&directory.path().join("identity")).unwrap();
+        let path = directory.path().join("inbox");
+        let options = crate::participant_watch::WatchOptions {
+            host_destination: None,
+            workspace_id: "W".repeat(43),
+            mailbox_id: "M".repeat(43),
+            membership_id: "G".repeat(43),
+            consumer_id: "program".into(),
+        };
+        let mut store =
+            InboxStore::open_local(&path, &identity, "https://example.invalid/").unwrap();
+        store.audience = "device-test".encode_utf16().collect();
+        let original = store.attach_watch(&identity, "program", &options).unwrap();
+        let body = json!({"claim_command_id":original.claim_id,"mailbox_id":options.mailbox_id,
+            "receiver_id":original.receiver,"expected_epoch":null,"destination_digest":"d".repeat(64),"replace":false});
+        let proof = store.receiver_proof(&identity, &original, &body).unwrap();
+        drop(store);
+        let mut store =
+            InboxStore::open_local(&path, &identity, "https://example.invalid/").unwrap();
+        store.audience = "device-test".encode_utf16().collect();
+        let resumed = store.attach_watch(&identity, "program", &options).unwrap();
+        assert_eq!(resumed.receiver, original.receiver);
+        assert_eq!(
+            store.receiver_proof(&identity, &resumed, &body).unwrap(),
+            proof
+        );
+        store
+            .db
+            .execute("DELETE FROM inbox_receiver_keys", [])
+            .unwrap();
+        let error = store
+            .attach_watch(&identity, "program", &options)
+            .err()
+            .unwrap();
+        assert_eq!(error.code, "RECEIVER_CONTINUITY_KEY_MISSING");
+        assert_eq!(error.recovery, "RESTORE_ORIGINAL_RECEIVER_STATE");
+        let stored: String = store
+            .db
+            .query_row("SELECT receiver FROM inbox_watches", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stored, original.receiver);
     }
 }

@@ -241,3 +241,39 @@ fn control_only_progress_is_valid_and_unverified_control_source_is_not() {
     )
     .is_err());
 }
+
+#[test]
+fn receiver_continuity_requires_device_key_and_exact_command_context() {
+    let seed = [17u8; 32];
+    let actor = "A".repeat(43);
+    let workspace = "W".repeat(43);
+    let mut body = json!({"claim_command_id":"C".repeat(43),"mailbox_id":"M".repeat(43),
+        "receiver_id":receiver_id(&seed),"expected_epoch":1,"destination_digest":"d".repeat(64),"replace":false});
+    body["continuity_proof"] =
+        json!(receiver_claim_proof(&seed, "service-one", &actor, &workspace, &body).unwrap());
+    assert!(verify_receiver_claim_proof("service-one", &actor, &workspace, &body).is_ok());
+    for (field, value) in [
+        ("claim_command_id", json!("N".repeat(43))),
+        ("mailbox_id", json!("X".repeat(43))),
+        ("receiver_id", json!(receiver_id(&[18u8; 32]))),
+        ("expected_epoch", json!(2)),
+        ("destination_digest", json!("e".repeat(64))),
+        ("replace", json!(true)),
+    ] {
+        let mut changed = body.clone();
+        changed[field] = value;
+        assert!(
+            verify_receiver_claim_proof("service-one", &actor, &workspace, &changed).is_err(),
+            "{field}"
+        );
+    }
+    assert!(verify_receiver_claim_proof("other-service", &actor, &workspace, &body).is_err());
+    assert!(
+        verify_receiver_claim_proof("service-one", &"B".repeat(43), &workspace, &body).is_err()
+    );
+    assert!(verify_receiver_claim_proof("service-one", &actor, &"X".repeat(43), &body).is_err());
+    assert!(receiver_claim_proof(&[18u8; 32], "service-one", &actor, &workspace, &body).is_err());
+    let mut missing = body.clone();
+    missing.as_object_mut().unwrap().remove("claim_command_id");
+    assert!(verify_receiver_claim_proof("service-one", &actor, &workspace, &missing).is_err());
+}

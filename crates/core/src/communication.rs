@@ -1165,7 +1165,7 @@ pub fn receiver_claim_context(
     workspace: &str,
     body: &serde_json::Value,
 ) -> serde_json::Value {
-    serde_json::json!({"format":RECEIVER_CONTINUITY_TYPE,"audience":audience,"actor_id":actor,"workspace_id":workspace,
+    serde_json::json!({"format":RECEIVER_CONTINUITY_TYPE,"audience":audience,"actor_id":actor,"workspace_id":workspace,"command_id":body["claim_command_id"],
         "mailbox_id":body["mailbox_id"],"receiver_id":body["receiver_id"],"expected_epoch":body["expected_epoch"],
         "destination_digest":body["destination_digest"],"replace":body.get("replace").cloned().unwrap_or(serde_json::json!(false))})
 }
@@ -1178,7 +1178,13 @@ pub fn receiver_claim_proof(
 ) -> Result<String> {
     let key = ed25519_dalek::SigningKey::from_bytes(seed);
     let kid = receiver_id(seed);
-    if body["receiver_id"] != kid || !token(actor) || !token(workspace) {
+    if body["receiver_id"] != kid
+        || !token(actor)
+        || !token(workspace)
+        || body["claim_command_id"]
+            .as_str()
+            .is_none_or(|id| !token(id))
+    {
         return Err(CommunicationError);
     }
     crate::crypto::sign_compact(
@@ -1194,6 +1200,14 @@ pub fn verify_receiver_claim_proof(
     workspace: &str,
     body: &serde_json::Value,
 ) -> Result<()> {
+    if !token(actor)
+        || !token(workspace)
+        || body["claim_command_id"]
+            .as_str()
+            .is_none_or(|id| !token(id))
+    {
+        return Err(CommunicationError);
+    }
     let proof = body["continuity_proof"]
         .as_str()
         .filter(|s| s.len() <= 4096)
