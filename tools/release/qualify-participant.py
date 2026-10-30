@@ -44,6 +44,12 @@ def loader_requirements(target, dependencies, symbols=''):
         assert names, 'Windows loader report contains no imports'
         external = re.compile(r'^(?:(?:msvcp|msvcr|vcruntime|concrt)\d.*|node|python\d*|icu.*)\.dll$', re.I)
         assert not any(external.fullmatch(name) for name in names), 'external Windows language/C++ runtime dependency'
+        system = {'kernel32.dll','ws2_32.dll','bcryptprimitives.dll','advapi32.dll','crypt32.dll',
+                  'ntdll.dll','bcrypt.dll','userenv.dll','secur32.dll','shell32.dll','ole32.dll',
+                  'oleaut32.dll','iphlpapi.dll','psapi.dll','cfgmgr32.dll','version.dll','normaliz.dll',
+                  'msvcrt.dll','msvcp_win.dll','ucrtbase.dll'}
+        assert all(name.lower() in system or name.lower().startswith(('api-ms-win-', 'ext-ms-win-'))
+                   for name in names), 'unqualified Windows loader import'
         return {'imports': sorted(set(name.lower() for name in names)), 'vc_runtime_dlls': 'NOT_IMPORTED', 'system_api_sets': 'Windows10+'}
     if target == 'darwin-arm64':
         names = re.findall(r'^\s+(\S+)\s+\(compatibility version', dependencies, re.M)

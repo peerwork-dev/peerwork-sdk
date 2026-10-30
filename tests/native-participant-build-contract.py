@@ -17,6 +17,8 @@ class NativeGraphTests(unittest.TestCase):
                 qualifier.loader_requirements('win32-x64-msvc',good+'    '+name+'\n')
         with self.assertRaisesRegex(AssertionError,'no imports'):
             qualifier.loader_requirements('win32-x64-msvc','tool failed')
+        with self.assertRaisesRegex(AssertionError,'unqualified Windows'):
+            qualifier.loader_requirements('win32-x64-msvc',good+'    unreviewed-runtime.dll\n')
 
     def test_gnu_cpp_abi_cannot_hide_behind_a_compatible_glibc_floor(self):
         deps='(NEEDED) Shared library: [libstdc++.so.6]\n(NEEDED) Shared library: [libc.so.6]'
