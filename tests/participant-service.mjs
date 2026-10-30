@@ -7,6 +7,7 @@ import {once} from 'node:events';
 import {writeFileSync} from 'node:fs';
 import {setTimeout as pause} from 'node:timers/promises';
 import {delayFixtureResponse} from './fixture-latency.mjs';
+import {observeFixtureQueries} from './fixture-query-metrics.mjs';
 
 const root=process.env.PEERWORK_STRUCTURE_REFERENCE_ROOT;
 if(!root||!process.env.PEERWORK_POSTGRES_TEST_URL)throw Error('explicit product root and synthetic PostgreSQL required');
@@ -24,6 +25,8 @@ const commandIds=new Set();
 // Explicit maintainer measurement only. Buffer closed metadata in memory and
 // write once after the fixture stops; never log packets, IDs or request bodies.
 const timingOutput=process.env.PEERWORK_PARTICIPANT_HTTP_TIMINGS;
+if(process.env.PEERWORK_PARTICIPANT_QUERY_TIMINGS==='1'&&!timingOutput)throw Error('query diagnostics require a new protected HTTP timing output');
+const queryObserver=process.env.PEERWORK_PARTICIPANT_QUERY_TIMINGS==='1'?observeFixtureQueries(f.store.pool):null;
 const timings=[];let timingsTruncated=false;
 const linkRttMs=Number(process.env.PEERWORK_FIXTURE_LINK_RTT_MS??0);
 if(!Number.isSafeInteger(linkRttMs)||linkRttMs<0||linkRttMs>1000)throw Error('invalid explicit fixture RTT');
@@ -73,12 +76,13 @@ const handle=async request=>{
   }
   if(delayName&&command.body?.name===delayName)await new Promise(resolve=>{release=resolve;});
  }
- const response=await app.fetch(request);
+ const measured=queryObserver?await queryObserver.measure(()=>app.fetch(request)):null;
+ const response=measured?measured.value:await app.fetch(request);
  if(timingOutput&&command){
   const elapsed=performance.now()-requestStarted;
   let errorCode=null;
   try{const value=await response.clone().json();const code=value.result?.error?.code??value.error?.code??value.code;if(typeof code==='string'&&/^[A-Z][A-Z0-9_]{0,79}$/.test(code))errorCode=code;}catch{}
-  if(timings.length<8192)timings.push({action:command.action_id,http_status:response.status,elapsed_ms:elapsed,error_code:errorCode});
+  if(timings.length<8192)timings.push({action:command.action_id,http_status:response.status,elapsed_ms:elapsed,error_code:errorCode,...(measured?{database:measured.metrics}:{})});
   else timingsTruncated=true;
  }
  if(path==='/api/workspace/v1/structure/communication/stream'&&response.ok){

@@ -184,10 +184,17 @@ impl KernelClient {
         let preparing=self.transport.phase(crate::transport::ClientPhase::BodyPrepare);
         let (command_id, mut command, durable) = self.structure_command(identity, authority, intent_wire)?;
         let request=parse_wire_json_bounded(intent_wire,38,peerwork_core::structure_content::MAX_BODY_REQUEST_BYTES).map_err(|_|KernelClientError::InvalidCommand)?;
+        let mut message_keys=None;
         if (request.get("plaintext_contents").is_some()||request.get("plaintext_message").is_some()) && self.journal.verified_pending(&command_id,identity.key_id(),self.discovery.audience_utf16())?.is_none(){
             let workspace=required_text(&command,"workspace_id")?;
             let pinned_message=if request.get("plaintext_message").is_some()&&self.content_key_store_path().is_file(){
-                crate::kernel_intents::StructureContentKeys::open(&self.content_key_store_path(),self.content_config())?.has_pinned_selected(identity.key_id(),&workspace)?
+                let _key_phase=self.transport.phase(crate::transport::ClientPhase::BodyKeySelection);
+                let keys=crate::kernel_intents::StructureContentKeys::open(&self.content_key_store_path(),self.content_config())?;
+                let pinned=keys.has_pinned_selected(identity.key_id(),&workspace)?;
+                // Retain this validated connection, not a cached key/head.
+                // It owns no transaction across any prerequisite network work;
+                // sealing still selects the then-current key from SQLite.
+                message_keys=Some(keys);pinned
             }else{false};
             if !pinned_message{Box::pin(self.ensure_structure_content_ready(identity,authority,&workspace,cancel)).await?;}
             // A new encrypted packet must be frozen with verified time, not
@@ -197,7 +204,7 @@ impl KernelClient {
             set(&mut command,"issued_at",WireValue::Number(context.server_time_ms() as f64));
             set(&mut command,"expires_at",WireValue::Number(context.expires_at_ms() as f64));
         }
-        let mut persisted = if request.get("plaintext_message").is_some(){self.prepare_plaintext_message(identity,&request,&mut command,cancel)?}
+        let mut persisted = if request.get("plaintext_message").is_some(){self.prepare_plaintext_message(identity,&request,&mut command,message_keys,cancel)?}
             else{self.prepare_plaintext_contents(identity,intent_wire,&mut command,cancel)?};
         drop(preparing);
         let mut phase="SUBMISSION";
@@ -548,7 +555,7 @@ impl KernelClient {
 
     /// One durable ciphertext election shared with ordinary actions. The
     /// journal, not a fresh nonce, owns every retry of a message operation.
-    fn prepare_plaintext_message(&mut self,identity:&KernelIdentity,request:&WireValue,command:&mut WireValue,cancel:&CancellationToken)
+    fn prepare_plaintext_message(&mut self,identity:&KernelIdentity,request:&WireValue,command:&mut WireValue,opened_keys:Option<crate::kernel_intents::StructureContentKeys>,cancel:&CancellationToken)
         ->Result<bool,KernelClientError>{
         use crate::kernel_intents::{StructureContentKeys,ContentKeyError};
         use peerwork_core::{communication::MessageContentContext,prepared_command::verify_structure_author_intent};
@@ -556,18 +563,26 @@ impl KernelClient {
         if cancel.is_cancelled(){return Err(TransportError::Cancelled.into());}
         let text=Zeroizing::new(required_text(request,"plaintext_message")?);
         let context=MessageContentContext::from_command(command).map_err(|_|KernelClientError::InvalidCommand)?;
-        let key_path=self.content_key_store_path();if !key_path.is_file(){return Err(ContentKeyError::Missing.into());}
-        let mut config=crate::transport::TransportConfig::new(self.origin());config.allow_loopback_http=self.origin().starts_with("http://");
-        let keys=StructureContentKeys::open(&key_path,config)?;
+        let keys=match opened_keys{Some(keys)=>keys,None=>{
+            let key_path=self.content_key_store_path();if !key_path.is_file(){return Err(ContentKeyError::Missing.into());}
+            let mut config=crate::transport::TransportConfig::new(self.origin());config.allow_loopback_http=self.origin().starts_with("http://");
+            let _key_phase=self.transport.phase(crate::transport::ClientPhase::BodyKeySelection);
+            StructureContentKeys::open(&key_path,config)?
+        }};
         let existing=self.journal.verified_pending(&context.command_id,identity.key_id(),self.discovery.audience_utf16())?;
         if existing.is_none(){
+            let crypto_phase=self.transport.phase(crate::transport::ClientPhase::BodySealSign);
             let sealed=keys.seal_message(identity.key_id(),text.as_bytes(),&context)?;
             let content=serde_json::to_vec(&serde_json::json!({"mode":"WORKSPACE_E2EE","body":sealed})).map_err(|_|KernelClientError::InvalidCommand)?;
             let content=parse_wire_json_bounded(&content,8,100_000).map_err(|_|KernelClientError::InvalidCommand)?;
             let mut body=command.get("body").cloned().ok_or(KernelClientError::InvalidCommand)?;set(&mut body,"content",content);set(command,"body",body);
             let signed=prepare_signed_command_wire(command,identity.signing_key(),&self.discovery,None).map_err(|_|KernelClientError::InvalidCommand)?;
+            drop(crypto_phase);
             if cancel.is_cancelled(){return Err(TransportError::Cancelled.into());}
-            match self.journal.prepare(&context.command_id,KernelPath::Command,signed.jws(),signed.http_body()){
+            let journal_phase=self.transport.phase(crate::transport::ClientPhase::BodyPersist);
+            let elected=self.journal.prepare(&context.command_id,KernelPath::Command,signed.jws(),signed.http_body());
+            drop(journal_phase);
+            match elected{
                 Ok(_)=>return Ok(true),Err(JournalError::IntentConflict)=>(),Err(e)=>return Err(e.into()),
             }
         }
@@ -717,7 +732,8 @@ mod tests {
                 let mut client=KernelClient::open_cached(TransportConfig::new("https://example.invalid"),&path,&[],&cancel).unwrap();
                 let authority=sha256_hex(identity.actor_id().as_bytes());let (_,mut command,_)=client.structure_command(&identity,&authority,&wire).unwrap();
                 let request=parse_wire_json_bounded(&wire,38,peerwork_core::structure_content::MAX_BODY_REQUEST_BYTES).unwrap();
-                barrier.wait();match client.prepare_plaintext_message(&identity,&request,&mut command,&cancel){
+                let retained=if plaintext.starts_with("First"){Some(StructureContentKeys::open(&path.with_extension("content-keys.sqlite"),TransportConfig::new("https://example.invalid")).unwrap())}else{None};
+                barrier.wait();match client.prepare_plaintext_message(&identity,&request,&mut command,retained,&cancel){
                     Ok(true)=>Some((plaintext.to_owned(),canonical_wire_value(&command,CanonicalPath::COMMAND).unwrap())),
                     Err(KernelClientError::Store(JournalError::IntentConflict))=>None,
                     other=>panic!("unexpected election result: {other:?}"),

@@ -8,21 +8,32 @@ use tokio_util::sync::CancellationToken;
 use std::sync::{Arc,atomic::{AtomicU64,Ordering}};
 
 #[derive(Default)]
-struct TransportMetrics{requests:AtomicU64,discovery:AtomicU64,context:AtomicU64,elapsed_us:AtomicU64,phases:[PhaseMetric;9]}
+struct TransportMetrics{requests:AtomicU64,discovery:AtomicU64,context:AtomicU64,elapsed_us:AtomicU64,phases:[PhaseMetric;12],send_phases:[PhaseMetric;12]}
 
 #[derive(Default)]
 struct PhaseMetric { count:AtomicU64, elapsed_us:AtomicU64, max_us:AtomicU64 }
 #[derive(Clone,Copy)]
-pub(crate) enum ClientPhase { SessionOpen, BodyPrepare, PacketPrepare, SavedLoad, HttpRoundtrip, ResponseVerifyStore, AdmissionReserve, RunningStore, CompletionStore }
-const PHASE_NAMES:[&str;9]=["session_open","body_prepare","packet_prepare","saved_load","http_roundtrip","response_verify_store","admission_reserve","running_store","completion_store"];
-pub(crate) struct PhaseTimer { metrics:Arc<TransportMetrics>, phase:ClientPhase, started:Instant }
+pub(crate) enum ClientPhase { SessionOpen, BodyPrepare, PacketPrepare, SavedLoad, HttpRoundtrip, ResponseVerifyStore, AdmissionReserve, RunningStore, CompletionStore, BodyKeySelection, BodySealSign, BodyPersist }
+const PHASE_NAMES:[&str;12]=["session_open","body_prepare","packet_prepare","saved_load","http_roundtrip","response_verify_store","admission_reserve","running_store","completion_store","body_key_selection","body_seal_sign","body_persist"];
+tokio::task_local! { static FOREGROUND_SEND: (); }
+/// Only nested work actually awaited by this send belongs to its execution
+/// scope. A separate watch/ACK task never inherits this task-local marker.
+pub(crate) async fn track_foreground_send<F:std::future::Future>(future:F)->F::Output{
+    FOREGROUND_SEND.scope((),future).await
+}
+pub(crate) struct PhaseTimer { metrics:Arc<TransportMetrics>, phase:ClientPhase, started:Instant, foreground_send:bool }
+impl PhaseMetric {
+    fn record(&self,elapsed:u64){
+        self.elapsed_us.fetch_add(elapsed,Ordering::Relaxed);
+        self.max_us.fetch_max(elapsed,Ordering::Relaxed);
+        self.count.fetch_add(1,Ordering::Relaxed);
+    }
+}
 impl Drop for PhaseTimer {
     fn drop(&mut self){
         let elapsed=self.started.elapsed().as_micros().min(u64::MAX as u128) as u64;
-        let metric=&self.metrics.phases[self.phase as usize];
-        metric.elapsed_us.fetch_add(elapsed,Ordering::Relaxed);
-        metric.max_us.fetch_max(elapsed,Ordering::Relaxed);
-        metric.count.fetch_add(1,Ordering::Relaxed);
+        self.metrics.phases[self.phase as usize].record(elapsed);
+        if self.foreground_send{self.metrics.send_phases[self.phase as usize].record(elapsed);}
     }
 }
 
@@ -219,10 +230,10 @@ impl HttpTransport {
         self.metrics.requests.fetch_add(1,Ordering::Relaxed);let started=Instant::now();let out=future.await;
         self.metrics.elapsed_us.fetch_add(started.elapsed().as_micros().min(u64::MAX as u128) as u64,Ordering::Relaxed);out
     }
-    pub(crate) fn phase(&self,phase:ClientPhase)->PhaseTimer{PhaseTimer{metrics:self.metrics.clone(),phase,started:Instant::now()}}
+    pub(crate) fn phase(&self,phase:ClientPhase)->PhaseTimer{PhaseTimer{metrics:self.metrics.clone(),phase,started:Instant::now(),foreground_send:FOREGROUND_SEND.try_with(|_|true).unwrap_or(false)}}
     pub(crate) fn metrics(&self)->serde_json::Value{
-        let phases:serde_json::Map<String,serde_json::Value>=PHASE_NAMES.iter().zip(&self.metrics.phases).map(|(name,metric)|((*name).into(),serde_json::json!({"count":metric.count.load(Ordering::Relaxed),"elapsed_us":metric.elapsed_us.load(Ordering::Relaxed),"max_us":metric.max_us.load(Ordering::Relaxed)}))).collect();
-        serde_json::json!({"scope":"SESSION_CUMULATIVE","http_requests_started":self.metrics.requests.load(Ordering::Relaxed),"discovery_requests":self.metrics.discovery.load(Ordering::Relaxed),"context_requests":self.metrics.context.load(Ordering::Relaxed),"http_response_headers_elapsed_us":self.metrics.elapsed_us.load(Ordering::Relaxed),"local_phases":phases,"local_phase_basis":"monotonic completed spans, including failed/cancelled scope exits; concurrent spans may overlap; maxima are lifetime, not delta maxima"})
+        let values=|metrics:&[PhaseMetric]|->serde_json::Map<String,serde_json::Value>{PHASE_NAMES.iter().zip(metrics).map(|(name,metric)|((*name).into(),serde_json::json!({"count":metric.count.load(Ordering::Relaxed),"elapsed_us":metric.elapsed_us.load(Ordering::Relaxed),"max_us":metric.max_us.load(Ordering::Relaxed)}))).collect()};
+        serde_json::json!({"scope":"SESSION_CUMULATIVE","http_requests_started":self.metrics.requests.load(Ordering::Relaxed),"discovery_requests":self.metrics.discovery.load(Ordering::Relaxed),"context_requests":self.metrics.context.load(Ordering::Relaxed),"http_response_headers_elapsed_us":self.metrics.elapsed_us.load(Ordering::Relaxed),"local_phases":values(&self.metrics.phases),"send_execution_phases":values(&self.metrics.send_phases),"send_execution_basis":"task-local structure.message.send execution and its awaited prerequisites only; separate ACK/watch tasks excluded; admission/running/completion store occur outside this scope","local_phase_basis":"monotonic completed spans, including failed/cancelled scope exits; concurrent/nested spans may overlap; maxima are lifetime, not delta maxima"})
     }
     pub fn new(mut config: TransportConfig) -> Result<Self, TransportError> {
         let extra_roots = if let Some(options) = &config.client_options {
@@ -863,6 +874,36 @@ mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+
+    #[tokio::test]
+    async fn send_phase_scope_excludes_interleaved_and_spawned_work_and_survives_cancellation(){
+        let transport=HttpTransport::new(TransportConfig::new("https://example.invalid")).unwrap();
+        tokio::join!(
+            track_foreground_send(async{let _phase=transport.phase(ClientPhase::BodyPrepare);tokio::task::yield_now().await;}),
+            async{let _phase=transport.phase(ClientPhase::BodyPrepare);tokio::task::yield_now().await;}
+        );
+        assert_eq!(transport.metrics()["local_phases"]["body_prepare"]["count"],2);
+        assert_eq!(transport.metrics()["send_execution_phases"]["body_prepare"]["count"],1);
+        let other=transport.clone();
+        track_foreground_send(async{
+            let _phase=transport.phase(ClientPhase::BodyPrepare);
+            tokio::spawn(async move{let _phase=other.phase(ClientPhase::BodyPrepare);tokio::task::yield_now().await;}).await.unwrap();
+        }).await;
+        let(tx,rx)=tokio::sync::oneshot::channel();
+        let mut pending=Box::pin(track_foreground_send(async{
+            let _phase=transport.phase(ClientPhase::BodyPrepare);
+            let _=tx.send(());
+            std::future::pending::<()>().await;
+        }));
+        tokio::select!{_=pending.as_mut()=>panic!("pending scope unexpectedly finished"),_=rx=>{}}
+        drop(pending);
+        // Scope restoration and timer Drop must work even when the whole
+        // caller future is cancelled, not just on the successful branch.
+        drop(transport.phase(ClientPhase::BodyPrepare));
+        assert_eq!(transport.metrics()["local_phases"]["body_prepare"]["count"],6);
+        assert_eq!(transport.metrics()["send_execution_phases"]["body_prepare"]["count"],3);
+        assert_eq!(transport.metrics()["send_execution_phases"]["http_roundtrip"]["count"],0);
+    }
 
     #[test]
     fn authorization_cache_advances_monotonically_without_extending_verified_expiry(){

@@ -432,8 +432,12 @@ impl KernelAccess {
         use crate::participant_actions::{self,Selection};
         let wire=request.wire(namespace,actor,origin,durable);
         if !participant_actions::HELPERS.contains(&request.action.as_str()) {
-            return self.execute_structure_intent_async(wire.to_string().as_bytes(),cancel).await
-                .map(crate::participant_outcome::outcome);
+            let wire=wire.to_string();
+            let execution=self.execute_structure_intent_async(wire.as_bytes(),cancel);
+            let outcome=if request.action=="structure.message.send"{
+                crate::transport::track_foreground_send(execution).await
+            }else{execution.await};
+            return outcome.map(crate::participant_outcome::outcome);
         }
         let selected=participant_actions::selection(request,wire["idempotency_key"].as_str().unwrap_or(""))
             .map_err(|_|KernelClientError::InvalidCommand)?;

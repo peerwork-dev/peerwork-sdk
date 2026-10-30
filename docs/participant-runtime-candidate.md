@@ -1107,10 +1107,11 @@ test-session `--effort low` comparison still observed42.8s/25.7s replies; no
 global/model configuration was changed. Neither two-sample result is a latency
 guarantee or a substitute for host delivery measurement.
 
-The native engine now exposes nine fixed `http.local_phases` counters through
+The native engine now exposes twelve fixed `http.local_phases` counters through
 `metrics()`: session open, body preparation, packet preparation, saved-packet
 loading, HTTP roundtrip, response verification/store, admission reservation,
-running-state store and completion store. Each reports count, cumulative
+running-state store, completion store, body-key selection, sealing/signing and
+body-packet persistence. Each reports count, cumulative
 microseconds and lifetime maximum, using a monotonic clock and completed scope
 exits including errors/cancellation. Concurrent/nested spans can overlap;
 snapshots are observations, not a new signed clock or transaction. Never
@@ -1204,3 +1205,22 @@ not signed/notarized public releases. Workflow source and Linux test selectors
 are prepared; actual three-platform CI execution remains pending. Audit the
 emitted loader dependencies and final installation separately from language
 runtime requirements.
+
+Foreground sends also expose `http.send_execution_phases`. A Tokio task-local
+scope counts only the native `structure.message.send` execution and its awaited
+prerequisites; separate watch/ACK tasks do not inherit it. Admission, scheduling
+and final operation-store work occur outside this execution scope. Failed and
+cancelled scope exits still count. Nested body stages overlap `body_prepare`;
+these are cumulative observations, not an additive percentile breakdown. Only
+fixed names/counts/durations are retained, with no body, operation ID or key.
+
+For explicit synthetic database attribution,
+`PEERWORK_PARTICIPANT_QUERY_TIMINGS=1` requires a fresh protected
+`PEERWORK_PARTICIPANT_HTTP_TIMINGS` output. The fixture records bounded query
+verb/table hints from a fixed allowlist, lock flags, driver-await spans and
+connection wait. SQL text, parameters, identifiers and errors are not exported.
+Sums may include overlapping calls; the completed-span union is separately
+reported. Neither is pure PostgreSQL execution time. Spans truncated or still
+incomplete at response headers are explicit, and later SSE work cannot change
+the completed snapshot. These observer-enabled shortened runs are diagnostic,
+not a performance gate.
