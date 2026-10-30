@@ -1,6 +1,6 @@
 //! Public, redacted kernel access boundary for language bindings. Each call
-//! reopens discovery and protected local state, so a process restart follows
-//! the same continuity and exact saved-command checks as an in-process retry.
+//! reopens protected local state. Embedded runtimes may explicitly retain a
+//! verified session and HTTP pool; restart still rechecks durable continuity.
 
 use crate::kernel_client::{
     KernelAcceptedResult, KernelClient, KernelClientError, KernelOperationStatus, TsMigrationReport,
@@ -14,6 +14,19 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 use tokio::runtime::{Builder, Runtime};
 use tokio_util::sync::CancellationToken;
+use std::sync::{Arc,Mutex};
+use std::time::{Duration,Instant};
+
+#[derive(Default)]
+struct PersistentSession {
+    refresh:tokio::sync::Mutex<()>,
+    runtime:Mutex<Option<Arc<Runtime>>>,
+    identity:Mutex<Option<KernelIdentity>>,
+    seed:Mutex<Option<(crate::kernel_client::KernelClientSeed,Instant)>>,
+}
+impl std::fmt::Debug for PersistentSession {
+    fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result{f.write_str("PersistentSession(<protected>)")}
+}
 
 #[derive(Debug, Error)]
 pub enum KernelAccessError {
@@ -187,6 +200,7 @@ pub struct KernelAccess {
     allow_loopback_http: bool,
     authority_override: Option<String>,
     transport: crate::transport::TransportOptions,
+    session: Option<Arc<PersistentSession>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -217,6 +231,7 @@ impl KernelAccess {
             allow_loopback_http,
             authority_override: None,
             transport: Default::default(),
+            session: None,
         }
     }
 
@@ -224,19 +239,37 @@ impl KernelAccess {
     /// the TypeScript client's SHA-256 digest of this local actor ID.
     pub fn with_authority(mut self, authority: Option<String>) -> Self {
         self.authority_override = authority;
+        if self.session.is_some() { self.session=Some(Arc::new(PersistentSession::default())); }
         self
     }
 
     pub fn with_transport_options(mut self, options: crate::transport::TransportOptions) -> Self {
         self.transport = options;
+        if self.session.is_some() { self.session=Some(Arc::new(PersistentSession::default())); }
         self
     }
 
-    fn runtime(&self) -> Result<Runtime, KernelAccessError> {
-        Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|_| KernelAccessError::Runtime)
+    /// Opt-in handle lifetime for embedded communication runtimes. Pins and
+    /// secrets remain private to this exact access configuration and identity.
+    pub fn with_persistent_session(mut self)->Self{
+        self.session=Some(Arc::new(PersistentSession::default()));self
+    }
+
+    /// After all owned host/maintenance jobs stop, release a lazily created
+    /// synchronous-bridge executor off the async owner thread.
+    pub(crate) async fn close_session_executor_async(&self){
+        let runtime=self.session.as_ref().and_then(|s|s.runtime.lock().ok()?.take());
+        if let Some(runtime)=runtime{let _=tokio::task::spawn_blocking(move||drop(runtime)).await;}
+    }
+
+    fn runtime(&self) -> Result<Arc<Runtime>, KernelAccessError> {
+        if let Some(session)=&self.session{
+            let mut slot=session.runtime.lock().map_err(|_|KernelAccessError::Runtime)?;
+            if let Some(runtime)=slot.as_ref(){return Ok(runtime.clone());}
+            let runtime=Arc::new(Builder::new_multi_thread().worker_threads(1).enable_all().build().map_err(|_|KernelAccessError::Runtime)?);
+            *slot=Some(runtime.clone());return Ok(runtime);
+        }
+        Builder::new_current_thread().enable_all().build().map(Arc::new).map_err(|_| KernelAccessError::Runtime)
     }
 
     fn transport_config(&self) -> TransportConfig {
@@ -251,31 +284,80 @@ impl KernelAccess {
         runtime: &Runtime,
         cancel: &CancellationToken,
     ) -> Result<KernelClient, KernelAccessError> {
-        let mut client=runtime.block_on(KernelClient::open(
-            self.transport_config(),
-            &self.journal_path,
-            &self.required_features,
-            cancel,
-        ))?;
+        runtime.block_on(self.open_session_client(cancel))
+    }
+
+    async fn open_session_client(&self,cancel:&CancellationToken)->Result<KernelClient,KernelAccessError>{
+        if cancel.is_cancelled(){return Err(KernelAccessError::Cancelled);}
+        // Only expired/cold discovery participates in this single-flight.
+        // Warm operations never wait for the background refresh owner.
+        let _refresh=if let Some(session)=&self.session{
+            let stale=session.seed.lock().map_err(|_|KernelAccessError::Runtime)?.as_ref().is_none_or(|(_,at)|at.elapsed()>=Duration::from_secs(60));
+            if stale{Some(session.refresh.lock().await)}else{None}
+        }else{None};
+        let cached=if let Some(session)=&self.session{
+            // Release the mutex before any network await. The seed owns no
+            // SQLite connection; journals stay per operation.
+            session.seed.lock().map_err(|_|KernelAccessError::Runtime)?.as_ref()
+                .map(|(seed,at)|(seed.clone(),at.elapsed()))
+        }else{None};
+        let mut client=match cached{
+            Some((seed,age)) if age<Duration::from_secs(60)=>KernelClient::from_session_seed(&seed,&self.journal_path)?,
+            Some((seed,_))=>KernelClient::refresh_session_seed(&seed,&self.journal_path,&self.required_features,cancel).await?,
+            None=>KernelClient::open(self.transport_config(),&self.journal_path,&self.required_features,cancel).await?,
+        };
+        if let Some(session)=&self.session{
+            let mut slot=session.seed.lock().map_err(|_|KernelAccessError::Runtime)?;
+            // Warm reuse must not extend the discovery refresh interval.
+            if slot.as_ref().is_none_or(|(_,at)|at.elapsed()>=Duration::from_secs(60)){
+                *slot=Some((client.session_seed(),Instant::now()));
+            }
+        }
         client.bind_content_key_path(self.content_key_path_for_origin(client.origin()));
         client.bind_access_recipient_path(self.access_recipient_path(client.origin()));
         Ok(client)
     }
 
     fn open_client_until(&self,runtime:&Runtime,cancel:&CancellationToken,deadline:tokio::time::Instant)->Result<KernelClient,KernelAccessError>{
-        let mut client=runtime.block_on(async{
-            tokio::time::timeout_at(deadline,KernelClient::open(self.transport_config(),&self.journal_path,&self.required_features,cancel))
-                .await.map_err(|_|KernelClientError::Transport(crate::transport::TransportError::Timeout))?
-        })?;
-        client.bind_content_key_path(self.content_key_path_for_origin(client.origin()));
-        client.bind_access_recipient_path(self.access_recipient_path(client.origin()));Ok(client)
+        runtime.block_on(async{
+            tokio::time::timeout_at(deadline,self.open_session_client(cancel)).await
+                .map_err(|_|KernelAccessError::Client(KernelClientError::Transport(crate::transport::TransportError::Timeout)))?
+        })
     }
 
     pub(crate) fn content_key_path_for_origin(&self,origin:&str)->PathBuf{
         self.identity_path.with_extension(format!("{}.content-keys.sqlite",sha256_hex(origin.as_bytes())))
     }
+    pub(crate) fn communication_executor(&self)->Result<Arc<Runtime>,KernelAccessError>{self.runtime()}
+    pub(crate) fn delivery_wakes(&self,token:&str,cancel:&CancellationToken,on_wake:impl Fn(bool))->Result<(),KernelAccessError>{
+        let runtime=self.runtime()?;let client=self.open_client(&runtime,cancel)?;
+        runtime.block_on(async{
+            let mut response=client.transport().delivery_stream(token,cancel).await?;
+            let mut buffer=Vec::new();
+            loop{
+                let chunk=tokio::select!{_=cancel.cancelled()=>return Ok(()),v=response.chunk()=>v.map_err(|_|crate::transport::TransportError::Network)?};
+                let Some(chunk)=chunk else{return Ok(());};
+                for byte in chunk{
+                    buffer.push(byte);if buffer.len()>4096{return Err(crate::transport::TransportError::ResponseTooLarge);}
+                    if buffer.ends_with(b"\n\n"){
+                        if buffer.windows(12).any(|v|v==b"event: ready"){on_wake(true);}
+                        else if buffer.windows(11).any(|v|v==b"event: wake"){on_wake(false);}
+                        buffer.clear();
+                    }
+                }
+            }
+        }).map_err(|e|KernelAccessError::Client(KernelClientError::Transport(e)))
+    }
+    pub fn session_metrics(&self)->serde_json::Value{
+        self.session.as_ref().and_then(|s|s.seed.lock().ok()?.as_ref().map(|(seed,_)|seed.metrics())).unwrap_or_else(||serde_json::json!({"scope":"SESSION_CUMULATIVE","http_requests_started":0}))
+    }
 
     fn identity(&self) -> Result<KernelIdentity, KernelAccessError> {
+        if let Some(session)=&self.session{
+            let mut slot=session.identity.lock().map_err(|_|KernelAccessError::Runtime)?;
+            if let Some(identity)=slot.as_ref(){return Ok(identity.clone());}
+            let identity=KernelIdentity::open(&self.identity_path)?;*slot=Some(identity.clone());return Ok(identity);
+        }
         Ok(KernelIdentity::open(&self.identity_path)?)
     }
 
@@ -312,27 +394,199 @@ impl KernelAccess {
     /// Business intent in, verified result or recoverable operation out. The
     /// selected identity/authority and source remain explicit client settings.
     pub fn execute_structure_intent_with_cancel(
-        &self,
-        intent_wire: &[u8],
-        cancel: &CancellationToken,
-    ) -> Result<crate::kernel_client::StructureIntentOutcome, KernelAccessError> {
-        let deadline=tokio::time::Instant::now()+std::time::Duration::from_secs(30);
+        &self,intent_wire:&[u8],cancel:&CancellationToken,
+    )->Result<crate::kernel_client::StructureIntentOutcome,KernelAccessError>{
+        self.runtime()?.block_on(self.execute_structure_intent_async(intent_wire,cancel))
+    }
+
+    /// Native async entry: safe inside an embedding application's executor.
+    /// No nested Tokio runtime, shared SQLite transaction or network mutex.
+    pub async fn execute_structure_intent_async(
+        &self,intent_wire:&[u8],cancel:&CancellationToken,
+    )->Result<crate::kernel_client::StructureIntentOutcome,KernelAccessError>{
+        let deadline=tokio::time::Instant::now()+Duration::from_secs(30);
         let identity=self.identity()?;
         let authority=self.authority_override.clone().unwrap_or_else(||sha256_hex(identity.actor_id().as_bytes()));
-        let runtime=self.runtime()?;
-        let mut client=self.open_client_until(&runtime,cancel,deadline)?;
+        let mut client=tokio::time::timeout_at(deadline,self.open_session_client(cancel)).await
+            .map_err(|_|KernelClientError::Transport(crate::transport::TransportError::Timeout))??;
         let recipient=self.access_recipient_path(client.origin());
-        Ok(runtime.block_on(async{
-            let mut outcome=client.execute_structure_intent_until(&identity,&authority,intent_wire,cancel,deadline).await?;
-            // Postcondition enrichment shares the original call budget. A
-            // timeout retains the already verified business outcome.
-            let _=tokio::time::timeout_at(deadline,async{
-                client.complete_known_structure_outcome(&identity,&authority,&mut outcome,cancel).await;
-                client.complete_structure_history_outcome(&identity,&authority,&mut outcome,cancel).await;
-                client.populate_selected_body_keys(&identity,&authority,&recipient,&mut outcome,cancel).await;
-            }).await;
-            Ok::<_,KernelClientError>(outcome)
-        })?)
+        let mut outcome=client.execute_structure_intent_until(&identity,&authority,intent_wire,cancel,deadline).await?;
+        let _=tokio::time::timeout_at(deadline,async{
+            client.complete_known_structure_outcome(&identity,&authority,&mut outcome,cancel).await;
+            client.complete_structure_history_outcome(&identity,&authority,&mut outcome,cancel).await;
+            client.populate_selected_body_keys(&identity,&authority,&recipient,&mut outcome,cancel).await;
+        }).await;
+        Ok(outcome)
+    }
+
+    /// Convenience producers share the resident native session and existing
+    /// encrypted parent/packet journals. Never call a synchronous facade here.
+    pub(crate) async fn execute_participant_async(
+        &self, request: &crate::participant::Invoke, namespace: &str,
+        actor: &str, origin: &str, durable: bool, cancel: &CancellationToken,
+        sources:&[crate::participant::MigrationSource],
+    )->Result<serde_json::Value,KernelAccessError>{
+        use crate::participant_actions::{self,Selection};
+        let wire=request.wire(namespace,actor,origin,durable);
+        if !participant_actions::HELPERS.contains(&request.action.as_str()) {
+            return self.execute_structure_intent_async(wire.to_string().as_bytes(),cancel).await
+                .map(crate::participant_outcome::outcome);
+        }
+        let selected=participant_actions::selection(request,wire["idempotency_key"].as_str().unwrap_or(""))
+            .map_err(|_|KernelClientError::InvalidCommand)?;
+        if let Selection::Offline{operation,input}=&selected{
+            let operation=operation.clone();let input=input.to_string();let stop=cancel.clone();
+            // This worker is awaited by the counted engine request job, even
+            // when its caller disconnects. It cannot outlive engine ownership.
+            return tokio::task::spawn_blocking(move||{
+                let result=crate::protocol_workbench::workbench_json(&operation,&input,&stop);
+                let result:serde_json::Value=serde_json::from_str(&result).map_err(|_|KernelClientError::InvalidResult)?;
+                Ok(serde_json::json!({"state":"OFFLINE_RESULT","authoritative":false,"simulated":true,"effect_certainty":"NOT_SUBMITTED","result":result}))
+            }).await.map_err(|_|KernelAccessError::Runtime)?;
+        }
+        if let Selection::Sources(ws)=&selected{
+            let selected=sources.iter().filter(|s|s.workspace_id()==ws).map(|s|s.public_info().map_err(|_|KernelClientError::InvalidCommand)).collect::<Result<Vec<_>,_>>()?;
+            return Ok(serde_json::json!({"state":"LOCAL_CONFIGURATION","workspace_id":ws,"sources":selected,"remote_effect":"NONE"}));
+        }
+        if let Selection::Initialize(ws)=&selected{
+            return Ok(serde_json::json!({"state":"LOCAL_KEY_READY","effect_certainty":"LOCAL_ONLY","remote_access":"NOT_GRANTED","key":self.ensure_local_content_key_with_cancel(ws,cancel)?}));
+        }
+        let deadline=tokio::time::Instant::now()+Duration::from_secs(if matches!(selected,Selection::Migrate{..}){180}else{30});
+        let identity=self.identity()?;
+        let authority=self.authority_override.clone().unwrap_or_else(||sha256_hex(identity.actor_id().as_bytes()));
+        let mut client=tokio::time::timeout_at(deadline,self.open_session_client(cancel)).await
+            .map_err(|_|KernelClientError::Transport(crate::transport::TransportError::Timeout))??;
+        let recipient=self.access_recipient_path(client.origin());
+        if let Selection::Migrate{workspace,source_id,name}=&selected{
+            let key=wire["idempotency_key"].as_str().ok_or(KernelClientError::InvalidCommand)?;
+            if let Some(original)=client.resume_prepared_archive(&identity,&authority,workspace,key,cancel,deadline).await?{
+                return Ok(crate::participant_outcome::outcome(original));
+            }
+            let source=crate::participant_migration::resolve(sources,workspace,source_id,key,name.clone())
+                .map_err(|_|KernelClientError::ArchiveMigration("MIGRATION_SOURCE_NOT_CONFIGURED"))?;
+            return client.migrate_archive_until(&identity,&authority,source,cancel,deadline).await.map(crate::participant_outcome::outcome).map_err(KernelAccessError::from);
+        }
+        let result=tokio::time::timeout_at(deadline,async{
+            let mut out=match selected {
+                Selection::Request(selection)=>return Ok(client.request_structure_access(&identity,&recipient,selection,cancel).await?),
+                Selection::Accept(selection)=>return Ok(client.accept_structure_keys(&identity,&authority,&recipient,selection,cancel).await?),
+                Selection::Initialize(_)=>return Err(KernelClientError::InvalidCommand.into()),
+                Selection::Offline{..}|Selection::Sources(_)=>return Err(KernelClientError::InvalidCommand.into()),
+                Selection::Migrate{..}=>return Err(KernelClientError::InvalidCommand.into()),
+                Selection::Approve(selection)=>client.authorize_structure_access_until(&identity,&authority,selection,cancel,deadline).await?,
+                Selection::Publish(selection)=>client.publish_selected_record_until(&identity,&authority,selection,cancel,deadline).await?,
+                Selection::Rotate(selection)=>client.rotate_structure_content_key(&identity,&authority,selection,cancel).await?,
+                Selection::Coordinate(ws)=>client.coordinate_structure_keys(&identity,&authority,&ws,cancel).await?,
+            };
+            let _=tokio::time::timeout_at(deadline,client.complete_structure_history_outcome(&identity,&authority,&mut out,cancel)).await;
+            Ok::<_,KernelAccessError>(crate::participant_outcome::outcome(out))
+        }).await.map_err(|_|KernelClientError::Transport(crate::transport::TransportError::Timeout))?;
+        result
+    }
+
+    /// Explicit migration owns a counted blocking maintenance lane because
+    /// legacy checkpoint validation/conversion performs bounded local CPU/IO.
+    /// It reuses this access object's transport/session and native journals.
+    pub(crate) fn execute_participant_migration(
+        &self,request:&crate::participant::Invoke,namespace:&str,actor:&str,origin:&str,
+        cancel:&CancellationToken,sources:&[crate::participant::MigrationSource],
+    )->Result<serde_json::Value,KernelAccessError>{
+        self.runtime()?.block_on(self.execute_participant_async(request,namespace,actor,origin,true,cancel,sources))
+    }
+
+    /// Historical selected result verification, including cached body opening.
+    /// No discovery, authorization refresh or remote submission is performed.
+    pub(crate) fn cached_participant_result(&self,command_id:&str,cancel:&CancellationToken)
+        ->Result<Option<crate::kernel_client::KernelAcceptedResult>,KernelAccessError>{
+        let identity=self.identity()?;
+        let mut client=KernelClient::open_cached(self.transport_config(),&self.journal_path,&[],cancel)?;
+        client.bind_content_key_path(self.content_key_path_for_origin(client.origin()));
+        match client.status(command_id,identity.key_id())?{
+            Some(crate::kernel_client::KernelOperationStatus::Accepted(result))=>Ok(Some(result)),
+            _=>Ok(None),
+        }
+    }
+
+    pub(crate) async fn refresh_mailbox_clock(&self,cancel:&CancellationToken)->Result<(),KernelAccessError>{
+        let client=self.open_session_client(cancel).await?;
+        client.transport().invalidate_context(client.discovery().receipt_public_key());
+        client.refresh_authorization_context(cancel).await?;Ok(())
+    }
+    /// Selected retained-key checks, with no discovery or network work.
+    pub(crate) fn cached_mail_keys(&self,workspace:&str,ids:&[String])->Result<std::collections::BTreeSet<String>,KernelAccessError>{
+        if ids.len()>32{return Err(KernelClientError::InvalidCommand.into());}
+        if ids.is_empty(){return Ok(Default::default());}
+        let identity=self.identity()?;
+        let path=self.content_key_path_for_origin(&self.origin);
+        if !path.is_file(){return Ok(Default::default());}
+        let keys=crate::kernel_intents::StructureContentKeys::open(&path,self.transport_config()).map_err(KernelClientError::from)?;
+        ids.iter().filter_map(|id|match keys.contains_retained(identity.key_id(),workspace,id){Ok(true)=>Some(Ok(id.clone())),Ok(false)=>None,Err(e)=>Some(Err(KernelClientError::from(e).into()))}).collect()
+    }
+    pub(crate) async fn prepare_mailbox_keys(&self,workspace:&str,mailbox:&str,needed:&[String],cancel:&CancellationToken)->Result<serde_json::Value,KernelAccessError>{
+        let identity=self.identity()?;
+        let authority=self.authority_override.clone().unwrap_or_else(||sha256_hex(identity.actor_id().as_bytes()));
+        let mut client=self.open_session_client(cancel).await?;
+        client.watch_structure_keys(&identity,&authority,workspace,mailbox,needed,cancel).await.map_err(KernelAccessError::from)
+    }
+    pub(crate) async fn mailbox_session(&self,cancel:&CancellationToken)->Result<crate::participant_watch::MailSession,KernelAccessError>{
+        let client=self.open_session_client(cancel).await?;
+        client.refresh_authorization_context(cancel).await?;
+        let discovery=client.discovery();
+        if !discovery.protocol_features().contains(&peerwork_core::communication::FEATURE.encode_utf16().collect::<Vec<_>>()){return Err(KernelClientError::UnsupportedStructureProfile.into());}
+        Ok(crate::participant_watch::MailSession{transport:client.transport().clone(),audience:discovery.audience_utf16().to_vec(),service_key:discovery.receipt_public_key().into()})
+    }
+    pub(crate) fn open_cached_mail(&self,entry:&mut serde_json::Value,audience:&[u16]){
+        use crate::kernel_intents::{ContentKeyError,StructureContentKeys};
+        let Some(message)=entry.get("envelope").and_then(|v|v.get("message"))else{return;};
+        let opened=(||->Result<serde_json::Value,KernelAccessError>{
+            let identity=self.identity()?;
+            let author=peerwork_core::prepared_command::verify_structure_author_intent(message["author_intent"].as_str().ok_or(KernelClientError::InvalidResult)?,audience).map_err(|_|KernelClientError::InvalidResult)?;
+            let (_,content)=peerwork_core::communication::authored_message_content(&author).map_err(|_|KernelClientError::InvalidResult)?;
+            let peerwork_core::communication::MessageContent::WorkspaceE2ee{body}=content else{return Ok(serde_json::json!({"state":"SOURCE_REFERENCE"}));};
+            let path=self.content_key_path_for_origin(&self.origin);
+            let plain=if path.is_file(){StructureContentKeys::open(&path,self.transport_config()).map_err(KernelClientError::from)?.open_message(identity.key_id(),&author)}else{Err(ContentKeyError::Missing)};
+            let mut out=serde_json::json!({"message_id":message["message_id"],"key_id":body.key_id});
+            match plain{
+                Ok(bytes)=>match std::str::from_utf8(&bytes){Ok(text)=>{out["state"]=serde_json::json!("OPENED");out["text"]=serde_json::json!(text);out["assurance"]=serde_json::json!("AUTHOR_SIGNATURE_AND_AEAD");},Err(_)=>out["state"]=serde_json::json!("UNSUPPORTED_ENCODING")},
+                Err(ContentKeyError::Missing)=>out["state"]=serde_json::json!("KEY_UNAVAILABLE"),
+                Err(ContentKeyError::Content(peerwork_core::structure_content::StructureContentError::Authentication))=>out["state"]=serde_json::json!("AUTHENTICATION_FAILED"),
+                Err(_)=>out["state"]=serde_json::json!("KEY_STATE_INVALID"),
+            }Ok(out)
+        })();
+        entry["opened_message"]=opened.unwrap_or_else(|_|serde_json::json!({"state":"KEY_STATE_INVALID"}));
+    }
+    pub async fn open_async(&self,cancel:&CancellationToken)->Result<KernelOpenInfo,KernelAccessError>{
+        let identity=self.identity()?;let client=self.open_session_client(cancel).await?;
+        Ok(KernelOpenInfo{actor_id:identity.actor_id().into(),key_id:identity.key_id().into(),origin:client.origin().into()})
+    }
+
+    pub async fn resume_structure_intent_async(&self,command_id:&str,cancel:&CancellationToken)
+        ->Result<crate::kernel_client::StructureIntentOutcome,KernelAccessError>{
+        let deadline=tokio::time::Instant::now()+Duration::from_secs(30);
+        let identity=self.identity()?;
+        let authority=self.authority_override.clone().unwrap_or_else(||sha256_hex(identity.actor_id().as_bytes()));
+        let mut client=tokio::time::timeout_at(deadline,self.open_session_client(cancel)).await
+            .map_err(|_|KernelClientError::Transport(crate::transport::TransportError::Timeout))??;
+        let mut outcome=client.resume_structure_parent_until(&identity,&authority,command_id,None,cancel,deadline).await?;
+        let _=tokio::time::timeout_at(deadline,async{
+            client.complete_known_structure_outcome(&identity,&authority,&mut outcome,cancel).await;
+            client.complete_structure_history_outcome(&identity,&authority,&mut outcome,cancel).await;
+        }).await;
+        Ok(outcome)
+    }
+
+    /// Refresh verified prerequisites using the same transport pool. Used by
+    /// the state owner before expiry, never to extend an unverified anchor.
+    pub async fn refresh_session_async(&self,cancel:&CancellationToken)->Result<(),KernelAccessError>{
+        let mut client=self.open_session_client(cancel).await?;
+        let _guard=if let Some(session)=&self.session{Some(session.refresh.lock().await)}else{None};
+        let refresh=self.session.as_ref().and_then(|s|s.seed.lock().ok()?.as_ref().map(|(_,at)|at.elapsed()>=Duration::from_secs(35))).unwrap_or(true);
+        if refresh{
+            let seed=client.session_seed();
+            client=KernelClient::refresh_session_seed(&seed,&self.journal_path,&self.required_features,cancel).await?;
+            if let Some(session)=&self.session{*session.seed.lock().map_err(|_|KernelAccessError::Runtime)?=Some((client.session_seed(),Instant::now()));}
+        }
+        client.refresh_authorization_context(cancel).await?;Ok(())
     }
 
     pub fn migrate_archive_with_cancel(&self,wire:&[u8],cancel:&CancellationToken)->Result<crate::kernel_client::StructureIntentOutcome,KernelAccessError>{

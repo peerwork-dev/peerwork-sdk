@@ -92,6 +92,21 @@ pub(crate) fn read_private_file_bounded(
     Ok(bytes)
 }
 
+/// Validate a database or large protected file without reading its contents.
+pub(crate) fn validate_private_file(path: &Path) -> Result<(), SecureStateError> {
+    check_private_parent(path)?;
+    check_private_file(path)?;
+    let file = open_state_read(path)?;
+    #[cfg(unix)] {
+        use std::os::unix::fs::MetadataExt;
+        let opened=file.metadata()?;
+        let named=fs::symlink_metadata(path)?;
+        if opened.dev()!=named.dev() || opened.ino()!=named.ino() { return Err(SecureStateError::Protection); }
+    }
+    let _=file;
+    Ok(())
+}
+
 pub(crate) fn read_private_seed_file(
     path: &Path,
 ) -> Result<Option<Zeroizing<[u8; 32]>>, SecureStateError> {

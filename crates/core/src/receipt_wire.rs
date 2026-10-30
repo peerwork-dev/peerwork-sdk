@@ -209,7 +209,7 @@ pub fn verify_http_response_wire(
     verify_http_response_with_path(response_wire, expected, Path::KERNEL)
 }
 
-fn verify_http_response_with_path(
+pub(crate) fn verify_http_response_with_path(
     response_wire: &[u8],
     expected: &WireReceiptExpectation<'_>,
     result_path: Path,
@@ -292,7 +292,7 @@ pub fn verify_http_response_for_prepared(
     if structured && !terminal && command.get("action_id").and_then(WireValue::as_string).as_deref() == Some("structure.operation.get") {
         verify_structure_lookup(result, &command, prepared, receipt_key_id)?;
     }
-    if structured && !terminal { verify_structure_read_authors(result, &command, prepared)?; }
+    if structured && !terminal { verify_structure_read_authors(result, &command, prepared)?; crate::communication::verify_read(result,&command,prepared,receipt_key_id).map_err(|_| VerifyWireReceiptError::Mismatch)?; }
     Ok(verified)
 }
 

@@ -5,6 +5,10 @@ use reqwest::{redirect::Policy, Certificate, Client, Proxy, Url};
 use std::time::{Duration,Instant};
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
+use std::sync::{Arc,atomic::{AtomicU64,Ordering}};
+
+#[derive(Default)]
+struct TransportMetrics{requests:AtomicU64,discovery:AtomicU64,context:AtomicU64,elapsed_us:AtomicU64}
 
 #[cfg(test)]
 static TEST_DROP_NEXT_SECURE_POST_RESPONSE: std::sync::atomic::AtomicBool =
@@ -131,12 +135,15 @@ pub struct ExactHttpResponse {
     pub wire: Vec<u8>,
 }
 
+#[derive(Clone)]
 pub struct HttpTransport {
     origin: Url,
     client: Client,
-    migration_source_clock:std::sync::Mutex<Option<(u64,Instant)>>,
+    metrics:Arc<TransportMetrics>,
+    context_cache:Arc<std::sync::Mutex<Option<(String,peerwork_core::structure_context::VerifiedStructureContext,Instant)>>>,
+    migration_source_clock:std::sync::Arc<std::sync::Mutex<Option<(u64,Instant)>>>,
     #[cfg(test)]
-    journal_get_probe: std::sync::Mutex<Option<Vec<String>>>,
+    journal_get_probe: std::sync::Arc<std::sync::Mutex<Option<Vec<String>>>>,
 }
 
 /// Canonical transport origin for local lifecycle pins only. Callers retain
@@ -147,7 +154,50 @@ pub(crate) fn canonical_lifecycle_origin(origin: &str, allow_loopback_http: bool
     Ok(HttpTransport::new(config)?.trusted_origin().to_owned())
 }
 
+/// Authorization timestamps estimated from a verified server anchor and local
+/// monotonic elapsed time. This is not a new signed server-time proof, and its
+/// expiry is never extended beyond that original anchor's authorization TTL.
+pub(crate) struct AuthorizationWindow{issued:u64,expires:u64}
+impl AuthorizationWindow{
+    pub(crate) fn server_time_ms(&self)->u64{self.issued}
+    pub(crate) fn expires_at_ms(&self)->u64{self.expires}
+}
 impl HttpTransport {
+    pub(crate) async fn delivery_stream(&self, token:&str, cancel:&CancellationToken)->Result<reqwest::Response,TransportError>{
+        if token.len()>8192 || !token.is_ascii(){return Err(TransportError::InvalidTrust);}
+        let url=self.endpoint("/api/workspace/v1/structure/delivery/stream")?;
+        let response=tokio::select!{_=cancel.cancelled()=>return Err(TransportError::Cancelled),r=self.measured_send(self.client.get(url).bearer_auth(token).header("Accept","text/event-stream").timeout(Duration::from_secs(70)).send())=>r.map_err(map_network_error)?};
+        if !response.status().is_success()||!response.headers().get("content-type").and_then(|v|v.to_str().ok()).is_some_and(|v|v.starts_with("text/event-stream")){return Err(TransportError::Network);}
+        Ok(response)
+    }
+    pub(crate) async fn mailbox_stream(&self,token:&str,cancel:&CancellationToken)->Result<reqwest::Response,TransportError>{
+        if token.len()>8192||!token.is_ascii(){return Err(TransportError::InvalidTrust);}
+        let url=self.endpoint("/api/workspace/v1/structure/communication/stream")?;
+        let response=tokio::select!{_=cancel.cancelled()=>return Err(TransportError::Cancelled),r=self.measured_send(self.client.get(url).bearer_auth(token).header("Accept","text/event-stream").timeout(Duration::from_secs(65)).send())=>r.map_err(map_network_error)?};
+        if !response.status().is_success()||!response.headers().get("content-type").and_then(|v|v.to_str().ok()).is_some_and(|v|v.starts_with("text/event-stream")){return Err(TransportError::Network);}
+        Ok(response)
+    }
+    pub(crate) fn invalidate_context(&self,key:&str){
+        if let Ok(mut slot)=self.context_cache.lock(){if slot.as_ref().is_some_and(|(pin,_,_)|pin==key){*slot=None;}}
+    }
+    pub(crate) fn cached_context(&self,key:&str)->Option<AuthorizationWindow>{
+        let slot=self.context_cache.lock().ok()?;
+        let (pin,context,at)=slot.as_ref()?;
+        let elapsed=u64::try_from(at.elapsed().as_millis()).ok()?;
+        if pin!=key || elapsed>=540_000{return None;}
+        let issued=context.server_time_ms().checked_add(elapsed)?;
+        let expires=context.expires_at_ms();
+        if issued>=expires{return None;}Some(AuthorizationWindow{issued,expires})
+    }
+    pub(crate) fn remember_context(&self,key:&str,context:&peerwork_core::structure_context::VerifiedStructureContext,started:Instant){
+        if let Ok(mut slot)=self.context_cache.lock(){*slot=Some((key.into(),context.clone(),started));}
+    }
+    async fn measured_send<F>(&self,future:F)->Result<reqwest::Response,reqwest::Error>
+    where F:std::future::Future<Output=Result<reqwest::Response,reqwest::Error>>{
+        self.metrics.requests.fetch_add(1,Ordering::Relaxed);let started=Instant::now();let out=future.await;
+        self.metrics.elapsed_us.fetch_add(started.elapsed().as_micros().min(u64::MAX as u128) as u64,Ordering::Relaxed);out
+    }
+    pub(crate) fn metrics(&self)->serde_json::Value{serde_json::json!({"scope":"SESSION_CUMULATIVE","http_requests_started":self.metrics.requests.load(Ordering::Relaxed),"discovery_requests":self.metrics.discovery.load(Ordering::Relaxed),"context_requests":self.metrics.context.load(Ordering::Relaxed),"http_response_headers_elapsed_us":self.metrics.elapsed_us.load(Ordering::Relaxed)})}
     pub fn new(mut config: TransportConfig) -> Result<Self, TransportError> {
         let extra_roots = if let Some(options) = &config.client_options {
             options.validate()?; config.timeout = Duration::from_millis(options.request_timeout_ms); options.roots()?
@@ -190,9 +240,11 @@ impl HttpTransport {
         Ok(Self {
             origin,
             client,
-            migration_source_clock:std::sync::Mutex::new(None),
+            metrics:Default::default(),
+            context_cache:Default::default(),
+            migration_source_clock:Default::default(),
             #[cfg(test)]
-            journal_get_probe: std::sync::Mutex::new(None),
+            journal_get_probe: Default::default(),
         })
     }
 
@@ -225,8 +277,9 @@ impl HttpTransport {
         &self,
         cancel: &CancellationToken,
     ) -> Result<ExactHttpResponse, TransportError> {
+        self.metrics.discovery.fetch_add(1,Ordering::Relaxed);
         let url = self.endpoint("/api/workspace/v1/discovery")?;
-        let send = self.client.get(url).header("Cache-Control","no-cache, no-store").send();
+        let send = self.measured_send(self.client.get(url).header("Cache-Control","no-cache, no-store").send());
         let response = tokio::select! {
             _ = cancel.cancelled() => return Err(TransportError::Cancelled),
             result = send => result.map_err(map_network_error)?,
@@ -240,17 +293,18 @@ impl HttpTransport {
         if query.len()>8||query.iter().any(|(k,v)|k.len()>32||v.len()>8192){return Err(TransportError::InvalidOrigin);}
         let mut url=self.endpoint("/api/workspace/v1/structure/public")?;
         {let mut pairs=url.query_pairs_mut();for(k,v)in query{pairs.append_pair(k,v);}}
-        let response=tokio::select!{_=cancel.cancelled()=>return Err(TransportError::Cancelled),result=self.client.get(url).header("Cache-Control","no-store").send()=>result.map_err(map_network_error)?};
+        let response=tokio::select!{_=cancel.cancelled()=>return Err(TransportError::Cancelled),result=self.measured_send(self.client.get(url).header("Cache-Control","no-store").send()) =>result.map_err(map_network_error)?};
         read_bounded(response,1_048_576,cancel).await
     }
 
     pub(crate) async fn guard_time_capabilities(&self,cancel:&CancellationToken)->Result<ExactHttpResponse,TransportError> {
         let url=self.endpoint("/api/workspace/v1/guard-time-capabilities")?;
-        let response=tokio::select!{_=cancel.cancelled()=>return Err(TransportError::Cancelled),result=self.client.get(url).send()=>result.map_err(map_network_error)?};
+        let response=tokio::select!{_=cancel.cancelled()=>return Err(TransportError::Cancelled),result=self.measured_send(self.client.get(url).send()) =>result.map_err(map_network_error)?};
         read_bounded(response,16384,cancel).await
     }
 
     pub(crate) async fn structure_context(&self, nonce: &str, cancel: &CancellationToken) -> Result<ExactHttpResponse, TransportError> {
+        self.metrics.context.fetch_add(1,Ordering::Relaxed);
         if nonce.len()!=43 || !nonce.bytes().all(|b| b.is_ascii_alphanumeric() || b==b'_' || b==b'-') {
             return Err(TransportError::InvalidOrigin);
         }
@@ -258,7 +312,7 @@ impl HttpTransport {
         url.query_pairs_mut().append_pair("nonce",nonce);
         let response=tokio::select! {
             _=cancel.cancelled()=>return Err(TransportError::Cancelled),
-            result=self.client.get(url).header("Cache-Control","no-store").send()=>result.map_err(map_network_error)?,
+            result=self.measured_send(self.client.get(url).header("Cache-Control","no-store").send()) =>result.map_err(map_network_error)?,
         };
         read_bounded(response,8192,cancel).await
     }
@@ -267,7 +321,7 @@ impl HttpTransport {
         let url = self.endpoint("/api/workspace/v1/install-capabilities")?;
         let response = tokio::select! {
             _ = cancel.cancelled() => return Err(TransportError::Cancelled),
-            result = self.client.get(url).send() => result.map_err(map_network_error)?,
+            result = self.measured_send(self.client.get(url).send()) => result.map_err(map_network_error)?,
         };
         read_bounded(response, 16_384, cancel).await
     }
@@ -285,7 +339,7 @@ impl HttpTransport {
         url.query_pairs_mut().append_pair(if observe { "nonce" } else { "root" }, parameter);
         let response = tokio::select! {
             _ = cancel.cancelled() => return Err(TransportError::Cancelled),
-            result = self.client.get(url).header("Cache-Control", "no-store").send() => result.map_err(map_network_error)?,
+            result = self.measured_send(self.client.get(url).header("Cache-Control", "no-store").send()) => result.map_err(map_network_error)?,
         };
         read_bounded(response, max_bytes, cancel).await
     }
@@ -305,7 +359,7 @@ impl HttpTransport {
         url.query_pairs_mut().append_pair(if observe {"nonce"} else {"root"},parameter);
         let response=tokio::select! {
             _=cancel.cancelled()=>return Err(TransportError::Cancelled),
-            result=self.client.get(url).header("X-Peerwork-Read",proof).header("Cache-Control","no-store").send()=>result.map_err(map_network_error)?,
+            result=self.measured_send(self.client.get(url).header("X-Peerwork-Read",proof).header("Cache-Control","no-store").send()) =>result.map_err(map_network_error)?,
         };
         read_bounded(response,max_bytes,cancel).await
     }
@@ -317,7 +371,7 @@ impl HttpTransport {
         let url=self.endpoint("/api/workspace/v1/read-model/publications")?;
         let response=tokio::select! {
             _=cancel.cancelled()=>return Err(TransportError::Cancelled),
-            result=self.client.post(url).header("X-Peerwork-Read",proof).header("Content-Type","application/json").body(body.to_vec()).send()=>result.map_err(map_network_error)?,
+            result=self.measured_send(self.client.post(url).header("X-Peerwork-Read",proof).header("Content-Type","application/json").body(body.to_vec()).send()) =>result.map_err(map_network_error)?,
         };
         read_bounded(response,2*1024*1024,cancel).await
     }
@@ -331,7 +385,7 @@ impl HttpTransport {
         url.query_pairs_mut().append_pair("nonce",nonce).append_pair("query",query);
         let response=tokio::select! {
             _=cancel.cancelled()=>return Err(TransportError::Cancelled),
-            result=self.client.get(url).header("X-Peerwork-Read",proof).header("Cache-Control","no-store").send()=>result.map_err(map_network_error)?,
+            result=self.measured_send(self.client.get(url).header("X-Peerwork-Read",proof).header("Cache-Control","no-store").send()) =>result.map_err(map_network_error)?,
         };
         read_bounded(response,8*1024*1024,cancel).await
     }
@@ -364,7 +418,7 @@ impl HttpTransport {
             }
             url.query_pairs_mut().extend_pairs(query.iter().copied());
         }
-        let send = self.client.get(url).send();
+        let send = self.measured_send(self.client.get(url).send());
         let response = tokio::select! {
             _ = cancel.cancelled() => return Err(TransportError::Cancelled),
             result = send => result.map_err(map_network_error)?,
@@ -376,13 +430,13 @@ impl HttpTransport {
     /// Never export a database credential or redirect a signed request.
     pub(crate) async fn migration_upload(&self,jws:&str,bytes:Vec<u8>,cancel:&CancellationToken)->Result<ExactHttpResponse,TransportError>{
         if jws.len()>32768||bytes.len()>64*1024*1024{return Err(TransportError::InvalidOrigin);}
-        let request=self.client.post(self.endpoint("/api/workspace/v1/structure/migration-upload")?).header("X-Peerwork-Migration-JWS",jws).header("Content-Type","application/octet-stream").body(bytes).send();
+        let request=self.measured_send(self.client.post(self.endpoint("/api/workspace/v1/structure/migration-upload")?).header("X-Peerwork-Migration-JWS",jws).header("Content-Type","application/octet-stream").body(bytes).send());
         let response=tokio::select!{_=cancel.cancelled()=>return Err(TransportError::SubmittedUncertain),result=request=>result.map_err(|_|TransportError::SubmittedUncertain)?};
         read_bounded(response,MAX_COMMAND_RESPONSE_BYTES,cancel).await
     }
     pub(crate) async fn migration_source(&self,jws:&str,cancel:&CancellationToken)->Result<(ExactHttpResponse,Vec<u8>),TransportError>{
         if jws.len()>32768{return Err(TransportError::InvalidOrigin);}
-        let request=self.client.post(self.endpoint("/api/workspace/v1/structure/migration-source")?).header("X-Peerwork-Migration-JWS",jws).send();
+        let request=self.measured_send(self.client.post(self.endpoint("/api/workspace/v1/structure/migration-source")?).header("X-Peerwork-Migration-JWS",jws).send());
         let response=tokio::select!{_=cancel.cancelled()=>return Err(TransportError::Cancelled),result=request=>result.map_err(map_network_error)?};
         if !response.status().is_success(){return Ok((read_bounded(response,MAX_COMMAND_RESPONSE_BYTES,cancel).await?,vec![]));}
         let receipt=response.headers().get("X-Peerwork-Migration-Receipt").and_then(|v|v.to_str().ok()).filter(|s|s.len()<=32768).ok_or(TransportError::InvalidOrigin)?;
@@ -403,12 +457,12 @@ impl HttpTransport {
             return Err(TransportError::InvalidOrigin);
         }
         let url = self.endpoint(path)?;
-        let send = self
+        let send = self.measured_send(self
             .client
             .post(url)
             .header("content-type", "application/json")
             .body(body)
-            .send();
+            .send());
         let response = tokio::select! {
             _ = cancel.cancelled() => return Err(TransportError::SubmittedUncertain),
             result = send => result.map_err(|_| TransportError::SubmittedUncertain)?,
@@ -442,13 +496,13 @@ impl HttpTransport {
             return Err(TransportError::InvalidOrigin);
         }
         let url = self.endpoint(path)?;
-        let send = self
+        let send = self.measured_send(self
             .client
             .post(url)
             .header("content-type", "application/json")
             .header("X-Peerwork-Read", read_proof)
             .body(body)
-            .send();
+            .send());
         let response = tokio::select! {
             _ = cancel.cancelled() => return Err(TransportError::SubmittedUncertain),
             result = send => result.map_err(|_| TransportError::SubmittedUncertain)?,
@@ -499,11 +553,11 @@ impl HttpTransport {
                 }
             }
         }
-        let send = self
+        let send = self.measured_send(self
             .client
             .get(url)
             .header("X-Peerwork-Read", read_proof)
-            .send();
+            .send());
         let response = tokio::select! {
             _ = cancel.cancelled() => return Err(TransportError::Cancelled),
             result = send => result.map_err(map_network_error)?,
@@ -516,7 +570,7 @@ impl HttpTransport {
     pub(crate) async fn get_public_journal_exact(&self, workspace:&str, after:u64, cancel:&CancellationToken)->Result<ExactHttpResponse,TransportError>{
         if !valid_identity_token(workspace){return Err(TransportError::InvalidOrigin)}
         let path=format!("/api/workspace/v1/public/secure/workspaces/{workspace}/journal?after={after}&limit=50");
-        let send=self.client.get(self.endpoint(&path)?).send();
+        let send=self.measured_send(self.client.get(self.endpoint(&path)?).send());
         let response=tokio::select!{_ = cancel.cancelled()=>return Err(TransportError::Cancelled),result=send=>result.map_err(map_network_error)?};
         read_bounded(response,8*1024*1024,cancel).await
     }
@@ -538,11 +592,11 @@ impl HttpTransport {
             return Err(TransportError::InvalidOrigin);
         }
         let url = self.endpoint(&path)?;
-        let send = self
+        let send = self.measured_send(self
             .client
             .get(url)
             .header("X-Peerwork-Read", read_proof)
-            .send();
+            .send());
         let response = tokio::select! {
             _ = cancel.cancelled() => return Err(TransportError::Cancelled),
             result = send => result.map_err(|_| TransportError::Network)?,
@@ -571,12 +625,12 @@ impl HttpTransport {
             return Err(TransportError::InvalidOrigin);
         }
         let url = self.endpoint(path)?;
-        let send = self
+        let send = self.measured_send(self
             .client
             .get(url)
             .header("connection", "close")
             .header("X-Peerwork-Read", read_proof)
-            .send();
+            .send());
         let response = tokio::select! {
             _ = cancel.cancelled() => return Err(TransportError::Cancelled),
             result = send => result.map_err(map_network_error)?,
@@ -589,7 +643,7 @@ impl HttpTransport {
         let valid=|v:&str|v.len()==43 && v.bytes().all(|b|b.is_ascii_alphanumeric() || matches!(b,b'-'|b'_'));
         if !valid(workspace)||!valid(request)||proof.is_empty()||proof.len()>12000 { return Err(TransportError::InvalidOrigin); }
         let path=format!("/api/workspace/v1/admin/workspaces/{workspace}/browser-requests/{request}");
-        let send=self.client.get(self.endpoint(&path)?).header("X-Peerwork-Read",proof).send();
+        let send=self.measured_send(self.client.get(self.endpoint(&path)?).header("X-Peerwork-Read",proof).send());
         let response=tokio::select! { _=cancel.cancelled()=>return Err(TransportError::Cancelled), result=send=>result.map_err(map_network_error)?, };
         read_bounded(response,262_144,cancel).await
     }
@@ -611,8 +665,8 @@ impl HttpTransport {
         }
         let response = tokio::select! {
             _ = cancel.cancelled() => return Err(TransportError::Cancelled),
-            result = self.client.get(self.endpoint(path)?)
-                .header("X-Peerwork-Read", read_proof).send() =>
+            result = self.measured_send(self.client.get(self.endpoint(path)?)
+                .header("X-Peerwork-Read", read_proof).send()) =>
                 result.map_err(map_network_error)?,
         };
         // A valid 128-entry history can exceed a single small control item.
@@ -640,8 +694,8 @@ impl HttpTransport {
         }
         let response = tokio::select! {
             _ = cancel.cancelled() => return Err(TransportError::Cancelled),
-            result = self.client.get(self.endpoint(path)?)
-                .header("X-Peerwork-Read", read_proof).send() =>
+            result = self.measured_send(self.client.get(self.endpoint(path)?)
+                .header("X-Peerwork-Read", read_proof).send()) =>
                 result.map_err(map_network_error)?,
         };
         read_bounded(response, 2 * 1024 * 1024, cancel).await
@@ -665,10 +719,10 @@ impl HttpTransport {
         let path = "/api/workspace/v1/secure/identity-keys";
         let response = tokio::select! {
             _ = cancel.cancelled() => return Err(TransportError::SubmittedUncertain),
-            result = self.client.post(self.endpoint(path)?)
+            result = self.measured_send(self.client.post(self.endpoint(path)?)
                 .header("content-type", "application/json")
                 .header("X-Peerwork-Read", read_proof)
-                .body(body).send() =>
+                .body(body).send()) =>
                 result.map_err(|_| TransportError::SubmittedUncertain)?,
         };
         read_bounded(response, MAX_COMMAND_RESPONSE_BYTES, cancel)
@@ -793,6 +847,28 @@ mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+
+    #[test]
+    fn authorization_cache_advances_monotonically_without_extending_verified_expiry(){
+        use ed25519_dalek::{Signer,SigningKey};
+        use peerwork_core::crypto::base64url;
+        let signing=SigningKey::from_bytes(&[7u8;32]);let key=base64url(signing.verifying_key().as_bytes());
+        let nonce=base64url(&[1u8;32]);let time=1230000000000u64;
+        let header=base64url(serde_json::json!({"alg":"EdDSA","typ":peerwork_core::structure_context::CONTEXT_TYPE,"kid":key}).to_string().as_bytes());
+        let payload=base64url(serde_json::json!({"v":1,"audience":"test","profile":"backend-structure-v1","nonce":nonce,"idempotency":"BUSINESS_INTENT_V1","assurance":"BACKEND_CURRENT_STATE","authorization_ttl_ms":600000,"server_time_ms":time}).to_string().as_bytes());
+        let input=format!("{header}.{payload}");let signature=base64url(&signing.sign(input.as_bytes()).to_bytes());
+        let wire=serde_json::json!({"context":format!("{input}.{signature}")}).to_string();
+        let context=peerwork_core::structure_context::verify_structure_context(wire.as_bytes(),&nonce,&"test".encode_utf16().collect::<Vec<_>>(),&key).unwrap();
+        let transport=HttpTransport::new(local_config("http://127.0.0.1:1".into())).unwrap();
+        assert!(transport.cached_context(&key).is_none());
+        transport.remember_context(&key,&context,Instant::now()-Duration::from_secs(45));
+        let shared=transport.clone();let window=shared.cached_context(&key).unwrap();
+        assert!((time+45000..time+46000).contains(&window.server_time_ms()));
+        assert_eq!(window.expires_at_ms(),time+600000);
+        assert!(shared.cached_context("another-service-key").is_none());
+        transport.remember_context(&key,&context,Instant::now()-Duration::from_secs(540));
+        assert!(shared.cached_context(&key).is_none(),"a cached anchor cannot extend itself");
+    }
 
     #[tokio::test]
     async fn migration_source_clock_uses_service_time_and_monotonic_expiry(){

@@ -16,6 +16,7 @@ pub const AUTHORIZATION_TTL_MS: u64 = 600_000;
 #[error("invalid or mismatched signed structure authorization context")]
 pub struct StructureContextError;
 
+#[derive(Clone)]
 pub struct VerifiedStructureContext {
     server_time_ms: u64,
 }

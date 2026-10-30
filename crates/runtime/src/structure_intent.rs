@@ -183,11 +183,15 @@ impl KernelClient {
         let started=Instant::now();
         let (command_id, mut command, durable) = self.structure_command(identity, authority, intent_wire)?;
         let request=parse_wire_json_bounded(intent_wire,38,peerwork_core::structure_content::MAX_BODY_REQUEST_BYTES).map_err(|_|KernelClientError::InvalidCommand)?;
-        if request.get("plaintext_contents").is_some() && self.journal.verified_pending(&command_id,identity.key_id(),self.discovery.audience_utf16())?.is_none(){
+        if (request.get("plaintext_contents").is_some()||request.get("plaintext_message").is_some()) && self.journal.verified_pending(&command_id,identity.key_id(),self.discovery.audience_utf16())?.is_none(){
             let workspace=required_text(&command,"workspace_id")?;
-            Box::pin(self.ensure_structure_content_ready(identity,authority,&workspace,cancel)).await?;
+            let pinned_message=if request.get("plaintext_message").is_some()&&self.content_key_store_path().is_file(){
+                crate::kernel_intents::StructureContentKeys::open(&self.content_key_store_path(),self.content_config())?.has_pinned_selected(identity.key_id(),&workspace)?
+            }else{false};
+            if !pinned_message{Box::pin(self.ensure_structure_content_ready(identity,authority,&workspace,cancel)).await?;}
         }
-        let mut persisted = self.prepare_plaintext_contents(identity,intent_wire,&mut command,cancel)?;
+        let mut persisted = if request.get("plaintext_message").is_some(){self.prepare_plaintext_message(identity,&request,&mut command,cancel)?}
+            else{self.prepare_plaintext_contents(identity,intent_wire,&mut command,cancel)?};
         let mut phase="SUBMISSION";
         let result = tokio::time::timeout(Duration::from_secs(30),async {
             let outcome=self.drive_structure_intent(identity,command.clone(),durable,&mut persisted,cancel).await?;
@@ -236,6 +240,18 @@ impl KernelClient {
         Ok(match outcome{
             StructureIntentOutcome::Accepted(mut result)=>{
                 let action=command.get("action_id").and_then(WireValue::as_string).ok_or(KernelClientError::InvalidCommand)?;
+                if action=="structure.message.send" {
+                    let value=result.structure_result_json.as_deref().and_then(|v|serde_json::from_str::<serde_json::Value>(v).ok());
+                    if value.as_ref().is_some_and(|v|v["status"]=="REJECTED_NO_EFFECT"&&v["error"]["code"]=="CONTENT_KEY_STALE"){
+                        if let Some(stale)=command.get("body").and_then(|v|v.get("content")).and_then(|v|v.get("body")).and_then(|v|v.get("key_id")).and_then(WireValue::as_string){
+                            let invalidated=(||->Result<(),KernelClientError>{
+                                let mut keys=crate::kernel_intents::StructureContentKeys::open(&self.content_key_store_path(),self.content_config())?;
+                                Ok(keys.invalidate_selected(identity.key_id(),&required_text(&command,"workspace_id")?,&stale)?)
+                            })();
+                            if invalidated.is_err(){result.local_warnings.push("CONTENT_KEY_CACHE_INVALIDATION_FAILED_SYNC_CURRENT_KEY".into());}
+                        }
+                    }
+                }
                 self.open_selected_structure_bodies(&mut result,&action,identity.key_id())?;
                 StructureIntentOutcome::Accepted(result)
             },other=>other,
@@ -308,13 +324,26 @@ impl KernelClient {
         Ok(pending(&command_id,"IN_PROGRESS","MAINTENANCE",true))
     }
 
-    pub(super) async fn fresh_structure_context(&self,cancel:&CancellationToken)->Result<peerwork_core::structure_context::VerifiedStructureContext,KernelClientError>{
+    pub(crate) async fn refresh_authorization_context(&self,cancel:&CancellationToken)->Result<(),KernelClientError>{
+        let mut nonce=[0u8;32];OsRng.try_fill_bytes(&mut nonce).map_err(|_|KernelClientError::InvalidCommand)?;
+        let nonce=base64url(&nonce);let started=Instant::now();let response=self.transport.structure_context(&nonce,cancel).await?;
+        if !(200..300).contains(&response.status){return Err(classify_http_rejection(response.status,&response.wire));}
+        if started.elapsed()>Duration::from_secs(30){return Err(TransportError::Timeout.into());}
+        let context=verify_structure_context(&response.wire,&nonce,self.discovery.audience_utf16(),self.discovery.receipt_public_key()).map_err(|_|JournalError::InvalidReceipt)?;
+        self.transport.remember_context(self.discovery.receipt_public_key(),&context,started);Ok(())
+    }
+
+    pub(super) async fn fresh_structure_context(&self,cancel:&CancellationToken)->Result<crate::transport::AuthorizationWindow,KernelClientError>{
+        if cancel.is_cancelled(){return Err(TransportError::Cancelled.into());}
+        if let Some(context)=self.transport.cached_context(self.discovery.receipt_public_key()){return Ok(context);}
         let mut nonce=[0u8;32];OsRng.try_fill_bytes(&mut nonce).map_err(|_|KernelClientError::InvalidCommand)?;
         let nonce=base64url(&nonce);let started=Instant::now();let response=self.transport.structure_context(&nonce,cancel).await?;
         if response.status==404{return Err(KernelClientError::UnsupportedStructureProfile);}
         if !(200..300).contains(&response.status){return Err(classify_http_rejection(response.status,&response.wire));}
         if started.elapsed()>Duration::from_secs(30){return Err(TransportError::Timeout.into());}
-        verify_structure_context(&response.wire,&nonce,self.discovery.audience_utf16(),self.discovery.receipt_public_key()).map_err(|_|JournalError::InvalidReceipt.into())
+        let context=verify_structure_context(&response.wire,&nonce,self.discovery.audience_utf16(),self.discovery.receipt_public_key()).map_err(|_|JournalError::InvalidReceipt)?;
+        self.transport.remember_context(self.discovery.receipt_public_key(),&context,started);
+        self.transport.cached_context(self.discovery.receipt_public_key()).ok_or_else(||TransportError::Timeout.into())
     }
 
     pub(super) fn structure_command(&self, identity: &KernelIdentity, authority: &str, intent_wire: &[u8])
@@ -322,11 +351,12 @@ impl KernelClient {
         let invalid = || KernelClientError::InvalidCommand;
         let request = parse_wire_json_bounded(intent_wire, 38, peerwork_core::structure_content::MAX_BODY_REQUEST_BYTES).map_err(|_| invalid())?;
         let WireValue::Object(fields) = &request else { return Err(invalid()); };
-        let allowed = ["action", "body", "command_id", "idempotency_key", "workspace_id", "instance_id", "protocol_digest", "plaintext_contents",
+        let allowed = ["action", "body", "command_id", "idempotency_key", "workspace_id", "instance_id", "protocol_digest", "plaintext_contents", "plaintext_message",
             "expected_workspace_revision", "expected_instance_revision", "exact_input_refs"];
         if fields.iter().any(|(key, _)| !allowed.iter().any(|name| key.iter().copied().eq(name.encode_utf16()))) { return Err(invalid()); }
         let action = request.get("action").and_then(WireValue::as_string).ok_or_else(invalid)?;
         if !is_structure_action(&action) { return Err(invalid()); }
+        if peerwork_core::structure_execution::is_communication_action(&action)&&!self.discovery.protocol_features().contains(&peerwork_core::communication::FEATURE.encode_utf16().collect::<Vec<_>>()){return Err(KernelClientError::UnsupportedStructureProfile);}
         if action.starts_with("structure.delivery.")&&!self.discovery.protocol_features().contains(&"agent-delivery-v1".encode_utf16().collect::<Vec<_>>()){return Err(KernelClientError::UnsupportedStructureProfile);}
         if action=="structure.protocol.bind"&&!self.discovery.protocol_features().contains(&"owner-protocol-bundle-binding-v1".encode_utf16().collect::<Vec<_>>()){return Err(KernelClientError::UnsupportedStructureProfile);}
         if (action.starts_with("structure.protocol.")||action=="structure.adopt"&&(request.get("body").and_then(|b|b.get("bundle")).is_some()||request.get("body").and_then(|b|b.get("package_digest")).is_some()))&&!self.discovery.protocol_features().contains(&"protocol-role-bundles-v1".encode_utf16().collect::<Vec<_>>()){return Err(KernelClientError::UnsupportedStructureProfile);}
@@ -335,7 +365,7 @@ impl KernelClient {
         if action.starts_with("structure.content-key.history.")&&!self.discovery.protocol_features().contains(&"owner-retained-key-delivery-v1".encode_utf16().collect::<Vec<_>>()){return Err(KernelClientError::UnsupportedStructureProfile);}
         if action=="structure.publication.prepare.get"&&!self.discovery.protocol_features().contains(&"selected-publication-snapshot-v1".encode_utf16().collect::<Vec<_>>()){return Err(KernelClientError::UnsupportedStructureProfile);}
         if action.starts_with("structure.publication.")&&!self.discovery.protocol_features().contains(&"owner-selected-publication-v1".encode_utf16().collect::<Vec<_>>()){return Err(KernelClientError::UnsupportedStructureProfile);}
-        if matches!(action.as_str(),"structure.content-key.set"|"structure.content-key.get"|"structure.content-key.deliver"|"structure.content-key.delivery.get")||request.get("plaintext_contents").is_some(){self.require_content_key_epochs()?;}
+        if matches!(action.as_str(),"structure.content-key.set"|"structure.content-key.get"|"structure.content-key.deliver"|"structure.content-key.delivery.get")||request.get("plaintext_contents").is_some()||request.get("plaintext_message").is_some(){self.require_content_key_epochs()?;}
         if matches!(action.as_str(),"structure.content-key.deliver"|"structure.content-key.delivery.get"){self.require_current_key_delivery()?;}
         if let Some(times)=request.get("body").and_then(|b|b.get("document_times")){
             if action!="structure.action"{return Err(invalid());}
@@ -361,6 +391,14 @@ impl KernelClient {
         // Validate plaintext byte/aggregate limits and capability before key
         // initialization or any service await. Large content never expands
         // ordinary structural fields or reaches the transport journal in clear.
+        if let Some(text)=request.get("plaintext_message"){
+            let text=text.as_string().ok_or_else(invalid)?;
+            if action!="structure.message.send"||request.get("plaintext_contents").is_some(){return Err(invalid());}
+            if text.len()>peerwork_core::structure_content::MAX_BODY_BYTES{return Err(crate::kernel_intents::ContentKeyError::Content(peerwork_core::structure_content::StructureContentError::TooLarge).into());}
+            if text.len()>peerwork_core::structure_content::INLINE_BODY_BYTES&&!self.discovery.protocol_features().contains(&"chunked-content-bodies-v1".encode_utf16().collect::<Vec<_>>()){return Err(KernelClientError::UnsupportedStructureProfile);}
+            let content=body.get("content").ok_or_else(invalid)?;
+            if content.object_len()!=Some(1)||content.get("mode").and_then(WireValue::as_string).as_deref()!=Some("WORKSPACE_E2EE"){return Err(invalid());}
+        }
         if let Some(contents)=request.get("plaintext_contents"){
             use peerwork_core::structure_content::{MAX_BODY_BYTES,MAX_BODY_BATCH_BYTES,INLINE_BODY_BYTES};
             let WireValue::Array(items)=contents else{return Err(invalid());};
@@ -382,6 +420,10 @@ impl KernelClient {
             &&!self.discovery.protocol_features().contains(&"chunked-content-bodies-v1".encode_utf16().collect::<Vec<_>>()){return Err(KernelClientError::UnsupportedStructureProfile);}
 
         set(&mut body, "profile", string(PROFILE));
+        if action=="structure.message.send" {
+            // Defaults become explicit signed fields before AAD construction.
+            for name in ["reply_to","reply_address"]{if body.get(name).is_none(){set(&mut body,name,WireValue::Null);}}
+        }
         if request.get("command_id").is_some() && request.get("idempotency_key").is_some() { return Err(invalid()); }
         let command_id = if let Some(id) = request.get("command_id") {
             let id = id.as_string().filter(|v| super::valid_token(v)).ok_or_else(invalid)?;
@@ -488,6 +530,42 @@ impl KernelClient {
         }
         let mut updated=command.get("body").cloned().ok_or(KernelClientError::InvalidCommand)?;
         set(&mut updated,"contents",saved_contents.clone());set(command,"body",updated);
+        let candidate=prepare_signed_command_wire(command,identity.signing_key(),&self.discovery,None).map_err(|_|KernelClientError::InvalidCommand)?;
+        if !same_request(&saved.proof,candidate.proof())?{return Err(JournalError::IntentConflict.into());}
+        Ok(true)
+    }
+
+    /// One durable ciphertext election shared with ordinary actions. The
+    /// journal, not a fresh nonce, owns every retry of a message operation.
+    fn prepare_plaintext_message(&mut self,identity:&KernelIdentity,request:&WireValue,command:&mut WireValue,cancel:&CancellationToken)
+        ->Result<bool,KernelClientError>{
+        use crate::kernel_intents::{StructureContentKeys,ContentKeyError};
+        use peerwork_core::{communication::MessageContentContext,prepared_command::verify_structure_author_intent};
+        use zeroize::Zeroizing;
+        if cancel.is_cancelled(){return Err(TransportError::Cancelled.into());}
+        let text=Zeroizing::new(required_text(request,"plaintext_message")?);
+        let context=MessageContentContext::from_command(command).map_err(|_|KernelClientError::InvalidCommand)?;
+        let key_path=self.content_key_store_path();if !key_path.is_file(){return Err(ContentKeyError::Missing.into());}
+        let mut config=crate::transport::TransportConfig::new(self.origin());config.allow_loopback_http=self.origin().starts_with("http://");
+        let keys=StructureContentKeys::open(&key_path,config)?;
+        let existing=self.journal.verified_pending(&context.command_id,identity.key_id(),self.discovery.audience_utf16())?;
+        if existing.is_none(){
+            let sealed=keys.seal_message(identity.key_id(),text.as_bytes(),&context)?;
+            let content=serde_json::to_vec(&serde_json::json!({"mode":"WORKSPACE_E2EE","body":sealed})).map_err(|_|KernelClientError::InvalidCommand)?;
+            let content=parse_wire_json_bounded(&content,8,100_000).map_err(|_|KernelClientError::InvalidCommand)?;
+            let mut body=command.get("body").cloned().ok_or(KernelClientError::InvalidCommand)?;set(&mut body,"content",content);set(command,"body",body);
+            let signed=prepare_signed_command_wire(command,identity.signing_key(),&self.discovery,None).map_err(|_|KernelClientError::InvalidCommand)?;
+            if cancel.is_cancelled(){return Err(TransportError::Cancelled.into());}
+            match self.journal.prepare(&context.command_id,KernelPath::Command,signed.jws(),signed.http_body()){
+                Ok(_)|Err(JournalError::IntentConflict)=>(),Err(e)=>return Err(e.into()),
+            }
+        }
+        let saved=self.journal.verified_pending(&context.command_id,identity.key_id(),self.discovery.audience_utf16())?.ok_or(JournalError::IncompatibleStore)?;
+        let author=verify_structure_author_intent(&saved.jws,self.discovery.audience_utf16()).map_err(|_|JournalError::IncompatibleStore)?;
+        let original=keys.open_message(identity.key_id(),&author)?;
+        if original.as_slice()!=text.as_bytes(){return Err(JournalError::IntentConflict.into());}
+        let saved_content=author.command().get("body").and_then(|b|b.get("content")).ok_or(JournalError::IntentConflict)?;
+        let mut body=command.get("body").cloned().ok_or(KernelClientError::InvalidCommand)?;set(&mut body,"content",saved_content.clone());set(command,"body",body);
         let candidate=prepare_signed_command_wire(command,identity.signing_key(),&self.discovery,None).map_err(|_|KernelClientError::InvalidCommand)?;
         if !same_request(&saved.proof,candidate.proof())?{return Err(JournalError::IntentConflict.into());}
         Ok(true)

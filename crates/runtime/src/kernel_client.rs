@@ -44,7 +44,7 @@ pub(crate) fn validate_public_action(value:&serde_json::Value)->Result<(),Kernel
 
 #[path = "structure_body_read.rs"]
 mod structure_body_read;
-pub use structure_body_read::OpenedStructureBody;
+pub use structure_body_read::{OpenedStructureBody,OpenedMessageBody};
 
 /// Verify already-signed transport bytes during raw preparation or recovery;
 /// never reinterpret them as unsigned caller selections or regenerate proofs.
@@ -152,6 +152,9 @@ pub struct KernelAcceptedResult {
     /// Local opening of selected original-author bodies; never part of the
     /// service receipt and never persisted in the transport journal.
     pub opened_contents: Option<Vec<OpenedStructureBody>>,
+    pub opened_messages: Option<Vec<OpenedMessageBody>>,
+    /// Local follow-up warnings never alter the authenticated service result.
+    pub local_warnings: Vec<String>,
     pub key_history:Option<StructureKeyHistoryReadiness>,
 }
 
@@ -362,6 +365,8 @@ impl KernelAcceptedResult {
             catalog,
             structure_result_json,
             opened_contents: None,
+            opened_messages: None,
+            local_warnings: Vec::new(),
             key_history:None,
         })
     }
@@ -414,7 +419,32 @@ pub struct KernelClient {
     access_recipient_path:Option<PathBuf>,
 }
 
+/// Share only immutable discovery and the HTTP pool. Each invocation owns its
+/// journal connection, so an await never holds another operation's DB lock.
+#[derive(Clone)]
+pub(crate) struct KernelClientSeed {
+    transport: HttpTransport,
+    discovery: ParsedDiscovery,
+}
+impl KernelClientSeed{pub(crate) fn metrics(&self)->serde_json::Value{self.transport.metrics()}}
+
 impl KernelClient {
+    pub(crate) fn session_seed(&self)->KernelClientSeed{
+        KernelClientSeed{transport:self.transport.clone(),discovery:self.discovery.clone()}
+    }
+    pub(crate) fn from_session_seed(seed:&KernelClientSeed,journal_path:&Path)->Result<Self,KernelClientError>{
+        let mut journal=KernelIntentJournal::open(journal_path)?;
+        journal.bind_discovery(seed.transport.trusted_origin(),&seed.discovery)?;
+        Ok(Self{transport:seed.transport.clone(),journal,discovery:seed.discovery.clone(),content_keys_path:None,access_recipient_path:None})
+    }
+    pub(crate) async fn refresh_session_seed(seed:&KernelClientSeed,journal_path:&Path,required_features:&[Vec<u16>],cancel:&CancellationToken)->Result<Self,KernelClientError>{
+        let response=seed.transport.discovery(cancel).await?;
+        if !(200..300).contains(&response.status){return Err(KernelClientError::DiscoveryStatus);}
+        let discovery=parse_discovery_wire(&response.wire,MAX_DISCOVERY_BYTES).map_err(|_|KernelClientError::UnsupportedDiscovery)?;
+        if !discovery.supports_required_features(required_features){return Err(KernelClientError::UnsupportedDiscovery);}
+        let mut journal=KernelIntentJournal::open(journal_path)?;journal.bind_discovery(seed.transport.trusted_origin(),&discovery)?;
+        Ok(Self{transport:seed.transport.clone(),journal,discovery,content_keys_path:None,access_recipient_path:None})
+    }
     pub(crate) fn bind_access_recipient_path(&mut self,path:PathBuf){self.access_recipient_path=Some(path);}
     pub(crate) fn bind_content_key_path(&mut self,path:PathBuf){self.content_keys_path=Some(path);}
     pub(crate) fn content_key_store_path(&self)->PathBuf{

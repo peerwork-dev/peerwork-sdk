@@ -15,9 +15,15 @@ pub struct OpenedStructureBody {
     pub text:Option<String>,
     pub assurance:Option<&'static str>,
 }
+#[derive(Debug,Clone,PartialEq,Eq,Serialize)]
+pub struct OpenedMessageBody {
+    pub message_id:String,pub source_command_id:String,pub key_id:Option<String>,
+    pub state:&'static str,pub text:Option<String>,pub assurance:Option<&'static str>,
+}
 impl KernelClient {
     pub(super) fn open_selected_structure_bodies(&self,result:&mut KernelAcceptedResult,action:&str,local_key:&str)
         ->Result<(),KernelClientError>{
+        if matches!(action,"structure.message.get"|"structure.mailbox.inbox.read"){return self.open_selected_message_bodies(result,action,local_key);}
         if result.opened_contents.is_some()||!matches!(action,"structure.record.get"|"structure.publication.prepare.get"|"structure.records.read"){return Ok(());}
         let data=parse_wire_json_bounded(result.structure_result_json.as_deref().ok_or(KernelClientError::InvalidResult)?.as_bytes(),32,1024*1024)
             .map_err(|_|KernelClientError::InvalidResult)?;
@@ -67,5 +73,37 @@ impl KernelClient {
             opened.push(body);
         }
         result.opened_contents=Some(opened);Ok(())
+    }
+}
+
+impl KernelClient {
+    fn open_selected_message_bodies(&self,result:&mut KernelAcceptedResult,action:&str,local_key:&str)->Result<(),KernelClientError>{
+        if result.opened_messages.is_some(){return Ok(());}
+        let data=parse_wire_json_bounded(result.structure_result_json.as_deref().ok_or(KernelClientError::InvalidResult)?.as_bytes(),40,2*1024*1024).map_err(|_|KernelClientError::InvalidResult)?;
+        if data.get("status").and_then(WireValue::as_string).as_deref()==Some("REJECTED_NO_EFFECT"){return Ok(());}
+        let messages=if action=="structure.message.get"{vec![data.get("message").ok_or(KernelClientError::InvalidResult)?]}
+            else{let Some(WireValue::Array(items))=data.get("items")else{return Err(KernelClientError::InvalidResult);};if items.len()>32{return Err(KernelClientError::InvalidResult);}items.iter().filter_map(|v|v.get("message")).collect()};
+        let path=self.content_key_store_path();
+        let keys=if path.is_file(){Some(StructureContentKeys::open(&path,self.content_config()))}else{None};
+        let mut opened=Vec::new();
+        for message in messages {
+            // Original source/recipient bindings were checked by receipt_wire.
+            let author=verify_structure_author_intent(&required_text(message,"author_intent")?,self.discovery.audience_utf16()).map_err(|_|KernelClientError::InvalidResult)?;
+            let (_,content)=peerwork_core::communication::authored_message_content(&author).map_err(|_|KernelClientError::InvalidResult)?;
+            let mut body=OpenedMessageBody{message_id:required_text(message,"message_id")?,source_command_id:author.command_id().into(),key_id:None,state:"SOURCE_REFERENCE",text:None,assurance:None};
+            if let peerwork_core::communication::MessageContent::WorkspaceE2ee{body:sealed}=content {
+                body.key_id=Some(sealed.key_id);
+                let bytes=match &keys{None=>Err(ContentKeyError::Missing),Some(Err(_))=>Err(ContentKeyError::Integrity),Some(Ok(keys))=>keys.open_message(local_key,&author)};
+                match bytes{
+                    Ok(plain)=>match std::str::from_utf8(&plain){Ok(text)=>{body.state="OPENED";body.text=Some(text.into());body.assurance=Some("AUTHOR_SIGNATURE_AND_AEAD");},Err(_)=>body.state="UNSUPPORTED_ENCODING"},
+                    Err(ContentKeyError::Missing)=>body.state="KEY_UNAVAILABLE",
+                    Err(ContentKeyError::Content(StructureContentError::Authentication))=>body.state="AUTHENTICATION_FAILED",
+                    Err(ContentKeyError::Content(_))=>body.state="BODY_INVALID",
+                    Err(_)=>body.state="KEY_STATE_INVALID",
+                }
+            }
+            opened.push(body);
+        }
+        result.opened_messages=Some(opened);Ok(())
     }
 }

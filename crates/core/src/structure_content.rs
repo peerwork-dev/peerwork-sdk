@@ -114,7 +114,14 @@ pub fn structure_content_key_id(key:&[u8;32])->String{
 pub fn seal_structure_content(key:&[u8;32],plaintext:&[u8],context:&StructureContentContext)
     ->Result<StructureSealedContent,StructureContentError>{
     if plaintext.len()>MAX_BODY_BYTES{return Err(StructureContentError::TooLarge);}
-    let aad=context.canonical_aad()?;
+    seal_content_with_aad(key,plaintext,&context.canonical_aad()?)
+}
+
+/// Shared crypto implementation; callers must construct a domain-specific,
+/// validated context rather than accepting arbitrary untrusted AAD.
+pub(crate) fn seal_content_with_aad(key:&[u8;32],plaintext:&[u8],aad:&str)
+    ->Result<StructureSealedContent,StructureContentError>{
+    if plaintext.len()>MAX_BODY_BYTES{return Err(StructureContentError::TooLarge);}
     let mut nonce=[0;12];OsRng.try_fill_bytes(&mut nonce).map_err(|_|StructureContentError::Entropy)?;
     let ciphertext=Aes256Gcm::new_from_slice(key).map_err(|_|StructureContentError::Invalid)?
         .encrypt(Nonce::from_slice(&nonce),Payload{msg:plaintext,aad:aad.as_bytes()})
@@ -129,7 +136,11 @@ pub fn seal_structure_content(key:&[u8;32],plaintext:&[u8],context:&StructureCon
 
 pub fn open_structure_content(key:&[u8;32],sealed:&StructureSealedContent,context:&StructureContentContext)
     ->Result<Zeroizing<Vec<u8>>,StructureContentError>{
-    let aad=context.canonical_aad()?;
+    open_content_with_aad(key,sealed,&context.canonical_aad()?)
+}
+
+pub(crate) fn open_content_with_aad(key:&[u8;32],sealed:&StructureSealedContent,aad:&str)
+    ->Result<Zeroizing<Vec<u8>>,StructureContentError>{
     if sealed.algorithm!="A256GCM"||sealed.key_id!=structure_content_key_id(key)
         ||sealed.aad_digest!=sha256_hex(aad.as_bytes())||sealed.nonce.len()!=16{
         return Err(StructureContentError::Invalid);
@@ -145,7 +156,7 @@ pub fn open_structure_content(key:&[u8;32],sealed:&StructureSealedContent,contex
 }
 
 impl StructureSealedContent {
-    fn decoded_ciphertext(&self)->Result<Vec<u8>,StructureContentError>{
+    pub(crate) fn decoded_ciphertext(&self)->Result<Vec<u8>,StructureContentError>{
         let encoded=if self.ciphertext_chunks.is_empty(){
             if self.ciphertext.len()>CIPHERTEXT_CHUNK_BYTES{return Err(StructureContentError::Invalid);}
             self.ciphertext.clone()

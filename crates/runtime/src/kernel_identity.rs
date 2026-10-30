@@ -50,6 +50,7 @@ impl KernelIdentityError {
     }
 }
 
+#[derive(Clone)]
 pub struct KernelIdentity {
     signing_key: SigningKey,
     key_id: String,

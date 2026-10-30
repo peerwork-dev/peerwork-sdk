@@ -391,6 +391,7 @@ pub struct CommandPins<'a> {
 /// prepared command. Peers may use any valid JSON member order accepted by the
 /// service. Signature bytes stay exact; duplicate members and schema/domain/
 /// audience mismatches still fail. This cannot authorize local journal replay.
+#[derive(Debug, Clone)]
 pub struct VerifiedStructureAuthorIntent {
     command: WireValue,
     actor: String,
@@ -439,10 +440,15 @@ impl VerifiedStructureAuthorIntent {
         ))
     }
 }
-pub fn verify_structure_author_intent(
-    jws: &str,
-    audience_utf16: &[u16],
-) -> Result<VerifiedStructureAuthorIntent, PreparedCommandError> {
+pub fn verify_structure_author_intent(jws:&str,audience_utf16:&[u16])->Result<VerifiedStructureAuthorIntent,PreparedCommandError>{
+    verify_authored_structure(jws,audience_utf16,false)
+}
+/// A separate finite evidence boundary. Host control attestations cannot be
+/// substituted for immutable business author-intent proofs.
+pub(crate) fn verify_host_report_intent(jws:&str,audience_utf16:&[u16])->Result<VerifiedStructureAuthorIntent,PreparedCommandError>{
+    verify_authored_structure(jws,audience_utf16,true)
+}
+fn verify_authored_structure(jws:&str,audience_utf16:&[u16],host_report:bool)->Result<VerifiedStructureAuthorIntent,PreparedCommandError>{
     let invalid = || PreparedCommandError::Invalid;
     if jws.len() > 250_000 || audience_utf16.is_empty() || audience_utf16.len() > 200 {
         return Err(invalid());
@@ -475,8 +481,8 @@ pub fn verify_structure_author_intent(
     let actor = actor_id(&key.to_bytes());
     validate_command_schema(&command, audience_utf16, &actor).map_err(|_| invalid())?;
     let action = string(&command, "action_id").ok_or_else(invalid)?;
-    if !(crate::structure_execution::is_structure_mutation(&action)
-        || crate::structure_execution::is_owner_checkpoint_evidence(&action))
+    if !(if host_report{action=="structure.mailbox.report"}else{crate::structure_execution::is_structure_mutation(&action)
+        || crate::structure_execution::is_owner_checkpoint_evidence(&action)})
         || command
             .get("body")
             .and_then(|b| b.get("profile"))

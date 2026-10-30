@@ -6,6 +6,7 @@ pub mod protocol_bundle;
 pub mod member_scopes;
 pub mod canonical;
 pub mod crypto;
+pub mod communication;
 pub mod discovery;
 pub mod e2ee;
 #[allow(dead_code)]

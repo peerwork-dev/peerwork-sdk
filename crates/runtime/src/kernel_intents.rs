@@ -21,7 +21,7 @@ fn parse_status(wire:&str)->Result<Option<String>,JournalError>{
 const APPLICATION_ID: i64 = 0x5057_5344; // PWSD; intentionally distinct from TS PWC1.
 const SCHEMA_VERSION: i64 = 6;
 #[path = "kernel_parent_operations.rs"]
-mod parent_operations;
+pub(crate) mod parent_operations;
 
 #[path = "kernel_pending_index.rs"]
 mod pending_index;

@@ -54,6 +54,8 @@ pub struct ArchiveMigrationSelection {
     pub read_only_snapshot: bool,
     #[serde(default)]
     pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_checkpoint_sha256: Option<String>,
 }
 #[derive(Serialize, Deserialize)]
 struct Artifact {
@@ -190,6 +192,41 @@ fn job_failure(id: &str, state: &Value) -> KernelClientError {
     }))
 }
 impl KernelClient {
+    pub(crate) async fn resume_prepared_archive(
+        &mut self,
+        identity: &KernelIdentity,
+        authority: &str,
+        workspace: &str,
+        key: &str,
+        cancel: &CancellationToken,
+        deadline: Instant,
+    ) -> Result<Option<StructureIntentOutcome>> {
+        let id = super::structure_keyed_command_id(
+            self.origin(),
+            identity.actor_id(),
+            WireValue::String(workspace.encode_utf16().collect()),
+            &key.encode_utf16().collect::<Vec<_>>(),
+        )?;
+        let Some(parent) = self.journal.parent_selection(
+            &id,
+            identity,
+            self.origin(),
+            self.discovery.audience_utf16(),
+            authority,
+            Some(workspace),
+        )?
+        else {
+            return Ok(None);
+        };
+        if parent.kind != "ARCHIVE_MIGRATION" {
+            return Err(JournalError::IntentConflict.into());
+        }
+        let selection =
+            serde_json::from_str(&parent.wire).map_err(|_| JournalError::IncompatibleStore)?;
+        self.migrate_archive_until(identity, authority, selection, cancel, deadline)
+            .await
+            .map(Some)
+    }
     async fn migration_read(
         &mut self,
         identity: &KernelIdentity,
@@ -284,6 +321,12 @@ impl KernelClient {
         if !valid_token(&selection.workspace_id)
             || selection.checkpoint_path.is_some() == selection.state_dir.is_some()
             || selection.state_dir.is_some() && !selection.read_only_snapshot
+            || selection
+                .expected_checkpoint_sha256
+                .as_deref()
+                .is_some_and(|s| {
+                    !crate::participant_migration::digest(s) || selection.checkpoint_path.is_none()
+                })
         {
             return Err(bad("MIGRATION_SELECTION_INVALID"));
         }
@@ -448,6 +491,12 @@ impl KernelClient {
                     self.prepare_archive_source(identity, authority, id, q, cancel)
                         .await?
                 };
+                if q.expected_checkpoint_sha256
+                    .as_ref()
+                    .is_some_and(|hash| hash != &artifact.sha256)
+                {
+                    return Err(bad("MIGRATION_ARTIFACT_CHANGED"));
+                }
                 let wire = serde_json::to_string(&artifact)
                     .map_err(|_| bad("MIGRATION_SELECTION_INVALID"))?;
                 let origin = self.origin().to_owned();
@@ -464,6 +513,12 @@ impl KernelClient {
                 artifact
             }
         };
+        if q.expected_checkpoint_sha256
+            .as_ref()
+            .is_some_and(|hash| hash != &artifact.sha256)
+        {
+            return Err(bad("MIGRATION_ARTIFACT_CHANGED"));
+        }
         if self
             .journal
             .verified_pending(id, identity.key_id(), self.discovery.audience_utf16())?

@@ -253,6 +253,9 @@ impl StructureContentKeys {
     pub(crate) fn select_retained(&mut self,local:&str,workspace:&str,id:&str,expected:Option<&str>)->Result<ContentKeyInfo,ContentKeyError>{
         let secret=load(&self.db,local,workspace,id)?;self.retain_current(local,workspace,&secret,id,expected)
     }
+    pub(crate) fn contains_retained(&self,local:&str,workspace:&str,id:&str)->Result<bool,ContentKeyError>{
+        match load(&self.db,local,workspace,id){Ok(_)=>Ok(true),Err(ContentKeyError::Missing)=>Ok(false),Err(e)=>Err(e)}
+    }
     pub fn selected(&self,local:&str,workspace:&str)->Result<ContentKeyInfo,ContentKeyError>{
         scope(local,workspace)?;let id=current(&self.db,local,workspace)?.ok_or(ContentKeyError::Missing)?;
         let _=load(&self.db,local,workspace,&id)?;Ok(ContentKeyInfo{workspace_id:workspace.into(),key_id:id})
@@ -267,6 +270,34 @@ impl StructureContentKeys {
         ->Result<Zeroizing<Vec<u8>>,ContentKeyError>{
         let secret=load(&self.db,local,&context.workspace_id,&sealed.key_id)?;
         Ok(open_structure_content(&secret,sealed,context)?)
+    }
+    /// A retained, previously verified remote selection is sufficient to
+    /// construct a candidate. The service still rejects stale epochs atomically;
+    /// this cache is never a claim that today's remote head is unchanged.
+    pub(crate) fn has_pinned_selected(&self,local:&str,workspace:&str)->Result<bool,ContentKeyError>{
+        let selected=match self.selected(local,workspace){Ok(v)=>v,Err(ContentKeyError::Missing)=>return Ok(false),Err(e)=>return Err(e)};
+        let pinned:Option<String>=self.db.query_row("SELECT key_id FROM content_key_remote_heads WHERE local_key_id=?1 AND workspace_id=?2",params![local,workspace],|r|r.get(0)).optional()?;
+        Ok(pinned.as_deref()==Some(selected.key_id.as_str()))
+    }
+    pub(crate) fn invalidate_selected(&mut self,local:&str,workspace:&str,stale_key:&str)->Result<(),ContentKeyError>{
+        scope(local,workspace)?;
+        // Retain the remote continuity pin and all decryption material. A
+        // concurrent newer selection must not be invalidated by an old reply.
+        self.db.execute("DELETE FROM content_key_heads WHERE local_key_id=?1 AND workspace_id=?2 AND key_id=?3",params![local,workspace,stale_key])?;
+        Ok(())
+    }
+    pub fn seal_message(&self,local:&str,plaintext:&[u8],context:&peerwork_core::communication::MessageContentContext)
+        ->Result<StructureSealedContent,ContentKeyError>{
+        let id=current(&self.db,local,&context.workspace_id)?.ok_or(ContentKeyError::Missing)?;
+        let secret=load(&self.db,local,&context.workspace_id,&id)?;
+        Ok(peerwork_core::communication::seal_message_content(&secret,plaintext,context)?)
+    }
+    pub fn open_message(&self,local:&str,author:&peerwork_core::prepared_command::VerifiedStructureAuthorIntent)
+        ->Result<Zeroizing<Vec<u8>>,ContentKeyError>{
+        let (context,content)=peerwork_core::communication::authored_message_content(author).map_err(|_|ContentKeyError::Integrity)?;
+        let peerwork_core::communication::MessageContent::WorkspaceE2ee{body}=content else{return Err(ContentKeyError::Selection);};
+        let secret=load(&self.db,local,&context.workspace_id,&body.key_id)?;
+        Ok(peerwork_core::communication::open_message_content(&secret,&body,&context)?)
     }
     pub fn open_authored_body(&self,local:&str,author:&peerwork_core::prepared_command::VerifiedStructureAuthorIntent,index:u8)
         ->Result<Zeroizing<Vec<u8>>,ContentKeyError>{

@@ -46,6 +46,33 @@ impl KernelClient {
         else{keys.pin_remote_head(identity.key_id(),workspace,None)?;}
         Ok(id)
     }
+    /// Receive-only crypto preparation. This never initializes/publishes a
+    /// missing head, rotates keys, grants access, or enumerates workspace history.
+    pub(crate) async fn watch_structure_keys(&mut self,identity:&KernelIdentity,authority:&str,workspace:&str,mailbox:&str,needed:&[String],cancel:&CancellationToken)->Result<Value,KernelClientError>{
+        self.require_content_key_epochs()?;
+        if needed.len()>31||needed.iter().any(|id|id.len()!=43){return Err(KernelClientError::InvalidCommand);}
+        let query=json!({"action":"structure.mailbox.get","workspace_id":workspace,"body":{"mailbox_id":mailbox}});
+        let StructureIntentOutcome::Accepted(result)=Box::pin(self.execute_structure_intent(identity,authority,query.to_string().as_bytes(),cancel)).await? else{return Err(KernelClientError::InvalidResult);};
+        let metadata=data(&result)?;
+        let current=self.observe_head(identity,&metadata,workspace)?;
+        if current.is_none()&&needed.is_empty(){return Ok(json!({"state":"NOT_REQUIRED","key_id":null,"epoch":null,"missing_key_ids":[]}));}
+        let head=&metadata["content_key_head"];
+        let mut selected=needed.to_vec();if let Some(id)=&current{if !selected.contains(id){selected.push(id.clone());}}
+        let keys=StructureContentKeys::open(&self.content_key_store_path(),self.content_config())?;
+        let missing=selected.iter().map(|id|keys.contains_retained(identity.key_id(),workspace,id).map(|present|(id,present))).collect::<Result<Vec<_>,_>>()?.into_iter().filter(|(_,present)|!*present).map(|(id,_)|id.clone()).collect::<Vec<_>>();drop(keys);
+        if !missing.is_empty(){
+            let path=self.access_recipient_path.clone().ok_or(ContentKeyError::Missing)?;
+            let selection=StructureKeyAcceptance{workspace_id:workspace.into(),owner_id:metadata["owner_id"].as_str().ok_or(KernelClientError::InvalidResult)?.into(),key_ids:missing,current_key_id:None,expected_current_key_id:None};
+            Box::pin(self.accept_structure_keys_mode(identity,authority,&path,selection,cancel,true)).await?;
+        }
+        let mut keys=StructureContentKeys::open(&self.content_key_store_path(),self.content_config())?;
+        let unavailable=selected.iter().filter_map(|id|match keys.contains_retained(identity.key_id(),workspace,id){Ok(true)=>None,Ok(false)=>Some(Ok(id.clone())),Err(e)=>Some(Err(e))}).collect::<Result<Vec<_>,_>>()?;
+        if let Some(id)=current.as_deref().filter(|id|!unavailable.iter().any(|v|v==id)){
+            let previous=match keys.selected(identity.key_id(),workspace){Ok(v)=>Some(v.key_id),Err(ContentKeyError::Missing)=>None,Err(e)=>return Err(e.into())};
+            keys.select_retained(identity.key_id(),workspace,id,previous.as_deref())?;
+        }
+        Ok(json!({"state":if current.is_some()&&head["usable"]!=true{"STALE"}else if !unavailable.is_empty(){"MISSING"}else if current.is_none(){"NOT_REQUIRED"}else{"READY"},"key_id":current,"epoch":head["epoch"],"missing_key_ids":unavailable}))
+    }
     pub(crate) async fn sync_structure_content_head(&mut self,identity:&KernelIdentity,authority:&str,workspace:&str,cancel:&CancellationToken)->Result<Value,KernelClientError>{
         self.require_content_key_epochs()?;
         let mut metadata=self.content_metadata(identity,authority,workspace,cancel).await?;

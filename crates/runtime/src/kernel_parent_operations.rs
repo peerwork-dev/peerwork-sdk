@@ -52,13 +52,26 @@ fn cipher(identity:&KernelIdentity)->Result<Aes256Gcm,JournalError>{
     let key=Zeroizing::new(sha256(&input));
     Aes256Gcm::new_from_slice(key.as_ref()).map_err(|_|JournalError::IncompatibleStore)
 }
-fn open(identity:&KernelIdentity,aad:&str,sealed:&[u8])->Result<Zeroizing<String>,JournalError>{
-    if !(29..=MAX_PLAN+28).contains(&sealed.len()){return Err(JournalError::IncompatibleStore);}
+pub(crate) fn open(identity:&KernelIdentity,aad:&str,sealed:&[u8])->Result<Zeroizing<String>,JournalError>{
+    open_bounded(identity,aad,sealed,MAX_PLAN)
+}
+pub(crate) fn open_bounded(identity:&KernelIdentity,aad:&str,sealed:&[u8],limit:usize)->Result<Zeroizing<String>,JournalError>{
+    if !(29..=limit+28).contains(&sealed.len()){return Err(JournalError::IncompatibleStore);}
     let bytes=Zeroizing::new(cipher(identity)?.decrypt(Nonce::from_slice(&sealed[..12]),Payload{msg:&sealed[12..],aad:aad.as_bytes()})
         .map_err(|_|JournalError::IncompatibleStore)?);
     let text=std::str::from_utf8(&bytes).map_err(|_|JournalError::IncompatibleStore)?;
     Ok(Zeroizing::new(text.to_owned()))
 }
+pub(crate) fn seal(identity:&KernelIdentity,aad:&str,wire:&str)->Result<Vec<u8>,JournalError>{
+    seal_bounded(identity,aad,wire,MAX_PLAN)
+}
+pub(crate) fn seal_bounded(identity:&KernelIdentity,aad:&str,wire:&str,limit:usize)->Result<Vec<u8>,JournalError>{
+    if wire.is_empty()||wire.len()>limit{return Err(JournalError::InvalidIntent);}
+    let mut nonce=[0;12];OsRng.try_fill_bytes(&mut nonce).map_err(|_|JournalError::InvalidIntent)?;
+    let encrypted=cipher(identity)?.encrypt(Nonce::from_slice(&nonce),Payload{msg:wire.as_bytes(),aad:aad.as_bytes()}).map_err(|_|JournalError::InvalidIntent)?;
+    let mut sealed=nonce.to_vec();sealed.extend_from_slice(&encrypted);Ok(sealed)
+}
+
 impl KernelIntentJournal {
     pub(crate) fn preparations_page(&self,identity:&KernelIdentity,origin:&str,audience:&[u16],authority:&str,after:Option<&str>,limit:usize)->Result<Value,JournalError>{
         if after.is_some_and(|v|!valid_token(v))||!(1..=32).contains(&limit){return Err(JournalError::InvalidIntent);}
@@ -93,9 +106,7 @@ impl KernelIntentJournal {
         let aad=binding(id,identity,origin,audience,authority,kind,workspace)?;
         let check=|saved:ParentSelection|if saved.kind==kind&&saved.workspace_id.as_deref()==workspace&&saved.wire.as_str()==wire{Ok(())}else{Err(JournalError::IntentConflict)};
         if let Some(saved)=self.parent_selection(id,identity,origin,audience,authority,workspace)?{return check(saved);}
-        let mut nonce=[0;12];OsRng.try_fill_bytes(&mut nonce).map_err(|_|JournalError::InvalidIntent)?;
-        let encrypted=cipher(identity)?.encrypt(Nonce::from_slice(&nonce),Payload{msg:wire.as_bytes(),aad:aad.as_bytes()}).map_err(|_|JournalError::InvalidIntent)?;
-        let mut sealed=nonce.to_vec();sealed.extend_from_slice(&encrypted);
+        let sealed=seal(identity,&aad,wire)?;
         // Atomic election; a racing producer's different ciphertext cannot
         // replace the winner, even before any signed child packet exists.
         let tx=self.db.transaction_with_behavior(TransactionBehavior::Immediate)?;

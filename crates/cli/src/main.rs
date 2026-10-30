@@ -57,6 +57,16 @@ fn identity_cli_path(value: &str) -> Result<PathBuf, String> {
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str)==Some("bridge") {
+        let out=peerwork_runtime::communication_bridge::cli(&args[1..]);
+        println!("{out}");return if out["state"]=="FAILED"{ExitCode::FAILURE}else{ExitCode::SUCCESS};
+    }
+    if args.first().map(String::as_str)==Some("runtime") {
+        let out=peerwork_runtime::communication_runtime::cli(&args[1..]);
+        let state=out["state"].as_str().or_else(||out["value"]["state"].as_str()).unwrap_or("");
+        println!("{out}");
+        return if matches!(state,"ADMITTED"|"RUNNING"|"PENDING"|"BLOCKED"){ExitCode::from(2)}else if matches!(state,"FAILED"|"REJECTED"|"REJECTED_NO_EFFECT")||out["ok"]==false{ExitCode::FAILURE}else{ExitCode::SUCCESS};
+    }
     if args.first().is_some_and(|noun| !["identity","kernel","context","bundle","protocol","conversion","legacy-migrate","url","changelog","publication","config","version","capabilities","--help","-h"].contains(&noun.as_str()))
         ||args.first().is_some_and(|noun|noun=="publication")&&args.get(1).map(String::as_str)!=Some("read")
         ||args.get(1).is_some_and(|verb|args.first().is_some_and(|noun|noun=="identity")&&verb=="import-legacy-owner-pem") {
