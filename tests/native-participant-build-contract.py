@@ -9,6 +9,13 @@ spec.loader.exec_module(qualifier)
 
 
 class NativeGraphTests(unittest.TestCase):
+    def test_cli_json_version_is_a_portable_archive_component(self):
+        self.assertEqual(qualifier.candidate_version('{"status":"experimental","version":"0.2.16"}\n'), '0.2.16')
+        self.assertEqual(qualifier.candidate_version('{"version":"1.2.3-rc.1+build.4"}'), '1.2.3-rc.1+build.4')
+        for raw in ('"0.2.16"', '{}', '{"version":null}', '{"version":"../x"}', '{"version":"1.2.3\\n"}'):
+            with self.subTest(raw=raw), self.assertRaises(AssertionError):
+                qualifier.candidate_version(raw)
+
     def fixture(self):
         names = ['peerwork-cli','peerwork-runtime','peerwork-core','peerwork-node-native','external-build-helper']
         packages = [{'id':str(i),'name':name,'source':None if i < 4 else 'registry'} for i,name in enumerate(names)]

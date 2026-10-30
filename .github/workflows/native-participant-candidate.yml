@@ -50,7 +50,9 @@ jobs:
             participant-v1-linux-x64-gnu-${{ hashFiles('Cargo.lock', '**/Cargo.toml', '**/build.rs', 'third_party/**') }}-
       - name: Build and exercise installed native process
         shell: bash
-        run: python tools/release/qualify-participant.py --target linux-x64-gnu
+        run: |
+          python tests/native-participant-build-contract.py
+          python tools/release/qualify-participant.py --target linux-x64-gnu
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: ${{ always() }}
         with:
@@ -88,7 +90,9 @@ jobs:
             participant-v1-${{ matrix.target }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', '**/build.rs', 'third_party/**') }}-
       - name: Build and exercise installed native process
         shell: bash
-        run: python tools/release/qualify-participant.py --target '${{ matrix.target }}'
+        run: |
+          python tests/native-participant-build-contract.py
+          python tools/release/qualify-participant.py --target '${{ matrix.target }}'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: ${{ always() }}
         with:

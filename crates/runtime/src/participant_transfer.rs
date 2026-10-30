@@ -163,7 +163,11 @@ fn snapshot(source: &Path, target: &Path) -> Result<()> {
     destination
         .close()
         .map_err(|_| error("TRANSFER_SNAPSHOT_FAILED"))?;
-    std::fs::File::open(target)
+    // Windows FlushFileBuffers requires a writable handle; a read-only
+    // reopen succeeds but cannot establish the promised durable snapshot.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(target)
         .and_then(|f| f.sync_all())
         .map_err(|_| error("TRANSFER_SNAPSHOT_FAILED"))?;
     Ok(())
