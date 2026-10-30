@@ -20,6 +20,22 @@ const LEGACY: &str = "2025-11-25";
 fn error(id: Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}})
 }
+fn argument_error(id: Value, name: &str, arguments: &Value) -> Value {
+    let tool = format!("peerwork_{name}");
+    let schema = agent_tools::catalog()
+        .into_iter()
+        .find(|t| t["name"] == tool)
+        .map(|t| t["inputSchema"].clone())
+        .unwrap_or(Value::Null);
+    let message=match name {
+        "reply"=>"Invalid peerwork_reply arguments. Required: scope, item {sequence, delivery_id}, operation_id, text. Copy reply.arguments from the inbox item and add operation_id/text; do not pass reply_address, reply_to or conversation_id. Nothing was submitted; keep operation_id when correcting input.".to_owned(),
+        "consume"=>"Invalid peerwork_consume arguments. Required: scope, items [{sequence, delivery_id}]. Copy consume.arguments from the handled inbox item. Nothing was submitted.".to_owned(),
+        _=>format!("Invalid {tool} arguments. Nothing was submitted; required keys: {}. Correct input using inputSchema and keep the original operation_id.",schema["required"]),
+    };
+    let mut value = error(id, -32602, &message);
+    value["error"]["data"] = json!({"code":"AGENT_ARGUMENT_INVALID","phase":"VALIDATION","effect_certainty":"NOT_SUBMITTED","recovery":"CORRECT_ARGUMENTS_KEEP_OPERATION_ID","tool":tool,"inputSchema":schema,"providedKeys":arguments.as_object().map(|v|v.keys().cloned().collect::<Vec<_>>())});
+    value
+}
 fn info() -> Value {
     json!({"name":"peerwork","version":crate::version()})
 }
@@ -174,7 +190,7 @@ where
                         let name=params["name"].as_str().and_then(|s|s.strip_prefix("peerwork_"));
                         if name.is_none()||params.as_object().is_none_or(|o|o.keys().any(|k|!["name","arguments","_meta"].contains(&k.as_str()))){write(&mut writer,error(id,-32602,"Unknown tool or invalid parameters")).await?;continue;}
                         let arguments=params.get("arguments").cloned().unwrap_or(json!({}));
-                        let request=match AgentRequest::parse(name.unwrap(),arguments.clone()){Ok(v)=>v,Err(_)=>{write(&mut writer,error(id,-32602,"Invalid tool arguments; see tools/list")).await?;continue;}};
+                        let request=match AgentRequest::parse(name.unwrap(),arguments.clone()){Ok(v)=>v,Err(_)=>{write(&mut writer,argument_error(id,name.unwrap(),&arguments)).await?;continue;}};
                         let original=arguments["operation_id"].as_str().map(str::to_owned);let tools=tools.clone();let task_key=id_key.clone();
                         let handle=jobs.spawn(async move{
                             let (out,is_error)=match tools.call(request).await{

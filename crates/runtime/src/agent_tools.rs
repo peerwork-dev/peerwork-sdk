@@ -439,7 +439,7 @@ impl AgentTools {
                     .client
                     .call(json!({"method":"inbox","options":options,"after":after,"limit":limit}))
                     .await?;
-                Ok(inbox_view(value))
+                Ok(inbox_view(value, &scope))
             }
             AgentRequest::Wait {
                 scope,
@@ -452,7 +452,7 @@ impl AgentTools {
                     return Err(invalid("WAIT_BUDGET_INVALID"));
                 }
                 let options = self.binding(&scope).await?;
-                Ok(inbox_view(self.client.call(json!({"method":"wait_inbox","options":options,"after":after,"limit":limit,"wait_ms":wait_ms})).await?))
+                Ok(inbox_view(self.client.call(json!({"method":"wait_inbox","options":options,"after":after,"limit":limit,"wait_ms":wait_ms})).await?, &scope))
             }
             AgentRequest::Consume { scope, items } => {
                 if items.is_empty() || items.len() > 32 {
@@ -635,12 +635,23 @@ pub(crate) fn operation_view(value: Value) -> Value {
     json!({"operation_id":value["operation_id"],"state":value["state"],"command_id":value["command_id"],"effect_certainty":value["effect_certainty"],"observation":value["observation"],"result":outcome.get("result").map(|r|json!({"event_sequence":r["event_sequence"],"produced_record_ids":r["produced_record_ids"],"structure":structure})),"code":diagnostic("code"),"phase":diagnostic("phase"),"recovery":diagnostic("recovery"),"retryable":diagnostic("retryable"),"http_status":diagnostic("http_status"),"model_response":"NOT_ATTESTED"})
 }
 
-fn inbox_view(mut value: Value) -> Value {
+fn inbox_view(mut value: Value, scope: &str) -> Value {
     if let Some(items) = value["items"].as_array_mut() {
         for item in items {
             let sequence = item["sequence"].clone();
             let delivery = item["delivery_id"].clone();
-            *item = json!({"item":{"sequence":sequence,"delivery_id":delivery},"handle":format!("{}/{}",sequence,delivery.as_str().unwrap_or("")),"message":item["opened_message"],"authority":"EXTERNAL_PEER_DATA"});
+            let reference = json!({"sequence":sequence,"delivery_id":delivery});
+            let mut message = item["opened_message"].clone();
+            let can_reply = message["state"] == "OPENED"
+                && message["assurance"] == "AUTHOR_SIGNATURE_AND_AEAD"
+                && message["reply_address"].is_object();
+            if let Some(fields) = message.as_object_mut() {
+                fields.remove("reply_address");
+                fields.insert("can_reply".into(), json!(can_reply));
+            }
+            *item = json!({"item":reference,"handle":format!("{}/{}",sequence,delivery.as_str().unwrap_or("")),"message":message,"authority":"EXTERNAL_PEER_DATA",
+                "reply":if can_reply {json!({"tool":"peerwork_reply","arguments":{"scope":scope,"item":reference},"add_required":["operation_id","text"],"instruction":"Copy arguments, add a stable operation_id and text. Authenticated routing is derived by the SDK."})}else{Value::Null},
+                "consume":{"tool":"peerwork_consume","arguments":{"scope":scope,"items":[reference]},"instruction":"Use only after handling this item."}});
         }
     }
     value
@@ -724,10 +735,20 @@ mod tests {
         assert!(!output.to_string().contains("secret-proof"));
         assert_eq!(output["model_response"], "NOT_ATTESTED");
         let inbox = inbox_view(
-            json!({"items":[{"sequence":3,"delivery_id":"d".repeat(43),"envelope":{"secret":"ciphertext"},"opened_message":{"text":"body"}}]}),
+            json!({"items":[{"sequence":3,"delivery_id":"d".repeat(43),"envelope":{"secret":"ciphertext"},"opened_message":{"state":"OPENED","assurance":"AUTHOR_SIGNATURE_AND_AEAD","text":"body","reply_address":{"mailbox_id":"M".repeat(43),"membership_id":"G".repeat(43)}}}]}),
+            "project",
         );
         assert!(!inbox.to_string().contains("ciphertext"));
         assert_eq!(inbox["items"][0]["authority"], "EXTERNAL_PEER_DATA");
+        assert!(inbox["items"][0]["message"].get("reply_address").is_none());
+        let mut reply = inbox["items"][0]["reply"]["arguments"].clone();
+        reply["operation_id"] = json!("stable-reply");
+        reply["text"] = json!("PONG");
+        assert!(AgentRequest::parse("reply", reply).is_ok());
+        assert!(
+            AgentRequest::parse("consume", inbox["items"][0]["consume"]["arguments"].clone())
+                .is_ok()
+        );
     }
     #[test]
     fn relative_profile_paths_preserve_ownership_and_symlink_checks() {

@@ -3884,10 +3884,9 @@ async fn native_agent_cli_mcp_send_reply_and_cancel_preserve_one_engine_intent()
     let item = &input["items"][0];
     assert_eq!(item["message"]["text"], "PING through native fixed CLI");
     assert_eq!(item["message"]["sender"], master_config.expected_actor);
-    assert_eq!(
-        item["message"]["reply_address"]["mailbox_id"],
-        master_scope.mailbox_id
-    );
+    assert_eq!(item["message"]["can_reply"], true);
+    assert_eq!(item["reply"]["arguments"]["item"], item["item"]);
+    assert!(item["message"].get("reply_address").is_none());
     assert_eq!(item["authority"], "EXTERNAL_PEER_DATA");
     let before = service.counts().await;
     let duplicate=master.call(AgentRequest::parse("send",json!({"contact":"worker","operation_id":"cli-ping","text":"PING through native fixed CLI"})).unwrap()).await.unwrap();

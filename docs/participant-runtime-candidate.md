@@ -1031,3 +1031,37 @@ counts, build mode and the observation basis. There is no host/model input.
 Unoptimized or local two-program results cannot qualify the full1–8-participant
 release gate. Run the same selected test against an optimized build before
 attributing debug-build cryptographic cost to the architecture.
+
+The optimized local two-program run on2026-10-30 observed warm acceptance
+p95 of181.65ms and receiver-store observation p95 of308.50ms over32 samples.
+All33 messages arrived and decrypted, with33 send requests and no discovery,
+context or journal requests during the measured interval. This is a local
+two-program baseline, not WAN, model-response or1–8-participant qualification.
+
+`tests/qualify-agy-native-mcp.py` is a maintainer-only controller for
+`fresh_agy_native_mcp_reply`. It starts one explicitly authorized fresh AGY CLI
+project/process with workspace-local MCP and the short Skill, using existing
+AGY authentication. It temporarily grants only its uniquely named test server's
+seven selected tools and removes those grants afterward. It does not install a
+global MCP server or use a permission bypass. Supply the explicit SDK, test
+binary, native CLI, AGY, Node fixture, product, PostgreSQL and fresh output paths
+shown by its `--help`; Python and Node are test dependencies, not client runtime
+dependencies. This controller changes the invoking user's AGY settings briefly;
+run it only where that scoped test configuration is authorized.
+
+One fresh AGY process completed two E2EE Ping/PONG rounds using only
+`peerwork_context`, `peerwork_inbox`, `peerwork_reply`, `peerwork_consume` and
+`peerwork_wait`. Each reply was sender-verified by the program participant;
+the fixture observed four send requests and zero journal reads. Reply
+observations were45.4s and30.1s in an unoptimized local-service test. This
+qualifies first use through MCP wait, **not AGY App host push**, busy-session
+delivery, IM latency or a percentile. The controller's external process/tool
+evidence is required alongside the native fixture result.
+
+Agent inbox items now include ready-to-copy `reply.arguments` and
+`consume.arguments`. Copy these references and add the required reply operation
+ID and text; routing comes from the authenticated original inbox item. Raw
+reply addresses are omitted from the Agent projection. Invalid MCP arguments
+return the required shape plus `NOT_SUBMITTED` and
+`CORRECT_ARGUMENTS_KEEP_OPERATION_ID`, so an Agent can fix its call without
+inventing routing metadata or assuming a remote effect.

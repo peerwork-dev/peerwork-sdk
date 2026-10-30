@@ -241,11 +241,25 @@ fn write_report(path: &std::path::Path, value: &Value) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires explicitly registered live host, isolated PostgreSQL and a real Agent reply through native CLI/MCP"]
 async fn program_master_existing_session_and_native_agent_reply() {
-    let host_path = PathBuf::from(
-        std::env::var("PEERWORK_LIVE_HOST_CONFIG")
-            .expect("explicit protected host configuration required"),
-    );
-    let host = crate::communication_store::private_json(&host_path, 65536).unwrap();
+    qualify_native_reply(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires explicit fresh AGY process with workspace MCP and isolated PostgreSQL; no host push is implied"]
+async fn fresh_agy_native_mcp_reply() {
+    qualify_native_reply(true).await;
+}
+
+async fn qualify_native_reply(mcp_only: bool) {
+    let host = if mcp_only {
+        Value::Null
+    } else {
+        let host_path = PathBuf::from(
+            std::env::var("PEERWORK_LIVE_HOST_CONFIG")
+                .expect("explicit protected host configuration required"),
+        );
+        crate::communication_store::private_json(&host_path, 65536).unwrap()
+    };
     let root = PathBuf::from(
         std::env::var("PEERWORK_LIVE_HOST_STATE_DIR")
             .expect("explicit empty protected fixture root required"),
@@ -323,39 +337,48 @@ async fn program_master_existing_session_and_native_agent_reply() {
     master.close().await.unwrap();
     worker.close().await.unwrap();
 
-    let worker_identity = KernelIdentity::open(&worker_config.identity_path).unwrap();
-    let bridge_config = BridgeConfig {
-        format: "peerwork.host-bridge.v1".into(),
-        state_directory: root.join("bridge"),
-        host,
-        bindings: vec![BridgeGrant {
-            expected_origin: worker_config.origin.clone(),
-            expected_actor: worker_config.expected_actor.clone(),
-            expected_key_id: worker_identity.key_id().into(),
-            namespace: "program:worker".into(),
-            workspace_id: ws.clone(),
-            mailbox_id: worker_box["mailbox_id"].as_str().unwrap().into(),
-            membership_id: worker_box["membership_id"].as_str().unwrap().into(),
-        }],
+    let (bridge_lifecycle, adapter, destination) = if mcp_only {
+        (None, None, None)
+    } else {
+        let worker_identity = KernelIdentity::open(&worker_config.identity_path).unwrap();
+        let bridge_config = BridgeConfig {
+            format: "peerwork.host-bridge.v1".into(),
+            state_directory: root.join("bridge"),
+            host,
+            bindings: vec![BridgeGrant {
+                expected_origin: worker_config.origin.clone(),
+                expected_actor: worker_config.expected_actor.clone(),
+                expected_key_id: worker_identity.key_id().into(),
+                namespace: "program:worker".into(),
+                workspace_id: ws.clone(),
+                mailbox_id: worker_box["mailbox_id"].as_str().unwrap().into(),
+                membership_id: worker_box["membership_id"].as_str().unwrap().into(),
+            }],
+        };
+        crate::communication_host::write_private(
+            &root.join("bridge.json"),
+            &serde_json::to_vec(&bridge_config).unwrap(),
+        )
+        .unwrap();
+        let bridge_stop = KernelCancellationToken::new();
+        let (tx, rx) = oneshot::channel();
+        let bridge = tokio::spawn(communication_bridge::serve(
+            bridge_config,
+            bridge_stop.clone(),
+            tx,
+        ));
+        let bridge_ready = rx.await.unwrap().unwrap();
+        let destination = HostBinding::new(bridge_ready.adapter["destination"].clone()).unwrap();
+        (
+            Some((bridge_stop, bridge)),
+            Some(bridge_ready.adapter),
+            Some(destination.digest),
+        )
     };
-    crate::communication_host::write_private(
-        &root.join("bridge.json"),
-        &serde_json::to_vec(&bridge_config).unwrap(),
-    )
-    .unwrap();
-    let bridge_stop = KernelCancellationToken::new();
-    let (tx, rx) = oneshot::channel();
-    let bridge = tokio::spawn(communication_bridge::serve(
-        bridge_config,
-        bridge_stop.clone(),
-        tx,
-    ));
-    let bridge_ready = rx.await.unwrap().unwrap();
-    let destination = HostBinding::new(bridge_ready.adapter["destination"].clone()).unwrap();
     let master_scope = mail_scope(&ws, &master_box);
     let worker_scope = mail_scope(&ws, &worker_box);
     let master_watch = watch(&master_scope, "master", None);
-    let worker_watch = watch(&worker_scope, "worker", Some(destination.digest));
+    let worker_watch = watch(&worker_scope, "worker", destination);
     let mut cap = Capability::owner();
     cap.allow_root = false;
     cap.workspace_ids = Some([ws.clone()].into());
@@ -390,14 +413,17 @@ async fn program_master_existing_session_and_native_agent_reply() {
                 capability: cap,
             },
         ],
-        hosts: vec![HostConfig {
-            name: "explicit-existing-worker".into(),
-            adapter: bridge_ready.adapter,
-            subscriptions: vec![HostSubscription {
-                client: "worker".into(),
-                watch: worker_watch.clone(),
-            }],
-        }],
+        hosts: adapter
+            .into_iter()
+            .map(|adapter| HostConfig {
+                name: "explicit-existing-worker".into(),
+                adapter,
+                subscriptions: vec![HostSubscription {
+                    client: "worker".into(),
+                    watch: worker_watch.clone(),
+                }],
+            })
+            .collect(),
     };
     crate::communication_host::write_private(
         &root.join("runtime.json"),
@@ -463,20 +489,23 @@ async fn program_master_existing_session_and_native_agent_reply() {
     let master = AgentTools::open(master_profile).await.unwrap();
     let before = service.counts().await;
     let mut result = json!({"state":"READY","format":"peerwork.live-host-qualification.v1","nonce":nonce,
-        "worker_profile":worker_profile_path,"expected_reply":format!("PONG {nonce}"),"fresh_agent_first_use":false,
-        "service":"LOCAL_SYNTHETIC_POSTGRES_HTTP","host":"EXPLICIT_EXISTING_SESSION","body_mode":"WORKSPACE_E2EE",
+        "worker_profile":worker_profile_path,"expected_reply":format!("PONG {nonce}"),"fresh_agent_first_use":false,"first_use_requires_external_harness_evidence":mcp_only,
+        "service":"LOCAL_SYNTHETIC_POSTGRES_HTTP","host":if mcp_only {"MCP_WAIT_ONLY_NO_HOST_PUSH"} else {"EXPLICIT_EXISTING_SESSION"},"body_mode":"WORKSPACE_E2EE",
         "timing_basis":"one observer monotonic clock; delivery observations are upper bounds, not isolated internal phase spans"});
     write_report(&report, &result);
     println!("LIVE_HOST_READY {}", result);
-    let started = Instant::now();
-    let sent=master.call(AgentRequest::parse("send",json!({"contact":"worker","operation_id":format!("ping-{nonce}"),"text":format!("PING {nonce}. Native Peerwork live-host qualification. Please reply with exactly PONG {nonce} using the native Peerwork reply tool for this verified inbox item."),"wait_ms":5000})).unwrap()).await.unwrap();
-    result["accepted_observed_ms"] = json!(started.elapsed().as_millis());
-    result["send_state"] = sent["state"].clone();
-    result["original_operation_id"] = json!(format!("ping-{nonce}"));
-    write_report(&report, &result);
-    assert_eq!(sent["state"], "ACCEPTED", "{sent}");
-    let message_id = sent["result"]["structure"]["message_id"].clone();
-    let item = tokio::time::timeout(Duration::from_secs(20), async {
+    let rounds = if mcp_only { 2 } else { 1 };
+    let mut samples = Vec::new();
+    for round in 1..=rounds {
+        let started = Instant::now();
+        let sent=master.call(AgentRequest::parse("send",json!({"contact":"worker","operation_id":format!("ping-{nonce}-{round}"),"text":format!("PING {nonce}. Native Peerwork live-host qualification. Please reply with exactly PONG {nonce} using the native Peerwork reply tool for this verified inbox item."),"wait_ms":5000})).unwrap()).await.unwrap();
+        result["accepted_observed_ms"] = json!(started.elapsed().as_millis());
+        result["send_state"] = sent["state"].clone();
+        result["original_operation_id"] = json!(format!("ping-{nonce}-{round}"));
+        write_report(&report, &result);
+        assert_eq!(sent["state"], "ACCEPTED", "{sent}");
+        let message_id = sent["result"]["structure"]["message_id"].clone();
+        let item = tokio::time::timeout(Duration::from_secs(20), async {
         loop {
             let page = worker_client
                 .call(json!({"method":"watch_next","options":worker_watch,"wait_ms":5000}))
@@ -484,7 +513,7 @@ async fn program_master_existing_session_and_native_agent_reply() {
                 .unwrap();
             assert_ne!(page["state"], "BLOCKED", "{page}");
             if let Some(items) = page["items"].as_array() {
-                if let Some(item) = items.first() {
+                if let Some(item) = items.iter().find(|item|item["envelope"]["message"]["message_id"]==message_id) {
                     return json!({"sequence":item["sequence"],"delivery_id":item["delivery_id"]});
                 }
             }
@@ -492,41 +521,82 @@ async fn program_master_existing_session_and_native_agent_reply() {
     })
     .await
     .expect("receiver did not durably store the accepted mail");
-    result["receiver_store_observed_ms"] = json!(started.elapsed().as_millis());
-    result["inbox_item"] = item.clone();
-    write_report(&report, &result);
-    println!(
-        "LIVE_HOST_DELIVERY {}",
-        json!({"nonce":nonce,"worker_profile":worker_profile_path,"item":item,"accepted_observed_ms":result["accepted_observed_ms"],"receiver_store_observed_ms":result["receiver_store_observed_ms"]})
-    );
-    let observed = tokio::time::timeout(Duration::from_secs(180), async {
-        loop {
-            let arrival = master
-                .call(
-                    AgentRequest::parse("wait", json!({"scope":"live","wait_ms":30000,"limit":8}))
+        result["receiver_store_observed_ms"] = json!(started.elapsed().as_millis());
+        result["inbox_item"] = item.clone();
+        write_report(&report, &result);
+        println!(
+            "LIVE_HOST_DELIVERY {}",
+            json!({"nonce":nonce,"worker_profile":worker_profile_path,"item":item,"accepted_observed_ms":result["accepted_observed_ms"],"receiver_store_observed_ms":result["receiver_store_observed_ms"]})
+        );
+        let observed = tokio::time::timeout(Duration::from_secs(180), async {
+            loop {
+                if mcp_only && root.join("agent-failed").exists() {
+                    return Value::Null;
+                }
+                let arrival = master
+                    .call(
+                        AgentRequest::parse(
+                            "wait",
+                            json!({"scope":"live","wait_ms":30000,"limit":8}),
+                        )
                         .unwrap(),
-                )
-                .await
-                .unwrap();
-            if let Some(items) = arrival["items"].as_array() {
-                for item in items {
-                    if item["message"]["reply_to"] == message_id
-                        && item["message"]["text"] == format!("PONG {nonce}")
-                    {
-                        return item.clone();
+                    )
+                    .await
+                    .unwrap();
+                if let Some(items) = arrival["items"].as_array() {
+                    for item in items {
+                        if item["message"]["reply_to"] == message_id
+                            && item["message"]["text"] == format!("PONG {nonce}")
+                        {
+                            return item.clone();
+                        }
                     }
                 }
             }
+        })
+        .await;
+        result["reply_observed_ms"] = json!(started.elapsed().as_millis());
+        let local = if mcp_only {
+            json!({"host":"NOT_CONFIGURED"})
+        } else {
+            worker_client
+                .call(json!({"method":"delivery_status","options":worker_watch,"item":item}))
+                .await
+                .unwrap()
+        };
+        result["host_fact"] = local["host"].clone();
+        let model_reply_observed = observed.as_ref().is_ok_and(|v| v.is_object());
+        result["model_reply_observed"] = json!(model_reply_observed);
+        let qualified = model_reply_observed && (mcp_only || local["host"] == "HOST_ACCEPTED");
+        samples.push(json!({"round":round,"accepted_observed_ms":result["accepted_observed_ms"],"receiver_store_observed_ms":result["receiver_store_observed_ms"],"reply_observed_ms":result["reply_observed_ms"],"qualified":qualified}));
+        if let Ok(arrival) = observed {
+            if arrival.is_object() {
+                master
+                    .call(
+                        AgentRequest::parse(
+                            "consume",
+                            json!({"scope":"live","items":[arrival["item"]]}),
+                        )
+                        .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+            }
         }
-    })
-    .await;
-    result["reply_observed_ms"] = json!(started.elapsed().as_millis());
-    let local = worker_client
-        .call(json!({"method":"delivery_status","options":worker_watch,"item":item}))
-        .await
-        .unwrap();
-    result["host_fact"] = local["host"].clone();
-    result["model_reply_observed"] = json!(observed.is_ok());
+        if !qualified {
+            break;
+        }
+    }
+    result["samples"] = json!(samples);
+    if mcp_only {
+        let completed = tokio::time::timeout(Duration::from_secs(45), async {
+            while !root.join("agent-finished").exists() {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+        result["agent_turn_completed"] = json!(completed.is_ok());
+    }
     let after = service.counts().await;
     result["message_send_http_count"] = json!(
         after["actions"]["structure.message.send"]
@@ -537,15 +607,20 @@ async fn program_master_existing_session_and_native_agent_reply() {
                 .unwrap_or(0)
     );
     result["journal_reads"] = after["journal_reads"].clone();
-    result["state"] = json!(if observed.is_ok() && local["host"] == "HOST_ACCEPTED" {
+    result["state"] = json!(if samples.len() == rounds
+        && samples.iter().all(|s| s["qualified"] == true)
+        && (!mcp_only || result["agent_turn_completed"] == true)
+    {
         "COMPLETED"
     } else {
         "NOT_QUALIFIED"
     });
     runtime_stop.cancel();
     runtime.await.unwrap().unwrap();
-    bridge_stop.cancel();
-    bridge.await.unwrap().unwrap();
+    if let Some((bridge_stop, bridge)) = bridge_lifecycle {
+        bridge_stop.cancel();
+        bridge.await.unwrap().unwrap();
+    }
     result["owned_runtime_and_bridge_stopped"] = json!(true);
     result["state_retained"] = json!(true);
     write_report(&report, &result);
