@@ -1236,3 +1236,23 @@ non-time command fields, submits the original winner and verifies acceptance.
 Expired candidates still take the trusted-time renewal path; a competing
 ciphertext is never replaced by the preferred in-memory candidate. This is a
 local candidate optimization, not a new performance or release qualification.
+
+The optional maintainer-only `tests/qualify-agy-native-mcp.py --trace-mcp`
+observer forwards the native MCP byte stream unchanged while recording bounded
+fixed method/tool labels and same-host monotonic request/response times. It
+never records request IDs, arguments or results. Native response availability
+and harness-reported tool/model duration are distinct observations; neither
+stdout forwarding nor a completed MCP call proves model consumption. This
+Python diagnostic is not part of the installed native client.
+
+The full 8KiB/100ms simulated-RTT matrix after typed-packet reuse delivered
+and decrypted all495 messages, exactly495 sends and zero measured discovery,
+context or journal reads. Acceptance p95 was190.25/275.48/252.12/339.79ms for
+1/2/4/8 participants. The8-participant case still misses300ms; a local
+packet-preparation mean reduction does not establish a tail-latency improvement.
+A separate unoptimized fresh-AGY observation passed two E2EE rounds and found
+roughly1.1–1.9s between harness ACTIVE observation and MCP request arrival,
+versus100–175ms for non-send MCP tool responses. Reply MCP spans were1.20s
+and460ms. This single session ran during compilation and does not establish
+optimized percentiles, App push or an isolated host-ACK span. Temporary scoped
+grants and synthetic native identity/state were removed after terminal results.
