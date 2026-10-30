@@ -26,6 +26,17 @@ GROUPS = ['communication_local_channel::tests', 'communication_runtime::tests',
           'transport::tests::send_phase_scope_excludes_interleaved_and_spawned_work_and_survives_cancellation']
 
 
+def candidate_version(raw):
+    """The CLI version command emits JSON, never an archive-name fragment."""
+    document = json.loads(raw)
+    assert isinstance(document, dict), 'invalid CLI version response'
+    version = document.get('version')
+    assert isinstance(version, str) and re.fullmatch(
+        r'[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?', version
+    ), 'invalid CLI version'
+    return version
+
+
 def native_metadata(document):
     """Select the CLI's transitive source/build graph, never a binding wrapper."""
     packages = {p['id']: p for p in document['packages']}
@@ -67,8 +78,15 @@ def main():
     env = dict(os.environ, CARGO_BUILD_JOBS='1', CARGO_INCREMENTAL='0', CARGO_PROFILE_RELEASE_DEBUG='0')
 
     def run(command, log):
+        print(f'Native candidate stage: {log}', flush=True)
         with (output / log).open('w', encoding='utf-8') as stream:
-            subprocess.run(command, cwd=root, env=env, stdout=stream, stderr=subprocess.STDOUT, check=True)
+            result = subprocess.run(command, cwd=root, env=env, stdout=stream, stderr=subprocess.STDOUT)
+        if result.returncode:
+            # Synthetic qualification only; make the failed stage visible in
+            # job logs even if artifact upload subsequently fails.
+            tail = '\n'.join((output / log).read_text(encoding='utf-8', errors='replace').splitlines()[-60:])
+            print(tail[-16384:], flush=True)
+            result.check_returncode()
 
     # Compile the shared test target once, then run only the native affected
     # groups. Explicitly ignored loopback tests are eligible on real CI hosts;
@@ -114,7 +132,7 @@ def main():
         path = output / 'third_party' / name
         path.parent.mkdir(parents=True,exist_ok=True)
         path.write_bytes(data)
-    version = subprocess.check_output([str(installed), 'version'], text=True).strip()
+    version = candidate_version(subprocess.check_output([str(installed), 'version'], text=True))
     archive = output / f'peerwork-native-candidate-{version}-{args.target}.tar.gz'
     deterministic_tar(archive,{installed.name:(installed.read_bytes(),0o755),
         'LICENSE':((output / 'LICENSE').read_bytes(),0o644),
