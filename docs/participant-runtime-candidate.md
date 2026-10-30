@@ -1328,3 +1328,55 @@ retains every warm sample. In the separate495-message run, the8-participant
 bound was p95<=199.39ms and p99<=240.98ms; all1/2/4/8 receiver bounds met their
 250ms/1s goals. Cold samples remain separate. This does not measure host ACK or
 model response, and observer runs do not qualify the quiet acceptance target.
+
+## Selected published Node delivery evidence import (unreleased)
+
+The native maintenance API accepts one explicit stopped-installation selection.
+`peerwork runtime import-node-delivery SELECTION.json` retires that old
+`ReceiverStore` constructor binding and archives its local control/delivery
+records under the selected original identity. Each durable page contains at
+most32 records. The command finishes pages internally; an interrupted command
+resumes the same selection. `import_page` is available for a caller that owns
+its own bounded maintenance loop. This is an offline operation, not a service
+request or an automatic startup migration.
+
+```json
+{
+  "format": "peerwork.legacy-delivery-import.v1",
+  "source_directory": "/owned/stopped-node-receiver",
+  "archive_directory": "/owned/native-legacy-evidence",
+  "identity_path": "/owned/original-peerwork-identity",
+  "expected_actor": "ORIGINAL_ACTOR_ID",
+  "expected_binding_digest": "EXACT_64_HEX_OLD_CONSTRUCTOR_DIGEST",
+  "kind": "RECEIVER",
+  "source_stopped": true
+}
+```
+
+Both directories and the selection/identity must satisfy native private-state
+checks. `expected_binding_digest` is the exact old `control.binding` value;
+it is not a hash of a reordered JSON configuration. Select it together with
+the intended original installation, actor and host configuration. The digest
+is a local selection pin, not a service signature or proof that a record is
+current. A retained `receiver.lock` causes refusal: the importer never deletes
+the old lock or infers process death from missing PID visibility. Stop the
+original owner in its own environment before importing. Retirement changes
+only the old constructor binding and adds its explicit retirement marker;
+old event records and receipts stay in place. A selected recovery archive is
+bounded to4096 records/32MiB and refuses further writes at capacity.
+
+`kind: "BRIDGE"` additionally retains the exact original `deliveries.json`
+and its at-most256 opaque bridge rows. Those old rows contain hashes but not
+necessarily the original binding or message; importing them never invents a
+workspace, recipient or verified native call. A later changed bridge ledger is
+refused. Use the same selection for repeat/resume, without clearing old data.
+
+`peerwork runtime legacy-evidence SELECTION.json delivery:73` decrypts exactly
+one archived record. Control keys use `control:KEY`; bridge rows use
+`bridge:INDEX`, with exact original ledger bytes at `bridge:original`.
+Output is explicitly `LOCAL_LEGACY_EVIDENCE_NOT_REVERIFIED`. Original event
+strings, status, receipt and body hash remain distinct; old `ACKED` or
+`HOST_QUEUED` never becomes model completion. Unknown results remain unknown.
+The archive creates no native inbox input, host call or remote acknowledgement.
+Original-host receipt reconciliation and physical-session rebind still require
+their separate qualified paths; this import alone does not establish them.

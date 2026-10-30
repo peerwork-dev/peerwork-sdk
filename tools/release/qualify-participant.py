@@ -24,6 +24,7 @@ GROUPS = ['communication_local_channel::tests', 'communication_runtime::tests',
           'communication_store::', 'participant_store::tests', 'participant_inbox::tests',
           'participant_transfer::tests', 'participant_presence::', 'agent_mcp::tests',
           'kernel_access::resident_wal_tests',
+          'participant_legacy_delivery::tests',
           'transport::tests::send_phase_scope_excludes_interleaved_and_spawned_work_and_survives_cancellation']
 
 
