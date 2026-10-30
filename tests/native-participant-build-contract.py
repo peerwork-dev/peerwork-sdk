@@ -9,6 +9,35 @@ spec.loader.exec_module(qualifier)
 
 
 class NativeGraphTests(unittest.TestCase):
+    def test_windows_imports_reject_dynamic_crt_and_language_runtimes(self):
+        good='    KERNEL32.dll\n    api-ms-win-crt-runtime-l1-1-0.dll\n'
+        self.assertEqual(qualifier.loader_requirements('win32-x64-msvc',good)['vc_runtime_dlls'],'NOT_IMPORTED')
+        for name in ('MSVCP140.dll','VCRUNTIME140_1.dll','concrt140.dll','python3.dll','node.dll','icuuc78.dll'):
+            with self.subTest(name=name), self.assertRaisesRegex(AssertionError,'external Windows'):
+                qualifier.loader_requirements('win32-x64-msvc',good+'    '+name+'\n')
+        with self.assertRaisesRegex(AssertionError,'no imports'):
+            qualifier.loader_requirements('win32-x64-msvc','tool failed')
+        with self.assertRaisesRegex(AssertionError,'unqualified Windows'):
+            qualifier.loader_requirements('win32-x64-msvc',good+'    unreviewed-runtime.dll\n')
+
+    def test_gnu_cpp_abi_cannot_hide_behind_a_compatible_glibc_floor(self):
+        deps='(NEEDED) Shared library: [libstdc++.so.6]\n(NEEDED) Shared library: [libc.so.6]'
+        symbols='GLIBC_2.2.5 GLIBC_2.28 GLIBCXX_3.4.25 CXXABI_1.3.11'
+        result=qualifier.loader_requirements('linux-x64-gnu',deps,symbols)
+        self.assertEqual(result['required_symbol_versions']['GLIBCXX'],'3.4.25')
+        self.assertEqual(result['cxx_runtime'],'SYSTEM_LIBSTDCXX')
+        for extra in ('GLIBC_2.29','GLIBCXX_3.4.26','CXXABI_1.3.12'):
+            with self.subTest(extra=extra), self.assertRaisesRegex(AssertionError,'ABI floor exceeded'):
+                qualifier.loader_requirements('linux-x64-gnu',deps,symbols+' '+extra)
+        with self.assertRaisesRegex(AssertionError,'external Linux'):
+            qualifier.loader_requirements('linux-x64-gnu',deps+'\n(NEEDED) Shared library: [libicui18n.so.78]',symbols)
+
+    def test_macos_imports_are_system_libraries_not_a_local_build_tree(self):
+        deps='/tmp/peerwork:\n    /usr/lib/libc++.1.dylib (compatibility version 1.0.0, current version 1.0.0)\n'
+        self.assertEqual(qualifier.loader_requirements('darwin-arm64',deps)['deployment_target'],'11.0')
+        with self.assertRaisesRegex(AssertionError,'external macOS'):
+            qualifier.loader_requirements('darwin-arm64',deps+'    @rpath/libicu.dylib (compatibility version 1.0.0, current version 1.0.0)\n')
+
     def test_cli_json_version_is_a_portable_archive_component(self):
         self.assertEqual(qualifier.candidate_version('{"status":"experimental","version":"0.2.16"}\n'), '0.2.16')
         self.assertEqual(qualifier.candidate_version('{"version":"1.2.3-rc.1+build.4"}'), '1.2.3-rc.1+build.4')

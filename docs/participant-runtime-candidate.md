@@ -1256,3 +1256,22 @@ versus100–175ms for non-send MCP tool responses. Reply MCP spans were1.20s
 and460ms. This single session ran during compilation and does not establish
 optimized percentiles, App push or an isolated host-ACK span. Temporary scoped
 grants and synthetic native identity/state were removed after terminal results.
+
+Native Windows candidates select `-C target-feature=+crt-static`. The pinned
+ICU MSVC projects follow Cargo's `crt-static` target feature for both release
+and debug runtime metadata; other library consumers retain their selected CRT
+choice. The candidate audit rejects VC++ redistributable, Node/Python and
+external ICU DLL imports. Native ICU collation is also checked against the
+pinned Node24/ICU78.3 corpus on each selected target. This is not yet an actual
+Windows result for the new link mode.
+
+GNU qualification now records required GLIBC, GLIBCXX and CXXABI symbol
+versions as well as loader imports. The preceding audited Linux candidate
+required GLIBC2.28, GLIBCXX3.4.11 and CXXABI1.3.8. It still uses the declared
+system `libstdc++.so.6`; no claim of eliminating that OS dependency is made.
+macOS imports must resolve to system libraries/frameworks. Toolchain runtime
+notice coverage and final release packaging remain separate checks.
+
+A qualification push marked `[native:win32-x64-msvc]` runs the changed Windows
+link mode alone. Unmarked pushes/dispatches retain the three-platform matrix.
+A selected-platform result never attests the whole release cohort.
