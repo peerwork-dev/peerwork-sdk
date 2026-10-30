@@ -738,13 +738,22 @@ async fn killed_native_runtime_reconciles_committed_packet_without_duplicate_eff
     .unwrap();
 }
 
+fn test_receiver(label:&str)->String {peerwork_core::communication::receiver_id(&peerwork_core::crypto::sha256(label.as_bytes()))}
+async fn test_claim_proof(client:&ParticipantClient,scope:&Scope,body:&mut Value){
+    let label=["R","F"].into_iter().find(|label|body["receiver_id"]==test_receiver(label)).expect("synthetic receiver key");
+    let bytes=reqwest::get(format!("{}/api/workspace/v1/discovery",client.origin().trim_end_matches('/'))).await.unwrap().bytes().await.unwrap();
+    let discovery=peerwork_core::discovery::parse_discovery_wire(&bytes,65536).unwrap();let audience=String::from_utf16(discovery.audience_utf16()).unwrap();
+    body["continuity_proof"]=json!(peerwork_core::communication::receiver_claim_proof(&peerwork_core::crypto::sha256(label.as_bytes()),&audience,client.actor_id(),scope.workspace_id.as_deref().unwrap(),body).unwrap());
+}
+
 async fn mutate(
     client: &ParticipantClient,
     id: &str,
     action: &str,
     scope: &Scope,
-    body: Value,
+    mut body: Value,
 ) -> Value {
+    if action=="structure.mailbox.claim" {test_claim_proof(client,scope,&mut body).await;}
     let op = client
         .invoke(
             Invoke::new(id, action, scope.clone(), body),
@@ -1167,8 +1176,8 @@ async fn native_program_mail_crypto_reply_sse_and_original_packet_recovery() {
     );
     let message_id = sent["message_id"].as_str().unwrap();
     assert_eq!(sent["status"], "APPLIED");
-    let claim=mutate(&worker,"worker-claim","structure.mailbox.claim",&scope,json!({"mailbox_id":worker_box["mailbox_id"],"receiver_id":"R".repeat(43),"expected_epoch":null,"destination_digest":"d".repeat(64)})).await;
-    let fence = json!({"mailbox_id":worker_box["mailbox_id"],"receiver_id":"R".repeat(43),"epoch":claim["mailbox"]["epoch"]});
+    let claim=mutate(&worker,"worker-claim","structure.mailbox.claim",&scope,json!({"mailbox_id":worker_box["mailbox_id"],"receiver_id":test_receiver("R"),"expected_epoch":null,"destination_digest":"d".repeat(64)})).await;
+    let fence = json!({"mailbox_id":worker_box["mailbox_id"],"receiver_id":test_receiver("R"),"epoch":claim["mailbox"]["epoch"]});
     let mut pulse = fence.clone();
     pulse["ready"] = json!(true);
     pulse["execution_state"] = json!("IDLE");
@@ -1253,7 +1262,7 @@ async fn native_program_mail_crypto_reply_sse_and_original_packet_recovery() {
     );
     // Verify a real full-data SSE frame independently of the read receipt.
     let after_control = inbox["control_checkpoint"].as_u64().unwrap();
-    let stream=selected(&worker,"structure.communication.stream.get",&Scope::default(),json!({"scopes":[{"workspace_id":ws,"mailbox_id":worker_box["mailbox_id"],"receiver_id":"R".repeat(43),"epoch":claim["mailbox"]["epoch"],"after_sequence":0,"after_control_sequence":after_control}]})).await;
+    let stream=selected(&worker,"structure.communication.stream.get",&Scope::default(),json!({"scopes":[{"workspace_id":ws,"mailbox_id":worker_box["mailbox_id"],"receiver_id":test_receiver("R"),"epoch":claim["mailbox"]["epoch"],"after_sequence":0,"after_control_sequence":after_control}]})).await;
     let discovery = reqwest::get(format!("{}/api/workspace/v1/discovery", service.origin))
         .await
         .unwrap()
@@ -1292,7 +1301,7 @@ async fn native_program_mail_crypto_reply_sse_and_original_packet_recovery() {
         workspace_id: ws.clone(),
         mailbox_id: worker_box["mailbox_id"].as_str().unwrap().into(),
         membership_id: worker_box["membership_id"].as_str().unwrap().into(),
-        receiver_id: "R".repeat(43),
+        receiver_id: test_receiver("R"),
         epoch: claim["mailbox"]["epoch"].as_u64().unwrap(),
         destination_digest: "d".repeat(64),
         binding_version: 1,
@@ -1887,7 +1896,12 @@ async fn automatic_native_program_watch_spools_offline_consumes_and_reconnects()
         json!({"mailbox_id":b["mailbox_id"]}),
     )
     .await;
-    mutate(&worker,"replace-b-fence","structure.mailbox.claim",&scope,json!({"mailbox_id":b["mailbox_id"],"receiver_id":"F".repeat(43),"expected_epoch":current["mailbox"]["epoch"],"destination_digest":current["mailbox"]["destination_digest"],"replace":true})).await;
+    let mut replacement=json!({"mailbox_id":b["mailbox_id"],"receiver_id":test_receiver("F"),"expected_epoch":current["mailbox"]["epoch"],"destination_digest":current["mailbox"]["destination_digest"],"replace":true});test_claim_proof(&worker,&scope,&mut replacement).await;
+    let rejected=worker.invoke(Invoke::new("replace-b-refused","structure.mailbox.claim",scope.clone(),replacement),Duration::from_secs(5)).await.unwrap();
+    assert_eq!(rejected.state,"REJECTED_NO_EFFECT");assert_eq!(rejected.outcome.unwrap()["result"]["structure"]["error"]["code"],"MAILBOX_STATE_RECOVERY_REQUIRED");
+    // Simulate a separately authorized administrative fence in the isolated
+    // fixture, to retain the scope-isolation test without an unsafe public API.
+    service.config(json!({"fence_mailbox":b["mailbox_id"]})).await;
     tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             let status = wb.next().await.unwrap();
@@ -2495,7 +2509,7 @@ async fn native_bridge_receives_genuine_verified_e2ee_mail_from_shared_runtime()
 
 #[tokio::test]
 #[ignore = "requires real PostgreSQL/HTTP synthetic service"]
-async fn refused_busy_claim_rotates_only_after_verified_no_effect_and_survives_restart() {
+async fn refused_busy_claim_preserves_original_selection_and_refuses_foreign_continuity() {
     let service=Service::start();
     let directory=crate::test_support::protected_test_dir();
     let config=configuration(directory.path(),&service.origin);
@@ -2511,29 +2525,19 @@ async fn refused_busy_claim_rotates_only_after_verified_no_effect_and_survives_r
     let mut watch=owner.watch(options.clone()).await.unwrap();
     tokio::time::timeout(Duration::from_secs(8),async{while service.counts().await["delayed"]!=1{tokio::time::sleep(Duration::from_millis(20)).await;}}).await.unwrap();
     // A competing receiver wins after our inspect, before our frozen claim.
-    let competitor=mutate(&owner,"busy-competitor","structure.mailbox.claim",&scope,json!({"mailbox_id":options.mailbox_id,"receiver_id":"F".repeat(43),"expected_epoch":null,"destination_digest":destination,"replace":false})).await["mailbox"].clone();
-    selected(&owner,"structure.mailbox.pulse",&scope,json!({"mailbox_id":options.mailbox_id,"receiver_id":"F".repeat(43),"epoch":competitor["epoch"],"ready":false,"execution_state":"OFFLINE"})).await;
+    let competitor=mutate(&owner,"busy-competitor","structure.mailbox.claim",&scope,json!({"mailbox_id":options.mailbox_id,"receiver_id":test_receiver("F"),"expected_epoch":null,"destination_digest":destination,"replace":false})).await["mailbox"].clone();
+    selected(&owner,"structure.mailbox.pulse",&scope,json!({"mailbox_id":options.mailbox_id,"receiver_id":test_receiver("F"),"epoch":competitor["epoch"],"ready":false,"execution_state":"OFFLINE"})).await;
     service.config(json!({"release":true})).await;
-    let busy=watch_until(&mut watch,|s|s.code.as_deref()==Some("MAILBOX_RECEIVER_BUSY")).await;
+    let busy=watch_until(&mut watch,|s|matches!(s.code.as_deref(),Some("MAILBOX_RECEIVER_BUSY"|"MAILBOX_STATE_RECOVERY_REQUIRED"))).await;
     assert!(!busy.receiver_link_verified);
     assert_eq!(service.counts().await["claim_commands"].as_array().unwrap().len(),2,"no new claim while another receiver's lease is live");
     owner.close().await.unwrap();drop(watch);drop(owner);
-    // Reload the durable next-claim selection, then expire only the synthetic
-    // old lease. No identity, mailbox, consumer or destination is replaced.
+    // Expiration does not transfer the competing receiver's uncertainty ledger.
     service.config(json!({"clock_offset_ms":20000})).await;
-    let owner=ParticipantClient::open(config).await.unwrap();
-    let mut watch=owner.watch(options.clone()).await.unwrap();
-    watch_until(&mut watch,|s|s.receiver_link_verified).await;
-    let current=selected(&owner,"structure.mailbox.get",&scope,json!({"mailbox_id":options.mailbox_id})).await;
-    assert_eq!(current["mailbox"]["epoch"],2);
-    assert_eq!(current["mailbox"]["destination_digest"],destination);
-    let counts=service.counts().await;
-    let claims=counts["claim_commands"].as_array().unwrap();
-    assert_eq!(claims.len(),3);
-    assert_eq!(claims[0]["receiver_id"],claims[2]["receiver_id"]);
-    assert_ne!(claims[0]["command_id"],claims[2]["command_id"]);
-    assert_eq!(claims[2]["expected_epoch"],1);
-    assert_eq!(claims[2]["replace"],false);
+    let owner=ParticipantClient::open(config).await.unwrap();let mut watch=owner.watch(options.clone()).await.unwrap();
+    let blocked=watch_until(&mut watch,|s|s.code.as_deref()==Some("MAILBOX_STATE_RECOVERY_REQUIRED")).await;assert!(!blocked.receiver_link_verified);
+    let current=selected(&owner,"structure.mailbox.get",&scope,json!({"mailbox_id":options.mailbox_id})).await;assert_eq!(current["mailbox"]["epoch"],1);assert_eq!(current["mailbox"]["receiver_id"],test_receiver("F"));
+    assert_eq!(service.counts().await["claim_commands"].as_array().unwrap().len(),2,"no fresh claim after expiry when continuity state belongs to another receiver");
     owner.close().await.unwrap();
 }
 

@@ -69,7 +69,7 @@ mod tests {
             host_destination: Some(host.digest.clone()),
         };
         let ns = "program:worker";
-        let binding = store.attach_watch(ns, &options).unwrap();
+        let binding = store.attach_watch(&identity, ns, &options).unwrap();
         store
             .register(&MailboxPins {
                 workspace_id: options.workspace_id.clone(),
@@ -302,7 +302,7 @@ mod tests {
             host_destination: Some(host.digest.clone()),
         };
         let ns = "program:worker";
-        let binding = store.attach_watch(ns, &options).unwrap();
+        let binding = store.attach_watch(&identity, ns, &options).unwrap();
         store
             .register(&MailboxPins {
                 workspace_id: options.workspace_id.clone(),

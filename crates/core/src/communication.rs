@@ -1,6 +1,6 @@
 //! Native directed mail. Immutable author evidence, service disclosure and
 //! mailbox delivery are separate proofs; none establishes model execution.
-#[path="communication_host_report.rs"]
+#[path = "communication_host_report.rs"]
 mod host_report;
 
 use crate::{
@@ -803,28 +803,65 @@ pub(crate) fn verify_read(
 ) -> Result<()> {
     let body = command.get("body").ok_or(CommunicationError)?;
     match prepared.action_id() {
-        "structure.mailbox.report"=>{
-            let report=result.get("report").ok_or(CommunicationError)?;
-            host_report::verify(report,prepared.audience_utf16(),prepared.workspace_id().ok_or(CommunicationError)?,prepared.actor_id())?;
-            let requested=body.get("report").ok_or(CommunicationError)?;
-            if report.get("call_id")!=requested.get("call_id")||report.get("scope")!=requested.get("scope")||number(report,"report_sequence")?<number(requested,"report_sequence")? {return Err(CommunicationError);}
+        "structure.mailbox.report" => {
+            let report = result.get("report").ok_or(CommunicationError)?;
+            host_report::verify(
+                report,
+                prepared.audience_utf16(),
+                prepared.workspace_id().ok_or(CommunicationError)?,
+                prepared.actor_id(),
+            )?;
+            let requested = body.get("report").ok_or(CommunicationError)?;
+            if report.get("call_id") != requested.get("call_id")
+                || report.get("scope") != requested.get("scope")
+                || number(report, "report_sequence")? < number(requested, "report_sequence")?
+            {
+                return Err(CommunicationError);
+            }
             Ok(())
-        },
-        "structure.message.receipts.read"=>{
-            if result.get("message_id")!=body.get("message_id"){return Err(CommunicationError);}
-            let mut mailboxes=std::collections::BTreeSet::new();
-            for delivery in array(result,"deliveries",8)?{
-                let mailbox=token_field(delivery,"mailbox_id")?;
-                let expected=id(serde_json::json!(["peerwork.delivery.v1",prepared.workspace_id().ok_or(CommunicationError)?,mailbox,text(body,"message_id")?,null]))?;
-                if token_field(delivery,"delivery_id")?!=expected||number(delivery,"sequence")?==0||!mailboxes.insert(mailbox){return Err(CommunicationError);}
-                if let Some(value)=delivery.get("host_report").filter(|v|!matches!(v,WireValue::Null)){
-                    host_report::verify(value,prepared.audience_utf16(),prepared.workspace_id().ok_or(CommunicationError)?,&text(delivery,"recipient_actor")?)?;
-                    let scope=value.get("scope").ok_or(CommunicationError)?;
-                    if scope.get("mailbox_id")!=delivery.get("mailbox_id")||scope.get("membership_id")!=delivery.get("membership_id")||scope.get("sequence")!=delivery.get("sequence")||scope.get("delivery_id")!=delivery.get("delivery_id"){return Err(CommunicationError);}
+        }
+        "structure.message.receipts.read" => {
+            if result.get("message_id") != body.get("message_id") {
+                return Err(CommunicationError);
+            }
+            let mut mailboxes = std::collections::BTreeSet::new();
+            for delivery in array(result, "deliveries", 8)? {
+                let mailbox = token_field(delivery, "mailbox_id")?;
+                let expected = id(serde_json::json!([
+                    "peerwork.delivery.v1",
+                    prepared.workspace_id().ok_or(CommunicationError)?,
+                    mailbox,
+                    text(body, "message_id")?,
+                    null
+                ]))?;
+                if token_field(delivery, "delivery_id")? != expected
+                    || number(delivery, "sequence")? == 0
+                    || !mailboxes.insert(mailbox)
+                {
+                    return Err(CommunicationError);
+                }
+                if let Some(value) = delivery
+                    .get("host_report")
+                    .filter(|v| !matches!(v, WireValue::Null))
+                {
+                    host_report::verify(
+                        value,
+                        prepared.audience_utf16(),
+                        prepared.workspace_id().ok_or(CommunicationError)?,
+                        &text(delivery, "recipient_actor")?,
+                    )?;
+                    let scope = value.get("scope").ok_or(CommunicationError)?;
+                    if scope.get("mailbox_id") != delivery.get("mailbox_id")
+                        || scope.get("membership_id") != delivery.get("membership_id")
+                        || scope.get("sequence") != delivery.get("sequence")
+                        || scope.get("delivery_id") != delivery.get("delivery_id")
+                    {
+                        return Err(CommunicationError);
+                    }
                 }
             }
             Ok(())
-        },
+        }
         "structure.communication.stream.get" => {
             if prepared.workspace_id().is_some() {
                 return Err(CommunicationError);
@@ -1110,4 +1147,80 @@ fn verify_typed(jws: &str, typ: &str, key: &str) -> Result<WireValue> {
         6000,
     )
     .map_err(|_| CommunicationError)
+}
+
+/// A receiver is a public device-continuity key, separate from the actor key.
+/// Its private seed is retained with the encrypted inbox, never sent to service.
+pub const RECEIVER_CONTINUITY_TYPE: &str = "peerwork.mailbox-continuity.v1";
+pub fn receiver_id(seed: &[u8; 32]) -> String {
+    crate::crypto::key_id(
+        &ed25519_dalek::SigningKey::from_bytes(seed)
+            .verifying_key()
+            .to_bytes(),
+    )
+}
+pub fn receiver_claim_context(
+    audience: &str,
+    actor: &str,
+    workspace: &str,
+    body: &serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({"format":RECEIVER_CONTINUITY_TYPE,"audience":audience,"actor_id":actor,"workspace_id":workspace,
+        "mailbox_id":body["mailbox_id"],"receiver_id":body["receiver_id"],"expected_epoch":body["expected_epoch"],
+        "destination_digest":body["destination_digest"],"replace":body.get("replace").cloned().unwrap_or(serde_json::json!(false))})
+}
+pub fn receiver_claim_proof(
+    seed: &[u8; 32],
+    audience: &str,
+    actor: &str,
+    workspace: &str,
+    body: &serde_json::Value,
+) -> Result<String> {
+    let key = ed25519_dalek::SigningKey::from_bytes(seed);
+    let kid = receiver_id(seed);
+    if body["receiver_id"] != kid || !token(actor) || !token(workspace) {
+        return Err(CommunicationError);
+    }
+    crate::crypto::sign_compact(
+        &serde_json::json!({"alg":"EdDSA","typ":RECEIVER_CONTINUITY_TYPE,"kid":kid}),
+        &receiver_claim_context(audience, actor, workspace, body),
+        &key,
+    )
+    .map_err(|_| CommunicationError)
+}
+pub fn verify_receiver_claim_proof(
+    audience: &str,
+    actor: &str,
+    workspace: &str,
+    body: &serde_json::Value,
+) -> Result<()> {
+    let proof = body["continuity_proof"]
+        .as_str()
+        .filter(|s| s.len() <= 4096)
+        .ok_or(CommunicationError)?;
+    let parts = proof.split('.').collect::<Vec<_>>();
+    if parts.len() != 3 {
+        return Err(CommunicationError);
+    }
+    let decode = |s: &str| crate::crypto::decode_base64url(s).map_err(|_| CommunicationError);
+    let header = crate::strict_json::parse_strict_json(&decode(parts[0])?)
+        .map_err(|_| CommunicationError)?;
+    let payload = crate::strict_json::parse_strict_json(&decode(parts[1])?)
+        .map_err(|_| CommunicationError)?;
+    let kid = body["receiver_id"].as_str().ok_or(CommunicationError)?;
+    if header != serde_json::json!({"alg":"EdDSA","typ":RECEIVER_CONTINUITY_TYPE,"kid":kid})
+        || payload != receiver_claim_context(audience, actor, workspace, body)
+    {
+        return Err(CommunicationError);
+    }
+    let signature: [u8; 64] = decode(parts[2])?
+        .try_into()
+        .map_err(|_| CommunicationError)?;
+    crate::crypto::verifying_key(kid)
+        .map_err(|_| CommunicationError)?
+        .verify_strict(
+            format!("{}.{}", parts[0], parts[1]).as_bytes(),
+            &ed25519_dalek::Signature::from_bytes(&signature),
+        )
+        .map_err(|_| CommunicationError)
 }

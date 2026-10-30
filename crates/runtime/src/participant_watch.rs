@@ -14,7 +14,7 @@ use peerwork_core::{
         verify_mailbox_frame, FramePins, MailboxPins, VerifiedMailboxPage, MAX_FRAME_BYTES,
     },
     crypto::{decode_base64url, sha256_hex},
-    wire_json::{parse_wire_json_bounded, WireValue},
+    wire_json::{canonical_wire_value, parse_wire_json_bounded, WireValue},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -357,7 +357,7 @@ fn scope_refusal(code: &str) -> bool {
             | "WORKSPACE_DELETING"
     )
 }
-fn validate_claim(binding: &Binding, wire: &str, actor: &str, origin: &str) -> Result<()> {
+fn validate_claim(binding: &Binding, wire: &str, actor: &str, origin: &str, audience:&str) -> Result<()> {
     let request = parse_wire_json_bounded(wire.as_bytes(), 8, 8192)
         .map_err(|_| error("WATCH_CLAIM_STATE_INVALID"))?;
     let expected = binding
@@ -367,11 +367,13 @@ fn validate_claim(binding: &Binding, wire: &str, actor: &str, origin: &str) -> R
     let body = request
         .get("body")
         .ok_or_else(|| error("WATCH_CLAIM_STATE_INVALID"))?;
+    let value:Value=serde_json::from_str(&canonical_wire_value(body,peerwork_core::canonical::Path::STRUCTURED).map_err(|_|error("WATCH_CLAIM_STATE_INVALID"))?).map_err(|_|error("WATCH_CLAIM_STATE_INVALID"))?;
+    peerwork_core::communication::verify_receiver_claim_proof(audience,actor,&binding.options.workspace_id,&value).map_err(|_|error("WATCH_CLAIM_STATE_INVALID"))?;
     if request.object_len() != Some(4)
         || text(&request, "action").as_deref() != Some("structure.mailbox.claim")
         || text(&request, "workspace_id").as_deref() != Some(&binding.options.workspace_id)
         || text(&request, "command_id").as_deref() != Some(&binding.claim_id)
-        || body.object_len() != Some(5)
+        || body.object_len() != Some(6)
         || text(body, "mailbox_id").as_deref() != Some(&binding.options.mailbox_id)
         || text(body, "receiver_id").as_deref() != Some(&binding.receiver)
         || text(body, "destination_digest").as_deref() != Some(&expected)
@@ -534,7 +536,7 @@ pub(crate) async fn run(
                 Some(Command::Attach{namespace,options,reply})=>{
                     let attached=(||->Result<_>{
                         if let Some(s)=slots.get_mut(&options.key()){s.signals.retain(|s|!s.is_closed());if s.signals.len()>=16{return Err(error("WATCH_LISTENER_LIMIT"));}}
-                        let binding=store.attach_watch(&namespace,&options)?;
+                        let binding=store.attach_watch(&identity, &namespace,&options)?;
                         let entry=slots.entry(options.key()).or_insert_with(||slot(binding));entry.enabled=true;
                         let (tx,rx)=mpsc::channel(1);let _=tx.try_send(());entry.signals.push(tx);Ok(rx)
                     })();let _=reply.send(attached);
@@ -623,7 +625,10 @@ pub(crate) async fn run(
                                         s.fail(Failure{no_effect:false,code:"MAILBOX_RECEIVER_BUSY".into(),retryable:true});continue;
                                     }
                                     let epoch=mailbox["epoch"].as_u64().unwrap_or(0);
-                                    let wire=json!({"action":"structure.mailbox.claim","workspace_id":s.binding.options.workspace_id,"command_id":s.binding.claim_id,"body":{"mailbox_id":s.binding.options.mailbox_id,"receiver_id":s.binding.receiver,"expected_epoch":if epoch==0{None}else{Some(epoch)},"destination_digest":target,"replace":false}}).to_string();
+                                    if epoch>0&&mailbox["receiver_id"]!=s.binding.receiver{s.fail(Failure{no_effect:false,code:"MAILBOX_STATE_RECOVERY_REQUIRED".into(),retryable:false});continue;}
+                                    let mut body=json!({"mailbox_id":s.binding.options.mailbox_id,"receiver_id":s.binding.receiver,"expected_epoch":if epoch==0{None}else{Some(epoch)},"destination_digest":target,"replace":false});
+                                    match store.receiver_proof(&identity,&s.binding,&body){Ok(proof)=>body["continuity_proof"]=json!(proof),Err(e)=>{s.fail(Failure{no_effect:false,code:e.code,retryable:false});continue;}}
+                                    let wire=json!({"action":"structure.mailbox.claim","workspace_id":s.binding.options.workspace_id,"command_id":s.binding.claim_id,"body":body}).to_string();
                                     match store.freeze_claim(&s.binding,&wire){Ok(())=>s.binding.claim_wire=Some(wire),Err(e)=>s.fail(Failure{no_effect:false,code:e.code,retryable:false})}
                                 },Err(e)=>s.fail(e),
                             }},
@@ -936,7 +941,7 @@ pub(crate) async fn run(
                     }
                 }
             } else if let Some(wire) = &s.binding.claim_wire {
-                if let Err(e) = validate_claim(&s.binding, wire, identity.actor_id(), &origin) {
+                if let Err(e) = validate_claim(&s.binding, wire, identity.actor_id(), &origin,&String::from_utf16(store.audience()).unwrap_or_default()) {
                     s.fail(Failure {
                         no_effect: false,
                         code: e.code,

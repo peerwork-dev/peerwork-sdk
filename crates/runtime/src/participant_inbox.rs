@@ -88,12 +88,20 @@ impl InboxStore {
         // Reject another principal before recovery changes any old call facts.
         let exists: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='inbox_meta')", [], |r|r.get(0)).map_err(db_error)?;
         if exists {
-            let old: Option<String> = db.query_row("SELECT binding FROM inbox_meta WHERE id=1", [], |r|r.get(0)).optional().map_err(db_error)?;
-            if old.as_deref()!=Some(binding.as_str()) { return Err(failure("INBOX_BINDING_MISMATCH")); }
+            let old: Option<String> = db
+                .query_row("SELECT binding FROM inbox_meta WHERE id=1", [], |r| {
+                    r.get(0)
+                })
+                .optional()
+                .map_err(db_error)?;
+            if old.as_deref() != Some(binding.as_str()) {
+                return Err(failure("INBOX_BINDING_MISMATCH"));
+            }
         }
         db.execute_batch("PRAGMA foreign_keys=ON;
             CREATE TABLE IF NOT EXISTS inbox_service(id INTEGER PRIMARY KEY CHECK(id=1),pins TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS inbox_watches(workspace TEXT NOT NULL,mailbox TEXT NOT NULL,namespace TEXT NOT NULL,descriptor TEXT NOT NULL,receiver TEXT NOT NULL,claim_id TEXT NOT NULL,claim_wire TEXT,enabled INTEGER NOT NULL,PRIMARY KEY(workspace,mailbox));
+            CREATE TABLE IF NOT EXISTS inbox_receiver_keys(workspace TEXT NOT NULL,mailbox TEXT NOT NULL,sealed BLOB NOT NULL,PRIMARY KEY(workspace,mailbox));
             CREATE INDEX IF NOT EXISTS inbox_watches_active ON inbox_watches(enabled,workspace,mailbox);
             CREATE TABLE IF NOT EXISTS inbox_meta(id INTEGER PRIMARY KEY CHECK(id=1),binding TEXT NOT NULL,allocated INTEGER NOT NULL,rows INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS inbox_mailboxes(workspace TEXT NOT NULL,mailbox TEXT NOT NULL,membership TEXT NOT NULL,receiver TEXT NOT NULL,epoch INTEGER NOT NULL,destination TEXT NOT NULL,binding_version INTEGER NOT NULL,item_cursor INTEGER NOT NULL,control_cursor INTEGER,last_frame TEXT,gc_after TEXT NOT NULL,PRIMARY KEY(workspace,mailbox));
@@ -186,6 +194,7 @@ impl InboxStore {
     }
     pub fn attach_watch(
         &mut self,
+        identity: &KernelIdentity,
         namespace: &str,
         options: &crate::participant_watch::WatchOptions,
     ) -> Result<crate::participant_watch::Binding> {
@@ -216,6 +225,10 @@ impl InboxStore {
             if owner != namespace || old != wire {
                 return Err(failure("WATCH_BINDING_MISMATCH"));
             }
+            let exists:bool=self.db.query_row("SELECT EXISTS(SELECT 1 FROM inbox_receiver_keys WHERE workspace=?1 AND mailbox=?2)",params![options.workspace_id,options.mailbox_id],|r|r.get(0)).map_err(db_error)?;
+            if !exists {
+                return Err(failure("RECEIVER_CONTINUITY_KEY_MISSING"));
+            }
         } else {
             let retained: usize = self
                 .db
@@ -224,21 +237,35 @@ impl InboxStore {
             if retained >= 256 {
                 return Err(failure("WATCH_BINDING_LIMIT"));
             }
-            let receiver = crate::communication_host::random_token().map_err(|_| state())?;
+            use rand_core::RngCore;
+            let mut seed = zeroize::Zeroizing::new([0u8; 32]);
+            rand_core::OsRng
+                .try_fill_bytes(&mut *seed)
+                .map_err(|_| state())?;
+            let receiver = peerwork_core::communication::receiver_id(&seed);
+            let aad = self.receiver_key_aad(namespace, options);
+            let encoded = zeroize::Zeroizing::new(peerwork_core::crypto::base64url(&*seed));
+            let sealed = seal_bounded(identity, &aad, &encoded, 128).map_err(|_| state())?;
             let claim = crate::communication_host::random_token().map_err(|_| state())?;
-            self.db
-                .execute(
-                    "INSERT INTO inbox_watches VALUES(?1,?2,?3,?4,?5,?6,NULL,1)",
-                    params![
-                        options.workspace_id,
-                        options.mailbox_id,
-                        namespace,
-                        wire,
-                        receiver,
-                        claim
-                    ],
-                )
-                .map_err(db_error)?;
+            let tx = self.db.unchecked_transaction().map_err(db_error)?;
+            tx.execute(
+                "INSERT INTO inbox_receiver_keys VALUES(?1,?2,?3)",
+                params![options.workspace_id, options.mailbox_id, sealed],
+            )
+            .map_err(db_error)?;
+            tx.execute(
+                "INSERT INTO inbox_watches VALUES(?1,?2,?3,?4,?5,?6,NULL,1)",
+                params![
+                    options.workspace_id,
+                    options.mailbox_id,
+                    namespace,
+                    wire,
+                    receiver,
+                    claim
+                ],
+            )
+            .map_err(db_error)?;
+            tx.commit().map_err(db_error)?;
         }
         self.db
             .execute(
@@ -283,6 +310,68 @@ impl InboxStore {
             )
             .map_err(db_error)?;
         Ok(())
+    }
+    fn receiver_key_aad(
+        &self,
+        namespace: &str,
+        options: &crate::participant_watch::WatchOptions,
+    ) -> String {
+        json!([
+            "peerwork.receiver-key.v1",
+            self.binding,
+            namespace,
+            options.workspace_id,
+            options.mailbox_id,
+            options.membership_id
+        ])
+        .to_string()
+    }
+    pub fn receiver_proof(
+        &self,
+        identity: &KernelIdentity,
+        binding: &crate::participant_watch::Binding,
+        body: &Value,
+    ) -> Result<String> {
+        let sealed: Option<Vec<u8>> = self
+            .db
+            .query_row(
+                "SELECT sealed FROM inbox_receiver_keys WHERE workspace=?1 AND mailbox=?2",
+                params![binding.options.workspace_id, binding.options.mailbox_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(db_error)?;
+        let sealed = sealed.ok_or_else(|| failure("RECEIVER_CONTINUITY_KEY_MISSING"))?;
+        let plain = open_bounded(
+            identity,
+            &self.receiver_key_aad(&binding.namespace, &binding.options),
+            &sealed,
+            128,
+        )
+        .map_err(|_| failure("RECEIVER_CONTINUITY_KEY_INVALID"))?;
+        let decoded = zeroize::Zeroizing::new(
+            peerwork_core::crypto::decode_base64url(&plain)
+                .map_err(|_| failure("RECEIVER_CONTINUITY_KEY_INVALID"))?,
+        );
+        let seed: zeroize::Zeroizing<[u8; 32]> = zeroize::Zeroizing::new(
+            decoded
+                .as_slice()
+                .try_into()
+                .map_err(|_| failure("RECEIVER_CONTINUITY_KEY_INVALID"))?,
+        );
+        if peerwork_core::communication::receiver_id(&seed) != binding.receiver {
+            return Err(failure("RECEIVER_CONTINUITY_KEY_INVALID"));
+        }
+        let audience = String::from_utf16(&self.audience)
+            .map_err(|_| failure("RECEIVER_CONTINUITY_KEY_INVALID"))?;
+        peerwork_core::communication::receiver_claim_proof(
+            &seed,
+            &audience,
+            &self.actor,
+            &binding.options.workspace_id,
+            body,
+        )
+        .map_err(|_| failure("RECEIVER_CONTINUITY_KEY_INVALID"))
     }
     pub fn freeze_claim(
         &mut self,
@@ -451,8 +540,11 @@ impl InboxStore {
         self.ingest_with_keys(identity, page, max_bytes, &Default::default())
     }
     pub fn ingest_with_keys(
-        &mut self, identity: &KernelIdentity, page: &VerifiedMailboxPage,
-        max_bytes: usize, known_keys: &std::collections::BTreeSet<String>,
+        &mut self,
+        identity: &KernelIdentity,
+        page: &VerifiedMailboxPage,
+        max_bytes: usize,
+        known_keys: &std::collections::BTreeSet<String>,
     ) -> Result<Cursor> {
         let pins = page.mailbox();
         if page.actor_id() != self.actor
@@ -474,7 +566,7 @@ impl InboxStore {
             .collect::<Result<_>>()?;
         let allocation =
             sealed.len() + 4096 + subjects.iter().map(|s| s.len() * 256 + 2048).sum::<usize>();
-        let key_refs=key_queue::prepare_refs(identity,&self.binding,page,&hash)?;
+        let key_refs = key_queue::prepare_refs(identity, &self.binding, page, &hash)?;
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -558,7 +650,9 @@ impl InboxStore {
                 continue;
             }
             tx.execute("INSERT INTO inbox_items(workspace,mailbox,sequence,delivery_id,kind,frame,item_index,item_digest,status,terminal_reason) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![pins.workspace_id,pins.mailbox_id,item.sequence(),item.delivery_id(),kind,hash,index,digest,if terminal.is_some(){"TERMINAL"}else{"PENDING"},terminal]).map_err(db_error)?;
-            if let Some(reference)=&key_refs[index] { key_queue::insert_ref(&tx,pins,item.sequence(),reference,known_keys)?; }
+            if let Some(reference) = &key_refs[index] {
+                key_queue::insert_ref(&tx, pins, item.sequence(), reference, known_keys)?;
+            }
             let lane = if let Some(message) = item.message() {
                 format!("MESSAGE:{}", message.context().conversation_id)
             } else {
@@ -599,9 +693,9 @@ impl InboxStore {
         }
         for control in page.controls() {
             let target = control.get("target").ok_or_else(invalid)?;
-            if text(control,"kind")?=="communication.message.withdrawn" {
+            if text(control, "kind")? == "communication.message.withdrawn" {
                 // One native message withdrawal names exactly one delivery.
-                let delivery=text(target,"delivery_id")?;
+                let delivery = text(target, "delivery_id")?;
                 tx.execute("DELETE FROM inbox_key_refs WHERE workspace=?1 AND mailbox=?2 AND sequence=(SELECT sequence FROM inbox_items WHERE workspace=?1 AND mailbox=?2 AND delivery_id=?3)",params![pins.workspace_id,pins.mailbox_id,delivery]).map_err(db_error)?;
             }
             let (kind, subject, revision, reason) = match text(control, "kind")?.as_str() {
@@ -1266,16 +1360,20 @@ mod tests {
             membership_id: "G".repeat(43),
             consumer_id: "program".into(),
         };
-        let first = store.attach_watch("program", &options(0)).unwrap();
+        let first = store
+            .attach_watch(&identity, "program", &options(0))
+            .unwrap();
         store
             .freeze_claim(&first, "original frozen synthetic claim")
             .unwrap();
         for n in 1..8 {
-            store.attach_watch("program", &options(n)).unwrap();
+            store
+                .attach_watch(&identity, "program", &options(n))
+                .unwrap();
         }
         assert_eq!(
             store
-                .attach_watch("program", &options(8))
+                .attach_watch(&identity, "program", &options(8))
                 .err()
                 .unwrap()
                 .code,
@@ -1285,12 +1383,14 @@ mod tests {
             store.disable_watch("program", &options(n)).unwrap();
         }
         for n in 8..256 {
-            store.attach_watch("program", &options(n)).unwrap();
+            store
+                .attach_watch(&identity, "program", &options(n))
+                .unwrap();
             store.disable_watch("program", &options(n)).unwrap();
         }
         assert_eq!(
             store
-                .attach_watch("program", &options(256))
+                .attach_watch(&identity, "program", &options(256))
                 .err()
                 .unwrap()
                 .code,
@@ -1299,7 +1399,9 @@ mod tests {
         drop(store);
         let mut store =
             InboxStore::open_local(&path, &identity, "https://example.invalid/").unwrap();
-        let recovered = store.attach_watch("program", &options(0)).unwrap();
+        let recovered = store
+            .attach_watch(&identity, "program", &options(0))
+            .unwrap();
         assert_eq!(recovered.receiver, first.receiver);
         assert_eq!(recovered.claim_id, first.claim_id);
         assert_eq!(
@@ -1315,22 +1417,31 @@ mod tests {
         );
         assert_eq!(
             store
-                .attach_watch("another-program", &options(0))
+                .attach_watch(&identity, "another-program", &options(0))
                 .err()
                 .unwrap()
                 .code,
             "WATCH_BINDING_MISMATCH"
         );
-        let next=store.rotate_refused_claim(&recovered).unwrap();
-        assert_ne!(next,recovered.claim_id);
-        assert_eq!(store.rotate_refused_claim(&recovered).unwrap_err().code,"WATCH_CLAIM_CONFLICT");
+        let next = store.rotate_refused_claim(&recovered).unwrap();
+        assert_ne!(next, recovered.claim_id);
+        assert_eq!(
+            store.rotate_refused_claim(&recovered).unwrap_err().code,
+            "WATCH_CLAIM_CONFLICT"
+        );
         drop(store);
-        let mut store=InboxStore::open_local(&path,&identity,"https://example.invalid/").unwrap();
-        let rotated=store.attach_watch("program",&options(0)).unwrap();
-        assert_eq!(rotated.claim_id,next);
-        assert_eq!(rotated.receiver,recovered.receiver);
+        let mut store =
+            InboxStore::open_local(&path, &identity, "https://example.invalid/").unwrap();
+        let rotated = store
+            .attach_watch(&identity, "program", &options(0))
+            .unwrap();
+        assert_eq!(rotated.claim_id, next);
+        assert_eq!(rotated.receiver, recovered.receiver);
         assert!(rotated.claim_wire.is_none());
-        assert_eq!(store.rotate_refused_claim(&rotated).unwrap_err().code,"WATCH_CLAIM_NOT_REFUSABLE");
+        assert_eq!(
+            store.rotate_refused_claim(&rotated).unwrap_err().code,
+            "WATCH_CLAIM_NOT_REFUSABLE"
+        );
         store
             .db
             .execute(

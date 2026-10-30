@@ -27,6 +27,7 @@ const server=serve({hostname:'127.0.0.1',port:0,fetch:async request=>{
    reportQuotaBlocked=options.report_quota_blocked;
    if(!reportQuotaBlocked){for(const [workspace,limit]of reportQuotaLimits)await f.store.pool.query(`UPDATE "${f.schema}".workspace_capacity SET byte_limit=$2 WHERE workspace_id=$1`,[workspace,limit]);reportQuotaLimits.clear();}
   }
+  if(options.fence_mailbox!==undefined)await f.store.pool.query(`UPDATE "${f.schema}".communication_mailboxes SET epoch=epoch+1,lease_until=0,ready=false WHERE mailbox_id=$1`,[options.fence_mailbox]);
   if(options.clock_offset_ms!==undefined){clockOffset=options.clock_offset_ms;f.clock.now=Date.now()+clockOffset;}
   if(options.drop_action!==undefined)dropAction=options.drop_action;
   if(options.delay_name!==undefined)delayName=options.delay_name;

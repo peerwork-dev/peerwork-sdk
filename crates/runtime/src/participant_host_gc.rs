@@ -189,7 +189,7 @@ mod tests {
             host_destination: Some(host.digest.clone()),
         };
         let namespace = "program:gc";
-        let binding = store.attach_watch(namespace, &options).unwrap();
+        let binding = store.attach_watch(&identity, namespace, &options).unwrap();
         store
             .register(&MailboxPins {
                 workspace_id: options.workspace_id.clone(),
