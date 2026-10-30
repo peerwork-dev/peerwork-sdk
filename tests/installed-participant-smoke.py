@@ -35,7 +35,10 @@ def main():
     cli = args.cli.absolute()
     assert cli.is_file(), 'installed native executable missing'
     with tempfile.TemporaryDirectory(prefix='peerwork installed Ω ') as temp:
-        root = Path(temp)
+        # macOS temporary roots may use /var -> /private/var. Provision the
+        # synthetic state under its canonical path, as the native contract
+        # requires; do not weaken production symlink rejection.
+        root = Path(temp).resolve(strict=True)
         protect(root)
         children = []
 
@@ -49,7 +52,7 @@ def main():
 
         def run(*words, success=True):
             result = subprocess.run([str(cli), *map(str, words)], cwd=root,
-                                    capture_output=True, text=True, timeout=20)
+                                    capture_output=True, text=True, encoding='utf-8', timeout=20)
             assert (result.returncode == 0) == success, 'unexpected native exit status'
             return json.loads(result.stdout)
 

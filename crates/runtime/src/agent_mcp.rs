@@ -224,7 +224,7 @@ mod tests {
     fn profile() -> AgentProfile {
         AgentProfile {
             format: "peerwork.agent-profile.v1".into(),
-            endpoint_path: "/nonexistent/synthetic/client.json".into(),
+            endpoint_path: std::env::current_dir().unwrap().join("__peerwork_nonexistent_synthetic__/client.json"),
             expected_origin: "https://example.invalid".into(),
             expected_actor: "A".repeat(43),
             scopes: BTreeMap::new(),

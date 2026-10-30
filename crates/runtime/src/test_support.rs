@@ -19,7 +19,10 @@ pub(crate) fn protected_test_dir() -> ProtectedTestDir {
     let path = {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-        root.path().to_owned()
+        // macOS exposes its temporary parent through /var, a system alias
+        // for /private/var. Native state deliberately rejects alias paths;
+        // canonicalize our newly created test root instead of relaxing it.
+        std::fs::canonicalize(root.path()).unwrap()
     };
     #[cfg(windows)]
     let path = {
