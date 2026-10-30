@@ -174,6 +174,219 @@ async fn two_program_warm_mail_latency_and_request_counts() {
     assert_eq!(result["journal_reads"], 0);
 }
 
+/// Concurrent ring traffic tests contention between independent identities in
+/// one workspace. Every accepted message must be verified and opened; no model
+/// or host latency is inferred from this local service/SDK measurement.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "requires explicit synthetic PostgreSQL, compiled service and protected matrix report path"]
+async fn one_to_eight_program_concurrent_mail_latency() {
+    let report = PathBuf::from(
+        std::env::var("PEERWORK_PROGRAM_MATRIX_REPORT").expect("explicit protected result path"),
+    );
+    assert!(report.is_absolute() && !report.exists());
+    let root = crate::test_support::protected_test_dir();
+    let service = Service::start();
+    let mut cases = Vec::new();
+    for size in [1usize, 2, 4, 8] {
+        let mut configs = Vec::new();
+        let mut clients = Vec::new();
+        for member in 0..size {
+            let dir = root.path().join(format!("case-{size}-member-{member}"));
+            create_private_state_directory(&dir).unwrap();
+            let config = configuration(&dir, &service.origin);
+            clients.push(ParticipantClient::open(config.clone()).await.unwrap());
+            configs.push(config);
+        }
+        let ws = mutate(
+            &clients[0],
+            "matrix-create",
+            "structure.workspace.create",
+            &Scope::default(),
+            json!({"name":"Synthetic concurrent mail qualification"}),
+        )
+        .await["workspace_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let scope = Scope {
+            workspace_id: Some(ws.clone()),
+            ..Default::default()
+        };
+        let mut boxes = Vec::new();
+        for member in 0..size {
+            let meta = selected(&clients[0], "structure.workspace.get", &scope, json!({})).await;
+            let membership = if member == 0 {
+                meta["membership"]["membership_id"].clone()
+            } else {
+                let mut request = Invoke::new(
+                    format!("matrix-join-{member}"),
+                    "structure.member.set",
+                    scope.clone(),
+                    json!({"actor_id":configs[member].expected_actor,"state":"ACTIVE","expected_membership_id":null}),
+                );
+                request.expected_workspace_revision = meta["workspace_revision"].as_u64();
+                structure(
+                    &clients[0]
+                        .invoke(request, Duration::from_secs(5))
+                        .await
+                        .unwrap(),
+                )["membership_id"]
+                    .clone()
+            };
+            boxes.push(mutate(
+                &clients[0], &format!("matrix-grant-{member}"), "structure.communication.grant.set", &scope,
+                json!({"actor_id":configs[member].expected_actor,"membership_id":membership,"expected_revision":null,"send":true,"receive":true}),
+            ).await["mailbox"].clone());
+        }
+        let mut key = String::new();
+        for config in &configs {
+            key = install_synthetic_key(config, &ws, &[93u8; 32], None);
+        }
+        mutate(
+            &clients[0],
+            "matrix-key",
+            "structure.content-key.set",
+            &scope,
+            json!({"key_id":key,"expected_epoch":0,"expected_head_revision":null}),
+        )
+        .await;
+        let mut receivers = Vec::new();
+        let mut options = Vec::new();
+        for (member, client) in clients.iter().enumerate() {
+            let opt = watch(&mail_scope(&ws, &boxes[member]), "matrix", None);
+            let mut receiver = client.watch(opt.clone()).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(20), async {
+                loop {
+                    let snapshot = receiver.next().await.unwrap();
+                    assert_ne!(snapshot.state, "BLOCKED", "{snapshot:?}");
+                    if snapshot.receiver_link_verified {
+                        break;
+                    }
+                }
+            })
+            .await
+            .expect("every receiver must independently verify its link");
+            options.push(opt);
+            receivers.push(receiver);
+        }
+        let before = service.counts().await;
+        let mut samples = Vec::new();
+        // First round is reported separately. All32 warm rounds remain eligible.
+        for round in 0..33 {
+            let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(size));
+            let round_start = Instant::now();
+            let mut jobs = tokio::task::JoinSet::new();
+            for (member, mut receiver) in receivers.drain(..).enumerate() {
+                let client = clients[member].clone();
+                let option = options[member].clone();
+                let scope = scope.clone();
+                let target = boxes[(member + 1) % size].clone();
+                let barrier = barrier.clone();
+                jobs.spawn(async move {
+                    let outgoing = format!("Concurrent mail case {size}, round {round}, member {member}");
+                    let incoming = format!("Concurrent mail case {size}, round {round}, member {}", (member + size - 1) % size);
+                    let mut request = Invoke::new(format!("matrix-{round}-{member}"), "structure.message.send", scope,
+                        json!({"conversation_id":"V".repeat(43),"reply_to":null,"reply_address":null,
+                            "recipients":[{"mailbox_id":target["mailbox_id"],"membership_id":target["membership_id"]}],
+                            "content":{"mode":"WORKSPACE_E2EE"}}));
+                    request.plaintext_message = Some(outgoing);
+                    barrier.wait().await;
+                    let call_started = round_start.elapsed().as_secs_f64() * 1000.;
+                    let accepted = structure(&client.invoke(request, Duration::from_secs(10)).await.unwrap());
+                    assert!(accepted["message_id"].is_string(), "{accepted}");
+                    let accepted_at = round_start.elapsed().as_secs_f64() * 1000.;
+                    let item = tokio::time::timeout(Duration::from_secs(15), async {
+                        loop {
+                            let snapshot = receiver.next().await.unwrap();
+                            assert_ne!(snapshot.state, "BLOCKED", "{snapshot:?}");
+                            if let Some(item) = snapshot.items.iter().find(|item| item["opened_message"]["text"] == incoming) {
+                                assert_eq!(item["opened_message"]["assurance"], "AUTHOR_SIGNATURE_AND_AEAD");
+                                return item.clone();
+                            }
+                        }
+                    }).await.expect("accepted ring message missing");
+                    let received_at = round_start.elapsed().as_secs_f64() * 1000.;
+                    client.consume(&option, vec![crate::participant::DeliveryReference {
+                        sequence: item["sequence"].as_u64().unwrap(),
+                        delivery_id: item["delivery_id"].as_str().unwrap().into(),
+                    }]).await.unwrap();
+                    (member, receiver, json!({"call_started":call_started,"accepted_at":accepted_at,
+                        "received_at":received_at,"outgoing_id":accepted["message_id"],
+                        "incoming_id":item["envelope"]["message"]["message_id"]}))
+                });
+            }
+            let mut outcomes = Vec::new();
+            while let Some(result) = jobs.join_next().await {
+                outcomes.push(result.unwrap());
+            }
+            outcomes.sort_by_key(|(member, _, _)| *member);
+            for member in 0..size {
+                let sender = &outcomes[member].2;
+                let recipient = &outcomes[(member + 1) % size].2;
+                assert_eq!(sender["outgoing_id"], recipient["incoming_id"]);
+                samples.push(json!({"round":round,"sender":member,
+                    "accepted_ms":sender["accepted_at"].as_f64().unwrap()-sender["call_started"].as_f64().unwrap(),
+                    "receiver_observed_ms":recipient["received_at"].as_f64().unwrap()-sender["call_started"].as_f64().unwrap()}));
+            }
+            receivers = outcomes
+                .into_iter()
+                .map(|(_, receiver, _)| receiver)
+                .collect();
+        }
+        let after = service.counts().await;
+        let warm = samples
+            .iter()
+            .filter(|s| s["round"] != 0)
+            .cloned()
+            .collect::<Vec<_>>();
+        let accepted = measured_distribution(&warm, "accepted_ms");
+        let observed = measured_distribution(&warm, "receiver_observed_ms");
+        let send_count = after["actions"]["structure.message.send"].as_u64().unwrap()
+            - before["actions"]["structure.message.send"]
+                .as_u64()
+                .unwrap_or(0);
+        cases.push(json!({"participants":size,"warm_samples":warm.len(),"samples":samples,
+            "warm_accepted":accepted,"warm_receiver_observed":observed,"send_http_count":send_count,
+            "discovery_http_count":after["discovery"].as_u64().unwrap_or(0)-before["discovery"].as_u64().unwrap_or(0),
+            "context_http_count":after["context"].as_u64().unwrap_or(0)-before["context"].as_u64().unwrap_or(0),
+            "journal_reads":after["journal_reads"],
+            "warm_acceptance_target_met":!cfg!(debug_assertions) && accepted["p95_ms"].as_f64().unwrap()<=300.}));
+        // Retain measured cases even if a later qualification case fails.
+        write_report(
+            &report,
+            &json!({"format":"peerwork.program-matrix.v1","state":"MEASURING","cases":cases}),
+        );
+        assert_eq!(send_count, (33 * size) as u64);
+        assert_eq!(after["journal_reads"], 0);
+        drop(receivers);
+        for client in clients {
+            client.close().await.unwrap();
+        }
+    }
+    write_report(
+        &report,
+        &json!({"format":"peerwork.program-matrix.v1","state":"MEASURED","cases":cases,
+        "build_profile":if cfg!(debug_assertions){"unoptimized-test"}else{"optimized"},
+        "service":"local synthetic PostgreSQL/HTTP","traffic":"one concurrent ring send per identity per round; E2EE bodies; signed SSE",
+        "timing_basis":"single monotonic clock; receiver observation follows its own send and includes observer scheduling; not an isolated acceptance-to-store span",
+        "host_or_model":"NOT_EXERCISED","release_gate_qualified":false}),
+    );
+}
+
+fn measured_distribution(samples: &[Value], name: &str) -> Value {
+    let mut values = samples
+        .iter()
+        .map(|v| v[name].as_f64().unwrap())
+        .collect::<Vec<_>>();
+    values.sort_by(f64::total_cmp);
+    let quantile = |q: f64| {
+        values[((values.len() as f64 * q).ceil() as usize)
+            .saturating_sub(1)
+            .min(values.len() - 1)]
+    };
+    json!({"p50_ms":quantile(0.5),"p95_ms":quantile(0.95),"p99_ms":quantile(0.99),"max_ms":values[values.len()-1]})
+}
+
 fn engine(name: &str, c: &ParticipantConfig) -> EngineConfig {
     EngineConfig {
         name: name.into(),

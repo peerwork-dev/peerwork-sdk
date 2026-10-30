@@ -362,8 +362,20 @@ with the original user/session. Metadata-only preflight waits before beginning
 an input attempt. Interleaved events are deadline-bounded, and resolved approval
 IDs are removed without retaining their tool/command payloads.
 
-The AGY adapter selects `agentapi_path`, `conversation_id` and a private
-`inbox_directory` for the existing application. It does not launch a headless
+The AGY adapter selects `agentapi_path` and `conversation_id` for the existing
+application. It queues a bounded native-inbox reference to that exact
+conversation; the Agent uses its configured Peerwork inbox tool to read the
+verified item, without a spool-file read or additional file permission.
+Decrypted bodies and business structure never enter the `agentapi` command-line
+arguments, which may be visible to local process inspection.
+The encrypted dispatcher/bridge ledger retains original input and outcome
+evidence. Command-line bounds are checked before starting `agentapi`, including
+a12,000 UTF-16-unit prompt limit. Oversized input is a no-input preflight refusal,
+never a silent file-based fallback. A formerly configured `inbox_directory` may
+remain as frozen candidate binding metadata but is not opened or written; new
+configurations omit it. Do not edit an existing bridge's pinned host fields or
+discard its old uncertain ledger merely to remove that metadata.
+It does not launch a headless
 model or add permission-bypass flags. A successful sidecar queue result is
 `HOST_QUEUED`, with execution/model processing unproven. Actual sidecar/app
 qualification is still pending. A cross-user bridge must return an exact
@@ -1065,3 +1077,32 @@ reply addresses are omitted from the Agent projection. Invalid MCP arguments
 return the required shape plus `NOT_SUBMITTED` and
 `CORRECT_ARGUMENTS_KEEP_OPERATION_ID`, so an Agent can fix its call without
 inventing routing metadata or assuming a remote effect.
+
+`one_to_eight_program_concurrent_mail_latency` uses a fresh protected
+`PEERWORK_PROGRAM_MATRIX_REPORT` and measures concurrent ring sends among1,2,4
+and8 independent identities in one workspace per case. Every first round is
+reported separately from32 warm rounds; every accepted message must arrive and
+decrypt, and no failed sample is discarded. This is small-message local traffic,
+not the full8KiB/WAN/host gate. The optimized quiet2026-10-30 run observed warm
+acceptance p95 of179.85/272.28/398.82/681.38ms respectively. All495 messages used
+exactly495 send requests and zero journal reads;4 and8 participants **miss** the
+300ms target. A preceding run overlapping compilation and another Agent test
+failed the request-count check (268 requests for264 messages in its8-participant
+case); retain that evidence rather than replacing it with the quiet result.
+The cause of those four extra requests was not captured by that earlier run.
+
+For explicit maintainer diagnostics, `PEERWORK_PARTICIPANT_HTTP_TIMINGS` names a
+new protected output file. The synthetic Node fixture buffers bounded action,
+status, error-code and monotonic duration metadata and writes it once on shutdown,
+without packets, identities, keys or body text. Its duration ends at response
+headers and is not the client acceptance span; never subtract their quantiles.
+The quiet run recorded zero HTTP/service errors and send-handler p95 of85.72ms.
+Further native queue/preparation/persistence attribution remains required.
+
+The AGY qualification controller now records monotonic step observations and
+harness-reported tool/agent-response durations without response deltas or
+reasoning text. One instrumented default-effort trial spent96.1s in reported
+agent-response steps and16.7s in seven tool steps over125.3s overall. An explicit
+test-session `--effort low` comparison still observed42.8s/25.7s replies; no
+global/model configuration was changed. Neither two-sample result is a latency
+guarantee or a substitute for host delivery measurement.

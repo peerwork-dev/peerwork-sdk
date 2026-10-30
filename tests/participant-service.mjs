@@ -4,6 +4,7 @@ import {createRequire} from 'node:module';
 import {pathToFileURL} from 'node:url';
 import {join} from 'node:path';
 import {once} from 'node:events';
+import {writeFileSync} from 'node:fs';
 
 const root=process.env.PEERWORK_STRUCTURE_REFERENCE_ROOT;
 if(!root||!process.env.PEERWORK_POSTGRES_TEST_URL)throw Error('explicit product root and synthetic PostgreSQL required');
@@ -18,7 +19,12 @@ const app=createPostgresControlApp(f.kernel,{source:()=> '127.0.0.1'});
 let offline=false,dropAction=null,delayName=null,delayAction=null,release=null,streamDurationOnce=0;
 const counts={commands:0,discovery:0,context:0,journal_reads:0,dropped:0,native_streams:0,delayed:0,claim_commands:[],actions:{}};
 const commandIds=new Set();
+// Explicit maintainer measurement only. Buffer closed metadata in memory and
+// write once after the fixture stops; never log packets, IDs or request bodies.
+const timingOutput=process.env.PEERWORK_PARTICIPANT_HTTP_TIMINGS;
+const timings=[];let timingsTruncated=false;
 const server=serve({hostname:'127.0.0.1',port:0,fetch:async request=>{
+ const requestStarted=performance.now();
  const path=new URL(request.url).pathname;
  if(path==='/__test/config'){
   const options=await request.json();
@@ -64,6 +70,13 @@ const server=serve({hostname:'127.0.0.1',port:0,fetch:async request=>{
   if(delayName&&command.body?.name===delayName)await new Promise(resolve=>{release=resolve;});
  }
  const response=await app.fetch(request);
+ if(timingOutput&&command){
+  const elapsed=performance.now()-requestStarted;
+  let errorCode=null;
+  try{const value=await response.clone().json();const code=value.result?.error?.code??value.error?.code??value.code;if(typeof code==='string'&&/^[A-Z][A-Z0-9_]{0,79}$/.test(code))errorCode=code;}catch{}
+  if(timings.length<8192)timings.push({action:command.action_id,http_status:response.status,elapsed_ms:elapsed,error_code:errorCode});
+  else timingsTruncated=true;
+ }
  if(path==='/api/workspace/v1/structure/communication/stream'&&response.ok){
   counts.native_streams++;
   if(streamDurationOnce){
@@ -84,5 +97,7 @@ await once(server,'listening');
 process.stdout.write(JSON.stringify({origin:`http://127.0.0.1:${server.address().port}`})+'\n');
 process.once('SIGTERM',async()=>{
  clearInterval(ticker);release?.();server.closeAllConnections();
- await new Promise(resolve=>server.close(resolve));await f.close();process.exit(0);
+ await new Promise(resolve=>server.close(resolve));await f.close();
+ if(timingOutput)writeFileSync(timingOutput,JSON.stringify({format:'peerwork.synthetic-http-timings.v1',timing_basis:'service process monotonic request entry to response headers; excludes SSE body consumption',timings,truncated:timingsTruncated}),{mode:0o600,flag:'wx'});
+ process.exit(0);
 });
