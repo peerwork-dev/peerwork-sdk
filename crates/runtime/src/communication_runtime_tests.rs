@@ -277,3 +277,57 @@ fn encrypted_rpc_keeps_large_payload_limits_separate_from_bridge_limits(){
     assert_eq!(decode_response(&auth,"large",&wire,reply.as_bytes()).unwrap(),out);
     assert!(encode_request(&auth,"oversize",json!({"padding":"x".repeat(MAX_REQUEST)})).is_err());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires local loopback IPC sockets"]
+async fn pinned_client_rechecks_replacement_and_keeps_original_operation() {
+    let directory = crate::test_support::protected_test_dir();
+    let options = config(directory.path());
+    let actor = options.engines[0].expected_actor.clone();
+    let origin = options.engines[0].origin.clone();
+    let (ready, cancel, task) = start(options.clone()).await;
+    let client = RuntimeClient::connect(ready.client_endpoints["creator"].clone(), &origin, &actor).await.unwrap();
+    assert_eq!(client.call(json!({"method":"bindings"})).await.unwrap(), json!([]));
+    assert_eq!(client.call(json!({"method":"capabilities","profile":"reader"})).await.unwrap_err().code,"CLIENT_REQUEST_INVALID");
+    let error = RuntimeClient::connect(ready.admin_endpoint.clone(), &origin, &actor).await.err().unwrap();
+    assert_eq!(error.code,"CLIENT_ADMIN_ENDPOINT_FORBIDDEN");
+    let mut request = Invoke::new("pinned-original", "structure.workspace.create", crate::participant::Scope::default(), json!({"name":"Synthetic pin test"}));
+    let out = client.call(json!({"method":"invoke","request":request,"wait_ms":0})).await.unwrap();
+    assert_eq!(out["operation_id"],"pinned-original");
+    cancel.cancel(); task.await.unwrap().unwrap();
+    let (ready, cancel, task) = start(options).await;
+    assert_eq!(client.call(json!({"method":"operation","operation_id":"pinned-original"})).await.unwrap()["operation_id"],"pinned-original");
+
+    let other_directory = crate::test_support::protected_test_dir();
+    let (other, other_cancel, other_task) = start(config(other_directory.path())).await;
+    let path = &ready.client_endpoints["creator"];
+    let correct = std::fs::read(path).unwrap();
+    std::fs::write(path, &std::fs::read(&other.client_endpoints["creator"]).unwrap()).unwrap();
+    request.operation_id = "must-not-cross-identity".into();
+    let error = client.call(json!({"method":"invoke","request":request,"wait_ms":0})).await.unwrap_err();
+    assert_eq!(error.code,"CLIENT_IDENTITY_OR_ORIGIN_MISMATCH");
+    let absent = call(&other.client_endpoints["creator"],json!({"method":"operation","operation_id":"must-not-cross-identity"})).await.unwrap();
+    assert_eq!(absent["error"]["code"],"OPERATION_NOT_FOUND");
+    std::fs::write(path,&correct).unwrap();
+    assert_eq!(client.call(json!({"method":"capabilities"})).await.unwrap()["actor_id"],actor);
+    other_cancel.cancel(); other_task.await.unwrap().unwrap(); cancel.cancel(); task.await.unwrap().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires local loopback IPC sockets"]
+async fn watch_binding_discovery_cannot_cross_namespace_or_capability() {
+    let directory = crate::test_support::protected_test_dir();
+    let options = config(directory.path());
+    let (ready,cancel,task) = start(options).await;
+    let creator = &ready.client_endpoints["creator"];
+    let reader = &ready.client_endpoints["reader"];
+    let options = json!({"workspace_id":"w".repeat(43),"mailbox_id":"m".repeat(43),"membership_id":"g".repeat(43),"consumer_id":"selected-worker"});
+    let watch = call(creator,json!({"method":"watch","options":options})).await.unwrap();
+    assert_eq!(watch["ok"],true);
+    let bindings = call(creator,json!({"method":"bindings"})).await.unwrap();
+    assert_eq!(bindings["value"],json!([options]));
+    assert_eq!(call(reader,json!({"method":"bindings"})).await.unwrap()["value"],json!([]));
+    assert_eq!(call(reader,json!({"method":"inbox","options":options,"limit":1})).await.unwrap()["error"]["code"],"LOCAL_SCOPE_DENIED");
+    assert_eq!(call(creator,json!({"method":"bindings","namespace":"reader"})).await.unwrap()["error"]["code"],"CLIENT_REQUEST_INVALID");
+    cancel.cancel(); task.await.unwrap().unwrap();
+}

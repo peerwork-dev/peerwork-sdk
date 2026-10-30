@@ -493,7 +493,7 @@ pub(crate) async fn run(
             command=commands.recv()=>match command{
                 None=>break,
                 Some(Command::Bindings{namespace,capability,reply})=>{
-                    let selected=slots.values().filter(|s|s.binding.namespace==namespace&&s.binding.options.authorize(&capability).is_ok()).map(|s|s.binding.options.clone()).collect::<Vec<_>>();let _=reply.send(Ok(selected));
+                    let selected=slots.values().filter(|s|s.enabled&&s.binding.namespace==namespace&&s.binding.options.authorize(&capability).is_ok()).map(|s|s.binding.options.clone()).collect::<Vec<_>>();let _=reply.send(Ok(selected));
                 },
                 Some(Command::Host{namespace,options,operation,reply})=>{
                     use crate::participant_inbox::{HostOperation as Op,HostReply as Reply};

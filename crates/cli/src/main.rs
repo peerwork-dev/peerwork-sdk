@@ -57,6 +57,12 @@ fn identity_cli_path(value: &str) -> Result<PathBuf, String> {
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str)==Some("agent") {
+        let out=peerwork_runtime::agent_frontend::cli(&args[1..]);
+        if out.is_null(){return ExitCode::SUCCESS;}
+        println!("{out}");
+        return if matches!(out["state"].as_str(),Some("FAILED"|"REJECTED_NO_EFFECT"|"REJECTED")){ExitCode::FAILURE}else if matches!(out["state"].as_str(),Some("ADMITTED"|"RUNNING"|"PENDING"|"BLOCKED")){ExitCode::from(2)}else{ExitCode::SUCCESS};
+    }
     if args.first().map(String::as_str)==Some("bridge") {
         let out=peerwork_runtime::communication_bridge::cli(&args[1..]);
         println!("{out}");return if out["state"]=="FAILED"{ExitCode::FAILURE}else{ExitCode::SUCCESS};
@@ -548,7 +554,7 @@ fn main() -> ExitCode {
             cli_result(public_catalog_command(verb, rest))
         }
         _ => {
-            let usage = "peerwork identity create|info FILE; bundle inspect BUNDLE_JSON; kernel protocol-inspect|protocol-role|protocol-register|protocol-adopt ORIGIN JOURNAL IDENTITY SELECTION_JSON; kernel intent|migrate-archive|resume-intent ORIGIN JOURNAL IDENTITY SELECTION_FILE_OR_OPERATION_ID [--authority=PIN] [--allow-loopback-http]; kernel access-request|access-approve|content-keys|publish-record ORIGIN JOURNAL IDENTITY FILE; conversion plan-cache|prepare-cache FILE; legacy-migrate request-source|capture-source|capture-cache FILE; protocol --help; url workspace|instance|record; changelog source|read; publication read --source FILE. Current online contract: backend-structure-v1. Legacy online modes are retired.";
+            let usage = "peerwork agent --help (native Agent tools/MCP candidate); runtime --help (resident engine candidate); bridge --help (selected-session bridge candidate); identity create|info FILE; bundle inspect BUNDLE_JSON; kernel protocol-inspect|protocol-role|protocol-register|protocol-adopt ORIGIN JOURNAL IDENTITY SELECTION_JSON; kernel intent|migrate-archive|resume-intent ORIGIN JOURNAL IDENTITY SELECTION_FILE_OR_OPERATION_ID [--authority=PIN] [--allow-loopback-http]; kernel access-request|access-approve|content-keys|publish-record ORIGIN JOURNAL IDENTITY FILE; conversion plan-cache|prepare-cache FILE; legacy-migrate request-source|capture-source|capture-cache FILE; protocol --help; url workspace|instance|record; changelog source|read; publication read --source FILE. Current online contract: backend-structure-v1. Legacy online modes are retired.";
             if matches!(args.as_slice(), [command] if command == "--help" || command == "-h" || command == "help") {
                 println!("{}", serde_json::json!({"status":"HELP", "usage":usage}));
                 ExitCode::SUCCESS

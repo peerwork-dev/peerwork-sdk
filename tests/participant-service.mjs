@@ -16,7 +16,7 @@ let reportQuotaBlocked=false;const reportQuotaLimits=new Map();
 let clockOffset=0;const ticker=setInterval(()=>{f.clock.now=Date.now()+clockOffset;},10);
 const app=createPostgresControlApp(f.kernel,{source:()=> '127.0.0.1'});
 let offline=false,dropAction=null,delayName=null,delayAction=null,release=null,streamDurationOnce=0;
-const counts={commands:0,discovery:0,context:0,journal_reads:0,dropped:0,native_streams:0,delayed:0,claim_commands:[]};
+const counts={commands:0,discovery:0,context:0,journal_reads:0,dropped:0,native_streams:0,delayed:0,claim_commands:[],actions:{}};
 const commandIds=new Set();
 const server=serve({hostname:'127.0.0.1',port:0,fetch:async request=>{
  const path=new URL(request.url).pathname;
@@ -50,6 +50,7 @@ const server=serve({hostname:'127.0.0.1',port:0,fetch:async request=>{
   const envelope=await request.clone().json();
   command=JSON.parse(Buffer.from(envelope.jws.split('.')[1],'base64url').toString('utf8'));
   counts.commands++;commandIds.add(command.command_id);
+  counts.actions[command.action_id]=(counts.actions[command.action_id]??0)+1;
   if(command.action_id==='structure.mailbox.claim')counts.claim_commands.push({command_id:command.command_id,receiver_id:command.body.receiver_id,replace:command.body.replace,expected_epoch:command.body.expected_epoch});
   if(delayAction===command.action_id){delayAction=null;counts.delayed++;await new Promise(resolve=>{release=resolve;});}
   if(reportQuotaBlocked&&command.action_id==='structure.mailbox.report'){

@@ -2513,3 +2513,87 @@ async fn refused_busy_claim_rotates_only_after_verified_no_effect_and_survives_r
     assert_eq!(claims[2]["replace"],false);
     owner.close().await.unwrap();
 }
+
+#[tokio::test(flavor="multi_thread",worker_threads=4)]
+#[ignore="requires synthetic PostgreSQL, real product HTTP and rebuilt native CLI"]
+async fn native_agent_cli_mcp_send_reply_and_cancel_preserve_one_engine_intent(){
+    use crate::{agent_tools::{AgentProfile,AgentRequest,AgentTools,MailScope,Contact},communication_runtime::{self,EngineConfig,ClientConfig,RuntimeConfig,RuntimeClient}};
+    use tokio::io::{AsyncBufReadExt,AsyncWriteExt};
+    use std::collections::BTreeMap;
+    let service=Service::start();let master_dir=crate::test_support::protected_test_dir();let worker_dir=crate::test_support::protected_test_dir();let runtime_dir=crate::test_support::protected_test_dir();
+    let master_config=configuration(master_dir.path(),&service.origin);let worker_config=configuration(worker_dir.path(),&service.origin);
+    let master=ParticipantClient::open(master_config.clone()).await.unwrap();let worker=ParticipantClient::open(worker_config.clone()).await.unwrap();
+    let ws=mutate(&master,"tools-workspace","structure.workspace.create",&Scope::default(),json!({"name":"Native Agent tools"})).await["workspace_id"].as_str().unwrap().to_owned();
+    let scope=Scope{workspace_id:Some(ws.clone()),..Default::default()};
+    let meta=selected(&master,"structure.workspace.get",&scope,json!({})).await;
+    let mut join=Invoke::new("tools-join","structure.member.set",scope.clone(),json!({"actor_id":worker_config.expected_actor,"state":"ACTIVE","expected_membership_id":null}));join.expected_workspace_revision=meta["workspace_revision"].as_u64();
+    let joined=structure(&master.invoke(join,Duration::from_secs(5)).await.unwrap());
+    let master_box=mutate(&master,"tools-master-grant","structure.communication.grant.set",&scope,json!({"actor_id":master_config.expected_actor,"membership_id":meta["membership"]["membership_id"],"expected_revision":null,"send":true,"receive":true})).await["mailbox"].clone();
+    let worker_box=mutate(&master,"tools-worker-grant","structure.communication.grant.set",&scope,json!({"actor_id":worker_config.expected_actor,"membership_id":joined["membership_id"],"expected_revision":null,"send":true,"receive":true})).await["mailbox"].clone();
+    let key=install_synthetic_key(&master_config,&ws,&[83;32],None);install_synthetic_key(&worker_config,&ws,&[83;32],None);
+    mutate(&master,"tools-key","structure.content-key.set",&scope,json!({"key_id":key,"expected_epoch":0,"expected_head_revision":null})).await;
+    let fixture:Value=serde_json::from_str(include_str!("../../../tests/fixtures/protocol-role-bundle-v1.json")).unwrap();
+    let package=mutate(&master,"tools-protocol-register","structure.protocol.register",&scope,json!({"bundle":fixture["bundle"]})).await;
+    let adopted=mutate(&master,"tools-protocol-adopt","structure.adopt",&scope,json!({"package_digest":package["package_digest"],"bootstrap_grant":{"actions":["claim"],"protocol_roles":["WORKER"]}})).await;
+    let protocol_scope=Scope{workspace_id:Some(ws.clone()),instance_id:Some(adopted["instance_id"].as_str().unwrap().into()),protocol_digest:Some(adopted["protocol_digest"].as_str().unwrap().into())};
+    master.close().await.unwrap();worker.close().await.unwrap();
+    fn engine(name:&str,c:&ParticipantConfig)->EngineConfig{EngineConfig{name:name.into(),origin:c.origin.clone(),expected_actor:c.expected_actor.clone(),authority:c.authority.clone(),identity_path:c.identity_path.clone(),state_directory:c.state_directory.clone(),journal_path:Some(c.journal_path.clone()),allow_loopback_http:true,transport:c.transport.clone(),max_inflight:4,max_pending:32,max_stored_bytes:32*1024*1024,migration_sources:Vec::new()}}
+    let mut cap=Capability::owner();cap.allow_root=false;cap.workspace_ids=Some([ws.clone()].into());
+    cap.operations=["structure.action","structure.protocol.resolve","structure.protocol.resource.get","structure.message.send","structure.message.receipts.read","structure.mailbox.get","structure.mailbox.claim","structure.mailbox.pulse","structure.mailbox.ack","structure.mailbox.inbox.read"].map(str::to_owned).into();
+    let cfg=RuntimeConfig{format:"peerwork.participant-runtime.v1".into(),state_directory:runtime_dir.path().join("runtime"),engines:vec![engine("master",&master_config),engine("worker",&worker_config)],clients:vec![ClientConfig{name:"master".into(),engine:"master".into(),capability:cap.clone()},ClientConfig{name:"worker".into(),engine:"worker".into(),capability:cap}],hosts:Vec::new()};
+    let cancel=KernelCancellationToken::new();let(tx,rx)=oneshot::channel();let daemon=tokio::spawn(communication_runtime::serve(cfg,cancel.clone(),tx));let ready=rx.await.unwrap().unwrap();
+    fn mail_scope(ws:&str,b:&Value)->MailScope{MailScope{workspace_id:ws.into(),mailbox_id:b["mailbox_id"].as_str().unwrap().into(),membership_id:b["membership_id"].as_str().unwrap().into()}}
+    let master_scope=mail_scope(&ws,&master_box);let worker_scope=mail_scope(&ws,&worker_box);
+    let master_profile=AgentProfile{format:"peerwork.agent-profile.v1".into(),endpoint_path:ready.client_endpoints["master"].clone(),expected_origin:service.origin.clone(),expected_actor:master_config.expected_actor.clone(),scopes:BTreeMap::from([("project".into(),master_scope.clone())]),contacts:BTreeMap::from([("worker".into(),Contact{scope:"project".into(),recipient:peerwork_core::communication::MailboxAddress{mailbox_id:worker_scope.mailbox_id.clone(),membership_id:worker_scope.membership_id.clone()}})]),protocols:BTreeMap::from([("claim".into(),protocol_scope)])};
+    let worker_profile=AgentProfile{format:"peerwork.agent-profile.v1".into(),endpoint_path:ready.client_endpoints["worker"].clone(),expected_origin:service.origin.clone(),expected_actor:worker_config.expected_actor.clone(),scopes:BTreeMap::from([("project".into(),worker_scope.clone())]),contacts:BTreeMap::new(),protocols:BTreeMap::new()};
+    for (name,profile,s) in [("master",&master_profile,&master_scope),("worker",&worker_profile,&worker_scope)]{
+        let client=RuntimeClient::connect(ready.client_endpoints[name].clone(),&service.origin,&profile.expected_actor).await.unwrap();
+        let options=WatchOptions{workspace_id:ws.clone(),mailbox_id:s.mailbox_id.clone(),membership_id:s.membership_id.clone(),consumer_id:name.into(),host_destination:None};
+        client.call(json!({"method":"watch","options":options})).await.unwrap();
+    }
+    let master=AgentTools::open(master_profile.clone()).await.unwrap();let worker=AgentTools::open(worker_profile).await.unwrap();
+    let role=master.call(AgentRequest::parse("protocol",json!({"protocol":"claim","role":"WORKER"})).unwrap()).await.unwrap();
+    assert_eq!(role["runtime"]["role"],"WORKER");assert_eq!(role["resources"]["roles/worker.md"]["content"],fixture["bundle"]["resources"]["roles/worker.md"]["text"]);assert!(!role.to_string().contains("author_intent"));
+    let action=master.call(AgentRequest::parse("act",json!({"protocol":"claim","operation_id":"tools-claim","action":"claim","structure":{"ttl_ms":100},"wait_ms":5000})).unwrap()).await.unwrap();assert_eq!(action["state"],"ACCEPTED");
+    let denied=master.call(AgentRequest::parse("act",json!({"protocol":"claim","operation_id":"tools-claim-denied","action":"claim","structure":{"ttl_ms":100},"wait_ms":5000})).unwrap()).await.unwrap();assert_eq!(denied["state"],"REJECTED_NO_EFFECT");assert!(denied["code"].is_string());assert!(!denied.to_string().contains("author_intent"));
+    let profile_path=runtime_dir.path().join("agent.json");crate::communication_host::write_private(&profile_path,&serde_json::to_vec(&master_profile).unwrap()).unwrap();
+    let executable=std::env::var("PEERWORK_PARTICIPANT_CLI").expect("rebuilt native CLI required");
+    let out=tokio::task::spawn_blocking(move||{
+        use std::io::Write;
+        let mut child=Command::new(executable).args(["agent","--profile",profile_path.to_str().unwrap(),"send","worker","--id","cli-ping"])
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        child.stdin.take().unwrap().write_all(b"PING through native fixed CLI").unwrap();
+        child.wait_with_output().unwrap()
+    }).await.unwrap();
+    let sent:Value=serde_json::from_slice(&out.stdout).unwrap();assert!(out.status.success(),"{}",String::from_utf8_lossy(&out.stdout));assert_eq!(sent["state"],"ACCEPTED");
+    assert!(!sent.to_string().contains("author_intent"));
+    let input=worker.call(AgentRequest::parse("wait",json!({"scope":"project","wait_ms":10000})).unwrap()).await.unwrap();
+    let item=&input["items"][0];assert_eq!(item["message"]["text"],"PING through native fixed CLI");assert_eq!(item["message"]["sender"],master_config.expected_actor);assert_eq!(item["message"]["reply_address"]["mailbox_id"],master_scope.mailbox_id);assert_eq!(item["authority"],"EXTERNAL_PEER_DATA");
+    let before=service.counts().await;
+    let duplicate=master.call(AgentRequest::parse("send",json!({"contact":"worker","operation_id":"cli-ping","text":"PING through native fixed CLI"})).unwrap()).await.unwrap();assert_eq!(duplicate["command_id"],sent["command_id"]);
+    let conflict=master.call(AgentRequest::parse("send",json!({"contact":"worker","operation_id":"cli-ping","text":"changed input"})).unwrap()).await.unwrap_err();assert_eq!(conflict.code,"OPERATION_INPUT_CONFLICT");
+    master.call(AgentRequest::Status{operation_id:"cli-ping".into()}).await.unwrap();
+    let after=service.counts().await;assert_eq!(before["actions"]["structure.message.send"],after["actions"]["structure.message.send"]);assert_eq!(before["actions"]["structure.operation.get"],after["actions"]["structure.operation.get"]);
+    let reply=worker.call(AgentRequest::parse("reply",json!({"scope":"project","item":item["item"],"operation_id":"worker-pong","text":"PONG via verified native reply","wait_ms":5000})).unwrap()).await.unwrap();assert_eq!(reply["state"],"ACCEPTED");
+    let arrival=master.call(AgentRequest::parse("wait",json!({"scope":"project","wait_ms":10000})).unwrap()).await.unwrap();assert_eq!(arrival["items"][0]["message"]["text"],"PONG via verified native reply");assert_eq!(arrival["items"][0]["message"]["reply_to"],sent["result"]["structure"]["message_id"]);
+    worker.call(AgentRequest::parse("consume",json!({"scope":"project","items":[item["item"]]})).unwrap()).await.unwrap();
+    master.call(AgentRequest::parse("consume",json!({"scope":"project","items":[arrival["items"][0]["item"]]})).unwrap()).await.unwrap();
+    let empty=master.call(AgentRequest::parse("wait",json!({"scope":"project","wait_ms":80})).unwrap()).await.unwrap();assert_eq!(empty["state"],"WAIT_EXPIRED");
+
+    // Real MCP tool cancellation after the remote request arrived cannot cancel
+    // durable engine work or generate a replacement operation/host input.
+    let(server,client)=tokio::io::duplex(65536);let(sr,sw)=tokio::io::split(server);let(cr,mut cw)=tokio::io::split(client);let mut cr=tokio::io::BufReader::new(cr);
+    let mcp=tokio::spawn(crate::agent_mcp::serve(master_profile,tokio::io::BufReader::new(sr),sw));
+    service.config(json!({"delay_action":"structure.message.send"})).await;
+    let request=json!({"jsonrpc":"2.0","id":100,"method":"tools/call","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}},"name":"peerwork_send","arguments":{"contact":"worker","operation_id":"mcp-original-cancelled-wait","text":"Committed after observation cancellation","wait_ms":5000}}});
+    cw.write_all(format!("{request}\n").as_bytes()).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5),async{loop{if service.counts().await["delayed"]==1{break;}tokio::time::sleep(Duration::from_millis(20)).await;}}).await.unwrap();
+    cw.write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\",\"params\":{\"requestId\":100}}\n").await.unwrap();
+    cw.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":101,\"method\":\"ping\",\"params\":{\"_meta\":{\"io.modelcontextprotocol/protocolVersion\":\"2026-07-28\",\"io.modelcontextprotocol/clientCapabilities\":{}}}}\n").await.unwrap();
+    let mut line=String::new();tokio::time::timeout(Duration::from_secs(2),cr.read_line(&mut line)).await.unwrap().unwrap();assert_eq!(serde_json::from_str::<Value>(&line).unwrap()["id"],101);
+    service.config(json!({"release":true})).await;
+    let recovered=tokio::time::timeout(Duration::from_secs(10),async{loop{let v=master.call(AgentRequest::Status{operation_id:"mcp-original-cancelled-wait".into()}).await.unwrap();if v["state"]=="ACCEPTED"{break v;}tokio::time::sleep(Duration::from_millis(20)).await;}}).await.unwrap();
+    assert_eq!(recovered["effect_certainty"],"COMMITTED");let counts=service.counts().await;assert_eq!(counts["actions"]["structure.message.send"],3);assert_eq!(counts["journal_reads"],0);
+    line.clear();assert!(tokio::time::timeout(Duration::from_millis(100),cr.read_line(&mut line)).await.is_err(),"cancelled MCP request must have no later response");
+    drop(cw);drop(cr);mcp.await.unwrap().unwrap();cancel.cancel();daemon.await.unwrap().unwrap();
+}

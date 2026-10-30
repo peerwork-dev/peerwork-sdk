@@ -541,11 +541,12 @@ impl KernelAccess {
         let opened=(||->Result<serde_json::Value,KernelAccessError>{
             let identity=self.identity()?;
             let author=peerwork_core::prepared_command::verify_structure_author_intent(message["author_intent"].as_str().ok_or(KernelClientError::InvalidResult)?,audience).map_err(|_|KernelClientError::InvalidResult)?;
-            let (_,content)=peerwork_core::communication::authored_message_content(&author).map_err(|_|KernelClientError::InvalidResult)?;
-            let peerwork_core::communication::MessageContent::WorkspaceE2ee{body}=content else{return Ok(serde_json::json!({"state":"SOURCE_REFERENCE"}));};
+            let (context,content)=peerwork_core::communication::authored_message_content(&author).map_err(|_|KernelClientError::InvalidResult)?;
+            let mut out=serde_json::json!({"message_id":message["message_id"],"sender":context.actor_id,"workspace_id":context.workspace_id,"conversation_id":context.conversation_id,"reply_to":context.reply_to,"reply_address":context.reply_address,"recipients":context.recipients,"assurance":"AUTHOR_SIGNATURE"});
+            let peerwork_core::communication::MessageContent::WorkspaceE2ee{body}=content else{out["state"]=serde_json::json!("SOURCE_REFERENCE");return Ok(out);};
             let path=self.content_key_path_for_origin(&self.origin);
             let plain=if path.is_file(){StructureContentKeys::open(&path,self.transport_config()).map_err(KernelClientError::from)?.open_message(identity.key_id(),&author)}else{Err(ContentKeyError::Missing)};
-            let mut out=serde_json::json!({"message_id":message["message_id"],"key_id":body.key_id});
+            out["key_id"]=serde_json::json!(body.key_id);
             match plain{
                 Ok(bytes)=>match std::str::from_utf8(&bytes){Ok(text)=>{out["state"]=serde_json::json!("OPENED");out["text"]=serde_json::json!(text);out["assurance"]=serde_json::json!("AUTHOR_SIGNATURE_AND_AEAD");},Err(_)=>out["state"]=serde_json::json!("UNSUPPORTED_ENCODING")},
                 Err(ContentKeyError::Missing)=>out["state"]=serde_json::json!("KEY_UNAVAILABLE"),

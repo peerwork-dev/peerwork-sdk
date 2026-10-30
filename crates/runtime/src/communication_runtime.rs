@@ -5,9 +5,8 @@
 #[path = "communication_runtime_tests.rs"]
 mod tests;
 use crate::communication_local_channel as channel;
-#[path="communication_client.rs"]
+#[path = "communication_client.rs"]
 mod client;
-pub use client::RuntimeClient;
 use crate::{
     communication_host::{random_token, write_private},
     communication_store::{identifier, private_json},
@@ -18,6 +17,7 @@ use crate::{
     secure_state::{create_private_state_directory, SecureStateStore},
     KernelCancellationToken,
 };
+pub use client::RuntimeClient;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
@@ -179,6 +179,13 @@ pub enum ClientRequest {
         options: WatchOptions,
         wait_ms: u64,
     },
+    WaitInbox {
+        options: WatchOptions,
+        #[serde(default)]
+        after: u64,
+        limit: usize,
+        wait_ms: u64,
+    },
     Inbox {
         options: WatchOptions,
         #[serde(default)]
@@ -222,7 +229,9 @@ impl ClientRequest {
         // handwritten method/field catalog that can diverge from this enum.
         let request: Self =
             serde_json::from_value(value.clone()).map_err(|_| local("CLIENT_REQUEST_INVALID"))?;
-        if matches!(request, Self::Capabilities|Self::Bindings) && value.as_object().is_none_or(|o| o.len() != 1) {
+        if matches!(request, Self::Capabilities | Self::Bindings)
+            && value.as_object().is_none_or(|o| o.len() != 1)
+        {
             return Err(local("CLIENT_REQUEST_INVALID"));
         }
         Ok(request)
@@ -310,6 +319,23 @@ impl Runtime {
                     if watch.options()!=&options{return Err(local("WATCH_BINDING_MISMATCH"));}
                     match tokio::time::timeout(Duration::from_millis(wait_ms),watch.next()).await{
                         Ok(value)=>serde_json::to_value(value?).map_err(|_|local("IPC_RESPONSE_INVALID")),
+                        Err(_)=>Ok(json!({"state":"WAIT_EXPIRED","scope":"LOCAL_OBSERVATION_ONLY","watch_continues":true})),
+                    }
+                },
+                ClientRequest::WaitInbox{options,after,limit,wait_ms}=>{
+                    if !(1..=32).contains(&limit)||after>9_007_199_254_740_991{return Err(local("INBOX_SELECTION_INVALID"));}
+                    if wait_ms==0||wait_ms>30_000{return Err(local("WAIT_BUDGET_INVALID"));}
+                    // Attach a notification handle to the same owned mailbox,
+                    // not a second remote receiver. Snapshot after every wake
+                    // so an initial state/heartbeat cannot satisfy an arrival.
+                    let mut watch=client.watch(options).await?;
+                    let observed=async{loop{
+                        watch.changed().await?;
+                        let page=watch.page(after,limit).await?;
+                        if !page.items.is_empty(){return serde_json::to_value(page).map_err(|_|local("IPC_RESPONSE_INVALID"));}
+                    }};
+                    match tokio::time::timeout(Duration::from_millis(wait_ms),observed).await{
+                        Ok(out)=>out,
                         Err(_)=>Ok(json!({"state":"WAIT_EXPIRED","scope":"LOCAL_OBSERVATION_ONLY","watch_continues":true})),
                     }
                 },
@@ -797,8 +823,9 @@ pub async fn serve(
     Ok(())
 }
 /// Thin native local client. The daemon owns signing, recovery and remote pool.
-/// Other languages can implement this bounded JSONL envelope without SDK logic.
-fn load_endpoint(endpoint_path:&Path)->Result<Endpoint> {
+/// Native frontends use RuntimeClient; the shared encrypted channel owns the
+/// wire protocol rather than making each language reimplement its handshake.
+fn load_endpoint(endpoint_path: &Path) -> Result<Endpoint> {
     let value = private_json(endpoint_path, 4096).map_err(|_| local("ENDPOINT_NOT_PRIVATE"))?;
     let endpoint: Endpoint =
         serde_json::from_value(value).map_err(|_| local("ENDPOINT_INVALID"))?;
@@ -814,11 +841,11 @@ fn load_endpoint(endpoint_path:&Path)->Result<Endpoint> {
     Ok(endpoint)
 }
 /// Low-level local RPC, including the separately authorized admin interface.
-pub async fn call(endpoint_path:&Path,request:Value)->Result<Value>{
-    let endpoint=load_endpoint(endpoint_path)?;
-    call_endpoint(&endpoint,request).await
+pub async fn call(endpoint_path: &Path, request: Value) -> Result<Value> {
+    let endpoint = load_endpoint(endpoint_path)?;
+    call_endpoint(&endpoint, request).await
 }
-async fn call_endpoint(endpoint:&Endpoint,request:Value)->Result<Value>{
+async fn call_endpoint(endpoint: &Endpoint, request: Value) -> Result<Value> {
     let stream = tokio::time::timeout(Duration::from_secs(1), TcpStream::connect(endpoint.address))
         .await
         .map_err(|_| local("RUNTIME_UNAVAILABLE"))?

@@ -40,6 +40,7 @@ No SQLite transaction is held across network awaits.
 | `operation_result(id, selection)` | Read a bounded chunk from one authorized operation outcome; re-verify the original native response when the index contains only a summary. No remote submission or history read. |
 | `recover(id)` | Schedule recovery of that original operation without replacing its immutable input. |
 | `watch(options)` | Durably configure an exact mailbox/generation and stable consumer; share the engine-owned SSE/lease/ACK driver. |
+| `watch_bindings()` | Read enabled, authorized mailbox bindings in this client namespace; no remote call or replacement lease. |
 | `ProgramWatch::next()` / `inbox(options, after, limit)` | Receive coalesced notifications and a bounded verified local snapshot, without a remote page read. |
 | `consume(options, references)` | Persist explicit local application consumption and automatically upload its fenced ACK. |
 | `delivery_status(options, reference)` | Select local receiver host evidence and independent upload state; never repeat a host input. |
@@ -56,8 +57,10 @@ conveniences described below. Explicit migration uses configured source handles;
 offline fixture/plan/simulation runs locally without an online apply path.
 Native mail construction and selected reads are implemented in
 source, together with automatic durable program `watch` and local notification
-waiting. General named-condition `wait`, the Agent MCP/CLI projection and host
-delivery are pending. Do not build production
+waiting. Native Agent CLI/MCP tools provide bounded local inbox waiting and
+share this engine. Existing-session host adapters remain candidate code;
+actual-host, first-use and cross-platform release qualification are pending.
+General business-predicate waits are not implemented. Do not build production
 automation against this candidate.
 
 The source example `crates/runtime/examples/participant_program.rs` loads one
@@ -767,3 +770,119 @@ verified stream, local IPC reception while a separate call progresses, explicit
 pause/resume, trusted-clock jump repair, scope fencing isolation and explicit
 persisted-recovery errors. These do not establish the proposed IM latency
 percentiles, production availability or real Agent host delivery.
+
+## Native Agent CLI and MCP projection
+
+The candidate `peerwork agent` frontend attaches to an existing scoped client
+endpoint. It never opens another signing engine, selects another identity,
+creates a receiver from guessed values or launches a model. Native CLI, stdio
+MCP and ordinary programs share the same owner, pool and durable operations.
+No Node/Python runtime is needed by these frontends. Each MCP frontend process
+is a thin transport endpoint, not an additional receiver/host dispatcher.
+
+A protected `peerwork.agent-profile.v1` JSON file contains:
+
+```json
+{
+  "format": "peerwork.agent-profile.v1",
+  "endpoint_path": "/owned/runtime/client-worker.json",
+  "expected_origin": "https://api.peerwork.dev",
+  "expected_actor": "ACTOR_ID",
+  "scopes": {
+    "project": {
+      "workspace_id": "WORKSPACE_ID",
+      "mailbox_id": "OWN_MAILBOX_ID",
+      "membership_id": "OWN_MEMBERSHIP_ID"
+    }
+  },
+  "contacts": {
+    "master": {
+      "scope": "project",
+      "recipient": {
+        "mailbox_id": "MASTER_MAILBOX_ID",
+        "membership_id": "MASTER_MEMBERSHIP_ID"
+      }
+    }
+  },
+  "protocols": {
+    "tasks": {
+      "workspace_id": "WORKSPACE_ID",
+      "instance_id": "INSTANCE_ID",
+      "protocol_digest": "PROTOCOL_DIGEST"
+    }
+  }
+}
+```
+
+Replace placeholders with exact enrolled IDs and the full lowercase protocol
+SHA256. The profile and endpoint use the native protected-file checks; keep
+POSIX mode0600 in an owned private directory, or the qualified Windows ACL.
+The profile does not confer service permissions. The daemon independently
+restricts this endpoint's actor, operation catalog and scope. Mail scope lookup
+selects an already enabled resident binding, including its original consumer
+and destination; it does not guess or replace a host binding. At most eight
+active bindings are returned and other client namespaces are excluded.
+Contact aliases pin exact mailbox/membership generations, not arbitrary actor
+labels. The service atomically validates the selected recipient and return
+address. Rejoining requires explicit updated contact/profile selection.
+
+`communication_runtime::RuntimeClient` verifies actor and Origin before private
+work, forbids admin endpoints, and rechecks if restart replaces the protected
+endpoint. Verification and the following call use the same descriptor snapshot.
+Local RPC exchanges currently open individual authenticated encrypted connections;
+the resident engine retains the remote HTTP pool and SSE stream.
+
+```sh
+peerwork agent --help
+peerwork agent --profile /owned/agent.json context
+printf '%s' 'Please investigate the build failure.' |
+  peerwork agent --profile /owned/agent.json send master --id investigate-build-1
+peerwork agent --profile /owned/agent.json inbox project
+printf '%s' 'Investigation complete; see the attached protocol action.' |
+  peerwork agent --profile /owned/agent.json reply project SEQUENCE/DELIVERY_ID --id report-build-1
+peerwork agent --profile /owned/agent.json status report-build-1
+peerwork agent --profile /owned/agent.json call consume '{"scope":"project","items":[{"sequence":1,"delivery_id":"DELIVERY_ID"}]}'
+```
+
+`--text-file FILE` is the alternative to stdin for send/reply. Use stable IDs;
+unknown results use `recover ORIGINAL_ID`, never a replacement send. Replies
+select exactly one pending local delivery and derive conversation/return address
+from verified author-signature and AEAD output. Reply does not automatically
+consume input. Inbox output omits wire proofs/ciphertext and labels peer content
+as external data. Status reads the original local operation; explicit receipts
+perform one selected native message query, without route enumeration.
+
+For stdio MCP, configure the host to run the native executable with arguments:
+
+```json
+["agent", "--profile", "/owned/agent.json", "mcp"]
+```
+
+The entry exposes `peerwork_context`, `send`, `reply`, `inbox`, `consume`,
+`status`, `recover`, `receipts`, `wait`, `protocol` and `act` (each with the
+`peerwork_` prefix). `peerwork agent tools` prints the exact shared schemas.
+`act` maps data to `structure.action` for a configured protocol; it is not a
+second handwritten business-action implementation. Runtime/service grants
+remain authoritative. Administration, profile switching and arbitrary paths
+are absent from tool arguments.
+
+MCP supports negotiated `2025-11-25` initialization and `2026-07-28` per-request
+metadata/discovery. Tools can be discovered while the runtime is offline;
+execution returns an explicit error rather than creating a new engine. Up to
+16 tool observations run concurrently; an inbox wait cannot serialize an
+unrelated send. Frame and output sizes are bounded. Cancelling/closing MCP
+ends its observation and emits no later result for that cancelled request;
+an already admitted durable operation continues in the resident runtime with
+its original ID. Reopening MCP does not replay a mutation automatically.
+`wait` uses local mailbox notifications with an explicit sequence and budget;
+initial state/heartbeat notifications alone cannot satisfy an arrival.
+
+The portable [Peerwork Skill](../skills/peerwork/SKILL.md) supplies short tool,
+recovery and asynchronous-work guidance. Installing it or changing a user's
+Codex/AGY environment is not automatic. Actual host installation/first-use,
+IM percentiles, uncertain-ledger handoff and the three announced platforms
+still require qualification before release.
+
+MCP references: [per-request versioning](https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning),
+[stdio](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/stdio)
+and [negotiated initialization](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle).
