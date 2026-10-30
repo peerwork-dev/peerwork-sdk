@@ -588,7 +588,10 @@ pub(crate) async fn run(
                     let value=(||->Result<()>{
                         let slot=slots.get_mut(&options.key()).filter(|s|s.binding.namespace==namespace&&s.binding.options==options).ok_or_else(||error("WATCH_NOT_FOUND"))?;
                         store.consume(&options.workspace_id,&options.mailbox_id,&items.iter().map(|r|(r.sequence,r.delivery_id.clone())).collect::<Vec<_>>())?;
-                        slot.next_control=Instant::now();slot.notify();Ok(())
+                        // Consumption is durable local work for the ACK queue,
+                        // not a change of lease/readiness. The loop schedules
+                        // the ACK immediately without forcing a preceding pulse.
+                        slot.notify();Ok(())
                     })();let _=reply.send(value);
                 },
             },

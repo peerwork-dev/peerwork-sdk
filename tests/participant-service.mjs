@@ -5,6 +5,8 @@ import {pathToFileURL} from 'node:url';
 import {join} from 'node:path';
 import {once} from 'node:events';
 import {writeFileSync} from 'node:fs';
+import {setTimeout as pause} from 'node:timers/promises';
+import {delayFixtureResponse} from './fixture-latency.mjs';
 
 const root=process.env.PEERWORK_STRUCTURE_REFERENCE_ROOT;
 if(!root||!process.env.PEERWORK_POSTGRES_TEST_URL)throw Error('explicit product root and synthetic PostgreSQL required');
@@ -23,7 +25,9 @@ const commandIds=new Set();
 // write once after the fixture stops; never log packets, IDs or request bodies.
 const timingOutput=process.env.PEERWORK_PARTICIPANT_HTTP_TIMINGS;
 const timings=[];let timingsTruncated=false;
-const server=serve({hostname:'127.0.0.1',port:0,fetch:async request=>{
+const linkRttMs=Number(process.env.PEERWORK_FIXTURE_LINK_RTT_MS??0);
+if(!Number.isSafeInteger(linkRttMs)||linkRttMs<0||linkRttMs>1000)throw Error('invalid explicit fixture RTT');
+const handle=async request=>{
  const requestStarted=performance.now();
  const path=new URL(request.url).pathname;
  if(path==='/__test/config'){
@@ -92,9 +96,14 @@ const server=serve({hostname:'127.0.0.1',port:0,fetch:async request=>{
   if(result.result?.workspace_id&&!result.result.error){dropAction=null;offline=true;counts.dropped++;return new Response('synthetic lost committed response',{status:503});}
  }
  return response;
+};
+const server=serve({hostname:'127.0.0.1',port:0,fetch:async request=>{
+ if(new URL(request.url).pathname.startsWith('/__test/'))return handle(request);
+ if(linkRttMs)await pause(linkRttMs/2);
+ return delayFixtureResponse(await handle(request),linkRttMs/2);
 }});
 await once(server,'listening');
-process.stdout.write(JSON.stringify({origin:`http://127.0.0.1:${server.address().port}`})+'\n');
+process.stdout.write(JSON.stringify({origin:`http://127.0.0.1:${server.address().port}`,simulated_link_rtt_ms:linkRttMs})+'\n');
 process.once('SIGTERM',async()=>{
  clearInterval(ticker);release?.();server.closeAllConnections();
  await new Promise(resolve=>server.close(resolve));await f.close();

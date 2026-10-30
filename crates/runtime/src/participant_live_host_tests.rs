@@ -199,6 +199,13 @@ async fn one_to_eight_program_concurrent_mail_latency() {
         .map(|s| s.parse::<usize>().unwrap())
         .unwrap_or(33);
     assert!((2..=33).contains(&rounds));
+    let payload_bytes = std::env::var("PEERWORK_PROGRAM_MATRIX_PAYLOAD_BYTES")
+        .map(|s| s.parse::<usize>().unwrap())
+        .unwrap_or(0);
+    assert!(payload_bytes == 0 || (128..=8192).contains(&payload_bytes));
+    let link_rtt_ms = std::env::var("PEERWORK_FIXTURE_LINK_RTT_MS")
+        .map(|s| s.parse::<u64>().unwrap())
+        .unwrap_or(0);
     for size in sizes {
         let mut configs = Vec::new();
         let mut clients = Vec::new();
@@ -299,8 +306,8 @@ async fn one_to_eight_program_concurrent_mail_latency() {
                 let target = boxes[(member + 1) % size].clone();
                 let barrier = barrier.clone();
                 jobs.spawn(async move {
-                    let outgoing = format!("Concurrent mail case {size}, round {round}, member {member}");
-                    let incoming = format!("Concurrent mail case {size}, round {round}, member {}", (member + size - 1) % size);
+                    let outgoing = matrix_text(size, round, member, payload_bytes);
+                    let incoming = matrix_text(size, round, (member + size - 1) % size, payload_bytes);
                     let mut request = Invoke::new(format!("matrix-{round}-{member}"), "structure.message.send", scope,
                         json!({"conversation_id":"V".repeat(43),"reply_to":null,"reply_address":null,
                             "recipients":[{"mailbox_id":target["mailbox_id"],"membership_id":target["membership_id"]}],
@@ -308,20 +315,25 @@ async fn one_to_eight_program_concurrent_mail_latency() {
                     request.plaintext_message = Some(outgoing);
                     barrier.wait().await;
                     let call_started = round_start.elapsed().as_secs_f64() * 1000.;
-                    let accepted = structure(&client.invoke(request, Duration::from_secs(10)).await.unwrap());
-                    assert!(accepted["message_id"].is_string(), "{accepted}");
-                    let accepted_at = round_start.elapsed().as_secs_f64() * 1000.;
-                    let item = tokio::time::timeout(Duration::from_secs(15), async {
+                    let send = async {
+                        let accepted = structure(&client.invoke(request, Duration::from_secs(10)).await.unwrap());
+                        assert!(accepted["message_id"].is_string(), "{accepted}");
+                        (accepted, round_start.elapsed().as_secs_f64() * 1000.)
+                    };
+                    let receive = tokio::time::timeout(Duration::from_secs(15), async {
                         loop {
                             let snapshot = receiver.next().await.unwrap();
                             assert_ne!(snapshot.state, "BLOCKED", "{snapshot:?}");
                             if let Some(item) = snapshot.items.iter().find(|item| item["opened_message"]["text"] == incoming) {
                                 assert_eq!(item["opened_message"]["assurance"], "AUTHOR_SIGNATURE_AND_AEAD");
-                                return item.clone();
+                                return (item.clone(), round_start.elapsed().as_secs_f64() * 1000.);
                             }
                         }
-                    }).await.expect("accepted ring message missing");
-                    let received_at = round_start.elapsed().as_secs_f64() * 1000.;
+                    });
+                    // Observe receive independently: never wait for this member's
+                    // own outgoing acceptance before observing its incoming mail.
+                    let ((accepted, accepted_at), received) = tokio::join!(send, receive);
+                    let (item, received_at) = received.expect("accepted ring message missing");
                     client.consume(&option, vec![crate::participant::DeliveryReference {
                         sequence: item["sequence"].as_u64().unwrap(),
                         delivery_id: item["delivery_id"].as_str().unwrap().into(),
@@ -365,8 +377,11 @@ async fn one_to_eight_program_concurrent_mail_latency() {
             - before["actions"]["structure.message.send"]
                 .as_u64()
                 .unwrap_or(0);
+        let pulse_count = after["actions"]["structure.mailbox.pulse"].as_u64().unwrap_or(0)
+            - before["actions"]["structure.mailbox.pulse"].as_u64().unwrap_or(0);
         cases.push(json!({"participants":size,"warm_samples":warm.len(),"samples":samples,
             "warm_accepted":accepted,"warm_receiver_observed":observed,"send_http_count":send_count,
+            "pulse_http_count":pulse_count,
             "client_metrics_before":before_metrics,"client_metrics_after":after_metrics,
             "discovery_http_count":after["discovery"].as_u64().unwrap_or(0)-before["discovery"].as_u64().unwrap_or(0),
             "context_http_count":after["context"].as_u64().unwrap_or(0)-before["context"].as_u64().unwrap_or(0),
@@ -375,9 +390,13 @@ async fn one_to_eight_program_concurrent_mail_latency() {
         // Retain measured cases even if a later qualification case fails.
         write_report(
             &report,
-            &json!({"format":"peerwork.program-matrix.v1","state":"MEASURING","cases":cases}),
+            &json!({"format":"peerwork.program-matrix.v1","state":"MEASURING","cases":cases,
+                "payload_bytes":if payload_bytes==0{json!([41,42])}else{json!([payload_bytes])},"simulated_link_rtt_ms":link_rtt_ms}),
         );
         assert_eq!(send_count, (rounds * size) as u64);
+        if rounds == 33 {
+            assert!(pulse_count < send_count, "consumption must not force a heartbeat per message");
+        }
         assert_eq!(after["journal_reads"], 0);
         drop(receivers);
         for client in clients {
@@ -389,9 +408,20 @@ async fn one_to_eight_program_concurrent_mail_latency() {
         &json!({"format":"peerwork.program-matrix.v1","state":"MEASURED","cases":cases,
         "build_profile":if cfg!(debug_assertions){"unoptimized-test"}else{"optimized"},
         "service":"local synthetic PostgreSQL/HTTP","traffic":"one concurrent ring send per identity per round; E2EE bodies; signed SSE",
-        "timing_basis":"single monotonic clock; receiver observation follows its own send and includes observer scheduling; not an isolated acceptance-to-store span",
+        "payload_bytes":if payload_bytes==0{json!([41,42])}else{json!([payload_bytes])},"simulated_link_rtt_ms":link_rtt_ms,
+        "timing_basis":"single monotonic clock; receive observation runs independently of outgoing acceptance and includes observer scheduling; not an isolated service-acceptance-to-store span; simulated link delays exclude TCP/TLS setup, bandwidth limits, jitter and packet loss",
         "host_or_model":"NOT_EXERCISED","release_gate_qualified":false}),
     );
+}
+
+fn matrix_text(size: usize, round: usize, member: usize, bytes: usize) -> String {
+    let mut text = format!("Concurrent mail case {size}, round {round}, member {member}");
+    if bytes != 0 {
+        assert!(text.len() <= bytes);
+        text.extend(std::iter::repeat('x').take(bytes - text.len()));
+        assert_eq!(text.len(), bytes);
+    }
+    text
 }
 
 fn measured_distribution(samples: &[Value], name: &str) -> Value {

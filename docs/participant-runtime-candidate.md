@@ -1122,6 +1122,22 @@ index. `PEERWORK_PROGRAM_MATRIX_CASES` and `PEERWORK_PROGRAM_MATRIX_ROUNDS` perm
 explicit shortened diagnostic runs; the defaults remain1/2/4/8 and33 rounds.
 Shortened/debug runs do not qualify the release gate.
 
+Maintainers may select an exact encrypted plaintext size with
+`PEERWORK_PROGRAM_MATRIX_PAYLOAD_BYTES=8192` (128–8192 bytes; unset preserves
+the earlier small-message samples). `PEERWORK_FIXTURE_LINK_RTT_MS=100` applies
+50ms to each request direction and to each response/SSE direction in the
+synthetic fixture. Burst chunks overlap their delays instead of paying a new
+50ms serial penalty for each chunk; the bounded queue fails explicitly if
+exceeded. Test-control endpoints bypass the simulated link and are excluded
+from acceptance timing. This exercises fixed link latency, not TCP/TLS setup,
+bandwidth limits, jitter, packet loss or an actual WAN deployment.
+
+New matrix receive observers run concurrently with each participant's outgoing
+send, so an incoming message need not wait for that participant's outgoing
+acceptance. The reported receive time is still a post-store observer timestamp,
+not an isolated service-acceptance-to-store span. Retain the timing-basis field
+when comparing earlier reports that observed receive after the outgoing send.
+
 The candidate removes a throwaway signature before applying verified service
 time and authenticates durable HTTP responses once inside the journal before
 recording them. Final packet validation, cached-result business-input equality,
