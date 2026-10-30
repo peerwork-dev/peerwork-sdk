@@ -1262,8 +1262,12 @@ ICU MSVC projects follow Cargo's `crt-static` target feature for both release
 and debug runtime metadata; other library consumers retain their selected CRT
 choice. The candidate audit rejects VC++ redistributable, Node/Python and
 external ICU DLL imports. Native ICU collation is also checked against the
-pinned Node24/ICU78.3 corpus on each selected target. This is not yet an actual
-Windows result for the new link mode.
+pinned Node24/ICU78.3 corpus on each selected target. The Windows-only candidate
+at source `2cd174c2` passed native tests and installed-process qualification.
+Its downloaded archive and binary hashes were verified, and its actual imports
+contain only the declared Windows system DLLs/API sets, with no VC++ runtime
+DLL import. This is selected-platform candidate evidence, not a public release
+or qualification of the other platforms at that source.
 
 GNU qualification now records required GLIBC, GLIBCXX and CXXABI symbol
 versions as well as loader imports. The preceding audited Linux candidate
@@ -1275,3 +1279,12 @@ notice coverage and final release packaging remain separate checks.
 A qualification push marked `[native:win32-x64-msvc]` runs the changed Windows
 link mode alone. Unmarked pushes/dispatches retain the three-platform matrix.
 A selected-platform result never attests the whole release cohort.
+
+For maintainer attribution only, `PEERWORK_PROGRAM_MATRIX_PHASES=1` adds
+per-send completed-phase counter deltas to matrix samples. Each identity has
+one sender per round; metrics snapshots sit outside its acceptance interval.
+Task-local execution spans exclude separate watch/ACK work. Operation-store
+counters are reported separately and must be checked for exactly one operation
+before attribution. Counter resets are explicit null/non-monotonic values;
+nested phases overlap and lifetime maxima are not subtracted. This mode always
+disables acceptance-target qualification, even in an optimized build.

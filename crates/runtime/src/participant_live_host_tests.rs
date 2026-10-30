@@ -206,6 +206,7 @@ async fn one_to_eight_program_concurrent_mail_latency() {
     let link_rtt_ms = std::env::var("PEERWORK_FIXTURE_LINK_RTT_MS")
         .map(|s| s.parse::<u64>().unwrap())
         .unwrap_or(0);
+    let phase_diagnostic = std::env::var("PEERWORK_PROGRAM_MATRIX_PHASES").as_deref() == Ok("1");
     for size in sizes {
         let mut configs = Vec::new();
         let mut clients = Vec::new();
@@ -313,12 +314,21 @@ async fn one_to_eight_program_concurrent_mail_latency() {
                             "recipients":[{"mailbox_id":target["mailbox_id"],"membership_id":target["membership_id"]}],
                             "content":{"mode":"WORKSPACE_E2EE"}}));
                     request.plaintext_message = Some(outgoing);
+                    // One send per identity per round. Snapshot outside the
+                    // timed interval; task-local phases exclude watch/ACK work.
+                    let phase_before = if phase_diagnostic {Some(client.metrics().await.unwrap()["http"].clone())}else{None};
                     barrier.wait().await;
                     let call_started = round_start.elapsed().as_secs_f64() * 1000.;
                     let send = async {
                         let accepted = structure(&client.invoke(request, Duration::from_secs(10)).await.unwrap());
                         assert!(accepted["message_id"].is_string(), "{accepted}");
-                        (accepted, round_start.elapsed().as_secs_f64() * 1000.)
+                        let accepted_at=round_start.elapsed().as_secs_f64() * 1000.;
+                        let phases=if let Some(before)=phase_before {
+                            let after=client.metrics().await.unwrap()["http"].clone();
+                            json!({"send_execution":phase_interval(&before["send_execution_phases"],&after["send_execution_phases"],None),
+                                "operation_store":phase_interval(&before["local_phases"],&after["local_phases"],Some(&["admission_reserve","running_store","completion_store"]))})
+                        }else{Value::Null};
+                        (accepted, accepted_at, phases)
                     };
                     let receive = tokio::time::timeout(Duration::from_secs(15), async {
                         loop {
@@ -332,7 +342,7 @@ async fn one_to_eight_program_concurrent_mail_latency() {
                     });
                     // Observe receive independently: never wait for this member's
                     // own outgoing acceptance before observing its incoming mail.
-                    let ((accepted, accepted_at), received) = tokio::join!(send, receive);
+                    let ((accepted, accepted_at, phases), received) = tokio::join!(send, receive);
                     let (item, received_at) = received.expect("accepted ring message missing");
                     client.consume(&option, vec![crate::participant::DeliveryReference {
                         sequence: item["sequence"].as_u64().unwrap(),
@@ -340,7 +350,7 @@ async fn one_to_eight_program_concurrent_mail_latency() {
                     }]).await.unwrap();
                     (member, receiver, json!({"call_started":call_started,"accepted_at":accepted_at,
                         "received_at":received_at,"outgoing_id":accepted["message_id"],
-                        "incoming_id":item["envelope"]["message"]["message_id"]}))
+                        "incoming_id":item["envelope"]["message"]["message_id"],"phases":phases}))
                 });
             }
             let mut outcomes = Vec::new();
@@ -352,9 +362,11 @@ async fn one_to_eight_program_concurrent_mail_latency() {
                 let sender = &outcomes[member].2;
                 let recipient = &outcomes[(member + 1) % size].2;
                 assert_eq!(sender["outgoing_id"], recipient["incoming_id"]);
-                samples.push(json!({"round":round,"sender":member,
+                let mut sample=json!({"round":round,"sender":member,
                     "accepted_ms":sender["accepted_at"].as_f64().unwrap()-sender["call_started"].as_f64().unwrap(),
-                    "receiver_observed_ms":recipient["received_at"].as_f64().unwrap()-sender["call_started"].as_f64().unwrap()}));
+                    "receiver_observed_ms":recipient["received_at"].as_f64().unwrap()-sender["call_started"].as_f64().unwrap()});
+                if phase_diagnostic {sample["phases"]=sender["phases"].clone();}
+                samples.push(sample);
             }
             receivers = outcomes
                 .into_iter()
@@ -386,12 +398,13 @@ async fn one_to_eight_program_concurrent_mail_latency() {
             "discovery_http_count":after["discovery"].as_u64().unwrap_or(0)-before["discovery"].as_u64().unwrap_or(0),
             "context_http_count":after["context"].as_u64().unwrap_or(0)-before["context"].as_u64().unwrap_or(0),
             "journal_reads":after["journal_reads"],
-            "warm_acceptance_target_met":!cfg!(debug_assertions) && accepted["p95_ms"].as_f64().unwrap()<=300.}));
+            "phase_diagnostic":phase_diagnostic,
+            "warm_acceptance_target_met":!phase_diagnostic && !cfg!(debug_assertions) && accepted["p95_ms"].as_f64().unwrap()<=300.}));
         // Retain measured cases even if a later qualification case fails.
         write_report(
             &report,
             &json!({"format":"peerwork.program-matrix.v1","state":"MEASURING","cases":cases,
-                "payload_bytes":if payload_bytes==0{json!([41,42])}else{json!([payload_bytes])},"simulated_link_rtt_ms":link_rtt_ms}),
+                "payload_bytes":if payload_bytes==0{json!([41,42])}else{json!([payload_bytes])},"simulated_link_rtt_ms":link_rtt_ms,"phase_diagnostic":phase_diagnostic}),
         );
         assert_eq!(send_count, (rounds * size) as u64);
         if rounds == 33 {
@@ -409,9 +422,21 @@ async fn one_to_eight_program_concurrent_mail_latency() {
         "build_profile":if cfg!(debug_assertions){"unoptimized-test"}else{"optimized"},
         "service":"local synthetic PostgreSQL/HTTP","traffic":"one concurrent ring send per identity per round; E2EE bodies; signed SSE",
         "payload_bytes":if payload_bytes==0{json!([41,42])}else{json!([payload_bytes])},"simulated_link_rtt_ms":link_rtt_ms,
+        "phase_diagnostic":phase_diagnostic,
         "timing_basis":"single monotonic clock; receive observation runs independently of outgoing acceptance and includes observer scheduling; not an isolated service-acceptance-to-store span; simulated link delays exclude TCP/TLS setup, bandwidth limits, jitter and packet loss",
         "host_or_model":"NOT_EXERCISED","release_gate_qualified":false}),
     );
+}
+
+fn phase_interval(before:&Value,after:&Value,selected:Option<&[&str]>)->Value{
+    let mut interval=serde_json::Map::new();
+    for (name,value) in after.as_object().unwrap(){
+        if selected.is_some_and(|names|!names.contains(&name.as_str())){continue;}
+        let count=value["count"].as_u64().and_then(|n|n.checked_sub(before[name]["count"].as_u64()?));
+        let elapsed=value["elapsed_us"].as_u64().and_then(|n|n.checked_sub(before[name]["elapsed_us"].as_u64()?));
+        interval.insert(name.clone(),json!({"count":count,"elapsed_us":elapsed,"monotonic":count.is_some()&&elapsed.is_some()}));
+    }
+    Value::Object(interval)
 }
 
 fn matrix_text(size: usize, round: usize, member: usize, bytes: usize) -> String {
