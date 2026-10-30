@@ -56,9 +56,7 @@ fn replace_once(source: String, old: &str, new: &str, label: &str) -> String {
     source.replacen(old, new, 1)
 }
 
-fn prepare_msvc_project(source: &Path, project: &str, library: &str) {
-    let path = source.join(format!("icu/source/{project}/{project}.vcxproj"));
-    let input = fs::read_to_string(&path).expect("read pinned ICU MSVC project");
+fn msvc_project(input: String, project: &str, library: &str, static_crt: bool) -> String {
     let patched = replace_once(
         input,
         "<ConfigurationType>DynamicLibrary</ConfigurationType>",
@@ -94,6 +92,24 @@ fn prepare_msvc_project(source: &Path, project: &str, library: &str) {
         patched_defines,
         "MSVC static/suffixed symbols",
     );
+    // A static ICU archive alone can still import the VC++ runtime DLLs.
+    // Follow Cargo's target CRT choice for every ICU translation unit too.
+    let patched = if static_crt {
+        let patched = replace_once(
+            patched,
+            "<RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>",
+            "<RuntimeLibrary>MultiThreaded</RuntimeLibrary>",
+            "MSVC release CRT",
+        );
+        replace_once(
+            patched,
+            "<RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>",
+            "<RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>",
+            "MSVC debug CRT",
+        )
+    } else {
+        patched
+    };
     // The solution target copies public headers for the dynamic distribution.
     // All three projects compile against the source tree directly instead.
     let patched = if project == "stubdata" {
@@ -107,7 +123,18 @@ fn prepare_msvc_project(source: &Path, project: &str, library: &str) {
             "MSVC solution header-copy target",
         )
     };
-    fs::write(&path, patched).expect("write patched ICU MSVC project");
+    patched
+}
+
+fn prepare_msvc_project(source: &Path, project: &str, library: &str) {
+    let path = source.join(format!("icu/source/{project}/{project}.vcxproj"));
+    let input = fs::read_to_string(&path).expect("read pinned ICU MSVC project");
+    let static_crt = env::var("CARGO_CFG_TARGET_FEATURE")
+        .expect("Cargo target features")
+        .split(',')
+        .any(|feature| feature == "crt-static");
+    fs::write(&path, msvc_project(input, project, library, static_crt))
+        .expect("write patched ICU MSVC project");
 }
 
 fn find_msbuild() -> PathBuf {
@@ -189,6 +216,7 @@ fn build_msvc(source: &Path, target_triple: &str) {
 }
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_FEATURE");
     println!("cargo:rerun-if-changed=../../third_party/icu4c-78.3/icu4c-78.3-sources.tgz");
     println!("cargo:rerun-if-changed=../../third_party/icu4c-78.3/icudt78l.dat");
     let source_asset = Path::new("../../third_party/icu4c-78.3/icu4c-78.3-sources.tgz");
@@ -401,5 +429,56 @@ fn main() {
         println!("cargo:rustc-link-lib=dylib=stdc++");
         println!("cargo:rustc-link-lib=dylib=pthread");
         println!("cargo:rustc-link-lib=dylib=dl");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pinned_project(project: &str) -> String {
+        let archive = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../third_party/icu4c-78.3/icu4c-78.3-sources.tgz");
+        let output = Command::new("tar")
+            .arg("-xOf")
+            .arg(archive)
+            .arg(format!("icu/source/{project}/{project}.vcxproj"))
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap()
+    }
+
+    #[test]
+    fn every_pinned_icu_project_follows_the_selected_crt_without_rewriting_symbols() {
+        for (project, library) in [
+            ("common", "icuucpeerwork"),
+            ("i18n", "icui18npeerwork"),
+            ("stubdata", "icudatapeerwork"),
+        ] {
+            let input = pinned_project(project);
+            for static_crt in [false, true] {
+                let patched = msvc_project(input.clone(), project, library, static_crt);
+                assert!(patched.contains("<ConfigurationType>StaticLibrary</ConfigurationType>"));
+                assert!(patched.contains(&format!("<TargetName>{library}</TargetName>")));
+                assert!(patched.contains("U_STATIC_IMPLEMENTATION;U_HAVE_LIB_SUFFIX=1;U_LIB_SUFFIX_C_NAME=_peerwork;"));
+                for (dynamic, linked) in [
+                    ("MultiThreadedDLL", "MultiThreaded"),
+                    ("MultiThreadedDebugDLL", "MultiThreadedDebug"),
+                ] {
+                    assert_eq!(patched.contains(&format!("<RuntimeLibrary>{dynamic}</RuntimeLibrary>")), !static_crt);
+                    assert_eq!(patched.contains(&format!("<RuntimeLibrary>{linked}</RuntimeLibrary>")), static_crt);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn changed_crt_metadata_is_rejected_before_a_mixed_runtime_can_build() {
+        let input = pinned_project("common").replace(
+            "<RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>",
+            "<RuntimeLibrary>UNEXPECTED</RuntimeLibrary>",
+        );
+        assert!(std::panic::catch_unwind(|| msvc_project(input, "common", "icuucpeerwork", true)).is_err());
     }
 }

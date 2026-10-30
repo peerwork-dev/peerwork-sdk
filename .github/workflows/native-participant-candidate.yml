@@ -22,6 +22,7 @@ env:
 
 jobs:
   linux:
+    if: ${{ !contains(github.event.head_commit.message, '[native:win32-x64-msvc]') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     container:
@@ -76,13 +77,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - target: darwin-arm64
-            runner: macos-15
-          - target: win32-x64-msvc
-            runner: windows-2022
+        # Development may qualify one changed platform. A normal candidate
+        # push or dispatch still selects all three release targets.
+        include: ${{ fromJSON(contains(github.event.head_commit.message, '[native:win32-x64-msvc]') && '[{"target":"win32-x64-msvc","runner":"windows-2022","rustflags":"-C target-feature=+crt-static"}]' || '[{"target":"darwin-arm64","runner":"macos-15","rustflags":""},{"target":"win32-x64-msvc","runner":"windows-2022","rustflags":"-C target-feature=+crt-static"}]') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
+    env:
+      RUSTFLAGS: ${{ matrix.rustflags }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -97,9 +98,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target/release
-          key: participant-v1-${{ matrix.target }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', '**/build.rs', 'third_party/**') }}-${{ github.sha }}
+          key: participant-v2-${{ matrix.target }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', '**/build.rs', 'third_party/**') }}-${{ github.sha }}
           restore-keys: |
-            participant-v1-${{ matrix.target }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', '**/build.rs', 'third_party/**') }}-
+            participant-v2-${{ matrix.target }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', '**/build.rs', 'third_party/**') }}-
       - name: Build and exercise installed native process
         shell: bash
         run: |

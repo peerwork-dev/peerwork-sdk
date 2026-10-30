@@ -37,6 +37,36 @@ def candidate_version(raw):
     return version
 
 
+def loader_requirements(target, dependencies, symbols=''):
+    """Audit emitted imports, not just build flags or a successful CI host."""
+    if target == 'win32-x64-msvc':
+        names = re.findall(r'^\s+([A-Za-z0-9_.-]+\.dll)\s*$', dependencies, re.I | re.M)
+        assert names, 'Windows loader report contains no imports'
+        external = re.compile(r'^(?:(?:msvcp|msvcr|vcruntime|concrt)\d.*|node|python\d*|icu.*)\.dll$', re.I)
+        assert not any(external.fullmatch(name) for name in names), 'external Windows language/C++ runtime dependency'
+        return {'imports': sorted(set(name.lower() for name in names)), 'vc_runtime_dlls': 'NOT_IMPORTED', 'system_api_sets': 'Windows10+'}
+    if target == 'darwin-arm64':
+        names = re.findall(r'^\s+(\S+)\s+\(compatibility version', dependencies, re.M)
+        assert names, 'macOS loader report contains no imports'
+        assert all(name.startswith(('/usr/lib/', '/System/Library/Frameworks/')) for name in names), 'external macOS loader dependency'
+        return {'imports': sorted(set(names)), 'deployment_target': '11.0'}
+    assert target == 'linux-x64-gnu'
+    names = re.findall(r'\(NEEDED\).*?\[([^\]]+)\]', dependencies)
+    assert names, 'Linux loader report contains no imports'
+    assert not any(re.match(r'lib(?:node|python|icu)', name) for name in names), 'external Linux language/ICU runtime dependency'
+    required = {}
+    for namespace, ceiling in [('GLIBC', (2, 28, 0)), ('GLIBCXX', (3, 4, 25)), ('CXXABI', (1, 3, 11))]:
+        versions = [tuple(int(part or 0) for part in match) for match in
+                    re.findall(r'\b' + namespace + r'_(\d+)\.(\d+)(?:\.(\d+))?\b', symbols)]
+        assert versions or namespace != 'GLIBC', 'missing GNU ABI version requirements'
+        if versions:
+            actual = max(versions)
+            assert actual <= ceiling, namespace + ' ABI floor exceeded'
+            required[namespace] = '.'.join(map(str, actual))
+    return {'imports': sorted(set(names)), 'required_symbol_versions': required,
+            'cxx_runtime': 'SYSTEM_LIBSTDCXX' if 'libstdc++.so.6' in names else 'NOT_IMPORTED'}
+
+
 def native_metadata(document):
     """Select the CLI's transitive source/build graph, never a binding wrapper."""
     packages = {p['id']: p for p in document['packages']}
@@ -74,6 +104,9 @@ def main():
         assert subprocess.check_output(['getconf', 'GNU_LIBC_VERSION'], text=True).strip() == 'glibc 2.28'
     if args.target == 'darwin-arm64':
         assert os.environ.get('MACOSX_DEPLOYMENT_TARGET') == '11.0'
+    if args.target == 'win32-x64-msvc':
+        assert os.environ.get('RUSTFLAGS') == '-C target-feature=+crt-static', 'native Windows candidate requires the selected static CRT flags'
+        assert not os.environ.get('CARGO_ENCODED_RUSTFLAGS'), 'encoded flags override the selected CRT policy'
     output.mkdir(parents=True)
     env = dict(os.environ, CARGO_BUILD_JOBS='1', CARGO_INCREMENTAL='0', CARGO_PROFILE_RELEASE_DEBUG='0')
 
@@ -91,6 +124,9 @@ def main():
     # Compile the shared test target once, then run only the native affected
     # groups. Explicitly ignored loopback tests are eligible on real CI hosts;
     # real service/Agent fixtures are outside these module prefixes.
+    run(['cargo','test','--release','--locked','-p','peerwork-core','--lib',
+         'js_locale::tests','--','--test-threads=1'], 'icu-conformance.log')
+    assert re.search(r'test result: ok\. [1-9][0-9]* passed;', (output / 'icu-conformance.log').read_text(encoding='utf-8')), 'ICU selector matched no passing cases'
     for index, group in enumerate(GROUPS):
         run(['cargo', 'test', '--release', '--locked', '-p', 'peerwork-runtime', '--lib',
              group, '--', '--include-ignored', '--test-threads=1'], f'tests-{index}.log')
@@ -107,17 +143,20 @@ def main():
     assert json.loads((output / 'installed-smoke.json').read_text())['state'] == 'PASS'
     if args.target == 'linux-x64-gnu':
         symbols = subprocess.check_output(['readelf', '--version-info', installed], text=True)
-        versions = [tuple(int(part or 0) for part in match) for match in re.findall(r'\bGLIBC_(\d+)\.(\d+)(?:\.(\d+))?\b', symbols)]
-        assert versions and all(v <= (2,28,0) for v in versions), 'glibc floor exceeded'
-        (output / 'dynamic-dependencies.txt').write_text(subprocess.check_output(['readelf', '-d', installed], text=True))
+        (output / 'symbol-versions.txt').write_text(symbols)
+        dependencies = subprocess.check_output(['readelf', '-d', installed], text=True)
     elif args.target == 'darwin-arm64':
-        (output / 'dynamic-dependencies.txt').write_text(subprocess.check_output(['otool', '-L', installed], text=True))
+        symbols = ''
+        dependencies = subprocess.check_output(['otool', '-L', installed], text=True)
     else:
+        symbols = ''
         vswhere = Path(os.environ['ProgramFiles(x86)']) / 'Microsoft Visual Studio/Installer/vswhere.exe'
         visual_studio = Path(subprocess.check_output([str(vswhere),'-latest','-products','*','-requires','Microsoft.Component.MSBuild','-property','installationPath'],text=True).strip())
         dumpbins = sorted(visual_studio.glob('VC/Tools/MSVC/*/bin/Hostx64/x64/dumpbin.exe'))
         assert dumpbins, 'Windows loader inspection tool missing'
-        (output / 'dynamic-dependencies.txt').write_text(subprocess.check_output([str(dumpbins[-1]),'/dependents',str(installed)],text=True))
+        dependencies = subprocess.check_output([str(dumpbins[-1]),'/dependents',str(installed)],text=True)
+    (output / 'dynamic-dependencies.txt').write_text(dependencies)
+    loader = loader_requirements(args.target, dependencies, symbols)
     import sbom
     from assets import deterministic_tar
     metadata = native_metadata(json.loads(subprocess.check_output(['cargo','metadata','--locked','--format-version','1','--filter-platform',TARGETS[args.target]],cwd=root,env=env,text=True)))
@@ -145,9 +184,11 @@ def main():
         'source_commit': source, 'target': args.target, 'sdk_version': version,
         'binary_sha256': hashlib.sha256(installed.read_bytes()).hexdigest(),
         'binary_bytes': installed.stat().st_size, 'native_test_groups': GROUPS,
+        'core_test_groups': ['js_locale::tests'],
+        'os_loader_requirements': loader,
         'candidate_archive': archive.name, 'archive_sha256': hashlib.sha256(archive.read_bytes()).hexdigest(),
         'node_or_python_client_runtime': 'NOT_USED', 'public_release_qualified': False,
-        'limits': ['CI native process/OS qualification only', 'Windows loader dependencies require release audit',
+        'limits': ['CI native process/OS qualification only', 'Linux GNU may require its declared system C++ runtime',
                    'No actual service/Agent performance, final packaging, signing or notarization claim'],
     }, indent=2) + '\n')
     print(json.dumps({'state': 'PASS', 'target': args.target, 'source_commit': source, 'public_release_qualified': False}))
