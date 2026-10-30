@@ -1365,6 +1365,11 @@ only the old constructor binding and adds its explicit retirement marker;
 old event records and receipts stay in place. A selected recovery archive is
 bounded to4096 records/32MiB and refuses further writes at capacity.
 
+A wrong source binding is rejected before binding an empty archive. Correct
+that unsubmitted selection and reuse its chosen archive directory. After an
+archive has accepted pages, its exact selection remains pinned; do not change
+identity, source, archive or binding to work around an interrupted import.
+
 `kind: "BRIDGE"` additionally retains the exact original `deliveries.json`
 and its at-most256 opaque bridge rows. Those old rows contain hashes but not
 necessarily the original binding or message; importing them never invents a
