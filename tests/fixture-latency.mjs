@@ -2,6 +2,17 @@
 // a burst must not acquire another one-way latency for each subsequent chunk.
 import {setTimeout as pause} from 'node:timers/promises';
 
+// Opt-in proof runs need a real lower bound, not a timer's rounded deadline.
+export async function minimumFixtureDelay(delayMs, {clock = () => performance.now(), sleep = pause} = {}) {
+  if (!Number.isFinite(delayMs) || delayMs < 0) throw RangeError('invalid fixture delay');
+  const deadline = clock() + delayMs;
+  for (;;) {
+    const remaining = deadline - clock();
+    if (remaining <= 0) return;
+    await sleep(remaining);
+  }
+}
+
 export async function delayFixtureResponse(response, delayMs) {
   if (!delayMs) return response;
   const reader = response.body?.getReader();

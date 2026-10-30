@@ -6,7 +6,7 @@ import {join} from 'node:path';
 import {once} from 'node:events';
 import {writeFileSync} from 'node:fs';
 import {setTimeout as pause} from 'node:timers/promises';
-import {delayFixtureResponse} from './fixture-latency.mjs';
+import {delayFixtureResponse,minimumFixtureDelay} from './fixture-latency.mjs';
 import {observeFixtureQueries} from './fixture-query-metrics.mjs';
 
 const root=process.env.PEERWORK_STRUCTURE_REFERENCE_ROOT;
@@ -30,6 +30,8 @@ const queryObserver=process.env.PEERWORK_PARTICIPANT_QUERY_TIMINGS==='1'?observe
 const timings=[];let timingsTruncated=false;
 const linkRttMs=Number(process.env.PEERWORK_FIXTURE_LINK_RTT_MS??0);
 if(!Number.isSafeInteger(linkRttMs)||linkRttMs<0||linkRttMs>1000)throw Error('invalid explicit fixture RTT');
+const minimumUplink=process.env.PEERWORK_FIXTURE_MIN_UPLINK==='1';
+if(!['0','1'].includes(process.env.PEERWORK_FIXTURE_MIN_UPLINK??'0'))throw Error('invalid minimum uplink flag');
 const handle=async request=>{
  const requestStarted=performance.now();
  const path=new URL(request.url).pathname;
@@ -103,11 +105,11 @@ const handle=async request=>{
 };
 const server=serve({hostname:'127.0.0.1',port:0,fetch:async request=>{
  if(new URL(request.url).pathname.startsWith('/__test/'))return handle(request);
- if(linkRttMs)await pause(linkRttMs/2);
+ if(linkRttMs)await(minimumUplink?minimumFixtureDelay(linkRttMs/2):pause(linkRttMs/2));
  return delayFixtureResponse(await handle(request),linkRttMs/2);
 }});
 await once(server,'listening');
-process.stdout.write(JSON.stringify({origin:`http://127.0.0.1:${server.address().port}`,simulated_link_rtt_ms:linkRttMs})+'\n');
+process.stdout.write(JSON.stringify({origin:`http://127.0.0.1:${server.address().port}`,simulated_link_rtt_ms:linkRttMs,simulated_minimum_uplink_ms:minimumUplink?linkRttMs/2:0})+'\n');
 process.once('SIGTERM',async()=>{
  clearInterval(ticker);release?.();server.closeAllConnections();
  await new Promise(resolve=>server.close(resolve));await f.close();

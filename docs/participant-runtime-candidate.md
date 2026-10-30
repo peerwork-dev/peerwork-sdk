@@ -1305,3 +1305,26 @@ counters are reported separately and must be checked for exactly one operation
 before attribution. Counter resets are explicit null/non-monotonic values;
 nested phases overlap and lifetime maxima are not subtracted. This mode always
 disables acceptance-target qualification, even in an optimized build.
+
+The resident-WAL source candidate's complete quiet 8 KiB / nominal100ms RTT
+matrix delivered and opened all495 messages. Warm acceptance p95 for1/2/4/8
+participants was183.64/196.00/240.13/286.45ms. All tails remain in the report,
+including a640.50ms one-participant maximum; passing p95 does not hide that tail.
+The affected native journal/participant/store and HTTP/process runs passed26
+and15 cases respectively (the journal count includes a subprocess helper).
+These are candidate program-transport results, not installed-tool/host or
+public-network release qualification.
+
+A separate observer-enabled matrix bounds acceptance-to-receiver-store rather
+than claiming a directly measured internal span. For each matched warm message,
+subtract its disjoint completed pre-POST work and a fixture-enforced minimum
+uplink from that same message's call-to-receiver observation. Acceptance must
+follow that pre-POST work/uplink, and observation follows durable storage, so
+the remaining duration is a conservative upper bound. Cross-process timestamps
+and separately calculated quantiles are never subtracted. The fixture's opt-in
+`PEERWORK_FIXTURE_MIN_UPLINK=1` rechecks its monotonic timer deadline after early
+wakes. `tests/fixture-delivery-bound.py` requires attributable phase counts and
+retains every warm sample. In the separate495-message run, the8-participant
+bound was p95<=199.39ms and p99<=240.98ms; all1/2/4/8 receiver bounds met their
+250ms/1s goals. Cold samples remain separate. This does not measure host ACK or
+model response, and observer runs do not qualify the quiet acceptance target.
