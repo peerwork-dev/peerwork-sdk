@@ -210,13 +210,16 @@ impl Store {
                     .and_then(|v| serde_json::from_str::<Value>(&v).map_err(|_| corrupt()))
             })
             .transpose()?;
+        Ok(Self::operation(id,status,command,out))
+    }
+    fn operation(id:&str,status:String,command:Option<String>,out:Option<Value>)->Operation {
         let committed = out
             .as_ref()
             .is_some_and(|v| v["effect_certainty"] == "COMMITTED");
         let not_submitted = out
             .as_ref()
             .is_some_and(|v| v["effect_certainty"] == "NOT_SUBMITTED");
-        Ok(Operation {
+        Operation {
             operation_id: id.into(),
             state: status.clone(),
             command_id: command,
@@ -231,7 +234,7 @@ impl Store {
             .into(),
             outcome: out,
             observation: "LOCAL_DURABLE".into(),
-        })
+        }
     }
     pub fn due(&self, limit: usize) -> Result<Vec<(String, String)>> {
         let clock = now();
@@ -321,7 +324,10 @@ impl Store {
             tx.execute("UPDATE participant_meta SET pending=pending-1,allocated=allocated-?1+?2 WHERE id=1",params![allocation,next_allocation]).map_err(|_|storage())?;
         }
         tx.commit().map_err(|_| storage())?;
-        self.get(session, id, identity)
+        // The committed bytes were just sealed from this exact value. Return
+        // it without another SELECT/decrypt/parse cycle. Reopens and selected
+        // reads still authenticate the durable ciphertext through get().
+        Ok(Self::operation(id,state.into(),command.map(str::to_owned).or(current.command_id),Some(saved)))
     }
     pub fn list(
         &self,
@@ -361,6 +367,33 @@ impl Store {
 mod tests {
     use super::*;
     use crate::participant::Scope;
+    #[test]
+    fn completed_return_matches_authenticated_reopen_and_corruption_is_still_rejected() {
+        let t=crate::test_support::protected_test_dir();
+        let identity=KernelIdentity::create(&t.path().join("identity")).unwrap();
+        let directory=t.path().join("state");
+        let mut store=Store::open(&directory,&identity,"https://service.invalid/").unwrap();
+        for (index,value) in [
+            json!({"state":"ACCEPTED","result":{"command_id":"accepted","body":"x".repeat(8192)}}),
+            json!({"state":"PENDING","command_id":"pending","retryable":true,"effect_certainty":"UNKNOWN"}),
+            json!({"state":"PENDING","command_id":"prepared","retryable":true,"effect_certainty":"NOT_SUBMITTED"}),
+            json!({"state":"FAILED","command_id":"blocked","retryable":false,"effect_certainty":"UNKNOWN"}),
+            json!({"state":"REJECTED","command_id":"refused"}),
+            json!({"state":"ACCEPTED","result":{"command_id":"large","body":"x".repeat(OUTCOME_RESERVE)}}),
+        ].into_iter().enumerate() {
+            let id=format!("completed-{index}");
+            let request=Invoke::new(&id,"structure.workspace.create",Scope::default(),json!({"name":"one"}));
+            store.reserve("program",&request,&identity,32,16*1024*1024).unwrap();
+            store.running("program",&id).unwrap();
+            let completed=serde_json::to_value(store.finish("program",&id,&identity,&value).unwrap()).unwrap();
+            assert_eq!(completed,serde_json::to_value(store.get("program",&id,&identity).unwrap()).unwrap());
+            drop(store);
+            store=Store::open(&directory,&identity,"https://service.invalid/").unwrap();
+            assert_eq!(completed,serde_json::to_value(store.get("program",&id,&identity).unwrap()).unwrap());
+        }
+        store.db.execute("UPDATE participant_operations SET outcome=zeroblob(length(outcome)) WHERE session='program' AND id='completed-0'",[]).unwrap();
+        assert_eq!(store.get("program","completed-0",&identity).unwrap_err().code,"STATE_INVALID");
+    }
     #[test]
     fn admission_quota_is_atomic_and_replay_does_not_allocate_again() {
         let t = crate::test_support::protected_test_dir();

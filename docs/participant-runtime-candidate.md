@@ -83,6 +83,13 @@ Closing a tool connection or exhausting the caller's wait budget does not cancel
 admitted work. Stopping the engine ends active execution and leaves exact durable
 recovery state for reopening.
 
+The scheduler reads/decrypts a selected queued request once and retains that
+validated value for execution. After a successful outcome transaction commits,
+the local caller receives the exact value that was encrypted and written,
+without an immediate read/decrypt of its own new write. Selected reads and
+restarts still authenticate persisted input and outcome bytes; durable admission,
+the running marker, signed-packet storage and outcome commits remain unchanged.
+
 `ADMITTED`, `RUNNING`, `PENDING` and `BLOCKED` are local execution observations.
 They are not recipient or model evidence. Service acceptance and business
 completion remain distinct; follow the operation's effect certainty and original

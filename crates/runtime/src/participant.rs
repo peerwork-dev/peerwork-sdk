@@ -1248,18 +1248,15 @@ async fn engine_loop(
                 Ok(v) => v,
                 Err(_) => break,
             };
-            let Some(key) = due.into_iter().find(|k| {
-                !active.contains(k)
-                    && store.request(&k.0, &k.1, &identity).is_ok_and(|r| {
-                        let slow = crate::participant_actions::maintenance(&r.action);
-                        !slow || maintenance.is_empty()
-                    })
+            let Some((key, request)) = due.into_iter().find_map(|key| {
+                if active.contains(&key) { return None; }
+                let request = store.request(&key.0, &key.1, &identity).ok()?;
+                if crate::participant_actions::maintenance(&request.action) && !maintenance.is_empty() {
+                    return None;
+                }
+                Some((key, request))
             }) else {
                 break;
-            };
-            let request = match store.request(&key.0, &key.1, &identity) {
-                Ok(v) => v,
-                Err(_) => break,
             };
             let running = access.phase(crate::transport::ClientPhase::RunningStore);
             if store.running(&key.0, &key.1).is_err() {
