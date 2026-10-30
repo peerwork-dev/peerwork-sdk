@@ -1132,6 +1132,12 @@ unnecessary authorization archive. A producer that just saved its own typed
 packet does not decrypt/re-sign that same winner; conflicting/concurrent and
 resumed producers still verify, decrypt and compare the original saved bytes.
 Older pending attempts retain their original renewal/recovery path and history.
+Local key-store opening and lifecycle Origin normalization now use the same
+pure URL validator as real HTTP construction, without building a TLS client,
+loading network trust roots or creating a discarded pool. Origin canonical bytes,
+TLS/explicit-loopback scheme policy, private state and stored-Origin checks stay
+the same. Network trust/proxy/certificate options are validated when constructing
+the actual HTTP client; local key storage has no network authority to configure.
 Application consumption can now acknowledge custody cumulatively: the SDK
 persists the consume request, uploads its fenced ACK and only records remote
 confirmation after verifying that response. Background custody ACKs get a
@@ -1139,3 +1145,18 @@ non-extending25ms coalescing window, while item/host notification remains
 immediate. Unconsumed custody and consumption batches alternate under mixed
 load and each indexed selection remains bounded to32. A local consume, queued
 ACK or host acceptance still does not prove that a model read or replied.
+
+The native admission/inbox indexes use single-owner WAL with FULL synchronous
+commits on a local filesystem; identity, encryption, durable reservation and
+recovery boundaries stay the same. Sidecars are checked before SQLite opens
+them, and newly created sidecars retain private ownership/ACLs. Transfers use
+the SQLite snapshot path; a live WAL is not disposable.
+
+After these corrections, the full local optimized small-message matrix observed
+acceptance p95 of95.56/121.19/214.71/237.34ms for1/2/4/8 independent program
+identities. All495 messages arrived and decrypted, with exactly495 send requests
+and zero discovery/context/journal requests in the measured intervals. These
+41–42-byte payloads establish the local acceptance slice only:8KiB payloads,
+100ms RTT, actual host spans and installed-platform release qualification remain
+separate. Receiver observation p95 at8 participants was305.23ms from call start;
+that is not an isolated service-acceptance-to-store measurement.

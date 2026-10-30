@@ -1,7 +1,7 @@
 //! Bounded durable admission queue. Exact signed packets remain authoritative
 //! in the native journal; this index owns scheduling, not remote effect truth.
 use crate::{
-    communication_store::database,
+    communication_store::single_owner_database as database,
     kernel_identity::KernelIdentity,
     kernel_intents::parent_operations::{open, seal},
     participant::{Capability, Invoke, Operation, ParticipantError, Result},

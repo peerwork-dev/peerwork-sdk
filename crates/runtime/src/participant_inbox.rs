@@ -5,7 +5,7 @@ mod host_ledger;
 #[path = "participant_key_queue.rs"]
 mod key_queue;
 use crate::{
-    communication_store::database,
+    communication_store::single_owner_database as database,
     kernel_identity::KernelIdentity,
     kernel_intents::parent_operations::{open_bounded, seal_bounded},
     participant::{ParticipantError, Result},

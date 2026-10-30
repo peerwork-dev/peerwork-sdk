@@ -1,7 +1,7 @@
 //! Protected, indexed body keys. This local cache neither grants workspace
 //! membership nor publishes/delivers keys to another actor or browser.
 use super::{ensure_private_parent,create_or_check_private_file,set_wal_with_retry};
-use crate::{secure_state::read_private_seed_file,transport::{HttpTransport,TransportConfig}};
+use crate::{secure_state::read_private_seed_file,transport::{canonical_lifecycle_origin,TransportConfig}};
 use peerwork_core::structure_content::{StructureContentContext,StructureSealedContent,StructureContentError,
     seal_structure_content,open_structure_content,structure_content_key_id};
 use rand_core::{OsRng,RngCore};
@@ -72,7 +72,9 @@ fn load(db:&Connection,local:&str,workspace:&str,id:&str)->Result<Zeroizing<[u8;
 }
 impl StructureContentKeys {
     pub fn open(path:&Path,transport:TransportConfig)->Result<Self,ContentKeyError>{
-        let origin=HttpTransport::new(transport).map_err(|_|ContentKeyError::Selection)?.trusted_origin().to_owned();
+        // This is a protected local database, not a network client. Normalize
+        // the same Origin without rebuilding TLS roots/pools on every key read.
+        let origin=canonical_lifecycle_origin(&transport.origin,transport.allow_loopback_http).map_err(|_|ContentKeyError::Selection)?;
         ensure_private_parent(path).map_err(|_|ContentKeyError::Protection)?;
         create_or_check_private_file(path).map_err(|_|ContentKeyError::Protection)?;
         #[cfg(windows)]
@@ -430,6 +432,20 @@ mod tests {
         assert!(matches!(keys.import_current_from_file(&local,&c.workspace_id,&source,&id,Some(&id)),Err(ContentKeyError::Protection)));
         assert_eq!(fs::read(&source).unwrap(),[42;32],"import source remains untouched");
     }
+    #[test]
+    fn local_key_open_does_not_initialize_network_trust_but_preserves_origin_pin(){
+        let dir=crate::test_support::protected_test_dir();let path=dir.path().join("local.sqlite");
+        let options=crate::transport::TransportOptions{additional_root_pem_files:vec![dir.path().join("absent-network-root.pem")],..Default::default()};
+        let config=||TransportConfig::new("https://EXAMPLE.invalid:443").with_options(options.clone());
+        assert!(matches!(crate::transport::HttpTransport::new(config()),Err(crate::transport::TransportError::InvalidTrust)));
+        let keys=StructureContentKeys::open(&path,config()).unwrap();drop(keys);
+        assert!(StructureContentKeys::open(&path,TransportConfig::new("https://example.invalid/")).is_ok());
+        assert!(matches!(StructureContentKeys::open(&path,TransportConfig::new("https://other.invalid")),Err(ContentKeyError::OriginChanged)));
+        for origin in ["http://example.invalid","https://user@example.invalid","https://example.invalid/path","https://example.invalid/?q=1"]{
+            assert!(matches!(StructureContentKeys::open(&path,TransportConfig::new(origin)),Err(ContentKeyError::Selection)));
+        }
+    }
+
     #[test]
     fn selected_key_lookup_does_not_scan_old_or_other_actor_keys_and_detects_selected_corruption(){
         let dir=crate::test_support::protected_test_dir();let path=dir.path().join("body.sqlite");let mut keys=StructureContentKeys::open(&path,config()).unwrap();

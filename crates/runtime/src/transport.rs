@@ -165,9 +165,15 @@ pub struct HttpTransport {
 /// Canonical transport origin for local lifecycle pins only. Callers retain
 /// their original config/history origin binding; no network request is made.
 pub(crate) fn canonical_lifecycle_origin(origin: &str, allow_loopback_http: bool) -> Result<String, TransportError> {
-    let mut config = TransportConfig::new(origin);
-    config.allow_loopback_http = allow_loopback_http;
-    Ok(HttpTransport::new(config)?.trusted_origin().to_owned())
+    Ok(checked_origin(origin,allow_loopback_http)?.to_string())
+}
+fn checked_origin(origin:&str,allow_loopback_http:bool)->Result<Url,TransportError>{
+    let origin=Url::parse(origin).map_err(|_|TransportError::InvalidOrigin)?;
+    let loopback=matches!(origin.host_str(),Some("localhost"|"127.0.0.1"|"::1"));
+    if !(origin.scheme()=="https" || allow_loopback_http&&loopback&&origin.scheme()=="http")
+        || origin.host_str().is_none() || !origin.username().is_empty() || origin.password().is_some()
+        || origin.path()!="/" || origin.query().is_some() || origin.fragment().is_some(){return Err(TransportError::InvalidOrigin);}
+    Ok(origin)
 }
 
 /// Authorization timestamps estimated from a verified server anchor and local
@@ -222,18 +228,8 @@ impl HttpTransport {
         let extra_roots = if let Some(options) = &config.client_options {
             options.validate()?; config.timeout = Duration::from_millis(options.request_timeout_ms); options.roots()?
         } else { Vec::new() };
-        let origin = Url::parse(&config.origin).map_err(|_| TransportError::InvalidOrigin)?;
-        let loopback = matches!(origin.host_str(), Some("localhost" | "127.0.0.1" | "::1"));
-        if !(origin.scheme() == "https"
-            || (config.allow_loopback_http && loopback && origin.scheme() == "http"))
-            || origin.host_str().is_none()
-            || !origin.username().is_empty()
-            || origin.password().is_some()
-            || origin.path() != "/"
-            || origin.query().is_some()
-            || origin.fragment().is_some()
-            || config.timeout.is_zero()
-        {
+        let origin=checked_origin(&config.origin,config.allow_loopback_http)?;
+        if config.timeout.is_zero() {
             return Err(TransportError::InvalidOrigin);
         }
         let mut builder = Client::builder()

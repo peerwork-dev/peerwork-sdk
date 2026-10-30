@@ -26,6 +26,53 @@ pub(crate) fn database(directory: &Path, name: &str) -> Result<Connection> {
     db.execute_batch("PRAGMA synchronous=FULL; PRAGMA secure_delete=ON;").map_err(|_| "TOOLS_STATE_FAILED")?;
     Ok(db)
 }
+/// Native indexes have one engine owner and live on a local filesystem. Keep
+/// FULL commit durability while avoiding a new rollback journal/directory sync
+/// for every short admission, scheduling and inbox transaction.
+pub(crate) fn single_owner_database(directory:&Path,name:&str)->Result<Connection>{
+    create_private_state_directory(directory).map_err(|_|"TOOLS_STATE_NOT_PRIVATE")?;
+    let sidecars=[directory.join(format!("{name}-wal")),directory.join(format!("{name}-shm")),directory.join(format!("{name}-journal"))];
+    let check=||->Result<()>{
+        for path in &sidecars{
+            match std::fs::symlink_metadata(path){
+                Ok(_)=>crate::secure_state::validate_private_file(path).map_err(|_|"TOOLS_STATE_NOT_PRIVATE")?,
+                Err(e) if e.kind()==std::io::ErrorKind::NotFound=>(),
+                Err(_)=>return Err("TOOLS_STATE_NOT_PRIVATE"),
+            }
+        }Ok(())
+    };
+    check()?;
+    #[cfg(windows)]
+    for path in &sidecars[..2]{crate::windows_fs::create_or_check_file(path).map_err(|_|"TOOLS_STATE_NOT_PRIVATE")?;}
+    let db=database(directory,name)?;
+    let mode:String=db.pragma_query_value(None,"journal_mode",|r|r.get(0)).map_err(|_|"TOOLS_STATE_FAILED")?;
+    if mode!="wal"{db.pragma_update(None,"journal_mode","WAL").map_err(|_|"TOOLS_STATE_FAILED")?;}
+    let mode:String=db.pragma_query_value(None,"journal_mode",|r|r.get(0)).map_err(|_|"TOOLS_STATE_FAILED")?;
+    if mode!="wal"{return Err("TOOLS_STATE_FAILED");}
+    check()?;Ok(db)
+}
+
+#[cfg(test)]
+mod native_database_tests{
+    use super::*;
+    #[test]
+    fn owned_wal_preserves_full_durability_reopen_and_private_sidecars(){
+        let root=crate::test_support::protected_test_dir();let directory=root.path().join("indexes");
+        let db=single_owner_database(&directory,"owned.sqlite").unwrap();
+        assert_eq!(db.pragma_query_value(None,"synchronous",|r|r.get::<_,i64>(0)).unwrap(),2);
+        db.execute_batch("CREATE TABLE durable(value INTEGER); INSERT INTO durable VALUES(7);").unwrap();
+        for suffix in ["-wal","-shm"]{crate::secure_state::validate_private_file(&directory.join(format!("owned.sqlite{suffix}"))).unwrap();}
+        drop(db);
+        let db=single_owner_database(&directory,"owned.sqlite").unwrap();
+        assert_eq!(db.query_row("SELECT value FROM durable",[],|r|r.get::<_,u64>(0)).unwrap(),7);drop(db);
+        #[cfg(unix)]{
+            let other=root.path().join("unrelated");crate::communication_host::write_private(&other,b"must stay unchanged").unwrap();
+            std::os::unix::fs::symlink(&other,directory.join("owned.sqlite-wal")).unwrap();
+            assert!(matches!(single_owner_database(&directory,"owned.sqlite"),Err("TOOLS_STATE_NOT_PRIVATE")));
+            assert_eq!(std::fs::read(other).unwrap(),b"must stay unchanged");
+        }
+    }
+}
 pub(crate) struct ToolStore { pub db: Connection }
 impl ToolStore {
     pub fn open(profile: &Value) -> Result<Self> {
