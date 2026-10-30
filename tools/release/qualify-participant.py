@@ -149,6 +149,14 @@ def main():
     shutil.copy2(built, installed)
     run([sys.executable, 'tests/installed-participant-smoke.py', '--cli', str(installed)], 'installed-smoke.json')
     assert json.loads((output / 'installed-smoke.json').read_text())['state'] == 'PASS'
+    if os.name != 'nt':
+        # The published Node producer checks POSIX mode bits; it was never a
+        # Windows receiver. Native import/ACL cases above still run on Windows.
+        node = shutil.which('node')
+        assert node, 'Node is required only to produce the published legacy-store fixture'
+        run([sys.executable, 'tests/qualify-node-delivery-import.py', '--cli', str(installed),
+             '--node', node], 'legacy-node-import.json')
+        assert json.loads((output / 'legacy-node-import.json').read_text())['state'] == 'PASS'
     if args.target == 'linux-x64-gnu':
         symbols = subprocess.check_output(['readelf', '--version-info', installed], text=True)
         (output / 'symbol-versions.txt').write_text(symbols)

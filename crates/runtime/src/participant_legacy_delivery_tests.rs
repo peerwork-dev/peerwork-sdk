@@ -66,13 +66,7 @@ fn setup(
     (root, selection)
 }
 fn finish(s: &LegacyDeliverySelection) -> Value {
-    for _ in 0..20 {
-        let v = import_page(s).unwrap();
-        if v["state"] == "LEGACY_EVIDENCE_IMPORTED" {
-            return v;
-        }
-    }
-    panic!("bounded import did not finish")
+    import_all(s).unwrap()
 }
 #[test]
 fn bounded_pages_keep_exact_unknown_acked_and_control_evidence_without_native_replay() {
@@ -200,6 +194,7 @@ fn bridge_opaque_rows_and_exact_ledger_are_preserved_without_fabricated_scope() 
     assert_eq!(row["evidence"]["original"]["key"], "opaque-original-key");
     assert_eq!(row["evidence"]["assurance"], "UNATTRIBUTED_LOCAL_ROW");
     assert!(row["evidence"].get("workspace_id").is_none());
+    std::fs::remove_file(s.source_directory.join("deliveries.json")).unwrap();
     write_private(&s.source_directory.join("deliveries.json"), b"[]").unwrap();
     assert_eq!(
         import_page(&s).unwrap_err().code,

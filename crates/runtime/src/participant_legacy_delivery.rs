@@ -28,7 +28,10 @@ fn invalid() -> ParticipantError {
     err("LEGACY_DELIVERY_STATE_INVALID")
 }
 fn failed() -> ParticipantError {
-    err("LEGACY_DELIVERY_IMPORT_FAILED_RESUME_SAME_SELECTION")
+    let mut error = err("LEGACY_DELIVERY_IMPORT_FAILED_RESUME_SAME_SELECTION");
+    error.effect_certainty = "UNKNOWN".into();
+    error.recovery = "RESUME_SAME_IMPORT_SELECTION".into();
+    error
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -374,6 +377,17 @@ pub fn read_evidence(s: &LegacyDeliverySelection, key: &str) -> Result<Value> {
         return Err(err("LEGACY_DELIVERY_ARCHIVE_MISSING"));
     }
     Archive::open(s)?.read(key)
+}
+/// One user operation owns all bounded maintenance pages. Agents do not need
+/// to write polling scripts or reconstruct a new selection between pages.
+pub fn import_all(s: &LegacyDeliverySelection) -> Result<Value> {
+    for _ in 0..(ROWS / PAGE + 4) {
+        let status = import_page(s)?;
+        if status["state"] == "LEGACY_EVIDENCE_IMPORTED" {
+            return Ok(status);
+        }
+    }
+    Err(failed())
 }
 pub fn load_selection(path: &Path) -> Result<LegacyDeliverySelection> {
     serde_json::from_value(

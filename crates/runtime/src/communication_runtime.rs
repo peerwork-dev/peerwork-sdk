@@ -879,7 +879,7 @@ pub fn cli(args: &[String]) -> Value {
         }
         if let [verb,path]=args {
             if verb=="import-node-delivery" {
-                return crate::participant_legacy_delivery::import_page(&crate::participant_legacy_delivery::load_selection(Path::new(path))?);
+                return crate::participant_legacy_delivery::import_all(&crate::participant_legacy_delivery::load_selection(Path::new(path))?);
             }
         }
         if let [verb,path,key]=args {
