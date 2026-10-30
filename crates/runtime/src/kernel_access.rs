@@ -1,6 +1,7 @@
 //! Public, redacted kernel access boundary for language bindings. Each call
 //! reopens protected local state. Embedded runtimes may explicitly retain a
-//! verified session and HTTP pool; restart still rechecks durable continuity.
+//! verified session, HTTP pool and idle database connections. Per-call state
+//! validation and restart continuity remain authoritative.
 
 use crate::kernel_client::{
     KernelAcceptedResult, KernelClient, KernelClientError, KernelOperationStatus, TsMigrationReport,
@@ -23,6 +24,32 @@ struct PersistentSession {
     runtime:Mutex<Option<Arc<Runtime>>>,
     identity:Mutex<Option<KernelIdentity>>,
     seed:Mutex<Option<(crate::kernel_client::KernelClientSeed,Instant)>>,
+    // Idle handles only: no transaction, statement, key/head or operation cache.
+    // Keep WAL alive between calls instead of checkpointing every last close.
+    journal_keeper:Mutex<Option<rusqlite::Connection>>,
+    keys_keeper:Mutex<Option<rusqlite::Connection>>,
+}
+
+/// An optional performance handle, never a source of authorization or keys.
+/// Do not create/migrate a database or make a structure read depend on the
+/// health of an unrelated body-key store. Actual operations validate their own
+/// stores. No file-size/history-dependent work or transaction survives here.
+fn idle_wal_connection(path:&Path)->Option<rusqlite::Connection>{
+    crate::kernel_intents::ensure_private_parent(path).ok()?;
+    crate::kernel_intents::check_private_database_file(path).ok()?;
+    crate::kernel_intents::check_private_sidecars(path).ok()?;
+    #[cfg(windows)]
+    crate::kernel_intents::create_missing_private_wal_sidecars(path).ok()?;
+    let db=rusqlite::Connection::open_with_flags(path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE|rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX).ok()?;
+    db.busy_timeout(Duration::ZERO).ok()?;
+    let mode:String=db.pragma_query_value(None,"journal_mode",|r|r.get(0)).ok()?;
+    if mode!="wal"{return None;}
+    db.pragma_update(None,"synchronous","FULL").ok()?;
+    let _:i64=db.pragma_query_value(None,"schema_version",|r|r.get(0)).ok()?;
+    crate::kernel_intents::check_private_database_file(path).ok()?;
+    crate::kernel_intents::check_private_sidecars(path).ok()?;
+    Some(db)
 }
 impl std::fmt::Debug for PersistentSession {
     fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result{f.write_str("PersistentSession(<protected>)")}
@@ -256,10 +283,15 @@ impl KernelAccess {
     }
 
     /// After all owned host/maintenance jobs stop, release a lazily created
-    /// synchronous-bridge executor off the async owner thread.
+    /// synchronous-bridge executor and idle database connections off the async
+    /// owner thread. Await final checkpoint/close before state ownership ends.
     pub(crate) async fn close_session_executor_async(&self){
         let runtime=self.session.as_ref().and_then(|s|s.runtime.lock().ok()?.take());
-        if let Some(runtime)=runtime{let _=tokio::task::spawn_blocking(move||drop(runtime)).await;}
+        let journal=self.session.as_ref().and_then(|s|s.journal_keeper.lock().ok()?.take());
+        let keys=self.session.as_ref().and_then(|s|s.keys_keeper.lock().ok()?.take());
+        if runtime.is_some()||journal.is_some()||keys.is_some(){
+            let _=tokio::task::spawn_blocking(move||drop((runtime,journal,keys))).await;
+        }
     }
 
     fn runtime(&self) -> Result<Arc<Runtime>, KernelAccessError> {
@@ -315,6 +347,20 @@ impl KernelAccess {
         }
         client.bind_content_key_path(self.content_key_path_for_origin(client.origin()));
         client.bind_access_recipient_path(self.access_recipient_path(client.origin()));
+        if let Some(session)=&self.session{
+            // Ordinary clients still open/validate their own protected stores
+            // and select current keys. These bounded idle connections merely
+            // move last-connection checkpointing to resident-engine shutdown.
+            {
+                let mut keeper=session.journal_keeper.lock().map_err(|_|KernelAccessError::Runtime)?;
+                if keeper.is_none(){*keeper=idle_wal_connection(&self.journal_path);}
+            }
+            {
+                let mut keeper=session.keys_keeper.lock().map_err(|_|KernelAccessError::Runtime)?;
+                let path=client.content_key_store_path();
+                if keeper.is_none(){*keeper=idle_wal_connection(&path);}
+            }
+        }
         Ok(client)
     }
 
@@ -349,7 +395,13 @@ impl KernelAccess {
         }).map_err(|e|KernelAccessError::Client(KernelClientError::Transport(e)))
     }
     pub fn session_metrics(&self)->serde_json::Value{
-        self.session.as_ref().and_then(|s|s.seed.lock().ok()?.as_ref().map(|(seed,_)|seed.metrics())).unwrap_or_else(||serde_json::json!({"scope":"SESSION_CUMULATIVE","http_requests_started":0}))
+        let mut metrics=self.session.as_ref().and_then(|s|s.seed.lock().ok()?.as_ref().map(|(seed,_)|seed.metrics())).unwrap_or_else(||serde_json::json!({"scope":"SESSION_CUMULATIVE","http_requests_started":0}));
+        if let Some(session)=&self.session{
+            metrics["resident_databases"]=serde_json::json!({
+                "journal":session.journal_keeper.lock().ok().map(|s|s.is_some()),
+                "body_keys":session.keys_keeper.lock().ok().map(|s|s.is_some())});
+        }
+        metrics
     }
     pub(crate) fn phase(&self,phase:crate::transport::ClientPhase)->Option<crate::transport::PhaseTimer>{
         self.session.as_ref().and_then(|s|s.seed.lock().ok()?.as_ref().map(|(seed,_)|seed.phase(phase)))
@@ -881,6 +933,32 @@ impl KernelAccess {
         let runtime = self.runtime()?;
         let mut client = self.open_client(&runtime, cancel)?;
         Ok(runtime.block_on(client.submit_saved(command_id, identity.key_id(), cancel))?)
+    }
+}
+
+#[cfg(test)]
+mod resident_wal_tests {
+    use super::*;
+    #[test]
+    fn idle_handles_preserve_full_sync_close_normally_and_never_create_or_migrate_state(){
+        let dir=crate::test_support::protected_test_dir();
+        let path=dir.path().join("journal.sqlite");
+        assert!(idle_wal_connection(&path).is_none());
+        assert!(!path.exists(),"an optional keeper must not create a database");
+        let journal=crate::kernel_intents::KernelIntentJournal::open(&path).unwrap();
+        let keeper=idle_wal_connection(&path).unwrap();
+        assert!(keeper.is_autocommit(),"no idle read transaction may pin a WAL snapshot");
+        assert_eq!(keeper.pragma_query_value(None,"synchronous",|r|r.get::<_,i64>(0)).unwrap(),2);
+        assert_eq!(keeper.pragma_query_value(None,"wal_autocheckpoint",|r|r.get::<_,i64>(0)).unwrap(),1000);
+        drop(journal);
+        let mut name=path.as_os_str().to_os_string();name.push("-wal");let wal=PathBuf::from(name);
+        assert!(wal.exists());
+        drop(keeper);
+        assert!(!wal.exists(),"normal final close must retain checkpoint/delete semantics");
+        let invalid=b"synthetic invalid SQLite body-key state";
+        std::fs::write(&path,invalid).unwrap();
+        assert!(idle_wal_connection(&path).is_none());
+        assert_eq!(std::fs::read(&path).unwrap(),invalid,"optional setup must not repair/migrate arbitrary state");
     }
 }
 

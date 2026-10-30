@@ -28,6 +28,16 @@ multiplexes native futures, shares the verified discovery/time anchor and HTTP
 pool, and bounds real work independently of how many callers are waiting.
 No SQLite transaction is held across network awaits.
 
+Explicit resident sessions keep at most two idle WAL connections: one native
+journal and an optional existing body-key store. Actual calls still open and
+validate their protected stores and select current keys. The keepers never
+serve authorization, business rows or key material, create/migrate databases,
+or hold a read/write transaction; an unavailable optional keeper does not block
+an unrelated structure read. `metrics().http.resident_databases` reports only
+whether those handles currently exist. FULL synchronous commits and the default
+automatic WAL checkpoints remain enabled. After owned work stops, engine close
+awaits the keepers' normal final checkpoint/close before releasing ownership.
+
 ## Program contract implemented so far
 
 | Entry | Candidate behavior |
