@@ -150,6 +150,10 @@ fn stopped_assertion_lock_identity_and_source_binding_fail_closed() {
         )
         .unwrap();
     assert!(!marker);
+    drop(db);
+    assert!(!s.archive_directory.exists());
+    // Correcting an unsubmitted typo must reuse the same chosen destination.
+    assert_eq!(finish(&s)["state"], "LEGACY_EVIDENCE_IMPORTED");
 }
 #[test]
 fn interruption_after_source_fence_resumes_exact_selection_and_keeps_one_archive_copy() {

@@ -98,6 +98,38 @@ impl Archive {
                 .to_string()
                 .as_bytes(),
         );
+        // A mistyped source pin must not bind an empty destination permanently.
+        // Check it before creating archive metadata; the write transaction
+        // below rechecks it before retirement. Existing archives remain readable
+        // even if the old bridge ledger later changes.
+        if !s.archive_directory.join("legacy-delivery.sqlite").exists() {
+            let source = source(s)?;
+            let binding: String = source
+                .query_row("SELECT value FROM control WHERE key='binding'", [], |r| {
+                    r.get(0)
+                })
+                .map_err(|_| invalid())?;
+            let saved: Option<String> = source
+                .query_row("SELECT value FROM control WHERE key=?1", [MARKER], |r| {
+                    r.get(0)
+                })
+                .optional()
+                .map_err(|_| invalid())?;
+            let original = serde_json::from_str::<String>(&binding).ok();
+            let resumed = saved
+                .as_deref()
+                .and_then(|s| serde_json::from_str::<Value>(s).ok())
+                .is_some_and(|v| {
+                    v["pin"] == pin
+                        && v["original_binding"] == s.expected_binding_digest
+                        && original.as_deref() == Some(&format!("RETIRED:{pin}"))
+                });
+            if !resumed
+                && (saved.is_some() || original.as_deref() != Some(&s.expected_binding_digest))
+            {
+                return Err(err("LEGACY_DELIVERY_BINDING_MISMATCH"));
+            }
+        }
         crate::secure_state::create_private_state_directory(&s.archive_directory)
             .map_err(|_| failed())?;
         let owner = SecureStateStore::open(&s.archive_directory.join("legacy-import.state"))
