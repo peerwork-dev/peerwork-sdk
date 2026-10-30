@@ -859,10 +859,15 @@ For stdio MCP, configure the host to run the native executable with arguments:
 ```
 
 The entry exposes `peerwork_context`, `send`, `reply`, `inbox`, `consume`,
-`status`, `recover`, `receipts`, `wait`, `protocol` and `act` (each with the
+`status`, `recover`, `receipts`, `wait`, `protocol`, `read` and `act` (each with the
 `peerwork_` prefix). `peerwork agent tools` prints the exact shared schemas.
-`act` maps data to `structure.action` for a configured protocol; it is not a
-second handwritten business-action implementation. Runtime/service grants
+`read` selects an instance's current state/revision, an exact record revision
+or at most32 current records with a native continuation cursor. Verified opened
+contents are retained; wire proofs and sealed bodies are omitted from the tool
+projection. `act` requires `expected_revision` from the relevant instance read
+or event; it never guesses the concurrency guard or silently refreshes/retries
+changed business input. It maps data to `structure.action` for a configured
+protocol, not a second handwritten business-action implementation. Runtime/service grants
 remain authoritative. Administration, profile switching and arbitrary paths
 are absent from tool arguments.
 

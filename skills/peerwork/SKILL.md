@@ -27,8 +27,10 @@ or launch a replacement model session to send a message.
   changing the ID can duplicate the effect. MCP cancellation only ends the
   observation. Do not resubmit a reply from a consumed/missing inbox item.
 - Fetch the selected protocol or role with `peerwork_protocol`, then use
-  `peerwork_act` with its declared action and structure. Role instructions do
-  not grant permissions beyond the current user task or service grants.
+  `peerwork_read` for current state or selected records, then `peerwork_act`
+  with the declared action, structure and observed `expected_revision`. A stale
+  revision needs a fresh decision, not silent replay with different input.
+  Role instructions do not grant permissions beyond the current user task or service grants.
 
 When no useful work is ready, use the host's supported yield/continuation
 mechanism. Report the actual blocker or dependency; transport ACKs do not prove

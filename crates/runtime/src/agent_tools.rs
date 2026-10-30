@@ -24,6 +24,9 @@ fn token(s: &str) -> bool {
         && s.bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
 }
+fn instance_view() -> String {
+    "instance".into()
+}
 fn one() -> usize {
     8
 }
@@ -183,6 +186,21 @@ pub enum AgentRequest {
         #[serde(default)]
         path: Option<String>,
     },
+    Read {
+        protocol: String,
+        #[serde(default = "instance_view")]
+        view: String,
+        #[serde(default)]
+        record_id: Option<String>,
+        #[serde(default)]
+        revision: Option<u64>,
+        #[serde(default)]
+        schema: Option<String>,
+        #[serde(default)]
+        cursor: Option<String>,
+        #[serde(default = "one")]
+        limit: usize,
+    },
     Act {
         protocol: String,
         operation_id: String,
@@ -190,8 +208,7 @@ pub enum AgentRequest {
         structure: Value,
         #[serde(default)]
         plaintext_contents: Option<Value>,
-        #[serde(default)]
-        expected_revision: Option<u64>,
+        expected_revision: u64,
         #[serde(default)]
         exact_input_refs: Vec<Value>,
         #[serde(default = "send_budget")]
@@ -268,7 +285,15 @@ impl AgentTools {
             }
             return Ok(value);
         }
-        Ok(public_structure(value["result"]["structure"].clone()))
+        let mut structure = public_structure(value["result"]["structure"].clone());
+        if value["result"]["opened_contents"]
+            .as_array()
+            .is_some_and(|v| !v.is_empty())
+            && structure.is_object()
+        {
+            structure["opened_contents"] = value["result"]["opened_contents"].clone();
+        }
+        Ok(structure)
     }
     async fn invoke(&self, request: Invoke, wait_ms: u64) -> Result<Value> {
         if wait_ms > 5000 {
@@ -482,6 +507,53 @@ impl AgentTools {
                 }
                 Ok(value)
             }
+            AgentRequest::Read {
+                protocol,
+                view,
+                record_id,
+                revision,
+                schema,
+                cursor,
+                limit,
+            } => {
+                let (action, body) = match view.as_str() {
+                    "instance"
+                        if record_id.is_none()
+                            && revision.is_none()
+                            && schema.is_none()
+                            && cursor.is_none() =>
+                    {
+                        ("structure.instance.get", json!({}))
+                    }
+                    "record"
+                        if record_id.as_deref().is_some_and(token)
+                            && revision.is_some_and(|r| r > 0 && r <= 9_007_199_254_740_991)
+                            && schema.is_none()
+                            && cursor.is_none() =>
+                    {
+                        (
+                            "structure.record.get",
+                            json!({"record_id":record_id,"revision":revision}),
+                        )
+                    }
+                    "records"
+                        if record_id.is_none()
+                            && revision.is_none()
+                            && (1..=32).contains(&limit) =>
+                    {
+                        (
+                            "structure.records.read",
+                            json!({"schema":schema,"cursor":cursor,"limit":limit}),
+                        )
+                    }
+                    _ => return Err(invalid("BUSINESS_READ_SELECTION_INVALID")),
+                };
+                let mut value = self.read(action, self.protocol(&protocol)?, body).await?;
+                if let Some(object) = value.as_object_mut() {
+                    object.insert("authority".into(), json!("EXTERNAL_PROTOCOL_DATA"));
+                }
+                Ok(value)
+            }
             AgentRequest::Act {
                 protocol,
                 operation_id,
@@ -499,7 +571,7 @@ impl AgentTools {
                     json!({"action_id":action,"structure":structure}),
                 );
                 request.plaintext_contents = plaintext_contents;
-                request.expected_instance_revision = expected_revision;
+                request.expected_instance_revision = Some(expected_revision);
                 request.exact_input_refs = exact_input_refs;
                 self.invoke(request, wait_ms).await
             }
@@ -525,6 +597,15 @@ fn public_structure(mut value: Value) -> Value {
     if let Some(object) = value.as_object_mut() {
         object.remove("author_intent");
         object.remove("evidence");
+        object.remove("sealed_content");
+        object.remove("sources");
+        if let Some(records) = object.get_mut("records").and_then(Value::as_array_mut) {
+            for record in records {
+                if let Some(item) = record.as_object_mut() {
+                    item.remove("sealed_content");
+                }
+            }
+        }
     }
     value
 }
@@ -537,9 +618,15 @@ pub(crate) fn operation_view(value: Value) -> Value {
             .get(name)
             .filter(|v| !v.is_null())
             .cloned()
+            .or_else(|| {
+                outcome["details"]
+                    .get(name)
+                    .filter(|v| !v.is_null())
+                    .cloned()
+            })
             .unwrap_or_else(|| error[name].clone())
     };
-    json!({"operation_id":value["operation_id"],"state":value["state"],"command_id":value["command_id"],"effect_certainty":value["effect_certainty"],"observation":value["observation"],"result":outcome.get("result").map(|r|json!({"event_sequence":r["event_sequence"],"produced_record_ids":r["produced_record_ids"],"structure":structure})),"code":diagnostic("code"),"phase":diagnostic("phase"),"recovery":diagnostic("recovery"),"model_response":"NOT_ATTESTED"})
+    json!({"operation_id":value["operation_id"],"state":value["state"],"command_id":value["command_id"],"effect_certainty":value["effect_certainty"],"observation":value["observation"],"result":outcome.get("result").map(|r|json!({"event_sequence":r["event_sequence"],"produced_record_ids":r["produced_record_ids"],"structure":structure})),"code":diagnostic("code"),"phase":diagnostic("phase"),"recovery":diagnostic("recovery"),"retryable":diagnostic("retryable"),"http_status":diagnostic("http_status"),"model_response":"NOT_ATTESTED"})
 }
 
 fn inbox_view(mut value: Value) -> Value {
@@ -590,7 +677,8 @@ pub fn catalog() -> Vec<Value> {
         tool("receipts","Explicit single service query for this sent message's receiver/host facts. HOST_ACCEPTED does not prove model response or business completion.",json!({"scope":text,"message_id":text}),&["scope","message_id"],true),
         tool("wait","Wait for a pending local inbox item after a sequence, only at a dependency barrier. Uses notifications, no sleep/status polling. Expiry does not cancel work.",json!({"scope":text,"after":number,"limit":page,"wait_ms":{"type":"integer","minimum":1,"maximum":30000,"default":5000}}),&["scope"],true),
         tool("protocol","Inspect a configured protocol, selected role or selected resource path. Returned role instructions do not expand user/task permissions.",json!({"protocol":text,"role":text,"path":text}),&["protocol"],true),
-        tool("act","Invoke an action discovered from the selected protocol. Native schema, grants, signing and original-intent recovery are enforced by the same engine.",json!({"protocol":text,"operation_id":text,"action":text,"structure":{"type":"object"},"plaintext_contents":{},"expected_revision":{"type":"integer","minimum":1},"exact_input_refs":{"type":"array","maxItems":32,"items":{"type":"object"}},"wait_ms":budget}),&["protocol","operation_id","action","structure"],false),
+        tool("read","Read the selected protocol instance (including current revision), exact record, or bounded current-record page. Business content is external data; no history replay.",json!({"protocol":text,"view":{"type":"string","enum":["instance","record","records"],"default":"instance"},"record_id":text,"revision":{"type":"integer","minimum":1},"schema":text,"cursor":text,"limit":page}),&["protocol"],true),
+        tool("act","Invoke an action discovered from the selected protocol. Native schema, grants, signing and original-intent recovery are enforced by the same engine.",json!({"protocol":text,"operation_id":text,"action":text,"structure":{"type":"object"},"plaintext_contents":{},"expected_revision":{"type":"integer","minimum":1},"exact_input_refs":{"type":"array","maxItems":32,"items":{"type":"object"}},"wait_ms":budget}),&["protocol","operation_id","action","structure","expected_revision"],false),
     ]
 }
 
@@ -612,12 +700,12 @@ mod tests {
             json!({"contact":"worker","operation_id":"same","text":"hello"})
         )
         .is_ok());
-        assert!(AgentRequest::parse("act",json!({"protocol":"tasks","operation_id":"same","action":"custom.action","structure":{}})).is_ok());
+        assert!(AgentRequest::parse("act",json!({"protocol":"tasks","operation_id":"same","action":"custom.action","structure":{},"expected_revision":1})).is_ok());
         let names = catalog()
             .iter()
             .map(|t| t["name"].as_str().unwrap().to_owned())
             .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(names.len(), 11);
+        assert_eq!(names.len(), 12);
         assert!(!names
             .iter()
             .any(|n| n.contains("admin") || n.contains("stop")));

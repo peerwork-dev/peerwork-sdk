@@ -243,7 +243,7 @@ mod tests {
         let task = tokio::spawn(serve(profile(), BufReader::new(sr), sw));
         send(&mut cw, modern(1, "tools/list", json!({}))).await;
         let list = receive(&mut cr).await;
-        assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 11);
+        assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 12);
         assert_eq!(list["result"]["resultType"], "complete");
         send(&mut cw, modern(2, "server/discover", json!({}))).await;
         assert_eq!(
