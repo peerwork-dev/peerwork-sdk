@@ -874,8 +874,17 @@ pub fn cli(args: &[String]) -> Value {
     fn run(args: &[String]) -> Result<Value> {
         if args.is_empty() || args == ["--help"] {
             return Ok(
-                json!({"state":"HELP","availability":"UNRELEASED_CANDIDATE","runtime_dependencies":[],"usage":["peerwork runtime run CONFIG.json","peerwork runtime call CLIENT_ENDPOINT.json REQUEST.json","peerwork runtime admin ADMIN_ENDPOINT.json status|stop"],"authority":"Client endpoints pin identity and capability; no request profile/key selection.","readiness":"LOCAL_READY is not a network/host delivery proof."}),
+                json!({"state":"HELP","availability":"UNRELEASED_CANDIDATE","runtime_dependencies":[],"usage":["peerwork runtime run CONFIG.json","peerwork runtime call CLIENT_ENDPOINT.json REQUEST.json","peerwork runtime admin ADMIN_ENDPOINT.json status|stop","peerwork runtime transfer-engine RUNTIME_CONFIG.json ENGINE_NAME NEW_STATE_DIRECTORY"],"authority":"Client endpoints pin identity and capability; no request profile/key selection.","readiness":"LOCAL_READY is not a network/host delivery proof."}),
             );
+        }
+        if let [verb, config, name, target] = args {
+            if verb == "transfer-engine" {
+                return crate::participant_transfer::transfer_engine(
+                    Path::new(config),
+                    name,
+                    Path::new(target),
+                );
+            }
         }
         let executor = tokio::runtime::Builder::new_current_thread()
             .enable_all()

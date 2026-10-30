@@ -617,6 +617,7 @@ impl ParticipantClient {
                     let owner =
                         SecureStateStore::open(&config.state_directory.join("engine-owner.state"))
                             .map_err(|_| ParticipantError::local("STATE_ALREADY_OWNED", "OPEN"))?;
+                    crate::participant_transfer::check_open(&config.state_directory)?;
                     let journal_owner = SecureStateStore::open(
                         &config
                             .journal_path

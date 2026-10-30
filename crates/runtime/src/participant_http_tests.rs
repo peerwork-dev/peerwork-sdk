@@ -2240,15 +2240,38 @@ async fn runtime_host_dispatch_persists_unknown_and_blocks_only_same_conversatio
     assert_eq!(reported["value"]["reporting"],"SERVICE_CONFIRMED");
     assert_eq!(service.counts().await["journal_reads"],0);
     stop.cancel();server.await.unwrap().unwrap();
-    let stop=KernelCancellationToken::new();let(tx,rx)=oneshot::channel();let server=tokio::spawn(ipc::serve(runtime,stop.clone(),tx));let ready=rx.await.unwrap().unwrap();
+    // Move the complete encrypted inbox/host ledger, not just its cursor.
+    // Original journal/key paths and physical host binding are retained.
+    let transfer_config=worker_dir.path().join("transfer-runtime.json");crate::communication_host::write_private(&transfer_config,&serde_json::to_vec(&runtime).unwrap()).unwrap();
+    let target=worker_dir.path().join("taken-over-engine");
+    let executable=std::env::var("PEERWORK_PARTICIPANT_CLI").expect("rebuilt native CLI required");
+    let copied=Command::new(&executable).args(["runtime","transfer-engine",transfer_config.to_str().unwrap(),"worker",target.to_str().unwrap()]).output().unwrap();
+    let copied:Value=serde_json::from_slice(&copied.stdout).unwrap();assert_eq!(copied["state"],"TRANSFER_READY","{copied}");
+    assert_eq!(ParticipantClient::open(worker_config.clone()).await.err().unwrap().code,"ENGINE_STATE_TRANSFERRED_USE_TARGET");
+    let moved:ipc::RuntimeConfig=serde_json::from_value(crate::communication_store::private_json(std::path::Path::new(copied["runtime_config_path"].as_str().unwrap()),65536).unwrap()).unwrap();
+    assert_eq!(moved.engines[0].journal_path,Some(worker_config.journal_path.clone()));
+    let stop=KernelCancellationToken::new();let(tx,rx)=oneshot::channel();let server=tokio::spawn(ipc::serve(moved,stop.clone(),tx));let ready=rx.await.unwrap().unwrap();
     let endpoint=&ready.client_endpoints["worker"];
     tokio::time::timeout(Duration::from_secs(10),async{loop{
         let status=ipc::call(endpoint,json!({"method":"delivery_status","options":options,"item":third})).await.unwrap();
         if status["ok"]==true{assert_eq!(status["value"]["host"],"HOST_ACCEPTED");break;}
         tokio::time::sleep(Duration::from_millis(50)).await;
     }}).await.unwrap();
+    let retry=Command::new(&executable).args(["runtime","transfer-engine",transfer_config.to_str().unwrap(),"worker",target.to_str().unwrap()]).output().unwrap();
+    assert_eq!(serde_json::from_slice::<Value>(&retry.stdout).unwrap()["job_id"],copied["job_id"]);
+    let original=ipc::call(endpoint,json!({"method":"delivery_status","options":options,"item":first})).await.unwrap();assert_eq!(original["value"]["host"],"RESULT_UNKNOWN");
     tokio::time::sleep(Duration::from_millis(700)).await;
     assert_eq!(fixture.calls().iter().filter(|v|matches!(v["method"].as_str(),Some("turn/start"|"turn/steer"))).count(),2,"restart cannot replay unknown or accepted calls");
+    let fresh=structure(&owner.invoke(native_message("post-transfer-message",&scope,&worker_box,&owner_box,&"C".repeat(43),"Fresh E2EE mail after state handoff"),Duration::from_secs(5)).await.unwrap());
+    let fresh_item=json!({"sequence":fresh["deliveries"][0]["sequence"],"delivery_id":fresh["deliveries"][0]["delivery_id"]});
+    tokio::time::timeout(Duration::from_secs(10),async{loop{
+        let status=ipc::call(endpoint,json!({"method":"delivery_status","options":options,"item":fresh_item})).await.unwrap();
+        if status["value"]["host"]=="HOST_ACCEPTED"{break;}
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }}).await.unwrap();
+    let opened=ipc::call(endpoint,json!({"method":"inbox","options":options,"after":fresh["deliveries"][0]["sequence"].as_u64().unwrap()-1,"limit":1})).await.unwrap();assert_eq!(opened["value"]["items"][0]["opened_message"]["text"],"Fresh E2EE mail after state handoff");
+    assert_eq!(fixture.calls().iter().filter(|v|matches!(v["method"].as_str(),Some("turn/start"|"turn/steer"))).count(),3,"fresh unrelated mail progresses while the original unknown remains pinned");
+    assert_eq!(service.counts().await["journal_reads"],0);
     stop.cancel();server.await.unwrap().unwrap();owner.close().await.unwrap();
 }
 

@@ -20,6 +20,7 @@ pub(crate) mod communication_local_channel;
 pub mod participant;
 mod participant_actions;
 mod participant_migration;
+pub mod participant_transfer;
 pub mod participant_dispatch;
 mod participant_presence;
 mod participant_result;
