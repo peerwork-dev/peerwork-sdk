@@ -204,12 +204,13 @@ impl KernelClient {
             set(&mut command,"issued_at",WireValue::Number(context.server_time_ms() as f64));
             set(&mut command,"expires_at",WireValue::Number(context.expires_at_ms() as f64));
         }
-        let mut persisted = if request.get("plaintext_message").is_some(){self.prepare_plaintext_message(identity,&request,&mut command,message_keys,cancel)?}
+        let prepared = if request.get("plaintext_message").is_some(){self.prepare_plaintext_message(identity,&request,&mut command,message_keys,cancel)?}
             else{self.prepare_plaintext_contents(identity,intent_wire,&mut command,cancel)?};
+        let mut persisted=prepared.is_some();
         drop(preparing);
         let mut phase="SUBMISSION";
         let result = tokio::time::timeout(Duration::from_secs(30),async {
-            let outcome=self.drive_structure_intent(identity,command.clone(),durable,&mut persisted,cancel).await?;
+            let outcome=self.drive_structure_intent(identity,command.clone(),durable,&mut persisted,prepared,cancel).await?;
             match outcome {
                 StructureIntentOutcome::Accepted(result) if command.get("action_id").and_then(WireValue::as_string).as_deref()==Some("structure.workspace.delete")=>{
                     let initial=parse_wire_json_bounded(result.structure_result_json.as_ref().ok_or(KernelClientError::InvalidResult)?.as_bytes(),32,1024*1024).map_err(|_|KernelClientError::InvalidResult)?;
@@ -483,13 +484,13 @@ impl KernelClient {
     /// concurrent producer adopts the saved winner only after decrypting and
     /// comparing its requested bytes; a retry never invents a fresh nonce.
     fn prepare_plaintext_contents(&mut self,identity:&KernelIdentity,wire:&[u8],command:&mut WireValue,cancel:&CancellationToken)
-        ->Result<bool,KernelClientError>{
+        ->Result<Option<SignedPreparedCommand>,KernelClientError>{
         use crate::kernel_intents::{StructureContentKeys,ContentKeyError};
         use peerwork_core::structure_content::StructureContentContext;
         use peerwork_core::prepared_command::verify_structure_author_intent;
         use zeroize::Zeroizing;
         let request=parse_wire_json_bounded(wire,38,peerwork_core::structure_content::MAX_BODY_REQUEST_BYTES).map_err(|_|KernelClientError::InvalidCommand)?;
-        let Some(contents)=request.get("plaintext_contents")else{return Ok(false);};
+        let Some(contents)=request.get("plaintext_contents")else{return Ok(None);};
         if cancel.is_cancelled(){return Err(TransportError::Cancelled.into());}
         if command.get("action_id").and_then(WireValue::as_string).as_deref()!=Some("structure.action"){
             return Err(KernelClientError::InvalidCommand);
@@ -533,7 +534,7 @@ impl KernelClient {
                 // The typed freshly signed bytes were just durably elected.
                 // Do not decrypt/re-sign our own winner. A competing producer
                 // still takes the verified saved-winner path below.
-                Ok(_)=>return Ok(true),Err(JournalError::IntentConflict)=>(),Err(e)=>return Err(e.into()),
+                Ok(_)=>return Ok(Some(prepared)),Err(JournalError::IntentConflict)=>(),Err(e)=>return Err(e.into()),
             }
         }
         let saved=self.journal.verified_pending(&command_id,identity.key_id(),self.discovery.audience_utf16())?.ok_or(JournalError::IncompatibleStore)?;
@@ -550,13 +551,13 @@ impl KernelClient {
         set(&mut updated,"contents",saved_contents.clone());set(command,"body",updated);
         let candidate=prepare_signed_command_wire(command,identity.signing_key(),&self.discovery,None).map_err(|_|KernelClientError::InvalidCommand)?;
         if !same_request(&saved.proof,candidate.proof())?{return Err(JournalError::IntentConflict.into());}
-        Ok(true)
+        Ok(Some(candidate))
     }
 
     /// One durable ciphertext election shared with ordinary actions. The
     /// journal, not a fresh nonce, owns every retry of a message operation.
     fn prepare_plaintext_message(&mut self,identity:&KernelIdentity,request:&WireValue,command:&mut WireValue,opened_keys:Option<crate::kernel_intents::StructureContentKeys>,cancel:&CancellationToken)
-        ->Result<bool,KernelClientError>{
+        ->Result<Option<SignedPreparedCommand>,KernelClientError>{
         use crate::kernel_intents::{StructureContentKeys,ContentKeyError};
         use peerwork_core::{communication::MessageContentContext,prepared_command::verify_structure_author_intent};
         use zeroize::Zeroizing;
@@ -583,7 +584,7 @@ impl KernelClient {
             let elected=self.journal.prepare(&context.command_id,KernelPath::Command,signed.jws(),signed.http_body());
             drop(journal_phase);
             match elected{
-                Ok(_)=>return Ok(true),Err(JournalError::IntentConflict)=>(),Err(e)=>return Err(e.into()),
+                Ok(_)=>return Ok(Some(signed)),Err(JournalError::IntentConflict)=>(),Err(e)=>return Err(e.into()),
             }
         }
         let saved=self.journal.verified_pending(&context.command_id,identity.key_id(),self.discovery.audience_utf16())?.ok_or(JournalError::IncompatibleStore)?;
@@ -594,7 +595,7 @@ impl KernelClient {
         let mut body=command.get("body").cloned().ok_or(KernelClientError::InvalidCommand)?;set(&mut body,"content",saved_content.clone());set(command,"body",body);
         let candidate=prepare_signed_command_wire(command,identity.signing_key(),&self.discovery,None).map_err(|_|KernelClientError::InvalidCommand)?;
         if !same_request(&saved.proof,candidate.proof())?{return Err(JournalError::IntentConflict.into());}
-        Ok(true)
+        Ok(Some(candidate))
     }
 
     /// Fresh selected reads are verified in memory. They are not an ever-
@@ -618,6 +619,7 @@ impl KernelClient {
         mut command: WireValue,
         durable: bool,
         persisted: &mut bool,
+        prepared: Option<SignedPreparedCommand>,
         cancel: &CancellationToken,
     ) -> Result<StructureIntentOutcome, KernelClientError> {
         let preparing=self.transport.phase(crate::transport::ClientPhase::PacketPrepare);
@@ -632,7 +634,11 @@ impl KernelClient {
                 // A cached acceptance may only satisfy this exact business
                 // request. Pending work is compared against the final packet
                 // below, before any submission.
-                let candidate=prepare_signed_command_wire(&command,identity.signing_key(),&self.discovery,None).map_err(|_|KernelClientError::InvalidCommand)?;
+                let fallback;
+                let candidate=if let Some(packet)=prepared.as_ref(){packet}else{
+                    fallback=prepare_signed_command_wire(&command,identity.signing_key(),&self.discovery,None).map_err(|_|KernelClientError::InvalidCommand)?;
+                    &fallback
+                };
                 if !same_request(&saved.proof,candidate.proof())? {return Err(JournalError::IntentConflict.into());}
                 return Ok(StructureIntentOutcome::Accepted(KernelAcceptedResult::from_verified(proof,&saved.proof,None)?));
             }
@@ -643,7 +649,14 @@ impl KernelClient {
         let context=self.fresh_structure_context(cancel).await?;
         set(&mut command,"issued_at",WireValue::Number(context.server_time_ms() as f64));
         set(&mut command,"expires_at",WireValue::Number(context.expires_at_ms() as f64));
-        let signed=prepare_signed_command_wire(&command,identity.signing_key(),&self.discovery,None).map_err(|_|KernelClientError::InvalidCommand)?;
+        // Body preparation already signed and validated the same business
+        // request. Reuse that typed packet while its authorization is fresh;
+        // do not sign a second candidate merely to compare the journal winner.
+        // Expired candidates still receive freshly verified service time.
+        let signed=match prepared {
+            Some(packet) if packet.proof().expires_at_ms()>context.server_time_ms()+5_000=>packet,
+            _=>prepare_signed_command_wire(&command,identity.signing_key(),&self.discovery,None).map_err(|_|KernelClientError::InvalidCommand)?,
+        };
         if durable {
         if self.journal.verified_pending(&command_id,identity.key_id(),self.discovery.audience_utf16())?.is_none() {
             match self.journal.prepare(&command_id,KernelPath::Command,signed.jws(),signed.http_body()) {
@@ -734,9 +747,14 @@ mod tests {
                 let request=parse_wire_json_bounded(&wire,38,peerwork_core::structure_content::MAX_BODY_REQUEST_BYTES).unwrap();
                 let retained=if plaintext.starts_with("First"){Some(StructureContentKeys::open(&path.with_extension("content-keys.sqlite"),TransportConfig::new("https://example.invalid")).unwrap())}else{None};
                 barrier.wait();match client.prepare_plaintext_message(&identity,&request,&mut command,retained,&cancel){
-                    Ok(true)=>Some((plaintext.to_owned(),canonical_wire_value(&command,CanonicalPath::COMMAND).unwrap())),
+                    Ok(Some(packet))=>{
+                        let canonical=canonical_wire_value(&command,CanonicalPath::COMMAND).unwrap();
+                        assert_eq!(packet.proof().command_canonical_json(),canonical);
+                        Some((plaintext.to_owned(),canonical))
+                    },
                     Err(KernelClientError::Store(JournalError::IntentConflict))=>None,
-                    other=>panic!("unexpected election result: {other:?}"),
+                    Ok(None)=>panic!("message election did not return its typed packet"),
+                    Err(error)=>panic!("unexpected election error: {error:?}"),
                 }
             }));
         }
@@ -772,8 +790,10 @@ mod tests {
                 let identity=KernelIdentity::open(&identity_path).unwrap();let cancel=CancellationToken::new();
                 let mut client=KernelClient::open_cached(TransportConfig::new("https://example.invalid"),&path,&[],&cancel).unwrap();
                 let authority=sha256_hex(identity.actor_id().as_bytes());let (_,mut command,_)=client.structure_command(&identity,&authority,&wire).unwrap();
-                barrier.wait();assert!(client.prepare_plaintext_contents(&identity,&wire,&mut command,&cancel).unwrap());
-                canonical_wire_value(&command,CanonicalPath::COMMAND).unwrap()
+                barrier.wait();let packet=client.prepare_plaintext_contents(&identity,&wire,&mut command,&cancel).unwrap().unwrap();
+                let canonical=canonical_wire_value(&command,CanonicalPath::COMMAND).unwrap();
+                assert_eq!(packet.proof().command_canonical_json(),canonical);
+                canonical
             }));
         }
         let commands:Vec<_>=workers.into_iter().map(|h|h.join().unwrap()).collect();

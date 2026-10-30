@@ -1201,8 +1201,11 @@ The dedicated `Native participant qualification` workflow prepares exactly
 Linux x86_64 GNU/glibc2.28, macOS ARM64 and Windows x86_64 candidates. It builds
 the CLI and affected native tests without Node/Python extension builds and
 does not invoke the older experimental publisher. Temporary CI artifacts are
-not signed/notarized public releases. Workflow source and Linux test selectors
-are prepared; actual three-platform CI execution remains pending. Audit the
+not signed/notarized public releases. The first CI run found a JSON version-output packaging error and a Windows
+snapshot flush using a read-only handle; both are corrected in a subsequent
+candidate run. The first macOS job never acquired a runner because of hosted
+ARM64 capacity constraints. Corrected three-platform qualification remains
+pending; do not infer a pass from local Linux tests. Audit the
 emitted loader dependencies and final installation separately from language
 runtime requirements.
 
@@ -1224,3 +1227,12 @@ reported. Neither is pure PostgreSQL execution time. Spans truncated or still
 incomplete at response headers are explicit, and later SSE work cannot change
 the completed snapshot. These observer-enabled shortened runs are diagnostic,
 not a performance gate.
+Fresh encrypted-body preparation now returns its already validated signed
+packet to the submission driver. The driver reuses that typed candidate while
+its authorization retains more than five seconds at verified service time,
+instead of signing the same business request again. It still re-reads and
+authenticates the durable journal winner after prerequisite work, compares all
+non-time command fields, submits the original winner and verifies acceptance.
+Expired candidates still take the trusted-time renewal path; a competing
+ciphertext is never replaced by the preferred in-memory candidate. This is a
+local candidate optimization, not a new performance or release qualification.
