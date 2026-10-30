@@ -1172,7 +1172,35 @@ After these corrections, the full local optimized small-message matrix observed
 acceptance p95 of95.56/121.19/214.71/237.34ms for1/2/4/8 independent program
 identities. All495 messages arrived and decrypted, with exactly495 send requests
 and zero discovery/context/journal requests in the measured intervals. These
-41–42-byte payloads establish the local acceptance slice only:8KiB payloads,
-100ms RTT, actual host spans and installed-platform release qualification remain
-separate. Receiver observation p95 at8 participants was305.23ms from call start;
+41–42-byte payloads establish the initial local acceptance slice only; the
+maximum-payload qualification below is separate. Receiver observation p95 at8
+participants was305.23ms from call start;
 that is not an isolated service-acceptance-to-store measurement.
+
+The subsequent full 8KiB plaintext matrix found unnecessary heartbeat traffic:
+local consumption was forcing a new pulse before its ACK. Consumption now wakes
+the ACK scheduler without changing the lease/presence heartbeat deadline.
+Periodic renewal, expiry checks and actual readiness changes are preserved.
+After this correction, local warm acceptance p95 was91.87/113.29/161.35/297.36ms
+for1/2/4/8 independent identities. With the explicit simulated100ms RTT, it was
+243.84/228.21/249.20/372.06ms. Each full matrix delivered/decrypted495 messages
+with exactly495 send requests and zero discovery/context/journal requests.
+The8-participant delayed-link case **still misses** the300ms target; this is
+not a complete IM release qualification. The full matrix records heartbeat
+counts and rejects a heartbeat per consumed message. Retain the earlier
+317.22ms local /500.70ms delayed-link8-participant misses as their own evidence.
+
+`tests/installed-participant-smoke.py --cli /absolute/path/to/peerwork` exercises
+a copied native executable with synthetic identity, private Unicode paths,
+scoped encrypted local IPC, administrative denial, competing-owner refusal,
+kill/restart and normal shutdown. Python is the maintainer's test driver, not
+an installed client dependency. The current Linux candidate passed this check.
+
+The dedicated `Native participant qualification` workflow prepares exactly
+Linux x86_64 GNU/glibc2.28, macOS ARM64 and Windows x86_64 candidates. It builds
+the CLI and affected native tests without Node/Python extension builds and
+does not invoke the older experimental publisher. Temporary CI artifacts are
+not signed/notarized public releases. Workflow source and Linux test selectors
+are prepared; actual three-platform CI execution remains pending. Audit the
+emitted loader dependencies and final installation separately from language
+runtime requirements.
