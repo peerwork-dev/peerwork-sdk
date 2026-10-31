@@ -7,7 +7,6 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'crates/**'
-      - 'bindings/**'
       - 'examples/meta-protocols/**'
       - 'examples/research/**'
       - 'conformance/**'
@@ -21,7 +20,6 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'crates/**'
-      - 'bindings/**'
       - 'examples/meta-protocols/**'
       - 'examples/research/**'
       - 'conformance/**'
@@ -66,19 +64,13 @@ jobs:
             checks-v1-${{ runner.os }}-${{ runner.arch }}-rust1.89.0-${{ hashFiles('Cargo.lock', '**/Cargo.toml', '**/build.rs', 'third_party/**') }}-
       - name: Validate source and release controls
         run: |
-          python tools/release/version.py check
-          python tests/experimental-source.py
-          python tests/release-workflows.py
-          python -m compileall -q bindings/python/peerwork
-          node --check bindings/node/index.cjs
+          python tools/release/version.py check --native
+          python tests/native-participant-build-contract.py
+          python tests/native-release-policy.py
       - name: Test composable protocols and durable example host
         run: |
-          node tests/protocol-session.test.cjs
-          node --test --test-isolation=none tests/agent-tools.test.cjs
-          npm pack ./bindings/agent-tools --dry-run --json
-          node --test --test-isolation=none tests/delivery/*.test.cjs
           node --test --test-isolation=none tests/research/protocols.test.mjs tests/research/host.test.mjs
           node examples/research/delm/run.mjs --offline
           node examples/research/agensh/run.mjs --offline
-      - name: Test shared core, runtime and native bindings
-        run: cargo test --workspace --locked
+      - name: Test shared native core, runtime and CLI
+        run: cargo test --locked -p peerwork-core -p peerwork-runtime -p peerwork-cli

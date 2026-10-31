@@ -338,7 +338,7 @@ impl AgentTools {
                 let capabilities = self.client.call(json!({"method":"capabilities"})).await?;
                 let bindings = self.client.call(json!({"method":"bindings"})).await?;
                 Ok(
-                    json!({"actor_id":self.client.actor_id(),"origin":self.client.origin(),"availability":"UNRELEASED_CANDIDATE","local_engine":"AUTHENTICATED","remote_or_host_readiness":"NOT_ATTESTED","scopes":self.profile.scopes,"contacts":self.profile.contacts.keys().collect::<Vec<_>>(),"protocols":self.profile.protocols,"bindings":bindings,"capability":capabilities["capability"]}),
+                    json!({"actor_id":self.client.actor_id(),"origin":self.client.origin(),"maturity":"EXPERIMENTAL","local_engine":"AUTHENTICATED","remote_or_host_readiness":"NOT_ATTESTED","scopes":self.profile.scopes,"contacts":self.profile.contacts.keys().collect::<Vec<_>>(),"protocols":self.profile.protocols,"bindings":bindings,"capability":capabilities["capability"]}),
                 )
             }
             AgentRequest::Send {

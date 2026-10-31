@@ -56,6 +56,13 @@ def main():
             assert (result.returncode == 0) == success, 'unexpected native exit status'
             return json.loads(result.stdout)
 
+        # Interface maturity is a property of these bytes. Publication and
+        # remote/host readiness cannot be inferred from a compiled help string.
+        for words in [('agent', '--help'), ('agent', 'tools'), ('runtime', '--help')]:
+            description = run(*words)
+            assert description['maturity'] == 'EXPERIMENTAL'
+            assert 'availability' not in description
+
         identity = root / 'synthetic identity.state'
         created = run('identity', 'create', identity)
         assert set(created) == {'actor_id', 'key_id'}, 'identity exposed unexpected fields'
@@ -91,6 +98,8 @@ def main():
             capability = run('runtime', 'call', endpoint, capability_request)
             assert capability['ok'] and capability['value']['actor_id'] == created['actor_id']
             assert capability['value']['admin'] is False, 'client gained admin capability'
+            assert capability['value']['maturity'] == 'EXPERIMENTAL'
+            assert 'availability' not in capability['value']
             denied = run('runtime', 'admin', endpoint, 'stop', success=False)
             assert denied.get('ok') is False and process.poll() is None, 'client stopped the runtime'
             competing = run('runtime', 'run', config, success=False)
