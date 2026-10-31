@@ -50,7 +50,7 @@ impl Service {
             bootstrap,
         }
     }
-    async fn config(&self, value: Value) {
+    pub(crate) async fn config(&self, value: Value) {
         reqwest::Client::new()
             .post(format!("{}/__test/config", self.origin))
             .body(value.to_string())

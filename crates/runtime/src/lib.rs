@@ -22,6 +22,7 @@ mod participant_owner;
 mod participant_actions;
 mod participant_migration;
 pub mod participant_transfer;
+pub mod participant_rebind;
 pub mod participant_legacy_delivery;
 pub mod participant_dispatch;
 mod participant_presence;

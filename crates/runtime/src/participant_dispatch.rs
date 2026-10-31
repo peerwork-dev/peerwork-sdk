@@ -34,7 +34,7 @@ fn error(code: &str) -> ParticipantError {
     ParticipantError::local(code, "HOST_DISPATCH")
 }
 impl HostConfig {
-    fn key(&self) -> Result<String> {
+    pub(crate) fn key(&self) -> Result<String> {
         if !identifier(&self.name) || self.subscriptions.is_empty() || self.subscriptions.len() > 8
         {
             return Err(error("HOST_CONFIG_INVALID"));

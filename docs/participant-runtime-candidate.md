@@ -40,6 +40,57 @@ awaits the keepers' normal final checkpoint/close before releasing ownership.
 
 ## Program contract implemented so far
 
+### Explicit physical-session replacement
+
+The candidate exposes `participant_rebind::rebind_host(config_path, request)`
+and `peerwork runtime rebind-host /absolute/runtime.json /absolute/request.json`.
+Stop the owning runtime and embedded clients first. The protected request is:
+
+```json
+{
+  "format": "peerwork.host-rebind.v1",
+  "operation_id": "replace-worker-session-1",
+  "engine": "worker-identity",
+  "host": "worker-session",
+  "adapter": {
+    "kind": "codex",
+    "endpoint": "unix:///absolute/selected-app-server.sock",
+    "thread_id": "explicit-existing-thread",
+    "expected_session_id": "explicit-existing-session"
+  }
+}
+```
+
+The selection addresses one configured host group and one identity/Origin
+engine, with at most eight existing mailbox subscriptions. A host shared by
+different engines or duplicated across equivalent host entries must first be
+selected as an unambiguous group; the command refuses that selection before
+claiming a mailbox. Normal runtime operation still supports multiple identities.
+
+One call validates the existing target adapter and each scoped bridge grant,
+flushes original pending host reports, and signs an exact same-device replacement
+for each selected mailbox. It then commits durable local binding history and
+the target host descriptor, and atomically updates the runtime configuration.
+The original identity, receiver keys, inbox cursors, messages and host-call facts
+are retained. An unknown old input stays at its original binding and is never
+re-injected into the replacement session. This operation performs indexed
+selected lookups and internally drains bounded local pages; it does not replay
+workspace history or start a replacement model process.
+
+The sealed job records each original claim before submission. On interruption,
+repeat the same command with the same request and `operation_id`; a missing
+response cannot justify a fresh claim. A versioned engine-owner fence prevents
+the ordinary engine, transfer and unsupported older readers from starting
+during partial replacement. Unrelated configuration edits are refused rather
+than overwritten. A completed retry returns its historical result before
+opening the engine or contacting a host, preserving later work.
+
+`HOST_REBIND_READY` means local binding/configuration commit completed. Start
+the runtime normally to observe current receiver/host readiness. It does not
+attest model execution, cancel old model work or establish IM performance.
+The service must advertise `native-mailbox-rebind-v1`; existing production
+availability and cross-platform qualification are not implied by this guide.
+
 | Entry | Candidate behavior |
 | --- | --- |
 | `ParticipantClient::open` | Validate explicit actor, Origin, identity and state ownership; no implicit identity creation. |
