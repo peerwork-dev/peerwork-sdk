@@ -106,11 +106,11 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root',type=Path,default=Path(__file__).resolve().parents[2])
     sub=parser.add_subparsers(dest='operation',required=True)
-    check_parser=sub.add_parser('check');check_parser.add_argument('--tag');check_parser.add_argument('--plain',action='store_true')
+    check_parser=sub.add_parser('check');check_parser.add_argument('--tag');check_parser.add_argument('--plain',action='store_true');check_parser.add_argument('--native',action='store_true',help='Validate only the CLI/core/runtime release and selected three native targets')
     sync_parser=sub.add_parser('sync');sync_parser.add_argument('--version')
     args=parser.parse_args()
     try:
-        result=check(args.root,args.tag) if args.operation=='check' else sync(args.root,args.version)
+        result=(check_native(args.root,args.tag) if args.native else check(args.root,args.tag)) if args.operation=='check' else sync(args.root,args.version)
     except (ReleaseError,KeyError,ValueError) as error:
         parser.exit(2,'release version refused: '+str(error)+'\n')
     print(result['version'] if getattr(args,'plain',False) else json.dumps(result,sort_keys=True))

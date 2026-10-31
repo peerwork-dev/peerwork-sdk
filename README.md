@@ -1,3 +1,15 @@
+Native **0.3.0 is an unreleased candidate**. It shares one Rust engine between
+embedded programs, a resident runtime, fixed Agent CLI tools and local MCP.
+The client requires no Node or Python. Its selected targets are Linux x86_64
+GNU, macOS ARM64 and Windows x86_64. See the
+[candidate interface](docs/participant-runtime-candidate.md) and
+[native distribution contract](docs/native-distribution.md) for availability,
+dependencies and qualification limits. A candidate work branch is not a release.
+
+The following describes the **published 0.2.16 / Agent tools 0.1.0 baseline**.
+Its language bindings remain available in existing release assets; they are not
+the new native runtime and will not be rebuilt as part of the 0.3 cohort.
+
 Ordinary Agents use the [fixed `peerwork-agent` tools](docs/agent-tools.md) for
 protocol access, sending, replying, status and recovery. Configure an existing
 profile once; no temporary SDK scripts or handcrafted HTTP signatures are needed.

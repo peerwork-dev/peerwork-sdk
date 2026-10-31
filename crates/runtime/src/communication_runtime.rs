@@ -348,7 +348,7 @@ impl Runtime {
                 ClientRequest::Recover{operation_id}=>serde_json::to_value(client.recover(&operation_id).await?).map_err(|_|local("IPC_RESPONSE_INVALID")),
                 ClientRequest::Operations{after,limit}=>client.operations(&after,limit).await,
                 ClientRequest::Bindings=>serde_json::to_value(client.watch_bindings().await?).map_err(|_|local("IPC_RESPONSE_INVALID")),
-                ClientRequest::Capabilities=>Ok(json!({"format":"peerwork.participant-capability.v1","actor_id":client.actor_id(),"origin":client.origin(),"capability":client.capability(),"admin":false,"availability":"UNRELEASED_CANDIDATE"})),
+                ClientRequest::Capabilities=>Ok(json!({"format":"peerwork.participant-capability.v1","actor_id":client.actor_id(),"origin":client.origin(),"capability":client.capability(),"admin":false,"maturity":"EXPERIMENTAL"})),
             }
         }.await;
         response(id, value)
@@ -882,7 +882,7 @@ pub fn cli(args: &[String]) -> Value {
         }
         if args.is_empty() || args == ["--help"] {
             return Ok(
-                json!({"state":"HELP","availability":"UNRELEASED_CANDIDATE","runtime_dependencies":[],"usage":["peerwork runtime run CONFIG.json","peerwork runtime call CLIENT_ENDPOINT.json REQUEST.json","peerwork runtime admin ADMIN_ENDPOINT.json status|stop","peerwork runtime transfer-engine RUNTIME_CONFIG.json ENGINE_NAME NEW_STATE_DIRECTORY","peerwork runtime rebind-host RUNTIME_CONFIG.json REQUEST.json","peerwork runtime recover-host-rebind RUNTIME_CONFIG.json REQUEST.json RECOVERY.json","peerwork runtime import-node-delivery SELECTION.json","peerwork runtime legacy-evidence SELECTION.json RECORD_KEY"],"authority":"Client endpoints pin identity and capability; no request profile/key selection.","readiness":"LOCAL_READY is not a network/host delivery proof."}),
+                json!({"state":"HELP","maturity":"EXPERIMENTAL","runtime_dependencies":[],"usage":["peerwork runtime run CONFIG.json","peerwork runtime call CLIENT_ENDPOINT.json REQUEST.json","peerwork runtime admin ADMIN_ENDPOINT.json status|stop","peerwork runtime transfer-engine RUNTIME_CONFIG.json ENGINE_NAME NEW_STATE_DIRECTORY","peerwork runtime rebind-host RUNTIME_CONFIG.json REQUEST.json","peerwork runtime recover-host-rebind RUNTIME_CONFIG.json REQUEST.json RECOVERY.json","peerwork runtime import-node-delivery SELECTION.json","peerwork runtime legacy-evidence SELECTION.json RECORD_KEY"],"authority":"Client endpoints pin identity and capability; no request profile/key selection.","readiness":"LOCAL_READY is not a network/host delivery proof."}),
             );
         }
         if let [verb,path]=args {

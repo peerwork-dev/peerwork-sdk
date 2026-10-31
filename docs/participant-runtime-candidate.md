@@ -1,9 +1,10 @@
 # Participant SDK and resident runtime candidate
 
 **Unreleased source candidate.** SDK 0.2.16 and Agent tools 0.1.0 do not ship
-this interface. Native mail and automatic program watch are implemented in this
-candidate; this document does not announce production availability, new host
-connectors or a qualified cross-platform release.
+this interface. Production discovery now advertises the native mailbox and
+physical-session rebind service capabilities. Native mail and automatic program
+watch are implemented in this client candidate; this document does not announce
+a published client release or qualified real-host IM performance.
 
 The native candidate is versioned 0.3.0. It selects Linux x86_64 GNU/glibc2.28,
 macOS ARM64 and Windows x86_64; optional language-binding packages are not part
@@ -137,8 +138,9 @@ overwrite later engine/configuration writes.
 `HOST_REBIND_READY` means local binding/configuration commit completed. Start
 the runtime normally to observe current receiver/host readiness. It does not
 attest model execution, cancel old model work or establish IM performance.
-The service must advertise `native-mailbox-rebind-v1`; existing production
-availability and cross-platform qualification are not implied by this guide.
+The service must advertise `native-mailbox-rebind-v1`; check the selected
+Origin rather than assuming every deployment provides it. Cross-platform
+packaging qualification is separate from real-host readiness and performance.
 
 | Entry | Candidate behavior |
 | --- | --- |

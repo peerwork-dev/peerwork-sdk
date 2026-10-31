@@ -102,7 +102,7 @@ fn main() -> ExitCode {
             match fs::File::open(path).and_then(|file|{let mut input=String::new();file.take(65537).read_to_string(&mut input)?;Ok(input)}){Ok(input)=>{let out=peerwork_runtime::legacy_migration::capture_cache_json(&input);let ok=serde_json::from_str::<serde_json::Value>(&out).ok().is_some_and(|v|v["ok"]==true);println!("{out}");if ok{ExitCode::SUCCESS}else{ExitCode::FAILURE}},Err(_)=>ExitCode::FAILURE}
         },
         [noun,help] if noun=="conversion"&&help=="--help"=>{
-            println!("{}",serde_json::json!({"schema":"peerwork.owner-checkpoint-help.v1","availability":"UNRELEASED_CANDIDATE",
+            println!("{}",serde_json::json!({"schema":"peerwork.owner-checkpoint-help.v1","maturity":"EXPERIMENTAL",
                 "usage":"peerwork conversion prepare|inspect-cache|plan-cache|prepare-cache REQUEST_JSON_FILE","network_requests":"0 by default; explicit refresh_source may read the pinned migration source",
                 "inspect_cache":"Pause Owner watchers first. Requires state_dir, workspace_id, report_path (inside selected Owner directory); optional expected_actor. Writes only a protected field/type report with no current field values; only metadata is returned. Never submits a conversion.",
                 "required_fields":["identity_path","expected_actor","origin","audience","source_path","plan_path","output_path"],

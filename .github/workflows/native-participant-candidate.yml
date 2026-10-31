@@ -59,6 +59,7 @@ jobs:
         shell: bash
         run: |
           python tests/native-participant-build-contract.py
+          python tests/native-release-policy.py
           python tools/release/qualify-participant.py --target linux-x64-gnu
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: ${{ always() }}
@@ -116,6 +117,7 @@ jobs:
         shell: bash
         run: |
           python tests/native-participant-build-contract.py
+          python tests/native-release-policy.py
           python tools/release/qualify-participant.py --target '${{ matrix.target }}'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: ${{ always() }}

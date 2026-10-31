@@ -9,7 +9,7 @@ fn invalid() -> ParticipantError {
     ParticipantError::local("AGENT_ARGUMENT_INVALID_SEE_HELP", "AGENT_CLI")
 }
 pub fn help() -> Value {
-    json!({"state":"HELP","availability":"UNRELEASED_CANDIDATE","runtime_dependencies":[],"usage":[
+    json!({"state":"HELP","maturity":"EXPERIMENTAL","runtime_dependencies":[],"usage":[
 "peerwork agent tools",
 "peerwork agent --profile PROFILE.json context",
 "peerwork agent --profile PROFILE.json send CONTACT --id OPERATION_ID [--text-file FILE] < message.txt",
@@ -75,7 +75,7 @@ pub fn cli(args: &[String]) -> Value {
         return help();
     }
     if args == ["tools"] {
-        return json!({"tools":agent_tools::catalog(),"availability":"UNRELEASED_CANDIDATE"});
+        return json!({"tools":agent_tools::catalog(),"maturity":"EXPERIMENTAL"});
     }
     let run = || -> Result<Value> {
         let [flag, path, rest @ ..] = args else {
