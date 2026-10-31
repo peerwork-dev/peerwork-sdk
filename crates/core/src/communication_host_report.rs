@@ -102,7 +102,7 @@ pub(super) fn verify(
     } else {
         return Err(CommunicationError);
     };
-    if state != expected || states.contains("NOT_SENT") && states.len() != 1 {
+    if state != expected || states.contains("NOT_SENT") && (states.contains("HOST_QUEUED") || states.contains("HOST_ACCEPTED")) {
         return Err(CommunicationError);
     }
     Ok(())

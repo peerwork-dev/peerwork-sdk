@@ -635,17 +635,16 @@ impl ParticipantClient {
                     )
                     .map_err(|_| ParticipantError::local("ORIGIN_INVALID", "OPEN"))?;
                     let authority=config.authority.clone().unwrap_or_else(||sha256_hex(identity.actor_id().as_bytes()));
-                    let binding=json!({"format":"peerwork.participant-owner.v1","actor":identity.actor_id(),"key":identity.key_id(),"origin":origin,"authority":authority}).to_string();
+                    let binding=crate::participant_owner::logical_binding(&identity,&origin,&authority);
                     match owner.read_exact().map_err(|_|ParticipantError::local("STATE_BINDING_INVALID","OPEN"))?{
-                        Some(saved) if saved!=binding.as_bytes()=>return Err(ParticipantError::local("STATE_BINDING_MISMATCH","OPEN")),
-                        Some(_)=>(),
+                        Some(_)=>crate::participant_owner::validate_ready(&owner,&binding)?,
                         None=>{
                             // Earlier candidate indexes used only the default
                             // authority. They cannot be silently rebound.
                             if config.authority.as_ref().is_some_and(|a|a!=&sha256_hex(identity.actor_id().as_bytes()))&&config.state_directory.join("participant.sqlite").is_file(){
                                 return Err(ParticipantError::local("STATE_AUTHORITY_UNPINNED","OPEN"));
                             }
-                            owner.write_exact(binding.as_bytes()).map_err(|_|ParticipantError::local("STATE_BINDING_FAILED","OPEN"))?;
+                            owner.write_exact(&binding).map_err(|_|ParticipantError::local("STATE_BINDING_FAILED","OPEN"))?;
                         }
                     }
                     let store = Store::open(&config.state_directory, &identity, &origin)?;

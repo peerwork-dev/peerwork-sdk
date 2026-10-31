@@ -5,6 +5,11 @@ this interface. Native mail and automatic program watch are implemented in this
 candidate; this document does not announce production availability, new host
 connectors or a qualified cross-platform release.
 
+The native candidate is versioned 0.3.0. It selects Linux x86_64 GNU/glibc2.28,
+macOS ARM64 and Windows x86_64; optional language-binding packages are not part
+of this native release cohort. Candidate CI installation and dependency checks
+do not by themselves announce a published release or production availability.
+
 ## Shared engine
 
 A program participant binds an explicit identity, service Origin and protected
@@ -39,6 +44,101 @@ automatic WAL checkpoints remain enabled. After owned work stops, engine close
 awaits the keepers' normal final checkpoint/close before releasing ownership.
 
 ## Program contract implemented so far
+
+### Explicit physical-session replacement
+
+The candidate exposes `participant_rebind::rebind_host(config_path, request)`
+and `peerwork runtime rebind-host /absolute/runtime.json /absolute/request.json`.
+Stop the owning runtime and embedded clients first. The protected request is:
+
+```json
+{
+  "format": "peerwork.host-rebind.v1",
+  "operation_id": "replace-worker-session-1",
+  "engine": "worker-identity",
+  "host": "worker-session",
+  "adapter": {
+    "kind": "codex",
+    "endpoint": "unix:///absolute/selected-app-server.sock",
+    "thread_id": "explicit-existing-thread",
+    "expected_session_id": "explicit-existing-session"
+  }
+}
+```
+
+The selection addresses one configured host group and one identity/Origin
+engine, with at most eight existing mailbox subscriptions. A host shared by
+different engines or duplicated across equivalent host entries must first be
+selected as an unambiguous group; the command refuses that selection before
+claiming a mailbox. Normal runtime operation still supports multiple identities.
+
+One call validates the existing target adapter and each scoped bridge grant,
+flushes original pending host reports, and signs an exact same-device replacement
+for each selected mailbox. It then commits durable local binding history and
+the target host descriptor, and atomically updates the runtime configuration.
+The original identity, receiver keys, inbox cursors, messages and host-call facts
+are retained. An unknown old input stays at its original binding and is never
+re-injected into the replacement session. This operation performs indexed
+selected lookups and internally drains bounded local pages; it does not replay
+workspace history or start a replacement model process.
+
+The sealed job records each original claim before submission. On interruption,
+repeat the same command with the same request and `operation_id`; a missing
+response cannot justify a fresh claim. A versioned engine-owner fence prevents
+the ordinary engine, transfer and unsupported older readers from starting
+during partial replacement. Unrelated configuration edits are refused rather
+than overwritten. A completed retry returns its historical result before
+opening the engine or contacting a host, preserving later work.
+
+A definitive remote refusal is not transport uncertainty. The candidate retains
+the original job and fence on that refusal. An explicit operator can call
+`participant_rebind::recover_host_rebind` or
+`peerwork runtime recover-host-rebind /absolute/runtime.json /absolute/request.json /absolute/recovery.json`.
+The protected recovery file is:
+
+```json
+{
+  "format": "peerwork.host-rebind-recovery.v1",
+  "decision_id": "retry-after-fixing-access-1",
+  "action": "RETRY_REJECTED"
+}
+```
+
+Use a stable `decision_id` for each explicit decision and repeat it after
+interruption. Reusing that ID with a different action is refused. Recovery
+checks the original journal's exact signed request and digest-bound service
+receipt locally; an HTTP status, missing response or current mailbox snapshot
+cannot prove a replacement had no effect.
+
+- `RETRY_REJECTED` assigns a new claim ID only to a verified
+  `REJECTED_NO_EFFECT` attempt. Its original packet and receipt remain in the
+  journal and its digest is retained by the sealed job. Confirmed subscriptions
+  are preserved; unknown claims keep their original IDs. If the same original
+  receiver/destination has a newer epoch, the explicit retry may refresh only
+  that epoch after a verified selected read. It cannot change identity,
+  membership, receiver key, binding version or selected target.
+- `ABORT` is allowed only if every frozen replacement is locally proven not
+  submitted or has a verified no-effect receipt, and none has committed. It
+  verifies the original mailbox binding, closes its old lease, restores each
+  saved watch's enabled/disabled state, then releases the maintenance fence.
+  `HOST_REBIND_ABORTED` retains the original configuration, keys, cursors and
+  uncertain original host calls. Its destination digest describes the attempted
+  target, not a live current binding. It does not cancel old model work or
+  remove peer messages.
+
+Unknown replacement outcomes refuse both cancellation and fresh claim IDs;
+resume the original `rebind-host` operation to reconcile them. A partially
+committed multi-mailbox replacement refuses rollback and must finish forward.
+Retry decisions are bounded at16 per job; abort retains its own terminal slot.
+The sealed job payload remains capped at512KiB. Definitive refusals require repairing their
+cause before another explicit retry. Completed or aborted observations do not
+overwrite later engine/configuration writes.
+
+`HOST_REBIND_READY` means local binding/configuration commit completed. Start
+the runtime normally to observe current receiver/host readiness. It does not
+attest model execution, cancel old model work or establish IM performance.
+The service must advertise `native-mailbox-rebind-v1`; existing production
+availability and cross-platform qualification are not implied by this guide.
 
 | Entry | Candidate behavior |
 | --- | --- |
@@ -1305,3 +1405,148 @@ counters are reported separately and must be checked for exactly one operation
 before attribution. Counter resets are explicit null/non-monotonic values;
 nested phases overlap and lifetime maxima are not subtracted. This mode always
 disables acceptance-target qualification, even in an optimized build.
+
+The resident-WAL source candidate's complete quiet 8 KiB / nominal100ms RTT
+matrix delivered and opened all495 messages. Warm acceptance p95 for1/2/4/8
+participants was183.64/196.00/240.13/286.45ms. All tails remain in the report,
+including a640.50ms one-participant maximum; passing p95 does not hide that tail.
+The affected native journal/participant/store and HTTP/process runs passed26
+and15 cases respectively (the journal count includes a subprocess helper).
+These are candidate program-transport results, not installed-tool/host or
+public-network release qualification.
+
+A separate observer-enabled matrix bounds acceptance-to-receiver-store rather
+than claiming a directly measured internal span. For each matched warm message,
+subtract its disjoint completed pre-POST work and a fixture-enforced minimum
+uplink from that same message's call-to-receiver observation. Acceptance must
+follow that pre-POST work/uplink, and observation follows durable storage, so
+the remaining duration is a conservative upper bound. Cross-process timestamps
+and separately calculated quantiles are never subtracted. The fixture's opt-in
+`PEERWORK_FIXTURE_MIN_UPLINK=1` rechecks its monotonic timer deadline after early
+wakes. `tests/fixture-delivery-bound.py` requires attributable phase counts and
+retains every warm sample. In the separate495-message run, the8-participant
+bound was p95<=199.39ms and p99<=240.98ms; all1/2/4/8 receiver bounds met their
+250ms/1s goals. Cold samples remain separate. This does not measure host ACK or
+model response, and observer runs do not qualify the quiet acceptance target.
+
+## Selected published Node delivery evidence import (unreleased)
+
+The native maintenance API accepts one explicit stopped-installation selection.
+`peerwork runtime import-node-delivery SELECTION.json` retires that old
+`ReceiverStore` constructor binding and archives its local control/delivery
+records under the selected original identity. Each durable page contains at
+most32 records. The command finishes pages internally; an interrupted command
+resumes the same selection. `import_page` is available for a caller that owns
+its own bounded maintenance loop. This is an offline operation, not a service
+request or an automatic startup migration.
+
+```json
+{
+  "format": "peerwork.legacy-delivery-import.v1",
+  "source_directory": "/owned/stopped-node-receiver",
+  "archive_directory": "/owned/native-legacy-evidence",
+  "identity_path": "/owned/original-peerwork-identity",
+  "expected_actor": "ORIGINAL_ACTOR_ID",
+  "expected_binding_digest": "EXACT_64_HEX_OLD_CONSTRUCTOR_DIGEST",
+  "kind": "RECEIVER",
+  "source_stopped": true
+}
+```
+
+Both directories and the selection/identity must satisfy native private-state
+checks. `expected_binding_digest` is the exact old `control.binding` value;
+it is not a hash of a reordered JSON configuration. Select it together with
+the intended original installation, actor and host configuration. The digest
+is a local selection pin, not a service signature or proof that a record is
+current. A retained `receiver.lock` causes refusal: the importer never deletes
+the old lock or infers process death from missing PID visibility. Stop the
+original owner in its own environment before importing. Retirement changes
+only the old constructor binding and adds its explicit retirement marker;
+old event records and receipts stay in place. A selected recovery archive is
+bounded to4096 records/32MiB and refuses further writes at capacity.
+
+A wrong source binding is rejected before binding an empty archive. Correct
+that unsubmitted selection and reuse its chosen archive directory. After an
+archive has accepted pages, its exact selection remains pinned; do not change
+identity, source, archive or binding to work around an interrupted import.
+
+`kind: "BRIDGE"` additionally retains the exact original `deliveries.json`
+and its at-most256 opaque bridge rows. Those old rows contain hashes but not
+necessarily the original binding or message; importing them never invents a
+workspace, recipient or verified native call. A later changed bridge ledger is
+refused. Use the same selection for repeat/resume, without clearing old data.
+
+`peerwork runtime legacy-evidence SELECTION.json delivery:73` decrypts exactly
+one archived record. Control keys use `control:KEY`; bridge rows use
+`bridge:INDEX`, with exact original ledger bytes at `bridge:original`.
+Output is explicitly `LOCAL_LEGACY_EVIDENCE_NOT_REVERIFIED`. Original event
+strings, status, receipt and body hash remain distinct; old `ACKED` or
+`HOST_QUEUED` never becomes model completion. Unknown results remain unknown.
+The archive creates no native inbox input, host call or remote acknowledgement.
+Original-host receipt reconciliation and physical-session rebind still require
+their separate qualified paths; this import alone does not establish them.
+
+## Local physical binding commit (internal candidate)
+
+The native inbox now has an internal local commit for independently verified
+`native-mailbox-rebind-v1` results. It requires the original watch to be stopped,
+all original reports to have been confirmed and exact old mailbox pins to match.
+It preserves receiver key ciphertext, message/control cursors, encrypted frames
+and original-call evidence. It accepts no unsigned remote result and performs
+no host/network IO. The operator workflow that stops the runtime, uploads
+reports, resumes the original signed replacement and switches host configuration
+is not yet exposed as a complete SDK/CLI operation.
+
+Pending waiting work is copied in durable pages of at most32 entries. A persisted
+`COPYING` fence refuses both old and new watch attachment after interruption.
+The final mailbox/watch/host pointer swap and `COMMITTED` marker share one local
+transaction. Repeating that exact operation after commitment never rewrites
+later cursors or state. The next ordinary restart has its own claim selection;
+the verified original replacement remains a separate durable operation.
+
+Each changed physical binding gets a distinct ordering lane generation. Old
+unknown calls cannot stall a new generation, and their original input cannot
+be automatically injected again. Previously unattempted waiting work keeps its
+order and gets a scheduled new lane head. Original calls remain accessible by
+their exact IDs and scopes. Historical facts can upload through the current
+receiver lease without being attributed to the new host. A historical negative
+resolution remains evidence only and does not automatically enqueue the input.
+
+Local retirement frontiers are scoped by physical host. The old single-host
+metadata table (at most256 mailbox rows) is copied once transactionally into
+the new index, without reading event history; the old table remains retained.
+Per-host terminal-call collection uses its own covering index instead of
+filtering across unrelated historical bindings. Rebind metadata shares the
+existing32MiB/65536-row host-state budget.
+
+The service and native verifier also retain `RESULT_UNKNOWN` followed by a
+bound-host `NOT_SENT` proof as two compatible observations. Neither observation
+is erased; contradictory queued/accepted facts remain forbidden. This is a
+recipient attestation, never a host signature or model-completion claim.
+
+## Versioned engine-owner maintenance exclusion (internal candidate)
+
+The operator workflow can now fence a stopped engine with
+`peerwork.participant-owner.v2` before any remote replacement. The descriptor
+retains the exact old logical actor/key/Origin/authority binding separately
+from maintenance state. It is not an encryption pin; no journal, inbox frame,
+receiver key or body key is re-encrypted when its version changes.
+
+A pending maintenance descriptor refuses ordinary engine opening and explicit
+engine transfer before store recovery or host/network startup. The error gives
+the original operation ID and `RESUME_SAME_HOST_REBIND_OPERATION`. Resumption
+must match the selection digest and expected owner revision. Completion retains
+the v2 descriptor, so an actual pre-upgrade reader continues to refuse it after
+maintenance as well. The selected new reader can reopen it normally. A stale
+operation cannot clear a newer pending operation or fence an engine again after
+newer maintenance has completed.
+
+Engine transfer uses the same owner validation and copies the completed v2
+descriptor exactly; it never silently downgrades the target to v1. Original
+identity/journal/key paths and fixed store bindings remain unchanged. Existing
+v1 owner data is accepted for this explicit upgrade; this does not add a legacy
+online execution mode or fallback. Three native tests, the retained actual v1
+binary refusal check and existing transfer cases are qualification evidence in
+the work record, not a published release or complete rebind CLI. The public
+job that couples this fence, report flushing, remote continuation, local commit
+and selected host configuration update is still being integrated.

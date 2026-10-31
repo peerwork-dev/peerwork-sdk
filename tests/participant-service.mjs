@@ -6,7 +6,7 @@ import {join} from 'node:path';
 import {once} from 'node:events';
 import {writeFileSync} from 'node:fs';
 import {setTimeout as pause} from 'node:timers/promises';
-import {delayFixtureResponse} from './fixture-latency.mjs';
+import {delayFixtureResponse,minimumFixtureDelay} from './fixture-latency.mjs';
 import {observeFixtureQueries} from './fixture-query-metrics.mjs';
 
 const root=process.env.PEERWORK_STRUCTURE_REFERENCE_ROOT;
@@ -20,6 +20,7 @@ let reportQuotaBlocked=false;const reportQuotaLimits=new Map();
 let clockOffset=0;const ticker=setInterval(()=>{f.clock.now=Date.now()+clockOffset;},10);
 const app=createPostgresControlApp(f.kernel,{source:()=> '127.0.0.1'});
 let offline=false,dropAction=null,delayName=null,delayAction=null,release=null,streamDurationOnce=0;
+let rejectNextRebindMailbox=null;
 const counts={commands:0,discovery:0,context:0,journal_reads:0,dropped:0,native_streams:0,delayed:0,claim_commands:[],actions:{}};
 const commandIds=new Set();
 // Explicit maintainer measurement only. Buffer closed metadata in memory and
@@ -30,6 +31,8 @@ const queryObserver=process.env.PEERWORK_PARTICIPANT_QUERY_TIMINGS==='1'?observe
 const timings=[];let timingsTruncated=false;
 const linkRttMs=Number(process.env.PEERWORK_FIXTURE_LINK_RTT_MS??0);
 if(!Number.isSafeInteger(linkRttMs)||linkRttMs<0||linkRttMs>1000)throw Error('invalid explicit fixture RTT');
+const minimumUplink=process.env.PEERWORK_FIXTURE_MIN_UPLINK==='1';
+if(!['0','1'].includes(process.env.PEERWORK_FIXTURE_MIN_UPLINK??'0'))throw Error('invalid minimum uplink flag');
 const handle=async request=>{
  const requestStarted=performance.now();
  const path=new URL(request.url).pathname;
@@ -43,6 +46,7 @@ const handle=async request=>{
   if(options.fence_mailbox!==undefined)await f.store.pool.query(`UPDATE "${f.schema}".communication_mailboxes SET epoch=epoch+1,lease_until=0,ready=false WHERE mailbox_id=$1`,[options.fence_mailbox]);
   if(options.clock_offset_ms!==undefined){clockOffset=options.clock_offset_ms;f.clock.now=Date.now()+clockOffset;}
   if(options.drop_action!==undefined)dropAction=options.drop_action;
+  if(options.reject_next_rebind_mailbox!==undefined)rejectNextRebindMailbox=options.reject_next_rebind_mailbox;
   if(options.delay_name!==undefined)delayName=options.delay_name;
   if(options.delay_action!==undefined)delayAction=options.delay_action;
   if(options.stream_duration_once_ms!==undefined)streamDurationOnce=options.stream_duration_once_ms;
@@ -66,6 +70,10 @@ const handle=async request=>{
   counts.commands++;commandIds.add(command.command_id);
   counts.actions[command.action_id]=(counts.actions[command.action_id]??0)+1;
   if(command.action_id==='structure.mailbox.claim')counts.claim_commands.push({command_id:command.command_id,receiver_id:command.body.receiver_id,replace:command.body.replace,expected_epoch:command.body.expected_epoch});
+  if(command.action_id==='structure.mailbox.claim'&&command.body.replace===true&&command.body.mailbox_id===rejectNextRebindMailbox){
+   rejectNextRebindMailbox=null;
+   await f.store.pool.query(`UPDATE "${f.schema}".communication_mailboxes SET epoch=epoch+1,lease_until=0,ready=false WHERE mailbox_id=$1`,[command.body.mailbox_id]);
+  }
   if(delayAction===command.action_id){delayAction=null;counts.delayed++;await new Promise(resolve=>{release=resolve;});}
   if(reportQuotaBlocked&&command.action_id==='structure.mailbox.report'){
    const workspace=command.workspace_id;
@@ -103,11 +111,11 @@ const handle=async request=>{
 };
 const server=serve({hostname:'127.0.0.1',port:0,fetch:async request=>{
  if(new URL(request.url).pathname.startsWith('/__test/'))return handle(request);
- if(linkRttMs)await pause(linkRttMs/2);
+ if(linkRttMs)await(minimumUplink?minimumFixtureDelay(linkRttMs/2):pause(linkRttMs/2));
  return delayFixtureResponse(await handle(request),linkRttMs/2);
 }});
 await once(server,'listening');
-process.stdout.write(JSON.stringify({origin:`http://127.0.0.1:${server.address().port}`,simulated_link_rtt_ms:linkRttMs})+'\n');
+process.stdout.write(JSON.stringify({origin:`http://127.0.0.1:${server.address().port}`,simulated_link_rtt_ms:linkRttMs,simulated_minimum_uplink_ms:minimumUplink?linkRttMs/2:0})+'\n');
 process.once('SIGTERM',async()=>{
  clearInterval(ticker);release?.();server.closeAllConnections();
  await new Promise(resolve=>server.close(resolve));await f.close();

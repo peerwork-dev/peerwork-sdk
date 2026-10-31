@@ -11,6 +11,7 @@ use crate::{
     participant::{ParticipantError, Result},
 };
 pub(crate) use host_ledger::{HostBinding, HostOperation, HostOutcome, HostReply};
+pub(crate) use host_ledger::rebind::HostRebind;
 use peerwork_core::{
     canonical::Path as CanonicalPath,
     communication::{MailboxPins, VerifiedMailboxPage, MAX_FRAME_BYTES},
@@ -199,6 +200,35 @@ impl InboxStore {
             })
             .collect()
     }
+    /// An explicit maintenance selection may refer to a gracefully stopped
+    /// watch. Ordinary startup still enumerates enabled watches only.
+    pub(crate) fn selected_watch(&self, namespace: &str, options: &crate::participant_watch::WatchOptions) -> Result<crate::participant_watch::Binding> {
+        let row: Option<(String,String,String,String,Option<String>)> = self.db.query_row(
+            "SELECT namespace,descriptor,receiver,claim_id,claim_wire FROM inbox_watches WHERE workspace=?1 AND mailbox=?2",
+            params![options.workspace_id,options.mailbox_id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional().map_err(db_error)?;
+        let (saved,wire,receiver,claim_id,claim_wire)=row.ok_or_else(||failure("WATCH_NOT_INITIALIZED"))?;
+        let actual:crate::participant_watch::WatchOptions=serde_json::from_str(&wire).map_err(|_|invalid())?;
+        let mut expected=options.clone();
+        if expected.host_destination.is_none(){expected.host_destination=actual.host_destination.clone();}
+        if saved!=namespace || expected!=actual{return Err(failure("WATCH_BINDING_MISMATCH"));}
+        Ok(crate::participant_watch::Binding{namespace:saved,pins:self.pins(&actual.workspace_id,&actual.mailbox_id)?,options:actual,receiver,claim_id,claim_wire})
+    }
+    pub(crate) fn rebind_reports_unblocked(&self, options: &crate::participant_watch::WatchOptions) -> Result<()> {
+        let blocked:bool=self.db.query_row("SELECT EXISTS(SELECT 1 FROM inbox_host_calls WHERE workspace=?1 AND mailbox=?2 AND report_pending=2)",params![options.workspace_id,options.mailbox_id],|r|r.get(0)).map_err(db_error)?;
+        if blocked {return Err(failure("HOST_REBIND_ORIGINAL_REPORT_BLOCKED"));}
+        Ok(())
+    }
+    pub(crate) fn rebind_watch_enabled(&self,namespace:&str,options:&crate::participant_watch::WatchOptions)->Result<bool>{
+        self.selected_watch(namespace,options)?;
+        self.db.query_row("SELECT enabled FROM inbox_watches WHERE workspace=?1 AND mailbox=?2",params![options.workspace_id,options.mailbox_id],|r|r.get(0)).map_err(db_error)
+    }
+    /// Only the stopped, fenced operator calls this after proving every frozen
+    /// replacement was not submitted or has a signed no-effect receipt.
+    pub(crate) fn rebind_restore_watch(&self,namespace:&str,options:&crate::participant_watch::WatchOptions,receiver:&str,enabled:bool,claim_id:&str)->Result<()> {
+        if self.selected_watch(namespace,options)?.receiver!=receiver{return Err(failure("WATCH_BINDING_MISMATCH"));}
+        self.db.execute("UPDATE inbox_watches SET enabled=?3,claim_id=?4,claim_wire=NULL WHERE workspace=?1 AND mailbox=?2",params![options.workspace_id,options.mailbox_id,enabled,claim_id]).map_err(db_error)?;
+        Ok(())
+    }
     pub fn attach_watch(
         &mut self,
         identity: &KernelIdentity,
@@ -206,6 +236,7 @@ impl InboxStore {
         options: &crate::participant_watch::WatchOptions,
     ) -> Result<crate::participant_watch::Binding> {
         options.validate()?;
+        self.host_rebind_available(options)?;
         let wire = serde_json::to_string(options).map_err(|_| invalid())?;
         let active:bool=self.db.query_row("SELECT EXISTS(SELECT 1 FROM inbox_watches WHERE workspace=?1 AND mailbox=?2 AND enabled=1)",params![options.workspace_id,options.mailbox_id],|r|r.get(0)).map_err(db_error)?;
         let count: usize = self

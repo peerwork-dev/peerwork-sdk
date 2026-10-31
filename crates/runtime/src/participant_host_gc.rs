@@ -7,7 +7,7 @@ impl InboxStore {
         options: &WatchOptions,
         host: &str,
     ) -> Result<(u64, u64, bool)> {
-        let row:Option<(String,u64,u64,bool)>=self.db.query_row("SELECT host,through_sequence,lane_after,lane_pending FROM inbox_host_retired WHERE workspace=?1 AND mailbox=?2",params![options.workspace_id,options.mailbox_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(db_error)?;
+        let row:Option<(String,u64,u64,bool)>=self.db.query_row("SELECT host,through_sequence,lane_after,lane_pending FROM inbox_host_retired_v2 WHERE workspace=?1 AND mailbox=?2 AND host=?3",params![options.workspace_id,options.mailbox_id,host],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(db_error)?;
         if let Some((saved, through, after, pending)) = row {
             if saved != host {
                 return Err(failure("HOST_RETIREMENT_SCOPE_MISMATCH"));
@@ -31,7 +31,8 @@ impl InboxStore {
         namespace: &str,
         options: &WatchOptions,
     ) -> Result<Option<Value>> {
-        let (host, _) = self.host_link(namespace, options)?;
+        self.host_evidence_scope(namespace,options)?;
+        let host=options.host_destination.as_deref().ok_or_else(invalid)?.to_owned();
         let through = self.host_consumed_frontier(options)?;
         let previous = self.host_retired(options, &host)?;
         if through < previous.0 {
@@ -39,7 +40,7 @@ impl InboxStore {
         }
         let mut calls = Vec::new();
         for state in ["HOST_ACCEPTED", "NOT_SENT"] {
-            let ids=self.db.prepare("SELECT call_id FROM inbox_host_calls INDEXED BY inbox_host_gc WHERE workspace=?1 AND mailbox=?2 AND report_pending=0 AND state=?3 AND sequence<=?4 ORDER BY sequence,call_id LIMIT 32").map_err(db_error)?.query_map(params![options.workspace_id,options.mailbox_id,state,through],|r|r.get::<_,String>(0)).map_err(db_error)?.collect::<std::result::Result<Vec<_>,_>>().map_err(db_error)?;
+            let ids=self.db.prepare("SELECT call_id FROM inbox_host_calls INDEXED BY inbox_host_gc_binding WHERE workspace=?1 AND mailbox=?2 AND report_pending=0 AND state=?3 AND sequence<=?4 AND host=?5 ORDER BY sequence,call_id LIMIT 32").map_err(db_error)?.query_map(params![options.workspace_id,options.mailbox_id,state,through,host],|r|r.get::<_,String>(0)).map_err(db_error)?.collect::<std::result::Result<Vec<_>,_>>().map_err(db_error)?;
             for id in ids {
                 let call = self.host_call(identity, &id)?;
                 if call.scope["namespace"] != namespace
@@ -71,7 +72,8 @@ impl InboxStore {
         options: &WatchOptions,
         plan: &Value,
     ) -> Result<()> {
-        let (host, _) = self.host_link(namespace, options)?;
+        self.host_evidence_scope(namespace,options)?;
+        let host=options.host_destination.as_deref().ok_or_else(invalid)?.to_owned();
         if plan["binding"] != self.host_access_scope(namespace, options)? {
             return Err(failure("HOST_RETIREMENT_SCOPE_MISMATCH"));
         }
@@ -131,7 +133,7 @@ impl InboxStore {
             selected.push((id.to_owned(), allocation, sequence));
         }
         let tx = self.db.unchecked_transaction().map_err(db_error)?;
-        tx.execute("INSERT INTO inbox_host_retired VALUES(?1,?2,?3,?4,0,1) ON CONFLICT(workspace,mailbox) DO UPDATE SET through_sequence=max(through_sequence,excluded.through_sequence),lane_pending=1",params![options.workspace_id,options.mailbox_id,host,through]).map_err(db_error)?;
+        tx.execute("INSERT INTO inbox_host_retired_v2 VALUES(?1,?2,?3,?4,0,1) ON CONFLICT(workspace,mailbox,host) DO UPDATE SET through_sequence=max(through_sequence,excluded.through_sequence),lane_pending=1",params![options.workspace_id,options.mailbox_id,host,through]).map_err(db_error)?;
         for (id, allocation, _) in &selected {
             tx.execute("DELETE FROM inbox_host_facts WHERE call_id=?1", [id])
                 .map_err(db_error)?;
@@ -164,7 +166,7 @@ impl InboxStore {
                 tx.execute("DELETE FROM inbox_host_lanes WHERE workspace=?1 AND mailbox=?2 AND sequence=?3",params![options.workspace_id,options.mailbox_id,sequence]).map_err(db_error)?;
             }
         }
-        tx.execute("UPDATE inbox_host_retired SET lane_after=?3,lane_pending=?4 WHERE workspace=?1 AND mailbox=?2",params![options.workspace_id,options.mailbox_id,rows.last().copied().filter(|_|rows.len()==32).unwrap_or(0),if rows.len()==32{1}else{0}]).map_err(db_error)?;
+        tx.execute("UPDATE inbox_host_retired_v2 SET lane_after=?3,lane_pending=?4 WHERE workspace=?1 AND mailbox=?2 AND host=?5",params![options.workspace_id,options.mailbox_id,rows.last().copied().filter(|_|rows.len()==32).unwrap_or(0),if rows.len()==32{1}else{0},host]).map_err(db_error)?;
         tx.commit().map_err(db_error)?;
         Ok(())
     }

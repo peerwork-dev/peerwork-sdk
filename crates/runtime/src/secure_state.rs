@@ -249,6 +249,13 @@ impl SecureStateStore {
         Ok(Some(bytes))
     }
 
+    /// Protected observation without acquiring the writer's ownership lock.
+    /// Exact-state writes are atomic replacements; this never grants mutation.
+    pub(crate) fn read_snapshot(path:&Path,limit:usize)->Result<Vec<u8>,SecureStateError>{
+        let bytes=read_private_file_bounded(path,limit.checked_add(MAGIC.len()).ok_or(SecureStateError::TooLarge)?)?;
+        let wire=bytes.strip_prefix(MAGIC).filter(|b|!b.is_empty()).ok_or(SecureStateError::Corrupt)?;
+        Ok(wire.to_vec())
+    }
     /// Atomically replaces native state with exact bytes after the caller has
     /// completed semantic validation. Empty/oversize state fails closed.
     pub fn write_exact(&self, bytes: &[u8]) -> Result<(), SecureStateError> {

@@ -4,7 +4,7 @@ default-members = ["crates/core", "crates/runtime", "crates/cli"]
 members = ["crates/core", "crates/runtime", "crates/cli", "bindings/python/native", "bindings/node/native"]
 
 [workspace.package]
-version = "0.2.16"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.89"
 license = "Apache-2.0"

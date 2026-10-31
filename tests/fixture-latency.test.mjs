@@ -1,6 +1,17 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {delayFixtureResponse} from './fixture-latency.mjs';
+import {delayFixtureResponse, minimumFixtureDelay} from './fixture-latency.mjs';
+
+test('minimum uplink delay survives an early timer wake without restarting the full delay', async () => {
+  let time = 0;
+  const waits = [];
+  await minimumFixtureDelay(50, {clock: () => time, sleep: async delay => {
+    waits.push(delay);
+    time += waits.length === 1 ? 17 : delay;
+  }});
+  assert.deepEqual(waits, [50, 33]);
+  assert.equal(time, 50);
+});
 
 test('zero delay preserves the exact response', async () => {
   const response = new Response('unchanged');

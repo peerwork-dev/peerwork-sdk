@@ -41,7 +41,7 @@ fn sync_directory(path: &Path) -> R<()> {
     let _ = path;
     Ok(())
 }
-fn replace_descriptor(path: &Path, value: &Value) -> R<()> {
+pub(crate) fn replace_descriptor(path: &Path, value: &Value) -> R<()> {
     let bytes = value.to_string();
     #[cfg(windows)]
     {
