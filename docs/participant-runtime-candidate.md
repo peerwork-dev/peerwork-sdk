@@ -85,6 +85,12 @@ during partial replacement. Unrelated configuration edits are refused rather
 than overwritten. A completed retry returns its historical result before
 opening the engine or contacting a host, preserving later work.
 
+A definitive remote refusal is not transport uncertainty. The candidate retains
+the original job and fence on that refusal; changing IDs or deleting its state
+is not a supported recovery. A separate explicit administrative refusal/abort
+path remains a release requirement, especially after partial multi-mailbox
+replacement. Interruption/retry qualification does not establish that path.
+
 `HOST_REBIND_READY` means local binding/configuration commit completed. Start
 the runtime normally to observe current receiver/host readiness. It does not
 attest model execution, cancel old model work or establish IM performance.
