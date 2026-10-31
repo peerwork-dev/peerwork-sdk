@@ -2977,6 +2977,7 @@ async fn runtime_bridge_reconciles_only_original_bound_receipts_across_recipient
     use std::sync::atomic::Ordering;
     let service = Service::start();
     let bridge = BridgeFixture::start();
+    bridge.busy.store(true, Ordering::SeqCst);
     let a = crate::test_support::protected_test_dir();
     let b = crate::test_support::protected_test_dir();
     let owner_config = configuration(a.path(), &service.origin);
@@ -3119,6 +3120,35 @@ async fn runtime_bridge_reconciles_only_original_bound_receipts_across_recipient
     let (tx, rx) = oneshot::channel();
     let server = tokio::spawn(ipc::serve(runtime.clone(), stop.clone(), tx));
     let ready = rx.await.unwrap().unwrap();
+    // A known busy host cannot accept another input yet. Deferral must retain
+    // that fact, without spending an input attempt or downgrading it to UNKNOWN.
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let status = ipc::call(&ready.admin_endpoint, json!({"method":"status"})).await.unwrap();
+            if status["value"]["hosts"][0]["code"] == "HOST_BUSY" { break; }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }).await.expect("queued mail must wait for the selected busy host");
+    let waiting = ipc::call(&ready.client_endpoints["worker"],
+        json!({"method":"inbox","options":options,"after":0,"limit":32})).await.unwrap();
+    assert_eq!(waiting["ok"], true, "the selected local inbox must remain readable");
+    assert_eq!(waiting["value"]["presence"]["host"]["execution_state"], "BUSY",
+        "deferral must preserve the independently observed native host state");
+    assert!(!bridge.calls().iter().any(|call| call["method"] == "deliver"),
+        "busy preflight must not attempt or replay input");
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let remote = selected(&owner, "structure.mailboxes.read", &scope,
+                json!({"actor_id":worker_config.expected_actor})).await;
+            let host = &remote["mailboxes"][0]["presence"]["host"];
+            if host["execution_state"] == "BUSY" {
+                assert_eq!(host["ready"], false);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }).await.expect("other participants must see the known busy host state");
+    bridge.busy.store(false, Ordering::SeqCst);
     let original = wait_host(
         &ready.client_endpoints["worker"],
         &options,

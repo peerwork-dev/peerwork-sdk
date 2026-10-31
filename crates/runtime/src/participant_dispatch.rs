@@ -497,15 +497,15 @@ async fn run_owned(
                 match health {
                     Ok(value) if value["ready"] == true||value["can_attempt_queued"]==true => (),
                     other => {
-                        let code = if other
-                            .as_ref()
-                            .is_ok_and(|v| v["execution_state"] == "WAITING_APPROVAL")
-                        {
-                            "HOST_WAITING_APPROVAL"
-                        } else {
-                            "HOST_NOT_READY"
+                        let execution=other.as_ref().ok()
+                            .and_then(|value|value["execution_state"].as_str())
+                            .filter(|state|matches!(*state,"IDLE"|"BUSY"|"WAITING_APPROVAL"|"OFFLINE"))
+                            .unwrap_or("UNKNOWN");
+                        let code=match execution {
+                            "BUSY"=>"HOST_BUSY",
+                            "WAITING_APPROVAL"=>"HOST_WAITING_APPROVAL",
+                            _=>"HOST_NOT_READY",
                         };
-                        let execution=if code=="HOST_WAITING_APPROVAL"{"WAITING_APPROVAL"}else{"UNKNOWN"};
                         for (target,scope) in watches.iter(){target.host_operation(scope,HostOperation::Presence{value:json!({"mode":if config.adapter["destination"]["host"]=="ANTIGRAVITY_APP"{"QUEUED_ONLY"}else{"LIVE"},"ready":false,"execution_state":execution}),observed_at}).await?;}
                         client
                             .host_operation(
@@ -560,6 +560,9 @@ async fn run_owned(
                     },
                 )
                 .await?;
+            // Input acceptance can change host eligibility immediately. Refresh
+            // its observed state before dispatching another eligible message.
+            next_health = std::time::Instant::now();
             set(
                 &status,
                 json!({"state":if unknown{"HOST_RESULT_UNKNOWN"}else{"HOST_ATTACHED"},"last_call_id":call.call_id,"model_response":"NOT_ATTESTED"}),

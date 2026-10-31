@@ -354,6 +354,19 @@ mod tests {
             .execute("UPDATE inbox_mailboxes SET item_cursor=1", [])
             .unwrap();
         assert_eq!(store.host_due(ns, &options, 32).unwrap().len(), 1);
+        // Repeated observed busy/approval waits cannot consume an input attempt
+        // or accumulate a failure cooldown that outlives the host's busy turn.
+        for code in ["HOST_BUSY", "HOST_WAITING_APPROVAL"] {
+            for _ in 0..100 {
+                store.host_defer(ns, &options, &item, code).unwrap();
+                let (retry,failures,attempts):(i64,u64,u64)=store.db.query_row(
+                    "SELECT next_retry,failures,attempts FROM inbox_host_ready WHERE workspace=?1 AND mailbox=?2 AND sequence=?3",
+                    params![options.workspace_id,options.mailbox_id,item.sequence],
+                    |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+                assert!(retry<=crate::participant_store::now()+500);
+                assert_eq!((failures,attempts),(0,0));
+            }
+        }
         let frame = json!({"format":"peerwork.incoming.v2","message_id":"one-frozen-frame","text":"private_host_text_to_keep_encrypted"});
         let first = store
             .host_begin(&identity, ns, &options, &item, frame.clone())
@@ -764,7 +777,10 @@ impl InboxStore {
         if !crate::communication_store::identifier(code) {
             return Err(invalid());
         }
-        self.db.execute("UPDATE inbox_host_ready SET next_retry=?4+min(30000,500*(1<<min(failures,6))),failures=failures+1,code=?5 WHERE workspace=?1 AND mailbox=?2 AND sequence=?3 AND delivery_id=?6",params![options.workspace_id,options.mailbox_id,item.sequence,crate::participant_store::now(),code,item.delivery_id]).map_err(db_error)?;
+        // Healthy busy/approval observations are eligibility waits, not failed
+        // inputs. They must not accumulate a30s cooldown after the host resumes.
+        let waiting=matches!(code,"HOST_BUSY"|"HOST_WAITING_APPROVAL");
+        self.db.execute("UPDATE inbox_host_ready SET next_retry=?4+CASE WHEN ?7 THEN 500 ELSE min(30000,500*(1<<min(failures,6))) END,failures=CASE WHEN ?7 THEN 0 ELSE failures+1 END,code=?5 WHERE workspace=?1 AND mailbox=?2 AND sequence=?3 AND delivery_id=?6",params![options.workspace_id,options.mailbox_id,item.sequence,crate::participant_store::now(),code,item.delivery_id,waiting]).map_err(db_error)?;
         Ok(())
     }
     pub fn host_begin(

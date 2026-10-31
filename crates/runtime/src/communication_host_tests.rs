@@ -332,6 +332,7 @@ pub(crate) struct BridgeFixture {
     token_file: std::path::PathBuf,
     _directory: crate::test_support::ProtectedTestDir,
     pub receipt_state: Arc<std::sync::atomic::AtomicU8>,
+    pub busy: Arc<AtomicBool>,
     calls: Arc<Mutex<Vec<Value>>>,
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
@@ -349,6 +350,8 @@ impl BridgeFixture {
         let log = calls.clone();
         let receipt_state = Arc::new(std::sync::atomic::AtomicU8::new(0));
         let state = receipt_state.clone();
+        let busy = Arc::new(AtomicBool::new(false));
+        let occupied = busy.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let done = stop.clone();
         let thread = std::thread::spawn(move || {
@@ -362,6 +365,8 @@ impl BridgeFixture {
                     }
                     Err(_) => break,
                 };
+                stream.set_nonblocking(false).unwrap();
+                stream.set_nodelay(true).unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(2)))
                     .unwrap();
@@ -420,7 +425,8 @@ impl BridgeFixture {
                 log.lock()
                     .unwrap()
                     .push(json!({"method":method,"body":body}));
-                let mut out = json!({"destination":body["destination"],"health":{"ready":true,"execution_state":"IDLE"}});
+                let busy = occupied.load(Ordering::SeqCst);
+                let mut out = json!({"destination":body["destination"],"health":{"ready":!busy,"execution_state":if busy {"BUSY"} else {"IDLE"}}});
                 if method == "deliver" || method == "receipt" {
                     let id = body["binding"]["call_id"].as_str().unwrap().to_owned();
                     if method == "deliver" {
@@ -478,6 +484,7 @@ impl BridgeFixture {
             token_file,
             _directory: directory,
             receipt_state,
+            busy,
             calls,
             stop,
             thread: Some(thread),
