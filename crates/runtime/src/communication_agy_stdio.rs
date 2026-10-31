@@ -50,6 +50,7 @@ pub(super) struct AgyStdio {
     last_input: Option<u64>,
     attempted: bool,
     io_budget: Duration,
+    shutdown_budget: Duration,
     failed: bool,
 }
 impl AgyStdio {
@@ -143,7 +144,7 @@ impl AgyStdio {
             }
         });
         let mut host = Self { child, input: Some(input), events: Some(rx), reader: Some(reader),
-            fence, conversation: conversation.into(), pid, process_token, executor, busy: false, last_input: None, attempted: false, io_budget: Duration::from_secs(10), failed: false };
+            fence, conversation: conversation.into(), pid, process_token, executor, busy: false, last_input: None, attempted: false, io_budget: Duration::from_secs(10), shutdown_budget: Duration::from_secs(10), failed: false };
         match host.next(Instant::now() + Duration::from_secs(30))? {
             Event::Init(id) if id == host.conversation => Ok(host),
             _ => Err("HOST_BINDING_MISMATCH"),
@@ -210,19 +211,25 @@ impl AgyStdio {
 impl Drop for AgyStdio {
     fn drop(&mut self) {
         self.input.take();
+        // EOF is the vendor's normal stream shutdown. Keep draining stdout so
+        // the active turn can finish and persist its host/tool state. A signed
+        // reply and inbox consumption can precede the native terminal result.
+        let (terminal, graceful) = self.executor.block_on(async {
+            if let Ok(result) = tokio::time::timeout(self.shutdown_budget, self.child.wait()).await {
+                return match result { Ok(status) => (true, status.success()), Err(_) => (false, false) };
+            }
+            let _ = self.child.start_kill();
+            (self.child.wait().await.is_ok(), false)
+        });
         self.events.take();
         if let Some(reader) = self.reader.take() {
             reader.abort();
             let _ = self.executor.block_on(reader);
         }
-        let terminal = self.executor.block_on(async {
-            if self.child.try_wait().ok().flatten().is_none() { let _ = self.child.start_kill(); }
-            self.child.wait().await.is_ok()
-        });
         if terminal {
             // This records process termination only. Accepted and unknown
             // inputs remain unchanged in the encrypted bridge journal.
-            let _ = self.fence.write_exact(json!({"format":"peerwork.agy-stdio-launch.v2","state":"STOPPED","conversation_id":self.conversation,"pid":self.pid,"process_token":self.process_token,"input_attempted":self.attempted}).to_string().as_bytes());
+            let _ = self.fence.write_exact(json!({"format":"peerwork.agy-stdio-launch.v2","state":"STOPPED","conversation_id":self.conversation,"pid":self.pid,"process_token":self.process_token,"input_attempted":self.attempted,"graceful":graceful}).to_string().as_bytes());
         }
     }
 }
@@ -357,6 +364,29 @@ mod tests {
         std::fs::set_permissions(executable,std::fs::Permissions::from_mode(0o700)).unwrap();
         drop(AgyStdio::open(&config,rt.handle().clone()).unwrap());
     }
+    #[cfg(unix)]
+    #[test]
+    fn graceful_eof_persists_host_state_before_release() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let root = crate::test_support::protected_test_dir();
+        let config = stub(root.path(), false);
+        std::fs::write(config["executable"].as_str().unwrap(),concat!(
+            "#!/bin/sh\n",
+            "printf '%s\\n' '{\"event\":\"init\",\"conversation_id\":\"owned-conversation\"}'\n",
+            "IFS= read -r line || exit 1\n",
+            "printf '%s\\n' '{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"owned-conversation\",\"state\":\"DONE\",\"step_type\":\"user_input\",\"step_index\":0}}'\n",
+            "while IFS= read -r line; do :; done\n",
+            "sleep 0.05\nprintf saved > flushed.txt\n")).unwrap();
+        let mut host = AgyStdio::open(&config,rt.handle().clone()).unwrap();
+        host.shutdown_budget = Duration::from_secs(2);
+        assert_eq!(host.deliver(&json!({"rendered_text":"test input"})).unwrap()["state"],"HOST_ACCEPTED");
+        drop(host);
+        assert_eq!(std::fs::read_to_string(root.path().join("flushed.txt")).unwrap(),"saved");
+        let fence = SecureStateStore::open(&root.path().join("launch.state")).unwrap();
+        let saved: Value = serde_json::from_slice(&fence.read_exact().unwrap().unwrap()).unwrap();
+        assert_eq!(saved["state"],"STOPPED");
+        assert_eq!(saved["graceful"],true);
+    }
     #[cfg(target_os = "linux")]
     #[test]
     fn blocked_pipe_write_is_bounded_and_cannot_replay() {
@@ -372,6 +402,7 @@ mod tests {
         let mut host=AgyStdio::open(&config,rt.handle().clone()).unwrap();
         assert!(unsafe { libc::fcntl(host.input.as_ref().unwrap().as_raw_fd(),libc::F_SETPIPE_SZ,4096) }>=4096);
         host.io_budget=Duration::from_millis(250);
+        host.shutdown_budget=Duration::from_millis(250);
         let pid=host.child.id().unwrap();let(tx,rx)=std::sync::mpsc::channel();
         let worker=std::thread::spawn(move||{
             let outcome=host.deliver(&json!({"rendered_text":"X".repeat(48000)}));

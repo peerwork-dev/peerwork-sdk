@@ -1612,13 +1612,19 @@ calls keep their original facts and are never replayed into the restarted CLI.
 An existing live process, different conversation or uncertain launch without a
 durable process record blocks startup. Selecting a different conversation uses
 the existing explicit `runtime rebind-host` path. Stopping the bridge stops only
-its owned managed CLI, and retains session locks until that child and its output
-task are terminal. Existing App or Codex sessions retain their independent host
-lifetime.
+its owned managed CLI. It first closes stdin and drains output so the current
+turn can finish; after a ten-second shutdown budget it terminates the child.
+The protected marker distinguishes a successful graceful exit from forced/error
+termination. Session locks remain held until the child and output task are
+terminal. Existing App or Codex sessions retain their independent host lifetime.
 
 Current evidence: local Linux provider/process regressions, two actual native
-input receipts and two real E2EE HTTP/MCP Ping/PONG rounds pass. Same-conversation
-restart qualification is in progress. This source addition is not in the
+input receipts and two real E2EE HTTP/MCP Ping/PONG rounds pass. Live restart
+tests exposed missing AGY MCP dispatch after the previous immediate-kill
+shutdown. Workspace/project alignment and personal MCP configuration did not
+resolve it. Qualification of the corrected graceful shutdown is in progress;
+native init and input ACK alone do not prove tool availability. This source
+addition is not in the
 previously qualified frozen three-platform artifacts. Platform checks and
 release promotion are still required. The
 portable MCP-wait entry remains available independently of this managed mode.

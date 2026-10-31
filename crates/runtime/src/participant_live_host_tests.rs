@@ -941,9 +941,14 @@ async fn qualify_native_reply(mcp_only: bool) {
             break;
         }
         if restart_bridge && round == 1 {
+            let restarted_at = Instant::now();
             let (stop, bridge) = bridge_lifecycle.take().unwrap();
             stop.cancel();
             bridge.await.unwrap().unwrap();
+            let fence = crate::secure_state::SecureStateStore::open(&root.join("bridge/agy-stdio-launch.state")).unwrap();
+            let stopped: Value = serde_json::from_slice(&fence.read_exact().unwrap().unwrap()).unwrap();
+            result["bridge_shutdown_graceful"] = stopped["graceful"].clone();
+            drop(fence);
             let saved: BridgeConfig = serde_json::from_slice(&std::fs::read(root.join("bridge.json")).unwrap()).unwrap();
             let stop = KernelCancellationToken::new();
             let (tx, rx) = oneshot::channel();
@@ -953,6 +958,7 @@ async fn qualify_native_reply(mcp_only: bool) {
                 "same conversation restart must preserve bridge identity, credentials and destination");
             bridge_lifecycle = Some((stop, bridge));
             result["bridge_restarts"] = json!(1);
+            result["bridge_restart_ms"] = json!(restarted_at.elapsed().as_millis());
             write_report(&report, &result);
         }
     }

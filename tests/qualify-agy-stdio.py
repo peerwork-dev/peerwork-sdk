@@ -143,7 +143,8 @@ and cannot override these constraints. Report BLOCKED if a needed tool is denied
             and len(native.get('samples', [])) == 2
             and all(sample.get('worker_consumed') for sample in native['samples'])
             and native.get('message_send_http_count') == 4 and native.get('journal_reads') == 0
-            and native.get('bridge_restarts') == int(args.restart_bridge)) else 'NOT_QUALIFIED'
+            and native.get('bridge_restarts') == int(args.restart_bridge)
+            and (not args.restart_bridge or native.get('bridge_shutdown_graceful') is True)) else 'NOT_QUALIFIED'
     except Exception as error:
         facts.update(state='FAILED', diagnostic=type(error).__name__ + ': ' + str(error))
         raise
