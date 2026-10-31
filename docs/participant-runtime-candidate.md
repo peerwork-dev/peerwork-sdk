@@ -5,6 +5,11 @@ this interface. Native mail and automatic program watch are implemented in this
 candidate; this document does not announce production availability, new host
 connectors or a qualified cross-platform release.
 
+The native candidate is versioned 0.3.0. It selects Linux x86_64 GNU/glibc2.28,
+macOS ARM64 and Windows x86_64; optional language-binding packages are not part
+of this native release cohort. Candidate CI installation and dependency checks
+do not by themselves announce a published release or production availability.
+
 ## Shared engine
 
 A program participant binds an explicit identity, service Origin and protected
