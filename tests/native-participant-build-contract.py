@@ -1,14 +1,71 @@
 """Candidate source-inventory scope, without building an artifact or using a secret."""
 import importlib.util
 from pathlib import Path
+import sys
+import tomllib
 import unittest
+from unittest.mock import patch
 
-spec = importlib.util.spec_from_file_location('qualify_participant',Path(__file__).resolve().parents[1] / 'tools/release/qualify-participant.py')
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'tools/release'))
+import sbom
+import version
+
+spec = importlib.util.spec_from_file_location('qualify_participant',ROOT / 'tools/release/qualify-participant.py')
 qualifier = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(qualifier)
 
 
 class NativeGraphTests(unittest.TestCase):
+    def native_inventory(self):
+        release = version.authority(ROOT)
+        license_name = tomllib.loads((ROOT / 'Cargo.toml').read_text())['workspace']['package']['license']
+        packages = [dict(id=name, name=name, version=release, source=None,
+                         manifest_path=str(ROOT / member / 'Cargo.toml'), license=license_name)
+                    for name, member in [('peerwork-cli', 'crates/cli'),
+                                         ('peerwork-runtime', 'crates/runtime'),
+                                         ('peerwork-core', 'crates/core')]]
+        return dict(version=1, workspace_root=str(ROOT), packages=packages,
+                    workspace_members=[p['id'] for p in packages],
+                    resolve=dict(nodes=[dict(id=p['id'], dependencies=[])
+                                        for p in packages]))
+
+    def test_native_sbom_uses_cargo_version_without_retired_binding_parity(self):
+        # Exercise actual source manifests, lock, notices and ICU inputs. The
+        # candidate's optional Node package intentionally keeps its old version.
+        with patch.object(sbom, 'check', side_effect=AssertionError('legacy release parity used')):
+            document, inventory, files = sbom.generate(
+                ROOT, 'linux-x64-gnu', self.native_inventory(), 'a' * 40, 0, native=True)
+        self.assertEqual(inventory['version'], version.authority(ROOT))
+        self.assertEqual({p['name'] for p in document['packages']},
+                         {'peerwork-cli', 'peerwork-runtime', 'peerwork-core', 'ICU4C'})
+        self.assertTrue(files)
+        self.assertTrue(all(row['notices'] for row in inventory['components']))
+        self.assertEqual(set(version.check_native(ROOT)['targets']), set(qualifier.TARGETS))
+
+    def test_native_sbom_refuses_wrong_target_wrapper_version_and_license(self):
+        cases = [('target', 'invalid selected release'),
+                 ('wrapper', 'exactly the CLI/runtime/core'),
+                 ('version', 'does not match locked source'),
+                 ('license', 'unknown bundled dependency license')]
+        for fault, error in cases:
+            with self.subTest(fault=fault):
+                data = self.native_inventory()
+                target = 'linux-x64-gnu'
+                if fault == 'target':
+                    target = 'linux-arm64-gnu'
+                elif fault == 'wrapper':
+                    wrapper = dict(data['packages'][0], id='wrapper', name='peerwork-node-native')
+                    data['packages'].append(wrapper)
+                    data['workspace_members'].append('wrapper')
+                    data['resolve']['nodes'].append(dict(id='wrapper', dependencies=[]))
+                elif fault == 'version':
+                    data['packages'][0]['version'] = '999.0.0'
+                else:
+                    data['packages'][0]['license'] = 'UNKNOWN'
+                with self.assertRaisesRegex(version.ReleaseError, error):
+                    sbom.generate(ROOT, target, data, 'a' * 40, 0, native=True)
+
     def test_windows_imports_reject_dynamic_crt_and_language_runtimes(self):
         good='    KERNEL32.dll\n    api-ms-win-crt-runtime-l1-1-0.dll\n'
         self.assertEqual(qualifier.loader_requirements('win32-x64-msvc',good)['vc_runtime_dlls'],'NOT_IMPORTED')

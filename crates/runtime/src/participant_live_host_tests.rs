@@ -817,6 +817,35 @@ async fn qualify_native_reply(mcp_only: bool) {
             "LIVE_HOST_DELIVERY {}",
             json!({"nonce":nonce,"worker_profile":worker_profile_path,"item":item,"accepted_observed_ms":result["accepted_observed_ms"],"receiver_store_observed_ms":result["receiver_store_observed_ms"]})
         );
+        if !mcp_only {
+            // Observe host acceptance before waiting for model output. Poll
+            // only the original local delivery; never resubmit its input. A
+            // same-observer upper bound is not an internal host-only span.
+            let early_ack = tokio::time::timeout(Duration::from_secs(20), async {
+                loop {
+                    let status = worker_client
+                        .call(json!({"method":"delivery_status","options":worker_watch,"item":item}))
+                        .await
+                        .unwrap();
+                    if status["host"] == "HOST_ACCEPTED" {
+                        return started.elapsed().as_millis();
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await;
+            result["host_ack_observed_ms"] = json!(early_ack.as_ref().ok().copied());
+            result["host_ack_observation_state"] = json!(if early_ack.is_ok() {
+                "HOST_ACCEPTED"
+            } else {
+                "OBSERVATION_BUDGET_EXCEEDED"
+            });
+            write_report(&report, &result);
+            println!(
+                "LIVE_HOST_ACK {}",
+                json!({"nonce":nonce,"host_ack_observed_ms":result["host_ack_observed_ms"],"state":result["host_ack_observation_state"]})
+            );
+        }
         let observed = tokio::time::timeout(Duration::from_secs(180), async {
             loop {
                 if mcp_only && root.join("agent-failed").exists() {
@@ -857,7 +886,7 @@ async fn qualify_native_reply(mcp_only: bool) {
         let model_reply_observed = observed.as_ref().is_ok_and(|v| v.is_object());
         result["model_reply_observed"] = json!(model_reply_observed);
         let qualified = model_reply_observed && (mcp_only || local["host"] == "HOST_ACCEPTED");
-        samples.push(json!({"round":round,"accepted_observed_ms":result["accepted_observed_ms"],"receiver_store_observed_ms":result["receiver_store_observed_ms"],"reply_observed_ms":result["reply_observed_ms"],"qualified":qualified}));
+        samples.push(json!({"round":round,"accepted_observed_ms":result["accepted_observed_ms"],"receiver_store_observed_ms":result["receiver_store_observed_ms"],"host_ack_observed_ms":result["host_ack_observed_ms"],"reply_observed_ms":result["reply_observed_ms"],"qualified":qualified}));
         if let Ok(arrival) = observed {
             if arrival.is_object() {
                 master

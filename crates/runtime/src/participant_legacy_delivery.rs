@@ -51,10 +51,14 @@ pub struct LegacyDeliverySelection {
 fn directory(path: &Path) -> Result<()> {
     // Reuse native directory checks without creating a missing source.
     let m = std::fs::symlink_metadata(path).map_err(|_| invalid())?;
-    if !m.is_dir()
-        || m.file_type().is_symlink()
-        || std::fs::canonicalize(path).ok().as_deref() != Some(path)
-    {
+    if !m.is_dir() || m.file_type().is_symlink() {
+        return Err(invalid());
+    }
+    // Windows canonicalize adds a verbatim drive prefix to ordinary absolute
+    // paths. Its native handle/DACL check below rejects every reparse ancestor;
+    // string equality is neither required nor a protection check on Windows.
+    #[cfg(not(windows))]
+    if std::fs::canonicalize(path).ok().as_deref() != Some(path) {
         return Err(invalid());
     }
     crate::secure_state::create_private_state_directory(path).map_err(|_| invalid())
@@ -82,6 +86,20 @@ impl Archive {
             return Err(err("LEGACY_DELIVERY_SELECTION_INVALID"));
         }
         directory(&s.source_directory)?;
+        #[cfg(windows)]
+        {
+            let source = std::fs::canonicalize(&s.source_directory).map_err(|_| invalid())?;
+            let archive = if s.archive_directory.exists() {
+                std::fs::canonicalize(&s.archive_directory).map_err(|_| invalid())?
+            } else {
+                std::fs::canonicalize(s.archive_directory.parent().ok_or_else(invalid)?)
+                    .map_err(|_| invalid())?
+                    .join(s.archive_directory.file_name().ok_or_else(invalid)?)
+            };
+            if source.starts_with(&archive) || archive.starts_with(&source) {
+                return Err(err("LEGACY_DELIVERY_SELECTION_INVALID"));
+            }
+        }
         // Old code does not honor native OS locks. Require an explicitly stopped
         // installation and a released old lock; never unlink it or guess death.
         match std::fs::symlink_metadata(s.source_directory.join("receiver.lock")) {

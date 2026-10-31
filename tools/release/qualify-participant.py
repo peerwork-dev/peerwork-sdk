@@ -120,6 +120,18 @@ def main():
     output.mkdir(parents=True)
     env = dict(os.environ, CARGO_BUILD_JOBS='1', CARGO_INCREMENTAL='0', CARGO_PROFILE_RELEASE_DEBUG='0')
 
+    # Reject source/version/license drift before compiling ICU and the native
+    # runtime. Keep one complete target-specific graph for the later package;
+    # optional retired bindings do not participate in this release cohort.
+    print('Native candidate stage: locked-source-license-preflight', flush=True)
+    import sbom
+    from assets import deterministic_tar
+    metadata = native_metadata(json.loads(subprocess.check_output(
+        ['cargo', 'metadata', '--locked', '--format-version', '1', '--filter-platform', TARGETS[args.target]],
+        cwd=root, env=env, text=True)))
+    epoch = int(subprocess.check_output(['git', 'show', '-s', '--format=%ct', 'HEAD'], cwd=root, text=True))
+    document, notices, files = sbom.generate(root, args.target, metadata, source, epoch, native=True)
+
     def run(command, log):
         print(f'Native candidate stage: {log}', flush=True)
         with (output / log).open('w', encoding='utf-8') as stream:
@@ -175,11 +187,6 @@ def main():
         dependencies = subprocess.check_output([str(dumpbins[-1]),'/dependents',str(installed)],text=True)
     (output / 'dynamic-dependencies.txt').write_text(dependencies)
     loader = loader_requirements(args.target, dependencies, symbols)
-    import sbom
-    from assets import deterministic_tar
-    metadata = native_metadata(json.loads(subprocess.check_output(['cargo','metadata','--locked','--format-version','1','--filter-platform',TARGETS[args.target]],cwd=root,env=env,text=True)))
-    epoch = int(subprocess.check_output(['git','show','-s','--format=%ct','HEAD'],cwd=root,text=True))
-    document,notices,files = sbom.generate(root,args.target,metadata,source,epoch)
     document['comment'] += ' This view is rooted at the native CLI, not the optional binding workspace members.'
     notices['source_inventory_scope'] = document['comment']
     (output / 'sbom.spdx.json').write_text(json.dumps(document,sort_keys=True) + '\n')
@@ -190,6 +197,7 @@ def main():
         path.parent.mkdir(parents=True,exist_ok=True)
         path.write_bytes(data)
     version = candidate_version(subprocess.check_output([str(installed), 'version'], text=True))
+    assert version == notices['version'], 'installed CLI version differs from selected Cargo cohort'
     archive = output / f'peerwork-native-candidate-{version}-{args.target}.tar.gz'
     deterministic_tar(archive,{installed.name:(installed.read_bytes(),0o755),
         'LICENSE':((output / 'LICENSE').read_bytes(),0o644),
