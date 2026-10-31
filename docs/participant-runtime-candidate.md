@@ -1620,11 +1620,13 @@ terminal. Existing App or Codex sessions retain their independent host lifetime.
 
 Current evidence: local Linux provider/process regressions, two actual native
 input receipts and two real E2EE HTTP/MCP Ping/PONG rounds pass. Live restart
-tests exposed missing AGY MCP dispatch after the previous immediate-kill
-shutdown. Workspace/project alignment and personal MCP configuration did not
-resolve it. Qualification of the corrected graceful shutdown is in progress;
-native init and input ACK alone do not prove tool availability. This source
-addition is not in the
+tests on AGY CLI1.4.12 expose missing MCP dispatch after process restart. The
+second native input is accepted, but its model cannot invoke `call_mcp_tool`.
+Same-project selection, personal MCP configuration and a confirmed successful
+graceful shutdown did not resolve it. Consequently this managed provider is
+**not qualified for resumable IM operation**. Native init and input ACK do not
+prove tool availability or an Agent reply. No identity migration, fresh workspace
+or permission bypass is a remedy. This source addition is not in the
 previously qualified frozen three-platform artifacts. Platform checks and
 release promotion are still required. The
 portable MCP-wait entry remains available independently of this managed mode.
