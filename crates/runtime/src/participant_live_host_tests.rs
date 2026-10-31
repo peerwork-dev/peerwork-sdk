@@ -641,7 +641,7 @@ async fn qualify_native_reply(mcp_only: bool) {
     let worker_profile_path = root.join("worker-agent.json");
     crate::communication_host::write_private(&worker_profile_path,
         &serde_json::to_vec(&early_worker_profile).unwrap()).unwrap();
-    let (bridge_lifecycle, adapter, destination) = if mcp_only {
+    let (mut bridge_lifecycle, adapter, destination) = if mcp_only {
         (None, None, None)
     } else {
         let worker_identity = KernelIdentity::open(&worker_config.identity_path).unwrap();
@@ -698,6 +698,7 @@ async fn qualify_native_reply(mcp_only: bool) {
     ]
     .map(str::to_owned)
     .into();
+    let original_bridge_adapter = adapter.clone();
     let cfg = RuntimeConfig {
         format: "peerwork.participant-runtime.v1".into(),
         state_directory: root.join("runtime"),
@@ -794,10 +795,19 @@ async fn qualify_native_reply(mcp_only: bool) {
         "timing_basis":"one observer monotonic clock; delivery observations are upper bounds, not isolated internal phase spans"});
     write_report(&report, &result);
     println!("LIVE_HOST_READY {}", result);
+    let require_consumption = std::env::var("PEERWORK_LIVE_HOST_REQUIRE_CONSUMED").as_deref() == Ok("1");
+    result["consumption_required"] = json!(require_consumption);
     let rounds = std::env::var("PEERWORK_LIVE_HOST_ROUNDS").ok()
         .map(|v| v.parse::<usize>().expect("explicit round count"))
         .unwrap_or(if mcp_only { 2 } else { 1 });
     assert!((1..=8).contains(&rounds));
+    let restart_bridge = std::env::var("PEERWORK_LIVE_HOST_RESTART_BRIDGE").as_deref() == Ok("1");
+    if restart_bridge {
+        assert!(!mcp_only && rounds >= 2 && require_consumption);
+        let saved: BridgeConfig = serde_json::from_slice(&std::fs::read(root.join("bridge.json")).unwrap()).unwrap();
+        assert_eq!(saved.host["kind"], "agy-stdio", "restart only our explicitly managed CLI");
+    }
+    result["bridge_restarts"] = json!(0);
     let mut samples = Vec::new();
     for round in 1..=rounds {
         let started = Instant::now();
@@ -899,8 +909,20 @@ async fn qualify_native_reply(mcp_only: bool) {
         result["host_fact"] = local["host"].clone();
         let model_reply_observed = observed.as_ref().is_ok_and(|v| v.is_object());
         result["model_reply_observed"] = json!(model_reply_observed);
-        let qualified = model_reply_observed && (mcp_only || local["host"] == "HOST_ACCEPTED");
-        samples.push(json!({"round":round,"accepted_observed_ms":result["accepted_observed_ms"],"receiver_store_observed_ms":result["receiver_store_observed_ms"],"host_ack_observed_ms":result["host_ack_observed_ms"],"reply_observed_ms":result["reply_observed_ms"],"qualified":qualified}));
+        let mut qualified = model_reply_observed && (mcp_only || local["host"] == "HOST_ACCEPTED");
+        let consumed = if require_consumption && qualified {
+            let done = tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    let page = worker_client.call(json!({"method":"inbox","options":worker_watch,"after":0,"limit":32})).await.unwrap();
+                    let pending = page["items"].as_array().expect("explicit local inbox page");
+                    if !pending.iter().any(|entry|entry["delivery_id"]==item["delivery_id"]) { break; }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            }).await.is_ok();
+            qualified &= done;
+            Some(done)
+        } else { None };
+        samples.push(json!({"round":round,"accepted_observed_ms":result["accepted_observed_ms"],"receiver_store_observed_ms":result["receiver_store_observed_ms"],"host_ack_observed_ms":result["host_ack_observed_ms"],"reply_observed_ms":result["reply_observed_ms"],"worker_consumed":consumed,"qualified":qualified}));
         if let Ok(arrival) = observed {
             if arrival.is_object() {
                 master
@@ -917,6 +939,21 @@ async fn qualify_native_reply(mcp_only: bool) {
         }
         if !qualified {
             break;
+        }
+        if restart_bridge && round == 1 {
+            let (stop, bridge) = bridge_lifecycle.take().unwrap();
+            stop.cancel();
+            bridge.await.unwrap().unwrap();
+            let saved: BridgeConfig = serde_json::from_slice(&std::fs::read(root.join("bridge.json")).unwrap()).unwrap();
+            let stop = KernelCancellationToken::new();
+            let (tx, rx) = oneshot::channel();
+            let bridge = tokio::spawn(communication_bridge::serve(saved, stop.clone(), tx));
+            let restarted = rx.await.unwrap().unwrap();
+            assert_eq!(Some(restarted.adapter), original_bridge_adapter,
+                "same conversation restart must preserve bridge identity, credentials and destination");
+            bridge_lifecycle = Some((stop, bridge));
+            result["bridge_restarts"] = json!(1);
+            write_report(&report, &result);
         }
     }
     result["samples"] = json!(samples);

@@ -1,4 +1,4 @@
-//! Explicitly owned AGY stream-json process. One launch per physical binding;
+//! Explicitly owned AGY stream-json process. One launch per bridge lifecycle;
 //! no process/model is started by delivery or automatic reconnect.
 use super::{random_token, text, R};
 use crate::secure_state::SecureStateStore;
@@ -43,7 +43,8 @@ pub(super) struct AgyStdio {
     reader: Option<JoinHandle<()>>,
     fence: SecureStateStore,
     conversation: String,
-    session: String,
+    pid: u32,
+    process_token: Option<String>,
     executor: Handle,
     busy: bool,
     last_input: Option<u64>,
@@ -59,15 +60,12 @@ impl AgyStdio {
         let executable = text(config, "executable")?;
         let working = text(config, "working_directory")?;
         let conversation = text(config, "conversation_id")?;
-        let session = text(config, "session_id")?;
         if !Path::new(executable).is_absolute()
             || !std::fs::metadata(executable).is_ok_and(|m| m.is_file())
             || !Path::new(working).is_absolute()
             || !std::fs::metadata(working).is_ok_and(|m| m.is_dir())
             || conversation.len() > 256
             || !conversation.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_'))
-            || session.len() < 16 || session.len() > 128
-            || !session.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_'))
         {
             return Err("HOST_CONFIG_INVALID");
         }
@@ -77,11 +75,24 @@ impl AgyStdio {
             .map_err(|_| "AGY_STDIO_SESSION_ALREADY_OWNED")?;
         if let Some(bytes) = fence.read_exact().map_err(|_| "HOST_STATE_INVALID")? {
             let old: Value = serde_json::from_slice(&bytes).map_err(|_| "HOST_STATE_INVALID")?;
-            if old["format"] != "peerwork.agy-stdio-launch.v1" || old["state"] != "STOPPED_WITHOUT_INPUT" || old["session_id"] != session {
-                return Err("AGY_STDIO_RESTART_REQUIRES_REBIND");
+            if old["format"] != "peerwork.agy-stdio-launch.v2" || old["conversation_id"] != conversation {
+                return Err("HOST_BINDING_MISMATCH");
+            }
+            match old["state"].as_str() {
+                Some("STOPPED") => (),
+                Some("OPENED" | "INPUT_ATTEMPTED") => {
+                    let pid = old["pid"].as_u64().and_then(|v|u32::try_from(v).ok()).filter(|pid| *pid > 0).ok_or("HOST_STATE_INVALID")?;
+                    if crate::communication_store::process_alive(pid,old["process_token"].as_str()) {
+                        return Err("AGY_STDIO_PREVIOUS_PROCESS_RUNNING");
+                    }
+                }
+                // A crash between spawn and its durable PID record cannot be
+                // force-reclaimed. It is distinct from an ordinary restart.
+                Some("STARTING") => return Err("AGY_STDIO_LAUNCH_RECOVERY_REQUIRED"),
+                _ => return Err("HOST_STATE_INVALID"),
             }
         }
-        fence.write_exact(json!({"format":"peerwork.agy-stdio-launch.v1","state":"STARTING","session_id":session}).to_string().as_bytes())
+        fence.write_exact(json!({"format":"peerwork.agy-stdio-launch.v2","state":"STARTING","conversation_id":conversation}).to_string().as_bytes())
             .map_err(|_| "HOST_STATE_FAILED")?;
         let entered = executor.enter();
         let spawned = Command::new(executable)
@@ -93,13 +104,20 @@ impl AgyStdio {
             Err(_) => {
                 // No executable started and no input existed. Repairing a
                 // local launch error must not require inventing another intent.
-                let _ = fence.write_exact(json!({"format":"peerwork.agy-stdio-launch.v1","state":"STOPPED_WITHOUT_INPUT","session_id":session}).to_string().as_bytes());
+                let _ = fence.write_exact(json!({"format":"peerwork.agy-stdio-launch.v2","state":"STOPPED","conversation_id":conversation,"input_attempted":false}).to_string().as_bytes());
                 return Err("HOST_NOT_SENT");
             }
         };
+        drop(entered);
+        let pid = child.id().ok_or("HOST_STATE_INVALID")?;
+        let process_token = crate::communication_store::process_token(pid);
+        if fence.write_exact(json!({"format":"peerwork.agy-stdio-launch.v2","state":"OPENED","conversation_id":conversation,"pid":pid,"process_token":process_token,"input_attempted":false}).to_string().as_bytes()).is_err() {
+            let _ = executor.block_on(child.kill());
+            let _ = executor.block_on(child.wait());
+            return Err("HOST_STATE_FAILED");
+        }
         let input = child.stdin.take().ok_or("HOST_STATE_INVALID")?;
         let output = child.stdout.take().ok_or("HOST_STATE_INVALID")?;
-        drop(entered);
         let (tx, rx) = mpsc::channel(8);
         let reader = executor.spawn(async move {
             let mut reader = BufReader::new(output);
@@ -125,7 +143,7 @@ impl AgyStdio {
             }
         });
         let mut host = Self { child, input: Some(input), events: Some(rx), reader: Some(reader),
-            fence, conversation: conversation.into(), session: session.into(), executor, busy: false, last_input: None, attempted: false, io_budget: Duration::from_secs(10), failed: false };
+            fence, conversation: conversation.into(), pid, process_token, executor, busy: false, last_input: None, attempted: false, io_budget: Duration::from_secs(10), failed: false };
         match host.next(Instant::now() + Duration::from_secs(30))? {
             Event::Init(id) if id == host.conversation => Ok(host),
             _ => Err("HOST_BINDING_MISMATCH"),
@@ -163,9 +181,9 @@ impl AgyStdio {
         if self.health()?["ready"] != true { return Err("HOST_NOT_READY"); }
         let rendered = text(message, "rendered_text")?;
         if rendered.len() > 48000 { return Err("HOST_INPUT_TOO_LARGE"); }
-        // This fenced attempt survives a lost pipe reply or bridge crash. A
-        // new physical process needs an explicit new binding; never replay.
-        self.fence.write_exact(json!({"format":"peerwork.agy-stdio-launch.v1","state":"INPUT_ATTEMPTED","session_id":self.session}).to_string().as_bytes())
+        // The bridge journal, not the process marker, owns original call
+        // certainty. Restarting this conversation never replays those calls.
+        self.fence.write_exact(json!({"format":"peerwork.agy-stdio-launch.v2","state":"INPUT_ATTEMPTED","conversation_id":self.conversation,"pid":self.pid,"process_token":self.process_token,"input_attempted":true}).to_string().as_bytes())
             .map_err(|_| "HOST_STATE_FAILED")?;
         self.attempted = true;
         let mut bytes = serde_json::to_vec(&json!({"event":"user","message":{"content":rendered}}))
@@ -201,10 +219,10 @@ impl Drop for AgyStdio {
             if self.child.try_wait().ok().flatten().is_none() { let _ = self.child.start_kill(); }
             self.child.wait().await.is_ok()
         });
-        if terminal && !self.attempted {
-            // Safe retry only when this exact owned process is terminal and
-            // no input was ever attempted. A crash retains STARTING instead.
-            let _ = self.fence.write_exact(json!({"format":"peerwork.agy-stdio-launch.v1","state":"STOPPED_WITHOUT_INPUT","session_id":self.session}).to_string().as_bytes());
+        if terminal {
+            // This records process termination only. Accepted and unknown
+            // inputs remain unchanged in the encrypted bridge journal.
+            let _ = self.fence.write_exact(json!({"format":"peerwork.agy-stdio-launch.v2","state":"STOPPED","conversation_id":self.conversation,"pid":self.pid,"process_token":self.process_token,"input_attempted":self.attempted}).to_string().as_bytes());
         }
     }
 }
@@ -231,10 +249,10 @@ mod tests {
             std::fs::write(&executable, body + tail).unwrap();
         }
         json!({"kind":"agy-stdio","managed":true,"executable":executable,"working_directory":root,
-            "conversation_id":"owned-conversation","session_id":"explicit-physical-session-1","launch_fence":root.join("launch.state")})
+            "conversation_id":"owned-conversation","launch_fence":root.join("launch.state")})
     }
     #[test]
-    fn one_process_handles_two_inputs_and_refuses_unreviewed_restart() {
+    fn one_process_handles_two_inputs_and_terminal_restart_does_not_replay() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let root = crate::test_support::protected_test_dir();
         let config = stub(root.path(), false);
@@ -246,7 +264,61 @@ mod tests {
         assert_eq!(host.deliver(&json!({"rendered_text":"second external data"})).unwrap()["state"],"HOST_ACCEPTED");
         drop(host);
         assert_eq!(std::fs::read_to_string(root.path().join("starts.txt")).unwrap().lines().count(),1);
-        assert!(matches!(AgyStdio::open(&config,rt.handle().clone()),Err("AGY_STDIO_RESTART_REQUIRES_REBIND")));
+        drop(AgyStdio::open(&config,rt.handle().clone()).unwrap());
+        assert_eq!(std::fs::read_to_string(root.path().join("starts.txt")).unwrap().lines().count(),2);
+        let fence = SecureStateStore::open(&root.path().join("launch.state")).unwrap();
+        let saved: Value = serde_json::from_slice(&fence.read_exact().unwrap().unwrap()).unwrap();
+        assert_eq!(saved["state"], "STOPPED");
+        assert_eq!(saved["input_attempted"], false);
+    }
+    #[test]
+    fn running_previous_process_is_not_replaced() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let root = crate::test_support::protected_test_dir();
+        let config = stub(root.path(), false);
+        let pid = std::process::id();
+        let fence = SecureStateStore::open(&root.path().join("launch.state")).unwrap();
+        fence.write_exact(json!({"format":"peerwork.agy-stdio-launch.v2","state":"INPUT_ATTEMPTED","conversation_id":"owned-conversation","pid":pid,"process_token":crate::communication_store::process_token(pid)}).to_string().as_bytes()).unwrap();
+        drop(fence);
+        assert!(matches!(AgyStdio::open(&config,rt.handle().clone()),Err("AGY_STDIO_PREVIOUS_PROCESS_RUNNING")));
+        assert!(!root.path().join("starts.txt").exists());
+    }
+    #[test]
+    fn terminated_previous_process_can_resume_same_conversation_without_input() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let root = crate::test_support::protected_test_dir();
+        let config = stub(root.path(), false);
+        let host = AgyStdio::open(&config,rt.handle().clone()).unwrap();
+        let pid = host.pid;
+        let token = host.process_token.clone();
+        drop(host);
+        assert!(!crate::communication_store::process_alive(pid,token.as_deref()));
+        // Simulate a crash after process exit but before the STOPPED marker.
+        let fence = SecureStateStore::open(&root.path().join("launch.state")).unwrap();
+        fence.write_exact(json!({"format":"peerwork.agy-stdio-launch.v2","state":"INPUT_ATTEMPTED","conversation_id":"owned-conversation","pid":pid,"process_token":token}).to_string().as_bytes()).unwrap();
+        drop(fence);
+        drop(AgyStdio::open(&config,rt.handle().clone()).unwrap());
+        let fence = SecureStateStore::open(&root.path().join("launch.state")).unwrap();
+        let saved: Value = serde_json::from_slice(&fence.read_exact().unwrap().unwrap()).unwrap();
+        assert_eq!(saved["state"], "STOPPED");
+        assert_eq!(saved["input_attempted"], false);
+    }
+    #[test]
+    fn uncertain_launch_and_different_conversation_are_not_force_reclaimed() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let root = crate::test_support::protected_test_dir();
+        let config = stub(root.path(), false);
+        for (state, conversation, pid, expected) in [
+            ("STARTING", "owned-conversation", 1, "AGY_STDIO_LAUNCH_RECOVERY_REQUIRED"),
+            ("STOPPED", "different-conversation", 1, "HOST_BINDING_MISMATCH"),
+            ("OPENED", "owned-conversation", 0, "HOST_STATE_INVALID"),
+        ] {
+            let fence = SecureStateStore::open(&root.path().join("launch.state")).unwrap();
+            fence.write_exact(json!({"format":"peerwork.agy-stdio-launch.v2","state":state,"conversation_id":conversation,"pid":pid}).to_string().as_bytes()).unwrap();
+            drop(fence);
+            assert!(matches!(AgyStdio::open(&config,rt.handle().clone()),Err(code) if code == expected));
+        }
+        assert!(!root.path().join("starts.txt").exists());
     }
     #[test]
     fn wrong_event_never_attests_acceptance_or_replays_unknown_input() {
@@ -256,8 +328,8 @@ mod tests {
         let mut host = AgyStdio::open(&config,rt.handle().clone()).unwrap();
         assert_eq!(host.deliver(&json!({"rendered_text":"possibly received"})).unwrap_err(),"HOST_ACK_UNKNOWN");
         drop(host);
-        assert!(matches!(AgyStdio::open(&config,rt.handle().clone()),Err("AGY_STDIO_RESTART_REQUIRES_REBIND")));
-        assert_eq!(std::fs::read_to_string(root.path().join("starts.txt")).unwrap().lines().count(),1);
+        drop(AgyStdio::open(&config,rt.handle().clone()).unwrap());
+        assert_eq!(std::fs::read_to_string(root.path().join("starts.txt")).unwrap().lines().count(),2);
     }
     #[test]
     fn metadata_only_terminal_process_can_retry_but_requires_explicit_ownership() {
@@ -309,7 +381,7 @@ mod tests {
         if observed.is_err() { unsafe { libc::kill(pid as i32,libc::SIGKILL); } }
         worker.join().unwrap();
         assert!(matches!(observed,Ok(Err("HOST_ACK_UNKNOWN"))));
-        assert!(matches!(AgyStdio::open(&config,rt.handle().clone()),Err("AGY_STDIO_RESTART_REQUIRES_REBIND")));
+        drop(AgyStdio::open(&config,rt.handle().clone()).unwrap());
     }
     #[test]
     fn only_native_user_input_done_is_an_ack() {

@@ -1571,7 +1571,7 @@ The new source candidate also implements `agy-stdio` as an opt-in host-user
 bridge provider. It requires the existing `agy` executable; no Node or Python
 client runtime is introduced. This does not attach to an arbitrary running TUI.
 The operator explicitly selects an existing conversation and gives this bridge
-ownership of starting and stopping one CLI process for that physical binding.
+ownership of starting and stopping one CLI process per bridge lifecycle.
 Do not leave another CLI/TUI driving the selected conversation.
 
 Use this object as `BridgeConfig.host` (the bridge's existing scoped grants are
@@ -1583,8 +1583,7 @@ still required):
   "managed": true,
   "executable": "/absolute/path/to/agy",
   "working_directory": "/private/worker/project",
-  "conversation_id": "explicit-existing-conversation-id",
-  "session_id": "unique-physical-cli-session-1"
+  "conversation_id": "explicit-existing-conversation-id"
 }
 ```
 
@@ -1605,19 +1604,21 @@ Busy turns leave later messages in the existing durable Peerwork queue until
 the native terminal result makes the host eligible again. A model reply remains
 a separate signed protocol/message result.
 
-Automatic reconnect never starts another CLI. A protected launch fence is set
-before input; uncertain input is not replayed on bridge restart. A definite
-failed spawn, or a controlled terminal metadata-only process with no input,
-can retry the same selection. After input, a new physical session needs an
-explicit fresh bridge binding and the existing `runtime rebind-host` path;
-original accepted/unknown calls remain at their original binding. Stopping the
-bridge stops only its owned managed CLI, and retains session locks until that
-child and its output task are terminal. Scope/grant edits that require stopping
-this managed bridge consequently require a new physical binding. Existing App
-or Codex sessions retain their independent host lifetime.
+Automatic reconnect never starts another CLI. A protected launch fence records
+process ownership before input. An explicit bridge restart can resume the same
+conversation after its previous owned process is confirmed terminal. It retains
+the bridge identity, credentials and encrypted journal; accepted and unknown
+calls keep their original facts and are never replayed into the restarted CLI.
+An existing live process, different conversation or uncertain launch without a
+durable process record blocks startup. Selecting a different conversation uses
+the existing explicit `runtime rebind-host` path. Stopping the bridge stops only
+its owned managed CLI, and retains session locks until that child and its output
+task are terminal. Existing App or Codex sessions retain their independent host
+lifetime.
 
-Current evidence: local Linux provider/process regressions and two actual
-existing-conversation input receipts pass. This source addition is not in the
-previously qualified frozen three-platform artifacts. Complete native HTTP/MCP
-qualification, platform checks and release promotion are still required. The
+Current evidence: local Linux provider/process regressions, two actual native
+input receipts and two real E2EE HTTP/MCP Ping/PONG rounds pass. Same-conversation
+restart qualification is in progress. This source addition is not in the
+previously qualified frozen three-platform artifacts. Platform checks and
+release promotion are still required. The
 portable MCP-wait entry remains available independently of this managed mode.

@@ -423,7 +423,7 @@ impl Host {
     }
     pub fn reconnect(&mut self) -> R<()> {
         if self.config["kind"] == "agy-stdio" {
-            return Err("AGY_STDIO_RESTART_REQUIRES_REBIND");
+            return Err("AGY_STDIO_EXPLICIT_RESTART_REQUIRED");
         }
         let mut next = Self::connect(self.config.clone(), self.executor.clone())?;
         let mut expected = self.destination.clone();
@@ -467,7 +467,7 @@ impl Host {
             "agy-stdio" => (
                 "ANTIGRAVITY_CLI",
                 "LIVE",
-                json!({"host":"ANTIGRAVITY_CLI","conversation_id":text(&config,"conversation_id")?,"session_id":text(&config,"session_id")?}),
+                json!({"host":"ANTIGRAVITY_CLI","conversation_id":text(&config,"conversation_id")?,"session_id":text(&config,"conversation_id")?}),
             ),
             "bridge" => {
                 let instance = text(&config["destination"], "bridge_id")?;

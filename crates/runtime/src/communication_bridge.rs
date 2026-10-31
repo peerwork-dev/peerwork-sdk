@@ -165,7 +165,7 @@ impl BridgeConfig {
                 "inbox_directory",
             ],
             Some("agy-stdio") => &[
-                "kind", "managed", "executable", "conversation_id", "session_id", "working_directory",
+                "kind", "managed", "executable", "conversation_id", "working_directory",
             ],
             _ => return Err("BRIDGE_NATIVE_HOST_REQUIRED"),
         };
