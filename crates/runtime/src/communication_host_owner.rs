@@ -72,7 +72,7 @@ impl HostOwner {
                 config["endpoint"],
                 config["thread_id"]
             ]),
-            Some("agy-app") => json!([
+            Some("agy-app" | "agy-stdio") => json!([
                 "peerwork.host-selection.v1",
                 "agy-app",
                 config["conversation_id"]
@@ -144,6 +144,14 @@ mod tests {
             json!({"config":config,"destination":destination,"hold":hold}).to_string(),
         );
         cmd
+    }
+    #[test]
+    fn agy_cli_and_app_cannot_own_the_same_conversation() {
+        let id = crate::communication_host::random_token().unwrap();
+        let owner = HostOwner::select(&json!({"kind":"agy-app","conversation_id":id})).unwrap();
+        assert!(matches!(HostOwner::select(&json!({"kind":"agy-stdio","conversation_id":id})),Err("HOST_SESSION_ALREADY_OWNED")));
+        drop(owner);
+        assert!(HostOwner::select(&json!({"kind":"agy-stdio","conversation_id":id})).is_ok());
     }
     #[test]
     fn session_owner_excludes_independent_processes_aliases_and_survives_crash() {

@@ -626,6 +626,21 @@ async fn qualify_native_reply(mcp_only: bool) {
     master.close().await.unwrap();
     worker.close().await.unwrap();
 
+    // MCP discovery may happen while a managed host initializes. Supply its
+    // protected profile before starting that host; execution still waits for
+    // the scoped runtime endpoint and never opens another signing engine.
+    let worker_scope_early = mail_scope(&ws, &worker_box);
+    let early_worker_profile = AgentProfile {
+        format: "peerwork.agent-profile.v1".into(),
+        endpoint_path: root.join("runtime/client-worker.json"),
+        expected_origin: service.origin.clone(),
+        expected_actor: worker_config.expected_actor.clone(),
+        scopes: BTreeMap::from([("live".into(), worker_scope_early)]),
+        contacts: BTreeMap::new(), protocols: BTreeMap::new(),
+    };
+    let worker_profile_path = root.join("worker-agent.json");
+    crate::communication_host::write_private(&worker_profile_path,
+        &serde_json::to_vec(&early_worker_profile).unwrap()).unwrap();
     let (bridge_lifecycle, adapter, destination) = if mcp_only {
         (None, None, None)
     } else {
@@ -769,12 +784,8 @@ async fn qualify_native_reply(mcp_only: bool) {
         worker_scope,
         BTreeMap::new(),
     );
-    let worker_profile_path = root.join("worker-agent.json");
-    crate::communication_host::write_private(
-        &worker_profile_path,
-        &serde_json::to_vec(&worker_profile).unwrap(),
-    )
-    .unwrap();
+    assert_eq!(worker_profile.endpoint_path, early_worker_profile.endpoint_path);
+    assert_eq!(serde_json::to_value(&worker_profile).unwrap(),serde_json::to_value(&early_worker_profile).unwrap());
     let master = AgentTools::open(master_profile).await.unwrap();
     let before = service.counts().await;
     let mut result = json!({"state":"READY","format":"peerwork.live-host-qualification.v1","nonce":nonce,
@@ -783,7 +794,10 @@ async fn qualify_native_reply(mcp_only: bool) {
         "timing_basis":"one observer monotonic clock; delivery observations are upper bounds, not isolated internal phase spans"});
     write_report(&report, &result);
     println!("LIVE_HOST_READY {}", result);
-    let rounds = if mcp_only { 2 } else { 1 };
+    let rounds = std::env::var("PEERWORK_LIVE_HOST_ROUNDS").ok()
+        .map(|v| v.parse::<u64>().expect("explicit round count"))
+        .unwrap_or(if mcp_only { 2 } else { 1 });
+    assert!((1..=8).contains(&rounds));
     let mut samples = Vec::new();
     for round in 1..=rounds {
         let started = Instant::now();
