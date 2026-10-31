@@ -1385,3 +1385,41 @@ strings, status, receipt and body hash remain distinct; old `ACKED` or
 The archive creates no native inbox input, host call or remote acknowledgement.
 Original-host receipt reconciliation and physical-session rebind still require
 their separate qualified paths; this import alone does not establish them.
+
+## Local physical binding commit (internal candidate)
+
+The native inbox now has an internal local commit for independently verified
+`native-mailbox-rebind-v1` results. It requires the original watch to be stopped,
+all original reports to have been confirmed and exact old mailbox pins to match.
+It preserves receiver key ciphertext, message/control cursors, encrypted frames
+and original-call evidence. It accepts no unsigned remote result and performs
+no host/network IO. The operator workflow that stops the runtime, uploads
+reports, resumes the original signed replacement and switches host configuration
+is not yet exposed as a complete SDK/CLI operation.
+
+Pending waiting work is copied in durable pages of at most32 entries. A persisted
+`COPYING` fence refuses both old and new watch attachment after interruption.
+The final mailbox/watch/host pointer swap and `COMMITTED` marker share one local
+transaction. Repeating that exact operation after commitment never rewrites
+later cursors or state. The next ordinary restart has its own claim selection;
+the verified original replacement remains a separate durable operation.
+
+Each changed physical binding gets a distinct ordering lane generation. Old
+unknown calls cannot stall a new generation, and their original input cannot
+be automatically injected again. Previously unattempted waiting work keeps its
+order and gets a scheduled new lane head. Original calls remain accessible by
+their exact IDs and scopes. Historical facts can upload through the current
+receiver lease without being attributed to the new host. A historical negative
+resolution remains evidence only and does not automatically enqueue the input.
+
+Local retirement frontiers are scoped by physical host. The old single-host
+metadata table (at most256 mailbox rows) is copied once transactionally into
+the new index, without reading event history; the old table remains retained.
+Per-host terminal-call collection uses its own covering index instead of
+filtering across unrelated historical bindings. Rebind metadata shares the
+existing32MiB/65536-row host-state budget.
+
+The service and native verifier also retain `RESULT_UNKNOWN` followed by a
+bound-host `NOT_SENT` proof as two compatible observations. Neither observation
+is erased; contradictory queued/accepted facts remain forbidden. This is a
+recipient attestation, never a host signature or model-completion claim.

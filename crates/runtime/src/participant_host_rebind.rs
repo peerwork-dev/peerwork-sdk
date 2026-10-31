@@ -291,8 +291,18 @@ impl InboxStore {
             let tx = self.db.transaction().map_err(db_error)?;
             for sequence in &rows {
                 let original:String=tx.query_row("SELECT COALESCE((SELECT lane FROM inbox_item_lanes WHERE workspace=?1 AND mailbox=?2 AND sequence=?3),'MAILBOX')",params![s.old.workspace_id,s.old.mailbox_id,sequence],|r|r.get(0)).map_err(db_error)?;
-                tx.execute("UPDATE inbox_host_lanes SET lane=?4 WHERE workspace=?1 AND mailbox=?2 AND sequence=?3 AND state='WAITING'",params![s.old.workspace_id,s.old.mailbox_id,sequence,lane_key(s.confirmed.binding_version,&s.host.digest,&original)]).map_err(db_error)?;
-                tx.execute("UPDATE inbox_host_ready SET host=?4 WHERE workspace=?1 AND mailbox=?2 AND sequence=?3",params![s.old.workspace_id,s.old.mailbox_id,sequence,s.host.digest]).map_err(db_error)?;
+                let lane = lane_key(s.confirmed.binding_version, &s.host.digest, &original);
+                tx.execute("UPDATE inbox_host_lanes SET lane=?4 WHERE workspace=?1 AND mailbox=?2 AND sequence=?3 AND state='WAITING'",params![s.old.workspace_id,s.old.mailbox_id,sequence,lane]).map_err(db_error)?;
+                tx.execute("UPDATE inbox_host_ready SET host=?4,next_retry=0,failures=0,code=NULL WHERE workspace=?1 AND mailbox=?2 AND sequence=?3",params![s.old.workspace_id,s.old.mailbox_id,sequence,s.host.digest]).map_err(db_error)?;
+                // Retagging alone leaves an unattempted queue stranded behind
+                // the old unknown head. Schedule its new head while fenced.
+                promote_lane(
+                    &tx,
+                    &s.old.workspace_id,
+                    &s.old.mailbox_id,
+                    &lane,
+                    &s.host.digest,
+                )?;
             }
             if let Some(last) = rows.last() {
                 cursor = *last;

@@ -3,6 +3,7 @@ use crate::{kernel_identity::KernelIdentity, secure_state::create_private_state_
 
 fn setup(
     count: u64,
+    distinct_second: bool,
 ) -> (
     crate::test_support::ProtectedTestDir,
     KernelIdentity,
@@ -70,8 +71,17 @@ fn setup(
         store
             .db
             .execute(
-                "INSERT INTO inbox_item_lanes VALUES(?1,?2,?3,'same-conversation')",
-                params![old.workspace_id, old.mailbox_id, sequence],
+                "INSERT INTO inbox_item_lanes VALUES(?1,?2,?3,?4)",
+                params![
+                    old.workspace_id,
+                    old.mailbox_id,
+                    sequence,
+                    if distinct_second && sequence == 2 {
+                        "other-conversation"
+                    } else {
+                        "same-conversation"
+                    }
+                ],
             )
             .unwrap();
     }
@@ -156,7 +166,7 @@ impl InboxStore {
 }
 #[test]
 fn rebind_preserves_original_unknown_keys_cursors_and_unblocks_only_the_new_lane() {
-    let (_root, identity, mut store, s, call) = setup(70);
+    let (_root, identity, mut store, s, call) = setup(70, false);
     assert_eq!(
         store.host_rebind_commit(&s).unwrap_err().code,
         "HOST_REBIND_STOP_DISPATCHER_FIRST"
@@ -272,7 +282,7 @@ fn rebind_preserves_original_unknown_keys_cursors_and_unblocks_only_the_new_lane
 #[test]
 fn interrupted_bounded_copy_reopens_fenced_and_same_operation_never_overwrites_later_writes() {
     for stage in ["FENCED", "PAGE", "COMMITTED"] {
-        let (root, identity, mut store, s, call) = setup(70);
+        let (root, identity, mut store, s, call) = setup(70, false);
         ready(&mut store, &s, &call);
         let result = store.host_rebind_with_boundary(&s, |seen| {
             if seen == stage {
@@ -339,7 +349,7 @@ fn interrupted_bounded_copy_reopens_fenced_and_same_operation_never_overwrites_l
 }
 #[test]
 fn historical_negative_resolution_never_reinjects_the_old_input() {
-    let (_root, identity, mut store, s, call) = setup(3);
+    let (_root, identity, mut store, s, call) = setup(3, false);
     ready(&mut store, &s, &call);
     store.host_rebind_commit(&s).unwrap();
     let original = store
@@ -358,6 +368,7 @@ fn historical_negative_resolution_never_reinjects_the_old_input() {
         )
         .unwrap();
     let due = store.host_due(&s.namespace, &s.new, 32).unwrap();
+    assert_eq!(due.first().unwrap().sequence, 2);
     assert!(due.iter().all(|i| i.sequence != 1));
     let old = store
         .host_original_call(&identity, &s.namespace, &s.new, &call.call_id)
@@ -380,7 +391,7 @@ fn historical_negative_resolution_never_reinjects_the_old_input() {
 }
 #[test]
 fn old_retirement_metadata_is_upgraded_once_and_scoped_to_each_physical_host() {
-    let (root, identity, store, s, _call) = setup(2);
+    let (root, identity, store, s, _call) = setup(2, false);
     store
         .db
         .execute(
@@ -433,4 +444,40 @@ fn old_retirement_metadata_is_upgraded_once_and_scoped_to_each_physical_host() {
         7
     );
     assert_eq!(store.host_retired(&s.new, &s.host.digest).unwrap().0, 9);
+}
+
+#[test]
+fn rebind_drops_old_host_readiness_backoff_without_inventing_delivery_success() {
+    let (_root, identity, mut store, s, call) = setup(3, true);
+    let item = DeliveryReference {
+        sequence: 2,
+        delivery_id: format!("{:043}", 2),
+    };
+    store
+        .host_defer(&s.namespace, &s.old, &item, "HOST_WAITING_APPROVAL")
+        .unwrap();
+    let previous: i64 = store
+        .db
+        .query_row(
+            "SELECT next_retry FROM inbox_host_ready WHERE sequence=2",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(previous > crate::participant_store::now());
+    ready(&mut store, &s, &call);
+    store.host_rebind_commit(&s).unwrap();
+    assert!(store
+        .host_due(&s.namespace, &s.new, 32)
+        .unwrap()
+        .iter()
+        .any(|r| r.sequence == 2));
+    let old = store
+        .host_original_call(&identity, &s.namespace, &s.new, &call.call_id)
+        .unwrap();
+    assert_eq!(old.state, "RESULT_UNKNOWN");
+    let second = store
+        .host_status(&identity, &s.namespace, &s.new, &item)
+        .unwrap();
+    assert_eq!(second["host"], "NO_CONFIRMED_INVOCATION");
 }
