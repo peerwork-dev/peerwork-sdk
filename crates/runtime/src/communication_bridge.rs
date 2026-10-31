@@ -922,7 +922,7 @@ pub fn cli(args: &[String]) -> Value {
     let run = || -> R<Value> {
         if args.is_empty() || args == ["--help"] {
             return Ok(
-                json!({"state":"HELP","availability":"UNRELEASED_CANDIDATE","runtime_dependencies":[],"usage":"peerwork bridge run CONFIG.json | set-grants CONFIG.json EXPECTED_REVISION","scope":"Explicit existing host and identity/space/mailbox grants; no permission responses or new Agent."}),
+                json!({"state":"HELP","maturity":"EXPERIMENTAL","runtime_dependencies":[],"usage":"peerwork bridge run CONFIG.json | set-grants CONFIG.json EXPECTED_REVISION","scope":"Explicit existing host and identity/space/mailbox grants; no permission responses or new Agent."}),
             );
         }
         if let [verb, path, revision] = args {

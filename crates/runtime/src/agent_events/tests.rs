@@ -127,6 +127,11 @@ fn invalid_or_cancelled_wait_has_no_profile_or_inbox_effect() {
 fn local_delivery_ack_status_need_no_discovery_and_missing_store_is_noncreating() {
     let dir = crate::test_support::protected_test_dir();
     let mut cfg = config(dir.path());
+    let network = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    network.set_nonblocking(true).unwrap();
+    cfg.origin = format!("http://{}", network.local_addr().unwrap());
+    cfg.allow_loopback_http = true;
+    cfg.transport.request_timeout_ms = 100;
     cfg.owner_actor_id = Some("owner".into());
     cfg.owner_key_id = Some("owner-key".into());
     crate::kernel_identity::KernelIdentity::create(&cfg.identity_path).unwrap();
@@ -137,7 +142,8 @@ fn local_delivery_ack_status_need_no_discovery_and_missing_store_is_noncreating(
     );
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), before);
     // Test-only source construction: production creation remains gated by
-    // authenticated replay. No discovery service exists at invalid.example.
+    // authenticated replay. Any network attempt remains visible in the local
+    // listener backlog; it cannot receive a discovery response.
     let (binding, _, _) = local_binding(&cfg, "fp").unwrap();
     let opened = AgentInbox::open(
         &cfg.state_dir.join("agent-events.sqlite"),
@@ -166,7 +172,6 @@ fn local_delivery_ack_status_need_no_discovery_and_missing_store_is_noncreating(
         })
         .unwrap();
     drop(inbox);
-    let started = std::time::Instant::now();
     let delivered = receive(
         cfg.clone(),
         "fp",
@@ -177,7 +182,7 @@ fn local_delivery_ack_status_need_no_discovery_and_missing_store_is_noncreating(
         &CancellationToken::new(),
     )
     .unwrap();
-    assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    assert_eq!(delivered["wait_status"], "delivered");
     let token = delivered["delivery"]["ack_token"].as_str().unwrap();
     assert_eq!(delivered["delivery"]["receipt"]["command_id"], "cmd");
     ack(cfg.clone(), "fp", "c", "v1", token).unwrap();
@@ -189,6 +194,12 @@ fn local_delivery_ack_status_need_no_discovery_and_missing_store_is_noncreating(
         status(cfg, "different-fp").unwrap_err().code(),
         "CONTEXT_MISMATCH"
     );
+    assert_eq!(
+        network.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock,
+        "local delivery/status/ack attempted network access"
+    );
+    assert!(!dir.path().join("kernel.sqlite").exists());
 }
 
 #[test]
