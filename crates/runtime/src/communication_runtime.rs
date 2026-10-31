@@ -872,6 +872,9 @@ async fn call_endpoint(endpoint: &Endpoint, request: Value) -> Result<Value> {
 
 pub fn cli(args: &[String]) -> Value {
     fn run(args: &[String]) -> Result<Value> {
+        if let [verb,config,request,recovery]=args {
+            if verb=="recover-host-rebind" {return crate::participant_rebind::recovery_cli(Path::new(config),Path::new(request),Path::new(recovery));}
+        }
         if let [verb,config,request]=args {
             if verb=="rebind-host" {
                 return crate::participant_rebind::cli(Path::new(config),Path::new(request));
@@ -879,7 +882,7 @@ pub fn cli(args: &[String]) -> Value {
         }
         if args.is_empty() || args == ["--help"] {
             return Ok(
-                json!({"state":"HELP","availability":"UNRELEASED_CANDIDATE","runtime_dependencies":[],"usage":["peerwork runtime run CONFIG.json","peerwork runtime call CLIENT_ENDPOINT.json REQUEST.json","peerwork runtime admin ADMIN_ENDPOINT.json status|stop","peerwork runtime transfer-engine RUNTIME_CONFIG.json ENGINE_NAME NEW_STATE_DIRECTORY","peerwork runtime rebind-host RUNTIME_CONFIG.json REQUEST.json","peerwork runtime import-node-delivery SELECTION.json","peerwork runtime legacy-evidence SELECTION.json RECORD_KEY"],"authority":"Client endpoints pin identity and capability; no request profile/key selection.","readiness":"LOCAL_READY is not a network/host delivery proof."}),
+                json!({"state":"HELP","availability":"UNRELEASED_CANDIDATE","runtime_dependencies":[],"usage":["peerwork runtime run CONFIG.json","peerwork runtime call CLIENT_ENDPOINT.json REQUEST.json","peerwork runtime admin ADMIN_ENDPOINT.json status|stop","peerwork runtime transfer-engine RUNTIME_CONFIG.json ENGINE_NAME NEW_STATE_DIRECTORY","peerwork runtime rebind-host RUNTIME_CONFIG.json REQUEST.json","peerwork runtime recover-host-rebind RUNTIME_CONFIG.json REQUEST.json RECOVERY.json","peerwork runtime import-node-delivery SELECTION.json","peerwork runtime legacy-evidence SELECTION.json RECORD_KEY"],"authority":"Client endpoints pin identity and capability; no request profile/key selection.","readiness":"LOCAL_READY is not a network/host delivery proof."}),
             );
         }
         if let [verb,path]=args {

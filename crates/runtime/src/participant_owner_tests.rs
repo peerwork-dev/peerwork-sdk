@@ -105,6 +105,7 @@ async fn pending_owner_blocks_open_before_store_changes_and_keeps_fixed_data_bin
     assert!(begin(&owner, &binding, &job).unwrap());
     assert!(begin(&owner, &binding, &job).unwrap());
     let pending_error = validate_ready(&owner, &binding).unwrap_err();
+    assert!(!completed_snapshot(&file, &binding, &job).unwrap());
     assert_eq!(pending_error.operation_id, Some(job.operation_id.clone()));
     assert_eq!(pending_error.recovery, "RESUME_SAME_HOST_REBIND_OPERATION");
     drop(owner);
@@ -124,6 +125,7 @@ async fn pending_owner_blocks_open_before_store_changes_and_keeps_fixed_data_bin
     assert_eq!(std::fs::read(&selected.identity_path).unwrap(), key);
     let owner = SecureStateStore::open(&file).unwrap();
     complete(&owner, &binding, &job).unwrap();
+    assert!(completed_snapshot(&file, &binding, &job).unwrap());
     assert!(!begin(&owner, &binding, &job).unwrap());
     assert_eq!(revision(&owner, &binding).unwrap(), 1);
     drop(owner);

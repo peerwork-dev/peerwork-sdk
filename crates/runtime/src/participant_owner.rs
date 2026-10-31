@@ -47,8 +47,11 @@ fn read(owner: &SecureStateStore, binding: &[u8]) -> Result<Descriptor> {
         .read_exact()
         .map_err(|_| error("STATE_BINDING_INVALID"))?
         .ok_or_else(|| error("OWNER_NOT_INITIALIZED"))?;
+    decode(&bytes, binding)
+}
+fn decode(bytes: &[u8], binding: &[u8]) -> Result<Descriptor> {
     let binding = std::str::from_utf8(binding).map_err(|_| error("STATE_BINDING_INVALID"))?;
-    if bytes.as_slice() == binding.as_bytes() {
+    if bytes == binding.as_bytes() {
         return Ok(Descriptor {
             format: "peerwork.participant-owner.v2".into(),
             binding: binding.into(),
@@ -89,6 +92,19 @@ fn read(owner: &SecureStateStore, binding: &[u8]) -> Result<Descriptor> {
         return Err(error("STATE_BINDING_INVALID"));
     }
     Ok(saved)
+}
+/// Observation only: a completed job retry must not acquire a running engine
+/// or overwrite subsequent work. A partial/concurrent descriptor fails closed.
+pub(crate) fn completed_snapshot(
+    path: &std::path::Path,
+    binding: &[u8],
+    pin: &MaintenancePin,
+) -> Result<bool> {
+    pin.validate()?;
+    let bytes =
+        SecureStateStore::read_snapshot(path, 16384).map_err(|_| error("STATE_BINDING_INVALID"))?;
+    let state = decode(&bytes, binding)?;
+    Ok(state.pending.is_none() && state.completed.as_ref() == Some(pin))
 }
 fn write(owner: &SecureStateStore, state: &Descriptor) -> Result<()> {
     owner

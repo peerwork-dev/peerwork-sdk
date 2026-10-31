@@ -24,6 +24,27 @@ use serde_json::{json, Value};
 use std::path::Path;
 
 const MAX_JOB: usize = 512 * 1024;
+const MAX_DECISIONS: usize = 16;
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum HostRebindRecoveryAction {
+    RetryRejected,
+    Abort,
+}
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HostRebindRecoveryRequest {
+    pub format: String,
+    pub decision_id: String,
+    pub action: HostRebindRecoveryAction,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RejectedAttempt {
+    claim_id: String,
+    claim_wire: String,
+    result_digest: String,
+}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HostRebindRequest {
@@ -87,6 +108,12 @@ struct Subscription {
     claim_wire: Option<String>,
     confirmed: Option<Pins>,
     committed: bool,
+    #[serde(default)]
+    was_enabled: bool,
+    #[serde(default)]
+    rejected: Vec<RejectedAttempt>,
+    #[serde(default)]
+    refresh_epoch_on_retry: bool,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -101,6 +128,12 @@ struct Job {
     host_state_before: Option<Vec<u8>>,
     scopes: Vec<Subscription>,
     ready: bool,
+    #[serde(default)]
+    decisions: Vec<HostRebindRecoveryRequest>,
+    #[serde(default)]
+    aborting: Option<String>,
+    #[serde(default)]
+    aborted: bool,
 }
 fn error(code: &str) -> ParticipantError {
     ParticipantError::local(code, "HOST_REBIND")
@@ -130,6 +163,8 @@ fn load(store: &SecureStateStore, identity: &KernelIdentity, aad: &str) -> Resul
             if job.format != "peerwork.host-rebind-job.v1"
                 || job.scopes.is_empty()
                 || job.scopes.len() > 8
+                || job.decisions.len() > MAX_DECISIONS + 1
+                || job.scopes.iter().any(|s| s.rejected.len() > MAX_DECISIONS)
             {
                 return Err(error("HOST_REBIND_STATE_INVALID"));
             }
@@ -138,10 +173,10 @@ fn load(store: &SecureStateStore, identity: &KernelIdentity, aad: &str) -> Resul
         .transpose()
 }
 fn result(job: &Job) -> Value {
-    json!({"state":"HOST_REBIND_READY","operation_id":job.request.operation_id,"engine":job.request.engine,
+    json!({"state":if job.aborted{"HOST_REBIND_ABORTED"}else{"HOST_REBIND_READY"},"operation_id":job.request.operation_id,"engine":job.request.engine,
         "host":job.request.host,"scopes":job.scopes.len(),"destination_digest":job.destination.digest,
         "original_host_calls":"RETAINED_AT_ORIGINAL_BINDINGS","model_response":"NOT_ATTESTED",
-        "readiness":"CONFIGURATION_COMMITTED_START_RUNTIME_TO_OBSERVE_CURRENT_READINESS"})
+        "readiness":if job.aborted{"ORIGINAL_CONFIGURATION_RETAINED_START_RUNTIME_TO_OBSERVE_CURRENT_READINESS"}else{"CONFIGURATION_COMMITTED_START_RUNTIME_TO_OBSERVE_CURRENT_READINESS"}})
 }
 /// Stop the owning runtime/embedded client first. One call completes all selected
 /// subscriptions. After interruption repeat the exact request and operation ID;
@@ -152,11 +187,37 @@ pub async fn rebind_host(config: &Path, request: HostRebindRequest) -> Result<Va
         .await
         .map_err(|_| error("HOST_REBIND_EXECUTOR_FAILED"))?
 }
+/// Explicit operator decision. Unknown claims cannot be cancelled or assigned
+/// fresh IDs. A confirmed no-effect claim may be retried at the same selected
+/// destination; abort is possible only before any mailbox replacement commits.
+pub async fn recover_host_rebind(
+    config: &Path,
+    request: HostRebindRequest,
+    recovery: HostRebindRecoveryRequest,
+) -> Result<Value> {
+    let config = config.to_owned();
+    tokio::task::spawn_blocking(move || rebind_action(&config, request, Some(recovery), |_| Ok(())))
+        .await
+        .map_err(|_| error("HOST_REBIND_EXECUTOR_FAILED"))?
+}
 fn rebind_with(
     config_path: &Path,
     request: HostRebindRequest,
     mut boundary: impl FnMut(&str) -> Result<()>,
 ) -> Result<Value> {
+    rebind_action(config_path, request, None, &mut boundary)
+}
+fn rebind_action(
+    config_path: &Path,
+    request: HostRebindRequest,
+    recovery: Option<HostRebindRecoveryRequest>,
+    mut boundary: impl FnMut(&str) -> Result<()>,
+) -> Result<Value> {
+    if let Some(r) = &recovery {
+        if r.format != "peerwork.host-rebind-recovery.v1" || !identifier(&r.decision_id) {
+            return Err(error("HOST_REBIND_RECOVERY_SELECTION_INVALID"));
+        }
+    }
     if request.format != "peerwork.host-rebind.v1"
         || !identifier(&request.operation_id)
         || !identifier(&request.engine)
@@ -236,9 +297,28 @@ fn rebind_with(
             return Err(error("HOST_REBIND_ORIGINAL_SELECTION_REQUIRED"));
         }
         // Observational completed retry before engine ownership or host IO.
-        if job.ready {
+        validate_decision(job, recovery.as_ref())?;
+        if job.ready || job.aborted {
             return Ok(result(job));
         }
+        if participant_owner::completed_snapshot(
+            &engine.state_directory.join("engine-owner.state"),
+            &logical,
+            &job.pin,
+        )? {
+            let mut job = existing.unwrap();
+            if job.aborting.is_some() {
+                job.aborted = true;
+            } else if job.scopes.iter().all(|s| s.committed) {
+                job.ready = true;
+            } else {
+                return Err(error("HOST_REBIND_STATE_INVALID"));
+            }
+            save(&job_store, &identity, &aad, &job)?;
+            return Ok(result(&job));
+        }
+    } else if recovery.is_some() {
+        return Err(error("HOST_REBIND_ORIGINAL_JOB_REQUIRED"));
     }
     let _runtime = SecureStateStore::open(&config.state_directory.join("runtime.state"))
         .map_err(|_| error("HOST_REBIND_STOP_RUNTIME_FIRST"))?;
@@ -326,6 +406,7 @@ fn rebind_with(
             target_host.subscriptions[index].watch.host_destination =
                 Some(destination.digest.clone());
             scopes.push(Subscription {
+                was_enabled: inbox.rebind_watch_enabled(&namespace, &binding.options)?,
                 namespace,
                 old: binding.options,
                 expected: Pins::from(&pins),
@@ -333,6 +414,8 @@ fn rebind_with(
                 claim_wire: None,
                 confirmed: None,
                 committed: false,
+                rejected: vec![],
+                refresh_epoch_on_retry: false,
             });
         }
         let host_state = SecureStateStore::open(
@@ -379,6 +462,9 @@ fn rebind_with(
             host_state_before,
             scopes,
             ready: false,
+            decisions: vec![],
+            aborting: None,
+            aborted: false,
         };
         // Capability discovery is a preflight: no owner fence on unsupported service.
         let access = access(&engine);
@@ -392,6 +478,37 @@ fn rebind_with(
     };
     // User edits are never overwritten, including after a partial remote move.
     check_config(config_path, &job)?;
+    if job.aborting.is_some()
+        || recovery
+            .as_ref()
+            .is_some_and(|r| r.action == HostRebindRecoveryAction::Abort)
+    {
+        participant_owner::begin(&owner, &logical, &job.pin)?;
+        return abort_job(
+            &mut job,
+            recovery.as_ref(),
+            &job_store,
+            &identity,
+            &aad,
+            &owner,
+            &logical,
+            &mut inbox,
+            &engine,
+            &executor,
+            &mut boundary,
+        );
+    }
+    if let Some(recovery) = &recovery {
+        if !job
+            .decisions
+            .iter()
+            .any(|r| r.decision_id == recovery.decision_id)
+        {
+            retry_rejected(&mut job, recovery, &identity, &engine)?;
+            save(&job_store, &identity, &aad, &job)?;
+            boundary("RETRY_REJECTED_FROZEN")?;
+        }
+    }
     if job
         .target
         .hosts
@@ -463,14 +580,32 @@ fn rebind_with(
                         json!({"mailbox_id":s.old.mailbox_id}),
                         None,
                     ))?;
+                    let refreshed_epoch = if s.refresh_epoch_on_retry {
+                        let epoch = current["mailbox"]["epoch"]
+                            .as_u64()
+                            .filter(|e| *e >= s.expected.epoch)
+                            .ok_or_else(|| error("HOST_REBIND_VERIFIED_MAILBOX_MISMATCH"))?;
+                        epoch
+                    } else {
+                        s.expected.epoch
+                    };
                     validate_mailbox(
                         &current["mailbox"],
                         &s.expected,
                         &engine.expected_actor,
                         &s.expected.destination_digest,
-                        s.expected.epoch,
+                        refreshed_epoch,
                         s.expected.binding_version,
                     )?;
+                    if s.refresh_epoch_on_retry {
+                        let mut pins = s.expected.native();
+                        pins.epoch = refreshed_epoch;
+                        inbox.register(&pins)?;
+                        job.scopes[index].expected = Pins::from(&pins);
+                        job.scopes[index].refresh_epoch_on_retry = false;
+                        save(&job_store, &identity, &aad, &job)?;
+                    }
+                    let s = &job.scopes[index];
                     // Renew the original fence even when its old lease expired.
                     executor.block_on(call(&access,"structure.mailbox.pulse",&s.old.workspace_id,json!({"mailbox_id":s.old.mailbox_id,
                         "receiver_id":s.expected.receiver_id,"epoch":s.expected.epoch,"ready":false,"execution_state":"OFFLINE"}),None))?;
@@ -584,6 +719,295 @@ fn check_config(path: &Path, job: &Job) -> Result<()> {
     }
     Ok(())
 }
+fn validate_decision(job: &Job, recovery: Option<&HostRebindRecoveryRequest>) -> Result<()> {
+    let Some(r) = recovery else {
+        return Ok(());
+    };
+    if let Some(old) = job
+        .decisions
+        .iter()
+        .find(|d| d.decision_id == r.decision_id)
+    {
+        if old != r {
+            return Err(error("HOST_REBIND_ORIGINAL_RECOVERY_DECISION_REQUIRED"));
+        }
+    } else if job.decisions.len() >= MAX_DECISIONS
+        && r.action == HostRebindRecoveryAction::RetryRejected
+    {
+        return Err(error("HOST_REBIND_RECOVERY_DECISION_LIMIT"));
+    }
+    if job.ready && r.action == HostRebindRecoveryAction::Abort {
+        return Err(error("HOST_REBIND_COMMITTED_FORWARD_RECOVERY_REQUIRED"));
+    }
+    if job.aborted && r.action == HostRebindRecoveryAction::RetryRejected {
+        return Err(error("HOST_REBIND_ABORTED_NEW_JOB_REQUIRED"));
+    }
+    if let Some(id) = &job.aborting {
+        if r.action != HostRebindRecoveryAction::Abort || &r.decision_id != id {
+            return Err(error(
+                "HOST_REBIND_ABORT_IN_PROGRESS_RESUME_ORIGINAL_DECISION",
+            ));
+        }
+    }
+    Ok(())
+}
+enum ClaimEvidence {
+    NotSubmitted,
+    Rejected(String),
+    Unknown,
+    Committed,
+}
+fn uncertain_claim(id: &str) -> ParticipantError {
+    ParticipantError {
+        code: "HOST_REBIND_UNKNOWN_CLAIM_RESUME_ORIGINAL".into(),
+        phase: "HOST_REBIND_RECOVERY".into(),
+        effect_certainty: "UNKNOWN".into(),
+        recovery: "RESUME_SAME_HOST_REBIND_OPERATION".into(),
+        operation_id: Some(id.into()),
+    }
+}
+/// Selected offline verification, never a status inference from HTTP or a
+/// server's mutable current mailbox. Every saved packet and receipt is checked
+/// against the original identity, discovery, authority and complete claim body.
+fn claim_evidence(
+    journal: &crate::kernel_intents::KernelIntentJournal,
+    identity: &KernelIdentity,
+    origin: &str,
+    authority: &str,
+    id: &str,
+    wire: &str,
+) -> Result<ClaimEvidence> {
+    let discovery = journal
+        .pinned_discovery(origin)
+        .map_err(|_| error("HOST_REBIND_ORIGINAL_JOURNAL_INVALID"))?;
+    let Some(packet) = journal
+        .verified_pending(id, identity.key_id(), discovery.audience_utf16())
+        .map_err(|_| error("HOST_REBIND_ORIGINAL_JOURNAL_INVALID"))?
+    else {
+        return Ok(ClaimEvidence::NotSubmitted);
+    };
+    let frozen: Value =
+        serde_json::from_str(wire).map_err(|_| error("HOST_REBIND_STATE_INVALID"))?;
+    let command: Value = serde_json::from_str(packet.proof.command_canonical_json())
+        .map_err(|_| error("HOST_REBIND_ORIGINAL_JOURNAL_INVALID"))?;
+    // Native structure preparation makes this required field explicit before
+    // signing. Compare the complete prepared body, including that exact profile.
+    let mut expected_body = frozen["body"].clone();
+    if expected_body
+        .get("profile")
+        .is_some_and(|v| v != peerwork_core::structure_execution::PROFILE)
+    {
+        return Err(error("HOST_REBIND_ORIGINAL_CLAIM_MISMATCH"));
+    }
+    expected_body
+        .as_object_mut()
+        .ok_or_else(|| error("HOST_REBIND_STATE_INVALID"))?
+        .insert(
+            "profile".into(),
+            json!(peerwork_core::structure_execution::PROFILE),
+        );
+    if packet.proof.actor_id() != identity.actor_id()
+        || packet.proof.action_id() != "structure.mailbox.claim"
+        || packet.proof.workspace_id() != frozen["workspace_id"].as_str()
+        || command["authority"] != authority
+        || command["body"] != expected_body
+        || frozen["command_id"] != id
+        || frozen["action"] != "structure.mailbox.claim"
+    {
+        return Err(error("HOST_REBIND_ORIGINAL_CLAIM_MISMATCH"));
+    }
+    let Some(response) = journal
+        .accepted_response(&packet, discovery.receipt_public_key())
+        .map_err(|_| error("HOST_REBIND_ORIGINAL_JOURNAL_INVALID"))?
+    else {
+        return Ok(ClaimEvidence::Unknown);
+    };
+    let result: Value = serde_json::from_str(response.result_canonical_json())
+        .map_err(|_| error("HOST_REBIND_ORIGINAL_JOURNAL_INVALID"))?;
+    if result["status"] == "REJECTED_NO_EFFECT" {
+        Ok(ClaimEvidence::Rejected(response.result_digest().into()))
+    } else {
+        Ok(ClaimEvidence::Committed)
+    }
+}
+fn open_evidence_journal(
+    engine: &crate::communication_runtime::EngineConfig,
+) -> Result<crate::kernel_intents::KernelIntentJournal> {
+    let path = engine.participant_config().journal_path;
+    validate_private_file(&path).map_err(|_| error("HOST_REBIND_ORIGINAL_JOURNAL_INVALID"))?;
+    crate::kernel_intents::KernelIntentJournal::open(&path)
+        .map_err(|_| error("HOST_REBIND_ORIGINAL_JOURNAL_INVALID"))
+}
+fn retry_rejected(
+    job: &mut Job,
+    recovery: &HostRebindRecoveryRequest,
+    identity: &KernelIdentity,
+    engine: &crate::communication_runtime::EngineConfig,
+) -> Result<()> {
+    if recovery.action != HostRebindRecoveryAction::RetryRejected {
+        return Err(error("HOST_REBIND_RECOVERY_SELECTION_INVALID"));
+    }
+    let journal = open_evidence_journal(engine)?;
+    let origin =
+        crate::transport::canonical_lifecycle_origin(&engine.origin, engine.allow_loopback_http)
+            .map_err(|_| error("ORIGIN_INVALID"))?;
+    let authority = engine
+        .authority
+        .clone()
+        .unwrap_or_else(|| sha256_hex(identity.actor_id().as_bytes()));
+    let mut retry = Vec::new();
+    for (index, s) in job
+        .scopes
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.confirmed.is_none())
+    {
+        if let Some(wire) = &s.claim_wire {
+            if let ClaimEvidence::Rejected(digest) =
+                claim_evidence(&journal, identity, &origin, &authority, &s.claim_id, wire)?
+            {
+                retry.push((
+                    index,
+                    RejectedAttempt {
+                        claim_id: s.claim_id.clone(),
+                        claim_wire: wire.clone(),
+                        result_digest: digest,
+                    },
+                ));
+            }
+        }
+    }
+    if retry.is_empty() {
+        return Err(error(
+            "HOST_REBIND_NO_VERIFIED_REJECTED_CLAIM_RESUME_ORIGINAL",
+        ));
+    }
+    for (index, old) in retry {
+        let s = &mut job.scopes[index];
+        s.rejected.push(old);
+        s.claim_id = token(json!([
+            job.pin.operation_id,
+            recovery.decision_id,
+            index,
+            "retry-rejected"
+        ]));
+        s.claim_wire = None;
+        s.refresh_epoch_on_retry = true;
+    }
+    job.decisions.push(recovery.clone());
+    Ok(())
+}
+fn abort_job(
+    job: &mut Job,
+    recovery: Option<&HostRebindRecoveryRequest>,
+    store: &SecureStateStore,
+    identity: &KernelIdentity,
+    aad: &str,
+    owner: &SecureStateStore,
+    logical: &[u8],
+    inbox: &mut InboxStore,
+    engine: &crate::communication_runtime::EngineConfig,
+    executor: &tokio::runtime::Runtime,
+    boundary: &mut impl FnMut(&str) -> Result<()>,
+) -> Result<Value> {
+    if job
+        .scopes
+        .iter()
+        .any(|s| s.confirmed.is_some() || s.committed)
+    {
+        return Err(error("HOST_REBIND_COMMITTED_FORWARD_RECOVERY_REQUIRED"));
+    }
+    if job.aborting.is_none() {
+        let journal = open_evidence_journal(engine)?;
+        let origin = crate::transport::canonical_lifecycle_origin(
+            &engine.origin,
+            engine.allow_loopback_http,
+        )
+        .map_err(|_| error("ORIGIN_INVALID"))?;
+        let authority = engine
+            .authority
+            .clone()
+            .unwrap_or_else(|| sha256_hex(identity.actor_id().as_bytes()));
+        for s in &job.scopes {
+            for old in &s.rejected {
+                match claim_evidence(
+                    &journal,
+                    identity,
+                    &origin,
+                    &authority,
+                    &old.claim_id,
+                    &old.claim_wire,
+                )? {
+                    ClaimEvidence::Rejected(digest) if digest == old.result_digest => (),
+                    _ => return Err(error("HOST_REBIND_ORIGINAL_JOURNAL_INVALID")),
+                }
+            }
+            if let Some(wire) = &s.claim_wire {
+                match claim_evidence(&journal, identity, &origin, &authority, &s.claim_id, wire)? {
+                    ClaimEvidence::NotSubmitted | ClaimEvidence::Rejected(_) => (),
+                    ClaimEvidence::Unknown => return Err(uncertain_claim(&s.claim_id)),
+                    ClaimEvidence::Committed => {
+                        return Err(error("HOST_REBIND_COMMITTED_FORWARD_RECOVERY_REQUIRED"))
+                    }
+                }
+            }
+        }
+        let r = recovery.ok_or_else(|| error("HOST_REBIND_ABORT_DECISION_REQUIRED"))?;
+        job.aborting = Some(r.decision_id.clone());
+        job.decisions.push(r.clone());
+        save(store, identity, aad, job)?;
+        boundary("ABORT_FROZEN")?;
+    }
+    let access = access(engine);
+    let work = (|| {
+        for (index, s) in job.scopes.iter().enumerate() {
+            let current = executor.block_on(call(
+                &access,
+                "structure.mailbox.get",
+                &s.old.workspace_id,
+                json!({"mailbox_id":s.old.mailbox_id}),
+                None,
+            ))?;
+            let epoch = current["mailbox"]["epoch"]
+                .as_u64()
+                .filter(|v| *v >= s.expected.epoch)
+                .ok_or_else(|| error("HOST_REBIND_VERIFIED_MAILBOX_MISMATCH"))?;
+            validate_mailbox(
+                &current["mailbox"],
+                &s.expected,
+                &engine.expected_actor,
+                &s.expected.destination_digest,
+                epoch,
+                s.expected.binding_version,
+            )?;
+            let mut pins = s.expected.native();
+            pins.epoch = epoch;
+            inbox.register(&pins)?;
+            executor.block_on(call(&access,"structure.mailbox.close",&s.old.workspace_id,json!({"mailbox_id":s.old.mailbox_id,"receiver_id":s.expected.receiver_id,"epoch":epoch}),None))?;
+            let claim = token(json!([
+                job.pin.operation_id,
+                job.aborting,
+                index,
+                "abort-watch-restart"
+            ]));
+            inbox.rebind_restore_watch(
+                &s.namespace,
+                &s.old,
+                &s.expected.receiver_id,
+                s.was_enabled,
+                &claim,
+            )?;
+            boundary("ABORT_WATCH_RESTORED")?;
+        }
+        participant_owner::complete(owner, logical, &job.pin)?;
+        boundary("ABORT_OWNER_COMPLETED")?;
+        job.aborted = true;
+        save(store, identity, aad, job)?;
+        Ok(result(job))
+    })();
+    executor.block_on(access.close_session_executor_async());
+    work
+}
 fn access(engine: &crate::communication_runtime::EngineConfig) -> KernelAccess {
     KernelAccess::new(
         &engine.origin,
@@ -663,7 +1087,12 @@ async fn execute(access: &KernelAccess, wire: &str, command: Option<&str>) -> Re
             value["effect_certainty"].as_str().unwrap_or("UNKNOWN")
         }
         .into(),
-        recovery: "RESUME_SAME_HOST_REBIND_OPERATION".into(),
+        recovery: if refusal {
+            "EXPLICIT_HOST_REBIND_RECOVERY_DECISION_REQUIRED"
+        } else {
+            "RESUME_SAME_HOST_REBIND_OPERATION"
+        }
+        .into(),
         operation_id: command.map(str::to_owned),
     })
 }
@@ -696,6 +1125,16 @@ pub(crate) fn cli(config: &Path, request: &Path) -> Result<Value> {
     )
     .map_err(|_| error("HOST_REBIND_SELECTION_INVALID"))?;
     rebind_with(config, request, |_| Ok(()))
+}
+pub(crate) fn recovery_cli(config: &Path, request: &Path, recovery: &Path) -> Result<Value> {
+    let load = |path: &Path| {
+        private_json(path, 16384).map_err(|_| error("HOST_REBIND_REQUEST_NOT_PRIVATE"))
+    };
+    let request: HostRebindRequest = serde_json::from_value(load(request)?)
+        .map_err(|_| error("HOST_REBIND_SELECTION_INVALID"))?;
+    let recovery: HostRebindRecoveryRequest = serde_json::from_value(load(recovery)?)
+        .map_err(|_| error("HOST_REBIND_RECOVERY_SELECTION_INVALID"))?;
+    rebind_action(config, request, Some(recovery), |_| Ok(()))
 }
 
 #[cfg(test)]

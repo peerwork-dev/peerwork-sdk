@@ -20,6 +20,7 @@ let reportQuotaBlocked=false;const reportQuotaLimits=new Map();
 let clockOffset=0;const ticker=setInterval(()=>{f.clock.now=Date.now()+clockOffset;},10);
 const app=createPostgresControlApp(f.kernel,{source:()=> '127.0.0.1'});
 let offline=false,dropAction=null,delayName=null,delayAction=null,release=null,streamDurationOnce=0;
+let rejectNextRebindMailbox=null;
 const counts={commands:0,discovery:0,context:0,journal_reads:0,dropped:0,native_streams:0,delayed:0,claim_commands:[],actions:{}};
 const commandIds=new Set();
 // Explicit maintainer measurement only. Buffer closed metadata in memory and
@@ -45,6 +46,7 @@ const handle=async request=>{
   if(options.fence_mailbox!==undefined)await f.store.pool.query(`UPDATE "${f.schema}".communication_mailboxes SET epoch=epoch+1,lease_until=0,ready=false WHERE mailbox_id=$1`,[options.fence_mailbox]);
   if(options.clock_offset_ms!==undefined){clockOffset=options.clock_offset_ms;f.clock.now=Date.now()+clockOffset;}
   if(options.drop_action!==undefined)dropAction=options.drop_action;
+  if(options.reject_next_rebind_mailbox!==undefined)rejectNextRebindMailbox=options.reject_next_rebind_mailbox;
   if(options.delay_name!==undefined)delayName=options.delay_name;
   if(options.delay_action!==undefined)delayAction=options.delay_action;
   if(options.stream_duration_once_ms!==undefined)streamDurationOnce=options.stream_duration_once_ms;
@@ -68,6 +70,10 @@ const handle=async request=>{
   counts.commands++;commandIds.add(command.command_id);
   counts.actions[command.action_id]=(counts.actions[command.action_id]??0)+1;
   if(command.action_id==='structure.mailbox.claim')counts.claim_commands.push({command_id:command.command_id,receiver_id:command.body.receiver_id,replace:command.body.replace,expected_epoch:command.body.expected_epoch});
+  if(command.action_id==='structure.mailbox.claim'&&command.body.replace===true&&command.body.mailbox_id===rejectNextRebindMailbox){
+   rejectNextRebindMailbox=null;
+   await f.store.pool.query(`UPDATE "${f.schema}".communication_mailboxes SET epoch=epoch+1,lease_until=0,ready=false WHERE mailbox_id=$1`,[command.body.mailbox_id]);
+  }
   if(delayAction===command.action_id){delayAction=null;counts.delayed++;await new Promise(resolve=>{release=resolve;});}
   if(reportQuotaBlocked&&command.action_id==='structure.mailbox.report'){
    const workspace=command.workspace_id;

@@ -360,6 +360,36 @@ async fn installed_cli_reconciles_lost_committed_claim_response_without_new_gene
         refusal["error"]["recovery"],
         "RESUME_SAME_HOST_REBIND_OPERATION"
     );
+    let before = service.counts().await;
+    let abort = HostRebindRecoveryRequest {
+        format: "peerwork.host-rebind-recovery.v1".into(),
+        decision_id: "unknown-abort".into(),
+        action: HostRebindRecoveryAction::Abort,
+    };
+    assert_eq!(
+        recover_host_rebind(&path, request.clone(), abort)
+            .await
+            .unwrap_err()
+            .code,
+        "HOST_REBIND_UNKNOWN_CLAIM_RESUME_ORIGINAL"
+    );
+    let retry = HostRebindRecoveryRequest {
+        format: "peerwork.host-rebind-recovery.v1".into(),
+        decision_id: "unknown-retry".into(),
+        action: HostRebindRecoveryAction::RetryRejected,
+    };
+    assert_eq!(
+        recover_host_rebind(&path, request.clone(), retry)
+            .await
+            .unwrap_err()
+            .code,
+        "HOST_REBIND_NO_VERIFIED_REJECTED_CLAIM_RESUME_ORIGINAL"
+    );
+    assert_eq!(
+        service.counts().await["commands"],
+        before["commands"],
+        "uncertainty recovery selection performs no submission"
+    );
     service.config(json!({"offline":false})).await;
     let second = run(cli, path.clone(), input).await;
     assert!(
@@ -441,5 +471,342 @@ async fn live_runtime_and_changed_config_are_refused_without_overwrite() {
     assert_eq!(
         rebind_host(&path, other).await.unwrap_err().code,
         "HOST_REBIND_ORIGINAL_SELECTION_REQUIRED"
+    );
+}
+
+fn decision(id: &str, action: HostRebindRecoveryAction) -> HostRebindRecoveryRequest {
+    HostRebindRecoveryRequest {
+        format: "peerwork.host-rebind-recovery.v1".into(),
+        decision_id: id.into(),
+        action,
+    }
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires explicit synthetic PostgreSQL and service fixture"]
+async fn frozen_unsubmitted_claim_can_abort_and_restore_original_enabled_watch() {
+    let root = crate::test_support::protected_test_dir();
+    let service = Service::start();
+    let (cfg, path, request, watches) = setup(root.path(), &service).await;
+    let identity = KernelIdentity::open(&cfg.engines[0].identity_path).unwrap();
+    let origin =
+        crate::transport::canonical_lifecycle_origin(&cfg.engines[0].origin, true).unwrap();
+    let mut inbox =
+        InboxStore::open_local(&cfg.engines[0].state_directory, &identity, &origin).unwrap();
+    inbox
+        .attach_watch(&identity, "program:worker", &watches[0])
+        .unwrap();
+    drop(inbox);
+    let p = path.clone();
+    let r = request.clone();
+    let err = tokio::task::spawn_blocking(move || {
+        rebind_with(&p, r, |at| {
+            if at == "CLAIM_FROZEN" {
+                Err(error("SYNTHETIC_INTERRUPTION"))
+            } else {
+                Ok(())
+            }
+        })
+    })
+    .await
+    .unwrap()
+    .unwrap_err();
+    assert_eq!(err.code, "SYNTHETIC_INTERRUPTION");
+    assert_eq!(
+        recover_host_rebind(
+            &path,
+            request,
+            decision("abort-before-submission", HostRebindRecoveryAction::Abort)
+        )
+        .await
+        .unwrap()["state"],
+        "HOST_REBIND_ABORTED"
+    );
+    let inbox =
+        InboxStore::open_local(&cfg.engines[0].state_directory, &identity, &origin).unwrap();
+    assert!(inbox
+        .rebind_watch_enabled("program:worker", &watches[0])
+        .unwrap());
+    assert!(!inbox
+        .rebind_watch_enabled("program:worker", &watches[1])
+        .unwrap());
+    let counts = service.counts().await;
+    assert!(counts["claim_commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|c| c["replace"] != true));
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires explicit synthetic PostgreSQL and service fixture"]
+async fn signed_refusal_retry_is_explicit_idempotent_and_keeps_partial_commits() {
+    let service = Service::start();
+    for rejected_index in 0..2 {
+        let root = crate::test_support::protected_test_dir();
+        let (cfg, path, request, watches) = setup(root.path(), &service).await;
+        service
+            .config(json!({"reject_next_rebind_mailbox":watches[rejected_index].mailbox_id}))
+            .await;
+        let rejected = rebind_host(&path, request.clone()).await.unwrap_err();
+        assert_eq!(
+            rejected.effect_certainty, "REJECTED_NO_EFFECT",
+            "{rejected:?}"
+        );
+        assert_eq!(
+            rejected.recovery,
+            "EXPLICIT_HOST_REBIND_RECOVERY_DECISION_REQUIRED"
+        );
+        if rejected_index == 1 {
+            assert_eq!(
+                recover_host_rebind(
+                    &path,
+                    request.clone(),
+                    decision("abort-partial", HostRebindRecoveryAction::Abort)
+                )
+                .await
+                .unwrap_err()
+                .code,
+                "HOST_REBIND_COMMITTED_FORWARD_RECOVERY_REQUIRED"
+            );
+        }
+        let p = path.clone();
+        let r = request.clone();
+        let d = decision(
+            "retry-same-selection",
+            HostRebindRecoveryAction::RetryRejected,
+        );
+        let prepared = d.clone();
+        let err = tokio::task::spawn_blocking(move || {
+            rebind_action(&p, r, Some(prepared), |at| {
+                if at == "RETRY_REJECTED_FROZEN" {
+                    Err(error("SYNTHETIC_INTERRUPTION"))
+                } else {
+                    Ok(())
+                }
+            })
+        })
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(err.code, "SYNTHETIC_INTERRUPTION");
+        let output = recover_host_rebind(&path, request.clone(), d.clone())
+            .await
+            .unwrap();
+        assert_eq!(output["state"], "HOST_REBIND_READY");
+        let before = service.counts().await;
+        assert_eq!(
+            recover_host_rebind(&path, request.clone(), d)
+                .await
+                .unwrap()["state"],
+            "HOST_REBIND_READY"
+        );
+        assert_eq!(service.counts().await["commands"], before["commands"]);
+        assert_eq!(
+            recover_host_rebind(
+                &path,
+                request,
+                decision("retry-same-selection", HostRebindRecoveryAction::Abort)
+            )
+            .await
+            .unwrap_err()
+            .code,
+            "HOST_REBIND_ORIGINAL_RECOVERY_DECISION_REQUIRED"
+        );
+        let identity = KernelIdentity::open(&cfg.engines[0].identity_path).unwrap();
+        let inbox = InboxStore::open_local(
+            &cfg.engines[0].state_directory,
+            &identity,
+            &crate::transport::canonical_lifecycle_origin(&cfg.engines[0].origin, true).unwrap(),
+        )
+        .unwrap();
+        for (index, w) in watches.iter().enumerate() {
+            let pins = inbox.pins(&w.workspace_id, &w.mailbox_id).unwrap().unwrap();
+            assert_eq!(pins.epoch, if index == rejected_index { 3 } else { 2 });
+            assert_eq!(pins.binding_version, 2);
+        }
+    }
+    assert_eq!(service.counts().await["journal_reads"], 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires explicit synthetic PostgreSQL and service fixture"]
+async fn abort_restores_only_proven_original_state_and_resumes_each_abort_boundary() {
+    let service = Service::start();
+    for fault in [
+        "ABORT_FROZEN",
+        "ABORT_WATCH_RESTORED",
+        "ABORT_OWNER_COMPLETED",
+    ] {
+        let root = crate::test_support::protected_test_dir();
+        let (cfg, path, request, watches) = setup(root.path(), &service).await;
+        service
+            .config(json!({"reject_next_rebind_mailbox":watches[0].mailbox_id}))
+            .await;
+        rebind_host(&path, request.clone()).await.unwrap_err();
+        let original = std::fs::read(&path).unwrap();
+        let identity_bytes = std::fs::read(&cfg.engines[0].identity_path).unwrap();
+        let d = decision("abort-known-no-effect", HostRebindRecoveryAction::Abort);
+        let p = path.clone();
+        let r = request.clone();
+        let initial = d.clone();
+        let stage = fault.to_owned();
+        let err = tokio::task::spawn_blocking(move || {
+            rebind_action(&p, r, Some(initial), |at| {
+                if at == stage {
+                    Err(error("SYNTHETIC_INTERRUPTION"))
+                } else {
+                    Ok(())
+                }
+            })
+        })
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(err.code, "SYNTHETIC_INTERRUPTION");
+        let active = if fault == "ABORT_OWNER_COMPLETED" {
+            Some(
+                ParticipantClient::open(cfg.engines[0].participant_config())
+                    .await
+                    .unwrap(),
+            )
+        } else {
+            None
+        };
+        assert_eq!(
+            recover_host_rebind(&path, request.clone(), d.clone())
+                .await
+                .unwrap()["state"],
+            "HOST_REBIND_ABORTED"
+        );
+        assert_eq!(
+            rebind_host(&path, request.clone()).await.unwrap()["state"],
+            "HOST_REBIND_ABORTED"
+        );
+        assert_eq!(
+            recover_host_rebind(
+                &path,
+                request,
+                decision("new-retry", HostRebindRecoveryAction::RetryRejected)
+            )
+            .await
+            .unwrap_err()
+            .code,
+            "HOST_REBIND_ABORTED_NEW_JOB_REQUIRED"
+        );
+        if let Some(active) = active {
+            active.close().await.unwrap();
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert_eq!(
+            std::fs::read(&cfg.engines[0].identity_path).unwrap(),
+            identity_bytes
+        );
+        let identity = KernelIdentity::open(&cfg.engines[0].identity_path).unwrap();
+        let inbox = InboxStore::open_local(
+            &cfg.engines[0].state_directory,
+            &identity,
+            &crate::transport::canonical_lifecycle_origin(&cfg.engines[0].origin, true).unwrap(),
+        )
+        .unwrap();
+        for w in &watches {
+            let pins = inbox.pins(&w.workspace_id, &w.mailbox_id).unwrap().unwrap();
+            assert_eq!(pins.binding_version, 1);
+            assert_eq!(pins.destination_digest, w.host_destination.clone().unwrap());
+            assert!(pins.after_sequence >= 1);
+            assert!(!inbox.rebind_watch_enabled("program:worker", w).unwrap());
+        }
+    }
+    assert_eq!(service.counts().await["journal_reads"], 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires explicit synthetic PostgreSQL, service fixture and rebuilt native CLI"]
+async fn installed_cli_abort_checks_signed_receipt_and_rejects_tampering() {
+    let cli =
+        PathBuf::from(std::env::var("PEERWORK_PARTICIPANT_CLI").expect("explicit current CLI"));
+    let service = Service::start();
+    let root = crate::test_support::protected_test_dir();
+    let (cfg, path, request, watches) = setup(root.path(), &service).await;
+    service
+        .config(json!({"reject_next_rebind_mailbox":watches[0].mailbox_id}))
+        .await;
+    rebind_host(&path, request.clone()).await.unwrap_err();
+    let input = root.path().join("request.json");
+    let recovery = root.path().join("recovery.json");
+    write_private(&input, &serde_json::to_vec(&request).unwrap()).unwrap();
+    write_private(
+        &recovery,
+        &serde_json::to_vec(&decision("cli-abort", HostRebindRecoveryAction::Abort)).unwrap(),
+    )
+    .unwrap();
+    let p = path.clone();
+    let r = input.clone();
+    let d = recovery.clone();
+    let output = tokio::task::spawn_blocking(move || {
+        std::process::Command::new(cli)
+            .args(["runtime", "recover-host-rebind"])
+            .arg(p)
+            .arg(r)
+            .arg(d)
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()["state"],
+        "HOST_REBIND_ABORTED"
+    );
+    let active = ParticipantClient::open(cfg.engines[0].participant_config())
+        .await
+        .unwrap();
+    active.close().await.unwrap();
+    // Separate original job: a tampered local receipt never proves no effect.
+    let other = crate::test_support::protected_test_dir();
+    let (cfg, path, request, watches) = setup(other.path(), &service).await;
+    service
+        .config(json!({"reject_next_rebind_mailbox":watches[0].mailbox_id}))
+        .await;
+    rebind_host(&path, request.clone()).await.unwrap_err();
+    let counts = service.counts().await;
+    let id = counts["claim_commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|c| c["replace"] == true)
+        .unwrap()["command_id"]
+        .as_str()
+        .unwrap();
+    let db = rusqlite::Connection::open(cfg.engines[0].participant_config().journal_path).unwrap();
+    db.execute(
+        "UPDATE accepted_responses SET response_wire=x'00' WHERE command_id=?1",
+        [id],
+    )
+    .unwrap();
+    drop(db);
+    for action in [
+        HostRebindRecoveryAction::Abort,
+        HostRebindRecoveryAction::RetryRejected,
+    ] {
+        assert_eq!(
+            recover_host_rebind(&path, request.clone(), decision("tampered", action))
+                .await
+                .unwrap_err()
+                .code,
+            "HOST_REBIND_ORIGINAL_JOURNAL_INVALID"
+        );
+    }
+    assert_eq!(
+        ParticipantClient::open(cfg.engines[0].participant_config())
+            .await
+            .err()
+            .unwrap()
+            .code,
+        "OWNER_MAINTENANCE_PENDING_RESUME_ORIGINAL_OPERATION"
     );
 }

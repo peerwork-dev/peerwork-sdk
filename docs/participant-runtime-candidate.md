@@ -86,10 +86,48 @@ than overwritten. A completed retry returns its historical result before
 opening the engine or contacting a host, preserving later work.
 
 A definitive remote refusal is not transport uncertainty. The candidate retains
-the original job and fence on that refusal; changing IDs or deleting its state
-is not a supported recovery. A separate explicit administrative refusal/abort
-path remains a release requirement, especially after partial multi-mailbox
-replacement. Interruption/retry qualification does not establish that path.
+the original job and fence on that refusal. An explicit operator can call
+`participant_rebind::recover_host_rebind` or
+`peerwork runtime recover-host-rebind /absolute/runtime.json /absolute/request.json /absolute/recovery.json`.
+The protected recovery file is:
+
+```json
+{
+  "format": "peerwork.host-rebind-recovery.v1",
+  "decision_id": "retry-after-fixing-access-1",
+  "action": "RETRY_REJECTED"
+}
+```
+
+Use a stable `decision_id` for each explicit decision and repeat it after
+interruption. Reusing that ID with a different action is refused. Recovery
+checks the original journal's exact signed request and digest-bound service
+receipt locally; an HTTP status, missing response or current mailbox snapshot
+cannot prove a replacement had no effect.
+
+- `RETRY_REJECTED` assigns a new claim ID only to a verified
+  `REJECTED_NO_EFFECT` attempt. Its original packet and receipt remain in the
+  journal and its digest is retained by the sealed job. Confirmed subscriptions
+  are preserved; unknown claims keep their original IDs. If the same original
+  receiver/destination has a newer epoch, the explicit retry may refresh only
+  that epoch after a verified selected read. It cannot change identity,
+  membership, receiver key, binding version or selected target.
+- `ABORT` is allowed only if every frozen replacement is locally proven not
+  submitted or has a verified no-effect receipt, and none has committed. It
+  verifies the original mailbox binding, closes its old lease, restores each
+  saved watch's enabled/disabled state, then releases the maintenance fence.
+  `HOST_REBIND_ABORTED` retains the original configuration, keys, cursors and
+  uncertain original host calls. Its destination digest describes the attempted
+  target, not a live current binding. It does not cancel old model work or
+  remove peer messages.
+
+Unknown replacement outcomes refuse both cancellation and fresh claim IDs;
+resume the original `rebind-host` operation to reconcile them. A partially
+committed multi-mailbox replacement refuses rollback and must finish forward.
+Retry decisions are bounded at16 per job; abort retains its own terminal slot.
+The sealed job payload remains capped at512KiB. Definitive refusals require repairing their
+cause before another explicit retry. Completed or aborted observations do not
+overwrite later engine/configuration writes.
 
 `HOST_REBIND_READY` means local binding/configuration commit completed. Start
 the runtime normally to observe current receiver/host readiness. It does not

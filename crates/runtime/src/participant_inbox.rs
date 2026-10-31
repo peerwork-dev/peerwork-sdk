@@ -218,6 +218,17 @@ impl InboxStore {
         if blocked {return Err(failure("HOST_REBIND_ORIGINAL_REPORT_BLOCKED"));}
         Ok(())
     }
+    pub(crate) fn rebind_watch_enabled(&self,namespace:&str,options:&crate::participant_watch::WatchOptions)->Result<bool>{
+        self.selected_watch(namespace,options)?;
+        self.db.query_row("SELECT enabled FROM inbox_watches WHERE workspace=?1 AND mailbox=?2",params![options.workspace_id,options.mailbox_id],|r|r.get(0)).map_err(db_error)
+    }
+    /// Only the stopped, fenced operator calls this after proving every frozen
+    /// replacement was not submitted or has a signed no-effect receipt.
+    pub(crate) fn rebind_restore_watch(&self,namespace:&str,options:&crate::participant_watch::WatchOptions,receiver:&str,enabled:bool,claim_id:&str)->Result<()> {
+        if self.selected_watch(namespace,options)?.receiver!=receiver{return Err(failure("WATCH_BINDING_MISMATCH"));}
+        self.db.execute("UPDATE inbox_watches SET enabled=?3,claim_id=?4,claim_wire=NULL WHERE workspace=?1 AND mailbox=?2",params![options.workspace_id,options.mailbox_id,enabled,claim_id]).map_err(db_error)?;
+        Ok(())
+    }
     pub fn attach_watch(
         &mut self,
         identity: &KernelIdentity,
