@@ -3,6 +3,8 @@
 import importlib.util
 from pathlib import Path
 import unittest
+import json
+import tempfile
 spec=importlib.util.spec_from_file_location('qualify',Path(__file__).with_name('qualify-agy-native-mcp.py'))
 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
 class ResourceReads(unittest.TestCase):
@@ -26,4 +28,25 @@ class ResourceReads(unittest.TestCase):
     def test_ambiguous_arguments_and_wrong_tool(self):
         self.assertIsNone(self.classify(str(self.skill),file_path='/sdk/private.rs'))
         self.assertIsNone(self.classify(str(self.skill),name='run_command'))
+
+
+class TransportObservation(unittest.TestCase):
+    def test_restart_request_ids_are_paired_only_with_their_own_process(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name, start, end in [('one', 100, 200), ('two', 1000, 5000)]:
+                records = [dict(event='REQUEST_READ', index=1, method='tools/call', tool='peerwork_reply', monotonic_ns=start),
+                           dict(event='RESPONSE_READ', index=1, rpc_error=False, monotonic_ns=end),
+                           dict(event='CHILD_EXIT', exit_code=0, pending=0)]
+                (root / (name + '.jsonl')).write_text('\n'.join(json.dumps(r) for r in records))
+            result = module.observe_mcp_transport(root)
+            self.assertTrue(result['complete'])
+            self.assertEqual([call['duration_ms'] for call in result['calls']], [0.0001, 0.004])
+
+    def test_missing_or_corrupt_measurement_is_not_a_complete_observation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.assertFalse(module.observe_mcp_transport(root)['complete'])
+            (root / 'broken.jsonl').write_text('{')
+            self.assertFalse(module.observe_mcp_transport(root)['complete'])
 if __name__=='__main__':unittest.main()

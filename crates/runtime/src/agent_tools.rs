@@ -673,7 +673,11 @@ pub fn catalog() -> Vec<Value> {
         required: &[&str],
         read_only: bool,
     ) -> Value {
-        json!({"name":format!("peerwork_{name}"),"description":description,"inputSchema":object(properties,required),"annotations":{"readOnlyHint":read_only,"idempotentHint":!matches!(name,"send"|"reply"|"act"),"openWorldHint":matches!(name,"send"|"reply"|"act"|"protocol"|"receipts")}})
+        // Fixed participant entry points must survive host-session resume.
+        // AGY CLI 1.3.3+ supports this tools/list hint instead of its ephemeral
+        // on-demand dispatcher. Other hosts may ignore it. It grants no authority.
+        // https://antigravity.google/docs/changelog?tab=cli
+        json!({"name":format!("peerwork_{name}"),"description":description,"inputSchema":object(properties,required),"_meta":{"antigravity/alwaysLoad":true},"annotations":{"readOnlyHint":read_only,"idempotentHint":!matches!(name,"send"|"reply"|"act"),"openWorldHint":matches!(name,"send"|"reply"|"act"|"protocol"|"receipts")}})
     }
     let text = field("string");
     let number = json!({"type":"integer","minimum":0,"maximum":9_007_199_254_740_991_u64});

@@ -322,6 +322,11 @@ mod tests {
         let list = receive(&mut cr).await;
         assert_eq!(list["id"], 2);
         assert_eq!(list["result"]["tools"], json!(agent_tools::catalog()));
+        let tools = list["result"]["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 12);
+        assert!(tools.iter().all(|tool| tool["_meta"]["antigravity/alwaysLoad"] == true));
+        assert!(serde_json::to_vec(tools).unwrap().len() <= 16 * 1024,
+            "fixed eager entry points must not expand into per-protocol action catalogs");
         // Invalid JSON and duplicate object fields cannot become tool inputs.
         cw.write_all(b"{bad json}\n{\"jsonrpc\":\"2.0\",\"id\":3,\"id\":4,\"method\":\"ping\"}\n")
             .await

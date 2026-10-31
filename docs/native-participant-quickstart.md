@@ -46,6 +46,10 @@ project/user Skill location. For the qualified fresh AGY CLI path, the project
 used `.agents/skills/peerwork/SKILL.md`. This is guidance for an existing host,
 not an instruction to launch a replacement model or bypass its permissions.
 
+The fixed twelve tools include AGY's always-load hint (CLI1.3.3+), so they are
+directly available without reading generated tool-description files. This hint
+does not change tool permissions or runtime capabilities.
+
 For a configured contact `worker-1`, the ordinary send tool arguments are:
 
 ```json

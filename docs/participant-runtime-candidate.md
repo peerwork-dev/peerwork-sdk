@@ -1618,15 +1618,18 @@ The protected marker distinguishes a successful graceful exit from forced/error
 termination. Session locks remain held until the child and output task are
 terminal. Existing App or Codex sessions retain their independent host lifetime.
 
-Current evidence: local Linux provider/process regressions, two actual native
-input receipts and two real E2EE HTTP/MCP Ping/PONG rounds pass. Live restart
-tests on AGY CLI1.4.12 expose missing MCP dispatch after process restart. The
-second native input is accepted, but its model cannot invoke `call_mcp_tool`.
-Same-project selection, personal MCP configuration and a confirmed successful
-graceful shutdown did not resolve it. Consequently this managed provider is
-**not qualified for resumable IM operation**. Native init and input ACK do not
-prove tool availability or an Agent reply. No identity migration, fresh workspace
-or permission bypass is a remedy. This source addition is not in the
+The fixed twelve MCP entry points carry the advisory
+`_meta: {"antigravity/alwaysLoad": true}` hint supported by AGY CLI1.3.3+.
+They appear directly in that host's tool catalog; other hosts may ignore the
+hint. Runtime capabilities and tool permissions still apply. The entire catalog
+is bounded, independent of how many business protocols are configured.
+
+Current Linux evidence includes AGY CLI1.4.12 with direct native MCP and optional
+per-process observation. Both paths complete two real E2EE HTTP/MCP Ping/PONG
+rounds with a same-conversation bridge restart, unchanged adapter and explicit
+consumption. Each uses four message sends and zero journal reads. These are
+functional examples, not IM latency percentiles. Native init and input ACK alone
+do not prove tool availability or an Agent reply. This addition is not in the
 previously qualified frozen three-platform artifacts. Platform checks and
-release promotion are still required. The
-portable MCP-wait entry remains available independently of this managed mode.
+release promotion remain required. The portable MCP-wait entry remains
+available independently of managed mode.

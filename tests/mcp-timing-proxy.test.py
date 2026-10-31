@@ -15,6 +15,29 @@ spec.loader.exec_module(module)
 
 
 class TimingProxyTests(unittest.TestCase):
+    def test_restarted_mcp_processes_get_distinct_private_traces(self):
+        with tempfile.TemporaryDirectory() as directory:
+            traces = Path(directory) / 'timing'
+            request = (json.dumps({'jsonrpc': '2.0', 'id': 'private-id', 'method': 'tools/call',
+                'params': {'name': 'peerwork_reply', 'arguments': {'text': 'private-body'}}}) + '\n').encode()
+            for _ in range(2):
+                result = subprocess.run([sys.executable, str(PROXY), '--trace-dir', str(traces), '--',
+                    sys.executable, '-c', 'import sys; sys.stdout.buffer.write(sys.stdin.buffer.read())'],
+                    input=request, capture_output=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, request)
+            files = list(traces.glob('*.jsonl'))
+            self.assertEqual(len(files), 2)
+            for path in files:
+                raw = path.read_text()
+                self.assertNotIn('private-', raw)
+                records = [json.loads(line) for line in raw.splitlines()]
+                self.assertEqual([r['index'] for r in records if r['event'] == 'REQUEST_READ'], [1])
+                self.assertEqual(records[-1]['event'], 'CHILD_EXIT')
+                self.assertEqual(records[-1]['pending'], 0)
+                if os.name != 'nt':
+                    self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
     def test_out_of_order_results_are_unchanged_and_private_fields_are_not_traced(self):
         with tempfile.TemporaryDirectory() as directory:
             trace = Path(directory) / 'timing.jsonl'
