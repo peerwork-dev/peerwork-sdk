@@ -11,6 +11,7 @@ use crate::{
     participant::{ParticipantError, Result},
 };
 pub(crate) use host_ledger::{HostBinding, HostOperation, HostOutcome, HostReply};
+pub(crate) use host_ledger::rebind::HostRebind;
 use peerwork_core::{
     canonical::Path as CanonicalPath,
     communication::{MailboxPins, VerifiedMailboxPage, MAX_FRAME_BYTES},
@@ -206,6 +207,7 @@ impl InboxStore {
         options: &crate::participant_watch::WatchOptions,
     ) -> Result<crate::participant_watch::Binding> {
         options.validate()?;
+        self.host_rebind_available(options)?;
         let wire = serde_json::to_string(options).map_err(|_| invalid())?;
         let active:bool=self.db.query_row("SELECT EXISTS(SELECT 1 FROM inbox_watches WHERE workspace=?1 AND mailbox=?2 AND enabled=1)",params![options.workspace_id,options.mailbox_id],|r|r.get(0)).map_err(db_error)?;
         let count: usize = self

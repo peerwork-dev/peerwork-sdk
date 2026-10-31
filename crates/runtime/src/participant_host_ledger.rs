@@ -3,6 +3,8 @@
 use super::*;
 #[path="participant_host_gc.rs"]
 mod retirement;
+#[path = "participant_host_rebind.rs"]
+pub(super) mod rebind;
 use crate::participant_watch::{DeliveryReference, WatchOptions};
 use serde::{Deserialize, Serialize};
 
@@ -593,6 +595,7 @@ pub(super) fn initialize(db: &Connection) -> Result<()> {
 
         CREATE INDEX IF NOT EXISTS inbox_host_lane_state ON inbox_host_lanes(state,sequence);
         UPDATE inbox_host_lanes SET state='RESULT_UNKNOWN' WHERE state='CALL_OPEN';").map_err(db_error)?;
+    rebind::initialize(db)?;
     let columns = db
         .prepare("PRAGMA table_info(inbox_host_calls)")
         .map_err(db_error)?
@@ -618,13 +621,14 @@ pub(super) fn initialize(db: &Connection) -> Result<()> {
         }
     }
     db.execute_batch("CREATE INDEX IF NOT EXISTS inbox_host_gc ON inbox_host_calls(workspace,mailbox,report_pending,state,sequence,call_id);").map_err(db_error)?;
+    db.execute_batch("CREATE INDEX IF NOT EXISTS inbox_host_gc_binding ON inbox_host_calls(workspace,mailbox,host,report_pending,state,sequence,call_id);").map_err(db_error)?;
     db.execute_batch("CREATE INDEX IF NOT EXISTS inbox_host_reconcile ON inbox_host_calls(workspace,mailbox,host,state,reconcile_at,call_id);").map_err(db_error)?;
     db.execute_batch("CREATE INDEX IF NOT EXISTS inbox_host_report_pending ON inbox_host_calls(workspace,mailbox,report_pending,call_id); UPDATE inbox_host_calls SET state='RESULT_UNKNOWN',report_version=report_version+1,report_pending=1,report_code=NULL WHERE state='CALL_OPEN';").map_err(db_error)?;
     Ok(())
 }
 impl InboxStore {
     pub fn host_access_scope(&self,namespace:&str,options:&WatchOptions)->Result<Value>{
-        self.host_link(namespace,options)?;
+        self.host_evidence_scope(namespace,options)?;
         Ok(json!({"format":"peerwork.host-access.v1","owner":self.binding,"namespace":namespace,"workspace_id":options.workspace_id,"mailbox_id":options.mailbox_id,"membership_id":options.membership_id,"destination_digest":options.host_destination}))
     }
     /// Read the original encrypted call only. Reserve the next probe before IO
@@ -661,6 +665,7 @@ impl InboxStore {
         Ok(())
     }
     fn host_link(&self, namespace: &str, options: &WatchOptions) -> Result<(String, u64)> {
+        self.host_rebind_available(options)?;
         self.host_watch_scope(namespace, options)?;
         let row:Option<(String,String,u64)>=self.db.query_row("SELECT namespace,host,cursor FROM inbox_host_links WHERE workspace=?1 AND mailbox=?2",params![options.workspace_id,options.mailbox_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(db_error)?;
         let (saved, host, cursor) = row.ok_or_else(|| failure("HOST_BINDING_NOT_CONFIGURED"))?;
@@ -717,6 +722,7 @@ impl InboxStore {
             return Err(invalid());
         }
         let (host, after) = self.host_link(namespace, options)?;
+        let version=self.pins(&options.workspace_id,&options.mailbox_id)?.ok_or_else(invalid)?.binding_version;
         // Populate one bounded keyset page, independently of old call history.
         let rows=self.db.prepare("SELECT sequence,delivery_id FROM inbox_items WHERE workspace=?1 AND mailbox=?2 AND sequence>?3 AND consume_requested=0 ORDER BY sequence LIMIT 32").map_err(db_error)?
             .query_map(params![options.workspace_id,options.mailbox_id,after],|r|Ok((r.get::<_,u64>(0)?,r.get::<_,String>(1)?))).map_err(db_error)?.collect::<std::result::Result<Vec<_>,_>>().map_err(db_error)?;
@@ -728,7 +734,9 @@ impl InboxStore {
         if !rows.is_empty() || cursor != after {
             let tx = self.db.unchecked_transaction().map_err(db_error)?;
             for (sequence, _) in &rows {
-                tx.execute("INSERT OR IGNORE INTO inbox_host_lanes SELECT ?1,?2,?3,COALESCE((SELECT lane FROM inbox_item_lanes WHERE workspace=?1 AND mailbox=?2 AND sequence=?3),'MAILBOX'),'WAITING'",params![options.workspace_id,options.mailbox_id,sequence]).map_err(db_error)?;
+                let original:String=tx.query_row("SELECT COALESCE((SELECT lane FROM inbox_item_lanes WHERE workspace=?1 AND mailbox=?2 AND sequence=?3),'MAILBOX')",params![options.workspace_id,options.mailbox_id,sequence],|r|r.get(0)).map_err(db_error)?;
+                let lane=rebind::lane_key(version,&host,&original);
+                tx.execute("INSERT OR IGNORE INTO inbox_host_lanes VALUES(?1,?2,?3,?4,'WAITING')",params![options.workspace_id,options.mailbox_id,sequence,lane]).map_err(db_error)?;
                 let lane:String=tx.query_row("SELECT lane FROM inbox_host_lanes WHERE workspace=?1 AND mailbox=?2 AND sequence=?3",params![options.workspace_id,options.mailbox_id,sequence],|r|r.get(0)).map_err(db_error)?;
                 promote_lane(
                     &tx,
@@ -742,8 +750,8 @@ impl InboxStore {
             tx.commit().map_err(db_error)?;
         }
         let now = crate::participant_store::now();
-        self.db.prepare("SELECT sequence,delivery_id FROM inbox_host_ready WHERE workspace=?1 AND mailbox=?2 AND (next_retry<=?3 OR next_retry>?4) ORDER BY next_retry,sequence LIMIT ?5").map_err(db_error)?
-            .query_map(params![options.workspace_id,options.mailbox_id,now,now+30000,limit],|r|Ok(DeliveryReference{sequence:r.get(0)?,delivery_id:r.get(1)?})).map_err(db_error)?.collect::<std::result::Result<Vec<_>,_>>().map_err(db_error)
+        self.db.prepare("SELECT sequence,delivery_id FROM inbox_host_ready WHERE workspace=?1 AND mailbox=?2 AND host=?6 AND (next_retry<=?3 OR next_retry>?4) ORDER BY next_retry,sequence LIMIT ?5").map_err(db_error)?
+            .query_map(params![options.workspace_id,options.mailbox_id,now,now+30000,limit,host],|r|Ok(DeliveryReference{sequence:r.get(0)?,delivery_id:r.get(1)?})).map_err(db_error)?.collect::<std::result::Result<Vec<_>,_>>().map_err(db_error)
     }
     pub fn host_defer(
         &self,
@@ -916,9 +924,11 @@ impl InboxStore {
         call: &HostCall,
         outcome: HostOutcome,
     ) -> Result<()> {
-        self.host_link(namespace, options)?;
+        let mut historical=self.host_evidence_scope(namespace, options)?;
         outcome.validate()?;
         let old = self.host_call(identity, &call.call_id)?;
+        self.host_original_scope(namespace,options,&old)?;
+        historical|=old.scope["binding_version"]!=self.pins(&options.workspace_id,&options.mailbox_id)?.ok_or_else(invalid)?.binding_version;
         if old.scope != call.scope
             || old.frame_digest != call.frame_digest
             || old.scope["namespace"] != namespace
@@ -972,7 +982,8 @@ impl InboxStore {
             params![call.call_id, outcome.status(), sealed],
         )
         .map_err(db_error)?;
-        tx.execute("UPDATE inbox_host_lanes SET state=?4 WHERE workspace=?1 AND mailbox=?2 AND sequence=?3",params![options.workspace_id,options.mailbox_id,sequence,if matches!(outcome,HostOutcome::NotSent{..}){"WAITING"}else{outcome.status()}]).map_err(db_error)?;
+        tx.execute("UPDATE inbox_host_lanes SET state=?4 WHERE workspace=?1 AND mailbox=?2 AND sequence=?3",params![options.workspace_id,options.mailbox_id,sequence,if historical&&matches!(outcome,HostOutcome::NotSent{..}){"HISTORICAL_NOT_SENT"}else if matches!(outcome,HostOutcome::NotSent{..}){"WAITING"}else{outcome.status()}]).map_err(db_error)?;
+        if historical {tx.commit().map_err(db_error)?;return Ok(());}
         let lane:String=tx.query_row("SELECT lane FROM inbox_host_lanes WHERE workspace=?1 AND mailbox=?2 AND sequence=?3",params![options.workspace_id,options.mailbox_id,sequence],|r|r.get(0)).map_err(db_error)?;
         promote_lane(
             &tx,
@@ -1000,8 +1011,8 @@ impl InboxStore {
         options: &WatchOptions,
         item: &DeliveryReference,
     ) -> Result<Value> {
-        self.host_link(namespace, options)?;
-        let id:Option<String>=self.db.query_row("SELECT call_id FROM inbox_host_calls WHERE workspace=?1 AND mailbox=?2 AND sequence=?3 AND delivery_id=?4 ORDER BY attempt DESC LIMIT 1",params![options.workspace_id,options.mailbox_id,item.sequence,item.delivery_id],|r|r.get(0)).optional().map_err(db_error)?;
+        self.host_evidence_scope(namespace, options)?;
+        let id:Option<String>=self.db.query_row("SELECT call_id FROM inbox_host_calls WHERE workspace=?1 AND mailbox=?2 AND sequence=?3 AND delivery_id=?4 AND host=?5 ORDER BY attempt DESC LIMIT 1",params![options.workspace_id,options.mailbox_id,item.sequence,item.delivery_id,options.host_destination],|r|r.get(0)).optional().map_err(db_error)?;
         let call = id.map(|id| self.host_call(identity, &id)).transpose()?;
         let retired=call.is_none()&&item.sequence<=self.host_retired(options,options.host_destination.as_deref().unwrap_or(""))?.0;
 
@@ -1065,12 +1076,7 @@ impl InboxStore {
             return Ok(None);
         };
         let call = self.host_call(identity, &id)?;
-        if call.scope["namespace"] != namespace
-            || call.scope["membership_id"] != options.membership_id
-            || call.scope["destination_digest"] != options.host_destination.as_deref().unwrap_or("")
-        {
-            return Err(failure("HOST_EVIDENCE_SCOPE_MISMATCH"));
-        }
+        self.host_original_scope(namespace,options,&call)?;
         let report = json!({"sequence":call.scope["sequence"],"delivery_id":call.scope["delivery_id"],"call_id":id,"attempt":call.attempt,"scope":call.scope,"frame_digest":call.frame_digest,"state":call.state,"facts":self.host_facts(identity,&call)?,"report_sequence":call.report_version});
         Ok(Some((id, call.report_version, report)))
     }

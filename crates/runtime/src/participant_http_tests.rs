@@ -1215,6 +1215,38 @@ fn native_message(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires synthetic PostgreSQL and the real product HTTP fixture"]
+async fn historical_unknown_to_not_sent_preserves_both_signed_observations_after_rebind() {
+    let service=Service::start();let root=crate::test_support::protected_test_dir();
+    let config=configuration(root.path(),&service.origin);let client=ParticipantClient::open(config.clone()).await.unwrap();
+    let created=mutate(&client,"negative-space","structure.workspace.create",&Scope::default(),json!({"name":"Original negative receipt"})).await;
+    let ws=created["workspace_id"].as_str().unwrap().to_owned();let scope=Scope{workspace_id:Some(ws.clone()),..Default::default()};
+    let meta=selected(&client,"structure.workspace.get",&scope,json!({})).await;
+    let mailbox=mutate(&client,"negative-grant","structure.communication.grant.set",&scope,json!({"actor_id":client.actor_id(),"membership_id":meta["membership"]["membership_id"],"expected_revision":null,"send":true,"receive":true})).await["mailbox"].clone();
+    let key=install_synthetic_key(&config,&ws,&[71;32],None);
+    mutate(&client,"negative-key","structure.content-key.set",&scope,json!({"key_id":key,"expected_epoch":0,"expected_head_revision":null})).await;
+    let sent=structure(&client.invoke(native_message("one-original-message",&scope,&mailbox,&mailbox,&"v".repeat(43),"Synthetic original encrypted body"),Duration::from_secs(10)).await.unwrap());
+    let item=&sent["deliveries"][0];let device=test_receiver("R");
+    let claimed=mutate(&client,"original-claim","structure.mailbox.claim",&scope,json!({"mailbox_id":mailbox["mailbox_id"],"receiver_id":device,"expected_epoch":null,"destination_digest":"d".repeat(64)})).await;
+    let old_epoch=claimed["mailbox"]["epoch"].as_u64().unwrap();
+    selected(&client,"structure.mailbox.pulse",&scope,json!({"mailbox_id":mailbox["mailbox_id"],"receiver_id":device,"epoch":old_epoch,"ready":true,"execution_state":"IDLE"})).await;
+    let id="c".repeat(43);let unknown=json!({"state":"RESULT_UNKNOWN","code":"HOST_ACK_UNKNOWN"});
+    let original_scope=json!({"format":"peerwork.host-call.v1","owner":"original-local-owner","namespace":"program","workspace_id":ws,"mailbox_id":mailbox["mailbox_id"],"membership_id":mailbox["membership_id"],"sequence":item["sequence"],"delivery_id":item["delivery_id"],"receiver_id":device,"epoch":old_epoch,"binding_version":1,"destination_digest":"d".repeat(64),"call_id":id,"frame_digest":"e".repeat(64),"source_digest":"f".repeat(64)});
+    let mut report=json!({"sequence":item["sequence"],"delivery_id":item["delivery_id"],"call_id":id,"attempt":1,"scope":original_scope,"frame_digest":"e".repeat(64),"state":"RESULT_UNKNOWN","facts":[unknown],"report_sequence":1});
+    selected(&client,"structure.mailbox.report",&scope,json!({"mailbox_id":mailbox["mailbox_id"],"receiver_id":device,"epoch":old_epoch,"report":report})).await;
+    let changed=mutate(&client,"explicit-rebind","structure.mailbox.claim",&scope,json!({"mailbox_id":mailbox["mailbox_id"],"receiver_id":device,"expected_epoch":old_epoch,"destination_digest":"a".repeat(64),"replace":true})).await;
+    let epoch=changed["mailbox"]["epoch"].as_u64().unwrap();assert_eq!(changed["mailbox"]["binding_version"],2);
+    selected(&client,"structure.mailbox.pulse",&scope,json!({"mailbox_id":mailbox["mailbox_id"],"receiver_id":device,"epoch":epoch,"ready":true,"execution_state":"IDLE"})).await;
+    report["state"]=json!("NOT_SENT");report["report_sequence"]=json!(2);
+    report["facts"]=json!([unknown,{"state":"NOT_SENT","code":"HOST_CONFIRMED_NOT_SENT","proof":"BOUND_HOST_RECONCILIATION"}]);
+    let saved=selected(&client,"structure.mailbox.report",&scope,json!({"mailbox_id":mailbox["mailbox_id"],"receiver_id":device,"epoch":epoch,"report":report})).await;
+    assert_eq!(saved["report"]["state"],"NOT_SENT");assert_eq!(saved["report"]["facts"].as_array().unwrap().len(),2);assert_eq!(saved["report"]["scope"],original_scope);assert_eq!(saved["report"]["observation"]["currentness"],"STALE");
+    let receipts=selected(&client,"structure.message.receipts.read",&scope,json!({"message_id":sent["message_id"]})).await;
+    assert_eq!(receipts["deliveries"][0]["host_report"]["state"],"NOT_SENT");assert_eq!(receipts["deliveries"][0]["host_report"]["model_response"],"NOT_ATTESTED");
+    client.close().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires explicit synthetic PostgreSQL and real product HTTP fixture"]
 async fn native_program_mail_crypto_reply_sse_and_original_packet_recovery() {
     let service = Service::start();
