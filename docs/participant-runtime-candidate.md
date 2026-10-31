@@ -1563,3 +1563,61 @@ binary refusal check and existing transfer cases are qualification evidence in
 the work record, not a published release or complete rebind CLI. The public
 job that couples this fence, report flushing, remote continuation, local commit
 and selected host configuration update is still being integrated.
+
+
+## Explicit managed AGY CLI stdio candidate
+
+The new source candidate also implements `agy-stdio` as an opt-in host-user
+bridge provider. It requires the existing `agy` executable; no Node or Python
+client runtime is introduced. This does not attach to an arbitrary running TUI.
+The operator explicitly selects an existing conversation and gives this bridge
+ownership of starting and stopping one CLI process for that physical binding.
+Do not leave another CLI/TUI driving the selected conversation.
+
+Use this object as `BridgeConfig.host` (the bridge's existing scoped grants are
+still required):
+
+```json
+{
+  "kind": "agy-stdio",
+  "managed": true,
+  "executable": "/absolute/path/to/agy",
+  "working_directory": "/private/worker/project",
+  "conversation_id": "explicit-existing-conversation-id",
+  "session_id": "unique-physical-cli-session-1"
+}
+```
+
+The selected project must already configure its native Peerwork MCP tools and
+protected Agent profile. Configure the scoped runtime/bridge once; sends never
+launch another model or signing engine. The backend's mail delivery does not
+require a protocol instance. This provider does not use App Sidecar
+`agentapi_path` or `ANTIGRAVITY_LS_ADDRESS`.
+
+The bridge launches `agy --conversation … --input-format stream-json
+--output-format stream-json` once, with the explicitly selected project added
+to its workspace. Startup observes the matching native `init` without sending a
+model prompt. Each delivery goes through stdin, never argv or a plaintext spool.
+A matching monotonic native `user_input`/`DONE` event establishes HOST_ACCEPTED.
+A successful pipe write or model response event alone cannot establish it.
+The selected CLI is the sole stdin writer/reader pair; one input is in flight.
+Busy turns leave later messages in the existing durable Peerwork queue until
+the native terminal result makes the host eligible again. A model reply remains
+a separate signed protocol/message result.
+
+Automatic reconnect never starts another CLI. A protected launch fence is set
+before input; uncertain input is not replayed on bridge restart. A definite
+failed spawn, or a controlled terminal metadata-only process with no input,
+can retry the same selection. After input, a new physical session needs an
+explicit fresh bridge binding and the existing `runtime rebind-host` path;
+original accepted/unknown calls remain at their original binding. Stopping the
+bridge stops only its owned managed CLI, and retains session locks until that
+child and its output task are terminal. Scope/grant edits that require stopping
+this managed bridge consequently require a new physical binding. Existing App
+or Codex sessions retain their independent host lifetime.
+
+Current evidence: local Linux provider/process regressions and two actual
+existing-conversation input receipts pass. This source addition is not in the
+previously qualified frozen three-platform artifacts. Complete native HTTP/MCP
+qualification, platform checks and release promotion are still required. The
+portable MCP-wait entry remains available independently of this managed mode.

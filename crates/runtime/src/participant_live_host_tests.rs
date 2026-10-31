@@ -795,7 +795,7 @@ async fn qualify_native_reply(mcp_only: bool) {
     write_report(&report, &result);
     println!("LIVE_HOST_READY {}", result);
     let rounds = std::env::var("PEERWORK_LIVE_HOST_ROUNDS").ok()
-        .map(|v| v.parse::<u64>().expect("explicit round count"))
+        .map(|v| v.parse::<usize>().expect("explicit round count"))
         .unwrap_or(if mcp_only { 2 } else { 1 });
     assert!((1..=8).contains(&rounds));
     let mut samples = Vec::new();
@@ -961,4 +961,27 @@ async fn qualify_native_reply(mcp_only: bool) {
         result["state"], "COMPLETED",
         "inspect retained qualification result; do not resend original input"
     );
+}
+
+#[test]
+#[ignore = "requires explicit protected config selecting an owned synthetic existing AGY conversation"]
+fn agy_stdio_selected_cli_two_input_receipts() {
+    let config_path = std::env::var("PEERWORK_AGY_STDIO_CONFIG").unwrap();
+    let report_path = std::env::var("PEERWORK_AGY_STDIO_REPORT").unwrap();
+    assert!(std::path::Path::new(&report_path).is_absolute() && !std::path::Path::new(&report_path).exists());
+    let config = crate::communication_store::private_json(std::path::Path::new(&config_path),65536).unwrap();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let mut host = crate::communication_host::Host::open(config,rt.handle().clone()).unwrap();
+    let mut samples = Vec::new();
+    for index in 0..2 {
+        let deadline = Instant::now()+Duration::from_secs(90);
+        while host.health(&json!({})).unwrap()["ready"] != true { assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(20)); }
+        let before = Instant::now();
+        let receipt = host.deliver(&json!({}),&json!({"rendered_text":format!("Peerwork isolated native stdio interoperability check. Reply exactly PW-AGY-NATIVE-{index}. Do not use tools or read files. Preserve all task permissions.")})).unwrap();
+        assert_eq!(receipt["state"],"HOST_ACCEPTED");
+        samples.push(json!({"index":index,"host_accepted_ms":before.elapsed().as_secs_f64()*1000.,"state":receipt["state"]}));
+        assert_eq!(host.health(&json!({})).unwrap()["execution_state"],"BUSY");
+    }
+    let destination=host.destination.clone();drop(host);
+    std::fs::write(report_path,serde_json::to_vec_pretty(&json!({"state":"PASS","destination":destination,"samples":samples,"process_reused":true,"owned_process_stopped":true,"model_reply":"NOT_ATTESTED","peerwork_service":"NOT_EXERCISED","scope":"Two native provider receipts, not IM percentiles"})).unwrap()).unwrap();
 }

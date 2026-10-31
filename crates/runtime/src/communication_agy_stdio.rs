@@ -48,6 +48,7 @@ pub(super) struct AgyStdio {
     busy: bool,
     last_input: Option<u64>,
     attempted: bool,
+    io_budget: Duration,
     failed: bool,
 }
 impl AgyStdio {
@@ -83,10 +84,19 @@ impl AgyStdio {
         fence.write_exact(json!({"format":"peerwork.agy-stdio-launch.v1","state":"STARTING","session_id":session}).to_string().as_bytes())
             .map_err(|_| "HOST_STATE_FAILED")?;
         let entered = executor.enter();
-        let mut child = Command::new(executable)
+        let spawned = Command::new(executable)
             .args(["--conversation", conversation, "--add-dir", working, "--input-format", "stream-json", "--output-format", "stream-json"])
             .current_dir(working).stdin(Stdio::piped()).stdout(Stdio::piped())
-            .stderr(Stdio::null()).kill_on_drop(true).spawn().map_err(|_| "HOST_NOT_SENT")?;
+            .stderr(Stdio::null()).kill_on_drop(true).spawn();
+        let mut child = match spawned {
+            Ok(child) => child,
+            Err(_) => {
+                // No executable started and no input existed. Repairing a
+                // local launch error must not require inventing another intent.
+                let _ = fence.write_exact(json!({"format":"peerwork.agy-stdio-launch.v1","state":"STOPPED_WITHOUT_INPUT","session_id":session}).to_string().as_bytes());
+                return Err("HOST_NOT_SENT");
+            }
+        };
         let input = child.stdin.take().ok_or("HOST_STATE_INVALID")?;
         let output = child.stdout.take().ok_or("HOST_STATE_INVALID")?;
         drop(entered);
@@ -115,7 +125,7 @@ impl AgyStdio {
             }
         });
         let mut host = Self { child, input: Some(input), events: Some(rx), reader: Some(reader),
-            fence, conversation: conversation.into(), session: session.into(), executor, busy: false, last_input: None, attempted: false, failed: false };
+            fence, conversation: conversation.into(), session: session.into(), executor, busy: false, last_input: None, attempted: false, io_budget: Duration::from_secs(10), failed: false };
         match host.next(Instant::now() + Duration::from_secs(30))? {
             Event::Init(id) if id == host.conversation => Ok(host),
             _ => Err("HOST_BINDING_MISMATCH"),
@@ -161,11 +171,15 @@ impl AgyStdio {
         let mut bytes = serde_json::to_vec(&json!({"event":"user","message":{"content":rendered}}))
             .map_err(|_| "HOST_INPUT_INVALID")?;
         bytes.push(b'\n');
+        let deadline = Instant::now() + self.io_budget;
         let input = self.input.as_mut().ok_or("HOST_DISCONNECTED")?;
-        if self.executor.block_on(input.write_all(&bytes)).is_err() {
+        let written = self.executor.block_on(async {
+            tokio::time::timeout(self.io_budget, input.write_all(&bytes)).await
+        });
+        if !matches!(written, Ok(Ok(()))) {
             self.failed = true; return Err("HOST_ACK_UNKNOWN");
         }
-        let result = self.next(Instant::now() + Duration::from_secs(10));
+        let result = self.next(deadline);
         match result {
             Ok(Event::Input(id, index)) if id == self.conversation && self.last_input.is_none_or(|last| index > last) => {
                 self.last_input = Some(index); self.busy = true;
@@ -257,27 +271,45 @@ mod tests {
         drop(AgyStdio::open(&config,rt.handle().clone()).unwrap());
         assert_eq!(std::fs::read_to_string(root.path().join("starts.txt")).unwrap().lines().count(),2);
     }
+    #[cfg(unix)]
     #[test]
-    #[ignore = "requires explicit protected config selecting an owned synthetic existing AGY conversation"]
-    fn real_selected_cli_two_input_receipts() {
-        let config_path = std::env::var("PEERWORK_AGY_STDIO_CONFIG").unwrap();
-        let report_path = std::env::var("PEERWORK_AGY_STDIO_REPORT").unwrap();
-        assert!(Path::new(&report_path).is_absolute() && !Path::new(&report_path).exists());
-        let config = crate::communication_store::private_json(Path::new(&config_path),65536).unwrap();
+    fn proven_failed_spawn_can_retry_after_local_repair() {
+        use std::os::unix::fs::PermissionsExt;
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let mut host = super::super::Host::open(config,rt.handle().clone()).unwrap();
-        let mut samples = Vec::new();
-        for index in 0..2 {
-            let deadline = Instant::now()+Duration::from_secs(90);
-            while host.health(&json!({})).unwrap()["ready"] != true { assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(20)); }
-            let before = Instant::now();
-            let receipt = host.deliver(&json!({}),&json!({"rendered_text":format!("Peerwork isolated native stdio interoperability check. Reply exactly PW-AGY-NATIVE-{index}. Do not use tools or read files. Preserve all task permissions.")})).unwrap();
-            assert_eq!(receipt["state"],"HOST_ACCEPTED");
-            samples.push(json!({"index":index,"host_accepted_ms":before.elapsed().as_secs_f64()*1000.,"state":receipt["state"]}));
-            assert_eq!(host.health(&json!({})).unwrap()["execution_state"],"BUSY");
-        }
-        let destination=host.destination.clone();drop(host);
-        std::fs::write(report_path,serde_json::to_vec_pretty(&json!({"state":"PASS","destination":destination,"samples":samples,"process_reused":true,"owned_process_stopped":true,"model_reply":"NOT_ATTESTED","peerwork_service":"NOT_EXERCISED","scope":"Two native provider receipts, not IM percentiles"})).unwrap()).unwrap();
+        let root = crate::test_support::protected_test_dir();
+        let config = stub(root.path(), false);
+        let executable = Path::new(config["executable"].as_str().unwrap());
+        std::fs::set_permissions(executable,std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(matches!(AgyStdio::open(&config,rt.handle().clone()),Err("HOST_NOT_SENT")));
+        assert!(!root.path().join("starts.txt").exists());
+        std::fs::set_permissions(executable,std::fs::Permissions::from_mode(0o700)).unwrap();
+        drop(AgyStdio::open(&config,rt.handle().clone()).unwrap());
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn blocked_pipe_write_is_bounded_and_cannot_replay() {
+        use std::os::{fd::AsRawFd, unix::fs::PermissionsExt};
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let root = crate::test_support::protected_test_dir();
+        let config = stub(root.path(), false);
+        let fifo = std::ffi::CString::new(root.path().join("stall.fifo").as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(),0o600) },0);
+        let executable=Path::new(config["executable"].as_str().unwrap());
+        std::fs::write(executable,"#!/bin/sh\nprintf '%s\\n' '{\"event\":\"init\",\"conversation_id\":\"owned-conversation\"}'\nread stalled < stall.fifo\n").unwrap();
+        std::fs::set_permissions(executable,std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut host=AgyStdio::open(&config,rt.handle().clone()).unwrap();
+        assert!(unsafe { libc::fcntl(host.input.as_ref().unwrap().as_raw_fd(),libc::F_SETPIPE_SZ,4096) }>=4096);
+        host.io_budget=Duration::from_millis(250);
+        let pid=host.child.id().unwrap();let(tx,rx)=std::sync::mpsc::channel();
+        let worker=std::thread::spawn(move||{
+            let outcome=host.deliver(&json!({"rendered_text":"X".repeat(48000)}));
+            drop(host);tx.send(outcome).unwrap();
+        });
+        let observed=rx.recv_timeout(Duration::from_secs(3));
+        if observed.is_err() { unsafe { libc::kill(pid as i32,libc::SIGKILL); } }
+        worker.join().unwrap();
+        assert!(matches!(observed,Ok(Err("HOST_ACK_UNKNOWN"))));
+        assert!(matches!(AgyStdio::open(&config,rt.handle().clone()),Err("AGY_STDIO_RESTART_REQUIRES_REBIND")));
     }
     #[test]
     fn only_native_user_input_done_is_an_ack() {
