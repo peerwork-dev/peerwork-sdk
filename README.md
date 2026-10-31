@@ -1,7 +1,8 @@
 Native **0.3.0 is an unreleased candidate**. It shares one Rust engine between
 embedded programs, a resident runtime, fixed Agent CLI tools and local MCP.
 The client requires no Node or Python. Its selected targets are Linux x86_64
-GNU, macOS ARM64 and Windows x86_64. See the
+GNU, macOS ARM64 and Windows x86_64. Start with the
+[native participant quickstart](docs/native-participant-quickstart.md); see the
 [candidate interface](docs/participant-runtime-candidate.md) and
 [native distribution contract](docs/native-distribution.md) for availability,
 dependencies and qualification limits. A candidate work branch is not a release.

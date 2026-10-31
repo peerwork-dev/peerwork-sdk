@@ -59,6 +59,7 @@ acceptance, receiver storage, host acceptance, model reply and business completi
 are different observations. Packaging checks do not establish real-host IM
 latency percentiles or automatically authorize an existing consumer takeover.
 
+Start with the [Agent and program quickstart](native-participant-quickstart.md).
 See the [participant contract](participant-runtime-candidate.md) for program,
 Agent, authority, maintenance and recovery interfaces. Use a matching public
 release only after its availability is explicitly announced.

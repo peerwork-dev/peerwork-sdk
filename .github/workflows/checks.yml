@@ -67,6 +67,7 @@ jobs:
           python tools/release/version.py check --native
           python tests/native-participant-build-contract.py
           python tests/native-release-policy.py
+          python tests/qualify-agy-native-mcp.test.py
       - name: Test composable protocols and durable example host
         run: |
           node --test --test-isolation=none tests/research/protocols.test.mjs tests/research/host.test.mjs
