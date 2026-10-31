@@ -98,6 +98,10 @@ impl FixtureListener {
         match self {
             Self::Tcp(listener) => {
                 let (stream, _) = listener.accept()?;
+                // Windows/BSD may inherit the listener's nonblocking mode.
+                // This fixture uses blocking tungstenite, not an async reactor.
+                stream.set_nonblocking(false)?;
+                stream.set_nodelay(true)?;
                 stream.set_read_timeout(Some(Duration::from_secs(2)))?;
                 stream.set_write_timeout(Some(Duration::from_secs(2)))?;
                 Ok(Box::new(stream))
@@ -105,6 +109,7 @@ impl FixtureListener {
             #[cfg(unix)]
             Self::Unix(listener) => {
                 let (stream, _) = listener.accept()?;
+                stream.set_nonblocking(false)?;
                 stream.set_read_timeout(Some(Duration::from_secs(2)))?;
                 stream.set_write_timeout(Some(Duration::from_secs(2)))?;
                 Ok(Box::new(stream))
