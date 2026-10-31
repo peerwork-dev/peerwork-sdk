@@ -626,7 +626,22 @@ async fn qualify_native_reply(mcp_only: bool) {
     master.close().await.unwrap();
     worker.close().await.unwrap();
 
-    let (bridge_lifecycle, adapter, destination) = if mcp_only {
+    // MCP discovery may happen while a managed host initializes. Supply its
+    // protected profile before starting that host; execution still waits for
+    // the scoped runtime endpoint and never opens another signing engine.
+    let worker_scope_early = mail_scope(&ws, &worker_box);
+    let early_worker_profile = AgentProfile {
+        format: "peerwork.agent-profile.v1".into(),
+        endpoint_path: root.join("runtime/client-worker.json"),
+        expected_origin: service.origin.clone(),
+        expected_actor: worker_config.expected_actor.clone(),
+        scopes: BTreeMap::from([("live".into(), worker_scope_early)]),
+        contacts: BTreeMap::new(), protocols: BTreeMap::new(),
+    };
+    let worker_profile_path = root.join("worker-agent.json");
+    crate::communication_host::write_private(&worker_profile_path,
+        &serde_json::to_vec(&early_worker_profile).unwrap()).unwrap();
+    let (mut bridge_lifecycle, adapter, destination) = if mcp_only {
         (None, None, None)
     } else {
         let worker_identity = KernelIdentity::open(&worker_config.identity_path).unwrap();
@@ -683,6 +698,7 @@ async fn qualify_native_reply(mcp_only: bool) {
     ]
     .map(str::to_owned)
     .into();
+    let original_bridge_adapter = adapter.clone();
     let cfg = RuntimeConfig {
         format: "peerwork.participant-runtime.v1".into(),
         state_directory: root.join("runtime"),
@@ -769,12 +785,8 @@ async fn qualify_native_reply(mcp_only: bool) {
         worker_scope,
         BTreeMap::new(),
     );
-    let worker_profile_path = root.join("worker-agent.json");
-    crate::communication_host::write_private(
-        &worker_profile_path,
-        &serde_json::to_vec(&worker_profile).unwrap(),
-    )
-    .unwrap();
+    assert_eq!(worker_profile.endpoint_path, early_worker_profile.endpoint_path);
+    assert_eq!(serde_json::to_value(&worker_profile).unwrap(),serde_json::to_value(&early_worker_profile).unwrap());
     let master = AgentTools::open(master_profile).await.unwrap();
     let before = service.counts().await;
     let mut result = json!({"state":"READY","format":"peerwork.live-host-qualification.v1","nonce":nonce,
@@ -783,7 +795,19 @@ async fn qualify_native_reply(mcp_only: bool) {
         "timing_basis":"one observer monotonic clock; delivery observations are upper bounds, not isolated internal phase spans"});
     write_report(&report, &result);
     println!("LIVE_HOST_READY {}", result);
-    let rounds = if mcp_only { 2 } else { 1 };
+    let require_consumption = std::env::var("PEERWORK_LIVE_HOST_REQUIRE_CONSUMED").as_deref() == Ok("1");
+    result["consumption_required"] = json!(require_consumption);
+    let rounds = std::env::var("PEERWORK_LIVE_HOST_ROUNDS").ok()
+        .map(|v| v.parse::<usize>().expect("explicit round count"))
+        .unwrap_or(if mcp_only { 2 } else { 1 });
+    assert!((1..=8).contains(&rounds));
+    let restart_bridge = std::env::var("PEERWORK_LIVE_HOST_RESTART_BRIDGE").as_deref() == Ok("1");
+    if restart_bridge {
+        assert!(!mcp_only && rounds >= 2 && require_consumption);
+        let saved: BridgeConfig = serde_json::from_slice(&std::fs::read(root.join("bridge.json")).unwrap()).unwrap();
+        assert_eq!(saved.host["kind"], "agy-stdio", "restart only our explicitly managed CLI");
+    }
+    result["bridge_restarts"] = json!(0);
     let mut samples = Vec::new();
     for round in 1..=rounds {
         let started = Instant::now();
@@ -885,8 +909,20 @@ async fn qualify_native_reply(mcp_only: bool) {
         result["host_fact"] = local["host"].clone();
         let model_reply_observed = observed.as_ref().is_ok_and(|v| v.is_object());
         result["model_reply_observed"] = json!(model_reply_observed);
-        let qualified = model_reply_observed && (mcp_only || local["host"] == "HOST_ACCEPTED");
-        samples.push(json!({"round":round,"accepted_observed_ms":result["accepted_observed_ms"],"receiver_store_observed_ms":result["receiver_store_observed_ms"],"host_ack_observed_ms":result["host_ack_observed_ms"],"reply_observed_ms":result["reply_observed_ms"],"qualified":qualified}));
+        let mut qualified = model_reply_observed && (mcp_only || local["host"] == "HOST_ACCEPTED");
+        let consumed = if require_consumption && qualified {
+            let done = tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    let page = worker_client.call(json!({"method":"inbox","options":worker_watch,"after":0,"limit":32})).await.unwrap();
+                    let pending = page["items"].as_array().expect("explicit local inbox page");
+                    if !pending.iter().any(|entry|entry["delivery_id"]==item["delivery_id"]) { break; }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            }).await.is_ok();
+            qualified &= done;
+            Some(done)
+        } else { None };
+        samples.push(json!({"round":round,"accepted_observed_ms":result["accepted_observed_ms"],"receiver_store_observed_ms":result["receiver_store_observed_ms"],"host_ack_observed_ms":result["host_ack_observed_ms"],"reply_observed_ms":result["reply_observed_ms"],"worker_consumed":consumed,"qualified":qualified}));
         if let Ok(arrival) = observed {
             if arrival.is_object() {
                 master
@@ -903,6 +939,27 @@ async fn qualify_native_reply(mcp_only: bool) {
         }
         if !qualified {
             break;
+        }
+        if restart_bridge && round == 1 {
+            let restarted_at = Instant::now();
+            let (stop, bridge) = bridge_lifecycle.take().unwrap();
+            stop.cancel();
+            bridge.await.unwrap().unwrap();
+            let fence = crate::secure_state::SecureStateStore::open(&root.join("bridge/agy-stdio-launch.state")).unwrap();
+            let stopped: Value = serde_json::from_slice(&fence.read_exact().unwrap().unwrap()).unwrap();
+            result["bridge_shutdown_graceful"] = stopped["graceful"].clone();
+            drop(fence);
+            let saved: BridgeConfig = serde_json::from_slice(&std::fs::read(root.join("bridge.json")).unwrap()).unwrap();
+            let stop = KernelCancellationToken::new();
+            let (tx, rx) = oneshot::channel();
+            let bridge = tokio::spawn(communication_bridge::serve(saved, stop.clone(), tx));
+            let restarted = rx.await.unwrap().unwrap();
+            assert_eq!(Some(restarted.adapter), original_bridge_adapter,
+                "same conversation restart must preserve bridge identity, credentials and destination");
+            bridge_lifecycle = Some((stop, bridge));
+            result["bridge_restarts"] = json!(1);
+            result["bridge_restart_ms"] = json!(restarted_at.elapsed().as_millis());
+            write_report(&report, &result);
         }
     }
     result["samples"] = json!(samples);
@@ -947,4 +1004,27 @@ async fn qualify_native_reply(mcp_only: bool) {
         result["state"], "COMPLETED",
         "inspect retained qualification result; do not resend original input"
     );
+}
+
+#[test]
+#[ignore = "requires explicit protected config selecting an owned synthetic existing AGY conversation"]
+fn agy_stdio_selected_cli_two_input_receipts() {
+    let config_path = std::env::var("PEERWORK_AGY_STDIO_CONFIG").unwrap();
+    let report_path = std::env::var("PEERWORK_AGY_STDIO_REPORT").unwrap();
+    assert!(std::path::Path::new(&report_path).is_absolute() && !std::path::Path::new(&report_path).exists());
+    let config = crate::communication_store::private_json(std::path::Path::new(&config_path),65536).unwrap();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let mut host = crate::communication_host::Host::open(config,rt.handle().clone()).unwrap();
+    let mut samples = Vec::new();
+    for index in 0..2 {
+        let deadline = Instant::now()+Duration::from_secs(90);
+        while host.health(&json!({})).unwrap()["ready"] != true { assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(20)); }
+        let before = Instant::now();
+        let receipt = host.deliver(&json!({}),&json!({"rendered_text":format!("Peerwork isolated native stdio interoperability check. Reply exactly PW-AGY-NATIVE-{index}. Do not use tools or read files. Preserve all task permissions.")})).unwrap();
+        assert_eq!(receipt["state"],"HOST_ACCEPTED");
+        samples.push(json!({"index":index,"host_accepted_ms":before.elapsed().as_secs_f64()*1000.,"state":receipt["state"]}));
+        assert_eq!(host.health(&json!({})).unwrap()["execution_state"],"BUSY");
+    }
+    let destination=host.destination.clone();drop(host);
+    std::fs::write(report_path,serde_json::to_vec_pretty(&json!({"state":"PASS","destination":destination,"samples":samples,"process_reused":true,"owned_process_stopped":true,"model_reply":"NOT_ATTESTED","peerwork_service":"NOT_EXERCISED","scope":"Two native provider receipts, not IM percentiles"})).unwrap()).unwrap();
 }

@@ -15,6 +15,8 @@ use tungstenite::{
     WebSocket,
 };
 type R<T> = Result<T, &'static str>;
+#[path = "communication_agy_stdio.rs"]
+mod agy_stdio;
 fn text<'a>(v: &'a Value, key: &str) -> R<&'a str> {
     v[key]
         .as_str()
@@ -363,6 +365,7 @@ pub(crate) struct Host {
     owner: Option<crate::communication_host_owner::HostOwner>,
     config: Value,
     codex: Option<Codex>,
+    agy_stdio: Option<agy_stdio::AgyStdio>,
     bridge_client: reqwest::Client,
     executor: tokio::runtime::Handle,
     pub destination: Value,
@@ -371,6 +374,14 @@ pub(crate) struct Host {
 }
 pub(crate) struct RetirementControl {
     host: Host,
+}
+impl Drop for Host {
+    fn drop(&mut self) {
+        // Retain the physical-session locks until owned provider IO/processes
+        // are terminal. A second bridge must not overlap a managed CLI exit.
+        self.agy_stdio.take();
+        self.codex.take();
+    }
 }
 impl RetirementControl {
     pub fn retire(&self, plan: &Value) -> R<()> {
@@ -401,6 +412,7 @@ impl Host {
                 owner: None,
                 config: self.config.clone(),
                 codex: None,
+                agy_stdio: None,
                 bridge_client: self.bridge_client.clone(),
                 executor: self.executor.clone(),
                 destination: self.destination.clone(),
@@ -410,6 +422,9 @@ impl Host {
         }
     }
     pub fn reconnect(&mut self) -> R<()> {
+        if self.config["kind"] == "agy-stdio" {
+            return Err("AGY_STDIO_EXPLICIT_RESTART_REQUIRED");
+        }
         let mut next = Self::connect(self.config.clone(), self.executor.clone())?;
         let mut expected = self.destination.clone();
         let instance = if self.config["kind"] != "bridge" {
@@ -449,6 +464,11 @@ impl Host {
                 "TOOL_ONLY",
                 json!({"host":"ANTIGRAVITY_APP","conversation_id":text(&config,"conversation_id")?}),
             ),
+            "agy-stdio" => (
+                "ANTIGRAVITY_CLI",
+                "LIVE",
+                json!({"host":"ANTIGRAVITY_CLI","conversation_id":text(&config,"conversation_id")?,"session_id":text(&config,"conversation_id")?}),
+            ),
             "bridge" => {
                 let instance = text(&config["destination"], "bridge_id")?;
                 if instance.len() != 43
@@ -459,7 +479,7 @@ impl Host {
                     return Err("HOST_BINDING_MISMATCH");
                 }
                 let host = text(&config["destination"], "host")?;
-                if !matches!(host, "CODEX_APP_SERVER" | "ANTIGRAVITY_APP") {
+                if !matches!(host, "CODEX_APP_SERVER" | "ANTIGRAVITY_APP" | "ANTIGRAVITY_CLI") {
                     return Err("HOST_KIND_UNSUPPORTED");
                 }
                 (
@@ -487,6 +507,11 @@ impl Host {
         } else {
             None
         };
+        let agy_stdio = if kind == "agy-stdio" {
+            Some(agy_stdio::AgyStdio::open(&config, executor.clone())?)
+        } else {
+            None
+        };
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .no_proxy()
@@ -503,6 +528,7 @@ impl Host {
             owner: None,
             config,
             codex,
+            agy_stdio,
             bridge_client: client,
             executor,
             destination,
@@ -611,6 +637,9 @@ impl Host {
         })
     }
     pub fn health(&mut self, binding: &Value) -> R<Value> {
+        if let Some(host) = &mut self.agy_stdio {
+            return host.health();
+        }
         if let Some(host) = &mut self.codex {
             return host.health();
         }
@@ -632,6 +661,9 @@ impl Host {
         Ok(None)
     }
     pub fn deliver(&mut self, binding: &Value, message: &Value) -> R<Value> {
+        if let Some(host) = &mut self.agy_stdio {
+            return host.deliver(message);
+        }
         if let Some(host) = &mut self.codex {
             return host.deliver(message);
         }

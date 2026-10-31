@@ -20,7 +20,8 @@ TARGETS = {
     'darwin-arm64': 'aarch64-apple-darwin',
     'win32-x64-msvc': 'x86_64-pc-windows-msvc',
 }
-GROUPS = ['communication_local_channel::tests', 'communication_runtime::tests',
+GROUPS = ['communication_host::', 'communication_host_owner::tests',
+          'communication_local_channel::tests', 'communication_runtime::tests',
           'communication_store::', 'participant_store::tests', 'participant_inbox::tests',
           'participant_transfer::tests', 'participant_presence::', 'agent_mcp::tests',
           'kernel_access::resident_wal_tests',

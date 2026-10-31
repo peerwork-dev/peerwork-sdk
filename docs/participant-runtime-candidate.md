@@ -1563,3 +1563,73 @@ binary refusal check and existing transfer cases are qualification evidence in
 the work record, not a published release or complete rebind CLI. The public
 job that couples this fence, report flushing, remote continuation, local commit
 and selected host configuration update is still being integrated.
+
+
+## Explicit managed AGY CLI stdio candidate
+
+The new source candidate also implements `agy-stdio` as an opt-in host-user
+bridge provider. It requires the existing `agy` executable; no Node or Python
+client runtime is introduced. This does not attach to an arbitrary running TUI.
+The operator explicitly selects an existing conversation and gives this bridge
+ownership of starting and stopping one CLI process per bridge lifecycle.
+Do not leave another CLI/TUI driving the selected conversation.
+
+Use this object as `BridgeConfig.host` (the bridge's existing scoped grants are
+still required):
+
+```json
+{
+  "kind": "agy-stdio",
+  "managed": true,
+  "executable": "/absolute/path/to/agy",
+  "working_directory": "/private/worker/project",
+  "conversation_id": "explicit-existing-conversation-id"
+}
+```
+
+The selected project must already configure its native Peerwork MCP tools and
+protected Agent profile. Configure the scoped runtime/bridge once; sends never
+launch another model or signing engine. The backend's mail delivery does not
+require a protocol instance. This provider does not use App Sidecar
+`agentapi_path` or `ANTIGRAVITY_LS_ADDRESS`.
+
+The bridge launches `agy --conversation … --input-format stream-json
+--output-format stream-json` once, with the explicitly selected project added
+to its workspace. Startup observes the matching native `init` without sending a
+model prompt. Each delivery goes through stdin, never argv or a plaintext spool.
+A matching monotonic native `user_input`/`DONE` event establishes HOST_ACCEPTED.
+A successful pipe write or model response event alone cannot establish it.
+The selected CLI is the sole stdin writer/reader pair; one input is in flight.
+Busy turns leave later messages in the existing durable Peerwork queue until
+the native terminal result makes the host eligible again. A model reply remains
+a separate signed protocol/message result.
+
+Automatic reconnect never starts another CLI. A protected launch fence records
+process ownership before input. An explicit bridge restart can resume the same
+conversation after its previous owned process is confirmed terminal. It retains
+the bridge identity, credentials and encrypted journal; accepted and unknown
+calls keep their original facts and are never replayed into the restarted CLI.
+An existing live process, different conversation or uncertain launch without a
+durable process record blocks startup. Selecting a different conversation uses
+the existing explicit `runtime rebind-host` path. Stopping the bridge stops only
+its owned managed CLI. It first closes stdin and drains output so the current
+turn can finish; after a ten-second shutdown budget it terminates the child.
+The protected marker distinguishes a successful graceful exit from forced/error
+termination. Session locks remain held until the child and output task are
+terminal. Existing App or Codex sessions retain their independent host lifetime.
+
+The fixed twelve MCP entry points carry the advisory
+`_meta: {"antigravity/alwaysLoad": true}` hint supported by AGY CLI1.3.3+.
+They appear directly in that host's tool catalog; other hosts may ignore the
+hint. Runtime capabilities and tool permissions still apply. The entire catalog
+is bounded, independent of how many business protocols are configured.
+
+Current Linux evidence includes AGY CLI1.4.12 with direct native MCP and optional
+per-process observation. Both paths complete two real E2EE HTTP/MCP Ping/PONG
+rounds with a same-conversation bridge restart, unchanged adapter and explicit
+consumption. Each uses four message sends and zero journal reads. These are
+functional examples, not IM latency percentiles. Native init and input ACK alone
+do not prove tool availability or an Agent reply. This addition is not in the
+previously qualified frozen three-platform artifacts. Platform checks and
+release promotion remain required. The portable MCP-wait entry remains
+available independently of managed mode.

@@ -20,7 +20,7 @@ impl HostBinding {
             o.keys().any(|k| {
                 !["host", "conversation_id", "session_id", "endpoint", "bridge_id"].contains(&k.as_str())
             })
-        }) || !["CODEX_APP_SERVER", "ANTIGRAVITY_APP"]
+        }) || !["CODEX_APP_SERVER", "ANTIGRAVITY_APP", "ANTIGRAVITY_CLI"]
             .contains(&destination["host"].as_str().unwrap_or(""))
             || ["conversation_id", "session_id"].iter().any(|k| {
                 destination[*k]

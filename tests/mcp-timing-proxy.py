@@ -9,12 +9,13 @@ import argparse
 import json
 import os
 from pathlib import Path
+import stat
 import subprocess
 import threading
 import time
 
 METHODS = {'initialize', 'tools/list', 'tools/call', 'ping', 'notifications/initialized', 'notifications/cancelled'}
-TOOLS = {'peerwork_' + name for name in ('context', 'protocol', 'action', 'send', 'reply', 'inbox', 'consume', 'status', 'receipt', 'recover', 'wait', 'presence')}
+TOOLS = {'peerwork_' + name for name in ('context', 'protocol', 'act', 'read', 'send', 'reply', 'inbox', 'consume', 'status', 'receipts', 'recover', 'wait')}
 
 
 class Trace:
@@ -94,13 +95,24 @@ class Trace:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--trace', required=True, type=Path)
+    target = parser.add_mutually_exclusive_group(required=True)
+    target.add_argument('--trace', type=Path, help='One fresh trace file for a single MCP process')
+    target.add_argument('--trace-dir', type=Path,
+                        help='Private directory; create a distinct trace for each MCP process/restart')
     parser.add_argument('command', nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ['--'] else args.command
     if not command:
         parser.error('native MCP command required')
-    trace = Trace(args.trace)
+    path = args.trace
+    if args.trace_dir is not None:
+        args.trace_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        meta = args.trace_dir.lstat()
+        if not stat.S_ISDIR(meta.st_mode) or (os.name != 'nt' and
+                (meta.st_uid != os.geteuid() or meta.st_mode & 0o077)):
+            parser.error('private trace directory required')
+        path = args.trace_dir / f'mcp-{os.getpid()}-{os.urandom(8).hex()}.jsonl'
+    trace = Trace(path)
     child = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
 
     def pump(source, target, response):

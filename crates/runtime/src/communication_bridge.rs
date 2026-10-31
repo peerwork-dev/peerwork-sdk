@@ -164,6 +164,9 @@ impl BridgeConfig {
                 "conversation_id",
                 "inbox_directory",
             ],
+            Some("agy-stdio") => &[
+                "kind", "managed", "executable", "conversation_id", "working_directory",
+            ],
             _ => return Err("BRIDGE_NATIVE_HOST_REQUIRED"),
         };
         if self
@@ -738,7 +741,11 @@ pub async fn serve(
             write_private(&token_file, worker_token.as_bytes())?;
             sync_directory(&config.state_directory)?;
         }
-        let mut host = Host::open(config.host.clone(), executor)?;
+        let mut host_config = config.host.clone();
+        if host_config["kind"] == "agy-stdio" {
+            host_config["launch_fence"] = json!(config.state_directory.join("agy-stdio-launch.state"));
+        }
+        let mut host = Host::open(host_config, executor)?;
         let pin = match saved_owner {
             Some(bytes) => read_owner(&bytes)?,
             None => {
