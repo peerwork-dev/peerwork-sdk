@@ -1604,6 +1604,20 @@ Busy turns leave later messages in the existing durable Peerwork queue until
 the native terminal result makes the host eligible again. A model reply remains
 a separate signed protocol/message result.
 
+When preflight defers an input, presence retains the observed `BUSY` state with
+`ready: false`. The deferred message keeps its original ID and consumes no host
+input attempt. `HOST_BUSY` and `HOST_WAITING_APPROVAL` use a fixed500ms
+eligibility wait without accumulating failure backoff. A completed input also
+requests a fresh host observation. Missing or failed observations remain
+`UNKNOWN`; serializing a status does not renew its age.
+
+The CLI has no interactive approval prompt in this mode. A tool whose policy
+requires unavailable approval is soft-denied; configure the intended scoped MCP
+permissions before connecting. Peerwork preserves the CLI policy and does not
+grant additional tool access. A host input ACK cannot prove that a later reply
+tool was permitted or that a reply was committed. See the vendor's
+[headless permissions contract](https://antigravity.google/docs/cli/headless/#permissions-in-headless-mode).
+
 Automatic reconnect never starts another CLI. A protected launch fence records
 process ownership before input. An explicit bridge restart can resume the same
 conversation after its previous owned process is confirmed terminal. It retains
@@ -1629,7 +1643,7 @@ per-process observation. Both paths complete two real E2EE HTTP/MCP Ping/PONG
 rounds with a same-conversation bridge restart, unchanged adapter and explicit
 consumption. Each uses four message sends and zero journal reads. These are
 functional examples, not IM latency percentiles. Native init and input ACK alone
-do not prove tool availability or an Agent reply. This addition is not in the
-previously qualified frozen three-platform artifacts. Platform checks and
-release promotion remain required. The portable MCP-wait entry remains
+do not prove tool availability or an Agent reply. This source candidate remains
+unreleased; the exact final artifact's platform checks and release promotion
+remain required. The portable MCP-wait entry remains
 available independently of managed mode.

@@ -539,6 +539,14 @@ async fn fresh_agy_native_mcp_reply() {
     qualify_native_reply(true).await;
 }
 
+async fn observed_host_state_gate(root: &std::path::Path, name: &str) {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while !root.join(name).is_file() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }).await.expect("explicit maintainer host-state observer did not complete its barrier");
+}
+
 async fn qualify_native_reply(mcp_only: bool) {
     let host = if mcp_only {
         Value::Null
@@ -795,6 +803,11 @@ async fn qualify_native_reply(mcp_only: bool) {
         "timing_basis":"one observer monotonic clock; delivery observations are upper bounds, not isolated internal phase spans"});
     write_report(&report, &result);
     println!("LIVE_HOST_READY {}", result);
+    let state_gates = std::env::var("PEERWORK_LIVE_HOST_STATE_GATES").as_deref() == Ok("1");
+    if state_gates {
+        assert!(!mcp_only && original_bridge_adapter.as_ref().unwrap()["destination"]["host"] == "ANTIGRAVITY_CLI");
+        observed_host_state_gate(&root, "observed-initial-idle").await;
+    }
     let require_consumption = std::env::var("PEERWORK_LIVE_HOST_REQUIRE_CONSUMED").as_deref() == Ok("1");
     result["consumption_required"] = json!(require_consumption);
     let rounds = std::env::var("PEERWORK_LIVE_HOST_ROUNDS").ok()
@@ -990,6 +1003,11 @@ async fn qualify_native_reply(mcp_only: bool) {
     } else {
         "NOT_QUALIFIED"
     });
+    if state_gates && result["state"] == "COMPLETED" {
+        write_report(&report, &result);
+        observed_host_state_gate(&root, "observed-final-idle").await;
+        result["maintainer_state_barriers_completed"] = json!(true);
+    }
     runtime_stop.cancel();
     runtime.await.unwrap().unwrap();
     if let Some((bridge_stop, bridge)) = bridge_lifecycle {
