@@ -58,7 +58,8 @@ def main():
 
         # Interface maturity is a property of these bytes. Publication and
         # remote/host readiness cannot be inferred from a compiled help string.
-        for words in [('agent', '--help'), ('agent', 'tools'), ('runtime', '--help')]:
+        for words in [('agent', '--help'), ('agent', 'tools'), ('runtime', '--help'),
+                      ('bridge', '--help')]:
             description = run(*words)
             assert description['maturity'] == 'EXPERIMENTAL'
             assert 'availability' not in description
