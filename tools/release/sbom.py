@@ -13,7 +13,7 @@ import re
 import shutil
 import tomllib
 from urllib.parse import quote
-from version import TARGETS,ReleaseError,check,read_toml
+from version import TARGETS,NATIVE_TARGETS,ReleaseError,check,check_native,authority,read_toml
 from assets import sha,wire,tar_members
 
 MAX_NOTICE=8*1024*1024
@@ -55,7 +55,7 @@ def license_expression(value: str):
 def notices(root: Path,package: dict,checksum: str | None):
     directory=Path(package['manifest_path']).resolve().parent
     manifest=read_toml(directory/'Cargo.toml')['package']
-    if manifest['name']!=package['name'] or (manifest.get('version') if isinstance(manifest.get('version'),str) else check(root)['version'])!=package['version']:
+    if manifest['name']!=package['name'] or (manifest.get('version') if isinstance(manifest.get('version'),str) else authority(root))!=package['version']:
         raise ReleaseError('dependency source manifest identity mismatch: '+package['name'])
     declared=manifest.get('license')
     if declared=={'workspace':True}:declared=read_toml(root/'Cargo.toml')['workspace']['package']['license']
@@ -101,14 +101,16 @@ def notices(root: Path,package: dict,checksum: str | None):
         result.append((path.name,path.read_bytes(),origin))
     return result
 
-def generate(root: Path,target: str,metadata: dict,source_sha: str,epoch: int):
-    identity=check(root)
-    if target not in TARGETS or not re.fullmatch('[0-9a-f]{40}',source_sha) or not 0<=epoch<=253402300799:
+def generate(root: Path,target: str,metadata: dict,source_sha: str,epoch: int,*,native=False):
+    identity=check_native(root) if native else check(root)
+    if target not in (NATIVE_TARGETS if native else TARGETS) or not re.fullmatch('[0-9a-f]{40}',source_sha) or not 0<=epoch<=253402300799:
         raise ReleaseError('invalid selected release source/target/epoch')
     if metadata.get('version')!=1 or Path(metadata['workspace_root']).resolve()!=root.resolve() or not metadata.get('resolve'):
         raise ReleaseError('Cargo metadata does not bind the selected source/resolve graph')
     nodes=metadata['resolve']['nodes'];selected={p['id']:p for p in metadata['packages'] if p['id'] in {n['id'] for n in nodes}}
     if not selected or len(selected)>4096 or len(selected)!=len(nodes):raise ReleaseError('incomplete or duplicate Cargo resolve graph')
+    if native and {p['name'] for p in selected.values() if p['id'] in metadata['workspace_members']}!=set(identity['workspace_packages']):
+        raise ReleaseError('native inventory must bind exactly the CLI/runtime/core workspace graph')
     locked=read_toml(root/'Cargo.lock')['package'];packages=[];license_rows=[];notice_files={};package_ids={}
     for package_id,p in sorted(selected.items(),key=lambda item:(item[1]['name'],item[1]['version'],item[1].get('source') or '')):
         source=p.get('source');expression=p.get('license')

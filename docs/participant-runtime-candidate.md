@@ -1139,13 +1139,20 @@ attempting another input. Completed test state may be removed after the owned
 runtime/bridge are terminal and the verified result has been retained.
 
 The report distinguishes service acceptance, receiver-store observation, host
-fact and actual reply. Its observation times share one monotonic clock and
-include observer scheduling; they are not isolated internal phase spans.
-A real existing Codex round trip passed on2026-10-30 with one HTTP send per
-message and zero journal reads. That single unoptimized local-service sample
-observed acceptance in716ms, receiver storage in976ms and PONG in46.3s, including
-model/tool scheduling and a rejected relative-profile-path attempt. It does not
-qualify IM percentiles, fresh-Agent first use, a production WAN path or AGY.
+fact and actual reply. For a selected host, it observes the original local
+delivery's `HOST_ACCEPTED` before waiting for model output, with a separate
+20-second observation budget and no input resubmission. Missing host ACK timing
+remains explicit even if a model reply later arrives. Its observation times
+share one monotonic clock and include observer scheduling; they are not isolated
+internal phase spans or a percentile qualification.
+A 0.3.0 development-source round trip through the selected existing Codex
+session passed on2026-10-31 with one HTTP send per message and zero journal
+reads. Acceptance was observed in391ms, receiver storage in526ms, host ACK
+in623ms and the exact sender-verified PONG in16.429s. The native reply tool
+itself took509ms; model/tool orchestration is separate from host acceptance.
+An earlier same-day host-ACK observation of1480ms is retained as well. These
+local unoptimized canaries do not qualify IM percentiles, fresh-Agent first
+use, a production WAN path or AGY App push.
 
 The profile-file loading issue from that use is corrected: CLI profile paths
 may be absolute or relative to the process working directory. The selected
@@ -1315,16 +1322,20 @@ kill/restart and normal shutdown. Python is the maintainer's test driver, not
 an installed client dependency. The current Linux candidate passed this check.
 
 The dedicated `Native participant qualification` workflow prepares exactly
-Linux x86_64 GNU/glibc2.28, macOS ARM64 and Windows x86_64 candidates. It builds
-the CLI and affected native tests without Node/Python extension builds and
-does not invoke the older experimental publisher. Temporary CI artifacts are
-not signed/notarized public releases. The first CI run found a JSON version-output packaging error and a Windows
-snapshot flush using a read-only handle; both are corrected in a subsequent
-candidate run. The first macOS job never acquired a runner because of hosted
-ARM64 capacity constraints. Corrected three-platform qualification remains
-pending; do not infer a pass from local Linux tests. Audit the
-emitted loader dependencies and final installation separately from language
-runtime requirements.
+Linux x86_64 GNU/glibc2.28, macOS ARM64 and Windows x86_64 candidates. Before
+compiling, it validates the native Cargo version, target-specific locked CLI
+dependency graph, exact source notices and pinned ICU inputs. Optional
+Node/Python binding versions are independent of this native release cohort.
+The same verified inventory is packaged after the CLI's reported version and
+emitted loader dependencies pass inspection.
+
+It builds the CLI and affected native tests without Node/Python extension
+builds and does not invoke the older experimental publisher. Node is used on
+POSIX CI only to produce an actual published legacy-store import fixture;
+neither Node nor Python is an installed native client dependency. Temporary
+CI artifacts are not signed/notarized public releases. Complete three-platform
+qualification remains required; local inventory preflight does not establish
+cross compilation, OS installation or service/host compatibility.
 
 Foreground sends also expose `http.send_execution_phases`. A Tokio task-local
 scope counts only the native `structure.message.send` execution and its awaited

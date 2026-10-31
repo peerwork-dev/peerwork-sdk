@@ -8,6 +8,7 @@ import sys
 import tomllib
 
 TARGETS = ('linux-x64-gnu','linux-arm64-gnu','linux-x64-musl','linux-arm64-musl','darwin-x64','darwin-arm64','win32-x64-msvc')
+NATIVE_TARGETS = ('linux-x64-gnu','darwin-arm64','win32-x64-msvc')
 VERSION = re.compile(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z')
 
 class ReleaseError(ValueError):
@@ -21,6 +22,20 @@ def authority(root: Path) -> str:
     if not isinstance(version,str) or not VERSION.fullmatch(version):
         raise ReleaseError('release version must be canonical stable MAJOR.MINOR.PATCH')
     return version
+
+def check_native(root: Path, tag: str | None = None) -> dict:
+    """The CLI/program cohort has its own finite graph, not binding parity."""
+    version=authority(root)
+    if tag is not None and tag!='v'+version:raise ReleaseError('tag does not match native Cargo release version')
+    locked=read_toml(root/'Cargo.lock')['package'];names=[]
+    for member,expected in [('crates/core','peerwork-core'),('crates/runtime','peerwork-runtime'),('crates/cli','peerwork-cli')]:
+        package=read_toml(root/member/'Cargo.toml')['package']
+        if package['name']!=expected or package.get('version')!={'workspace':True}:
+            raise ReleaseError('native crate must inherit the exact Cargo release version')
+        rows=[p for p in locked if p['name']==expected and 'source' not in p]
+        if len(rows)!=1 or rows[0]['version']!=version:raise ReleaseError('native Cargo.lock release version drifted')
+        names.append(expected)
+    return dict(version=version,tag='v'+version,targets=list(NATIVE_TARGETS),workspace_packages=sorted(names))
 
 def check(root: Path, tag: str | None = None) -> dict:
     version=authority(root)

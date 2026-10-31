@@ -68,6 +68,35 @@ fn setup(
 fn finish(s: &LegacyDeliverySelection) -> Value {
     import_all(s).unwrap()
 }
+#[cfg(windows)]
+#[test]
+fn drive_and_verbatim_aliases_cannot_hide_nested_source_or_archive() {
+    let (_root, s) = setup("RECEIVER", 1);
+    let original = std::fs::read(s.source_directory.join("receiver.sqlite")).unwrap();
+    // canonicalize returns a verbatim drive path; ordinary drive spelling is
+    // also supported, but neither may bypass the selection overlap check.
+    let canonical_source = std::fs::canonicalize(&s.source_directory).unwrap();
+    let mut nested = s.clone();
+    nested.archive_directory = canonical_source.join("nested-archive");
+    assert_eq!(
+        import_page(&nested).unwrap_err().code,
+        "LEGACY_DELIVERY_SELECTION_INVALID"
+    );
+    assert!(!nested.archive_directory.exists());
+    let mut parent = s.clone();
+    parent.archive_directory = std::fs::canonicalize(s.source_directory.parent().unwrap()).unwrap();
+    assert_eq!(
+        import_page(&parent).unwrap_err().code,
+        "LEGACY_DELIVERY_SELECTION_INVALID"
+    );
+    assert_eq!(
+        std::fs::read(s.source_directory.join("receiver.sqlite")).unwrap(),
+        original
+    );
+    assert!(!s.archive_directory.exists());
+    // A valid sibling destination still imports the original unchanged source.
+    assert_eq!(finish(&s)["state"], "LEGACY_EVIDENCE_IMPORTED");
+}
 #[test]
 fn bounded_pages_keep_exact_unknown_acked_and_control_evidence_without_native_replay() {
     let (_root, s) = setup("RECEIVER", 65);
