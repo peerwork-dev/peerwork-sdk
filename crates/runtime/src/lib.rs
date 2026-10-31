@@ -18,6 +18,7 @@ mod agent_mcp;
 pub mod communication_bridge;
 pub(crate) mod communication_local_channel;
 pub mod participant;
+mod participant_owner;
 mod participant_actions;
 mod participant_migration;
 pub mod participant_transfer;

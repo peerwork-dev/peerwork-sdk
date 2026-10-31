@@ -26,6 +26,7 @@ GROUPS = ['communication_local_channel::tests', 'communication_runtime::tests',
           'kernel_access::resident_wal_tests',
           'participant_legacy_delivery::tests',
           'participant_inbox::host_ledger',
+          'participant_owner::tests',
           'transport::tests::send_phase_scope_excludes_interleaved_and_spawned_work_and_survives_cancellation']
 
 

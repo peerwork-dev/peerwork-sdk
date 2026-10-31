@@ -185,7 +185,7 @@ fn pin_binding(engine: &EngineConfig) -> Result<Vec<u8>> {
         .authority
         .clone()
         .unwrap_or_else(|| sha256_hex(identity.actor_id().as_bytes()));
-    serde_json::to_vec(&json!({"format":"peerwork.participant-owner.v1","actor":identity.actor_id(),"key":identity.key_id(),"origin":origin,"authority":authority})).map_err(|_|error("ENGINE_TRANSFER_STATE_INVALID"))
+    Ok(crate::participant_owner::logical_binding(&identity,&origin,&authority))
 }
 /// Stop the owning runtime/embedded program first. This same-host operation
 /// changes only the chosen engine state directory; its clients, capabilities,
@@ -223,14 +223,11 @@ fn transfer_with(
         .map_err(|_| error("TRANSFER_SOURCE_NOT_INITIALIZED"))?;
     let owner = SecureStateStore::open(&source.join("engine-owner.state"))
         .map_err(|_| error("TRANSFER_SOURCE_STILL_OWNED"))?;
-    if owner
+    let owner_wire=owner
         .read_exact()
         .map_err(|_| error("TRANSFER_SOURCE_STATE_INVALID"))?
-        .as_deref()
-        != Some(expected.as_slice())
-    {
-        return Err(error("STATE_BINDING_MISMATCH"));
-    }
+        .ok_or_else(||error("TRANSFER_SOURCE_STATE_INVALID"))?;
+    crate::participant_owner::validate_ready(&owner,&expected)?;
     if source.join(IN).exists() {
         let incoming = read(&marker(&source.join(IN))?)?
             .ok_or_else(|| error("ENGINE_TRANSFER_STATE_INVALID"))?;
@@ -409,7 +406,7 @@ fn transfer_with(
         boundary(database)?;
     }
     _target_owner
-        .write_exact(&expected)
+        .write_exact(&owner_wire)
         .map_err(|_| error("TRANSFER_TARGET_STATE_FAILED"))?;
     if config_output.exists() {
         let old = crate::secure_state::read_private_file_bounded(&config_output, 65536)

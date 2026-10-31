@@ -1423,3 +1423,30 @@ The service and native verifier also retain `RESULT_UNKNOWN` followed by a
 bound-host `NOT_SENT` proof as two compatible observations. Neither observation
 is erased; contradictory queued/accepted facts remain forbidden. This is a
 recipient attestation, never a host signature or model-completion claim.
+
+## Versioned engine-owner maintenance exclusion (internal candidate)
+
+The operator workflow can now fence a stopped engine with
+`peerwork.participant-owner.v2` before any remote replacement. The descriptor
+retains the exact old logical actor/key/Origin/authority binding separately
+from maintenance state. It is not an encryption pin; no journal, inbox frame,
+receiver key or body key is re-encrypted when its version changes.
+
+A pending maintenance descriptor refuses ordinary engine opening and explicit
+engine transfer before store recovery or host/network startup. The error gives
+the original operation ID and `RESUME_SAME_HOST_REBIND_OPERATION`. Resumption
+must match the selection digest and expected owner revision. Completion retains
+the v2 descriptor, so an actual pre-upgrade reader continues to refuse it after
+maintenance as well. The selected new reader can reopen it normally. A stale
+operation cannot clear a newer pending operation or fence an engine again after
+newer maintenance has completed.
+
+Engine transfer uses the same owner validation and copies the completed v2
+descriptor exactly; it never silently downgrades the target to v1. Original
+identity/journal/key paths and fixed store bindings remain unchanged. Existing
+v1 owner data is accepted for this explicit upgrade; this does not add a legacy
+online execution mode or fallback. Three native tests, the retained actual v1
+binary refusal check and existing transfer cases are qualification evidence in
+the work record, not a published release or complete rebind CLI. The public
+job that couples this fence, report flushing, remote continuation, local commit
+and selected host configuration update is still being integrated.
