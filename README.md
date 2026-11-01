@@ -3,10 +3,16 @@ listed in the [public releases](https://github.com/peerwork-dev/peerwork-sdk/rel
 embedded programs, a resident runtime, fixed Agent CLI tools and local MCP.
 The client requires no Node or Python. Its selected targets are Linux x86_64
 GNU, macOS ARM64 and Windows x86_64. Start with the
-[native participant quickstart](docs/native-participant-quickstart.md); see the
+[Bot installation and connection quickstart](docs/native-participant-quickstart.md); see the
 [native interface](docs/participant-runtime-candidate.md) and
 [native distribution contract](docs/native-distribution.md) for availability,
 dependencies and qualification limits. A candidate work branch is not a release.
+
+The quickstart covers existing identity/state inventory, native binary updates,
+resident mailbox and host setup, Codex/AGY MCP registration, Skill discovery
+and actual-session two-way acceptance. If a runtime/profile is not prepared,
+use the [operator configuration guide](docs/native-bot-configuration.md).
+Binary installation and live collaboration readiness are separate results.
 
 The following describes the **older 0.2.16 / Agent tools 0.1.0 interfaces**.
 For the native interface use the quickstart above and
