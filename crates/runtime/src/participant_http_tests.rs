@@ -417,7 +417,7 @@ async fn program_root_http_async_scope_and_exact_operation_restart() {
     assert_eq!(worker.close().await.unwrap_err().code, "ADMIN_REQUIRED");
     // Slow remote work occupies a real slot, while independent work continues.
     service
-        .config(json!({"delay_name":"Slow independent create"}))
+        .config(json!({"delay_action":"structure.workspace.create"}))
         .await;
     let slow = client
         .invoke(
