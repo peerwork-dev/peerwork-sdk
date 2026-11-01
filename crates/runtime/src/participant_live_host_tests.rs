@@ -734,6 +734,7 @@ async fn qualify_native_reply(mcp_only: bool) {
                 name: "explicit-existing-worker".into(),
                 adapter,
                 subscriptions: vec![HostSubscription {
+                    client_generation: None,
                     client: "worker".into(),
                     watch: worker_watch.clone(),
                 }],

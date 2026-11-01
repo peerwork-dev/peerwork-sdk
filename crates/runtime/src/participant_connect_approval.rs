@@ -143,6 +143,13 @@ impl Connect {
         let client =
             RuntimeClient::connect(selected.endpoint_path, &selected.origin, &selected.actor_id)
                 .await?;
+        let missing =
+            missing_runtime_features(&client.call(json!({"method":"capabilities"})).await?);
+        if !missing.is_empty() {
+            return Ok(
+                json!({"state":"PENDING","approval_id":approval_id,"blocker":{"stage":"LOCAL_RUNTIME","code":"LOCAL_RUNTIME_UPGRADE_REQUIRED","next_actor":"LOCAL_RUNTIME_OWNER","next_action":"UPGRADE_SELECTED_RUNTIME_PRESERVING_ORIGINAL_STATE","missing_features":missing},"remote_changes_submitted":false,"original_operations_retained":true}),
+            );
+        }
         let digest = sha256_hex(
             serde_json::to_vec(&request)
                 .map_err(|_| local("AUTHORIZATION_REQUEST_INVALID"))?

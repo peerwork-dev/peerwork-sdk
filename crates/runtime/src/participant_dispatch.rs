@@ -21,8 +21,8 @@ use std::{
 #[serde(deny_unknown_fields)]
 pub struct HostSubscription {
     pub client: String,
-    #[serde(default,skip_serializing_if="Option::is_none")]
-    pub client_generation:Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_generation: Option<u64>,
     pub watch: WatchOptions,
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -359,7 +359,9 @@ fn selected(
     client: &ParticipantClient,
     options: &WatchOptions,
 ) -> Result<bool> {
-    if !client.locally_live(){return Ok(false);}
+    if !client.locally_live() {
+        return Ok(false);
+    }
     Ok(sources
         .lock()
         .map_err(|_| error("HOST_STATE_INVALID"))?
@@ -573,7 +575,9 @@ async fn run_owned(
         }
         let mut scope_errors = Vec::new();
         for (client, configured) in selected_sources {
-            if !client.locally_live(){continue;}
+            if !client.locally_live() {
+                continue;
+            }
             if watches
                 .iter()
                 .any(|(c, o)| c.same_client(&client) && o.key() == configured.key())
@@ -857,7 +861,7 @@ async fn run_owned(
                 .await?
             {
                 HostReply::Call(Some(call)) => call,
-                HostReply::Call(None) => continue,
+                HostReply::Call(None) => return Ok(false),
                 _ => return Err(error("HOST_STATE_INVALID")),
             };
             // The final selected-source check is the admission boundary for
@@ -904,6 +908,9 @@ async fn run_owned(
                 }
                 Ok(false) => (),
                 Err(problem) => scope_error(&status, options, &problem),
+            }
+            if adapter.is_none() {
+                break;
             }
         }
         if !progressed {

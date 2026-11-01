@@ -31,6 +31,7 @@ impl Connect {
             name: name.into(),
             adapter: selected.adapter.clone(),
             subscriptions: vec![HostSubscription {
+                client_generation: None,
                 client: "selected".into(),
                 watch: placeholder,
             }],
@@ -74,6 +75,7 @@ impl Connect {
         request: &ConnectRequest,
         registration: &Registration,
         client_name: &str,
+        client_generation: u64,
         watch: WatchOptions,
     ) -> Result<Value> {
         let selected = self
@@ -88,6 +90,7 @@ impl Connect {
             name: name.into(),
             adapter: selected.adapter.clone(),
             subscriptions: vec![HostSubscription {
+                client_generation: Some(client_generation),
                 client: client_name.into(),
                 watch,
             }],

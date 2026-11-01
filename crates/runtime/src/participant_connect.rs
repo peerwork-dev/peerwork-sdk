@@ -82,6 +82,16 @@ pub struct ConnectRequest {
     #[serde(default)]
     pub host: Option<String>,
 }
+fn missing_runtime_features(caps: &Value) -> Vec<&'static str> {
+    crate::communication_runtime::CONNECT_FEATURES
+        .into_iter()
+        .filter(|wanted| {
+            !caps["features"]
+                .as_array()
+                .is_some_and(|xs| xs.iter().any(|v| v == wanted))
+        })
+        .collect()
+}
 fn default_alias() -> String {
     "workspace".into()
 }
@@ -519,6 +529,18 @@ impl Connect {
                 )
             }
         };
+        let caps = client.call(json!({"method":"capabilities"})).await?;
+        let missing_features = missing_runtime_features(&caps);
+        if !missing_features.is_empty() {
+            return self.pending(
+                &request,
+                "LOCAL_RUNTIME",
+                "LOCAL_RUNTIME_UPGRADE_REQUIRED",
+                "LOCAL_RUNTIME_OWNER",
+                "UPGRADE_SELECTED_RUNTIME_PRESERVING_ORIGINAL_STATE",
+                json!({"missing_features":missing_features,"remote_changes_submitted":false}),
+            );
+        }
         let scope = Scope {
             workspace_id: Some(request.workspace_id.clone()),
             ..Scope::default()
@@ -721,7 +743,6 @@ impl Connect {
                 json!({"observation":mailboxes}),
             );
         }
-        let caps = client.call(json!({"method":"capabilities"})).await?;
         let parent: Capability = serde_json::from_value(caps["capability"].clone())
             .map_err(|_| local("LOCAL_CEILING_INVALID"))?;
         let previous_setup = self
@@ -886,6 +907,7 @@ impl Connect {
             .as_ref()
             .and_then(|p| p.receive_endpoint_path.clone());
         let mut receiver_name = String::new();
+        let mut receiver_generation = 0;
         let receiver_tools = if channel_receive {
             let mailbox_id = mailbox
                 .and_then(|m| m["mailbox_id"].as_str())
@@ -923,6 +945,9 @@ impl Connect {
             let derived = client
                 .call(json!({"method":"derive","name":alias,"capability":receive_cap}))
                 .await?;
+            receiver_generation = derived["client_generation"]
+                .as_u64()
+                .ok_or_else(|| local("DERIVED_CLIENT_GENERATION_REQUIRED"))?;
             receiver_name = derived["client_name"]
                 .as_str()
                 .ok_or_else(|| local("DERIVED_ENDPOINT_INVALID"))?
@@ -1091,7 +1116,14 @@ impl Connect {
                 .as_ref()
                 .ok_or_else(|| local("DEFAULT_MAILBOX_REQUIRED"))?;
             host_observation = self
-                .ensure_host(name, &request, &selected, client_name, options.clone())
+                .ensure_host(
+                    name,
+                    &request,
+                    &selected,
+                    client_name,
+                    receiver_generation,
+                    options.clone(),
+                )
                 .await?;
             let until = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
             loop {
@@ -1110,7 +1142,14 @@ impl Connect {
                 }
                 if tokio::time::Instant::now() >= until {
                     host_observation = self
-                        .ensure_host(name, &request, &selected, client_name, options.clone())
+                        .ensure_host(
+                            name,
+                            &request,
+                            &selected,
+                            client_name,
+                            receiver_generation,
+                            options.clone(),
+                        )
                         .await?;
                     let blocked = host_observation["observation"]["state"] == "BLOCKED";
                     let code = if blocked {

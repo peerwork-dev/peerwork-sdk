@@ -38,6 +38,11 @@ use tokio::{
     task::JoinSet,
 };
 
+pub(crate) const CONNECT_FEATURES: [&str; 3] = [
+    "participant-connect-v1",
+    "derived-client-generation-v1",
+    "scoped-host-revocation-v1",
+];
 const REQUEST_FORMAT: &str = "peerwork.participant-request.v1";
 const RESPONSE_FORMAT: &str = "peerwork.participant-response.v1";
 const ENDPOINT_FORMAT: &str = "peerwork.participant-endpoint.v1";
@@ -154,6 +159,7 @@ pub struct RuntimeReady {
 struct Session {
     name: String,
     token: String,
+    generation: Option<u64>,
     client: ParticipantClient,
     watches: Arc<tokio::sync::Mutex<BTreeMap<String, Arc<tokio::sync::Mutex<ProgramWatch>>>>>,
 }
@@ -161,6 +167,7 @@ struct Runtime {
     owners: BTreeMap<String, ParticipantClient>,
     sessions: std::sync::RwLock<Vec<Session>>,
     derived: std::sync::Mutex<derived::Clients>,
+    cleanup_active: std::sync::Mutex<BTreeSet<String>>,
     directory: PathBuf,
     address: SocketAddr,
     admin_token: String,
@@ -177,10 +184,11 @@ pub enum ClientRequest {
         name: String,
         capability: Capability,
         #[serde(default)]
-        expected_capability:Option<Capability>,
+        expected_capability: Option<Capability>,
     },
     RevokeDerived {
         name: String,
+        expected_binding: String,
     },
     DeliveryStatus {
         options: WatchOptions,
@@ -286,7 +294,7 @@ impl Runtime {
             .find(|key| equal(&channel::key_id(key), id))
             .map(str::to_owned)
     }
-    async fn request(self:&Arc<Self>, frame: Frame, credential: &str) -> Value {
+    async fn request(self: &Arc<Self>, frame: Frame, credential: &str) -> Value {
         let id = &frame.request_id;
         if frame.format != REQUEST_FORMAT || !identifier(id) {
             return response(id, Err(local("IPC_FRAME_INVALID")));
@@ -297,20 +305,20 @@ impl Runtime {
             struct AdminRequest {
                 method: String,
                 #[serde(default)]
-                config:Option<crate::participant_dispatch::HostConfig>,
+                config: Option<crate::participant_dispatch::HostConfig>,
                 #[serde(default)]
-                expected_actor:Option<String>,
+                expected_actor: Option<String>,
                 #[serde(default)]
-                expected_origin:Option<String>,
+                expected_origin: Option<String>,
             }
             let value=async{match serde_json::from_value::<AdminRequest>(frame.request){
                 Ok(request)if request.method=="stop"&&request.config.is_none()=>Ok(json!({"state":"STOPPING"})),
                 Ok(request)if request.method=="status"&&request.config.is_none()=>{
                     let mut engines=Vec::new();for (name,owner) in &self.owners{engines.push(json!({"name":name,"actor_id":owner.actor_id(),"origin":owner.origin(),"metrics":owner.metrics().await?}));}
-                    Ok(json!({"state":"LOCAL_READY","engines":engines,"hosts":self.hosts.lock().await.statuses(),"network_or_host_readiness":"NOT_ATTESTED"}))
+                    Ok(json!({"state":"LOCAL_READY","engines":engines,"hosts":self.hosts.lock().await.statuses(),"pending_client_revocations":self.pending_revocation_status()?,"network_or_host_readiness":"NOT_ATTESTED"}))
                 },
                 Ok(request)if request.method=="host_ensure"&&request.config.is_some()=>{
-                    let clients:BTreeMap<String,ParticipantClient>=self.sessions.read().map_err(|_|local("CLIENT_REGISTRY_UNAVAILABLE"))?.iter().map(|s|(s.name.clone(),s.client.clone())).collect();
+                    let (clients,generations)=self.client_snapshot()?;
                     let config=request.config.unwrap();
                     if request.expected_actor.is_some()!=request.expected_origin.is_some(){return Err(local("HOST_IDENTITY_PIN_REQUIRED"));}
                     if let Some(actor)=request.expected_actor{
@@ -320,15 +328,17 @@ impl Runtime {
                             if client.actor_id()!=actor||client.origin()!=origin{return Err(local("HOST_IDENTITY_OR_ORIGIN_MISMATCH"));}
                         }
                     }
-                    self.hosts.lock().await.ensure(config,&clients,&self.directory,self.cancel.clone()).await
+                    self.hosts.lock().await.ensure(config,&clients,&generations,&self.directory,self.cancel.clone()).await
                 },_=>Err(local("ADMIN_COMMAND_INVALID")),
             }}.await;
             return response(id, value);
         }
-        let session = self.sessions.read().ok().and_then(|sessions| sessions
-            .iter()
-            .find(|session| equal(&session.token, credential))
-            .cloned());
+        let session = self.sessions.read().ok().and_then(|sessions| {
+            sessions
+                .iter()
+                .find(|session| equal(&session.token, credential))
+                .cloned()
+        });
         let Some(session) = session else {
             return response(id, Err(local("IPC_UNAUTHORIZED")));
         };
@@ -340,17 +350,12 @@ impl Runtime {
                     let runtime=self.clone();let parent=session.clone();
                     tokio::task::spawn_blocking(move||runtime.derive_client(&parent,&name,capability,expected_capability)).await.map_err(|_|local("CLIENT_DERIVATION_TASK_FAILED"))?
                 },
-                ClientRequest::RevokeDerived{name}=>{
+                ClientRequest::RevokeDerived{name,expected_binding}=>{
                     let runtime=self.clone();let parent=session.clone();
-                    let revoked=tokio::task::spawn_blocking(move||runtime.revoke_derived(&parent,&name)).await.map_err(|_|local("CLIENT_REVOCATION_TASK_FAILED"))??;
-                    let count=revoked.len();let mut cleanup_pending=false;
-                    for revoked in revoked {
-                        match revoked.client.watch_bindings().await {
-                            Ok(bindings)=>for binding in bindings {if revoked.client.unwatch(&binding).await.is_err(){cleanup_pending=true;}},
-                            Err(_)=>cleanup_pending=true,
-                        }
-                    }
-                    Ok(json!({"state":"LOCAL_CLIENTS_REVOKED","count":count,"receiver_cleanup_pending":cleanup_pending,"original_operations_retained":true,"remote_rights_revoked":false}))
+                    let revoked=tokio::task::spawn_blocking(move||runtime.revoke_derived(&parent,&name,&expected_binding)).await.map_err(|_|local("CLIENT_REVOCATION_TASK_FAILED"))??;
+                    let count=revoked.as_ref().map_or(0,|job|job.names().len());
+                    let(cleaned,cleanup_error)=match revoked {Some(job)=>match self.cleanup_revocation(&job).await{Ok(done)=>(done,None),Err(e)=>(false,Some(e))},None=>(true,None)};
+                    Ok(json!({"state":if cleaned{"LOCAL_CLIENTS_REVOKED"}else{"LOCAL_CLIENTS_REVOKED_CLEANUP_PENDING"},"count":count,"receiver_cleanup_pending":!cleaned,"cleanup_error":cleanup_error,"original_operations_retained":true,"remote_rights_revoked":false,"inflight_host_results":"RETAINED"}))
                 },
                 ClientRequest::DeliveryStatus{options,item}=>client.delivery_status(&options,item).await,
                 ClientRequest::Unwatch{options}=>{client.unwatch(&options).await?;session.watches.lock().await.remove(&options.key());Ok(json!({"state":"LOCAL_STOPPED","lease_expires_within_ms":15000,"messages_deleted":false}))},
@@ -402,7 +407,7 @@ impl Runtime {
                 ClientRequest::Recover{operation_id}=>serde_json::to_value(client.recover(&operation_id).await?).map_err(|_|local("IPC_RESPONSE_INVALID")),
                 ClientRequest::Operations{after,limit}=>client.operations(&after,limit).await,
                 ClientRequest::Bindings=>serde_json::to_value(client.watch_bindings().await?).map_err(|_|local("IPC_RESPONSE_INVALID")),
-                ClientRequest::Capabilities=>Ok(json!({"format":"peerwork.participant-capability.v1","actor_id":client.actor_id(),"origin":client.origin(),"capability":client.capability(),"admin":false,"maturity":"EXPERIMENTAL"})),
+                ClientRequest::Capabilities=>Ok(json!({"format":"peerwork.participant-capability.v1","actor_id":client.actor_id(),"origin":client.origin(),"capability":client.capability(),"admin":false,"maturity":"EXPERIMENTAL","features":CONNECT_FEATURES})),
             }
         }.await;
         response(id, value)
@@ -540,7 +545,10 @@ pub(crate) async fn client_handshake(
 ) -> Result<Authenticated> {
     // Confirmation and the sealed request are separate small frames. Do not
     // let Nagle wait for a delayed ACK between authenticated local messages.
-    stream.get_ref().set_nodelay(true).map_err(|_| local("IPC_CHANNEL_INVALID"))?;
+    stream
+        .get_ref()
+        .set_nodelay(true)
+        .map_err(|_| local("IPC_CHANNEL_INVALID"))?;
     let nonce = random_token().map_err(|_| local("ENTROPY_UNAVAILABLE"))?;
     let hello =
         json!({"format":HELLO_FORMAT,"key_id":channel::key_id(credential),"client_nonce":nonce});
@@ -773,6 +781,7 @@ pub async fn serve(
                 .ok_or_else(|| local("CLIENT_CONFIG_INVALID"))?;
             sessions.push(Session {
                 name: client.name.clone(),
+                generation: None,
                 watches: Default::default(),
                 token: random_token().map_err(|_| local("ENTROPY_UNAVAILABLE"))?,
                 client: owner.restrict(&client.name, client.capability.clone())?,
@@ -819,10 +828,15 @@ pub async fn serve(
         .iter()
         .map(|session| (session.name.clone(), session.client.clone()))
         .collect();
+    let generations = sessions
+        .iter()
+        .map(|s| (s.name.clone(), s.generation))
+        .collect();
     let hosts = match hosts::Hosts::open(
         &config.state_directory,
         &config.hosts,
         &clients,
+        &generations,
         cancel.clone(),
     ) {
         Ok(jobs) => jobs,
@@ -836,21 +850,27 @@ pub async fn serve(
             return Err(error);
         }
     };
+    let pending_revocations = derived.pending();
+    let runtime = Arc::new(Runtime {
+        owners,
+        sessions: std::sync::RwLock::new(sessions),
+        derived: std::sync::Mutex::new(derived),
+        cleanup_active: Default::default(),
+        directory: config.state_directory.clone(),
+        address,
+        admin_token,
+        hosts: tokio::sync::Mutex::new(hosts),
+        cancel,
+    });
+    for job in pending_revocations {
+        let _ = runtime.cleanup_revocation(&job).await;
+    }
     let _ = ready.send(Ok(RuntimeReady {
         state: "LOCAL_READY".into(),
         admin_endpoint: admin_endpoint.clone(),
         client_endpoints: paths.clone(),
     }));
-    let runtime = Arc::new(Runtime {
-        owners,
-        sessions: std::sync::RwLock::new(sessions),
-        derived: std::sync::Mutex::new(derived),
-        directory: config.state_directory.clone(),
-        address,
-        admin_token,
-        hosts:tokio::sync::Mutex::new(hosts),
-        cancel,
-    });
+    let cleanup_job = tokio::spawn(runtime.clone().resume_revocations());
     let mut connections = JoinSet::new();
     loop {
         tokio::select! {
@@ -865,6 +885,7 @@ pub async fn serve(
     while connections.join_next().await.is_some() {}
     // A host call may already have reached the selected session. Finish its
     // evidence write while the owning engine remains available.
+    let _ = cleanup_job.await;
     runtime.hosts.lock().await.close().await;
     let mut close_error = None;
     for owner in runtime.owners.values() {
@@ -930,12 +951,18 @@ async fn call_endpoint(endpoint: &Endpoint, request: Value) -> Result<Value> {
 
 pub fn cli(args: &[String]) -> Value {
     fn run(args: &[String]) -> Result<Value> {
-        if let [verb,config,request,recovery]=args {
-            if verb=="recover-host-rebind" {return crate::participant_rebind::recovery_cli(Path::new(config),Path::new(request),Path::new(recovery));}
+        if let [verb, config, request, recovery] = args {
+            if verb == "recover-host-rebind" {
+                return crate::participant_rebind::recovery_cli(
+                    Path::new(config),
+                    Path::new(request),
+                    Path::new(recovery),
+                );
+            }
         }
-        if let [verb,config,request]=args {
-            if verb=="rebind-host" {
-                return crate::participant_rebind::cli(Path::new(config),Path::new(request));
+        if let [verb, config, request] = args {
+            if verb == "rebind-host" {
+                return crate::participant_rebind::cli(Path::new(config), Path::new(request));
             }
         }
         if args.is_empty() || args == ["--help"] {
@@ -943,14 +970,19 @@ pub fn cli(args: &[String]) -> Value {
                 json!({"state":"HELP","maturity":"EXPERIMENTAL","runtime_dependencies":[],"usage":["peerwork runtime run CONFIG.json","peerwork runtime call CLIENT_ENDPOINT.json REQUEST.json","peerwork runtime admin ADMIN_ENDPOINT.json status|stop","peerwork runtime transfer-engine RUNTIME_CONFIG.json ENGINE_NAME NEW_STATE_DIRECTORY","peerwork runtime rebind-host RUNTIME_CONFIG.json REQUEST.json","peerwork runtime recover-host-rebind RUNTIME_CONFIG.json REQUEST.json RECOVERY.json","peerwork runtime import-node-delivery SELECTION.json","peerwork runtime legacy-evidence SELECTION.json RECORD_KEY"],"authority":"Client endpoints pin identity and capability; no request profile/key selection.","readiness":"LOCAL_READY is not a network/host delivery proof."}),
             );
         }
-        if let [verb,path]=args {
-            if verb=="import-node-delivery" {
-                return crate::participant_legacy_delivery::import_all(&crate::participant_legacy_delivery::load_selection(Path::new(path))?);
+        if let [verb, path] = args {
+            if verb == "import-node-delivery" {
+                return crate::participant_legacy_delivery::import_all(
+                    &crate::participant_legacy_delivery::load_selection(Path::new(path))?,
+                );
             }
         }
-        if let [verb,path,key]=args {
-            if verb=="legacy-evidence" {
-                return crate::participant_legacy_delivery::read_evidence(&crate::participant_legacy_delivery::load_selection(Path::new(path))?,key);
+        if let [verb, path, key] = args {
+            if verb == "legacy-evidence" {
+                return crate::participant_legacy_delivery::read_evidence(
+                    &crate::participant_legacy_delivery::load_selection(Path::new(path))?,
+                    key,
+                );
             }
         }
         if let [verb, config, name, target] = args {

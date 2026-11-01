@@ -2417,6 +2417,7 @@ async fn runtime_host_dispatch_persists_unknown_and_blocks_only_same_conversatio
         name: "existing-codex".into(),
         adapter,
         subscriptions: vec![HostSubscription {
+            client_generation: None,
             client: "worker".into(),
             watch: options.clone(),
         }],
@@ -2835,6 +2836,7 @@ async fn native_presence_selftests_empty_receiver_imports_authorized_keys_and_tr
             name: "existing-codex".into(),
             adapter: fixture.config(),
             subscriptions: vec![HostSubscription {
+                client_generation: None,
                 client: "worker".into(),
                 watch: options.clone(),
             }],
@@ -3101,6 +3103,7 @@ async fn runtime_bridge_reconciles_only_original_bound_receipts_across_recipient
             name: "bridge-existing-session".into(),
             adapter,
             subscriptions: vec![HostSubscription {
+                client_generation: None,
                 client: "worker".into(),
                 watch: options.clone(),
             }],
@@ -3414,6 +3417,7 @@ async fn native_bridge_receives_genuine_verified_e2ee_mail_from_shared_runtime()
             name: "native-host-bridge".into(),
             adapter: ready.adapter,
             subscriptions: vec![HostSubscription {
+                client_generation: None,
                 client: "worker".into(),
                 watch: options.clone(),
             }],
@@ -4426,4 +4430,92 @@ async fn native_connect_cli_preserves_original_engine_and_attaches_selected_host
     }}).await.unwrap();
     assert_eq!(restored.operation("before-bootstrap").await.unwrap().command_id,original_operation.command_id,"bootstrap abandoned the original operation namespace");
     assert_eq!(service.counts().await["journal_reads"],0);restored.close().await.unwrap();
+}
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires synthetic PostgreSQL, real HTTP and synthetic selected host"]
+async fn shared_host_keeps_healthy_scope_running_when_result_storage_fails_and_another_client_is_revoked(){shared_host_result_failure(false).await;}
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires synthetic PostgreSQL, real HTTP and synthetic selected host"]
+async fn shared_host_reconnects_unknown_input_when_result_write_fails_without_panicking_other_scopes(){shared_host_result_failure(true).await;}
+async fn shared_host_result_failure(lose_ack:bool){
+    use crate::{communication_host::tests::CodexFixture,communication_runtime::{self as ipc,ClientConfig,EngineConfig,RuntimeConfig},participant_dispatch::{HostConfig,HostSubscription}};
+    let service=Service::start();let host=CodexFixture::start();let root=crate::test_support::protected_test_dir();
+    let options=configuration(root.path(),&service.origin);let owner=ParticipantClient::open(options.clone()).await.unwrap();
+    let mut scopes=Vec::new();let mut boxes=Vec::new();
+    for (index,key_bytes) in [[65;32],[66;32]].iter().enumerate(){
+        let created=mutate(&owner,&format!("fault-space-{index}"),"structure.workspace.create",&Scope::default(),json!({"name":format!("Synthetic isolated scope {index}")})).await;
+        let scope=Scope{workspace_id:Some(created["workspace_id"].as_str().unwrap().into()),..Default::default()};
+        let metadata=selected(&owner,"structure.workspace.get",&scope,json!({})).await;
+        let mailbox=mutate(&owner,&format!("fault-grant-{index}"),"structure.communication.grant.set",&scope,json!({"actor_id":owner.actor_id(),"membership_id":metadata["membership"]["membership_id"],"expected_revision":null,"send":true,"receive":true})).await["mailbox"].clone();
+        let key=install_synthetic_key(&options,scope.workspace_id.as_deref().unwrap(),key_bytes,None);
+        mutate(&owner,&format!("fault-head-{index}"),"structure.content-key.set",&scope,json!({"key_id":key,"expected_epoch":0,"expected_head_revision":null})).await;
+        if index==0{assert_eq!(owner.invoke(native_message(&format!("fault-prime-{index}"),&scope,&mailbox,&mailbox,&"A".repeat(43),&format!("scope-{index} verified input")),Duration::from_secs(5)).await.unwrap().state,"ACCEPTED");}
+        scopes.push(scope);boxes.push(mailbox);
+    }
+    owner.close().await.unwrap();
+    let runtime=RuntimeConfig{format:"peerwork.participant-runtime.v1".into(),state_directory:root.path().join("runtime"),engines:vec![EngineConfig{name:"original".into(),origin:options.origin.clone(),expected_actor:options.expected_actor.clone(),authority:None,identity_path:options.identity_path.clone(),state_directory:options.state_directory.clone(),journal_path:Some(options.journal_path.clone()),allow_loopback_http:true,transport:options.transport.clone(),max_inflight:4,max_pending:16,max_stored_bytes:8*1024*1024,migration_sources:Vec::new()}],clients:vec![ClientConfig{name:"parent".into(),engine:"original".into(),capability:Capability::owner()}],hosts:Vec::new()};
+    let stop=KernelCancellationToken::new();let(tx,rx)=oneshot::channel();let server=tokio::spawn(ipc::serve(runtime,stop.clone(),tx));let ready=rx.await.unwrap().unwrap();let parent=&ready.client_endpoints["parent"];
+    let mut derived=Vec::new();let mut watches=Vec::new();let mut endpoints=Vec::new();let mut subscriptions=Vec::new();
+    for index in 0..2{
+        let mut capability=Capability::owner();capability.allow_root=false;capability.workspace_ids=Some([scopes[index].workspace_id.clone().unwrap()].into());capability.mailbox_ids=Some([boxes[index]["mailbox_id"].as_str().unwrap().into()].into());
+        let client=ipc::call(parent,json!({"method":"derive","name":format!("scope-{index}"),"capability":capability})).await.unwrap();assert_eq!(client["ok"],true,"{client}");
+        let watch=WatchOptions{workspace_id:scopes[index].workspace_id.clone().unwrap(),mailbox_id:boxes[index]["mailbox_id"].as_str().unwrap().into(),membership_id:boxes[index]["membership_id"].as_str().unwrap().into(),consumer_id:format!("scope-{index}"),host_destination:None};
+        subscriptions.push(HostSubscription{client:client["value"]["client_name"].as_str().unwrap().into(),client_generation:client["value"]["client_generation"].as_u64(),watch:watch.clone()});
+        endpoints.push(PathBuf::from(client["value"]["endpoint_path"].as_str().unwrap()));derived.push(client);watches.push(watch);
+    }
+    host.approval.store(true,std::sync::atomic::Ordering::SeqCst);
+    let config=HostConfig{name:"one-physical-host".into(),adapter:host.config(),subscriptions};
+    let ensured=ipc::call(&ready.admin_endpoint,json!({"method":"host_ensure","config":config})).await.unwrap();assert_eq!(ensured["ok"],true,"{ensured}");
+    for index in 0..2{
+        tokio::time::timeout(Duration::from_secs(10),async{loop{
+            let bindings=ipc::call(&endpoints[index],json!({"method":"bindings"})).await.unwrap();
+            if let Some(watch)=bindings["value"].as_array().and_then(|xs|xs.first()){
+                watches[index]=serde_json::from_value(watch.clone()).unwrap();
+                let page=ipc::call(&endpoints[index],json!({"method":"inbox","options":watches[index],"after":0,"limit":1})).await.unwrap();
+                if page["value"]["receiver_link_verified"]==true&&(index==1||page["value"]["items"].as_array().is_some_and(|xs|!xs.is_empty())){break;}
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }}).await.expect("selected scope did not store its encrypted input");
+    }
+    let db=rusqlite::Connection::open(options.state_directory.join("participant-inbox.sqlite")).unwrap();db.busy_timeout(Duration::from_secs(2)).unwrap();
+    let failed_workspace=scopes[0].workspace_id.as_deref().unwrap();assert!(crate::workspace_urls::token(failed_workspace));
+    db.execute_batch(&format!("CREATE TRIGGER injected_result_write_failure BEFORE UPDATE OF state ON inbox_host_calls WHEN OLD.workspace='{failed_workspace}' BEGIN SELECT RAISE(FAIL,'synthetic result write failure'); END;")).unwrap();
+    host.lose_next_ack.store(lose_ack,std::sync::atomic::Ordering::SeqCst);
+    host.approval.store(false,std::sync::atomic::Ordering::SeqCst);
+    tokio::time::timeout(Duration::from_secs(10),async{loop{
+        let status=ipc::call(&ready.admin_endpoint,json!({"method":"status"})).await.unwrap();
+        if status["value"]["hosts"][0]["pending_result_writes"]==1{break;}tokio::time::sleep(Duration::from_millis(20)).await;
+    }}).await.expect("original host result never reached injected persistence failure");
+    let request=native_message("healthy-during-fault",&scopes[1],&boxes[1],&boxes[1],&"B".repeat(43),"healthy input while another result cannot be saved");
+    assert_eq!(ipc::call(parent,json!({"method":"invoke","request":request,"wait_ms":5000})).await.unwrap()["value"]["state"],"ACCEPTED");
+    let item=tokio::time::timeout(Duration::from_secs(12),async{loop{
+        let page=ipc::call(&endpoints[1],json!({"method":"inbox","options":watches[1],"limit":1})).await.unwrap();
+        if let Some(item)=page["value"]["items"].as_array().and_then(|xs|xs.first()){
+            let reference=json!({"sequence":item["sequence"],"delivery_id":item["delivery_id"]});
+            let status=ipc::call(&endpoints[1],json!({"method":"delivery_status","options":watches[1],"item":reference})).await.unwrap();
+            if status["value"]["host"]=="HOST_ACCEPTED"{break reference;}
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }}).await.expect("a failed result write stopped the unrelated scope");
+    let count_inputs=||host.calls().iter().filter(|v|matches!(v["method"].as_str(),Some("turn/start"|"turn/steer"))).count();
+    tokio::time::timeout(Duration::from_secs(10),async{loop{
+        let pending:usize=db.query_row("SELECT count(*) FROM inbox_host_calls WHERE workspace=?1 AND state='CALL_OPEN'",[failed_workspace],|r|r.get(0)).unwrap();
+        if count_inputs()==2&&pending==1{break;}tokio::time::sleep(Duration::from_millis(20)).await;
+    }}).await.expect("faulted scope never reached its original host input");
+    let pending:usize=db.query_row("SELECT count(*) FROM inbox_host_calls WHERE workspace=?1 AND state='CALL_OPEN'",[failed_workspace],|r|r.get(0)).unwrap();assert_eq!(pending,1);
+    let status=ipc::call(&ready.admin_endpoint,json!({"method":"status"})).await.unwrap();assert_eq!(status["value"]["hosts"].as_array().unwrap().len(),1);
+    let revoked=ipc::call(parent,json!({"method":"revoke_derived","name":"scope-0","expected_binding":derived[0]["value"]["binding_version"]})).await.unwrap();assert_eq!(revoked["value"]["state"],"LOCAL_CLIENTS_REVOKED","{revoked}");
+    db.execute_batch("DROP TRIGGER injected_result_write_failure").unwrap();
+    tokio::time::timeout(Duration::from_secs(5),async{loop{
+        let saved:usize=db.query_row("SELECT count(*) FROM inbox_host_calls WHERE workspace=?1 AND state=?2",rusqlite::params![failed_workspace,if lose_ack{"RESULT_UNKNOWN"}else{"HOST_ACCEPTED"}],|r|r.get(0)).unwrap();if saved==1{break;}
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }}).await.expect("revocation discarded the observed original host result");
+    let request=native_message("healthy-after-revoke",&scopes[1],&boxes[1],&boxes[1],&"C".repeat(43),"healthy input after another client was revoked");
+    let sent=ipc::call(parent,json!({"method":"invoke","request":request,"wait_ms":5000})).await.unwrap();assert_eq!(sent["value"]["state"],"ACCEPTED","{sent}");
+    tokio::time::timeout(Duration::from_secs(10),async{loop{if count_inputs()==3{break;}tokio::time::sleep(Duration::from_millis(20)).await;}}).await.expect("revoking another scope stopped the shared host");
+    assert_eq!(count_inputs(),3,"retry repeated original host input");
+    assert_eq!(ipc::call(&endpoints[1],json!({"method":"delivery_status","options":watches[1],"item":item})).await.unwrap()["value"]["host"],"HOST_ACCEPTED");
+    assert!(!endpoints[0].exists());assert_eq!(service.counts().await["journal_reads"],0);
+    drop(db);stop.cancel();server.await.unwrap().unwrap();
 }
