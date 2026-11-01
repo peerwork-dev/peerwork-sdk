@@ -24,6 +24,8 @@ GROUPS = ['communication_host::', 'communication_host_owner::tests',
           'communication_local_channel::tests', 'communication_runtime::tests',
           'communication_store::', 'participant_store::tests', 'participant_inbox::tests',
           'participant_transfer::tests', 'participant_presence::', 'agent_mcp::tests',
+          'participant_connect::', 'participant_dispatch::tests',
+          'agent_tools::tests', 'process_identity::tests',
           'kernel_access::resident_wal_tests',
           'participant_legacy_delivery::tests',
           'participant_inbox::host_ledger',
@@ -150,7 +152,8 @@ def main():
     run(['cargo','test','--release','--locked','-p','peerwork-core','--lib',
          'js_locale::tests','--','--test-threads=1'], 'icu-conformance.log')
     assert re.search(r'test result: ok\. [1-9][0-9]* passed;', (output / 'icu-conformance.log').read_text(encoding='utf-8')), 'ICU selector matched no passing cases'
-    for index, group in enumerate(GROUPS):
+    groups=GROUPS+(["onboarding_files::windows::tests"] if args.target=="win32-x64-msvc" else [])
+    for index, group in enumerate(groups):
         run(['cargo', 'test', '--release', '--locked', '-p', 'peerwork-runtime', '--lib',
              group, '--', '--include-ignored', '--test-threads=1'], f'tests-{index}.log')
         result = (output / f'tests-{index}.log').read_text(encoding='utf-8')
@@ -210,7 +213,7 @@ def main():
         'format': 'peerwork.native-platform-qualification.v1', 'state': 'PASS',
         'source_commit': source, 'target': args.target, 'sdk_version': version,
         'binary_sha256': hashlib.sha256(installed.read_bytes()).hexdigest(),
-        'binary_bytes': installed.stat().st_size, 'native_test_groups': GROUPS,
+        'binary_bytes': installed.stat().st_size, 'native_test_groups': groups,
         'core_test_groups': ['js_locale::tests'],
         'os_loader_requirements': loader,
         'candidate_archive': archive.name, 'archive_sha256': hashlib.sha256(archive.read_bytes()).hexdigest(),

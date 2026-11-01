@@ -64,6 +64,43 @@ def main():
             assert description['maturity'] == 'EXPERIMENTAL'
             assert 'availability' not in description
 
+        assert run('connect','--help')['state']=='HELP'
+        local=root/'unconfigured participant'
+        context=run('connect','--local',local,'--context')
+        assert context['state']=='NOT_CONFIGURED' and context['participants']==[]
+        assert context['remote_or_host_readiness']=='NOT_ATTESTED'
+        # Exercise the installed OS process before any profile, actor or service
+        # exists. Discovery must not require an administrator-made profile or
+        # accidentally expose signing/business tools to an unselected identity.
+        mcp=subprocess.Popen([str(cli),'agent','--local',str(local),'mcp'],cwd=root,
+                             stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
+                             text=True,encoding='utf-8')
+        frames=queue.Queue()
+        def read_mcp():
+            for line in mcp.stdout:
+                try:frames.put(json.loads(line))
+                except ValueError:frames.put({'invalid_frame':True})
+        threading.Thread(target=read_mcp,daemon=True).start()
+        def rpc(identifier,method,params):
+            mcp.stdin.write(json.dumps({'jsonrpc':'2.0','id':identifier,'method':method,'params':params})+'\n');mcp.stdin.flush()
+            value=frames.get(timeout=20)
+            assert value.get('id')==identifier and 'error' not in value,value
+            return value['result']
+        try:
+            rpc(1,'initialize',{'protocolVersion':'2025-11-25','capabilities':{},'clientInfo':{'name':'native-installed-onboarding','version':'1'}})
+            mcp.stdin.write(json.dumps({'jsonrpc':'2.0','method':'notifications/initialized'})+'\n');mcp.stdin.flush()
+            tools=rpc(2,'tools/list',{})['tools']
+            assert {tool['name'] for tool in tools}=={'peerwork_context','peerwork_connect'}
+            value=rpc(3,'tools/call',{'name':'peerwork_context','arguments':{}})
+            assert value['structuredContent']['state']=='NOT_CONFIGURED'
+            assert value['structuredContent']['participants']==[]
+        finally:
+            mcp.stdin.close()
+            try:mcp.wait(timeout=20)
+            except subprocess.TimeoutExpired:mcp.kill();mcp.wait(timeout=10);raise
+        assert mcp.returncode==0,'unconfigured MCP process did not close cleanly'
+        assert run('agent','--local',local,'context')['state']=='NOT_CONFIGURED'
+
         identity = root / 'synthetic identity.state'
         created = run('identity', 'create', identity)
         assert set(created) == {'actor_id', 'key_id'}, 'identity exposed unexpected fields'
@@ -124,7 +161,7 @@ def main():
                     process.kill()
                 process.communicate(timeout=20)
         print(json.dumps({'state': 'PASS', 'scope': 'installed native local process, synthetic identity only',
-                          'checks': ['protected Unicode path', 'identity reopen', 'scoped encrypted IPC',
+                          'checks': ['protected Unicode path', 'unconfigured connect discovery', 'unconfigured installed MCP catalog/context', 'identity reopen', 'scoped encrypted IPC',
                                      'admin denial', 'single owner', 'kill/restart', 'graceful shutdown'],
                           'children_terminal': len(stopped), 'service_or_model': 'NOT_EXERCISED'}))
 

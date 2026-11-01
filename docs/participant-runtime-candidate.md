@@ -46,6 +46,64 @@ whether those handles currently exist. FULL synchronous commits and the default
 automatic WAL checkpoints remain enabled. After owned work stops, engine close
 awaits the keepers' normal final checkpoint/close before releasing ownership.
 
+## Self-service onboarding in native0.3.2
+
+This section requires the native0.3.2 connect feature; it is not an addition to
+published0.3.1. Check actual release availability before installing a version.
+The [connect guide](participant-connect.md) and [Bot quickstart](native-participant-quickstart.md)
+replace administrator-made Worker profiles as the normal supported setup path.
+
+The public Rust `participant_connect::Connect` API is the same coordinator used
+by CLI `peerwork connect` and MCP `peerwork_connect`, not another implementation.
+`Connect::open` owns the protected setup journal; `inspect` provides a bounded
+read-only view while a setup writer is active. `register` binds an explicitly
+selected participant handle to an identity/Origin-pinned existing runtime client.
+`run(ConnectRequest)` reconciles desired workspace, send/receive, key, contact,
+protocol-role and selected-host scopes. `context`/`context_for` expose public setup
+observations; `profile_for_scope` returns the restricted local projection.
+Programs that already embed `ParticipantClient` need no Agent profile or host.
+
+`setup_id` identifies the original desired-state job and its frozen child
+operations. Resuming the same request observes independently completed stages;
+it does not create another identity, mailbox, signing journal or model. A result
+can be pending with stage, code, affected scope, next actor and next action.
+Setup is not a globally atomic transaction or one-HTTP-request promise. Unknown
+submissions continue under their original IDs/packets. A new requested scope
+cannot abandon an unresolved earlier mutation.
+
+Existing remote rights require zero human Workspace Owner exchanges. A missing
+permission/key delta returns a public `AuthorizationRequest`. An explicitly
+authorized approver uses `Connect::approve` (CLI `--approve-request`, MCP
+`peerwork_connect_approve`) and preserves its own approval ID. The requester
+then resumes the original setup. The request carries no Worker profile, local
+path, credential or private key. Multiple responsible authorities remain named
+separately. Finite leases are preserved, expired unrequested directions are not
+revived, and following future body-key rotations is explicit rather than default.
+
+An unconfigured MCP frontend can expose bounded context/connect before a profile
+exists, but only within provisioned local handle authority. It cannot select
+arbitrary key files, admin credentials, executables or sockets from tool arguments.
+Initial CLI bootstrap selects the original EngineConfig/journal explicitly.
+A copied client endpoint alone does not establish runtime administration.
+
+Same-engine additional roles derive separate restricted clients and reuse the
+mailbox and physical-host dispatcher. New roles do not restart the engine or
+unrelated scopes; role views do not create cross-instance permission unions.
+Derived-file repair requires verified original provenance. Revocation fences old
+client generations and durably cleans owned endpoints/subscriptions, while
+original admitted operations and uncertain host facts remain recoverable.
+Unsupported older resident features produce `LOCAL_RUNTIME_UPGRADE_REQUIRED`
+before remote setup mutation. Updating that binary is explicit local maintenance,
+not automatic per-role restart.
+
+`HostSelection`/`register_host` are separate explicit local-administrator APIs.
+Remote workspace rights do not grant root socket access or project trust. Actual
+MCP loading, supported refresh and host tool permission must be verified in the
+selected session. Local configuration is not proof of current network/host
+readiness. Codex uses supported idle/busy steering and approval observations;
+explicitly managed AGY CLI resumes one selected persistent conversation and
+queues while busy. Existing App support remains queue-only.
+
 ## Program contract implemented so far
 
 ### Explicit physical-session replacement

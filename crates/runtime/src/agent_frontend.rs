@@ -11,7 +11,10 @@ fn invalid() -> ParticipantError {
 pub fn help() -> Value {
     json!({"state":"HELP","maturity":"EXPERIMENTAL","runtime_dependencies":[],"usage":[
 "peerwork agent tools",
+"peerwork connect --help",
+"peerwork agent --local PROTECTED_DIRECTORY context|mcp",
 "peerwork agent --profile PROFILE.json context",
+"peerwork agent --profile PROFILE.json reachability SCOPE",
 "peerwork agent --profile PROFILE.json send CONTACT --id OPERATION_ID [--text-file FILE] < message.txt",
 "peerwork agent --profile PROFILE.json reply SCOPE SEQUENCE/DELIVERY_ID --id OPERATION_ID [--text-file FILE] < reply.txt",
 "peerwork agent --profile PROFILE.json inbox SCOPE",
@@ -46,6 +49,7 @@ fn selection(args: &[String]) -> Result<AgentRequest> {
     let (name, body) = match args {
         [command] if command == "context" => ("context", json!({})),
         [command, scope] if command == "inbox" => ("inbox", json!({"scope":scope})),
+        [command, scope] if command == "reachability" => ("reachability", json!({"scope":scope})),
         [command, id] if ["status", "recover"].contains(&command.as_str()) => {
             (command.as_str(), json!({"operation_id":id}))
         }
@@ -81,15 +85,45 @@ pub fn cli(args: &[String]) -> Value {
         let [flag, path, rest @ ..] = args else {
             return Err(invalid());
         };
-        if flag != "--profile" {
+        if flag != "--profile" && flag != "--local" {
             return Err(invalid());
         }
-        let profile = AgentProfile::load(Path::new(path))?;
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
             .build()
             .map_err(|_| invalid())?;
+        if flag == "--local" {
+            let path=std::path::absolute(path).map_err(|_|invalid())?;
+            let (handle,rest)=match rest {
+                [selected,value,tail @ ..] if selected=="--participant"=>(Some(value.clone()),tail),
+                _=>(None,rest),
+            };
+            let (workspace,rest)=match rest {
+                [selected,value,tail @ ..] if selected=="--workspace"=>(Some(value.clone()),tail),
+                _=>(None,rest),
+            };
+            if rest == ["mcp"] {
+                runtime.block_on(crate::agent_mcp::serve_local_selected(path,handle,workspace,tokio::io::BufReader::new(tokio::io::stdin()),tokio::io::stdout()))?;
+                return Ok(Value::Null);
+            }
+            let request=selection(rest)?;
+            return runtime.block_on(async {
+                if !path.exists(){drop(crate::participant_connect::Connect::open(&path)?);}
+                if let AgentRequest::Connect{request}=request {return crate::participant_connect::Connect::open(&path)?.run(request).await;}
+                if let AgentRequest::ConnectApprove{participant,approval_id,request}=request {return crate::participant_connect::Connect::open(&path)?.approve(&participant,&approval_id,request).await;}
+                let connect=crate::participant_connect::Connect::inspect(&path)?;
+                let profile=connect.profile_for_scope(handle.as_deref(),workspace.as_deref())?;
+                if let Some(profile)=profile {
+                    let is_context=matches!(request,AgentRequest::Context);let context=connect.context_for(handle.as_deref(),workspace.as_deref());drop(connect);
+                    let mut value=AgentTools::open(profile).await?.call(request).await?;
+                    if is_context {value["onboarding"]=context;}return Ok(value);
+                }
+                if matches!(request,AgentRequest::Context) {return Ok(connect.context());}
+                Err(ParticipantError::local("LOCAL_SELECTION_REQUIRED_USE_CONNECT","CONNECT"))
+            });
+        }
+        let profile = AgentProfile::load(Path::new(path))?;
         if rest == ["mcp"] {
             runtime.block_on(crate::agent_mcp::serve(
                 profile,
