@@ -85,7 +85,7 @@ jobs:
       matrix:
         # Development may qualify one changed platform. A normal candidate
         # push or dispatch still selects all three release targets.
-        include: ${{ fromJSON(contains(github.event.head_commit.message, '[native:win32-x64-msvc]') && '[{"target":"win32-x64-msvc","runner":"windows-2022","rustflags":"-C target-feature=+crt-static"}]' || '[{"target":"darwin-arm64","runner":"macos-15","rustflags":""},{"target":"win32-x64-msvc","runner":"windows-2022","rustflags":"-C target-feature=+crt-static"}]') }}
+        include: ${{ fromJSON(contains(github.event.head_commit.message, '[native:win32-x64-msvc]') && '[{"target":"win32-x64-msvc","runner":"windows-2022","rustflags":"-C target-feature=+crt-static"}]' || '[{"target":"darwin-arm64","runner":"macos-26","rustflags":""},{"target":"win32-x64-msvc","runner":"windows-2022","rustflags":"-C target-feature=+crt-static"}]') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     env:
