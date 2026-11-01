@@ -10,7 +10,7 @@ use crate::{
     kernel_intents::parent_operations::{open_bounded, seal_bounded},
     participant::{ParticipantError, Result},
 };
-pub(crate) use host_ledger::{HostBinding, HostOperation, HostOutcome, HostReply};
+pub(crate) use host_ledger::{HostBinding, HostCall, HostOperation, HostOutcome, HostReply};
 pub(crate) use host_ledger::rebind::HostRebind;
 use peerwork_core::{
     canonical::Path as CanonicalPath,

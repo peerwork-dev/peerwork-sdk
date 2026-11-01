@@ -591,11 +591,15 @@ pub struct ParticipantClient {
     shared: Arc<Shared>,
     namespace: String,
     capability: Capability,
+    local_live:Arc<std::sync::atomic::AtomicBool>,
 }
 impl ParticipantClient {
     pub(crate) fn same_client(&self,other:&Self)->bool{
-        Arc::ptr_eq(&self.shared,&other.shared)&&self.namespace==other.namespace
+        Arc::ptr_eq(&self.shared,&other.shared)&&self.namespace==other.namespace&&Arc::ptr_eq(&self.local_live,&other.local_live)
     }
+    pub(crate) fn locally_live(&self)->bool{self.local_live.load(std::sync::atomic::Ordering::Acquire)}
+    pub(crate) fn revoke_local(&self){self.local_live.store(false,std::sync::atomic::Ordering::Release);}
+    pub(crate) fn inherit_lifecycle(&mut self,other:&Self){self.local_live=other.local_live.clone();}
     /// Opens protected local state without requiring a network connection.
     /// Discovery is verified before the engine makes any signed service call.
     pub async fn open(config: ParticipantConfig) -> Result<Self> {
@@ -728,6 +732,7 @@ impl ParticipantClient {
             }),
             namespace: "program".into(),
             capability: Capability::owner(),
+            local_live:Arc::new(std::sync::atomic::AtomicBool::new(true)),
         })
     }
     pub fn actor_id(&self) -> &str {
@@ -741,6 +746,7 @@ impl ParticipantClient {
     }
     /// An Agent or program session can only narrow its parent's authority.
     pub fn restrict(&self, name: &str, capability: Capability) -> Result<Self> {
+        if !self.locally_live(){return Err(ParticipantError::local("LOCAL_CLIENT_REVOKED","AUTHORIZATION"));}
         capability.validate()?;
         if !crate::communication_store::identifier(name)
             || !capability.is_subset_of(&self.capability)
@@ -758,6 +764,7 @@ impl ParticipantClient {
             shared: self.shared.clone(),
             namespace,
             capability,
+            local_live:Arc::new(std::sync::atomic::AtomicBool::new(true)),
         })
     }
     fn context(&self) -> ReplyContext {

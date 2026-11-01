@@ -4,7 +4,7 @@ use crate::{
     communication_host::Host,
     communication_store::identifier,
     participant::{ParticipantClient, ParticipantError, Result, WatchOptions},
-    participant_inbox::{HostBinding, HostOperation, HostOutcome, HostReply},
+    participant_inbox::{HostBinding, HostCall, HostOperation, HostOutcome, HostReply},
     secure_state::SecureStateStore,
     KernelCancellationToken,
 };
@@ -21,6 +21,8 @@ use std::{
 #[serde(deny_unknown_fields)]
 pub struct HostSubscription {
     pub client: String,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub client_generation:Option<u64>,
     pub watch: WatchOptions,
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -53,7 +55,13 @@ impl HostConfig {
                 "conversation_id",
                 "inbox_directory",
             ],
-            Some("agy-stdio") => &["kind","managed","executable","conversation_id","working_directory"],
+            Some("agy-stdio") => &[
+                "kind",
+                "managed",
+                "executable",
+                "conversation_id",
+                "working_directory",
+            ],
             Some("bridge") => &["kind", "endpoint", "token_file", "destination"],
             _ => return Err(error("HOST_CONFIG_INVALID")),
         };
@@ -71,40 +79,75 @@ impl HostConfig {
             }
             target.watch.validate()?;
         }
-        let credential=if self.adapter["kind"]=="bridge"{
-            let path=self.adapter["token_file"].as_str().ok_or_else(||error("HOST_CONFIG_INVALID"))?;
-            let bytes=crate::secure_state::read_private_file_bounded(std::path::Path::new(path),43).map_err(|_|error("HOST_CREDENTIAL_NOT_PRIVATE"))?;
-            let key=std::str::from_utf8(&bytes).map_err(|_|error("HOST_CONFIG_INVALID"))?;
-            if key.len()!=43{return Err(error("HOST_CONFIG_INVALID"));}Some(crate::communication_bridge::channel::key_id(key))
-        }else{None};
+        let credential = if self.adapter["kind"] == "bridge" {
+            let path = self.adapter["token_file"]
+                .as_str()
+                .ok_or_else(|| error("HOST_CONFIG_INVALID"))?;
+            let bytes =
+                crate::secure_state::read_private_file_bounded(std::path::Path::new(path), 43)
+                    .map_err(|_| error("HOST_CREDENTIAL_NOT_PRIVATE"))?;
+            let key = std::str::from_utf8(&bytes).map_err(|_| error("HOST_CONFIG_INVALID"))?;
+            if key.len() != 43 {
+                return Err(error("HOST_CONFIG_INVALID"));
+            }
+            Some(crate::communication_bridge::channel::key_id(key))
+        } else {
+            None
+        };
         Ok(peerwork_core::crypto::sha256_hex(json!({"kind":self.adapter["kind"],"endpoint":self.adapter["endpoint"],"thread":self.adapter["thread_id"],"conversation":self.adapter["conversation_id"],"destination":self.adapter["destination"],"credential":credential}).to_string().as_bytes()))
     }
 }
 pub(crate) struct RunningHost {
     pub status: Arc<Mutex<Value>>,
     pub task: tokio::task::JoinHandle<()>,
-    pub sources:Arc<Mutex<Vec<(ParticipantClient,WatchOptions)>>>,
-    pub changed:Arc<tokio::sync::Notify>,
+    pub sources: Arc<Mutex<Vec<(ParticipantClient, WatchOptions)>>>,
+    pub changed: Arc<tokio::sync::Notify>,
 }
-impl RunningHost{
-    pub fn validate_sources(&self,sources:&[(ParticipantClient,WatchOptions)])->Result<()>{
-        let old=self.sources.lock().map_err(|_|error("HOST_STATE_INVALID"))?;
-        if sources.len()>8{return Err(error("HOST_SUBSCRIPTION_LIMIT"));}
-        for (index,(client,wanted)) in sources.iter().enumerate(){
+impl RunningHost {
+    pub fn validate_sources(&self, sources: &[(ParticipantClient, WatchOptions)]) -> Result<()> {
+        let old = self
+            .sources
+            .lock()
+            .map_err(|_| error("HOST_STATE_INVALID"))?;
+        if sources.len() > 8 {
+            return Err(error("HOST_SUBSCRIPTION_LIMIT"));
+        }
+        for (index, (client, wanted)) in sources.iter().enumerate() {
             wanted.authorize(client.capability())?;
-            for (other,previous) in &sources[..index]{
-                if wanted.key()==previous.key()&&(!client.same_client(other)||wanted!=previous){return Err(error("HOST_SUBSCRIPTION_CONFLICT"));}
+            for (other, previous) in &sources[..index] {
+                if wanted.key() == previous.key()
+                    && (!client.same_client(other) || wanted != previous)
+                {
+                    return Err(error("HOST_SUBSCRIPTION_CONFLICT"));
+                }
             }
-            if old.iter().any(|(c,o)|o.key()==wanted.key()&&(!c.same_client(client)||o!=wanted)){
+            if old
+                .iter()
+                .any(|(c, o)| o.key() == wanted.key() && (!c.same_client(client) || o != wanted))
+            {
                 return Err(error("HOST_SUBSCRIPTION_CONFLICT"));
             }
-        }Ok(())
+        }
+        Ok(())
     }
-    pub fn set_sources(&self,sources:Vec<(ParticipantClient,WatchOptions)>)->Result<()>{
+    pub fn set_sources(&self, sources: Vec<(ParticipantClient, WatchOptions)>) -> Result<()> {
         self.validate_sources(&sources)?;
-        let mut old=self.sources.lock().map_err(|_|error("HOST_STATE_INVALID"))?;
-        if old.len()==sources.len()&&old.iter().zip(&sources).all(|((a,x),(b,y))|a.same_client(b)&&x==y){return Ok(());}
-        *old=sources;drop(old);self.changed.notify_one();Ok(())
+        let mut old = self
+            .sources
+            .lock()
+            .map_err(|_| error("HOST_STATE_INVALID"))?;
+        if old.len() == sources.len()
+            && old
+                .iter()
+                .zip(&sources)
+                .all(|((a, x), (b, y))| a.same_client(b) && x == y)
+        {
+            return Ok(());
+        }
+        *old = sources;
+        drop(old);
+        self.changed.notify_one();
+        Ok(())
     }
 }
 pub(crate) fn start(
@@ -128,9 +171,15 @@ pub(crate) fn start(
             )?;
         }
         if let Some(group) = groups.get_mut(&key) {
-            let mut old=group.adapter.clone();let mut selected=config.adapter.clone();
-            if old["kind"]=="bridge"{old.as_object_mut().unwrap().remove("token_file");selected.as_object_mut().unwrap().remove("token_file");}
-            if old != selected {return Err(error("HOST_SELECTION_CONFLICT"));}
+            let mut old = group.adapter.clone();
+            let mut selected = config.adapter.clone();
+            if old["kind"] == "bridge" {
+                old.as_object_mut().unwrap().remove("token_file");
+                selected.as_object_mut().unwrap().remove("token_file");
+            }
+            if old != selected {
+                return Err(error("HOST_SELECTION_CONFLICT"));
+            }
             for source in &config.subscriptions {
                 if !group
                     .subscriptions
@@ -148,10 +197,16 @@ pub(crate) fn start(
         }
     }
     let mut active = Vec::new();
-    for config in groups.values(){
-        for (i,a) in config.subscriptions.iter().enumerate(){for b in &config.subscriptions[..i]{
-            if a.watch.key()==b.watch.key()&&(!clients[&a.client].same_client(&clients[&b.client])||a.watch!=b.watch){return Err(error("HOST_SUBSCRIPTION_CONFLICT"));}
-        }}
+    for config in groups.values() {
+        for (i, a) in config.subscriptions.iter().enumerate() {
+            for b in &config.subscriptions[..i] {
+                if a.watch.key() == b.watch.key()
+                    && (!clients[&a.client].same_client(&clients[&b.client]) || a.watch != b.watch)
+                {
+                    return Err(error("HOST_SUBSCRIPTION_CONFLICT"));
+                }
+            }
+        }
     }
     for (key, config) in groups {
         let sources = config
@@ -159,8 +214,10 @@ pub(crate) fn start(
             .iter()
             .map(|s| (clients[&s.client].clone(), s.watch.clone()))
             .collect::<Vec<_>>();
-        let sources=Arc::new(Mutex::new(sources));
-        let selected_sources=sources.clone();let changed=Arc::new(tokio::sync::Notify::new());let signal=changed.clone();
+        let sources = Arc::new(Mutex::new(sources));
+        let selected_sources = sources.clone();
+        let changed = Arc::new(tokio::sync::Notify::new());
+        let signal = changed.clone();
         let state = Arc::new(Mutex::new(
             json!({"name":config.name,"state":"CONNECTING","host_ack":"UNCONFIRMED","model_response":"NOT_ATTESTED"}),
         ));
@@ -168,7 +225,8 @@ pub(crate) fn start(
         let stop = cancel.clone();
         let path = directory.join(format!("host-{key}.state"));
         let task = tokio::spawn(async move {
-            if let Err(e) = run(config, selected_sources, path, status.clone(), stop,signal).await {
+            if let Err(e) = run(config, selected_sources, path, status.clone(), stop, signal).await
+            {
                 set(
                     &status,
                     json!({"state":"BLOCKED","code":e.code,"model_response":"NOT_ATTESTED"}),
@@ -178,7 +236,8 @@ pub(crate) fn start(
         active.push(RunningHost {
             status: state,
             task,
-            sources,changed,
+            sources,
+            changed,
         });
     }
     Ok(active)
@@ -213,7 +272,7 @@ fn render(client: &ParticipantClient, options: &WatchOptions, entry: &Value) -> 
                 json!({"text":text,"partial":partial,"assurance":"AUTHOR_SIGNATURE_AND_AEAD"})
             }
             Some("SOURCE_REFERENCE") => json!({"source_reference":true}),
-            Some("KEY_UNAVAILABLE")=>return Err(error("CONTENT_KEY_REQUIRED")),
+            Some("KEY_UNAVAILABLE") => return Err(error("CONTENT_KEY_REQUIRED")),
             _ => return Err(error("HOST_FRAME_INVALID")),
         };
         incoming["message"] = json!({"message_id":entry["envelope"]["message"]["message_id"],"sender_actor":entry["envelope"]["message"]["sender_actor"],"content":body});
@@ -236,7 +295,10 @@ fn render(client: &ParticipantClient, options: &WatchOptions, entry: &Value) -> 
         json!({"format":"peerwork.host-frame.v1","message_id":id,"rendered_text":rendered,"incoming":incoming}),
     )
 }
-pub(crate) fn host_outcome(kind: &str, result: std::result::Result<Value, &'static str>) -> HostOutcome {
+pub(crate) fn host_outcome(
+    kind: &str,
+    result: std::result::Result<Value, &'static str>,
+) -> HostOutcome {
     match result {
         Ok(v)
             if kind == "bridge"
@@ -279,10 +341,78 @@ pub(crate) fn host_outcome(kind: &str, result: std::result::Result<Value, &'stat
             code: "HOST_PROCESS_NOT_STARTED".into(),
             proof: "PROCESS_NOT_STARTED".into(),
         },
-        Err("HOST_ORIGINAL_INPUT_REQUIRES_RECOVERY")=>HostOutcome::Unknown{code:"HOST_ORIGINAL_INPUT_REQUIRES_RECOVERY".into()},
+        Err("HOST_ORIGINAL_INPUT_REQUIRES_RECOVERY") => HostOutcome::Unknown {
+            code: "HOST_ORIGINAL_INPUT_REQUIRES_RECOVERY".into(),
+        },
         _ => HostOutcome::Unknown {
             code: "HOST_ACK_UNKNOWN".into(),
         },
+    }
+}
+fn scope_error(status: &Arc<Mutex<Value>>, options: &WatchOptions, problem: &ParticipantError) {
+    if let Ok(mut value) = status.lock() {
+        value["last_scope_error"] = json!({"workspace_id":options.workspace_id,"mailbox_id":options.mailbox_id,"code":problem.code,"phase":problem.phase});
+    }
+}
+fn selected(
+    sources: &Arc<Mutex<Vec<(ParticipantClient, WatchOptions)>>>,
+    client: &ParticipantClient,
+    options: &WatchOptions,
+) -> Result<bool> {
+    if !client.locally_live(){return Ok(false);}
+    Ok(sources
+        .lock()
+        .map_err(|_| error("HOST_STATE_INVALID"))?
+        .iter()
+        .any(|(c, o)| {
+            c.same_client(client)
+                && o.key() == options.key()
+                && o.membership_id == options.membership_id
+                && o.consumer_id == options.consumer_id
+        }))
+}
+struct PendingFinish {
+    client: ParticipantClient,
+    options: WatchOptions,
+    call: HostCall,
+    outcome: HostOutcome,
+}
+async fn finish(
+    pending: &mut BTreeMap<String, PendingFinish>,
+    client: &ParticipantClient,
+    options: &WatchOptions,
+    call: HostCall,
+    outcome: HostOutcome,
+) -> Result<()> {
+    match client
+        .host_operation(
+            options,
+            HostOperation::Finish {
+                call: call.clone(),
+                outcome: outcome.clone(),
+            },
+        )
+        .await
+    {
+        Ok(_) => {
+            pending.remove(&options.key());
+            Ok(())
+        }
+        Err(problem) => {
+            // No new spool or signing journal: CALL_OPEN is already durable.
+            // Keep only the bounded observed result in memory for same-call
+            // persistence retry; a crash retains the original uncertain call.
+            pending.insert(
+                options.key(),
+                PendingFinish {
+                    client: client.clone(),
+                    options: options.clone(),
+                    call,
+                    outcome,
+                },
+            );
+            Err(problem)
+        }
     }
 }
 async fn run(
@@ -291,13 +421,14 @@ async fn run(
     path: PathBuf,
     status: Arc<Mutex<Value>>,
     cancel: KernelCancellationToken,
-    changed:Arc<tokio::sync::Notify>,
+    changed: Arc<tokio::sync::Notify>,
 ) -> Result<()> {
-    let launch_fence=path.with_extension("agy-launch.state");
+    let launch_fence = path.with_extension("agy-launch.state");
     let owner = SecureStateStore::open(&path).map_err(|_| error("HOST_STATE_ALREADY_OWNED"))?;
     let mut subscriptions = Vec::new();
     let mut listeners = tokio::task::JoinSet::new();
-    let mut maintenance=tokio::task::JoinSet::new();
+    let mut maintenance = tokio::task::JoinSet::new();
+    let mut pending_finishes = BTreeMap::new();
     let result = run_owned(
         config,
         &owner,
@@ -307,10 +438,25 @@ async fn run(
         &mut subscriptions,
         &mut listeners,
         &mut maintenance,
+        &mut pending_finishes,
         changed,
         launch_fence,
     )
     .await;
+    // One final persistence attempt before the engine closes. Failure never
+    // clears CALL_OPEN or permits replay of the original host input.
+    for (_, pending) in pending_finishes {
+        let _ = pending
+            .client
+            .host_operation(
+                &pending.options,
+                HostOperation::Finish {
+                    call: pending.call,
+                    outcome: pending.outcome,
+                },
+            )
+            .await;
+    }
     // Stop claims on every exit, including partial setup or a ledger failure.
     // Receiver custody remains durable; shutdown does not delete peer messages.
     for (client, options) in &subscriptions {
@@ -329,24 +475,43 @@ async fn run_owned(
     sources: &Arc<Mutex<Vec<(ParticipantClient, WatchOptions)>>>,
     watches: &mut Vec<(ParticipantClient, WatchOptions)>,
     listeners: &mut tokio::task::JoinSet<()>,
-    maintenance:&mut tokio::task::JoinSet<Result<()>>,
+    maintenance: &mut tokio::task::JoinSet<Result<()>>,
+    pending_finishes: &mut BTreeMap<String, PendingFinish>,
     changed: Arc<tokio::sync::Notify>,
-    launch_fence:PathBuf,
+    launch_fence: PathBuf,
 ) -> Result<()> {
     let handle = tokio::runtime::Handle::current();
     // The adapter owns only an executor Handle, not a nested runtime. Blocking
     // socket/helper work stays counted in this one owned dispatcher future.
     let mut adapter: Option<Arc<Mutex<Host>>> = None;
     let mut next = 0usize;
-    let mut next_health=std::time::Instant::now();
-    let mut next_retire=std::time::Instant::now();
-    let mut retirement_scope=0usize;
-    let mut watch_tasks:BTreeMap<String,tokio::task::AbortHandle>=BTreeMap::new();
+    let mut next_health = std::time::Instant::now();
+    let mut next_retire = std::time::Instant::now();
+    let mut retirement_scope = 0usize;
+    let mut watch_tasks: BTreeMap<String, tokio::task::AbortHandle> = BTreeMap::new();
     while !cancel.is_cancelled() {
-        while listeners.try_join_next().is_some(){}
+        while listeners.try_join_next().is_some() {}
+        let retry_keys: Vec<_> = pending_finishes.keys().cloned().collect();
+        for key in retry_keys {
+            let pending = &pending_finishes[&key];
+            let (client, options, call, outcome) = (
+                pending.client.clone(),
+                pending.options.clone(),
+                pending.call.clone(),
+                pending.outcome.clone(),
+            );
+            if let Err(problem) = finish(pending_finishes, &client, &options, call, outcome).await {
+                scope_error(&status, &options, &problem);
+            }
+        }
+        if let Ok(mut value) = status.lock() {
+            value["pending_result_writes"] = json!(pending_finishes.len());
+        }
         if adapter.is_none() {
             let mut options = config.adapter.clone();
-            if options["kind"]=="agy-stdio"{options["launch_fence"]=json!(launch_fence);}
+            if options["kind"] == "agy-stdio" {
+                options["launch_fence"] = json!(launch_fence);
+            }
             let executor = handle.clone();
             let opened = tokio::task::spawn_blocking(move || Host::open(options, executor))
                 .await
@@ -377,96 +542,191 @@ async fn run_owned(
                     .map_err(|_| error("HOST_STATE_FAILED"))?,
             }
             adapter = Some(Arc::new(Mutex::new(host)));
-            next_health=std::time::Instant::now();
+            next_health = std::time::Instant::now();
             set(
                 &status,
                 json!({"state":"HOST_ATTACHED","destination":binding.destination,"subscriptions":watches.len(),"receiver_link":"SEPARATELY_VERIFIED","model_response":"NOT_ATTESTED"}),
             );
         }
-        let selected_sources=sources.lock().map_err(|_|error("HOST_STATE_INVALID"))?.clone();
-        let mut index=0;
-        while index<watches.len(){
-            let keep=selected_sources.iter().any(|(client,options)|client.same_client(&watches[index].0)
-                &&options.workspace_id==watches[index].1.workspace_id&&options.mailbox_id==watches[index].1.mailbox_id
-                &&options.membership_id==watches[index].1.membership_id&&options.consumer_id==watches[index].1.consumer_id);
-            if keep{index+=1;}else{
-                let (client,options)=watches.remove(index);
-                if let Some(task)=watch_tasks.remove(&options.key()){task.abort();}
-                let _=client.unwatch(&options).await;
+        let selected_sources = sources
+            .lock()
+            .map_err(|_| error("HOST_STATE_INVALID"))?
+            .clone();
+        let mut index = 0;
+        while index < watches.len() {
+            let keep = selected_sources.iter().any(|(client, options)| {
+                client.same_client(&watches[index].0)
+                    && options.workspace_id == watches[index].1.workspace_id
+                    && options.mailbox_id == watches[index].1.mailbox_id
+                    && options.membership_id == watches[index].1.membership_id
+                    && options.consumer_id == watches[index].1.consumer_id
+            });
+            if keep {
+                index += 1;
+            } else {
+                let (client, options) = watches.remove(index);
+                if let Some(task) = watch_tasks.remove(&options.key()) {
+                    task.abort();
+                }
+                let _ = client.unwatch(&options).await;
             }
         }
-        let mut scope_errors=Vec::new();
-        for (client,configured) in selected_sources{
-            if watches.iter().any(|(c,o)|c.same_client(&client)&&o.key()==configured.key()){continue;}
-            let selected=adapter.as_ref().unwrap().clone();
-            let binding=HostBinding::new(selected.lock().map_err(|_|error("HOST_NOT_READY"))?.destination.clone())?;
-            if configured.host_destination.as_ref().is_some_and(|v|v!=&binding.digest){
-                scope_errors.push(json!({"workspace_id":configured.workspace_id,"mailbox_id":configured.mailbox_id,"code":"HOST_BINDING_MISMATCH"}));continue;
+        let mut scope_errors = Vec::new();
+        for (client, configured) in selected_sources {
+            if !client.locally_live(){continue;}
+            if watches
+                .iter()
+                .any(|(c, o)| c.same_client(&client) && o.key() == configured.key())
+            {
+                continue;
             }
-            let mut options=configured.clone();options.host_destination=Some(binding.digest.clone());
-            let mut acquired=false;
-            let opened=async{
-                let watch=client.watch(options.clone()).await?;acquired=true;
-                client.host_operation(&options,HostOperation::Attach(binding.clone())).await?;
-                if config.adapter["kind"]=="bridge"{
-                    let access=match client.host_operation(&options,HostOperation::AccessScope).await?{HostReply::AccessScope(v)=>v,_=>return Err(error("HOST_STATE_INVALID"))};
-                    tokio::task::spawn_blocking(move||selected.lock().map_err(|_|"HOST_NOT_READY")?.health(&access)).await.map_err(|_|error("HOST_TASK_FAILED"))?.map_err(error)?;
+            let selected = adapter.as_ref().unwrap().clone();
+            let binding = HostBinding::new(
+                selected
+                    .lock()
+                    .map_err(|_| error("HOST_NOT_READY"))?
+                    .destination
+                    .clone(),
+            )?;
+            if configured
+                .host_destination
+                .as_ref()
+                .is_some_and(|v| v != &binding.digest)
+            {
+                scope_errors.push(json!({"workspace_id":configured.workspace_id,"mailbox_id":configured.mailbox_id,"code":"HOST_BINDING_MISMATCH"}));
+                continue;
+            }
+            let mut options = configured.clone();
+            options.host_destination = Some(binding.digest.clone());
+            let mut acquired = false;
+            let opened = async {
+                let watch = client.watch(options.clone()).await?;
+                acquired = true;
+                client
+                    .host_operation(&options, HostOperation::Attach(binding.clone()))
+                    .await?;
+                if config.adapter["kind"] == "bridge" {
+                    let access = match client
+                        .host_operation(&options, HostOperation::AccessScope)
+                        .await?
+                    {
+                        HostReply::AccessScope(v) => v,
+                        _ => return Err(error("HOST_STATE_INVALID")),
+                    };
+                    tokio::task::spawn_blocking(move || {
+                        selected
+                            .lock()
+                            .map_err(|_| "HOST_NOT_READY")?
+                            .health(&access)
+                    })
+                    .await
+                    .map_err(|_| error("HOST_TASK_FAILED"))?
+                    .map_err(error)?;
                 }
                 Ok(watch)
-            }.await;
-            match opened{
-                Ok(mut watch)=>{
-                    let signal=changed.clone();let stop=cancel.clone();
+            }
+            .await;
+            match opened {
+                Ok(mut watch) => {
+                    let signal = changed.clone();
+                    let stop = cancel.clone();
                     let task=listeners.spawn(async move{loop{tokio::select!{
                         _=stop.cancelled()=>break,result=watch.changed()=>{if result.is_err(){break;}signal.notify_one();}
                     }}});
-                    watch_tasks.insert(options.key(),task);watches.push((client,options));next_health=std::time::Instant::now();
+                    watch_tasks.insert(options.key(), task);
+                    watches.push((client, options));
+                    next_health = std::time::Instant::now();
                 }
-                Err(e)=>{
-                    if acquired{let _=client.unwatch(&options).await;}
+                Err(e) => {
+                    if acquired {
+                        let _ = client.unwatch(&options).await;
+                    }
                     scope_errors.push(json!({"workspace_id":options.workspace_id,"mailbox_id":options.mailbox_id,"code":e.code}));
                 }
             }
         }
-        if let Ok(mut current)=status.lock(){current["subscriptions"]=json!(watches.len());current["scope_errors"]=json!(scope_errors);}
-        if std::time::Instant::now()>=next_health {
-            let observed_at=std::time::Instant::now();
-            let selected=adapter.as_ref().unwrap().clone();
+        if let Ok(mut current) = status.lock() {
+            current["subscriptions"] = json!(watches.len());
+            current["scope_errors"] = json!(scope_errors);
+        }
+        if std::time::Instant::now() >= next_health {
+            let observed_at = std::time::Instant::now();
+            let selected = adapter.as_ref().unwrap().clone();
             let observed=tokio::task::spawn_blocking(move||{
                 let mut host=selected.lock().map_err(|_|"HOST_NOT_READY")?;
                 let mode=if host.mode=="TOOL_ONLY"{"QUEUED_ONLY"}else{"LIVE"};
                 let health=host.health(&json!({}))?;
                 Ok::<_,&'static str>(json!({"mode":mode,"ready":mode=="LIVE"&&health["ready"]==true,"execution_state":health["execution_state"].as_str().unwrap_or("UNKNOWN")}))
             }).await.unwrap_or(Err("HOST_NOT_READY"));
-            let mode=if config.adapter["kind"]=="agy-app"||config.adapter["destination"]["host"]=="ANTIGRAVITY_APP"{"QUEUED_ONLY"}else{"LIVE"};
-            let value=observed.clone().unwrap_or_else(|_|json!({"mode":mode,"ready":false,"execution_state":"OFFLINE"}));
-            for (client,options) in watches.iter(){client.host_operation(options,HostOperation::Presence{value:value.clone(),observed_at}).await?;}
-            next_health=std::time::Instant::now()+Duration::from_secs(3);
-            if observed.is_err(){adapter=None;continue;}
+            let mode = if config.adapter["kind"] == "agy-app"
+                || config.adapter["destination"]["host"] == "ANTIGRAVITY_APP"
+            {
+                "QUEUED_ONLY"
+            } else {
+                "LIVE"
+            };
+            let value = observed
+                .clone()
+                .unwrap_or_else(|_| json!({"mode":mode,"ready":false,"execution_state":"OFFLINE"}));
+            for (client, options) in watches.iter() {
+                if let Err(problem) = client
+                    .host_operation(
+                        options,
+                        HostOperation::Presence {
+                            value: value.clone(),
+                            observed_at,
+                        },
+                    )
+                    .await
+                {
+                    scope_error(&status, options, &problem);
+                }
+            }
+            next_health = std::time::Instant::now() + Duration::from_secs(3);
+            if observed.is_err() {
+                adapter = None;
+                continue;
+            }
         }
         // One bounded cleanup worker, separate from input observation/IO.
         // It clones only the bridge control client, never the physical session.
-        if let Some(result)=maintenance.try_join_next() {
-            let result=result.unwrap_or_else(|_|Err(error("HOST_RETIREMENT_TASK_FAILED")));
-            let mut current=status.lock().unwrap();
-            current["retirement_error"]=result.err().map(|e|json!(e.code)).unwrap_or(Value::Null);
+        if let Some(result) = maintenance.try_join_next() {
+            let result = result.unwrap_or_else(|_| Err(error("HOST_RETIREMENT_TASK_FAILED")));
+            let mut current = status.lock().unwrap();
+            current["retirement_error"] =
+                result.err().map(|e| json!(e.code)).unwrap_or(Value::Null);
         }
-        if maintenance.is_empty()&&!watches.is_empty()&&std::time::Instant::now()>=next_retire {
-            let (client,options)=watches[retirement_scope%watches.len()].clone();
-            retirement_scope=(retirement_scope+1)%watches.len();
-            let peer=adapter.as_ref().unwrap().lock().map_err(|_|error("HOST_NOT_READY"))?.retirement_control();
+        if maintenance.is_empty() && !watches.is_empty() && std::time::Instant::now() >= next_retire
+        {
+            let (client, options) = watches[retirement_scope % watches.len()].clone();
+            retirement_scope = (retirement_scope + 1) % watches.len();
+            let peer = adapter
+                .as_ref()
+                .unwrap()
+                .lock()
+                .map_err(|_| error("HOST_NOT_READY"))?
+                .retirement_control();
             maintenance.spawn(async move {
-                let plan=match client.host_operation(&options,HostOperation::RetirementPlan).await? {
-                    HostReply::Retirement(plan)=>plan,_=>return Err(error("HOST_STATE_INVALID")),
+                let plan = match client
+                    .host_operation(&options, HostOperation::RetirementPlan)
+                    .await?
+                {
+                    HostReply::Retirement(plan) => plan,
+                    _ => return Err(error("HOST_STATE_INVALID")),
                 };
-                if let Some(plan)=plan {
-                    let request=plan.clone();
-                    tokio::task::spawn_blocking(move||peer.retire(&request)).await.map_err(|_|error("HOST_RETIREMENT_TASK_FAILED"))?.map_err(|code|error(code))?;
-                    client.host_operation(&options,HostOperation::RetirementCommit(plan)).await?;
+                if let Some(plan) = plan {
+                    let request = plan.clone();
+                    tokio::task::spawn_blocking(move || peer.retire(&request))
+                        .await
+                        .map_err(|_| error("HOST_RETIREMENT_TASK_FAILED"))?
+                        .map_err(|code| error(code))?;
+                    client
+                        .host_operation(&options, HostOperation::RetirementCommit(plan))
+                        .await?;
                 }
                 Ok(())
             });
-            next_retire=std::time::Instant::now()+Duration::from_secs(1);
+            next_retire = std::time::Instant::now() + Duration::from_secs(1);
         }
         let mut progressed = false;
         let mut receipt_probed = false;
@@ -474,6 +734,13 @@ async fn run_owned(
         for offset in 0..watches.len() {
             let index = (round_start + offset) % watches.len();
             let (client, options) = &watches[index];
+            if pending_finishes.contains_key(&options.key())
+                || pending_finishes.len() >= 8
+                || !selected(sources, client, options)?
+            {
+                continue;
+            }
+            let scope_result:Result<bool>=async {
             if config.adapter["kind"]=="bridge"&&!receipt_probed {
                 let original=match client.host_operation(options,HostOperation::ReconcileDue).await? {
                     HostReply::Call(call)=>call,_=>return Err(error("HOST_STATE_INVALID")),
@@ -488,8 +755,8 @@ async fn run_owned(
                     if let Ok(Some(value))=observed {
                         let outcome=host_outcome("bridge",Ok(value));
                         if !matches!(outcome,HostOutcome::Unknown{..}) {
-                            client.host_operation(options,HostOperation::Finish{call,outcome}).await?;
-                            next=(index+1)%watches.len();progressed=true;break;
+                            finish(pending_finishes,client,options,call,outcome).await?;
+                            next=(index+1)%watches.len();progressed=true;return Ok(true);
                         }
                     }
                 }
@@ -499,11 +766,11 @@ async fn run_owned(
                 .await
             {
                 Ok(HostReply::Due(due)) => due,
-                Err(e)=>{if let Ok(mut current)=status.lock(){current["last_scope_error"]=json!({"workspace_id":options.workspace_id,"mailbox_id":options.mailbox_id,"code":e.code});}continue;},
+                Err(e)=>return Err(e),
                 _ => return Err(error("HOST_STATE_INVALID")),
             };
             let Some(item) = due.into_iter().next() else {
-                continue;
+                return Ok(false);
             };
             let page = client
                 .inbox(options, item.sequence.saturating_sub(1), 1)
@@ -522,7 +789,7 @@ async fn run_owned(
                         },
                     )
                     .await?;
-                continue;
+                return Ok(false);
             };
             let frame = if entry["state"] == "PENDING" {
                 match render(client, options, entry) {
@@ -531,7 +798,7 @@ async fn run_owned(
                         client
                             .host_operation(options, HostOperation::Defer { item, code: e.code })
                             .await?;
-                        continue;
+                        return Ok(false);
                     }
                 }
             } else {
@@ -562,7 +829,7 @@ async fn run_owned(
                             "WAITING_APPROVAL"=>"HOST_WAITING_APPROVAL",
                             _=>"HOST_NOT_READY",
                         };
-                        for (target,scope) in watches.iter(){target.host_operation(scope,HostOperation::Presence{value:json!({"mode":if config.adapter["destination"]["host"]=="ANTIGRAVITY_APP"{"QUEUED_ONLY"}else{"LIVE"},"ready":false,"execution_state":execution}),observed_at}).await?;}
+                        for (target,scope) in watches.iter(){if let Err(problem)=target.host_operation(scope,HostOperation::Presence{value:json!({"mode":if config.adapter["destination"]["host"]=="ANTIGRAVITY_APP"{"QUEUED_ONLY"}else{"LIVE"},"ready":false,"execution_state":execution}),observed_at}).await{scope_error(&status,scope,&problem);}}
                         client
                             .host_operation(
                                 options,
@@ -578,12 +845,13 @@ async fn run_owned(
                         );
                         if other.is_err() {
                             adapter = None;
-                            break;
+                            return Ok(true);
                         }
-                        continue;
+                        return Ok(false);
                     }
                 }
             }
+            if !selected(sources,client,options)?{return Ok(false);}
             let call = match client
                 .host_operation(options, HostOperation::Begin { item, frame })
                 .await?
@@ -592,6 +860,12 @@ async fn run_owned(
                 HostReply::Call(None) => continue,
                 _ => return Err(error("HOST_STATE_INVALID")),
             };
+            // The final selected-source check is the admission boundary for
+            // this in-flight call. Revocation after it may not erase its result.
+            if !selected(sources,client,options)? {
+                finish(pending_finishes,client,options,call,HostOutcome::NotSent{code:"LOCAL_CLIENT_REVOKED".into(),proof:"LOCAL_PREFLIGHT_NO_IO".into()}).await?;
+                return Ok(false);
+            }
             let selected = adapter.as_ref().unwrap().clone();
             let message = call.frame.clone();
             let binding = call.scope.clone();
@@ -607,15 +881,8 @@ async fn run_owned(
             let unknown = matches!(outcome, HostOutcome::Unknown { .. });
             // Persist before allowing another host call. If storage fails, the
             // original CALL_OPEN remains uncertain; it is never reinjected.
-            client
-                .host_operation(
-                    options,
-                    HostOperation::Finish {
-                        call: call.clone(),
-                        outcome,
-                    },
-                )
-                .await?;
+            if unknown{adapter=None;}
+            finish(pending_finishes,client,options,call.clone(),outcome).await?;
             // Input acceptance can change host eligibility immediately. Refresh
             // its observed state before dispatching another eligible message.
             next_health = std::time::Instant::now();
@@ -628,7 +895,16 @@ async fn run_owned(
             }
             next = (index + 1) % watches.len();
             progressed = true;
-            break;
+            Ok(true)
+            }.await;
+            match scope_result {
+                Ok(true) => {
+                    progressed = true;
+                    break;
+                }
+                Ok(false) => (),
+                Err(problem) => scope_error(&status, options, &problem),
+            }
         }
         if !progressed {
             tokio::select! {_=cancel.cancelled()=>break,_=changed.notified()=>{},_=tokio::time::sleep(Duration::from_millis(500))=>{}}
