@@ -418,6 +418,17 @@ async fn finish(
         }
     }
 }
+// Host adapters perform bounded synchronous shutdown. Drop them on the same
+// blocking lane used for host I/O, never inside the async executor. Await this
+// before reopening the launch fence or reporting the dispatcher stopped.
+async fn close_adapter(adapter: &mut Option<Arc<Mutex<Host>>>) -> Result<()> {
+    if let Some(host) = adapter.take() {
+        tokio::task::spawn_blocking(move || drop(host))
+            .await
+            .map_err(|_| error("HOST_SHUTDOWN_FAILED"))?;
+    }
+    Ok(())
+}
 async fn run(
     config: HostConfig,
     sources: Arc<Mutex<Vec<(ParticipantClient, WatchOptions)>>>,
@@ -432,6 +443,7 @@ async fn run(
     let mut listeners = tokio::task::JoinSet::new();
     let mut maintenance = tokio::task::JoinSet::new();
     let mut pending_finishes = BTreeMap::new();
+    let mut adapter = None;
     let result = run_owned(
         config,
         &owner,
@@ -442,10 +454,12 @@ async fn run(
         &mut listeners,
         &mut maintenance,
         &mut pending_finishes,
+        &mut adapter,
         changed,
         launch_fence,
     )
     .await;
+    let closed = close_adapter(&mut adapter).await;
     // One final persistence attempt before the engine closes. Failure never
     // clears CALL_OPEN or permits replay of the original host input.
     for (_, pending) in pending_finishes {
@@ -468,7 +482,7 @@ async fn run(
     listeners.abort_all();
     while listeners.join_next().await.is_some() {}
     while maintenance.join_next().await.is_some() {}
-    result
+    result.and(closed)
 }
 async fn run_owned(
     config: HostConfig,
@@ -480,13 +494,13 @@ async fn run_owned(
     listeners: &mut tokio::task::JoinSet<()>,
     maintenance: &mut tokio::task::JoinSet<Result<()>>,
     pending_finishes: &mut BTreeMap<String, PendingFinish>,
+    adapter: &mut Option<Arc<Mutex<Host>>>,
     changed: Arc<tokio::sync::Notify>,
     launch_fence: PathBuf,
 ) -> Result<()> {
     let handle = tokio::runtime::Handle::current();
     // The adapter owns only an executor Handle, not a nested runtime. Blocking
     // socket/helper work stays counted in this one owned dispatcher future.
-    let mut adapter: Option<Arc<Mutex<Host>>> = None;
     let mut next = 0usize;
     let mut next_health = std::time::Instant::now();
     let mut next_retire = std::time::Instant::now();
@@ -530,7 +544,9 @@ async fn run_owned(
                     continue;
                 }
             };
-            let binding = HostBinding::new(host.destination.clone())?;
+            let destination = host.destination.clone();
+            *adapter = Some(Arc::new(Mutex::new(host)));
+            let binding = HostBinding::new(destination)?;
             let pin = serde_json::to_vec(&binding).map_err(|_| error("HOST_BINDING_INVALID"))?;
             match owner
                 .read_exact()
@@ -544,7 +560,6 @@ async fn run_owned(
                     .write_exact(&pin)
                     .map_err(|_| error("HOST_STATE_FAILED"))?,
             }
-            adapter = Some(Arc::new(Mutex::new(host)));
             next_health = std::time::Instant::now();
             set(
                 &status,
@@ -689,7 +704,7 @@ async fn run_owned(
             }
             next_health = std::time::Instant::now() + Duration::from_secs(3);
             if observed.is_err() {
-                adapter = None;
+                close_adapter(adapter).await?;
                 continue;
             }
         }
@@ -849,7 +864,7 @@ async fn run_owned(
                             json!({"state":"BLOCKED","code":code,"model_response":"NOT_ATTESTED"}),
                         );
                         if other.is_err() {
-                            adapter = None;
+                            close_adapter(adapter).await?;
                             return Ok(true);
                         }
                         return Ok(false);
@@ -886,7 +901,7 @@ async fn run_owned(
             let unknown = matches!(outcome, HostOutcome::Unknown { .. });
             // Persist before allowing another host call. If storage fails, the
             // original CALL_OPEN remains uncertain; it is never reinjected.
-            if unknown{adapter=None;}
+            if unknown{close_adapter(adapter).await?;}
             finish(pending_finishes,client,options,call.clone(),outcome).await?;
             // Input acceptance can change host eligibility immediately. Refresh
             // its observed state before dispatching another eligible message.
@@ -896,7 +911,7 @@ async fn run_owned(
                 json!({"state":if unknown{"HOST_RESULT_UNKNOWN"}else{"HOST_ATTACHED"},"last_call_id":call.call_id,"model_response":"NOT_ATTESTED"}),
             );
             if unknown {
-                adapter = None;
+                close_adapter(adapter).await?;
             }
             next = (index + 1) % watches.len();
             progressed = true;
@@ -920,13 +935,62 @@ async fn run_owned(
     }
     // Dropping handles stops observation; persisted receiver custody/claims
     // remain owned by the engine until its explicit shutdown follows this join.
-    drop(adapter);
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn managed_host_shutdown_is_awaited_on_cancel_and_binding_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = crate::test_support::protected_test_dir();
+        let executable = root.path().join("owned-agy.sh");
+        std::fs::write(&executable, "#!/bin/sh\nprintf '%s\\n' '{\"event\":\"init\",\"conversation_id\":\"owned-conversation\"}'\nwhile IFS= read -r line; do :; done\n").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = root.path().join("host.state");
+        let config = HostConfig {
+            name: "selected".into(),
+            adapter: json!({"kind":"agy-stdio","managed":true,"executable":executable,"working_directory":root.path(),"conversation_id":"owned-conversation"}),
+            subscriptions: vec![],
+        };
+        for binding_error in [false, true] {
+            if binding_error {
+                let owner = SecureStateStore::open(&path).unwrap();
+                owner.write_exact(b"{}").unwrap();
+            }
+            let cancel = KernelCancellationToken::new();
+            let stop = cancel.clone();
+            let stopping = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                stop.cancel();
+            });
+            let result = run(
+                config.clone(),
+                Arc::new(Mutex::new(vec![])),
+                path.clone(),
+                Arc::new(Mutex::new(json!({}))),
+                cancel,
+                Arc::new(tokio::sync::Notify::new()),
+            )
+            .await;
+            stopping.await.unwrap();
+            if binding_error {
+                assert_eq!(
+                    result.unwrap_err().code,
+                    "HOST_BINDING_CHANGED_REQUIRES_REVIEW"
+                );
+            } else {
+                result.unwrap();
+            }
+            let fence = SecureStateStore::open(&path.with_extension("agy-launch.state")).unwrap();
+            let state: Value =
+                serde_json::from_slice(&fence.read_exact().unwrap().unwrap()).unwrap();
+            assert_eq!(state["state"], "STOPPED");
+            assert_eq!(state["graceful"], true);
+        }
+    }
     #[test]
     fn unbound_bridge_errors_never_establish_no_send() {
         for code in [

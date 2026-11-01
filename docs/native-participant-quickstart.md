@@ -7,6 +7,10 @@ The native executable needs neither Node nor Python. Use Linux x86_64 GNU
 A Bot may perform the authorized steps below. Keep the existing participant
 identity and selected Agent session throughout.
 
+The upcoming [self-service connect workflow](participant-connect.md) is an
+unreleased candidate; do not use its commands with published0.3.1. It removes
+manual profile assembly for supported existing authorized participants.
+
 ## 1. Identify the existing installation
 
 Before changing files, record the selected service Origin, actor ID, identity
