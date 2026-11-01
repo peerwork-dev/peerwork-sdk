@@ -88,6 +88,31 @@ async fn framing_is_bounded_and_preserves_multiple_messages() {
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires loopback IPC permission"]
+async fn authenticated_local_client_keeps_small_frames_immediate() {
+    let temp = crate::test_support::protected_test_dir();
+    let options = config(temp.path());
+    let (ready, cancel, task) = start(options.clone()).await;
+    let endpoint = load_endpoint(&ready.client_endpoints["reader"]).unwrap();
+    let mut stream = BufReader::new(TcpStream::connect(endpoint.address).await.unwrap());
+    let auth = client_handshake(&mut stream, &endpoint.token).await.unwrap();
+    // Socket policy is deterministic across supported OSes; wall-clock timing
+    // would turn scheduler contention into a flaky transport regression.
+    assert!(stream.get_ref().nodelay().unwrap());
+    let id = random_token().unwrap();
+    let (wire, request) = encode_request(&auth, &id, json!({"method":"capabilities"})).unwrap();
+    write_frame(stream.get_mut(), &wire).await.unwrap();
+    let response = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut stream, MAX_WIRE_RESPONSE))
+        .await.unwrap().unwrap().unwrap();
+    let verified = decode_response(&auth, &id, &request, &response).unwrap();
+    assert_eq!(verified["ok"], true);
+    assert_eq!(verified["value"]["actor_id"], options.engines[0].expected_actor);
+    assert_eq!(verified["value"]["admin"], false);
+    drop(stream);
+    cancel.cancel();
+    task.await.unwrap().unwrap();
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires loopback IPC permission"]
 async fn scoped_clients_share_engine_but_not_administration_or_operations() {
     let temp = crate::test_support::protected_test_dir();
     let options = config(temp.path());
