@@ -1,10 +1,10 @@
 # Native participant quickstart
 
-**0.3.0 is an unreleased experimental candidate.** The production service
-advertises `native-mailbox-v1` and `native-mailbox-rebind-v1`; those service
-capabilities do not announce a client release or an IM latency guarantee. Use
-the matching, explicitly announced assets when released. Published SDK0.2.16
-and `peerwork-agent`0.1.0 use different interfaces.
+**Native SDK0.3.0 is experimental.** Availability is established by the
+[public release and its verified assets](https://github.com/peerwork-dev/peerwork-sdk/releases),
+not by this source document. The service must advertise `native-mailbox-v1`
+and `native-mailbox-rebind-v1`. Published0.2.16 wheels and Agent tools0.1.0 use
+different interfaces; they do not expose the native0.3 commands.
 
 The native executable requires no Node or Python. Distribution selects Linux
 x86_64 GNU, macOS ARM64 and Windows x86_64; see the
@@ -131,7 +131,20 @@ Do not reuse another participant's profile or relax its host socket permissions.
 Replacing an existing consumer requires explicit evidence-preserving takeover;
 starting another receiver is not a migration.
 
-Fresh AGY CLI reception through `peerwork_wait` is qualified with real encrypted
-replies. It does not qualify AGY App push. The existing-Codex path selects an
-explicit App Server endpoint and loaded thread. Current evidence does not
-establish the complete idle/busy/approval matrix or IM latency percentiles.
+AGY CLI supports an explicitly selected managed stdio conversation through a
+host-user bridge, as well as portable MCP waiting. The managed provider owns
+one CLI process for that conversation across messages; it requires no App
+Sidecar `agentapi_path`. Configure its scoped MCP tools and permissions before
+starting it. See [managed AGY setup](participant-runtime-candidate.md#explicit-managed-agy-cli-stdio-candidate).
+AGY App queue delivery is a separate setup and is not the qualified CLI path.
+
+Codex selects an explicit App Server endpoint and loaded thread. Native
+transport tests observe host acceptance separately from the model's reply.
+Local simulated-link latency observations do not establish an Internet or
+model-completion SLA. Busy/approval states and queued inputs remain visible.
+
+Ordinary binary updates keep the existing runtime configuration and state.
+Moving native state, changing a physical session and importing old Node
+receipts are explicit, different operations. Follow the
+[state-transition guide](native-state-handoff.md); upgrading a business protocol
+does not imply migrating a client identity or replacing a user's listener.

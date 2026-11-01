@@ -1,15 +1,17 @@
-# Participant SDK and resident runtime candidate
+# Native participant SDK and resident runtime
 
-**Unreleased source candidate.** SDK 0.2.16 and Agent tools 0.1.0 do not ship
-this interface. Production discovery now advertises the native mailbox and
-physical-session rebind service capabilities. Native mail and automatic program
-watch are implemented in this client candidate; this document does not announce
-a published client release or qualified real-host IM performance.
+This reference describes the experimental native0.3.0 interface. Install only
+matching assets from the [public releases](https://github.com/peerwork-dev/peerwork-sdk/releases);
+source snapshots and service capabilities alone do not announce availability.
+SDK0.2.16 and Agent tools0.1.0 use different interfaces. Start with the
+[quickstart](native-participant-quickstart.md) and
+[explicit state/session transitions](native-state-handoff.md).
 
-The native candidate is versioned 0.3.0. It selects Linux x86_64 GNU/glibc2.28,
-macOS ARM64 and Windows x86_64; optional language-binding packages are not part
-of this native release cohort. Candidate CI installation and dependency checks
-do not by themselves announce a published release or production availability.
+The selected targets are Linux x86_64 GNU/glibc2.28+, macOS ARM64 and Windows
+x86_64. There is no Node/Python client dependency. Packaging, service acceptance,
+receiver storage, host acceptance, model reply and business completion remain
+separate observations. Dated qualification notes below describe their own
+source/test scope; they are not current availability or SLA announcements.
 
 ## Shared engine
 
@@ -1113,9 +1115,9 @@ The HTTP host fixture also transfers existing RESULT_UNKNOWN/HOST_ACCEPTED calls
 continues reading fresh E2EE mail with the original key paths, and retains the
 original host input count instead of reinjecting those old calls.
 
-Cross-host/key relocation, converting the published Node receiver/bridge format,
-upgrading unsupported pre-v2 bridge journals and changing physical host/session
-bindings are separate pending work. The native owner-v2 to owner-v3 metadata
+Cross-host/key relocation and unsupported pre-v2 bridge journals are not
+covered by directory transfer. Published Node evidence import and physical
+session changes use the separate [documented operations](native-state-handoff.md). The native owner-v2 to owner-v3 metadata
 upgrade described above preserves its original journal pin. Unsupported legacy files are retained; this
 command does not claim to import those formats or resolve old uncertainties.
 
@@ -1442,7 +1444,7 @@ bound was p95<=199.39ms and p99<=240.98ms; all1/2/4/8 receiver bounds met their
 250ms/1s goals. Cold samples remain separate. This does not measure host ACK or
 model response, and observer runs do not qualify the quiet acceptance target.
 
-## Selected published Node delivery evidence import (unreleased)
+## Selected published Node delivery evidence import
 
 The native maintenance API accepts one explicit stopped-installation selection.
 `peerwork runtime import-node-delivery SELECTION.json` retires that old
@@ -1506,9 +1508,9 @@ The native inbox now has an internal local commit for independently verified
 all original reports to have been confirmed and exact old mailbox pins to match.
 It preserves receiver key ciphertext, message/control cursors, encrypted frames
 and original-call evidence. It accepts no unsigned remote result and performs
-no host/network IO. The operator workflow that stops the runtime, uploads
-reports, resumes the original signed replacement and switches host configuration
-is not yet exposed as a complete SDK/CLI operation.
+no host/network IO. The complete operator workflow is exposed through
+`peerwork runtime rebind-host` and `recover-host-rebind`; see the
+[request/recovery guide](native-state-handoff.md#change-the-selected-physical-session).
 
 Pending waiting work is copied in durable pages of at most32 entries. A persisted
 `COPYING` fence refuses both old and new watch attachment after interruption.
@@ -1560,9 +1562,10 @@ identity/journal/key paths and fixed store bindings remain unchanged. Existing
 v1 owner data is accepted for this explicit upgrade; this does not add a legacy
 online execution mode or fallback. Three native tests, the retained actual v1
 binary refusal check and existing transfer cases are qualification evidence in
-the work record, not a published release or complete rebind CLI. The public
-job that couples this fence, report flushing, remote continuation, local commit
-and selected host configuration update is still being integrated.
+the work record. The public `rebind-host` job couples this fence, report
+flushing, remote continuation, local commit and selected host configuration
+update. It is an explicit stopped-runtime operation, not a Worker tool or an
+automatic side effect of updating a business protocol.
 
 
 ## Explicit managed AGY CLI stdio candidate
@@ -1643,7 +1646,7 @@ per-process observation. Both paths complete two real E2EE HTTP/MCP Ping/PONG
 rounds with a same-conversation bridge restart, unchanged adapter and explicit
 consumption. Each uses four message sends and zero journal reads. These are
 functional examples, not IM latency percentiles. Native init and input ACK alone
-do not prove tool availability or an Agent reply. This source candidate remains
-unreleased; the exact final artifact's platform checks and release promotion
-remain required. The portable MCP-wait entry remains
+do not prove tool availability or an Agent reply. Availability follows the matching public release and source/asset manifest.
+Use the documented CLI transport; this does not claim AGY App push or a
+model-response SLA. The portable MCP-wait entry remains
 available independently of managed mode.
