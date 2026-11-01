@@ -4400,9 +4400,20 @@ async fn native_connect_cli_preserves_original_engine_and_attaches_selected_host
     assert_eq!(config["engines"][0]["journal_path"],original.journal_path.to_str().unwrap());assert_eq!(config["engines"][0]["authority"],original.authority.as_deref().unwrap());assert_eq!(config["engines"][0]["transport"]["request_timeout_ms"],17432);
     let launch=crate::secure_state::SecureStateStore::read_snapshot(&runtime.join("bootstrap.state"),65536).unwrap().to_vec();
     let registry=Connect::inspect(&local).unwrap();let profile=registry.profile().unwrap().unwrap();assert_eq!(profile.expected_actor,actor);
+    let receiver=ipc::RuntimeClient::connect(profile.receive_endpoint_path.clone().unwrap(),&service.origin,&actor).await.unwrap();
     let tools=AgentTools::open(profile).await.unwrap();
     let inbox=tools.call(AgentRequest::parse("wait",json!({"scope":"workspace","wait_ms":5000})).unwrap()).await.unwrap();
     assert_eq!(inbox["items"][0]["message"]["text"],"original journal and key survive","{inbox}");
+    let bindings=receiver.call(json!({"method":"bindings"})).await.unwrap();let binding=bindings.as_array().unwrap().first().unwrap().clone();
+    tokio::time::timeout(Duration::from_secs(5),async{loop{
+        let status=receiver.call(json!({"method":"delivery_status","options":binding,"item":inbox["items"][0]["item"]})).await.unwrap();
+        if status["host"]=="HOST_ACCEPTED"{break;}
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }}).await.expect("selected host never accepted the verified inbox input");
+    let inputs:Vec<_>=host.calls().into_iter().filter(|v|matches!(v["method"].as_str(),Some("turn/start"|"turn/steer"))).collect();
+    assert_eq!(inputs.len(),1,"initial connect opened multiple inputs for one delivery");
+    assert!(inputs[0].to_string().contains("original journal and key survive"));
+    let admin=ipc::call(&runtime.join("admin.json"),json!({"method":"status"})).await.unwrap();assert_eq!(admin["value"]["hosts"].as_array().unwrap().len(),1);
     let again=run(&executable,&args).await;assert_eq!(again["state"],"LOCAL_CONFIGURED");
     assert_eq!(crate::secure_state::SecureStateStore::read_snapshot(&runtime.join("bootstrap.state"),65536).unwrap().as_slice(),launch.as_slice(),"unchanged reentry started another runtime");
     assert_eq!(service.counts().await["actions"]["structure.communication.grant.set"],1,"authorized connect requested new Owner grants");
