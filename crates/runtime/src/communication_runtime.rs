@@ -484,6 +484,9 @@ pub(crate) async fn client_handshake(
     stream: &mut BufReader<TcpStream>,
     credential: &str,
 ) -> Result<Authenticated> {
+    // Confirmation and the sealed request are separate small frames. Do not
+    // let Nagle wait for a delayed ACK between authenticated local messages.
+    stream.get_ref().set_nodelay(true).map_err(|_| local("IPC_CHANNEL_INVALID"))?;
     let nonce = random_token().map_err(|_| local("ENTROPY_UNAVAILABLE"))?;
     let hello =
         json!({"format":HELLO_FORMAT,"key_id":channel::key_id(credential),"client_nonce":nonce});
