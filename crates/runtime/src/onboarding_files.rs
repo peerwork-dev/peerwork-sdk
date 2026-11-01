@@ -2,6 +2,9 @@
 //! be private, but no writable/symlink ancestor may redirect generated outputs.
 use crate::participant::{ParticipantError, Result};
 use std::path::{Component, Path};
+#[cfg(windows)]
+#[path = "onboarding_windows.rs"]
+mod windows;
 fn error() -> ParticipantError {
     ParticipantError::local("ONBOARDING_PATH_UNSAFE", "LOCAL_CONFIGURATION")
 }
@@ -33,15 +36,15 @@ pub(crate) fn directory(path: &Path, private: bool) -> Result<()> {
 }
 pub(crate) fn check_directory(path: &Path, private: bool) -> Result<()> {
     let m = std::fs::symlink_metadata(path).map_err(|_| error())?;
-    if !m.is_dir()
-        || m.file_type().is_symlink()
-        || std::fs::canonicalize(path).map_err(|_| error())? != path
-    {
+    if !m.is_dir() || m.file_type().is_symlink() {
         return Err(error());
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
+        if std::fs::canonicalize(path).map_err(|_| error())? != path {
+            return Err(error());
+        }
         if m.uid() != unsafe { libc::geteuid() }
             || m.mode() & if private { 0o077 } else { 0o022 } != 0
         {
@@ -61,8 +64,11 @@ pub(crate) fn check_directory(path: &Path, private: bool) -> Result<()> {
         }
     }
     #[cfg(windows)]
-    if private {
-        crate::secure_state::check_private_directory(path).map_err(|_| error())?;
+    {
+        windows::directory(path)?;
+        if private {
+            crate::secure_state::check_private_directory(path).map_err(|_| error())?;
+        }
     }
     Ok(())
 }
@@ -101,7 +107,10 @@ fn read_file(path: &Path, limit: usize, private: bool) -> Result<Option<Vec<u8>>
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(libc::O_NOFOLLOW);
     }
+    #[cfg(not(windows))]
     let mut f = options.open(path).map_err(|_| error())?;
+    #[cfg(windows)]
+    let mut f = windows::read(path, private)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
@@ -142,7 +151,7 @@ pub(crate) fn replace_if_unchanged(
     unchanged(path, expected)?;
     #[cfg(windows)]
     {
-        crate::windows_fs::atomic_replace(path, &[], bytes).map_err(|_| error())?;
+        windows::replace(path, expected, bytes)?;
     }
     #[cfg(not(windows))]
     {

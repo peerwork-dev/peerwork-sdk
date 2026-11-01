@@ -121,3 +121,5 @@ pub mod legacy_migration;
 
 #[cfg(test)]
 mod participant_live_host_tests;
+
+mod process_identity;

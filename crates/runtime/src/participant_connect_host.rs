@@ -105,3 +105,125 @@ impl Connect {
         Ok(value["value"].clone())
     }
 }
+
+pub(super) fn adapter(values: &BTreeMap<String, String>) -> Result<Option<Value>> {
+    let has = |name: &str| values.contains_key(name);
+    let text = |name: &str| {
+        values
+            .get(name)
+            .cloned()
+            .ok_or_else(|| local("HOST_SELECTION_ARGUMENT_MISSING"))
+    };
+    let absolute =
+        |name: &str| std::path::absolute(text(name)?).map_err(|_| local("HOST_SELECTION_INVALID"));
+    let codex = [
+        "--codex-endpoint",
+        "--codex-thread",
+        "--codex-session",
+        "--codex-auth-env",
+    ]
+    .iter()
+    .any(|s| has(s));
+    let managed = has("--agy-managed");
+    let app = has("--agy-api");
+    if usize::from(codex) + usize::from(managed) + usize::from(app) > 1 {
+        return Err(local("SELECT_ONE_HOST_ADAPTER"));
+    }
+    if codex {
+        if ["--agy-executable", "--agy-conversation", "--agy-inbox"]
+            .iter()
+            .any(|s| has(s))
+        {
+            return Err(local("SELECT_ONE_HOST_ADAPTER"));
+        }
+        let mut selected = json!({"kind":"codex","endpoint":text("--codex-endpoint")?,"thread_id":text("--codex-thread")?});
+        if let Some(session) = values.get("--codex-session") {
+            selected["expected_session_id"] = json!(session);
+        }
+        if let Some(env) = values.get("--codex-auth-env") {
+            if env.is_empty()
+                || env.len() > 128
+                || !env.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
+            {
+                return Err(local("HOST_SELECTION_INVALID"));
+            }
+            selected["auth_token_env"] = json!(env);
+        }
+        return Ok(Some(selected));
+    }
+    if managed {
+        if has("--agy-inbox") {
+            return Err(local("SELECT_ONE_HOST_ADAPTER"));
+        }
+        return Ok(Some(
+            json!({"kind":"agy-stdio","managed":true,"executable":absolute("--agy-executable")?,
+            "working_directory":absolute("--project")?,"conversation_id":text("--agy-conversation")?}),
+        ));
+    }
+    if app {
+        if has("--agy-executable") {
+            return Err(local("SELECT_ONE_HOST_ADAPTER"));
+        }
+        return Ok(Some(
+            json!({"kind":"agy-app","agentapi_path":absolute("--agy-api")?,"inbox_directory":absolute("--agy-inbox")?,"conversation_id":text("--agy-conversation")?}),
+        ));
+    }
+    if ["--agy-executable", "--agy-conversation", "--agy-inbox"]
+        .iter()
+        .any(|s| has(s))
+    {
+        return Err(local("EXISTING_AGY_SESSION_INTERFACE_REQUIRED"));
+    }
+    Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn flags(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+    #[test]
+    fn session_selection_is_explicit_and_managed_agy_never_implies_bypass() {
+        assert!(adapter(&BTreeMap::new()).unwrap().is_none());
+        assert_eq!(
+            adapter(&flags(&[("--agy-conversation", "existing")]))
+                .unwrap_err()
+                .code,
+            "EXISTING_AGY_SESSION_INTERFACE_REQUIRED"
+        );
+        let codex = adapter(&flags(&[
+            ("--codex-endpoint", "ws://127.0.0.1:1"),
+            ("--codex-thread", "selected-thread"),
+            ("--codex-session", "selected-session"),
+        ]))
+        .unwrap()
+        .unwrap();
+        assert_eq!(codex["thread_id"], "selected-thread");
+        assert_eq!(codex["expected_session_id"], "selected-session");
+        let managed = adapter(&flags(&[
+            ("--agy-managed", "true"),
+            ("--agy-executable", "agy"),
+            ("--project", "."),
+            ("--agy-conversation", "owned-session"),
+        ]))
+        .unwrap()
+        .unwrap();
+        assert_eq!(managed["managed"], true);
+        assert!(managed.get("args").is_none());
+        assert!(!managed.to_string().contains("skip-permissions"));
+        assert!(adapter(&flags(&[("--codex-thread", "thread")])).is_err());
+        assert_eq!(
+            adapter(&flags(&[
+                ("--codex-thread", "thread"),
+                ("--agy-managed", "true")
+            ]))
+            .unwrap_err()
+            .code,
+            "SELECT_ONE_HOST_ADAPTER"
+        );
+    }
+}

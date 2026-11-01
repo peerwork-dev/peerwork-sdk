@@ -4357,3 +4357,62 @@ async fn connect_send_only_accepts_body_keys_without_mailbox_and_preserves_lease
     assert!(owner_box["mailbox_id"].is_string());
     cancel.cancel();running.await.unwrap().unwrap();
 }
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires explicit synthetic PostgreSQL, real product HTTP fixture and rebuilt native CLI"]
+async fn native_connect_cli_preserves_original_engine_and_attaches_selected_host_without_owner_exchange(){
+    use crate::{communication_host::tests::CodexFixture,communication_runtime as ipc,participant_connect::Connect,agent_tools::{AgentTools,AgentRequest}};
+    let service=Service::start();let host=CodexFixture::start();let root=crate::test_support::protected_test_dir();
+    let owner_dir=root.path().join("owner");crate::secure_state::create_private_state_directory(&owner_dir).unwrap();
+    let mut original=configuration(&owner_dir,&service.origin);original.journal_path=owner_dir.join("existing-nondefault-journal.sqlite");original.authority=Some("a".repeat(64));original.transport.request_timeout_ms=17432;
+    let owner=ParticipantClient::open(original.clone()).await.unwrap();
+    let created=mutate(&owner,"cli-connect-space","structure.workspace.create",&Scope::default(),json!({"name":"Synthetic native bootstrap qualification"})).await;
+    let ws=created["workspace_id"].as_str().unwrap().to_owned();let scope=Scope{workspace_id:Some(ws.clone()),..Default::default()};
+    let metadata=selected(&owner,"structure.workspace.get",&scope,json!({})).await;
+    let mailbox=mutate(&owner,"cli-connect-grant","structure.communication.grant.set",&scope,json!({"actor_id":owner.actor_id(),"membership_id":metadata["membership"]["membership_id"],"expected_revision":null,"send":true,"receive":true})).await["mailbox"].clone();
+    let key=install_synthetic_key(&original,&ws,&[59;32],None);
+    mutate(&owner,"cli-connect-head","structure.content-key.set",&scope,json!({"key_id":key,"expected_epoch":0,"expected_head_revision":null})).await;
+    let original_operation=owner.invoke(native_message("before-bootstrap",&scope,&mailbox,&mailbox,&"V".repeat(43),"original journal and key survive"),Duration::from_secs(5)).await.unwrap();assert_eq!(original_operation.state,"ACCEPTED");
+    let actor=owner.actor_id().to_owned();let identity_hash=peerwork_core::crypto::sha256_hex(&std::fs::read(&original.identity_path).unwrap());
+    owner.close().await.unwrap();
+    let local=root.path().join("local");let project=root.path().join("project");crate::onboarding_files::directory(&project,false).unwrap();
+    let adapter=host.config();let executable=PathBuf::from(std::env::var("PEERWORK_PARTICIPANT_CLI").expect("rebuilt native CLI required"));
+    let args:Vec<String>=vec!["connect".into(),"--local".into(),local.to_str().unwrap().into(),"--participant".into(),"worker".into(),
+        "--identity".into(),original.identity_path.to_str().unwrap().into(),"--engine-state".into(),original.state_directory.to_str().unwrap().into(),
+        "--journal".into(),original.journal_path.to_str().unwrap().into(),"--authority".into(),original.authority.clone().unwrap(),"--request-timeout-ms".into(),"17432".into(),
+        "--origin".into(),service.origin.clone(),"--allow-loopback-http".into(),"--workspace".into(),ws.clone(),"--id".into(),"cold-connect".into(),"--send".into(),"--receive".into(),"--body-keys".into(),
+        "--codex-endpoint".into(),adapter["endpoint"].as_str().unwrap().into(),"--codex-thread".into(),"existing-thread".into(),"--codex-session".into(),adapter["expected_session_id"].as_str().unwrap().into(),
+        "--install".into(),"codex".into(),"--project".into(),project.to_str().unwrap().into()];
+    async fn run(executable:&std::path::Path,args:&[String])->Value{
+        let exe=executable.to_owned();let args=args.to_vec();
+        let output=tokio::task::spawn_blocking(move||Command::new(exe).args(args).output().unwrap()).await.unwrap();
+        let value:Value=serde_json::from_slice(&output.stdout).unwrap();assert!(output.status.success(),"native connect failed: {value}");value
+    }
+    let mut configured=run(&executable,&args).await;
+    for _ in 0..10{
+        if configured["state"]=="LOCAL_CONFIGURED"{break;}
+        assert_eq!(configured["blocker"]["code"],"HOST_STARTING","{configured}");
+        tokio::time::sleep(Duration::from_millis(100)).await;configured=run(&executable,&args).await;
+    }
+    assert_eq!(configured["state"],"LOCAL_CONFIGURED","{configured}");assert_eq!(configured["owner_exchange_required"],false);assert_eq!(configured["actor_id"],actor);
+    let runtime=local.join("runtime-worker");
+    let config=crate::communication_store::private_json(&runtime.join("config.json"),65536).unwrap();
+    assert_eq!(config["engines"][0]["journal_path"],original.journal_path.to_str().unwrap());assert_eq!(config["engines"][0]["authority"],original.authority.as_deref().unwrap());assert_eq!(config["engines"][0]["transport"]["request_timeout_ms"],17432);
+    let launch=crate::secure_state::SecureStateStore::read_snapshot(&runtime.join("bootstrap.state"),65536).unwrap().to_vec();
+    let registry=Connect::inspect(&local).unwrap();let profile=registry.profile().unwrap().unwrap();assert_eq!(profile.expected_actor,actor);
+    let tools=AgentTools::open(profile).await.unwrap();
+    let inbox=tools.call(AgentRequest::parse("wait",json!({"scope":"workspace","wait_ms":5000})).unwrap()).await.unwrap();
+    assert_eq!(inbox["items"][0]["message"]["text"],"original journal and key survive","{inbox}");
+    let again=run(&executable,&args).await;assert_eq!(again["state"],"LOCAL_CONFIGURED");
+    assert_eq!(crate::secure_state::SecureStateStore::read_snapshot(&runtime.join("bootstrap.state"),65536).unwrap().as_slice(),launch.as_slice(),"unchanged reentry started another runtime");
+    assert_eq!(service.counts().await["actions"]["structure.communication.grant.set"],1,"authorized connect requested new Owner grants");
+    assert!(service.counts().await["actions"]["structure.access.authorize"].is_null());
+    assert_eq!(peerwork_core::crypto::sha256_hex(&std::fs::read(&original.identity_path).unwrap()),identity_hash,"bootstrap replaced the original identity");
+    assert!(project.join(".codex/config.toml").is_file());assert!(project.join(".agents/skills/peerwork/SKILL.md").is_file());
+    let stopped=ipc::call(&runtime.join("admin.json"),json!({"method":"stop"})).await.unwrap();assert_eq!(stopped["ok"],true);
+    let restored=tokio::time::timeout(Duration::from_secs(5),async{loop{
+        match ParticipantClient::open(original.clone()).await{Ok(client)=>break client,Err(_)=>tokio::time::sleep(Duration::from_millis(20)).await,}
+    }}).await.unwrap();
+    assert_eq!(restored.operation("before-bootstrap").await.unwrap().command_id,original_operation.command_id,"bootstrap abandoned the original operation namespace");
+    assert_eq!(service.counts().await["journal_reads"],0);restored.close().await.unwrap();
+}

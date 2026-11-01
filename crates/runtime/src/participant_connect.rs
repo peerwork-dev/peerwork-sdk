@@ -24,6 +24,8 @@ pub use install::Installation;
 #[path = "participant_connect_host.rs"]
 mod host;
 pub use host::HostSelection;
+#[path = "participant_connect_bootstrap.rs"]
+mod bootstrap;
 
 fn local(code: &str) -> ParticipantError {
     ParticipantError::local(code, "CONNECT")
@@ -158,6 +160,8 @@ struct Registry {
     installations: BTreeMap<String, install::Installed>,
     #[serde(default)]
     hosts: BTreeMap<String, HostSelection>,
+    #[serde(default)]
+    local_runtime_admins: BTreeMap<String, PathBuf>,
 }
 pub struct Connect {
     directory: PathBuf,
@@ -748,8 +752,10 @@ impl Connect {
         if request
             .host
             .as_ref()
-            .zip(old_host.as_ref())
-            .is_some_and(|(a, b)| a != b)
+            .is_some_and(|wanted| old_host.as_ref() != Some(wanted))
+            && previous_setup
+                .as_ref()
+                .is_some_and(|s| s.channel_receive || s.desired.receive)
         {
             return self.pending(
                 &request,
@@ -761,6 +767,19 @@ impl Connect {
             );
         }
         let effective_host = request.host.clone().or(old_host);
+        if effective_host
+            .as_ref()
+            .is_some_and(|name| !self.registry.hosts.contains_key(name))
+        {
+            return self.pending(
+                &request,
+                "HOST_BINDING",
+                "HOST_BINDING_REQUIRED",
+                "HOST_USER",
+                "SELECT_SUPPORTED_HOST_OR_REGISTER_EXISTING_HANDLE",
+                json!({"host":effective_host}),
+            );
+        }
         if let Some(old) = &previous {
             for (name, s) in &old.protocols {
                 if protocols.get(name).is_some_and(|wanted| wanted != s) {
@@ -1072,7 +1091,7 @@ impl Connect {
                 .as_ref()
                 .ok_or_else(|| local("DEFAULT_MAILBOX_REQUIRED"))?;
             host_observation = self
-                .ensure_host(name, &request, &selected, client_name, options)
+                .ensure_host(name, &request, &selected, client_name, options.clone())
                 .await?;
             let until = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
             loop {
@@ -1090,12 +1109,28 @@ impl Connect {
                     break;
                 }
                 if tokio::time::Instant::now() >= until {
+                    host_observation = self
+                        .ensure_host(name, &request, &selected, client_name, options.clone())
+                        .await?;
+                    let blocked = host_observation["observation"]["state"] == "BLOCKED";
+                    let code = if blocked {
+                        host_observation["observation"]["code"]
+                            .as_str()
+                            .unwrap_or("HOST_NOT_BOUND")
+                    } else {
+                        "HOST_STARTING"
+                    };
+                    let code = code.to_owned();
                     return self.pending(
                         &request,
                         "HOST_BINDING",
-                        "HOST_NOT_BOUND",
-                        "HOST_USER",
-                        "CHECK_SELECTED_HOST_OR_EXPLICIT_REBIND",
+                        &code,
+                        if blocked { "HOST_USER" } else { "RUNTIME" },
+                        if blocked {
+                            "REPAIR_SELECTED_HOST_WITHOUT_REPLACING_IDENTITY"
+                        } else {
+                            "RESUME_SAME_SETUP"
+                        },
                         json!({"host":host_observation}),
                     );
                 }
@@ -1191,153 +1226,6 @@ pub fn schema() -> Value {
     schema
 }
 
-/// Explicit CLI bootstrap selects an existing identity and its original engine
-/// state. The Agent/MCP interface cannot perform this administrative selection.
-async fn bootstrap(
-    directory: &Path,
-    handle: &str,
-    identity: &Path,
-    engine_state: &Path,
-    origin: &str,
-    allow_http: bool,
-) -> Result<Registration> {
-    use crate::communication_runtime::{ClientConfig, EngineConfig, RuntimeConfig};
-    if !identifier(handle) || !identity.is_absolute() || !engine_state.is_absolute() {
-        return Err(local("LOCAL_SELECTION_INVALID"));
-    }
-    let actor = crate::kernel_identity::KernelIdentity::open(identity)
-        .map_err(|_| local("IDENTITY_RECOVERY_REQUIRED"))?
-        .actor_id()
-        .to_owned();
-    let origin = crate::transport::canonical_lifecycle_origin(origin, allow_http)
-        .map_err(|_| local("LOCAL_SELECTION_INVALID"))?;
-    let runtime_dir = directory.join(format!("runtime-{handle}"));
-    create_private_state_directory(&runtime_dir)
-        .map_err(|_| local("RUNTIME_DIRECTORY_NOT_PRIVATE"))?;
-    let config = RuntimeConfig {
-        format: "peerwork.participant-runtime.v1".into(),
-        state_directory: runtime_dir.clone(),
-        engines: vec![EngineConfig {
-            name: "selected".into(),
-            origin: origin.clone(),
-            expected_actor: actor.clone(),
-            identity_path: identity.into(),
-            state_directory: engine_state.into(),
-            journal_path: None,
-            authority: None,
-            allow_loopback_http: allow_http,
-            transport: Default::default(),
-            max_inflight: 4,
-            max_pending: 64,
-            max_stored_bytes: 32 * 1024 * 1024,
-            migration_sources: Vec::new(),
-        }],
-        clients: vec![ClientConfig {
-            name: "bootstrap".into(),
-            engine: "selected".into(),
-            capability: Capability::owner(),
-        }],
-        hosts: Vec::new(),
-    };
-    let config_path = runtime_dir.join("config.json");
-    let wire = serde_json::to_vec(&config).map_err(|_| local("RUNTIME_CONFIG_INVALID"))?;
-    match std::fs::symlink_metadata(&config_path) {
-        Ok(_) => {
-            let old = crate::communication_store::private_json(&config_path, 65536)
-                .map_err(|_| local("RUNTIME_CONFIG_NOT_PRIVATE"))?;
-            if old != serde_json::to_value(&config).map_err(|_| local("RUNTIME_CONFIG_INVALID"))? {
-                return Err(local("LOCAL_BINDING_CONFLICT"));
-            }
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            write_private(&config_path, &wire).map_err(|_| local("RUNTIME_CONFIG_NOT_PRIVATE"))?
-        }
-        Err(_) => return Err(local("RUNTIME_CONFIG_NOT_PRIVATE")),
-    }
-    let selected = Registration {
-        origin,
-        actor_id: actor,
-        endpoint_path: runtime_dir.join("client-bootstrap.json"),
-    };
-    if std::fs::symlink_metadata(&selected.endpoint_path).is_ok() {
-        match RuntimeClient::connect(
-            selected.endpoint_path.clone(),
-            &selected.origin,
-            &selected.actor_id,
-        )
-        .await
-        {
-            Ok(_) => return Ok(selected),
-            Err(e) if e.code == "RUNTIME_UNAVAILABLE" => (),
-            Err(e) => return Err(e),
-        }
-    }
-    // A second launcher cannot own the original engine state. Never change the
-    // state path to evade that fence. The parent observes the exact child.
-    let log = runtime_dir.join("runtime.log");
-    if std::fs::symlink_metadata(&log).is_err() {
-        write_private(&log, b"").map_err(|_| local("RUNTIME_LOG_NOT_PRIVATE"))?;
-    }
-    crate::secure_state::validate_private_file(&log)
-        .map_err(|_| local("RUNTIME_LOG_NOT_PRIVATE"))?;
-    let output = std::fs::OpenOptions::new()
-        .append(true)
-        .open(&log)
-        .map_err(|_| local("RUNTIME_LOG_NOT_PRIVATE"))?;
-    let mut command = std::process::Command::new(
-        std::env::current_exe().map_err(|_| local("EXECUTABLE_UNAVAILABLE"))?,
-    );
-    command
-        .args(["runtime", "run"])
-        .arg(&config_path)
-        .stdin(std::process::Stdio::null())
-        .stderr(
-            output
-                .try_clone()
-                .map_err(|_| local("RUNTIME_LOG_NOT_PRIVATE"))?,
-        )
-        .stdout(output);
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        unsafe {
-            command.pre_exec(|| {
-                if libc::setsid() < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x00000200 | 0x00000008);
-    }
-    let mut child = command.spawn().map_err(|_| local("RUNTIME_START_FAILED"))?;
-    for _ in 0..50 {
-        if RuntimeClient::connect(
-            selected.endpoint_path.clone(),
-            &selected.origin,
-            &selected.actor_id,
-        )
-        .await
-        .is_ok()
-        {
-            return Ok(selected);
-        }
-        if child
-            .try_wait()
-            .map_err(|_| local("RUNTIME_START_FAILED"))?
-            .is_some()
-        {
-            return Err(local("RUNTIME_START_FAILED_CHECK_ORIGINAL_STATE_OWNER"));
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-    Err(local("RUNTIME_STARTING_REOBSERVE_SAME_BINDING"))
-}
-
 pub fn cli(args: &[String]) -> Value {
     fn parse(args: &[String]) -> Result<BTreeMap<String, String>> {
         let mut values = BTreeMap::new();
@@ -1351,6 +1239,7 @@ pub fn cli(args: &[String]) -> Value {
                 "--allow-loopback-http",
                 "--context",
                 "--uninstall",
+                "--agy-managed",
             ]
             .contains(&flag.as_str());
             if ![
@@ -1375,6 +1264,22 @@ pub fn cli(args: &[String]) -> Value {
                 "--install",
                 "--project",
                 "--uninstall",
+                "--engine-config",
+                "--journal",
+                "--authority",
+                "--request-timeout-ms",
+                "--ca-root",
+                "--host",
+                "--admin",
+                "--codex-endpoint",
+                "--codex-thread",
+                "--codex-session",
+                "--codex-auth-env",
+                "--agy-managed",
+                "--agy-executable",
+                "--agy-conversation",
+                "--agy-api",
+                "--agy-inbox",
             ]
             .contains(&flag.as_str())
                 || values.contains_key(flag)
@@ -1402,7 +1307,10 @@ pub fn cli(args: &[String]) -> Value {
             "peerwork connect --local DIRECTORY --participant HANDLE --workspace WORKSPACE --id SETUP_ID --send --receive",
             "peerwork connect --local DIRECTORY --context",
             "peerwork connect --local DIRECTORY --participant OWNER_HANDLE --id APPROVAL_ID --approve-request PUBLIC_REQUEST.json",
-            "peerwork agent --local DIRECTORY mcp"],"authority":"Initial local-owner selection preserves the existing identity/state. Missing remote rights return a consolidated approval request. Subsequent MCP connect accepts registered handles only."});
+            "peerwork connect --local DIRECTORY --participant HANDLE --engine-config EXISTING_ENGINE.json --workspace WORKSPACE --id SETUP_ID --send --receive",
+            "peerwork connect --local DIRECTORY --participant HANDLE --workspace WORKSPACE --id SETUP_ID --send --receive --host SELECTED_HOST --codex-endpoint APP_SERVER_URL --codex-thread THREAD --install codex --project PROJECT",
+            "peerwork connect --local DIRECTORY --participant HANDLE --workspace WORKSPACE --id SETUP_ID --send --receive --agy-managed --agy-executable AGY --agy-conversation OWNED_CONVERSATION --project PROJECT --install agy",
+            "peerwork agent --local DIRECTORY mcp"],"engine_options":["--journal ORIGINAL_JOURNAL","--authority ORIGINAL_AUTHORITY","--request-timeout-ms MILLISECONDS","--ca-root PEM_FILE"],"host_authority":"Bootstrap records its own runtime admin endpoint. An external --client requires explicit --admin when registering a host. Existing handles can be reused without adapter flags.","authority":"Initial local-owner selection preserves the existing identity/state. Missing remote rights return a consolidated approval request. Subsequent MCP connect accepts registered handles only."});
     }
     let result = || -> Result<Value> {
         let values = parse(args)?;
@@ -1472,7 +1380,7 @@ pub fn cli(args: &[String]) -> Value {
             require_body_keys: values.contains_key("--body-keys"),
             protocols: Vec::new(),
             contacts: Vec::new(),
-            host: None,
+            host: values.get("--host").cloned(),
         };
         if let Some(role) = values.get("--role") {
             let parts: Vec<_> = role.split(':').collect();
@@ -1496,27 +1404,21 @@ pub fn cli(args: &[String]) -> Value {
             });
         }
         request.validate()?;
+        let selected_adapter = host::adapter(&values)?;
+        if selected_adapter.is_some() && !request.receive {
+            return Err(local("HOST_SELECTION_REQUIRES_RECEIVE"));
+        }
+        if selected_adapter.is_none() && values.contains_key("--admin") {
+            return Err(local("HOST_SELECTION_REQUIRED"));
+        }
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
             .build()
             .map_err(|_| local("EXECUTOR_FAILED"))?;
         runtime.block_on(async {
-            if let Some(identity) = values.get("--identity") {
-                if values.contains_key("--client") {
-                    return Err(local("LOCAL_SELECTION_CONFLICT"));
-                }
-                let selected = bootstrap(
-                    &directory,
-                    &handle,
-                    &std::path::absolute(identity).map_err(|_| local("LOCAL_SELECTION_INVALID"))?,
-                    &std::path::absolute(required("--engine-state")?)
-                        .map_err(|_| local("LOCAL_SELECTION_INVALID"))?,
-                    &required("--origin")?,
-                    values.contains_key("--allow-loopback-http"),
-                )
-                .await?;
-                connect.register(&handle, selected).await?;
+            if let Some(engine) = bootstrap::engine(&values)? {
+                connect.bootstrap(&handle, engine).await?;
             } else if let Some(endpoint) = values.get("--client") {
                 connect
                     .register(
@@ -1529,6 +1431,30 @@ pub fn cli(args: &[String]) -> Value {
                         },
                     )
                     .await?;
+            }
+            if let Some(adapter) = selected_adapter {
+                let name = request.host.clone().unwrap_or_else(|| {
+                    format!("host-{}", &sha256_hex(adapter.to_string().as_bytes())[..16])
+                });
+                let admin = values
+                    .get("--admin")
+                    .map(std::path::absolute)
+                    .transpose()
+                    .map_err(|_| local("HOST_SELECTION_INVALID"))?
+                    .or_else(|| connect.registry.local_runtime_admins.get(&handle).cloned())
+                    .ok_or_else(|| local("EXPLICIT_RUNTIME_ADMIN_SELECTION_REQUIRED"))?;
+                connect
+                    .register_host(
+                        &name,
+                        HostSelection {
+                            participant: handle.clone(),
+                            admin_endpoint: admin,
+                            adapter,
+                        },
+                    )
+                    .await?;
+                request.host = Some(name);
+                request.validate()?;
             }
             let installed = installation
                 .map(|spec| connect.install(&handle, &request.workspace_id, spec))
@@ -1543,7 +1469,11 @@ pub fn cli(args: &[String]) -> Value {
             Ok(out)
         })
     };
-    result().unwrap_or_else(|error| json!({"state":"FAILED","error":error}))
+    result().unwrap_or_else(|error| {
+        if matches!(error.code.as_str(),"RUNTIME_STARTING_REOBSERVE_SAME_BINDING"|"PROCESS_IDENTITY_UNCONFIRMED"|"RUNTIME_LAUNCH_RECOVERY_REQUIRED"){
+            json!({"state":"PENDING","phase":"LOCAL_RUNTIME_STARTUP","error":error,"next_action":if error.code=="RUNTIME_STARTING_REOBSERVE_SAME_BINDING"{"REOBSERVE_SAME_BINDING"}else{"VERIFY_ORIGINAL_LAUNCH_EVIDENCE"}})
+        } else {json!({"state":"FAILED","error":error})}
+    })
 }
 
 #[cfg(test)]
