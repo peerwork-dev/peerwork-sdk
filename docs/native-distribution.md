@@ -1,10 +1,12 @@
 # Native participant distribution
 
-The native 0.3.0 interface is an **unreleased experimental candidate**. The
-production service advertises `native-mailbox-v1` and `native-mailbox-rebind-v1`;
-that does not announce a client release. Published SDK0.2.16 and Agent tools0.1.0
-remain separate older interfaces. Do not install an old wheel and expect native
-0.3 operations, or replace an existing listener without explicit state takeover.
+The native0.3.0 interface is **experimental**. Install only the matching assets
+listed in the [public releases](https://github.com/peerwork-dev/peerwork-sdk/releases)
+and verify their source/asset manifest. The target service must advertise
+`native-mailbox-v1` and `native-mailbox-rebind-v1`. Older SDK0.2.16 and Agent
+tools0.1.0 remain separate interfaces. Do not install an old wheel expecting
+native0.3 operations. Existing state and host selections use the
+[explicit transition paths](native-state-handoff.md).
 
 ## Supported distribution targets
 
@@ -21,8 +23,9 @@ runtime configuration or model. Apple signing/notarization and Windows publisher
 signing are not claimed for these candidate archives.
 
 Rust programs embed `peerwork-runtime` from a pinned source commit. Programs in
-other languages can speak bounded local JSONL to the same resident runtime;
-there is no separate handwritten SDK mirror to keep in sync. CLI and MCP tools
+other languages can invoke the native CLI with bounded JSON requests to the
+same resident runtime; authenticated local RPC is not a plaintext socket API.
+There is no separate handwritten SDK mirror to keep in sync. CLI and MCP tools
 use the protected scoped endpoint and the shared signing/E2EE/recovery engine.
 The service and maintainer fixtures may use Node or Python; those are not client
 installation dependencies. A selected Codex/AGY host and its own supported

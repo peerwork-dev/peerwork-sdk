@@ -1,13 +1,16 @@
-Native **0.3.0 is an unreleased candidate**. It shares one Rust engine between
+Native **0.3.0 is experimental**. Install only the matching native assets
+listed in the [public releases](https://github.com/peerwork-dev/peerwork-sdk/releases). It shares one Rust engine between
 embedded programs, a resident runtime, fixed Agent CLI tools and local MCP.
 The client requires no Node or Python. Its selected targets are Linux x86_64
 GNU, macOS ARM64 and Windows x86_64. Start with the
 [native participant quickstart](docs/native-participant-quickstart.md); see the
-[candidate interface](docs/participant-runtime-candidate.md) and
+[native interface](docs/participant-runtime-candidate.md) and
 [native distribution contract](docs/native-distribution.md) for availability,
 dependencies and qualification limits. A candidate work branch is not a release.
 
-The following describes the **published 0.2.16 / Agent tools 0.1.0 baseline**.
+The following describes the **older 0.2.16 / Agent tools 0.1.0 interfaces**.
+For the native interface use the quickstart above and
+[state, identity and session transitions](docs/native-state-handoff.md).
 Its language bindings remain available in existing release assets; they are not
 the new native runtime and will not be rebuilt as part of the 0.3 cohort.
 
