@@ -534,6 +534,7 @@ struct Admission {
     completed: oneshot::Receiver<Operation>,
 }
 struct ReplyContext {
+    local_live: Arc<std::sync::atomic::AtomicBool>,
     namespace: String,
     capability: Capability,
 }
@@ -575,6 +576,7 @@ enum Command {
     },
 }
 struct Shared {
+    state_binding: String,
     sender: mpsc::Sender<Command>,
     cancel: KernelCancellationToken,
     thread: Mutex<Option<JoinHandle<()>>>,
@@ -591,8 +593,30 @@ pub struct ParticipantClient {
     shared: Arc<Shared>,
     namespace: String,
     capability: Capability,
+    local_live: Arc<std::sync::atomic::AtomicBool>,
 }
 impl ParticipantClient {
+    pub(crate) fn same_client(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.shared, &other.shared)
+            && self.namespace == other.namespace
+            && Arc::ptr_eq(&self.local_live, &other.local_live)
+    }
+    pub(crate) fn local_namespace(&self) -> &str {
+        &self.namespace
+    }
+    pub(crate) fn state_binding(&self) -> &str {
+        &self.shared.state_binding
+    }
+    pub(crate) fn locally_live(&self) -> bool {
+        self.local_live.load(std::sync::atomic::Ordering::Acquire)
+    }
+    pub(crate) fn revoke_local(&self) {
+        self.local_live
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+    pub(crate) fn inherit_lifecycle(&mut self, other: &Self) {
+        self.local_live = other.local_live.clone();
+    }
     /// Opens protected local state without requiring a network connection.
     /// Discovery is verified before the engine makes any signed service call.
     pub async fn open(config: ParticipantConfig) -> Result<Self> {
@@ -616,6 +640,7 @@ impl ParticipantClient {
         {
             return Err(ParticipantError::local("CONFIG_INVALID", "OPEN"));
         }
+        let state_binding=peerwork_core::crypto::sha256_hex(json!({"actor":config.expected_actor,"origin":config.origin,"state":config.state_directory,"journal":config.journal_path,"authority":config.authority}).to_string().as_bytes());
         let (tx, rx) = mpsc::channel(64);
         let (ready_tx, ready_rx) = oneshot::channel();
         let cancel = KernelCancellationToken::new();
@@ -646,17 +671,34 @@ impl ParticipantClient {
                         config.allow_loopback_http,
                     )
                     .map_err(|_| ParticipantError::local("ORIGIN_INVALID", "OPEN"))?;
-                    let authority=config.authority.clone().unwrap_or_else(||sha256_hex(identity.actor_id().as_bytes()));
-                    let binding=crate::participant_owner::logical_binding(&identity,&origin,&authority);
-                    match owner.read_exact().map_err(|_|ParticipantError::local("STATE_BINDING_INVALID","OPEN"))?{
-                        Some(_)=>crate::participant_owner::validate_ready(&owner,&binding)?,
-                        None=>{
+                    let authority = config
+                        .authority
+                        .clone()
+                        .unwrap_or_else(|| sha256_hex(identity.actor_id().as_bytes()));
+                    let binding =
+                        crate::participant_owner::logical_binding(&identity, &origin, &authority);
+                    match owner
+                        .read_exact()
+                        .map_err(|_| ParticipantError::local("STATE_BINDING_INVALID", "OPEN"))?
+                    {
+                        Some(_) => crate::participant_owner::validate_ready(&owner, &binding)?,
+                        None => {
                             // Earlier candidate indexes used only the default
                             // authority. They cannot be silently rebound.
-                            if config.authority.as_ref().is_some_and(|a|a!=&sha256_hex(identity.actor_id().as_bytes()))&&config.state_directory.join("participant.sqlite").is_file(){
-                                return Err(ParticipantError::local("STATE_AUTHORITY_UNPINNED","OPEN"));
+                            if config
+                                .authority
+                                .as_ref()
+                                .is_some_and(|a| a != &sha256_hex(identity.actor_id().as_bytes()))
+                                && config.state_directory.join("participant.sqlite").is_file()
+                            {
+                                return Err(ParticipantError::local(
+                                    "STATE_AUTHORITY_UNPINNED",
+                                    "OPEN",
+                                ));
                             }
-                            owner.write_exact(&binding).map_err(|_|ParticipantError::local("STATE_BINDING_FAILED","OPEN"))?;
+                            owner.write_exact(&binding).map_err(|_| {
+                                ParticipantError::local("STATE_BINDING_FAILED", "OPEN")
+                            })?;
                         }
                     }
                     let store = Store::open(&config.state_directory, &identity, &origin)?;
@@ -717,6 +759,7 @@ impl ParticipantClient {
         };
         Ok(Self {
             shared: Arc::new(Shared {
+                state_binding,
                 sender: tx,
                 cancel,
                 thread: Mutex::new(Some(thread)),
@@ -725,6 +768,7 @@ impl ParticipantClient {
             }),
             namespace: "program".into(),
             capability: Capability::owner(),
+            local_live: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         })
     }
     pub fn actor_id(&self) -> &str {
@@ -738,6 +782,12 @@ impl ParticipantClient {
     }
     /// An Agent or program session can only narrow its parent's authority.
     pub fn restrict(&self, name: &str, capability: Capability) -> Result<Self> {
+        if !self.locally_live() {
+            return Err(ParticipantError::local(
+                "LOCAL_CLIENT_REVOKED",
+                "AUTHORIZATION",
+            ));
+        }
         capability.validate()?;
         if !crate::communication_store::identifier(name)
             || !capability.is_subset_of(&self.capability)
@@ -755,12 +805,14 @@ impl ParticipantClient {
             shared: self.shared.clone(),
             namespace,
             capability,
+            local_live: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         })
     }
     fn context(&self) -> ReplyContext {
         ReplyContext {
             namespace: self.namespace.clone(),
             capability: self.capability.clone(),
+            local_live: self.local_live.clone(),
         }
     }
     fn send(&self, command: Command) -> Result<()> {
@@ -890,6 +942,7 @@ impl ParticipantClient {
         self.send(Command::Watch {
             context: self.context(),
             request: crate::participant_watch::Command::Attach {
+                local_live: self.local_live.clone(),
                 namespace: self.namespace.clone(),
                 options: options.clone(),
                 reply: tx,
@@ -927,6 +980,7 @@ impl ParticipantClient {
         self.send(Command::Watch {
             context: self.context(),
             request: crate::participant_watch::Command::Host {
+                local_live: self.local_live.clone(),
                 namespace: self.namespace.clone(),
                 options: options.clone(),
                 operation,
@@ -1167,6 +1221,7 @@ async fn engine_loop(
                 },
                 Some(Command::Invoke{context,request,reply})=>{
                     let result=(||{
+                        if !context.local_live.load(std::sync::atomic::Ordering::Acquire){return Err(ParticipantError::local("LOCAL_CLIENT_REVOKED","ADMISSION").original(&request.operation_id));}
                         context.capability.authorize(&request)?;
                         if crate::participant_actions::kind(&request.action)!=Some(StructureOperationKind::Mutation){return Err(ParticipantError::local("MUTATION_REQUIRED","VALIDATION"));}
                         let existing=if request.action=="participant.archive.migrate"{store.existing(&context.namespace,&request,&identity)?}else{None};
@@ -1218,6 +1273,7 @@ async fn engine_loop(
                     });job_kinds.insert(handle.id(),JobKind::Request);
                 },
                 Some(Command::Request{context,request,reply})=>{
+                    if !context.local_live.load(std::sync::atomic::Ordering::Acquire){let _=reply.send(Err(ParticipantError::local("LOCAL_CLIENT_REVOKED","ADMISSION")));continue;}
                     if jobs.len()-usize::from(refresh_running)+retry_persistence.len()>=config.max_inflight{let _=reply.send(Err(ParticipantError::local("NOT_ADMITTED_BUSY","ADMISSION")));continue;}
                     if let Err(e)=context.capability.authorize(&request){let _=reply.send(Err(e));continue;}
                     let access=access.clone();let stop=cancel.clone();let namespace=context.namespace;let actor=identity.actor_id().to_owned();let request_origin=origin.clone();let sources=sources.clone();
@@ -1261,9 +1317,13 @@ async fn engine_loop(
                 Err(_) => break,
             };
             let Some((key, request)) = due.into_iter().find_map(|key| {
-                if active.contains(&key) { return None; }
+                if active.contains(&key) {
+                    return None;
+                }
                 let request = store.request(&key.0, &key.1, &identity).ok()?;
-                if crate::participant_actions::maintenance(&request.action) && !maintenance.is_empty() {
+                if crate::participant_actions::maintenance(&request.action)
+                    && !maintenance.is_empty()
+                {
                     return None;
                 }
                 Some((key, request))
@@ -1356,26 +1416,44 @@ mod tests {
     use super::*;
     #[test]
     fn live_running_observation_does_not_invent_or_downgrade_remote_certainty() {
-        for (state,certainty,expected) in [
-            ("PENDING","UNKNOWN","UNKNOWN"),
-            ("PENDING","NOT_SUBMITTED","UNKNOWN"),
-            ("PENDING","COMMITTED","COMMITTED"),
-            ("ADMITTED","NOT_SUBMITTED","UNKNOWN"),
+        for (state, certainty, expected) in [
+            ("PENDING", "UNKNOWN", "UNKNOWN"),
+            ("PENDING", "NOT_SUBMITTED", "UNKNOWN"),
+            ("PENDING", "COMMITTED", "COMMITTED"),
+            ("ADMITTED", "NOT_SUBMITTED", "UNKNOWN"),
         ] {
-            let op=Operation{operation_id:"one".into(),state:state.into(),command_id:None,effect_certainty:certainty.into(),outcome:None,observation:"LOCAL_DURABLE".into()};
-            let unchanged=op.clone().observed_running(false);
-            assert_eq!(unchanged.state,state);
-            assert_eq!(unchanged.effect_certainty,certainty);
-            let running=op.observed_running(true);
-            assert_eq!(running.state,"RUNNING");
-            assert_eq!(running.effect_certainty,expected);
-            assert_eq!(running.observation,"LOCAL_RUNTIME");
+            let op = Operation {
+                operation_id: "one".into(),
+                state: state.into(),
+                command_id: None,
+                effect_certainty: certainty.into(),
+                outcome: None,
+                observation: "LOCAL_DURABLE".into(),
+            };
+            let unchanged = op.clone().observed_running(false);
+            assert_eq!(unchanged.state, state);
+            assert_eq!(unchanged.effect_certainty, certainty);
+            let running = op.observed_running(true);
+            assert_eq!(running.state, "RUNNING");
+            assert_eq!(running.effect_certainty, expected);
+            assert_eq!(running.observation, "LOCAL_RUNTIME");
         }
-        for (state,certainty) in [("ACCEPTED","COMMITTED"),("REJECTED_NO_EFFECT","NO_EFFECT")] {
-            let op=Operation{operation_id:"one".into(),state:state.into(),command_id:None,effect_certainty:certainty.into(),outcome:None,observation:"LOCAL_DURABLE".into()}.observed_running(true);
-            assert_eq!(op.state,state);
-            assert_eq!(op.effect_certainty,certainty);
-            assert_eq!(op.observation,"LOCAL_DURABLE");
+        for (state, certainty) in [
+            ("ACCEPTED", "COMMITTED"),
+            ("REJECTED_NO_EFFECT", "NO_EFFECT"),
+        ] {
+            let op = Operation {
+                operation_id: "one".into(),
+                state: state.into(),
+                command_id: None,
+                effect_certainty: certainty.into(),
+                outcome: None,
+                observation: "LOCAL_DURABLE".into(),
+            }
+            .observed_running(true);
+            assert_eq!(op.state, state);
+            assert_eq!(op.effect_certainty, certainty);
+            assert_eq!(op.observation, "LOCAL_DURABLE");
         }
     }
     #[tokio::test]
@@ -1500,6 +1578,7 @@ mod tests {
             let (release_tx, release_rx) = oneshot::channel::<()>();
             let client = ParticipantClient {
                 shared: Arc::new(Shared {
+                    state_binding: "synthetic".into(),
                     sender: sender.clone(),
                     cancel: KernelCancellationToken::new(),
                     thread: Mutex::new(None),
@@ -1508,6 +1587,7 @@ mod tests {
                 }),
                 namespace: "program".into(),
                 capability: Capability::owner(),
+                local_live: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             };
             let initial = certainty.to_owned();
             let helper = tokio::spawn(async move {

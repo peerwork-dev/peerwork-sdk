@@ -1206,7 +1206,7 @@ pub(crate) fn install_synthetic_key(
         .unwrap();
     key
 }
-fn native_message(
+pub(crate) fn native_message(
     id: &str,
     scope: &Scope,
     recipient: &Value,
@@ -2417,6 +2417,7 @@ async fn runtime_host_dispatch_persists_unknown_and_blocks_only_same_conversatio
         name: "existing-codex".into(),
         adapter,
         subscriptions: vec![HostSubscription {
+            client_generation: None,
             client: "worker".into(),
             watch: options.clone(),
         }],
@@ -2835,6 +2836,7 @@ async fn native_presence_selftests_empty_receiver_imports_authorized_keys_and_tr
             name: "existing-codex".into(),
             adapter: fixture.config(),
             subscriptions: vec![HostSubscription {
+                client_generation: None,
                 client: "worker".into(),
                 watch: options.clone(),
             }],
@@ -3101,6 +3103,7 @@ async fn runtime_bridge_reconciles_only_original_bound_receipts_across_recipient
             name: "bridge-existing-session".into(),
             adapter,
             subscriptions: vec![HostSubscription {
+                client_generation: None,
                 client: "worker".into(),
                 watch: options.clone(),
             }],
@@ -3414,6 +3417,7 @@ async fn native_bridge_receives_genuine_verified_e2ee_mail_from_shared_runtime()
             name: "native-host-bridge".into(),
             adapter: ready.adapter,
             subscriptions: vec![HostSubscription {
+                client_generation: None,
                 client: "worker".into(),
                 watch: options.clone(),
             }],
@@ -3861,6 +3865,8 @@ async fn native_agent_cli_mcp_send_reply_and_cancel_preserve_one_engine_intent()
     let master_scope = mail_scope(&ws, &master_box);
     let worker_scope = mail_scope(&ws, &worker_box);
     let master_profile = AgentProfile {
+        protocol_endpoints: Default::default(),
+            send_scopes: Default::default(), receive_endpoint_path: None,
         format: "peerwork.agent-profile.v1".into(),
         endpoint_path: ready.client_endpoints["master"].clone(),
         expected_origin: service.origin.clone(),
@@ -3879,6 +3885,8 @@ async fn native_agent_cli_mcp_send_reply_and_cancel_preserve_one_engine_intent()
         protocols: BTreeMap::from([("claim".into(), protocol_scope)]),
     };
     let worker_profile = AgentProfile {
+        protocol_endpoints: Default::default(),
+            send_scopes: Default::default(), receive_endpoint_path: None,
         format: "peerwork.agent-profile.v1".into(),
         endpoint_path: ready.client_endpoints["worker"].clone(),
         expected_origin: service.origin.clone(),
@@ -4016,6 +4024,7 @@ async fn native_agent_cli_mcp_send_reply_and_cancel_preserve_one_engine_intent()
     assert_eq!(conflict.code, "OPERATION_INPUT_CONFLICT");
     master
         .call(AgentRequest::Status {
+            protocol: None,
             operation_id: "cli-ping".into(),
         })
         .await
@@ -4107,6 +4116,7 @@ async fn native_agent_cli_mcp_send_reply_and_cancel_preserve_one_engine_intent()
         loop {
             let v = master
                 .call(AgentRequest::Status {
+                    protocol: None,
                     operation_id: "mcp-original-cancelled-wait".into(),
                 })
                 .await
@@ -4135,4 +4145,377 @@ async fn native_agent_cli_mcp_send_reply_and_cancel_preserve_one_engine_intent()
     mcp.await.unwrap().unwrap();
     cancel.cancel();
     daemon.await.unwrap().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires explicit synthetic PostgreSQL and real product HTTP fixture"]
+async fn connect_consolidates_missing_rights_and_resumes_without_owner_profile_exchange() {
+    use crate::{communication_runtime as ipc,participant_connect::{Connect,ConnectRequest,Registration,AuthorizationRequest}};
+    use ipc::{RuntimeConfig,EngineConfig,ClientConfig};
+    let service=Service::start();let root=crate::test_support::protected_test_dir();
+    let owner_dir=root.path().join("owner");let worker_dir=root.path().join("worker");
+    crate::secure_state::create_private_state_directory(&owner_dir).unwrap();
+    crate::secure_state::create_private_state_directory(&worker_dir).unwrap();
+    let owner_config=configuration(&owner_dir,&service.origin);let worker_config=configuration(&worker_dir,&service.origin);
+    let owner=ParticipantClient::open(owner_config.clone()).await.unwrap();
+    let created=mutate(&owner,"connect-space","structure.workspace.create",&Scope::default(),json!({"name":"Connect synthetic qualification"})).await;
+    let ws=created["workspace_id"].as_str().unwrap().to_owned();
+    let scope=Scope{workspace_id:Some(ws.clone()),..Scope::default()};
+    let metadata=selected(&owner,"structure.workspace.get",&scope,json!({})).await;
+    let mut admit=Invoke::new("connect-admit","structure.member.set",scope.clone(),json!({"actor_id":worker_config.expected_actor,"state":"ACTIVE","expected_membership_id":null}));
+    admit.expected_workspace_revision=metadata["workspace_revision"].as_u64();
+    let admitted=owner.invoke(admit,Duration::from_secs(5)).await.unwrap();assert_eq!(admitted.state,"ACCEPTED","{admitted:?}");
+    let fixture:Value=serde_json::from_str(include_str!("../../../tests/fixtures/protocol-role-bundle-v1.json")).unwrap();
+    let package=mutate(&owner,"connect-register","structure.protocol.register",&scope,json!({"bundle":fixture["bundle"]})).await;
+    let adopted=mutate(&owner,"connect-adopt","structure.adopt",&scope,json!({"package_digest":package["package_digest"],"bootstrap_grant":{"actions":["claim"],"protocol_roles":["WORKER"]}})).await;
+    owner.close().await.unwrap();
+    let engine=|name:&str,c:&ParticipantConfig|EngineConfig{name:name.into(),origin:c.origin.clone(),expected_actor:c.expected_actor.clone(),
+        authority:None,identity_path:c.identity_path.clone(),state_directory:c.state_directory.clone(),journal_path:Some(c.journal_path.clone()),
+        allow_loopback_http:true,transport:c.transport.clone(),max_inflight:4,max_pending:16,max_stored_bytes:8*1024*1024,migration_sources:Vec::new()};
+    let config=RuntimeConfig{format:"peerwork.participant-runtime.v1".into(),state_directory:root.path().join("runtime"),
+        engines:vec![engine("owner",&owner_config),engine("worker",&worker_config)],
+        clients:vec![ClientConfig{name:"owner".into(),engine:"owner".into(),capability:Capability::owner()},
+            ClientConfig{name:"worker".into(),engine:"worker".into(),capability:Capability::owner()}],hosts:Vec::new()};
+    let cancel=crate::KernelCancellationToken::new();let(tx,rx)=tokio::sync::oneshot::channel();
+    let running=tokio::spawn(ipc::serve(config,cancel.clone(),tx));let ready=rx.await.unwrap().unwrap();
+    let mut worker=Connect::open(&root.path().join("worker-local")).unwrap();
+    worker.register("worker",Registration{origin:service.origin.clone(),actor_id:worker_config.expected_actor.clone(),endpoint_path:ready.client_endpoints["worker"].clone()}).await.unwrap();
+    let request=ConnectRequest{setup_id:"worker-first".into(),participant:"worker".into(),workspace_id:ws,alias:"project".into(),send:true,receive:true,require_body_keys:false,protocols:Vec::new(),contacts:Vec::new(),host:None};
+    let pending=worker.run(request.clone()).await.unwrap();
+    assert_eq!(pending["blocker"]["code"],"OWNER_APPROVAL_REQUIRED","{pending}");
+    let handoff=pending["details"]["authorization_request"].clone();
+    assert!(!handoff.to_string().contains("endpoint_path"));assert!(!handoff.to_string().contains("profile_path"));
+    let mut owner=Connect::open(&root.path().join("owner-local")).unwrap();
+    owner.register("owner",Registration{origin:service.origin.clone(),actor_id:owner_config.expected_actor.clone(),endpoint_path:ready.client_endpoints["owner"].clone()}).await.unwrap();
+    let approved=owner.approve("owner","approve-worker",serde_json::from_value::<AuthorizationRequest>(handoff.clone()).unwrap()).await.unwrap();
+    assert_eq!(approved["state"],"APPROVED","{approved}");
+    let result=worker.run(request.clone()).await.unwrap();assert_eq!(result["state"],"LOCAL_CONFIGURED","{result}");
+    let before=service.counts().await;
+    let registry=root.path().join("worker-local/connect.state");let modified=std::fs::metadata(&registry).unwrap().modified().unwrap();
+    let again=worker.run(request.clone()).await.unwrap();assert_eq!(again["state"],"LOCAL_CONFIGURED");
+    let after=service.counts().await;
+    // The independent mailbox receiver may claim/pulse or synchronize keys
+    // while this local observation runs; those are not another setup attempt.
+    for action in ["structure.workspace.get","structure.communication.grant.get","structure.mailboxes.read","structure.communication.grant.set"] {
+        assert_eq!(before["actions"][action],after["actions"][action],"unchanged connect repeated {action}");
+    }
+    assert_eq!(std::fs::metadata(&registry).unwrap().modified().unwrap(),modified,"unchanged connect rewrote the setup journal");
+    let path=PathBuf::from(result["profile_path"].as_str().unwrap());let exact=std::fs::read(&path).unwrap();std::fs::remove_file(&path).unwrap();
+    let restored=worker.run(request.clone()).await.unwrap();assert_eq!(restored["state"],"LOCAL_CONFIGURED");assert_eq!(std::fs::read(&path).unwrap(),exact);
+    assert_eq!(owner.approve("owner","approve-worker",serde_json::from_value(handoff).unwrap()).await.unwrap()["state"],"APPROVED");
+    assert_eq!(service.counts().await["actions"]["structure.communication.grant.set"],1);
+    let old_profile=worker.profile().unwrap().unwrap();
+    let original_endpoint=std::fs::read(&old_profile.endpoint_path).unwrap();
+    std::fs::remove_file(&old_profile.endpoint_path).unwrap();
+    let repaired=worker.run(request.clone()).await.unwrap();assert_eq!(repaired["state"],"LOCAL_CONFIGURED","{repaired}");
+    assert_eq!(std::fs::read(&old_profile.endpoint_path).unwrap(),original_endpoint,"endpoint repair changed the credential or namespace");
+    let receiver_path=old_profile.receive_endpoint_path.as_ref().unwrap();
+    let original_receiver=std::fs::read(receiver_path).unwrap();std::fs::remove_file(receiver_path).unwrap();
+    let repaired=worker.run(request.clone()).await.unwrap();assert_eq!(repaired["state"],"LOCAL_CONFIGURED","{repaired}");
+    assert_eq!(std::fs::read(receiver_path).unwrap(),original_receiver,"receiver repair changed credentials/custody");
+    let mut role_request=request;role_request.setup_id="worker-role".into();
+    role_request.protocols.push(crate::participant_connect::ProtocolSelection{alias:"claim".into(),instance_id:adopted["instance_id"].as_str().unwrap().into(),role:"WORKER".into(),actions:Vec::new()});
+    let pending=worker.run(role_request.clone()).await.unwrap();assert_eq!(pending["blocker"]["code"],"OWNER_APPROVAL_REQUIRED","{pending}");
+    let approved=owner.approve("owner","approve-role",serde_json::from_value(pending["details"]["authorization_request"].clone()).unwrap()).await.unwrap();
+    assert_eq!(approved["state"],"APPROVED","{approved}");
+    let role_result=worker.run(role_request).await.unwrap();assert_eq!(role_result["state"],"LOCAL_CONFIGURED","{role_result}");
+    let new_profile=worker.profile().unwrap().unwrap();
+    assert_eq!(old_profile.endpoint_path,new_profile.endpoint_path,"adding a role replaced the communication client");
+    assert_eq!(std::fs::read(&new_profile.endpoint_path).unwrap(),original_endpoint,"adding a role rotated receiver credentials");
+    let tools=crate::agent_tools::AgentTools::open(new_profile).await.unwrap();
+    let role=tools.call(crate::agent_tools::AgentRequest::parse("protocol",json!({"protocol":"claim","role":"WORKER"})).unwrap()).await.unwrap();
+    assert_eq!(role["runtime"]["role"],"WORKER","{role}");
+    let action=tools.call(crate::agent_tools::AgentRequest::parse("act",json!({"protocol":"claim","operation_id":"connected-claim","action":"claim","structure":{"ttl_ms":100},"expected_revision":1,"wait_ms":5000})).unwrap()).await.unwrap();
+    assert_eq!(action["state"],"ACCEPTED","{action}");
+    let status=tools.call(crate::agent_tools::AgentRequest::parse("status",action["recovery_arguments"].clone()).unwrap()).await.unwrap();
+    assert_eq!(status["command_id"],action["command_id"]);
+    worker.register("owner",Registration{origin:service.origin.clone(),actor_id:owner_config.expected_actor.clone(),endpoint_path:ready.client_endpoints["owner"].clone()}).await.unwrap();
+    assert_eq!(worker.profile().err().unwrap().code,"MULTIPLE_IDENTITIES_SELECT_FRONTEND_PARTICIPANT");
+    // A pinned MCP session reads through the live setup writer and cannot be
+    // switched to another locally registered identity or workspace.
+    use tokio::io::{AsyncBufReadExt,AsyncWriteExt};
+    let (server,client)=tokio::io::duplex(65536);let(sr,sw)=tokio::io::split(server);let(cr,mut cw)=tokio::io::split(client);
+    let mut cr=tokio::io::BufReader::new(cr);
+    let mcp=tokio::spawn(crate::agent_mcp::serve_local_selected(root.path().join("worker-local"),Some("worker".into()),scope.workspace_id.clone(),tokio::io::BufReader::new(sr),sw));
+    cw.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{},\"clientInfo\":{\"name\":\"synthetic\",\"version\":\"1\"}}}\n").await.unwrap();
+    let mut line=String::new();cr.read_line(&mut line).await.unwrap();assert!(serde_json::from_str::<Value>(&line).unwrap()["result"].is_object());
+    cw.write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"peerwork_context\",\"arguments\":{}}}\n").await.unwrap();
+    line.clear();cr.read_line(&mut line).await.unwrap();let context:Value=serde_json::from_str(&line).unwrap();
+    assert_eq!(context["result"]["structuredContent"]["actor_id"],worker_config.expected_actor,"{context}");
+    assert_eq!(context["result"]["structuredContent"]["onboarding"]["participants"].as_array().unwrap().len(),1);
+    let wrong=json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"peerwork_connect","arguments":{"request":{"setup_id":"wrong-owner","participant":"owner","workspace_id":scope.workspace_id,"receive":true}}}});
+    cw.write_all(format!("{wrong}\n").as_bytes()).await.unwrap();line.clear();cr.read_line(&mut line).await.unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&line).unwrap()["result"]["structuredContent"]["error"]["code"],"FRONTEND_IDENTITY_PIN_MISMATCH");
+    drop(cw);drop(cr);mcp.await.unwrap().unwrap();
+    assert_eq!(service.counts().await["journal_reads"],0);
+    cancel.cancel();running.await.unwrap().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires explicit synthetic PostgreSQL and real product HTTP fixture"]
+async fn connect_send_only_accepts_body_keys_without_mailbox_and_preserves_lease_on_receive_upgrade() {
+    use crate::{communication_runtime as ipc,participant_connect::{Connect,ConnectRequest,Registration,AuthorizationRequest,ContactSelection},agent_tools::{AgentTools,AgentRequest}};
+    use ipc::{RuntimeConfig,EngineConfig,ClientConfig};
+    let service=Service::start();
+    let root=crate::test_support::protected_test_dir();
+    let owner_dir=root.path().join("owner");let worker_dir=root.path().join("sender");
+    crate::secure_state::create_private_state_directory(&owner_dir).unwrap();
+    crate::secure_state::create_private_state_directory(&worker_dir).unwrap();
+    let owner_config=configuration(&owner_dir,&service.origin);let worker_config=configuration(&worker_dir,&service.origin);
+    let owner=ParticipantClient::open(owner_config.clone()).await.unwrap();
+    let created=mutate(&owner,"sender-space","structure.workspace.create",&Scope::default(),json!({"name":"Synthetic send-only connect"})).await;
+    let ws=created["workspace_id"].as_str().unwrap().to_owned();let scope=Scope{workspace_id:Some(ws.clone()),..Default::default()};
+    let meta=selected(&owner,"structure.workspace.get",&scope,json!({})).await;
+    let mut admit=Invoke::new("sender-admit","structure.member.set",scope.clone(),json!({"actor_id":worker_config.expected_actor,"state":"ACTIVE","expected_membership_id":null}));
+    admit.expected_workspace_revision=meta["workspace_revision"].as_u64();
+    let admitted=structure(&owner.invoke(admit,Duration::from_secs(5)).await.unwrap());
+    let owner_box=mutate(&owner,"sender-owner-grant","structure.communication.grant.set",&scope,json!({"actor_id":owner.actor_id(),"membership_id":meta["membership"]["membership_id"],"send":true,"receive":true,"expected_revision":null})).await["mailbox"].clone();
+    let time=owner.request(Invoke::new("time","participant.time.read",scope.clone(),json!({}))).await.unwrap();
+    let initial_time=time["server_time_ms"].as_u64().unwrap();
+    let expiry=initial_time+2_000_000;
+    mutate(&owner,"sender-only-grant","structure.communication.grant.set",&scope,json!({"actor_id":worker_config.expected_actor,"membership_id":admitted["membership_id"],"send":true,"receive":false,"expires_at":expiry,"expected_revision":null})).await;
+    let mut read_only=Capability::owner();read_only.allow_root=false;read_only.workspace_ids=Some([ws.clone()].into());read_only.operations=["participant.keys.prepare".into()].into();
+    let head_reader=owner.restrict("head-observer",read_only).unwrap();
+    let no_head=head_reader.request(Invoke::new("prepare-no-head","participant.keys.prepare",scope.clone(),json!({}))).await.unwrap();
+    assert_eq!(no_head["state"],"OWNER_KEY_HEAD_REQUIRED","{no_head}");
+    assert!(service.counts().await["actions"]["structure.content-key.set"].is_null(),"key preparation published a remote head through restricted authority");
+    let key=install_synthetic_key(&owner_config,&ws,&[41;32],None);
+    mutate(&owner,"sender-head","structure.content-key.set",&scope,json!({"key_id":key,"expected_epoch":0,"expected_head_revision":null})).await;
+    owner.close().await.unwrap();
+    let engine=|name:&str,c:&ParticipantConfig|EngineConfig{name:name.into(),origin:c.origin.clone(),expected_actor:c.expected_actor.clone(),authority:None,
+        identity_path:c.identity_path.clone(),state_directory:c.state_directory.clone(),journal_path:Some(c.journal_path.clone()),allow_loopback_http:true,transport:c.transport.clone(),max_inflight:4,max_pending:32,max_stored_bytes:8*1024*1024,migration_sources:Vec::new()};
+    let config=RuntimeConfig{format:"peerwork.participant-runtime.v1".into(),state_directory:root.path().join("runtime"),
+        engines:vec![engine("owner",&owner_config),engine("sender",&worker_config)],clients:vec![ClientConfig{name:"owner".into(),engine:"owner".into(),capability:Capability::owner()},ClientConfig{name:"sender".into(),engine:"sender".into(),capability:Capability::owner()}],hosts:Vec::new()};
+    let cancel=crate::KernelCancellationToken::new();let(tx,rx)=tokio::sync::oneshot::channel();let running=tokio::spawn(ipc::serve(config,cancel.clone(),tx));let ready=rx.await.unwrap().unwrap();
+    let mut worker=Connect::open(&root.path().join("sender-local")).unwrap();
+    worker.register("sender",Registration{origin:service.origin.clone(),actor_id:worker_config.expected_actor.clone(),endpoint_path:ready.client_endpoints["sender"].clone()}).await.unwrap();
+    let mut owner=Connect::open(&root.path().join("owner-local")).unwrap();
+    owner.register("owner",Registration{origin:service.origin.clone(),actor_id:owner_config.expected_actor.clone(),endpoint_path:ready.client_endpoints["owner"].clone()}).await.unwrap();
+    let request=ConnectRequest{setup_id:"send-first".into(),participant:"sender".into(),workspace_id:ws.clone(),alias:"project".into(),send:true,receive:false,require_body_keys:true,protocols:Vec::new(),contacts:vec![ContactSelection{alias:"owner".into(),actor_id:owner_config.expected_actor.clone()}],host:None};
+    let pending=worker.run(request.clone()).await.unwrap();
+    assert_eq!(pending["blocker"]["code"],"KEY_AUTHORIZATION_REQUIRED","{pending}");
+    let old_handoff=pending["details"]["authorization_request"].clone();
+    let deadline=old_handoff["key_request"]["expires_at"].as_u64().unwrap();
+    service.config(json!({"clock_offset_ms":deadline-initial_time+1000})).await;
+    let refreshed=worker.run(request.clone()).await.unwrap();
+    assert_eq!(refreshed["setup_id"],pending["setup_id"]);
+    let handoff=refreshed["details"]["authorization_request"].clone();
+    assert_ne!(handoff["key_request"]["request_id"],old_handoff["key_request"]["request_id"],"expired request was replayed");
+    assert_eq!(handoff["key_request"]["recipient_key_id"],old_handoff["key_request"]["recipient_key_id"],"request refresh replaced recipient identity");
+    let snapshot=crate::secure_state::SecureStateStore::read_snapshot(&root.path().join("sender-local/connect.state"),16*1024*1024).unwrap();
+    let saved:Value=serde_json::from_slice(&snapshot).unwrap();
+    assert_eq!(saved["setups"]["send-first"]["key_request_history"][0]["request_id"],old_handoff["key_request"]["request_id"]);
+    assert!(handoff["missing"].as_array().unwrap().is_empty(),"existing send permission was requested again: {handoff}");
+    let approved=owner.approve("owner","keys-only",serde_json::from_value::<AuthorizationRequest>(handoff).unwrap()).await.unwrap();
+    assert_eq!(approved["state"],"APPROVED","{approved}");
+    let result=worker.run(request.clone()).await.unwrap();
+    assert_eq!(result["state"],"LOCAL_CONFIGURED","{result}");
+    assert_eq!(result["keys"]["state"],"READY");
+    let profile=worker.profile().unwrap().unwrap();
+    assert!(profile.scopes.is_empty());assert_eq!(profile.send_scopes["project"].workspace_id,ws);
+    assert!(profile.receive_endpoint_path.is_none());
+    let sender=ipc::RuntimeClient::connect(profile.endpoint_path.clone(),&service.origin,&worker_config.expected_actor).await.unwrap();
+    let caps=sender.call(json!({"method":"capabilities"})).await.unwrap();
+    let operations=caps["capability"]["operations"].as_array().unwrap();
+    assert!(!operations.iter().any(|v|v.as_str().unwrap().starts_with("structure.mailbox.")&&v!="structure.mailbox.get"));
+    assert!(sender.call(json!({"method":"bindings"})).await.unwrap().as_array().unwrap().is_empty());
+    let tools=AgentTools::open(profile.clone()).await.unwrap();
+    let sent=tools.call(AgentRequest::parse("send",json!({"contact":"owner","operation_id":"sender-message","text":"E2EE without a receiver","wait_ms":5000})).unwrap()).await.unwrap();
+    assert_eq!(sent["state"],"ACCEPTED","{sent}");
+    let owner_client=ipc::RuntimeClient::connect(ready.client_endpoints["owner"].clone(),&service.origin,&owner_config.expected_actor).await.unwrap();
+    let envelope=owner_client.call(json!({"method":"request","request":Invoke::new("read-sent","structure.message.get",scope.clone(),json!({"message_id":sent["result"]["structure"]["message_id"]}))})).await.unwrap();
+    assert_eq!(envelope["result"]["opened_messages"][0]["text"],"E2EE without a receiver","{envelope}");
+    assert!(envelope["result"]["structure"]["message"]["reply_address"].is_null());
+    let boxes=owner_client.call(json!({"method":"request","request":Invoke::new("sender-boxes","structure.mailboxes.read",scope.clone(),json!({"actor_id":worker_config.expected_actor,"limit":8}))})).await.unwrap();
+    assert!(boxes["result"]["structure"]["mailboxes"].as_array().unwrap().is_empty(),"send-only created a mailbox: {boxes}");
+    assert_eq!(service.counts().await["actions"]["structure.communication.grant.set"],2,"key-only approval rewrote communication authority");
+    let mut upgrade=request;upgrade.setup_id="receive-upgrade".into();upgrade.receive=true;
+    let pending=worker.run(upgrade.clone()).await.unwrap();assert_eq!(pending["blocker"]["code"],"OWNER_APPROVAL_REQUIRED","{pending}");
+    let handoff=pending["details"]["authorization_request"].clone();assert_eq!(handoff["body_keys_required"],false);
+    assert_eq!(handoff["missing"],json!([{"kind":"COMMUNICATION_RECEIVE"}]));
+    service.config(json!({"drop_action":"structure.communication.grant.set"})).await;
+    let interrupted=owner.approve("owner","receive-only",serde_json::from_value(handoff.clone()).unwrap()).await.unwrap();
+    assert_eq!(interrupted["state"],"PENDING","{interrupted}");
+    assert_eq!(interrupted["next_action"],"RESUME_SAME_APPROVAL_ID");
+    service.config(json!({"offline":false})).await;
+    let approved=owner.approve("owner","receive-only",serde_json::from_value(handoff.clone()).unwrap()).await.unwrap();assert_eq!(approved["state"],"APPROVED","{approved}");
+    let grant=owner_client.call(json!({"method":"request","request":Invoke::new("grant","structure.communication.grant.get",scope.clone(),json!({"actor_id":worker_config.expected_actor}))})).await.unwrap();
+    assert_eq!(grant["result"]["structure"]["grant"]["expires_at"],expiry);
+    assert_eq!(grant["result"]["structure"]["grant"]["can_send"],true);
+    let result=worker.run(upgrade).await.unwrap();assert_eq!(result["state"],"LOCAL_CONFIGURED","{result}");
+    let upgraded=worker.profile().unwrap().unwrap();
+    assert_eq!(upgraded.endpoint_path,profile.endpoint_path,"receiving replaced sender namespace");
+    let receive=ipc::RuntimeClient::connect(upgraded.receive_endpoint_path.clone().unwrap(),&service.origin,&worker_config.expected_actor).await.unwrap();
+    let receive_caps=receive.call(json!({"method":"capabilities"})).await.unwrap();
+    assert_eq!(receive_caps["capability"]["mailbox_ids"],json!([upgraded.scopes["project"].mailbox_id]));
+    assert!(!receive_caps["capability"]["operations"].as_array().unwrap().iter().any(|v|v=="structure.message.send"));
+    assert_eq!(sender.call(json!({"method":"operation","operation_id":"sender-message"})).await.unwrap()["command_id"],sent["command_id"]);
+    // Renewing an expired lease must be explicit and may not resurrect a
+    // receive direction absent from the newly approved delta.
+    service.config(json!({"clock_offset_ms":expiry-initial_time+180000})).await;
+    let mut renewal=handoff;renewal["missing"]=json!([{"kind":"COMMUNICATION_SEND"}]);renewal["grant_expires_at"]=json!(expiry+500000);
+    let approved=owner.approve("owner","explicit-renewal",serde_json::from_value(renewal).unwrap()).await.unwrap();assert_eq!(approved["state"],"APPROVED","{approved}");
+    let grant=owner_client.call(json!({"method":"request","request":Invoke::new("renewed-grant","structure.communication.grant.get",scope.clone(),json!({"actor_id":worker_config.expected_actor}))})).await.unwrap();
+    assert_eq!(grant["result"]["structure"]["grant"]["can_receive"],false,"expired receive authority was resurrected");
+    assert_eq!(service.counts().await["journal_reads"],0);
+    assert!(owner_box["mailbox_id"].is_string());
+    cancel.cancel();running.await.unwrap().unwrap();
+}
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires explicit synthetic PostgreSQL, real product HTTP fixture and rebuilt native CLI"]
+async fn native_connect_cli_preserves_original_engine_and_attaches_selected_host_without_owner_exchange(){
+    use crate::{communication_host::tests::CodexFixture,communication_runtime as ipc,participant_connect::Connect,agent_tools::{AgentTools,AgentRequest}};
+    let service=Service::start();let host=CodexFixture::start();let root=crate::test_support::protected_test_dir();
+    let owner_dir=root.path().join("owner");crate::secure_state::create_private_state_directory(&owner_dir).unwrap();
+    let mut original=configuration(&owner_dir,&service.origin);original.journal_path=owner_dir.join("existing-nondefault-journal.sqlite");original.authority=Some(peerwork_core::crypto::sha256_hex(original.expected_actor.as_bytes()));original.transport.request_timeout_ms=17432;
+    let owner=ParticipantClient::open(original.clone()).await.unwrap();
+    let created=mutate(&owner,"cli-connect-space","structure.workspace.create",&Scope::default(),json!({"name":"Synthetic native bootstrap qualification"})).await;
+    let ws=created["workspace_id"].as_str().unwrap().to_owned();let scope=Scope{workspace_id:Some(ws.clone()),..Default::default()};
+    let metadata=selected(&owner,"structure.workspace.get",&scope,json!({})).await;
+    let mailbox=mutate(&owner,"cli-connect-grant","structure.communication.grant.set",&scope,json!({"actor_id":owner.actor_id(),"membership_id":metadata["membership"]["membership_id"],"expected_revision":null,"send":true,"receive":true})).await["mailbox"].clone();
+    let key=install_synthetic_key(&original,&ws,&[59;32],None);
+    mutate(&owner,"cli-connect-head","structure.content-key.set",&scope,json!({"key_id":key,"expected_epoch":0,"expected_head_revision":null})).await;
+    let original_operation=owner.invoke(native_message("before-bootstrap",&scope,&mailbox,&mailbox,&"V".repeat(43),"original journal and key survive"),Duration::from_secs(5)).await.unwrap();assert_eq!(original_operation.state,"ACCEPTED");
+    let actor=owner.actor_id().to_owned();let identity_hash=peerwork_core::crypto::sha256_hex(&std::fs::read(&original.identity_path).unwrap());
+    owner.close().await.unwrap();
+    let local=root.path().join("local");let project=root.path().join("project");crate::onboarding_files::directory(&project,false).unwrap();
+    let adapter=host.config();let executable=PathBuf::from(std::env::var("PEERWORK_PARTICIPANT_CLI").expect("rebuilt native CLI required"));
+    let args:Vec<String>=vec!["connect".into(),"--local".into(),local.to_str().unwrap().into(),"--participant".into(),"worker".into(),
+        "--identity".into(),original.identity_path.to_str().unwrap().into(),"--engine-state".into(),original.state_directory.to_str().unwrap().into(),
+        "--journal".into(),original.journal_path.to_str().unwrap().into(),"--authority".into(),original.authority.clone().unwrap(),"--request-timeout-ms".into(),"17432".into(),
+        "--origin".into(),service.origin.clone(),"--allow-loopback-http".into(),"--workspace".into(),ws.clone(),"--id".into(),"cold-connect".into(),"--send".into(),"--receive".into(),"--body-keys".into(),
+        "--codex-endpoint".into(),adapter["endpoint"].as_str().unwrap().into(),"--codex-thread".into(),"existing-thread".into(),"--codex-session".into(),adapter["expected_session_id"].as_str().unwrap().into(),
+        "--install".into(),"codex".into(),"--project".into(),project.to_str().unwrap().into()];
+    async fn run(executable:&std::path::Path,args:&[String])->Value{
+        let exe=executable.to_owned();let args=args.to_vec();
+        let output=tokio::task::spawn_blocking(move||Command::new(exe).args(args).output().unwrap()).await.unwrap();
+        let value:Value=serde_json::from_slice(&output.stdout).unwrap();assert!(output.status.success(),"native connect failed: {value}");value
+    }
+    let mut configured=run(&executable,&args).await;
+    for _ in 0..10{
+        if configured["state"]=="LOCAL_CONFIGURED"{break;}
+        assert_eq!(configured["blocker"]["code"],"HOST_STARTING","{configured}");
+        tokio::time::sleep(Duration::from_millis(100)).await;configured=run(&executable,&args).await;
+    }
+    assert_eq!(configured["state"],"LOCAL_CONFIGURED","{configured}");assert_eq!(configured["owner_exchange_required"],false);assert_eq!(configured["actor_id"],actor);
+    let runtime=local.join("runtime-worker");
+    let config=crate::communication_store::private_json(&runtime.join("config.json"),65536).unwrap();
+    assert_eq!(config["engines"][0]["journal_path"],original.journal_path.to_str().unwrap());assert_eq!(config["engines"][0]["authority"],original.authority.as_deref().unwrap());assert_eq!(config["engines"][0]["transport"]["request_timeout_ms"],17432);
+    let launch=crate::secure_state::SecureStateStore::read_snapshot(&runtime.join("bootstrap.state"),65536).unwrap().to_vec();
+    let registry=Connect::inspect(&local).unwrap();let profile=registry.profile().unwrap().unwrap();assert_eq!(profile.expected_actor,actor);
+    let receiver=ipc::RuntimeClient::connect(profile.receive_endpoint_path.clone().unwrap(),&service.origin,&actor).await.unwrap();
+    let tools=AgentTools::open(profile).await.unwrap();
+    let inbox=tools.call(AgentRequest::parse("wait",json!({"scope":"workspace","wait_ms":5000})).unwrap()).await.unwrap();
+    assert_eq!(inbox["items"][0]["message"]["text"],"original journal and key survive","{inbox}");
+    let bindings=receiver.call(json!({"method":"bindings"})).await.unwrap();let binding=bindings.as_array().unwrap().first().unwrap().clone();
+    tokio::time::timeout(Duration::from_secs(5),async{loop{
+        let status=receiver.call(json!({"method":"delivery_status","options":binding,"item":inbox["items"][0]["item"]})).await.unwrap();
+        if status["host"]=="HOST_ACCEPTED"{break;}
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }}).await.expect("selected host never accepted the verified inbox input");
+    let inputs:Vec<_>=host.calls().into_iter().filter(|v|matches!(v["method"].as_str(),Some("turn/start"|"turn/steer"))).collect();
+    assert_eq!(inputs.len(),1,"initial connect opened multiple inputs for one delivery");
+    assert!(inputs[0].to_string().contains("original journal and key survive"));
+    let admin=ipc::call(&runtime.join("admin.json"),json!({"method":"status"})).await.unwrap();assert_eq!(admin["value"]["hosts"].as_array().unwrap().len(),1);
+    let again=run(&executable,&args).await;assert_eq!(again["state"],"LOCAL_CONFIGURED");
+    assert_eq!(crate::secure_state::SecureStateStore::read_snapshot(&runtime.join("bootstrap.state"),65536).unwrap().as_slice(),launch.as_slice(),"unchanged reentry started another runtime");
+    assert_eq!(service.counts().await["actions"]["structure.communication.grant.set"],1,"authorized connect requested new Owner grants");
+    assert!(service.counts().await["actions"]["structure.access.authorize"].is_null());
+    assert_eq!(peerwork_core::crypto::sha256_hex(&std::fs::read(&original.identity_path).unwrap()),identity_hash,"bootstrap replaced the original identity");
+    assert!(project.join(".codex/config.toml").is_file());assert!(project.join(".agents/skills/peerwork/SKILL.md").is_file());
+    let stopped=ipc::call(&runtime.join("admin.json"),json!({"method":"stop"})).await.unwrap();assert_eq!(stopped["ok"],true);
+    let restored=tokio::time::timeout(Duration::from_secs(5),async{loop{
+        match ParticipantClient::open(original.clone()).await{Ok(client)=>break client,Err(_)=>tokio::time::sleep(Duration::from_millis(20)).await,}
+    }}).await.unwrap();
+    assert_eq!(restored.operation("before-bootstrap").await.unwrap().command_id,original_operation.command_id,"bootstrap abandoned the original operation namespace");
+    assert_eq!(service.counts().await["journal_reads"],0);restored.close().await.unwrap();
+}
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires synthetic PostgreSQL, real HTTP and synthetic selected host"]
+async fn shared_host_keeps_healthy_scope_running_when_result_storage_fails_and_another_client_is_revoked(){shared_host_result_failure(false).await;}
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires synthetic PostgreSQL, real HTTP and synthetic selected host"]
+async fn shared_host_reconnects_unknown_input_when_result_write_fails_without_panicking_other_scopes(){shared_host_result_failure(true).await;}
+async fn shared_host_result_failure(lose_ack:bool){
+    use crate::{communication_host::tests::CodexFixture,communication_runtime::{self as ipc,ClientConfig,EngineConfig,RuntimeConfig},participant_dispatch::{HostConfig,HostSubscription}};
+    let service=Service::start();let host=CodexFixture::start();let root=crate::test_support::protected_test_dir();
+    let options=configuration(root.path(),&service.origin);let owner=ParticipantClient::open(options.clone()).await.unwrap();
+    let mut scopes=Vec::new();let mut boxes=Vec::new();
+    for (index,key_bytes) in [[65;32],[66;32]].iter().enumerate(){
+        let created=mutate(&owner,&format!("fault-space-{index}"),"structure.workspace.create",&Scope::default(),json!({"name":format!("Synthetic isolated scope {index}")})).await;
+        let scope=Scope{workspace_id:Some(created["workspace_id"].as_str().unwrap().into()),..Default::default()};
+        let metadata=selected(&owner,"structure.workspace.get",&scope,json!({})).await;
+        let mailbox=mutate(&owner,&format!("fault-grant-{index}"),"structure.communication.grant.set",&scope,json!({"actor_id":owner.actor_id(),"membership_id":metadata["membership"]["membership_id"],"expected_revision":null,"send":true,"receive":true})).await["mailbox"].clone();
+        let key=install_synthetic_key(&options,scope.workspace_id.as_deref().unwrap(),key_bytes,None);
+        mutate(&owner,&format!("fault-head-{index}"),"structure.content-key.set",&scope,json!({"key_id":key,"expected_epoch":0,"expected_head_revision":null})).await;
+        if index==0{assert_eq!(owner.invoke(native_message(&format!("fault-prime-{index}"),&scope,&mailbox,&mailbox,&"A".repeat(43),&format!("scope-{index} verified input")),Duration::from_secs(5)).await.unwrap().state,"ACCEPTED");}
+        scopes.push(scope);boxes.push(mailbox);
+    }
+    owner.close().await.unwrap();
+    let runtime=RuntimeConfig{format:"peerwork.participant-runtime.v1".into(),state_directory:root.path().join("runtime"),engines:vec![EngineConfig{name:"original".into(),origin:options.origin.clone(),expected_actor:options.expected_actor.clone(),authority:None,identity_path:options.identity_path.clone(),state_directory:options.state_directory.clone(),journal_path:Some(options.journal_path.clone()),allow_loopback_http:true,transport:options.transport.clone(),max_inflight:4,max_pending:16,max_stored_bytes:8*1024*1024,migration_sources:Vec::new()}],clients:vec![ClientConfig{name:"parent".into(),engine:"original".into(),capability:Capability::owner()}],hosts:Vec::new()};
+    let stop=KernelCancellationToken::new();let(tx,rx)=oneshot::channel();let server=tokio::spawn(ipc::serve(runtime,stop.clone(),tx));let ready=rx.await.unwrap().unwrap();let parent=&ready.client_endpoints["parent"];
+    let mut derived=Vec::new();let mut watches=Vec::new();let mut endpoints=Vec::new();let mut subscriptions=Vec::new();
+    for index in 0..2{
+        let mut capability=Capability::owner();capability.allow_root=false;capability.workspace_ids=Some([scopes[index].workspace_id.clone().unwrap()].into());capability.mailbox_ids=Some([boxes[index]["mailbox_id"].as_str().unwrap().into()].into());
+        let client=ipc::call(parent,json!({"method":"derive","name":format!("scope-{index}"),"capability":capability})).await.unwrap();assert_eq!(client["ok"],true,"{client}");
+        let watch=WatchOptions{workspace_id:scopes[index].workspace_id.clone().unwrap(),mailbox_id:boxes[index]["mailbox_id"].as_str().unwrap().into(),membership_id:boxes[index]["membership_id"].as_str().unwrap().into(),consumer_id:format!("scope-{index}"),host_destination:None};
+        subscriptions.push(HostSubscription{client:client["value"]["client_name"].as_str().unwrap().into(),client_generation:client["value"]["client_generation"].as_u64(),watch:watch.clone()});
+        endpoints.push(PathBuf::from(client["value"]["endpoint_path"].as_str().unwrap()));derived.push(client);watches.push(watch);
+    }
+    host.approval.store(true,std::sync::atomic::Ordering::SeqCst);
+    let config=HostConfig{name:"one-physical-host".into(),adapter:host.config(),subscriptions};
+    let ensured=ipc::call(&ready.admin_endpoint,json!({"method":"host_ensure","config":config})).await.unwrap();assert_eq!(ensured["ok"],true,"{ensured}");
+    for index in 0..2{
+        tokio::time::timeout(Duration::from_secs(10),async{loop{
+            let bindings=ipc::call(&endpoints[index],json!({"method":"bindings"})).await.unwrap();
+            if let Some(watch)=bindings["value"].as_array().and_then(|xs|xs.first()){
+                watches[index]=serde_json::from_value(watch.clone()).unwrap();
+                let page=ipc::call(&endpoints[index],json!({"method":"inbox","options":watches[index],"after":0,"limit":1})).await.unwrap();
+                if page["value"]["receiver_link_verified"]==true&&(index==1||page["value"]["items"].as_array().is_some_and(|xs|!xs.is_empty())){break;}
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }}).await.expect("selected scope did not store its encrypted input");
+    }
+    let db=rusqlite::Connection::open(options.state_directory.join("participant-inbox.sqlite")).unwrap();db.busy_timeout(Duration::from_secs(2)).unwrap();
+    let failed_workspace=scopes[0].workspace_id.as_deref().unwrap();assert!(crate::workspace_urls::token(failed_workspace));
+    db.execute_batch(&format!("CREATE TRIGGER injected_result_write_failure BEFORE UPDATE OF state ON inbox_host_calls WHEN OLD.workspace='{failed_workspace}' BEGIN SELECT RAISE(FAIL,'synthetic result write failure'); END;")).unwrap();
+    host.lose_next_ack.store(lose_ack,std::sync::atomic::Ordering::SeqCst);
+    host.approval.store(false,std::sync::atomic::Ordering::SeqCst);
+    tokio::time::timeout(Duration::from_secs(10),async{loop{
+        let status=ipc::call(&ready.admin_endpoint,json!({"method":"status"})).await.unwrap();
+        if status["value"]["hosts"][0]["pending_result_writes"]==1{break;}tokio::time::sleep(Duration::from_millis(20)).await;
+    }}).await.expect("original host result never reached injected persistence failure");
+    let request=native_message("healthy-during-fault",&scopes[1],&boxes[1],&boxes[1],&"B".repeat(43),"healthy input while another result cannot be saved");
+    assert_eq!(ipc::call(parent,json!({"method":"invoke","request":request,"wait_ms":5000})).await.unwrap()["value"]["state"],"ACCEPTED");
+    let item=tokio::time::timeout(Duration::from_secs(12),async{loop{
+        let page=ipc::call(&endpoints[1],json!({"method":"inbox","options":watches[1],"limit":1})).await.unwrap();
+        if let Some(item)=page["value"]["items"].as_array().and_then(|xs|xs.first()){
+            let reference=json!({"sequence":item["sequence"],"delivery_id":item["delivery_id"]});
+            let status=ipc::call(&endpoints[1],json!({"method":"delivery_status","options":watches[1],"item":reference})).await.unwrap();
+            if status["value"]["host"]=="HOST_ACCEPTED"{break reference;}
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }}).await.expect("a failed result write stopped the unrelated scope");
+    let count_inputs=||host.calls().iter().filter(|v|matches!(v["method"].as_str(),Some("turn/start"|"turn/steer"))).count();
+    tokio::time::timeout(Duration::from_secs(10),async{loop{
+        let pending:usize=db.query_row("SELECT count(*) FROM inbox_host_calls WHERE workspace=?1 AND state='CALL_OPEN'",[failed_workspace],|r|r.get(0)).unwrap();
+        if count_inputs()==2&&pending==1{break;}tokio::time::sleep(Duration::from_millis(20)).await;
+    }}).await.expect("faulted scope never reached its original host input");
+    let pending:usize=db.query_row("SELECT count(*) FROM inbox_host_calls WHERE workspace=?1 AND state='CALL_OPEN'",[failed_workspace],|r|r.get(0)).unwrap();assert_eq!(pending,1);
+    let status=ipc::call(&ready.admin_endpoint,json!({"method":"status"})).await.unwrap();assert_eq!(status["value"]["hosts"].as_array().unwrap().len(),1);
+    let revoked=ipc::call(parent,json!({"method":"revoke_derived","name":"scope-0","expected_binding":derived[0]["value"]["binding_version"]})).await.unwrap();assert_eq!(revoked["value"]["state"],"LOCAL_CLIENTS_REVOKED","{revoked}");
+    db.execute_batch("DROP TRIGGER injected_result_write_failure").unwrap();
+    tokio::time::timeout(Duration::from_secs(5),async{loop{
+        let saved:usize=db.query_row("SELECT count(*) FROM inbox_host_calls WHERE workspace=?1 AND state=?2",rusqlite::params![failed_workspace,if lose_ack{"RESULT_UNKNOWN"}else{"HOST_ACCEPTED"}],|r|r.get(0)).unwrap();if saved==1{break;}
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }}).await.expect("revocation discarded the observed original host result");
+    let request=native_message("healthy-after-revoke",&scopes[1],&boxes[1],&boxes[1],&"C".repeat(43),"healthy input after another client was revoked");
+    let sent=ipc::call(parent,json!({"method":"invoke","request":request,"wait_ms":5000})).await.unwrap();assert_eq!(sent["value"]["state"],"ACCEPTED","{sent}");
+    tokio::time::timeout(Duration::from_secs(10),async{loop{if count_inputs()==3{break;}tokio::time::sleep(Duration::from_millis(20)).await;}}).await.expect("revoking another scope stopped the shared host");
+    assert_eq!(count_inputs(),3,"retry repeated original host input");
+    assert_eq!(ipc::call(&endpoints[1],json!({"method":"delivery_status","options":watches[1],"item":item})).await.unwrap()["value"]["host"],"HOST_ACCEPTED");
+    assert!(!endpoints[0].exists());assert_eq!(service.counts().await["journal_reads"],0);
+    drop(db);stop.cancel();server.await.unwrap().unwrap();
 }

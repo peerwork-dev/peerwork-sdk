@@ -95,30 +95,83 @@ async fn write<W: AsyncWrite + Unpin>(writer: &mut W, value: Value) -> Result<()
     .map_err(|_| ParticipantError::local("MCP_OUTPUT_CLOSED", "MCP"))
 }
 struct Tools {
-    profile: AgentProfile,
+    profile: Option<AgentProfile>,
+    local: Option<std::path::PathBuf>,
+    handle: Option<String>,
+    workspace: Option<String>,
     client: OnceCell<AgentTools>,
 }
 impl Tools {
     async fn call(&self, request: AgentRequest) -> Result<Value> {
+        if let Some(directory)=&self.local {
+            let connect=crate::participant_connect::Connect::inspect(directory)?;
+            let handle=connect.selected_handle(self.handle.as_deref())?;
+            if let AgentRequest::Connect{request}=request {
+                if handle.is_none(){return Ok(crate::participant_connect::Connect::selection_required(&request.setup_id));}
+                if handle.as_ref().is_some_and(|h|h!=&request.participant){return Err(ParticipantError::local("FRONTEND_IDENTITY_PIN_MISMATCH","CONNECT"));}
+                if self.workspace.as_ref().is_some_and(|ws|ws!=&request.workspace_id){return Err(ParticipantError::local("FRONTEND_WORKSPACE_PIN_MISMATCH","CONNECT"));}
+                drop(connect);return crate::participant_connect::Connect::open(directory)?.run(request).await;
+            }
+            if let AgentRequest::ConnectApprove{participant,approval_id,request}=request {
+                if handle.as_ref().is_some_and(|h|h!=&participant){return Err(ParticipantError::local("FRONTEND_IDENTITY_PIN_MISMATCH","CONNECT"));}
+                if self.workspace.as_ref().is_some_and(|ws|ws!=&request.workspace_id){return Err(ParticipantError::local("FRONTEND_WORKSPACE_PIN_MISMATCH","CONNECT"));}
+                drop(connect);return crate::participant_connect::Connect::open(directory)?.approve(&participant,&approval_id,request).await;
+            }
+            let context=connect.context_for(handle.as_deref(),self.workspace.as_deref());
+            let profile=connect.profile_for_scope(self.handle.as_deref(),self.workspace.as_deref())?;
+            drop(connect);
+            if let Some(profile)=profile {
+                let is_context=matches!(request,AgentRequest::Context);
+                let mut value=AgentTools::open(profile).await?.call(request).await?;
+                if is_context {value["onboarding"]=context;}
+                return Ok(value);
+            }
+            if matches!(request,AgentRequest::Context) { return Ok(context); }
+            return Err(ParticipantError::local("LOCAL_SELECTION_REQUIRED_USE_CONNECT","CONNECT"));
+        }
         self.client
-            .get_or_try_init(|| AgentTools::open(self.profile.clone()))
+            .get_or_try_init(|| AgentTools::open(self.profile.clone().expect("validated profile frontend")))
             .await?
             .call(request)
             .await
     }
+    fn catalog(&self)->Result<Vec<Value>> {
+        let mut tools=agent_tools::catalog();
+        if let Some(directory)=&self.local {
+            let connect=crate::participant_connect::Connect::inspect(directory)?;
+            if connect.profile_for_scope(self.handle.as_deref(),self.workspace.as_deref())?.is_none() {
+                let registered=connect.context()["participants"].as_array().is_some_and(|v|!v.is_empty());
+                tools.retain(|v|matches!(v["name"].as_str(),Some("peerwork_context"|"peerwork_connect")) || registered && v["name"]=="peerwork_connect_approve");
+            }
+        }
+        Ok(tools)
+    }
 }
 /// Supports per-request MCP 2026-07-28 and negotiated 2025-11-25 hosts.
 /// Discovery is available while the owner is offline; tools never create it.
-pub async fn serve<R, W>(profile: AgentProfile, mut reader: R, mut writer: W) -> Result<()>
+pub async fn serve<R, W>(profile: AgentProfile, reader: R, writer: W) -> Result<()>
 where
     R: AsyncBufRead + Send + Unpin + 'static,
     W: AsyncWrite + Unpin,
 {
     profile.validate()?;
-    let tools = Arc::new(Tools {
-        profile,
-        client: OnceCell::new(),
-    });
+    serve_tools(Tools { profile:Some(profile),local:None,handle:None,workspace:None,client:OnceCell::new() },reader,writer).await
+}
+pub async fn serve_local<R,W>(directory:std::path::PathBuf,reader:R,writer:W)->Result<()>
+where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
+    serve_local_selected(directory,None,None,reader,writer).await
+}
+pub async fn serve_local_selected<R,W>(directory:std::path::PathBuf,handle:Option<String>,workspace:Option<String>,reader:R,writer:W)->Result<()>
+where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
+    // The directory itself was explicitly selected by the host owner. Missing
+    // identity handles expose discovery only, never secret scanning/bootstrap.
+    if directory.exists(){crate::participant_connect::Connect::inspect(&directory)?;}
+    else{drop(crate::participant_connect::Connect::open(&directory)?);}
+    serve_tools(Tools { profile:None,local:Some(directory),handle,workspace,client:OnceCell::new() },reader,writer).await
+}
+async fn serve_tools<R,W>(tools:Tools,mut reader:R,mut writer:W)->Result<()>
+where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
+    let tools = Arc::new(tools);
     let (tx, mut rx) = mpsc::channel(8);
     let reading = tokio::spawn(async move {
         loop {
@@ -183,7 +236,7 @@ where
                     "ping"=>write(&mut writer,success(id,json!({}),modern)).await?,
                     "tools/list"=>{
                         if params.get("cursor").is_some_and(|v|!v.is_null()){write(&mut writer,error(id,-32602,"No further tool page")).await?;continue;}
-                        write(&mut writer,success(id,json!({"tools":agent_tools::catalog()}),modern)).await?;
+                        match tools.catalog(){Ok(catalog)=>write(&mut writer,success(id,json!({"tools":catalog}),modern)).await?,Err(e)=>write(&mut writer,error_response(id,&e.code)).await?};
                     },
                     "tools/call"=>{
                         if calls.len()>=MAX_INFLIGHT{write(&mut writer,error(id,1001,"MCP_INFLIGHT_LIMIT; no new tool admission")).await?;continue;}
@@ -223,6 +276,8 @@ mod tests {
     use tokio::io::{AsyncBufReadExt, BufReader};
     fn profile() -> AgentProfile {
         AgentProfile {
+            protocol_endpoints: Default::default(),
+            send_scopes: Default::default(), receive_endpoint_path: None,
             format: "peerwork.agent-profile.v1".into(),
             endpoint_path: std::env::current_dir().unwrap().join("__peerwork_nonexistent_synthetic__/client.json"),
             expected_origin: "https://example.invalid".into(),
@@ -259,7 +314,7 @@ mod tests {
         let task = tokio::spawn(serve(profile(), BufReader::new(sr), sw));
         send(&mut cw, modern(1, "tools/list", json!({}))).await;
         let list = receive(&mut cr).await;
-        assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 12);
+        assert_eq!(list["result"]["tools"].as_array().unwrap().len(), agent_tools::catalog().len());
         assert_eq!(list["result"]["resultType"], "complete");
         send(&mut cw, modern(2, "server/discover", json!({}))).await;
         assert_eq!(
@@ -299,6 +354,29 @@ mod tests {
         task.await.unwrap().unwrap();
     }
     #[tokio::test]
+    async fn unconfigured_mcp_exposes_connect_without_a_profile_or_identity() {
+        let temp=crate::test_support::protected_test_dir();
+        let directory=temp.path().join("local");
+        let _setup_writer=crate::participant_connect::Connect::open(&directory).unwrap();
+        let (server,client)=tokio::io::duplex(65536);
+        let (sr,sw)=tokio::io::split(server);let(cr,mut cw)=tokio::io::split(client);
+        let mut cr=BufReader::new(cr);
+        let task=tokio::spawn(serve_local(directory.clone(),BufReader::new(sr),sw));
+        send(&mut cw,modern(1,"tools/list",json!({}))).await;
+        let list=receive(&mut cr).await;
+        let names:Vec<_>=list["result"]["tools"].as_array().unwrap().iter().map(|v|v["name"].as_str().unwrap()).collect();
+        assert_eq!(names,vec!["peerwork_context","peerwork_connect"]);
+        send(&mut cw,modern(2,"tools/call",json!({"name":"peerwork_context","arguments":{}}))).await;
+        let context=receive(&mut cr).await;
+        assert_eq!(context["result"]["structuredContent"]["state"],"NOT_CONFIGURED");
+        send(&mut cw,modern(3,"tools/call",json!({"name":"peerwork_connect","arguments":{"request":{"setup_id":"first","participant":"existing","workspace_id":"W".repeat(43),"receive":true}}}))).await;
+        assert_eq!(receive(&mut cr).await["result"]["structuredContent"]["blocker"]["code"],"LOCAL_SELECTION_REQUIRED");
+        send(&mut cw,modern(4,"tools/call",json!({"name":"peerwork_connect","arguments":{"request":{"setup_id":"first","participant":"existing","workspace_id":"W".repeat(43),"receive":true,"identity_path":"/unselected"}}}))).await;
+        assert_eq!(receive(&mut cr).await["error"]["code"],-32602);
+        assert!(!directory.join("connect.state").exists(),"discovery cannot create a trusted identity binding");
+        drop(cw);drop(cr);task.await.unwrap().unwrap();
+    }
+    #[tokio::test]
     async fn negotiated_host_requires_initialize_and_keeps_protocol_stdout_clean() {
         let (server, client) = tokio::io::duplex(65536);
         let (sr, sw) = tokio::io::split(server);
@@ -323,7 +401,7 @@ mod tests {
         assert_eq!(list["id"], 2);
         assert_eq!(list["result"]["tools"], json!(agent_tools::catalog()));
         let tools = list["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 12);
+        assert_eq!(tools.len(), agent_tools::catalog().len());
         assert!(tools.iter().all(|tool| tool["_meta"]["antigravity/alwaysLoad"] == true));
         assert!(serde_json::to_vec(tools).unwrap().len() <= 16 * 1024,
             "fixed eager entry points must not expand into per-protocol action catalogs");

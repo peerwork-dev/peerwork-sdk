@@ -14,6 +14,8 @@ pub(crate) mod communication_store;
 pub mod communication_runtime;
 pub mod agent_tools;
 pub mod agent_frontend;
+pub mod participant_connect;
+mod onboarding_files;
 mod agent_mcp;
 pub mod communication_bridge;
 pub(crate) mod communication_local_channel;
@@ -119,3 +121,8 @@ pub mod legacy_migration;
 
 #[cfg(test)]
 mod participant_live_host_tests;
+
+#[cfg(test)]
+mod participant_onboarding_live_tests;
+
+mod process_identity;

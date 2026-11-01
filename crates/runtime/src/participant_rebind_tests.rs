@@ -160,6 +160,7 @@ async fn setup(
             subscriptions: watches
                 .iter()
                 .map(|watch| HostSubscription {
+                    client_generation: None,
                     client: "worker".into(),
                     watch: watch.clone(),
                 })

@@ -124,6 +124,9 @@ pub(crate) struct CodexFixture {
     calls: Arc<Mutex<Vec<Value>>>,
     pub approval: Arc<AtomicBool>,
     pub lose_next_ack: Arc<AtomicBool>,
+    pub emit_events: Arc<AtomicBool>,
+    pub approval_on_turn_query: Arc<AtomicBool>,
+    pub current_turn: Arc<Mutex<String>>,
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -155,6 +158,12 @@ impl CodexFixture {
         let waiting = approval.clone();
         let lose_next_ack = Arc::new(AtomicBool::new(false));
         let lose = lose_next_ack.clone();
+        let emit_events = Arc::new(AtomicBool::new(true));
+        let emit = emit_events.clone();
+        let approval_on_turn_query = Arc::new(AtomicBool::new(false));
+        let query_approval = approval_on_turn_query.clone();
+        let current_turn = Arc::new(Mutex::new("original-turn".to_string()));
+        let actual_turn = current_turn.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let done = stop.clone();
         let thread = std::thread::spawn(move || {
@@ -186,32 +195,48 @@ impl CodexFixture {
                     let result = match method {
                         "initialize" => json!({"userAgent":"synthetic-protocol-fixture"}),
                         "thread/read" | "thread/resume" => {
-                            if waiting.load(Ordering::SeqCst) && !announced {
+                            if emit.load(Ordering::SeqCst)
+                                && waiting.load(Ordering::SeqCst)
+                                && !announced
+                            {
                                 ws.send(Message::Text(json!({"id":401,"method":"item/commandExecution/requestApproval","params":{"threadId":"existing-thread","command":"synthetic-only"}}).to_string().into())).unwrap();
                                 announced = true;
-                            } else if !waiting.load(Ordering::SeqCst) && announced {
+                            } else if emit.load(Ordering::SeqCst)
+                                && !waiting.load(Ordering::SeqCst)
+                                && announced
+                            {
                                 ws.send(Message::Text(json!({"method":"serverRequest/resolved","params":{"threadId":"existing-thread","requestId":401}}).to_string().into())).unwrap();
                                 announced = false;
                             }
                             // A busy stream must not lose its correlated reply after 256 events.
-                            for _ in 0..300 {
+                            for _ in 0..if emit.load(Ordering::SeqCst) { 300 } else { 0 } {
                                 if ws.send(Message::Text(json!({"method":"thread/status/changed","params":{"threadId":"existing-thread"}}).to_string().into())).is_err(){break;}
                             }
-                            json!({"thread":{"id":"existing-thread","sessionId":host_session,"status":{"type":if active{"active"}else{"idle"},"activeFlags":[]}}})
+                            json!({"thread":{"id":"existing-thread","sessionId":host_session,"status":{"type":if active||waiting.load(Ordering::SeqCst){"active"}else{"idle"},"activeFlags":if waiting.load(Ordering::SeqCst){vec!["waitingOnApproval"]}else{Vec::<&str>::new()}}}})
                         }
                         "thread/turns/list" => {
-                            json!({"data":[{"id":"original-turn","status":"inProgress"}]})
+                            if query_approval.swap(false, Ordering::SeqCst) {
+                                waiting.store(true, Ordering::SeqCst);
+                                ws.send(Message::Text(json!({"id":402,"method":"item/commandExecution/requestApproval","params":{"threadId":"existing-thread","command":"synthetic-only"}}).to_string().into())).unwrap();
+                            }
+                            json!({"data":[{"id":*actual_turn.lock().unwrap(),"status":"inProgress"}]})
                         }
                         "turn/start" | "turn/steer" => {
+                            if method == "turn/steer"
+                                && value["params"]["expectedTurnId"] != *actual_turn.lock().unwrap()
+                            {
+                                ws.send(Message::Text(json!({"id":id,"error":{"code":-32600,"message":"selected turn is no longer active"}}).to_string().into())).unwrap();
+                                continue;
+                            }
                             active = true;
                             if lose.swap(false, Ordering::SeqCst) {
                                 let _ = ws.close(None);
                                 break;
                             }
                             if method == "turn/steer" {
-                                json!({"turnId":"original-turn"})
+                                json!({"turnId":*actual_turn.lock().unwrap()})
                             } else {
-                                json!({"turn":{"id":"original-turn"}})
+                                json!({"turn":{"id":*actual_turn.lock().unwrap()}})
                             }
                         }
                         _ => panic!("unexpected host method {method}"),
@@ -233,6 +258,9 @@ impl CodexFixture {
             calls,
             approval,
             lose_next_ack,
+            emit_events,
+            approval_on_turn_query,
+            current_turn,
             stop,
             thread: Some(thread),
         }
@@ -269,6 +297,13 @@ fn selected_codex_session_drains_approvals_and_routes_busy_input_without_overrid
         Err("HOST_SESSION_ALREADY_OWNED")
     ));
 
+    assert!(
+        !fixture
+            .calls()
+            .iter()
+            .any(|call| call["method"] == "thread/resume"),
+        "binding an already loaded thread must not require a saved rollout or resume it"
+    );
     fixture.approval.store(true, Ordering::SeqCst);
     let message =
         json!({"message_id":"frozen-id","rendered_text":"external peer data: synthetic ping"});
@@ -305,6 +340,38 @@ fn selected_codex_session_drains_approvals_and_routes_busy_input_without_overrid
         ]
         .contains(&k.as_str())));
     }
+    // Another connection can replace the active turn without this adapter
+    // receiving lifecycle or approval-resolution events.
+    fixture.approval.store(true, Ordering::SeqCst);
+    assert_eq!(
+        host.health(&json!({})).unwrap()["execution_state"],
+        "WAITING_APPROVAL"
+    );
+    fixture.emit_events.store(false, Ordering::SeqCst);
+    fixture.approval.store(false, Ordering::SeqCst);
+    *fixture.current_turn.lock().unwrap() = "external-new-turn".into();
+    assert_eq!(
+        host.deliver(&json!({}), &message).unwrap()["state"],
+        "HOST_ACCEPTED"
+    );
+    let calls = fixture.calls();
+    let current = calls
+        .iter()
+        .rev()
+        .find(|v| v["method"] == "turn/steer")
+        .unwrap();
+    assert_eq!(current["params"]["expectedTurnId"], "external-new-turn");
+    fixture.approval_on_turn_query.store(true, Ordering::SeqCst);
+    assert_eq!(
+        host.health(&json!({})).unwrap()["execution_state"],
+        "WAITING_APPROVAL"
+    );
+    assert_eq!(
+        host.deliver(&json!({}), &message).unwrap_err(),
+        "HOST_NOT_READY"
+    );
+    fixture.approval.store(false, Ordering::SeqCst);
+    assert_eq!(host.health(&json!({})).unwrap()["execution_state"], "BUSY");
     let before = host.destination.clone();
     fixture.lose_next_ack.store(true, Ordering::SeqCst);
     assert!(matches!(

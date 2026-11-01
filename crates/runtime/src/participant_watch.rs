@@ -172,6 +172,7 @@ pub(crate) enum Command {
         reply: oneshot::Sender<Result<Vec<WatchOptions>>>,
     },
     Host {
+        local_live:Arc<std::sync::atomic::AtomicBool>,
         namespace: String,
         options: WatchOptions,
         operation: crate::participant_inbox::HostOperation,
@@ -183,6 +184,7 @@ pub(crate) enum Command {
         reply: oneshot::Sender<Result<()>>,
     },
     Attach {
+        local_live:Arc<std::sync::atomic::AtomicBool>,
         namespace: String,
         options: WatchOptions,
         reply: oneshot::Sender<Result<mpsc::Receiver<()>>>,
@@ -524,7 +526,7 @@ pub(crate) async fn run(
                 Some(Command::Bindings{namespace,capability,reply})=>{
                     let selected=slots.values().filter(|s|s.enabled&&s.binding.namespace==namespace&&s.binding.options.authorize(&capability).is_ok()).map(|s|s.binding.options.clone()).collect::<Vec<_>>();let _=reply.send(Ok(selected));
                 },
-                Some(Command::Host{namespace,options,operation,reply})=>{
+                Some(Command::Host{local_live,namespace,options,operation,reply})=>{
                     use crate::participant_inbox::{HostOperation as Op,HostReply as Reply};
                     let value=(||->Result<Reply>{
                         let selected=slots.get(&options.key()).filter(|s|s.binding.namespace==namespace&&s.binding.options==options);
@@ -535,9 +537,9 @@ pub(crate) async fn run(
                             Op::AccessScope=>Reply::AccessScope(store.host_access_scope(&namespace,&options)?),
                             Op::ReconcileDue=>Reply::Call(if live{store.host_reconcile_due(&identity,&namespace,&options)?}else{None}),
                             Op::Presence{value,observed_at}=>{store.host_scope_check(&namespace,&options)?;let s=slots.get_mut(&options.key()).ok_or_else(||error("WATCH_NOT_FOUND"))?;s.presence.host_observed(value,observed_at)?;s.next_control=Instant::now();s.notify();Reply::Saved},
-                            Op::Attach(host)=>{if selected.is_none(){return Err(error("WATCH_NOT_FOUND"));}store.host_attach(&namespace,&options,&host)?;Reply::Saved},
+                            Op::Attach(host)=>{if !local_live.load(std::sync::atomic::Ordering::Acquire){return Err(error("LOCAL_CLIENT_REVOKED"));}if selected.is_none(){return Err(error("WATCH_NOT_FOUND"));}store.host_attach(&namespace,&options,&host)?;Reply::Saved},
                             Op::Due{limit}=>Reply::Due(if live{store.host_due(&namespace,&options,limit)?}else{Vec::new()}),
-                            Op::Begin{item,frame}=>{if !live{return Err(error("WATCH_NOT_CONNECTED"));}Reply::Call(store.host_begin(&identity,&namespace,&options,&item,frame)?)},
+                            Op::Begin{item,frame}=>{if !local_live.load(std::sync::atomic::Ordering::Acquire){return Err(error("LOCAL_CLIENT_REVOKED"));}if !live{return Err(error("WATCH_NOT_CONNECTED"));}Reply::Call(store.host_begin(&identity,&namespace,&options,&item,frame)?)},
                             Op::Finish{call,outcome}=>{store.host_finish(&identity,&namespace,&options,&call,outcome)?;if let Some(s)=slots.get_mut(&options.key()){s.presence.version=s.presence.version.saturating_add(1);s.next_control=Instant::now();s.notify();}Reply::Saved},
                             Op::Defer{item,code}=>{
                                 store.host_defer(&namespace,&options,&item,&code)?;
@@ -557,11 +559,18 @@ pub(crate) async fn run(
                 },
                 Some(Command::Stop{namespace,options,reply})=>{
                     let stopped=store.disable_watch(&namespace,&options).and_then(|_|{
-                        let slot=slots.get_mut(&options.key()).ok_or_else(||error("WATCH_NOT_FOUND"))?;slot.enabled=false;if let Some(c)=slot.control_cancel.take(){c.cancel();}slot.link_verified=false;slot.state("LOCAL_STOPPED",None);Ok(())
+                        // disable_watch verified the exact persisted namespace and descriptor.
+                        // The in-memory slot may already have been reaped after
+                        // another stop; this same binding remains stopped.
+                        if let Some(slot)=slots.get_mut(&options.key()){
+                            if slot.binding.namespace!=namespace||slot.binding.options!=options{return Err(error("WATCH_BINDING_MISMATCH"));}
+                            slot.enabled=false;if let Some(c)=slot.control_cancel.take(){c.cancel();}slot.link_verified=false;slot.state("LOCAL_STOPPED",None);
+                        }Ok(())
                     });let _=reply.send(stopped);
                 },
-                Some(Command::Attach{namespace,options,reply})=>{
+                Some(Command::Attach{local_live,namespace,options,reply})=>{
                     let attached=(||->Result<_>{
+                        if !local_live.load(std::sync::atomic::Ordering::Acquire){return Err(error("LOCAL_CLIENT_REVOKED"));}
                         if let Some(s)=slots.get_mut(&options.key()){s.signals.retain(|s|!s.is_closed());if s.signals.len()>=16{return Err(error("WATCH_LISTENER_LIMIT"));}}
                         let binding=store.attach_watch(&identity, &namespace,&options)?;
                         let entry=slots.entry(options.key()).or_insert_with(||slot(binding));entry.enabled=true;
