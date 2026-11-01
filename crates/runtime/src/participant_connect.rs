@@ -1,0 +1,1314 @@
+//! Shared, resumable local onboarding. Remote rights remain service-enforced;
+//! the registry contains explicit local selections, never discovered secrets.
+use crate::{
+    agent_tools::{AgentProfile, Contact, MailScope},
+    communication_host::write_private,
+    communication_runtime::RuntimeClient,
+    communication_store::identifier,
+    participant::{Capability, Invoke, ParticipantError, Result, Scope, WatchOptions},
+    secure_state::{create_private_state_directory, SecureStateStore},
+};
+use peerwork_core::crypto::sha256_hex;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
+#[path = "participant_connect_approval.rs"]
+mod approval;
+pub use approval::AuthorizationRequest;
+
+fn local(code: &str) -> ParticipantError {
+    ParticipantError::local(code, "CONNECT")
+}
+fn token(s: &str) -> bool {
+    crate::workspace_urls::token(s)
+}
+fn stamp() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|v| v.as_millis() as u64)
+        .unwrap_or(0)
+}
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Registration {
+    pub origin: String,
+    pub actor_id: String,
+    pub endpoint_path: PathBuf,
+}
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProtocolSelection {
+    pub alias: String,
+    pub instance_id: String,
+    pub role: String,
+    #[serde(default)]
+    pub actions: Vec<String>,
+}
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ContactSelection {
+    pub alias: String,
+    pub actor_id: String,
+}
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ConnectRequest {
+    pub setup_id: String,
+    pub participant: String,
+    pub workspace_id: String,
+    #[serde(default = "default_alias")]
+    pub alias: String,
+    #[serde(default)]
+    pub send: bool,
+    #[serde(default)]
+    pub receive: bool,
+    #[serde(default)]
+    pub require_body_keys: bool,
+    #[serde(default)]
+    pub protocols: Vec<ProtocolSelection>,
+    #[serde(default)]
+    pub contacts: Vec<ContactSelection>,
+}
+fn default_alias() -> String {
+    "workspace".into()
+}
+impl ConnectRequest {
+    pub fn validate(&self) -> Result<()> {
+        if !identifier(&self.setup_id)
+            || !identifier(&self.participant)
+            || !identifier(&self.alias)
+            || !token(&self.workspace_id)
+            || self.protocols.len() > 8
+            || self.contacts.len() > 64
+            || (!self.send && !self.receive && self.protocols.is_empty())
+        {
+            return Err(local("CONNECT_ARGUMENT_INVALID"));
+        }
+        let mut aliases = std::collections::BTreeSet::new();
+        for p in &self.protocols {
+            if !identifier(&p.alias)
+                || !aliases.insert(&p.alias)
+                || !token(&p.instance_id)
+                || p.role.is_empty()
+                || p.role.len() > 128
+                || p.actions.len() > 64
+                || p.actions.iter().any(|s| s.is_empty() || s.len() > 128)
+            {
+                return Err(local("CONNECT_PROTOCOL_SELECTION_INVALID"));
+            }
+        }
+        let mut aliases = std::collections::BTreeSet::new();
+        if self
+            .contacts
+            .iter()
+            .any(|c| !identifier(&c.alias) || !token(&c.actor_id) || !aliases.insert(&c.alias))
+        {
+            return Err(local("CONNECT_CONTACT_SELECTION_INVALID"));
+        }
+        Ok(())
+    }
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Setup {
+    desired: ConnectRequest,
+    registration: Registration,
+    digest: String,
+    profile: Option<AgentProfile>,
+    result: Value,
+    #[serde(default)]
+    key_request: Option<Value>,
+}
+#[derive(Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Registry {
+    participants: BTreeMap<String, Registration>,
+    setups: BTreeMap<String, Setup>,
+    active: Option<String>,
+    #[serde(default)]
+    active_by_scope: BTreeMap<String, String>,
+    #[serde(default)]
+    approvals: BTreeMap<String, approval::Approval>,
+}
+pub struct Connect {
+    directory: PathBuf,
+    store: Option<SecureStateStore>,
+    registry: Registry,
+}
+impl Connect {
+    pub fn open(directory: &Path) -> Result<Self> {
+        create_private_state_directory(directory)
+            .map_err(|_| local("CONNECT_DIRECTORY_NOT_PRIVATE"))?;
+        let store = SecureStateStore::open(&directory.join("connect.state"))
+            .map_err(|_| local("CONNECT_STATE_ALREADY_OWNED_OR_UNSAFE"))?;
+        let registry: Registry = match store
+            .read_exact()
+            .map_err(|_| local("CONNECT_RECOVERY_REQUIRED"))?
+        {
+            None => {
+                if std::fs::symlink_metadata(directory.join("initialized.json")).is_ok() {
+                    return Err(local("CONNECT_ORIGINAL_BINDING_RECOVERY_REQUIRED"));
+                }
+                Registry::default()
+            }
+            Some(wire) => serde_json::from_value(
+                peerwork_core::strict_json::parse_strict_json(&wire)
+                    .map_err(|_| local("CONNECT_RECOVERY_REQUIRED"))?,
+            )
+            .map_err(|_| local("CONNECT_RECOVERY_REQUIRED"))?,
+        };
+        if registry.participants.len() > 8
+            || registry.setups.len() > 64
+            || registry.approvals.len() > 64
+        {
+            return Err(local("CONNECT_RECOVERY_REQUIRED"));
+        }
+        Ok(Self {
+            directory: directory.into(),
+            store: Some(store),
+            registry,
+        })
+    }
+    /// Atomic, bounded read of the selected local registry. Normal tools must
+    /// remain available while a setup job awaits its remote/local prerequisites.
+    pub fn inspect(directory: &Path) -> Result<Self> {
+        crate::secure_state::check_private_directory(directory)
+            .map_err(|_| local("CONNECT_DIRECTORY_NOT_PRIVATE"))?;
+        let path = directory.join("connect.state");
+        let registry: Registry = match std::fs::symlink_metadata(&path) {
+            Ok(_) => {
+                let bytes = SecureStateStore::read_snapshot(&path, 16 * 1024 * 1024)
+                    .map_err(|_| local("CONNECT_RECOVERY_REQUIRED"))?;
+                serde_json::from_value(
+                    peerwork_core::strict_json::parse_strict_json(&bytes)
+                        .map_err(|_| local("CONNECT_RECOVERY_REQUIRED"))?,
+                )
+                .map_err(|_| local("CONNECT_RECOVERY_REQUIRED"))?
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if std::fs::symlink_metadata(directory.join("initialized.json")).is_ok() {
+                    return Err(local("CONNECT_ORIGINAL_BINDING_RECOVERY_REQUIRED"));
+                }
+                Registry::default()
+            }
+            Err(_) => return Err(local("CONNECT_RECOVERY_REQUIRED")),
+        };
+        if registry.participants.len() > 8
+            || registry.setups.len() > 64
+            || registry.approvals.len() > 64
+        {
+            return Err(local("CONNECT_RECOVERY_REQUIRED"));
+        }
+        Ok(Self {
+            directory: directory.into(),
+            store: None,
+            registry,
+        })
+    }
+    fn require_writer(&self) -> Result<()> {
+        if self.store.is_some() {
+            Ok(())
+        } else {
+            Err(local("CONNECT_READ_ONLY_VIEW"))
+        }
+    }
+    fn save(&self) -> Result<()> {
+        self.store
+            .as_ref()
+            .ok_or_else(|| local("CONNECT_READ_ONLY_VIEW"))?
+            .write_exact(
+                &serde_json::to_vec(&self.registry).map_err(|_| local("CONNECT_STATE_INVALID"))?,
+            )
+            .map_err(|_| local("CONNECT_STATE_WRITE_FAILED"))?;
+        let marker = self.directory.join("initialized.json");
+        let expected = json!({"format":"peerwork.connect-initialized.v1"});
+        match std::fs::symlink_metadata(&marker) {
+            Ok(_) => {
+                if crate::communication_store::private_json(&marker, 1024)
+                    .map_err(|_| local("CONNECT_BINDING_MARKER_NOT_PRIVATE"))?
+                    != expected
+                {
+                    return Err(local("CONNECT_BINDING_MARKER_INVALID"));
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                write_private(&marker, expected.to_string().as_bytes())
+                    .map_err(|_| local("CONNECT_BINDING_MARKER_NOT_PRIVATE"))?
+            }
+            Err(_) => return Err(local("CONNECT_BINDING_MARKER_NOT_PRIVATE")),
+        }
+        Ok(())
+    }
+    /// CLI/local-owner bootstrap only. MCP cannot select new paths or identities.
+    pub async fn register(&mut self, name: &str, mut selected: Registration) -> Result<Value> {
+        self.require_writer()?;
+        if !identifier(name) || !token(&selected.actor_id) || !selected.endpoint_path.is_absolute()
+        {
+            return Err(local("LOCAL_SELECTION_INVALID"));
+        }
+        let origin = crate::transport::canonical_lifecycle_origin(&selected.origin, true)
+            .map_err(|_| local("LOCAL_SELECTION_INVALID"))?;
+        selected.origin = origin.clone();
+        RuntimeClient::connect(selected.endpoint_path.clone(), &origin, &selected.actor_id).await?;
+        if let Some(old) = self.registry.participants.get(name) {
+            if old != &selected {
+                return Err(local("LOCAL_BINDING_CONFLICT"));
+            }
+        } else {
+            if self.registry.participants.len() >= 8 {
+                return Err(local("LOCAL_PARTICIPANT_LIMIT"));
+            }
+            self.registry.participants.insert(name.into(), selected);
+            self.save()?;
+        }
+        Ok(self.context())
+    }
+    pub fn context(&self) -> Value {
+        json!({"state":if self.registry.participants.is_empty(){"NOT_CONFIGURED"}else{"LOCAL_SELECTION_REGISTERED"},
+            "participants":self.registry.participants.iter().map(|(handle,r)|json!({"handle":handle,"actor_id":r.actor_id,"origin":r.origin})).collect::<Vec<_>>(),
+            "active_setup_id":self.registry.active,"setups":self.registry.setups.iter().map(|(id,s)|json!({"setup_id":id,"participant":s.desired.participant,"workspace_id":s.desired.workspace_id,"protocol_roles":s.desired.protocols,"state":s.result["state"],"blocker":s.result["blocker"]})).collect::<Vec<_>>(),
+            "next_tool":"peerwork_connect","remote_or_host_readiness":"NOT_ATTESTED"})
+    }
+    pub fn context_for(&self, participant: Option<&str>, workspace: Option<&str>) -> Value {
+        let mut value = self.context();
+        if let Some(items) = value["participants"].as_array_mut() {
+            items.retain(|p| participant.is_none_or(|h| p["handle"] == h));
+        }
+        if let Some(items) = value["setups"].as_array_mut() {
+            items.retain(|s| {
+                participant.is_none_or(|h| s["participant"] == h)
+                    && workspace.is_none_or(|ws| s["workspace_id"] == ws)
+            });
+        }
+        if !value["setups"]
+            .as_array()
+            .is_some_and(|xs| xs.iter().any(|s| s["setup_id"] == value["active_setup_id"]))
+        {
+            value["active_setup_id"] = Value::Null;
+        }
+        value
+    }
+    pub fn profile(&self) -> Result<Option<AgentProfile>> {
+        self.profile_for(None)
+    }
+    pub fn selected_handle(&self, explicit: Option<&str>) -> Result<Option<String>> {
+        if let Some(handle) = explicit {
+            if !self.registry.participants.contains_key(handle) {
+                return Err(local("LOCAL_SELECTION_REQUIRED"));
+            }
+            return Ok(Some(handle.into()));
+        }
+        match self.registry.participants.len() {
+            0 => Ok(None),
+            1 => Ok(self.registry.participants.keys().next().cloned()),
+            _ => Err(local("MULTIPLE_IDENTITIES_SELECT_FRONTEND_PARTICIPANT")),
+        }
+    }
+    pub fn profile_for(&self, participant: Option<&str>) -> Result<Option<AgentProfile>> {
+        self.profile_for_scope(participant, None)
+    }
+    pub fn profile_for_scope(
+        &self,
+        participant: Option<&str>,
+        workspace: Option<&str>,
+    ) -> Result<Option<AgentProfile>> {
+        let Some(handle) = self.selected_handle(participant)? else {
+            return Ok(None);
+        };
+        let ids: Vec<_> = self
+            .registry
+            .active_by_scope
+            .values()
+            .filter(|id| {
+                self.registry.setups.get(*id).is_some_and(|s| {
+                    s.desired.participant == handle
+                        && workspace.is_none_or(|ws| s.desired.workspace_id == ws)
+                })
+            })
+            .collect();
+        let id = match ids.as_slice() {
+            [] => return Ok(None),
+            [id] => *id,
+            _ => return Err(local("MULTIPLE_WORKSPACES_SELECT_FRONTEND_WORKSPACE")),
+        };
+        let setup = self
+            .registry
+            .setups
+            .get(id)
+            .ok_or_else(|| local("BROKEN_BINDING"))?;
+        if setup.desired.participant != handle {
+            return Err(local("BROKEN_BINDING"));
+        }
+        let Some(profile) = &setup.profile else {
+            return Ok(None);
+        };
+        self.ensure_profile(id, profile)?;
+        Ok(Some(profile.clone()))
+    }
+    fn ensure_profile(&self, id: &str, profile: &AgentProfile) -> Result<PathBuf> {
+        profile.validate()?;
+        let path = self.directory.join(format!("profile-{id}.json"));
+        match std::fs::symlink_metadata(&path) {
+            Ok(_) => {
+                let old = AgentProfile::load(&path)?;
+                if serde_json::to_value(&old).ok() != serde_json::to_value(profile).ok() {
+                    return Err(local("DERIVED_PROFILE_CONFLICT"));
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                write_private(
+                    &path,
+                    &serde_json::to_vec(profile).map_err(|_| local("DERIVED_PROFILE_INVALID"))?,
+                )
+                .map_err(|_| local("DERIVED_PROFILE_NOT_PRIVATE"))?;
+            }
+            Err(_) => return Err(local("DERIVED_PROFILE_NOT_PRIVATE")),
+        }
+        Ok(path)
+    }
+    fn record(
+        &mut self,
+        request: &ConnectRequest,
+        result: Value,
+        profile: Option<AgentProfile>,
+    ) -> Result<Value> {
+        let old = self
+            .registry
+            .setups
+            .get_mut(&request.setup_id)
+            .ok_or_else(|| local("CONNECT_STATE_INVALID"))?;
+        if old.result != result || (old.profile.is_none() && profile.is_some()) {
+            old.result = result.clone();
+            if profile.is_some() {
+                old.profile = profile;
+            }
+            self.save()?;
+        }
+        Ok(result)
+    }
+    fn pending(
+        &mut self,
+        r: &ConnectRequest,
+        stage: &str,
+        code: &str,
+        actor: &str,
+        action: &str,
+        details: Value,
+    ) -> Result<Value> {
+        self.record(r, json!({"state":"PENDING","setup_id":r.setup_id,
+            "blocker":{"stage":stage,"code":code,"affected_scope":{"workspace_id":r.workspace_id},"next_actor":actor,"next_action":action},
+            "details":details,"existing_configuration_preserved":true}), None)
+    }
+    pub async fn run(&mut self, request: ConnectRequest) -> Result<Value> {
+        self.require_writer()?;
+        request.validate()?;
+        let selected = match self.registry.participants.get(&request.participant) {
+            Some(v) => v.clone(),
+            None => {
+                return Ok(
+                    json!({"state":"PENDING","setup_id":request.setup_id,"blocker":{"stage":"LOCAL_SELECTION","code":"LOCAL_SELECTION_REQUIRED","next_actor":"LOCAL_RUNTIME_OWNER","next_action":"REGISTER_EXISTING_PARTICIPANT"}}),
+                )
+            }
+        };
+        let digest = sha256_hex(
+            serde_json::to_vec(&request)
+                .map_err(|_| local("CONNECT_ARGUMENT_INVALID"))?
+                .as_slice(),
+        );
+        if let Some(old) = self.registry.setups.get(&request.setup_id) {
+            if old.digest != digest || old.registration != selected {
+                return Err(local("SETUP_ID_CONFLICT_RESUME_ORIGINAL"));
+            }
+            if old.result["state"] == "LOCAL_CONFIGURED" {
+                if let Some(profile) = &old.profile {
+                    self.ensure_profile(&request.setup_id, profile)?;
+                    if RuntimeClient::connect(
+                        profile.endpoint_path.clone(),
+                        &profile.expected_origin,
+                        &profile.expected_actor,
+                    )
+                    .await
+                    .is_ok()
+                    {
+                        let mut result = old.result.clone();
+                        result["observation"] =
+                            json!("CACHED_SETUP_RESULT_USE_REACHABILITY_FOR_CURRENT_STATE");
+                        return Ok(result);
+                    }
+                }
+            }
+        } else {
+            if self.registry.setups.len() >= 64 {
+                return Err(local("SETUP_LIMIT"));
+            }
+            self.registry.setups.insert(
+                request.setup_id.clone(),
+                Setup {
+                    desired: request.clone(),
+                    registration: selected.clone(),
+                    digest,
+                    profile: None,
+                    key_request: None,
+                    result: json!({"state":"PENDING","setup_id":request.setup_id}),
+                },
+            );
+            self.save()?;
+        }
+        let client = match RuntimeClient::connect(
+            selected.endpoint_path.clone(),
+            &selected.origin,
+            &selected.actor_id,
+        )
+        .await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                return self.pending(
+                    &request,
+                    "LOCAL_RUNTIME",
+                    &e.code,
+                    "LOCAL_RUNTIME_OWNER",
+                    "RESTORE_SELECTED_RUNTIME",
+                    json!({"recovery":e.recovery}),
+                )
+            }
+        };
+        let scope = Scope {
+            workspace_id: Some(request.workspace_id.clone()),
+            ..Scope::default()
+        };
+        let workspace = read(&client, "structure.workspace.get", scope.clone(), json!({})).await?;
+        if !token(
+            workspace["membership"]["membership_id"]
+                .as_str()
+                .unwrap_or(""),
+        ) {
+            return self.pending(
+                &request,
+                "MEMBERSHIP",
+                "MEMBERSHIP_REQUIRED",
+                "WORKSPACE_OWNER",
+                "USE_EXISTING_ADMISSION",
+                json!({"observation":workspace}),
+            );
+        }
+        let membership = workspace["membership"]["membership_id"].as_str().unwrap();
+        let owner = workspace["owner_id"]
+            .as_str()
+            .ok_or_else(|| local("WORKSPACE_OBSERVATION_INVALID"))?;
+        let grants = read(
+            &client,
+            "structure.communication.grant.get",
+            scope.clone(),
+            json!({}),
+        )
+        .await?;
+        let grant = &grants["grant"];
+        let valid = grant["membership_id"] == membership
+            && (grant["expires_at"].is_null()
+                || grant["expires_at"].as_u64().is_some_and(|v| v > stamp()));
+        let mut missing = Vec::new();
+        if request.send && (!valid || grant["can_send"] != true) {
+            missing.push(json!({"kind":"COMMUNICATION_SEND"}));
+        }
+        if request.receive && (!valid || grant["can_receive"] != true) {
+            missing.push(json!({"kind":"COMMUNICATION_RECEIVE"}));
+        }
+        let mut protocols = BTreeMap::new();
+        let mut role_actions: BTreeMap<String, std::collections::BTreeSet<String>> =
+            BTreeMap::new();
+        for p in &request.protocols {
+            let resolved = read(
+                &client,
+                "structure.instance.resolve",
+                scope.clone(),
+                json!({"instance_id":p.instance_id}),
+            )
+            .await?;
+            let digest = resolved["instance"]["protocol_digest"]
+                .as_str()
+                .ok_or_else(|| local("PROTOCOL_RESOLUTION_FAILED"))?
+                .to_owned();
+            let selected_scope = Scope {
+                workspace_id: Some(request.workspace_id.clone()),
+                instance_id: Some(p.instance_id.clone()),
+                protocol_digest: Some(digest),
+            };
+            let binding = read(
+                &client,
+                "structure.protocol.resolve",
+                selected_scope.clone(),
+                json!({"view":"inspect","include_resources":false}),
+            )
+            .await?;
+            if binding["bundle_header"].is_null() {
+                return self.pending(
+                    &request,
+                    "PROTOCOL_BINDING",
+                    "PROTOCOL_BUNDLE_NOT_BOUND",
+                    "WORKSPACE_OWNER",
+                    "BIND_PROTOCOL_BUNDLE",
+                    json!({"instance_id":p.instance_id,"observation":binding}),
+                );
+            }
+            {
+                let definition = &binding["bundle_header"]["roles"][&p.role];
+                if !definition.is_object() {
+                    return Err(local("PROTOCOL_ROLE_NOT_FOUND"));
+                }
+                let rights = read(
+                    &client,
+                    "structure.grant.get",
+                    selected_scope.clone(),
+                    json!({"actor_id":selected.actor_id}),
+                )
+                .await?;
+                let g = &rights["grant"];
+                if g["effective"] != true
+                    || !g["protocol_roles"]
+                        .as_array()
+                        .is_some_and(|rs| rs.iter().any(|v| v == &p.role))
+                    || !p.actions.iter().all(|a| {
+                        g["actions"]
+                            .as_array()
+                            .is_some_and(|xs| xs.iter().any(|v| v == a))
+                    })
+                {
+                    missing.push(json!({"kind":"BUSINESS_ROLE","instance_id":p.instance_id,"protocol_digest":selected_scope.protocol_digest,"role":p.role,"actions":p.actions}));
+                }
+                let declared: std::collections::BTreeSet<String> = definition["tools"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|t| t["action"].as_str().map(str::to_owned))
+                    .collect();
+                let granted: std::collections::BTreeSet<String> = g["actions"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect();
+                if p.actions.iter().any(|a| !declared.contains(a)) {
+                    return Err(local("ACTION_NOT_DECLARED_FOR_ROLE"));
+                }
+                let actions = declared
+                    .intersection(&granted)
+                    .filter(|a| p.actions.is_empty() || p.actions.contains(a))
+                    .cloned()
+                    .collect();
+                role_actions.insert(p.alias.clone(), actions);
+            }
+            protocols.insert(p.alias.clone(), selected_scope);
+        }
+        if !missing.is_empty() {
+            let keys = if request.require_body_keys {
+                Some(self.key_request(&client, &request, &scope).await?)
+            } else {
+                None
+            };
+            return self.pending(&request,"REMOTE_AUTHORIZATION","OWNER_APPROVAL_REQUIRED",owner,"APPROVE_REQUESTED_PERMISSION_DELTA",
+                json!({"authorization_request":{"format":"peerwork.connect-authorization-request.v1","setup_id":request.setup_id,
+                    "origin":selected.origin,"workspace_id":request.workspace_id,"actor_id":selected.actor_id,"membership_id":membership,
+                    "owner_id":owner,"missing":missing,"body_keys_required":request.require_body_keys,"key_request":keys},
+                    "delivery":"EXISTING_ADMISSION_OR_VERIFIED_HANDOFF","contains_private_keys_or_local_paths":false}));
+        }
+        let mailboxes = read(
+            &client,
+            "structure.mailboxes.read",
+            scope.clone(),
+            json!({"limit":8}),
+        )
+        .await?;
+        let mailbox = mailboxes["mailboxes"]
+            .as_array()
+            .and_then(|xs| xs.iter().find(|m| m["name"] == "default"));
+        if request.receive && mailbox.is_none() {
+            return self.pending(
+                &request,
+                "MAILBOX",
+                "DEFAULT_MAILBOX_REQUIRED",
+                "WORKSPACE_OWNER",
+                "VERIFY_RECEIVE_GRANT",
+                json!({"observation":mailboxes}),
+            );
+        }
+        let caps = client.call(json!({"method":"capabilities"})).await?;
+        let parent: Capability = serde_json::from_value(caps["capability"].clone())
+            .map_err(|_| local("LOCAL_CEILING_INVALID"))?;
+        let previous = self
+            .registry
+            .setups
+            .values()
+            .find(|s| {
+                s.desired.participant == request.participant
+                    && s.desired.workspace_id == request.workspace_id
+                    && s.registration == selected
+                    && (!request.send || s.desired.send)
+                    && (!request.receive || s.desired.receive)
+                    && s.profile.is_some()
+            })
+            .and_then(|s| s.profile.clone());
+        if let Some(old) = &previous {
+            for (name, s) in &old.protocols {
+                if protocols.get(name).is_some_and(|wanted| wanted != s) {
+                    return Err(local("PROTOCOL_ALIAS_CONFLICT"));
+                }
+                protocols.entry(name.clone()).or_insert_with(|| s.clone());
+            }
+        }
+        let mut protocol_endpoints = previous
+            .as_ref()
+            .map(|p| p.protocol_endpoints.clone())
+            .unwrap_or_default();
+        for p in &request.protocols {
+            let selected_scope = &protocols[&p.alias];
+            let mut cap = parent.clone();
+            cap.allow_root = false;
+            cap.workspace_ids = Some([request.workspace_id.clone()].into());
+            cap.instance_ids = Some([p.instance_id.clone()].into());
+            cap.protocol_digests = Some([selected_scope.protocol_digest.clone().unwrap()].into());
+            cap.mailbox_ids = Some(Default::default());
+            cap.operations.retain(|s| {
+                [
+                    "structure.action",
+                    "structure.instance.get",
+                    "structure.protocol.resolve",
+                    "structure.protocol.resource.get",
+                    "structure.record.get",
+                    "structure.records.read",
+                ]
+                .contains(&s.as_str())
+            });
+            {
+                cap.business_actions = Some(
+                    role_actions[&p.alias]
+                        .iter()
+                        .filter(|s| {
+                            parent
+                                .business_actions
+                                .as_ref()
+                                .is_none_or(|a| a.contains(*s))
+                        })
+                        .cloned()
+                        .collect(),
+                );
+            }
+            let alias = format!(
+                "role-{}",
+                &sha256_hex(
+                    json!([
+                        request.participant,
+                        request.workspace_id,
+                        p.alias,
+                        p.instance_id,
+                        p.role,
+                        p.actions
+                    ])
+                    .to_string()
+                    .as_bytes()
+                )[..40]
+            );
+            let derived = client
+                .call(json!({"method":"derive","name":alias,"capability":cap}))
+                .await?;
+            protocol_endpoints.insert(
+                p.alias.clone(),
+                PathBuf::from(
+                    derived["endpoint_path"]
+                        .as_str()
+                        .ok_or_else(|| local("DERIVED_ENDPOINT_INVALID"))?,
+                ),
+            );
+        }
+        let mut capability = parent;
+        capability.allow_root = false;
+        capability.workspace_ids = Some([request.workspace_id.clone()].into());
+        let allowed = [
+            "structure.message.send",
+            "structure.message.get",
+            "structure.message.receipts.read",
+            "structure.mailbox.get",
+            "structure.mailbox.claim",
+            "structure.mailbox.inbox.read",
+            "structure.mailbox.pulse",
+            "structure.mailbox.ack",
+            "structure.mailbox.report",
+        ];
+        capability
+            .operations
+            .retain(|s| allowed.contains(&s.as_str()));
+        if !request.send {
+            capability.operations.remove("structure.message.send");
+        }
+        capability.validate()?;
+        let alias = format!(
+            "mail-{}",
+            &sha256_hex(
+                json!([
+                    request.participant,
+                    request.workspace_id,
+                    request.send,
+                    request.receive
+                ])
+                .to_string()
+                .as_bytes()
+            )[..40]
+        );
+        let child = if let Some(old) = &previous {
+            json!({"endpoint_path":old.endpoint_path})
+        } else {
+            client
+                .call(json!({"method":"derive","name":alias,"capability":capability}))
+                .await?
+        };
+        let endpoint = child["endpoint_path"]
+            .as_str()
+            .ok_or_else(|| local("DERIVED_ENDPOINT_INVALID"))?;
+        let tools = RuntimeClient::connect(
+            PathBuf::from(endpoint),
+            &selected.origin,
+            &selected.actor_id,
+        )
+        .await?;
+        let mut scopes = previous
+            .as_ref()
+            .map(|p| p.scopes.clone())
+            .unwrap_or_default();
+        let mut receiver = Value::Null;
+        if let Some(mailbox) = mailbox {
+            let address = MailScope {
+                workspace_id: request.workspace_id.clone(),
+                mailbox_id: mailbox["mailbox_id"]
+                    .as_str()
+                    .filter(|v| token(v))
+                    .ok_or_else(|| local("MAILBOX_OBSERVATION_INVALID"))?
+                    .into(),
+                membership_id: membership.into(),
+            };
+            if request.receive {
+                let options = WatchOptions {
+                    workspace_id: request.workspace_id.clone(),
+                    mailbox_id: address.mailbox_id.clone(),
+                    membership_id: membership.into(),
+                    consumer_id: format!("connect-{}", request.participant),
+                    host_destination: None,
+                };
+                let observed = tools
+                    .call(json!({"method":"watch","options":options}))
+                    .await?;
+                receiver = json!({"state":observed["state"],"code":observed["code"],"presence":observed["presence"],
+                    "receiver_link_verified":observed["receiver_link_verified"],"checkpoint":observed["checkpoint"],
+                    "model_response":"NOT_ATTESTED"});
+            }
+            scopes.insert(request.alias.clone(), address);
+        }
+        let mut contacts = previous
+            .as_ref()
+            .map(|p| p.contacts.clone())
+            .unwrap_or_default();
+        for contact in &request.contacts {
+            let addresses = read(
+                &client,
+                "structure.mailboxes.read",
+                scope.clone(),
+                json!({"actor_id":contact.actor_id,"limit":8}),
+            )
+            .await?;
+            let address = addresses["mailboxes"]
+                .as_array()
+                .and_then(|xs| xs.iter().find(|m| m["name"] == "default"))
+                .ok_or_else(|| local("CONTACT_MAILBOX_NOT_AUTHORIZED_OR_AVAILABLE"))?;
+            let recipient = peerwork_core::communication::MailboxAddress {
+                mailbox_id: address["mailbox_id"]
+                    .as_str()
+                    .filter(|v| token(v))
+                    .ok_or_else(|| local("MAILBOX_OBSERVATION_INVALID"))?
+                    .into(),
+                membership_id: address["membership_id"]
+                    .as_str()
+                    .filter(|v| token(v))
+                    .ok_or_else(|| local("MAILBOX_OBSERVATION_INVALID"))?
+                    .into(),
+            };
+            if contacts
+                .get(&contact.alias)
+                .is_some_and(|old| old.recipient != recipient || old.scope != request.alias)
+            {
+                return Err(local("CONTACT_BINDING_CHANGED_REVIEW_REQUIRED"));
+            }
+            contacts.insert(
+                contact.alias.clone(),
+                Contact {
+                    scope: request.alias.clone(),
+                    recipient,
+                },
+            );
+        }
+        let profile = AgentProfile {
+            format: "peerwork.agent-profile.v1".into(),
+            endpoint_path: PathBuf::from(endpoint),
+            expected_origin: selected.origin,
+            expected_actor: selected.actor_id,
+            scopes,
+            contacts,
+            protocols,
+            protocol_endpoints,
+        };
+        // Persist the trusted derivation before materializing the expendable file.
+        {
+            let s = self.registry.setups.get_mut(&request.setup_id).unwrap();
+            if s.profile.is_none() {
+                s.profile = Some(profile.clone());
+                self.save()?;
+            }
+        }
+        let path = self.ensure_profile(&request.setup_id, &profile)?;
+        if request.require_body_keys
+            && (receiver["presence"]["key_current"] != true
+                || receiver["presence"]["body_key"]["state"] != "READY")
+        {
+            if receiver["presence"]["body_key"]["state"] != "MISSING" {
+                return self.pending(&request,"CONTENT_KEYS","KEYS_SYNCHRONIZING","RUNTIME","RESUME_SAME_SETUP",
+                    json!({"profile_path":path,"receiver":receiver,"owner_exchange_required":false}));
+            }
+            let keys = self.key_request(&client, &request, &scope).await?;
+            return self.pending(&request,"CONTENT_KEYS","KEY_AUTHORIZATION_REQUIRED",owner,"DELIVER_OR_ACCEPT_AUTHORIZED_KEYS",
+                json!({"profile_path":path,"receiver":receiver,"authorization_request":{"format":"peerwork.connect-authorization-request.v1",
+                    "setup_id":request.setup_id,"origin":profile.expected_origin,"workspace_id":request.workspace_id,"actor_id":profile.expected_actor,
+                    "membership_id":membership,"owner_id":owner,"missing":[],"body_keys_required":true,"key_request":keys}}));
+        }
+        if self.registry.active.as_deref() != Some(&request.setup_id) {
+            self.registry.active = Some(request.setup_id.clone());
+            self.registry.active_by_scope.insert(
+                format!("{}:{}", request.participant, request.workspace_id),
+                request.setup_id.clone(),
+            );
+            self.save()?;
+        }
+        self.record(&request,json!({"state":"LOCAL_CONFIGURED","setup_id":request.setup_id,"profile_path":path,
+            "observed_at_ms":stamp(),
+            "actor_id":profile.expected_actor,"origin":profile.expected_origin,"workspace_id":request.workspace_id,
+            "membership_id":membership,"receiver":receiver,"host":"NOT_BOUND","mcp_current_session":"NOT_ATTESTED",
+            "next_action":"BIND_SELECTED_HOST_AND_VERIFY_TOOLS","owner_exchange_required":false}),Some(profile))
+    }
+    async fn key_request(
+        &mut self,
+        client: &RuntimeClient,
+        r: &ConnectRequest,
+        scope: &Scope,
+    ) -> Result<Value> {
+        if let Some(value) = &self.registry.setups[&r.setup_id].key_request {
+            return Ok(value.clone());
+        }
+        let value = read(
+            client,
+            "participant.access.request",
+            scope.clone(),
+            json!({"label":format!("Peerwork connect {}",r.setup_id)}),
+        )
+        .await?;
+        if value["state"] != "AWAITING_OWNER_APPROVAL" {
+            return Err(local("KEY_REQUEST_FAILED"));
+        }
+        self.registry
+            .setups
+            .get_mut(&r.setup_id)
+            .unwrap()
+            .key_request = Some(value.clone());
+        self.save()?;
+        Ok(value)
+    }
+}
+async fn read(client: &RuntimeClient, action: &str, scope: Scope, body: Value) -> Result<Value> {
+    let value=client.call(json!({"method":"request","request":Invoke::new("connect-bounded-read",action,scope,body)})).await?;
+    if matches!(value["state"].as_str(), Some("ACCEPTED" | "COMPLETED")) {
+        Ok(value["result"]["structure"].clone())
+    } else if action.starts_with("participant.") {
+        Ok(value)
+    } else {
+        let detail = &value["result"]["structure"]["error"];
+        let mut error = local(detail["code"].as_str().unwrap_or("CONNECT_READ_FAILED"));
+        error.phase = detail["phase"].as_str().unwrap_or("REMOTE_READ").into();
+        Err(error)
+    }
+}
+
+pub fn schema() -> Value {
+    let mut schema = json!({"type":"object","additionalProperties":false,"required":["request"],"properties":{"request":{
+        "type":"object","additionalProperties":false,"required":["setup_id","participant","workspace_id"],
+        "properties":{"setup_id":{"type":"string"},"participant":{"type":"string"},"workspace_id":{"type":"string"},"alias":{"type":"string","default":"workspace"},"send":{"type":"boolean"},"receive":{"type":"boolean"},"require_body_keys":{"type":"boolean"},"protocols":{"type":"array","maxItems":8,"items":{"type":"object","additionalProperties":false,"required":["alias","instance_id","role"],"properties":{"alias":{"type":"string"},"instance_id":{"type":"string"},"role":{"type":"string"},"actions":{"type":"array","maxItems":64,"items":{"type":"string"}}}}}}}}});
+    schema["properties"]["request"]["properties"]["contacts"] = json!({"type":"array","maxItems":64,"items":{"type":"object","additionalProperties":false,"required":["alias","actor_id"],"properties":{"alias":{"type":"string"},"actor_id":{"type":"string"}}}});
+    schema
+}
+
+/// Explicit CLI bootstrap selects an existing identity and its original engine
+/// state. The Agent/MCP interface cannot perform this administrative selection.
+async fn bootstrap(
+    directory: &Path,
+    handle: &str,
+    identity: &Path,
+    engine_state: &Path,
+    origin: &str,
+    allow_http: bool,
+) -> Result<Registration> {
+    use crate::communication_runtime::{ClientConfig, EngineConfig, RuntimeConfig};
+    if !identifier(handle) || !identity.is_absolute() || !engine_state.is_absolute() {
+        return Err(local("LOCAL_SELECTION_INVALID"));
+    }
+    let actor = crate::kernel_identity::KernelIdentity::open(identity)
+        .map_err(|_| local("IDENTITY_RECOVERY_REQUIRED"))?
+        .actor_id()
+        .to_owned();
+    let origin = crate::transport::canonical_lifecycle_origin(origin, allow_http)
+        .map_err(|_| local("LOCAL_SELECTION_INVALID"))?;
+    let runtime_dir = directory.join(format!("runtime-{handle}"));
+    create_private_state_directory(&runtime_dir)
+        .map_err(|_| local("RUNTIME_DIRECTORY_NOT_PRIVATE"))?;
+    let config = RuntimeConfig {
+        format: "peerwork.participant-runtime.v1".into(),
+        state_directory: runtime_dir.clone(),
+        engines: vec![EngineConfig {
+            name: "selected".into(),
+            origin: origin.clone(),
+            expected_actor: actor.clone(),
+            identity_path: identity.into(),
+            state_directory: engine_state.into(),
+            journal_path: None,
+            authority: None,
+            allow_loopback_http: allow_http,
+            transport: Default::default(),
+            max_inflight: 4,
+            max_pending: 64,
+            max_stored_bytes: 32 * 1024 * 1024,
+            migration_sources: Vec::new(),
+        }],
+        clients: vec![ClientConfig {
+            name: "bootstrap".into(),
+            engine: "selected".into(),
+            capability: Capability::owner(),
+        }],
+        hosts: Vec::new(),
+    };
+    let config_path = runtime_dir.join("config.json");
+    let wire = serde_json::to_vec(&config).map_err(|_| local("RUNTIME_CONFIG_INVALID"))?;
+    match std::fs::symlink_metadata(&config_path) {
+        Ok(_) => {
+            let old = crate::communication_store::private_json(&config_path, 65536)
+                .map_err(|_| local("RUNTIME_CONFIG_NOT_PRIVATE"))?;
+            if old != serde_json::to_value(&config).map_err(|_| local("RUNTIME_CONFIG_INVALID"))? {
+                return Err(local("LOCAL_BINDING_CONFLICT"));
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            write_private(&config_path, &wire).map_err(|_| local("RUNTIME_CONFIG_NOT_PRIVATE"))?
+        }
+        Err(_) => return Err(local("RUNTIME_CONFIG_NOT_PRIVATE")),
+    }
+    let selected = Registration {
+        origin,
+        actor_id: actor,
+        endpoint_path: runtime_dir.join("client-bootstrap.json"),
+    };
+    if std::fs::symlink_metadata(&selected.endpoint_path).is_ok() {
+        match RuntimeClient::connect(
+            selected.endpoint_path.clone(),
+            &selected.origin,
+            &selected.actor_id,
+        )
+        .await
+        {
+            Ok(_) => return Ok(selected),
+            Err(e) if e.code == "RUNTIME_UNAVAILABLE" => (),
+            Err(e) => return Err(e),
+        }
+    }
+    // A second launcher cannot own the original engine state. Never change the
+    // state path to evade that fence. The parent observes the exact child.
+    let log = runtime_dir.join("runtime.log");
+    if std::fs::symlink_metadata(&log).is_err() {
+        write_private(&log, b"").map_err(|_| local("RUNTIME_LOG_NOT_PRIVATE"))?;
+    }
+    crate::secure_state::validate_private_file(&log)
+        .map_err(|_| local("RUNTIME_LOG_NOT_PRIVATE"))?;
+    let output = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&log)
+        .map_err(|_| local("RUNTIME_LOG_NOT_PRIVATE"))?;
+    let mut command = std::process::Command::new(
+        std::env::current_exe().map_err(|_| local("EXECUTABLE_UNAVAILABLE"))?,
+    );
+    command
+        .args(["runtime", "run"])
+        .arg(&config_path)
+        .stdin(std::process::Stdio::null())
+        .stderr(
+            output
+                .try_clone()
+                .map_err(|_| local("RUNTIME_LOG_NOT_PRIVATE"))?,
+        )
+        .stdout(output);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x00000200 | 0x00000008);
+    }
+    let mut child = command.spawn().map_err(|_| local("RUNTIME_START_FAILED"))?;
+    for _ in 0..50 {
+        if RuntimeClient::connect(
+            selected.endpoint_path.clone(),
+            &selected.origin,
+            &selected.actor_id,
+        )
+        .await
+        .is_ok()
+        {
+            return Ok(selected);
+        }
+        if child
+            .try_wait()
+            .map_err(|_| local("RUNTIME_START_FAILED"))?
+            .is_some()
+        {
+            return Err(local("RUNTIME_START_FAILED_CHECK_ORIGINAL_STATE_OWNER"));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    Err(local("RUNTIME_STARTING_REOBSERVE_SAME_BINDING"))
+}
+
+pub fn cli(args: &[String]) -> Value {
+    fn parse(args: &[String]) -> Result<BTreeMap<String, String>> {
+        let mut values = BTreeMap::new();
+        let mut i = 0;
+        while i < args.len() {
+            let flag = &args[i];
+            let boolean = [
+                "--send",
+                "--receive",
+                "--body-keys",
+                "--allow-loopback-http",
+                "--context",
+            ]
+            .contains(&flag.as_str());
+            if ![
+                "--local",
+                "--participant",
+                "--workspace",
+                "--id",
+                "--alias",
+                "--identity",
+                "--engine-state",
+                "--origin",
+                "--client",
+                "--actor",
+                "--send",
+                "--receive",
+                "--body-keys",
+                "--allow-loopback-http",
+                "--context",
+                "--approve-request",
+                "--role",
+                "--contact",
+            ]
+            .contains(&flag.as_str())
+                || values.contains_key(flag)
+            {
+                return Err(local("CONNECT_ARGUMENT_INVALID_SEE_HELP"));
+            }
+            let value = if boolean {
+                "true".into()
+            } else {
+                i += 1;
+                args.get(i)
+                    .filter(|v| !v.starts_with("--"))
+                    .ok_or_else(|| local("CONNECT_ARGUMENT_INVALID_SEE_HELP"))?
+                    .clone()
+            };
+            values.insert(flag.clone(), value);
+            i += 1;
+        }
+        Ok(values)
+    }
+    if args.is_empty() || args == ["--help"] {
+        return json!({"state":"HELP","usage":[
+            "peerwork connect --local DIRECTORY --participant HANDLE --identity IDENTITY --engine-state ORIGINAL_STATE --origin ORIGIN --workspace WORKSPACE --id SETUP_ID --send --receive",
+            "peerwork connect --local DIRECTORY --participant HANDLE --client EXISTING_ENDPOINT --origin ORIGIN --actor ACTOR --workspace WORKSPACE --id SETUP_ID --receive",
+            "peerwork connect --local DIRECTORY --participant HANDLE --workspace WORKSPACE --id SETUP_ID --send --receive",
+            "peerwork connect --local DIRECTORY --context",
+            "peerwork connect --local DIRECTORY --participant OWNER_HANDLE --id APPROVAL_ID --approve-request PUBLIC_REQUEST.json",
+            "peerwork agent --local DIRECTORY mcp"],"authority":"Initial local-owner selection preserves the existing identity/state. Missing remote rights return a consolidated approval request. Subsequent MCP connect accepts registered handles only."});
+    }
+    let result = || -> Result<Value> {
+        let values = parse(args)?;
+        let required = |key: &str| {
+            values
+                .get(key)
+                .cloned()
+                .ok_or_else(|| local("CONNECT_ARGUMENT_INVALID_SEE_HELP"))
+        };
+        let directory = std::path::absolute(required("--local")?)
+            .map_err(|_| local("CONNECT_DIRECTORY_INVALID"))?;
+        if values.contains_key("--context") && directory.exists() {
+            return Ok(Connect::inspect(&directory)?.context());
+        }
+        let mut connect = Connect::open(&directory)?;
+        if values.contains_key("--context") {
+            return Ok(connect.context());
+        }
+        let handle = required("--participant")?;
+        if let Some(path) = values.get("--approve-request") {
+            use std::io::Read;
+            let mut wire = Vec::new();
+            std::fs::File::open(path)
+                .map_err(|_| local("APPROVAL_REQUEST_UNREADABLE"))?
+                .take(32769)
+                .read_to_end(&mut wire)
+                .map_err(|_| local("APPROVAL_REQUEST_UNREADABLE"))?;
+            if wire.len() > 32768 {
+                return Err(local("APPROVAL_REQUEST_TOO_LARGE"));
+            }
+            let request: AuthorizationRequest = serde_json::from_value(
+                peerwork_core::strict_json::parse_strict_json(&wire)
+                    .map_err(|_| local("AUTHORIZATION_REQUEST_INVALID"))?,
+            )
+            .map_err(|_| local("AUTHORIZATION_REQUEST_INVALID"))?;
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .map_err(|_| local("EXECUTOR_FAILED"))?;
+            return runtime.block_on(connect.approve(&handle, &required("--id")?, request));
+        }
+        let mut request = ConnectRequest {
+            setup_id: required("--id")?,
+            participant: handle.clone(),
+            workspace_id: required("--workspace")?,
+            alias: values.get("--alias").cloned().unwrap_or_else(default_alias),
+            send: values.contains_key("--send"),
+            receive: values.contains_key("--receive"),
+            require_body_keys: values.contains_key("--body-keys"),
+            protocols: Vec::new(),
+            contacts: Vec::new(),
+        };
+        if let Some(role) = values.get("--role") {
+            let parts: Vec<_> = role.split(':').collect();
+            if parts.len() != 3 {
+                return Err(local("ROLE_SELECTION_USE_ALIAS_INSTANCE_ROLE"));
+            }
+            request.protocols.push(ProtocolSelection {
+                alias: parts[0].into(),
+                instance_id: parts[1].into(),
+                role: parts[2].into(),
+                actions: Vec::new(),
+            });
+        }
+        if let Some(contact) = values.get("--contact") {
+            let (alias, actor) = contact
+                .split_once(':')
+                .ok_or_else(|| local("CONTACT_SELECTION_USE_ALIAS_ACTOR"))?;
+            request.contacts.push(ContactSelection {
+                alias: alias.into(),
+                actor_id: actor.into(),
+            });
+        }
+        request.validate()?;
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .map_err(|_| local("EXECUTOR_FAILED"))?;
+        runtime.block_on(async {
+            if let Some(identity) = values.get("--identity") {
+                if values.contains_key("--client") {
+                    return Err(local("LOCAL_SELECTION_CONFLICT"));
+                }
+                let selected = bootstrap(
+                    &directory,
+                    &handle,
+                    &std::path::absolute(identity).map_err(|_| local("LOCAL_SELECTION_INVALID"))?,
+                    &std::path::absolute(required("--engine-state")?)
+                        .map_err(|_| local("LOCAL_SELECTION_INVALID"))?,
+                    &required("--origin")?,
+                    values.contains_key("--allow-loopback-http"),
+                )
+                .await?;
+                connect.register(&handle, selected).await?;
+            } else if let Some(endpoint) = values.get("--client") {
+                connect
+                    .register(
+                        &handle,
+                        Registration {
+                            origin: required("--origin")?,
+                            actor_id: required("--actor")?,
+                            endpoint_path: std::path::absolute(endpoint)
+                                .map_err(|_| local("LOCAL_SELECTION_INVALID"))?,
+                        },
+                    )
+                    .await?;
+            }
+            connect.run(request).await
+        })
+    };
+    result().unwrap_or_else(|error| json!({"state":"FAILED","error":error}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn lost_original_registry_is_not_reinterpreted_as_first_install() {
+        let temp = crate::test_support::protected_test_dir();
+        let directory = temp.path().join("local");
+        let connect = Connect::open(&directory).unwrap();
+        connect.save().unwrap();
+        drop(connect);
+        std::fs::remove_file(directory.join("connect.state")).unwrap();
+        let error = match Connect::open(&directory) {
+            Err(e) => e,
+            Ok(_) => panic!("lost original binding was silently replaced"),
+        };
+        assert_eq!(error.code, "CONNECT_ORIGINAL_BINDING_RECOVERY_REQUIRED");
+        assert!(!directory.join("connect.state").exists());
+    }
+    #[tokio::test]
+    async fn readers_remain_available_during_setup_without_gaining_writer_authority() {
+        let temp = crate::test_support::protected_test_dir();
+        let directory = temp.path().join("local");
+        let writer = Connect::open(&directory).unwrap();
+        writer.save().unwrap();
+        let mut reader = Connect::inspect(&directory).unwrap();
+        assert_eq!(reader.context()["state"], "NOT_CONFIGURED");
+        let error = reader
+            .run(ConnectRequest {
+                setup_id: "original".into(),
+                participant: "worker".into(),
+                workspace_id: "W".repeat(43),
+                alias: "space".into(),
+                send: false,
+                receive: true,
+                require_body_keys: false,
+                protocols: Vec::new(),
+                contacts: Vec::new(),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, "CONNECT_READ_ONLY_VIEW");
+        assert!(reader.save().is_err());
+    }
+}

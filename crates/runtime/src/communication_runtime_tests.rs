@@ -58,6 +58,43 @@ async fn start(
         .unwrap();
     (ready, cancel, task)
 }
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires loopback IPC permission"]
+async fn derived_clients_reuse_authority_namespace_and_survive_restart_without_engine_reload() {
+    let temp=crate::test_support::protected_test_dir();let options=config(temp.path());
+    let (ready,cancel,task)=start(options.clone()).await;
+    let parent=&ready.client_endpoints["reader"];
+    let cap=options.clients[1].capability.clone();
+    let request=json!({"method":"derive","name":"role-a","capability":cap});
+    let first=call(parent,request.clone()).await.unwrap();assert_eq!(first["ok"],true,"{first}");
+    assert_eq!(first["value"]["engine_restarted"],false);
+    let path=PathBuf::from(first["value"]["endpoint_path"].as_str().unwrap());
+    let original=std::fs::read(&path).unwrap();
+    let again=call(parent,request.clone()).await.unwrap();assert_eq!(again["value"],first["value"]);
+    assert_eq!(std::fs::read(&path).unwrap(),original);
+    let escalation=call(parent,json!({"method":"derive","name":"bad","capability":Capability::owner()})).await.unwrap();
+    assert_eq!(escalation["error"]["code"],"CAPABILITY_ESCALATION");
+    assert_eq!(call(&path,json!({"method":"stop"})).await.unwrap()["error"]["code"],"CLIENT_REQUEST_INVALID");
+    assert_eq!(call(&path,json!({"method":"capabilities"})).await.unwrap()["value"]["capability"],serde_json::to_value(&cap).unwrap());
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(call(parent,request.clone()).await.unwrap()["value"],first["value"]);
+    assert_eq!(std::fs::read(&path).unwrap(),original,"repair must not rotate live credentials");
+    cancel.cancel();task.await.unwrap().unwrap();
+    let (ready,cancel,task)=start(options.clone()).await;
+    let restored=call(&ready.client_endpoints["reader"],request).await.unwrap();
+    assert_eq!(restored["value"]["endpoint_path"],first["value"]["endpoint_path"]);
+    assert_eq!(call(&path,json!({"method":"capabilities"})).await.unwrap()["value"]["capability"],serde_json::to_value(cap).unwrap());
+    let old_token=temp.path().join("copied-restricted-endpoint.json");
+    write_private(&old_token,&std::fs::read(&path).unwrap()).unwrap();
+    let nested=call(&path,json!({"method":"derive","name":"nested","capability":options.clients[1].capability})).await.unwrap();
+    let nested_path=PathBuf::from(nested["value"]["endpoint_path"].as_str().unwrap());
+    let revoked=call(&ready.client_endpoints["reader"],json!({"method":"revoke_derived","name":"role-a"})).await.unwrap();
+    assert_eq!(revoked["value"]["count"],2,"{revoked}");
+    assert!(!path.exists());assert!(!nested_path.exists());
+    assert!(matches!(call(&old_token,json!({"method":"capabilities"})).await.unwrap_err().code.as_str(),"IPC_UNAUTHORIZED"|"IPC_DISCONNECTED"));
+    assert_eq!(call(&ready.client_endpoints["reader"],json!({"method":"revoke_derived","name":"role-a"})).await.unwrap()["value"]["count"],0);
+    cancel.cancel();task.await.unwrap().unwrap();
+}
 #[tokio::test]
 async fn framing_is_bounded_and_preserves_multiple_messages() {
     let (input, mut output) = tokio::io::duplex(64);

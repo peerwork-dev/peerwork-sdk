@@ -7,6 +7,8 @@ mod tests;
 use crate::communication_local_channel as channel;
 #[path = "communication_client.rs"]
 mod client;
+#[path = "communication_clients.rs"]
+mod derived;
 use crate::{
     communication_host::{random_token, write_private},
     communication_store::{identifier, private_json},
@@ -148,13 +150,17 @@ pub struct RuntimeReady {
 }
 #[derive(Clone)]
 struct Session {
+    name: String,
     token: String,
     client: ParticipantClient,
     watches: Arc<tokio::sync::Mutex<BTreeMap<String, Arc<tokio::sync::Mutex<ProgramWatch>>>>>,
 }
 struct Runtime {
     owners: BTreeMap<String, ParticipantClient>,
-    sessions: Vec<Session>,
+    sessions: std::sync::RwLock<Vec<Session>>,
+    derived: std::sync::Mutex<derived::Clients>,
+    directory: PathBuf,
+    address: SocketAddr,
     admin_token: String,
     host_status: Vec<Arc<std::sync::Mutex<Value>>>,
     cancel: KernelCancellationToken,
@@ -165,6 +171,13 @@ struct Runtime {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "method", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ClientRequest {
+    Derive {
+        name: String,
+        capability: Capability,
+    },
+    RevokeDerived {
+        name: String,
+    },
     DeliveryStatus {
         options: WatchOptions,
         item: DeliveryReference,
@@ -262,10 +275,12 @@ fn response(id: &str, out: Result<Value>) -> Value {
     }
 }
 impl Runtime {
-    fn credential(&self, id: &str) -> Option<&str> {
+    fn credential(&self, id: &str) -> Option<String> {
+        let sessions = self.sessions.read().ok()?;
         std::iter::once(self.admin_token.as_str())
-            .chain(self.sessions.iter().map(|s| s.token.as_str()))
+            .chain(sessions.iter().map(|s| s.token.as_str()))
             .find(|key| equal(&channel::key_id(key), id))
+            .map(str::to_owned)
     }
     async fn request(&self, frame: Frame, credential: &str) -> Value {
         let id = &frame.request_id;
@@ -287,17 +302,29 @@ impl Runtime {
             }}.await;
             return response(id, value);
         }
-        let Some(session) = self
-            .sessions
+        let session = self.sessions.read().ok().and_then(|sessions| sessions
             .iter()
             .find(|session| equal(&session.token, credential))
-        else {
+            .cloned());
+        let Some(session) = session else {
             return response(id, Err(local("IPC_UNAUTHORIZED")));
         };
         let value=async{
             let request=ClientRequest::parse(frame.request)?;
             let client=&session.client;
             match request{
+                ClientRequest::Derive{name,capability}=>self.derive_client(&session,&name,capability),
+                ClientRequest::RevokeDerived{name}=>{
+                    let revoked=self.revoke_derived(&session,&name)?;
+                    let count=revoked.len();let mut cleanup_pending=false;
+                    for revoked in revoked {
+                        match revoked.client.watch_bindings().await {
+                            Ok(bindings)=>for binding in bindings {if revoked.client.unwatch(&binding).await.is_err(){cleanup_pending=true;}},
+                            Err(_)=>cleanup_pending=true,
+                        }
+                    }
+                    Ok(json!({"state":"LOCAL_CLIENTS_REVOKED","count":count,"receiver_cleanup_pending":cleanup_pending,"original_operations_retained":true,"remote_rights_revoked":false}))
+                },
                 ClientRequest::DeliveryStatus{options,item}=>client.delivery_status(&options,item).await,
                 ClientRequest::Unwatch{options}=>{client.unwatch(&options).await?;session.watches.lock().await.remove(&options.key());Ok(json!({"state":"LOCAL_STOPPED","lease_expires_within_ms":15000,"messages_deleted":false}))},
                 ClientRequest::Watch{options}=>{
@@ -718,6 +745,7 @@ pub async fn serve(
                 .get(&client.engine)
                 .ok_or_else(|| local("CLIENT_CONFIG_INVALID"))?;
             sessions.push(Session {
+                name: client.name.clone(),
                 watches: Default::default(),
                 token: random_token().map_err(|_| local("ENTROPY_UNAVAILABLE"))?,
                 client: owner.restrict(&client.name, client.capability.clone())?,
@@ -738,17 +766,19 @@ pub async fn serve(
     let address = listener
         .local_addr()
         .map_err(|_| local("IPC_BIND_FAILED"))?;
+    let derived = derived::Clients::open(&config.state_directory)?;
+    derived.restore(&mut sessions)?;
     let admin_token = random_token().map_err(|_| local("ENTROPY_UNAVAILABLE"))?;
     let admin_endpoint = config.state_directory.join("admin.json");
     let mut paths = BTreeMap::new();
     let published: Result<()> = (|| {
         endpoint(&admin_endpoint, address, &admin_token, "ADMIN")?;
-        for (client, session) in config.clients.iter().zip(&sessions) {
+        for session in &sessions {
             let path = config
                 .state_directory
-                .join(format!("client-{}.json", client.name));
+                .join(format!("client-{}.json", session.name));
             endpoint(&path, address, &session.token, "CLIENT")?;
-            paths.insert(client.name.clone(), path);
+            paths.insert(session.name.clone(), path);
         }
         Ok(())
     })();
@@ -789,7 +819,10 @@ pub async fn serve(
     }));
     let runtime = Arc::new(Runtime {
         owners,
-        sessions,
+        sessions: std::sync::RwLock::new(sessions),
+        derived: std::sync::Mutex::new(derived),
+        directory: config.state_directory.clone(),
+        address,
         admin_token,
         host_status,
         cancel,

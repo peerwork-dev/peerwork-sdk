@@ -14,6 +14,7 @@ pub(crate) mod communication_store;
 pub mod communication_runtime;
 pub mod agent_tools;
 pub mod agent_frontend;
+pub mod participant_connect;
 mod agent_mcp;
 pub mod communication_bridge;
 pub(crate) mod communication_local_channel;
