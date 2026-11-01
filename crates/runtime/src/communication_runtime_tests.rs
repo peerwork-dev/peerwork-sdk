@@ -393,3 +393,51 @@ async fn watch_binding_discovery_cannot_cross_namespace_or_capability() {
     assert_eq!(call(creator,json!({"method":"bindings","namespace":"reader"})).await.unwrap()["error"]["code"],"CLIENT_REQUEST_INVALID");
     cancel.cancel(); task.await.unwrap().unwrap();
 }
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires loopback IPC permission"]
+async fn derived_capability_changes_compare_previous_authority_and_never_leave_narrowed_clones(){
+    let temp=crate::test_support::protected_test_dir();let options=config(temp.path());let(ready,cancel,task)=start(options.clone()).await;
+    let parent=&ready.client_endpoints["creator"];let initial=options.clients[1].capability.clone();
+    let first=call(parent,json!({"method":"derive","name":"scoped","capability":initial})).await.unwrap();assert_eq!(first["ok"],true);
+    let endpoint=PathBuf::from(first["value"]["endpoint_path"].as_str().unwrap());let credential=std::fs::read(&endpoint).unwrap();
+    let mut added=initial.clone();added.operations.insert("structure.mailbox.get".into());
+    let conflict=call(parent,json!({"method":"derive","name":"scoped","capability":added})).await.unwrap();assert_eq!(conflict["error"]["code"],"CLIENT_BINDING_CONFLICT");
+    let changed=call(parent,json!({"method":"derive","name":"scoped","capability":added,"expected_capability":initial})).await.unwrap();assert_eq!(changed["ok"],true,"{changed}");
+    assert_eq!(std::fs::read(&endpoint).unwrap(),credential,"additive permission change rotated the client identity");
+    assert_eq!(call(&endpoint,json!({"method":"capabilities"})).await.unwrap()["value"]["capability"],serde_json::to_value(&added).unwrap());
+    let removed=call(parent,json!({"method":"derive","name":"scoped","capability":initial,"expected_capability":added})).await.unwrap();
+    assert_eq!(removed["error"]["code"],"CLIENT_NARROWING_REQUIRES_REVOCATION");
+    cancel.cancel();task.await.unwrap().unwrap();
+    let(ready,cancel,task)=start(options).await;
+    let restored=call(&ready.client_endpoints["creator"],json!({"method":"derive","name":"scoped","capability":added})).await.unwrap();
+    assert_eq!(restored["value"]["endpoint_path"],first["value"]["endpoint_path"]);
+    cancel.cancel();task.await.unwrap().unwrap();
+}
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires loopback IPC permission"]
+async fn host_scope_conflicts_are_rejected_before_persistence_and_terminal_dispatchers_are_not_ready(){
+    use crate::participant_dispatch::{HostConfig,HostSubscription};
+    let temp=crate::test_support::protected_test_dir();let mut options=config(temp.path());
+    options.clients.push(ClientConfig{name:"other".into(),engine:"one-identity".into(),capability:Capability::owner()});
+    let runtime_directory=options.state_directory.clone();let(ready,cancel,task)=start(options).await;
+    let watch=WatchOptions{workspace_id:"W".repeat(43),mailbox_id:"B".repeat(43),membership_id:"M".repeat(43),consumer_id:"first".into(),host_destination:None};
+    let mut host=HostConfig{name:"selected".into(),adapter:json!({"kind":"codex","endpoint":"ws://127.0.0.1:1","thread_id":"owned-synthetic-thread"}),
+        subscriptions:vec![HostSubscription{client:"creator".into(),watch:watch.clone()},HostSubscription{client:"other".into(),watch}]};
+    let rejected=call(&ready.admin_endpoint,json!({"method":"host_ensure","config":host})).await.unwrap();
+    assert_eq!(rejected["error"]["code"],"HOST_SUBSCRIPTION_CONFLICT","{rejected}");
+    assert!(!runtime_directory.join("runtime-hosts.state").exists(),"invalid host configuration was persisted before validation");
+    host.subscriptions.pop();let key=host.key().unwrap();
+    let owner=SecureStateStore::open(&runtime_directory.join(format!("host-{key}.state"))).unwrap();
+    let registered=call(&ready.admin_endpoint,json!({"method":"host_ensure","config":host})).await.unwrap();assert_eq!(registered["ok"],true,"{registered}");
+    tokio::time::timeout(Duration::from_secs(2),async{loop{
+        let status=call(&ready.admin_endpoint,json!({"method":"status"})).await.unwrap();
+        if status["value"]["hosts"][0]["code"]=="HOST_STATE_ALREADY_OWNED"{break;}
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }}).await.unwrap();
+    let failed=call(&ready.admin_endpoint,json!({"method":"host_ensure","config":host})).await.unwrap();
+    assert_eq!(failed["error"]["code"],"HOST_DISPATCHER_RECOVERY_REQUIRED","{failed}");
+    assert_eq!(call(&ready.client_endpoints["creator"],json!({"method":"capabilities"})).await.unwrap()["ok"],true);
+    drop(owner);cancel.cancel();task.await.unwrap().unwrap();
+}

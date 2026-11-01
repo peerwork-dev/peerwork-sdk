@@ -4205,8 +4205,12 @@ async fn connect_consolidates_missing_rights_and_resumes_without_owner_profile_e
     std::fs::remove_file(&old_profile.endpoint_path).unwrap();
     let repaired=worker.run(request.clone()).await.unwrap();assert_eq!(repaired["state"],"LOCAL_CONFIGURED","{repaired}");
     assert_eq!(std::fs::read(&old_profile.endpoint_path).unwrap(),original_endpoint,"endpoint repair changed the credential or namespace");
+    let receiver_path=old_profile.receive_endpoint_path.as_ref().unwrap();
+    let original_receiver=std::fs::read(receiver_path).unwrap();std::fs::remove_file(receiver_path).unwrap();
+    let repaired=worker.run(request.clone()).await.unwrap();assert_eq!(repaired["state"],"LOCAL_CONFIGURED","{repaired}");
+    assert_eq!(std::fs::read(receiver_path).unwrap(),original_receiver,"receiver repair changed credentials/custody");
     let mut role_request=request;role_request.setup_id="worker-role".into();
-    role_request.protocols.push(crate::participant_connect::ProtocolSelection{alias:"claim".into(),instance_id:adopted["instance_id"].as_str().unwrap().into(),role:"WORKER".into(),actions:vec!["claim".into()]});
+    role_request.protocols.push(crate::participant_connect::ProtocolSelection{alias:"claim".into(),instance_id:adopted["instance_id"].as_str().unwrap().into(),role:"WORKER".into(),actions:Vec::new()});
     let pending=worker.run(role_request.clone()).await.unwrap();assert_eq!(pending["blocker"]["code"],"OWNER_APPROVAL_REQUIRED","{pending}");
     let approved=owner.approve("owner","approve-role",serde_json::from_value(pending["details"]["authorization_request"].clone()).unwrap()).await.unwrap();
     assert_eq!(approved["state"],"APPROVED","{approved}");
@@ -4263,8 +4267,14 @@ async fn connect_send_only_accepts_body_keys_without_mailbox_and_preserves_lease
     let admitted=structure(&owner.invoke(admit,Duration::from_secs(5)).await.unwrap());
     let owner_box=mutate(&owner,"sender-owner-grant","structure.communication.grant.set",&scope,json!({"actor_id":owner.actor_id(),"membership_id":meta["membership"]["membership_id"],"send":true,"receive":true,"expected_revision":null})).await["mailbox"].clone();
     let time=owner.request(Invoke::new("time","participant.time.read",scope.clone(),json!({}))).await.unwrap();
-    let expiry=time["server_time_ms"].as_u64().unwrap()+120000;
+    let initial_time=time["server_time_ms"].as_u64().unwrap();
+    let expiry=initial_time+2_000_000;
     mutate(&owner,"sender-only-grant","structure.communication.grant.set",&scope,json!({"actor_id":worker_config.expected_actor,"membership_id":admitted["membership_id"],"send":true,"receive":false,"expires_at":expiry,"expected_revision":null})).await;
+    let mut read_only=Capability::owner();read_only.allow_root=false;read_only.workspace_ids=Some([ws.clone()].into());read_only.operations=["participant.keys.prepare".into()].into();
+    let head_reader=owner.restrict("head-observer",read_only).unwrap();
+    let no_head=head_reader.request(Invoke::new("prepare-no-head","participant.keys.prepare",scope.clone(),json!({}))).await.unwrap();
+    assert_eq!(no_head["state"],"OWNER_KEY_HEAD_REQUIRED","{no_head}");
+    assert!(service.counts().await["actions"]["structure.content-key.set"].is_null(),"key preparation published a remote head through restricted authority");
     let key=install_synthetic_key(&owner_config,&ws,&[41;32],None);
     mutate(&owner,"sender-head","structure.content-key.set",&scope,json!({"key_id":key,"expected_epoch":0,"expected_head_revision":null})).await;
     owner.close().await.unwrap();
@@ -4280,7 +4290,17 @@ async fn connect_send_only_accepts_body_keys_without_mailbox_and_preserves_lease
     let request=ConnectRequest{setup_id:"send-first".into(),participant:"sender".into(),workspace_id:ws.clone(),alias:"project".into(),send:true,receive:false,require_body_keys:true,protocols:Vec::new(),contacts:vec![ContactSelection{alias:"owner".into(),actor_id:owner_config.expected_actor.clone()}],host:None};
     let pending=worker.run(request.clone()).await.unwrap();
     assert_eq!(pending["blocker"]["code"],"KEY_AUTHORIZATION_REQUIRED","{pending}");
-    let handoff=pending["details"]["authorization_request"].clone();
+    let old_handoff=pending["details"]["authorization_request"].clone();
+    let deadline=old_handoff["key_request"]["expires_at"].as_u64().unwrap();
+    service.config(json!({"clock_offset_ms":deadline-initial_time+1000})).await;
+    let refreshed=worker.run(request.clone()).await.unwrap();
+    assert_eq!(refreshed["setup_id"],pending["setup_id"]);
+    let handoff=refreshed["details"]["authorization_request"].clone();
+    assert_ne!(handoff["key_request"]["request_id"],old_handoff["key_request"]["request_id"],"expired request was replayed");
+    assert_eq!(handoff["key_request"]["recipient_key_id"],old_handoff["key_request"]["recipient_key_id"],"request refresh replaced recipient identity");
+    let snapshot=crate::secure_state::SecureStateStore::read_snapshot(&root.path().join("sender-local/connect.state"),16*1024*1024).unwrap();
+    let saved:Value=serde_json::from_slice(&snapshot).unwrap();
+    assert_eq!(saved["setups"]["send-first"]["key_request_history"][0]["request_id"],old_handoff["key_request"]["request_id"]);
     assert!(handoff["missing"].as_array().unwrap().is_empty(),"existing send permission was requested again: {handoff}");
     let approved=owner.approve("owner","keys-only",serde_json::from_value::<AuthorizationRequest>(handoff).unwrap()).await.unwrap();
     assert_eq!(approved["state"],"APPROVED","{approved}");
@@ -4309,6 +4329,11 @@ async fn connect_send_only_accepts_body_keys_without_mailbox_and_preserves_lease
     let pending=worker.run(upgrade.clone()).await.unwrap();assert_eq!(pending["blocker"]["code"],"OWNER_APPROVAL_REQUIRED","{pending}");
     let handoff=pending["details"]["authorization_request"].clone();assert_eq!(handoff["body_keys_required"],false);
     assert_eq!(handoff["missing"],json!([{"kind":"COMMUNICATION_RECEIVE"}]));
+    service.config(json!({"drop_action":"structure.communication.grant.set"})).await;
+    let interrupted=owner.approve("owner","receive-only",serde_json::from_value(handoff.clone()).unwrap()).await.unwrap();
+    assert_eq!(interrupted["state"],"PENDING","{interrupted}");
+    assert_eq!(interrupted["next_action"],"RESUME_SAME_APPROVAL_ID");
+    service.config(json!({"offline":false})).await;
     let approved=owner.approve("owner","receive-only",serde_json::from_value(handoff.clone()).unwrap()).await.unwrap();assert_eq!(approved["state"],"APPROVED","{approved}");
     let grant=owner_client.call(json!({"method":"request","request":Invoke::new("grant","structure.communication.grant.get",scope.clone(),json!({"actor_id":worker_config.expected_actor}))})).await.unwrap();
     assert_eq!(grant["result"]["structure"]["grant"]["expires_at"],expiry);
@@ -4323,8 +4348,8 @@ async fn connect_send_only_accepts_body_keys_without_mailbox_and_preserves_lease
     assert_eq!(sender.call(json!({"method":"operation","operation_id":"sender-message"})).await.unwrap()["command_id"],sent["command_id"]);
     // Renewing an expired lease must be explicit and may not resurrect a
     // receive direction absent from the newly approved delta.
-    service.config(json!({"clock_offset_ms":180000})).await;
-    let mut renewal=handoff;renewal["missing"]=json!([{"kind":"COMMUNICATION_SEND"}]);renewal["grant_expires_at"]=json!(expiry+180000);
+    service.config(json!({"clock_offset_ms":expiry-initial_time+180000})).await;
+    let mut renewal=handoff;renewal["missing"]=json!([{"kind":"COMMUNICATION_SEND"}]);renewal["grant_expires_at"]=json!(expiry+500000);
     let approved=owner.approve("owner","explicit-renewal",serde_json::from_value(renewal).unwrap()).await.unwrap();assert_eq!(approved["state"],"APPROVED","{approved}");
     let grant=owner_client.call(json!({"method":"request","request":Invoke::new("renewed-grant","structure.communication.grant.get",scope.clone(),json!({"actor_id":worker_config.expected_actor}))})).await.unwrap();
     assert_eq!(grant["result"]["structure"]["grant"]["can_receive"],false,"expired receive authority was resurrected");

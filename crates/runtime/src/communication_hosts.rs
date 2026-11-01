@@ -42,7 +42,7 @@ fn sources(
     config: &HostConfig,
     clients: &BTreeMap<String, ParticipantClient>,
 ) -> Result<Vec<(ParticipantClient, WatchOptions)>> {
-    config
+    let selected:Vec<_>=config
         .subscriptions
         .iter()
         .map(|s| {
@@ -52,7 +52,11 @@ fn sources(
             s.watch.authorize(client.capability())?;
             Ok((client.clone(), s.watch.clone()))
         })
-        .collect()
+        .collect::<Result<_>>()?;
+    for (index,(client,watch)) in selected.iter().enumerate(){for (other,previous) in &selected[..index]{
+        if watch.key()==previous.key()&&(!client.same_client(other)||watch!=previous){return Err(local("HOST_SUBSCRIPTION_CONFLICT"));}
+    }}
+    Ok(selected)
 }
 impl Hosts {
     pub fn open(
@@ -126,6 +130,7 @@ impl Hosts {
             .clone();
         let selected_sources = sources(&selected, clients)?;
         if let Some(job) = self.jobs.get(&key) {
+            if job.task.is_finished(){return Err(local("HOST_DISPATCHER_RECOVERY_REQUIRED"));}
             job.validate_sources(&selected_sources)?;
         }
         let wire = serde_json::to_vec(&desired).map_err(|_| local("HOST_REGISTRY_INVALID"))?;

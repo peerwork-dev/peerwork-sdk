@@ -134,6 +134,8 @@ struct Setup {
     #[serde(default)]
     key_request: Option<Value>,
     #[serde(default)]
+    key_request_history: Vec<Value>,
+    #[serde(default)]
     effective_host: Option<String>,
     #[serde(default)]
     channel_send: bool,
@@ -447,14 +449,24 @@ impl Connect {
             if old.result["state"] == "LOCAL_CONFIGURED" {
                 if let Some(profile) = &old.profile {
                     self.ensure_profile(&request.setup_id, profile)?;
-                    if RuntimeClient::connect(
+                    let sender_ready = RuntimeClient::connect(
                         profile.endpoint_path.clone(),
                         &profile.expected_origin,
                         &profile.expected_actor,
                     )
                     .await
-                    .is_ok()
-                    {
+                    .is_ok();
+                    let receiver_ready = match &profile.receive_endpoint_path {
+                        Some(path) => RuntimeClient::connect(
+                            path.clone(),
+                            &profile.expected_origin,
+                            &profile.expected_actor,
+                        )
+                        .await
+                        .is_ok(),
+                        None => true,
+                    };
+                    if sender_ready && receiver_ready {
                         let mut result = old.result.clone();
                         result["observation"] =
                             json!("CACHED_SETUP_RESULT_USE_REACHABILITY_FOR_CURRENT_STATE");
@@ -474,6 +486,7 @@ impl Connect {
                     digest,
                     profile: None,
                     key_request: None,
+                    key_request_history: Vec::new(),
                     effective_host: None,
                     channel_send: false,
                     channel_receive: false,
@@ -506,6 +519,7 @@ impl Connect {
             workspace_id: Some(request.workspace_id.clone()),
             ..Scope::default()
         };
+        let now = trusted_time(&client, &scope).await?;
         let workspace = read(&client, "structure.workspace.get", scope.clone(), json!({})).await?;
         if !token(
             workspace["membership"]["membership_id"]
@@ -533,7 +547,6 @@ impl Connect {
         )
         .await?;
         let grant = &grants["grant"];
-        let now = trusted_time(&client, &scope).await?;
         let valid = grant["membership_id"] == membership && approval::effective(grant, now);
         let mut missing = Vec::new();
         if request.send && (!valid || grant["can_send"] != true) {
@@ -584,6 +597,20 @@ impl Connect {
                 if !definition.is_object() {
                     return Err(local("PROTOCOL_ROLE_NOT_FOUND"));
                 }
+                let declared: std::collections::BTreeSet<String> = definition["tools"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|t| t["action"].as_str().map(str::to_owned))
+                    .collect();
+                let wanted: std::collections::BTreeSet<String> = if p.actions.is_empty() {
+                    declared.clone()
+                } else {
+                    p.actions.iter().cloned().collect()
+                };
+                if wanted.len() > 64 || !wanted.is_subset(&declared) {
+                    return Err(local("ACTION_NOT_DECLARED_FOR_ROLE"));
+                }
                 let rights = read(
                     &client,
                     "structure.grant.get",
@@ -592,24 +619,6 @@ impl Connect {
                 )
                 .await?;
                 let g = &rights["grant"];
-                if g["effective"] != true
-                    || !g["protocol_roles"]
-                        .as_array()
-                        .is_some_and(|rs| rs.iter().any(|v| v == &p.role))
-                    || !p.actions.iter().all(|a| {
-                        g["actions"]
-                            .as_array()
-                            .is_some_and(|xs| xs.iter().any(|v| v == a))
-                    })
-                {
-                    missing.push(json!({"kind":"BUSINESS_ROLE","instance_id":p.instance_id,"protocol_digest":selected_scope.protocol_digest,"role":p.role,"actions":p.actions}));
-                }
-                let declared: std::collections::BTreeSet<String> = definition["tools"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|t| t["action"].as_str().map(str::to_owned))
-                    .collect();
                 let granted: std::collections::BTreeSet<String> = g["actions"]
                     .as_array()
                     .into_iter()
@@ -617,29 +626,71 @@ impl Connect {
                     .filter_map(Value::as_str)
                     .map(str::to_owned)
                     .collect();
-                if p.actions.iter().any(|a| !declared.contains(a)) {
-                    return Err(local("ACTION_NOT_DECLARED_FOR_ROLE"));
+                if g["effective"] != true
+                    || !g["protocol_roles"]
+                        .as_array()
+                        .is_some_and(|rs| rs.iter().any(|v| v == &p.role))
+                    || !wanted.is_subset(&granted)
+                {
+                    missing.push(json!({"kind":"BUSINESS_ROLE","instance_id":p.instance_id,"protocol_digest":selected_scope.protocol_digest,"role":p.role,"actions":wanted}));
                 }
-                let actions = declared
-                    .intersection(&granted)
-                    .filter(|a| p.actions.is_empty() || p.actions.contains(a))
-                    .cloned()
-                    .collect();
+                let actions = wanted.intersection(&granted).cloned().collect();
                 role_actions.insert(p.alias.clone(), actions);
             }
             protocols.insert(p.alias.clone(), selected_scope);
         }
         let keys = if request.require_body_keys {
-            match read(&client,"participant.keys.prepare",scope.clone(),json!({})).await {
-                Ok(value) if value["state"]=="READY" => value,
-                Err(error) if error.code=="CONTENT_KEY_MISSING" => json!({"state":"MISSING"}),
-                Err(error) => return self.pending(&request,"CONTENT_KEYS",&error.code,"RUNTIME","RECOVER_SELECTED_KEY_STATE",json!({"recovery":error.recovery})),
-                Ok(value) => return self.pending(&request,"CONTENT_KEYS","KEYS_SYNCHRONIZING","RUNTIME","RESUME_SAME_SETUP",json!({"keys":value})),
+            match read(
+                &client,
+                "participant.keys.prepare",
+                scope.clone(),
+                json!({}),
+            )
+            .await
+            {
+                Ok(value) if value["state"] == "READY" => value,
+                Ok(value) if value["state"] == "OWNER_KEY_HEAD_REQUIRED" => {
+                    return self.pending(
+                        &request,
+                        "CONTENT_KEYS",
+                        "OWNER_KEY_HEAD_REQUIRED",
+                        owner,
+                        "EXPLICITLY_INITIALIZE_WORKSPACE_CONTENT_KEY_HEAD",
+                        json!({"keys":value}),
+                    )
+                }
+                Err(error) if error.code == "CONTENT_KEY_MISSING" => json!({"state":"MISSING"}),
+                Err(error) => {
+                    return self.pending(
+                        &request,
+                        "CONTENT_KEYS",
+                        &error.code,
+                        "RUNTIME",
+                        "RECOVER_SELECTED_KEY_STATE",
+                        json!({"recovery":error.recovery}),
+                    )
+                }
+                Ok(value) => {
+                    return self.pending(
+                        &request,
+                        "CONTENT_KEYS",
+                        "KEYS_SYNCHRONIZING",
+                        "RUNTIME",
+                        "RESUME_SAME_SETUP",
+                        json!({"keys":value}),
+                    )
+                }
             }
-        } else {json!({"state":"NOT_REQUESTED"})};
-        let needs_keys=keys["state"]=="MISSING";
+        } else {
+            json!({"state":"NOT_REQUESTED"})
+        };
+        let needs_keys = keys["state"] == "MISSING";
         if !missing.is_empty() || needs_keys {
-            let key_request=if needs_keys{Some(self.key_request(&client,&request,&scope).await?)}else{None};
+            let key_request = if needs_keys {
+                Some(self.key_request(&client, &request, &scope).await?)
+            } else {
+                None
+            };
             return self.pending(&request,"REMOTE_AUTHORIZATION",if missing.is_empty(){"KEY_AUTHORIZATION_REQUIRED"}else{"OWNER_APPROVAL_REQUIRED"},owner,"APPROVE_REQUESTED_PERMISSION_DELTA",
                 json!({"authorization_request":{"format":"peerwork.connect-authorization-request.v1","setup_id":request.setup_id,
                     "origin":selected.origin,"workspace_id":request.workspace_id,"actor_id":selected.actor_id,"membership_id":membership,
@@ -787,39 +838,98 @@ impl Connect {
         capability.workspace_ids = Some([request.workspace_id.clone()].into());
         // Sending never acquires receiver/claim/report authority. The receiver
         // gets a separate own-mailbox-bound client under the same engine.
-        let allowed = ["structure.message.send","structure.message.receipts.read","structure.mailbox.get"];
-        capability.operations.retain(|s|allowed.contains(&s.as_str()));
-        if !channel_send { capability.operations.remove("structure.message.send"); }
+        let allowed = [
+            "structure.message.send",
+            "structure.message.receipts.read",
+            "structure.mailbox.get",
+        ];
+        capability
+            .operations
+            .retain(|s| allowed.contains(&s.as_str()));
+        if !channel_send {
+            capability.operations.remove("structure.message.send");
+        }
         capability.validate()?;
-        let alias = format!("mail-{}", &sha256_hex(json!([request.participant,request.workspace_id]).to_string().as_bytes())[..40]);
+        let alias = format!(
+            "mail-{}",
+            &sha256_hex(
+                json!([request.participant, request.workspace_id])
+                    .to_string()
+                    .as_bytes()
+            )[..40]
+        );
         let child = client.call(json!({"method":"derive","name":alias,"capability":capability,
             "expected_capability":previous_setup.as_ref().and_then(|s|s.sender_capability.clone())})).await?;
-        let endpoint = child["endpoint_path"].as_str().ok_or_else(||local("DERIVED_ENDPOINT_INVALID"))?;
-        let mut receive_endpoint = previous.as_ref().and_then(|p|p.receive_endpoint_path.clone());
+        let endpoint = child["endpoint_path"]
+            .as_str()
+            .ok_or_else(|| local("DERIVED_ENDPOINT_INVALID"))?;
+        let mut receive_endpoint = previous
+            .as_ref()
+            .and_then(|p| p.receive_endpoint_path.clone());
         let mut receiver_name = String::new();
         let receiver_tools = if channel_receive {
-            let mailbox_id=mailbox.and_then(|m|m["mailbox_id"].as_str()).filter(|s|token(s)).ok_or_else(||local("DEFAULT_MAILBOX_REQUIRED"))?;
-            let mut receive_cap=parent.clone();
-            receive_cap.allow_root=false;
-            receive_cap.workspace_ids=Some([request.workspace_id.clone()].into());
-            receive_cap.mailbox_ids=Some([mailbox_id.into()].into());
-            receive_cap.operations.retain(|s| ["structure.mailbox.get","structure.mailbox.claim","structure.mailbox.inbox.read",
-                "structure.mailbox.pulse","structure.mailbox.ack","structure.mailbox.report","structure.communication.stream.get"].contains(&s.as_str()));
-            let alias=format!("receive-{}",&sha256_hex(json!([request.participant,request.workspace_id,mailbox_id,membership]).to_string().as_bytes())[..40]);
-            let derived=client.call(json!({"method":"derive","name":alias,"capability":receive_cap})).await?;
-            receiver_name=derived["client_name"].as_str().ok_or_else(||local("DERIVED_ENDPOINT_INVALID"))?.into();
-            let path=PathBuf::from(derived["endpoint_path"].as_str().ok_or_else(||local("DERIVED_ENDPOINT_INVALID"))?);
-            let tools=RuntimeClient::connect(path.clone(),&selected.origin,&selected.actor_id).await?;
-            receive_endpoint=Some(path);
+            let mailbox_id = mailbox
+                .and_then(|m| m["mailbox_id"].as_str())
+                .filter(|s| token(s))
+                .ok_or_else(|| local("DEFAULT_MAILBOX_REQUIRED"))?;
+            let mut receive_cap = parent.clone();
+            receive_cap.allow_root = false;
+            receive_cap.workspace_ids = Some([request.workspace_id.clone()].into());
+            receive_cap.mailbox_ids = Some([mailbox_id.into()].into());
+            receive_cap.operations.retain(|s| {
+                [
+                    "structure.mailbox.get",
+                    "structure.mailbox.claim",
+                    "structure.mailbox.inbox.read",
+                    "structure.mailbox.pulse",
+                    "structure.mailbox.ack",
+                    "structure.mailbox.report",
+                    "structure.communication.stream.get",
+                ]
+                .contains(&s.as_str())
+            });
+            let alias = format!(
+                "receive-{}",
+                &sha256_hex(
+                    json!([
+                        request.participant,
+                        request.workspace_id,
+                        mailbox_id,
+                        membership
+                    ])
+                    .to_string()
+                    .as_bytes()
+                )[..40]
+            );
+            let derived = client
+                .call(json!({"method":"derive","name":alias,"capability":receive_cap}))
+                .await?;
+            receiver_name = derived["client_name"]
+                .as_str()
+                .ok_or_else(|| local("DERIVED_ENDPOINT_INVALID"))?
+                .into();
+            let path = PathBuf::from(
+                derived["endpoint_path"]
+                    .as_str()
+                    .ok_or_else(|| local("DERIVED_ENDPOINT_INVALID"))?,
+            );
+            let tools =
+                RuntimeClient::connect(path.clone(), &selected.origin, &selected.actor_id).await?;
+            receive_endpoint = Some(path);
             Some(tools)
-        } else {None};
+        } else {
+            None
+        };
         let mut scopes = previous
             .as_ref()
             .map(|p| p.scopes.clone())
             .unwrap_or_default();
-        let mut send_scopes=previous.as_ref().map(|p|p.send_scopes.clone()).unwrap_or_default();
+        let mut send_scopes = previous
+            .as_ref()
+            .map(|p| p.send_scopes.clone())
+            .unwrap_or_default();
         let mut receiver = json!({"state":"NOT_REQUESTED"});
-        if let Some(mailbox) = mailbox.filter(|_|channel_receive) {
+        if let Some(mailbox) = mailbox.filter(|_| channel_receive) {
             let address = MailScope {
                 workspace_id: request.workspace_id.clone(),
                 mailbox_id: mailbox["mailbox_id"]
@@ -837,7 +947,9 @@ impl Connect {
                     consumer_id: format!("connect-{}", request.participant),
                     host_destination: None,
                 };
-                let observed = receiver_tools.as_ref().unwrap()
+                let observed = receiver_tools
+                    .as_ref()
+                    .unwrap()
                     .call(json!({"method":"watch","options":options}))
                     .await?;
                 receiver = json!({"state":observed["state"],"code":observed["code"],"presence":observed["presence"],
@@ -847,7 +959,13 @@ impl Connect {
             scopes.insert(request.alias.clone(), address);
             send_scopes.remove(&request.alias);
         } else {
-            send_scopes.insert(request.alias.clone(),SendScope{workspace_id:request.workspace_id.clone(),membership_id:membership.into()});
+            send_scopes.insert(
+                request.alias.clone(),
+                SendScope {
+                    workspace_id: request.workspace_id.clone(),
+                    membership_id: membership.into(),
+                },
+            );
         }
         let mut contacts = previous
             .as_ref()
@@ -950,7 +1068,9 @@ impl Connect {
                 host_destination: None,
             };
             let client_name = receiver_name.as_str();
-            let tools=receiver_tools.as_ref().ok_or_else(||local("DEFAULT_MAILBOX_REQUIRED"))?;
+            let tools = receiver_tools
+                .as_ref()
+                .ok_or_else(|| local("DEFAULT_MAILBOX_REQUIRED"))?;
             host_observation = self
                 .ensure_host(name, &request, &selected, client_name, options)
                 .await?;
@@ -1003,7 +1123,15 @@ impl Connect {
         scope: &Scope,
     ) -> Result<Value> {
         if let Some(value) = &self.registry.setups[&r.setup_id].key_request {
-            return Ok(value.clone());
+            let now = trusted_time(client, scope).await?;
+            if value["expires_at"].as_u64().is_some_and(|t| t > now) {
+                return Ok(value.clone());
+            }
+            if self.registry.setups[&r.setup_id].key_request_history.len() >= 8 {
+                return Err(local(
+                    "KEY_REQUEST_REVISION_LIMIT_PRESERVE_APPROVAL_HISTORY",
+                ));
+            }
         }
         let value = read(
             client,
@@ -1015,19 +1143,24 @@ impl Connect {
         if value["state"] != "AWAITING_OWNER_APPROVAL" {
             return Err(local("KEY_REQUEST_FAILED"));
         }
-        self.registry
-            .setups
-            .get_mut(&r.setup_id)
-            .unwrap()
-            .key_request = Some(value.clone());
+        let setup = self.registry.setups.get_mut(&r.setup_id).unwrap();
+        if let Some(previous) = setup.key_request.replace(value.clone()) {
+            setup.key_request_history.push(previous);
+        }
+        // Prior public requests remain evidence. An approval job has its own
+        // frozen digest/operation IDs; refreshing a request never changes it.
         self.save()?;
         Ok(value)
     }
 }
-async fn trusted_time(client: &RuntimeClient, scope:&Scope)->Result<u64>{
-    let time=read(client,"participant.time.read",scope.clone(),json!({})).await?;
-    if time["source"]!="SIGNED_AUTHORIZATION_CONTEXT" {return Err(local("TRUSTED_TIME_UNAVAILABLE"));}
-    time["server_time_ms"].as_u64().ok_or_else(||local("TRUSTED_TIME_UNAVAILABLE"))
+async fn trusted_time(client: &RuntimeClient, scope: &Scope) -> Result<u64> {
+    let time = read(client, "participant.time.read", scope.clone(), json!({})).await?;
+    if time["source"] != "SIGNED_AUTHORIZATION_CONTEXT" {
+        return Err(local("TRUSTED_TIME_UNAVAILABLE"));
+    }
+    time["server_time_ms"]
+        .as_u64()
+        .ok_or_else(|| local("TRUSTED_TIME_UNAVAILABLE"))
 }
 async fn read(client: &RuntimeClient, action: &str, scope: Scope, body: Value) -> Result<Value> {
     let value=client.call(json!({"method":"request","request":Invoke::new("connect-bounded-read",action,scope,body)})).await?;
@@ -1036,7 +1169,13 @@ async fn read(client: &RuntimeClient, action: &str, scope: Scope, body: Value) -
     } else if action.starts_with("participant.") {
         Ok(value)
     } else {
-        let detail = &value["result"]["structure"]["error"];
+        let detail = if value["result"]["structure"]["error"].is_object() {
+            &value["result"]["structure"]["error"]
+        } else if value["error"].is_object() {
+            &value["error"]
+        } else {
+            &value
+        };
         let mut error = local(detail["code"].as_str().unwrap_or("CONNECT_READ_FAILED"));
         error.phase = detail["phase"].as_str().unwrap_or("REMOTE_READ").into();
         Err(error)

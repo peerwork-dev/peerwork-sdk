@@ -106,12 +106,17 @@ impl AuthorizationRequest {
         Ok(())
     }
 }
-pub(super) fn effective(grant:&Value, now:u64)->bool {
-    grant.is_object() && (grant["expires_at"].is_null() || grant["expires_at"].as_u64().is_some_and(|t|t>now))
+pub(super) fn effective(grant: &Value, now: u64) -> bool {
+    grant.is_object()
+        && (grant["expires_at"].is_null() || grant["expires_at"].as_u64().is_some_and(|t| t > now))
 }
-fn approved_expiry(grant:&Value, requested:Option<u64>, now:u64)->Result<Value>{
-    let expiry=requested.or_else(||grant["expires_at"].as_u64());
-    if expiry.is_some_and(|t|t<=now){return Err(local("AUTHORIZATION_LEASE_EXPIRED_EXPLICIT_RENEWAL_REQUIRED"));}
+fn approved_expiry(grant: &Value, requested: Option<u64>, now: u64) -> Result<Value> {
+    let expiry = requested.or_else(|| grant["expires_at"].as_u64());
+    if expiry.is_some_and(|t| t <= now) {
+        return Err(local(
+            "AUTHORIZATION_LEASE_EXPIRED_EXPLICIT_RENEWAL_REQUIRED",
+        ));
+    }
     Ok(json!(expiry))
 }
 impl Connect {
@@ -155,12 +160,12 @@ impl Connect {
                 workspace_id: Some(request.workspace_id.clone()),
                 ..Scope::default()
             };
+            let now = trusted_time(&client, &scope).await?;
             let workspace =
                 read(&client, "structure.workspace.get", scope.clone(), json!({})).await?;
             if workspace["membership"]["role"] != "OWNER" {
                 return Err(local("OWNER_APPROVAL_REQUIRED"));
             }
-            let now=trusted_time(&client,&scope).await?;
             let mut steps = Vec::new();
             let send = request
                 .missing
@@ -182,8 +187,8 @@ impl Connect {
                 if grant.is_object() && grant["membership_id"] != request.membership_id {
                     return Err(local("MEMBERSHIP_CHANGED_NEW_REQUEST_REQUIRED"));
                 }
-                let expiry=approved_expiry(grant,request.grant_expires_at,now)?;
-                let effective=effective(grant,now);
+                let expiry = approved_expiry(grant, request.grant_expires_at, now)?;
+                let effective = effective(grant, now);
                 steps.push(Invoke::new(format!("approve-{approval_id}-communication"),"structure.communication.grant.set",scope.clone(),
                     json!({"actor_id":request.actor_id,"membership_id":request.membership_id,"expected_revision":grant["revision"],
                         "send":send||(effective&&grant["can_send"]==true),"receive":receive||(effective&&grant["can_receive"]==true),"expires_at":expiry})));
@@ -229,8 +234,8 @@ impl Connect {
                 if grant.is_object() && grant["membership_id"] != request.membership_id {
                     return Err(local("MEMBERSHIP_CHANGED_NEW_REQUEST_REQUIRED"));
                 }
-                let expiry=approved_expiry(grant,request.grant_expires_at,now)?;
-                let effective = grant["effective"] == true && effective(grant,now);
+                let expiry = approved_expiry(grant, request.grant_expires_at, now)?;
+                let effective = grant["effective"] == true && effective(grant, now);
                 let mut roles: std::collections::BTreeSet<String> = if effective {
                     serde_json::from_value(grant["protocol_roles"].clone()).unwrap_or_default()
                 } else {
@@ -305,16 +310,18 @@ mod tests {
     use super::*;
     #[test]
     fn approval_preserves_finite_lease_and_requires_explicit_expired_renewal() {
-        let grant=json!({"expires_at":2000});
-        assert!(effective(&grant,1000));
-        assert_eq!(approved_expiry(&grant,None,1000).unwrap(),2000);
-        assert!(!effective(&grant,2000));
-        assert_eq!(approved_expiry(&grant,None,2000).unwrap_err().code,
-            "AUTHORIZATION_LEASE_EXPIRED_EXPLICIT_RENEWAL_REQUIRED");
-        assert_eq!(approved_expiry(&grant,Some(3000),2000).unwrap(),3000);
-        assert!(!effective(&Value::Null,1000));
-        assert!(approved_expiry(&Value::Null,None,1000).unwrap().is_null());
-        assert!(effective(&json!({"expires_at":null}),1000));
+        let grant = json!({"expires_at":2000});
+        assert!(effective(&grant, 1000));
+        assert_eq!(approved_expiry(&grant, None, 1000).unwrap(), 2000);
+        assert!(!effective(&grant, 2000));
+        assert_eq!(
+            approved_expiry(&grant, None, 2000).unwrap_err().code,
+            "AUTHORIZATION_LEASE_EXPIRED_EXPLICIT_RENEWAL_REQUIRED"
+        );
+        assert_eq!(approved_expiry(&grant, Some(3000), 2000).unwrap(), 3000);
+        assert!(!effective(&Value::Null, 1000));
+        assert!(approved_expiry(&Value::Null, None, 1000).unwrap().is_null());
+        assert!(effective(&json!({"expires_at":null}), 1000));
     }
     #[test]
     fn future_key_follow_requires_explicit_body_authorization() {
@@ -325,7 +332,10 @@ mod tests {
             "body_keys_required":false})).unwrap();
         request.validate().unwrap();
         assert!(!request.follow_current_key);
-        request.follow_current_key=true;
-        assert_eq!(request.validate().unwrap_err().code,"AUTHORIZATION_REQUEST_INVALID");
+        request.follow_current_key = true;
+        assert_eq!(
+            request.validate().unwrap_err().code,
+            "AUTHORIZATION_REQUEST_INVALID"
+        );
     }
 }

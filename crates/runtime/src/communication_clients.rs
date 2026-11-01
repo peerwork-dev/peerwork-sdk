@@ -164,6 +164,10 @@ impl Runtime {
         if let Some(index) = registry.entries.iter().position(|e| e.name == name) {
             let entry=registry.entries[index].clone();
             if entry.capability != capability {
+                // Additions preserve in-flight views and descendants. Removing
+                // authority must revoke the credential and its host sources;
+                // it cannot leave an older capability clone alive.
+                if !entry.capability.is_subset_of(&capability){return Err(local("CLIENT_NARROWING_REQUIRES_REVOCATION"));}
                 if expected_capability.as_ref()!=Some(&entry.capability){return Err(local("CLIENT_BINDING_CONFLICT"));}
                 let mut entries=registry.entries.clone();entries[index].capability=capability.clone();
                 registry.store.write_exact(&serde_json::to_vec(&entries).map_err(|_|local("CLIENT_REGISTRY_INVALID"))?).map_err(|_|local("CLIENT_REGISTRY_WRITE_FAILED"))?;

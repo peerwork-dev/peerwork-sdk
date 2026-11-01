@@ -90,8 +90,11 @@ impl RunningHost{
     pub fn validate_sources(&self,sources:&[(ParticipantClient,WatchOptions)])->Result<()>{
         let old=self.sources.lock().map_err(|_|error("HOST_STATE_INVALID"))?;
         if sources.len()>8{return Err(error("HOST_SUBSCRIPTION_LIMIT"));}
-        for (client,wanted) in sources{
+        for (index,(client,wanted)) in sources.iter().enumerate(){
             wanted.authorize(client.capability())?;
+            for (other,previous) in &sources[..index]{
+                if wanted.key()==previous.key()&&(!client.same_client(other)||wanted!=previous){return Err(error("HOST_SUBSCRIPTION_CONFLICT"));}
+            }
             if old.iter().any(|(c,o)|o.key()==wanted.key()&&(!c.same_client(client)||o!=wanted)){
                 return Err(error("HOST_SUBSCRIPTION_CONFLICT"));
             }

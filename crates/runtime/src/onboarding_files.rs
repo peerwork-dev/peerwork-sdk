@@ -47,6 +47,18 @@ pub(crate) fn check_directory(path: &Path, private: bool) -> Result<()> {
         {
             return Err(error());
         }
+        for ancestor in path.ancestors().skip(1) {
+            let parent = std::fs::symlink_metadata(ancestor).map_err(|_| error())?;
+            let trusted_owner = parent.uid() == 0 || parent.uid() == unsafe { libc::geteuid() };
+            let sticky_root = parent.uid() == 0 && parent.mode() & 0o1000 != 0;
+            if !parent.is_dir()
+                || parent.file_type().is_symlink()
+                || !trusted_owner
+                || (parent.mode() & 0o022 != 0 && !sticky_root)
+            {
+                return Err(error());
+            }
+        }
     }
     #[cfg(windows)]
     if private {
@@ -110,7 +122,24 @@ fn read_file(path: &Path, limit: usize, private: bool) -> Result<Option<Vec<u8>>
     Ok(Some(bytes))
 }
 pub(crate) fn replace(path: &Path, bytes: &[u8]) -> Result<()> {
-    let _ = read_public_optional(path, 256 * 1024)?;
+    let expected = read_public_optional(path, 256 * 1024)?;
+    replace_if_unchanged(path, expected.as_deref(), bytes)
+}
+fn unchanged(path: &Path, expected: Option<&[u8]>) -> Result<()> {
+    if read_public_optional(path, 256 * 1024)?.as_deref() != expected {
+        return Err(ParticipantError::local(
+            "HOST_CONFIGURATION_CONCURRENTLY_CHANGED",
+            "LOCAL_CONFIGURATION",
+        ));
+    }
+    Ok(())
+}
+pub(crate) fn replace_if_unchanged(
+    path: &Path,
+    expected: Option<&[u8]>,
+    bytes: &[u8],
+) -> Result<()> {
+    unchanged(path, expected)?;
     #[cfg(windows)]
     {
         crate::windows_fs::atomic_replace(path, &[], bytes).map_err(|_| error())?;
@@ -126,10 +155,29 @@ pub(crate) fn replace(path: &Path, bytes: &[u8]) -> Result<()> {
         f.write_all(bytes)
             .and_then(|_| f.as_file().sync_all())
             .map_err(|_| error())?;
+        // No filesystem operation follows this comparison before rename.
+        // Uncooperative same-user editors can still race that final boundary;
+        // the project lock coordinates Peerwork writers, not arbitrary editors.
+        unchanged(path, expected)?;
         f.persist(path).map_err(|_| error())?;
         std::fs::File::open(parent)
             .and_then(|f| f.sync_all())
             .map_err(|_| error())?;
     }
+    Ok(())
+}
+
+pub(crate) fn remove_if_unchanged(path: &Path, expected: &[u8]) -> Result<()> {
+    if read_public_optional(path, 256 * 1024)?.as_deref() != Some(expected) {
+        return Err(ParticipantError::local(
+            "HOST_CONFIGURATION_CONCURRENTLY_CHANGED",
+            "LOCAL_CONFIGURATION",
+        ));
+    }
+    std::fs::remove_file(path).map_err(|_| error())?;
+    #[cfg(unix)]
+    std::fs::File::open(path.parent().ok_or_else(error)?)
+        .and_then(|f| f.sync_all())
+        .map_err(|_| error())?;
     Ok(())
 }

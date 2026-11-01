@@ -533,7 +533,7 @@ impl KernelAccess {
             let mut out=match selected {
                 Selection::Request(selection)=>return Ok(client.request_structure_access(&identity,&recipient,selection,cancel).await?),
                 Selection::Time=>{let(_,_,context)=client.access_context(cancel).await?;return Ok(serde_json::json!({"state":"VERIFIED_TIME","server_time_ms":context.server_time_ms(),"source":"SIGNED_AUTHORIZATION_CONTEXT","not_transaction_time_proof":true}));},
-                Selection::Prepare(ws)=>{let metadata=client.sync_structure_content_head(&identity,&authority,&ws,cancel).await?;return Ok(serde_json::json!({"state":"READY","workspace_id":ws,"head":metadata["content_key_head"],"source":"VERIFIED_CANONICAL_HEAD_AND_LOCAL_KEY"}));},
+                Selection::Prepare(ws)=>return Ok(client.prepare_structure_content_keys(&identity,&authority,&ws,cancel).await?),
                 Selection::KeyStatus{..}=>return Err(KernelClientError::InvalidCommand.into()),
                 Selection::Accept(selection)=>return Ok(client.accept_structure_keys(&identity,&authority,&recipient,selection,cancel).await?),
                 Selection::Initialize(_)=>return Err(KernelClientError::InvalidCommand.into()),
