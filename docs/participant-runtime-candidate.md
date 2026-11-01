@@ -1,6 +1,6 @@
 # Native participant SDK and resident runtime
 
-This reference describes the experimental native0.3.0 interface. Install only
+This reference describes the experimental native0.3 interface. Install only
 matching assets from the [public releases](https://github.com/peerwork-dev/peerwork-sdk/releases);
 source snapshots and service capabilities alone do not announce availability.
 SDK0.2.16 and Agent tools0.1.0 use different interfaces. Start with the

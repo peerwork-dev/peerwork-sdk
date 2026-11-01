@@ -1,6 +1,6 @@
 # Native participant distribution
 
-The native0.3.0 interface is **experimental**. Install only the matching assets
+The native0.3 interface is **experimental**. Install only the matching assets
 listed in the [public releases](https://github.com/peerwork-dev/peerwork-sdk/releases)
 and verify their source/asset manifest. The target service must advertise
 `native-mailbox-v1` and `native-mailbox-rebind-v1`. Older SDK0.2.16 and Agent
@@ -66,3 +66,29 @@ Start with the [Agent and program quickstart](native-participant-quickstart.md).
 See the [participant contract](participant-runtime-candidate.md) for program,
 Agent, authority, maintenance and recovery interfaces. Use a matching public
 release only after its availability is explicitly announced.
+
+## Recorded native0.3.1 communication qualification
+
+The Linux client from source `18f4ea283ac5352b36786a49554c299cb7d4bed6`
+completed the recorded1/2/4/8-active-participant qualification with32 warm
+samples per case,8KiB encrypted bodies and100ms simulated Agent-to-service RTT.
+Sender-acceptance p95 was148–236ms for Codex and136–164ms for AGY CLI1.4.12.
+The measured durable-receiver and host-acceptance bounds also passed. The
+[release notes](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.1)
+record the per-case results and qualification scope.
+
+The AGY run used direct persistent native SQLite state and an independent
+PostgreSQL17 persistent volume; the Codex run retained its original local
+fixture setup. Storage placement is part of these measurements. FUSE-backed
+AGY state remains outside the qualified sender-performance scope. Select a
+persistent local state directory for latency-sensitive use and retain FULL
+sync. These results do not establish model-response latency, busy/approval
+waiting time, arbitrary host configuration or real-host behavior on every OS.
+Desktop qualification covers the process/OS checks in the platform reports.
+
+Queued0.3.1 mutations omit one redundant scheduling commit. Original requests,
+exact packets and final verified outcomes retain FULL durability. A current
+`RUNNING`/`LOCAL_RUNTIME` observation is separate from a verified remote effect;
+recover uncertain work by its original operation ID. See the
+[state reference](native-state-handoff.md). No identity/workspace migration is
+required for this patch.
