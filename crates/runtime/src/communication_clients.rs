@@ -139,6 +139,7 @@ impl Runtime {
         parent: &Session,
         alias: &str,
         capability: Capability,
+        expected_capability:Option<Capability>,
     ) -> Result<Value> {
         if !identifier(alias) {
             return Err(local("CLIENT_ALIAS_INVALID"));
@@ -160,9 +161,19 @@ impl Runtime {
         {
             return Err(local("IPC_UNAUTHORIZED"));
         }
-        if let Some(entry) = registry.entries.iter().find(|e| e.name == name) {
+        if let Some(index) = registry.entries.iter().position(|e| e.name == name) {
+            let entry=registry.entries[index].clone();
             if entry.capability != capability {
-                return Err(local("CLIENT_BINDING_CONFLICT"));
+                if expected_capability.as_ref()!=Some(&entry.capability){return Err(local("CLIENT_BINDING_CONFLICT"));}
+                let mut entries=registry.entries.clone();entries[index].capability=capability.clone();
+                registry.store.write_exact(&serde_json::to_vec(&entries).map_err(|_|local("CLIENT_REGISTRY_INVALID"))?).map_err(|_|local("CLIENT_REGISTRY_WRITE_FAILED"))?;
+                registry.entries=entries;
+                let mut sessions=self.sessions.write().map_err(|_|local("CLIENT_REGISTRY_UNAVAILABLE"))?;
+                let session=sessions.iter_mut().find(|s|s.name==name).ok_or_else(||local("CLIENT_REGISTRY_RECOVERY_REQUIRED"))?;
+                session.client=client;
+                // The capability is enforced again per request. Keeping this
+                // credential and namespace preserves admitted operation IDs and
+                // receiver custody; no signing authority escapes its parent.
             }
             let session = self
                 .sessions
@@ -226,7 +237,7 @@ impl Runtime {
             endpoint(&path, self.address, &token, "CLIENT")?;
         }
         Ok(
-            json!({"state":"LOCAL_CLIENT_READY","endpoint_path":path,"actor_id":parent.client.actor_id(),
+            json!({"state":"LOCAL_CLIENT_READY","client_name":name,"endpoint_path":path,"actor_id":parent.client.actor_id(),
             "origin":parent.client.origin(),"capability":capability,"engine_restarted":false}),
         )
     }

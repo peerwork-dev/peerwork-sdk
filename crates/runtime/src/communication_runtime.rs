@@ -9,6 +9,8 @@ use crate::communication_local_channel as channel;
 mod client;
 #[path = "communication_clients.rs"]
 mod derived;
+#[path = "communication_hosts.rs"]
+mod hosts;
 use crate::{
     communication_host::{random_token, write_private},
     communication_store::{identifier, private_json},
@@ -162,7 +164,7 @@ struct Runtime {
     directory: PathBuf,
     address: SocketAddr,
     admin_token: String,
-    host_status: Vec<Arc<std::sync::Mutex<Value>>>,
+    hosts: tokio::sync::Mutex<hosts::Hosts>,
     cancel: KernelCancellationToken,
 }
 
@@ -174,6 +176,8 @@ pub enum ClientRequest {
     Derive {
         name: String,
         capability: Capability,
+        #[serde(default)]
+        expected_capability:Option<Capability>,
     },
     RevokeDerived {
         name: String,
@@ -292,12 +296,31 @@ impl Runtime {
             #[serde(deny_unknown_fields)]
             struct AdminRequest {
                 method: String,
+                #[serde(default)]
+                config:Option<crate::participant_dispatch::HostConfig>,
+                #[serde(default)]
+                expected_actor:Option<String>,
+                #[serde(default)]
+                expected_origin:Option<String>,
             }
             let value=async{match serde_json::from_value::<AdminRequest>(frame.request){
-                Ok(request)if request.method=="stop"=>Ok(json!({"state":"STOPPING"})),
-                Ok(request)if request.method=="status"=>{
-                    let mut engines=Vec::new();for (name,owner) in &self.owners{engines.push(json!({"name":name,"metrics":owner.metrics().await?}));}
-                    Ok(json!({"state":"LOCAL_READY","engines":engines,"hosts":self.host_status.iter().map(|s|s.lock().map(|v|v.clone()).unwrap_or_else(|_|json!({"state":"UNKNOWN"}))).collect::<Vec<_>>(),"network_or_host_readiness":"NOT_ATTESTED"}))
+                Ok(request)if request.method=="stop"&&request.config.is_none()=>Ok(json!({"state":"STOPPING"})),
+                Ok(request)if request.method=="status"&&request.config.is_none()=>{
+                    let mut engines=Vec::new();for (name,owner) in &self.owners{engines.push(json!({"name":name,"actor_id":owner.actor_id(),"origin":owner.origin(),"metrics":owner.metrics().await?}));}
+                    Ok(json!({"state":"LOCAL_READY","engines":engines,"hosts":self.hosts.lock().await.statuses(),"network_or_host_readiness":"NOT_ATTESTED"}))
+                },
+                Ok(request)if request.method=="host_ensure"&&request.config.is_some()=>{
+                    let clients:BTreeMap<String,ParticipantClient>=self.sessions.read().map_err(|_|local("CLIENT_REGISTRY_UNAVAILABLE"))?.iter().map(|s|(s.name.clone(),s.client.clone())).collect();
+                    let config=request.config.unwrap();
+                    if request.expected_actor.is_some()!=request.expected_origin.is_some(){return Err(local("HOST_IDENTITY_PIN_REQUIRED"));}
+                    if let Some(actor)=request.expected_actor{
+                        let origin=request.expected_origin.unwrap();
+                        for source in &config.subscriptions{
+                            let client: &ParticipantClient=clients.get(&source.client).ok_or_else(||local("HOST_CLIENT_NOT_FOUND"))?;
+                            if client.actor_id()!=actor||client.origin()!=origin{return Err(local("HOST_IDENTITY_OR_ORIGIN_MISMATCH"));}
+                        }
+                    }
+                    self.hosts.lock().await.ensure(config,&clients,&self.directory,self.cancel.clone()).await
                 },_=>Err(local("ADMIN_COMMAND_INVALID")),
             }}.await;
             return response(id, value);
@@ -313,9 +336,9 @@ impl Runtime {
             let request=ClientRequest::parse(frame.request)?;
             let client=&session.client;
             match request{
-                ClientRequest::Derive{name,capability}=>{
+                ClientRequest::Derive{name,capability,expected_capability}=>{
                     let runtime=self.clone();let parent=session.clone();
-                    tokio::task::spawn_blocking(move||runtime.derive_client(&parent,&name,capability)).await.map_err(|_|local("CLIENT_DERIVATION_TASK_FAILED"))?
+                    tokio::task::spawn_blocking(move||runtime.derive_client(&parent,&name,capability,expected_capability)).await.map_err(|_|local("CLIENT_DERIVATION_TASK_FAILED"))?
                 },
                 ClientRequest::RevokeDerived{name}=>{
                     let runtime=self.clone();let parent=session.clone();
@@ -792,16 +815,14 @@ pub async fn serve(
         }
         return Err(error);
     }
-    let clients = config
-        .clients
+    let clients = sessions
         .iter()
-        .zip(&sessions)
-        .map(|(config, session)| (config.name.clone(), session.client.clone()))
+        .map(|session| (session.name.clone(), session.client.clone()))
         .collect();
-    let host_jobs = match crate::participant_dispatch::start(
+    let hosts = match hosts::Hosts::open(
+        &config.state_directory,
         &config.hosts,
         &clients,
-        &config.state_directory,
         cancel.clone(),
     ) {
         Ok(jobs) => jobs,
@@ -815,7 +836,6 @@ pub async fn serve(
             return Err(error);
         }
     };
-    let host_status = host_jobs.iter().map(|job| job.status.clone()).collect();
     let _ = ready.send(Ok(RuntimeReady {
         state: "LOCAL_READY".into(),
         admin_endpoint: admin_endpoint.clone(),
@@ -828,7 +848,7 @@ pub async fn serve(
         directory: config.state_directory.clone(),
         address,
         admin_token,
-        host_status,
+        hosts:tokio::sync::Mutex::new(hosts),
         cancel,
     });
     let mut connections = JoinSet::new();
@@ -845,9 +865,7 @@ pub async fn serve(
     while connections.join_next().await.is_some() {}
     // A host call may already have reached the selected session. Finish its
     // evidence write while the owning engine remains available.
-    for job in host_jobs {
-        let _ = job.task.await;
-    }
+    runtime.hosts.lock().await.close().await;
     let mut close_error = None;
     for owner in runtime.owners.values() {
         if let Err(error) = owner.close().await {

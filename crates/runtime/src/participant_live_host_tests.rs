@@ -640,6 +640,7 @@ async fn qualify_native_reply(mcp_only: bool) {
     let worker_scope_early = mail_scope(&ws, &worker_box);
     let early_worker_profile = AgentProfile {
         protocol_endpoints: Default::default(),
+            send_scopes: Default::default(), receive_endpoint_path: None,
         format: "peerwork.agent-profile.v1".into(),
         endpoint_path: root.join("runtime/client-worker.json"),
         expected_origin: service.origin.clone(),
@@ -766,6 +767,7 @@ async fn qualify_native_reply(mcp_only: bool) {
     receiver_ready(&worker_client, &worker_watch).await;
     let profile = |actor: &str, name: &str, s: MailScope, contacts| AgentProfile {
         protocol_endpoints: Default::default(),
+            send_scopes: Default::default(), receive_endpoint_path: None,
         format: "peerwork.agent-profile.v1".into(),
         endpoint_path: ready.client_endpoints[name].clone(),
         expected_origin: service.origin.clone(),

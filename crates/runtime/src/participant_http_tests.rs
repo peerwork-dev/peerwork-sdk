@@ -3862,6 +3862,7 @@ async fn native_agent_cli_mcp_send_reply_and_cancel_preserve_one_engine_intent()
     let worker_scope = mail_scope(&ws, &worker_box);
     let master_profile = AgentProfile {
         protocol_endpoints: Default::default(),
+            send_scopes: Default::default(), receive_endpoint_path: None,
         format: "peerwork.agent-profile.v1".into(),
         endpoint_path: ready.client_endpoints["master"].clone(),
         expected_origin: service.origin.clone(),
@@ -3881,6 +3882,7 @@ async fn native_agent_cli_mcp_send_reply_and_cancel_preserve_one_engine_intent()
     };
     let worker_profile = AgentProfile {
         protocol_endpoints: Default::default(),
+            send_scopes: Default::default(), receive_endpoint_path: None,
         format: "peerwork.agent-profile.v1".into(),
         endpoint_path: ready.client_endpoints["worker"].clone(),
         expected_origin: service.origin.clone(),
@@ -4174,7 +4176,7 @@ async fn connect_consolidates_missing_rights_and_resumes_without_owner_profile_e
     let running=tokio::spawn(ipc::serve(config,cancel.clone(),tx));let ready=rx.await.unwrap().unwrap();
     let mut worker=Connect::open(&root.path().join("worker-local")).unwrap();
     worker.register("worker",Registration{origin:service.origin.clone(),actor_id:worker_config.expected_actor.clone(),endpoint_path:ready.client_endpoints["worker"].clone()}).await.unwrap();
-    let request=ConnectRequest{setup_id:"worker-first".into(),participant:"worker".into(),workspace_id:ws,alias:"project".into(),send:true,receive:true,require_body_keys:false,protocols:Vec::new(),contacts:Vec::new()};
+    let request=ConnectRequest{setup_id:"worker-first".into(),participant:"worker".into(),workspace_id:ws,alias:"project".into(),send:true,receive:true,require_body_keys:false,protocols:Vec::new(),contacts:Vec::new(),host:None};
     let pending=worker.run(request.clone()).await.unwrap();
     assert_eq!(pending["blocker"]["code"],"OWNER_APPROVAL_REQUIRED","{pending}");
     let handoff=pending["details"]["authorization_request"].clone();
@@ -4238,5 +4240,95 @@ async fn connect_consolidates_missing_rights_and_resumes_without_owner_profile_e
     assert_eq!(serde_json::from_str::<Value>(&line).unwrap()["result"]["structuredContent"]["error"]["code"],"FRONTEND_IDENTITY_PIN_MISMATCH");
     drop(cw);drop(cr);mcp.await.unwrap().unwrap();
     assert_eq!(service.counts().await["journal_reads"],0);
+    cancel.cancel();running.await.unwrap().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires explicit synthetic PostgreSQL and real product HTTP fixture"]
+async fn connect_send_only_accepts_body_keys_without_mailbox_and_preserves_lease_on_receive_upgrade() {
+    use crate::{communication_runtime as ipc,participant_connect::{Connect,ConnectRequest,Registration,AuthorizationRequest,ContactSelection},agent_tools::{AgentTools,AgentRequest}};
+    use ipc::{RuntimeConfig,EngineConfig,ClientConfig};
+    let service=Service::start();
+    let root=crate::test_support::protected_test_dir();
+    let owner_dir=root.path().join("owner");let worker_dir=root.path().join("sender");
+    crate::secure_state::create_private_state_directory(&owner_dir).unwrap();
+    crate::secure_state::create_private_state_directory(&worker_dir).unwrap();
+    let owner_config=configuration(&owner_dir,&service.origin);let worker_config=configuration(&worker_dir,&service.origin);
+    let owner=ParticipantClient::open(owner_config.clone()).await.unwrap();
+    let created=mutate(&owner,"sender-space","structure.workspace.create",&Scope::default(),json!({"name":"Synthetic send-only connect"})).await;
+    let ws=created["workspace_id"].as_str().unwrap().to_owned();let scope=Scope{workspace_id:Some(ws.clone()),..Default::default()};
+    let meta=selected(&owner,"structure.workspace.get",&scope,json!({})).await;
+    let mut admit=Invoke::new("sender-admit","structure.member.set",scope.clone(),json!({"actor_id":worker_config.expected_actor,"state":"ACTIVE","expected_membership_id":null}));
+    admit.expected_workspace_revision=meta["workspace_revision"].as_u64();
+    let admitted=structure(&owner.invoke(admit,Duration::from_secs(5)).await.unwrap());
+    let owner_box=mutate(&owner,"sender-owner-grant","structure.communication.grant.set",&scope,json!({"actor_id":owner.actor_id(),"membership_id":meta["membership"]["membership_id"],"send":true,"receive":true,"expected_revision":null})).await["mailbox"].clone();
+    let time=owner.request(Invoke::new("time","participant.time.read",scope.clone(),json!({}))).await.unwrap();
+    let expiry=time["server_time_ms"].as_u64().unwrap()+120000;
+    mutate(&owner,"sender-only-grant","structure.communication.grant.set",&scope,json!({"actor_id":worker_config.expected_actor,"membership_id":admitted["membership_id"],"send":true,"receive":false,"expires_at":expiry,"expected_revision":null})).await;
+    let key=install_synthetic_key(&owner_config,&ws,&[41;32],None);
+    mutate(&owner,"sender-head","structure.content-key.set",&scope,json!({"key_id":key,"expected_epoch":0,"expected_head_revision":null})).await;
+    owner.close().await.unwrap();
+    let engine=|name:&str,c:&ParticipantConfig|EngineConfig{name:name.into(),origin:c.origin.clone(),expected_actor:c.expected_actor.clone(),authority:None,
+        identity_path:c.identity_path.clone(),state_directory:c.state_directory.clone(),journal_path:Some(c.journal_path.clone()),allow_loopback_http:true,transport:c.transport.clone(),max_inflight:4,max_pending:32,max_stored_bytes:8*1024*1024,migration_sources:Vec::new()};
+    let config=RuntimeConfig{format:"peerwork.participant-runtime.v1".into(),state_directory:root.path().join("runtime"),
+        engines:vec![engine("owner",&owner_config),engine("sender",&worker_config)],clients:vec![ClientConfig{name:"owner".into(),engine:"owner".into(),capability:Capability::owner()},ClientConfig{name:"sender".into(),engine:"sender".into(),capability:Capability::owner()}],hosts:Vec::new()};
+    let cancel=crate::KernelCancellationToken::new();let(tx,rx)=tokio::sync::oneshot::channel();let running=tokio::spawn(ipc::serve(config,cancel.clone(),tx));let ready=rx.await.unwrap().unwrap();
+    let mut worker=Connect::open(&root.path().join("sender-local")).unwrap();
+    worker.register("sender",Registration{origin:service.origin.clone(),actor_id:worker_config.expected_actor.clone(),endpoint_path:ready.client_endpoints["sender"].clone()}).await.unwrap();
+    let mut owner=Connect::open(&root.path().join("owner-local")).unwrap();
+    owner.register("owner",Registration{origin:service.origin.clone(),actor_id:owner_config.expected_actor.clone(),endpoint_path:ready.client_endpoints["owner"].clone()}).await.unwrap();
+    let request=ConnectRequest{setup_id:"send-first".into(),participant:"sender".into(),workspace_id:ws.clone(),alias:"project".into(),send:true,receive:false,require_body_keys:true,protocols:Vec::new(),contacts:vec![ContactSelection{alias:"owner".into(),actor_id:owner_config.expected_actor.clone()}],host:None};
+    let pending=worker.run(request.clone()).await.unwrap();
+    assert_eq!(pending["blocker"]["code"],"KEY_AUTHORIZATION_REQUIRED","{pending}");
+    let handoff=pending["details"]["authorization_request"].clone();
+    assert!(handoff["missing"].as_array().unwrap().is_empty(),"existing send permission was requested again: {handoff}");
+    let approved=owner.approve("owner","keys-only",serde_json::from_value::<AuthorizationRequest>(handoff).unwrap()).await.unwrap();
+    assert_eq!(approved["state"],"APPROVED","{approved}");
+    let result=worker.run(request.clone()).await.unwrap();
+    assert_eq!(result["state"],"LOCAL_CONFIGURED","{result}");
+    assert_eq!(result["keys"]["state"],"READY");
+    let profile=worker.profile().unwrap().unwrap();
+    assert!(profile.scopes.is_empty());assert_eq!(profile.send_scopes["project"].workspace_id,ws);
+    assert!(profile.receive_endpoint_path.is_none());
+    let sender=ipc::RuntimeClient::connect(profile.endpoint_path.clone(),&service.origin,&worker_config.expected_actor).await.unwrap();
+    let caps=sender.call(json!({"method":"capabilities"})).await.unwrap();
+    let operations=caps["capability"]["operations"].as_array().unwrap();
+    assert!(!operations.iter().any(|v|v.as_str().unwrap().starts_with("structure.mailbox.")&&v!="structure.mailbox.get"));
+    assert!(sender.call(json!({"method":"bindings"})).await.unwrap().as_array().unwrap().is_empty());
+    let tools=AgentTools::open(profile.clone()).await.unwrap();
+    let sent=tools.call(AgentRequest::parse("send",json!({"contact":"owner","operation_id":"sender-message","text":"E2EE without a receiver","wait_ms":5000})).unwrap()).await.unwrap();
+    assert_eq!(sent["state"],"ACCEPTED","{sent}");
+    let owner_client=ipc::RuntimeClient::connect(ready.client_endpoints["owner"].clone(),&service.origin,&owner_config.expected_actor).await.unwrap();
+    let envelope=owner_client.call(json!({"method":"request","request":Invoke::new("read-sent","structure.message.get",scope.clone(),json!({"message_id":sent["result"]["structure"]["message_id"]}))})).await.unwrap();
+    assert_eq!(envelope["result"]["opened_messages"][0]["text"],"E2EE without a receiver","{envelope}");
+    assert!(envelope["result"]["structure"]["message"]["reply_address"].is_null());
+    let boxes=owner_client.call(json!({"method":"request","request":Invoke::new("sender-boxes","structure.mailboxes.read",scope.clone(),json!({"actor_id":worker_config.expected_actor,"limit":8}))})).await.unwrap();
+    assert!(boxes["result"]["structure"]["mailboxes"].as_array().unwrap().is_empty(),"send-only created a mailbox: {boxes}");
+    assert_eq!(service.counts().await["actions"]["structure.communication.grant.set"],2,"key-only approval rewrote communication authority");
+    let mut upgrade=request;upgrade.setup_id="receive-upgrade".into();upgrade.receive=true;
+    let pending=worker.run(upgrade.clone()).await.unwrap();assert_eq!(pending["blocker"]["code"],"OWNER_APPROVAL_REQUIRED","{pending}");
+    let handoff=pending["details"]["authorization_request"].clone();assert_eq!(handoff["body_keys_required"],false);
+    assert_eq!(handoff["missing"],json!([{"kind":"COMMUNICATION_RECEIVE"}]));
+    let approved=owner.approve("owner","receive-only",serde_json::from_value(handoff.clone()).unwrap()).await.unwrap();assert_eq!(approved["state"],"APPROVED","{approved}");
+    let grant=owner_client.call(json!({"method":"request","request":Invoke::new("grant","structure.communication.grant.get",scope.clone(),json!({"actor_id":worker_config.expected_actor}))})).await.unwrap();
+    assert_eq!(grant["result"]["structure"]["grant"]["expires_at"],expiry);
+    assert_eq!(grant["result"]["structure"]["grant"]["can_send"],true);
+    let result=worker.run(upgrade).await.unwrap();assert_eq!(result["state"],"LOCAL_CONFIGURED","{result}");
+    let upgraded=worker.profile().unwrap().unwrap();
+    assert_eq!(upgraded.endpoint_path,profile.endpoint_path,"receiving replaced sender namespace");
+    let receive=ipc::RuntimeClient::connect(upgraded.receive_endpoint_path.clone().unwrap(),&service.origin,&worker_config.expected_actor).await.unwrap();
+    let receive_caps=receive.call(json!({"method":"capabilities"})).await.unwrap();
+    assert_eq!(receive_caps["capability"]["mailbox_ids"],json!([upgraded.scopes["project"].mailbox_id]));
+    assert!(!receive_caps["capability"]["operations"].as_array().unwrap().iter().any(|v|v=="structure.message.send"));
+    assert_eq!(sender.call(json!({"method":"operation","operation_id":"sender-message"})).await.unwrap()["command_id"],sent["command_id"]);
+    // Renewing an expired lease must be explicit and may not resurrect a
+    // receive direction absent from the newly approved delta.
+    service.config(json!({"clock_offset_ms":180000})).await;
+    let mut renewal=handoff;renewal["missing"]=json!([{"kind":"COMMUNICATION_SEND"}]);renewal["grant_expires_at"]=json!(expiry+180000);
+    let approved=owner.approve("owner","explicit-renewal",serde_json::from_value(renewal).unwrap()).await.unwrap();assert_eq!(approved["state"],"APPROVED","{approved}");
+    let grant=owner_client.call(json!({"method":"request","request":Invoke::new("renewed-grant","structure.communication.grant.get",scope.clone(),json!({"actor_id":worker_config.expected_actor}))})).await.unwrap();
+    assert_eq!(grant["result"]["structure"]["grant"]["can_receive"],false,"expired receive authority was resurrected");
+    assert_eq!(service.counts().await["journal_reads"],0);
+    assert!(owner_box["mailbox_id"].is_string());
     cancel.cancel();running.await.unwrap().unwrap();
 }

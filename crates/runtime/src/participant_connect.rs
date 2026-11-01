@@ -1,7 +1,7 @@
 //! Shared, resumable local onboarding. Remote rights remain service-enforced;
 //! the registry contains explicit local selections, never discovered secrets.
 use crate::{
-    agent_tools::{AgentProfile, Contact, MailScope},
+    agent_tools::{AgentProfile, Contact, MailScope, SendScope},
     communication_host::write_private,
     communication_runtime::RuntimeClient,
     communication_store::identifier,
@@ -17,7 +17,13 @@ use std::{
 };
 #[path = "participant_connect_approval.rs"]
 mod approval;
+#[path = "participant_connect_install.rs"]
+mod install;
 pub use approval::AuthorizationRequest;
+pub use install::Installation;
+#[path = "participant_connect_host.rs"]
+mod host;
+pub use host::HostSelection;
 
 fn local(code: &str) -> ParticipantError {
     ParticipantError::local(code, "CONNECT")
@@ -71,6 +77,8 @@ pub struct ConnectRequest {
     pub protocols: Vec<ProtocolSelection>,
     #[serde(default)]
     pub contacts: Vec<ContactSelection>,
+    #[serde(default)]
+    pub host: Option<String>,
 }
 fn default_alias() -> String {
     "workspace".into()
@@ -84,6 +92,10 @@ impl ConnectRequest {
             || self.protocols.len() > 8
             || self.contacts.len() > 64
             || (!self.send && !self.receive && self.protocols.is_empty())
+            || self
+                .host
+                .as_ref()
+                .is_some_and(|h| !identifier(h) || !self.receive)
         {
             return Err(local("CONNECT_ARGUMENT_INVALID"));
         }
@@ -121,6 +133,14 @@ struct Setup {
     result: Value,
     #[serde(default)]
     key_request: Option<Value>,
+    #[serde(default)]
+    effective_host: Option<String>,
+    #[serde(default)]
+    channel_send: bool,
+    #[serde(default)]
+    channel_receive: bool,
+    #[serde(default)]
+    sender_capability: Option<Capability>,
 }
 #[derive(Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -132,6 +152,10 @@ struct Registry {
     active_by_scope: BTreeMap<String, String>,
     #[serde(default)]
     approvals: BTreeMap<String, approval::Approval>,
+    #[serde(default)]
+    installations: BTreeMap<String, install::Installed>,
+    #[serde(default)]
+    hosts: BTreeMap<String, HostSelection>,
 }
 pub struct Connect {
     directory: PathBuf,
@@ -143,8 +167,7 @@ impl Connect {
         json!({"state":"PENDING","setup_id":setup_id,"blocker":{"stage":"LOCAL_SELECTION","code":"LOCAL_SELECTION_REQUIRED","next_actor":"LOCAL_RUNTIME_OWNER","next_action":"REGISTER_EXISTING_PARTICIPANT"}})
     }
     pub fn open(directory: &Path) -> Result<Self> {
-        create_private_state_directory(directory)
-            .map_err(|_| local("CONNECT_DIRECTORY_NOT_PRIVATE"))?;
+        crate::onboarding_files::directory(directory, true)?;
         let store = SecureStateStore::open(&directory.join("connect.state"))
             .map_err(|_| local("CONNECT_STATE_ALREADY_OWNED_OR_UNSAFE"))?;
         let registry: Registry = match store
@@ -451,6 +474,10 @@ impl Connect {
                     digest,
                     profile: None,
                     key_request: None,
+                    effective_host: None,
+                    channel_send: false,
+                    channel_receive: false,
+                    sender_capability: None,
                     result: json!({"state":"PENDING","setup_id":request.setup_id}),
                 },
             );
@@ -506,9 +533,8 @@ impl Connect {
         )
         .await?;
         let grant = &grants["grant"];
-        let valid = grant["membership_id"] == membership
-            && (grant["expires_at"].is_null()
-                || grant["expires_at"].as_u64().is_some_and(|v| v > stamp()));
+        let now = trusted_time(&client, &scope).await?;
+        let valid = grant["membership_id"] == membership && approval::effective(grant, now);
         let mut missing = Vec::new();
         if request.send && (!valid || grant["can_send"] != true) {
             missing.push(json!({"kind":"COMMUNICATION_SEND"}));
@@ -603,16 +629,21 @@ impl Connect {
             }
             protocols.insert(p.alias.clone(), selected_scope);
         }
-        if !missing.is_empty() {
-            let keys = if request.require_body_keys {
-                Some(self.key_request(&client, &request, &scope).await?)
-            } else {
-                None
-            };
-            return self.pending(&request,"REMOTE_AUTHORIZATION","OWNER_APPROVAL_REQUIRED",owner,"APPROVE_REQUESTED_PERMISSION_DELTA",
+        let keys = if request.require_body_keys {
+            match read(&client,"participant.keys.prepare",scope.clone(),json!({})).await {
+                Ok(value) if value["state"]=="READY" => value,
+                Err(error) if error.code=="CONTENT_KEY_MISSING" => json!({"state":"MISSING"}),
+                Err(error) => return self.pending(&request,"CONTENT_KEYS",&error.code,"RUNTIME","RECOVER_SELECTED_KEY_STATE",json!({"recovery":error.recovery})),
+                Ok(value) => return self.pending(&request,"CONTENT_KEYS","KEYS_SYNCHRONIZING","RUNTIME","RESUME_SAME_SETUP",json!({"keys":value})),
+            }
+        } else {json!({"state":"NOT_REQUESTED"})};
+        let needs_keys=keys["state"]=="MISSING";
+        if !missing.is_empty() || needs_keys {
+            let key_request=if needs_keys{Some(self.key_request(&client,&request,&scope).await?)}else{None};
+            return self.pending(&request,"REMOTE_AUTHORIZATION",if missing.is_empty(){"KEY_AUTHORIZATION_REQUIRED"}else{"OWNER_APPROVAL_REQUIRED"},owner,"APPROVE_REQUESTED_PERMISSION_DELTA",
                 json!({"authorization_request":{"format":"peerwork.connect-authorization-request.v1","setup_id":request.setup_id,
                     "origin":selected.origin,"workspace_id":request.workspace_id,"actor_id":selected.actor_id,"membership_id":membership,
-                    "owner_id":owner,"missing":missing,"body_keys_required":request.require_body_keys,"key_request":keys},
+                    "owner_id":owner,"missing":missing,"body_keys_required":needs_keys,"key_request":key_request},
                     "delivery":"EXISTING_ADMISSION_OR_VERIFIED_HANDOFF","contains_private_keys_or_local_paths":false}));
         }
         let mailboxes = read(
@@ -638,34 +669,47 @@ impl Connect {
         let caps = client.call(json!({"method":"capabilities"})).await?;
         let parent: Capability = serde_json::from_value(caps["capability"].clone())
             .map_err(|_| local("LOCAL_CEILING_INVALID"))?;
-        let previous_binding = self
+        let previous_setup = self
             .registry
-            .setups
-            .values()
-            .find(|s| {
-                s.desired.participant == request.participant
-                    && s.desired.workspace_id == request.workspace_id
-                    && s.registration == selected
-                    && (!request.send || s.desired.send)
-                    && (!request.receive || s.desired.receive)
-                    && s.profile.is_some()
+            .active_by_scope
+            .get(&format!("{}:{}", request.participant, request.workspace_id))
+            .and_then(|id| self.registry.setups.get(id))
+            .filter(|s| s.registration == selected && s.profile.is_some())
+            .or_else(|| {
+                self.registry
+                    .setups
+                    .get(&request.setup_id)
+                    .filter(|s| s.profile.is_some())
             })
-            .map(|s| {
-                (
-                    s.profile.clone().unwrap(),
-                    s.desired.send,
-                    s.desired.receive,
-                )
-            });
-        let previous = previous_binding.as_ref().map(|(p, _, _)| p.clone());
-        let channel_send = previous_binding
+            .cloned();
+        let previous = previous_setup.as_ref().and_then(|s| s.profile.clone());
+        let channel_send = request.send
+            || previous_setup
+                .as_ref()
+                .is_some_and(|s| s.channel_send || s.desired.send);
+        let channel_receive = request.receive
+            || previous_setup
+                .as_ref()
+                .is_some_and(|s| s.channel_receive || s.desired.receive);
+        let old_host = previous_setup
             .as_ref()
-            .map(|(_, send, _)| *send)
-            .unwrap_or(request.send);
-        let channel_receive = previous_binding
+            .and_then(|s| s.effective_host.clone().or_else(|| s.desired.host.clone()));
+        if request
+            .host
             .as_ref()
-            .map(|(_, _, receive)| *receive)
-            .unwrap_or(request.receive);
+            .zip(old_host.as_ref())
+            .is_some_and(|(a, b)| a != b)
+        {
+            return self.pending(
+                &request,
+                "HOST_BINDING",
+                "HOST_SELECTION_CHANGED_REBIND_REQUIRED",
+                "HOST_USER",
+                "EXPLICIT_NATIVE_REBIND",
+                json!({}),
+            );
+        }
+        let effective_host = request.host.clone().or(old_host);
         if let Some(old) = &previous {
             for (name, s) in &old.protocols {
                 if protocols.get(name).is_some_and(|wanted| wanted != s) {
@@ -738,58 +782,44 @@ impl Connect {
                 ),
             );
         }
-        let mut capability = parent;
+        let mut capability = parent.clone();
         capability.allow_root = false;
         capability.workspace_ids = Some([request.workspace_id.clone()].into());
-        let allowed = [
-            "structure.message.send",
-            "structure.message.get",
-            "structure.message.receipts.read",
-            "structure.mailbox.get",
-            "structure.mailbox.claim",
-            "structure.mailbox.inbox.read",
-            "structure.mailbox.pulse",
-            "structure.mailbox.ack",
-            "structure.mailbox.report",
-        ];
-        capability
-            .operations
-            .retain(|s| allowed.contains(&s.as_str()));
-        if !channel_send {
-            capability.operations.remove("structure.message.send");
-        }
+        // Sending never acquires receiver/claim/report authority. The receiver
+        // gets a separate own-mailbox-bound client under the same engine.
+        let allowed = ["structure.message.send","structure.message.receipts.read","structure.mailbox.get"];
+        capability.operations.retain(|s|allowed.contains(&s.as_str()));
+        if !channel_send { capability.operations.remove("structure.message.send"); }
         capability.validate()?;
-        let alias = format!(
-            "mail-{}",
-            &sha256_hex(
-                json!([
-                    request.participant,
-                    request.workspace_id,
-                    channel_send,
-                    channel_receive
-                ])
-                .to_string()
-                .as_bytes()
-            )[..40]
-        );
-        let child = client
-            .call(json!({"method":"derive","name":alias,"capability":capability}))
-            .await?;
-        let endpoint = child["endpoint_path"]
-            .as_str()
-            .ok_or_else(|| local("DERIVED_ENDPOINT_INVALID"))?;
-        let tools = RuntimeClient::connect(
-            PathBuf::from(endpoint),
-            &selected.origin,
-            &selected.actor_id,
-        )
-        .await?;
+        let alias = format!("mail-{}", &sha256_hex(json!([request.participant,request.workspace_id]).to_string().as_bytes())[..40]);
+        let child = client.call(json!({"method":"derive","name":alias,"capability":capability,
+            "expected_capability":previous_setup.as_ref().and_then(|s|s.sender_capability.clone())})).await?;
+        let endpoint = child["endpoint_path"].as_str().ok_or_else(||local("DERIVED_ENDPOINT_INVALID"))?;
+        let mut receive_endpoint = previous.as_ref().and_then(|p|p.receive_endpoint_path.clone());
+        let mut receiver_name = String::new();
+        let receiver_tools = if channel_receive {
+            let mailbox_id=mailbox.and_then(|m|m["mailbox_id"].as_str()).filter(|s|token(s)).ok_or_else(||local("DEFAULT_MAILBOX_REQUIRED"))?;
+            let mut receive_cap=parent.clone();
+            receive_cap.allow_root=false;
+            receive_cap.workspace_ids=Some([request.workspace_id.clone()].into());
+            receive_cap.mailbox_ids=Some([mailbox_id.into()].into());
+            receive_cap.operations.retain(|s| ["structure.mailbox.get","structure.mailbox.claim","structure.mailbox.inbox.read",
+                "structure.mailbox.pulse","structure.mailbox.ack","structure.mailbox.report","structure.communication.stream.get"].contains(&s.as_str()));
+            let alias=format!("receive-{}",&sha256_hex(json!([request.participant,request.workspace_id,mailbox_id,membership]).to_string().as_bytes())[..40]);
+            let derived=client.call(json!({"method":"derive","name":alias,"capability":receive_cap})).await?;
+            receiver_name=derived["client_name"].as_str().ok_or_else(||local("DERIVED_ENDPOINT_INVALID"))?.into();
+            let path=PathBuf::from(derived["endpoint_path"].as_str().ok_or_else(||local("DERIVED_ENDPOINT_INVALID"))?);
+            let tools=RuntimeClient::connect(path.clone(),&selected.origin,&selected.actor_id).await?;
+            receive_endpoint=Some(path);
+            Some(tools)
+        } else {None};
         let mut scopes = previous
             .as_ref()
             .map(|p| p.scopes.clone())
             .unwrap_or_default();
-        let mut receiver = Value::Null;
-        if let Some(mailbox) = mailbox {
+        let mut send_scopes=previous.as_ref().map(|p|p.send_scopes.clone()).unwrap_or_default();
+        let mut receiver = json!({"state":"NOT_REQUESTED"});
+        if let Some(mailbox) = mailbox.filter(|_|channel_receive) {
             let address = MailScope {
                 workspace_id: request.workspace_id.clone(),
                 mailbox_id: mailbox["mailbox_id"]
@@ -799,7 +829,7 @@ impl Connect {
                     .into(),
                 membership_id: membership.into(),
             };
-            if channel_receive {
+            if channel_receive && effective_host.is_none() {
                 let options = WatchOptions {
                     workspace_id: request.workspace_id.clone(),
                     mailbox_id: address.mailbox_id.clone(),
@@ -807,7 +837,7 @@ impl Connect {
                     consumer_id: format!("connect-{}", request.participant),
                     host_destination: None,
                 };
-                let observed = tools
+                let observed = receiver_tools.as_ref().unwrap()
                     .call(json!({"method":"watch","options":options}))
                     .await?;
                 receiver = json!({"state":observed["state"],"code":observed["code"],"presence":observed["presence"],
@@ -815,6 +845,9 @@ impl Connect {
                     "model_response":"NOT_ATTESTED"});
             }
             scopes.insert(request.alias.clone(), address);
+            send_scopes.remove(&request.alias);
+        } else {
+            send_scopes.insert(request.alias.clone(),SendScope{workspace_id:request.workspace_id.clone(),membership_id:membership.into()});
         }
         let mut contacts = previous
             .as_ref()
@@ -861,35 +894,93 @@ impl Connect {
         let profile = AgentProfile {
             format: "peerwork.agent-profile.v1".into(),
             endpoint_path: PathBuf::from(endpoint),
-            expected_origin: selected.origin,
-            expected_actor: selected.actor_id,
+            expected_origin: selected.origin.clone(),
+            expected_actor: selected.actor_id.clone(),
             scopes,
             contacts,
             protocols,
             protocol_endpoints,
+            send_scopes,
+            receive_endpoint_path: receive_endpoint,
         };
         // Persist the trusted derivation before materializing the expendable file.
         {
             let s = self.registry.setups.get_mut(&request.setup_id).unwrap();
             if s.profile.is_none() {
                 s.profile = Some(profile.clone());
+                s.channel_send = channel_send;
+                s.channel_receive = channel_receive;
+                s.sender_capability = Some(capability.clone());
                 self.save()?;
             }
         }
         let path = self.ensure_profile(&request.setup_id, &profile)?;
-        if request.require_body_keys
-            && (receiver["presence"]["key_current"] != true
-                || receiver["presence"]["body_key"]["state"] != "READY")
+        // Publish the already-authorized tool view before opening a managed
+        // host: its MCP initialization reads this snapshot without the writer lock.
+        if self
+            .registry
+            .active_by_scope
+            .get(&format!("{}:{}", request.participant, request.workspace_id))
+            != Some(&request.setup_id)
         {
-            if receiver["presence"]["body_key"]["state"] != "MISSING" {
-                return self.pending(&request,"CONTENT_KEYS","KEYS_SYNCHRONIZING","RUNTIME","RESUME_SAME_SETUP",
-                    json!({"profile_path":path,"receiver":receiver,"owner_exchange_required":false}));
+            self.registry.active_by_scope.insert(
+                format!("{}:{}", request.participant, request.workspace_id),
+                request.setup_id.clone(),
+            );
+            self.registry.active = Some(request.setup_id.clone());
+            self.save()?;
+        }
+        let mut host_observation = json!({"state":"NOT_BOUND"});
+        if let Some(name) = &effective_host {
+            self.registry
+                .setups
+                .get_mut(&request.setup_id)
+                .unwrap()
+                .effective_host = Some(name.clone());
+            self.save()?;
+            let address = profile
+                .scopes
+                .get(&request.alias)
+                .ok_or_else(|| local("DEFAULT_MAILBOX_REQUIRED"))?;
+            let options = WatchOptions {
+                workspace_id: request.workspace_id.clone(),
+                mailbox_id: address.mailbox_id.clone(),
+                membership_id: address.membership_id.clone(),
+                consumer_id: format!("connect-{}", request.participant),
+                host_destination: None,
+            };
+            let client_name = receiver_name.as_str();
+            let tools=receiver_tools.as_ref().ok_or_else(||local("DEFAULT_MAILBOX_REQUIRED"))?;
+            host_observation = self
+                .ensure_host(name, &request, &selected, client_name, options)
+                .await?;
+            let until = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+            loop {
+                let bindings = tools.call(json!({"method":"bindings"})).await?;
+                if let Some(options) = bindings.as_array().and_then(|xs| {
+                    xs.iter().find(|o| {
+                        o["workspace_id"] == request.workspace_id
+                            && o["mailbox_id"] == address.mailbox_id
+                    })
+                }) {
+                    let observed = tools
+                        .call(json!({"method":"inbox","options":options,"after":0,"limit":1}))
+                        .await?;
+                    receiver = json!({"state":observed["state"],"code":observed["code"],"presence":observed["presence"],"receiver_link_verified":observed["receiver_link_verified"],"checkpoint":observed["checkpoint"],"model_response":"NOT_ATTESTED"});
+                    break;
+                }
+                if tokio::time::Instant::now() >= until {
+                    return self.pending(
+                        &request,
+                        "HOST_BINDING",
+                        "HOST_NOT_BOUND",
+                        "HOST_USER",
+                        "CHECK_SELECTED_HOST_OR_EXPLICIT_REBIND",
+                        json!({"host":host_observation}),
+                    );
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             }
-            let keys = self.key_request(&client, &request, &scope).await?;
-            return self.pending(&request,"CONTENT_KEYS","KEY_AUTHORIZATION_REQUIRED",owner,"DELIVER_OR_ACCEPT_AUTHORIZED_KEYS",
-                json!({"profile_path":path,"receiver":receiver,"authorization_request":{"format":"peerwork.connect-authorization-request.v1",
-                    "setup_id":request.setup_id,"origin":profile.expected_origin,"workspace_id":request.workspace_id,"actor_id":profile.expected_actor,
-                    "membership_id":membership,"owner_id":owner,"missing":[],"body_keys_required":true,"key_request":keys}}));
         }
         if self.registry.active.as_deref() != Some(&request.setup_id) {
             self.registry.active = Some(request.setup_id.clone());
@@ -902,7 +993,7 @@ impl Connect {
         self.record(&request,json!({"state":"LOCAL_CONFIGURED","setup_id":request.setup_id,"profile_path":path,
             "observed_at_ms":stamp(),
             "actor_id":profile.expected_actor,"origin":profile.expected_origin,"workspace_id":request.workspace_id,
-            "membership_id":membership,"receiver":receiver,"host":"NOT_BOUND","mcp_current_session":"NOT_ATTESTED",
+            "membership_id":membership,"keys":keys,"receiver":receiver,"host":host_observation,"mcp_current_session":"NOT_ATTESTED",
             "next_action":"BIND_SELECTED_HOST_AND_VERIFY_TOOLS","owner_exchange_required":false}),Some(profile))
     }
     async fn key_request(
@@ -933,6 +1024,11 @@ impl Connect {
         Ok(value)
     }
 }
+async fn trusted_time(client: &RuntimeClient, scope:&Scope)->Result<u64>{
+    let time=read(client,"participant.time.read",scope.clone(),json!({})).await?;
+    if time["source"]!="SIGNED_AUTHORIZATION_CONTEXT" {return Err(local("TRUSTED_TIME_UNAVAILABLE"));}
+    time["server_time_ms"].as_u64().ok_or_else(||local("TRUSTED_TIME_UNAVAILABLE"))
+}
 async fn read(client: &RuntimeClient, action: &str, scope: Scope, body: Value) -> Result<Value> {
     let value=client.call(json!({"method":"request","request":Invoke::new("connect-bounded-read",action,scope,body)})).await?;
     if matches!(value["state"].as_str(), Some("ACCEPTED" | "COMPLETED")) {
@@ -952,6 +1048,7 @@ pub fn schema() -> Value {
         "type":"object","additionalProperties":false,"required":["setup_id","participant","workspace_id"],
         "properties":{"setup_id":{"type":"string"},"participant":{"type":"string"},"workspace_id":{"type":"string"},"alias":{"type":"string","default":"workspace"},"send":{"type":"boolean"},"receive":{"type":"boolean"},"require_body_keys":{"type":"boolean"},"protocols":{"type":"array","maxItems":8,"items":{"type":"object","additionalProperties":false,"required":["alias","instance_id","role"],"properties":{"alias":{"type":"string"},"instance_id":{"type":"string"},"role":{"type":"string"},"actions":{"type":"array","maxItems":64,"items":{"type":"string"}}}}}}}}});
     schema["properties"]["request"]["properties"]["contacts"] = json!({"type":"array","maxItems":64,"items":{"type":"object","additionalProperties":false,"required":["alias","actor_id"],"properties":{"alias":{"type":"string"},"actor_id":{"type":"string"}}}});
+    schema["properties"]["request"]["properties"]["host"] = json!({"type":"string","description":"Existing host-user-approved local handle. Omit for a program or to reuse the selected host; no command/socket/session paths are accepted."});
     schema
 }
 
@@ -1114,6 +1211,7 @@ pub fn cli(args: &[String]) -> Value {
                 "--body-keys",
                 "--allow-loopback-http",
                 "--context",
+                "--uninstall",
             ]
             .contains(&flag.as_str());
             if ![
@@ -1135,6 +1233,9 @@ pub fn cli(args: &[String]) -> Value {
                 "--approve-request",
                 "--role",
                 "--contact",
+                "--install",
+                "--project",
+                "--uninstall",
             ]
             .contains(&flag.as_str())
                 || values.contains_key(flag)
@@ -1182,6 +1283,23 @@ pub fn cli(args: &[String]) -> Value {
             return Ok(connect.context());
         }
         let handle = required("--participant")?;
+        let installation = if let Some(host) = values.get("--install") {
+            Some(Installation {
+                host: host.clone(),
+                project: std::path::absolute(required("--project")?)
+                    .map_err(|_| local("HOST_INSTALLATION_SELECTION_INVALID"))?,
+                executable: std::env::current_exe().map_err(|_| local("EXECUTABLE_UNAVAILABLE"))?,
+            })
+        } else {
+            None
+        };
+        if values.contains_key("--uninstall") {
+            return connect.uninstall(
+                &handle,
+                &required("--workspace")?,
+                installation.ok_or_else(|| local("SELECT_INSTALLATION_TO_REMOVE"))?,
+            );
+        }
         if let Some(path) = values.get("--approve-request") {
             use std::io::Read;
             let mut wire = Vec::new();
@@ -1215,6 +1333,7 @@ pub fn cli(args: &[String]) -> Value {
             require_body_keys: values.contains_key("--body-keys"),
             protocols: Vec::new(),
             contacts: Vec::new(),
+            host: None,
         };
         if let Some(role) = values.get("--role") {
             let parts: Vec<_> = role.split(':').collect();
@@ -1272,7 +1391,17 @@ pub fn cli(args: &[String]) -> Value {
                     )
                     .await?;
             }
-            connect.run(request).await
+            let installed = installation
+                .map(|spec| connect.install(&handle, &request.workspace_id, spec))
+                .transpose()?;
+            let mut out = match connect.run(request).await {
+                Ok(v) => v,
+                Err(error) => json!({"state":"FAILED","error":error}),
+            };
+            if let Some(installed) = installed {
+                out["integration"] = installed;
+            }
+            Ok(out)
         })
     };
     result().unwrap_or_else(|error| json!({"state":"FAILED","error":error}))
@@ -1315,6 +1444,7 @@ mod tests {
                 require_body_keys: false,
                 protocols: Vec::new(),
                 contacts: Vec::new(),
+                host: None,
             })
             .await
             .unwrap_err();

@@ -26,6 +26,12 @@ pub struct AuthorizationRequest {
     pub owner_id: String,
     pub missing: Vec<Delta>,
     pub body_keys_required: bool,
+    /// Explicitly requested lease for this approval. Omission preserves an
+    /// existing finite lease; it never silently renews or makes it permanent.
+    #[serde(default)]
+    pub grant_expires_at: Option<u64>,
+    #[serde(default)]
+    pub follow_current_key: bool,
     #[serde(default)]
     pub key_request: Option<Value>,
 }
@@ -50,6 +56,7 @@ impl AuthorizationRequest {
             .iter()
             .all(|v| token(v))
             || self.missing.len() > 10
+            || (self.follow_current_key && !self.body_keys_required)
         {
             return Err(local("AUTHORIZATION_REQUEST_INVALID"));
         }
@@ -99,6 +106,14 @@ impl AuthorizationRequest {
         Ok(())
     }
 }
+pub(super) fn effective(grant:&Value, now:u64)->bool {
+    grant.is_object() && (grant["expires_at"].is_null() || grant["expires_at"].as_u64().is_some_and(|t|t>now))
+}
+fn approved_expiry(grant:&Value, requested:Option<u64>, now:u64)->Result<Value>{
+    let expiry=requested.or_else(||grant["expires_at"].as_u64());
+    if expiry.is_some_and(|t|t<=now){return Err(local("AUTHORIZATION_LEASE_EXPIRED_EXPLICIT_RENEWAL_REQUIRED"));}
+    Ok(json!(expiry))
+}
 impl Connect {
     pub async fn approve(
         &mut self,
@@ -145,6 +160,7 @@ impl Connect {
             if workspace["membership"]["role"] != "OWNER" {
                 return Err(local("OWNER_APPROVAL_REQUIRED"));
             }
+            let now=trusted_time(&client,&scope).await?;
             let mut steps = Vec::new();
             let send = request
                 .missing
@@ -166,9 +182,11 @@ impl Connect {
                 if grant.is_object() && grant["membership_id"] != request.membership_id {
                     return Err(local("MEMBERSHIP_CHANGED_NEW_REQUEST_REQUIRED"));
                 }
+                let expiry=approved_expiry(grant,request.grant_expires_at,now)?;
+                let effective=effective(grant,now);
                 steps.push(Invoke::new(format!("approve-{approval_id}-communication"),"structure.communication.grant.set",scope.clone(),
                     json!({"actor_id":request.actor_id,"membership_id":request.membership_id,"expected_revision":grant["revision"],
-                        "send":send||grant["can_send"]==true,"receive":receive||grant["can_receive"]==true,"expires_at":null})));
+                        "send":send||(effective&&grant["can_send"]==true),"receive":receive||(effective&&grant["can_receive"]==true),"expires_at":expiry})));
             }
             let mut groups: BTreeMap<
                 (String, String),
@@ -211,7 +229,8 @@ impl Connect {
                 if grant.is_object() && grant["membership_id"] != request.membership_id {
                     return Err(local("MEMBERSHIP_CHANGED_NEW_REQUEST_REQUIRED"));
                 }
-                let effective = grant["effective"] == true;
+                let expiry=approved_expiry(grant,request.grant_expires_at,now)?;
+                let effective = grant["effective"] == true && effective(grant,now);
                 let mut roles: std::collections::BTreeSet<String> = if effective {
                     serde_json::from_value(grant["protocol_roles"].clone()).unwrap_or_default()
                 } else {
@@ -226,11 +245,11 @@ impl Connect {
                 allowed.extend(requested_actions);
                 steps.push(Invoke::new(format!("approve-{approval_id}-role-{index}"),"structure.grant.set",s,
                         json!({"actor_id":request.actor_id,"membership_id":request.membership_id,"expected_grant_revision":grant["grant_revision"],
-                            "actions":allowed,"protocol_roles":roles,"capabilities":if effective{grant["capabilities"].as_array().cloned().unwrap_or_default()}else{Vec::new()},"expires_at":null})));
+                            "actions":allowed,"protocol_roles":roles,"capabilities":if effective{grant["capabilities"].as_array().cloned().unwrap_or_default()}else{Vec::new()},"expires_at":expiry})));
             }
             if request.body_keys_required {
                 steps.push(Invoke::new(format!("approve-{approval_id}-keys"),"participant.access.approve",scope,
-                    json!({"request_jws":request.key_request.as_ref().unwrap()["request_jws"],"mode":"KEYS_ONLY","follow_current_key":true})));
+                    json!({"request_jws":request.key_request.as_ref().unwrap()["request_jws"],"mode":"KEYS_ONLY","follow_current_key":request.follow_current_key})));
             }
             // The request and exact commands are committed before first remote
             // mutation. Partial application is retained rather than rolled back.
@@ -278,5 +297,35 @@ impl Connect {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn approval_preserves_finite_lease_and_requires_explicit_expired_renewal() {
+        let grant=json!({"expires_at":2000});
+        assert!(effective(&grant,1000));
+        assert_eq!(approved_expiry(&grant,None,1000).unwrap(),2000);
+        assert!(!effective(&grant,2000));
+        assert_eq!(approved_expiry(&grant,None,2000).unwrap_err().code,
+            "AUTHORIZATION_LEASE_EXPIRED_EXPLICIT_RENEWAL_REQUIRED");
+        assert_eq!(approved_expiry(&grant,Some(3000),2000).unwrap(),3000);
+        assert!(!effective(&Value::Null,1000));
+        assert!(approved_expiry(&Value::Null,None,1000).unwrap().is_null());
+        assert!(effective(&json!({"expires_at":null}),1000));
+    }
+    #[test]
+    fn future_key_follow_requires_explicit_body_authorization() {
+        let mut request:AuthorizationRequest=serde_json::from_value(json!({
+            "format":"peerwork.connect-authorization-request.v1","setup_id":"new-worker",
+            "origin":"https://example.invalid/","workspace_id":"W".repeat(43),"actor_id":"A".repeat(43),
+            "membership_id":"M".repeat(43),"owner_id":"O".repeat(43),"missing":[{"kind":"COMMUNICATION_SEND"}],
+            "body_keys_required":false})).unwrap();
+        request.validate().unwrap();
+        assert!(!request.follow_current_key);
+        request.follow_current_key=true;
+        assert_eq!(request.validate().unwrap_err().code,"AUTHORIZATION_REQUEST_INVALID");
     }
 }

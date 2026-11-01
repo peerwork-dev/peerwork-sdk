@@ -117,7 +117,7 @@ impl KernelClient {
         config
     }
 
-    pub(super) async fn access_context(
+    pub(crate) async fn access_context(
         &self,
         cancel: &CancellationToken,
     ) -> Result<(String, Vec<u8>, VerifiedStructureContext), KernelClientError> {

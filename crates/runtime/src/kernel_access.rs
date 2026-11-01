@@ -510,6 +510,10 @@ impl KernelAccess {
         if let Selection::Initialize(ws)=&selected{
             return Ok(serde_json::json!({"state":"LOCAL_KEY_READY","effect_certainty":"LOCAL_ONLY","remote_access":"NOT_GRANTED","key":self.ensure_local_content_key_with_cancel(ws,cancel)?}));
         }
+        if let Selection::KeyStatus{workspace,key_ids}=&selected{
+            let available=self.cached_mail_keys(workspace,key_ids)?;
+            return Ok(serde_json::json!({"state":if available.len()==key_ids.len(){"READY"}else{"MISSING"},"source":"VERIFIED_LOCAL_KEY_STORE","key_ids":available,"remote_access":"NOT_ATTESTED"}));
+        }
         let deadline=tokio::time::Instant::now()+Duration::from_secs(if matches!(selected,Selection::Migrate{..}){180}else{30});
         let identity=self.identity()?;
         let authority=self.authority_override.clone().unwrap_or_else(||sha256_hex(identity.actor_id().as_bytes()));
@@ -528,6 +532,9 @@ impl KernelAccess {
         let result=tokio::time::timeout_at(deadline,async{
             let mut out=match selected {
                 Selection::Request(selection)=>return Ok(client.request_structure_access(&identity,&recipient,selection,cancel).await?),
+                Selection::Time=>{let(_,_,context)=client.access_context(cancel).await?;return Ok(serde_json::json!({"state":"VERIFIED_TIME","server_time_ms":context.server_time_ms(),"source":"SIGNED_AUTHORIZATION_CONTEXT","not_transaction_time_proof":true}));},
+                Selection::Prepare(ws)=>{let metadata=client.sync_structure_content_head(&identity,&authority,&ws,cancel).await?;return Ok(serde_json::json!({"state":"READY","workspace_id":ws,"head":metadata["content_key_head"],"source":"VERIFIED_CANONICAL_HEAD_AND_LOCAL_KEY"}));},
+                Selection::KeyStatus{..}=>return Err(KernelClientError::InvalidCommand.into()),
                 Selection::Accept(selection)=>return Ok(client.accept_structure_keys(&identity,&authority,&recipient,selection,cancel).await?),
                 Selection::Initialize(_)=>return Err(KernelClientError::InvalidCommand.into()),
                 Selection::Offline{..}|Selection::Sources(_)=>return Err(KernelClientError::InvalidCommand.into()),

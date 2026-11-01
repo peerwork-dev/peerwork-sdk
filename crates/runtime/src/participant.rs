@@ -593,6 +593,9 @@ pub struct ParticipantClient {
     capability: Capability,
 }
 impl ParticipantClient {
+    pub(crate) fn same_client(&self,other:&Self)->bool{
+        Arc::ptr_eq(&self.shared,&other.shared)&&self.namespace==other.namespace
+    }
     /// Opens protected local state without requiring a network connection.
     /// Discovery is verified before the engine makes any signed service call.
     pub async fn open(config: ParticipantConfig) -> Result<Self> {

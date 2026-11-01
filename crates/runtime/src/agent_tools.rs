@@ -68,6 +68,9 @@ pub struct Contact {
     pub scope: String,
     pub recipient: MailboxAddress,
 }
+#[derive(Clone,Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SendScope{pub workspace_id:String,pub membership_id:String}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentProfile {
@@ -82,6 +85,10 @@ pub struct AgentProfile {
     pub protocols: BTreeMap<String, Scope>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub protocol_endpoints: BTreeMap<String, PathBuf>,
+    #[serde(default,skip_serializing_if="BTreeMap::is_empty")]
+    pub send_scopes:BTreeMap<String,SendScope>,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub receive_endpoint_path:Option<PathBuf>,
 }
 impl AgentProfile {
     pub fn load(path: &Path) -> Result<Self> {
@@ -104,6 +111,8 @@ impl AgentProfile {
             || self.scopes.len() > 8
             || self.contacts.len() > 64
             || self.protocols.len() > 32
+            || self.send_scopes.len()>8 || self.send_scopes.iter().any(|(name,s)|!identifier(name)||!token(&s.workspace_id)||!token(&s.membership_id)||self.scopes.contains_key(name))
+            || self.receive_endpoint_path.as_ref().is_some_and(|p|!p.is_absolute())
             || self.protocol_endpoints.iter().any(|(name,path)| !self.protocols.contains_key(name) || !path.is_absolute())
             || self
                 .scopes
@@ -119,7 +128,7 @@ impl AgentProfile {
             || self
                 .contacts
                 .values()
-                .any(|c| !self.scopes.contains_key(&c.scope) || c.recipient.validate().is_err())
+                .any(|c| !(self.scopes.contains_key(&c.scope)||self.send_scopes.contains_key(&c.scope)) || c.recipient.validate().is_err())
             || self.protocols.values().any(|s| {
                 s.workspace_id.as_deref().is_none_or(|s| !token(s))
                     || s.instance_id.as_deref().is_none_or(|s| !token(s))
@@ -257,6 +266,7 @@ pub struct AgentTools {
     profile: AgentProfile,
     client: RuntimeClient,
     protocol_clients: BTreeMap<String, RuntimeClient>,
+    receiver:Option<RuntimeClient>,
 }
 impl AgentTools {
     pub async fn open(profile: AgentProfile) -> Result<Self> {
@@ -271,7 +281,8 @@ impl AgentTools {
         for (name,path) in &profile.protocol_endpoints {
             protocol_clients.insert(name.clone(),RuntimeClient::connect(path.clone(),&profile.expected_origin,&profile.expected_actor).await?);
         }
-        Ok(Self { profile, client, protocol_clients })
+        let receiver=match &profile.receive_endpoint_path{Some(p)=>Some(RuntimeClient::connect(p.clone(),&profile.expected_origin,&profile.expected_actor).await?),None=>None};
+        Ok(Self { profile, client, protocol_clients,receiver })
     }
     fn scope(&self, name: &str) -> Result<&MailScope> {
         self.profile
@@ -286,10 +297,16 @@ impl AgentTools {
             .cloned()
             .ok_or_else(|| invalid("PROTOCOL_ALIAS_UNKNOWN"))
     }
+    fn receiving(&self)->&RuntimeClient{self.receiver.as_ref().unwrap_or(&self.client)}
+    fn workspace_scope(&self,name:&str)->Result<Scope>{
+        if let Some(scope)=self.profile.scopes.get(name){return Ok(scope.scope());}
+        let scope=self.profile.send_scopes.get(name).ok_or_else(||invalid("SCOPE_ALIAS_UNKNOWN"))?;
+        Ok(Scope{workspace_id:Some(scope.workspace_id.clone()),..Default::default()})
+    }
     async fn binding(&self, name: &str) -> Result<WatchOptions> {
         let scope = self.scope(name)?;
         let options: Vec<WatchOptions> =
-            serde_json::from_value(self.client.call(json!({"method":"bindings"})).await?)
+            serde_json::from_value(self.receiving().call(json!({"method":"bindings"})).await?)
                 .map_err(|_| invalid("BINDINGS_RESPONSE_INVALID"))?;
         options
             .into_iter()
@@ -349,14 +366,18 @@ impl AgentTools {
         conversation: String,
         reply_to: Option<String>,
     ) -> Result<Invoke> {
+        self.message_to(&scope.workspace_id,Some(scope.address()),id,text,recipient,conversation,reply_to)
+    }
+    fn message_to(&self,workspace:&str,reply:Option<MailboxAddress>,id:String,text:String,recipient:MailboxAddress,conversation:String,reply_to:Option<String>)->Result<Invoke>{
         if text.is_empty() || text.len() > 8192 {
             return Err(invalid("MESSAGE_TEXT_LIMIT"));
         }
-        let mut body = json!({"conversation_id":conversation,"recipients":[recipient],"reply_address":scope.address(),"content":{"mode":"WORKSPACE_E2EE"}});
+        let mut body = json!({"conversation_id":conversation,"recipients":[recipient],"content":{"mode":"WORKSPACE_E2EE"}});
+        if let Some(reply)=reply{body["reply_address"]=json!(reply);}
         if let Some(parent) = reply_to {
             body["reply_to"] = json!(parent);
         }
-        let mut request = Invoke::new(id, "structure.message.send", scope.scope(), body);
+        let mut request = Invoke::new(id, "structure.message.send", Scope{workspace_id:Some(workspace.into()),..Default::default()}, body);
         request.plaintext_message = Some(text);
         Ok(request)
     }
@@ -365,25 +386,28 @@ impl AgentTools {
             AgentRequest::Connect { .. } | AgentRequest::ConnectApprove { .. } => Err(invalid("CONNECT_LOCAL_REGISTRY_REQUIRED")),
             AgentRequest::Context => {
                 let capabilities = self.client.call(json!({"method":"capabilities"})).await?;
-                let bindings = self.client.call(json!({"method":"bindings"})).await?;
+                let bindings = self.receiving().call(json!({"method":"bindings"})).await?;
                 Ok(
-                    json!({"actor_id":self.client.actor_id(),"origin":self.client.origin(),"maturity":"EXPERIMENTAL","local_engine":"AUTHENTICATED","remote_or_host_readiness":"NOT_ATTESTED","scopes":self.profile.scopes,"contacts":self.profile.contacts.keys().collect::<Vec<_>>(),"protocols":self.profile.protocols,"bindings":bindings,"capability":capabilities["capability"],"next_tools":{"reachability":"peerwork_reachability","capability_discovery":"peerwork agent tools"}}),
+                    json!({"actor_id":self.client.actor_id(),"origin":self.client.origin(),"maturity":"EXPERIMENTAL","local_engine":"AUTHENTICATED","remote_or_host_readiness":"NOT_ATTESTED","scopes":self.profile.scopes,"send_scopes":self.profile.send_scopes,"contacts":self.profile.contacts.keys().collect::<Vec<_>>(),"protocols":self.profile.protocols,"bindings":bindings,"capability":capabilities["capability"],"next_tools":{"reachability":"peerwork_reachability","capability_discovery":"peerwork agent tools"}}),
                 )
             }
             AgentRequest::Reachability { scope, contact } => {
                 let (scope, mailbox, membership) = match (scope, contact) {
                     (Some(alias), None) => {
+                        if self.profile.send_scopes.contains_key(&alias) {
+                            return Ok(json!({"workspace_id":self.workspace_scope(&alias)?.workspace_id,"receiver":"NOT_CONFIGURED","model_response":"NOT_ATTESTED"}));
+                        }
                         let scope = self.scope(&alias)?;
-                        (scope, scope.mailbox_id.clone(), scope.membership_id.clone())
+                        (scope.scope(), scope.mailbox_id.clone(), scope.membership_id.clone())
                     }
                     (None, Some(alias)) => {
                         let contact = self.profile.contacts.get(&alias)
                             .ok_or_else(|| invalid("CONTACT_ALIAS_UNKNOWN"))?;
-                        (self.scope(&contact.scope)?, contact.recipient.mailbox_id.clone(), contact.recipient.membership_id.clone())
+                        (self.workspace_scope(&contact.scope)?, contact.recipient.mailbox_id.clone(), contact.recipient.membership_id.clone())
                     }
                     _ => return Err(invalid("SELECT_ONE_SCOPE_OR_CONTACT")),
                 };
-                let observation = self.read("structure.mailbox.get", scope.scope(), json!({"mailbox_id":mailbox})).await?;
+                let observation = self.read("structure.mailbox.get", scope.clone(), json!({"mailbox_id":mailbox})).await?;
                 let observed_at_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
                     .map_err(|_| invalid("LOCAL_CLOCK_UNAVAILABLE"))?.as_millis() as u64;
                 // Backend presence includes its own lease and freshness facts.
@@ -403,34 +427,21 @@ impl AgentTools {
                     .contacts
                     .get(&contact)
                     .ok_or_else(|| invalid("CONTACT_ALIAS_UNKNOWN"))?;
-                let scope = self.scope(&contact.scope)?;
-                let mut addresses = [scope.address(), contact.recipient.clone()];
-                addresses.sort_by(|a, b| {
-                    (&a.mailbox_id, &a.membership_id).cmp(&(&b.mailbox_id, &b.membership_id))
-                });
-                let conversation = base64url(&sha256(
-                    json!([
-                        "peerwork.direct-conversation.v1",
-                        self.client.origin(),
-                        scope.workspace_id,
-                        addresses
-                    ])
-                    .to_string()
-                    .as_bytes(),
-                ));
-                self.invoke(
-                    self.message(
-                        scope,
-                        operation_id,
-                        text,
-                        contact.recipient.clone(),
-                        conversation,
-                        None,
-                    )?,
-                    wait_ms,
-                )
-                .await
+                let scope = self.workspace_scope(&contact.scope)?;
+                let workspace = scope.workspace_id.as_deref().unwrap();
+                let (reply, conversation) = if let Some(local) = self.profile.scopes.get(&contact.scope) {
+                    let mut addresses = [local.address(), contact.recipient.clone()];
+                    addresses.sort_by(|a,b| (&a.mailbox_id,&a.membership_id).cmp(&(&b.mailbox_id,&b.membership_id)));
+                    (Some(local.address()), json!(["peerwork.direct-conversation.v1",self.client.origin(),workspace,addresses]))
+                } else {
+                    let local = &self.profile.send_scopes[&contact.scope];
+                    (None,json!(["peerwork.one-way-conversation.v1",self.client.origin(),workspace,
+                        self.client.actor_id(),local.membership_id,contact.recipient]))
+                };
+                let conversation=base64url(&sha256(conversation.to_string().as_bytes()));
+                self.invoke(self.message_to(workspace,reply,operation_id,text,contact.recipient.clone(),conversation,None)?,wait_ms).await
             }
+
             AgentRequest::Reply {
                 scope,
                 item,
@@ -440,7 +451,7 @@ impl AgentTools {
             } => {
                 validate_reference(&item)?;
                 let options = self.binding(&scope).await?;
-                let selected=self.client.call(json!({"method":"inbox","options":options,"after":item.sequence-1,"limit":1})).await?;
+                let selected=self.receiving().call(json!({"method":"inbox","options":options,"after":item.sequence-1,"limit":1})).await?;
                 let entry = selected["items"]
                     .as_array()
                     .and_then(|a| a.first())
@@ -487,7 +498,7 @@ impl AgentTools {
                 validate_page(after, limit)?;
                 let options = self.binding(&scope).await?;
                 let value = self
-                    .client
+                    .receiving()
                     .call(json!({"method":"inbox","options":options,"after":after,"limit":limit}))
                     .await?;
                 Ok(inbox_view(value, &scope))
@@ -503,7 +514,7 @@ impl AgentTools {
                     return Err(invalid("WAIT_BUDGET_INVALID"));
                 }
                 let options = self.binding(&scope).await?;
-                Ok(inbox_view(self.client.call(json!({"method":"wait_inbox","options":options,"after":after,"limit":limit,"wait_ms":wait_ms})).await?, &scope))
+                Ok(inbox_view(self.receiving().call(json!({"method":"wait_inbox","options":options,"after":after,"limit":limit,"wait_ms":wait_ms})).await?, &scope))
             }
             AgentRequest::Consume { scope, items } => {
                 if items.is_empty() || items.len() > 32 {
@@ -513,7 +524,7 @@ impl AgentTools {
                     validate_reference(item)?;
                 }
                 let options = self.binding(&scope).await?;
-                self.client
+                self.receiving()
                     .call(json!({"method":"consume","options":options,"items":items}))
                     .await
             }
@@ -533,7 +544,7 @@ impl AgentTools {
                 }
                 self.read(
                     "structure.message.receipts.read",
-                    self.scope(&scope)?.scope(),
+                    self.workspace_scope(&scope)?,
                     json!({"message_id":message_id}),
                 )
                 .await
@@ -830,6 +841,7 @@ mod tests {
         let file = directory.path().join("agent.json");
         let profile = AgentProfile {
             protocol_endpoints: Default::default(),
+            send_scopes: Default::default(), receive_endpoint_path: None,
             format: "peerwork.agent-profile.v1".into(),
             endpoint_path: directory.path().join("endpoint.json"),
             expected_origin: "https://example.invalid/".into(),

@@ -53,6 +53,7 @@ impl HostConfig {
                 "conversation_id",
                 "inbox_directory",
             ],
+            Some("agy-stdio") => &["kind","managed","executable","conversation_id","working_directory"],
             Some("bridge") => &["kind", "endpoint", "token_file", "destination"],
             _ => return Err(error("HOST_CONFIG_INVALID")),
         };
@@ -82,6 +83,26 @@ impl HostConfig {
 pub(crate) struct RunningHost {
     pub status: Arc<Mutex<Value>>,
     pub task: tokio::task::JoinHandle<()>,
+    pub sources:Arc<Mutex<Vec<(ParticipantClient,WatchOptions)>>>,
+    pub changed:Arc<tokio::sync::Notify>,
+}
+impl RunningHost{
+    pub fn validate_sources(&self,sources:&[(ParticipantClient,WatchOptions)])->Result<()>{
+        let old=self.sources.lock().map_err(|_|error("HOST_STATE_INVALID"))?;
+        if sources.len()>8{return Err(error("HOST_SUBSCRIPTION_LIMIT"));}
+        for (client,wanted) in sources{
+            wanted.authorize(client.capability())?;
+            if old.iter().any(|(c,o)|o.key()==wanted.key()&&(!c.same_client(client)||o!=wanted)){
+                return Err(error("HOST_SUBSCRIPTION_CONFLICT"));
+            }
+        }Ok(())
+    }
+    pub fn set_sources(&self,sources:Vec<(ParticipantClient,WatchOptions)>)->Result<()>{
+        self.validate_sources(&sources)?;
+        let mut old=self.sources.lock().map_err(|_|error("HOST_STATE_INVALID"))?;
+        if old.len()==sources.len()&&old.iter().zip(&sources).all(|((a,x),(b,y))|a.same_client(b)&&x==y){return Ok(());}
+        *old=sources;drop(old);self.changed.notify_one();Ok(())
+    }
 }
 pub(crate) fn start(
     configs: &[HostConfig],
@@ -124,12 +145,19 @@ pub(crate) fn start(
         }
     }
     let mut active = Vec::new();
+    for config in groups.values(){
+        for (i,a) in config.subscriptions.iter().enumerate(){for b in &config.subscriptions[..i]{
+            if a.watch.key()==b.watch.key()&&(!clients[&a.client].same_client(&clients[&b.client])||a.watch!=b.watch){return Err(error("HOST_SUBSCRIPTION_CONFLICT"));}
+        }}
+    }
     for (key, config) in groups {
         let sources = config
             .subscriptions
             .iter()
             .map(|s| (clients[&s.client].clone(), s.watch.clone()))
             .collect::<Vec<_>>();
+        let sources=Arc::new(Mutex::new(sources));
+        let selected_sources=sources.clone();let changed=Arc::new(tokio::sync::Notify::new());let signal=changed.clone();
         let state = Arc::new(Mutex::new(
             json!({"name":config.name,"state":"CONNECTING","host_ack":"UNCONFIRMED","model_response":"NOT_ATTESTED"}),
         ));
@@ -137,7 +165,7 @@ pub(crate) fn start(
         let stop = cancel.clone();
         let path = directory.join(format!("host-{key}.state"));
         let task = tokio::spawn(async move {
-            if let Err(e) = run(config, sources, path, status.clone(), stop).await {
+            if let Err(e) = run(config, selected_sources, path, status.clone(), stop,signal).await {
                 set(
                     &status,
                     json!({"state":"BLOCKED","code":e.code,"model_response":"NOT_ATTESTED"}),
@@ -147,6 +175,7 @@ pub(crate) fn start(
         active.push(RunningHost {
             status: state,
             task,
+            sources,changed,
         });
     }
     Ok(active)
@@ -255,16 +284,17 @@ pub(crate) fn host_outcome(kind: &str, result: std::result::Result<Value, &'stat
 }
 async fn run(
     config: HostConfig,
-    sources: Vec<(ParticipantClient, WatchOptions)>,
+    sources: Arc<Mutex<Vec<(ParticipantClient, WatchOptions)>>>,
     path: PathBuf,
     status: Arc<Mutex<Value>>,
     cancel: KernelCancellationToken,
+    changed:Arc<tokio::sync::Notify>,
 ) -> Result<()> {
+    let launch_fence=path.with_extension("agy-launch.state");
     let owner = SecureStateStore::open(&path).map_err(|_| error("HOST_STATE_ALREADY_OWNED"))?;
     let mut subscriptions = Vec::new();
     let mut listeners = tokio::task::JoinSet::new();
     let mut maintenance=tokio::task::JoinSet::new();
-    let changed = Arc::new(tokio::sync::Notify::new());
     let result = run_owned(
         config,
         &owner,
@@ -275,6 +305,7 @@ async fn run(
         &mut listeners,
         &mut maintenance,
         changed,
+        launch_fence,
     )
     .await;
     // Stop claims on every exit, including partial setup or a ledger failure.
@@ -292,11 +323,12 @@ async fn run_owned(
     owner: &SecureStateStore,
     status: Arc<Mutex<Value>>,
     cancel: KernelCancellationToken,
-    sources: &[(ParticipantClient, WatchOptions)],
+    sources: &Arc<Mutex<Vec<(ParticipantClient, WatchOptions)>>>,
     watches: &mut Vec<(ParticipantClient, WatchOptions)>,
     listeners: &mut tokio::task::JoinSet<()>,
     maintenance:&mut tokio::task::JoinSet<Result<()>>,
     changed: Arc<tokio::sync::Notify>,
+    launch_fence:PathBuf,
 ) -> Result<()> {
     let handle = tokio::runtime::Handle::current();
     // The adapter owns only an executor Handle, not a nested runtime. Blocking
@@ -306,14 +338,17 @@ async fn run_owned(
     let mut next_health=std::time::Instant::now();
     let mut next_retire=std::time::Instant::now();
     let mut retirement_scope=0usize;
+    let mut watch_tasks:BTreeMap<String,tokio::task::AbortHandle>=BTreeMap::new();
     while !cancel.is_cancelled() {
+        while listeners.try_join_next().is_some(){}
         if adapter.is_none() {
-            let options = config.adapter.clone();
+            let mut options = config.adapter.clone();
+            if options["kind"]=="agy-stdio"{options["launch_fence"]=json!(launch_fence);}
             let executor = handle.clone();
             let opened = tokio::task::spawn_blocking(move || Host::open(options, executor))
                 .await
                 .map_err(|_| error("HOST_TASK_FAILED"))?;
-            let mut host = match opened {
+            let host = match opened {
                 Ok(host) => host,
                 Err(code) => {
                     set(
@@ -338,35 +373,6 @@ async fn run_owned(
                     .write_exact(&pin)
                     .map_err(|_| error("HOST_STATE_FAILED"))?,
             }
-            if watches.is_empty() {
-                for (client, configured) in sources {
-                    if configured
-                        .host_destination
-                        .as_ref()
-                        .is_some_and(|v| v != &binding.digest)
-                    {
-                        return Err(error("HOST_BINDING_MISMATCH"));
-                    }
-                    let mut options = configured.clone();
-                    options.host_destination = Some(binding.digest.clone());
-                    let mut watch = client.watch(options.clone()).await?;
-                    watches.push((client.clone(), options.clone()));
-                    client
-                        .host_operation(&options, HostOperation::Attach(binding.clone()))
-                        .await?;
-                    if config.adapter["kind"]=="bridge"{
-                        let access=match client.host_operation(&options,HostOperation::AccessScope).await?{HostReply::AccessScope(value)=>value,_=>return Err(error("HOST_STATE_INVALID"))};
-                        let (returned,checked)=tokio::task::spawn_blocking(move||{let value=host.health(&access);(host,value)}).await.map_err(|_|error("HOST_TASK_FAILED"))?;
-                        host=returned;checked.map_err(error)?;
-                    }
-                    let signal = changed.clone();
-                    let stop = cancel.clone();
-                    listeners.spawn(async move {loop{tokio::select!{
-                        _=stop.cancelled()=>break,
-                        result=watch.changed()=>{if result.is_err(){break;}signal.notify_one();}
-                    }}});
-                }
-            }
             adapter = Some(Arc::new(Mutex::new(host)));
             next_health=std::time::Instant::now();
             set(
@@ -374,6 +380,52 @@ async fn run_owned(
                 json!({"state":"HOST_ATTACHED","destination":binding.destination,"subscriptions":watches.len(),"receiver_link":"SEPARATELY_VERIFIED","model_response":"NOT_ATTESTED"}),
             );
         }
+        let selected_sources=sources.lock().map_err(|_|error("HOST_STATE_INVALID"))?.clone();
+        let mut index=0;
+        while index<watches.len(){
+            let keep=selected_sources.iter().any(|(client,options)|client.same_client(&watches[index].0)
+                &&options.workspace_id==watches[index].1.workspace_id&&options.mailbox_id==watches[index].1.mailbox_id
+                &&options.membership_id==watches[index].1.membership_id&&options.consumer_id==watches[index].1.consumer_id);
+            if keep{index+=1;}else{
+                let (client,options)=watches.remove(index);
+                if let Some(task)=watch_tasks.remove(&options.key()){task.abort();}
+                let _=client.unwatch(&options).await;
+            }
+        }
+        let mut scope_errors=Vec::new();
+        for (client,configured) in selected_sources{
+            if watches.iter().any(|(c,o)|c.same_client(&client)&&o.key()==configured.key()){continue;}
+            let selected=adapter.as_ref().unwrap().clone();
+            let binding=HostBinding::new(selected.lock().map_err(|_|error("HOST_NOT_READY"))?.destination.clone())?;
+            if configured.host_destination.as_ref().is_some_and(|v|v!=&binding.digest){
+                scope_errors.push(json!({"workspace_id":configured.workspace_id,"mailbox_id":configured.mailbox_id,"code":"HOST_BINDING_MISMATCH"}));continue;
+            }
+            let mut options=configured.clone();options.host_destination=Some(binding.digest.clone());
+            let mut acquired=false;
+            let opened=async{
+                let watch=client.watch(options.clone()).await?;acquired=true;
+                client.host_operation(&options,HostOperation::Attach(binding.clone())).await?;
+                if config.adapter["kind"]=="bridge"{
+                    let access=match client.host_operation(&options,HostOperation::AccessScope).await?{HostReply::AccessScope(v)=>v,_=>return Err(error("HOST_STATE_INVALID"))};
+                    tokio::task::spawn_blocking(move||selected.lock().map_err(|_|"HOST_NOT_READY")?.health(&access)).await.map_err(|_|error("HOST_TASK_FAILED"))?.map_err(error)?;
+                }
+                Ok(watch)
+            }.await;
+            match opened{
+                Ok(mut watch)=>{
+                    let signal=changed.clone();let stop=cancel.clone();
+                    let task=listeners.spawn(async move{loop{tokio::select!{
+                        _=stop.cancelled()=>break,result=watch.changed()=>{if result.is_err(){break;}signal.notify_one();}
+                    }}});
+                    watch_tasks.insert(options.key(),task);watches.push((client,options));next_health=std::time::Instant::now();
+                }
+                Err(e)=>{
+                    if acquired{let _=client.unwatch(&options).await;}
+                    scope_errors.push(json!({"workspace_id":options.workspace_id,"mailbox_id":options.mailbox_id,"code":e.code}));
+                }
+            }
+        }
+        if let Ok(mut current)=status.lock(){current["subscriptions"]=json!(watches.len());current["scope_errors"]=json!(scope_errors);}
         if std::time::Instant::now()>=next_health {
             let observed_at=std::time::Instant::now();
             let selected=adapter.as_ref().unwrap().clone();
@@ -441,9 +493,10 @@ async fn run_owned(
             }
             let due = match client
                 .host_operation(options, HostOperation::Due { limit: 1 })
-                .await?
+                .await
             {
-                HostReply::Due(due) => due,
+                Ok(HostReply::Due(due)) => due,
+                Err(e)=>{if let Ok(mut current)=status.lock(){current["last_scope_error"]=json!({"workspace_id":options.workspace_id,"mailbox_id":options.mailbox_id,"code":e.code});}continue;},
                 _ => return Err(error("HOST_STATE_INVALID")),
             };
             let Some(item) = due.into_iter().next() else {

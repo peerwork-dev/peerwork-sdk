@@ -112,6 +112,9 @@ impl KernelClient {
         }
         drop(keys);
         let path=self.access_recipient_path.clone().ok_or(ContentKeyError::Missing)?;
+        // No recipient has yet been provisioned. Distinguish missing access
+        // from a corrupt protected recipient binding, which must fail closed.
+        if std::fs::symlink_metadata(&path).is_err_and(|e|e.kind()==std::io::ErrorKind::NotFound){return Err(ContentKeyError::Missing.into());}
         let selection=StructureKeyAcceptance{workspace_id:workspace.into(),owner_id:metadata["owner_id"].as_str().ok_or(KernelClientError::InvalidResult)?.into(),key_ids:vec![id.clone()],current_key_id:Some(id),expected_current_key_id:prior};
         Box::pin(self.accept_structure_keys(identity,authority,&path,selection,cancel)).await?;
         Ok(metadata)

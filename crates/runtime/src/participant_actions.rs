@@ -19,6 +19,9 @@ pub(crate) const HELPERS: &[&str] = &[
     "participant.keys.coordinate",
     "participant.keys.initialize",
     "participant.keys.rotate",
+    "participant.keys.status",
+    "participant.keys.prepare",
+    "participant.time.read",
     "participant.publication.publish",
     "participant.protocol.offline",
 ];
@@ -30,6 +33,7 @@ pub(crate) fn maintenance(action: &str) -> bool {
 }
 pub(crate) fn kind(action: &str) -> Option<StructureOperationKind> {
     match action {
+        "participant.keys.status"|"participant.time.read"=>Some(StructureOperationKind::Read),
         "participant.access.approve"
         | "participant.archive.migrate"
         | "participant.keys.coordinate"
@@ -39,6 +43,7 @@ pub(crate) fn kind(action: &str) -> Option<StructureOperationKind> {
         | "participant.archive.sources"
         | "participant.protocol.offline"
         | "participant.keys.accept"
+        | "participant.keys.prepare"
         | "participant.keys.initialize" => Some(StructureOperationKind::Control),
         _ => native::operation_kind(action),
     }
@@ -53,6 +58,9 @@ pub(crate) enum Selection {
     Rotate(StructureContentKeyRotation),
     Coordinate(String),
     Initialize(String),
+    KeyStatus{workspace:String,key_ids:Vec<String>},
+    Time,
+    Prepare(String),
     Publish(PublicationSnapshotSelection),
     Migrate {
         workspace: String,
@@ -131,6 +139,15 @@ pub(crate) fn selection(r: &Invoke, idempotency_key: &str) -> Result<Selection> 
         serde_json::from_value(v).map_err(|_| invalid())
     }
     Ok(match r.action.as_str() {
+        "participant.keys.prepare"=>{if r.body.as_object().is_none_or(|o|!o.is_empty()){return Err(invalid());}Selection::Prepare(ws.into())},
+        "participant.time.read"=>{if r.body.as_object().is_none_or(|o|!o.is_empty()){return Err(invalid());}Selection::Time},
+        "participant.keys.status"=>{
+            #[derive(serde::Deserialize)]#[serde(deny_unknown_fields)]
+            struct Keys{key_ids:Vec<String>}
+            let s:Keys=serde_json::from_value(r.body.clone()).map_err(|_|invalid())?;
+            if s.key_ids.is_empty()||s.key_ids.len()>32||s.key_ids.iter().any(|id|!crate::workspace_urls::token(id)){return Err(invalid());}
+            Selection::KeyStatus{workspace:ws.into(),key_ids:s.key_ids}
+        },
         "participant.archive.migrate" => {
             #[derive(serde::Deserialize)]
             #[serde(deny_unknown_fields)]
