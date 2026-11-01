@@ -1016,15 +1016,21 @@ mod tests {
             std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
                 .unwrap();
         }
+        // A Windows TempDir inherits its parent's ACL; merely changing its
+        // owner cannot make that public directory protected. Provision an
+        // explicitly private child, as an actual local operator must do.
+        let state = directory.path().join("state");
         #[cfg(windows)]
-        crate::windows_fs::set_current_user_owner_for_new_directory(directory.path()).unwrap();
-        let file = directory.path().join("agent.json");
+        crate::windows_fs::create_private_directory(&state).unwrap();
+        #[cfg(not(windows))]
+        crate::secure_state::create_private_state_directory(&state).unwrap();
+        let file = state.join("agent.json");
         let profile = AgentProfile {
             protocol_endpoints: Default::default(),
             send_scopes: Default::default(),
             receive_endpoint_path: None,
             format: "peerwork.agent-profile.v1".into(),
-            endpoint_path: directory.path().join("endpoint.json"),
+            endpoint_path: state.join("endpoint.json"),
             expected_origin: "https://example.invalid/".into(),
             expected_actor: "A".repeat(43),
             scopes: BTreeMap::new(),
@@ -1045,7 +1051,7 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let link = directory.path().join("link.json");
+            let link = state.join("link.json");
             std::os::unix::fs::symlink(&file, &link).unwrap();
             assert_eq!(
                 AgentProfile::load(link.strip_prefix(&cwd).unwrap())
