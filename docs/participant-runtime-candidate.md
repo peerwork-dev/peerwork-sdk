@@ -150,7 +150,7 @@ packaging qualification is separate from real-host readiness and performance.
 | `restrict(name, capability)` | Derive an isolated operation namespace with a subset of local authority. Backend authorization still applies. |
 | `invoke(request, wait_budget)` | Authorize and durably admit a supported structure mutation, then optionally observe its result. |
 | `request(request)` | Perform an authorized selected read or ephemeral control operation. |
-| `operation(id)` / `operations(after, limit)` | Observe local durable operations in this client namespace; keyset pages contain at most 32 items. |
+| `operation(id)` / `operations(after, limit)` | Observe operations and current owner activity in this client namespace; keyset pages contain at most32 items. |
 | `operation_result(id, selection)` | Read a bounded chunk from one authorized operation outcome; re-verify the original native response when the index contains only a summary. No remote submission or history read. |
 | `recover(id)` | Schedule recovery of that original operation without replacing its immutable input. |
 | `watch(options)` | Durably configure an exact mailbox/generation and stable consumer; share the engine-owned SSE/lease/ACK driver. |
@@ -172,10 +172,37 @@ offline fixture/plan/simulation runs locally without an online apply path.
 Native mail construction and selected reads are implemented in
 source, together with automatic durable program `watch` and local notification
 waiting. Native Agent CLI/MCP tools provide bounded local inbox waiting and
-share this engine. Existing-session host adapters remain candidate code;
-actual-host, first-use and cross-platform release qualification are pending.
-General business-predicate waits are not implemented. Do not build production
-automation against this candidate.
+share this engine. Existing-session Codex and AGY CLI adapters are available in the native0.3
+experimental line. Real-host checks cover the documented Linux setup; the
+three-platform reports establish their own OS/process scope. Availability comes
+from the actual public release and its matching assets, not this source page.
+General business-predicate waits and an arbitrary model-response SLA are not
+implemented.
+
+### Operation observations in the0.3.1 followup
+
+This source followup is available only when its matching release is published.
+The runtime persists the original request before scheduling it and the final
+verified result before returning a durable terminal outcome. Scheduling no longer
+requires a separate durable transition just to record that execution started.
+
+- An initial `ADMITTED` reply is the pre-dispatch admission fact. It does not
+  prove that submission still has not happened by the time the caller reads it.
+- `RUNNING` with `observation: LOCAL_RUNTIME` is the current owner's activity.
+  It does not establish a remote effect or that an Agent started business work.
+  A previously established `COMMITTED` fact is retained; otherwise the current
+  remote effect is conservatively `UNKNOWN`.
+- A pending operation after restart can have an unknown remote result. Recover
+  its original operation ID; the native journal owns the exact signed packet.
+  Do not send another operation just because the running observation disappeared.
+- Terminal results retain `LOCAL_DURABLE`. Existing identities, keys, ciphertext
+  bindings and original operation IDs are preserved; no workspace or identity
+  migration is required for this change.
+
+The bounded local `operation`/`operations` views combine durable operation facts
+with live owner activity. A stopped runtime has no current running observation;
+that is not proof that a remote command was never submitted. FULL commit
+durability remains enabled for durable requests and outcomes.
 
 The source example `crates/runtime/examples/participant_program.rs` loads one
 protected `communication_runtime::EngineConfig`, creates a PRIVATE workspace

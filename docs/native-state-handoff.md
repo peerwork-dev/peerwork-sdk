@@ -1,6 +1,6 @@
 # Native state, identity and session transitions
 
-Use the native0.3.0 experimental interface and the matching public release.
+Use the native0.3 experimental interface and the matching public release.
 The service must advertise `native-mailbox-v1`; a physical session change also
 requires `native-mailbox-rebind-v1`. These operations use the original selected
 identity, encryption material and durable operation IDs. They are operator
