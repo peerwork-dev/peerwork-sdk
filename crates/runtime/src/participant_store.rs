@@ -74,7 +74,9 @@ impl Store {
         json!({"format":"peerwork.participant-local.v1","binding":self.binding,"session":session,"operation_id":id,"input_hash":hash,"kind":kind}).to_string()
     }
     pub fn reset_running(&self) -> Result<()> {
-        self.db.execute("UPDATE participant_operations SET status='PENDING',next_retry=0 WHERE status='RUNNING'",[]).map_err(|_|storage())?;
+        // Canonicalize older ADMITTED rows before dispatch too. A later
+        // downgrade must not observe NOT_SUBMITTED for an operation we ran.
+        self.db.execute("UPDATE participant_operations SET status='PENDING',next_retry=0 WHERE status IN ('RUNNING','ADMITTED')",[]).map_err(|_|storage())?;
         Ok(())
     }
     pub fn reserve(
@@ -126,7 +128,11 @@ impl Store {
         } else {
             0
         };
-        tx.execute("INSERT INTO participant_operations(session,id,input_hash,action,workspace,instance,protocol,status,input,allocation,lane) VALUES(?1,?2,?3,?4,?5,?6,?7,'ADMITTED',?8,?9,?10)",
+        // A durable PENDING row is conservative after any crash, including
+        // for earlier clients: it never claims NOT_SUBMITTED after execution
+        // may have begun. The returned admission fact below is known before
+        // scheduling; current RUNNING is an owner-memory observation only.
+        tx.execute("INSERT INTO participant_operations(session,id,input_hash,action,workspace,instance,protocol,status,input,allocation,lane) VALUES(?1,?2,?3,?4,?5,?6,?7,'PENDING',?8,?9,?10)",
             params![session,request.operation_id,hash,request.action,s.workspace_id,s.instance_id,s.protocol_digest,sealed,allocated,lane]).map_err(|_|storage())?;
         tx.execute("UPDATE participant_meta SET pending=pending+1,allocated=allocated+?1,rows=rows+1 WHERE id=1",[allocated]).map_err(|_|storage())?;
         tx.commit().map_err(|_| storage())?;
@@ -247,6 +253,9 @@ impl Store {
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|_| storage())
     }
+    // Older native indexes may contain this state; fixtures retain coverage
+    // of their recovery without adding this write to the current hot path.
+    #[cfg(test)]
     pub fn running(&self, session: &str, id: &str) -> Result<()> {
         self.db.execute("UPDATE participant_operations SET status='RUNNING' WHERE session=?1 AND id=?2 AND status IN ('ADMITTED','PENDING')",params![session,id]).map_err(|_|storage())?;
         Ok(())
@@ -336,6 +345,7 @@ impl Store {
         identity: &KernelIdentity,
         after: &str,
         limit: usize,
+        active: &std::collections::BTreeSet<(String, String)>,
     ) -> Result<Value> {
         if limit == 0 || limit > 32 {
             return Err(ParticipantError::local("PAGE_INVALID", "VALIDATION"));
@@ -356,7 +366,7 @@ impl Store {
                 .authorize(&self.request(session, id, identity)?)
                 .is_ok()
             {
-                items.push(self.get(session, id, identity)?);
+                items.push(self.get(session, id, identity)?.observed_running(active.contains(&(session.to_owned(),id.to_owned()))));
             }
         }
         Ok(json!({"items":items,"next_after":if more{selected.last()}else{None}}))
@@ -367,6 +377,56 @@ impl Store {
 mod tests {
     use super::*;
     use crate::participant::Scope;
+    #[test]
+    fn admission_is_recoverable_without_a_durable_running_transition() {
+        let t = crate::test_support::protected_test_dir();
+        let identity = KernelIdentity::create(&t.path().join("identity")).unwrap();
+        let directory = t.path().join("state");
+        let origin = "https://service.invalid/";
+        let mut store = Store::open(&directory, &identity, origin).unwrap();
+        let request = Invoke::new("one", "structure.workspace.create", Scope::default(), json!({"name":"one"}));
+        let admitted = store.reserve("program", &request, &identity, 1, 1024 * 1024).unwrap();
+        assert_eq!((admitted.state.as_str(),admitted.effect_certainty.as_str()),("ADMITTED","NOT_SUBMITTED"));
+        let durable = store.get("program","one",&identity).unwrap();
+        assert_eq!((durable.state.as_str(),durable.effect_certainty.as_str()),("PENDING","UNKNOWN"));
+        let active = [("program".into(),"one".into())].into();
+        let page = store.list("program",&Capability::owner(),&identity,"",32,&active).unwrap();
+        assert_eq!(page["items"][0]["state"],"RUNNING");
+        assert_eq!(page["items"][0]["observation"],"LOCAL_RUNTIME");
+        assert_eq!(store.get("program","one",&identity).unwrap().state,"PENDING");
+        drop(store);
+        let mut store = Store::open(&directory,&identity,origin).unwrap();
+        store.reset_running().unwrap();
+        assert_eq!(store.get("program","one",&identity).unwrap().effect_certainty,"UNKNOWN");
+        assert_eq!(serde_json::to_value(store.request("program","one",&identity).unwrap()).unwrap(),serde_json::to_value(&request).unwrap());
+        let completed = store.finish("program","one",&identity,&json!({"state":"ACCEPTED","result":{"command_id":"original"}})).unwrap();
+        drop(store);
+        let mut store = Store::open(&directory,&identity,origin).unwrap();
+        assert_eq!(serde_json::to_value(store.reserve("program",&request,&identity,1,1024*1024).unwrap()).unwrap(),serde_json::to_value(completed).unwrap());
+        assert_eq!(store.db.pragma_query_value(None,"synchronous",|r|r.get::<_,i64>(0)).unwrap(),2);
+    }
+    #[test]
+    fn older_admitted_and_running_rows_are_conservative_before_any_dispatch() {
+        let t = crate::test_support::protected_test_dir();
+        let identity = KernelIdentity::create(&t.path().join("identity")).unwrap();
+        let directory = t.path().join("state");
+        let mut store = Store::open(&directory,&identity,"https://service.invalid/").unwrap();
+        for id in ["queued","started"] {
+            store.reserve("program",&Invoke::new(id,"structure.workspace.create",Scope::default(),json!({"name":id})),&identity,2,1024*1024).unwrap();
+        }
+        store.db.execute("UPDATE participant_operations SET status='ADMITTED' WHERE id='queued'",[]).unwrap();
+        store.running("program","started").unwrap();
+        drop(store);
+        let store = Store::open(&directory,&identity,"https://service.invalid/").unwrap();
+        store.reset_running().unwrap();
+        for id in ["queued","started"] {
+            let op = store.get("program",id,&identity).unwrap();
+            assert_eq!((op.state.as_str(),op.effect_certainty.as_str()),("PENDING","UNKNOWN"));
+            assert_eq!(store.request("program",id,&identity).unwrap().operation_id,id);
+        }
+        assert_eq!(store.due(2).unwrap().len(),2);
+        assert_eq!(store.db.query_row("SELECT pending FROM participant_meta",[],|r|r.get::<_,i64>(0)).unwrap(),2);
+    }
     #[test]
     fn completed_return_matches_authenticated_reopen_and_corruption_is_still_rejected() {
         let t=crate::test_support::protected_test_dir();

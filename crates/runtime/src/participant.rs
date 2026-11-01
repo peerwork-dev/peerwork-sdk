@@ -516,6 +516,18 @@ impl Operation {
     pub fn is_terminal(&self) -> bool {
         matches!(self.state.as_str(), "ACCEPTED" | "REJECTED_NO_EFFECT")
     }
+    pub(crate) fn observed_running(mut self, active: bool) -> Self {
+        if active && !self.is_terminal() {
+            self.state = "RUNNING".into();
+            // A prior preparation failure cannot prove that the current
+            // attempt has not submitted. Retain already-committed facts.
+            if self.effect_certainty != "COMMITTED" {
+                self.effect_certainty = "UNKNOWN".into();
+            }
+            self.observation = "LOCAL_RUNTIME".into();
+        }
+        self
+    }
 }
 struct Admission {
     operation: Operation,
@@ -1164,7 +1176,8 @@ async fn engine_loop(
                             }
                         }
                         let reserving=access.phase(crate::transport::ClientPhase::AdmissionReserve);
-                        let op=match existing{Some(op)=>op,None=>store.reserve(&context.namespace,&request,&identity,config.max_pending,config.max_stored_bytes)?};
+                        let op=match existing{Some(op)=>op,None=>store.reserve(&context.namespace,&request,&identity,config.max_pending,config.max_stored_bytes)?}
+                            .observed_running(active.contains(&(context.namespace.clone(),request.operation_id.clone())));
                         drop(reserving);
                         let (done_tx,done_rx)=oneshot::channel();
                         if op.is_terminal(){let _=done_tx.send(op.clone());}
@@ -1173,9 +1186,9 @@ async fn engine_loop(
                     })();let _=reply.send(result);
                 },
                 Some(Command::Get{context,id,recover,reply})=>{
-                    let result=(||{let r=store.request(&context.namespace,&id,&identity)?;context.capability.authorize(&r)?;if recover&&!active.contains(&(context.namespace.clone(),id.clone())){store.recover(&context.namespace,&id)?;}store.get(&context.namespace,&id,&identity)})();let _=reply.send(result);
+                    let result=(||{let r=store.request(&context.namespace,&id,&identity)?;context.capability.authorize(&r)?;if recover&&!active.contains(&(context.namespace.clone(),id.clone())){store.recover(&context.namespace,&id)?;}store.get(&context.namespace,&id,&identity).map(|op|op.observed_running(active.contains(&(context.namespace.clone(),id.clone()))))})();let _=reply.send(result);
                 },
-                Some(Command::List{context,after,limit,reply})=>{let _=reply.send(store.list(&context.namespace,&context.capability,&identity,&after,limit));},
+                Some(Command::List{context,after,limit,reply})=>{let _=reply.send(store.list(&context.namespace,&context.capability,&identity,&after,limit,&active));},
                 Some(Command::Result{context,id,selection,reply})=>{
                     let selected=(||{selection.validate()?;let request=store.request(&context.namespace,&id,&identity)?;context.capability.authorize(&request)?;let op=store.get(&context.namespace,&id,&identity)?;Ok((request,op))})();
                     let (request,op)=match selected{Ok(v)=>v,Err(e)=>{let _=reply.send(Err(e));continue;}};
@@ -1257,11 +1270,9 @@ async fn engine_loop(
             }) else {
                 break;
             };
-            let running = access.phase(crate::transport::ClientPhase::RunningStore);
-            if store.running(&key.0, &key.1).is_err() {
-                break;
-            }
-            drop(running);
+            // Admission already persisted the recoverable request as PENDING.
+            // Scheduling is owned by this single loop, not another durable
+            // fact: no extra FULL commit before starting the exact operation.
             active.insert(key.clone());
             if crate::participant_actions::maintenance(&request.action) {
                 maintenance.insert(key.clone());
@@ -1343,6 +1354,30 @@ async fn engine_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn live_running_observation_does_not_invent_or_downgrade_remote_certainty() {
+        for (state,certainty,expected) in [
+            ("PENDING","UNKNOWN","UNKNOWN"),
+            ("PENDING","NOT_SUBMITTED","UNKNOWN"),
+            ("PENDING","COMMITTED","COMMITTED"),
+            ("ADMITTED","NOT_SUBMITTED","UNKNOWN"),
+        ] {
+            let op=Operation{operation_id:"one".into(),state:state.into(),command_id:None,effect_certainty:certainty.into(),outcome:None,observation:"LOCAL_DURABLE".into()};
+            let unchanged=op.clone().observed_running(false);
+            assert_eq!(unchanged.state,state);
+            assert_eq!(unchanged.effect_certainty,certainty);
+            let running=op.observed_running(true);
+            assert_eq!(running.state,"RUNNING");
+            assert_eq!(running.effect_certainty,expected);
+            assert_eq!(running.observation,"LOCAL_RUNTIME");
+        }
+        for (state,certainty) in [("ACCEPTED","COMMITTED"),("REJECTED_NO_EFFECT","NO_EFFECT")] {
+            let op=Operation{operation_id:"one".into(),state:state.into(),command_id:None,effect_certainty:certainty.into(),outcome:None,observation:"LOCAL_DURABLE".into()}.observed_running(true);
+            assert_eq!(op.state,state);
+            assert_eq!(op.effect_certainty,certainty);
+            assert_eq!(op.observation,"LOCAL_DURABLE");
+        }
+    }
     #[tokio::test]
     async fn offline_protocol_tools_simulate_without_network_or_legacy_apply() {
         let dir = crate::test_support::protected_test_dir();

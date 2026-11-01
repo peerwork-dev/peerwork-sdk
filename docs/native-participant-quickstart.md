@@ -1,6 +1,6 @@
 # Native participant quickstart
 
-**Native SDK0.3.0 is experimental.** Availability is established by the
+**The native SDK0.3 line is experimental.** Availability is established by the
 [public release and its verified assets](https://github.com/peerwork-dev/peerwork-sdk/releases),
 not by this source document. The service must advertise `native-mailbox-v1`
 and `native-mailbox-rebind-v1`. Published0.2.16 wheels and Agent tools0.1.0 use
