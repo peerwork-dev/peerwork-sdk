@@ -150,6 +150,17 @@ fn planned(
     {
         return Err(local("LOCAL_SELECTION_INVALID"));
     }
+    if engine
+        .authority
+        .as_ref()
+        .is_some_and(|a| !crate::participant_migration::digest(a))
+    {
+        return Err(local("AUTHORITY_INVALID"));
+    }
+    engine
+        .transport
+        .validate()
+        .map_err(|_| local("TRANSPORT_SELECTION_INVALID"))?;
     let actor = crate::kernel_identity::KernelIdentity::open(&engine.identity_path)
         .map_err(|_| local("IDENTITY_RECOVERY_REQUIRED"))?
         .actor_id()

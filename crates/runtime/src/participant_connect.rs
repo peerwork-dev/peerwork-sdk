@@ -1471,7 +1471,8 @@ pub fn cli(args: &[String]) -> Value {
     };
     result().unwrap_or_else(|error| {
         if matches!(error.code.as_str(),"RUNTIME_STARTING_REOBSERVE_SAME_BINDING"|"PROCESS_IDENTITY_UNCONFIRMED"|"RUNTIME_LAUNCH_RECOVERY_REQUIRED"){
-            json!({"state":"PENDING","phase":"LOCAL_RUNTIME_STARTUP","error":error,"next_action":if error.code=="RUNTIME_STARTING_REOBSERVE_SAME_BINDING"{"REOBSERVE_SAME_BINDING"}else{"VERIFY_ORIGINAL_LAUNCH_EVIDENCE"}})
+            let selection=parse(args).unwrap_or_default();
+            json!({"state":"PENDING","phase":"LOCAL_RUNTIME_STARTUP","setup_id":selection.get("--id"),"participant":selection.get("--participant"),"workspace_id":selection.get("--workspace"),"error":error,"next_action":if error.code=="RUNTIME_STARTING_REOBSERVE_SAME_BINDING"{"REOBSERVE_SAME_BINDING"}else{"VERIFY_ORIGINAL_LAUNCH_EVIDENCE"}})
         } else {json!({"state":"FAILED","error":error})}
     })
 }

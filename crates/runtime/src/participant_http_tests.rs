@@ -4364,7 +4364,7 @@ async fn native_connect_cli_preserves_original_engine_and_attaches_selected_host
     use crate::{communication_host::tests::CodexFixture,communication_runtime as ipc,participant_connect::Connect,agent_tools::{AgentTools,AgentRequest}};
     let service=Service::start();let host=CodexFixture::start();let root=crate::test_support::protected_test_dir();
     let owner_dir=root.path().join("owner");crate::secure_state::create_private_state_directory(&owner_dir).unwrap();
-    let mut original=configuration(&owner_dir,&service.origin);original.journal_path=owner_dir.join("existing-nondefault-journal.sqlite");original.authority=Some("a".repeat(64));original.transport.request_timeout_ms=17432;
+    let mut original=configuration(&owner_dir,&service.origin);original.journal_path=owner_dir.join("existing-nondefault-journal.sqlite");original.authority=Some(peerwork_core::crypto::sha256_hex(original.expected_actor.as_bytes()));original.transport.request_timeout_ms=17432;
     let owner=ParticipantClient::open(original.clone()).await.unwrap();
     let created=mutate(&owner,"cli-connect-space","structure.workspace.create",&Scope::default(),json!({"name":"Synthetic native bootstrap qualification"})).await;
     let ws=created["workspace_id"].as_str().unwrap().to_owned();let scope=Scope{workspace_id:Some(ws.clone()),..Default::default()};
