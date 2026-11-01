@@ -1471,7 +1471,17 @@ pub fn cli(args: &[String]) -> Value {
                     )
                     .await?;
             }
-            if let Some(adapter) = selected_adapter {
+            if let Some(mut adapter) = selected_adapter {
+                if adapter["kind"] == "agy-stdio" {
+                    if let Some(spec) = installation.as_ref().filter(|spec| spec.host == "agy") {
+                        adapter["mcp_server"] = json!(install::server_name(
+                            &connect.directory,
+                            &handle,
+                            &request.workspace_id,
+                            spec
+                        ));
+                    }
+                }
                 let name = request.host.clone().unwrap_or_else(|| {
                     format!("host-{}", &sha256_hex(adapter.to_string().as_bytes())[..16])
                 });

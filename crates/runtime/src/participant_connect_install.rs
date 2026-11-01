@@ -313,6 +313,17 @@ fn id(participant: &str, workspace: &str, spec: &Installation) -> String {
             .as_bytes(),
     )
 }
+pub(super) fn server_name(
+    directory: &Path,
+    participant: &str,
+    workspace: &str,
+    spec: &Installation,
+) -> String {
+    format!(
+        "peerwork-{}",
+        &reference(directory, &id(participant, workspace, spec))[..16]
+    )
+}
 fn entry(directory: &Path, participant: &str, workspace: &str, spec: &Installation) -> Value {
     json!({"command":spec.executable,"args":["agent","--local",directory,"--participant",participant,"--workspace",workspace,"mcp"]})
 }
@@ -462,7 +473,7 @@ impl Connect {
         files::check_directory(&spec.project, false)?;
         let key = id(participant, workspace, &spec);
         let reference = reference(&self.directory, &key);
-        let name = format!("peerwork-{}", &reference[..16]);
+        let name = server_name(&self.directory, participant, workspace, &spec);
         let wanted = entry(&self.directory, participant, workspace, &spec);
         let prior = self.registry.installations.get(&key).cloned();
         if prior.is_none() && self.registry.installations.len() >= 32 {

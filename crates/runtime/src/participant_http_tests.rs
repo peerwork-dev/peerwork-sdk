@@ -1206,7 +1206,7 @@ pub(crate) fn install_synthetic_key(
         .unwrap();
     key
 }
-fn native_message(
+pub(crate) fn native_message(
     id: &str,
     scope: &Scope,
     recipient: &Value,

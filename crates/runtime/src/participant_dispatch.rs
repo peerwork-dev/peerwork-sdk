@@ -61,6 +61,7 @@ impl HostConfig {
                 "executable",
                 "conversation_id",
                 "working_directory",
+                "mcp_server",
             ],
             Some("bridge") => &["kind", "endpoint", "token_file", "destination"],
             _ => return Err(error("HOST_CONFIG_INVALID")),
