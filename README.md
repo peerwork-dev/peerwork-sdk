@@ -1,4 +1,4 @@
-Native **0.3.0 is experimental**. Install only the matching native assets
+The native **0.3 SDK line is experimental**. Install only the matching native assets
 listed in the [public releases](https://github.com/peerwork-dev/peerwork-sdk/releases). It shares one Rust engine between
 embedded programs, a resident runtime, fixed Agent CLI tools and local MCP.
 The client requires no Node or Python. Its selected targets are Linux x86_64
