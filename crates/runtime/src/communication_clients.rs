@@ -76,6 +76,15 @@ impl Runtime {
             .derived
             .lock()
             .map_err(|_| local("CLIENT_REGISTRY_UNAVAILABLE"))?;
+        if !self
+            .sessions
+            .read()
+            .map_err(|_| local("CLIENT_REGISTRY_UNAVAILABLE"))?
+            .iter()
+            .any(|s| s.name == parent.name && s.token == parent.token)
+        {
+            return Err(local("IPC_UNAUTHORIZED"));
+        }
         let mut names = std::collections::BTreeSet::from([target]);
         // Registry order is parent-before-child and bounded to32 entries.
         for entry in &registry.entries {
@@ -92,10 +101,6 @@ impl Runtime {
         if entries.len() == registry.entries.len() {
             return Ok(Vec::new());
         }
-        let mut sessions = self
-            .sessions
-            .write()
-            .map_err(|_| local("CLIENT_REGISTRY_UNAVAILABLE"))?;
         registry
             .store
             .write_exact(
@@ -104,6 +109,10 @@ impl Runtime {
             .map_err(|_| local("CLIENT_REGISTRY_WRITE_FAILED"))?;
         registry.entries = entries;
         let mut revoked = Vec::new();
+        let mut sessions = self
+            .sessions
+            .write()
+            .map_err(|_| local("CLIENT_REGISTRY_UNAVAILABLE"))?;
         sessions.retain(|s| {
             if names.contains(&s.name) {
                 revoked.push(s.clone());
@@ -112,6 +121,7 @@ impl Runtime {
                 true
             }
         });
+        drop(sessions);
         for session in &revoked {
             let path = self.directory.join(format!("client-{}.json", session.name));
             // Remove only this exact generated credential; a conflicting output
@@ -141,17 +151,26 @@ impl Runtime {
             .derived
             .lock()
             .map_err(|_| local("CLIENT_REGISTRY_UNAVAILABLE"))?;
-        let mut sessions = self
+        if !self
             .sessions
-            .write()
-            .map_err(|_| local("CLIENT_REGISTRY_UNAVAILABLE"))?;
+            .read()
+            .map_err(|_| local("CLIENT_REGISTRY_UNAVAILABLE"))?
+            .iter()
+            .any(|s| s.name == parent.name && s.token == parent.token)
+        {
+            return Err(local("IPC_UNAUTHORIZED"));
+        }
         if let Some(entry) = registry.entries.iter().find(|e| e.name == name) {
             if entry.capability != capability {
                 return Err(local("CLIENT_BINDING_CONFLICT"));
             }
-            let session = sessions
+            let session = self
+                .sessions
+                .read()
+                .map_err(|_| local("CLIENT_REGISTRY_UNAVAILABLE"))?
                 .iter()
                 .find(|s| s.name == name)
+                .cloned()
                 .ok_or_else(|| local("CLIENT_REGISTRY_RECOVERY_REQUIRED"))?;
             // Reconstruct missing derived output; never rotate a live credential.
             match std::fs::symlink_metadata(&path) {
@@ -200,7 +219,10 @@ impl Runtime {
             // Publish memory before endpoint output. A lost response or output
             // failure resumes the same namespace instead of another client.
             let token = session.token.clone();
-            sessions.push(session);
+            self.sessions
+                .write()
+                .map_err(|_| local("CLIENT_REGISTRY_UNAVAILABLE"))?
+                .push(session);
             endpoint(&path, self.address, &token, "CLIENT")?;
         }
         Ok(

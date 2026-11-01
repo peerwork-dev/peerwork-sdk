@@ -282,7 +282,7 @@ impl Runtime {
             .find(|key| equal(&channel::key_id(key), id))
             .map(str::to_owned)
     }
-    async fn request(&self, frame: Frame, credential: &str) -> Value {
+    async fn request(self:&Arc<Self>, frame: Frame, credential: &str) -> Value {
         let id = &frame.request_id;
         if frame.format != REQUEST_FORMAT || !identifier(id) {
             return response(id, Err(local("IPC_FRAME_INVALID")));
@@ -313,9 +313,13 @@ impl Runtime {
             let request=ClientRequest::parse(frame.request)?;
             let client=&session.client;
             match request{
-                ClientRequest::Derive{name,capability}=>self.derive_client(&session,&name,capability),
+                ClientRequest::Derive{name,capability}=>{
+                    let runtime=self.clone();let parent=session.clone();
+                    tokio::task::spawn_blocking(move||runtime.derive_client(&parent,&name,capability)).await.map_err(|_|local("CLIENT_DERIVATION_TASK_FAILED"))?
+                },
                 ClientRequest::RevokeDerived{name}=>{
-                    let revoked=self.revoke_derived(&session,&name)?;
+                    let runtime=self.clone();let parent=session.clone();
+                    let revoked=tokio::task::spawn_blocking(move||runtime.revoke_derived(&parent,&name)).await.map_err(|_|local("CLIENT_REVOCATION_TASK_FAILED"))??;
                     let count=revoked.len();let mut cleanup_pending=false;
                     for revoked in revoked {
                         match revoked.client.watch_bindings().await {

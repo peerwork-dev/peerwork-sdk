@@ -139,6 +139,9 @@ pub struct Connect {
     registry: Registry,
 }
 impl Connect {
+    pub fn selection_required(setup_id: &str) -> Value {
+        json!({"state":"PENDING","setup_id":setup_id,"blocker":{"stage":"LOCAL_SELECTION","code":"LOCAL_SELECTION_REQUIRED","next_actor":"LOCAL_RUNTIME_OWNER","next_action":"REGISTER_EXISTING_PARTICIPANT"}})
+    }
     pub fn open(directory: &Path) -> Result<Self> {
         create_private_state_directory(directory)
             .map_err(|_| local("CONNECT_DIRECTORY_NOT_PRIVATE"))?;
@@ -407,11 +410,7 @@ impl Connect {
         request.validate()?;
         let selected = match self.registry.participants.get(&request.participant) {
             Some(v) => v.clone(),
-            None => {
-                return Ok(
-                    json!({"state":"PENDING","setup_id":request.setup_id,"blocker":{"stage":"LOCAL_SELECTION","code":"LOCAL_SELECTION_REQUIRED","next_actor":"LOCAL_RUNTIME_OWNER","next_action":"REGISTER_EXISTING_PARTICIPANT"}}),
-                )
-            }
+            None => return Ok(Self::selection_required(&request.setup_id)),
         };
         let digest = sha256_hex(
             serde_json::to_vec(&request)
@@ -639,7 +638,7 @@ impl Connect {
         let caps = client.call(json!({"method":"capabilities"})).await?;
         let parent: Capability = serde_json::from_value(caps["capability"].clone())
             .map_err(|_| local("LOCAL_CEILING_INVALID"))?;
-        let previous = self
+        let previous_binding = self
             .registry
             .setups
             .values()
@@ -651,7 +650,22 @@ impl Connect {
                     && (!request.receive || s.desired.receive)
                     && s.profile.is_some()
             })
-            .and_then(|s| s.profile.clone());
+            .map(|s| {
+                (
+                    s.profile.clone().unwrap(),
+                    s.desired.send,
+                    s.desired.receive,
+                )
+            });
+        let previous = previous_binding.as_ref().map(|(p, _, _)| p.clone());
+        let channel_send = previous_binding
+            .as_ref()
+            .map(|(_, send, _)| *send)
+            .unwrap_or(request.send);
+        let channel_receive = previous_binding
+            .as_ref()
+            .map(|(_, _, receive)| *receive)
+            .unwrap_or(request.receive);
         if let Some(old) = &previous {
             for (name, s) in &old.protocols {
                 if protocols.get(name).is_some_and(|wanted| wanted != s) {
@@ -741,7 +755,7 @@ impl Connect {
         capability
             .operations
             .retain(|s| allowed.contains(&s.as_str()));
-        if !request.send {
+        if !channel_send {
             capability.operations.remove("structure.message.send");
         }
         capability.validate()?;
@@ -751,20 +765,16 @@ impl Connect {
                 json!([
                     request.participant,
                     request.workspace_id,
-                    request.send,
-                    request.receive
+                    channel_send,
+                    channel_receive
                 ])
                 .to_string()
                 .as_bytes()
             )[..40]
         );
-        let child = if let Some(old) = &previous {
-            json!({"endpoint_path":old.endpoint_path})
-        } else {
-            client
-                .call(json!({"method":"derive","name":alias,"capability":capability}))
-                .await?
-        };
+        let child = client
+            .call(json!({"method":"derive","name":alias,"capability":capability}))
+            .await?;
         let endpoint = child["endpoint_path"]
             .as_str()
             .ok_or_else(|| local("DERIVED_ENDPOINT_INVALID"))?;
@@ -789,7 +799,7 @@ impl Connect {
                     .into(),
                 membership_id: membership.into(),
             };
-            if request.receive {
+            if channel_receive {
                 let options = WatchOptions {
                     workspace_id: request.workspace_id.clone(),
                     mailbox_id: address.mailbox_id.clone(),

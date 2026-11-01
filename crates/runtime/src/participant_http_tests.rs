@@ -4200,6 +4200,9 @@ async fn connect_consolidates_missing_rights_and_resumes_without_owner_profile_e
     assert_eq!(service.counts().await["actions"]["structure.communication.grant.set"],1);
     let old_profile=worker.profile().unwrap().unwrap();
     let original_endpoint=std::fs::read(&old_profile.endpoint_path).unwrap();
+    std::fs::remove_file(&old_profile.endpoint_path).unwrap();
+    let repaired=worker.run(request.clone()).await.unwrap();assert_eq!(repaired["state"],"LOCAL_CONFIGURED","{repaired}");
+    assert_eq!(std::fs::read(&old_profile.endpoint_path).unwrap(),original_endpoint,"endpoint repair changed the credential or namespace");
     let mut role_request=request;role_request.setup_id="worker-role".into();
     role_request.protocols.push(crate::participant_connect::ProtocolSelection{alias:"claim".into(),instance_id:adopted["instance_id"].as_str().unwrap().into(),role:"WORKER".into(),actions:vec!["claim".into()]});
     let pending=worker.run(role_request.clone()).await.unwrap();assert_eq!(pending["blocker"]["code"],"OWNER_APPROVAL_REQUIRED","{pending}");

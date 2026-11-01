@@ -107,6 +107,7 @@ impl Tools {
             let connect=crate::participant_connect::Connect::inspect(directory)?;
             let handle=connect.selected_handle(self.handle.as_deref())?;
             if let AgentRequest::Connect{request}=request {
+                if handle.is_none(){return Ok(crate::participant_connect::Connect::selection_required(&request.setup_id));}
                 if handle.as_ref().is_some_and(|h|h!=&request.participant){return Err(ParticipantError::local("FRONTEND_IDENTITY_PIN_MISMATCH","CONNECT"));}
                 if self.workspace.as_ref().is_some_and(|ws|ws!=&request.workspace_id){return Err(ParticipantError::local("FRONTEND_WORKSPACE_PIN_MISMATCH","CONNECT"));}
                 drop(connect);return crate::participant_connect::Connect::open(directory)?.run(request).await;
