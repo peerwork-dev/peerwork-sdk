@@ -432,6 +432,17 @@ async fn program_root_http_async_scope_and_exact_operation_restart() {
         .await
         .unwrap();
     assert!(!slow.is_terminal());
+    tokio::time::timeout(Duration::from_secs(5),async {
+        while service.counts().await["delayed"] != 1 { tokio::time::sleep(Duration::from_millis(10)).await; }
+    }).await.unwrap();
+    let running = client.operation("slow").await.unwrap();
+    assert_eq!((running.state.as_str(),running.effect_certainty.as_str(),running.observation.as_str()),("RUNNING","UNKNOWN","LOCAL_RUNTIME"));
+    let duplicate = client.invoke(Invoke::new("slow","structure.workspace.create",Scope::default(),json!({"name":"Slow independent create"})),Duration::ZERO).await.unwrap();
+    assert_eq!((duplicate.state.as_str(),duplicate.effect_certainty.as_str()),("RUNNING","UNKNOWN"));
+    let listed = client.operations("",32).await.unwrap();
+    let listed = listed["items"].as_array().unwrap().iter().find(|op|op["operation_id"]=="slow").unwrap();
+    assert_eq!(listed["observation"],"LOCAL_RUNTIME");
+    let before_ready=service.counts().await["workspaces"].as_u64().unwrap();
     let ready = client
         .invoke(
             Invoke::new(
@@ -447,6 +458,8 @@ async fn program_root_http_async_scope_and_exact_operation_restart() {
     assert_eq!(ready.state, "ACCEPTED");
     service.config(json!({"release":true})).await;
     wait_terminal(&client, "slow").await;
+    assert_eq!(service.counts().await["workspaces"].as_u64().unwrap(),before_ready+2,"the duplicate invocation must not create another remote workspace");
+    assert_eq!(client.metrics().await.unwrap()["http"]["local_phases"]["running_store"]["count"],0,"scheduling no longer performs a separate durable write");
     // Lost acceptance response: close and reopen the same owner, recover only
     // the original operation, and prove exactly one new remote workspace.
     let initial = service.counts().await;
