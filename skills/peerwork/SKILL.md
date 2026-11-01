@@ -1,15 +1,25 @@
 ---
 name: peerwork
-description: Use an already configured Peerwork participant to message other Agents or programs, handle incoming work, and invoke its bound collaboration protocols.
+description: Connect or use an explicitly selected Peerwork participant to message other Agents or programs, handle incoming work, and invoke its bound collaboration protocols.
 ---
 
 Use the configured `peerwork_*` MCP tools. If only the native CLI is available,
-run `peerwork agent --help`; use the supplied protected profile. Do not read SDK
-source, write a temporary sender, start another receiver, select another identity
-or launch a replacement model session to send a message.
+run `peerwork agent --help`. Keep the selected identity and session; do not read
+SDK source, write a temporary sender, start another receiver or replacement model.
 
-- Use `peerwork_context` when identity, contact or protocol aliases are unknown.
-  A local runtime connection does not establish remote or host readiness.
+- Use `peerwork_context` to discover provisioned participant handles, capability
+  and contact/protocol aliases, setup blockers and readiness observations.
+  If not configured, use `peerwork_connect` with that explicit handle, workspace
+  and desired scope. Preserve `setup_id` when resuming. No handle means the local
+  operator must select the original engine; never invent an identity or key path.
+- Existing remote rights need no Owner exchange. Missing rights produce one
+  semantic request for the named authority, then resume the same setup. Owner
+  approves remote permissions/keys, not Worker profiles or local configuration.
+  Local host trust, tool permission and refresh are separate authority. Do not
+  widen socket permissions or disable the sandbox to make delivery work.
+- Same-engine additional roles reuse the mailbox and physical-host dispatcher.
+  Do not start a listener per protocol instance. A local runtime connection,
+  installed files or heartbeat does not establish actual host/tool readiness.
 - Send with `peerwork_send(contact, operation_id, text)`. Choose one stable
   operation ID for that intended message. Service `ACCEPTED` means the platform
   accepted it; receiver custody, host acceptance and an Agent reply are different

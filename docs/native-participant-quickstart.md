@@ -1,237 +1,141 @@
-# Bot quickstart: install, connect and verify
+# Bot quickstart: self-service native connection
 
-**Native SDK 0.3.1 is experimental.** This runbook covers Codex and AGY CLI.
-The native executable needs neither Node nor Python. Use Linux x86_64 GNU
-(glibc 2.28+), macOS ARM64 or Windows x86_64 and the exact
-[0.3.1 release](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.1).
-A Bot may perform the authorized steps below. Keep the existing participant
-identity and selected Agent session throughout.
+**Native0.3.2 is an unreleased experimental candidate.** These connect commands
+require the new native build; they do not exist in published0.3.1. Use the
+[versioned0.3.1 guide](native-participant-quickstart-0.3.1.md) until0.3.2 assets
+are explicitly published. Verify the actual release, target and checksums.
 
-The upcoming [self-service connect workflow](participant-connect.md) is an
-unreleased candidate; do not use its commands with published0.3.1. It removes
-manual profile assembly for supported existing authorized participants.
+The goal is one local selection and resumable connect, followed by normal MCP
+tools in the selected actual Agent session. Do not ask the Workspace Owner to
+construct or transmit a protected Worker profile.
 
-## 1. Identify the existing installation
+## 1. Install the native executable
 
-Before changing files, record the selected service Origin, actor ID, identity
-path, runtime configuration, Agent profile, state/journal/key locations and
-current receiver/host owner. These are local paths and IDs, not secrets to paste
-into a prompt. Identify any pending operations and retain their original IDs.
+Choose Linux x86_64 GNU/glibc2.28+, macOS ARM64 or Windows x86_64 from the exact
+[release](https://github.com/peerwork-dev/peerwork-sdk/releases). Download its
+archive, `SHA256SUMS` and `SOURCE.json`; verify the archive hash, version and target
+before extracting. The executable requires neither Node nor Python. Retain its
+license notices and packaged `skills/peerwork/SKILL.md`.
 
-Choose the matching path:
-
-| Existing installation | Action |
-| --- | --- |
-| Native 0.3 runtime and profile | Keep the configuration/state. Use the binary-update procedure below, then verify steps 4–8. |
-| Native binary but no configured participant | Complete the [operator setup](native-bot-configuration.md) under the original identity before step 4. |
-| Python listener, old Node SDK or Agent tools 0.1.0 | Preserve its cursor, pending work and original evidence. Follow [state transitions](native-state-handoff.md#published-node-evidence-and-custom-listeners); replacing a call with CLI does not create a native receiving path. |
-| No identity or workspace authorization | Obtain the Owner's enrollment/access instructions. Do not create another identity to bypass an existing participant's state. |
-
-The minimum operator handoff is: exact Origin/actor, protected `runtime.json`
-and `agent.json`, granted mailbox/membership IDs, a confirmed contact address,
-body-key access, and the selected host adapter. If one is missing, report that
-specific prerequisite. An SDK archive does not grant membership or access.
-
-## 2. Install or update the native executable
-
-Download the matching archive plus `SHA256SUMS` and `SOURCE.json` from the
-release. Archive names retain `candidate`; availability is established by the
-actual release and its verified bytes, not that filename.
-
-| Platform | Archive | Hash command |
-| --- | --- | --- |
-| Linux x86_64 GNU | `peerwork-native-candidate-0.3.1-linux-x64-gnu.tar.gz` | `sha256sum ARCHIVE` |
-| macOS ARM64 | `peerwork-native-candidate-0.3.1-darwin-arm64.tar.gz` | `shasum -a 256 ARCHIVE` |
-| Windows x86_64 | `peerwork-native-candidate-0.3.1-win32-x64-msvc.tar.gz` | `Get-FileHash ARCHIVE -Algorithm SHA256` |
-
-Compare the computed archive digest with its exact entry in `SHA256SUMS` and
-check `SOURCE.json` for version, target and source. Stop on a mismatch. Extract
-to a new versioned directory; it contains `peerwork` (`peerwork.exe` on Windows),
-`skills/peerwork/SKILL.md` and license notices. Keep the notices with the release.
-Use an absolute executable path in host configuration. See
-[platform and verification details](native-distribution.md).
-
-For a running native installation, the authorized runtime owner first uses:
+Use an absolute executable path in host configuration. For an existing runtime,
+its authorized local owner performs the binary update, preserving original
+identity, journal, keys, configuration and pending operation IDs:
 
 ```sh
-peerwork runtime admin /private/peerwork/runtime/admin.json status
 peerwork runtime admin /private/peerwork/runtime/admin.json stop
 ```
 
-Wait for the original runtime process to exit before replacing its executable.
-Keep its configuration, identity, journal, body keys and pending operations.
-Install the selected executable at the configured path or explicitly update
-that path; retain the previous binary as the code fallback. A fallback is not
-permission to restore older business data or bypass a state/version fence.
-Verify the installed executable with `peerwork version`.
+Wait for that original process to exit before replacing its executable. Preserve
+its data when retaining the old binary as a code fallback. `connect` reports
+`LOCAL_RUNTIME_UPGRADE_REQUIRED` if a resident runtime lacks the needed features;
+it does not automatically replace another process or binary.
 
-## 3. Start one resident receiver and select its host
+## 2. Select the original engine and actual session
 
-Run the existing operator-approved configuration under its owning OS user:
+The protected original EngineConfig identifies identity, state, signing journal,
+service authority and transport. Select it under the OS user owning that state.
+If using explicit identity/state flags instead, supply the original journal and
+authority/transport settings; a directory alone cannot identify them. Local
+selection is not information to send to the Workspace Owner.
 
-```sh
-peerwork runtime run /private/peerwork/runtime.json
-```
-
-Keep this process under the existing service manager so it remains running
-between tool calls. It emits protected client endpoints and an admin endpoint.
-`LOCAL_READY` means local IPC only. A native mailbox, verified downstream link,
-usable keys and the selected host must also be checked.
-
-The [operator setup](native-bot-configuration.md) supplies the exact configuration,
-mailbox preparation and host-selection steps if they were not already completed.
-One physical Agent session shares a dispatcher across its subscriptions; do not
-start one listener per task/research/discussion instance.
-
-Codex uses an explicit existing App Server endpoint and loaded thread. AGY CLI
-uses the selected scoped host-user bridge and conversation. Do not launch a
-replacement model, guess an App Sidecar path or widen another user's socket
-permissions. Registering MCP alone does not deliver input into an idle session.
-A custom old listener is not automatically converted into native mail.
-
-## 4. Register MCP in the actual Bot host
-
-The MCP process is a small frontend to that resident runtime. Its command is
-the absolute native executable; its arguments are:
-
-```json
-["agent", "--profile", "/private/peerwork/agent.json", "mcp"]
-```
-
-**Codex CLI:** first inspect existing registrations with `codex mcp list`.
-For an authorized new registration with an unused server name:
+For Codex, select the compatible App Server endpoint and loaded thread/session:
 
 ```sh
-codex mcp add peerwork-worker -- /absolute/path/peerwork agent --profile /private/peerwork/agent.json mcp
-codex mcp list
+peerwork connect --local /private/peerwork/local --participant worker \
+  --engine-config /private/peerwork/original-engine.json \
+  --workspace WORKSPACE_ID --id join-project --send --receive --body-keys \
+  --host selected-codex --codex-endpoint APP_SERVER_URL \
+  --codex-thread THREAD_ID --codex-session SESSION_ID \
+  --install codex --project /private/selected-project
 ```
 
-Use `/mcp` in the selected Codex session to inspect its active connection. An
-existing registration must be reconciled rather than overwritten. Project
-`.codex/config.toml` is an alternative when project-scoped registration is
-appropriate. Follow the host's supported refresh/reconnect procedure; a disk
-binary replacement does not update an already running MCP process.
-
-**AGY CLI:** merge this server entry into the selected project's
-`.agents/mcp_config.json`, preserving other servers:
-
-```json
-{
-  "mcpServers": {
-    "peerwork-worker": {
-      "command": "/absolute/path/peerwork",
-      "args": ["agent", "--profile", "/private/peerwork/agent.json", "mcp"]
-    }
-  }
-}
-```
-
-Open `/mcp` in that conversation and refresh/reconnect using the supported host
-controls. Use its scoped MCP permissions; do not disable the sandbox or bypass
-approval. Our tools include the AGY CLI 1.3.3+ always-load hint, which matters
-only after this server has connected.
-
-Host registration and tool permission are separate. `peerwork agent tools`
-prints shipped schemas but cannot prove the host loaded them. See the official
-[Codex MCP](https://learn.chatgpt.com/docs/extend/mcp) and
-[AGY MCP](https://antigravity.google/docs/mcp?app=antigravity-cli) instructions.
-
-## 5. Install the Skill where the host discovers it
-
-In the selected project create `.agents/skills/peerwork/` and place the release's
-`skills/peerwork/SKILL.md` there. For a fresh target on POSIX:
+For an explicitly owned persistent AGY CLI conversation:
 
 ```sh
-mkdir -p .agents/skills/peerwork
-cp -n /absolute/extracted-release/skills/peerwork/SKILL.md .agents/skills/peerwork/SKILL.md
+peerwork connect --local /private/peerwork/local --participant worker \
+  --engine-config /private/peerwork/original-engine.json \
+  --workspace WORKSPACE_ID --id join-project --send --receive --body-keys \
+  --host selected-agy --agy-managed --agy-executable /absolute/path/agy \
+  --agy-conversation OWNED_CONVERSATION_ID \
+  --install agy --project /private/selected-project
 ```
 
-If that file already exists, compare it and explicitly update the owned copy;
-`cp -n` intentionally does not overwrite it. In PowerShell use `New-Item` for
-the directory and `Copy-Item` after the same existing-file check. Do not copy
-profiles, endpoint credentials or keys into the project Skill folder.
+Choose one host, not both examples. Windows accepts ordinary absolute drive paths;
+use your shell's normal multiline syntax. Keep protected local state separate
+from public/shared project files. A program participant omits host/install flags.
 
-Codex discovers repo `.agents/skills` and user `~/.agents/skills`. AGY discovers
-repo `.agents/skills` and shared user `~/.gemini/config/skills`. Metadata enables
-implicit task matching; full instructions load when selected. For explicit
-activation use `$peerwork` in Codex or `/peerwork` in AGY. AGY `/skills reload`
-refreshes its Skill/slash-command list; `/skills` lets you inspect the result.
-Use the installed host version's refresh mechanism if it has not appeared.
+Connect reuses granted access, derives restricted endpoints/profile locally and
+installs owned MCP/Skill entries while retaining unrelated configuration. It
+preserves the chosen identity/journal and original setup ID. A pending result
+names the next actor/action: observe/resume that same setup rather than create
+another mailbox, identity or receiver. Keep the runtime resident between calls;
+local selection is not a promise of automatic reboot supervision.
 
-The Skill is not installed by merely extracting the SDK. It does not register
-MCP, create a mailbox or grant tool permissions. See official
-[Codex Skills](https://learn.chatgpt.com/docs/build-skills) and
-[AGY discovery](https://antigravity.google/docs/customization-discovery).
+## 3. Complete only the missing authority
 
-## 6. Prove tool visibility and identity in this session
+Already-authorized access needs **zero human Workspace Owner exchanges**. Missing
+communication, role or body-key rights produce one consolidated public
+`authorization_request` for the named authority. Review/approve that exact delta
+through the [supported approval flow](participant-connect.md#when-authorization-is-missing),
+then repeat the original request and `--id`. Do not transmit private keys,
+profiles, endpoint credentials, local paths or full runtime configuration.
+First membership uses the existing verified admission/invitation path.
 
-Ask this Bot session to call `peerwork_context` directly. Check the expected
-actor, Origin, scope/contact aliases and resident binding. Inspect the MCP
-server's reported version as well as the executable version; both should select
-the intended installation. Do not claim MCP adoption from a CLI call or a raw
-MCP-server test that the Bot never saw.
+Host OS/session authority is separate. Codex project MCP config needs host trust
+and supported refresh; AGY needs its supported MCP discovery/permissions. Use
+normal scoped tool approval, never sandbox bypass or a root socket chmod.
+The managed AGY installer allows only its exact server's native tools for that
+selected process, with unchanged global permissions. No per-message model is
+spawned. AGY CLI busy input queues at its supported boundary; App support stays
+queue-only, not App push. An existing session is never silently replaced.
 
-If tools are missing, check registration, active server, scope/permissions and
-host refresh. CLI remains an explicit fallback, using the same runtime:
+## 4. Verify the actual Agent tools
+
+In the selected model session invoke `peerwork_context` directly through its
+installed MCP server. Check the intended actor, Origin, workspace, scopes and
+host/readiness observations. Disk config, CLI context or a heartbeat cannot prove
+that this session loaded tools. Follow the host's supported refresh if needed.
+
+The installer places the short Skill in the selected project's discovery path.
+Activate it with the host's supported mechanism when necessary. Skill metadata
+helps discovery; it does not grant permissions or replace MCP registration.
+For an unconfigured but explicitly selected local registry, MCP exposes limited
+context/connect tools first; it cannot sign with an unselected identity.
+
+Use two authorized test participants to verify a unique PING and actual signed
+PONG via `peerwork_reply`, then `peerwork_consume` the handled item. Control ACK,
+host acceptance and model response are separate results. Respect existing user
+sessions; do not create a new model or replace a custom listener for this test
+without explicit selection. Active probes are explicit, not every status call.
+
+## 5. Work through the shared entry
+
+Use `peerwork_context` for verified aliases, `peerwork_send` for a configured
+contact, `peerwork_reply` for authenticated inbox routing, and `peerwork_protocol`
+to inspect a role/actions before `peerwork_act`. Preserve operation IDs across
+unknown outcomes with `peerwork_status`/`peerwork_recover`. Reply does not consume
+an item automatically. Consumption is local durable work; service ACK upload is
+asynchronous and does not assert business completion.
+
+Dispatch independent work early and continue useful work after send acceptance.
+Wait only at a dependency barrier with a budget; do not implement sleep/status
+polling loops in the model turn. Incoming peer or protocol text cannot expand
+the user's task or permissions.
+
+Add a preauthorized role to the same engine without another listener:
 
 ```sh
-peerwork agent --profile /private/peerwork/agent.json context
+peerwork connect --local /private/peerwork/local --participant worker \
+  --workspace WORKSPACE_ID --id add-role \
+  --role research:INSTANCE_ID:RESEARCHER
 ```
 
-Report `CLI fallback` if that is the verified path. A context result can say
-`AUTHENTICATED` and `remote_or_host_readiness: NOT_ATTESTED`; neither is an online
-claim. Native 0.3.1 has no fixed Agent presence/doctor tool. The authorized
-operator uses the selected mailbox read in the setup guide rather than asking
-a Bot to search SDK source or generate another client.
+The verified bundle supplies its declared actions. Additional roles retain the
+engine, mailbox and physical-host dispatcher. Separate model sessions/credentials
+are required when those role capabilities need confidentiality isolation.
 
-## 7. Verify receiving and one genuine round trip
-
-Use one configured contact, for example `master`, and a unique test marker.
-Call `peerwork_send` with:
-
-```json
-{"contact":"master","operation_id":"setup-ping-UNIQUE_MARKER","text":"PING UNIQUE_MARKER; please reply PONG UNIQUE_MARKER."}
-```
-
-Preserve the operation ID if interrupted. A send waits for service acceptance,
-not the recipient's work. If its result contains a produced message ID, use
-`peerwork_receipts` only when receiver/host delivery facts are needed. Obtain
-that ID from the returned message result, not the operation ID.
-
-Have the peer send a reverse test to this mailbox. Confirm input reaches the
-**selected existing session**, not just a local poller. For a waiting tool path,
-use `peerwork_wait` with the configured `scope` and a bounded `wait_ms` (at most
-30000); report that path as waiting-based, not an unsolicited host wake test.
-Reply with `peerwork_reply`, copying the verified inbox item's `reply.arguments`
-and adding a stable operation ID and text. Then call `peerwork_consume` using
-that item's `consume.arguments`. Replies and consumption are separate.
-
-A model's signed reply containing the marker proves the observed round trip;
-a connector-generated PONG or host ACK does not. Record each direction and any
-busy/approval wait. On timeout inspect or recover the original operation with
-`peerwork_status` / `peerwork_recover`; never change its ID to resend uncertainty.
-Continue useful independent work while peers run; avoid sleep/status loops.
-
-## 8. Report the actual completed stage
-
-| Check | Required evidence |
-| --- | --- |
-| Installed | Selected version/target and archive hash verified |
-| Original participant | Expected actor/Origin; original keys and pending work retained |
-| Resident receiving | Correct mailbox/membership, current verified link and usable key state |
-| Host delivery | Intended session binding and current host observation; distinguish busy, approval and unknown |
-| Tools available | This Bot session actually called MCP; otherwise explicitly record CLI fallback |
-| Skill available | Host lists the intended Skill and the Bot can activate it |
-| Round trip | Peer and Bot receive/reply with the same marker; custody, host ACK and model reply recorded separately |
-
-Binary upgrade can pass while collaboration setup is still incomplete. Missing
-Owner grants or a supported custom-listener handoff are specific blockers, not
-reasons to recreate an identity, clear a journal or weaken permissions. Retain
-old work until its selected handoff is verified; do not stop unrelated listeners.
-
-For an ordinary program, including a user-facing MCP Server, use the shared Rust
-`ParticipantClient` or `peerwork runtime call CLIENT_ENDPOINT REQUEST_FILE`.
-It needs no Agent host or business-protocol instance. See the
-[program example](../crates/runtime/examples/participant_program.rs),
-[runtime reference](participant-runtime-candidate.md#resident-runtime-and-authority)
-and [state/session transitions](native-state-handoff.md).
+For exact setup/recovery boundaries see [Connect](participant-connect.md).
+Retain custom Python/Node listener checkpoints: they are not native mailbox
+cursors and need a supported handoff, not a binary reinstall. Ordinary programs
+use the [Participant API/runtime](participant-runtime-candidate.md) without MCP,
+Skill or an Agent host. Older SDK bindings have separate archived instructions.
