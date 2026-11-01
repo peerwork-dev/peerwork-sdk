@@ -215,14 +215,11 @@ impl Codex {
         host.session = text(&current["thread"], "sessionId")
             .map_err(|_| "HOST_SESSION_BINDING_UNAVAILABLE")?
             .into();
-        let resumed = host.rpc(
-            "thread/resume",
-            json!({"threadId":host.thread,"excludeTurns":true}),
-        )?;
-        if resumed["thread"]["id"] != host.thread || resumed["thread"]["sessionId"] != host.session
-        {
-            return Err("HOST_BINDING_MISMATCH");
-        }
+        // This destination is already loaded and its live session was pinned
+        // above. It need not have a saved rollout yet (a newly created or
+        // ephemeral thread may not). Resuming it adds a persistence prerequisite
+        // and can fail despite a usable live destination. Health reads current
+        // metadata; delivery targets the pinned thread and expected active turn.
         host.health()?;
         Ok(host)
     }
@@ -288,18 +285,30 @@ impl Codex {
         if r["thread"]["id"] != self.thread || r["thread"]["sessionId"] != self.session {
             return Err("HOST_BINDING_MISMATCH");
         }
-        if !self.requests.is_empty() {
-            return Ok(json!({"ready":false,"execution_state":"WAITING_APPROVAL"}));
+        let status = r["thread"]["status"]["type"].as_str();
+        if !matches!(status, Some("idle" | "active")) {
+            self.requests.clear();
+            self.turn = None;
+            self.execution = "OFFLINE".into();
+            return Ok(json!({"ready":false,"execution_state":"OFFLINE"}));
         }
-        if r["thread"]["status"]["activeFlags"]
-            .as_array()
-            .is_some_and(|flags| {
-                flags.iter().any(|f| {
-                    let s = f.as_str().unwrap_or("").to_lowercase();
-                    s.contains("approval") || s.contains("permission") || s.contains("input")
-                })
+        let flags = r["thread"]["status"]["activeFlags"].as_array();
+        let waiting = flags.is_some_and(|flags| {
+            flags.iter().any(|flag| {
+                let value = flag.as_str().unwrap_or("").to_lowercase();
+                value.contains("approval")
+                    || value.contains("permission")
+                    || value.contains("input")
             })
-        {
+        });
+        // The loaded thread's current metadata is authoritative even when this
+        // connection missed a resolved notification. An idle thread independently
+        // confirms no active turn is waiting. Missing flags on an active thread
+        // are not proof of resolution; retain observed requests in that case.
+        if !waiting && (status == Some("idle") || flags.is_some()) {
+            self.requests.clear();
+        }
+        if waiting || !self.requests.is_empty() {
             return Ok(json!({"ready":false,"execution_state":"WAITING_APPROVAL"}));
         }
         self.execution = match r["thread"]["status"]["type"].as_str() {
@@ -311,12 +320,18 @@ impl Codex {
             _ => "OFFLINE",
         }
         .into();
-        if self.execution == "BUSY" && self.turn.is_none() {
+        if self.execution == "BUSY" {
+            self.turn = None;
             let turns=self.rpc("thread/turns/list",json!({"threadId":self.thread,"limit":1,"sortDirection":"desc","itemsView":"notLoaded"}))?;
             let turn = &turns["data"][0];
             if turn["status"] == "inProgress" {
                 self.turn = turn["id"].as_str().map(str::to_owned);
             }
+        }
+        // turns/list may itself deliver a newly pending approval notification.
+        // Never steer after learning that the host is waiting for its user.
+        if !self.requests.is_empty() {
+            return Ok(json!({"ready":false,"execution_state":"WAITING_APPROVAL"}));
         }
         Ok(
             json!({"ready":self.execution=="IDLE"||self.execution=="BUSY"&&self.turn.is_some(),"execution_state":self.execution}),
@@ -479,7 +494,10 @@ impl Host {
                     return Err("HOST_BINDING_MISMATCH");
                 }
                 let host = text(&config["destination"], "host")?;
-                if !matches!(host, "CODEX_APP_SERVER" | "ANTIGRAVITY_APP" | "ANTIGRAVITY_CLI") {
+                if !matches!(
+                    host,
+                    "CODEX_APP_SERVER" | "ANTIGRAVITY_APP" | "ANTIGRAVITY_CLI"
+                ) {
                     return Err("HOST_KIND_UNSUPPORTED");
                 }
                 (

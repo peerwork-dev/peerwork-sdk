@@ -103,18 +103,36 @@ impl KernelClient {
                     .map_err(|_|KernelClientError::PrerequisitePending{command_id:command_id.into(),workspace_id:workspace.into()})?;
             }
         }
+        self.select_authorized_content_head(identity,authority,workspace,&metadata,&id,cancel).await?;
+        Ok(metadata)
+    }
+    /// Bounded read/local acceptance only. In particular, Owner identity does
+    /// not confer permission to publish a head through this helper.
+    pub(crate) async fn prepare_structure_content_keys(&mut self,identity:&KernelIdentity,authority:&str,workspace:&str,cancel:&CancellationToken)->Result<Value,KernelClientError>{
+        self.require_content_key_epochs()?;
+        let metadata=self.content_metadata(identity,authority,workspace,cancel).await?;
+        let Some(id)=self.observe_head(identity,&metadata,workspace)? else {
+            return Ok(json!({"state":"OWNER_KEY_HEAD_REQUIRED","workspace_id":workspace,"owner_id":metadata["owner_id"],"remote_effect":"NONE"}));
+        };
+        self.select_authorized_content_head(identity,authority,workspace,&metadata,&id,cancel).await?;
+        Ok(json!({"state":"READY","workspace_id":workspace,"head":metadata["content_key_head"],"source":"VERIFIED_CANONICAL_HEAD_AND_LOCAL_KEY"}))
+    }
+    async fn select_authorized_content_head(&mut self,identity:&KernelIdentity,authority:&str,workspace:&str,metadata:&Value,id:&str,cancel:&CancellationToken)->Result<(),KernelClientError>{
         if metadata["content_key_head"]["usable"]!=true{return Err(ContentKeyError::RotationRequired.into());}
         let mut keys=StructureContentKeys::open(&self.content_key_store_path(),self.content_config())?;
         let prior=match keys.selected(identity.key_id(),workspace){Ok(v)=>Some(v.key_id),Err(ContentKeyError::Missing)=>None,Err(e)=>return Err(e.into())};
-        if prior.as_deref()==Some(&id){return Ok(metadata);}
-        match keys.select_retained(identity.key_id(),workspace,&id,prior.as_deref()){
-            Ok(_)=>return Ok(metadata),Err(ContentKeyError::Missing)=>(),Err(e)=>return Err(e.into()),
+        if prior.as_deref()==Some(id){return Ok(());}
+        match keys.select_retained(identity.key_id(),workspace,id,prior.as_deref()){
+            Ok(_)=>return Ok(()),Err(ContentKeyError::Missing)=>(),Err(e)=>return Err(e.into()),
         }
         drop(keys);
         let path=self.access_recipient_path.clone().ok_or(ContentKeyError::Missing)?;
-        let selection=StructureKeyAcceptance{workspace_id:workspace.into(),owner_id:metadata["owner_id"].as_str().ok_or(KernelClientError::InvalidResult)?.into(),key_ids:vec![id.clone()],current_key_id:Some(id),expected_current_key_id:prior};
+        // No recipient has yet been provisioned. Distinguish missing access
+        // from a corrupt protected recipient binding, which must fail closed.
+        if std::fs::symlink_metadata(&path).is_err_and(|e|e.kind()==std::io::ErrorKind::NotFound){return Err(ContentKeyError::Missing.into());}
+        let selection=StructureKeyAcceptance{workspace_id:workspace.into(),owner_id:metadata["owner_id"].as_str().ok_or(KernelClientError::InvalidResult)?.into(),key_ids:vec![id.into()],current_key_id:Some(id.into()),expected_current_key_id:prior};
         Box::pin(self.accept_structure_keys(identity,authority,&path,selection,cancel)).await?;
-        Ok(metadata)
+        Ok(())
     }
     /// Repair only the Owner's crypto prerequisite. Never rebase business
     /// revisions, delegate Owner authority, or wait for every recipient.

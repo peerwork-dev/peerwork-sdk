@@ -57,6 +57,10 @@ fn identity_cli_path(value: &str) -> Result<PathBuf, String> {
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str)==Some("connect") {
+        let out=peerwork_runtime::participant_connect::cli(&args[1..]);println!("{out}");
+        return if out["state"]=="FAILED"{ExitCode::FAILURE}else if out["state"]=="PENDING"{ExitCode::from(2)}else{ExitCode::SUCCESS};
+    }
     if args.first().map(String::as_str)==Some("agent") {
         let out=peerwork_runtime::agent_frontend::cli(&args[1..]);
         if out.is_null(){return ExitCode::SUCCESS;}

@@ -117,7 +117,7 @@ impl KernelClient {
         config
     }
 
-    pub(super) async fn access_context(
+    pub(crate) async fn access_context(
         &self,
         cancel: &CancellationToken,
     ) -> Result<(String, Vec<u8>, VerifiedStructureContext), KernelClientError> {
@@ -141,6 +141,9 @@ impl KernelClient {
             self.discovery.receipt_public_key(),
         )
         .map_err(|_| JournalError::InvalidReceipt)?;
+        // This fresh nonce-bound verification is also a new trusted time anchor
+        // for the shared session. No browser or wall-clock time is consulted.
+        self.transport.remember_context(self.discovery.receipt_public_key(),&context,started);
         Ok((nonce, response.wire, context))
     }
     pub(crate) async fn request_structure_access(

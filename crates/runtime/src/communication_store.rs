@@ -160,18 +160,4 @@ pub(crate) fn output(row: &Value) -> Value {
     out["operation_id"]=row["id"].clone(); out["audience"]=json!("WORKSPACE_INSTANCE_SHARED");
     out["model_response"]=json!("NOT_ATTESTED"); out["observation"]=json!("LOCAL_CACHED"); out
 }
-pub(crate) fn process_token(pid: u32) -> Option<String> {
-    #[cfg(target_os="linux")]
-    { std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?.rsplit_once(") ")?.1.split_whitespace().nth(19).map(str::to_owned) }
-    #[cfg(not(target_os="linux"))] { let _=pid; None }
-}
-pub(crate) fn process_alive(pid: u32, token: Option<&str>) -> bool {
-    if let (Some(expected),Some(actual))=(token,process_token(pid)) {return expected==actual;}
-    #[cfg(unix)] { unsafe {libc::kill(pid as i32,0)==0 || std::io::Error::last_os_error().raw_os_error()==Some(libc::EPERM)} }
-    #[cfg(windows)] { // Unknown ownership is deliberately not force-reclaimed.
-        use windows_sys::Win32::{Foundation::CloseHandle,System::Threading::{OpenProcess,GetExitCodeProcess,PROCESS_QUERY_LIMITED_INFORMATION}};
-        unsafe { let handle=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,0,pid); if handle.is_null(){return std::io::Error::last_os_error().raw_os_error()!=Some(87);}
-            let mut code=0; let ok=GetExitCodeProcess(handle,&mut code);CloseHandle(handle);ok==0||code==259 }
-    }
-    #[cfg(not(any(unix,windows)))] {true}
-}
+pub(crate) use crate::process_identity::{token as process_token,alive as process_alive};
