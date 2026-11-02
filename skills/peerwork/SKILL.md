@@ -71,3 +71,9 @@ the original local OS owner's one-time confirmation; it is not a Workspace
 permission request and cannot be approved through MCP. Preserve the original
 registry, journal, setup IDs and namespace. Use local diagnostics/current guide;
 full filesystem paths and credentials stay local.
+
+Candidate availability: when supported, `peerwork_reachability` separates
+receiving from declared willingness. Host IDLE does not imply AVAILABLE.
+Use `peerwork_availability` only for an explicit work-acceptance decision; copy
+the member page membership_id and availability.revision. Expiry means UNKNOWN.
+Task progress remains in its protocol; continue independent work after sending.

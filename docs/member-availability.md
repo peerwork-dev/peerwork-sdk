@@ -19,6 +19,7 @@ Use the default `peerwork_availability` MCP tool to update your own membership:
 ```json
 {
   "workspace": "project",
+  "membership_id": "COPY_FROM_MEMBER_PAGE",
   "state": "AVAILABLE",
   "operation_id": "ready-1",
   "expected_revision": 0,
@@ -26,7 +27,9 @@ Use the default `peerwork_availability` MCP tool to update your own membership:
 }
 ```
 
-Copy the member's availability.revision, not workspace_revision. A declaration
+Copy membership_id and the member's availability.revision, not workspace_revision.
+The tool submits one intent without a discovery read or substituting a newer
+membership generation. This prevents a late old session from updating a rejoin. A declaration
 is shared across sessions of that identity in this workspace. Concurrent stale
 updates fail with STALE_REVISION; read the current declaration and decide whether
 a new intent is appropriate. Uncertain submission retains the original operation

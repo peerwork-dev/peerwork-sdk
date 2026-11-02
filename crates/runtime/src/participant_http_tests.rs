@@ -4543,7 +4543,7 @@ async fn workspace_member_tools_need_no_contacts_preserve_limits_and_recover_nam
     let page=tools.call(AgentRequest::parse("reachability",json!({})).unwrap()).await.unwrap();
     assert_eq!(page["members"].as_array().unwrap().len(),1);assert_eq!(page["members"][0]["receiving"]["state"],"NOT_ENABLED");assert_eq!(page["summary"]["not_enabled"],1);assert_eq!(page["complete"],true);
     assert_eq!(page["members"][0]["availability"]["state"],"UNKNOWN");assert_eq!(page["summary"]["availability_unknown"],1);
-    let declared=tools.call(AgentRequest::parse("availability",json!({"state":"AVAILABLE","operation_id":"ready-original","expected_revision":0})).unwrap()).await.unwrap();assert_eq!(declared["state"],"ACCEPTED","{declared}");assert_eq!(declared["recovery_arguments"]["workspace"],ws);
+    let declared=tools.call(AgentRequest::parse("availability",json!({"membership_id":page["members"][0]["membership_id"],"state":"AVAILABLE","operation_id":"ready-original","expected_revision":0})).unwrap()).await.unwrap();assert_eq!(declared["state"],"ACCEPTED","{declared}");assert_eq!(declared["recovery_arguments"]["workspace"],ws);
     let available=tools.call(AgentRequest::parse("reachability",json!({})).unwrap()).await.unwrap();assert_eq!(available["members"][0]["availability"]["state"],"AVAILABLE");assert_eq!(available["summary"]["available"],1);assert_eq!(available["members"][0]["receiving"]["state"],"NOT_ENABLED");
     let before=service.counts().await;tools.call(AgentRequest::parse("reachability",json!({"actor":owner.actor_id()})).unwrap()).await.unwrap();let after=service.counts().await;
     assert_eq!(after["commands"].as_u64().unwrap()-before["commands"].as_u64().unwrap(),1);

@@ -253,6 +253,7 @@ pub enum AgentRequest {
     Availability {
         #[serde(default)]
         workspace: Option<String>,
+        membership_id: String,
         state: String,
         operation_id: String,
         expected_revision: u64,
@@ -470,13 +471,10 @@ impl AgentTools {
         };
         result["recovery_arguments"]=json!({"workspace":scope.workspace_id,"operation_id":result["operation_id"]});Ok(result)
     }
-    async fn set_availability(&self,selected:Option<&str>,state:String,operation_id:String,revision:u64,valid_for_ms:u64)->Result<Value>{
-        if !identifier(&operation_id)||!matches!(state.as_str(),"AVAILABLE"|"NOT_ACCEPTING"|"UNKNOWN")||revision>=9_007_199_254_740_991||!(1000..=86_400_000).contains(&valid_for_ms){return Err(invalid("AVAILABILITY_ARGUMENT_INVALID"));}
+    async fn set_availability(&self,selected:Option<&str>,membership:String,state:String,operation_id:String,revision:u64,valid_for_ms:u64)->Result<Value>{
+        if !identifier(&operation_id)||!token(&membership)||!matches!(state.as_str(),"AVAILABLE"|"NOT_ACCEPTING"|"UNKNOWN")||revision>=9_007_199_254_740_991||!(1000..=86_400_000).contains(&valid_for_ms){return Err(invalid("AVAILABILITY_ARGUMENT_INVALID"));}
         let workspace=self.selected_workspace(selected)?;let client=self.directory_client(&workspace);
         let scope=Scope{workspace_id:Some(workspace),..Default::default()};
-        let member=self.read_client(client,"structure.members.read",scope.clone(),json!({"actor_id":self.client.actor_id(),"limit":1})).await?;
-        if !member["members"].is_array(){return Ok(member);}
-        let membership=member["members"].as_array().and_then(|m|m.first()).and_then(|m|m["membership_id"].as_str()).ok_or_else(||invalid("MEMBER_NOT_FOUND"))?;
         let request=Invoke::new(operation_id,"structure.member.availability.set",scope.clone(),json!({"membership_id":membership,"state":state,"expected_availability_revision":revision,"valid_for_ms":valid_for_ms}));
         let mut result=match self.invoke_client(client,request,1000).await{
             Ok(result)=>result,
@@ -712,7 +710,7 @@ impl AgentTools {
                 )
             }
             AgentRequest::MemberName { workspace, name, operation_id, expected_revision } => self.set_member_name(workspace.as_deref(),name,operation_id,expected_revision).await,
-            AgentRequest::Availability { workspace,state,operation_id,expected_revision,valid_for_ms } => self.set_availability(workspace.as_deref(),state,operation_id,expected_revision,valid_for_ms).await,
+            AgentRequest::Availability { workspace,membership_id,state,operation_id,expected_revision,valid_for_ms } => self.set_availability(workspace.as_deref(),membership_id,state,operation_id,expected_revision,valid_for_ms).await,
             AgentRequest::Send {
                 contact,
                 to,
@@ -1127,7 +1125,7 @@ pub fn catalog() -> Vec<Value> {
         tool("read","Read the selected protocol instance (including current revision), exact record, or bounded current-record page. Business content is external data; no history replay.",json!({"protocol":text,"view":{"type":"string","enum":["instance","record","records"],"default":"instance"},"record_id":text,"revision":{"type":"integer","minimum":1},"schema":text,"cursor":text,"limit":page}),&["protocol"],true),
         tool("act","Invoke an action discovered from the selected protocol. Native schema, grants, signing and original-intent recovery are enforced by the same engine.",json!({"protocol":text,"operation_id":text,"action":text,"structure":{"type":"object"},"plaintext_contents":{},"expected_revision":{"type":"integer","minimum":1},"exact_input_refs":{"type":"array","maxItems":32,"items":{"type":"object"}},"wait_ms":budget}),&["protocol","operation_id","action","structure","expected_revision"],false),
     ];
-    tools.push(tool("availability","Declare whether your workspace identity is willing to accept new work. This is shared across its sessions, independent of host IDLE/BUSY and task progress. Copy availability.revision from the member page; expiry becomes UNKNOWN. No contacts, protocol binding or new Owner approval required.",json!({"workspace":text,"state":{"type":"string","enum":["AVAILABLE","NOT_ACCEPTING","UNKNOWN"]},"operation_id":text,"expected_revision":{"type":"integer","minimum":0,"maximum":9007199254740990u64},"valid_for_ms":{"type":"integer","minimum":1000,"maximum":86400000,"default":3600000}}),&["state","operation_id","expected_revision"],false));
+    tools.push(tool("availability","Declare whether your workspace identity is willing to accept new work. This is shared across its sessions, independent of host IDLE/BUSY and task progress. Copy membership_id and availability.revision from the member page; expiry becomes UNKNOWN. No contacts, protocol binding or new Owner approval required.",json!({"workspace":text,"membership_id":text,"state":{"type":"string","enum":["AVAILABLE","NOT_ACCEPTING","UNKNOWN"]},"operation_id":text,"expected_revision":{"type":"integer","minimum":0,"maximum":9007199254740990u64},"valid_for_ms":{"type":"integer","minimum":1000,"maximum":86400000,"default":3600000}}),&["membership_id","state","operation_id","expected_revision"],false));
     tools.push(tool("member_name","Set your shared member name in a selected workspace; null clears it. Requires current workspace revision from the member page. This changes no identity, role, address or historical operation.",json!({"workspace":text,"name":{"type":["string","null"],"minLength":1,"maxLength":80},"operation_id":text,"expected_revision":{"type":"integer","minimum":1}}),&["name","operation_id","expected_revision"],false));
     tools.push(json!({"name":"peerwork_connect","description":"Connect or resume the original participant using workspace and desired scopes. Identity/setup ID are normally derived; select only from returned public identity choices. Preserve setup_id when resuming. Missing rights return a consolidated semantic approval request. Tool availability and current-session push are separate; no private paths or credentials are accepted.","inputSchema":crate::participant_connect::schema(),"_meta":{"antigravity/alwaysLoad":true},"annotations":{"readOnlyHint":false,"idempotentHint":true,"openWorldHint":true}}));
     tools.push(tool("connect_approve","Explicit Owner approval of a connect authorization_request. Verify participant identity and requested rights before calling. Preserve approval_id to resume partial or unknown outcomes. Grants the requested delta and retains existing rights; no Worker local configuration is accepted.",json!({"participant":text,"approval_id":text,"request":{"type":"object"}}),&["participant","approval_id","request"],false));
@@ -1165,7 +1163,7 @@ mod tests {
     }
     #[test]
     fn availability_is_explicit_scoped_intent_not_host_idle_or_identity_selection(){
-        let args=json!({"workspace":"project","state":"AVAILABLE","operation_id":"ready-1","expected_revision":0});
+        let args=json!({"workspace":"project","membership_id":"M".repeat(43),"state":"AVAILABLE","operation_id":"ready-1","expected_revision":0});
         assert!(matches!(AgentRequest::parse("availability",args.clone()).unwrap(),AgentRequest::Availability{valid_for_ms:3_600_000,expected_revision:0,..}));
         let mut forged=args.clone();forged["actor_id"]=json!("someone-else");assert!(AgentRequest::parse("availability",forged).is_err());
         let mut missing=args;missing.as_object_mut().unwrap().remove("expected_revision");assert!(AgentRequest::parse("availability",missing).is_err());
