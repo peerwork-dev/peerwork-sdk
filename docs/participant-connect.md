@@ -6,6 +6,13 @@ Native0.3.2 retains its
 [explicit setup guide](participant-connect-0.3.2.md).
 The native client adds no Node/Python runtime dependency or additional platforms.
 
+## Tool access without state takeover
+
+If an existing client already works, [attach tools to that client](existing-client-tools.md)
+instead of migrating its identity/history merely to obtain MCP. Native resident
+profiles need no installation ledger; native0.3.5 source adds the direct embedded
+Rust entry. State replacement and exact host-session delivery remain separate.
+
 ## Normal Agent entry
 
 From the authorized project, use the native CLI once if MCP is not loaded:

@@ -258,7 +258,7 @@ pub enum ClientRequest {
     Bindings,
 }
 impl ClientRequest {
-    fn parse(value: Value) -> Result<Self> {
+    pub(crate) fn parse(value: Value) -> Result<Self> {
         // Non-unit variants use serde's deny_unknown_fields. The only unit
         // variant needs an explicit extra-field check; do not maintain a second
         // handwritten method/field catalog that can diverge from this enum.
@@ -367,58 +367,9 @@ impl Runtime {
                     let(cleaned,cleanup_error)=match revoked {Some(job)=>match self.cleanup_revocation(&job).await{Ok(done)=>(done,None),Err(e)=>(false,Some(e))},None=>(true,None)};
                     Ok(json!({"state":if cleaned{"LOCAL_CLIENTS_REVOKED"}else{"LOCAL_CLIENTS_REVOKED_CLEANUP_PENDING"},"count":count,"receiver_cleanup_pending":!cleaned,"cleanup_error":cleanup_error,"original_operations_retained":true,"remote_rights_revoked":false,"inflight_host_results":"RETAINED"}))
                 },
-                ClientRequest::DeliveryStatus{options,item}=>client.delivery_status(&options,item).await,
-                ClientRequest::Unwatch{options}=>{client.unwatch(&options).await?;session.watches.lock().await.remove(&options.key());Ok(json!({"state":"LOCAL_STOPPED","lease_expires_within_ms":15000,"messages_deleted":false}))},
-                ClientRequest::Watch{options}=>{
-                    let mut watches=session.watches.lock().await;
-                    if !watches.contains_key(&options.key()){
-                        if watches.len()>=8{return Err(local("WATCH_SCOPE_LIMIT"));}
-                        let watch=client.watch(options.clone()).await?;watches.insert(options.key(),Arc::new(tokio::sync::Mutex::new(watch)));
-                    }else{
-                        let watch=watches.get(&options.key()).unwrap().clone().try_lock_owned().map_err(|_|local("WATCH_WAIT_IN_PROGRESS"))?;
-                        if watch.options()!=&options{return Err(local("WATCH_BINDING_MISMATCH"));}
-                    }
-                    drop(watches);
-                    serde_json::to_value(client.inbox(&options,0,32).await?).map_err(|_|local("IPC_RESPONSE_INVALID"))
-                },
-                ClientRequest::WatchNext{options,wait_ms}=>{
-                    if wait_ms==0||wait_ms>30_000{return Err(local("WAIT_BUDGET_INVALID"));}
-                    let watch=session.watches.lock().await.get(&options.key()).cloned().ok_or_else(||local("WATCH_NOT_FOUND"))?;
-                    let mut watch=watch.try_lock_owned().map_err(|_|local("WATCH_WAIT_IN_PROGRESS"))?;
-                    if watch.options()!=&options{return Err(local("WATCH_BINDING_MISMATCH"));}
-                    match tokio::time::timeout(Duration::from_millis(wait_ms),watch.next()).await{
-                        Ok(value)=>serde_json::to_value(value?).map_err(|_|local("IPC_RESPONSE_INVALID")),
-                        Err(_)=>Ok(json!({"state":"WAIT_EXPIRED","scope":"LOCAL_OBSERVATION_ONLY","watch_continues":true})),
-                    }
-                },
-                ClientRequest::WaitInbox{options,after,limit,wait_ms}=>{
-                    if !(1..=32).contains(&limit)||after>9_007_199_254_740_991{return Err(local("INBOX_SELECTION_INVALID"));}
-                    if wait_ms==0||wait_ms>30_000{return Err(local("WAIT_BUDGET_INVALID"));}
-                    // Attach a notification handle to the same owned mailbox,
-                    // not a second remote receiver. Snapshot after every wake
-                    // so an initial state/heartbeat cannot satisfy an arrival.
-                    let mut watch=client.watch(options).await?;
-                    let observed=async{loop{
-                        watch.changed().await?;
-                        let page=watch.page(after,limit).await?;
-                        if !page.items.is_empty(){return serde_json::to_value(page).map_err(|_|local("IPC_RESPONSE_INVALID"));}
-                    }};
-                    match tokio::time::timeout(Duration::from_millis(wait_ms),observed).await{
-                        Ok(out)=>out,
-                        Err(_)=>Ok(json!({"state":"WAIT_EXPIRED","scope":"LOCAL_OBSERVATION_ONLY","watch_continues":true})),
-                    }
-                },
-                ClientRequest::Inbox{options,after,limit}=>serde_json::to_value(client.inbox(&options,after,limit).await?).map_err(|_|local("IPC_RESPONSE_INVALID")),
-                ClientRequest::Consume{options,items}=>{client.consume(&options,items).await?;Ok(json!({"state":"LOCAL_CONSUMPTION_RECORDED","remote_ack":"ASYNCHRONOUS","model_response":"NOT_ATTESTED"}))},
-                ClientRequest::Invoke{request,wait_ms}=>{if wait_ms>30_000{return Err(local("WAIT_BUDGET_INVALID"));}serde_json::to_value(client.invoke(request,Duration::from_millis(wait_ms)).await?).map_err(|_|local("IPC_RESPONSE_INVALID"))},
-                ClientRequest::Request{request}=>client.request(request).await,
-                ClientRequest::Operation{operation_id}=>serde_json::to_value(client.operation(&operation_id).await?).map_err(|_|local("IPC_RESPONSE_INVALID")),
-                ClientRequest::OperationResult{operation_id,selection}=>client.operation_result(&operation_id,selection).await,
-                ClientRequest::Recover{operation_id}=>serde_json::to_value(client.recover(&operation_id).await?).map_err(|_|local("IPC_RESPONSE_INVALID")),
-                ClientRequest::Operations{after,limit}=>client.operations(&after,limit).await,
-                ClientRequest::Bindings=>serde_json::to_value(client.watch_bindings().await?).map_err(|_|local("IPC_RESPONSE_INVALID")),
                 ClientRequest::Capabilities=>Ok(json!({"format":"peerwork.participant-capability.v1","actor_id":client.actor_id(),"origin":client.origin(),"capability":client.capability(),"admin":false,"maturity":"EXPERIMENTAL","features":CONNECT_FEATURES})),
                 ClientRequest::Binding=>Ok(json!({"format":"peerwork.local-engine-binding.v1","actor_id":client.actor_id(),"origin":client.origin(),"state_binding":client.state_binding(),"engine_digest":self.engine_bindings.get(client.state_binding()),"namespace":client.local_namespace(),"client_generation":session.generation,"features":CONNECT_FEATURES})),
+                request=>crate::participant_client_tools::call(client,&session.watches,request).await,
             }
         }.await;
         response(id, value)

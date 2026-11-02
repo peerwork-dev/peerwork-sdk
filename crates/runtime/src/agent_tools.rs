@@ -2,8 +2,9 @@
 //! retains credentials, signing, remote connections and durable continuation.
 use crate::{
     communication_runtime::RuntimeClient,
+    agent_client::Client,
     communication_store::{identifier, private_json},
-    participant::{DeliveryReference, Invoke, ParticipantError, Result, Scope, WatchOptions},
+    participant::{DeliveryReference, Invoke, ParticipantClient, ParticipantError, Result, Scope, WatchOptions},
 };
 use peerwork_core::{
     communication::MailboxAddress,
@@ -107,10 +108,44 @@ impl AgentProfile {
         profile.validate()?;
         Ok(profile)
     }
+    pub fn selection(&self) -> AgentSelection {
+        AgentSelection { expected_origin: self.expected_origin.clone(), expected_actor: self.expected_actor.clone(),
+            scopes: self.scopes.clone(), contacts: self.contacts.clone(), protocols: self.protocols.clone(), send_scopes: self.send_scopes.clone() }
+    }
     pub fn validate(&self) -> Result<()> {
-        if self.format != "peerwork.agent-profile.v1"
-            || !self.endpoint_path.is_absolute()
-            || !token(&self.expected_actor)
+        if self.format != "peerwork.agent-profile.v1" || !self.endpoint_path.is_absolute()
+            || self.receive_endpoint_path.as_ref().is_some_and(|p| !p.is_absolute())
+            || self.protocol_endpoints.iter().any(|(name, path)| !self.protocols.contains_key(name) || !path.is_absolute()) {
+            return Err(invalid("AGENT_PROFILE_INVALID"));
+        }
+        self.selection().validate().map_err(|_| invalid("AGENT_PROFILE_INVALID"))
+    }
+}
+
+/// Path-free aliases over an existing participant's authority. This is not a
+/// new grant, installation record or identity. Pass an appropriately restricted
+/// original client; its namespace, pending operations and revocation stay intact.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentSelection {
+    pub expected_origin: String,
+    pub expected_actor: String,
+    #[serde(default)]
+    pub scopes: BTreeMap<String, MailScope>,
+    #[serde(default)]
+    pub contacts: BTreeMap<String, Contact>,
+    #[serde(default)]
+    pub protocols: BTreeMap<String, Scope>,
+    #[serde(default)]
+    pub send_scopes: BTreeMap<String, SendScope>,
+}
+impl AgentSelection {
+    pub fn for_client(client: &ParticipantClient) -> Self {
+        Self { expected_origin: client.origin().into(), expected_actor: client.actor_id().into(),
+            scopes: Default::default(), contacts: Default::default(), protocols: Default::default(), send_scopes: Default::default() }
+    }
+    pub fn validate(&self) -> Result<()> {
+        if !token(&self.expected_actor)
             || self.scopes.len() > 8
             || self.contacts.len() > 64
             || self.protocols.len() > 32
@@ -122,18 +157,11 @@ impl AgentProfile {
                     || self.scopes.contains_key(name)
             })
             || self
-                .receive_endpoint_path
-                .as_ref()
-                .is_some_and(|p| !p.is_absolute())
-            || self
-                .protocol_endpoints
-                .iter()
-                .any(|(name, path)| !self.protocols.contains_key(name) || !path.is_absolute())
-            || self
                 .scopes
                 .keys()
                 .chain(self.contacts.keys())
                 .chain(self.protocols.keys())
+                .chain(self.send_scopes.keys())
                 .any(|s| !identifier(s))
             || self.scopes.values().any(|s| {
                 ![&s.workspace_id, &s.mailbox_id, &s.membership_id]
@@ -155,10 +183,10 @@ impl AgentProfile {
                     })
             })
         {
-            return Err(invalid("AGENT_PROFILE_INVALID"));
+            return Err(invalid("AGENT_SELECTION_INVALID"));
         }
         crate::transport::canonical_lifecycle_origin(&self.expected_origin, true)
-            .map_err(|_| invalid("AGENT_PROFILE_INVALID"))?;
+            .map_err(|_| invalid("AGENT_SELECTION_INVALID"))?;
         Ok(())
     }
 }
@@ -284,10 +312,10 @@ impl AgentRequest {
 }
 
 pub struct AgentTools {
-    profile: AgentProfile,
-    client: RuntimeClient,
-    protocol_clients: BTreeMap<String, RuntimeClient>,
-    receiver: Option<RuntimeClient>,
+    profile: AgentSelection,
+    client: Client,
+    protocol_clients: BTreeMap<String, Client>,
+    receiver: Option<Client>,
 }
 impl AgentTools {
     pub async fn open(profile: AgentProfile) -> Result<Self> {
@@ -307,7 +335,7 @@ impl AgentTools {
                     &profile.expected_origin,
                     &profile.expected_actor,
                 )
-                .await?,
+                .await?.into(),
             );
         }
         let receiver = match &profile.receive_endpoint_path {
@@ -317,16 +345,29 @@ impl AgentTools {
                     &profile.expected_origin,
                     &profile.expected_actor,
                 )
-                .await?,
+                .await?.into(),
             ),
             None => None,
         };
         Ok(Self {
-            profile,
-            client,
+            profile: profile.selection(),
+            client: client.into(),
             protocol_clients,
             receiver,
         })
+    }
+    /// Attach a tool view to an already-open client. No engine, signer,
+    /// mailbox, namespace or migration is created. Closing the MCP transport
+    /// does not close the caller's client or cancel its admitted operations.
+    pub fn from_client(client: ParticipantClient, selection: AgentSelection) -> Result<Self> {
+        selection.validate()?;
+        let origin = crate::transport::canonical_lifecycle_origin(&selection.expected_origin, true)
+            .map_err(|_| invalid("CLIENT_IDENTITY_OR_ORIGIN_MISMATCH"))?;
+        if client.actor_id() != selection.expected_actor || client.origin() != origin {
+            return Err(invalid("CLIENT_IDENTITY_OR_ORIGIN_MISMATCH"));
+        }
+        if !client.locally_live() { return Err(invalid("LOCAL_CLIENT_REVOKED")); }
+        Ok(Self { profile: selection, client: Client::attached(client), protocol_clients: Default::default(), receiver: None })
     }
     fn scope(&self, name: &str) -> Result<&MailScope> {
         self.profile
@@ -341,7 +382,7 @@ impl AgentTools {
             .cloned()
             .ok_or_else(|| invalid("PROTOCOL_ALIAS_UNKNOWN"))
     }
-    fn receiving(&self) -> &RuntimeClient {
+    fn receiving(&self) -> &Client {
         self.receiver.as_ref().unwrap_or(&self.client)
     }
     fn workspace_scope(&self, name: &str) -> Result<Scope> {
@@ -371,13 +412,13 @@ impl AgentTools {
     async fn read(&self, action: &str, scope: Scope, body: Value) -> Result<Value> {
         self.read_client(&self.client, action, scope, body).await
     }
-    fn protocol_client(&self, name: &str) -> Result<&RuntimeClient> {
+    fn protocol_client(&self, name: &str) -> Result<&Client> {
         self.protocol(name)?;
         Ok(self.protocol_clients.get(name).unwrap_or(&self.client))
     }
     async fn read_client(
         &self,
-        client: &RuntimeClient,
+        client: &Client,
         action: &str,
         scope: Scope,
         body: Value,
@@ -410,7 +451,7 @@ impl AgentTools {
     }
     async fn invoke_client(
         &self,
-        client: &RuntimeClient,
+        client: &Client,
         request: Invoke,
         wait_ms: u64,
     ) -> Result<Value> {
@@ -483,7 +524,7 @@ impl AgentTools {
                 let capabilities = self.client.call(json!({"method":"capabilities"})).await?;
                 let bindings = self.receiving().call(json!({"method":"bindings"})).await?;
                 Ok(
-                    json!({"actor_id":self.client.actor_id(),"origin":self.client.origin(),"maturity":"EXPERIMENTAL","local_engine":"AUTHENTICATED","remote_or_host_readiness":"NOT_ATTESTED","scopes":self.profile.scopes,"send_scopes":self.profile.send_scopes,"contacts":self.profile.contacts.keys().collect::<Vec<_>>(),"protocols":self.profile.protocols,"bindings":bindings,"capability":capabilities["capability"],"next_tools":{"reachability":"peerwork_reachability","capability_discovery":"peerwork agent tools"}}),
+                    json!({"actor_id":self.client.actor_id(),"origin":self.client.origin(),"maturity":"EXPERIMENTAL","local_engine":if self.client.attached_mode(){"ATTACHED_ORIGINAL_CLIENT"}else{"AUTHENTICATED"},"state_migration_required":false,"remote_or_host_readiness":"NOT_ATTESTED","scopes":self.profile.scopes,"send_scopes":self.profile.send_scopes,"contacts":self.profile.contacts.keys().collect::<Vec<_>>(),"protocols":self.profile.protocols,"bindings":bindings,"capability":capabilities["capability"],"next_tools":{"reachability":"peerwork_reachability","capability_discovery":"peerwork agent tools"}}),
                 )
             }
             AgentRequest::Reachability { scope, contact } => {

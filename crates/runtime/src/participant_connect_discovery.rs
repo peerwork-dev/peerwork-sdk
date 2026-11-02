@@ -203,7 +203,13 @@ pub(super) struct Source {
     path:PathBuf,digest:String,engine:EngineConfig,runtime:Option<PathBuf>,client:Option<String>,namespace:Option<String>,
 }
 #[derive(Clone,Debug,Serialize)]
-pub struct Discovery {pub state:String,pub candidates:Vec<Value>,pub next_action:String}
+pub struct Discovery {
+    pub state:String,
+    pub candidates:Vec<Value>,
+    pub next_action:String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnostic:Option<Value>,
+}
 pub fn directory(project:&Path)->Result<PathBuf> {
     let context=ProjectDirectory::open(project)?;let identity=context.identity()?;
     let path=crate::onboarding_state::project(project,"projects",true)?.unwrap();
@@ -332,10 +338,11 @@ impl Connect {
                 state: "LOCAL_PROJECT_TRUST_REQUIRED".into(),
                 candidates: vec![],
                 next_action: "AUTHORIZE_LOCAL_PROJECT_DISCOVERY_ONCE".into(),
+                diagnostic: None,
             });
         }
         let root = project.join(".peerwork");
-        let Some(source_root)=project_context.child(".peerwork",false,true)? else {return Ok(Discovery{state:"ORIGINAL_SOURCE_REQUIRED".into(),candidates:vec![],next_action:"SELECT_ORIGINAL_NATIVE_INSTALLATION".into()})};
+        let Some(source_root)=project_context.child(".peerwork",false,true)? else {return Ok(self.discovery_summary())};
         let mut found = BTreeMap::new();
         // A versioned fixed provider set, not filename guessing or a home scan.
         for (name, is_runtime) in [("engine.json", false), ("runtime.json", true)] {
@@ -430,14 +437,20 @@ impl Connect {
             );
         }
         Discovery {
+            diagnostic: candidates.is_empty().then(|| json!({
+                "meaning":"NO_SUPPORTED_LOCAL_CLIENT_DISCOVERED",
+                "identity_existence":"NOT_DETERMINED",
+                "tools_require_state_migration":false,
+                "existing_client_options":["SELECT_EXISTING_NATIVE_CLIENT_ENDPOINT","ATTACH_TO_OPEN_RUST_PARTICIPANT","CUSTOM_CLIENT_REQUIRES_EXPLICIT_ADAPTER"]
+            })),
             state: match candidates.len() {
-                0 => "NO_LOCAL_IDENTITY_FOUND",
+                0 => "NO_SUPPORTED_LOCAL_CLIENT_FOUND",
                 1 => "IDENTITY_AVAILABLE",
                 _ => "IDENTITY_SELECTION_REQUIRED",
             }
             .into(),
             next_action: match candidates.len() {
-                0 => "IMPORT_EXISTING_INSTALLATION_OR_EXPLICITLY_CREATE_IDENTITY",
+                0 => "ATTACH_EXISTING_CLIENT_OR_SELECT_NATIVE_INSTALLATION",
                 1 => "RESUME_CONNECT",
                 _ => "CHOOSE_ONE_PUBLIC_IDENTITY_HANDLE",
             }
@@ -776,6 +789,19 @@ mod tests {
         // Even a valid same-user clone cannot silently replace the confirmed inode.
         std::fs::write(local.join("connect.state"),before).unwrap();std::fs::set_permissions(local.join("connect.state"),std::fs::Permissions::from_mode(0o600)).unwrap();
         assert!(matches!(Connect::inspect(&local),Err(e)if e.code=="ORIGINAL_REGISTRY_DIRECTORY_CHANGED"));
+    }
+    #[test]
+    fn missing_installation_is_not_a_missing_identity_or_migration_requirement() {
+        let temp = crate::test_support::protected_test_dir();
+        let mut connect = Connect::open(&temp.path().join("local")).unwrap();
+        let discovery = connect.discover(temp.path(), true).unwrap();
+        assert_eq!(discovery.state, "NO_SUPPORTED_LOCAL_CLIENT_FOUND");
+        assert_eq!(discovery.next_action, "ATTACH_EXISTING_CLIENT_OR_SELECT_NATIVE_INSTALLATION");
+        let diagnostic = discovery.diagnostic.unwrap();
+        assert_eq!(diagnostic["identity_existence"], "NOT_DETERMINED");
+        assert_eq!(diagnostic["tools_require_state_migration"], false);
+        assert!(!temp.path().join("identity").exists());
+        assert!(!temp.path().join("engine").exists());
     }
     #[test]
     fn discovery_requires_consent_and_never_opens_engine_or_exposes_paths() {

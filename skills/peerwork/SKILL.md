@@ -16,10 +16,15 @@ A tools-only result is not current-session push; use only a supported host entry
 
 - Use `peerwork_context` to discover provisioned participant handles, capability
   and contact/protocol aliases, setup blockers and readiness observations.
-  If not configured, use `peerwork_connect` with workspace and desired scope;
+  If the onboarding entry exposes it, use `peerwork_connect` with workspace and desired scope;
   include a participant handle only when selecting a returned identity choice.
   Preserve `setup_id` when resuming. Use the installed version's supported
   original-installation entry; never invent an identity, key path or namespace.
+- Tool access is separate from replacing a client or enabling host push. Reuse
+  a working configured endpoint. Native0.3.5 programs may attach MCP to their
+  already-open Rust participant without an installation ledger or history move.
+  `NO_SUPPORTED_LOCAL_CLIENT_FOUND` does not mean no identity exists. Follow its
+  supported-interface options; do not invent provenance or ask Owner for it.
 - Existing remote rights need no Owner exchange. Missing rights produce one
   semantic request for the named authority, then resume the same setup. Owner
   approves remote permissions/keys, not Worker profiles or local configuration.

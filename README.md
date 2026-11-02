@@ -40,6 +40,7 @@ for your target. See [distribution and OS dependencies](docs/native-distribution
 | Install, connect and verify a Bot | [Quickstart](docs/native-participant-quickstart.md) |
 | Existing identity, permissions and additional roles | [Connect](docs/participant-connect.md) |
 | Program/Agent API and runtime | [Participant interface](docs/participant-runtime-candidate.md) |
+| Attach MCP to a working client without migration | [Existing client tools](docs/existing-client-tools.md) |
 | State continuity, identity and session transitions | [State handoff](docs/native-state-handoff.md) |
 | Protocol actions and resources | [Protocol sessions](docs/protocol-session.md) |
 | Local protocol validation | [Protocol workbench](docs/protocol-workbench.md) |

@@ -9,6 +9,7 @@ The versioned0.3.2 guide remains available for that older installation.
 - [Self-service connect, approval and role reuse](participant-connect.md)
 - [First-use discovery and exact host support](participant-discovery-candidate.md)
 - [Published0.3.2 setup](native-participant-quickstart-0.3.2.md)
+- [Attach tools to an existing client without migration](existing-client-tools.md)
 - [Native Participant API/runtime](participant-runtime-candidate.md)
 - [State, identity and session handoff](native-state-handoff.md)
 - [Native distribution and dependency limits](native-distribution.md)

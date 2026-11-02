@@ -155,6 +155,11 @@ impl Tools {
     }
     fn catalog(&self)->Result<Vec<Value>> {
         let mut tools=agent_tools::catalog();
+        if self.local.is_none() {
+            // A connected tool transport is not an installation/migration
+            // workflow. Local onboarding belongs to its own registry entry.
+            tools.retain(|v| !matches!(v["name"].as_str(), Some("peerwork_connect" | "peerwork_connect_approve")));
+        }
         if let Some(directory)=&self.local {
             let connect=crate::participant_connect::Connect::inspect(directory)?;
             let profile=match connect.profile_for_scope(self.handle.as_deref(),self.workspace.as_deref()) {
@@ -179,6 +184,33 @@ where
 {
     profile.validate()?;
     serve_tools(Tools { profile:Some(profile),local:None,handle:None,workspace:None,client:OnceCell::new() },reader,writer).await
+}
+/// Serve the normal MCP tools using an already-owned participant. The caller
+/// retains its original identity, operation namespace, engine and lifecycle.
+/// No local installation record, runtime endpoint or host binding is required.
+///
+/// ```no_run
+/// use peerwork_runtime::{agent_mcp, agent_tools::AgentSelection, participant::{ParticipantClient, Result}};
+/// async fn expose_tools(original: ParticipantClient) -> Result<()> {
+///     let selection = AgentSelection::for_client(&original);
+///     // Add known workspace/contact/protocol aliases as needed. This grants
+///     // no new permission; pass the original suitably restricted client.
+///     agent_mcp::serve_client(original, selection,
+///         tokio::io::BufReader::new(tokio::io::stdin()), tokio::io::stdout()).await
+/// }
+/// ```
+pub async fn serve_client<R, W>(
+    client: crate::participant::ParticipantClient,
+    selection: agent_tools::AgentSelection,
+    reader: R,
+    writer: W,
+) -> Result<()>
+where
+    R: AsyncBufRead + Send + Unpin + 'static,
+    W: AsyncWrite + Unpin,
+{
+    let tools = AgentTools::from_client(client, selection)?;
+    serve_tools(Tools { profile:None,local:None,handle:None,workspace:None,client:OnceCell::new_with(Some(tools)) },reader,writer).await
 }
 pub async fn serve_local<R,W>(directory:std::path::PathBuf,reader:R,writer:W)->Result<()>
 where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
@@ -358,7 +390,8 @@ mod tests {
         let task = tokio::spawn(serve(profile(), BufReader::new(sr), sw));
         send(&mut cw, modern(1, "tools/list", json!({}))).await;
         let list = receive(&mut cr).await;
-        assert_eq!(list["result"]["tools"].as_array().unwrap().len(), agent_tools::catalog().len());
+        assert_eq!(list["result"]["tools"].as_array().unwrap().len(), agent_tools::catalog().len() - 2);
+        assert!(list["result"]["tools"].as_array().unwrap().iter().all(|v| v["name"] != "peerwork_connect" && v["name"] != "peerwork_connect_approve"));
         assert_eq!(list["result"]["resultType"], "complete");
         send(&mut cw, modern(2, "server/discover", json!({}))).await;
         assert_eq!(
@@ -443,9 +476,9 @@ mod tests {
         .await;
         let list = receive(&mut cr).await;
         assert_eq!(list["id"], 2);
-        assert_eq!(list["result"]["tools"], json!(agent_tools::catalog()));
         let tools = list["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), agent_tools::catalog().len());
+        let expected: Vec<_> = agent_tools::catalog().into_iter().filter(|v| v["name"] != "peerwork_connect" && v["name"] != "peerwork_connect_approve").collect();
+        assert_eq!(tools, &expected);
         assert!(tools.iter().all(|tool| tool["_meta"]["antigravity/alwaysLoad"] == true));
         assert!(serde_json::to_vec(tools).unwrap().len() <= 16 * 1024,
             "fixed eager entry points must not expand into per-protocol action catalogs");

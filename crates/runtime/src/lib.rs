@@ -19,7 +19,7 @@ mod onboarding_files;
 mod onboarding_project;
 mod onboarding_state;
 mod onboarding_store;
-mod agent_mcp;
+pub mod agent_mcp;
 pub mod communication_bridge;
 pub(crate) mod communication_local_channel;
 pub mod participant;
@@ -129,3 +129,8 @@ mod participant_live_host_tests;
 mod participant_onboarding_live_tests;
 
 mod process_identity;
+
+mod participant_client_tools;
+mod agent_client;
+#[cfg(test)]
+mod agent_attached_tests;
