@@ -4,7 +4,29 @@ use crate::participant::{ParticipantError, Result};
 use std::path::{Component, Path};
 #[cfg(windows)]
 #[path = "onboarding_windows.rs"]
-mod windows;
+pub(crate) mod windows;
+thread_local! {
+    static DIAGNOSTIC: std::cell::RefCell<Option<serde_json::Value>> = const { std::cell::RefCell::new(None) };
+}
+// Full paths stay on the calling CLI thread. ParticipantError and MCP never
+// serialize these local filesystem observations.
+pub(crate) fn take_diagnostic() -> Option<serde_json::Value> {
+    DIAGNOSTIC.with(|d| d.borrow_mut().take())
+}
+pub(crate) fn path_error(path: &Path, policy: &str, operation: &str, reason: &str) -> ParticipantError {
+    let mut value = serde_json::json!({"component":path,"policy":policy,"operation":operation,"reason":reason});
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        value["effective_uid"] = serde_json::json!(unsafe {libc::geteuid()});
+        if let Ok(m) = std::fs::symlink_metadata(path) {
+            value["uid"] = serde_json::json!(m.uid()); value["gid"] = serde_json::json!(m.gid());
+            value["mode"] = serde_json::json!(format!("{:04o}",m.mode() & 0o7777));
+        }
+    }
+    DIAGNOSTIC.with(|d| *d.borrow_mut() = Some(value));
+    let mut e = error(); e.recovery = "VERIFY_ORIGINAL_LOCAL_BINDING_AND_REPAIR_NAMED_COMPONENT".into(); e
+}
 fn error() -> ParticipantError {
     ParticipantError::local("ONBOARDING_PATH_UNSAFE", "LOCAL_CONFIGURATION")
 }
@@ -23,6 +45,7 @@ pub(crate) fn directory(path: &Path, private: bool) -> Result<()> {
                 std::fs::DirBuilder::new()
                     .mode(if private { 0o700 } else { 0o755 })
                     .create(path)
+                    .or_else(|e|if e.kind()==std::io::ErrorKind::AlreadyExists {Ok(())} else {Err(e)})
                     .map_err(|_| error())?;
             }
             #[cfg(windows)]
@@ -35,23 +58,20 @@ pub(crate) fn directory(path: &Path, private: bool) -> Result<()> {
     check_directory(path, private)
 }
 pub(crate) fn check_directory(path: &Path, private: bool) -> Result<()> {
-    let m = std::fs::symlink_metadata(path).map_err(|_| error())?;
+    let m = std::fs::symlink_metadata(path).map_err(|e| path_error(path,"PRIVATE_STATE","STAT",if e.kind()==std::io::ErrorKind::PermissionDenied {"PERMISSION_DENIED"} else {"NOT_FOUND_OR_UNREADABLE"}))?;
     if !m.is_dir() || m.file_type().is_symlink() {
-        return Err(error());
+        return Err(path_error(path,"PRIVATE_STATE","STAT","NOT_DIRECTORY_OR_SYMLINK"));
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
         if std::fs::canonicalize(path).map_err(|_| error())? != path {
-            return Err(error());
+            return Err(path_error(path,"PRIVATE_STATE","STAT","SYMLINK_OR_PATH_ALIAS"));
         }
-        if m.uid() != unsafe { libc::geteuid() }
-            || m.mode() & if private { 0o077 } else { 0o022 } != 0
-        {
-            return Err(error());
-        }
+        if m.uid() != unsafe { libc::geteuid() } { return Err(path_error(path,"PRIVATE_STATE","STAT","OWNER_MISMATCH")); }
+        if m.mode() & if private { 0o077 } else { 0o022 } != 0 { return Err(path_error(path,"PRIVATE_STATE","STAT","PRIVATE_OR_WRITE_PERMISSIONS")); }
         for ancestor in path.ancestors().skip(1) {
-            let parent = std::fs::symlink_metadata(ancestor).map_err(|_| error())?;
+            let parent = std::fs::symlink_metadata(ancestor).map_err(|_| path_error(ancestor,"PRIVATE_STATE","STAT","ANCESTOR_UNREADABLE"))?;
             let trusted_owner = parent.uid() == 0 || parent.uid() == unsafe { libc::geteuid() };
             let sticky_root = parent.uid() == 0 && parent.mode() & 0o1000 != 0;
             if !parent.is_dir()
@@ -59,7 +79,7 @@ pub(crate) fn check_directory(path: &Path, private: bool) -> Result<()> {
                 || !trusted_owner
                 || (parent.mode() & 0o022 != 0 && !sticky_root)
             {
-                return Err(error());
+                return Err(path_error(ancestor,"PRIVATE_STATE","STAT",if !parent.is_dir() || parent.file_type().is_symlink() {"ANCESTOR_NOT_DIRECTORY_OR_SYMLINK"} else if !trusted_owner {"ANCESTOR_OWNER_MISMATCH"} else {"ANCESTOR_WRITABLE"}));
             }
         }
     }

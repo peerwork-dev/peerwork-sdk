@@ -1,8 +1,69 @@
 //! Bounded original-installation discovery. No recursive scan or engine open.
 use super::*;
+use crate::onboarding_project::Directory as ProjectDirectory;
 use crate::communication_runtime::{EngineConfig, RuntimeConfig};
 
 const LIMIT: usize = 8;
+fn bounded_registry(bytes:&[u8])->Result<Registry>{
+    let registry:Registry=serde_json::from_value(peerwork_core::strict_json::parse_strict_json(bytes).map_err(|_|local("CONNECT_RECOVERY_REQUIRED"))?).map_err(|_|local("CONNECT_RECOVERY_REQUIRED"))?;
+    if registry.participants.len()>8 || registry.setups.len()>64 || registry.approvals.len()>64 || registry.sources.len()>8
+        || registry.trusted_projects.len()>8 || registry.trusted_project_identities.len()>8 || registry.verified_bindings.len()>8 {return Err(local("CONNECT_RECOVERY_REQUIRED"))}
+    Ok(registry)
+}
+fn anchored_registry(directory:&ProjectDirectory)->Result<Registry>{
+    let bytes=directory.read("connect.state",64*1024*1024+128,true)?.ok_or_else(||local("CONNECT_ORIGINAL_BINDING_RECOVERY_REQUIRED"))?;
+    bounded_registry(SecureStateStore::snapshot_payload(&bytes,64*1024*1024).map_err(|_|local("CONNECT_RECOVERY_REQUIRED"))?)
+}
+fn association_required()->ParticipantError{let mut e=local("ORIGINAL_LOCAL_REGISTRY_CONFIRMATION_REQUIRED");e.recovery="LOCAL_OWNER_CONFIRM_EXISTING_REGISTRY_WITH_CONNECT_LOCAL_CONTEXT_CONFIRM_ORIGINAL".into();e}
+fn require_original_association(directory:&ProjectDirectory)->Result<()> {
+    let selected=crate::onboarding_state::project(directory.path(),"original-registries",false)?
+        .ok_or_else(association_required)?;
+    let path=selected.join("association.state");
+    let bytes=SecureStateStore::read_snapshot(&path,65536).map_err(|_|association_required())?;
+    let expected=json!({"format":"peerwork.original-registry-association.v1","directory":directory.identity()?});
+    if peerwork_core::strict_json::parse_strict_json(&bytes).ok().as_ref()!=Some(&expected) {return Err(local("ORIGINAL_REGISTRY_DIRECTORY_CHANGED"))}
+    Ok(())
+}
+/// Explicit local confirmation selects an existing private store. It changes
+/// only a protected association, never keys, source state or remote authority.
+pub(super) fn confirm_original_store(path:&Path)->Result<()> {
+    if crate::onboarding_files::check_directory(path,true).is_ok(){return Ok(())}
+    let directory=ProjectDirectory::private(path)?;
+    let store=crate::onboarding_store::Store::anchored(directory.clone(),"connect.state",false)?;
+    let registry=bounded_registry(&store.read_exact()?.ok_or_else(||local("CONNECT_RECOVERY_REQUIRED"))?)?;
+    if registry.participants.is_empty() && registry.sources.is_empty() && registry.setups.is_empty(){return Err(local("CONFIRM_ORIGINAL_REQUIRES_EXISTING_IDENTITY"))}
+    let selected=crate::onboarding_state::project(path,"original-registries",true)?.unwrap();
+    let association=SecureStateStore::open(&selected.join("association.state")).map_err(|_|local("ORIGINAL_ASSOCIATION_ALREADY_OWNED"))?;
+    let expected=json!({"format":"peerwork.original-registry-association.v1","directory":directory.identity()?});
+    if let Some(old)=association.read_exact().map_err(|_|local("ORIGINAL_ASSOCIATION_RECOVERY_REQUIRED"))? {
+        if peerwork_core::strict_json::parse_strict_json(&old).ok().as_ref()!=Some(&expected){return Err(local("ORIGINAL_REGISTRY_DIRECTORY_CHANGED"))}
+    }else{directory.verify()?;association.write_exact(&serde_json::to_vec(&expected).unwrap()).map_err(|_|local("ORIGINAL_ASSOCIATION_WRITE_FAILED"))?;}
+    crate::onboarding_files::take_diagnostic();Ok(())
+}
+pub(super) fn open_original_store(path:&Path)->Result<(crate::onboarding_store::Store,ProjectDirectory)> {
+    if !path.try_exists().map_err(|_|crate::onboarding_files::path_error(path,"PRIVATE_STATE","OPEN","PERMISSION_DENIED"))? {
+        crate::onboarding_files::directory(path,true)?;
+    }
+    if crate::onboarding_files::check_directory(path,true).is_ok(){
+        let directory=ProjectDirectory::private(path)?;
+        return Ok((crate::onboarding_store::Store::protected(&path.join("connect.state")).map_err(|_|local("CONNECT_STATE_ALREADY_OWNED_OR_UNSAFE"))?,directory));
+    }
+    let directory=ProjectDirectory::private(path)?;
+    require_original_association(&directory)?;
+    let store=crate::onboarding_store::Store::anchored(directory.clone(),"connect.state",false)?;
+    crate::onboarding_files::take_diagnostic();Ok((store,directory))
+}
+pub(super) fn inspect_original_store(path:&Path)->Result<(Registry,ProjectDirectory)> {
+    let ordinary=crate::onboarding_files::check_directory(path,true).is_ok();
+    let directory=ProjectDirectory::private(path)?;
+    if !ordinary {require_original_association(&directory)?;}
+    let registry=match directory.read("connect.state",64*1024*1024+128,true)? {
+        Some(bytes)=>bounded_registry(SecureStateStore::snapshot_payload(&bytes,64*1024*1024).map_err(|_|local("CONNECT_RECOVERY_REQUIRED"))?)?,
+        None=>{if directory.kind("initialized.json")?.is_some(){return Err(local("CONNECT_ORIGINAL_BINDING_RECOVERY_REQUIRED"))} Registry::default()},
+    };
+    if !ordinary {crate::onboarding_files::take_diagnostic();}
+    Ok((registry,directory))
+}
 pub(super) struct ProjectBinding {
     pub directory: PathBuf,
     pub participant: String,
@@ -14,6 +75,7 @@ pub(super) struct ProjectBinding {
     entry: Value,
     config_path: PathBuf,
     config_digest: String,
+    project_identity: Value,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -23,244 +85,133 @@ pub(super) struct ProjectTarget {
     registration: Registration,
     binding: Option<Value>,
 }
-pub(super) fn project_target(project: &Path) -> Result<Option<(PathBuf, String)>> {
-    let path = project.join(".peerwork/connect");
-    match std::fs::symlink_metadata(&path) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(_) => return Err(local("ORIGINAL_INSTALLATION_RECOVERY_REQUIRED")),
-        Ok(_) => (),
+fn checked_project_index(path: &Path, project: &ProjectDirectory) -> Result<Connect> {
+    let index = Connect::inspect(path)?;
+    if index.registry.project_identity.as_ref().is_some_and(|wanted| project.identity().as_ref().ok() != Some(wanted)) {
+        return Err(local("PROJECT_DIRECTORY_CHANGED_RESELECT_ORIGINAL"));
     }
-    let index = Connect::inspect(&path)?;
-    let Some(target) = index.registry.project_target else {
-        if index.registry.participants.is_empty()
-            && index.registry.sources.is_empty()
-            && index.registry.setups.is_empty()
-            && index.registry.approvals.is_empty()
-        {
-            return Ok(None);
-        }
-        return Ok(Some((path, String::new())));
-    };
-    if target.directory == path {
-        return Err(local("ORIGINAL_INSTALLATION_RECOVERY_REQUIRED"));
-    }
-    let original = Connect::inspect(&target.directory)?;
-    if original.registry.project_target.is_some()
-        || original.registry.participants.get(&target.participant) != Some(&target.registration)
-        || target.binding.as_ref().is_some_and(|wanted| {
-            original.registry.verified_bindings.get(&target.participant) != Some(wanted)
-        })
-    {
-        return Err(local("ORIGINAL_INSTALLATION_RECOVERY_REQUIRED"));
-    }
-    Ok(Some((target.directory, target.participant)))
+    Ok(index)
 }
-pub(super) fn remember_project(project: &Path, choice: &ProjectBinding) -> Result<()> {
-    // Serialize with registration/uninstall; preserve the discovered snapshot.
-    let original = Connect::open(&choice.directory)?;
-    if original.registry.participants.get(&choice.participant) != Some(&choice.registration)
-        || original.registry.verified_bindings.get(&choice.participant) != choice.binding.as_ref()
-        || !install::matches_installation(
-            &original,
-            project,
-            &choice.host,
-            &choice.name,
-            &choice.entry,
-        )
-        || crate::onboarding_files::read_public_optional(&choice.config_path, 256 * 1024)?
-            .is_none_or(|bytes| sha256_hex(&bytes) != choice.config_digest)
-    {
+fn resolve_target(path: PathBuf, index: Connect) -> Result<Option<(PathBuf,String)>> {
+    let Some(target) = index.registry.project_target else {
+        if index.registry.participants.is_empty() && index.registry.sources.is_empty()
+            && index.registry.setups.is_empty() && index.registry.approvals.is_empty() {return Ok(None)}
+        return Ok(Some((path,String::new())));
+    };
+    if target.directory == path {return Err(local("ORIGINAL_INSTALLATION_RECOVERY_REQUIRED"))}
+    let original=Connect::inspect(&target.directory)?;
+    if original.registry.project_target.is_some()
+        || original.registry.participants.get(&target.participant)!=Some(&target.registration)
+        || target.binding.as_ref().is_some_and(|wanted|original.registry.verified_bindings.get(&target.participant)!=Some(wanted)) {
+        return Err(local("ORIGINAL_INSTALLATION_RECOVERY_REQUIRED"));
+    }
+    Ok(Some((target.directory,target.participant)))
+}
+pub(super) fn project_target(project:&Path)->Result<Option<(PathBuf,String)>> {
+    let context=ProjectDirectory::open(project)?;
+    if let Some(path)=crate::onboarding_state::project(project,"projects",false)? {
+        if let Some(target)=resolve_target(path.clone(),checked_project_index(&path,&context)?)? {return Ok(Some(target))}
+    }
+    // Old project-local registries retain their exact source. A private path
+    // that fails protection is a recovery blocker, never a new-identity fallback.
+    let legacy=project.join(".peerwork/connect");
+    match legacy.try_exists() {
+        Ok(false)=>Ok(None),
+        Err(_)=>Err(crate::onboarding_files::path_error(&legacy,"LEGACY_PRIVATE_REGISTRY","DISCOVER","PERMISSION_DENIED")),
+        Ok(true)=>{
+            let index=checked_project_index(&legacy,&context)?;
+            context.verify()?;resolve_target(legacy,index)
+        },
+    }
+}
+pub(super) fn remember_project(project:&Path,choice:&ProjectBinding)->Result<()> {
+    let context=ProjectDirectory::open(project)?;
+    if context.identity()?!=choice.project_identity {return Err(local("PROJECT_SOURCE_CHANGED_REDISCOVER_ORIGINAL"))}
+    let original=Connect::open(&choice.directory)?;
+    if original.registry.participants.get(&choice.participant)!=Some(&choice.registration)
+        || original.registry.verified_bindings.get(&choice.participant)!=choice.binding.as_ref()
+        || !install::matches_installation(&original,project,&choice.host,&choice.name,&choice.entry)
+        || read_project_config(&context,&choice.host)?.is_none_or(|bytes|sha256_hex(&bytes)!=choice.config_digest) {
         return Err(local("PROJECT_SOURCE_CHANGED_REDISCOVER_ORIGINAL"));
     }
-    let directory = directory(project)?;
-    if directory == choice.directory {
-        return Ok(());
-    }
-    let mut index = Connect::open(&directory)?;
-    if !index.registry.participants.is_empty()
-        || !index.registry.sources.is_empty()
-        || !index.registry.setups.is_empty()
-        || index.registry.project_target.is_some()
-    {
-        return Err(local("PROJECT_BINDING_CHANGED_RESUME_ORIGINAL"));
-    }
-    index.registry.project_target = Some(ProjectTarget {
-        directory: choice.directory.clone(),
-        participant: choice.participant.clone(),
-        registration: choice.registration.clone(),
-        binding: choice.binding.clone(),
-    });
-    index.save()
+    let directory=directory(project)?;
+    if directory==choice.directory {return Ok(())}
+    let mut index=Connect::open(&directory)?;
+    if !index.registry.participants.is_empty() || !index.registry.sources.is_empty()
+        || !index.registry.setups.is_empty() || index.registry.project_target.is_some() {return Err(local("PROJECT_BINDING_CHANGED_RESUME_ORIGINAL"))}
+    index.registry.project_target=Some(ProjectTarget{directory:choice.directory.clone(),participant:choice.participant.clone(),registration:choice.registration.clone(),binding:choice.binding.clone()});
+    context.verify()?;index.save()
 }
-pub(super) fn pin_project_binding(
-    project: &Path,
-    original: &Connect,
-    participant: &str,
-) -> Result<()> {
-    let directory = project.join(".peerwork/connect");
-    if directory == original.directory || !directory.is_dir() {
-        return Ok(());
-    }
-    let mut index = Connect::open(&directory)?;
-    let Some(target) = index.registry.project_target.as_mut() else {
-        return Ok(());
-    };
-    if target.directory != original.directory || target.participant != participant {
-        return Ok(());
-    }
-    if original.registry.participants.get(participant) != Some(&target.registration) {
-        return Err(local("ORIGINAL_INSTALLATION_RECOVERY_REQUIRED"));
-    }
-    let binding = original
-        .registry
-        .verified_bindings
-        .get(participant)
-        .ok_or_else(|| local("ORIGINAL_BINDING_VERIFICATION_REQUIRED"))?;
-    match &target.binding {
-        Some(old) if old != binding => Err(local("ORIGINAL_INSTALLATION_RECOVERY_REQUIRED")),
-        Some(_) => Ok(()),
-        None => {
-            target.binding = Some(binding.clone());
-            index.save()
-        }
-    }
+pub(super) fn pin_project_binding(project:&Path,original:&Connect,participant:&str)->Result<()> {
+    let Some(directory)=crate::onboarding_state::project(project,"projects",false)? else{return Ok(())};
+    if directory==original.directory {return Ok(())}
+    let mut index=Connect::open(&directory)?;
+    if index.registry.project_identity.as_ref()!=Some(&ProjectDirectory::open(project)?.identity()?) {return Err(local("PROJECT_DIRECTORY_CHANGED_RESELECT_ORIGINAL"))}
+    let Some(target)=index.registry.project_target.as_mut() else{return Ok(())};
+    if target.directory!=original.directory || target.participant!=participant {return Ok(())}
+    if original.registry.participants.get(participant)!=Some(&target.registration) {return Err(local("ORIGINAL_INSTALLATION_RECOVERY_REQUIRED"))}
+    let binding=original.registry.verified_bindings.get(participant).ok_or_else(||local("ORIGINAL_BINDING_VERIFICATION_REQUIRED"))?;
+    match &target.binding {Some(old) if old!=binding=>Err(local("ORIGINAL_INSTALLATION_RECOVERY_REQUIRED")),Some(_)=>Ok(()),None=>{target.binding=Some(binding.clone());index.save()}}
 }
-/// Follow only an exact installation entry confirmed by the original protected
-/// registry. A repository MCP entry alone cannot authorize a private runtime.
-pub(super) fn project_bindings(
-    project: &Path,
-    workspace: Option<&str>,
-) -> Result<Vec<ProjectBinding>> {
-    crate::onboarding_files::check_directory(project, false)?;
-    let mut found = BTreeMap::new();
-    for (host, relative) in [
-        ("codex", ".codex/config.toml"),
-        ("agy", ".agents/mcp_config.json"),
-    ] {
-        let path = project.join(relative);
-        match std::fs::symlink_metadata(path.parent().unwrap()) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(_) => return Err(local("DISCOVERY_INCOMPLETE")),
-            Ok(_) => (),
-        }
-        let Some(bytes) = crate::onboarding_files::read_public_optional(&path, 256 * 1024)
-            .map_err(|_| local("DISCOVERY_INCOMPLETE"))?
-        else {
-            continue;
+fn read_project_config(project:&ProjectDirectory,host:&str)->Result<Option<Vec<u8>>> {
+    let name=if host=="codex"{".codex"}else{".agents"};
+    let Some(directory)=project.child(name,false,false)? else{return Ok(None)};
+    directory.read(if host=="codex"{"config.toml"}else{"mcp_config.json"},256*1024,false)
+}
+/// Project entries are bounded hints, never commands to execute or signer authority.
+pub(super) fn project_bindings(project:&Path,workspace:Option<&str>)->Result<Vec<ProjectBinding>> {
+    let context=ProjectDirectory::open(project)?;
+    let project_identity=context.identity()?;
+    let mut found=BTreeMap::new();
+    for host in ["codex","agy"] {
+        let path=project.join(if host=="codex"{".codex/config.toml"}else{".agents/mcp_config.json"});
+        let Some(bytes)=read_project_config(&context,host)? else{continue};
+        let entries:Vec<(String,Value)>=if host=="codex" {
+            let doc=std::str::from_utf8(&bytes).ok().and_then(|s|s.parse::<toml_edit::DocumentMut>().ok()).ok_or_else(||local("DISCOVERY_INCOMPLETE"))?;
+            doc.get("mcp_servers").and_then(|v|v.as_table_like()).map(|table|table.iter().filter_map(|(name,v)|{
+                let command=v.get("command")?.as_str()?;
+                let args=v.get("args")?.as_array()?.iter().map(|v|v.as_str().map(str::to_owned)).collect::<Option<Vec<_>>>()?;
+                let mut entry=json!({"command":command,"args":args});
+                if v.as_table_like().is_none_or(|table|table.iter().any(|(key,_)|!matches!(key,"command"|"args"))) {entry["unrecognized_installation_fields"]=json!(true)}
+                Some((name.to_owned(),entry))
+            }).collect()).unwrap_or_default()
+        }else {
+            let doc=peerwork_core::strict_json::parse_strict_json(&bytes).map_err(|_|local("DISCOVERY_INCOMPLETE"))?;
+            doc["mcpServers"].as_object().map(|t|t.iter().map(|(n,v)|(n.clone(),v.clone())).collect()).unwrap_or_default()
         };
-        let entries: Vec<(String, Value)> = if host == "codex" {
-            let doc = std::str::from_utf8(&bytes)
-                .ok()
-                .and_then(|s| s.parse::<toml_edit::DocumentMut>().ok())
-                .ok_or_else(|| local("DISCOVERY_INCOMPLETE"))?;
-            doc.get("mcp_servers")
-                .and_then(|v| v.as_table_like())
-                .map(|table| {
-                    table
-                        .iter()
-                        .filter_map(|(name, v)| {
-                            let command = v.get("command")?.as_str()?;
-                            let args = v
-                                .get("args")?
-                                .as_array()?
-                                .iter()
-                                .map(|v| v.as_str().map(str::to_owned))
-                                .collect::<Option<Vec<_>>>()?;
-                            let mut entry = json!({"command":command,"args":args});
-                            if v.as_table_like().is_none_or(|table| {
-                                table
-                                    .iter()
-                                    .any(|(key, _)| !matches!(key, "command" | "args"))
-                            }) {
-                                entry["unrecognized_installation_fields"] = json!(true);
-                            }
-                            Some((name.to_owned(), entry))
-                        })
-                        .collect()
-                })
-                .unwrap_or_default()
-        } else {
-            let doc = peerwork_core::strict_json::parse_strict_json(&bytes)
-                .map_err(|_| local("DISCOVERY_INCOMPLETE"))?;
-            doc["mcpServers"]
-                .as_object()
-                .map(|table| table.iter().map(|(n, v)| (n.clone(), v.clone())).collect())
-                .unwrap_or_default()
-        };
-        if entries.len() > 32 {
-            return Err(local("DISCOVERY_INCOMPLETE"));
-        }
-        for (name, entry) in entries {
-            if !name.starts_with("peerwork-") {
-                continue;
-            }
-            let Some(args) = entry["args"].as_array() else {
-                continue;
-            };
-            if args.len() != 8
-                || args[0] != "agent"
-                || args[1] != "--local"
-                || args[3] != "--participant"
-                || args[5] != "--workspace"
-                || args[7] != "mcp"
-            {
-                continue;
-            }
-            let (Some(directory), Some(participant), Some(ws)) =
-                (args[2].as_str(), args[4].as_str(), args[6].as_str())
-            else {
-                continue;
-            };
-            if workspace.is_some_and(|wanted| wanted != ws) {
-                continue;
-            }
-            let directory = PathBuf::from(directory);
-            let original = Connect::inspect(&directory)
-                .map_err(|_| local("ORIGINAL_INSTALLATION_RECOVERY_REQUIRED"))?;
-            if !install::matches_installation(&original, project, host, &name, &entry) {
-                return Err(local("PROJECT_INSTALLATION_PROVENANCE_REQUIRED"));
-            }
-            let registration = original
-                .registry
-                .participants
-                .get(participant)
-                .ok_or_else(|| local("ORIGINAL_INSTALLATION_RECOVERY_REQUIRED"))?;
-            let choice = format!(
-                "installed-{}",
-                &sha256_hex(json!([directory, participant]).to_string().as_bytes())[..24]
-            );
-            found.insert(choice.clone(),ProjectBinding{directory,participant:participant.into(),
-                registration:registration.clone(),binding:original.registry.verified_bindings.get(participant).cloned(),
-                host:host.into(),name:name.clone(),entry:entry.clone(),config_path:path.clone(),config_digest:sha256_hex(&bytes),
-                summary:json!({"handle":choice,"actor_id":registration.actor_id,"origin":registration.origin,"source":"VERIFIED_PROJECT_INSTALLATION","workspace_id":ws})});
-            if found.len() > LIMIT {
-                return Err(local("DISCOVERY_INCOMPLETE"));
-            }
+        if entries.len()>32 {return Err(local("DISCOVERY_INCOMPLETE"))}
+        for (name,entry) in entries {
+            if !name.starts_with("peerwork-"){continue}
+            let Some(args)=entry["args"].as_array() else{continue};
+            if args.len()!=8 || args[0]!="agent" || args[1]!="--local" || args[3]!="--participant" || args[5]!="--workspace" || args[7]!="mcp"{continue}
+            let (Some(directory),Some(participant),Some(ws))=(args[2].as_str(),args[4].as_str(),args[6].as_str())else{continue};
+            if workspace.is_some_and(|wanted|wanted!=ws){continue}
+            let directory=PathBuf::from(directory);let original=Connect::inspect(&directory)?;
+            if !install::matches_installation(&original,project,host,&name,&entry){return Err(local("PROJECT_INSTALLATION_PROVENANCE_REQUIRED"))}
+            let registration=original.registry.participants.get(participant).ok_or_else(||local("ORIGINAL_INSTALLATION_RECOVERY_REQUIRED"))?;
+            let choice=format!("installed-{}",&sha256_hex(json!([directory,participant]).to_string().as_bytes())[..24]);
+            found.insert(choice.clone(),ProjectBinding{directory,participant:participant.into(),registration:registration.clone(),binding:original.registry.verified_bindings.get(participant).cloned(),host:host.into(),name:name.clone(),entry:entry.clone(),config_path:path.clone(),config_digest:sha256_hex(&bytes),project_identity:project_identity.clone(),summary:json!({"handle":choice,"actor_id":registration.actor_id,"origin":registration.origin,"source":"VERIFIED_PROJECT_INSTALLATION","workspace_id":ws})});
+            if found.len()>LIMIT{return Err(local("DISCOVERY_INCOMPLETE"))}
         }
     }
-    Ok(found.into_values().collect())
+    context.verify()?;Ok(found.into_values().collect())
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone,Serialize,Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Source {
-    path: PathBuf,
-    digest: String,
-    engine: EngineConfig,
-    runtime: Option<PathBuf>,
-    client: Option<String>,
-    namespace: Option<String>,
+    path:PathBuf,digest:String,engine:EngineConfig,runtime:Option<PathBuf>,client:Option<String>,namespace:Option<String>,
 }
-#[derive(Clone, Debug, Serialize)]
-pub struct Discovery {
-    pub state: String,
-    pub candidates: Vec<Value>,
-    pub next_action: String,
-}
-pub fn directory(project: &Path) -> Result<PathBuf> {
-    crate::onboarding_files::check_directory(project, false)?;
-    let root = project.join(".peerwork");
-    crate::onboarding_files::directory(&root, true)?;
-    Ok(root.join("connect"))
+#[derive(Clone,Debug,Serialize)]
+pub struct Discovery {pub state:String,pub candidates:Vec<Value>,pub next_action:String}
+pub fn directory(project:&Path)->Result<PathBuf> {
+    let context=ProjectDirectory::open(project)?;let identity=context.identity()?;
+    let path=crate::onboarding_state::project(project,"projects",true)?.unwrap();
+    let mut index=Connect::open(&path)?;
+    match &index.registry.project_identity {
+        Some(old) if old!=&identity=>return Err(local("PROJECT_DIRECTORY_CHANGED_RESELECT_ORIGINAL")),
+        Some(_)=>(),None=>{index.registry.project_identity=Some(identity);context.verify()?;index.save()?;},
+    }
+    Ok(path)
 }
 fn binding(engine: &EngineConfig) -> Result<String> {
     let options = engine.participant_config();
@@ -362,21 +313,23 @@ impl Connect {
         self.require_writer()?;
         // An explicitly selected original registry already supplies authority.
         // Role reuse must not depend on an unrelated shell cwd or read it.
-        if !authorize_project && (!self.registry.participants.is_empty() || !self.registry.sources.is_empty()) {
-            return Ok(self.discovery_summary());
-        }
-        crate::onboarding_files::check_directory(project, false)?;
-        if authorize_project && !self.registry.trusted_projects.iter().any(|p| p == project) {
-            if self.registry.trusted_projects.len() >= LIMIT {
-                return Err(local("DISCOVERY_SOURCE_LIMIT"));
-            }
-            self.registry.trusted_projects.push(project.into());
-            self.save()?;
-        }
-        // A previous binding wins. A damaged binding is repaired by adopt(),
-        // never replaced by whichever different identity happens to be found.
         if !self.registry.participants.is_empty() || !self.registry.sources.is_empty() {
             return Ok(self.discovery_summary());
+        }
+        let project_context = ProjectDirectory::open(project)?;
+        let identity=project_context.identity()?;
+        match self.registry.trusted_project_identities.get(project) {
+            Some(old) if old!=&identity=>return Err(local("PROJECT_DIRECTORY_CHANGED_RESELECT_ORIGINAL")),
+            None if !authorize_project && self.registry.trusted_projects.iter().any(|p|p==project)=>return Err(local("LOCAL_PROJECT_RECONFIRMATION_REQUIRED")),
+            _=>(),
+        }
+        if authorize_project {
+            if !self.registry.trusted_projects.iter().any(|p|p==project){
+                if self.registry.trusted_projects.len()>=LIMIT{return Err(local("DISCOVERY_SOURCE_LIMIT"))}
+                self.registry.trusted_projects.push(project.into());
+            }
+            self.registry.trusted_project_identities.insert(project.into(),identity);
+            project_context.verify()?;self.save()?;
         }
         if !self.registry.trusted_projects.iter().any(|p| p == project) {
             return Ok(Discovery {
@@ -386,13 +339,12 @@ impl Connect {
             });
         }
         let root = project.join(".peerwork");
-        crate::onboarding_files::check_directory(&root, true)?;
+        let Some(source_root)=project_context.child(".peerwork",false,true)? else {return Ok(Discovery{state:"ORIGINAL_SOURCE_REQUIRED".into(),candidates:vec![],next_action:"SELECT_ORIGINAL_NATIVE_INSTALLATION".into()})};
         let mut found = BTreeMap::new();
         // A versioned fixed provider set, not filename guessing or a home scan.
         for (name, is_runtime) in [("engine.json", false), ("runtime.json", true)] {
             let path = root.join(name);
-            let Some(bytes) = crate::onboarding_files::read_optional(&path, 65536)
-                .map_err(|_| local("DISCOVERY_INCOMPLETE"))?
+            let Some(bytes) = source_root.read(name, 65536, true)?
             else {
                 continue;
             };
@@ -460,6 +412,7 @@ impl Connect {
                 }
             }
         }
+        project_context.verify()?;
         if !found.is_empty() {
             self.registry.sources = found;
             self.save()?;
@@ -558,6 +511,9 @@ impl Connect {
     /// fences remain the only path to opening a signer; state is never copied.
     pub(crate) async fn adopt(&mut self, handle: &str) -> Result<()> {
         if let Some(r) = self.registry.participants.get(handle).cloned() {
+            if self.registry.verified_bindings.contains_key(handle) {
+                match self.original_client(handle).await {Ok(_)=>return Ok(()),Err(error) if matches!(error.code.as_str(),"ORIGINAL_RUNTIME_BINDING_CHANGED"|"CLIENT_IDENTITY_OR_ORIGIN_MISMATCH"|"CLIENT_BINDING_INVALID")=>return Err(error),Err(_)=>()}
+            }
             let original = self.directory.join(format!("runtime-{handle}"));
             let owned_proof = r.endpoint_path == original.join("client-bootstrap.json")
                 && original.join("config.json").is_file()
@@ -568,7 +524,7 @@ impl Connect {
                 && owned_proof
             {
                 let bytes =
-                    crate::onboarding_files::read_optional(&original.join("config.json"), 65536)?
+                    crate::onboarding_project::read_private_source(&original.join("config.json"), 65536)?
                         .ok_or_else(|| local("ORIGINAL_INSTALLATION_RECOVERY_REQUIRED"))?;
                 let config: RuntimeConfig = serde_json::from_value(
                     peerwork_core::strict_json::parse_strict_json(&bytes)
@@ -595,7 +551,7 @@ impl Connect {
                     {
                         return Err(error);
                     }
-                    let wire = crate::onboarding_files::read_optional(
+                    let wire = crate::onboarding_project::read_private_source(
                         &directory.join("config.json"),
                         65536,
                     )?
@@ -621,7 +577,7 @@ impl Connect {
             .get(handle)
             .cloned()
             .ok_or_else(|| local("LOCAL_SELECTION_REQUIRED"))?;
-        let bytes = crate::onboarding_files::read_optional(&source.path, 65536)?
+        let bytes = crate::onboarding_project::read_private_source(&source.path, 65536)?
             .ok_or_else(|| local("ORIGINAL_INSTALLATION_RECOVERY_REQUIRED"))?;
         if sha256_hex(&bytes) != source.digest {
             return Err(local("ORIGINAL_SOURCE_CHANGED_RECOVERY_REQUIRED"));
@@ -650,7 +606,7 @@ impl Connect {
             }
             // Recheck before publishing; an altered source cannot gain the
             // original runtime's authority even when its actor is unchanged.
-            if crate::onboarding_files::read_optional(&source.path, 65536)?.as_deref()
+            if crate::onboarding_project::read_private_source(&source.path, 65536)?.as_deref()
                 != Some(bytes.as_slice())
             {
                 return Err(local("ORIGINAL_SOURCE_CHANGED_RECOVERY_REQUIRED"));
@@ -773,7 +729,54 @@ mod tests {
         }
     }
     fn write(path: &Path, value: &impl Serialize) {
+        if let Some(parent)=path.parent(){if !parent.exists(){create_private_state_directory(parent).unwrap();}}
         write_private(path, &serde_json::to_vec(value).unwrap()).unwrap();
+    }
+    #[cfg(unix)]
+    #[test]
+    fn shared_project_installs_and_reuses_original_without_private_repo_state(){
+        use std::os::unix::fs::{PermissionsExt,MetadataExt};
+        let t=crate::test_support::protected_test_dir();let shared=t.path().join("shared");std::fs::create_dir(&shared).unwrap();std::fs::set_permissions(&shared,std::fs::Permissions::from_mode(0o775)).unwrap();
+        let project=shared.join("repo");std::fs::create_dir(&project).unwrap();
+        let index=directory(&project).unwrap();assert!(!index.starts_with(&project));assert!(!project.join(".peerwork").exists());
+        let original=t.path().join("original");let mut c=Connect::open(&original).unwrap();
+        c.registry.participants.insert("worker".into(),Registration{origin:"https://api.peerwork.dev".into(),actor_id:"A".repeat(43),endpoint_path:t.path().join("client.json")});c.save().unwrap();
+        let spec=Installation{host:"codex".into(),project:project.clone(),executable:std::env::current_exe().unwrap()};
+        c.install("worker",&"W".repeat(43),spec).unwrap();drop(c);
+        assert!(project.join(".agents/.peerwork-installation").is_file());
+        assert!(!project.join(".agents/.peerwork-installation/ownership.state").exists());
+        let choices=project_bindings(&project,None).unwrap();assert_eq!(choices.len(),1);remember_project(&project,&choices[0]).unwrap();
+        assert_eq!(project_target(&project).unwrap(),Some((original.clone(),"worker".into())));
+        assert_eq!(Connect::inspect(&original).unwrap().registry.participants["worker"].actor_id,"A".repeat(43));
+        assert_eq!(std::fs::metadata(shared).unwrap().mode()&0o777,0o775);
+    }
+    #[cfg(unix)]
+    #[test]
+    fn explicit_empty_registry_pins_failed_project_discovery_across_reentry(){
+        let t=crate::test_support::protected_test_dir();let project=t.path().join("project");std::fs::create_dir(&project).unwrap();
+        let local=t.path().join("local");let mut c=Connect::open(&local).unwrap();
+        c.discover(&project,true).unwrap();drop(c);
+        std::fs::rename(&project,t.path().join("original-project")).unwrap();std::fs::create_dir(&project).unwrap();
+        let mut c=Connect::open(&local).unwrap();assert!(matches!(c.discover(&project,false),Err(e)if e.code=="PROJECT_DIRECTORY_CHANGED_RESELECT_ORIGINAL"));
+        assert!(c.registry.sources.is_empty()&&c.registry.participants.is_empty());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn legacy_registry_confirmation_pins_original_directory_without_moving_state(){
+        use std::os::unix::fs::{PermissionsExt,DirBuilderExt};
+        let t=crate::test_support::protected_test_dir();let shared=t.path().join("shared");create_private_state_directory(&shared).unwrap();let local=shared.join("local");
+        let mut c=Connect::open(&local).unwrap();c.registry.participants.insert("worker".into(),Registration{origin:"https://api.peerwork.dev".into(),actor_id:"A".repeat(43),endpoint_path:local.join("endpoint.json")});c.save().unwrap();drop(c);
+        let before=std::fs::read(local.join("connect.state")).unwrap();std::fs::write(local.join("original-journal"),b"unresolved original command: keep-id").unwrap();
+        std::fs::set_permissions(&shared,std::fs::Permissions::from_mode(0o775)).unwrap();
+        assert!(matches!(Connect::inspect(&local),Err(e)if e.code=="ORIGINAL_LOCAL_REGISTRY_CONFIRMATION_REQUIRED"));
+        confirm_original_store(&local).unwrap();assert_eq!(std::fs::read(local.join("connect.state")).unwrap(),before);
+        let mut c=Connect::open(&local).unwrap();assert_eq!(c.registry.participants["worker"].actor_id,"A".repeat(43));c.save().unwrap();drop(c);
+        assert_eq!(std::fs::read(local.join("original-journal")).unwrap(),b"unresolved original command: keep-id");
+        assert_eq!(std::fs::read(local.join("connect.state")).unwrap(),before);
+        std::fs::rename(&local,shared.join("moved-original")).unwrap();std::fs::DirBuilder::new().mode(0o700).create(&local).unwrap();
+        // Even a valid same-user clone cannot silently replace the confirmed inode.
+        std::fs::write(local.join("connect.state"),before).unwrap();std::fs::set_permissions(local.join("connect.state"),std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(matches!(Connect::inspect(&local),Err(e)if e.code=="ORIGINAL_REGISTRY_DIRECTORY_CHANGED"));
     }
     #[test]
     fn discovery_requires_consent_and_never_opens_engine_or_exposes_paths() {
@@ -905,6 +908,7 @@ mod tests {
         let dir = directory(project).unwrap();
         let config = engine(project);
         write(&project.join("original.json"), &config);
+        crate::onboarding_files::directory(&project.join(".peerwork"),true).unwrap();
         std::os::unix::fs::symlink(
             project.join("original.json"),
             project.join(".peerwork/engine.json"),
@@ -913,7 +917,7 @@ mod tests {
         let mut c = Connect::open(&dir).unwrap();
         assert_eq!(
             c.discover(project, true).unwrap_err().code,
-            "DISCOVERY_INCOMPLETE"
+            "ONBOARDING_PATH_UNSAFE"
         );
         assert!(c.registry.sources.is_empty());
     }

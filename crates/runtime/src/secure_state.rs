@@ -256,6 +256,16 @@ impl SecureStateStore {
         let wire=bytes.strip_prefix(MAGIC).filter(|b|!b.is_empty()).ok_or(SecureStateError::Corrupt)?;
         Ok(wire.to_vec())
     }
+    /// Exact on-disk envelope for the anchored project-ownership adapter. This
+    /// is local bookkeeping; exposing it does not grant state or signer access.
+    pub(crate) fn snapshot_payload(bytes:&[u8],limit:usize)->Result<&[u8],SecureStateError>{
+        let value=bytes.strip_prefix(MAGIC).filter(|b|!b.is_empty()).ok_or(SecureStateError::Corrupt)?;
+        if value.len()>limit{return Err(SecureStateError::TooLarge)} Ok(value)
+    }
+    pub(crate) fn snapshot_wire(bytes:&[u8])->Result<Vec<u8>,SecureStateError>{
+        if bytes.is_empty() || bytes.len() as u64>MAX_STATE_BYTES{return Err(SecureStateError::TooLarge)}
+        let mut value=Vec::with_capacity(MAGIC.len()+bytes.len());value.extend_from_slice(MAGIC);value.extend_from_slice(bytes);Ok(value)
+    }
     /// Atomically replaces native state with exact bytes after the caller has
     /// completed semantic validation. Empty/oversize state fails closed.
     pub fn write_exact(&self, bytes: &[u8]) -> Result<(), SecureStateError> {

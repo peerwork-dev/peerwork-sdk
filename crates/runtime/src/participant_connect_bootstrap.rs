@@ -68,6 +68,7 @@ pub(super) fn engine(values: &BTreeMap<String, String>) -> Result<Option<EngineC
         }
     }
     let identity_path = absolute(identity)?;
+    crate::onboarding_files::check_directory(identity_path.parent().ok_or_else(||local("LOCAL_SELECTION_INVALID"))?,true)?;
     let actor = crate::kernel_identity::KernelIdentity::open(&identity_path)
         .map_err(|_| local("IDENTITY_RECOVERY_REQUIRED"))?
         .actor_id()
@@ -135,11 +136,22 @@ fn alive(pid: u32, expected: Option<&str>) -> Result<bool> {
     }
     Err(local("PROCESS_IDENTITY_UNCONFIRMED"))
 }
+fn automatic_namespace(directory:&Path,engine:&EngineConfig)->Result<()> {
+    let checked=(||->Result<()>{
+        crate::onboarding_files::check_directory(directory,true)?;
+        crate::onboarding_files::check_directory(engine.identity_path.parent().ok_or_else(||local("LOCAL_SELECTION_INVALID"))?,true)?;
+        if engine.state_directory.try_exists().map_err(|_|local("LOCAL_SELECTION_INVALID"))? {crate::onboarding_files::check_directory(&engine.state_directory,true)?;}else{crate::onboarding_files::check_directory(engine.state_directory.parent().ok_or_else(||local("LOCAL_SELECTION_INVALID"))?,false)?;}
+        if let Some(journal)=&engine.journal_path {crate::onboarding_files::check_directory(journal.parent().ok_or_else(||local("LOCAL_SELECTION_INVALID"))?,true)?;}
+        Ok(())
+    })();
+    checked.map_err(|_|{let mut e=local("ORIGINAL_RUNTIME_OWNER_START_REQUIRED");e.recovery="START_OR_UPGRADE_ORIGINAL_RUNTIME_WITH_ITS_LOCAL_OWNER".into();e})
+}
 fn planned(
     directory: &Path,
     handle: &str,
     mut engine: EngineConfig,
 ) -> Result<(RuntimeConfig, Registration)> {
+    automatic_namespace(directory,&engine)?;
     if !identifier(handle)
         || !engine.identity_path.is_absolute()
         || !engine.state_directory.is_absolute()
@@ -418,6 +430,18 @@ async fn launch(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn protected_index_does_not_authorize_automatic_signer_start_in_shared_namespace(){
+        use std::os::unix::fs::PermissionsExt;
+        let t=crate::test_support::protected_test_dir();let shared=t.path().join("shared");create_private_state_directory(&shared).unwrap();
+        let key=shared.join("identity");let identity=crate::kernel_identity::KernelIdentity::create(&key).unwrap();let actor=identity.actor_id().to_owned();drop(identity);
+        std::fs::set_permissions(&shared,std::fs::Permissions::from_mode(0o775)).unwrap();let local=t.path().join("safe-index");create_private_state_directory(&local).unwrap();
+        let engine=EngineConfig{name:"original".into(),origin:"https://api.peerwork.dev".into(),expected_actor:actor,identity_path:key,state_directory:shared.join("state"),journal_path:Some(shared.join("journal.sqlite")),authority:None,allow_loopback_http:false,transport:Default::default(),max_inflight:1,max_pending:2,max_stored_bytes:1024,migration_sources:vec![]};
+        assert!(matches!(planned(&local,"worker",engine),Err(e)if e.code=="ORIGINAL_RUNTIME_OWNER_START_REQUIRED"));
+        assert!(!shared.join("state").exists());assert!(!shared.join("journal.sqlite").exists());assert!(!local.join("runtime-worker").exists());
+    }
+
     use super::*;
     #[test]
     fn selected_existing_engine_keeps_journal_authority_and_transport() {

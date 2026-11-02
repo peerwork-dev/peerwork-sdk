@@ -284,7 +284,7 @@ fn components(path: &Path) -> io::Result<()> {
     }
     Ok(())
 }
-pub(super) fn directory(path: &Path) -> Result<()> {
+pub(crate) fn directory(path: &Path) -> Result<()> {
     components(path).map_err(|_| error())?;
     let trust = Trust::open().map_err(|_| error())?;
     for (index, node) in path.ancestors().enumerate() {
@@ -292,6 +292,23 @@ pub(super) fn directory(path: &Path) -> Result<()> {
         inspect(&handle, true, index == 0, &trust).map_err(|_| error())?;
     }
     Ok(())
+}
+pub(crate) fn pin_directory(path:&Path)->Result<Vec<File>> {
+    directory(path)?;
+    let mut handles=Vec::new();
+    for node in path.ancestors() {
+        let raw=unsafe{CreateFileW(wide(node).as_ptr(),READ_CONTROL|FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ|FILE_SHARE_WRITE,null(),OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS|FILE_FLAG_OPEN_REPARSE_POINT,null_mut())};
+        if raw==INVALID_HANDLE_VALUE {return Err(error())}
+        handles.push(unsafe{File::from_raw_handle(raw)});
+    }
+    directory(path)?;Ok(handles)
+}
+pub(crate) fn directory_identity(path:&Path)->Result<serde_json::Value>{
+    let file=open(path,true,0).map_err(|_|error())?;let mut info:BY_HANDLE_FILE_INFORMATION=unsafe{zeroed()};
+    if unsafe{GetFileInformationByHandle(file.as_raw_handle(),&mut info)}==0{return Err(error())}
+    Ok(serde_json::json!({"path":path,"volume":info.dwVolumeSerialNumber,"index_high":info.nFileIndexHigh,"index_low":info.nFileIndexLow}))
 }
 pub(super) fn read(path: &Path, private: bool) -> Result<File> {
     directory(path.parent().ok_or_else(error)?)?;

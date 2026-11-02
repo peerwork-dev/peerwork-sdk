@@ -182,26 +182,31 @@ struct Registry {
     local_runtime_admins: BTreeMap<String, PathBuf>,
     #[serde(default)]
     trusted_projects: Vec<PathBuf>,
+    #[serde(default,skip_serializing_if="BTreeMap::is_empty")]
+    trusted_project_identities:BTreeMap<PathBuf,Value>,
     #[serde(default)]
     sources: BTreeMap<String, discovery::Source>,
     #[serde(default)]
     verified_bindings: BTreeMap<String, Value>,
     #[serde(default)]
     project_target: Option<discovery::ProjectTarget>,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    project_identity: Option<Value>,
 }
 pub struct Connect {
     directory: PathBuf,
-    store: Option<SecureStateStore>,
+    private_directory:crate::onboarding_project::Directory,
+    store: Option<crate::onboarding_store::Store>,
     registry: Registry,
 }
 impl Connect {
     pub fn selection_required(setup_id: &str) -> Value {
         json!({"state":"PENDING","setup_id":setup_id,"blocker":{"stage":"LOCAL_SELECTION","code":"LOCAL_SELECTION_REQUIRED","next_actor":"LOCAL_RUNTIME_OWNER","next_action":"RUN_NATIVE_CONNECT_WITH_AUTHORIZED_PROJECT_CONTEXT"}})
     }
+    /// One local OS-owner confirmation for an existing private registry. No signer or remote operation is opened.
+    pub fn confirm_original(directory:&Path)->Result<Value>{discovery::confirm_original_store(directory)?;Ok(Self::inspect(directory)?.context())}
     pub fn open(directory: &Path) -> Result<Self> {
-        crate::onboarding_files::directory(directory, true)?;
-        let store = SecureStateStore::open(&directory.join("connect.state"))
-            .map_err(|_| local("CONNECT_STATE_ALREADY_OWNED_OR_UNSAFE"))?;
+        let (store,private_directory) = discovery::open_original_store(directory)?;
         let registry: Registry = match store
             .read_exact()
             .map_err(|_| local("CONNECT_RECOVERY_REQUIRED"))?
@@ -221,12 +226,13 @@ impl Connect {
         if registry.participants.len() > 8
             || registry.setups.len() > 64
             || registry.approvals.len() > 64
-            || registry.sources.len() > 8 || registry.trusted_projects.len() > 8 || registry.verified_bindings.len() > 8
+            || registry.sources.len() > 8 || registry.trusted_projects.len() > 8 || registry.trusted_project_identities.len()>8 || registry.verified_bindings.len() > 8
         {
             return Err(local("CONNECT_RECOVERY_REQUIRED"));
         }
         Ok(Self {
             directory: directory.into(),
+            private_directory,
             store: Some(store),
             registry,
         })
@@ -234,39 +240,8 @@ impl Connect {
     /// Atomic, bounded read of the selected local registry. Normal tools must
     /// remain available while a setup job awaits its remote/local prerequisites.
     pub fn inspect(directory: &Path) -> Result<Self> {
-        crate::secure_state::check_private_directory(directory)
-            .map_err(|_| local("CONNECT_DIRECTORY_NOT_PRIVATE"))?;
-        let path = directory.join("connect.state");
-        let registry: Registry = match std::fs::symlink_metadata(&path) {
-            Ok(_) => {
-                let bytes = SecureStateStore::read_snapshot(&path, 16 * 1024 * 1024)
-                    .map_err(|_| local("CONNECT_RECOVERY_REQUIRED"))?;
-                serde_json::from_value(
-                    peerwork_core::strict_json::parse_strict_json(&bytes)
-                        .map_err(|_| local("CONNECT_RECOVERY_REQUIRED"))?,
-                )
-                .map_err(|_| local("CONNECT_RECOVERY_REQUIRED"))?
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                if std::fs::symlink_metadata(directory.join("initialized.json")).is_ok() {
-                    return Err(local("CONNECT_ORIGINAL_BINDING_RECOVERY_REQUIRED"));
-                }
-                Registry::default()
-            }
-            Err(_) => return Err(local("CONNECT_RECOVERY_REQUIRED")),
-        };
-        if registry.participants.len() > 8
-            || registry.setups.len() > 64
-            || registry.approvals.len() > 64
-            || registry.sources.len() > 8 || registry.trusted_projects.len() > 8 || registry.verified_bindings.len() > 8
-        {
-            return Err(local("CONNECT_RECOVERY_REQUIRED"));
-        }
-        Ok(Self {
-            directory: directory.into(),
-            store: None,
-            registry,
-        })
+        let (registry,private_directory)=discovery::inspect_original_store(directory)?;
+        Ok(Self{directory:directory.into(),private_directory,store:None,registry})
     }
     fn require_writer(&self) -> Result<()> {
         if self.store.is_some() {
@@ -283,22 +258,10 @@ impl Connect {
                 &serde_json::to_vec(&self.registry).map_err(|_| local("CONNECT_STATE_INVALID"))?,
             )
             .map_err(|_| local("CONNECT_STATE_WRITE_FAILED"))?;
-        let marker = self.directory.join("initialized.json");
-        let expected = json!({"format":"peerwork.connect-initialized.v1"});
-        match std::fs::symlink_metadata(&marker) {
-            Ok(_) => {
-                if crate::communication_store::private_json(&marker, 1024)
-                    .map_err(|_| local("CONNECT_BINDING_MARKER_NOT_PRIVATE"))?
-                    != expected
-                {
-                    return Err(local("CONNECT_BINDING_MARKER_INVALID"));
-                }
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                write_private(&marker, expected.to_string().as_bytes())
-                    .map_err(|_| local("CONNECT_BINDING_MARKER_NOT_PRIVATE"))?
-            }
-            Err(_) => return Err(local("CONNECT_BINDING_MARKER_NOT_PRIVATE")),
+        let expected=json!({"format":"peerwork.connect-initialized.v1"});
+        match self.private_directory.read("initialized.json",1024,true)? {
+            Some(bytes) if peerwork_core::strict_json::parse_strict_json(&bytes).ok().as_ref()!=Some(&expected)=>return Err(local("CONNECT_BINDING_MARKER_INVALID")),
+            Some(_)=>(),None=>self.private_directory.replace_private("initialized.json",None,expected.to_string().as_bytes())?,
         }
         Ok(())
     }
@@ -430,21 +393,14 @@ impl Connect {
             s.agent_host_required && s.desired.receive && !s.channel_receive);
         let suffix = if partial { "-tools" } else { "" };
         let path = self.directory.join(format!("profile-{id}{suffix}.json"));
-        match std::fs::symlink_metadata(&path) {
-            Ok(_) => {
-                let old = AgentProfile::load(&path)?;
-                if serde_json::to_value(&old).ok() != serde_json::to_value(profile).ok() {
-                    return Err(local("DERIVED_PROFILE_CONFLICT"));
-                }
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                write_private(
-                    &path,
-                    &serde_json::to_vec(profile).map_err(|_| local("DERIVED_PROFILE_INVALID"))?,
-                )
-                .map_err(|_| local("DERIVED_PROFILE_NOT_PRIVATE"))?;
-            }
-            Err(_) => return Err(local("DERIVED_PROFILE_NOT_PRIVATE")),
+        let name=format!("profile-{id}{suffix}.json");
+        match self.private_directory.read(&name,512*1024,true)? {
+            Some(bytes)=>{
+                let old:AgentProfile=serde_json::from_value(peerwork_core::strict_json::parse_strict_json(&bytes).map_err(|_|local("DERIVED_PROFILE_INVALID"))?).map_err(|_|local("DERIVED_PROFILE_INVALID"))?;
+                old.validate()?;
+                if serde_json::to_value(&old).ok()!=serde_json::to_value(profile).ok(){return Err(local("DERIVED_PROFILE_CONFLICT"))}
+            },
+            None=>self.private_directory.replace_private(&name,None,&serde_json::to_vec(profile).map_err(|_|local("DERIVED_PROFILE_INVALID"))?)?,
         }
         Ok(path)
     }
@@ -1340,6 +1296,7 @@ pub fn schema() -> Value {
 }
 
 pub fn cli(args: &[String]) -> Value {
+    crate::onboarding_files::take_diagnostic();
     fn parse(args: &[String]) -> Result<BTreeMap<String, String>> {
         let mut values = BTreeMap::new();
         let mut i = 0;
@@ -1354,6 +1311,7 @@ pub fn cli(args: &[String]) -> Value {
                 "--uninstall",
                 "--agy-managed",
                 "--trust-project",
+                "--confirm-original",
                 "--program",
             ]
             .contains(&flag.as_str());
@@ -1396,6 +1354,7 @@ pub fn cli(args: &[String]) -> Value {
                 "--agy-api",
                 "--agy-inbox",
                 "--trust-project",
+                "--confirm-original",
                 "--program",
             ]
             .contains(&flag.as_str())
@@ -1433,6 +1392,7 @@ pub fn cli(args: &[String]) -> Value {
     }
     let result = || -> Result<Value> {
         let mut values = parse(args)?;
+        if values.contains_key("--confirm-original") && (values.keys().any(|key|!matches!(key.as_str(),"--local"|"--context"|"--confirm-original")) || !values.contains_key("--local") || !values.contains_key("--context")) {return Err(local("CONFIRM_ORIGINAL_REQUIRES_LOCAL_CONTEXT_ONLY"))}
         let project = std::path::absolute(values.get("--project").cloned().unwrap_or_else(||".".into()))
             .map_err(|_|local("PROJECT_CONTEXT_INVALID"))?.components().collect::<PathBuf>();
         let mut installed_directory=None;
@@ -1460,6 +1420,10 @@ pub fn cli(args: &[String]) -> Value {
             Some(path)=>std::path::absolute(path).map_err(|_|local("CONNECT_DIRECTORY_INVALID"))?,
             None=>match installed_directory {Some(path)=>path,None=>discovery::directory(&project)?},
         };
+        if values.contains_key("--confirm-original") {
+            if !values.contains_key("--local") || !values.contains_key("--context") {return Err(local("CONFIRM_ORIGINAL_REQUIRES_LOCAL_CONTEXT_ONLY"))}
+            discovery::confirm_original_store(&directory)?;
+        }
         if values.contains_key("--context") && directory.exists() {
             return Ok(Connect::inspect(&directory)?.context());
         }
@@ -1634,12 +1598,18 @@ pub fn cli(args: &[String]) -> Value {
             Ok(out)
         })
     };
-    result().unwrap_or_else(|error| {
+    let mut output = result().unwrap_or_else(|error| {
         if matches!(error.code.as_str(),"RUNTIME_STARTING_REOBSERVE_SAME_BINDING"|"PROCESS_IDENTITY_UNCONFIRMED"|"RUNTIME_LAUNCH_RECOVERY_REQUIRED"){
             let selection=parse(args).unwrap_or_default();
             json!({"state":"PENDING","phase":"LOCAL_RUNTIME_STARTUP","setup_id":selection.get("--id"),"participant":selection.get("--participant"),"workspace_id":selection.get("--workspace"),"error":error,"next_action":if error.code=="RUNTIME_STARTING_REOBSERVE_SAME_BINDING"{"REOBSERVE_SAME_BINDING"}else{"VERIFY_ORIGINAL_LAUNCH_EVIDENCE"}})
         } else {json!({"state":"FAILED","error":error})}
-    })
+    });
+    if output["state"] == "FAILED" {
+        if let Some(diagnostic) = crate::onboarding_files::take_diagnostic() {
+            output["error"]["local_diagnostic"] = diagnostic;
+        }
+    }
+    output
 }
 
 #[cfg(test)]

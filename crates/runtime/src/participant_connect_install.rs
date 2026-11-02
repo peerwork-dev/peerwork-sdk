@@ -48,7 +48,7 @@ mod tests {
         let first = connect.install("worker", &ws, spec.clone()).unwrap();
         let before = std::fs::metadata(&config).unwrap().modified().unwrap();
         let registry = std::fs::read(connect.directory.join("connect.state")).unwrap();
-        let project_state = project.join(".agents/.peerwork-installation/ownership.state");
+        let project_state = crate::onboarding_state::project(&project,"installations",true).unwrap().unwrap().join("ownership.state");
         let project_modified = std::fs::metadata(&project_state)
             .unwrap()
             .modified()
@@ -245,7 +245,7 @@ mod tests {
         pending.entry_owned = false;
         connect.save().unwrap();
         {
-            let mut project = ProjectFiles::open(&project.join(".agents")).unwrap();
+            let mut project = ProjectFiles::open(&project,None).unwrap();
             project.ownership.skill_owned = false;
             project.ownership.skill_hash = None;
             project.ownership.pending_skill_hash = Some(sha256_hex(SKILL.as_bytes()));
@@ -305,6 +305,8 @@ pub(super) struct Installed {
     previous_entry: Option<Value>,
     #[serde(default)]
     previous_skill_hash: Option<String>,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    project_identity: Option<Value>,
 }
 fn id(participant: &str, workspace: &str, spec: &Installation) -> String {
     sha256_hex(
@@ -334,36 +336,68 @@ struct ProjectOwnership {
     skill_owned: bool,
     skill_hash: Option<String>,
     pending_skill_hash: Option<String>,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    project_identity: Option<Value>,
 }
+use crate::onboarding_store::Store as OwnershipStore;
 struct ProjectFiles {
-    store: SecureStateStore,
+    store: OwnershipStore,
     ownership: ProjectOwnership,
 }
 pub(super) fn matches_installation(connect:&Connect,project:&Path,host:&str,name:&str,entry:&Value)->bool {
     connect.registry.installations.values().any(|record|record.committed && record.entry_owned
-        && record.spec.project==project && record.spec.host==host && record.name==name && record.entry==*entry)
+        && record.spec.project==project && record.spec.host==host && record.name==name && record.entry==*entry
+        && record.project_identity.as_ref().is_none_or(|wanted|crate::onboarding_project::Directory::open(project).and_then(|p|p.identity()).as_ref().ok()==Some(wanted)))
 }
 impl ProjectFiles {
-    fn open(agents: &Path) -> Result<Self> {
-        let directory = agents.join(".peerwork-installation");
-        files::directory(&directory, true)?;
-        let store = SecureStateStore::open(&directory.join("ownership.state"))
-            .map_err(|_| local("HOST_INSTALLATION_ALREADY_OWNED_OR_UNSAFE"))?;
-        let ownership: ProjectOwnership = match store
-            .read_exact()
-            .map_err(|_| local("HOST_INSTALLATION_RECOVERY_REQUIRED"))?
-        {
-            Some(bytes) => serde_json::from_value(
-                peerwork_core::strict_json::parse_strict_json(&bytes)
-                    .map_err(|_| local("HOST_INSTALLATION_RECOVERY_REQUIRED"))?,
-            )
-            .map_err(|_| local("HOST_INSTALLATION_RECOVERY_REQUIRED"))?,
-            None => Default::default(),
+    fn open(project:&Path,own_reference:Option<&str>)->Result<Self>{
+        let context=crate::onboarding_project::Directory::open(project)?;
+        let identity=context.identity()?;
+        let agents=context.child(".agents",false,false)?.ok_or_else(||local("HOST_INSTALLATION_RECOVERY_REQUIRED"))?;
+        const MARKER:&str=".peerwork-installation";
+        let kind=agents.kind(MARKER)?;
+        let legacy=kind==Some("DIRECTORY");
+        let store=if legacy {
+            let directory=agents.child(MARKER,false,true)?.unwrap();
+            OwnershipStore::anchored(directory,"ownership.state",true)?
+        }else{
+            if kind==Some("OTHER"){return Err(local("HOST_INSTALLATION_RECOVERY_REQUIRED"))}
+            let directory=crate::onboarding_state::project(project,"installations",true)?.unwrap();
+            if kind.is_some() && !directory.join("ownership.state").is_file(){return Err(local("HOST_INSTALLATION_ORIGINAL_STATE_REQUIRED"))}
+            let store=SecureStateStore::open(&directory.join("ownership.state")).map_err(|_|local("HOST_INSTALLATION_ALREADY_OWNED_OR_UNSAFE"))?;
+            OwnershipStore::Protected(store)
         };
-        if ownership.references.len() > 64 {
-            return Err(local("HOST_INSTALLATION_LIMIT"));
+        let mut ownership:ProjectOwnership=match store.read_exact()?{
+            Some(bytes)=>serde_json::from_value(peerwork_core::strict_json::parse_strict_json(&bytes).map_err(|_|local("HOST_INSTALLATION_RECOVERY_REQUIRED"))?).map_err(|_|local("HOST_INSTALLATION_RECOVERY_REQUIRED"))?,
+            None=>ProjectOwnership::default(),
+        };
+        if ownership.references.len()>64 || ownership.project_identity.as_ref().is_some_and(|wanted|wanted!=&identity){return Err(local("PROJECT_DIRECTORY_CHANGED_RESELECT_ORIGINAL"))}
+        if legacy && ownership.project_identity.is_none() {
+            let mut proven=own_reference.is_some_and(|r|ownership.references.contains(r));
+            if !proven && !ownership.references.is_empty(){
+                for binding in super::discovery::project_bindings(project,None)? {
+                    let original=Connect::inspect(&binding.directory)?;
+                    if original.registry.installations.iter().any(|(key,record)|record.spec.project==project && ownership.references.contains(&reference(&binding.directory,key))) {proven=true;break}
+                }
+            }
+            if !ownership.references.is_empty() && !proven {return Err(local("HOST_INSTALLATION_LEGACY_OWNER_CONFIRMATION_REQUIRED"))}
+            ownership.project_identity=Some(identity.clone());
+            store.write_exact(&serde_json::to_vec(&ownership).map_err(|_|local("HOST_INSTALLATION_WRITE_FAILED"))?)?;
         }
-        Ok(Self { store, ownership })
+        if !legacy {
+            let marker=json!({"format":"peerwork.user-installation.v1","project_key":sha256_hex(project.to_string_lossy().as_bytes())});
+            if let Some(existing)=agents.read(MARKER,65536,false)? {
+                if peerwork_core::strict_json::parse_strict_json(&existing).ok().as_ref()!=Some(&marker){return Err(local("HOST_INSTALLATION_CHANGED"))}
+            }else{
+                // A public format fence stops an older installer from creating
+                // another ownership store for the same project. No secrets.
+                ownership.project_identity=Some(identity);
+                store.write_exact(&serde_json::to_vec(&ownership).map_err(|_|local("HOST_INSTALLATION_WRITE_FAILED"))?)?;
+                agents.replace(MARKER,None,&serde_json::to_vec(&marker).unwrap())?;
+            }
+            if ownership.project_identity.is_none(){return Err(local("HOST_INSTALLATION_RECOVERY_REQUIRED"))}
+        }
+        context.verify()?;Ok(Self{store,ownership})
     }
     fn save(&self) -> Result<()> {
         let bytes = serde_json::to_vec(&self.ownership)
@@ -474,33 +508,30 @@ impl Connect {
         {
             return Err(local("HOST_INSTALLATION_SELECTION_INVALID"));
         }
-        files::check_directory(&spec.project, false)?;
+        let project_root = crate::onboarding_project::Directory::open(&spec.project)?;
+        let project_identity = project_root.identity()?;
         let key = id(participant, workspace, &spec);
         let reference = reference(&self.directory, &key);
         let name = server_name(&self.directory, participant, workspace, &spec);
         let wanted = entry(&self.directory, participant, workspace, &spec);
         let prior = self.registry.installations.get(&key).cloned();
+        if prior.as_ref().and_then(|p|p.project_identity.as_ref()).is_some_and(|old|old!=&project_identity){return Err(local("PROJECT_DIRECTORY_CHANGED_RESELECT_ORIGINAL"))}
         if prior.is_none() && self.registry.installations.len() >= 32 {
             return Err(local("HOST_INSTALLATION_LIMIT"));
         }
-        let agents = spec.project.join(".agents");
-        files::directory(&agents, false)?;
+        let agents = project_root.child(".agents",true,false)?.unwrap();
         // This project-scoped owner serializes Peerwork installations from
         // distinct identity registries and tracks shared Skill provenance.
-        let mut project = ProjectFiles::open(&agents)?;
+        let mut project = ProjectFiles::open(&spec.project,prior.as_ref().map(|_|reference.as_str()))?;
         if !project.ownership.references.contains(&reference)
             && project.ownership.references.len() >= 64
         {
             return Err(local("HOST_INSTALLATION_LIMIT"));
         }
-        let config = if spec.host == "codex" {
-            let dir = spec.project.join(".codex");
-            files::directory(&dir, false)?;
-            dir.join("config.toml")
-        } else {
-            agents.join("mcp_config.json")
-        };
-        let old_config = files::read_public_optional(&config, 256 * 1024)?;
+        let config_directory = if spec.host == "codex" { project_root.child(".codex",true,false)?.unwrap() } else { project_root.child(".agents",true,false)?.unwrap() };
+        let config_name = if spec.host == "codex" {"config.toml"} else {"mcp_config.json"};
+        let config = config_directory.path().join(config_name);
+        let old_config = config_directory.read(config_name,256*1024,false)?;
         let new_config = if spec.host == "codex" {
             codex_update(
                 old_config.clone(),
@@ -540,12 +571,10 @@ impl Connect {
         let entry_owned = prior.as_ref().is_some_and(|p| p.entry_owned);
         // A plan to publish is not proof of publication. On a lost pre-write
         // attempt, an identical file encountered later remains user-owned.
-        let skills = agents.join("skills");
-        files::directory(&skills, false)?;
-        let skill_dir = skills.join("peerwork");
-        files::directory(&skill_dir, false)?;
-        let skill = skill_dir.join("SKILL.md");
-        let existing_skill = files::read_public_optional(&skill, 65536)?;
+        let skills=agents.child("skills",true,false)?.unwrap();
+        let skill_dir=skills.child("peerwork",true,false)?.unwrap();
+        let skill=skill_dir.path().join("SKILL.md");
+        let existing_skill=skill_dir.read("SKILL.md",65536,false)?;
         let hash = sha256_hex(SKILL.as_bytes());
         if existing_skill.as_ref().is_some_and(|v| {
             v.as_slice() != SKILL.as_bytes()
@@ -585,6 +614,7 @@ impl Connect {
                     p.previous_entry.clone().unwrap_or_else(|| p.entry.clone())
                 }
             }),
+            project_identity: Some(project_identity.clone()),
             previous_skill_hash: prior.as_ref().map(|p| {
                 if p.committed {
                     p.skill_hash.clone()
@@ -602,13 +632,14 @@ impl Connect {
             p.entry != record.entry
                 || p.skill_hash != record.skill_hash
                 || p.entry_owned != record.entry_owned
+                || p.project_identity.as_ref() != Some(&project_identity)
                 || !p.committed
         }) {
             self.registry.installations.insert(key.clone(), record);
             self.save()?;
         }
         if let Some(bytes) = new_config {
-            files::replace_if_unchanged(&config, old_config.as_deref(), &bytes)?;
+            config_directory.replace(config_name,old_config.as_deref(),&bytes)?;
             self.registry
                 .installations
                 .get_mut(&key)
@@ -617,7 +648,7 @@ impl Connect {
             self.save()?;
         }
         if existing_skill.as_deref() != Some(SKILL.as_bytes()) {
-            files::replace_if_unchanged(&skill, existing_skill.as_deref(), SKILL.as_bytes())?;
+            skill_dir.replace("SKILL.md",existing_skill.as_deref(),SKILL.as_bytes())?;
             project.ownership.skill_owned = true;
         }
         if let Some(hash) = project.ownership.pending_skill_hash.take() {
@@ -626,6 +657,7 @@ impl Connect {
             }
             project.save()?;
         }
+        project_root.verify()?;
         if !self.registry.installations[&key].committed {
             self.registry.installations.get_mut(&key).unwrap().committed = true;
             self.save()?;
@@ -647,14 +679,13 @@ impl Connect {
         let Some(owned) = self.registry.installations.get(&key).cloned() else {
             return Ok(json!({"state":"HOST_INTEGRATION_ABSENT"}));
         };
-        files::check_directory(&spec.project, false)?;
-        let config = spec.project.join(if spec.host == "codex" {
-            ".codex/config.toml"
-        } else {
-            ".agents/mcp_config.json"
-        });
-        let mut project = ProjectFiles::open(&spec.project.join(".agents"))?;
-        let old_config = files::read_public_optional(&config, 256 * 1024)?;
+        let project_root=crate::onboarding_project::Directory::open(&spec.project)?;
+        if owned.project_identity.as_ref().is_some_and(|wanted|project_root.identity().as_ref().ok()!=Some(wanted)) {return Err(local("PROJECT_DIRECTORY_CHANGED_RESELECT_ORIGINAL"))}
+        let config_directory=project_root.child(if spec.host=="codex"{".codex"}else{".agents"},false,false)?.ok_or_else(||local("HOST_CONFIGURATION_CHANGED"))?;
+        let config_name=if spec.host=="codex"{"config.toml"}else{"mcp_config.json"};
+        let own_reference=reference(&self.directory,&key);
+        let mut project=ProjectFiles::open(&spec.project,Some(&own_reference))?;
+        let old_config=config_directory.read(config_name,256*1024,false)?;
         let new_config = if !owned.entry_owned {
             None
         } else if spec.host == "codex" {
@@ -690,14 +721,14 @@ impl Connect {
                 )
             }
         };
-        let own_reference = reference(&self.directory, &key);
         let shared = project
             .ownership
             .references
             .iter()
             .any(|r| r != &own_reference);
-        let skill = spec.project.join(".agents/skills/peerwork/SKILL.md");
-        let existing_skill = files::read_public_optional(&skill, 65536)?;
+        let agents=project_root.child(".agents",false,false)?.ok_or_else(||local("HOST_SKILL_CHANGED"))?;
+        let skill_dir=agents.child("skills",false,false)?.map(|d|d.child("peerwork",false,false)).transpose()?.flatten();
+        let existing_skill=match &skill_dir {Some(dir)=>dir.read("SKILL.md",65536,false)?,None=>None};
         let remove_skill = !shared
             && project.ownership.skill_owned
             && existing_skill.as_ref().is_some_and(|bytes| {
@@ -706,10 +737,10 @@ impl Connect {
                     || project.ownership.pending_skill_hash.as_ref() == Some(&hash)
             });
         if let Some(bytes) = new_config {
-            files::replace_if_unchanged(&config, old_config.as_deref(), &bytes)?;
+            config_directory.replace(config_name,old_config.as_deref(),&bytes)?;
         }
         if remove_skill {
-            files::remove_if_unchanged(&skill, existing_skill.as_deref().unwrap())?;
+            skill_dir.as_ref().unwrap().remove("SKILL.md",existing_skill.as_deref().unwrap())?;
         }
         let skill_retained = existing_skill.is_some() && !remove_skill;
         project.ownership.references.remove(&own_reference);
@@ -719,6 +750,7 @@ impl Connect {
             project.ownership.pending_skill_hash = None;
         }
         project.save()?;
+        project_root.verify()?;
         self.registry.installations.remove(&key);
         self.save()?;
         Ok(
