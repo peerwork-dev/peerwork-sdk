@@ -18,4 +18,7 @@ local capability restrictions and workspace access continue to apply. This
 release adds no automatic task dispatch, global capacity scheduler or timed
 reminders. See [the guide](docs/member-availability.md).
 
-Actual native platform availability is listed on the release page.
+Initial native availability: Linux x86_64 GNU and Windows x86_64. macOS ARM64
+is pending because the hosted build runner was not allocated; no macOS0.3.7
+qualification is claimed. Existing published archive bytes remain immutable.
+The actual release asset list and source/checksum manifests define availability.

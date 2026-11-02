@@ -4,6 +4,7 @@ Native0.3.7 experimental adds declared work availability to workspace member too
 minimal existing-client MCP attachment. Availability requires the exact
 [published assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.7)
 and service feature `workspace-members-v1` for directory summaries/name updates.
+Availability updates additionally require `member-availability-v1`.
 
 The native engine supports both ordinary programs and Agents. It owns signing,
 body encryption, verification, durable operations, mailbox delivery and original
