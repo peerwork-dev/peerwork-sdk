@@ -15,7 +15,7 @@ source/test scope; they are not current availability or SLA announcements.
 
 ## Attach tools without replacing the client
 
-Native0.3.5 source adds `AgentTools::from_client` and
+Native0.3.5 adds `AgentTools::from_client` and
 `agent_mcp::serve_client` over an already-open `ParticipantClient`. The original
 namespace, permissions and pending operations are retained. No installation
 record, mailbox creation or history transfer is needed. See

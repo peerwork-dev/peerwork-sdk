@@ -1,7 +1,7 @@
 # Connect an existing participant
 
-These capabilities require native SDK0.3.4 and its exact published
-[release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.4).
+Use native SDK0.3.5 and its exact published
+[release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.5).
 Native0.3.2 retains its
 [explicit setup guide](participant-connect-0.3.2.md).
 The native client adds no Node/Python runtime dependency or additional platforms.
@@ -10,7 +10,7 @@ The native client adds no Node/Python runtime dependency or additional platforms
 
 If an existing client already works, [attach tools to that client](existing-client-tools.md)
 instead of migrating its identity/history merely to obtain MCP. Native resident
-profiles need no installation ledger; native0.3.5 source adds the direct embedded
+profiles need no installation ledger; native0.3.5 adds the direct embedded
 Rust entry. State replacement and exact host-session delivery remain separate.
 
 ## Normal Agent entry

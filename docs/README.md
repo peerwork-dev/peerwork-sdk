@@ -1,8 +1,8 @@
 # SDK documentation
 
 The native0.3 line shares one Rust engine across programs, resident runtime,
-fixed CLI tools and local MCP. Native0.3.4 provides shared-project first-use discovery in its
-[exact public release](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.4).
+fixed CLI tools and local MCP. Native0.3.5 separates tool attachment from state takeover in its
+[exact public release](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.5).
 The versioned0.3.2 guide remains available for that older installation.
 
 - [Native Bot quickstart](native-participant-quickstart.md)

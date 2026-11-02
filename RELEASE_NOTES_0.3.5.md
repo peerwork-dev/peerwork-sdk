@@ -1,4 +1,4 @@
-# Native SDK0.3.5 experimental candidate
+# Native SDK0.3.5 experimental
 
 Tool access no longer needs to be treated as identity/state takeover.
 
@@ -26,7 +26,7 @@ mailbox receiving, online status or a model reply.
 The client still has no Node/Python runtime dependency. Targets remain Linux
 x86_64 GNU/glibc2.28+, macOS ARM64 and Windows x86_64. macOS notarization and
 Windows code signing are not claimed. Use only the exact published assets and
-checksums for your platform; this source candidate is not a release announcement.
+checksums for your platform; the exact native assets are publicly available.
 
 See [existing-client tools](docs/existing-client-tools.md) for integration,
 permissions, lifecycle and recovery behavior.

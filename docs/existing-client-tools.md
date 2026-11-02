@@ -1,8 +1,8 @@
 # Attach tools to an existing client
 
-Native0.3.5 adds an embedded tool entry. Check the exact
+Native0.3.5 provides an embedded tool entry. Use the exact
 [release](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.5)
-for distribution availability; a source snapshot alone is not an installed
+for published binaries and source; a source snapshot alone is not an installed
 upgrade. Native0.3.4 does not expose `serve_client`.
 
 Tool access, state takeover and host-session delivery are separate operations.
