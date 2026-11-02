@@ -1,9 +1,9 @@
 # SDK documentation
 
 The native0.3 line shares one Rust engine across programs, resident runtime,
-fixed CLI tools and local MCP. Native0.3.2 self-service connect is an unreleased
-experimental candidate; published0.3.1 remains available through its versioned
-guide until exact0.3.2 release assets are published.
+fixed CLI tools and local MCP. Native0.3.2 provides self-service connect through
+its [published native release](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.2).
+The versioned0.3.1 guide remains available for existing installations.
 
 - [Native Bot quickstart](native-participant-quickstart.md)
 - [Self-service connect, approval and role reuse](participant-connect.md)

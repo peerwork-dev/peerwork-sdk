@@ -49,7 +49,8 @@ awaits the keepers' normal final checkpoint/close before releasing ownership.
 ## Self-service onboarding in native0.3.2
 
 This section requires the native0.3.2 connect feature; it is not an addition to
-published0.3.1. Check actual release availability before installing a version.
+published0.3.1. Use the exact [native0.3.2 release](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.2)
+and preserve the original state when its local owner updates the runtime.
 The [connect guide](participant-connect.md) and [Bot quickstart](native-participant-quickstart.md)
 replace administrator-made Worker profiles as the normal supported setup path.
 

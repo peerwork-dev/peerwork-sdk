@@ -1,9 +1,10 @@
 # Peerwork native Participant SDK
 
-**Native0.3.2 is an unreleased experimental candidate.** Until its exact public
-assets are published, use the existing0.3.1 release and its
-[versioned setup guide](docs/native-participant-quickstart-0.3.1.md).
-A source commit, work branch or passing build is not a release announcement.
+Native0.3.2 provides experimental self-service participant connection. Install
+only the exact [published release assets and checksums](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.2).
+A source commit or work branch alone does not establish release availability.
+The [versioned0.3.1 guide](docs/native-participant-quickstart-0.3.1.md) remains
+available for existing installations.
 
 The native engine supports both ordinary programs and Agents. It owns signing,
 body encryption, verification, durable operations, mailbox delivery and original

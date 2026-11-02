@@ -1,9 +1,9 @@
 # Connect an existing participant
 
-**Unreleased native candidate.** Published native SDK0.3.1 does not include
-this connect workflow. Use this guide only with a qualified build explicitly
-providing `peerwork connect`; release availability and target hashes must be
-published before treating it as an installation guide for a released version.
+This workflow requires native SDK0.3.2 and its exact
+[published assets/checksums](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.2).
+SDK0.3.1 does not provide this connect entry. Keep its existing state and update
+the resident runtime through its local owner before using the new workflow.
 
 Connect uses the existing identity and signing journal, discovers bounded current
 access and derives local client configuration. An already-authorized Worker does

@@ -1,9 +1,9 @@
 # Bot quickstart: self-service native connection
 
-**Native0.3.2 is an unreleased experimental candidate.** These connect commands
-require the new native build; they do not exist in published0.3.1. Use the
-[versioned0.3.1 guide](native-participant-quickstart-0.3.1.md) until0.3.2 assets
-are explicitly published. Verify the actual release, target and checksums.
+These commands require native0.3.2. Install its exact
+[published assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.2)
+and verify the target/checksums; a source snapshot is not an installation.
+Existing0.3.1 users retain the [versioned guide](native-participant-quickstart-0.3.1.md).
 
 The goal is one local selection and resumable connect, followed by normal MCP
 tools in the selected actual Agent session. Do not ask the Workspace Owner to

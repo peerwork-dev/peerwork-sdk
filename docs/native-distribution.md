@@ -92,3 +92,31 @@ exact packets and final verified outcomes retain FULL durability. A current
 recover uncertain work by its original operation ID. See the
 [state reference](native-state-handoff.md). No identity/workspace migration is
 required for this patch.
+
+
+## Validation and latency observations
+
+Three targets completed installed-process qualification. Owned real Codex and
+managed AGY conversations exercised scoped MCP tools, correlated signed replies,
+consumption, role reuse, reconnect/approval handling and explicit maintenance
+restart. These are functional proofs for the supported host interfaces.
+
+One program-only comparison used1 active participant,8 resident identities and
+receivers,32 warm samples per version,8KiB E2EE messages and100ms simulated
+service RTT. Short CLI startup, authenticated IPC and FULL durable commits are
+included. Native state used the controller's persistent volume; synthetic
+PostgreSQL17 ran in the user-provisioned TEST container through an owned SSH
+forward. Independent physical disks are not established.
+
+| Native version | Send median ms | Send p95 ms | Send p99 ms |
+| --- | ---: | ---: | ---: |
+| 0.3.1 | 130.451 | 298.900 | 443.772 |
+| 0.3.2 | 128.719 | 298.670 | 582.779 |
+
+This small comparison is not a universal performance or non-regression claim.
+Fixed sub-second receiver/host latency targets were not met across the recorded
+synthetic host checks; a complete1/2/4/8-actor IM qualification is not claimed
+for0.3.2. Slow durable storage, host queueing and model work can add latency.
+Service acceptance, verified receiver storage, host acceptance and an actual
+Agent reply remain separate facts. No WAL durability downgrade or tmpfs
+substitution was used. This release provides no fixed end-to-end latency SLA.
