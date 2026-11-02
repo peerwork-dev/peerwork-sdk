@@ -414,9 +414,40 @@ fn verify_workspace_deletion(job:&WireValue,result:&WireValue,command:&WireValue
     Ok(())
 }
 
+fn verify_availability(value:&WireValue,actor:&str,active:bool,now:u64)->Result<(),VerifyWireReceiptError>{
+    let invalid=||VerifyWireReceiptError::Mismatch;
+    let revision=number(value,"revision").ok_or_else(invalid)?;
+    if number(value,"evaluated_at")!=Some(now){return Err(invalid());}
+    let declared=ascii_field(value,"declared_state");
+    if let Some(state)=declared.as_deref(){
+        if !matches!(state,"AVAILABLE"|"NOT_ACCEPTING"|"UNKNOWN")||revision==0||ascii_field(value,"reported_by").as_deref()!=Some(actor){return Err(invalid());}
+        let at=number(value,"declared_at").filter(|at|*at<=now).ok_or_else(invalid)?;
+        if state=="UNKNOWN"{
+            if !matches!(value.get("expires_at"),Some(WireValue::Null)){return Err(invalid());}
+        }else{
+            let expires=number(value,"expires_at").ok_or_else(invalid)?;
+            if expires<=at||at.checked_add(86_400_000).is_none_or(|max|expires>max){return Err(invalid());}
+        }
+    }else if !matches!(value.get("declared_state"),Some(WireValue::Null))||revision!=0||["reported_by","declared_at","expires_at"].iter().any(|k|!matches!(value.get(k),Some(WireValue::Null))){return Err(invalid());}
+    let reason=if !active{Some("MEMBERSHIP_INACTIVE")}else if declared.is_none(){Some("UNDECLARED")}else if declared.as_deref()!=Some("UNKNOWN")&&number(value,"expires_at").is_none_or(|at|at<=now){Some("EXPIRED")}else{None};
+    let expected=if reason.is_some(){"UNKNOWN"}else{declared.as_deref().unwrap_or("UNKNOWN")};
+    if ascii_field(value,"state").as_deref()!=Some(expected)||ascii_field(value,"reason").as_deref()!=reason||reason.is_none()&&!matches!(value.get("reason"),Some(WireValue::Null)){return Err(invalid());}
+    Ok(())
+}
+
 fn verify_member_directory(result:&WireValue,command:&WireValue,prepared:&VerifiedPreparedCommand)->Result<(),VerifyWireReceiptError>{
     let invalid=||VerifyWireReceiptError::Mismatch;
     let body=command.get("body").ok_or_else(invalid)?;
+    if prepared.action_id()=="structure.member.availability.set" {
+        let value=result.get("availability").ok_or_else(invalid)?;
+        let now=number(value,"evaluated_at").ok_or_else(invalid)?;
+        verify_availability(value,prepared.actor_id(),true,now)?;
+        if ascii_field(result,"actor_id").as_deref()!=Some(prepared.actor_id())||result.get("membership_id")!=body.get("membership_id")
+            ||number(value,"revision")!=number(body,"expected_availability_revision").and_then(|n|n.checked_add(1))
+            ||value.get("declared_state")!=body.get("state")||number(value,"declared_at")!=Some(now){return Err(invalid());}
+        if ascii_field(body,"state").as_deref()!=Some("UNKNOWN")&&number(value,"expires_at")!=now.checked_add(number(body,"valid_for_ms").unwrap_or(3_600_000)){return Err(invalid());}
+        return Ok(());
+    }
     if prepared.action_id()=="structure.member.name.set" {
         if ascii_field(result,"actor_id").as_deref()!=Some(prepared.actor_id())
             || result.get("membership_id")!=body.get("membership_id") || result.get("name")!=body.get("name")
@@ -435,6 +466,9 @@ fn verify_member_directory(result:&WireValue,command:&WireValue,prepared:&Verifi
             || body.get("membership_id").and_then(WireValue::as_string).is_some() && member.get("membership_id")!=body.get("membership_id")
             || ascii_field(member,"state")!=Some(ascii_field(body,"state").unwrap_or_else(||"ACTIVE".into()))
             || !matches!(member.get("access_active"),Some(WireValue::Bool(_))) {return Err(invalid());}
+        if let Some(availability)=member.get("availability"){
+            verify_availability(availability,&actor,matches!(member.get("access_active"),Some(WireValue::Bool(true))),number(result,"observed_at").ok_or_else(invalid)?)?;
+        }
         previous=Some(actor);
         match member.get("name") {
             Some(WireValue::Null)=>(),
@@ -466,7 +500,7 @@ fn verify_member_directory(result:&WireValue,command:&WireValue,prepared:&Verifi
 fn verify_structure_read_authors(result:&WireValue,command:&WireValue,prepared:&VerifiedPreparedCommand)->Result<(),VerifyWireReceiptError>{
     let invalid=||VerifyWireReceiptError::Mismatch;
     match prepared.action_id(){
-        "structure.members.read"|"structure.member.name.set"=>verify_member_directory(result,command,prepared),
+        "structure.members.read"|"structure.member.name.set"|"structure.member.availability.set"=>verify_member_directory(result,command,prepared),
         "structure.workspace.delete"|"structure.workspace.deletion.get"=>{
             if ascii_field(result,"status").as_deref()==Some("REJECTED_NO_EFFECT"){return Ok(());}
             verify_workspace_deletion(result.get("deletion").ok_or_else(invalid)?,result,command,prepared,false)

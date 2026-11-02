@@ -932,7 +932,7 @@ impl Connect {
         }
         let mut directory_endpoints=previous.as_ref().map(|p|p.directory_endpoints.clone()).unwrap_or_default();
         let mut metadata=parent.clone();metadata.allow_root=false;metadata.workspace_ids=Some([request.workspace_id.clone()].into());
-        metadata.operations.retain(|a|["structure.members.read","structure.member.name.set","structure.workspace.get","structure.instance.resolve","participant.time.read"].contains(&a.as_str()));
+        metadata.operations.retain(|a|["structure.members.read","structure.member.name.set","structure.member.availability.set","structure.workspace.get","structure.instance.resolve","participant.time.read"].contains(&a.as_str()));
         if metadata.operations.contains("structure.members.read") {
             let alias=format!("directory-{}",&sha256_hex(json!([request.participant,request.workspace_id]).to_string().as_bytes())[..40]);
             let value=client.call(json!({"method":"derive","name":alias,"capability":metadata})).await?;
@@ -944,7 +944,7 @@ impl Connect {
             previous.as_ref().unwrap().endpoint_path.clone()
         }else{
             let allowed: &[&str]=if communication_requested {&["structure.message.send","structure.message.receipts.read","structure.mailbox.get","structure.members.read"]}
-                else {&["structure.members.read","structure.member.name.set","structure.workspace.get","structure.instance.resolve","participant.time.read"]};
+                else {&["structure.members.read","structure.member.name.set","structure.member.availability.set","structure.workspace.get","structure.instance.resolve","participant.time.read"]};
             capability.operations.retain(|a|allowed.contains(&a.as_str()));
             if !channel_send{capability.operations.remove("structure.message.send");}
             if capability.operations.is_empty()&&parent.operations.contains("participant.time.read"){capability.operations.insert("participant.time.read".into());}
