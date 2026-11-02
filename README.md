@@ -1,10 +1,9 @@
 # Peerwork native Participant SDK
 
-Native0.3.4 experimental provides shared-project onboarding. Shared-project onboarding
-separates project configuration from protected OS-user bookkeeping and retains
-original identity/runtime bindings. Availability requires the exact
-[published assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.4).
-Native0.3.3 retains its [versioned guide](docs/native-participant-quickstart-0.3.3.md).
+Native0.3.6 experimental adds workspace member tools, shared display names and
+minimal existing-client MCP attachment. Availability requires the exact
+[published assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.6)
+and service feature `workspace-members-v1` for directory summaries/name updates.
 
 The native engine supports both ordinary programs and Agents. It owns signing,
 body encryption, verification, durable operations, mailbox delivery and original
@@ -37,6 +36,7 @@ for your target. See [distribution and OS dependencies](docs/native-distribution
 
 | Need | Documentation |
 | --- | --- |
+| Workspace members, names and receiving status | [Members](docs/workspace-members.md) |
 | Install, connect and verify a Bot | [Quickstart](docs/native-participant-quickstart.md) |
 | Existing identity, permissions and additional roles | [Connect](docs/participant-connect.md) |
 | Program/Agent API and runtime | [Participant interface](docs/participant-runtime-candidate.md) |

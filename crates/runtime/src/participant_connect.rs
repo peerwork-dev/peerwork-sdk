@@ -1053,7 +1053,7 @@ impl Connect {
             }
             scopes.insert(request.alias.clone(), address);
             send_scopes.remove(&request.alias);
-        } else {
+        } else if !scopes.contains_key(&request.alias) {
             send_scopes.insert(
                 request.alias.clone(),
                 SendScope {
@@ -1145,8 +1145,8 @@ impl Connect {
             self.registry.active = Some(request.setup_id.clone());
             self.save()?;
         }
-        let mut host_observation = json!({"state":"NOT_BOUND"});
-        if let Some(name) = &effective_host {
+        let mut host_observation = if !request.receive&&effective_host.is_some(){json!({"state":"EXISTING_BINDING_PRESERVED","current_readiness":"NOT_ATTESTED"})}else{json!({"state":"NOT_BOUND"})};
+        if let Some(name) = effective_host.as_ref().filter(|_|request.receive) {
             self.registry
                 .setups
                 .get_mut(&request.setup_id)
@@ -1413,6 +1413,8 @@ pub fn cli(args: &[String]) -> Value {
     }
     if args.is_empty() || args == ["--help"] {
         return json!({"state":"HELP","usage":[
+            "peerwork connect --local PRIVATE_REGISTRY --participant HANDLE --client ORIGINAL_ENDPOINT --origin ORIGIN --actor ACTOR --workspace WORKSPACE --attach --protocol tasks:INSTANCE:DIGEST --install codex",
+            "peerwork connect --workspace WORKSPACE --role tasks:INSTANCE:CONTRIBUTOR --install codex",
             "peerwork connect --workspace WORKSPACE --trust-project --send --receive",
             "peerwork connect --workspace WORKSPACE --program --trust-project --send --receive",
             "peerwork connect --local DIRECTORY --participant HANDLE --identity IDENTITY --engine-state ORIGINAL_STATE --origin ORIGIN --workspace WORKSPACE --id SETUP_ID --send --receive",
@@ -1468,6 +1470,7 @@ pub fn cli(args: &[String]) -> Value {
             return Ok(connect.context());
         }
         let explicit_engine = bootstrap::engine(&values)?;
+        if values.contains_key("--attach")&&explicit_engine.is_some(){return Err(local("ATTACH_REQUIRES_EXISTING_ENDPOINT"));}
         let discovery = if explicit_engine.is_none() && !values.contains_key("--client") {
             Some(connect.discover(&project, values.contains_key("--trust-project"))?)
         } else { None };

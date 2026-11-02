@@ -437,7 +437,8 @@ impl AgentTools {
         let mut body=json!({"view":"COLLABORATION","cursor":cursor,"limit":limit});
         if let Some(target)=target{body[if token(target){"actor_id"}else{"name"}]=json!(target);}
         let mut value=self.read_client(self.directory_client(&workspace),"structure.members.read",Scope{workspace_id:Some(workspace),..Default::default()},body).await?;
-        let members=value["members"].as_array().ok_or_else(||invalid("MEMBER_DIRECTORY_RESPONSE_INVALID"))?;
+        if !value["members"].is_array(){return Ok(value);}
+        let members=value["members"].as_array().unwrap();
         let count=|state:&str|members.iter().filter(|m|m["receiving"]["state"]==state).count();
         value["summary"]=json!({"scope":"RETURNED_PAGE","members":members.len(),"realtime":count("REALTIME"),"queued":count("QUEUED"),"not_enabled":count("NOT_ENABLED"),"unconfirmed":count("UNCONFIRMED")});
         value["complete"]=json!(value["next_cursor"].is_null());
@@ -445,13 +446,18 @@ impl AgentTools {
         Ok(value)
     }
     async fn set_member_name(&self, selected:Option<&str>, name:Option<String>, operation_id:String, revision:u64)->Result<Value>{
+        if !identifier(&operation_id)||revision==0||name.as_ref().is_some_and(|n|n.is_empty()||n.trim()!=n||n.encode_utf16().count()>80||n.len()>256||token(n)||n.chars().any(char::is_control)){return Err(invalid("MEMBER_NAME_ARGUMENT_INVALID"));}
         let workspace=self.selected_workspace(selected)?;let client=self.directory_client(&workspace);
         let scope=Scope{workspace_id:Some(workspace),..Default::default()};
         let member=self.read_client(client,"structure.members.read",scope.clone(),json!({"actor_id":self.client.actor_id(),"limit":1})).await?;
+        if !member["members"].is_array(){return Ok(member);}
         let membership=member["members"].as_array().and_then(|m|m.first()).and_then(|m|m["membership_id"].as_str()).ok_or_else(||invalid("MEMBER_NOT_FOUND"))?;
         let mut request=Invoke::new(operation_id,"structure.member.name.set",scope.clone(),json!({"membership_id":membership,"name":name}));
         request.expected_workspace_revision=Some(revision);
-        let mut result=self.invoke_client(client,request,1000).await?;
+        let mut result=match self.invoke_client(client,request,1000).await {
+            Ok(result)=>result,
+            Err(mut error)=>{if let Some(operation)=error.operation_id.clone(){let details=error.details.get_or_insert_with(||json!({}));details["recovery_arguments"]=json!({"workspace":scope.workspace_id,"operation_id":operation});}return Err(error);}
+        };
         result["recovery_arguments"]=json!({"workspace":scope.workspace_id,"operation_id":result["operation_id"]});Ok(result)
     }
     async fn send_member(&self, selected:Option<&str>, target:&str, operation_id:String, text:String, wait_ms:u64)->Result<Value>{
@@ -469,7 +475,8 @@ impl AgentTools {
         // Resolve with the sending client's ceiling, not a broader metadata
         // endpoint, so explicit mailbox restrictions cannot be bypassed.
         let found=self.read_client(&self.client,"structure.members.read",scope,body).await?;
-        let members=found["members"].as_array().ok_or_else(||invalid("MEMBER_DIRECTORY_RESPONSE_INVALID"))?;
+        if !found["members"].is_array(){return Ok(found);}
+        let members=found["members"].as_array().unwrap();
         if members.len()>1{let mut e=invalid("MEMBER_NAME_AMBIGUOUS");e.details=Some(json!({"candidates":members.iter().map(|m|json!({"actor_id":m["actor_id"],"name":m["name"]})).collect::<Vec<_>>(),"next_action":"SELECT_EXACT_ACTOR_ID"}));return Err(e);}
         let member=members.first().ok_or_else(||invalid("MEMBER_NOT_FOUND"))?;
         let recipient:MailboxAddress=serde_json::from_value(member["delivery"].clone()).map_err(|_|invalid("MEMBER_RECEPTION_NOT_ENABLED"))?;
@@ -1124,7 +1131,7 @@ mod tests {
             .iter()
             .map(|t| t["name"].as_str().unwrap().to_owned())
             .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(names.len(), 15);
+        assert_eq!(names.len(), 16);
         assert!(!names
             .iter()
             .any(|n| n.contains("admin") || n.contains("stop")));

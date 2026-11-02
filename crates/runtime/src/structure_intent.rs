@@ -372,6 +372,9 @@ impl KernelClient {
         if fields.iter().any(|(key, _)| !allowed.iter().any(|name| key.iter().copied().eq(name.encode_utf16()))) { return Err(invalid()); }
         let action = request.get("action").and_then(WireValue::as_string).ok_or_else(invalid)?;
         if !is_structure_action(&action) { return Err(invalid()); }
+        let member_projection=action=="structure.member.name.set"||action=="structure.members.read"&&request.get("body").is_some_and(|b|["view","actor_id","membership_id","name"].iter().any(|k|b.get(k).is_some_and(|v|!matches!(v,WireValue::Null))));
+        if member_projection&&!self.discovery.protocol_features().contains(&"workspace-members-v1".encode_utf16().collect::<Vec<_>>()){return Err(KernelClientError::UnsupportedStructureProfile);}
+
         if peerwork_core::structure_execution::is_communication_action(&action)&&!self.discovery.protocol_features().contains(&peerwork_core::communication::FEATURE.encode_utf16().collect::<Vec<_>>()){return Err(KernelClientError::UnsupportedStructureProfile);}
         if action.starts_with("structure.delivery.")&&!self.discovery.protocol_features().contains(&"agent-delivery-v1".encode_utf16().collect::<Vec<_>>()){return Err(KernelClientError::UnsupportedStructureProfile);}
         if action=="structure.protocol.bind"&&!self.discovery.protocol_features().contains(&"owner-protocol-bundle-binding-v1".encode_utf16().collect::<Vec<_>>()){return Err(KernelClientError::UnsupportedStructureProfile);}

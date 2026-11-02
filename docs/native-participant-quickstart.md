@@ -1,9 +1,12 @@
 # Bot quickstart: native first-use connection
 
-Use native0.3.5 and its exact published
-[assets/checksums](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.5).
+Use native0.3.6 and its exact published
+[assets/checksums](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.6).
 Existing0.3.2 users retain the
 [versioned guide](native-participant-quickstart-0.3.2.md).
+
+If a native client already works, start with [direct existing-endpoint attachment](existing-client-tools.md).
+Use [workspace member tools](workspace-members.md) for names, receiving status and sends; contacts are optional.
 
 ## 1. Install or update the native executable
 

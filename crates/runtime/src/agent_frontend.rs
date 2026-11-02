@@ -14,8 +14,8 @@ pub fn help() -> Value {
 "peerwork connect --help",
 "peerwork agent --local PROTECTED_DIRECTORY context|mcp",
 "peerwork agent --profile PROFILE.json context",
-"peerwork agent --profile PROFILE.json reachability SCOPE",
-"peerwork agent --profile PROFILE.json send CONTACT --id OPERATION_ID [--text-file FILE] < message.txt",
+"peerwork agent --profile PROFILE.json reachability [--workspace WORKSPACE]",
+"peerwork agent --profile PROFILE.json send --to MEMBER --id OPERATION_ID [--text-file FILE] < message.txt",
 "peerwork agent --profile PROFILE.json reply SCOPE SEQUENCE/DELIVERY_ID --id OPERATION_ID [--text-file FILE] < reply.txt",
 "peerwork agent --profile PROFILE.json inbox SCOPE",
 "peerwork agent --profile PROFILE.json status|recover OPERATION_ID",
@@ -49,13 +49,18 @@ fn selection(args: &[String]) -> Result<AgentRequest> {
     let (name, body) = match args {
         [command] if command == "context" => ("context", json!({})),
         [command, scope] if command == "inbox" => ("inbox", json!({"scope":scope})),
+        [command] if command == "reachability" => ("reachability", json!({})),
         [command, scope] if command == "reachability" => ("reachability", json!({"scope":scope})),
+        [command, flag, workspace] if command == "reachability"&&flag=="--workspace" => ("reachability", json!({"workspace":workspace})),
         [command, id] if ["status", "recover"].contains(&command.as_str()) => {
             (command.as_str(), json!({"operation_id":id}))
         }
-        [command, contact, flag, id, rest @ ..] if command == "send" && flag == "--id" => (
+        [command, selector, target, flag, id, rest @ ..] if command == "send"&&selector=="--to"&&flag=="--id" => (
+            "send",json!({"to":target,"operation_id":id,"text":text(rest)?}),
+        ),
+        [command, target, flag, id, rest @ ..] if command == "send" && flag == "--id" => (
             "send",
-            json!({"contact":contact,"operation_id":id,"text":text(rest)?}),
+            json!({"contact":target,"operation_id":id,"text":text(rest)?}),
         ),
         [command, scope, item, flag, id, rest @ ..] if command == "reply" && flag == "--id" => {
             let (sequence, delivery) = item.split_once('/').ok_or_else(invalid)?;
@@ -143,6 +148,14 @@ pub fn cli(args: &[String]) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn member_target_is_explicit_and_never_reinterprets_a_contact(){
+        let temp=crate::test_support::protected_test_dir();let file=temp.path().join("message");std::fs::write(&file,"Hello").unwrap();let path=file.to_str().unwrap();
+        let legacy=selection(&["send","worker","--id","same","--text-file",path].map(str::to_owned)).unwrap();
+        assert!(matches!(legacy,AgentRequest::Send{contact,to:None,..}if contact=="worker"));
+        let member=selection(&["send","--to","worker","--id","same","--text-file",path].map(str::to_owned)).unwrap();
+        assert!(matches!(member,AgentRequest::Send{contact,to:Some(to),..}if contact.is_empty()&&to=="worker"));
+    }
     #[test]
     fn fixed_cli_rejects_guessed_flags_and_authority_selection() {
         assert!(selection(&["send", "worker", "--json", "{}"].map(str::to_owned)).is_err());

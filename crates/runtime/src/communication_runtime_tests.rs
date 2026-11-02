@@ -1155,3 +1155,30 @@ async fn revoked_client_clone_cannot_readmit_a_watch_or_new_business_intent() {
     assert!(owner.watch_bindings().await.unwrap().is_empty());
     owner.close().await.unwrap();
 }
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires loopback IPC permission"]
+async fn existing_endpoint_attachment_needs_no_discovery_rights_and_keeps_original_pending(){
+    use crate::{participant_connect::{Connect,Registration},agent_tools::{AgentRequest,AgentTools},participant_store::Store};
+    let temp=crate::test_support::protected_test_dir();let mut cfg=config(temp.path());cfg.engines[0].origin.push('/');cfg.clients[1].capability.operations.insert("structure.member.name.set".into());cfg.clients[1].capability.workspace_ids=Some(["W".repeat(43)].into());
+    let identity=KernelIdentity::open(&cfg.engines[0].identity_path).unwrap();
+    let mut store=Store::open(&cfg.engines[0].state_directory,&identity,&cfg.engines[0].origin).unwrap();
+    let request=Invoke::new("original-pending","structure.member.name.set",crate::participant::Scope{workspace_id:Some("W".repeat(43)),..Default::default()},json!({"membership_id":"M".repeat(43),"name":"old"}));
+    store.reserve("program:reader",&request,&identity,64,32*1024*1024).unwrap();
+    store.finish("program:reader","original-pending",&identity,&json!({"state":"PENDING","retryable":false,"effect_certainty":"UNKNOWN","command_id":"old-command"})).unwrap();drop(store);
+    let (ready,cancel,task)=start(cfg.clone()).await;
+    let mut connect=Connect::open(&temp.path().join("local")).unwrap();
+    connect.register("worker",Registration{origin:cfg.engines[0].origin.clone(),actor_id:identity.actor_id().into(),endpoint_path:ready.client_endpoints["reader"].clone()}).await.unwrap();
+    let ws="W".repeat(43);
+    assert_eq!(connect.attach("worker",&ws,"project",Default::default()).await.unwrap()["state"],"LOCAL_ATTACHED");
+    let profile=connect.profile_for_scope(Some("worker"),Some(&ws)).unwrap().unwrap();
+    assert_eq!(profile.endpoint_path,ready.client_endpoints["reader"]);
+    assert!(profile.contacts.is_empty()&&profile.scopes.is_empty());
+    let tools=AgentTools::open(profile).await.unwrap();
+    let pending=tools.call(AgentRequest::Status{workspace:None,protocol:None,operation_id:"original-pending".into()}).await.unwrap();
+    assert_eq!(pending["command_id"],"old-command");assert_eq!(pending["effect_certainty"],"UNKNOWN");
+    let context=tools.call(AgentRequest::Context).await.unwrap();
+    assert_eq!(context["capability"],serde_json::to_value(&cfg.clients[1].capability).unwrap());
+    assert_eq!(context["workspaces"]["project"],ws);
+    drop(tools);drop(connect);cancel.cancel();task.await.unwrap().unwrap();
+}

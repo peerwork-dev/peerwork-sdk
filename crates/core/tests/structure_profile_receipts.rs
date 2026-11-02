@@ -884,3 +884,23 @@ fn selected_public_bodies_and_owner_policy_reads_bind_original_signatures(){
  let get=command(&reader,"structure.publication.policy.get");let query=prepare(&get,&reader);let result=json!({"profile":PROFILE,"assurance":"BACKEND_CURRENT_STATE","workspace_id":get["workspace_id"],"instance_id":get["instance_id"],"protocol_digest":get["protocol_digest"],"policy":{"revision":1,"state":"ACTIVE","actions":["post"],"source":{"actor_id":policy["actor_id"],"command_id":policy["command_id"],"intent_digest":original.proof().intent_digest(),"author_intent":original.jws()}}});
  let verify=|r:&Value|verify_http_response_for_prepared(&receipt(&service,&get,query.proof().intent_digest(),r),query.proof(),&service_kid);assert!(verify(&result).is_ok());let mut wrong=result.clone();wrong["policy"]["actions"]=json!(["admin"]);assert!(verify(&wrong).is_err());let mut wrong=result;wrong["policy"]["revision"]=json!(2);assert!(verify(&wrong).is_err());
 }
+
+#[test]
+fn member_directory_and_self_name_receipts_bind_exact_selected_metadata(){
+    let actor=SigningKey::from_bytes(&[21;32]);let service=SigningKey::from_bytes(&[22;32]);let kid=key_id(&service.verifying_key().to_bytes());
+    let wire=serde_json::to_vec(&json!({"semantics":"peerwork.kernel.v1","audience":"structure-test","command_type":"peerwork.kernel-command.v1+jws","receipt_type":"peerwork.kernel-receipt.v1+jws","receipt_public_key":kid,"limits":{}})).unwrap();
+    let discovery=parse_discovery_wire(&wire,wire.len()).unwrap();
+    let mut query=command(&actor,"structure.members.read");query["instance_id"]=Value::Null;query["protocol_digest"]=Value::Null;query["body"]=json!({"profile":PROFILE,"view":"COLLABORATION","actor_id":query["actor_id"],"limit":1});
+    let prepared=prepare_signed_command_wire(&parse_wire_json_bounded(&serde_json::to_vec(&query).unwrap(),40,180000).unwrap(),&actor,&discovery,None).unwrap();
+    let member=json!({"actor_id":query["actor_id"],"membership_id":key_id(&[30;32]),"name":"worker","state":"ACTIVE","role":"MEMBER","access_active":true,"receiving":{"state":"UNCONFIRMED","observed_at":10,"execution":"UNKNOWN","reason":"RECEIVER_LEASE_EXPIRED"}});
+    let result=json!({"profile":PROFILE,"assurance":"BACKEND_CURRENT_STATE","workspace_id":query["workspace_id"],"instance_id":null,"protocol_digest":null,"members":[member],"observed_at":10,"frontier":{"workspace_revision":1},"next_cursor":null});
+    let check=|result:&Value|verify_http_response_for_prepared(&receipt(&service,&query,prepared.proof().intent_digest(),result),prepared.proof(),&kid);
+    check(&result).unwrap();
+    for (field,value) in [("actor_id",json!(key_id(&[31;32]))),("name",json!(key_id(&[32;32]))),("state",json!("REVOKED")),("receiving",json!({"state":"REALTIME","observed_at":9,"execution":"IDLE"})),("delivery",json!({"mailbox_id":key_id(&[34;32])}))]{let mut wrong=result.clone();wrong["members"][0][field]=value;assert!(check(&wrong).is_err(),"{field}");}
+    let mut too_many=result.clone();too_many["members"].as_array_mut().unwrap().push(member.clone());assert!(check(&too_many).is_err());
+    let mut change=command(&actor,"structure.member.name.set");change["instance_id"]=Value::Null;change["protocol_digest"]=Value::Null;change["expected_workspace_revision"]=json!(3);change["body"]=json!({"profile":PROFILE,"membership_id":member["membership_id"],"name":"worker"});
+    let prepared=prepare_signed_command_wire(&parse_wire_json_bounded(&serde_json::to_vec(&change).unwrap(),40,180000).unwrap(),&actor,&discovery,None).unwrap();
+    let result=json!({"profile":PROFILE,"assurance":"BACKEND_CURRENT_STATE","workspace_id":change["workspace_id"],"instance_id":null,"protocol_digest":null,"actor_id":change["actor_id"],"membership_id":member["membership_id"],"name":"worker","workspace_revision":4,"author_intent":prepared.jws()});
+    let check=|result:&Value|verify_http_response_for_prepared(&receipt(&service,&change,prepared.proof().intent_digest(),result),prepared.proof(),&kid);check(&result).unwrap();
+    for (field,value) in [("actor_id",json!(key_id(&[31;32]))),("membership_id",json!(key_id(&[32;32]))),("name",json!("other")),("workspace_revision",json!(5))]{let mut wrong=result.clone();wrong[field]=value;assert!(check(&wrong).is_err(),"{field}");}
+}

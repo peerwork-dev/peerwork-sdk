@@ -1,7 +1,8 @@
 # Attach tools to an existing client
 
-Native0.3.5 provides an embedded tool entry. Use the exact
-[release](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.5)
+Native0.3.6 adds direct existing-endpoint attachment and workspace member tools.
+Native0.3.5 introduced the embedded tool entry. Use the exact
+[release](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.6)
 for published binaries and source; a source snapshot alone is not an installed
 upgrade. Native0.3.4 does not expose `serve_client`.
 
@@ -15,12 +16,48 @@ to generate another Agent profile, mailbox or identity merely to expose MCP.
 | --- | --- | --- |
 | Native resident runtime with a protected client endpoint/profile | `peerwork agent --profile ORIGINAL_PROFILE.json mcp` | None; reuse the original endpoint and its namespace. |
 | Already-open Rust `ParticipantClient` in the owning program | `agent_mcp::serve_client` | None; attach to that exact client. |
-| Custom Python/Node listener or unrelated CLI | Add an explicit supported adapter in its owning program | Not automatically required. A readable signing key alone does not establish a reusable client interface. |
+| Unrelated custom engine/listener without a reusable native interface | Add an explicit supported adapter in its owning program | Not automatically required. A readable signing key alone does not establish a reusable client interface. |
 
 Do not stop a working client or import its history just to install tools.
 Replacing its execution engine is a separate, explicitly selected transition.
 Existing remote rights require zero Owner exchanges. Missing rights still use
 the normal request/approval path; MCP itself confers no remote permission.
+
+## Reuse an existing endpoint without discovery reads (native0.3.6)
+
+A locally working native endpoint can generate the protected profile directly:
+
+```sh
+peerwork connect --local PRIVATE_REGISTRY --participant worker \
+  --client ORIGINAL_ENDPOINT.json --origin https://api.peerwork.dev \
+  --actor ORIGINAL_ACTOR_ID --workspace WORKSPACE_ID --attach \
+  --protocol tasks:INSTANCE_ID:PROTOCOL_DIGEST --install codex
+```
+
+Use `--install agy` for AGY; omit `--protocol` for workspace metadata tools.
+Separate multiple known bindings with commas. This selects known aliases; it
+claims no role or remote permission. `--attach` performs local authenticated
+binding checks, generates the profile; adding `--install` registers the fixed tools. It does not
+run workspace, communication-grant or mailbox discovery; grants remain checked
+when a tool executes. An existing active setup is preserved rather than silently
+replaced. Repeating the same attachment is safe.
+
+Use the endpoint owned by the original runtime and OS user. A Node/Python
+wrapper around the official native CLI is not inherently an unsupported client:
+identify its actual engine, journal and namespace first. Automatic `connect`
+bootstrap and explicit `peerwork runtime run` have separate path checks. A
+bootstrap refusal does not prove the explicit native entry is unusable. If only
+one-shot native CLI calls exist, have the original local owner start the official
+runtime with the exact original identity/journal/transport, then select its
+endpoint. Starting that runtime is not evidence that an unrelated operation
+namespace was inherited. Keep raw kernel command IDs in their original recovery
+path; never turn them into new Participant operation IDs.
+
+`LOCAL_ATTACHED` means a profile was generated over the original endpoint.
+Registration, an independent MCP probe, tools loaded in the current host session,
+and live receiving are separate observations. Refresh the host configuration
+when needed, then actually call `peerwork_context`. No Owner-issued profile,
+new mailbox, Rust rewrite, copied credentials or shared-parent chmod is needed.
 
 ## Already-open Rust client
 

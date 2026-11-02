@@ -1,7 +1,7 @@
 # Connect an existing participant
 
-Use native SDK0.3.5 and its exact published
-[release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.5).
+Use native SDK0.3.6 and its exact published
+[release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.6).
 Native0.3.2 retains its
 [explicit setup guide](participant-connect-0.3.2.md).
 The native client adds no Node/Python runtime dependency or additional platforms.
@@ -12,6 +12,23 @@ If an existing client already works, [attach tools to that client](existing-clie
 instead of migrating its identity/history merely to obtain MCP. Native resident
 profiles need no installation ledger; native0.3.5 adds the direct embedded
 Rust entry. State replacement and exact host-session delivery remain separate.
+
+## Minimal existing-business entry
+
+Reuse a working endpoint with the [direct attachment command](existing-client-tools.md).
+It does not require broader discovery permissions. When selecting roles through
+normal connect, request only the existing business role:
+
+```sh
+peerwork connect --workspace WORKSPACE_ID --role tasks:INSTANCE_ID:CONTRIBUTOR --install codex
+```
+
+No send, receive or body-key permission is implied. `LOCAL_SCOPE_DENIED` reports
+`details.action`, `restricted_by` and, during preflight, `missing_operations`.
+The local runtime owner selects a suitable existing local capability; remote
+Owner approval cannot repair a local operation/scope denial. Do not remove
+instance, protocol or mailbox restrictions or grant Owner privileges just to pass
+setup. Tools already configured for another scope remain available.
 
 ## Normal Agent entry
 
@@ -31,7 +48,8 @@ that the currently running session refreshed its tools. Once loaded, call:
 
 with `peerwork_connect`. Request body keys when using encrypted message bodies. Identity/setup ID are normally derived. A real identity
 ambiguity returns public identity choices; choose one handle once. Preserve the
-returned `setup_id` for recovery. `send` defaults to true; receive is opt-in.
+returned `setup_id` for recovery. `send`, `receive` and body-key requests default to false. Request only the
+capabilities needed; business-only setup reads no communication grants or mailboxes.
 Programs use the same engine without a host, MCP or Skill, and explicitly select
 program mode when using the CLI:
 

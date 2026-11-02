@@ -438,7 +438,7 @@ fn verify_member_directory(result:&WireValue,command:&WireValue,prepared:&Verifi
         previous=Some(actor);
         match member.get("name") {
             Some(WireValue::Null)=>(),
-            Some(value)=>{let name=value.as_string().filter(|v|!v.is_empty()&&v.encode_utf16().count()<=80&&v.len()<=256&&v.trim()==v&&!v.chars().any(char::is_control)).ok_or_else(invalid)?;
+            Some(value)=>{let name=value.as_string().filter(|v|!v.is_empty()&&v.encode_utf16().count()<=80&&v.len()<=256&&v.trim()==v&&!valid_token(v)&&!v.chars().any(char::is_control)).ok_or_else(invalid)?;
                 if body.get("name").and_then(WireValue::as_string).is_some_and(|wanted|wanted!=name){return Err(invalid());}},
             None if view=="BASIC"=>(),
             _=>return Err(invalid()),

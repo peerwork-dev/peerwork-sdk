@@ -4023,7 +4023,7 @@ async fn native_agent_cli_mcp_send_reply_and_cancel_preserve_one_engine_intent()
         .unwrap_err();
     assert_eq!(conflict.code, "OPERATION_INPUT_CONFLICT");
     master
-        .call(AgentRequest::Status {
+        .call(AgentRequest::Status { workspace: None,
             protocol: None,
             operation_id: "cli-ping".into(),
         })
@@ -4115,7 +4115,7 @@ async fn native_agent_cli_mcp_send_reply_and_cancel_preserve_one_engine_intent()
     let recovered = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let v = master
-                .call(AgentRequest::Status {
+                .call(AgentRequest::Status { workspace: None,
                     protocol: None,
                     operation_id: "mcp-original-cancelled-wait".into(),
                 })
@@ -4190,6 +4190,13 @@ async fn connect_consolidates_missing_rights_and_resumes_without_owner_profile_e
     let approved=owner.approve("owner","approve-worker",serde_json::from_value::<AuthorizationRequest>(handoff.clone()).unwrap()).await.unwrap();
     assert_eq!(approved["state"],"APPROVED","{approved}");
     let result=worker.run(request.clone()).await.unwrap();assert_eq!(result["state"],"LOCAL_CONFIGURED","{result}");
+    let original_profile=worker.profile().unwrap().unwrap();let prior=service.counts().await;
+    let mut tools_only=request.clone();tools_only.setup_id="only-existing-tools".into();tools_only.send=false;tools_only.receive=false;
+    let configured=worker.run(tools_only).await.unwrap();assert_eq!(configured["state"],"LOCAL_CONFIGURED","{configured}");
+    let tools_profile=worker.profile().unwrap().unwrap();assert_eq!(tools_profile.endpoint_path,original_profile.endpoint_path);assert_eq!(tools_profile.receive_endpoint_path,original_profile.receive_endpoint_path);
+    assert_eq!(tools_profile.scopes["project"].mailbox_id,original_profile.scopes["project"].mailbox_id);assert!(!tools_profile.send_scopes.contains_key("project"));
+    let next=service.counts().await;
+    for action in ["structure.communication.grant.get","structure.mailboxes.read"]{assert_eq!(prior["actions"][action],next["actions"][action],"business-only setup performed {action}");}
     let before=service.counts().await;
     let registry=root.path().join("worker-local/connect.state");let modified=std::fs::metadata(&registry).unwrap().modified().unwrap();
     let again=worker.run(request.clone()).await.unwrap();assert_eq!(again["state"],"LOCAL_CONFIGURED");
@@ -4518,4 +4525,75 @@ async fn shared_host_result_failure(lose_ack:bool){
     assert_eq!(ipc::call(&endpoints[1],json!({"method":"delivery_status","options":watches[1],"item":item})).await.unwrap()["value"]["host"],"HOST_ACCEPTED");
     assert!(!endpoints[0].exists());assert_eq!(service.counts().await["journal_reads"],0);
     drop(db);stop.cancel();server.await.unwrap().unwrap();
+}
+
+#[tokio::test(flavor="multi_thread",worker_threads=4)]
+#[ignore="requires synthetic PostgreSQL and real product HTTP"]
+async fn workspace_member_tools_need_no_contacts_preserve_limits_and_recover_name_namespace(){
+    use crate::agent_tools::{AgentSelection,AgentTools,AgentRequest,AgentProfile};
+    use crate::communication_runtime::{self,EngineConfig,ClientConfig,RuntimeConfig};
+    let service=Service::start();let root=crate::test_support::protected_test_dir();
+    let mut cfg=configuration(root.path(),&service.origin);cfg.transport.request_timeout_ms=5000;
+    let owner=ParticipantClient::open(cfg.clone()).await.unwrap();
+    let created=mutate(&owner,"create","structure.workspace.create",&Scope::default(),json!({"name":"Members HTTP"})).await;
+    let ws=created["workspace_id"].as_str().unwrap().to_owned();
+    let mut cap=Capability::owner();cap.allow_root=false;cap.workspace_ids=Some([ws.clone()].into());cap.operations=["structure.members.read".into(),"structure.member.name.set".into()].into();
+    let worker=owner.restrict("original-worker",cap.clone()).unwrap();let mut selection=AgentSelection::for_client(&worker);selection.workspaces.insert("project".into(),ws.clone());
+    let tools=AgentTools::from_client(worker.clone(),selection.clone()).unwrap();
+    let page=tools.call(AgentRequest::parse("reachability",json!({})).unwrap()).await.unwrap();
+    assert_eq!(page["members"].as_array().unwrap().len(),1);assert_eq!(page["members"][0]["receiving"]["state"],"NOT_ENABLED");assert_eq!(page["summary"]["not_enabled"],1);assert_eq!(page["complete"],true);
+    let before=service.counts().await;tools.call(AgentRequest::parse("reachability",json!({"actor":owner.actor_id()})).unwrap()).await.unwrap();let after=service.counts().await;
+    assert_eq!(after["commands"].as_u64().unwrap()-before["commands"].as_u64().unwrap(),1);
+    assert_eq!(before["journal_reads"],after["journal_reads"]);
+    let mut narrow=cap.clone();narrow.mailbox_ids=Some(Default::default());let restricted=worker.restrict("mailbox-limited",narrow).unwrap();let limited=AgentTools::from_client(restricted,selection).unwrap();
+    let error=limited.call(AgentRequest::parse("reachability",json!({})).unwrap()).await.unwrap_err();assert_eq!(error.code,"LOCAL_SCOPE_DENIED");assert!(error.details.unwrap()["restricted_by"].as_array().unwrap().iter().any(|x|x=="mailbox_ids"));
+    drop(limited);drop(tools);owner.close().await.unwrap();drop(worker);drop(owner);
+    let runtime=RuntimeConfig{format:"peerwork.participant-runtime.v1".into(),state_directory:root.path().join("runtime"),hosts:vec![],
+        engines:vec![EngineConfig{name:"original".into(),origin:cfg.origin.clone(),expected_actor:cfg.expected_actor.clone(),authority:cfg.authority.clone(),identity_path:cfg.identity_path.clone(),state_directory:cfg.state_directory.clone(),journal_path:Some(cfg.journal_path.clone()),allow_loopback_http:true,transport:cfg.transport.clone(),max_inflight:4,max_pending:64,max_stored_bytes:32*1024*1024,migration_sources:vec![]}],
+        clients:vec![ClientConfig{name:"worker".into(),engine:"original".into(),capability:Capability::owner()}]};
+    let cancel=KernelCancellationToken::new();let(tx,rx)=tokio::sync::oneshot::channel();let daemon=tokio::spawn(communication_runtime::serve(runtime,cancel.clone(),tx));let ready=rx.await.unwrap().unwrap();
+    let client=communication_runtime::RuntimeClient::connect(ready.client_endpoints["worker"].clone(),&service.origin,&cfg.expected_actor).await.unwrap();
+    let directory=client.call(json!({"method":"derive","name":"member-directory","capability":cap})).await.unwrap();
+    let profile=AgentProfile{format:"peerwork.agent-profile.v1".into(),endpoint_path:ready.client_endpoints["worker"].clone(),expected_origin:service.origin.clone(),expected_actor:cfg.expected_actor.clone(),workspaces:[("project".into(),ws.clone())].into(),directory_endpoints:[(ws.clone(),std::path::PathBuf::from(directory["endpoint_path"].as_str().unwrap()))].into(),scopes:Default::default(),contacts:Default::default(),protocols:Default::default(),protocol_endpoints:Default::default(),send_scopes:Default::default(),receive_endpoint_path:None};
+    let tools=AgentTools::open(profile).await.unwrap();let page=tools.call(AgentRequest::parse("reachability",json!({})).unwrap()).await.unwrap();
+    service.config(json!({"delay_action":"structure.member.name.set"})).await;
+    let pending=tools.call(AgentRequest::parse("member_name",json!({"operation_id":"rename-original","name":"Master","expected_revision":page["frontier"]["workspace_revision"]})).unwrap()).await.unwrap();
+    assert_eq!(pending["recovery_arguments"]["workspace"],ws);
+    let observe=||AgentRequest::parse("status",pending["recovery_arguments"].clone()).unwrap();
+    assert_eq!(tools.call(observe()).await.unwrap()["operation_id"],"rename-original");
+    assert!(matches!(client.call(json!({"method":"operation","operation_id":"rename-original"})).await,Err(e)if e.code=="OPERATION_NOT_FOUND"));
+    service.config(json!({"release":true})).await;
+    tokio::time::timeout(Duration::from_secs(10),async{loop{let result=tools.call(observe()).await.unwrap();if result["state"]=="ACCEPTED"{break;}tokio::time::sleep(Duration::from_millis(20)).await;}}).await.unwrap();
+    let page=tools.call(AgentRequest::parse("reachability",json!({"actor":"Master"})).unwrap()).await.unwrap();assert_eq!(page["members"][0]["name"],"Master");
+    assert_eq!(service.counts().await["actions"]["structure.member.name.set"],1);
+    drop(tools);drop(client);cancel.cancel();daemon.await.unwrap().unwrap();
+}
+
+#[tokio::test(flavor="multi_thread",worker_threads=4)]
+#[ignore="requires synthetic PostgreSQL and real product HTTP"]
+async fn workspace_member_send_refuses_ambiguous_names_and_pins_original_recipient(){
+    use crate::agent_tools::{AgentSelection,AgentTools,AgentRequest};
+    let service=Service::start();let home=crate::test_support::protected_test_dir();let a_home=crate::test_support::protected_test_dir();let b_home=crate::test_support::protected_test_dir();
+    let cfg=configuration(home.path(),&service.origin);let a_cfg=configuration(a_home.path(),&service.origin);let b_cfg=configuration(b_home.path(),&service.origin);
+    let owner=ParticipantClient::open(cfg.clone()).await.unwrap();let a=ParticipantClient::open(a_cfg).await.unwrap();let b=ParticipantClient::open(b_cfg).await.unwrap();
+    let ws=mutate(&owner,"create","structure.workspace.create",&Scope::default(),json!({"name":"Ambiguity"})).await["workspace_id"].as_str().unwrap().to_owned();let scope=Scope{workspace_id:Some(ws.clone()),..Default::default()};
+    let owner_meta=selected(&owner,"structure.workspace.get",&scope,json!({})).await;
+    mutate(&owner,"send-grant","structure.communication.grant.set",&scope,json!({"actor_id":owner.actor_id(),"membership_id":owner_meta["membership"]["membership_id"],"expected_revision":null,"send":true,"receive":false})).await;
+    for (i,peer) in [a.clone(),b.clone()].iter().enumerate(){
+        let meta=selected(&owner,"structure.workspace.get",&scope,json!({})).await;
+        let mut join=Invoke::new(format!("join-{i}"),"structure.member.set",scope.clone(),json!({"actor_id":peer.actor_id(),"state":"ACTIVE","expected_membership_id":null}));join.expected_workspace_revision=meta["workspace_revision"].as_u64();
+        let member=structure(&owner.invoke(join,Duration::from_secs(5)).await.unwrap());
+        mutate(&owner,&format!("grant-{i}"),"structure.communication.grant.set",&scope,json!({"actor_id":peer.actor_id(),"membership_id":member["membership_id"],"expected_revision":null,"send":false,"receive":true})).await;
+        let meta=selected(&owner,"structure.workspace.get",&scope,json!({})).await;
+        let mut rename=Invoke::new("shared-name","structure.member.name.set",scope.clone(),json!({"membership_id":member["membership_id"],"name":"worker"}));rename.expected_workspace_revision=meta["workspace_revision"].as_u64();
+        assert_eq!(peer.invoke(rename,Duration::from_secs(5)).await.unwrap().state,"ACCEPTED");
+    }
+    let key=install_synthetic_key(&cfg,&ws,&[47;32],None);mutate(&owner,"select-key","structure.content-key.set",&scope,json!({"key_id":key,"expected_epoch":0,"expected_head_revision":null})).await;
+    let mut selection=AgentSelection::for_client(&owner);selection.workspaces.insert("project".into(),ws.clone());let tools=AgentTools::from_client(owner.clone(),selection).unwrap();
+    let send=|target:&str|AgentRequest::parse("send",json!({"to":target,"operation_id":"one-message","text":"Hello","wait_ms":1000})).unwrap();
+    let error=tools.call(send("worker")).await.unwrap_err();assert_eq!(error.code,"MEMBER_NAME_AMBIGUOUS");assert_eq!(error.details.unwrap()["candidates"].as_array().unwrap().len(),2);
+    assert!(matches!(owner.operation("one-message").await,Err(e)if e.code=="OPERATION_NOT_FOUND"));assert!(service.counts().await["actions"]["structure.message.send"].is_null());
+    let sent=tools.call(send(a.actor_id())).await.unwrap();assert_eq!(sent["state"],"ACCEPTED");
+    let error=tools.call(send(b.actor_id())).await.unwrap_err();assert_eq!(error.code,"EXISTING_OPERATION_USE_STATUS_OR_RECOVER");assert_eq!(service.counts().await["actions"]["structure.message.send"],1);
+    a.close().await.unwrap();b.close().await.unwrap();owner.close().await.unwrap();
 }
