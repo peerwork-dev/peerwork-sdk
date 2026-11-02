@@ -158,7 +158,7 @@ pub fn parse_discovery_wire(
                 .ok_or(DiscoveryError::Invalid)
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let protocol_features = match value.get("protocol_features") {
+    let mut protocol_features = match value.get("protocol_features") {
         None => Vec::new(),
         Some(WireValue::Array(features)) if features.len() <= 32 => {
             let mut output = Vec::with_capacity(features.len());
@@ -173,6 +173,20 @@ pub fn parse_discovery_wire(
         }
         _ => return Err(DiscoveryError::Invalid),
     };
+    // Keep the original bounded flat list compatible with existing clients.
+    // New capabilities use the already versioned extension envelope, while
+    // security pins retain the complete effective feature set.
+    if let Some(extra) = value.get("extensions").and_then(|v| v.get("protocol_features")) {
+        let WireValue::Array(features) = extra else { return Err(DiscoveryError::Invalid); };
+        if features.len() > 128 { return Err(DiscoveryError::Invalid); }
+        for feature in features {
+            let units = feature.as_utf16().ok_or(DiscoveryError::Invalid)?;
+            if units.is_empty() || units.len() > 80 || protocol_features.iter().any(|old| old.as_slice() == units) {
+                return Err(DiscoveryError::Invalid);
+            }
+            protocol_features.push(units.to_vec());
+        }
+    }
     let manifest_language = match value.get("manifest_language") {
         None => None,
         Some(language) => {

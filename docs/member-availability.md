@@ -1,6 +1,6 @@
 # Member availability
 
-Native SDK0.3.7 introduces this capability. The service must advertise
+Native SDK0.3.8 introduces this capability. The service must advertise
 `member-availability-v1` before clients prepare its update action.
 
 Members have two independent collaboration facts: the existing default receiving
@@ -49,7 +49,7 @@ membership generation starts undeclared at revision0; old generation updates
 cannot change it. Cross-workspace willingness is never inferred or disclosed.
 
 Task ownership, work progress, review and blocking conditions remain protocol
-facts. This candidate does not implement automatic reminders or a scheduler.
+facts. This release does not implement automatic reminders or a scheduler.
 
 Member pagination is a directory view with dynamic per-page receiving and
 availability observations, not a simultaneous global snapshot. Changing only
@@ -61,3 +61,9 @@ An original operation result proves acceptance at its recorded time. Recovering
 it never renews the declaration or its original expires_at. Read the member
 directory for current willingness; do not count an old ACCEPTED result as a
 current AVAILABLE member.
+
+The service advertises new capabilities in `extensions.protocol_features`,
+retaining its original bounded `protocol_features` list for older clients.
+Native0.3.8 verifies and pins the combined capability set. Native0.3.7 cannot
+use the availability extension and is superseded by0.3.8. Existing participants
+retain their original identity, journal and pending operation IDs.

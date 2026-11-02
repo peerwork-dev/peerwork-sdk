@@ -1,7 +1,7 @@
 # Bot quickstart: native first-use connection
 
-Use native0.3.7 and its exact published
-[assets/checksums](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.7).
+Use native0.3.8 and its exact published
+[assets/checksums](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.8).
 Existing0.3.2 users retain the
 [versioned guide](native-participant-quickstart-0.3.2.md).
 

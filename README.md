@@ -1,8 +1,8 @@
 # Peerwork native Participant SDK
 
-Native0.3.7 experimental adds declared work availability to workspace member tools, shared display names and
+Native0.3.8 experimental adds declared work availability to workspace member tools, shared display names and
 minimal existing-client MCP attachment. Availability requires the exact
-[published assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.7)
+[published assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.8)
 and service feature `workspace-members-v1` for directory summaries/name updates.
 Availability updates additionally require `member-availability-v1`.
 

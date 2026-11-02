@@ -2,6 +2,27 @@ use peerwork_core::{crypto::key_id, discovery::parse_discovery_wire};
 use serde_json::json;
 
 #[test]
+fn discovery_extensions_add_capabilities_without_overflowing_or_resetting_legacy_pins(){
+    let mut base=json!({"semantics":"peerwork.kernel.v1","audience":"extension-test",
+        "command_type":"peerwork.kernel-command.v1+jws","receipt_type":"peerwork.kernel-receipt.v1+jws",
+        "receipt_public_key":key_id(&[37;32]),"limits":{"max":1},
+        "protocol_features":(0..32).map(|n|format!("feature-{n}")).collect::<Vec<_>>()});
+    let parse=|value:&serde_json::Value|{let wire=serde_json::to_vec(value).unwrap();parse_discovery_wire(&wire,wire.len())};
+    let old=parse(&base).unwrap();
+    base["extensions"]=json!({"protocol_features":["member-availability-v1"]});
+    let next=parse(&base).unwrap();
+    assert_eq!(next.protocol_features().len(),33);
+    assert!(next.supports_required_features(&["member-availability-v1".encode_utf16().collect()]));
+    assert!(next.permits_update_from(&old));
+    assert!(!old.permits_update_from(&next));
+    for bad in [json!(true),json!(["feature-1"]),json!(["new","new"]),json!([""]),json!(vec!["extra";129])]{
+        let mut invalid=base.clone();invalid["extensions"]["protocol_features"]=bad;assert!(parse(&invalid).is_err());
+    }
+    let mut oversized=base;oversized["protocol_features"].as_array_mut().unwrap().push(json!("feature-32"));
+    assert!(parse(&oversized).is_err());
+}
+
+#[test]
 fn discovery_preserves_lossless_audience_and_rejects_strict_unknown_or_duplicate_fields() {
     let key = key_id(&[27; 32]);
     let wire = format!(
