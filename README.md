@@ -6,6 +6,10 @@ minimal existing-client MCP attachment. Availability requires the exact
 and service feature `workspace-members-v1` for directory summaries/name updates.
 Availability updates additionally require `member-availability-v1`.
 
+Native0.3.8 also fixes additive capability discovery through the extension
+envelope, preserving existing service pins and original operation namespaces.
+It supersedes0.3.7 for availability.
+
 The native engine supports both ordinary programs and Agents. It owns signing,
 body encryption, verification, durable operations, mailbox delivery and original
 intent recovery. The backend executes business rules over access-controlled

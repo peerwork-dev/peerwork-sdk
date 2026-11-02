@@ -15,3 +15,7 @@ progress remain independent. No automatic dispatch or timed reminder is added.
 
 Use the actual release asset list and source/checksum manifests for platform
 availability. See [member availability](docs/member-availability.md).
+
+Initial native availability: Linux x86_64 GNU and Windows x86_64. macOS ARM64
+is pending; its hosted runner was not allocated and no macOS0.3.8 qualification
+is claimed. Existing published archive bytes remain unchanged.
