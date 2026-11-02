@@ -47,7 +47,17 @@ builds, exercises protected installed-process recovery and audits actual loader
 imports. Node is used on eligible CI hosts solely to produce a historical
 receiver-store fixture. It is not packaged or installed for users.
 
-All three archives must come from one successful qualification source/run.
+Every published archive must have a passed target job and a source-bound
+qualification report. All targets of a version use the same frozen client
+source; a capacity-only retry may use a separately reviewed workflow that
+checks out that exact source. Never infer a passed target from a sibling job.
+
+Targets may become available incrementally. SOURCE.json and SHA256SUMS are
+immutable snapshots of the initial publication. Pending targets are explicit;
+they are not qualified or downloadable until their actual assets are added.
+A later complete source manifest/checksum supplement may be appended without
+replacing previously published bytes. The actual release asset list is the
+availability authority.
 Promotion must retain those exact archive bytes and record source commit,
 source tree, run/artifact IDs, archive/binary hashes, target requirements,
 notices and explicit qualification limits. It must not reconstruct binaries,
@@ -149,3 +159,10 @@ recorded independently. An unchanged historical import or model/performance
 campaign is not a default artifact-publication check. No Node producer is needed
 for this native artifact workflow. Qualification reports explicitly distinguish
 these scopes and do not infer semantic or performance evidence from a build.
+
+## Native0.3.6 initial availability
+
+Linux x86_64 GNU and Windows x86_64 are qualified for initial publication.
+macOS ARM64 remains pending because no hosted runner was allocated; its0.3.6
+build has not run and is not qualified. Consult the actual release for later
+availability. No Mac success is inferred from Linux or Windows tests.

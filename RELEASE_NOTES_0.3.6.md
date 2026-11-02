@@ -26,3 +26,8 @@ universal latency SLA is claimed.
 
 See [existing-client attachment](docs/existing-client-tools.md),
 [workspace members](docs/workspace-members.md) and [connect](docs/participant-connect.md).
+
+Availability at initial publication: Linux x86_64 GNU and Windows x86_64.
+**macOS ARM64 is pending**: standard hosted runners did not acquire a machine;
+its0.3.6 build has not run and is not qualified. Follow this release for the
+additional same-source archive and qualification report when available.
