@@ -23,9 +23,12 @@ pub use approval::AuthorizationRequest;
 pub use install::Installation;
 #[path = "participant_connect_host.rs"]
 mod host;
-pub use host::HostSelection;
+pub use host::{HostInvocation, HostSelection};
 #[path = "participant_connect_bootstrap.rs"]
 mod bootstrap;
+#[path = "participant_connect_discovery.rs"]
+mod discovery;
+pub use discovery::Discovery;
 
 fn local(code: &str) -> ParticipantError {
     ParticipantError::local(code, "CONNECT")
@@ -64,12 +67,14 @@ pub struct ContactSelection {
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ConnectRequest {
+    #[serde(default)]
     pub setup_id: String,
+    #[serde(default)]
     pub participant: String,
     pub workspace_id: String,
     #[serde(default = "default_alias")]
     pub alias: String,
-    #[serde(default)]
+    #[serde(default = "default_send")]
     pub send: bool,
     #[serde(default)]
     pub receive: bool,
@@ -95,6 +100,7 @@ fn missing_runtime_features(caps: &Value) -> Vec<&'static str> {
 fn default_alias() -> String {
     "workspace".into()
 }
+fn default_send() -> bool { true }
 impl ConnectRequest {
     pub fn validate(&self) -> Result<()> {
         if !identifier(&self.setup_id)
@@ -155,6 +161,8 @@ struct Setup {
     channel_receive: bool,
     #[serde(default)]
     sender_capability: Option<Capability>,
+    #[serde(default)]
+    agent_host_required: bool,
 }
 #[derive(Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -172,6 +180,14 @@ struct Registry {
     hosts: BTreeMap<String, HostSelection>,
     #[serde(default)]
     local_runtime_admins: BTreeMap<String, PathBuf>,
+    #[serde(default)]
+    trusted_projects: Vec<PathBuf>,
+    #[serde(default)]
+    sources: BTreeMap<String, discovery::Source>,
+    #[serde(default)]
+    verified_bindings: BTreeMap<String, Value>,
+    #[serde(default)]
+    project_target: Option<discovery::ProjectTarget>,
 }
 pub struct Connect {
     directory: PathBuf,
@@ -205,6 +221,7 @@ impl Connect {
         if registry.participants.len() > 8
             || registry.setups.len() > 64
             || registry.approvals.len() > 64
+            || registry.sources.len() > 8 || registry.trusted_projects.len() > 8 || registry.verified_bindings.len() > 8
         {
             return Err(local("CONNECT_RECOVERY_REQUIRED"));
         }
@@ -241,6 +258,7 @@ impl Connect {
         if registry.participants.len() > 8
             || registry.setups.len() > 64
             || registry.approvals.len() > 64
+            || registry.sources.len() > 8 || registry.trusted_projects.len() > 8 || registry.verified_bindings.len() > 8
         {
             return Err(local("CONNECT_RECOVERY_REQUIRED"));
         }
@@ -285,7 +303,10 @@ impl Connect {
         Ok(())
     }
     /// CLI/local-owner bootstrap only. MCP cannot select new paths or identities.
-    pub async fn register(&mut self, name: &str, mut selected: Registration) -> Result<Value> {
+    pub async fn register(&mut self, name: &str, selected: Registration) -> Result<Value> {
+        self.register_pinned(name, selected, None, None).await
+    }
+    pub(super) async fn register_pinned(&mut self, name: &str, mut selected: Registration, expected:Option<Value>, owned_admin:Option<PathBuf>) -> Result<Value> {
         self.require_writer()?;
         if !identifier(name) || !token(&selected.actor_id) || !selected.endpoint_path.is_absolute()
         {
@@ -294,7 +315,14 @@ impl Connect {
         let origin = crate::transport::canonical_lifecycle_origin(&selected.origin, true)
             .map_err(|_| local("LOCAL_SELECTION_INVALID"))?;
         selected.origin = origin.clone();
-        RuntimeClient::connect(selected.endpoint_path.clone(), &origin, &selected.actor_id).await?;
+        let expected=expected.or_else(||self.registry.verified_bindings.get(name).cloned());
+        let client=match expected {
+            Some(binding)=>RuntimeClient::connect_bound(selected.endpoint_path.clone(), &origin, &selected.actor_id,binding).await?,
+            None=>RuntimeClient::connect(selected.endpoint_path.clone(), &origin, &selected.actor_id).await?,
+        };
+        let observed=client.call(json!({"method":"binding"})).await.map_err(|_|local("LOCAL_RUNTIME_UPGRADE_REQUIRED"))?;
+        let changed=self.registry.verified_bindings.get(name)!=Some(&observed) || !self.registry.participants.contains_key(name)
+            || owned_admin.as_ref().is_some_and(|admin|self.registry.local_runtime_admins.get(name)!=Some(admin));
         if let Some(old) = self.registry.participants.get(name) {
             if old != &selected {
                 return Err(local("LOCAL_BINDING_CONFLICT"));
@@ -304,12 +332,16 @@ impl Connect {
                 return Err(local("LOCAL_PARTICIPANT_LIMIT"));
             }
             self.registry.participants.insert(name.into(), selected);
-            self.save()?;
         }
+        // Registration and its verification fact are one recoverable commit.
+        self.registry.verified_bindings.insert(name.into(),observed);
+        if let Some(admin)=owned_admin {self.registry.local_runtime_admins.insert(name.into(),admin);}
+        if changed { self.save()?; }
         Ok(self.context())
     }
     pub fn context(&self) -> Value {
         json!({"state":if self.registry.participants.is_empty(){"NOT_CONFIGURED"}else{"LOCAL_SELECTION_REGISTERED"},
+            "discovery":self.discovery_summary(),
             "participants":self.registry.participants.iter().map(|(handle,r)|json!({"handle":handle,"actor_id":r.actor_id,"origin":r.origin})).collect::<Vec<_>>(),
             "active_setup_id":self.registry.active,"setups":self.registry.setups.iter().map(|(id,s)|json!({"setup_id":id,"participant":s.desired.participant,"workspace_id":s.desired.workspace_id,"protocol_roles":s.desired.protocols,"state":s.result["state"],"blocker":s.result["blocker"]})).collect::<Vec<_>>(),
             "next_tool":"peerwork_connect","remote_or_host_readiness":"NOT_ATTESTED"})
@@ -392,7 +424,10 @@ impl Connect {
     }
     fn ensure_profile(&self, id: &str, profile: &AgentProfile) -> Result<PathBuf> {
         profile.validate()?;
-        let path = self.directory.join(format!("profile-{id}.json"));
+        let partial = self.registry.setups.get(id).is_some_and(|s|
+            s.agent_host_required && s.desired.receive && !s.channel_receive);
+        let suffix = if partial { "-tools" } else { "" };
+        let path = self.directory.join(format!("profile-{id}{suffix}.json"));
         match std::fs::symlink_metadata(&path) {
             Ok(_) => {
                 let old = AgentProfile::load(&path)?;
@@ -444,9 +479,26 @@ impl Connect {
             "blocker":{"stage":stage,"code":code,"affected_scope":{"workspace_id":r.workspace_id},"next_actor":actor,"next_action":action},
             "details":details,"existing_configuration_preserved":true}), None)
     }
+    fn begin_setup(&mut self, request:&ConnectRequest, registration:Registration, agent:bool, effective_host:Option<String>)->Result<()> {
+        if self.registry.setups.len()>=64 {return Err(local("SETUP_LIMIT"));}
+        let digest=sha256_hex(serde_json::to_vec(request).map_err(|_|local("CONNECT_ARGUMENT_INVALID"))?.as_slice());
+        self.registry.setups.insert(request.setup_id.clone(),Setup {desired:request.clone(),registration,digest,
+            profile:None,key_request:None,key_request_history:vec![],effective_host,channel_send:false,channel_receive:false,
+            sender_capability:None,agent_host_required:agent,result:json!({"state":"PENDING","setup_id":request.setup_id})});
+        self.save()
+    }
     pub async fn run(&mut self, request: ConnectRequest) -> Result<Value> {
+        self.run_mode(request, false).await
+    }
+    /// Agent entry must never activate a program receiver while its requested
+    /// host is unknown. Named existing destinations remain named, not evidence
+    /// that the invoking model session is that destination.
+    pub async fn run_agent(&mut self, request: ConnectRequest) -> Result<Value> {
+        self.run_mode(request, true).await
+    }
+    async fn run_mode(&mut self, request: ConnectRequest, agent: bool) -> Result<Value> {
         self.require_writer()?;
-        request.validate()?;
+        let request = if agent {self.normalize_agent_request(request)?} else {self.normalize_request(request)?};
         let selected = match self.registry.participants.get(&request.participant) {
             Some(v) => v.clone(),
             None => return Ok(Self::selection_required(&request.setup_id)),
@@ -460,8 +512,22 @@ impl Connect {
             if old.digest != digest || old.registration != selected {
                 return Err(local("SETUP_ID_CONFLICT_RESUME_ORIGINAL"));
             }
+            if old.result["blocker"]["code"] == "HOST_CONTEXT_REQUIRED"
+                && old.effective_host.is_none() && request.host.is_none() {
+                if let Some(profile) = &old.profile {
+                    self.original_client(&request.participant).await?;
+                    self.ensure_profile(&request.setup_id, profile)?;
+                    let mut result = old.result.clone();
+                    result["observation"] = json!("CACHED_SETUP_RESULT_HOST_CONTEXT_STILL_REQUIRED");
+                    return Ok(result);
+                }
+            }
+            if agent && request.receive && !old.agent_host_required && old.channel_receive && old.effective_host.is_none() {
+                return Err(local("EXISTING_PROGRAM_RECEIVER_REQUIRES_EXPLICIT_REBIND"));
+            }
             if old.result["state"] == "LOCAL_CONFIGURED" {
                 if let Some(profile) = &old.profile {
+                    self.original_client(&request.participant).await?;
                     self.ensure_profile(&request.setup_id, profile)?;
                     let sender_ready = RuntimeClient::connect(
                         profile.endpoint_path.clone(),
@@ -489,33 +555,13 @@ impl Connect {
                 }
             }
         } else {
-            if self.registry.setups.len() >= 64 {
-                return Err(local("SETUP_LIMIT"));
-            }
-            self.registry.setups.insert(
-                request.setup_id.clone(),
-                Setup {
-                    desired: request.clone(),
-                    registration: selected.clone(),
-                    digest,
-                    profile: None,
-                    key_request: None,
-                    key_request_history: Vec::new(),
-                    effective_host: None,
-                    channel_send: false,
-                    channel_receive: false,
-                    sender_capability: None,
-                    result: json!({"state":"PENDING","setup_id":request.setup_id}),
-                },
-            );
+            self.begin_setup(&request, selected.clone(), agent, None)?;
+        }
+        if agent && !self.registry.setups[&request.setup_id].agent_host_required {
+            self.registry.setups.get_mut(&request.setup_id).unwrap().agent_host_required = true;
             self.save()?;
         }
-        let client = match RuntimeClient::connect(
-            selected.endpoint_path.clone(),
-            &selected.origin,
-            &selected.actor_id,
-        )
-        .await
+        let client = match self.original_client(&request.participant).await
         {
             Ok(c) => c,
             Err(e) => {
@@ -529,6 +575,7 @@ impl Connect {
                 )
             }
         };
+        self.verify_registered(&request.participant, &client).await?;
         let caps = client.call(json!({"method":"capabilities"})).await?;
         let missing_features = missing_runtime_features(&caps);
         if !missing_features.is_empty() {
@@ -759,14 +806,18 @@ impl Connect {
             })
             .cloned();
         let previous = previous_setup.as_ref().and_then(|s| s.profile.clone());
+        if (agent || self.registry.setups[&request.setup_id].agent_host_required)
+            && request.receive && previous_setup.as_ref().is_some_and(|s|s.channel_receive && s.effective_host.is_none()) {
+            return self.pending(&request,"HOST_BINDING","EXISTING_PROGRAM_RECEIVER_REQUIRES_EXPLICIT_REBIND","HOST_USER","EXPLICIT_NATIVE_REBIND",json!({"existing_receiver_preserved":true}));
+        }
         let channel_send = request.send
             || previous_setup
                 .as_ref()
                 .is_some_and(|s| s.channel_send || s.desired.send);
-        let channel_receive = request.receive
+        let wanted_receive = request.receive
             || previous_setup
                 .as_ref()
-                .is_some_and(|s| s.channel_receive || s.desired.receive);
+                .is_some_and(|s| s.channel_receive);
         let old_host = previous_setup
             .as_ref()
             .and_then(|s| s.effective_host.clone().or_else(|| s.desired.host.clone()));
@@ -776,7 +827,7 @@ impl Connect {
             .is_some_and(|wanted| old_host.as_ref() != Some(wanted))
             && previous_setup
                 .as_ref()
-                .is_some_and(|s| s.channel_receive || s.desired.receive)
+                .is_some_and(|s| s.channel_receive)
         {
             return self.pending(
                 &request,
@@ -787,7 +838,18 @@ impl Connect {
                 json!({}),
             );
         }
-        let effective_host = request.host.clone().or(old_host);
+        let effective_host = request.host.clone().or_else(||self.registry.setups[&request.setup_id].effective_host.clone())
+            .or_else(||if request.receive && (agent || self.registry.setups[&request.setup_id].agent_host_required) {None} else {old_host.clone()});
+        let host_pending = (agent || self.registry.setups[&request.setup_id].agent_host_required)
+            && wanted_receive && effective_host.is_none();
+        let channel_receive = wanted_receive && !host_pending;
+        if request.receive && (agent || self.registry.setups[&request.setup_id].agent_host_required)
+            && previous_setup.as_ref().is_some_and(|s|s.channel_receive)
+            && effective_host!=old_host {
+            return self.pending(&request,"HOST_BINDING",if effective_host.is_none(){"HOST_CONTEXT_REQUIRED"}else{"HOST_SELECTION_CHANGED_REBIND_REQUIRED"},
+                "HOST_USER",if effective_host.is_none(){"ENABLE_SUPPORTED_CURRENT_SESSION_INTEGRATION_OR_SELECT_NAMED_DESTINATION"}else{"EXPLICIT_NATIVE_REBIND"},
+                json!({"existing_named_receiver_preserved":true,"current_session":"NOT_ATTESTED","tools_available":previous.is_some()}));
+        }
         if effective_host
             .as_ref()
             .is_some_and(|name| !self.registry.hosts.contains_key(name))
@@ -1065,10 +1127,11 @@ impl Connect {
             send_scopes,
             receive_endpoint_path: receive_endpoint,
         };
+        profile.validate()?;
         // Persist the trusted derivation before materializing the expendable file.
         {
             let s = self.registry.setups.get_mut(&request.setup_id).unwrap();
-            if s.profile.is_none() {
+            if s.profile.is_none() || (s.agent_host_required && s.desired.receive && !s.channel_receive && channel_receive) {
                 s.profile = Some(profile.clone());
                 s.channel_send = channel_send;
                 s.channel_receive = channel_receive;
@@ -1184,6 +1247,14 @@ impl Connect {
             );
             self.save()?;
         }
+        if host_pending {
+            return self.record(&request,json!({"state":"PENDING","setup_id":request.setup_id,
+                "actor_id":profile.expected_actor,"origin":profile.expected_origin,"workspace_id":request.workspace_id,
+                "blocker":{"stage":"HOST_BINDING","code":"HOST_CONTEXT_REQUIRED","next_actor":"HOST_USER","next_action":"ENABLE_SUPPORTED_CURRENT_SESSION_INTEGRATION_OR_SELECT_NAMED_DESTINATION"},
+                "tools_available":true,"profile_path":path,"receiver":{"state":"NOT_STARTED","receiver_link_verified":false},
+                "host":{"state":"NOT_BOUND","current_session":"NOT_ATTESTED","supported_fallback":"TOOLS_ONLY"},
+                "keys":keys,"owner_exchange_required":false,"observed_at_ms":stamp()}),Some(profile));
+        }
         self.record(&request,json!({"state":"LOCAL_CONFIGURED","setup_id":request.setup_id,"profile_path":path,
             "observed_at_ms":stamp(),
             "actor_id":profile.expected_actor,"origin":profile.expected_origin,"workspace_id":request.workspace_id,
@@ -1258,7 +1329,7 @@ async fn read(client: &RuntimeClient, action: &str, scope: Scope, body: Value) -
 
 pub fn schema() -> Value {
     let mut schema = json!({"type":"object","additionalProperties":false,"required":["request"],"properties":{"request":{
-        "type":"object","additionalProperties":false,"required":["setup_id","participant","workspace_id"],
+        "type":"object","additionalProperties":false,"required":["workspace_id"],
         "properties":{"setup_id":{"type":"string"},"participant":{"type":"string"},"workspace_id":{"type":"string"},"alias":{"type":"string","default":"workspace"},"send":{"type":"boolean"},"receive":{"type":"boolean"},"require_body_keys":{"type":"boolean"},"protocols":{"type":"array","maxItems":8,"items":{"type":"object","additionalProperties":false,"required":["alias","instance_id","role"],"properties":{"alias":{"type":"string"},"instance_id":{"type":"string"},"role":{"type":"string"},"actions":{"type":"array","maxItems":64,"items":{"type":"string"}}}}}}}}});
     schema["properties"]["request"]["properties"]["contacts"] = json!({"type":"array","maxItems":64,"items":{"type":"object","additionalProperties":false,"required":["alias","actor_id"],"properties":{"alias":{"type":"string"},"actor_id":{"type":"string"}}}});
     schema["properties"]["request"]["properties"]["host"] = json!({"type":"string","description":"Existing host-user-approved local handle. Omit for a program or to reuse the selected host; no command/socket/session paths are accepted."});
@@ -1279,6 +1350,8 @@ pub fn cli(args: &[String]) -> Value {
                 "--context",
                 "--uninstall",
                 "--agy-managed",
+                "--trust-project",
+                "--program",
             ]
             .contains(&flag.as_str());
             if ![
@@ -1319,6 +1392,8 @@ pub fn cli(args: &[String]) -> Value {
                 "--agy-conversation",
                 "--agy-api",
                 "--agy-inbox",
+                "--trust-project",
+                "--program",
             ]
             .contains(&flag.as_str())
                 || values.contains_key(flag)
@@ -1341,6 +1416,8 @@ pub fn cli(args: &[String]) -> Value {
     }
     if args.is_empty() || args == ["--help"] {
         return json!({"state":"HELP","usage":[
+            "peerwork connect --workspace WORKSPACE --trust-project --send --receive",
+            "peerwork connect --workspace WORKSPACE --program --trust-project --send --receive",
             "peerwork connect --local DIRECTORY --participant HANDLE --identity IDENTITY --engine-state ORIGINAL_STATE --origin ORIGIN --workspace WORKSPACE --id SETUP_ID --send --receive",
             "peerwork connect --local DIRECTORY --participant HANDLE --client EXISTING_ENDPOINT --origin ORIGIN --actor ACTOR --workspace WORKSPACE --id SETUP_ID --receive",
             "peerwork connect --local DIRECTORY --participant HANDLE --workspace WORKSPACE --id SETUP_ID --send --receive",
@@ -1352,15 +1429,34 @@ pub fn cli(args: &[String]) -> Value {
             "peerwork agent --local DIRECTORY mcp"],"engine_options":["--journal ORIGINAL_JOURNAL","--authority ORIGINAL_AUTHORITY","--request-timeout-ms MILLISECONDS","--ca-root PEM_FILE"],"host_authority":"Bootstrap records its own runtime admin endpoint. An external --client requires explicit --admin when registering a host. Existing handles can be reused without adapter flags.","authority":"Initial local-owner selection preserves the existing identity/state. Missing remote rights return a consolidated approval request. Subsequent MCP connect accepts registered handles only."});
     }
     let result = || -> Result<Value> {
-        let values = parse(args)?;
+        let mut values = parse(args)?;
+        let project = std::path::absolute(values.get("--project").cloned().unwrap_or_else(||".".into()))
+            .map_err(|_|local("PROJECT_CONTEXT_INVALID"))?.components().collect::<PathBuf>();
+        let mut installed_directory=None;
+        if !["--local","--engine-config","--identity","--client"].iter().any(|key|values.contains_key(*key)) {
+            if let Some((directory,participant))=discovery::project_target(&project)? {
+                installed_directory=Some(directory);
+                if !participant.is_empty() && !values.contains_key("--participant") {values.insert("--participant".into(),participant);}
+            } else {
+                let choices=discovery::project_bindings(&project,values.get("--workspace").map(String::as_str))?;
+                let selected:Vec<_>=choices.iter().filter(|choice|values.get("--participant").is_none_or(|wanted|
+                    wanted==&choice.participant || choice.summary["handle"]==*wanted)).collect();
+                if selected.len()>1 {return Ok(json!({"state":"PENDING","discovery":{"state":"IDENTITY_SELECTION_REQUIRED","candidates":selected.iter().map(|c|c.summary.clone()).collect::<Vec<_>>()},
+                    "blocker":{"stage":"LOCAL_IDENTITY","code":"IDENTITY_SELECTION_REQUIRED","next_actor":"LOCAL_RUNTIME_OWNER","next_action":"CHOOSE_ONE_PUBLIC_IDENTITY_HANDLE"}}));}
+                if let Some(choice)=selected.first() {
+                    discovery::remember_project(&project,choice)?;
+                    installed_directory=Some(choice.directory.clone());
+                    values.insert("--participant".into(),choice.participant.clone());
+                } else if values.contains_key("--participant") && !choices.is_empty() {return Err(local("LOCAL_SELECTION_REQUIRED"));}
+            }
+        }
         let required = |key: &str| {
-            values
-                .get(key)
-                .cloned()
-                .ok_or_else(|| local("CONNECT_ARGUMENT_INVALID_SEE_HELP"))
+            values.get(key).cloned().ok_or_else(|| local("CONNECT_ARGUMENT_INVALID_SEE_HELP"))
         };
-        let directory = std::path::absolute(required("--local")?)
-            .map_err(|_| local("CONNECT_DIRECTORY_INVALID"))?;
+        let directory = match values.get("--local") {
+            Some(path)=>std::path::absolute(path).map_err(|_|local("CONNECT_DIRECTORY_INVALID"))?,
+            None=>match installed_directory {Some(path)=>path,None=>discovery::directory(&project)?},
+        };
         if values.contains_key("--context") && directory.exists() {
             return Ok(Connect::inspect(&directory)?.context());
         }
@@ -1368,12 +1464,26 @@ pub fn cli(args: &[String]) -> Value {
         if values.contains_key("--context") {
             return Ok(connect.context());
         }
-        let handle = required("--participant")?;
+        let explicit_engine = bootstrap::engine(&values)?;
+        let discovery = if explicit_engine.is_none() && !values.contains_key("--client") {
+            Some(connect.discover(&project, values.contains_key("--trust-project"))?)
+        } else { None };
+        let handle = match values.get("--participant").cloned() {
+            Some(value)=>value,
+            None=>match &explicit_engine {
+                Some(engine)=>format!("identity-{}",&engine.binding_digest()?[..24]),
+                None=>match connect.original_handle(None) {
+                    Ok(Some(handle))=>handle,
+                    Ok(None)|Err(_)=>return Ok(json!({"state":"PENDING","discovery":discovery,
+                        "blocker":{"stage":"LOCAL_IDENTITY","code":discovery.as_ref().map(|v|v.state.as_str()).unwrap_or("LOCAL_SELECTION_REQUIRED"),
+                            "next_actor":"LOCAL_RUNTIME_OWNER","next_action":discovery.as_ref().map(|v|v.next_action.as_str()).unwrap_or("SELECT_ORIGINAL_IDENTITY")}})),
+                },
+            },
+        };
         let installation = if let Some(host) = values.get("--install") {
             Some(Installation {
                 host: host.clone(),
-                project: std::path::absolute(required("--project")?)
-                    .map_err(|_| local("HOST_INSTALLATION_SELECTION_INVALID"))?,
+                project: project.clone(),
                 executable: std::env::current_exe().map_err(|_| local("EXECUTABLE_UNAVAILABLE"))?,
             })
         } else {
@@ -1410,11 +1520,11 @@ pub fn cli(args: &[String]) -> Value {
             return runtime.block_on(connect.approve(&handle, &required("--id")?, request));
         }
         let mut request = ConnectRequest {
-            setup_id: required("--id")?,
+            setup_id: values.get("--id").cloned().unwrap_or_default(),
             participant: handle.clone(),
             workspace_id: required("--workspace")?,
             alias: values.get("--alias").cloned().unwrap_or_else(default_alias),
-            send: values.contains_key("--send"),
+            send: values.contains_key("--send") || !["--receive","--role"].iter().any(|s|values.contains_key(*s)),
             receive: values.contains_key("--receive"),
             require_body_keys: values.contains_key("--body-keys"),
             protocols: Vec::new(),
@@ -1442,7 +1552,7 @@ pub fn cli(args: &[String]) -> Value {
                 actor_id: actor.into(),
             });
         }
-        request.validate()?;
+        request = if values.contains_key("--program") {connect.normalize_request(request)?} else {connect.normalize_agent_request(request)?};
         let selected_adapter = host::adapter(&values)?;
         if selected_adapter.is_some() && !request.receive {
             return Err(local("HOST_SELECTION_REQUIRES_RECEIVE"));
@@ -1456,7 +1566,7 @@ pub fn cli(args: &[String]) -> Value {
             .build()
             .map_err(|_| local("EXECUTOR_FAILED"))?;
         runtime.block_on(async {
-            if let Some(engine) = bootstrap::engine(&values)? {
+            if let Some(engine) = explicit_engine {
                 connect.bootstrap(&handle, engine).await?;
             } else if let Some(endpoint) = values.get("--client") {
                 connect
@@ -1471,6 +1581,7 @@ pub fn cli(args: &[String]) -> Value {
                     )
                     .await?;
             }
+            connect.adopt(&handle).await?;
             if let Some(mut adapter) = selected_adapter {
                 if adapter["kind"] == "agy-stdio" {
                     if let Some(spec) = installation.as_ref().filter(|spec| spec.host == "agy") {
@@ -1508,7 +1619,8 @@ pub fn cli(args: &[String]) -> Value {
             let installed = installation
                 .map(|spec| connect.install(&handle, &request.workspace_id, spec))
                 .transpose()?;
-            let mut out = match connect.run(request).await {
+            let result = if values.contains_key("--program") { connect.run(request).await } else { connect.run_agent(request).await };
+            let mut out = match result {
                 Ok(v) => v,
                 Err(error) => json!({"state":"FAILED","error":error}),
             };

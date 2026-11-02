@@ -230,13 +230,9 @@ impl Connect {
         // All handle/provenance conflicts are rejected before launch creates
         // config, logs, a signing-state owner or any child process.
         let (selected, admin) = launch(&self.directory, handle, engine).await?;
-        self.register(handle, selected).await?;
-        if self.registry.local_runtime_admins.get(handle) != Some(&admin) {
-            self.registry
-                .local_runtime_admins
-                .insert(handle.into(), admin);
-            self.save()?;
-        }
+        // The owned launch proof authorizes this admin endpoint. Publish it
+        // atomically with registration/binding, not in a later crash window.
+        self.register_pinned(handle, selected, None, Some(admin)).await?;
         Ok(())
     }
 }

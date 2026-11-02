@@ -339,6 +339,10 @@ struct ProjectFiles {
     store: SecureStateStore,
     ownership: ProjectOwnership,
 }
+pub(super) fn matches_installation(connect:&Connect,project:&Path,host:&str,name:&str,entry:&Value)->bool {
+    connect.registry.installations.values().any(|record|record.committed && record.entry_owned
+        && record.spec.project==project && record.spec.host==host && record.name==name && record.entry==*entry)
+}
 impl ProjectFiles {
     fn open(agents: &Path) -> Result<Self> {
         let directory = agents.join(".peerwork-installation");

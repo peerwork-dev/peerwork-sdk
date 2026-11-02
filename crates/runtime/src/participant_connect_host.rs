@@ -9,7 +9,74 @@ pub struct HostSelection {
     pub admin_endpoint: PathBuf,
     pub adapter: Value,
 }
+/// Local owning-host integration input, deliberately absent from MCP/CLI
+/// arguments and serde. Obtain these fields from the authenticated host
+/// callback, never from model arguments or inherited process environment.
+pub enum HostInvocation {
+    CodexDynamicTool { thread_id: String, turn_id: String, call_id: String, instance: String },
+    AntigravityApp { conversation_id: String, instance: String },
+}
+impl HostInvocation {
+    fn verify(&self, adapter:&Value)->Result<Value> {
+        let (kind,destination,instance)=match self {
+            Self::CodexDynamicTool{thread_id,turn_id,call_id,instance}=>{
+                if adapter["kind"]!="codex" || adapter["thread_id"]!=*thread_id || turn_id.is_empty() || call_id.is_empty() {
+                    return Err(local("CURRENT_HOST_CONTEXT_MISMATCH"));
+                }
+                ("CODEX_OWNING_CLIENT_CALLBACK",thread_id,instance)
+            },
+            Self::AntigravityApp{conversation_id,instance}=>{
+                if adapter["kind"]!="agy-app" || adapter["conversation_id"]!=*conversation_id {
+                    return Err(local("CURRENT_HOST_CONTEXT_MISMATCH"));
+                }
+                ("AGY_APP_OWNING_INTEGRATION",conversation_id,instance)
+            },
+        };
+        if destination.is_empty() || destination.len()>256 || !identifier(instance) {
+            return Err(local("CURRENT_HOST_CONTEXT_INVALID"));
+        }
+        Ok(json!({"source":kind,"destination_digest":sha256_hex(destination.as_bytes()),"host_instance":instance,
+            "current_session":"LOCAL_CALLER_CONTEXT_VERIFIED","tools_loaded":"NOT_ATTESTED","model_response":"NOT_ATTESTED"}))
+    }
+}
 impl Connect {
+    /// Entry for a client that ALREADY owns the actual host event channel.
+    /// This API does not manufacture that channel for an arbitrary UI/CLI.
+    /// Host-user authority is required to open this writer and select endpoints.
+    pub async fn connect_current(&mut self, request:ConnectRequest, selected:HostSelection, caller:HostInvocation)->Result<Value> {
+        self.require_writer()?;
+        let automatic=request.setup_id.is_empty();
+        let mut request=self.normalize_agent_request(request)?;
+        if !request.receive || selected.participant!=request.participant || request.host.is_some() {
+            return Err(local("CURRENT_HOST_SELECTION_CONFLICT"));
+        }
+        let observation=caller.verify(&selected.adapter)?;
+        if automatic {request.setup_id=format!("current-{}",&sha256_hex(json!([request.setup_id,observation]).to_string().as_bytes())[..32]);}
+        let name=self.registry.hosts.iter().find(|(_,old)|*old==&selected).map(|(name,_)|name.clone()).unwrap_or_else(||
+            format!("host-{}",&sha256_hex(json!([selected.adapter,observation]).to_string().as_bytes())[..24]));
+        if let Some(setup)=self.registry.setups.get(&request.setup_id) {
+            if setup.desired!=request || setup.effective_host.as_ref().is_some_and(|old|old!=&name) {
+                return Err(local("HOST_SELECTION_CHANGED_REBIND_REQUIRED"));
+            }
+            if setup.channel_receive && setup.effective_host.is_none() {
+                return Err(local("EXISTING_PROGRAM_RECEIVER_REQUIRES_EXPLICIT_REBIND"));
+            }
+        }
+        self.register_host(&name,selected).await?;
+        // Record the selected host BEFORE remote permissions/keys. Approval
+        // resumes this original selection, but never inherits caller evidence.
+        if self.registry.setups.contains_key(&request.setup_id) {
+            self.registry.setups.get_mut(&request.setup_id).unwrap().effective_host=Some(name);
+        } else {
+            let registration=self.registry.participants[&request.participant].clone();
+            self.begin_setup(&request,registration,true,Some(name))?;
+        }
+        self.save()?;
+        let mut result=self.run_agent(request).await?;
+        // Ephemeral caller evidence must never be cached for another session.
+        result["caller_context"]=observation;
+        Ok(result)
+    }
     pub async fn register_host(&mut self, name: &str, selected: HostSelection) -> Result<Value> {
         self.require_writer()?;
         if !identifier(name) || !selected.admin_endpoint.is_absolute() {
@@ -55,6 +122,12 @@ impl Connect {
                 })
         {
             return Err(local("HOST_RUNTIME_IDENTITY_OR_ORIGIN_MISMATCH"));
+        }
+        if let Some(expected)=self.registry.verified_bindings.get(&selected.participant) {
+            if !status["value"]["engines"].as_array().is_some_and(|xs|xs.iter().any(|e|
+                e["state_binding"]==expected["state_binding"] && e["engine_digest"]==expected["engine_digest"])) {
+                return Err(local("HOST_RUNTIME_BINDING_MISMATCH"));
+            }
         }
         if let Some(old) = self.registry.hosts.get(name) {
             if old != &selected {

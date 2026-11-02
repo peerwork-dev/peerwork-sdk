@@ -105,13 +105,21 @@ impl Tools {
     async fn call(&self, request: AgentRequest) -> Result<Value> {
         if let Some(directory)=&self.local {
             let connect=crate::participant_connect::Connect::inspect(directory)?;
-            let handle=connect.selected_handle(self.handle.as_deref())?;
-            if let AgentRequest::Connect{request}=request {
-                if handle.is_none(){return Ok(crate::participant_connect::Connect::selection_required(&request.setup_id));}
-                if handle.as_ref().is_some_and(|h|h!=&request.participant){return Err(ParticipantError::local("FRONTEND_IDENTITY_PIN_MISMATCH","CONNECT"));}
+            if let AgentRequest::Connect{mut request}=request {
                 if self.workspace.as_ref().is_some_and(|ws|ws!=&request.workspace_id){return Err(ParticipantError::local("FRONTEND_WORKSPACE_PIN_MISMATCH","CONNECT"));}
-                drop(connect);return crate::participant_connect::Connect::open(directory)?.run(request).await;
+                if let Some(pin)=&self.handle {
+                    if !request.participant.is_empty() && request.participant!=*pin {return Err(ParticipantError::local("FRONTEND_IDENTITY_PIN_MISMATCH","CONNECT"));}
+                    request.participant=pin.clone();
+                }
+                let selected=connect.original_handle((!request.participant.is_empty()).then_some(request.participant.as_str()))?;
+                let Some(handle)=selected else {return Ok(serde_json::json!({"state":"PENDING","discovery":connect.discovery_summary(),"blocker":{"code":"LOCAL_PROJECT_TRUST_REQUIRED","next_actor":"LOCAL_RUNTIME_OWNER","next_action":"RUN_NATIVE_CONNECT_ONCE_WITH_AUTHORIZED_PROJECT_CONTEXT"}}));};
+                request.participant=handle.clone();
+                drop(connect);
+                let mut connect=crate::participant_connect::Connect::open(directory)?;
+                connect.adopt(&handle).await?;
+                return connect.run_agent(request).await;
             }
+            let handle=connect.selected_handle(self.handle.as_deref())?;
             if let AgentRequest::ConnectApprove{participant,approval_id,request}=request {
                 if handle.as_ref().is_some_and(|h|h!=&participant){return Err(ParticipantError::local("FRONTEND_IDENTITY_PIN_MISMATCH","CONNECT"));}
                 if self.workspace.as_ref().is_some_and(|ws|ws!=&request.workspace_id){return Err(ParticipantError::local("FRONTEND_WORKSPACE_PIN_MISMATCH","CONNECT"));}

@@ -9,6 +9,7 @@ pub struct RuntimeClient {
     expected_actor: String,
     expected_origin: String,
     verified: Mutex<Option<String>>,
+    binding: Option<Value>,
 }
 impl RuntimeClient {
     pub async fn connect(
@@ -26,7 +27,17 @@ impl RuntimeClient {
             expected_actor: expected_actor.into(),
             expected_origin: origin,
             verified: Mutex::new(None),
+            binding: None,
         };
+        client.call(json!({"method":"capabilities"})).await?;
+        Ok(client)
+    }
+    /// Pin the original engine/namespace, and revalidate it on every changed
+    /// descriptor snapshot BEFORE sending any operation through that snapshot.
+    pub async fn connect_bound(endpoint_path:PathBuf, origin:&str, actor:&str, binding:Value)->Result<Self> {
+        let mut client=Self::connect(endpoint_path,origin,actor).await?;
+        client.binding=Some(binding);
+        *client.verified.lock().await=None;
         client.call(json!({"method":"capabilities"})).await?;
         Ok(client)
     }
@@ -51,6 +62,12 @@ impl RuntimeClient {
             || caps["admin"] != false
         {
             return Err(local("CLIENT_IDENTITY_OR_ORIGIN_MISMATCH"));
+        }
+        if let Some(expected)=&self.binding {
+            let observed=Self::unwrap(call_endpoint(endpoint,json!({"method":"binding"})).await?)?;
+            for field in ["actor_id","origin","engine_digest","state_binding","namespace","client_generation"] {
+                if observed[field]!=expected[field] {return Err(local("ORIGINAL_RUNTIME_BINDING_CHANGED"));}
+            }
         }
         *self.verified.lock().await = Some(fingerprint.into());
         Ok(caps)

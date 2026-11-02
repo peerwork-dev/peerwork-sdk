@@ -38,10 +38,11 @@ use tokio::{
     task::JoinSet,
 };
 
-pub(crate) const CONNECT_FEATURES: [&str; 3] = [
+pub(crate) const CONNECT_FEATURES: [&str; 4] = [
     "participant-connect-v1",
     "derived-client-generation-v1",
     "scoped-host-revocation-v1",
+    "original-engine-binding-v1",
 ];
 const REQUEST_FORMAT: &str = "peerwork.participant-request.v1";
 const RESPONSE_FORMAT: &str = "peerwork.participant-response.v1";
@@ -106,6 +107,12 @@ pub struct EngineConfig {
     pub migration_sources: Vec<MigrationSource>,
 }
 impl EngineConfig {
+    /// Exact configuration provenance, independent of its installation label.
+    pub(crate) fn binding_digest(&self) -> Result<String> {
+        let mut value = serde_json::to_value(self).map_err(|_| local("ENGINE_CONFIG_INVALID"))?;
+        value.as_object_mut().unwrap().remove("name");
+        Ok(peerwork_core::crypto::sha256_hex(value.to_string().as_bytes()))
+    }
     pub fn load(path: &Path) -> Result<Self> {
         serde_json::from_value(
             private_json(path, 65536).map_err(|_| local("ENGINE_CONFIG_NOT_PRIVATE"))?,
@@ -165,6 +172,7 @@ struct Session {
 }
 struct Runtime {
     owners: BTreeMap<String, ParticipantClient>,
+    engine_bindings: BTreeMap<String, String>,
     sessions: std::sync::RwLock<Vec<Session>>,
     derived: std::sync::Mutex<derived::Clients>,
     cleanup_active: std::sync::Mutex<BTreeSet<String>>,
@@ -245,6 +253,7 @@ pub enum ClientRequest {
         limit: usize,
     },
     Capabilities,
+    Binding,
     Bindings,
 }
 impl ClientRequest {
@@ -254,7 +263,7 @@ impl ClientRequest {
         // handwritten method/field catalog that can diverge from this enum.
         let request: Self =
             serde_json::from_value(value.clone()).map_err(|_| local("CLIENT_REQUEST_INVALID"))?;
-        if matches!(request, Self::Capabilities | Self::Bindings)
+        if matches!(request, Self::Capabilities | Self::Bindings | Self::Binding)
             && value.as_object().is_none_or(|o| o.len() != 1)
         {
             return Err(local("CLIENT_REQUEST_INVALID"));
@@ -314,7 +323,7 @@ impl Runtime {
             let value=async{match serde_json::from_value::<AdminRequest>(frame.request){
                 Ok(request)if request.method=="stop"&&request.config.is_none()=>Ok(json!({"state":"STOPPING"})),
                 Ok(request)if request.method=="status"&&request.config.is_none()=>{
-                    let mut engines=Vec::new();for (name,owner) in &self.owners{engines.push(json!({"name":name,"actor_id":owner.actor_id(),"origin":owner.origin(),"metrics":owner.metrics().await?}));}
+                    let mut engines=Vec::new();for (name,owner) in &self.owners{engines.push(json!({"name":name,"actor_id":owner.actor_id(),"origin":owner.origin(),"state_binding":owner.state_binding(),"engine_digest":self.engine_bindings.get(owner.state_binding()),"metrics":owner.metrics().await?}));}
                     Ok(json!({"state":"LOCAL_READY","engines":engines,"hosts":self.hosts.lock().await.statuses(),"pending_client_revocations":self.pending_revocation_status()?,"network_or_host_readiness":"NOT_ATTESTED"}))
                 },
                 Ok(request)if request.method=="host_ensure"&&request.config.is_some()=>{
@@ -408,6 +417,7 @@ impl Runtime {
                 ClientRequest::Operations{after,limit}=>client.operations(&after,limit).await,
                 ClientRequest::Bindings=>serde_json::to_value(client.watch_bindings().await?).map_err(|_|local("IPC_RESPONSE_INVALID")),
                 ClientRequest::Capabilities=>Ok(json!({"format":"peerwork.participant-capability.v1","actor_id":client.actor_id(),"origin":client.origin(),"capability":client.capability(),"admin":false,"maturity":"EXPERIMENTAL","features":CONNECT_FEATURES})),
+                ClientRequest::Binding=>Ok(json!({"format":"peerwork.local-engine-binding.v1","actor_id":client.actor_id(),"origin":client.origin(),"state_binding":client.state_binding(),"engine_digest":self.engine_bindings.get(client.state_binding()),"namespace":client.local_namespace(),"client_generation":session.generation,"features":CONNECT_FEATURES})),
             }
         }.await;
         response(id, value)
@@ -852,6 +862,10 @@ pub async fn serve(
     };
     let pending_revocations = derived.pending();
     let runtime = Arc::new(Runtime {
+        engine_bindings: config.engines.iter().map(|engine| {
+            let owner = &owners[&engine.name];
+            Ok((owner.state_binding().to_owned(), engine.binding_digest()?))
+        }).collect::<Result<BTreeMap<_, _>>>()?,
         owners,
         sessions: std::sync::RwLock::new(sessions),
         derived: std::sync::Mutex::new(derived),
