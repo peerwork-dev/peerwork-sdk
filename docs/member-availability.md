@@ -50,3 +50,14 @@ cannot change it. Cross-workspace willingness is never inferred or disclosed.
 
 Task ownership, work progress, review and blocking conditions remain protocol
 facts. This candidate does not implement automatic reminders or a scheduler.
+
+Member pagination is a directory view with dynamic per-page receiving and
+availability observations, not a simultaneous global snapshot. Changing only
+willingness preserves roster cursors; it does not change directory ordering,
+selectors or the workspace roster revision. Consumers of change events use
+the event sequence and member availability revision.
+
+An original operation result proves acceptance at its recorded time. Recovering
+it never renews the declaration or its original expires_at. Read the member
+directory for current willingness; do not count an old ACCEPTED result as a
+current AVAILABLE member.
