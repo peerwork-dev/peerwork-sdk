@@ -1,4 +1,4 @@
-# Native SDK0.3.4 experimental candidate
+# Native SDK0.3.4 experimental
 
 - Shared project ancestors such as POSIX0775 no longer prevent ordinary local
   onboarding. New connect and installation state lives in protected OS-user

@@ -1,6 +1,6 @@
 # Peerwork native Participant SDK
 
-**Native0.3.4 is an experimental source candidate.** Shared-project onboarding
+Native0.3.4 experimental provides shared-project onboarding. Shared-project onboarding
 separates project configuration from protected OS-user bookkeeping and retains
 original identity/runtime bindings. Availability requires the exact
 [published assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.4).

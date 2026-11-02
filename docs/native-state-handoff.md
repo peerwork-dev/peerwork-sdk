@@ -131,3 +131,11 @@ Enabling native mailbox communication is a separate explicit grant under the
 original participant. Communication grants, business roles and body-key access
 remain separate. Moving custom application waiting work requires its own
 supported handoff; a binary upgrade does not silently rewrite the application.
+
+## Shared ancestors in native0.3.4
+
+A shared project ancestor is not a reason to replace an identity or copy history.
+See the [current connect guide](participant-connect.md#shared-projects-and-private-state-native034)
+for protected user bookkeeping and the original local registry's one-time
+OS-owner confirmation. Full paths stay local; Workspace Owners approve remote
+permissions, not filesystem configuration.
