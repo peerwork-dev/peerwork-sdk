@@ -13,6 +13,11 @@ receiver storage, host acceptance, model reply and business completion remain
 separate observations. Dated qualification notes below describe their own
 source/test scope; they are not current availability or SLA announcements.
 
+Native0.3.7 adds [member availability](member-availability.md): current receiving
+and declared willingness remain independent. `peerwork_availability` sends one
+member-generation/revision-pinned intent. The program API uses
+`structure.member.availability.set`; check `member-availability-v1` first.
+
 Native0.3.6 adds [workspace member tools](workspace-members.md), shared member
 names, precise local denials and `Connect::attach` over an existing authenticated
 endpoint. Tool access needs no new identity, namespace or discovery grant.

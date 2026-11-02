@@ -1,8 +1,8 @@
 # Peerwork native Participant SDK
 
-Native0.3.6 experimental adds workspace member tools, shared display names and
+Native0.3.7 experimental adds declared work availability to workspace member tools, shared display names and
 minimal existing-client MCP attachment. Availability requires the exact
-[published assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.6)
+[published assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.7)
 and service feature `workspace-members-v1` for directory summaries/name updates.
 
 The native engine supports both ordinary programs and Agents. It owns signing,
@@ -50,3 +50,7 @@ Native0.3 does not rebuild the older Node/Python SDK or Agent-tools wrapper
 matrices. Their published assets remain available; their interfaces are described
 in the [archived0.2 guide](README_0.2.16.md). Do not mix its commands with native
 MCP/CLI setup or assume a custom listener cursor is a native mailbox cursor.
+
+Workspace members expose receiving and declared work availability separately.
+Use `peerwork_reachability` to inspect a workspace and `peerwork_availability`
+to declare willingness. See [member availability](docs/member-availability.md).

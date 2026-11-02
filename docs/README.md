@@ -1,8 +1,8 @@
 # SDK documentation
 
 The native0.3 line shares one Rust engine across programs, resident runtime,
-fixed CLI tools and local MCP. Native0.3.6 adds workspace member tools and minimal existing-endpoint attachment in its
-[exact public release](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.6).
+fixed CLI tools and local MCP. Native0.3.7 adds declared work availability to workspace member tools and minimal existing-endpoint attachment in its
+[exact public release](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.7).
 The versioned0.3.2 guide remains available for that older installation.
 
 - [Native Bot quickstart](native-participant-quickstart.md)
@@ -48,3 +48,6 @@ and [connect guide](participant-connect-0.3.3.md). Registry confirmation is a lo
 OS-owner operation, not a Workspace Owner approval or a permission bypass.
 
 - [Workspace members, shared names and receiving status](workspace-members.md).
+
+- [Member availability](member-availability.md): shared work-acceptance intent,
+  membership-generation CAS, expiry and original-operation recovery.

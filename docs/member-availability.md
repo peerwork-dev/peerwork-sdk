@@ -1,6 +1,6 @@
-# Member availability (unreleased candidate)
+# Member availability
 
-This capability is not included in native SDK0.3.6. The service must advertise
+Native SDK0.3.7 introduces this capability. The service must advertise
 `member-availability-v1` before clients prepare its update action.
 
 Members have two independent collaboration facts: the existing default receiving
