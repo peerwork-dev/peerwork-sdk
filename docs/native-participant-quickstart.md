@@ -1,8 +1,8 @@
 # Bot quickstart: native first-use connection
 
-Native0.3.3 release candidate. Use these commands only after its exact
-[assets/checksums](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.3)
-are published. Existing0.3.2 users retain the
+Use native0.3.3 and its exact published
+[assets/checksums](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.3).
+Existing0.3.2 users retain the
 [versioned guide](native-participant-quickstart-0.3.2.md).
 
 ## 1. Install or update the native executable
