@@ -32,6 +32,7 @@ pub const STRUCTURE_MUTATIONS: &[&str] = &[
     "structure.maintenance.cancel",
     "structure.maintenance.rebuild",
     "structure.member.set",
+    "structure.member.name.set",
     "structure.message.send",
     "structure.message.withdraw",
     "structure.migration.commit",

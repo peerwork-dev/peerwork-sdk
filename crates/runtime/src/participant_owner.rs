@@ -113,7 +113,7 @@ fn write(owner: &SecureStateStore, state: &Descriptor) -> Result<()> {
 }
 fn pending(pin: &MaintenancePin) -> ParticipantError {
     ParticipantError {
-        code: "OWNER_MAINTENANCE_PENDING_RESUME_ORIGINAL_OPERATION".into(),
+        details: None, code: "OWNER_MAINTENANCE_PENDING_RESUME_ORIGINAL_OPERATION".into(),
         phase: "ENGINE_OWNER".into(),
         effect_certainty: "UNKNOWN".into(),
         recovery: "RESUME_SAME_HOST_REBIND_OPERATION".into(),

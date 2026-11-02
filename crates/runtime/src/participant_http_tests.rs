@@ -3865,7 +3865,7 @@ async fn native_agent_cli_mcp_send_reply_and_cancel_preserve_one_engine_intent()
     let master_scope = mail_scope(&ws, &master_box);
     let worker_scope = mail_scope(&ws, &worker_box);
     let master_profile = AgentProfile {
-        protocol_endpoints: Default::default(),
+        workspaces: Default::default(), directory_endpoints: Default::default(), protocol_endpoints: Default::default(),
             send_scopes: Default::default(), receive_endpoint_path: None,
         format: "peerwork.agent-profile.v1".into(),
         endpoint_path: ready.client_endpoints["master"].clone(),
@@ -3885,7 +3885,7 @@ async fn native_agent_cli_mcp_send_reply_and_cancel_preserve_one_engine_intent()
         protocols: BTreeMap::from([("claim".into(), protocol_scope)]),
     };
     let worker_profile = AgentProfile {
-        protocol_endpoints: Default::default(),
+        workspaces: Default::default(), directory_endpoints: Default::default(), protocol_endpoints: Default::default(),
             send_scopes: Default::default(), receive_endpoint_path: None,
         format: "peerwork.agent-profile.v1".into(),
         endpoint_path: ready.client_endpoints["worker"].clone(),

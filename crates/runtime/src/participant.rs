@@ -33,6 +33,8 @@ use tokio::sync::{mpsc, oneshot};
 pub type Result<T> = std::result::Result<T, ParticipantError>;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParticipantError {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<Value>,
     pub code: String,
     pub phase: String,
     pub effect_certainty: String,
@@ -43,6 +45,7 @@ pub struct ParticipantError {
 impl ParticipantError {
     pub(crate) fn local(code: &str, phase: &str) -> Self {
         Self {
+            details: None,
             code: code.into(),
             phase: phase.into(),
             effect_certainty: "NOT_SUBMITTED".into(),
@@ -52,6 +55,7 @@ impl ParticipantError {
     }
     fn unavailable() -> Self {
         Self {
+            details: None,
             code: "ENGINE_UNAVAILABLE".into(),
             phase: "LOCAL_IPC".into(),
             effect_certainty: "UNKNOWN".into(),
@@ -238,7 +242,7 @@ impl Invoke {
                 .or_else(|| value["result"]["structure"]["instance"][field].as_str());
             if selected.is_some_and(|actual| actual != expected) {
                 return Err(ParticipantError {
-                    code: "VERIFIED_SCOPE_MISMATCH".into(),
+                    details: None, code: "VERIFIED_SCOPE_MISMATCH".into(),
                     phase: "VERIFICATION".into(),
                     effect_certainty: "UNKNOWN".into(),
                     recovery: "INSPECT_PINNED_SCOPE".into(),
@@ -305,12 +309,27 @@ impl Capability {
         }
         Ok(())
     }
+    fn denied(&self, r: &Invoke) -> ParticipantError {
+        let mut restricted_by=Vec::new();
+        if !self.operations.contains(&r.action) { restricted_by.push("operations"); }
+        if r.scope.workspace_id.as_ref().is_some_and(|id|!allows(&self.workspace_ids,id)) || r.scope.workspace_id.is_none()&&!self.allow_root { restricted_by.push("workspace_ids"); }
+        if self.instance_ids.is_some() && r.scope.instance_id.as_ref().is_none_or(|id|!allows(&self.instance_ids,id)) { restricted_by.push("instance_ids"); }
+        if self.protocol_digests.is_some() && r.scope.protocol_digest.as_ref().is_none_or(|id|!allows(&self.protocol_digests,id)) { restricted_by.push("protocol_digests"); }
+        if r.action=="structure.action" && self.business_actions.as_ref().is_some_and(|values|r.body["action_id"].as_str().is_none_or(|v|!values.contains(v))) { restricted_by.push("business_actions"); }
+        if self.mailbox_ids.is_some() && (catalog::is_communication_action(&r.action)||r.action=="structure.members.read"&&r.body["view"].as_str().is_some_and(|v|v!="BASIC")) {restricted_by.push("mailbox_ids");}
+        if restricted_by.is_empty(){restricted_by.push("request_scope");}
+        let mut error=ParticipantError::local("LOCAL_SCOPE_DENIED","AUTHORIZATION");
+        error.recovery="REVIEW_EXPLICIT_LOCAL_CAPABILITY".into();
+        error.details=Some(json!({"action":r.action,"scope":r.scope,"restricted_by":restricted_by,"next_actor":"LOCAL_RUNTIME_OWNER","remote_permission_checked":false}));
+        error
+    }
     pub fn authorize(&self, r: &Invoke) -> Result<()> {
         r.validate()?;
-        let denied = || ParticipantError::local("LOCAL_SCOPE_DENIED", "AUTHORIZATION");
+        let denied = || self.denied(r);
         if !self.operations.contains(&r.action) {
             return Err(denied());
         }
+        if r.action=="structure.members.read" && self.mailbox_ids.is_some() && r.body["view"].as_str().is_some_and(|v|v!="BASIC") { return Err(denied()); }
         let communication = catalog::is_communication_action(&r.action);
         if communication {
             self.authorize_communication(r)?;
@@ -362,7 +381,7 @@ impl Capability {
         Ok(())
     }
     fn authorize_communication(&self, r: &Invoke) -> Result<()> {
-        let denied = || ParticipantError::local("LOCAL_SCOPE_DENIED", "AUTHORIZATION");
+        let denied = || self.denied(r);
         let mailbox = |v: &Value| -> Result<()> {
             let id = v
                 .as_str()
@@ -1260,7 +1279,7 @@ async fn engine_loop(
                             let value=op.outcome.as_ref().ok_or_else(||ParticipantError::local("RESULT_NOT_AVAILABLE","OBSERVATION"))?;
                             let prepared=if value["detail_source"]=="VERIFIED_NATIVE_JOURNAL"{
                                 let command=op.command_id.as_deref().ok_or_else(||ParticipantError::local("RESULT_NOT_AVAILABLE","OBSERVATION"))?;
-                                let result=access.cached_participant_result(command,&stop).map_err(|e|ParticipantError{code:KernelPublicError::from(e).code.into(),phase:"RESULT_VERIFICATION".into(),effect_certainty:op.effect_certainty.clone(),recovery:"INSPECT_ORIGINAL_OPERATION".into(),operation_id:Some(id.clone())})?
+                                let result=access.cached_participant_result(command,&stop).map_err(|e|ParticipantError{details: None, code:KernelPublicError::from(e).code.into(),phase:"RESULT_VERIFICATION".into(),effect_certainty:op.effect_certainty.clone(),recovery:"INSPECT_ORIGINAL_OPERATION".into(),operation_id:Some(id.clone())})?
                                     .ok_or_else(||ParticipantError::local("RESULT_NOT_AVAILABLE","OBSERVATION"))?;
                                 let verified=request.verify_result_scope(crate::participant_outcome::accepted(result))?;
                                 selection.prepare("VERIFIED_NATIVE_COMMAND_RESULT",&verified)?
@@ -1279,7 +1298,7 @@ async fn engine_loop(
                     let access=access.clone();let stop=cancel.clone();let namespace=context.namespace;let actor=identity.actor_id().to_owned();let request_origin=origin.clone();let sources=sources.clone();
                     let handle=jobs.spawn_local(async move{
                         let r=access.execute_participant_async(&request,&namespace,&actor,&request_origin,false,&stop,&sources).await.map_err(|e|{
-                            let e=KernelPublicError::from(e);ParticipantError{code:e.code.into(),phase:"REQUEST".into(),effect_certainty:"UNKNOWN".into(),recovery:"REPEAT_SELECTED_READ_OR_CONTROL".into(),operation_id:Some(request.operation_id.clone())}
+                            let e=KernelPublicError::from(e);ParticipantError{details: None, code:e.code.into(),phase:"REQUEST".into(),effect_certainty:"UNKNOWN".into(),recovery:"REPEAT_SELECTED_READ_OR_CONTROL".into(),operation_id:Some(request.operation_id.clone())}
                         }).and_then(|value|request.verify_result_scope(value));let _=reply.send(r);JobResult::Request
                     });
                     job_kinds.insert(handle.id(),JobKind::Request);

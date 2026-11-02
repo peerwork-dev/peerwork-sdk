@@ -352,7 +352,7 @@ mod tests {
     }
     fn profile() -> AgentProfile {
         AgentProfile {
-            protocol_endpoints: Default::default(),
+            workspaces: Default::default(), directory_endpoints: Default::default(), protocol_endpoints: Default::default(),
             send_scopes: Default::default(), receive_endpoint_path: None,
             format: "peerwork.agent-profile.v1".into(),
             endpoint_path: std::env::current_dir().unwrap().join("__peerwork_nonexistent_synthetic__/client.json"),

@@ -759,7 +759,7 @@ enum ClaimEvidence {
 }
 fn uncertain_claim(id: &str) -> ParticipantError {
     ParticipantError {
-        code: "HOST_REBIND_UNKNOWN_CLAIM_RESUME_ORIGINAL".into(),
+        details: None, code: "HOST_REBIND_UNKNOWN_CLAIM_RESUME_ORIGINAL".into(),
         phase: "HOST_REBIND_RECOVERY".into(),
         effect_certainty: "UNKNOWN".into(),
         recovery: "RESUME_SAME_HOST_REBIND_OPERATION".into(),
@@ -1029,7 +1029,7 @@ fn native_error(
 ) -> ParticipantError {
     let value = crate::participant_outcome::native_error(error);
     ParticipantError {
-        code: value["code"]
+        details: None, code: value["code"]
             .as_str()
             .unwrap_or("HOST_REBIND_REMOTE_FAILED")
             .into(),
@@ -1072,7 +1072,7 @@ async fn execute(access: &KernelAccess, wire: &str, command: Option<&str>) -> Re
     }
     let refusal = value["result"]["structure"]["status"] == "REJECTED_NO_EFFECT";
     Err(ParticipantError {
-        code: value["result"]["structure"]["error"]["code"]
+        details: None, code: value["result"]["structure"]["error"]["code"]
             .as_str()
             .or(value["code"].as_str())
             .unwrap_or("HOST_REBIND_RESULT_INVALID")

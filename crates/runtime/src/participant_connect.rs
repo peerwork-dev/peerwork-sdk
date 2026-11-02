@@ -100,7 +100,7 @@ fn missing_runtime_features(caps: &Value) -> Vec<&'static str> {
 fn default_alias() -> String {
     "workspace".into()
 }
-fn default_send() -> bool { true }
+fn default_send() -> bool { false }
 impl ConnectRequest {
     pub fn validate(&self) -> Result<()> {
         if !identifier(&self.setup_id)
@@ -109,7 +109,6 @@ impl ConnectRequest {
             || !token(&self.workspace_id)
             || self.protocols.len() > 8
             || self.contacts.len() > 64
-            || (!self.send && !self.receive && self.protocols.is_empty())
             || self
                 .host
                 .as_ref()
@@ -445,6 +444,31 @@ impl Connect {
             sender_capability:None,agent_host_required:agent,result:json!({"state":"PENDING","setup_id":request.setup_id})});
         self.save()
     }
+    /// Local-owner attachment to a verified existing endpoint. No discovery reads,
+    /// grant requests, engine replacement or operation namespace derivation.
+    pub async fn attach(&mut self, participant:&str, workspace:&str, alias:&str, protocols:BTreeMap<String,Scope>)->Result<Value>{
+        self.require_writer()?;
+        let selected=self.registry.participants.get(participant).cloned().ok_or_else(||local("LOCAL_SELECTION_REQUIRED"))?;
+        self.original_client(participant).await?;
+        let profile=AgentProfile{format:"peerwork.agent-profile.v1".into(),endpoint_path:selected.endpoint_path.clone(),
+            expected_origin:selected.origin.clone(),expected_actor:selected.actor_id.clone(),workspaces:[(alias.into(),workspace.into())].into(),
+            protocols,protocol_endpoints:Default::default(),directory_endpoints:Default::default(),scopes:Default::default(),
+            contacts:Default::default(),send_scopes:Default::default(),receive_endpoint_path:None};
+        profile.validate()?;
+        if profile.protocols.values().any(|p|p.workspace_id.as_deref()!=Some(workspace)){return Err(local("ATTACH_SCOPE_INVALID"));}
+        let setup_id=format!("attach-{}",&sha256_hex(serde_json::to_vec(&profile).map_err(|_|local("AGENT_PROFILE_INVALID"))?.as_slice())[..32]);
+        let request=ConnectRequest{setup_id:setup_id.clone(),participant:participant.into(),workspace_id:workspace.into(),alias:alias.into(),
+            send:false,receive:false,require_body_keys:false,protocols:vec![],contacts:vec![],host:None};
+        request.validate()?;
+        let key=format!("{participant}:{workspace}");
+        if self.registry.active_by_scope.get(&key).is_some_and(|old|old!=&setup_id){return Err(local("EXISTING_SETUP_PRESERVED_USE_ITS_PROFILE"));}
+        if !self.registry.setups.contains_key(&setup_id){self.begin_setup(&request,selected,false,None)?;}
+        let result=json!({"state":"LOCAL_ATTACHED","setup_id":setup_id,"remote_permissions":"CHECKED_PER_TOOL_CALL", "identity_and_operation_namespace":"ORIGINAL", "receiver":"NOT_REQUESTED", "host_tools":"CONFIGURATION_ONLY_REFRESH_HOST_THEN_CALL_CONTEXT"});
+        self.record(&request,result.clone(),Some(profile.clone()))?;
+        self.ensure_profile(&setup_id,&profile)?;
+        self.registry.active_by_scope.insert(key,setup_id.clone());self.registry.active=Some(setup_id);self.save()?;
+        Ok(result)
+    }
     pub async fn run(&mut self, request: ConnectRequest) -> Result<Value> {
         self.run_mode(request, false).await
     }
@@ -546,11 +570,26 @@ impl Connect {
                 json!({"missing_features":missing_features,"remote_changes_submitted":false}),
             );
         }
+        let parent: Capability = serde_json::from_value(caps["capability"].clone()).map_err(|_| local("LOCAL_CEILING_INVALID"))?;
+        let communication_requested=request.send||request.receive||!request.contacts.is_empty();
+        let mut required=vec!["structure.workspace.get"];
+        if communication_requested||request.require_body_keys{required.push("participant.time.read");}
+        if communication_requested{required.push("structure.communication.grant.get");}
+        if request.receive{required.push("structure.mailboxes.read");}
+        if !request.protocols.is_empty(){required.extend(["structure.instance.resolve","structure.protocol.resolve","structure.grant.get"]);}
+        if request.send{required.push("structure.message.send");}
+        let missing=required.into_iter().filter(|action|!parent.operations.contains(*action)).collect::<Vec<_>>();
+        let probe=Invoke::new("connect-local-preflight","structure.workspace.get",Scope{workspace_id:Some(request.workspace_id.clone()),..Default::default()},json!({}));
+        let denied=parent.authorize(&probe).err();
+        if !missing.is_empty()||denied.is_some(){
+            let mut error=denied.unwrap_or_else(||local("LOCAL_SCOPE_DENIED"));error.phase="AUTHORIZATION".into();error.recovery="REVIEW_EXPLICIT_LOCAL_CAPABILITY".into();
+            let mut details=error.details.take().unwrap_or(json!({}));details["missing_operations"]=json!(missing);details["next_actor"]=json!("LOCAL_RUNTIME_OWNER");details["remote_permission_checked"]=json!(false);error.details=Some(details);return Err(error);
+        }
         let scope = Scope {
             workspace_id: Some(request.workspace_id.clone()),
             ..Scope::default()
         };
-        let now = trusted_time(&client, &scope).await?;
+        let now = if communication_requested||request.require_body_keys {trusted_time(&client, &scope).await?} else {0};
         let workspace = read(&client, "structure.workspace.get", scope.clone(), json!({})).await?;
         if !token(
             workspace["membership"]["membership_id"]
@@ -570,13 +609,13 @@ impl Connect {
         let owner = workspace["owner_id"]
             .as_str()
             .ok_or_else(|| local("WORKSPACE_OBSERVATION_INVALID"))?;
-        let grants = read(
+        let grants = if communication_requested {read(
             &client,
             "structure.communication.grant.get",
             scope.clone(),
             json!({}),
         )
-        .await?;
+        .await?}else{json!({"grant":null})};
         let grant = &grants["grant"];
         let valid = grant["membership_id"] == membership && approval::effective(grant, now);
         let mut missing = Vec::new();
@@ -728,13 +767,13 @@ impl Connect {
                     "owner_id":owner,"missing":missing,"body_keys_required":needs_keys,"key_request":key_request},
                     "delivery":"EXISTING_ADMISSION_OR_VERIFIED_HANDOFF","contains_private_keys_or_local_paths":false}));
         }
-        let mailboxes = read(
+        let mailboxes = if request.receive {read(
             &client,
             "structure.mailboxes.read",
             scope.clone(),
             json!({"limit":8}),
         )
-        .await?;
+        .await?}else{json!({"mailboxes":[]})};
         let mailbox = mailboxes["mailboxes"]
             .as_array()
             .and_then(|xs| xs.iter().find(|m| m["name"] == "default"));
@@ -748,8 +787,6 @@ impl Connect {
                 json!({"observation":mailboxes}),
             );
         }
-        let parent: Capability = serde_json::from_value(caps["capability"].clone())
-            .map_err(|_| local("LOCAL_CEILING_INVALID"))?;
         let previous_setup = self
             .registry
             .active_by_scope
@@ -893,42 +930,36 @@ impl Connect {
                 ),
             );
         }
-        let mut capability = parent.clone();
-        capability.allow_root = false;
-        capability.workspace_ids = Some([request.workspace_id.clone()].into());
-        // Sending never acquires receiver/claim/report authority. The receiver
-        // gets a separate own-mailbox-bound client under the same engine.
-        let allowed = [
-            "structure.message.send",
-            "structure.message.receipts.read",
-            "structure.mailbox.get",
-        ];
-        capability
-            .operations
-            .retain(|s| allowed.contains(&s.as_str()));
-        if !channel_send {
-            capability.operations.remove("structure.message.send");
+        let mut directory_endpoints=previous.as_ref().map(|p|p.directory_endpoints.clone()).unwrap_or_default();
+        let mut metadata=parent.clone();metadata.allow_root=false;metadata.workspace_ids=Some([request.workspace_id.clone()].into());
+        metadata.operations.retain(|a|["structure.members.read","structure.member.name.set","structure.workspace.get","structure.instance.resolve","participant.time.read"].contains(&a.as_str()));
+        if metadata.operations.contains("structure.members.read") {
+            let alias=format!("directory-{}",&sha256_hex(json!([request.participant,request.workspace_id]).to_string().as_bytes())[..40]);
+            let value=client.call(json!({"method":"derive","name":alias,"capability":metadata})).await?;
+            directory_endpoints.insert(request.workspace_id.clone(),PathBuf::from(value["endpoint_path"].as_str().ok_or_else(||local("DERIVED_ENDPOINT_INVALID"))?));
         }
-        capability.validate()?;
-        let alias = format!(
-            "mail-{}",
-            &sha256_hex(
-                json!([request.participant, request.workspace_id])
-                    .to_string()
-                    .as_bytes()
-            )[..40]
-        );
-        let child = client.call(json!({"method":"derive","name":alias,"capability":capability,
-            "expected_capability":previous_setup.as_ref().and_then(|s|s.sender_capability.clone())})).await?;
-        let endpoint = child["endpoint_path"]
-            .as_str()
-            .ok_or_else(|| local("DERIVED_ENDPOINT_INVALID"))?;
+        let mut capability=parent.clone();capability.allow_root=false;capability.workspace_ids=Some([request.workspace_id.clone()].into());
+        let endpoint=if !communication_requested&&previous.is_some(){
+            capability=previous_setup.as_ref().and_then(|s|s.sender_capability.clone()).unwrap_or_else(||parent.clone());
+            previous.as_ref().unwrap().endpoint_path.clone()
+        }else{
+            let allowed: &[&str]=if communication_requested {&["structure.message.send","structure.message.receipts.read","structure.mailbox.get","structure.members.read"]}
+                else {&["structure.members.read","structure.member.name.set","structure.workspace.get","structure.instance.resolve","participant.time.read"]};
+            capability.operations.retain(|a|allowed.contains(&a.as_str()));
+            if !channel_send{capability.operations.remove("structure.message.send");}
+            if capability.operations.is_empty()&&parent.operations.contains("participant.time.read"){capability.operations.insert("participant.time.read".into());}
+            capability.validate()?;
+            let alias=format!("{}-{}",if communication_requested{"mail"}else{"tools"},&sha256_hex(json!([request.participant,request.workspace_id]).to_string().as_bytes())[..40]);
+            let child=client.call(json!({"method":"derive","name":alias,"capability":capability,
+                "expected_capability":previous_setup.as_ref().and_then(|s|s.sender_capability.clone())})).await?;
+            PathBuf::from(child["endpoint_path"].as_str().ok_or_else(||local("DERIVED_ENDPOINT_INVALID"))?)
+        };
         let mut receive_endpoint = previous
             .as_ref()
             .and_then(|p| p.receive_endpoint_path.clone());
         let mut receiver_name = String::new();
         let mut receiver_generation = 0;
-        let receiver_tools = if channel_receive {
+        let receiver_tools = if request.receive && channel_receive {
             let mailbox_id = mailbox
                 .and_then(|m| m["mailbox_id"].as_str())
                 .filter(|s| token(s))
@@ -992,7 +1023,7 @@ impl Connect {
             .as_ref()
             .map(|p| p.send_scopes.clone())
             .unwrap_or_default();
-        let mut receiver = json!({"state":"NOT_REQUESTED"});
+        let mut receiver = json!({"state":if wanted_receive&&!request.receive{"EXISTING_RECEIVER_PRESERVED"}else{"NOT_REQUESTED"}});
         if let Some(mailbox) = mailbox.filter(|_| channel_receive) {
             let address = MailScope {
                 workspace_id: request.workspace_id.clone(),
@@ -1073,9 +1104,10 @@ impl Connect {
                 },
             );
         }
+        let mut workspaces=previous.as_ref().map(|p|p.workspaces.clone()).unwrap_or_default();workspaces.insert(request.alias.clone(),request.workspace_id.clone());
         let profile = AgentProfile {
-            format: "peerwork.agent-profile.v1".into(),
-            endpoint_path: PathBuf::from(endpoint),
+            workspaces, directory_endpoints, format: "peerwork.agent-profile.v1".into(),
+            endpoint_path: endpoint,
             expected_origin: selected.origin.clone(),
             expected_actor: selected.actor_id.clone(),
             scopes,
@@ -1290,7 +1322,7 @@ pub fn schema() -> Value {
         "type":"object","additionalProperties":false,"required":["workspace_id"],
         "properties":{"setup_id":{"type":"string"},"participant":{"type":"string"},"workspace_id":{"type":"string"},"alias":{"type":"string","default":"workspace"},"send":{"type":"boolean"},"receive":{"type":"boolean"},"require_body_keys":{"type":"boolean"},"protocols":{"type":"array","maxItems":8,"items":{"type":"object","additionalProperties":false,"required":["alias","instance_id","role"],"properties":{"alias":{"type":"string"},"instance_id":{"type":"string"},"role":{"type":"string"},"actions":{"type":"array","maxItems":64,"items":{"type":"string"}}}}}}}}});
     schema["properties"]["request"]["properties"]["contacts"] = json!({"type":"array","maxItems":64,"items":{"type":"object","additionalProperties":false,"required":["alias","actor_id"],"properties":{"alias":{"type":"string"},"actor_id":{"type":"string"}}}});
-    schema["properties"]["request"]["properties"]["send"]["default"] = json!(true);
+    schema["properties"]["request"]["properties"]["send"]["default"] = json!(false);
     schema["properties"]["request"]["properties"]["host"] = json!({"type":"string","description":"Existing host-user-approved named destination. Omission does not identify the current session; unknown Agent receive stays pending. No commands, sockets or session paths are accepted."});
     schema
 }
@@ -1313,6 +1345,7 @@ pub fn cli(args: &[String]) -> Value {
                 "--trust-project",
                 "--confirm-original",
                 "--program",
+                "--attach",
             ]
             .contains(&flag.as_str());
             if ![
@@ -1333,6 +1366,8 @@ pub fn cli(args: &[String]) -> Value {
                 "--context",
                 "--approve-request",
                 "--role",
+                "--attach",
+                "--protocol",
                 "--contact",
                 "--install",
                 "--project",
@@ -1492,7 +1527,7 @@ pub fn cli(args: &[String]) -> Value {
             participant: handle.clone(),
             workspace_id: required("--workspace")?,
             alias: values.get("--alias").cloned().unwrap_or_else(default_alias),
-            send: values.contains_key("--send") || !["--receive","--role"].iter().any(|s|values.contains_key(*s)),
+            send: values.contains_key("--send"),
             receive: values.contains_key("--receive"),
             require_body_keys: values.contains_key("--body-keys"),
             protocols: Vec::new(),
@@ -1585,6 +1620,20 @@ pub fn cli(args: &[String]) -> Value {
                 request.host = Some(name);
                 request.validate()?;
             }
+            if values.contains_key("--attach") {
+                if request.send||request.receive||request.require_body_keys||!request.protocols.is_empty()||!request.contacts.is_empty()||request.host.is_some(){return Err(local("ATTACH_ONLY_REUSES_EXISTING_AUTHORITY"));}
+                let mut protocols=BTreeMap::new();
+                if let Some(protocol)=values.get("--protocol"){
+                    for binding in protocol.split(',') {
+                        let parts:Vec<_>=binding.split(':').collect();if parts.len()!=3{return Err(local("PROTOCOL_SELECTION_USE_ALIAS_INSTANCE_DIGEST"));}
+                        if protocols.insert(parts[0].into(),Scope{workspace_id:Some(request.workspace_id.clone()),instance_id:Some(parts[1].into()),protocol_digest:Some(parts[2].into())}).is_some(){return Err(local("PROTOCOL_ALIAS_CONFLICT"));}
+                    }
+                }
+                let mut result=connect.attach(&handle,&request.workspace_id,&request.alias,protocols).await?;
+                if let Some(spec)=installation{result["integration"]=connect.install(&handle,&request.workspace_id,spec)?;}
+                return Ok(result);
+            }
+            if values.contains_key("--protocol"){return Err(local("PROTOCOL_SELECTION_REQUIRES_ATTACH"));}
             let installed = installation
                 .map(|spec| connect.install(&handle, &request.workspace_id, spec))
                 .transpose()?;

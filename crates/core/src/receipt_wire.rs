@@ -414,9 +414,59 @@ fn verify_workspace_deletion(job:&WireValue,result:&WireValue,command:&WireValue
     Ok(())
 }
 
+fn verify_member_directory(result:&WireValue,command:&WireValue,prepared:&VerifiedPreparedCommand)->Result<(),VerifyWireReceiptError>{
+    let invalid=||VerifyWireReceiptError::Mismatch;
+    let body=command.get("body").ok_or_else(invalid)?;
+    if prepared.action_id()=="structure.member.name.set" {
+        if ascii_field(result,"actor_id").as_deref()!=Some(prepared.actor_id())
+            || result.get("membership_id")!=body.get("membership_id") || result.get("name")!=body.get("name")
+            || number(result,"workspace_revision")!=number(command,"expected_workspace_revision").and_then(|n|n.checked_add(1)) {return Err(invalid());}
+        return Ok(());
+    }
+    let WireValue::Array(members)=result.get("members").ok_or_else(invalid)? else{return Err(invalid());};
+    if members.len()>number(body,"limit").unwrap_or(16).min(32) as usize {return Err(invalid());}
+    let mut previous=None;
+    let view=ascii_field(body,"view").unwrap_or_else(||"BASIC".into());
+    for member in members {
+        let actor=ascii_field(member,"actor_id").filter(|v|valid_token(v)).ok_or_else(invalid)?;
+        if previous.as_ref().is_some_and(|old:&String|old>=&actor)
+            || ascii_field(member,"membership_id").is_none_or(|v|!valid_token(&v))
+            || body.get("actor_id").and_then(WireValue::as_string).is_some_and(|wanted|wanted!=actor)
+            || body.get("membership_id").and_then(WireValue::as_string).is_some() && member.get("membership_id")!=body.get("membership_id")
+            || ascii_field(member,"state")!=Some(ascii_field(body,"state").unwrap_or_else(||"ACTIVE".into()))
+            || !matches!(member.get("access_active"),Some(WireValue::Bool(_))) {return Err(invalid());}
+        previous=Some(actor);
+        match member.get("name") {
+            Some(WireValue::Null)=>(),
+            Some(value)=>{let name=value.as_string().filter(|v|!v.is_empty()&&v.encode_utf16().count()<=80&&v.len()<=256&&v.trim()==v&&!v.chars().any(char::is_control)).ok_or_else(invalid)?;
+                if body.get("name").and_then(WireValue::as_string).is_some_and(|wanted|wanted!=name){return Err(invalid());}},
+            None if view=="BASIC"=>(),
+            _=>return Err(invalid()),
+        }
+        if body.get("name").and_then(WireValue::as_string).is_some() && member.get("name")!=body.get("name"){return Err(invalid());}
+        if view!="BASIC" {
+            let receiving=member.get("receiving").ok_or_else(invalid)?;
+            if !matches!(ascii_field(receiving,"state").as_deref(),Some("REALTIME"|"QUEUED"|"NOT_ENABLED"|"UNCONFIRMED"))
+                || number(receiving,"observed_at")!=number(result,"observed_at")
+                || !matches!(ascii_field(receiving,"execution").as_deref(),Some("IDLE"|"BUSY"|"WAITING_APPROVAL"|"UNKNOWN"|"OFFLINE")) {return Err(invalid());}
+            let WireValue::Object(fields)=receiving else{return Err(invalid());};
+            if fields.iter().any(|(key,_)|!["state","observed_at","execution","reason"].iter().any(|name|key.iter().copied().eq(name.encode_utf16()))){return Err(invalid());}
+        }
+        if view=="DELIVERY" {
+            match member.get("delivery") {
+                Some(WireValue::Null)=>(),
+                Some(address)=>if ascii_field(address,"mailbox_id").is_none_or(|v|!valid_token(&v))||address.get("membership_id")!=member.get("membership_id"){return Err(invalid());},
+                None=>return Err(invalid()),
+            }
+        } else if member.get("delivery").is_some(){return Err(invalid());}
+    }
+    Ok(())
+}
+
 fn verify_structure_read_authors(result:&WireValue,command:&WireValue,prepared:&VerifiedPreparedCommand)->Result<(),VerifyWireReceiptError>{
     let invalid=||VerifyWireReceiptError::Mismatch;
     match prepared.action_id(){
+        "structure.members.read"|"structure.member.name.set"=>verify_member_directory(result,command,prepared),
         "structure.workspace.delete"|"structure.workspace.deletion.get"=>{
             if ascii_field(result,"status").as_deref()==Some("REJECTED_NO_EFFECT"){return Ok(());}
             verify_workspace_deletion(result.get("deletion").ok_or_else(invalid)?,result,command,prepared,false)

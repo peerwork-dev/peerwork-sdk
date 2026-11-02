@@ -23,7 +23,7 @@ use serde_json::{json, Value};
 use std::path::Path;
 fn failure(code: &str) -> ParticipantError {
     ParticipantError {
-        code: code.into(),
+        details: None, code: code.into(),
         phase: "INBOX_STATE".into(),
         effect_certainty: "UNKNOWN".into(),
         recovery: if code.starts_with("RECEIVER_CONTINUITY_KEY_") {

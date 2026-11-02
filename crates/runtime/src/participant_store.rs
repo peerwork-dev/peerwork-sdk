@@ -30,7 +30,7 @@ fn corrupt() -> ParticipantError {
 }
 fn state_error(code: &str) -> ParticipantError {
     ParticipantError {
-        code: code.into(),
+        details: None, code: code.into(),
         phase: "LOCAL_STATE".into(),
         effect_certainty: "UNKNOWN".into(),
         recovery: "OBSERVE_OR_RECOVER_ORIGINAL_OPERATION".into(),
