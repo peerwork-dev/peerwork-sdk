@@ -904,3 +904,22 @@ fn member_directory_and_self_name_receipts_bind_exact_selected_metadata(){
     let check=|result:&Value|verify_http_response_for_prepared(&receipt(&service,&change,prepared.proof().intent_digest(),result),prepared.proof(),&kid);check(&result).unwrap();
     for (field,value) in [("actor_id",json!(key_id(&[31;32]))),("membership_id",json!(key_id(&[32;32]))),("name",json!("other")),("workspace_revision",json!(5))]{let mut wrong=result.clone();wrong[field]=value;assert!(check(&wrong).is_err(),"{field}");}
 }
+
+#[test]
+fn member_availability_receipts_bind_self_revision_expiry_and_independent_host_state(){
+ let actor=SigningKey::from_bytes(&[21;32]);let service=SigningKey::from_bytes(&[22;32]);let discovery=terminal_discovery(&service);let kid=key_id(&service.verifying_key().to_bytes());
+ let mut c=command(&actor,"structure.member.availability.set");c["instance_id"]=Value::Null;c["protocol_digest"]=Value::Null;c["body"]=json!({"profile":PROFILE,"membership_id":key_id(&[30;32]),"state":"AVAILABLE","expected_availability_revision":0,"valid_for_ms":1000});
+ let prepared=prepare_signed_command_wire(&parse_wire_json_bounded(&serde_json::to_vec(&c).unwrap(),40,180000).unwrap(),&actor,&discovery,None).unwrap();
+ let availability=json!({"state":"AVAILABLE","declared_state":"AVAILABLE","declared_at":10,"expires_at":1010,"revision":1,"reported_by":c["actor_id"],"evaluated_at":10,"reason":null});
+ let result=json!({"profile":PROFILE,"assurance":"BACKEND_CURRENT_STATE","workspace_id":c["workspace_id"],"instance_id":null,"protocol_digest":null,"actor_id":c["actor_id"],"membership_id":c["body"]["membership_id"],"workspace_revision":4,"availability":availability,"author_intent":prepared.jws()});
+ let check=|r:&Value|verify_http_response_for_prepared(&receipt(&service,&c,prepared.proof().intent_digest(),r),prepared.proof(),&kid);
+ check(&result).unwrap();
+ for(field,value)in[("revision",json!(2)),("reported_by",json!(key_id(&[31;32]))),("expires_at",json!(2010)),("state",json!("NOT_ACCEPTING"))]{let mut wrong=result.clone();wrong["availability"][field]=value;assert!(check(&wrong).is_err(),"{field}");}
+ let mut query=command(&actor,"structure.members.read");query["instance_id"]=Value::Null;query["protocol_digest"]=Value::Null;query["body"]=json!({"profile":PROFILE,"view":"COLLABORATION","actor_id":query["actor_id"],"limit":1});
+ let selected=prepare_signed_command_wire(&parse_wire_json_bounded(&serde_json::to_vec(&query).unwrap(),40,180000).unwrap(),&actor,&discovery,None).unwrap();
+ let mut expired=availability;expired["state"]=json!("UNKNOWN");expired["evaluated_at"]=json!(1010);expired["reason"]=json!("EXPIRED");
+ let member=json!({"actor_id":query["actor_id"],"membership_id":key_id(&[30;32]),"name":null,"state":"ACTIVE","access_active":true,"availability":expired,"receiving":{"state":"REALTIME","observed_at":1010,"execution":"IDLE","reason":null}});
+ let page=json!({"profile":PROFILE,"assurance":"BACKEND_CURRENT_STATE","workspace_id":query["workspace_id"],"instance_id":null,"protocol_digest":null,"members":[member],"observed_at":1010,"frontier":{"workspace_revision":4},"next_cursor":null});
+ let check=|r:&Value|verify_http_response_for_prepared(&receipt(&service,&query,selected.proof().intent_digest(),r),selected.proof(),&kid);check(&page).unwrap();
+ let mut wrong=page;wrong["members"][0]["availability"]["state"]=json!("AVAILABLE");assert!(check(&wrong).is_err(),"host IDLE cannot override expired willingness");
+}

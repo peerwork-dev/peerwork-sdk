@@ -1157,10 +1157,18 @@ mod tests {
             .iter()
             .map(|t| t["name"].as_str().unwrap().to_owned())
             .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(names.len(), 16);
+        assert_eq!(names.len(), 17);
+        assert!(names.contains("peerwork_availability"));
         assert!(!names
             .iter()
             .any(|n| n.contains("admin") || n.contains("stop")));
+    }
+    #[test]
+    fn availability_is_explicit_scoped_intent_not_host_idle_or_identity_selection(){
+        let args=json!({"workspace":"project","state":"AVAILABLE","operation_id":"ready-1","expected_revision":0});
+        assert!(matches!(AgentRequest::parse("availability",args.clone()).unwrap(),AgentRequest::Availability{valid_for_ms:3_600_000,expected_revision:0,..}));
+        let mut forged=args.clone();forged["actor_id"]=json!("someone-else");assert!(AgentRequest::parse("availability",forged).is_err());
+        let mut missing=args;missing.as_object_mut().unwrap().remove("expected_revision");assert!(AgentRequest::parse("availability",missing).is_err());
     }
     #[test]
     fn compact_outputs_do_not_echo_ciphertext_or_claim_a_model_reply() {
