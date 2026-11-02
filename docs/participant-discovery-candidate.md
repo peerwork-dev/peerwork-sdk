@@ -1,16 +1,17 @@
-# First-use connection: source candidate
+# First-use connection and original-state reuse
 
-**Unreleased source capability.** Published native0.3.2 still uses the explicit
-engine/host selections in [its connect guide](participant-connect.md).
-Do not assume these flags, defaults or runtime features exist in that release.
-This candidate adds no Node/Python runtime dependency or additional platforms.
+Native SDK0.3.3 release candidate. These capabilities are available only after
+its exact [release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.3)
+are published and verified. Native0.3.2 retains its
+[explicit setup guide](participant-connect-0.3.2.md).
+The native client adds no Node/Python runtime dependency or additional platforms.
 
 ## Normal Agent entry
 
 From the authorized project, use the native CLI once if MCP is not loaded:
 
 ```sh
-peerwork connect --workspace WORKSPACE_ID --send --receive --install codex
+peerwork connect --workspace WORKSPACE_ID --send --receive --body-keys --install codex
 ```
 
 Use `--install agy` for the supported AGY configuration instead. This chooses
@@ -18,10 +19,10 @@ which local integration to prepare; it does not create a model session or prove
 that the currently running session refreshed its tools. Once loaded, call:
 
 ```json
-{"request":{"workspace_id":"WORKSPACE_ID","send":true,"receive":true}}
+{"request":{"workspace_id":"WORKSPACE_ID","send":true,"receive":true,"require_body_keys":true}}
 ```
 
-with `peerwork_connect`. Identity/setup ID are normally derived. A real identity
+with `peerwork_connect`. Request body keys when using encrypted message bodies. Identity/setup ID are normally derived. A real identity
 ambiguity returns public identity choices; choose one handle once. Preserve the
 returned `setup_id` for recovery. `send` defaults to true; receive is opt-in.
 Programs use the same engine without a host, MCP or Skill, and explicitly select

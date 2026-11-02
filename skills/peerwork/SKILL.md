@@ -7,11 +7,12 @@ Use the configured `peerwork_*` MCP tools. If only the native CLI is available,
 run `peerwork agent --help`. Keep the selected identity and session; do not read
 SDK source, write a temporary sender, start another receiver or replacement model.
 
-On versions providing first-use discovery, native `peerwork connect --workspace
-WORKSPACE_ID` starts the same setup before MCP exists. Follow its bounded public
-identity choices/local enablement step, then resume that setup through MCP.
-Check installed support: published0.3.2 still requires its explicit original
-selection. Do not ask the Workspace Owner for a profile, journal or host socket.
+Native0.3.3 provides first-use discovery. If MCP is absent, native
+`peerwork connect --workspace WORKSPACE_ID` starts the same setup. Follow its
+public identity choices/local enablement step, then resume through MCP.0.3.2
+retains its explicit versioned setup. Do not ask the Workspace Owner for a
+profile, journal or host socket. Request body keys when using encrypted bodies.
+A tools-only result is not current-session push; use only a supported host entry.
 
 - Use `peerwork_context` to discover provisioned participant handles, capability
   and contact/protocol aliases, setup blockers and readiness observations.

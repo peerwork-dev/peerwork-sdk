@@ -17,6 +17,16 @@ spec.loader.exec_module(qualifier)
 
 
 class NativeGraphTests(unittest.TestCase):
+    def test_platform_groups_keep_ipc_cases_but_exclude_service_fixture(self):
+        command = qualifier.native_test_command('participant_connect::')
+        self.assertIn('--include-ignored', command)
+        skipped = [command[i + 1] for i, value in enumerate(command) if value == '--skip']
+        self.assertEqual(skipped, qualifier.EXTERNAL_SERVICE_CASES)
+        self.assertEqual(len(skipped), 1)
+        self.assertIn('cold_cli_finds_old_installation', skipped[0])
+        self.assertNotIn('pinned_client_rejects', ' '.join(skipped))
+        self.assertNotIn('v032_registry_recovers', ' '.join(skipped))
+
     def native_inventory(self):
         release = version.authority(ROOT)
         license_name = tomllib.loads((ROOT / 'Cargo.toml').read_text())['workspace']['package']['license']

@@ -1,170 +1,115 @@
 # Connect an existing participant
 
-This workflow requires native SDK0.3.2 and its exact
-[published assets/checksums](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.2).
-SDK0.3.1 does not provide this connect entry. Keep its existing state and update
-the resident runtime through its local owner before using the new workflow.
+Native SDK0.3.3 release candidate. These capabilities are available only after
+its exact [release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.3)
+are published and verified. Native0.3.2 retains its
+[explicit setup guide](participant-connect-0.3.2.md).
+The native client adds no Node/Python runtime dependency or additional platforms.
 
-Connect uses the existing identity and signing journal, discovers bounded current
-access and derives local client configuration. An already-authorized Worker does
-not need the Workspace Owner to construct or transmit an Agent profile.
-Programs use the same Participant engine without an Agent host, MCP or Skill.
+## Normal Agent entry
 
-## Select the original local engine
-
-Run initial selection under the OS account that owns the identity and state.
-Choose the protected original EngineConfig; it identifies the original journal,
-service authority, transport and key store. A state directory alone cannot
-identify those settings. Retain unresolved operations and their original IDs.
-Do not substitute a fresh identity when selection or recovery is blocked.
-
-The examples use local placeholder paths and IDs. These are explicit local
-selections, not information to send to the Workspace Owner. Keep state/config
-private; do not place credentials in shared project files or chat.
-
-For an ordinary program participant:
+From the authorized project, use the native CLI once if MCP is not loaded:
 
 ```sh
-peerwork connect --local /private/peerwork/local --participant worker \
-  --engine-config /private/peerwork/original-engine.json \
-  --workspace WORKSPACE_ID --id join-project --send --receive --body-keys
+peerwork connect --workspace WORKSPACE_ID --send --receive --body-keys --install codex
 ```
 
-An existing restricted runtime endpoint can instead be selected with `--client`,
-`--origin` and `--actor`. It does not grant runtime administration: selecting an
-Agent host on an external runtime requires its explicitly authorized `--admin`.
-Initial bootstrap records only the runtime it actually owns.
+Use `--install agy` for the supported AGY configuration instead. This chooses
+which local integration to prepare; it does not create a model session or prove
+that the currently running session refreshed its tools. Once loaded, call:
 
-## Select the actual Agent session and install its integration
+```json
+{"request":{"workspace_id":"WORKSPACE_ID","send":true,"receive":true,"require_body_keys":true}}
+```
 
-Choose the host before activating the initial Agent receiver. Connect cannot
-silently move an existing program receiver to a different physical destination.
-Use the same engine inputs as above and add the selected host:
+with `peerwork_connect`. Request body keys when using encrypted message bodies. Identity/setup ID are normally derived. A real identity
+ambiguity returns public identity choices; choose one handle once. Preserve the
+returned `setup_id` for recovery. `send` defaults to true; receive is opt-in.
+Programs use the same engine without a host, MCP or Skill, and explicitly select
+program mode when using the CLI:
 
 ```sh
-peerwork connect --local /private/peerwork/local --participant worker \
-  --engine-config /private/peerwork/original-engine.json \
-  --workspace WORKSPACE_ID --id join-project --send --receive --body-keys \
-  --host selected-codex --codex-endpoint APP_SERVER_URL \
-  --codex-thread THREAD_ID --codex-session SESSION_ID \
-  --install codex --project /private/selected-project
+peerwork connect --workspace WORKSPACE_ID --program --send --receive
 ```
 
-Codex needs a compatible App Server and the explicitly selected loaded thread.
-Project MCP configuration must be trusted by Codex and refreshed through its
-supported controls. Connect does not grant project trust, widen another OS
-user's socket permissions or replace the selected thread. A required host
-refresh is separate from Workspace Owner approval.
-The host may also ask permission for specific MCP tools. Use its normal scoped
-approval controls; Workspace access and Skill installation do not approve those
-host prompts or authorize sandbox bypass.
+Agent receive never silently falls back to a program receiver. Tools may be
+usable while requested push remains `HOST_CONTEXT_REQUIRED`. A configured
+named receiver is not evidence that this new caller is that receiver.
 
-For an explicitly owned persistent AGY CLI conversation:
+## How the original installation is found
 
-```sh
-peerwork connect --local /private/peerwork/local --participant worker \
-  --engine-config /private/peerwork/original-engine.json \
-  --workspace WORKSPACE_ID --id join-project --send --receive --body-keys \
-  --host selected-agy --agy-managed --agy-executable /absolute/path/agy \
-  --agy-conversation OWNED_CONVERSATION_ID \
-  --install agy --project /private/selected-project
-```
+Restore the existing protected project binding first. Otherwise inspect only
+bounded Codex/AGY project integration entries, follow their original local
+registry and confirm the exact committed, owned installation. The original
+directory may be anywhere; neither an EngineConfig copy nor a newly invented
+key path is required. The selected project reference is protected and retained;
+a missing/corrupt original binding does not trigger another identity search.
 
-This explicitly resumes that conversation in one persistent process. It does
-not attach to an arbitrary interactive process or spawn a model per message.
-Busy AGY CLI conversations queue input until the supported turn boundary.
-Selecting `--install agy` grants only the installed server's exact native MCP
-tools for this managed session. Global permissions, shell/filesystem grants
-and sandbox policy are unchanged. Existing AGY App support is queue-only;
-managed CLI qualification does not prove App push support.
+For a native installation not yet registered in a host integration, one local
+`--trust-project` consent allows the fixed private `.peerwork/runtime.json` and
+`.peerwork/engine.json` providers. They parse native RuntimeConfig/EngineConfig;
+discovery alone does not open an engine or create a journal. These providers do
+not claim to discover arbitrary old Python/Node listener files. An installation
+without a supported record needs explicit original-source import/handoff;
+private keys are never requested from the Workspace Owner.
 
-The installer derives the protected profile/endpoints locally, merges owned
-project MCP/Skill entries and retains unrelated/preexisting files. A conflict
-returns a specific repair action rather than overwriting it. Removing the
-integration retains identity, original journal and recovery data by default.
-No Node or Python runtime is added by the native client.
+A RuntimeConfig preserves its exact original static client namespace. A bare
+EngineConfig does not prove that namespace: automatic adoption of historical
+state/journal returns `ORIGINAL_CLIENT_NAMESPACE_REQUIRED_USE_RUNTIME_INSTALLATION`
+rather than opening it under a new namespace. The explicit low-level bootstrap
+is administrative creation of a `program:bootstrap` client, not a supported
+handoff of another client namespace; it is not the normal discovery/recovery path.
+Fresh native engine setup and a verified owned
+bootstrap may use their recorded lifecycle. Existing active state ownership,
+unconfirmed process identity and unsupported listener handoff remain blockers.
 
-## When authorization is missing
+Identity registration, original binding and proven owned runtime administration
+are committed together. Imported business `Capability::owner()` is not local
+runtime administration. External runtime host management needs its own local
+delegation. Runtime reuse verifies actor, Origin, engine digest, state binding,
+namespace and client generation. Descriptor changes are verified against the
+same pinned binding before further operations, not merely the same actor.
+`original-engine-binding-v1` is a new runtime feature: an older resident runtime
+needs its normal owner-managed update, preserving original state and journal.
+There is no automatic binary upgrade or replacement signer.
 
-Connect reports the exact missing communication, business-role and body-key
-rights in `authorization_request`, together with the responsible authority.
-Use the existing admission path or a verified handoff for that public request;
-it must remain usable before the requester has business-mailbox send rights.
-Do not send the full local registry/profile, endpoint credentials or any key.
+## Current host support
 
-An already configured authorized approver reviews that semantic delta and uses:
-
-```sh
-peerwork connect --local /private/approver/local --participant owner \
-  --id approve-join-project --approve-request public-request.json
-```
-
-The requester repeats the **same original connect request and setup ID** after
-approval. Existing rights require zero human Owner exchanges. Missing rights
-use one consolidated meaningful request/approval per responsible authority;
-this does not mean one HTTP request or automatic approval. Finite leases are
-preserved; future key rotation access is not silently granted.
-
-## Discover tools, use roles and continue work
-
-The Agent calls `peerwork_context` through the installed MCP server in its
-actual session. It sees pinned identity/Origin, scopes, capability catalog and
-setup/readiness observations. Installation files alone do not prove model tool
-visibility. An unconfigured MCP frontend exposes only bounded discovery/connect
-under explicitly provisioned local authority:
-
-```sh
-peerwork agent --local /private/peerwork/local \
-  --participant worker --workspace WORKSPACE_ID mcp
-```
-
-MCP arguments cannot select arbitrary key files, admin tokens, sockets or
-executables. Initial local-owner selection registers those trusted handles.
-The short Skill explains normal send/reply, bounded waits and original-intent
-recovery. Dispatch independent work early and continue useful work after send
-acceptance; wait only at a dependency barrier with a stated time budget.
-
-Add a preauthorized business role without rebuilding local configuration:
-
-```sh
-peerwork connect --local /private/peerwork/local --participant worker \
-  --workspace WORKSPACE_ID --id add-research-role \
-  --role research:INSTANCE_ID:RESEARCHER
-```
-
-The verified bundle supplies that role's declared actions. A role is permission
-on a workflow instance, not another Agent identity, mailbox or listener. Same
-engine role addition preserves the runtime and physical-host dispatcher.
-Unchanged reentry is observation, not a restart or a surprise probe message.
-Confidentiality separation between model sessions still requires separate
-credentials/sessions; one session can use its combined authorized role views.
-
-Use `peerwork_reply` for authenticated inbox routing, then `peerwork_consume`
-only after handling the item. Reply does not consume automatically. Consumption
-is a durable local request; signed service ACK upload proceeds independently.
-A timeout does not permit a new operation ID for the same uncertain submission.
-
-## Readiness and recovery boundaries
-
-Readiness reports local runtime, access/keys, receiver link, host mode and actual
-tool visibility separately, with observer/scope/freshness. Heartbeat, registration,
-queued input, host acceptance, model reply and business completion differ.
-An empty observation is not proof that every participant is offline.
-
-| Result | Responsible actor and next action |
+| Entry | What this candidate can establish |
 | --- | --- |
-| `OWNER_APPROVAL_REQUIRED` / `KEY_AUTHORIZATION_REQUIRED` | Named remote authority reviews the exact requested delta; requester resumes the original setup. |
-| `LOCAL_SELECTION_REQUIRED` | Local operator selects the original protected engine/registered handle. |
-| `LOCAL_RUNTIME_UPGRADE_REQUIRED` | Runtime owner performs the supported binary update, preserving identity, journal and pending work; resume the original setup. |
-| `HOST_BINDING_REQUIRED` / `HOST_DELEGATION_REQUIRED` | Host OS/session owner selects or narrowly delegates the supported interface. Workspace rights do not authorize root socket access. |
-| `HOST_REFRESH_REQUIRED` | Use the selected host's supported refresh procedure and verify actual tool invocation. |
-| `RECOVERY_REQUIRED` / `BROKEN_BINDING` | Recover original provenance/state; do not silently create a replacement identity. |
+| Existing selected Codex/managed AGY binding | Reuse the named destination; current caller and tools remain separately observed. |
+| Program already owning a Codex App Server client | Rust `Connect::connect_current` accepts `HostInvocation::CodexDynamicTool` from the actual server callback, checks its exact thread against the selected adapter and retains the host stage across approval. The owning program must integrate this call. |
+| AGY App owning integration | The same API accepts exact App conversation context and the explicitly enabled Sidecar/agentapi adapter. This is not CLI root metadata or a universal installed plugin. |
+| Ordinary Codex MCP/plugin | Tools/connect are available; this review did not establish generic current-thread metadata or automatic attachment to any existing UI/CLI. Report tools-only/context-required instead of guessing. |
+| AGY CLI MCP root metadata | Root context is not an exact child or an external push interface. Existing interactive CLI push is not established; explicitly owned managed stdio remains a separate supported mode. |
 
-Derived profile loss can be repaired from a verified local registry and original
-runtime binding. Missing/corrupt original provenance cannot. Revocation fences
-new use of old clients while preserving original admitted operations and unknown
-host facts. Unknown host input is reconciled, never replayed into another session.
-Custom Python/Node listener cursors are not native mailbox cursors: retain their
-original evidence and use only a supported handoff. General custom-listener
-conversion, universal session attach and automatic binary upgrades are outside
-this workflow.
+`HostInvocation` is a local Rust integration contract, absent from model-facing
+MCP/CLI arguments. Its owner obtains fields from the real authenticated host
+callback, not from model arguments, environment inheritance or session scans.
+The contract alone does not provide a host channel or qualify a new adapter.
+No harness is implicitly installed, no App Server/model is launched as fallback,
+and no socket permissions or sandbox policy are broadened.
+
+Caller context is per invocation. Its successful observation is not cached as
+proof for later callers. Tools installed, tools invoked, receiver link, host
+acceptance and actual model response are separate facts. A host can require its
+normal trust/refresh step; Workspace approval cannot supply that authority.
+
+## Permission and recovery contract
+
+Existing remote rights require zero Owner exchanges. Missing rights produce
+one semantic delta for each responsible authority, then the same setup resumes.
+Original selected host, key requests and child operation IDs survive intervening
+pending stages. Tools-only profile completion follows durable stage state, not
+the last error code. Current rights/keys are rechecked before activating receive.
+
+No action migrates unknown business effects into another identity, namespace
+or model session. A changed physical receiver needs explicit supported rebind.
+No source/registry discovery triggers a full historical replay or a model ping.
+
+Acceptance includes bounded read-only discovery, exact old0.3.2 registry schema,
+unchanged native namespace, original launch ownership recovery, endpoint
+replacement rejection, real synthetic-service HTTP and CLI entry, deferred
+Agent receive, explicit program receive, and host continuation across pending
+and permission approval. Synthetic host tests do not establish real App/CLI
+qualification or model latency.

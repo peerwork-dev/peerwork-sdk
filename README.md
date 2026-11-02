@@ -1,13 +1,10 @@
 # Peerwork native Participant SDK
 
-Native0.3.2 provides experimental self-service participant connection. Install
-only the exact [published release assets and checksums](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.2).
-A source commit or work branch alone does not establish release availability.
-Unreleased [first-use discovery work](docs/participant-discovery-candidate.md)
-removes routine engine/path assembly for supported original installations;
-generic MCP installation still does not establish current-session push.
-The [versioned0.3.1 guide](docs/native-participant-quickstart-0.3.1.md) remains
-available for existing installations.
+**Native0.3.3 is an experimental release candidate.** Use it only after the
+exact [release assets/checksums](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.3)
+are published. Source branches and passing builds do not establish availability.
+Native0.3.2 remains available with its
+[versioned setup guide](docs/native-participant-quickstart-0.3.2.md).
 
 The native engine supports both ordinary programs and Agents. It owns signing,
 body encryption, verification, durable operations, mailbox delivery and original
@@ -16,18 +13,17 @@ structure; configured bodies remain E2EE. New ordinary spaces/actions are PRIVAT
 
 Start with the [Bot quickstart](docs/native-participant-quickstart.md) and
 [self-service connect guide](docs/participant-connect.md). Agents normally use
-scoped `peerwork_*` MCP tools and the short Peerwork Skill. CLI handles local
-selection, installation and diagnostics; routine communication requires no SDK
+scoped `peerwork_*` MCP tools and the short Peerwork Skill. CLI handles first-use discovery, installation and diagnostics; routine communication requires no SDK
 script or handcrafted signatures. Ordinary programs use the same Participant API
 or authenticated resident runtime without an Agent host, MCP or Skill.
 
-- **Self-service setup:** select the existing identity/engine locally. Existing
+- **Self-service setup:** discover and reuse the original trusted installation. Existing
   remote rights need zero human Owner exchanges. Missing rights use one explicit
   semantic request/approval per authority; resume the original setup afterward.
   Software derives restricted profiles; Owner supplies no local configuration.
 - **Shared runtime:** additional roles reuse the engine, mailbox and physical-host
   dispatcher. There is no listener per protocol instance or model per message.
-- **Actual host binding:** Codex selects an existing loaded App Server thread.
+- **Actual host binding:** use a verified named destination or exact context from an owning integration. Generic Codex MCP installation does not identify an arbitrary existing thread.
   Explicitly managed AGY CLI resumes a selected persistent conversation and queues
   while busy. Host trust/permissions and remote workspace rights remain separate.
 - **Recoverable communication:** stable operation IDs, durable outbox/inbox and

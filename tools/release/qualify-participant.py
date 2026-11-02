@@ -33,6 +33,21 @@ GROUPS = ['communication_host::', 'communication_host_owner::tests',
           'transport::tests::send_phase_scope_excludes_interleaved_and_spawned_work_and_survives_cancellation']
 
 
+# These cases exercise a real synthetic service and require its explicit
+# PostgreSQL URL and rebuilt CLI. They run in the service release acceptance,
+# not in platform-only qualification; ignored IPC/OS tests still run here.
+EXTERNAL_SERVICE_CASES = [
+    'participant_connect::discovery::tests::cold_cli_finds_old_installation_defers_host_and_program_mode_remains_explicit',
+]
+
+def native_test_command(group):
+    command=['cargo', 'test', '--release', '--locked', '-p', 'peerwork-runtime', '--lib',
+             group, '--', '--include-ignored', '--test-threads=1']
+    for case in EXTERNAL_SERVICE_CASES:
+        command.extend(['--skip',case])
+    return command
+
+
 def candidate_version(raw):
     """The CLI version command emits JSON, never an archive-name fragment."""
     document = json.loads(raw)
@@ -148,14 +163,13 @@ def main():
 
     # Compile the shared test target once, then run only the native affected
     # groups. Explicitly ignored loopback tests are eligible on real CI hosts;
-    # real service/Agent fixtures are outside these module prefixes.
+    # real service/Agent fixtures are explicitly excluded from this OS cohort.
     run(['cargo','test','--release','--locked','-p','peerwork-core','--lib',
          'js_locale::tests','--','--test-threads=1'], 'icu-conformance.log')
     assert re.search(r'test result: ok\. [1-9][0-9]* passed;', (output / 'icu-conformance.log').read_text(encoding='utf-8')), 'ICU selector matched no passing cases'
     groups=GROUPS+(["onboarding_files::windows::tests"] if args.target=="win32-x64-msvc" else [])
     for index, group in enumerate(groups):
-        run(['cargo', 'test', '--release', '--locked', '-p', 'peerwork-runtime', '--lib',
-             group, '--', '--include-ignored', '--test-threads=1'], f'tests-{index}.log')
+        run(native_test_command(group), f'tests-{index}.log')
         result = (output / f'tests-{index}.log').read_text(encoding='utf-8')
         assert re.search(r'test result: ok\. [1-9][0-9]* passed;', result), 'test selector matched no passing cases'
     run(['cargo', 'build', '--release', '--locked', '-p', 'peerwork-cli', '--bin', 'peerwork'], 'build.log')
