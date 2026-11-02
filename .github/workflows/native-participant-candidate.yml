@@ -4,6 +4,21 @@ name: Native participant qualification
 # this workflow cannot trigger the legacy experimental SDK publisher.
 on:
   workflow_dispatch:
+    inputs:
+      target:
+        description: Qualify only this selected target, preserving passed artifacts
+        type: choice
+        options: [all, linux-x64-gnu, darwin-arm64, win32-x64-msvc]
+        default: all
+      source_commit:
+        description: Exact existing source commit; empty uses the workflow commit
+        type: string
+        default: ''
+      macos_runner:
+        description: Standard arm64 runner image
+        type: choice
+        options: [macos-26, macos-15]
+        default: macos-26
   push:
     branches: [work/native-participant-qualification]
 
@@ -22,7 +37,7 @@ env:
 
 jobs:
   linux:
-    if: ${{ !contains(github.event.head_commit.message, '[native:win32-x64-msvc]') }}
+    if: ${{ (!inputs.target || inputs.target == 'all' || inputs.target == 'linux-x64-gnu') && !contains(github.event.head_commit.message, '[native:win32-x64-msvc]') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     container:
@@ -31,6 +46,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+          ref: ${{ inputs.source_commit || github.sha }}
       - name: Select glibc 2.28 build environment
         shell: bash
         run: |
@@ -76,13 +92,14 @@ jobs:
           key: ${{ steps.native-cache.outputs.cache-primary-key }}
 
   desktop:
+    if: ${{ inputs.target != 'linux-x64-gnu' }}
     strategy:
       fail-fast: false
       matrix:
         # Development may qualify one changed platform. A normal candidate
         # push or dispatch still selects all three release targets.
-        include: ${{ fromJSON(contains(github.event.head_commit.message, '[native:win32-x64-msvc]') && '[{"target":"win32-x64-msvc","runner":"windows-2022","rustflags":"-C target-feature=+crt-static"}]' || '[{"target":"darwin-arm64","runner":"macos-26","rustflags":""},{"target":"win32-x64-msvc","runner":"windows-2022","rustflags":"-C target-feature=+crt-static"}]') }}
-    runs-on: ${{ matrix.runner }}
+        include: ${{ fromJSON(inputs.target == 'darwin-arm64' && '[{"target":"darwin-arm64","runner":"macos-26","rustflags":""}]' || (inputs.target == 'win32-x64-msvc' || contains(github.event.head_commit.message, '[native:win32-x64-msvc]')) && '[{"target":"win32-x64-msvc","runner":"windows-2022","rustflags":"-C target-feature=+crt-static"}]' || '[{"target":"darwin-arm64","runner":"macos-26","rustflags":""},{"target":"win32-x64-msvc","runner":"windows-2022","rustflags":"-C target-feature=+crt-static"}]') }}
+    runs-on: ${{ matrix.target == 'darwin-arm64' && (inputs.macos_runner || matrix.runner) || matrix.runner }}
     timeout-minutes: 60
     env:
       RUSTFLAGS: ${{ matrix.rustflags }}
@@ -90,6 +107,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+          ref: ${{ inputs.source_commit || github.sha }}
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249
         with:
           toolchain: '1.89.0'
