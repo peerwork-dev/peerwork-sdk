@@ -120,3 +120,20 @@ for0.3.2. Slow durable storage, host queueing and model work can add latency.
 Service acceptance, verified receiver storage, host acceptance and an actual
 Agent reply remain separate facts. No WAL durability downgrade or tmpfs
 substitution was used. This release provides no fixed end-to-end latency SLA.
+
+## Native0.3.3 first-use connection
+
+Native0.3.3 keeps the same three native targets and no Node/Python client runtime.
+Its platform reports qualify the exact source/run and installed-process behavior.
+The release also exercises original0.3.2 registry recovery, bounded project-source
+discovery, original namespace/binding checks, tools-only Agent receive, and
+permission/key/host continuation through real synthetic-service HTTP.
+
+Older resident runtimes need their local owner's normal update for
+`original-engine-binding-v1`, retaining original state, journal and pending IDs.
+No automatic binary update or identity/workspace migration is implied. Automatic
+attachment to arbitrary existing Codex UI/CLI and external push into arbitrary
+interactive AGY CLI remain outside support. A local owning-host callback API does
+not supply that integration. Earlier numerical performance observations retain
+their original versions and scopes;0.3.3 claims no new full1/2/4/8-agent latency
+qualification or fixed end-to-end SLA. See the [current quickstart](native-participant-quickstart.md).

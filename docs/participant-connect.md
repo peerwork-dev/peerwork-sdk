@@ -1,8 +1,8 @@
 # Connect an existing participant
 
-Native SDK0.3.3 release candidate. These capabilities are available only after
-its exact [release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.3)
-are published and verified. Native0.3.2 retains its
+These capabilities require native SDK0.3.3 and its exact published
+[release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.3).
+Native0.3.2 retains its
 [explicit setup guide](participant-connect-0.3.2.md).
 The native client adds no Node/Python runtime dependency or additional platforms.
 

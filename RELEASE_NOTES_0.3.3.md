@@ -1,6 +1,6 @@
-# Native SDK0.3.3 experimental candidate
+# Native SDK0.3.3 experimental
 
-Status: preparing the exact three-platform release. No service restart, schema
+Install the exact [three-platform release assets/checksums](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.3). No service restart, schema
 change, workspace or identity migration is required for this native client update.
 
 - First-use CLI and MCP share one resumable entry. Supported trusted native

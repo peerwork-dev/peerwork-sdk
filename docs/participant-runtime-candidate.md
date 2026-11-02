@@ -46,13 +46,13 @@ whether those handles currently exist. FULL synchronous commits and the default
 automatic WAL checkpoints remain enabled. After owned work stops, engine close
 awaits the keepers' normal final checkpoint/close before releasing ownership.
 
-## Self-service onboarding in native0.3.2
+## Self-service onboarding in native0.3.3
 
-This section requires the native0.3.2 connect feature; it is not an addition to
-published0.3.1. Use the exact [native0.3.2 release](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.2)
-and preserve the original state when its local owner updates the runtime.
-The [connect guide](participant-connect.md) and [Bot quickstart](native-participant-quickstart.md)
-replace administrator-made Worker profiles as the normal supported setup path.
+Use the exact [native0.3.3 release](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.3)
+and preserve original state during its local owner's runtime update. Native0.3.2
+retains its [versioned connect guide](participant-connect-0.3.2.md);0.3.1 lacks
+this connect entry. The [current connect guide](participant-connect.md) and
+[Bot quickstart](native-participant-quickstart.md) are the normal supported entry.
 
 The public Rust `participant_connect::Connect` API is the same coordinator used
 by CLI `peerwork connect` and MCP `peerwork_connect`, not another implementation.
@@ -63,6 +63,33 @@ selected participant handle to an identity/Origin-pinned existing runtime client
 protocol-role and selected-host scopes. `context`/`context_for` expose public setup
 observations; `profile_for_scope` returns the restricted local projection.
 Programs that already embed `ParticipantClient` need no Agent profile or host.
+
+Native0.3.3 adds bounded `discover(project, authorize_project)` for trusted native
+sources and committed project installation references. Discovery never opens a
+signer; `connect_selected(request, participant_pin, workspace_pin)` coordinates
+the scoped Agent entry used by CLI tools and MCP. The normal CLI derives local
+registry and stable setup IDs. Only real identity ambiguity needs a public-handle
+choice. Runtime binding verification includes engine/state digest, original
+namespace and client generation; changed descriptors are revalidated before
+further operations. The required feature is `original-engine-binding-v1`.
+
+`run_agent(ConnectRequest)` defers receive if the host is unknown, preserving
+available tools. It does not silently start a program receiver. CLI programs use
+`--program`; embedded programs keep the existing program API without host/MCP.
+The local `connect_current(request, HostSelection, HostInvocation)` integration
+accepts exact context from an already owning host client. `CodexDynamicTool`
+requires server callback thread/turn/call fields and host instance; `AntigravityApp`
+requires exact App conversation and instance. These are trusted local Rust inputs,
+not model-facing metadata or a way to create a missing host channel. Generic
+Codex MCP current-thread attachment and arbitrary AGY CLI external push are not
+established. See the [explicit host support table](participant-discovery-candidate.md#current-host-support).
+
+Registration and proven owned admin publish atomically. Old0.3.2 registry recovery
+uses the original protected launch/config proof. A business owner capability
+alone cannot authorize runtime administration. Source/history that cannot prove
+its client namespace returns a supported-handoff blocker rather than migrating
+unknown operations. Current caller evidence is transient; installed tools, named
+receiver and actual model response remain independent facts.
 
 `setup_id` identifies the original desired-state job and its frozen child
 operations. Resuming the same request observes independently completed stages;
