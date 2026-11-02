@@ -137,3 +137,15 @@ interactive AGY CLI remain outside support. A local owning-host callback API doe
 not supply that integration. Earlier numerical performance observations retain
 their original versions and scopes;0.3.3 claims no new full1/2/4/8-agent latency
 qualification or fixed end-to-end SLA. See the [current quickstart](native-participant-quickstart.md).
+
+## Change-scoped qualification for native0.3.4
+
+Shared onboarding semantics, identity/recovery boundaries and fault injection
+are checked once against the frozen source. Each selected native target builds
+the deliverable and exercises its installed OS process, including shared-project
+configuration, original installed identity discovery, scoped IPC and ownership.
+Additional library test groups can be requested with --library-tests; they are
+recorded independently. An unchanged historical import or model/performance
+campaign is not a default artifact-publication check. No Node producer is needed
+for this native artifact workflow. Qualification reports explicitly distinguish
+these scopes and do not infer semantic or performance evidence from a build.

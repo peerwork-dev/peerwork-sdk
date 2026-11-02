@@ -16,10 +16,11 @@ fn anchored_registry(directory:&ProjectDirectory)->Result<Registry>{
 }
 fn association_required()->ParticipantError{let mut e=local("ORIGINAL_LOCAL_REGISTRY_CONFIRMATION_REQUIRED");e.recovery="LOCAL_OWNER_CONFIRM_EXISTING_REGISTRY_WITH_CONNECT_LOCAL_CONTEXT_CONFIRM_ORIGINAL".into();e}
 fn require_original_association(directory:&ProjectDirectory)->Result<()> {
+    let missing=||{crate::onboarding_files::original_confirmation(directory.path());association_required()};
     let selected=crate::onboarding_state::project(directory.path(),"original-registries",false)?
-        .ok_or_else(association_required)?;
+        .ok_or_else(missing)?;
     let path=selected.join("association.state");
-    let bytes=SecureStateStore::read_snapshot(&path,65536).map_err(|_|association_required())?;
+    let bytes=SecureStateStore::read_snapshot(&path,65536).map_err(|_|missing())?;
     let expected=json!({"format":"peerwork.original-registry-association.v1","directory":directory.identity()?});
     if peerwork_core::strict_json::parse_strict_json(&bytes).ok().as_ref()!=Some(&expected) {return Err(local("ORIGINAL_REGISTRY_DIRECTORY_CHANGED"))}
     Ok(())
@@ -247,13 +248,8 @@ fn validate_engine(engine: &EngineConfig) -> Result<()> {
         .transport
         .validate()
         .map_err(|_| local("ORIGINAL_TRANSPORT_INVALID"))?;
-    if crate::kernel_identity::KernelIdentity::open(&options.identity_path)
-        .map_err(|_| local("IDENTITY_RECOVERY_REQUIRED"))?
-        .actor_id()
-        != engine.expected_actor
-    {
-        return Err(local("LOCAL_IDENTITY_MISMATCH"));
-    }
+    // Discovery validates declarations only. Live activation proves the binding;
+    // standalone activation checks the original namespace before opening a key.
     Ok(())
 }
 impl Connect {
@@ -512,7 +508,7 @@ impl Connect {
     pub(crate) async fn adopt(&mut self, handle: &str) -> Result<()> {
         if let Some(r) = self.registry.participants.get(handle).cloned() {
             if self.registry.verified_bindings.contains_key(handle) {
-                match self.original_client(handle).await {Ok(_)=>return Ok(()),Err(error) if matches!(error.code.as_str(),"ORIGINAL_RUNTIME_BINDING_CHANGED"|"CLIENT_IDENTITY_OR_ORIGIN_MISMATCH"|"CLIENT_BINDING_INVALID")=>return Err(error),Err(_)=>()}
+                match self.original_client(handle).await {Ok(_)=>return Ok(()),Err(error) if matches!(error.code.as_str(),"ORIGINAL_RUNTIME_BINDING_CHANGED"|"ORIGINAL_RUNTIME_BINDING_INVALID"|"CLIENT_IDENTITY_OR_ORIGIN_MISMATCH"|"CLIENT_BINDING_INVALID")=>return Err(error),Err(_)=>()}
             }
             let original = self.directory.join(format!("runtime-{handle}"));
             let owned_proof = r.endpoint_path == original.join("client-bootstrap.json")
@@ -626,6 +622,7 @@ impl Connect {
             // host setup requires a separately selected local admin delegation.
             return Ok(());
         }
+        bootstrap::automatic_namespace(&self.directory,&source.engine)?;
         // A standalone config may name an already active non-managed signer.
         // Take its original fences before creating any runtime/launch output.
         // Holding either fence means activation must stay pending.
@@ -729,7 +726,7 @@ mod tests {
         }
     }
     fn write(path: &Path, value: &impl Serialize) {
-        if let Some(parent)=path.parent(){if !parent.exists(){create_private_state_directory(parent).unwrap();}}
+        if let Some(parent)=path.parent(){if !parent.exists(){let base=ProjectDirectory::open(parent.parent().unwrap()).unwrap();base.child(parent.file_name().unwrap().to_str().unwrap(),true,true).unwrap();}}
         write_private(path, &serde_json::to_vec(value).unwrap()).unwrap();
     }
     #[cfg(unix)]
@@ -768,7 +765,9 @@ mod tests {
         let mut c=Connect::open(&local).unwrap();c.registry.participants.insert("worker".into(),Registration{origin:"https://api.peerwork.dev".into(),actor_id:"A".repeat(43),endpoint_path:local.join("endpoint.json")});c.save().unwrap();drop(c);
         let before=std::fs::read(local.join("connect.state")).unwrap();std::fs::write(local.join("original-journal"),b"unresolved original command: keep-id").unwrap();
         std::fs::set_permissions(&shared,std::fs::Permissions::from_mode(0o775)).unwrap();
-        assert!(matches!(Connect::inspect(&local),Err(e)if e.code=="ORIGINAL_LOCAL_REGISTRY_CONFIRMATION_REQUIRED"));
+        let error=Connect::inspect(&local).err().unwrap();assert_eq!(error.code,"ORIGINAL_LOCAL_REGISTRY_CONFIRMATION_REQUIRED");assert!(!serde_json::to_string(&error).unwrap().contains(local.to_str().unwrap()));
+        let local_result=super::super::cli(&["--local".to_owned(),local.to_str().unwrap().to_owned(),"--context".to_owned()]);
+        assert_eq!(local_result["local_command"][3],local.to_str().unwrap());assert_eq!(local_result["local_command"][5],"--confirm-original");
         confirm_original_store(&local).unwrap();assert_eq!(std::fs::read(local.join("connect.state")).unwrap(),before);
         let mut c=Connect::open(&local).unwrap();assert_eq!(c.registry.participants["worker"].actor_id,"A".repeat(43));c.save().unwrap();drop(c);
         assert_eq!(std::fs::read(local.join("original-journal")).unwrap(),b"unresolved original command: keep-id");
@@ -964,6 +963,26 @@ mod tests {
         assert!(
             matches!(project_target(project),Err(e) if e.code=="CONNECT_ORIGINAL_BINDING_RECOVERY_REQUIRED")
         );
+    }
+    #[cfg(unix)]
+    #[tokio::test(flavor="multi_thread",worker_threads=2)]
+    #[ignore="requires loopback IPC permission"]
+    async fn confirmed_legacy_reuses_live_bound_runtime_without_admin_repair_or_launch(){
+        use crate::communication_runtime::{self as ipc,ClientConfig};
+        use std::os::unix::fs::PermissionsExt;
+        let t=crate::test_support::protected_test_dir();let shared=t.path().join("shared");create_private_state_directory(&shared).unwrap();
+        let local=shared.join("original");let mut c=Connect::open(&local).unwrap();let e=engine(t.path());
+        let config=RuntimeConfig{format:"peerwork.participant-runtime.v1".into(),state_directory:local.join("runtime-worker"),engines:vec![e.clone()],clients:vec![ClientConfig{name:"bootstrap".into(),engine:e.name.clone(),capability:Capability::owner()}],hosts:vec![]};
+        let cancel=crate::KernelCancellationToken::new();let(tx,rx)=tokio::sync::oneshot::channel();let running=tokio::spawn(ipc::serve(config.clone(),cancel.clone(),tx));let ready=rx.await.unwrap().unwrap();
+        let registration=Registration{origin:crate::transport::canonical_lifecycle_origin(&e.origin,true).unwrap(),actor_id:e.expected_actor.clone(),endpoint_path:ready.client_endpoints["bootstrap"].clone()};
+        let client=RuntimeClient::connect(registration.endpoint_path.clone(),&registration.origin,&registration.actor_id).await.unwrap();let binding=client.call(json!({"method":"binding"})).await.unwrap();
+        write(&config.state_directory.join("config.json"),&config);
+        let launch=SecureStateStore::open(&config.state_directory.join("bootstrap.state")).unwrap();launch.write_exact(&serde_json::to_vec(&json!({"config_digest":sha256_hex(&serde_json::to_vec(&config).unwrap()),"pid":std::process::id(),"process_token":crate::communication_store::process_token(std::process::id())})).unwrap()).unwrap();drop(launch);
+        c.registry.participants.insert("worker".into(),registration);c.registry.verified_bindings.insert("worker".into(),crate::communication_runtime::canonical_binding(&binding));c.save().unwrap();drop(c);
+        std::fs::set_permissions(&shared,std::fs::Permissions::from_mode(0o775)).unwrap();confirm_original_store(&local).unwrap();
+        let mut c=Connect::open(&local).unwrap();c.adopt("worker").await.unwrap();assert!(c.registry.local_runtime_admins.is_empty());assert_eq!(c.registry.verified_bindings["worker"]["namespace"],"program:bootstrap");
+        assert_eq!(c.original_client("worker").await.unwrap().call(json!({"method":"binding"})).await.unwrap()["namespace"],"program:bootstrap");
+        drop(c);cancel.cancel();running.await.unwrap().unwrap();
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[ignore = "requires loopback IPC permission"]

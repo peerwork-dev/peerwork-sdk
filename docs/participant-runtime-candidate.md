@@ -1763,3 +1763,12 @@ do not prove tool availability or an Agent reply. Availability follows the match
 Use the documented CLI transport; this does not claim AGY App push or a
 model-response SLA. The portable MCP-wait entry remains
 available independently of managed mode.
+
+## Shared-project onboarding in native0.3.4
+
+The current [connect guide](participant-connect.md) specifies protected OS-user
+bookkeeping, existing private-registry confirmation and anchored configuration
+updates. Reuse original state, namespace and pending IDs. A compatible resident
+runtime with original-engine-binding-v1 (native0.3.3+) remains usable; the local
+client does not require a service/schema migration or new identity. Host context
+and receive guarantees retain their documented independent limits.

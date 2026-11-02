@@ -136,12 +136,22 @@ fn alive(pid: u32, expected: Option<&str>) -> Result<bool> {
     }
     Err(local("PROCESS_IDENTITY_UNCONFIRMED"))
 }
-fn automatic_namespace(directory:&Path,engine:&EngineConfig)->Result<()> {
+fn strict_existing_parent(path:&Path,private:bool)->Result<()> {
+    let mut existing=path;
+    loop {
+        match std::fs::symlink_metadata(existing) {
+            Ok(_)=>return crate::onboarding_files::check_directory(existing,private && existing==path),
+            Err(e) if e.kind()==std::io::ErrorKind::NotFound=>existing=existing.parent().ok_or_else(||local("LOCAL_SELECTION_INVALID"))?,
+            Err(_)=>return Err(crate::onboarding_files::path_error(existing,"PRIVATE_ENGINE_NAMESPACE","STAT","PERMISSION_DENIED")),
+        }
+    }
+}
+pub(super) fn automatic_namespace(directory:&Path,engine:&EngineConfig)->Result<()> {
     let checked=(||->Result<()>{
         crate::onboarding_files::check_directory(directory,true)?;
-        crate::onboarding_files::check_directory(engine.identity_path.parent().ok_or_else(||local("LOCAL_SELECTION_INVALID"))?,true)?;
-        if engine.state_directory.try_exists().map_err(|_|local("LOCAL_SELECTION_INVALID"))? {crate::onboarding_files::check_directory(&engine.state_directory,true)?;}else{crate::onboarding_files::check_directory(engine.state_directory.parent().ok_or_else(||local("LOCAL_SELECTION_INVALID"))?,false)?;}
-        if let Some(journal)=&engine.journal_path {crate::onboarding_files::check_directory(journal.parent().ok_or_else(||local("LOCAL_SELECTION_INVALID"))?,true)?;}
+        strict_existing_parent(engine.identity_path.parent().ok_or_else(||local("LOCAL_SELECTION_INVALID"))?,true)?;
+        strict_existing_parent(&engine.state_directory,true)?;
+        if let Some(journal)=&engine.journal_path{strict_existing_parent(journal.parent().ok_or_else(||local("LOCAL_SELECTION_INVALID"))?,true)?;}
         Ok(())
     })();
     checked.map_err(|_|{let mut e=local("ORIGINAL_RUNTIME_OWNER_START_REQUIRED");e.recovery="START_OR_UPGRADE_ORIGINAL_RUNTIME_WITH_ITS_LOCAL_OWNER".into();e})

@@ -37,3 +37,11 @@ and protocol references include:
 Their old `Secure*` APIs and dated results do not establish current service or
 native package support. A filename ending in `candidate` is not an availability
 announcement; inspect the guide and actual versioned release.
+
+## Shared-project onboarding follow-up
+
+Native0.3.4 is a source candidate until its exact public assets are verified.
+See [shared projects and private state](participant-connect.md#shared-projects-and-private-state-native034).
+Native0.3.3 retains its [versioned Bot guide](native-participant-quickstart-0.3.3.md)
+and [connect guide](participant-connect-0.3.3.md). Registry confirmation is a local
+OS-owner operation, not a Workspace Owner approval or a permission bypass.

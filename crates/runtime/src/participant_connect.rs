@@ -1384,6 +1384,7 @@ pub fn cli(args: &[String]) -> Value {
             "peerwork connect --local DIRECTORY --participant HANDLE --client EXISTING_ENDPOINT --origin ORIGIN --actor ACTOR --workspace WORKSPACE --id SETUP_ID --receive",
             "peerwork connect --local DIRECTORY --participant HANDLE --workspace WORKSPACE --id SETUP_ID --send --receive",
             "peerwork connect --local DIRECTORY --context",
+            "peerwork connect --local ORIGINAL_DIRECTORY --context --confirm-original",
             "peerwork connect --local DIRECTORY --participant OWNER_HANDLE --id APPROVAL_ID --approve-request PUBLIC_REQUEST.json",
             "peerwork connect --local DIRECTORY --participant HANDLE --engine-config EXISTING_ENGINE.json --workspace WORKSPACE --id SETUP_ID --send --receive",
             "peerwork connect --local DIRECTORY --participant HANDLE --workspace WORKSPACE --id SETUP_ID --send --receive --host SELECTED_HOST --codex-endpoint APP_SERVER_URL --codex-thread THREAD --install codex --project PROJECT",
@@ -1606,6 +1607,12 @@ pub fn cli(args: &[String]) -> Value {
     });
     if output["state"] == "FAILED" {
         if let Some(diagnostic) = crate::onboarding_files::take_diagnostic() {
+            if output["error"]["code"]=="ORIGINAL_LOCAL_REGISTRY_CONFIRMATION_REQUIRED" {
+                if let Some(path)=diagnostic["original_registry"].as_str(){
+                    output["next_actor"]=json!("LOCAL_RUNTIME_OWNER");
+                    output["local_command"]=json!(["peerwork","connect","--local",path,"--context","--confirm-original"]);
+                }
+            }
             output["error"]["local_diagnostic"] = diagnostic;
         }
     }

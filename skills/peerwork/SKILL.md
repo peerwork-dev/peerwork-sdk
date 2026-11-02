@@ -53,3 +53,11 @@ A tools-only result is not current-session push; use only a supported host entry
 When no useful work is ready, use the host's supported yield/continuation
 mechanism. Report the actual blocker or dependency; transport ACKs do not prove
 that another Agent started computing or completed its task.
+
+For native0.3.4 shared-project onboarding, local bookkeeping is selected outside
+the repository. Never chmod/chown shared ancestors or create another identity
+to bypass a local blocker. ORIGINAL_LOCAL_REGISTRY_CONFIRMATION_REQUIRED needs
+the original local OS owner's one-time confirmation; it is not a Workspace
+permission request and cannot be approved through MCP. Preserve the original
+registry, journal, setup IDs and namespace. Use local diagnostics/current guide;
+full filesystem paths and credentials stay local.

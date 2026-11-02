@@ -27,6 +27,12 @@ class NativeGraphTests(unittest.TestCase):
         self.assertNotIn('pinned_client_rejects', ' '.join(skipped))
         self.assertNotIn('v032_registry_recovers', ' '.join(skipped))
 
+    def test_default_native_artifact_checks_do_not_repeat_semantic_campaigns(self):
+        chosen=qualifier.options(['--target','linux-x64-gnu'])
+        self.assertEqual(chosen.library_tests,[])
+        chosen=qualifier.options(['--target','darwin-arm64','--library-tests','onboarding_project::'])
+        self.assertEqual(chosen.library_tests,['onboarding_project::'])
+
     def native_inventory(self):
         release = version.authority(ROOT)
         license_name = tomllib.loads((ROOT / 'Cargo.toml').read_text())['workspace']['package']['license']

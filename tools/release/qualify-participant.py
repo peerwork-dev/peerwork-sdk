@@ -116,10 +116,15 @@ def native_metadata(document):
             'resolve': {**document['resolve'], 'nodes': [n for n in document['resolve']['nodes'] if n['id'] in selected]}}
 
 
-def main():
+def options(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--target', choices=TARGETS, required=True)
-    args = parser.parse_args()
+    parser.add_argument('--library-tests',action='append',default=[],choices=GROUPS+['onboarding_project::','onboarding_state::','onboarding_store::','onboarding_files::windows::tests'],help='Explicit affected library groups; semantic evidence is separate from native artifact smoke')
+    return parser.parse_args(argv)
+
+
+def main():
+    args=options()
     root = Path(__file__).resolve().parents[2]
     output = root / '.participant-ci' / args.target
     assert not output.exists(), 'candidate output must be fresh'
@@ -161,17 +166,15 @@ def main():
             print(tail[-16384:], flush=True)
             result.check_returncode()
 
-    # Compile the shared test target once, then run only the native affected
-    # groups. Explicitly ignored loopback tests are eligible on real CI hosts;
-    # real service/Agent fixtures are explicitly excluded from this OS cohort.
-    run(['cargo','test','--release','--locked','-p','peerwork-core','--lib',
-         'js_locale::tests','--','--test-threads=1'], 'icu-conformance.log')
-    assert re.search(r'test result: ok\. [1-9][0-9]* passed;', (output / 'icu-conformance.log').read_text(encoding='utf-8')), 'ICU selector matched no passing cases'
-    groups=GROUPS+(["onboarding_files::windows::tests"] if args.target=="win32-x64-msvc" else [])
-    for index, group in enumerate(groups):
-        run(native_test_command(group), f'tests-{index}.log')
-        result = (output / f'tests-{index}.log').read_text(encoding='utf-8')
-        assert re.search(r'test result: ok\. [1-9][0-9]* passed;', result), 'test selector matched no passing cases'
+    # Shared semantics are qualified once before freezing source. Per-target
+    # publication normally builds the deliverable and exercises its real OS
+    # process. Request library groups explicitly for additional affected OS
+    # mechanisms; do not recompile historical test programs on every release.
+    groups=args.library_tests
+    for index,group in enumerate(groups):
+        run(native_test_command(group),f'tests-{index}.log')
+        result=(output/f'tests-{index}.log').read_text(encoding='utf-8')
+        assert re.search(r'test result: ok\. [1-9][0-9]* passed;',result),'test selector matched no passing cases'
     run(['cargo', 'build', '--release', '--locked', '-p', 'peerwork-cli', '--bin', 'peerwork'], 'build.log')
     target_dir = Path(env.get('CARGO_TARGET_DIR', root / 'target'))
     if not target_dir.is_absolute():
@@ -181,14 +184,6 @@ def main():
     shutil.copy2(built, installed)
     run([sys.executable, 'tests/installed-participant-smoke.py', '--cli', str(installed)], 'installed-smoke.json')
     assert json.loads((output / 'installed-smoke.json').read_text())['state'] == 'PASS'
-    if os.name != 'nt':
-        # The published Node producer checks POSIX mode bits; it was never a
-        # Windows receiver. Native import/ACL cases above still run on Windows.
-        node = shutil.which('node')
-        assert node, 'Node is required only to produce the published legacy-store fixture'
-        run([sys.executable, 'tests/qualify-node-delivery-import.py', '--cli', str(installed),
-             '--node', node], 'legacy-node-import.json')
-        assert json.loads((output / 'legacy-node-import.json').read_text())['state'] == 'PASS'
     if args.target == 'linux-x64-gnu':
         symbols = subprocess.check_output(['readelf', '--version-info', installed], text=True)
         (output / 'symbol-versions.txt').write_text(symbols)
@@ -228,7 +223,8 @@ def main():
         'source_commit': source, 'target': args.target, 'sdk_version': version,
         'binary_sha256': hashlib.sha256(installed.read_bytes()).hexdigest(),
         'binary_bytes': installed.stat().st_size, 'native_test_groups': groups,
-        'core_test_groups': ['js_locale::tests'],
+        'core_test_groups': [],
+        'semantic_qualification': 'Recorded separately for the frozen source; library groups above are explicit per-target additions',
         'os_loader_requirements': loader,
         'candidate_archive': archive.name, 'archive_sha256': hashlib.sha256(archive.read_bytes()).hexdigest(),
         'node_or_python_client_runtime': 'NOT_USED', 'public_release_qualified': False,

@@ -13,8 +13,15 @@ thread_local! {
 pub(crate) fn take_diagnostic() -> Option<serde_json::Value> {
     DIAGNOSTIC.with(|d| d.borrow_mut().take())
 }
+pub(crate) fn original_confirmation(path:&Path) {
+    DIAGNOSTIC.with(|d|{
+        let mut value=d.borrow_mut();
+        let diagnostic=value.get_or_insert_with(||serde_json::json!({"policy":"PRIVATE_STATE","reason":"LOCAL_CONFIRMATION_REQUIRED"}));
+        diagnostic["original_registry"]=serde_json::json!(path.to_string_lossy());
+    });
+}
 pub(crate) fn path_error(path: &Path, policy: &str, operation: &str, reason: &str) -> ParticipantError {
-    let mut value = serde_json::json!({"component":path,"policy":policy,"operation":operation,"reason":reason});
+    let mut value = serde_json::json!({"component":path.to_string_lossy(),"policy":policy,"operation":operation,"reason":reason});
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;

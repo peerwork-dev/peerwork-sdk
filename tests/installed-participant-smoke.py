@@ -31,9 +31,12 @@ Set-Acl -LiteralPath $env:PEERWORK_SMOKE_ROOT -AclObject $acl -ErrorAction Stop
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--cli', type=Path, required=True)
+    parser.add_argument('--runtime-cli',type=Path,help='Optional compatible original runtime; default is the installed artifact')
     args = parser.parse_args()
     cli = args.cli.absolute()
     assert cli.is_file(), 'installed native executable missing'
+    runtime_cli=args.runtime_cli.absolute() if args.runtime_cli else cli
+    assert runtime_cli.is_file()
     with tempfile.TemporaryDirectory(prefix='peerwork installed Ω ') as temp:
         # macOS temporary roots may use /var -> /private/var. Provision the
         # synthetic state under its canonical path, as the native contract
@@ -41,6 +44,8 @@ def main():
         root = Path(temp).resolve(strict=True)
         protect(root)
         children = []
+        native_env=dict(os.environ,XDG_STATE_HOME=str(root/"user-state"),LOCALAPPDATA=str(root/"user-state"))
+        if __import__("sys").platform=="darwin":native_env["HOME"]=str(root)
 
         def write(name, value):
             path = root / name
@@ -52,7 +57,7 @@ def main():
 
         def run(*words, success=True):
             result = subprocess.run([str(cli), *map(str, words)], cwd=root,
-                                    capture_output=True, text=True, encoding='utf-8', timeout=20)
+                                    capture_output=True, text=True, encoding='utf-8', timeout=20,env=native_env)
             assert (result.returncode == 0) == success, 'unexpected native exit status'
             return json.loads(result.stdout)
 
@@ -74,7 +79,7 @@ def main():
         # accidentally expose signing/business tools to an unselected identity.
         mcp=subprocess.Popen([str(cli),'agent','--local',str(local),'mcp'],cwd=root,
                              stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
-                             text=True,encoding='utf-8')
+                             text=True,encoding='utf-8',env=native_env)
         frames=queue.Queue()
         def read_mcp():
             for line in mcp.stdout:
@@ -120,9 +125,9 @@ def main():
         stopped = []
 
         def start():
-            process = subprocess.Popen([str(cli), 'runtime', 'run', config], cwd=root,
+            process = subprocess.Popen([str(runtime_cli), 'runtime', 'run', config], cwd=root,
                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                       text=True, encoding='utf-8')
+                                       text=True, encoding='utf-8',env=native_env)
             children.append(process)
             observed = queue.Queue(maxsize=1)
             threading.Thread(target=lambda: observed.put(process.stdout.readline()), daemon=True).start()
@@ -136,6 +141,27 @@ def main():
             capability = run('runtime', 'call', endpoint, capability_request)
             assert capability['ok'] and capability['value']['actor_id'] == created['actor_id']
             assert capability['value']['admin'] is False, 'client gained admin capability'
+            # Exact installed bytes must handle shared project ancestry. The
+            # restricted client deliberately cannot read this workspace: stop
+            # after local installation, without a remote service or model.
+            shared=root/'shared projects';shared.mkdir()
+            if os.name!='nt':shared.chmod(0o775)
+            project=shared/'repo';project.mkdir()
+            initial=run('connect','--project',project,'--context')
+            assert initial['state']=='NOT_CONFIGURED' and not (project/'.peerwork').exists()
+            selected=root/'selected-original'
+            installed=run('connect','--local',selected,'--participant','worker','--client',endpoint,
+                          '--origin','http://127.0.0.1:1','--actor',created['actor_id'],
+                          '--workspace','W'*43,'--id','installed-shared-project','--send',
+                          '--install','codex','--project',project,success=False)
+            assert installed['integration']['state']=='HOST_INTEGRATION_INSTALLED',installed
+            assert (project/'.codex/config.toml').is_file()
+            assert (project/'.agents/.peerwork-installation').is_file()
+            assert not (project/'.agents/.peerwork-installation/ownership.state').exists()
+            found=run('connect','--project',project,'--context')
+            assert created['actor_id'] in json.dumps(found)
+            assert run('identity','info',identity)==created
+            if os.name!='nt':assert shared.stat().st_mode&0o777==0o775
             assert capability['value']['maturity'] == 'EXPERIMENTAL'
             assert 'availability' not in capability['value']
             denied = run('runtime', 'admin', endpoint, 'stop', success=False)
@@ -162,8 +188,8 @@ def main():
                 process.communicate(timeout=20)
         print(json.dumps({'state': 'PASS', 'scope': 'installed native local process, synthetic identity only',
                           'checks': ['protected Unicode path', 'unconfigured connect discovery', 'unconfigured installed MCP catalog/context', 'identity reopen', 'scoped encrypted IPC',
-                                     'admin denial', 'single owner', 'kill/restart', 'graceful shutdown'],
-                          'children_terminal': len(stopped), 'service_or_model': 'NOT_EXERCISED'}))
+                                     'shared project/private user state', 'original installed identity discovery', 'admin denial', 'single owner', 'kill/restart', 'graceful shutdown'],
+                          'children_terminal': len(stopped), 'runtime_version': json.loads(subprocess.check_output([str(runtime_cli),'version'],text=True))['version'], 'service_or_model': 'NOT_EXERCISED'}))
 
 
 if __name__ == '__main__':

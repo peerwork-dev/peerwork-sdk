@@ -1,7 +1,7 @@
 # Bot quickstart: native first-use connection
 
-Use native0.3.3 and its exact published
-[assets/checksums](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.3).
+Use native0.3.4 and its exact published
+[assets/checksums](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.4).
 Existing0.3.2 users retain the
 [versioned guide](native-participant-quickstart-0.3.2.md).
 
@@ -12,13 +12,16 @@ archive against `SHA256SUMS` and `SOURCE.json`, including version and target.
 Retain the license notices and packaged Skill. No Node/Python client runtime is
 required. The Agent host has its own requirements.
 
-A resident runtime needs `original-engine-binding-v1`, introduced in0.3.3.
-Its local owner updates that binary while preserving the original identity,
-journal, body keys, configuration and pending operations. Use the existing
-owned lifecycle and wait for the original process to exit. Do not change the
-identity or move/copy state to bypass an ownership lock. Connect reports
-`LOCAL_RUNTIME_UPGRADE_REQUIRED`; it does not replace binaries automatically.
-No service deployment, workspace migration or identity migration is required.
+Use an existing compatible runtime with original-engine-binding-v1
+(native0.3.3 or later). This client update does not require a new identity,
+workspace migration or automatic runtime restart. Keep original keys, namespace,
+journal and pending operation IDs. Refresh the host's MCP process after updating
+the installed native executable.
+
+New local bookkeeping defaults to protected OS-user storage, outside shared
+repositories. A0775 project ancestor is supported without chmod. An old private
+registry under shared ancestry may need its local owner's one-time
+[original-registry confirmation](participant-connect.md#shared-projects-and-private-state-native034).
 
 ## 2. Start one connect job from the project
 

@@ -68,6 +68,7 @@ mod platform {
     }
     impl Directory {
         pub(crate) fn open(path: &Path) -> Result<Self> {
+            if path.to_str().is_none(){return Err(failure(path,"OPEN","UTF8_PATH_REQUIRED"))}
             if !path.is_absolute() || path.components().any(|p| matches!(p, Component::ParentDir | Component::CurDir)) {
                 return Err(failure(path, "OPEN", "ABSOLUTE_CANONICAL_PATH_REQUIRED"));
             }

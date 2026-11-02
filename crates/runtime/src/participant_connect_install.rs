@@ -123,6 +123,28 @@ mod tests {
         let user_owned = b"[mcp_servers.peerwork-one]\ncommand = \"other\"\n".to_vec();
         assert!(codex_update(Some(user_owned), "peerwork-one", &a, None, false).is_err());
     }
+    #[cfg(unix)]
+    #[test]
+    fn changed_project_cannot_inherit_prior_installation_ownership(){
+        let root=crate::test_support::protected_test_dir();let project=root.path().join("project");files::directory(&project,false).unwrap();
+        let mut c=Connect::open(&root.path().join("local")).unwrap();registration(&mut c);let ws="W".repeat(43);let spec=Installation{host:"agy".into(),project:project.clone(),executable:std::env::current_exe().unwrap()};
+        c.install("worker",&ws,spec.clone()).unwrap();std::fs::rename(&project,root.path().join("original-project")).unwrap();std::fs::create_dir(&project).unwrap();
+        assert!(matches!(c.install("worker",&ws,spec),Err(e)if e.code=="PROJECT_DIRECTORY_CHANGED_RESELECT_ORIGINAL"));assert!(!project.join(".agents").exists());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn legacy_ownership_is_updated_in_place_without_a_second_ledger(){
+        use std::os::unix::fs::DirBuilderExt;
+        let root=crate::test_support::protected_test_dir();let project=root.path().join("project");files::directory(&project,false).unwrap();
+        let mut c=Connect::open(&root.path().join("local")).unwrap();registration(&mut c);let ws="W".repeat(43);let spec=Installation{host:"agy".into(),project:project.clone(),executable:std::env::current_exe().unwrap()};c.install("worker",&ws,spec.clone()).unwrap();
+        let external=crate::onboarding_state::project(&project,"installations",false).unwrap().unwrap();
+        let raw=SecureStateStore::read_snapshot(&external.join("ownership.state"),65536).unwrap();let mut old:Value=serde_json::from_slice(&raw).unwrap();old.as_object_mut().unwrap().remove("project_identity");
+        std::fs::remove_file(project.join(".agents/.peerwork-installation")).unwrap();let legacy=project.join(".agents/.peerwork-installation");std::fs::DirBuilder::new().mode(0o700).create(&legacy).unwrap();
+        let store=SecureStateStore::open(&legacy.join("ownership.state")).unwrap();store.write_exact(&serde_json::to_vec(&old).unwrap()).unwrap();drop(store);std::fs::remove_dir_all(&external).unwrap();
+        for item in c.registry.installations.values_mut(){item.project_identity=None;}c.save().unwrap();
+        c.install("worker",&ws,spec.clone()).unwrap();let saved=SecureStateStore::read_snapshot(&legacy.join("ownership.state"),65536).unwrap();assert!(serde_json::from_slice::<Value>(&saved).unwrap()["project_identity"].is_object());assert!(!external.exists());
+        c.uninstall("worker",&ws,spec).unwrap();assert!(!project.join(".agents/skills/peerwork/SKILL.md").exists());assert!(!external.exists());
+    }
     #[test]
     fn identical_preexisting_user_outputs_are_never_claimed_or_removed() {
         let root = crate::test_support::protected_test_dir();

@@ -1,7 +1,7 @@
 # Connect an existing participant
 
-These capabilities require native SDK0.3.3 and its exact published
-[release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.3).
+These capabilities require native SDK0.3.4 and its exact published
+[release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.4).
 Native0.3.2 retains its
 [explicit setup guide](participant-connect-0.3.2.md).
 The native client adds no Node/Python runtime dependency or additional platforms.
@@ -35,6 +35,53 @@ peerwork connect --workspace WORKSPACE_ID --program --send --receive
 Agent receive never silently falls back to a program receiver. Tools may be
 usable while requested push remains `HOST_CONTEXT_REQUIRED`. A configured
 named receiver is not evidence that this new caller is that receiver.
+
+## Shared projects and private state (native0.3.4)
+
+Ordinary shared ancestry, including a POSIX0775 parent, is not a private-state
+root. New connect and installation bookkeeping automatically uses the protected
+OS-user state directory: XDG_STATE_HOME (or HOME/.local/state) on Linux,
+HOME/Library/Application Support on macOS, and LOCALAPPDATA on Windows, under
+peerwork. Do not place credentials in project references. A custom OS state-root
+environment must be consistent between the local CLI and its host process.
+
+The selected project's identity and existing participant binding are pinned.
+MCP configuration remains executable configuration under the host's normal
+workspace trust. The installer verifies its directories/files and uses anchored
+filesystem operations; it does not change shared ancestors' permissions. New
+project installation references are nonsecret; a format marker prevents an old
+installer from establishing another ownership ledger. Existing ownership ledgers
+are reused in place with their original lock. Older installers must be upgraded
+before modifying an installation adopted by this version.
+
+An existing private registry under writable ancestry is never silently adopted.
+Its local OS owner may confirm that exact existing registry once:
+
+```sh
+peerwork connect --local ORIGINAL_REGISTRY --context --confirm-original
+```
+
+This is a local selection/association, not a Workspace permission approval or a
+security-disable option. It requires an existing valid registry with its private
+owner/file protections, takes the original writer lock, and pins its directory
+identity in protected user state. It creates no signer or replacement identity,
+copies no journal, and leaves source state and pending IDs in place. A changed
+confirmed directory is rejected. If the original writer is busy, retain that
+binding and retry after its existing operation completes. Programs can invoke
+Rust Connect::confirm_original with equivalent local authority; MCP cannot
+supply paths or perform this confirmation.
+
+A verified live compatible runtime can be reused without repairing unrelated
+admin metadata. Auto-start still requires the original identity/state/journal
+namespace to pass strict private-path protection. ORIGINAL_RUNTIME_OWNER_START_REQUIRED
+means its local owner must start/upgrade the original runtime; it does not
+permit a new signer or copied history. Runtime support requires the existing
+original-engine-binding-v1 feature (native0.3.3 or later), not a server migration.
+
+CLI errors include a local_diagnostic with operation, policy, failed component,
+actual effective UID and reason. Full paths stay local; MCP exposes only the
+sanitized blocker. Distinguish ancestor-write, owner mismatch, symlink and OS
+access denial. Never chmod/chown another user's directories to clear a blocker.
 
 ## How the original installation is found
 
