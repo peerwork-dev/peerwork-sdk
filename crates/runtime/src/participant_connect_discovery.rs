@@ -360,6 +360,11 @@ impl Connect {
     /// Explicit local CLI consent; MCP cannot supply trust roots or file paths.
     pub fn discover(&mut self, project: &Path, authorize_project: bool) -> Result<Discovery> {
         self.require_writer()?;
+        // An explicitly selected original registry already supplies authority.
+        // Role reuse must not depend on an unrelated shell cwd or read it.
+        if !authorize_project && (!self.registry.participants.is_empty() || !self.registry.sources.is_empty()) {
+            return Ok(self.discovery_summary());
+        }
         crate::onboarding_files::check_directory(project, false)?;
         if authorize_project && !self.registry.trusted_projects.iter().any(|p| p == project) {
             if self.registry.trusted_projects.len() >= LIMIT {
@@ -861,6 +866,7 @@ mod tests {
         assert_eq!(found.candidates.len(), 1);
         assert_eq!(found.candidates[0]["handle"], "original");
         assert!(c.registry.sources.is_empty());
+        assert_eq!(c.discover(&project.join("unrelated-missing-project"),false).unwrap().candidates,found.candidates);
     }
     #[tokio::test]
     async fn changed_source_and_live_owner_do_not_launch_another_runtime() {
@@ -1317,6 +1323,14 @@ mod tests {
         let configured = run(vec!["--program".into()]).await.unwrap();
         assert_eq!(configured["state"], "LOCAL_CONFIGURED", "{configured}");
         assert_ne!(configured["setup_id"], pending["setup_id"]);
+        // A selected original registry is enough for sender/role reuse; neither
+        // an unrelated shell cwd nor inherited program custody is a host request.
+        let sender_cli=cli.clone();let sender_local=original.clone();let sender_ws=ws.clone();
+        let sender=tokio::task::spawn_blocking(move||{
+            let output=std::process::Command::new(sender_cli).args(["connect","--local",sender_local.to_str().unwrap(),"--participant","worker","--workspace",&sender_ws,"--id","explicit-sender-reuse","--send"]).output().unwrap();
+            serde_json::from_slice::<Value>(&output.stdout).unwrap()
+        }).await.unwrap();
+        assert_eq!(sender["state"],"LOCAL_CONFIGURED","{sender}");
         let blocked = run(vec!["--id".into(), "another-agent".into()])
             .await
             .unwrap();

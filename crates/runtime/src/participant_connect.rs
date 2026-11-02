@@ -843,7 +843,7 @@ impl Connect {
         let effective_host = request.host.clone().or_else(||self.registry.setups[&request.setup_id].effective_host.clone())
             .or_else(||if request.receive && (agent || self.registry.setups[&request.setup_id].agent_host_required) {None} else {old_host.clone()});
         let host_pending = (agent || self.registry.setups[&request.setup_id].agent_host_required)
-            && wanted_receive && effective_host.is_none();
+            && request.receive && effective_host.is_none();
         let channel_receive = wanted_receive && !host_pending;
         if request.receive && (agent || self.registry.setups[&request.setup_id].agent_host_required)
             && previous_setup.as_ref().is_some_and(|s|s.channel_receive)
@@ -1585,7 +1585,7 @@ pub fn cli(args: &[String]) -> Value {
                     .await?;
             }
             connect.adopt(&handle).await?;
-            discovery::pin_project_binding(&project,&connect,&handle)?;
+            if !values.contains_key("--local") {discovery::pin_project_binding(&project,&connect,&handle)?;}
             if let Some(mut adapter) = selected_adapter {
                 if adapter["kind"] == "agy-stdio" {
                     if let Some(spec) = installation.as_ref().filter(|spec| spec.host == "agy") {
