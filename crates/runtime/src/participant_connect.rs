@@ -196,7 +196,7 @@ pub struct Connect {
 }
 impl Connect {
     pub fn selection_required(setup_id: &str) -> Value {
-        json!({"state":"PENDING","setup_id":setup_id,"blocker":{"stage":"LOCAL_SELECTION","code":"LOCAL_SELECTION_REQUIRED","next_actor":"LOCAL_RUNTIME_OWNER","next_action":"REGISTER_EXISTING_PARTICIPANT"}})
+        json!({"state":"PENDING","setup_id":setup_id,"blocker":{"stage":"LOCAL_SELECTION","code":"LOCAL_SELECTION_REQUIRED","next_actor":"LOCAL_RUNTIME_OWNER","next_action":"RUN_NATIVE_CONNECT_WITH_AUTHORIZED_PROJECT_CONTEXT"}})
     }
     pub fn open(directory: &Path) -> Result<Self> {
         crate::onboarding_files::directory(directory, true)?;
@@ -321,6 +321,8 @@ impl Connect {
             None=>RuntimeClient::connect(selected.endpoint_path.clone(), &origin, &selected.actor_id).await?,
         };
         let observed=client.call(json!({"method":"binding"})).await.map_err(|_|local("LOCAL_RUNTIME_UPGRADE_REQUIRED"))?;
+        crate::communication_runtime::validate_binding(&observed,&origin,&selected.actor_id)?;
+        let observed=crate::communication_runtime::canonical_binding(&observed);
         let changed=self.registry.verified_bindings.get(name)!=Some(&observed) || !self.registry.participants.contains_key(name)
             || owned_admin.as_ref().is_some_and(|admin|self.registry.local_runtime_admins.get(name)!=Some(admin));
         if let Some(old) = self.registry.participants.get(name) {
@@ -1332,7 +1334,8 @@ pub fn schema() -> Value {
         "type":"object","additionalProperties":false,"required":["workspace_id"],
         "properties":{"setup_id":{"type":"string"},"participant":{"type":"string"},"workspace_id":{"type":"string"},"alias":{"type":"string","default":"workspace"},"send":{"type":"boolean"},"receive":{"type":"boolean"},"require_body_keys":{"type":"boolean"},"protocols":{"type":"array","maxItems":8,"items":{"type":"object","additionalProperties":false,"required":["alias","instance_id","role"],"properties":{"alias":{"type":"string"},"instance_id":{"type":"string"},"role":{"type":"string"},"actions":{"type":"array","maxItems":64,"items":{"type":"string"}}}}}}}}});
     schema["properties"]["request"]["properties"]["contacts"] = json!({"type":"array","maxItems":64,"items":{"type":"object","additionalProperties":false,"required":["alias","actor_id"],"properties":{"alias":{"type":"string"},"actor_id":{"type":"string"}}}});
-    schema["properties"]["request"]["properties"]["host"] = json!({"type":"string","description":"Existing host-user-approved local handle. Omit for a program or to reuse the selected host; no command/socket/session paths are accepted."});
+    schema["properties"]["request"]["properties"]["send"]["default"] = json!(true);
+    schema["properties"]["request"]["properties"]["host"] = json!({"type":"string","description":"Existing host-user-approved named destination. Omission does not identify the current session; unknown Agent receive stays pending. No commands, sockets or session paths are accepted."});
     schema
 }
 
@@ -1582,6 +1585,7 @@ pub fn cli(args: &[String]) -> Value {
                     .await?;
             }
             connect.adopt(&handle).await?;
+            discovery::pin_project_binding(&project,&connect,&handle)?;
             if let Some(mut adapter) = selected_adapter {
                 if adapter["kind"] == "agy-stdio" {
                     if let Some(spec) = installation.as_ref().filter(|spec| spec.host == "agy") {

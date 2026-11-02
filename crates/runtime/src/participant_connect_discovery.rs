@@ -7,6 +7,13 @@ pub(super) struct ProjectBinding {
     pub directory: PathBuf,
     pub participant: String,
     pub summary: Value,
+    registration: Registration,
+    binding: Option<Value>,
+    host: String,
+    name: String,
+    entry: Value,
+    config_path: PathBuf,
+    config_digest: String,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -25,6 +32,13 @@ pub(super) fn project_target(project: &Path) -> Result<Option<(PathBuf, String)>
     }
     let index = Connect::inspect(&path)?;
     let Some(target) = index.registry.project_target else {
+        if index.registry.participants.is_empty()
+            && index.registry.sources.is_empty()
+            && index.registry.setups.is_empty()
+            && index.registry.approvals.is_empty()
+        {
+            return Ok(None);
+        }
         return Ok(Some((path, String::new())));
     };
     if target.directory == path {
@@ -42,7 +56,22 @@ pub(super) fn project_target(project: &Path) -> Result<Option<(PathBuf, String)>
     Ok(Some((target.directory, target.participant)))
 }
 pub(super) fn remember_project(project: &Path, choice: &ProjectBinding) -> Result<()> {
-    let original = Connect::inspect(&choice.directory)?;
+    // Serialize with registration/uninstall; preserve the discovered snapshot.
+    let original = Connect::open(&choice.directory)?;
+    if original.registry.participants.get(&choice.participant) != Some(&choice.registration)
+        || original.registry.verified_bindings.get(&choice.participant) != choice.binding.as_ref()
+        || !install::matches_installation(
+            &original,
+            project,
+            &choice.host,
+            &choice.name,
+            &choice.entry,
+        )
+        || crate::onboarding_files::read_public_optional(&choice.config_path, 256 * 1024)?
+            .is_none_or(|bytes| sha256_hex(&bytes) != choice.config_digest)
+    {
+        return Err(local("PROJECT_SOURCE_CHANGED_REDISCOVER_ORIGINAL"));
+    }
     let directory = directory(project)?;
     if directory == choice.directory {
         return Ok(());
@@ -58,19 +87,43 @@ pub(super) fn remember_project(project: &Path, choice: &ProjectBinding) -> Resul
     index.registry.project_target = Some(ProjectTarget {
         directory: choice.directory.clone(),
         participant: choice.participant.clone(),
-        registration: original
-            .registry
-            .participants
-            .get(&choice.participant)
-            .cloned()
-            .ok_or_else(|| local("ORIGINAL_INSTALLATION_RECOVERY_REQUIRED"))?,
-        binding: original
-            .registry
-            .verified_bindings
-            .get(&choice.participant)
-            .cloned(),
+        registration: choice.registration.clone(),
+        binding: choice.binding.clone(),
     });
     index.save()
+}
+pub(super) fn pin_project_binding(
+    project: &Path,
+    original: &Connect,
+    participant: &str,
+) -> Result<()> {
+    let directory = project.join(".peerwork/connect");
+    if directory == original.directory || !directory.is_dir() {
+        return Ok(());
+    }
+    let mut index = Connect::open(&directory)?;
+    let Some(target) = index.registry.project_target.as_mut() else {
+        return Ok(());
+    };
+    if target.directory != original.directory || target.participant != participant {
+        return Ok(());
+    }
+    if original.registry.participants.get(participant) != Some(&target.registration) {
+        return Err(local("ORIGINAL_INSTALLATION_RECOVERY_REQUIRED"));
+    }
+    let binding = original
+        .registry
+        .verified_bindings
+        .get(participant)
+        .ok_or_else(|| local("ORIGINAL_BINDING_VERIFICATION_REQUIRED"))?;
+    match &target.binding {
+        Some(old) if old != binding => Err(local("ORIGINAL_INSTALLATION_RECOVERY_REQUIRED")),
+        Some(_) => Ok(()),
+        None => {
+            target.binding = Some(binding.clone());
+            index.save()
+        }
+    }
 }
 /// Follow only an exact installation entry confirmed by the original protected
 /// registry. A repository MCP entry alone cannot authorize a private runtime.
@@ -177,6 +230,8 @@ pub(super) fn project_bindings(
                 &sha256_hex(json!([directory, participant]).to_string().as_bytes())[..24]
             );
             found.insert(choice.clone(),ProjectBinding{directory,participant:participant.into(),
+                registration:registration.clone(),binding:original.registry.verified_bindings.get(participant).cloned(),
+                host:host.into(),name:name.clone(),entry:entry.clone(),config_path:path.clone(),config_digest:sha256_hex(&bytes),
                 summary:json!({"handle":choice,"actor_id":registration.actor_id,"origin":registration.origin,"source":"VERIFIED_PROJECT_INSTALLATION","workspace_id":ws})});
             if found.len() > LIMIT {
                 return Err(local("DISCOVERY_INCOMPLETE"));
@@ -251,6 +306,57 @@ fn validate_engine(engine: &EngineConfig) -> Result<()> {
     Ok(())
 }
 impl Connect {
+    /// Shared scoped Agent entry. Model arguments choose opaque handles only;
+    /// local trust sources and host authority cannot be supplied here.
+    pub async fn connect_selected(
+        &mut self,
+        mut request: ConnectRequest,
+        participant_pin: Option<&str>,
+        workspace_pin: Option<&str>,
+    ) -> Result<Value> {
+        self.require_writer()?;
+        if workspace_pin.is_some_and(|ws| ws != request.workspace_id) {
+            return Err(local("FRONTEND_WORKSPACE_PIN_MISMATCH"));
+        }
+        if let Some(pin) = participant_pin {
+            if !request.participant.is_empty() && request.participant != pin {
+                return Err(local("FRONTEND_IDENTITY_PIN_MISMATCH"));
+            }
+            request.participant = pin.into();
+        }
+        let selected = match self.original_handle(
+            (!request.participant.is_empty()).then_some(request.participant.as_str()),
+        ) {
+            Ok(selected) => selected,
+            Err(error) if error.code == "IDENTITY_SELECTION_REQUIRED" => {
+                return Ok(
+                    json!({"state":"PENDING","discovery":self.discovery_summary(),"blocker":{"code":"IDENTITY_SELECTION_REQUIRED","next_actor":"LOCAL_RUNTIME_OWNER","next_action":"CHOOSE_ONE_PUBLIC_IDENTITY_HANDLE"}}),
+                )
+            }
+            Err(error)
+                if error.code == "LOCAL_SELECTION_REQUIRED"
+                    && self.discovery_summary().candidates.is_empty() =>
+            {
+                let mut result = Self::selection_required(&request.setup_id);
+                result["discovery"] = serde_json::to_value(self.discovery_summary()).unwrap();
+                return Ok(result);
+            }
+            Err(error) => return Err(error),
+        };
+        let Some(handle) = selected else {
+            return Ok(
+                json!({"state":"PENDING","discovery":self.discovery_summary(),"blocker":{"code":"LOCAL_PROJECT_TRUST_REQUIRED","next_actor":"LOCAL_RUNTIME_OWNER","next_action":"RUN_NATIVE_CONNECT_ONCE_WITH_AUTHORIZED_PROJECT_CONTEXT"}}),
+            );
+        };
+        request.participant = handle.clone();
+        self.adopt(&handle).await?;
+        let mut result = self.run_agent(request).await?;
+        if let Some(value) = result.as_object_mut() {
+            value.remove("profile_path");
+        }
+        result["local_profile"] = json!("PROTECTED_LOCAL_PROJECTION");
+        Ok(result)
+    }
     /// Explicit local CLI consent; MCP cannot supply trust roots or file paths.
     pub fn discover(&mut self, project: &Path, authorize_project: bool) -> Result<Discovery> {
         self.require_writer()?;
@@ -603,7 +709,9 @@ impl Connect {
         .await?;
         let observed = client.call(json!({"method":"binding"})).await?;
         self.verify_registered(handle, &client).await?;
-        if self.registry.verified_bindings.get(handle) != Some(&observed) {
+        if self.registry.verified_bindings.get(handle)
+            != Some(&crate::communication_runtime::canonical_binding(&observed))
+        {
             return Err(local("ORIGINAL_RUNTIME_BINDING_CHANGED"));
         }
         Ok(())
@@ -823,6 +931,99 @@ mod tests {
         assert!(!first.participant.is_empty());
     }
     #[test]
+    fn existing_default_binding_wins_and_project_reference_cannot_fall_through() {
+        let temp = crate::test_support::protected_test_dir();
+        let project = temp.path();
+        let directory = directory(project).unwrap();
+        let mut c = Connect::open(&directory).unwrap();
+        c.registry.participants.insert(
+            "a".into(),
+            Registration {
+                origin: "https://example.invalid".into(),
+                actor_id: "A".repeat(43),
+                endpoint_path: project.join("missing.json"),
+            },
+        );
+        c.save().unwrap();
+        drop(c);
+        assert_eq!(
+            project_target(project).unwrap(),
+            Some((directory.clone(), String::new()))
+        );
+        std::fs::remove_file(directory.join("connect.state")).unwrap();
+        assert!(
+            matches!(project_target(project),Err(e) if e.code=="CONNECT_ORIGINAL_BINDING_RECOVERY_REQUIRED")
+        );
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "requires loopback IPC permission"]
+    async fn v032_registry_recovers_original_owned_launch_and_namespace_without_new_signer() {
+        use crate::communication_runtime::{self as ipc, ClientConfig};
+        let root = crate::test_support::protected_test_dir();
+        let directory = root.path().join("original-local");
+        let mut c = Connect::open(&directory).unwrap();
+        let mut e = engine(root.path());
+        e.name = "selected".into();
+        e.origin = crate::transport::canonical_lifecycle_origin(&e.origin, true).unwrap();
+        let runtime = directory.join("runtime-worker");
+        create_private_state_directory(&runtime).unwrap();
+        let config = RuntimeConfig {
+            format: "peerwork.participant-runtime.v1".into(),
+            state_directory: runtime.clone(),
+            engines: vec![e.clone()],
+            clients: vec![ClientConfig {
+                name: "bootstrap".into(),
+                engine: "selected".into(),
+                capability: Capability::owner(),
+            }],
+            hosts: vec![],
+        };
+        let bytes = serde_json::to_vec(&config).unwrap();
+        write_private(&runtime.join("config.json"), &bytes).unwrap();
+        let launch = SecureStateStore::open(&runtime.join("bootstrap.state")).unwrap();
+        launch.write_exact(&serde_json::to_vec(&json!({"config_digest":sha256_hex(&bytes),"pid":std::process::id(),"process_token":crate::communication_store::process_token(std::process::id())})).unwrap()).unwrap();
+        drop(launch);
+        let cancel = crate::KernelCancellationToken::new();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let running = tokio::spawn(ipc::serve(config, cancel.clone(), tx));
+        let ready = rx.await.unwrap().unwrap();
+        // Exact old public schema, including the old registration/admin crash
+        // window. No verified_bindings, sources, trust roots or project target.
+        let selected = Registration {
+            origin: e.origin.clone(),
+            actor_id: e.expected_actor.clone(),
+            endpoint_path: ready.client_endpoints["bootstrap"].clone(),
+        };
+        let old = json!({"participants":{"worker":selected},"setups":{},"active":null,"active_by_scope":{},"approvals":{},"installations":{},"hosts":{},"local_runtime_admins":{}});
+        c.store
+            .as_ref()
+            .unwrap()
+            .write_exact(&serde_json::to_vec(&old).unwrap())
+            .unwrap();
+        drop(c);
+        let mut c = Connect::open(&directory).unwrap();
+        assert!(c.registry.verified_bindings.is_empty());
+        c.adopt("worker").await.unwrap();
+        assert_eq!(
+            c.registry.verified_bindings["worker"]["namespace"],
+            "program:bootstrap"
+        );
+        assert_eq!(
+            c.registry.local_runtime_admins["worker"],
+            ready.admin_endpoint
+        );
+        let raw = SecureStateStore::read_snapshot(&directory.join("connect.state"), 65536).unwrap();
+        let saved: Value = serde_json::from_slice(&raw).unwrap();
+        assert_eq!(
+            saved["verified_bindings"]["worker"]["namespace"],
+            "program:bootstrap"
+        );
+        assert!(saved["local_runtime_admins"]["worker"].is_string());
+        drop(c);
+        cancel.cancel();
+        running.await.unwrap().unwrap();
+    }
+    #[test]
     fn existing_installation_is_found_without_copying_an_engine_config() {
         let temp = crate::test_support::protected_test_dir();
         let project = temp.path().join("project");
@@ -859,12 +1060,40 @@ mod tests {
             .summary
             .to_string()
             .contains(&original.to_string_lossy().to_string()));
+        let source = &bindings[0];
+        let config = std::fs::read(&source.config_path).unwrap();
+        let changed = format!(
+            "{}\n[mcp_servers.{}.env]\nTEST = \"changed\"\n",
+            String::from_utf8(config.clone()).unwrap(),
+            source.name
+        );
+        crate::onboarding_files::replace(&source.config_path, changed.as_bytes()).unwrap();
+        assert!(
+            matches!(project_bindings(&project,Some(&ws)),Err(e) if e.code=="PROJECT_INSTALLATION_PROVENANCE_REQUIRED")
+        );
+        crate::onboarding_files::replace(&source.config_path, &config).unwrap();
+        let mut c = Connect::open(&original).unwrap();
+        c.registry.participants.get_mut("worker").unwrap().actor_id = "B".repeat(43);
+        c.save().unwrap();
+        drop(c);
+        assert!(
+            matches!(remember_project(&project,source),Err(e) if e.code=="PROJECT_SOURCE_CHANGED_REDISCOVER_ORIGINAL")
+        );
+        assert!(!project.join(".peerwork").exists());
+        let mut c = Connect::open(&original).unwrap();
+        c.registry.participants.get_mut("worker").unwrap().actor_id = "A".repeat(43);
+        c.save().unwrap();
+        drop(c);
         // Project text alone is not permission: remove the original ownership
         // record and make the exact same config resolve to a recovery blocker.
         let mut c = Connect::open(&original).unwrap();
         c.registry.installations.clear();
         c.save().unwrap();
         drop(c);
+        assert!(
+            matches!(remember_project(&project,source),Err(e) if e.code=="PROJECT_SOURCE_CHANGED_REDISCOVER_ORIGINAL")
+        );
+        assert!(!project.join(".peerwork").exists());
         assert!(
             matches!(project_bindings(&project,Some(&ws)),Err(e) if e.code=="PROJECT_INSTALLATION_PROVENANCE_REQUIRED")
         );
@@ -952,6 +1181,27 @@ mod tests {
         };
         let meta = selected(&owner, "structure.workspace.get", &scope, json!({})).await;
         mutate(&owner,"cold-grant","structure.communication.grant.set",&scope,json!({"actor_id":owner.actor_id(),"membership_id":meta["membership"]["membership_id"],"expected_revision":null,"send":true,"receive":true})).await;
+        let mut extra_spaces = Vec::new();
+        for (id, grant) in [("host-recovery", true), ("host-approval", false)] {
+            let space = mutate(
+                &owner,
+                &format!("{id}-create"),
+                "structure.workspace.create",
+                &Scope::default(),
+                json!({"name":id}),
+            )
+            .await;
+            let ws = space["workspace_id"].as_str().unwrap().to_owned();
+            if grant {
+                let scope = Scope {
+                    workspace_id: Some(ws.clone()),
+                    ..Default::default()
+                };
+                let meta = selected(&owner, "structure.workspace.get", &scope, json!({})).await;
+                mutate(&owner,&format!("{id}-grant"),"structure.communication.grant.set",&scope,json!({"actor_id":owner.actor_id(),"membership_id":meta["membership"]["membership_id"],"expected_revision":null,"send":true,"receive":true})).await;
+            }
+            extra_spaces.push(ws);
+        }
         owner.close().await.unwrap();
         let engine = EngineConfig {
             name: "original".into(),
@@ -1074,7 +1324,118 @@ mod tests {
             blocked["blocker"]["code"], "EXISTING_PROGRAM_RECEIVER_REQUIRES_EXPLICIT_REBIND",
             "{blocked}"
         );
+        let host = crate::communication_host::tests::CodexFixture::start();
+        let selection = HostSelection {
+            participant: "worker".into(),
+            admin_endpoint: ready.admin_endpoint.clone(),
+            adapter: host.config(),
+        };
+        let mut connect = Connect::open(&original).unwrap();
+        let request:ConnectRequest=serde_json::from_value(json!({"setup_id":"host-recovery","participant":"worker","workspace_id":extra_spaces[0],"send":true,"receive":true})).unwrap();
+        assert_eq!(
+            connect.run_agent(request.clone()).await.unwrap()["blocker"]["code"],
+            "HOST_CONTEXT_REQUIRED"
+        );
+        connect
+            .register_host("named-host", selection.clone())
+            .await
+            .unwrap();
+        connect
+            .registry
+            .setups
+            .get_mut(&request.setup_id)
+            .unwrap()
+            .effective_host = Some("named-host".into());
+        let digest = connect.registry.setups[&request.setup_id].digest.clone();
+        connect
+            .pending(
+                &request,
+                "CONTENT_KEYS",
+                "KEYS_SYNCHRONIZING",
+                "RUNTIME",
+                "RESUME_SAME_SETUP",
+                json!({}),
+            )
+            .unwrap();
+        let restored = connect.run_agent(request.clone()).await.unwrap();
+        assert_eq!(restored["state"], "LOCAL_CONFIGURED", "{restored}");
+        assert!(connect.registry.setups[&request.setup_id].channel_receive);
+        assert_eq!(connect.registry.setups[&request.setup_id].digest, digest);
+        assert!(!restored["profile_path"]
+            .as_str()
+            .unwrap()
+            .ends_with("-tools.json"));
+        connect
+            .profile_for_scope(Some("worker"), Some(&extra_spaces[0]))
+            .unwrap()
+            .unwrap()
+            .validate()
+            .unwrap();
+        let mut other = request.clone();
+        other.setup_id = "different-current-caller".into();
+        let blocked = connect.run_agent(other.clone()).await.unwrap();
+        assert_eq!(blocked["blocker"]["code"], "HOST_CONTEXT_REQUIRED");
+        assert!(connect.registry.setups[&other.setup_id]
+            .effective_host
+            .is_none());
+        let wrong = HostInvocation::CodexDynamicTool {
+            thread_id: "different-child".into(),
+            turn_id: "turn".into(),
+            call_id: "call".into(),
+            instance: "owned-instance".into(),
+        };
+        assert_eq!(
+            connect
+                .connect_current(other, selection.clone(), wrong)
+                .await
+                .unwrap_err()
+                .code,
+            "CURRENT_HOST_CONTEXT_MISMATCH"
+        );
+        let approval:ConnectRequest=serde_json::from_value(json!({"setup_id":"host-approval","participant":"worker","workspace_id":extra_spaces[1],"send":true,"receive":true})).unwrap();
+        let caller = HostInvocation::CodexDynamicTool {
+            thread_id: "existing-thread".into(),
+            turn_id: "turn".into(),
+            call_id: "call".into(),
+            instance: "owned-instance".into(),
+        };
+        let pending = connect
+            .connect_current(approval.clone(), selection, caller)
+            .await
+            .unwrap();
+        assert_eq!(
+            pending["blocker"]["code"], "OWNER_APPROVAL_REQUIRED",
+            "{pending}"
+        );
+        assert_eq!(
+            connect.registry.setups[&approval.setup_id]
+                .effective_host
+                .as_deref(),
+            Some("named-host")
+        );
+        let authorized =
+            serde_json::from_value(pending["details"]["authorization_request"].clone()).unwrap();
+        assert_eq!(
+            connect
+                .approve("worker", "approve-original-host-setup", authorized)
+                .await
+                .unwrap()["state"],
+            "APPROVED"
+        );
+        let finished = connect.run_agent(approval.clone()).await.unwrap();
+        assert_eq!(finished["state"], "LOCAL_CONFIGURED", "{finished}");
+        assert!(
+            finished.get("caller_context").is_none(),
+            "old caller assertion leaked into a later invocation"
+        );
+        assert_eq!(
+            connect.registry.setups[&approval.setup_id]
+                .effective_host
+                .as_deref(),
+            Some("named-host")
+        );
         assert_eq!(service.counts().await["journal_reads"], 0);
+        drop(connect);
         cancel.cancel();
         running.await.unwrap().unwrap();
     }

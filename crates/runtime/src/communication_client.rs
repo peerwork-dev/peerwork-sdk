@@ -4,6 +4,20 @@ use super::*;
 use peerwork_core::crypto::sha256_hex;
 use tokio::sync::Mutex;
 
+pub(crate) fn validate_binding(value:&Value,origin:&str,actor:&str)->Result<()> {
+    if value["format"]!="peerwork.local-engine-binding.v1" || value["actor_id"]!=actor || value["origin"]!=origin
+        || !["engine_digest","state_binding"].iter().all(|field|value[*field].as_str().is_some_and(crate::participant_migration::digest))
+        || !value["namespace"].as_str().is_some_and(|s|!s.is_empty() && s.len()<=256)
+        || !(value["client_generation"].is_null() || value["client_generation"].as_u64().is_some()) {
+        return Err(local("ORIGINAL_RUNTIME_BINDING_INVALID"));
+    }
+    Ok(())
+}
+pub(crate) fn canonical_binding(value:&Value)->Value {
+    ["format","actor_id","origin","engine_digest","state_binding","namespace","client_generation"]
+        .into_iter().map(|field|(field.to_owned(),value[field].clone())).collect::<serde_json::Map<_,_>>().into()
+}
+
 pub struct RuntimeClient {
     endpoint_path: PathBuf,
     expected_actor: String,
@@ -36,6 +50,7 @@ impl RuntimeClient {
     /// descriptor snapshot BEFORE sending any operation through that snapshot.
     pub async fn connect_bound(endpoint_path:PathBuf, origin:&str, actor:&str, binding:Value)->Result<Self> {
         let mut client=Self::connect(endpoint_path,origin,actor).await?;
+        validate_binding(&binding,&client.expected_origin,&client.expected_actor)?;
         client.binding=Some(binding);
         *client.verified.lock().await=None;
         client.call(json!({"method":"capabilities"})).await?;
@@ -65,6 +80,7 @@ impl RuntimeClient {
         }
         if let Some(expected)=&self.binding {
             let observed=Self::unwrap(call_endpoint(endpoint,json!({"method":"binding"})).await?)?;
+            validate_binding(&observed,&self.expected_origin,&self.expected_actor)?;
             for field in ["actor_id","origin","engine_digest","state_binding","namespace","client_generation"] {
                 if observed[field]!=expected[field] {return Err(local("ORIGINAL_RUNTIME_BINDING_CHANGED"));}
             }

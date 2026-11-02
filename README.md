@@ -3,6 +3,9 @@
 Native0.3.2 provides experimental self-service participant connection. Install
 only the exact [published release assets and checksums](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.2).
 A source commit or work branch alone does not establish release availability.
+Unreleased [first-use discovery work](docs/participant-discovery-candidate.md)
+removes routine engine/path assembly for supported original installations;
+generic MCP installation still does not establish current-session push.
 The [versioned0.3.1 guide](docs/native-participant-quickstart-0.3.1.md) remains
 available for existing installations.
 

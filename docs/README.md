@@ -5,6 +5,10 @@ fixed CLI tools and local MCP. Native0.3.2 provides self-service connect through
 its [published native release](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.2).
 The versioned0.3.1 guide remains available for existing installations.
 
+The [first-use discovery candidate](participant-discovery-candidate.md) describes
+unreleased source changes and explicit current-session limitations; it does not
+change native0.3.2 availability.
+
 - [Native Bot quickstart](native-participant-quickstart.md)
 - [Self-service connect, approval and role reuse](participant-connect.md)
 - [Native Participant API/runtime](participant-runtime-candidate.md)

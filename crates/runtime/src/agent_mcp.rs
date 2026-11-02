@@ -105,28 +105,38 @@ impl Tools {
     async fn call(&self, request: AgentRequest) -> Result<Value> {
         if let Some(directory)=&self.local {
             let connect=crate::participant_connect::Connect::inspect(directory)?;
-            if let AgentRequest::Connect{mut request}=request {
+            if let AgentRequest::Connect{request}=request {
+                // Selection-only observations remain available while another
+                // setup holds the writer. They cannot sign or create bindings.
                 if self.workspace.as_ref().is_some_and(|ws|ws!=&request.workspace_id){return Err(ParticipantError::local("FRONTEND_WORKSPACE_PIN_MISMATCH","CONNECT"));}
-                if let Some(pin)=&self.handle {
-                    if !request.participant.is_empty() && request.participant!=*pin {return Err(ParticipantError::local("FRONTEND_IDENTITY_PIN_MISMATCH","CONNECT"));}
-                    request.participant=pin.clone();
+                if self.handle.as_ref().is_some_and(|pin|!request.participant.is_empty() && pin!=&request.participant){return Err(ParticipantError::local("FRONTEND_IDENTITY_PIN_MISMATCH","CONNECT"));}
+                let discovery=connect.discovery_summary();
+                if discovery.candidates.is_empty() {
+                    let mut result=crate::participant_connect::Connect::selection_required(&request.setup_id);
+                    result["discovery"]=serde_json::to_value(discovery).unwrap();return Ok(result);
                 }
-                let selected=connect.original_handle((!request.participant.is_empty()).then_some(request.participant.as_str()))?;
-                let Some(handle)=selected else {return Ok(serde_json::json!({"state":"PENDING","discovery":connect.discovery_summary(),"blocker":{"code":"LOCAL_PROJECT_TRUST_REQUIRED","next_actor":"LOCAL_RUNTIME_OWNER","next_action":"RUN_NATIVE_CONNECT_ONCE_WITH_AUTHORIZED_PROJECT_CONTEXT"}}));};
-                request.participant=handle.clone();
+                if discovery.candidates.len()>1 && self.handle.is_none() && request.participant.is_empty() {
+                    return Ok(json!({"state":"PENDING","discovery":discovery,"blocker":{"code":"IDENTITY_SELECTION_REQUIRED","next_actor":"LOCAL_RUNTIME_OWNER","next_action":"CHOOSE_ONE_PUBLIC_IDENTITY_HANDLE"}}));
+                }
                 drop(connect);
-                let mut connect=crate::participant_connect::Connect::open(directory)?;
-                connect.adopt(&handle).await?;
-                return connect.run_agent(request).await;
+                return crate::participant_connect::Connect::open(directory)?.connect_selected(request,self.handle.as_deref(),self.workspace.as_deref()).await;
             }
-            let handle=connect.selected_handle(self.handle.as_deref())?;
             if let AgentRequest::ConnectApprove{participant,approval_id,request}=request {
-                if handle.as_ref().is_some_and(|h|h!=&participant){return Err(ParticipantError::local("FRONTEND_IDENTITY_PIN_MISMATCH","CONNECT"));}
+                if self.handle.as_ref().is_some_and(|h|h!=&participant){return Err(ParticipantError::local("FRONTEND_IDENTITY_PIN_MISMATCH","CONNECT"));}
                 if self.workspace.as_ref().is_some_and(|ws|ws!=&request.workspace_id){return Err(ParticipantError::local("FRONTEND_WORKSPACE_PIN_MISMATCH","CONNECT"));}
                 drop(connect);return crate::participant_connect::Connect::open(directory)?.approve(&participant,&approval_id,request).await;
             }
+            let handle=match connect.selected_handle(self.handle.as_deref()) {
+                Ok(handle)=>handle,
+                Err(error) if matches!(request,AgentRequest::Context) && error.code=="MULTIPLE_IDENTITIES_SELECT_FRONTEND_PARTICIPANT"=>return Ok(connect.context_for(self.handle.as_deref(),self.workspace.as_deref())),
+                Err(error)=>return Err(error),
+            };
             let context=connect.context_for(handle.as_deref(),self.workspace.as_deref());
-            let profile=connect.profile_for_scope(self.handle.as_deref(),self.workspace.as_deref())?;
+            let profile=match connect.profile_for_scope(self.handle.as_deref(),self.workspace.as_deref()) {
+                Ok(profile)=>profile,
+                Err(error) if matches!(request,AgentRequest::Context) && error.code=="MULTIPLE_WORKSPACES_SELECT_FRONTEND_WORKSPACE"=>return Ok(context),
+                Err(error)=>return Err(error),
+            };
             drop(connect);
             if let Some(profile)=profile {
                 let is_context=matches!(request,AgentRequest::Context);
@@ -147,7 +157,12 @@ impl Tools {
         let mut tools=agent_tools::catalog();
         if let Some(directory)=&self.local {
             let connect=crate::participant_connect::Connect::inspect(directory)?;
-            if connect.profile_for_scope(self.handle.as_deref(),self.workspace.as_deref())?.is_none() {
+            let profile=match connect.profile_for_scope(self.handle.as_deref(),self.workspace.as_deref()) {
+                Ok(profile)=>profile,
+                Err(error) if ["MULTIPLE_IDENTITIES_SELECT_FRONTEND_PARTICIPANT","MULTIPLE_WORKSPACES_SELECT_FRONTEND_WORKSPACE"].contains(&error.code.as_str())=>None,
+                Err(error)=>return Err(error),
+            };
+            if profile.is_none() {
                 let registered=connect.context()["participants"].as_array().is_some_and(|v|!v.is_empty());
                 tools.retain(|v|matches!(v["name"].as_str(),Some("peerwork_context"|"peerwork_connect")) || registered && v["name"]=="peerwork_connect_approve");
             }
@@ -282,6 +297,27 @@ fn error_response(id: Value, code: &str) -> Value {
 mod tests {
     use super::*;
     use tokio::io::{AsyncBufReadExt, BufReader};
+    #[tokio::test]
+    async fn ambiguous_unconfigured_frontend_still_lists_tools_and_identity_choices() {
+        let root=crate::test_support::protected_test_dir();let directory=root.path().join("local");
+        drop(crate::participant_connect::Connect::open(&directory).unwrap());
+        let owner=crate::secure_state::SecureStateStore::open(&directory.join("connect.state")).unwrap();
+        let registrations=json!({"participants":{
+            "a":{"actor_id":"A".repeat(43),"origin":"https://example.invalid/","endpoint_path":root.path().join("a.json")},
+            "b":{"actor_id":"B".repeat(43),"origin":"https://example.invalid/","endpoint_path":root.path().join("b.json")}},
+            "setups":{},"active":null});
+        owner.write_exact(&serde_json::to_vec(&registrations).unwrap()).unwrap();drop(owner);
+        let tools=Tools{profile:None,local:Some(directory),handle:None,workspace:None,client:OnceCell::new()};
+        let catalog=tools.catalog().unwrap();assert!(catalog.iter().any(|v|v["name"]=="peerwork_connect"));
+        let context=tools.call(AgentRequest::Context).await.unwrap();assert_eq!(context["participants"].as_array().unwrap().len(),2);
+        let request=AgentRequest::parse("connect",json!({"request":{"workspace_id":"W".repeat(43)}})).unwrap();
+        let result=tools.call(request).await.unwrap();assert_eq!(result["blocker"]["code"],"IDENTITY_SELECTION_REQUIRED");
+        assert_eq!(result["discovery"]["candidates"].as_array().unwrap().len(),2);
+        assert!(!result.to_string().contains(&root.path().to_string_lossy().to_string()));
+        let bad=crate::participant_connect::Connect::open(tools.local.as_ref().unwrap()).unwrap()
+            .connect_selected(serde_json::from_value(json!({"participant":"b","workspace_id":"W".repeat(43)})).unwrap(),Some("a"),None).await.unwrap_err();
+        assert_eq!(bad.code,"FRONTEND_IDENTITY_PIN_MISMATCH");
+    }
     fn profile() -> AgentProfile {
         AgentProfile {
             protocol_endpoints: Default::default(),

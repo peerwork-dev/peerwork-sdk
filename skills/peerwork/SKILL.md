@@ -7,11 +7,18 @@ Use the configured `peerwork_*` MCP tools. If only the native CLI is available,
 run `peerwork agent --help`. Keep the selected identity and session; do not read
 SDK source, write a temporary sender, start another receiver or replacement model.
 
+On versions providing first-use discovery, native `peerwork connect --workspace
+WORKSPACE_ID` starts the same setup before MCP exists. Follow its bounded public
+identity choices/local enablement step, then resume that setup through MCP.
+Check installed support: published0.3.2 still requires its explicit original
+selection. Do not ask the Workspace Owner for a profile, journal or host socket.
+
 - Use `peerwork_context` to discover provisioned participant handles, capability
   and contact/protocol aliases, setup blockers and readiness observations.
-  If not configured, use `peerwork_connect` with that explicit handle, workspace
-  and desired scope. Preserve `setup_id` when resuming. No handle means the local
-  operator must select the original engine; never invent an identity or key path.
+  If not configured, use `peerwork_connect` with workspace and desired scope;
+  include a participant handle only when selecting a returned identity choice.
+  Preserve `setup_id` when resuming. Use the installed version's supported
+  original-installation entry; never invent an identity, key path or namespace.
 - Existing remote rights need no Owner exchange. Missing rights produce one
   semantic request for the named authority, then resume the same setup. Owner
   approves remote permissions/keys, not Worker profiles or local configuration.

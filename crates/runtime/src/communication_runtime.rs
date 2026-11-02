@@ -22,6 +22,7 @@ use crate::{
     KernelCancellationToken,
 };
 pub use client::RuntimeClient;
+pub(crate) use client::{canonical_binding,validate_binding};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
