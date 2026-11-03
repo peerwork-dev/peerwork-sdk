@@ -260,6 +260,10 @@ packaging qualification is separate from real-host readiness and performance.
 
 ### First-host binding for an existing INBOX (next native release)
 
+Rust callers constructing `HostRebindRequest` literals must add
+`initial_subscriptions: None` to retain ordinary replacement behavior. Existing
+serialized requests without the field keep their previous encoding.
+
 The same `runtime rebind-host` operation supports an explicit first host for an
 existing native INBOX. Stop its owning runtime first. Add `initial_subscriptions`
 to the protected request above, selecting one to eight original subscriptions:
