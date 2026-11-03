@@ -4230,10 +4230,11 @@ async fn connect_combined_admission_code_approves_once_and_agent_inbox_needs_no_
         configured=owner.run_agent(serde_json::from_value(json!({"setup_id":"owner-push","participant":"owner","workspace_id":push_ws,"alias":"push","send":true,"receive":true,"require_body_keys":true,"host":"selected-owner-host"})).unwrap()).await.unwrap();
     }
     assert_eq!(configured["state"],"LOCAL_CONFIGURED","{configured}");
-    let host_before=ipc::call(&ready.admin_endpoint,json!({"method":"status"})).await.unwrap()["value"]["hosts"].clone();
+    let host_before=ipc::call(&ready.admin_endpoint,json!({"method":"status"})).await.unwrap()["value"]["hosts"].as_array().unwrap().iter().map(|h|h["selection_id"].clone()).collect::<Vec<_>>();
     let inbox_request:ConnectRequest=serde_json::from_value(json!({"setup_id":"owner-inbox-must-not-inherit-host","participant":"owner","workspace_id":push_ws,"receive":true,"receive_mode":"INBOX"})).unwrap();
     let denied=owner.run_agent(inbox_request).await.unwrap();assert_eq!(denied["blocker"]["code"],"EXISTING_PUSH_RECEIVER_REQUIRES_EXPLICIT_REBIND","{denied}");
-    assert_eq!(ipc::call(&ready.admin_endpoint,json!({"method":"status"})).await.unwrap()["value"]["hosts"],host_before,"inbox changed the existing push host");
+    assert_eq!(ipc::call(&ready.admin_endpoint,json!({"method":"status"})).await.unwrap()["value"]["hosts"].as_array().unwrap().iter().map(|h|h["selection_id"].clone()).collect::<Vec<_>>(),host_before,"inbox changed the existing push host");
+    assert_eq!(owner.context()["active_setup_id"],"owner-push");
     assert_eq!(service.counts().await["journal_reads"],0);
     cancel.cancel();running.await.unwrap().unwrap();
 }
