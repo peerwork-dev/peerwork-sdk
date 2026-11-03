@@ -702,6 +702,14 @@ async fn run_owned(
                     scope_error(&status, options, &problem);
                 }
             }
+            if observed.as_ref().is_ok_and(|value|value["ready"]==true) {
+                if let Ok(mut current)=status.lock() {
+                    if matches!(current["code"].as_str(),Some("HOST_BUSY"|"HOST_WAITING_APPROVAL"|"HOST_NOT_READY")) {
+                        current["state"]=json!("HOST_ATTACHED");
+                        if let Some(fields)=current.as_object_mut(){fields.remove("code");}
+                    }
+                }
+            }
             next_health = std::time::Instant::now() + Duration::from_secs(3);
             if observed.is_err() {
                 close_adapter(adapter).await?;
@@ -859,10 +867,13 @@ async fn run_owned(
                                 },
                             )
                             .await?;
-                        set(
-                            &status,
-                            json!({"state":"BLOCKED","code":code,"model_response":"NOT_ATTESTED"}),
-                        );
+                        if other.is_ok() {
+                            if let Ok(mut current)=status.lock() {
+                                current["state"]=json!("BLOCKED");current["code"]=json!(code);
+                            }
+                        }else{
+                            set(&status,json!({"state":"BLOCKED","code":code,"model_response":"NOT_ATTESTED"}));
+                        }
                         if other.is_err() {
                             close_adapter(adapter).await?;
                             return Ok(true);
@@ -911,6 +922,7 @@ async fn run_owned(
             // the first delivery, making current-host checks unverifiable.
             if let Ok(mut current)=status.lock() {
                 current["state"]=json!(if unknown{"HOST_RESULT_UNKNOWN"}else{"HOST_ATTACHED"});
+                if let Some(fields)=current.as_object_mut(){fields.remove("code");}
                 current["last_call_id"]=json!(call.call_id);
                 current["model_response"]=json!("NOT_ATTESTED");
             }

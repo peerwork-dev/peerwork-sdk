@@ -34,6 +34,7 @@ def main():
             ('peerwork-runtime',['--lib'],'automatic_native_program_watch_spools_offline_consumes_and_reconnects'),
             ('peerwork-runtime',['--lib'],'runtime_host_dispatch_persists_unknown_and_blocks_only_same_conversation_across_restart'),
             ('peerwork-runtime',['--lib'],'native_bridge_receives_genuine_verified_e2ee_mail_from_shared_runtime'),
+            ('peerwork-runtime',['--lib'],'runtime_bridge_reconciles_only_original_bound_receipts_across_recipient_restart'),
             ('peerwork-runtime',['--lib'],'participant_rebind::initial_tests'),
             ('peerwork-runtime',['--lib'],'participant_rebind::tests'),
             ('peerwork-runtime',['--lib'],'participant_inbox::host_ledger::rebind::tests::first_binding'),
@@ -44,7 +45,7 @@ def main():
             ('peerwork-runtime',['--lib'],'participant::http_tests::connect_'),
             ('peerwork-runtime',['--lib'],'native_connect_cli_preserves_original_engine_and_attaches_selected_host_without_owner_exchange')]
     files=['crates/core/src/communication.rs','crates/core/tests/native_mail.rs','crates/runtime/src/participant_watch.rs','crates/runtime/src/participant_inbox.rs','crates/runtime/src/participant.rs','crates/runtime/src/kernel_access.rs','crates/runtime/src/transport.rs','crates/runtime/src/structure_intent.rs','crates/runtime/src/participant_reliability_http_tests.rs','tests/participant-service.mjs']
-    files += ['Cargo.toml','Cargo.lock','crates/runtime/src/participant_rebind.rs','crates/runtime/src/participant_rebind_tests.rs','crates/runtime/src/participant_initial_host_tests.rs','crates/runtime/src/participant_host_rebind.rs','crates/runtime/src/participant_host_rebind_tests.rs','crates/runtime/src/participant_dispatch.rs','crates/runtime/src/participant_connect.rs','crates/runtime/src/participant_connect_host.rs','crates/runtime/src/communication_runtime.rs','crates/runtime/src/communication_clients.rs','crates/runtime/src/communication_hosts.rs','tools/test/qualify-mailbox-reliability.py']
+    files += ['Cargo.toml','Cargo.lock','crates/runtime/src/participant_rebind.rs','crates/runtime/src/participant_rebind_tests.rs','crates/runtime/src/participant_initial_host_tests.rs','crates/runtime/src/participant_host_rebind.rs','crates/runtime/src/participant_host_rebind_tests.rs','crates/runtime/src/participant_dispatch.rs','crates/runtime/src/participant_http_tests.rs','crates/runtime/src/participant_connect.rs','crates/runtime/src/participant_connect_host.rs','crates/runtime/src/communication_runtime.rs','crates/runtime/src/communication_clients.rs','crates/runtime/src/communication_hosts.rs','tools/test/qualify-mailbox-reliability.py']
     product=Path(os.environ['PEERWORK_STRUCTURE_REFERENCE_ROOT'])
     service_files=[p for directory in ['src','dist-workspace/src'] for p in sorted((product/directory).rglob('*')) if p.is_file()]
     service_files += [product/'package.json',product/'package-lock.json',product/'dist-workspace/tests/fixtures/workspace-postgres-fixture.js']

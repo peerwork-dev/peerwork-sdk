@@ -3141,7 +3141,11 @@ async fn runtime_bridge_reconciles_only_original_bound_receipts_across_recipient
     tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             let status = ipc::call(&ready.admin_endpoint, json!({"method":"status"})).await.unwrap();
-            if status["value"]["hosts"][0]["code"] == "HOST_BUSY" { break; }
+            if status["value"]["hosts"][0]["code"] == "HOST_BUSY" {
+                let host=&status["value"]["hosts"][0];
+                assert_eq!(HostBinding::new(host["destination"].clone()).unwrap().digest,options.host_destination.clone().unwrap(),"temporary busy preflight must retain verified physical ownership");
+                break;
+            }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     }).await.expect("queued mail must wait for the selected busy host");
