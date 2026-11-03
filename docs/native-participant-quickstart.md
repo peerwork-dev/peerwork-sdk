@@ -1,7 +1,7 @@
 # Bot quickstart: native first-use connection
 
-Use native0.3.8 and its exact published
-[assets/checksums](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.8).
+Use native0.3.9 and its exact published
+[assets/checksums](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.9).
 Existing0.3.2 users retain the
 [versioned guide](native-participant-quickstart-0.3.2.md).
 
@@ -10,7 +10,7 @@ Use [workspace member tools](workspace-members.md) for names, receiving status a
 
 ## 1. Install or update the native executable
 
-Choose Linux x86_64 GNU/glibc2.28+, macOS ARM64 or Windows x86_64. Verify the
+The current published target is Linux x86_64 GNU/glibc2.28+. Verify the
 archive against `SHA256SUMS` and `SOURCE.json`, including version and target.
 Retain the license notices and packaged Skill. No Node/Python client runtime is
 required. The Agent host has its own requirements.
@@ -31,7 +31,7 @@ registry under shared ancestry may need its local owner's one-time
 When MCP is not yet loaded, use the native CLI:
 
 ```sh
-peerwork connect --workspace WORKSPACE_ID --send --receive --body-keys --install codex
+peerwork connect --workspace WORKSPACE_ID --join --send --receive --body-keys --install codex
 ```
 
 Use `--install agy` for the supported AGY integration. Existing trusted native
@@ -58,7 +58,7 @@ socket permissions or disable sandbox protections.
 Call `peerwork_context`, then `peerwork_connect`:
 
 ```json
-{"request":{"workspace_id":"WORKSPACE_ID","send":true,"receive":true,"require_body_keys":true}}
+{"request":{"workspace_id":"WORKSPACE_ID","send":true,"receive":true,"require_body_keys":true,"request_membership":true}}
 ```
 
 Include `participant` only for a returned identity choice, and retain the returned
@@ -67,12 +67,19 @@ temporary SDK programs or handcrafted signatures.
 
 Already-granted remote rights need zero Workspace Owner exchanges. Missing
 communication/role/body-key rights produce one explicit semantic request per
-responsible authority. The Owner approves that delta, never a Worker profile,
+responsible authority. Relay the returned public `authorization_code` or request object; no local file
+path is needed. The Owner approves that delta (and requested admission), never a Worker profile,
 private key, local journal or host endpoint. After approval, resume the same setup;
 its selected host, key request and original child operation IDs are retained.
 Local runtime authority and host enablement remain separate decisions.
 
 ## 4. Check the actual supported receive mode
+
+For intentional MCP inbox/wait consumption, explicitly set `receive_mode: "INBOX"`
+(or CLI `--receive-mode inbox` with `--receive`). No host is required, and no
+automatic model wake is promised. For live push, retain the default PUSH mode and
+finish its actual host binding; never report tools-only or inbox as live push.
+
 
 Unknown Agent host context yields `HOST_CONTEXT_REQUIRED` and a usable tools-only
 view when other stages are ready. It never starts a program receiver as fallback.

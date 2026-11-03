@@ -215,6 +215,7 @@ pub enum AgentRequest {
     ConnectApprove {
         participant: String,
         approval_id: String,
+        #[serde(deserialize_with="crate::participant_connect::deserialize_authorization_input")]
         request: crate::participant_connect::AuthorizationRequest,
     },
     Reachability {
@@ -662,7 +663,7 @@ impl AgentTools {
                 let capabilities = self.client.call(json!({"method":"capabilities"})).await?;
                 let bindings = self.receiving().call(json!({"method":"bindings"})).await?;
                 Ok(
-                    json!({"actor_id":self.client.actor_id(),"origin":self.client.origin(),"maturity":"EXPERIMENTAL","local_engine":if self.client.attached_mode(){"ATTACHED_ORIGINAL_CLIENT"}else{"AUTHENTICATED"},"state_migration_required":false,"remote_or_host_readiness":"NOT_ATTESTED","workspaces":self.profile.workspaces,"scopes":self.profile.scopes,"send_scopes":self.profile.send_scopes,"contacts":self.profile.contacts.keys().collect::<Vec<_>>(),"protocols":self.profile.protocols,"bindings":bindings,"capability":capabilities["capability"],"next_tools":{"reachability":"peerwork_reachability","capability_discovery":"peerwork agent tools"}}),
+                    json!({"actor_id":self.client.actor_id(),"origin":self.client.origin(),"maturity":"EXPERIMENTAL","local_engine":if self.client.attached_mode(){"ATTACHED_ORIGINAL_CLIENT"}else{"AUTHENTICATED"},"state_migration_required":false,"remote_or_host_readiness":"NOT_ATTESTED","workspaces":self.profile.workspaces,"scopes":self.profile.scopes,"send_scopes":self.profile.send_scopes,"contacts":self.profile.contacts.keys().collect::<Vec<_>>(),"protocols":self.profile.protocols,"bindings":bindings,"capability":capabilities["capability"],"tool_discovery":{"source":"LOADED_MCP_TOOL_SCHEMAS","extra_call_required":false},"next_tools":{"reachability":"peerwork_reachability","send":"peerwork_send","inbox":"peerwork_inbox","protocol":"peerwork_protocol"}}),
                 )
             }
             AgentRequest::Reachability { workspace, actor, cursor, limit, scope, contact } => {
@@ -1111,7 +1112,7 @@ pub fn catalog() -> Vec<Value> {
     );
     let budget = json!({"type":"integer","minimum":0,"maximum":5000,"default":1000});
     let mut tools = vec![
-        tool("context","Read selected identity, aliases and runtime capabilities. Local authentication does not prove remote/host readiness.",json!({}),&[],true),
+        tool("context","Read selected identity, workspaces, available scopes and runtime capabilities. Use the loaded MCP tool schemas for discovery; contacts and aliases are optional. Local authentication does not prove remote/host readiness.",json!({}),&[],true),
         tool("reachability","List workspace members, shared names, receiving status and independently declared willingness to accept work. No contacts required. Select actor ID or exact shared name; pages describe receiving paths, not model activity. Scope/contact are optional configured shortcuts.",json!({"workspace":text,"actor":text,"cursor":text,"limit":page,"scope":text,"contact":text}),&[],true),
         tool("send","Send to a workspace member by actor ID or shared name using to; configured contact aliases remain optional. Ambiguous names require exact actor selection. Preserve operation_id and recover it on uncertainty; acceptance is not a reply.",json!({"workspace":text,"to":text,"contact":text,"operation_id":text,"text":{"type":"string","minLength":1,"maxLength":8192},"wait_ms":budget}),&["operation_id","text"],false),
         tool("reply","Reply to one verified inbox item using its authenticated reply address. Does not consume the item. Preserve operation_id and use recover after an uncertain result.",json!({"scope":text,"item":item,"operation_id":text,"text":text,"wait_ms":budget}),&["scope","item","operation_id","text"],false),
@@ -1128,7 +1129,7 @@ pub fn catalog() -> Vec<Value> {
     tools.push(tool("availability","Declare whether your workspace identity is willing to accept new work. This is shared across its sessions, independent of host IDLE/BUSY and task progress. Copy membership_id and availability.revision from the member page; expiry becomes UNKNOWN. No contacts, protocol binding or new Owner approval required.",json!({"workspace":text,"membership_id":text,"state":{"type":"string","enum":["AVAILABLE","NOT_ACCEPTING","UNKNOWN"]},"operation_id":text,"expected_revision":{"type":"integer","minimum":0,"maximum":9007199254740990u64},"valid_for_ms":{"type":"integer","minimum":1000,"maximum":86400000,"default":3600000}}),&["membership_id","state","operation_id","expected_revision"],false));
     tools.push(tool("member_name","Set your shared member name in a selected workspace; null clears it. Requires current workspace revision from the member page. This changes no identity, role, address or historical operation.",json!({"workspace":text,"name":{"type":["string","null"],"minLength":1,"maxLength":80},"operation_id":text,"expected_revision":{"type":"integer","minimum":1}}),&["name","operation_id","expected_revision"],false));
     tools.push(json!({"name":"peerwork_connect","description":"Connect or resume the original participant using workspace and desired scopes. Identity/setup ID are normally derived; select only from returned public identity choices. Preserve setup_id when resuming. Missing rights return a consolidated semantic approval request. Tool availability and current-session push are separate; no private paths or credentials are accepted.","inputSchema":crate::participant_connect::schema(),"_meta":{"antigravity/alwaysLoad":true},"annotations":{"readOnlyHint":false,"idempotentHint":true,"openWorldHint":true}}));
-    tools.push(tool("connect_approve","Explicit Owner approval of a connect authorization_request. Verify participant identity and requested rights before calling. Preserve approval_id to resume partial or unknown outcomes. Grants the requested delta and retains existing rights; no Worker local configuration is accepted.",json!({"participant":text,"approval_id":text,"request":{"type":"object"}}),&["participant","approval_id","request"],false));
+    tools.push(tool("connect_approve","Explicit Owner approval of a connect authorization_request object or its public PW-AUTH-1 code. The code is a request, not permission. Verify participant identity and requested rights before calling. Preserve approval_id to resume partial or unknown outcomes. Grants the requested delta and retains existing rights; no Worker local configuration is accepted.",json!({"participant":text,"approval_id":text,"request":{"oneOf":[{"type":"object"},{"type":"string","pattern":"^PW-AUTH-1\\.[A-Za-z0-9_-]+$","maxLength":43705}]}}),&["participant","approval_id","request"],false));
     tools
 }
 

@@ -20,6 +20,7 @@ mod approval;
 #[path = "participant_connect_install.rs"]
 mod install;
 pub use approval::AuthorizationRequest;
+pub use approval::deserialize_input as deserialize_authorization_input;
 pub use install::Installation;
 #[path = "participant_connect_host.rs"]
 mod host;
@@ -78,8 +79,12 @@ pub struct ConnectRequest {
     pub send: bool,
     #[serde(default)]
     pub receive: bool,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub receive_mode: Option<ReceiveMode>,
     #[serde(default)]
     pub require_body_keys: bool,
+    #[serde(default,skip_serializing_if="is_false")]
+    pub request_membership: bool,
     #[serde(default)]
     pub protocols: Vec<ProtocolSelection>,
     #[serde(default)]
@@ -87,6 +92,9 @@ pub struct ConnectRequest {
     #[serde(default)]
     pub host: Option<String>,
 }
+#[derive(Clone,Copy,Serialize,Deserialize,PartialEq,Eq)]
+#[serde(rename_all="SCREAMING_SNAKE_CASE")]
+pub enum ReceiveMode { Push, Inbox }
 fn missing_runtime_features(caps: &Value) -> Vec<&'static str> {
     crate::communication_runtime::CONNECT_FEATURES
         .into_iter()
@@ -101,7 +109,9 @@ fn default_alias() -> String {
     "workspace".into()
 }
 fn default_send() -> bool { false }
+fn is_false(value:&bool)->bool{!*value}
 impl ConnectRequest {
+    fn needs_host(&self,agent:bool)->bool {(agent||self.receive_mode==Some(ReceiveMode::Push)) && self.receive_mode!=Some(ReceiveMode::Inbox)}
     pub fn validate(&self) -> Result<()> {
         if !identifier(&self.setup_id)
             || !identifier(&self.participant)
@@ -109,6 +119,8 @@ impl ConnectRequest {
             || !token(&self.workspace_id)
             || self.protocols.len() > 8
             || self.contacts.len() > 64
+            || (self.receive_mode.is_some() && !self.receive)
+            || (self.receive_mode==Some(ReceiveMode::Inbox) && self.host.is_some())
             || self
                 .host
                 .as_ref()
@@ -197,6 +209,8 @@ pub struct Connect {
     private_directory:crate::onboarding_project::Directory,
     store: Option<crate::onboarding_store::Store>,
     registry: Registry,
+    #[cfg(test)]
+    interrupt_after_admission: bool,
 }
 impl Connect {
     pub fn selection_required(setup_id: &str) -> Value {
@@ -234,13 +248,15 @@ impl Connect {
             private_directory,
             store: Some(store),
             registry,
+            #[cfg(test)]
+            interrupt_after_admission: false,
         })
     }
     /// Atomic, bounded read of the selected local registry. Normal tools must
     /// remain available while a setup job awaits its remote/local prerequisites.
     pub fn inspect(directory: &Path) -> Result<Self> {
         let (registry,private_directory)=discovery::inspect_original_store(directory)?;
-        Ok(Self{directory:directory.into(),private_directory,store:None,registry})
+        Ok(Self{directory:directory.into(),private_directory,store:None,registry,#[cfg(test)] interrupt_after_admission:false})
     }
     fn require_writer(&self) -> Result<()> {
         if self.store.is_some() {
@@ -458,7 +474,7 @@ impl Connect {
         if profile.protocols.values().any(|p|p.workspace_id.as_deref()!=Some(workspace)){return Err(local("ATTACH_SCOPE_INVALID"));}
         let setup_id=format!("attach-{}",&sha256_hex(serde_json::to_vec(&profile).map_err(|_|local("AGENT_PROFILE_INVALID"))?.as_slice())[..32]);
         let request=ConnectRequest{setup_id:setup_id.clone(),participant:participant.into(),workspace_id:workspace.into(),alias:alias.into(),
-            send:false,receive:false,require_body_keys:false,protocols:vec![],contacts:vec![],host:None};
+            send:false,receive:false,receive_mode:None,require_body_keys:false,request_membership:false,protocols:vec![],contacts:vec![],host:None};
         request.validate()?;
         let key=format!("{participant}:{workspace}");
         if self.registry.active_by_scope.get(&key).is_some_and(|old|old!=&setup_id){return Err(local("EXISTING_SETUP_PRESERVED_USE_ITS_PROFILE"));}
@@ -481,6 +497,7 @@ impl Connect {
     async fn run_mode(&mut self, request: ConnectRequest, agent: bool) -> Result<Value> {
         self.require_writer()?;
         let request = if agent {self.normalize_agent_request(request)?} else {self.normalize_request(request)?};
+        let agent=request.needs_host(agent);
         let selected = match self.registry.participants.get(&request.participant) {
             Some(v) => v.clone(),
             None => return Ok(Self::selection_required(&request.setup_id)),
@@ -590,12 +607,19 @@ impl Connect {
             ..Scope::default()
         };
         let now = if communication_requested||request.require_body_keys {trusted_time(&client, &scope).await?} else {0};
-        let workspace = read(&client, "structure.workspace.get", scope.clone(), json!({})).await?;
+        let workspace = match read(&client, "structure.workspace.get", scope.clone(), json!({})).await {
+            Ok(value)=>value,
+            Err(error) if request.request_membership && (matches!(error.code.as_str(),"FORBIDDEN"|"UNVERIFIED_AUTHORIZATION_RESPONSE") || error.details.as_ref().is_some_and(|d|d["http_status"]==403))=>{
+                return self.request_admission(&client,&request,&selected,&scope).await;
+            },
+            Err(error)=>return Err(error),
+        };
         if !token(
             workspace["membership"]["membership_id"]
                 .as_str()
                 .unwrap_or(""),
         ) {
+            if request.request_membership {return self.request_admission(&client,&request,&selected,&scope).await;}
             return self.pending(
                 &request,
                 "MEMBERSHIP",
@@ -761,11 +785,14 @@ impl Connect {
             } else {
                 None
             };
-            return self.pending(&request,"REMOTE_AUTHORIZATION",if missing.is_empty(){"KEY_AUTHORIZATION_REQUIRED"}else{"OWNER_APPROVAL_REQUIRED"},owner,"APPROVE_REQUESTED_PERMISSION_DELTA",
-                json!({"authorization_request":{"format":"peerwork.connect-authorization-request.v1","setup_id":request.setup_id,
+            let authorization_request=AuthorizationRequest::from_input(json!({"format":"peerwork.connect-authorization-request.v1","setup_id":request.setup_id,
                     "origin":selected.origin,"workspace_id":request.workspace_id,"actor_id":selected.actor_id,"membership_id":membership,
-                    "owner_id":owner,"missing":missing,"body_keys_required":needs_keys,"key_request":key_request},
-                    "delivery":"EXISTING_ADMISSION_OR_VERIFIED_HANDOFF","contains_private_keys_or_local_paths":false}));
+                    "owner_id":owner,"missing":missing,"body_keys_required":needs_keys,"key_request":key_request}))?;
+            let code=authorization_request.to_code()?;
+            return self.pending(&request,"REMOTE_AUTHORIZATION",if missing.is_empty(){"KEY_AUTHORIZATION_REQUIRED"}else{"OWNER_APPROVAL_REQUIRED"},owner,"APPROVE_REQUESTED_PERMISSION_DELTA",
+                json!({"authorization_request":authorization_request,"authorization_code":code,
+                    "approval":{"tool":"peerwork_connect_approve","arguments":{"approval_id":format!("approve-{}",&sha256_hex(code.as_bytes())[..24]),"request":code},"add_required":["participant"]},
+                    "delivery":"PUBLIC_REQUEST_CODE_OR_OBJECT","request_is_not_authorization":true,"contains_private_keys_or_local_paths":false}));
         }
         let mailboxes = if request.receive {read(
             &client,
@@ -801,9 +828,12 @@ impl Connect {
             })
             .cloned();
         let previous = previous_setup.as_ref().and_then(|s| s.profile.clone());
+        if request.receive_mode==Some(ReceiveMode::Inbox) && previous_setup.as_ref().is_some_and(|s|s.channel_receive&&s.effective_host.is_some()) {
+            return self.pending(&request,"HOST_BINDING","EXISTING_PUSH_RECEIVER_REQUIRES_EXPLICIT_REBIND","HOST_USER","EXPLICIT_NATIVE_REBIND",json!({"existing_receiver_preserved":true}));
+        }
         if (agent || self.registry.setups[&request.setup_id].agent_host_required)
             && request.receive && previous_setup.as_ref().is_some_and(|s|s.channel_receive && s.effective_host.is_none()) {
-            return self.pending(&request,"HOST_BINDING","EXISTING_PROGRAM_RECEIVER_REQUIRES_EXPLICIT_REBIND","HOST_USER","EXPLICIT_NATIVE_REBIND",json!({"existing_receiver_preserved":true}));
+            return self.pending(&request,"HOST_BINDING",if previous_setup.as_ref().is_some_and(|s|s.desired.receive_mode==Some(ReceiveMode::Inbox)){"EXISTING_INBOX_RECEIVER_REQUIRES_EXPLICIT_REBIND"}else{"EXISTING_PROGRAM_RECEIVER_REQUIRES_EXPLICIT_REBIND"},"HOST_USER","EXPLICIT_NATIVE_REBIND",json!({"existing_receiver_preserved":true}));
         }
         let channel_send = request.send
             || previous_setup
@@ -833,8 +863,8 @@ impl Connect {
                 json!({}),
             );
         }
-        let effective_host = request.host.clone().or_else(||self.registry.setups[&request.setup_id].effective_host.clone())
-            .or_else(||if request.receive && (agent || self.registry.setups[&request.setup_id].agent_host_required) {None} else {old_host.clone()});
+        let effective_host = if request.receive_mode==Some(ReceiveMode::Inbox){None}else{request.host.clone().or_else(||self.registry.setups[&request.setup_id].effective_host.clone())
+            .or_else(||if request.receive && (agent || self.registry.setups[&request.setup_id].agent_host_required) {None} else {old_host.clone()})};
         let host_pending = (agent || self.registry.setups[&request.setup_id].agent_host_required)
             && request.receive && effective_host.is_none();
         let channel_receive = wanted_receive && !host_pending;
@@ -1249,7 +1279,7 @@ impl Connect {
             "observed_at_ms":stamp(),
             "actor_id":profile.expected_actor,"origin":profile.expected_origin,"workspace_id":request.workspace_id,
             "membership_id":membership,"keys":keys,"receiver":receiver,"host":host_observation,"mcp_current_session":"NOT_ATTESTED",
-            "next_action":"BIND_SELECTED_HOST_AND_VERIFY_TOOLS","owner_exchange_required":false}),Some(profile))
+            "receive_mode":if request.receive{if agent{"PUSH"}else{"INBOX"}}else{"NOT_REQUESTED"},"automatic_model_wake":if effective_host.is_some(){"HOST_DEPENDENT_NOT_ATTESTED"}else{"NOT_CONFIGURED"},"next_action":if request.receive_mode==Some(ReceiveMode::Inbox){"USE_MCP_INBOX_OR_WAIT"}else if !request.receive{"USE_LOADED_TOOLS"}else{"VERIFY_SELECTED_RECEIVING_PATH_AND_TOOLS"},"owner_exchange_required":false}),Some(profile))
     }
     async fn key_request(
         &mut self,
@@ -1287,6 +1317,21 @@ impl Connect {
         self.save()?;
         Ok(value)
     }
+    async fn request_admission(&mut self,client:&RuntimeClient,r:&ConnectRequest,selected:&Registration,scope:&Scope)->Result<Value>{
+        let mut missing=vec![json!({"kind":"MEMBERSHIP"})];
+        if r.send{missing.push(json!({"kind":"COMMUNICATION_SEND"}));}
+        if r.receive{missing.push(json!({"kind":"COMMUNICATION_RECEIVE"}));}
+        for p in &r.protocols {missing.push(json!({"kind":"BUSINESS_ROLE","instance_id":p.instance_id,"protocol_digest":"","role":p.role,"actions":p.actions}));}
+        let key_request=if r.require_body_keys{Some(self.key_request(client,r,scope).await?)}else{None};
+        let authorization_request=AuthorizationRequest::from_input(json!({"format":"peerwork.connect-authorization-request.v2",
+            "setup_id":r.setup_id,"origin":selected.origin,"workspace_id":r.workspace_id,"actor_id":selected.actor_id,
+            "membership_id":"","owner_id":"","missing":missing,"body_keys_required":r.require_body_keys,"key_request":key_request}))?;
+        let code=authorization_request.to_code()?;
+        self.pending(r,"ADMISSION","ADMISSION_APPROVAL_REQUIRED","WORKSPACE_OWNER","APPROVE_COMBINED_PARTICIPATION_REQUEST",
+            json!({"authorization_request":authorization_request,"authorization_code":code,
+                "approval":{"tool":"peerwork_connect_approve","arguments":{"approval_id":format!("approve-{}",&sha256_hex(code.as_bytes())[..24]),"request":code},"add_required":["participant"]},
+                "delivery":"PUBLIC_REQUEST_CODE_OR_OBJECT","request_is_not_authorization":true,"contains_private_keys_or_local_paths":false}))
+    }
 }
 async fn trusted_time(client: &RuntimeClient, scope: &Scope) -> Result<u64> {
     let time = read(client, "participant.time.read", scope.clone(), json!({})).await?;
@@ -1323,6 +1368,8 @@ pub fn schema() -> Value {
         "properties":{"setup_id":{"type":"string"},"participant":{"type":"string"},"workspace_id":{"type":"string"},"alias":{"type":"string","default":"workspace"},"send":{"type":"boolean"},"receive":{"type":"boolean"},"require_body_keys":{"type":"boolean"},"protocols":{"type":"array","maxItems":8,"items":{"type":"object","additionalProperties":false,"required":["alias","instance_id","role"],"properties":{"alias":{"type":"string"},"instance_id":{"type":"string"},"role":{"type":"string"},"actions":{"type":"array","maxItems":64,"items":{"type":"string"}}}}}}}}});
     schema["properties"]["request"]["properties"]["contacts"] = json!({"type":"array","maxItems":64,"items":{"type":"object","additionalProperties":false,"required":["alias","actor_id"],"properties":{"alias":{"type":"string"},"actor_id":{"type":"string"}}}});
     schema["properties"]["request"]["properties"]["send"]["default"] = json!(false);
+    schema["properties"]["request"]["properties"]["request_membership"] = json!({"type":"boolean","default":false,"description":"Explicitly request admission if workspace access is not verified. Returns one public request covering membership and the requested rights; Owner approval is still required."});
+    schema["properties"]["request"]["properties"]["receive_mode"] = json!({"type":"string","enum":["PUSH","INBOX"],"description":"PUSH (Agent default) requires an actual supported host destination. INBOX explicitly receives for MCP inbox/wait without requiring host push; it never claims automatic model wake or replaces an existing host binding. Requires receive=true."});
     schema["properties"]["request"]["properties"]["host"] = json!({"type":"string","description":"Existing host-user-approved named destination. Omission does not identify the current session; unknown Agent receive stays pending. No commands, sockets or session paths are accepted."});
     schema
 }
@@ -1336,6 +1383,7 @@ pub fn cli(args: &[String]) -> Value {
             let flag = &args[i];
             let boolean = [
                 "--send",
+                "--join",
                 "--receive",
                 "--body-keys",
                 "--allow-loopback-http",
@@ -1360,11 +1408,14 @@ pub fn cli(args: &[String]) -> Value {
                 "--client",
                 "--actor",
                 "--send",
+                "--join",
                 "--receive",
                 "--body-keys",
                 "--allow-loopback-http",
                 "--context",
                 "--approve-request",
+                "--approve-code",
+                "--receive-mode",
                 "--role",
                 "--attach",
                 "--protocol",
@@ -1416,13 +1467,15 @@ pub fn cli(args: &[String]) -> Value {
             "peerwork connect --local PRIVATE_REGISTRY --participant HANDLE --client ORIGINAL_ENDPOINT --origin ORIGIN --actor ACTOR --workspace WORKSPACE --attach --protocol tasks:INSTANCE:DIGEST --install codex",
             "peerwork connect --workspace WORKSPACE --role tasks:INSTANCE:CONTRIBUTOR --install codex",
             "peerwork connect --workspace WORKSPACE --trust-project --send --receive",
+            "peerwork connect --workspace WORKSPACE --send --receive --receive-mode inbox --install codex",
             "peerwork connect --workspace WORKSPACE --program --trust-project --send --receive",
             "peerwork connect --local DIRECTORY --participant HANDLE --identity IDENTITY --engine-state ORIGINAL_STATE --origin ORIGIN --workspace WORKSPACE --id SETUP_ID --send --receive",
             "peerwork connect --local DIRECTORY --participant HANDLE --client EXISTING_ENDPOINT --origin ORIGIN --actor ACTOR --workspace WORKSPACE --id SETUP_ID --receive",
             "peerwork connect --local DIRECTORY --participant HANDLE --workspace WORKSPACE --id SETUP_ID --send --receive",
             "peerwork connect --local DIRECTORY --context",
             "peerwork connect --local ORIGINAL_DIRECTORY --context --confirm-original",
-            "peerwork connect --local DIRECTORY --participant OWNER_HANDLE --id APPROVAL_ID --approve-request PUBLIC_REQUEST.json",
+            "peerwork connect --local DIRECTORY --participant OWNER_HANDLE --id APPROVAL_ID --approve-request -",
+            "peerwork connect --local DIRECTORY --participant OWNER_HANDLE --id APPROVAL_ID --approve-code PW-AUTH-1.CODE",
             "peerwork connect --local DIRECTORY --participant HANDLE --engine-config EXISTING_ENGINE.json --workspace WORKSPACE --id SETUP_ID --send --receive",
             "peerwork connect --local DIRECTORY --participant HANDLE --workspace WORKSPACE --id SETUP_ID --send --receive --host SELECTED_HOST --codex-endpoint APP_SERVER_URL --codex-thread THREAD --install codex --project PROJECT",
             "peerwork connect --local DIRECTORY --participant HANDLE --workspace WORKSPACE --id SETUP_ID --send --receive --agy-managed --agy-executable AGY --agy-conversation OWNED_CONVERSATION --project PROJECT --install agy",
@@ -1430,6 +1483,12 @@ pub fn cli(args: &[String]) -> Value {
     }
     let result = || -> Result<Value> {
         let mut values = parse(args)?;
+        let selected_adapter=host::adapter(&values)?;
+        if let Some(mode)=values.get("--receive-mode"){
+            if !matches!(mode.as_str(),"push"|"inbox")||!values.contains_key("--receive"){return Err(local("RECEIVE_MODE_REQUIRES_RECEIVE_AND_PUSH_OR_INBOX"));}
+            if mode=="inbox"&&(selected_adapter.is_some()||values.contains_key("--host")){return Err(local("INBOX_DOES_NOT_SELECT_HOST"));}
+        }
+        if selected_adapter.is_some()&&!values.contains_key("--receive"){return Err(local("HOST_SELECTION_REQUIRES_RECEIVE"));}
         if values.contains_key("--confirm-original") && (values.keys().any(|key|!matches!(key.as_str(),"--local"|"--context"|"--confirm-original")) || !values.contains_key("--local") || !values.contains_key("--context")) {return Err(local("CONFIRM_ORIGINAL_REQUIRES_LOCAL_CONTEXT_ONLY"))}
         let project = std::path::absolute(values.get("--project").cloned().unwrap_or_else(||".".into()))
             .map_err(|_|local("PROJECT_CONTEXT_INVALID"))?.components().collect::<PathBuf>();
@@ -1502,22 +1561,24 @@ pub fn cli(args: &[String]) -> Value {
                 installation.ok_or_else(|| local("SELECT_INSTALLATION_TO_REMOVE"))?,
             );
         }
-        if let Some(path) = values.get("--approve-request") {
+        if values.contains_key("--approve-request") && values.contains_key("--approve-code") {return Err(local("SELECT_ONE_AUTHORIZATION_INPUT"));}
+        if values.contains_key("--approve-request") || values.contains_key("--approve-code") {
             use std::io::Read;
-            let mut wire = Vec::new();
-            std::fs::File::open(path)
+            let mut wire = if let Some(code)=values.get("--approve-code"){code.as_bytes().to_vec()}else{Vec::new()};
+            if let Some(path)=values.get("--approve-request") {
+            let reader:Box<dyn Read>=if path=="-"{Box::new(std::io::stdin())}else{Box::new(std::fs::File::open(path)
                 .map_err(|_| local("APPROVAL_REQUEST_UNREADABLE"))?
-                .take(32769)
+            )};
+            reader.take(43706)
                 .read_to_end(&mut wire)
                 .map_err(|_| local("APPROVAL_REQUEST_UNREADABLE"))?;
-            if wire.len() > 32768 {
+            }
+            if wire.len() > 43705 {
                 return Err(local("APPROVAL_REQUEST_TOO_LARGE"));
             }
-            let request: AuthorizationRequest = serde_json::from_value(
-                peerwork_core::strict_json::parse_strict_json(&wire)
-                    .map_err(|_| local("AUTHORIZATION_REQUEST_INVALID"))?,
-            )
-            .map_err(|_| local("AUTHORIZATION_REQUEST_INVALID"))?;
+            let text=std::str::from_utf8(&wire).map_err(|_|local("AUTHORIZATION_REQUEST_INVALID"))?.trim();
+            let input=if text.starts_with("PW-AUTH-1."){json!(text)}else{peerwork_core::strict_json::parse_strict_json(text.as_bytes()).map_err(|_|local("AUTHORIZATION_REQUEST_INVALID"))?};
+            let request=AuthorizationRequest::from_input(input)?;
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(2)
                 .enable_all()
@@ -1532,7 +1593,9 @@ pub fn cli(args: &[String]) -> Value {
             alias: values.get("--alias").cloned().unwrap_or_else(default_alias),
             send: values.contains_key("--send"),
             receive: values.contains_key("--receive"),
+            receive_mode: values.get("--receive-mode").map(|v|match v.as_str(){"push"=>Ok(ReceiveMode::Push),"inbox"=>Ok(ReceiveMode::Inbox),_=>Err(local("RECEIVE_MODE_USE_PUSH_OR_INBOX"))}).transpose()?,
             require_body_keys: values.contains_key("--body-keys"),
+            request_membership: values.contains_key("--join"),
             protocols: Vec::new(),
             contacts: Vec::new(),
             host: values.get("--host").cloned(),
@@ -1559,7 +1622,6 @@ pub fn cli(args: &[String]) -> Value {
             });
         }
         request = if values.contains_key("--program") {connect.normalize_request(request)?} else {connect.normalize_agent_request(request)?};
-        let selected_adapter = host::adapter(&values)?;
         if selected_adapter.is_some() && !request.receive {
             return Err(local("HOST_SELECTION_REQUIRES_RECEIVE"));
         }
@@ -1624,7 +1686,7 @@ pub fn cli(args: &[String]) -> Value {
                 request.validate()?;
             }
             if values.contains_key("--attach") {
-                if request.send||request.receive||request.require_body_keys||!request.protocols.is_empty()||!request.contacts.is_empty()||request.host.is_some(){return Err(local("ATTACH_ONLY_REUSES_EXISTING_AUTHORITY"));}
+                if request.send||request.receive||request.require_body_keys||request.request_membership||!request.protocols.is_empty()||!request.contacts.is_empty()||request.host.is_some(){return Err(local("ATTACH_ONLY_REUSES_EXISTING_AUTHORITY"));}
                 let mut protocols=BTreeMap::new();
                 if let Some(protocol)=values.get("--protocol"){
                     for binding in protocol.split(',') {
@@ -1675,6 +1737,26 @@ pub fn cli(args: &[String]) -> Value {
 mod tests {
     use super::*;
     #[test]
+    fn cli_inbox_host_conflict_does_not_bootstrap_or_create_local_state() {
+        let state=crate::test_support::protected_test_dir();let directory=state.path().join("not-created");
+        let args=vec!["--local".into(),directory.to_str().unwrap().into(),"--workspace".into(),"W".repeat(43),
+            "--receive".into(),"--receive-mode".into(),"inbox".into(),"--host".into(),"selected-host".into()];
+        let result=cli(&args);assert_eq!(result["error"]["code"],"INBOX_DOES_NOT_SELECT_HOST","{result}");
+        assert!(!directory.exists());
+    }
+    #[test]
+    fn explicit_inbox_needs_no_host_and_old_request_serialization_is_stable() {
+        let wire=json!({"setup_id":"same","participant":"worker","workspace_id":"W".repeat(43),"alias":"workspace",
+            "send":false,"receive":true,"require_body_keys":false,"protocols":[],"contacts":[],"host":null});
+        let mut request:ConnectRequest=serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&request).unwrap(),wire);
+        assert!(request.needs_host(true));
+        request.receive_mode=Some(ReceiveMode::Inbox);
+        request.validate().unwrap();assert!(!request.needs_host(true));
+        request.host=Some("selected-host".into());assert!(request.validate().is_err());
+        request.host=None;request.receive=false;assert!(request.validate().is_err());
+    }
+    #[test]
     fn lost_original_registry_is_not_reinterpreted_as_first_install() {
         let temp = crate::test_support::protected_test_dir();
         let directory = temp.path().join("local");
@@ -1705,7 +1787,9 @@ mod tests {
                 alias: "space".into(),
                 send: false,
                 receive: true,
+                receive_mode: None,
                 require_body_keys: false,
+                request_membership: false,
                 protocols: Vec::new(),
                 contacts: Vec::new(),
                 host: None,

@@ -1,7 +1,7 @@
 # Connect an existing participant
 
-Use native SDK0.3.8 and its exact published
-[release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.8).
+Use native SDK0.3.9 and its exact published
+[release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.9).
 Native0.3.2 retains its
 [explicit setup guide](participant-connect-0.3.2.md).
 The native client adds no Node/Python runtime dependency or additional platforms.
@@ -30,7 +30,7 @@ complete a tools-only stage before connecting for live collaboration.
 From the authorized project, use the native CLI once if MCP is not loaded:
 
 ```sh
-peerwork connect --workspace WORKSPACE_ID --send --receive --body-keys --install codex
+peerwork connect --workspace WORKSPACE_ID --join --send --receive --body-keys --install codex
 ```
 
 Use `--install agy` for the supported AGY configuration instead. This chooses
@@ -38,7 +38,7 @@ which local integration to prepare; it does not create a model session or prove
 that the currently running session refreshed its tools. Once loaded, call:
 
 ```json
-{"request":{"workspace_id":"WORKSPACE_ID","send":true,"receive":true,"require_body_keys":true}}
+{"request":{"workspace_id":"WORKSPACE_ID","send":true,"receive":true,"require_body_keys":true,"request_membership":true}}
 ```
 
 with `peerwork_connect`. Request body keys when using encrypted message bodies. Identity/setup ID are normally derived. A real identity
@@ -60,6 +60,54 @@ Report tools loaded, sending permitted, receiving path verified, host binding
 and body-key readiness separately. Setup that exposes only business tools is
 useful but does not complete a request for live communication. A transport or
 host acknowledgment does not prove that the model processed a message.
+
+## One portable permission request (native0.3.9)
+
+Existing grants are reused without an Owner exchange. If explicitly requesting
+membership with `--join` / `request_membership: true`, an access denial returns
+one public request for admission plus the selected communication, role and key
+rights. It does not prove why access was denied or disclose a private workspace.
+The Owner verifies the requested identity, workspace, rights and any lease, then
+approves once. Internal admission and dependent writes keep their own original
+operation IDs; interrupted or partial approval resumes the same outer
+`approval_id`. Invalid roles are rejected before admitting a new member.
+
+Pass the returned `authorization_code` (prefix `PW-AUTH-1.`) or
+`authorization_request` object through your existing handoff. The code is a public
+request, not a secret or permission token; it cannot join a workspace or approve
+itself. It contains no local endpoint/profile/journal paths or private key.
+Do not hand another machine a path to a local request file.
+
+The Owner calls `peerwork_connect_approve` with the returned `approval.arguments`
+and adds their own registered `participant` handle. The `request` argument accepts
+the code or object. CLI approval also accepts a code directly or through stdin:
+
+```sh
+peerwork connect --local OWNER_REGISTRY --participant OWNER --id APPROVAL_ID --approve-code PW-AUTH-1.CODE
+# Or paste the public request code/JSON into stdin, then close stdin:
+peerwork connect --local OWNER_REGISTRY --participant OWNER --id APPROVAL_ID --approve-request -
+```
+
+After approval, continue the original participant setup. Existing members and
+read-only sessions do not gain rights automatically. Expired sessions require
+their explicit admission/renewal path. Sender grant expiry, rejoin generations,
+local capabilities and body-key authorization remain independently enforced.
+This release does not introduce a server-hosted approval queue or automatically
+wake an arbitrary host session after an Owner approves.
+
+## Explicit inbox consumption without host push
+
+For an Agent intentionally using MCP inbox/wait, select
+`receive: true, receive_mode: "INBOX"`, or CLI `--receive --receive-mode inbox`.
+It reuses the native receiver without requiring an Agent host or starting a
+replacement model. It does not establish unsolicited model wake.
+
+Omitting `receive_mode` preserves the Agent PUSH requirement. Explicit `PUSH`
+also requires an actual host when selected by a program. A missing destination
+remains pending. Neither mode takes over an existing live consumer or changes
+its host implicitly; changing a previously active inbox to PUSH requires the
+supported explicit rebind. Existing setups without these new fields retain their
+original IDs and request digests.
 
 ## Optional business-only entry
 

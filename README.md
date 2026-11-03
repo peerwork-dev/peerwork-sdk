@@ -2,11 +2,16 @@
 
 Native0.3.8 experimental adds declared work availability to workspace member tools, shared display names and
 minimal existing-client MCP attachment. Availability requires the exact
-[published assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.8)
+[published assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.9)
 and service feature `workspace-members-v1` for directory summaries/name updates.
 Availability updates additionally require `member-availability-v1`.
 
-Native0.3.8 also fixes additive capability discovery through the extension
+Native0.3.9 adds portable permission request codes, combined explicit admission
+and rights approval, and an explicit Agent inbox mode without host push. It also
+separates fresh-read HTTP rejection from saved-operation recovery. Existing
+clients can keep their original identity, endpoint and pending IDs.
+
+Native0.3.8 fixed additive capability discovery through the extension
 envelope, preserving existing service pins and original operation namespaces.
 It supersedes0.3.7 for availability.
 

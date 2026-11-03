@@ -5,6 +5,7 @@ use super::*;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "SCREAMING_SNAKE_CASE", deny_unknown_fields)]
 pub enum Delta {
+    Membership,
     CommunicationSend,
     CommunicationReceive,
     BusinessRole {
@@ -42,20 +43,44 @@ pub(super) struct Approval {
     digest: String,
     steps: Vec<Invoke>,
     results: Vec<Value>,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    continuation: Option<AuthorizationRequest>,
 }
 impl AuthorizationRequest {
+    /// Portable public permission request. This carries no local endpoint,
+    /// private signing key or authority to grant the requested rights.
+    pub fn to_code(&self) -> Result<String> {
+        self.validate()?;
+        let wire=serde_json::to_vec(self).map_err(|_|local("AUTHORIZATION_REQUEST_INVALID"))?;
+        if wire.len()>32768 {return Err(local("AUTHORIZATION_REQUEST_TOO_LARGE"));}
+        Ok(format!("PW-AUTH-1.{}",peerwork_core::crypto::base64url(&wire)))
+    }
+    pub fn from_input(input:Value)->Result<Self> {
+        let value=if let Some(code)=input.as_str() {
+            if code.len()>43705 {return Err(local("AUTHORIZATION_REQUEST_TOO_LARGE"));}
+            let encoded=code.strip_prefix("PW-AUTH-1.").ok_or_else(||local("AUTHORIZATION_REQUEST_INVALID"))?;
+            let wire=peerwork_core::crypto::decode_base64url(encoded).map_err(|_|local("AUTHORIZATION_REQUEST_INVALID"))?;
+            if wire.len()>32768 {return Err(local("AUTHORIZATION_REQUEST_TOO_LARGE"));}
+            peerwork_core::strict_json::parse_strict_json(&wire).map_err(|_|local("AUTHORIZATION_REQUEST_INVALID"))?
+        }else{input};
+        let request:Self=serde_json::from_value(value).map_err(|_|local("AUTHORIZATION_REQUEST_INVALID"))?;
+        request.validate()?;
+        Ok(request)
+    }
     fn validate(&self) -> Result<()> {
-        if self.format != "peerwork.connect-authorization-request.v1"
+        let admission=self.missing.iter().any(|v|matches!(v,Delta::Membership));
+        if (if admission{self.format!="peerwork.connect-authorization-request.v2"}else{self.format!="peerwork.connect-authorization-request.v1"})
             || !identifier(&self.setup_id)
             || ![
                 &self.workspace_id,
                 &self.actor_id,
-                &self.membership_id,
-                &self.owner_id,
             ]
             .iter()
             .all(|v| token(v))
-            || self.missing.len() > 10
+            || (!admission&&(!token(&self.membership_id)||!token(&self.owner_id)))
+            || (admission&&(!self.membership_id.is_empty()||!self.owner_id.is_empty()))
+            || self.missing.len() > if admission{11}else{10}
+            || self.missing.iter().filter(|v|matches!(v,Delta::Membership)).count()>1
             || (self.follow_current_key && !self.body_keys_required)
         {
             return Err(local("AUTHORIZATION_REQUEST_INVALID"));
@@ -69,7 +94,7 @@ impl AuthorizationRequest {
             } = delta
             {
                 if !token(instance_id)
-                    || !crate::participant_migration::digest(protocol_digest)
+                    || !(crate::participant_migration::digest(protocol_digest)||(admission&&protocol_digest.is_empty()))
                     || role.is_empty()
                     || role.len() > 128
                     || actions.len() > 64
@@ -106,6 +131,9 @@ impl AuthorizationRequest {
         Ok(())
     }
 }
+pub fn deserialize_input<'de,D:serde::Deserializer<'de>>(deserializer:D)->std::result::Result<AuthorizationRequest,D::Error>{
+    AuthorizationRequest::from_input(Value::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+}
 pub(super) fn effective(grant: &Value, now: u64) -> bool {
     grant.is_object()
         && (grant["expires_at"].is_null() || grant["expires_at"].as_u64().is_some_and(|t| t > now))
@@ -120,6 +148,86 @@ fn approved_expiry(grant: &Value, requested: Option<u64>, now: u64) -> Result<Va
     Ok(json!(expiry))
 }
 impl Connect {
+    #[cfg(test)]
+    pub(crate) fn interrupt_after_admission_once(&mut self){self.interrupt_after_admission=true;}
+    /// One public approval continues admission and its dependent grants. The
+    /// parent persists the original request and pins resolved protocol scopes;
+    /// every internal write retains its own original operation/recovery ID.
+    async fn approve_admission(&mut self,participant:&str,id:&str,request:AuthorizationRequest,owner:&str,client:RuntimeClient,digest:String)->Result<Value>{
+        if let Some(prior)=self.registry.approvals.get(id){
+            if prior.digest!=digest||prior.participant!=participant{return Err(local("APPROVAL_ID_CONFLICT_RESUME_ORIGINAL"));}
+        }else{
+            if self.registry.approvals.len()>=63{return Err(local("APPROVAL_LIMIT"));}
+            let scope=Scope{workspace_id:Some(request.workspace_id.clone()),..Default::default()};
+            let workspace=read(&client,"structure.workspace.get",scope.clone(),json!({})).await?;
+            if workspace["membership"]["role"]!="OWNER"||workspace["owner_id"]!=owner{return Err(local("OWNER_APPROVAL_REQUIRED"));}
+            let mut continuation=request.clone();
+            continuation.format="peerwork.connect-authorization-request.v1".into();
+            continuation.owner_id=owner.into();
+            continuation.missing.retain(|d|!matches!(d,Delta::Membership));
+            // Resolve and validate requested role scopes before any admission.
+            // A malformed role request must not leave a new membership behind.
+            for delta in &mut continuation.missing {
+                if let Delta::BusinessRole{instance_id,protocol_digest,role,actions}=delta {
+                    let resolved=read(&client,"structure.instance.resolve",scope.clone(),json!({"instance_id":instance_id})).await?;
+                    let actual=resolved["instance"]["protocol_digest"].as_str().ok_or_else(||local("PROTOCOL_RESOLUTION_FAILED"))?;
+                    if !protocol_digest.is_empty()&&protocol_digest!=actual{return Err(local("PROTOCOL_RESOLUTION_FAILED"));}
+                    *protocol_digest=actual.into();
+                    let selected=Scope{workspace_id:scope.workspace_id.clone(),instance_id:Some(instance_id.clone()),protocol_digest:Some(protocol_digest.clone())};
+                    let bound=read(&client,"structure.protocol.resolve",selected,json!({"view":"inspect","include_resources":false})).await?;
+                    let definition=&bound["bundle_header"]["roles"][role.as_str()];
+                    if !definition.is_object(){return Err(local("PROTOCOL_ROLE_NOT_FOUND"));}
+                    let declared:std::collections::BTreeSet<String>=definition["tools"].as_array().into_iter().flatten().filter_map(|t|t["action"].as_str().map(str::to_owned)).collect();
+                    if actions.is_empty(){*actions=declared.into_iter().collect();}
+                    else if actions.iter().any(|a|!declared.contains(a)){return Err(local("ACTION_NOT_DECLARED_FOR_ROLE"));}
+                }
+            }
+            let active=read(&client,"structure.members.read",scope.clone(),json!({"actor_id":request.actor_id,"state":"ACTIVE","limit":1})).await?;
+            let mut steps=Vec::new();
+            if let Some(member)=active["members"].as_array().and_then(|m|m.first()){
+                if member["access_active"]!=true{return Err(local("EXPIRED_SESSION_REQUIRES_EXPLICIT_ADMISSION"));}
+                continuation.membership_id=member["membership_id"].as_str().ok_or_else(||local("MEMBERSHIP_OBSERVATION_INVALID"))?.into();
+            }else{
+                let revoked=read(&client,"structure.members.read",scope.clone(),json!({"actor_id":request.actor_id,"state":"REVOKED","limit":1})).await?;
+                let expected=revoked["members"].as_array().and_then(|m|m.first()).map(|m|m["membership_id"].clone()).unwrap_or(Value::Null);
+                let mut step=Invoke::new(format!("approve-{id}-membership"),"structure.member.set",scope,
+                    json!({"actor_id":request.actor_id,"state":"ACTIVE","expected_membership_id":expected}));
+                step.expected_workspace_revision=workspace["workspace_revision"].as_u64();
+                steps.push(step);
+            }
+            self.registry.approvals.insert(id.into(),Approval{participant:participant.into(),digest,steps,results:Vec::new(),continuation:Some(continuation)});
+            self.save()?;
+        }
+        let parent=&self.registry.approvals[id];
+        if parent.results.len()<parent.steps.len(){
+            let step=parent.steps[parent.results.len()].clone();
+            let mut value=client.call(json!({"method":"invoke","request":step,"wait_ms":1000})).await?;
+            if value["state"]=="PENDING"{value=client.call(json!({"method":"recover","operation_id":step.operation_id})).await?;}
+            if value["state"]!="ACCEPTED"{
+                let terminal=matches!(value["state"].as_str(),Some("REJECTED_NO_EFFECT"|"FAILED"|"REJECTED"));
+                return Ok(json!({"state":if terminal{"REJECTED_NO_EFFECT"}else{"PENDING"},"approval_id":id,"setup_id":request.setup_id,"phase":"ADMISSION_SUBMISSION",
+                    "original_operation":crate::agent_tools::operation_view(value),"next_action":if terminal{"CORRECT_REQUEST_NEW_APPROVAL_ID"}else{"RESUME_SAME_APPROVAL_ID"},"partial_success_preserved":true}));
+            }
+            #[cfg(test)]
+            if self.interrupt_after_admission {
+                self.interrupt_after_admission=false;
+                return Err(local("SYNTHETIC_INTERRUPT_AFTER_ADMISSION"));
+            }
+            let membership=value["outcome"]["result"]["structure"]["membership_id"].as_str().filter(|s|token(s)).ok_or_else(||local("MEMBERSHIP_OBSERVATION_INVALID"))?.to_owned();
+            let parent=self.registry.approvals.get_mut(id).unwrap();
+            parent.continuation.as_mut().ok_or_else(||local("APPROVAL_STATE_INVALID"))?.membership_id=membership;
+            parent.results.push(json!({"operation_id":value["operation_id"],"command_id":value["command_id"],"state":"ACCEPTED","effect_certainty":value["effect_certainty"]}));
+            self.save()?;
+        }
+        let continuation=self.registry.approvals[id].continuation.clone().ok_or_else(||local("APPROVAL_STATE_INVALID"))?;
+        let child_id=format!("rights-{}",&sha256_hex(json!([id,&self.registry.approvals[id].digest]).to_string().as_bytes())[..32]);
+        let mut result=Box::pin(self.approve(participant,&child_id,continuation)).await?;
+        result["approval_id"]=json!(id);
+        result["setup_id"]=json!(request.setup_id);
+        result["admission_operations"]=json!(self.registry.approvals[id].results);
+        result["next_action"]=if result["state"]=="APPROVED"{json!("RESUME_ORIGINAL_CONNECT_SETUP")}else if result["state"]=="PENDING"{json!("RESUME_SAME_APPROVAL_ID")}else{json!("CORRECT_REQUEST_NEW_APPROVAL_ID")};
+        Ok(result)
+    }
     pub async fn approve(
         &mut self,
         participant: &str,
@@ -137,7 +245,8 @@ impl Connect {
             .get(participant)
             .cloned()
             .ok_or_else(|| local("LOCAL_SELECTION_REQUIRED"))?;
-        if selected.actor_id != request.owner_id || selected.origin != request.origin {
+        let admission=request.missing.iter().any(|v|matches!(v,Delta::Membership));
+        if (!admission&&selected.actor_id != request.owner_id) || selected.origin != request.origin {
             return Err(local("APPROVER_IDENTITY_OR_ORIGIN_MISMATCH"));
         }
         let client =
@@ -155,6 +264,7 @@ impl Connect {
                 .map_err(|_| local("AUTHORIZATION_REQUEST_INVALID"))?
                 .as_slice(),
         );
+        if admission {return self.approve_admission(participant,approval_id,request,&selected.actor_id,client,digest).await;}
         if let Some(prior) = self.registry.approvals.get(approval_id) {
             if prior.digest != digest || prior.participant != participant {
                 return Err(local("APPROVAL_ID_CONFLICT_RESUME_ORIGINAL"));
@@ -272,6 +382,7 @@ impl Connect {
                     digest,
                     steps,
                     results: Vec::new(),
+                    continuation: None,
                 },
             );
             self.save()?;
@@ -315,6 +426,24 @@ impl Connect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn public_request_code_roundtrips_and_is_not_an_authorization() {
+        let input=json!({"format":"peerwork.connect-authorization-request.v2","setup_id":"join-worker",
+            "origin":"https://example.invalid/","workspace_id":"W".repeat(43),"actor_id":"A".repeat(43),
+            "membership_id":"","owner_id":"","missing":[{"kind":"MEMBERSHIP"},{"kind":"COMMUNICATION_SEND"}],"body_keys_required":false});
+        let request=AuthorizationRequest::from_input(input).unwrap();
+        let code=request.to_code().unwrap();
+        let restored=AuthorizationRequest::from_input(json!(code)).unwrap();
+        assert_eq!(serde_json::to_value(&request).unwrap(),serde_json::to_value(restored).unwrap());
+        let tool=crate::agent_tools::AgentRequest::parse("connect_approve",json!({"participant":"owner","approval_id":"approve-once","request":code}));
+        assert!(matches!(tool,Ok(crate::agent_tools::AgentRequest::ConnectApprove{..})));
+        assert!(AuthorizationRequest::from_input(json!("PW-AUTH-1.invalid+padding=")).is_err());
+        let invalid=format!("PW-AUTH-1.{}",peerwork_core::crypto::base64url(br#"{"format":"x","format":"y"}"#));
+        assert!(AuthorizationRequest::from_input(json!(invalid)).is_err());
+        assert!(AuthorizationRequest::from_input(json!("x".repeat(43706))).is_err());
+        let mut v=serde_json::to_value(&request).unwrap();v["missing"]=json!([{"kind":"COMMUNICATION_SEND"}]);
+        assert!(AuthorizationRequest::from_input(v).is_err(),"v2 cannot omit its explicit admission request");
+    }
     #[test]
     fn approval_preserves_finite_lease_and_requires_explicit_expired_renewal() {
         let grant = json!({"expires_at":2000});

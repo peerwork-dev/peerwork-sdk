@@ -97,9 +97,10 @@ missing or offline.
 
 Fresh reads without an explicit command ID or idempotency key do not create a
 saved mutation intent. Correct a malformed read and read again; do not replay a
-business operation or stop receiving to recover the directory. Native0.3.8's
-generic HTTP error may still say `RECONCILE_ORIGINAL_INTENT`; that message alone
-does not establish a saved operation. Explicitly durable queries and actual
+business operation or stop receiving to recover the directory. Native0.3.9 classifies fresh-read HTTP
+rejections separately and reports `CORRECT_READ_REQUEST_OR_CONFIGURATION`, not
+mutation recovery. Native0.3.8's generic HTTP message alone does not establish a
+saved operation. Explicitly durable queries and actual
 mutations retain their original status/recovery paths.
 
 If the tool is missing after upgrading the runtime, also upgrade and reload the

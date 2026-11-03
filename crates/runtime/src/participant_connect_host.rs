@@ -47,7 +47,7 @@ impl Connect {
         self.require_writer()?;
         let automatic=request.setup_id.is_empty();
         let mut request=self.normalize_agent_request(request)?;
-        if !request.receive || selected.participant!=request.participant || request.host.is_some() {
+        if !request.receive || selected.participant!=request.participant || request.host.is_some() || request.receive_mode==Some(ReceiveMode::Inbox) {
             return Err(local("CURRENT_HOST_SELECTION_CONFLICT"));
         }
         let observation=caller.verify(&selected.adapter)?;
@@ -256,6 +256,21 @@ pub(super) fn adapter(values: &BTreeMap<String, String>) -> Result<Option<Value>
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn explicit_inbox_rejects_current_host_binding_before_local_changes() {
+        let state=crate::test_support::protected_test_dir();
+        let mut connect=Connect::open(&state.path().join("registry")).unwrap();
+        connect.registry.participants.insert("worker".into(),Registration{origin:"https://example.invalid/".into(),actor_id:"A".repeat(43),endpoint_path:state.path().join("not-opened.json")});
+        connect.save().unwrap();
+        let before=std::fs::read(connect.directory.join("connect.state")).unwrap();
+        let request=serde_json::from_value(json!({"participant":"worker","workspace_id":"W".repeat(43),"receive":true,"receive_mode":"INBOX"})).unwrap();
+        let selected=HostSelection{participant:"worker".into(),admin_endpoint:state.path().join("not-opened-admin.json"),adapter:json!({"kind":"codex","thread_id":"selected-thread"})};
+        let caller=HostInvocation::CodexDynamicTool{thread_id:"selected-thread".into(),turn_id:"turn".into(),call_id:"call".into(),instance:"host".into()};
+        let error=connect.connect_current(request,selected,caller).await.unwrap_err();
+        assert_eq!(error.code,"CURRENT_HOST_SELECTION_CONFLICT");
+        assert_eq!(std::fs::read(connect.directory.join("connect.state")).unwrap(),before);
+        assert!(connect.registry.hosts.is_empty());assert!(connect.registry.setups.is_empty());
+    }
     fn flags(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         pairs
             .iter()
