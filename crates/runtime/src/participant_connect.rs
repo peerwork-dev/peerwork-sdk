@@ -212,6 +212,21 @@ pub struct Connect {
     #[cfg(test)]
     interrupt_after_admission: bool,
 }
+fn receiving_self_test(receiver:&Value,push:bool)->Value {
+    let linked=receiver["receiver_link_verified"]==true
+        && receiver["state"]=="RECEIVER_LINK_VERIFIED"
+        && receiver["verification_failure"].is_null();
+    let presence=&receiver["presence"];
+    let keys=presence["key_current"]==true&&matches!(presence["body_key"]["state"].as_str(),Some("READY"|"NOT_REQUIRED"));
+    let host=presence["host_current"]==true&&presence["host"]["ready"]==true&&presence["host"]["mode"]=="LIVE";
+    let code=if !linked{receiver["code"].as_str().unwrap_or("RECEIVER_NOT_VERIFIED")}else if push&&!keys{"BODY_KEYS_NOT_READY"}else if push&&!host{"HOST_LIVE_DELIVERY_NOT_READY"}else{"READY"};
+    json!({"state":if linked&&(!push||(host&&keys)){"READY"}else{"PENDING"},"code":code,"receiver_link_verified":linked,
+        "host_required":push,"host_ready":host,"body_keys_ready":keys,"presence":presence,
+        "basis":"CURRENT_LOCAL_RUNTIME_OBSERVATION","model_response":"NOT_ATTESTED"})
+}
+fn receiving_observation(observed:&Value)->Value {
+    json!({"state":observed["state"],"code":observed["code"],"verification_failure":observed["verification_failure"],"presence":observed["presence"],"receiver_link_verified":observed["receiver_link_verified"],"checkpoint":observed["checkpoint"],"model_response":"NOT_ATTESTED"})
+}
 impl Connect {
     pub fn selection_required(setup_id: &str) -> Value {
         json!({"state":"PENDING","setup_id":setup_id,"blocker":{"stage":"LOCAL_SELECTION","code":"LOCAL_SELECTION_REQUIRED","next_actor":"LOCAL_RUNTIME_OWNER","next_action":"RUN_NATIVE_CONNECT_WITH_AUTHORIZED_PROJECT_CONTEXT"}})
@@ -525,6 +540,17 @@ impl Connect {
                 return Err(local("EXISTING_PROGRAM_RECEIVER_REQUIRES_EXPLICIT_REBIND"));
             }
             if old.result["state"] == "LOCAL_CONFIGURED" {
+                if old.effective_host.is_none()&&old.channel_receive {
+                    if let Some(profile)=&old.profile {
+                        if let Some(endpoint)=&profile.receive_endpoint_path {
+                            let receiver=RuntimeClient::connect(endpoint.clone(),&profile.expected_origin,&profile.expected_actor).await?;
+                            let bindings=receiver.call(json!({"method":"bindings"})).await?;
+                            if bindings.as_array().is_some_and(|items|items.iter().any(|w|w["workspace_id"]==request.workspace_id&&w["host_destination"].is_string()&&profile.scopes.values().any(|s|w["mailbox_id"]==s.mailbox_id&&w["membership_id"]==s.membership_id))) {
+                                return self.pending(&request,"HOST_BINDING","EXISTING_PUSH_RECEIVER_REQUIRES_EXPLICIT_REBIND","HOST_USER","EXPLICIT_NATIVE_REBIND",json!({"existing_receiver_preserved":true}));
+                            }
+                        }
+                    }
+                }
                 if let Some(profile) = &old.profile {
                     self.original_client(&request.participant).await?;
                     self.ensure_profile(&request.setup_id, profile)?;
@@ -547,6 +573,30 @@ impl Connect {
                     };
                     if sender_ready && receiver_ready {
                         let mut result = old.result.clone();
+                        if request.receive&&old.channel_receive {
+                            if let Some(endpoint)=&profile.receive_endpoint_path {
+                                let receiver=RuntimeClient::connect(endpoint.clone(),&profile.expected_origin,&profile.expected_actor).await?;
+                                let bindings=receiver.call(json!({"method":"bindings"})).await?;
+                                let matched=bindings.as_array().and_then(|items|items.iter().find(|w|w["workspace_id"]==request.workspace_id&&profile.scopes.values().any(|s|w["mailbox_id"]==s.mailbox_id&&w["membership_id"]==s.membership_id)));
+                                if old.effective_host.is_some() {
+                                    let selected=if let Some(watch)=matched{self.completed_first_host(&request,old,watch).await?.is_some()}else{false};
+                                    if !selected {
+                                        return Ok(json!({"state":"PENDING","setup_id":request.setup_id,"tools_available":true,
+                                            "blocker":{"stage":"HOST_BINDING","code":"HOST_SELECTION_CHANGED_REBIND_REQUIRED","next_actor":"HOST_USER","next_action":"REVIEW_SELECTED_HOST_BINDING"},
+                                            "existing_configuration_preserved":true,"existing_receiver_preserved":true}));
+                                    }
+                                }
+                                let observed=if let Some(options)=matched{receiver.call(json!({"method":"inbox","options":options,"after":0,"limit":1})).await?}else{json!({"state":"NOT_STARTED","receiver_link_verified":false})};
+                                let observed=receiving_observation(&observed);
+                                let self_test=receiving_self_test(&observed,old.effective_host.is_some());
+                                if self_test["state"]!="READY" {
+                                    return self.record(&request,json!({"state":"PENDING","setup_id":request.setup_id,"tools_available":true,
+                                        "blocker":{"stage":"RECEIVING_SELF_TEST","code":self_test["code"],"next_actor":"RUNTIME","next_action":"INSPECT_RECEIVING_BLOCKER_OR_RESUME_SAME_SETUP"},
+                                        "receiver":observed,"self_test":self_test,"owner_exchange_required":false}),Some(profile.clone()));
+                                }
+                                result["receiver"]=observed;result["self_test"]=self_test;
+                            }
+                        }
                         result["observation"] =
                             json!("CACHED_SETUP_RESULT_USE_REACHABILITY_FOR_CURRENT_STATE");
                         return Ok(result);
@@ -814,7 +864,7 @@ impl Connect {
                 json!({"observation":mailboxes}),
             );
         }
-        let previous_setup = self
+        let mut previous_setup = self
             .registry
             .active_by_scope
             .get(&format!("{}:{}", request.participant, request.workspace_id))
@@ -827,6 +877,10 @@ impl Connect {
                     .filter(|s| s.profile.is_some())
             })
             .cloned();
+        let completed_first=if request.receive && (agent||request.host.is_some()) && previous_setup.as_ref().is_some_and(|s|s.channel_receive&&s.effective_host.is_none()) {
+            if let Some(mailbox)=mailbox {self.completed_first_host(&request,previous_setup.as_ref().unwrap(),mailbox).await?}else{None}
+        }else{None};
+        if let Some(completed)=&completed_first {previous_setup.as_mut().unwrap().effective_host=Some(completed.name.clone());}
         let previous = previous_setup.as_ref().and_then(|s| s.profile.clone());
         if request.receive_mode==Some(ReceiveMode::Inbox) && previous_setup.as_ref().is_some_and(|s|s.channel_receive&&s.effective_host.is_some()) {
             return self.pending(&request,"HOST_BINDING","EXISTING_PUSH_RECEIVER_REQUIRES_EXPLICIT_REBIND","HOST_USER","EXPLICIT_NATIVE_REBIND",json!({"existing_receiver_preserved":true}));
@@ -989,7 +1043,10 @@ impl Connect {
             .and_then(|p| p.receive_endpoint_path.clone());
         let mut receiver_name = String::new();
         let mut receiver_generation = 0;
-        let receiver_tools = if request.receive && channel_receive {
+        let receiver_tools = if let Some(completed)=&completed_first {
+            receive_endpoint=Some(completed.endpoint.clone());receiver_name=completed.client_name.clone();receiver_generation=completed.generation.unwrap_or(0);
+            Some(RuntimeClient::connect_bound(completed.endpoint.clone(),&selected.origin,&selected.actor_id,completed.binding.clone()).await?)
+        }else if request.receive && channel_receive {
             let mailbox_id = mailbox
                 .and_then(|m| m["mailbox_id"].as_str())
                 .filter(|s| token(s))
@@ -1077,9 +1134,13 @@ impl Connect {
                     .unwrap()
                     .call(json!({"method":"watch","options":options}))
                     .await?;
-                receiver = json!({"state":observed["state"],"code":observed["code"],"presence":observed["presence"],
-                    "receiver_link_verified":observed["receiver_link_verified"],"checkpoint":observed["checkpoint"],
-                    "model_response":"NOT_ATTESTED"});
+                receiver=receiving_observation(&observed);
+                let until=tokio::time::Instant::now()+std::time::Duration::from_secs(2);
+                while receiver["receiver_link_verified"]!=true&&receiver["state"]!="BLOCKED"&&tokio::time::Instant::now()<until {
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    let observed=receiver_tools.as_ref().unwrap().call(json!({"method":"inbox","options":options,"after":0,"limit":1})).await?;
+                    receiver=receiving_observation(&observed);
+                }
             }
             scopes.insert(request.alias.clone(), address);
             send_scopes.remove(&request.alias);
@@ -1187,13 +1248,14 @@ impl Connect {
                 .scopes
                 .get(&request.alias)
                 .ok_or_else(|| local("DEFAULT_MAILBOX_REQUIRED"))?;
-            let options = WatchOptions {
+            let options = completed_first.as_ref().map(|c|c.watch.clone()).unwrap_or_else(||WatchOptions {
                 workspace_id: request.workspace_id.clone(),
                 mailbox_id: address.mailbox_id.clone(),
                 membership_id: address.membership_id.clone(),
                 consumer_id: format!("connect-{}", request.participant),
                 host_destination: None,
-            };
+            });
+            let generation=if let Some(completed)=&completed_first{completed.generation}else{Some(receiver_generation)};
             let client_name = receiver_name.as_str();
             let tools = receiver_tools
                 .as_ref()
@@ -1204,7 +1266,7 @@ impl Connect {
                     &request,
                     &selected,
                     client_name,
-                    receiver_generation,
+                    generation,
                     options.clone(),
                 )
                 .await?;
@@ -1220,8 +1282,15 @@ impl Connect {
                     let observed = tools
                         .call(json!({"method":"inbox","options":options,"after":0,"limit":1}))
                         .await?;
-                    receiver = json!({"state":observed["state"],"code":observed["code"],"presence":observed["presence"],"receiver_link_verified":observed["receiver_link_verified"],"checkpoint":observed["checkpoint"],"model_response":"NOT_ATTESTED"});
-                    break;
+                    receiver=receiving_observation(&observed);
+                    if receiving_self_test(&receiver,true)["state"]=="READY" {break;}
+                    if receiver["state"]=="BLOCKED"||tokio::time::Instant::now()>=until {
+                        return self.record(&request,json!({"state":"PENDING","setup_id":request.setup_id,"tools_available":true,"profile_path":path,
+                            "blocker":{"stage":"RECEIVING_SELF_TEST","code":receiving_self_test(&receiver,true)["code"],"next_actor":"RUNTIME","next_action":"INSPECT_RECEIVING_BLOCKER_OR_RESUME_SAME_SETUP"},
+                            "receiver":receiver,"self_test":receiving_self_test(&receiver,true),"host":host_observation,"owner_exchange_required":false}),Some(profile));
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    continue;
                 }
                 if tokio::time::Instant::now() >= until {
                     host_observation = self
@@ -1230,7 +1299,7 @@ impl Connect {
                             &request,
                             &selected,
                             client_name,
-                            receiver_generation,
+                            generation,
                             options.clone(),
                         )
                         .await?;
@@ -1259,6 +1328,12 @@ impl Connect {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             }
         }
+        let self_test=if request.receive&&channel_receive{receiving_self_test(&receiver,effective_host.is_some())}else{json!({"state":"NOT_REQUESTED","model_response":"NOT_ATTESTED"})};
+        if request.receive&&channel_receive&&self_test["state"]!="READY" {
+            return self.record(&request,json!({"state":"PENDING","setup_id":request.setup_id,"tools_available":true,"profile_path":path,
+                "blocker":{"stage":"RECEIVING_SELF_TEST","code":self_test["code"],"next_actor":"RUNTIME","next_action":"INSPECT_RECEIVING_BLOCKER_OR_RESUME_SAME_SETUP"},
+                "receiver":receiver,"self_test":self_test,"host":host_observation,"owner_exchange_required":false}),Some(profile));
+        }
         if self.registry.active.as_deref() != Some(&request.setup_id) {
             self.registry.active = Some(request.setup_id.clone());
             self.registry.active_by_scope.insert(
@@ -1278,8 +1353,8 @@ impl Connect {
         self.record(&request,json!({"state":"LOCAL_CONFIGURED","setup_id":request.setup_id,"profile_path":path,
             "observed_at_ms":stamp(),
             "actor_id":profile.expected_actor,"origin":profile.expected_origin,"workspace_id":request.workspace_id,
-            "membership_id":membership,"keys":keys,"receiver":receiver,"host":host_observation,"mcp_current_session":"NOT_ATTESTED",
-            "receive_mode":if request.receive{if agent{"PUSH"}else{"INBOX"}}else{"NOT_REQUESTED"},"automatic_model_wake":if effective_host.is_some(){"HOST_DEPENDENT_NOT_ATTESTED"}else{"NOT_CONFIGURED"},"next_action":if request.receive_mode==Some(ReceiveMode::Inbox){"USE_MCP_INBOX_OR_WAIT"}else if !request.receive{"USE_LOADED_TOOLS"}else{"VERIFY_SELECTED_RECEIVING_PATH_AND_TOOLS"},"owner_exchange_required":false}),Some(profile))
+            "membership_id":membership,"keys":keys,"receiver":receiver,"host":host_observation,"self_test":self_test,"mcp_current_session":"NOT_ATTESTED",
+            "receive_mode":if request.receive{if effective_host.is_some(){"PUSH"}else{"INBOX"}}else{"NOT_REQUESTED"},"automatic_model_wake":if effective_host.is_some(){"HOST_DEPENDENT_NOT_ATTESTED"}else{"NOT_CONFIGURED"},"next_action":if request.receive_mode==Some(ReceiveMode::Inbox){"USE_MCP_INBOX_OR_WAIT"}else if !request.receive{"USE_LOADED_TOOLS"}else{"VERIFY_SELECTED_RECEIVING_PATH_AND_TOOLS"},"owner_exchange_required":false}),Some(profile))
     }
     async fn key_request(
         &mut self,
@@ -1799,4 +1874,26 @@ mod tests {
         assert_eq!(error.code, "CONNECT_READ_ONLY_VIEW");
         assert!(reader.save().is_err());
     }
+    #[test]
+    fn receiving_self_test_requires_current_verified_path_and_push_prerequisites() {
+        let ready=json!({"state":"RECEIVER_LINK_VERIFIED","receiver_link_verified":true,
+            "presence":{"host_current":true,"host":{"ready":true,"mode":"LIVE"},
+                "key_current":true,"body_key":{"state":"READY"}}});
+        assert_eq!(receiving_self_test(&ready,true)["state"],"READY");
+        assert_eq!(receiving_self_test(&ready,false)["state"],"READY");
+        for state in ["BLOCKED","RECONNECTING","LOCAL_STOPPED","CLAIMED"] {
+            let mut fault=ready.clone();fault["state"]=json!(state);
+            assert_eq!(receiving_self_test(&fault,false)["state"],"PENDING");
+            assert_eq!(receiving_self_test(&fault,true)["state"],"PENDING");
+        }
+        let mut fault=ready.clone();fault["verification_failure"]=json!({"code":"STREAM_DIGEST_INVALID"});
+        assert_eq!(receiving_self_test(&fault,true)["state"],"PENDING");
+        for field in ["key_current","host_current"] {
+            let mut stale=ready.clone();stale["presence"][field]=json!(false);
+            assert_eq!(receiving_self_test(&stale,true)["state"],"PENDING");
+            assert_eq!(receiving_self_test(&stale,false)["state"],"READY");
+        }
+        assert_eq!(receiving_self_test(&ready,true)["model_response"],"NOT_ATTESTED");
+    }
+
 }

@@ -99,7 +99,7 @@ impl WatchOptions {
         }
         Ok(())
     }
-    fn destination(&self, actor: &str, origin: &str, namespace: &str) -> String {
+    pub(crate) fn destination(&self, actor: &str, origin: &str, namespace: &str) -> String {
         if let Some(digest) = &self.host_destination {
             return digest.clone();
         }
@@ -596,7 +596,14 @@ pub(crate) async fn run(
                         if !local_live.load(std::sync::atomic::Ordering::Acquire){return Err(error("LOCAL_CLIENT_REVOKED"));}
                         if let Some(s)=slots.get_mut(&options.key()){s.signals.retain(|s|!s.is_closed());if s.signals.len()>=16{return Err(error("WATCH_LISTENER_LIMIT"));}}
                         let binding=store.attach_watch(&identity, &namespace,&options)?;
-                        let entry=slots.entry(options.key()).or_insert_with(||slot(binding));entry.enabled=true;
+                        let key=options.key();
+                        if !slots.contains_key(&key) {
+                            let fault=store.receive_fault(&options.workspace_id,&options.mailbox_id)?;
+                            let mut value=slot(binding);value.receive_fault=fault;
+                            if value.receive_fault.is_some(){value.state("BLOCKED",Some("STREAM_VERIFICATION_FAILED".into()));}
+                            slots.insert(key.clone(),value);
+                        }
+                        let entry=slots.get_mut(&key).unwrap();entry.enabled=true;
                         let (tx,rx)=mpsc::channel(1);let _=tx.try_send(());entry.signals.push(tx);Ok(rx)
                     })();let _=reply.send(attached);
                 },

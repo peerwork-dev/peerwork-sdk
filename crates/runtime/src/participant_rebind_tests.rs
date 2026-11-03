@@ -171,6 +171,7 @@ async fn setup(
     let path = root.join("runtime.json");
     write_private(&path, &serde_json::to_vec(&runtime).unwrap()).unwrap();
     let request = HostRebindRequest {
+        initial_subscriptions:None,
         format: "peerwork.host-rebind.v1".into(),
         operation_id: "move-session".into(),
         engine: "one".into(),

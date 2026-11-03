@@ -39,11 +39,12 @@ use tokio::{
     task::JoinSet,
 };
 
-pub(crate) const CONNECT_FEATURES: [&str; 4] = [
+pub(crate) const CONNECT_FEATURES: [&str; 5] = [
     "participant-connect-v1",
     "derived-client-generation-v1",
     "scoped-host-revocation-v1",
     "original-engine-binding-v1",
+    "first-host-rebind-v1",
 ];
 const REQUEST_FORMAT: &str = "peerwork.participant-request.v1";
 const RESPONSE_FORMAT: &str = "peerwork.participant-response.v1";
@@ -156,6 +157,20 @@ pub struct RuntimeConfig {
     pub clients: Vec<ClientConfig>,
     #[serde(default)]
     pub hosts: Vec<crate::participant_dispatch::HostConfig>,
+}
+/// A stopped-runtime selection, resolved through the original local client
+/// chain. It never creates a replacement namespace or expands a capability.
+pub(crate) struct RebindClient {
+    pub engine:String,
+    pub namespace:String,
+    pub capability:Capability,
+    pub generation:Option<u64>,
+}
+pub(crate) fn rebind_client(config:&RuntimeConfig,name:&str)->Result<RebindClient> {
+    derived::resolve_rebind_client(&config.state_directory,&config.clients,name)
+}
+pub(crate) fn initial_host_available(config:&RuntimeConfig,target:&crate::participant_dispatch::HostConfig)->Result<()> {
+    hosts::initial_host_available(&config.state_directory,&config.hosts,target)
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct RuntimeReady {
@@ -368,7 +383,7 @@ impl Runtime {
                     Ok(json!({"state":if cleaned{"LOCAL_CLIENTS_REVOKED"}else{"LOCAL_CLIENTS_REVOKED_CLEANUP_PENDING"},"count":count,"receiver_cleanup_pending":!cleaned,"cleanup_error":cleanup_error,"original_operations_retained":true,"remote_rights_revoked":false,"inflight_host_results":"RETAINED"}))
                 },
                 ClientRequest::Capabilities=>Ok(json!({"format":"peerwork.participant-capability.v1","actor_id":client.actor_id(),"origin":client.origin(),"capability":client.capability(),"admin":false,"maturity":"EXPERIMENTAL","features":CONNECT_FEATURES})),
-                ClientRequest::Binding=>Ok(json!({"format":"peerwork.local-engine-binding.v1","actor_id":client.actor_id(),"origin":client.origin(),"state_binding":client.state_binding(),"engine_digest":self.engine_bindings.get(client.state_binding()),"namespace":client.local_namespace(),"client_generation":session.generation,"features":CONNECT_FEATURES})),
+                ClientRequest::Binding=>Ok(json!({"format":"peerwork.local-engine-binding.v1","actor_id":client.actor_id(),"origin":client.origin(),"state_binding":client.state_binding(),"engine_digest":self.engine_bindings.get(client.state_binding()),"namespace":client.local_namespace(),"client_generation":session.generation,"client_name":session.name,"features":CONNECT_FEATURES})),
                 request=>crate::participant_client_tools::call(client,&session.watches,request).await,
             }
         }.await;

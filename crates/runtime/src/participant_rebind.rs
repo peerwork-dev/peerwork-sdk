@@ -54,6 +54,10 @@ pub struct HostRebindRequest {
     pub host: String,
     /// An explicit existing-session adapter, never a command to start a model.
     pub adapter: Value,
+    /// Explicit first-host binding of original INBOX subscriptions. Omitted
+    /// for replacing an already configured host. Never creates new clients.
+    #[serde(default, skip_serializing_if="Option::is_none")]
+    pub initial_subscriptions: Option<Vec<crate::participant_dispatch::HostSubscription>>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -114,6 +118,8 @@ struct Subscription {
     rejected: Vec<RejectedAttempt>,
     #[serde(default)]
     refresh_epoch_on_retry: bool,
+    #[serde(default, skip_serializing_if="Option::is_none")]
+    source_client: Option<crate::participant_dispatch::HostSubscription>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -237,12 +243,9 @@ fn rebind_action(
             .filter(|e| e.name == request.engine)
             .count()
             != 1
-        || config
-            .hosts
-            .iter()
-            .filter(|h| h.name == request.host)
-            .count()
-            != 1
+        || if request.initial_subscriptions.is_some(){
+            config.hosts.iter().filter(|h|h.name==request.host).count()>1
+        }else{config.hosts.iter().filter(|h|h.name==request.host).count()!=1}
     {
         return Err(error("HOST_REBIND_SELECTION_INVALID"));
     }
@@ -343,55 +346,51 @@ fn rebind_action(
     let mut job = if let Some(job) = existing {
         job
     } else {
-        let selected = config
-            .hosts
-            .iter()
-            .find(|h| h.name == request.host)
-            .unwrap();
-        let key = selected.key()?;
-        if config
-            .hosts
-            .iter()
-            .filter(|h| h.key().ok().as_ref() == Some(&key))
-            .count()
-            != 1
-        {
+        let first=request.initial_subscriptions.is_some();
+        let selected=if let Some(subscriptions)=&request.initial_subscriptions {
+            if subscriptions.is_empty()||subscriptions.len()>8||config.hosts.iter().any(|h|h.name==request.host)
+                || subscriptions.iter().any(|s|s.watch.host_destination.is_some()) {
+                return Err(error("HOST_INITIAL_SELECTION_INVALID"));
+            }
+            let selected=crate::participant_dispatch::HostConfig{name:request.host.clone(),adapter:request.adapter.clone(),subscriptions:subscriptions.clone()};
+            crate::communication_runtime::initial_host_available(&config,&selected)?;
+            selected
+        }else{config.hosts.iter().find(|h|h.name==request.host).unwrap().clone()};
+        let key=selected.key()?;
+        if !first && config.hosts.iter().filter(|h|h.key().ok().as_ref()==Some(&key)).count()!=1 {
             return Err(error("HOST_REBIND_SELECT_ONE_HOST_GROUP"));
         }
-        let mut target = config.clone();
-        let target_host = target
-            .hosts
-            .iter_mut()
-            .find(|h| h.name == request.host)
-            .unwrap();
-        target_host.adapter = request.adapter.clone();
-        let host_key = target_host.key()?;
+        let mut target=config.clone();
+        if first{target.hosts.push(selected.clone());}
+        let target_host=target.hosts.iter_mut().find(|h|h.name==request.host).unwrap();
+        target_host.adapter=request.adapter.clone();
+        let host_key=target_host.key()?;
         let revision = participant_owner::revision(&owner, &logical)?;
         let mut host =
             Host::open(request.adapter.clone(), executor.handle().clone()).map_err(error)?;
         let destination = HostBinding::new(host.destination.clone())?;
         let mut scopes = Vec::new();
         for (index, subscription) in selected.subscriptions.iter().enumerate() {
-            let clients = config
-                .clients
-                .iter()
-                .filter(|c| c.name == subscription.client)
-                .collect::<Vec<_>>();
-            if clients.len() != 1 || clients[0].engine != engine.name {
-                return Err(error("HOST_REBIND_SELECTED_HOST_ENGINE_MISMATCH"));
+            let client=crate::communication_runtime::rebind_client(&config,&subscription.client)?;
+            if client.engine!=engine.name||client.generation!=subscription.client_generation {
+                return Err(error("HOST_REBIND_SELECTED_HOST_ENGINE_OR_GENERATION_MISMATCH"));
             }
-            subscription.watch.authorize(&clients[0].capability)?;
-            let namespace = format!("program:{}", subscription.client);
-            let binding = inbox.selected_watch(&namespace, &subscription.watch)?;
-            inbox.host_scope_check(&namespace, &binding.options)?;
-            inbox.rebind_reports_unblocked(&binding.options)?;
+            subscription.watch.authorize(&client.capability)?;
+            let mut hosted=subscription.watch.clone();hosted.host_destination=Some(destination.digest.clone());
+            hosted.authorize(&client.capability)?;
+            let namespace=client.namespace;
+            let binding=inbox.selected_watch(&namespace,&subscription.watch)?;
+            if !first {
+                inbox.host_scope_check(&namespace,&binding.options)?;
+                inbox.rebind_reports_unblocked(&binding.options)?;
+            }
             let pins = binding
                 .pins
                 .ok_or_else(|| error("HOST_REBIND_MAILBOX_NOT_INITIALIZED"))?;
             pins.validate()
                 .map_err(|_| error("HOST_REBIND_PINS_INVALID"))?;
             if pins.receiver_id != binding.receiver
-                || binding.options.host_destination.as_deref() != Some(&pins.destination_digest)
+                || binding.options.destination(identity.actor_id(),&origin,&namespace) != pins.destination_digest
                 || destination.digest == pins.destination_digest
                 || scopes.iter().any(|s: &Subscription| {
                     s.old.workspace_id == binding.options.workspace_id
@@ -400,7 +399,7 @@ fn rebind_action(
             {
                 return Err(error("HOST_REBIND_SELECTION_INVALID"));
             }
-            let mut access = inbox.host_access_scope(&namespace, &binding.options)?;
+            let mut access=if first{inbox.initial_host_scope(&namespace,&binding.options,&pins)?}else{inbox.host_access_scope(&namespace,&binding.options)?};
             access["destination_digest"] = json!(destination.digest);
             host.health(&access).map_err(error)?;
             target_host.subscriptions[index].watch.host_destination =
@@ -416,6 +415,7 @@ fn rebind_action(
                 committed: false,
                 rejected: vec![],
                 refresh_epoch_on_retry: false,
+                source_client:Some(subscription.clone()),
             });
         }
         let host_state = SecureStateStore::open(
@@ -476,6 +476,17 @@ fn rebind_action(
         boundary("PREPARED")?;
         job
     };
+    for scope in &job.scopes {
+        if let Some(source)=&scope.source_client {
+            let client=crate::communication_runtime::rebind_client(&job.original,&source.client)?;
+            if client.engine!=job.request.engine||client.namespace!=scope.namespace||client.generation!=source.client_generation {
+                return Err(error("HOST_REBIND_SOURCE_CLIENT_CHANGED"));
+            }
+            source.watch.authorize(&client.capability)?;
+            let mut hosted=source.watch.clone();hosted.host_destination=Some(job.destination.digest.clone());
+            hosted.authorize(&client.capability)?;
+        }
+    }
     // User edits are never overwritten, including after a partial remote move.
     check_config(config_path, &job)?;
     if job.aborting.is_some()
@@ -541,7 +552,7 @@ fn rebind_action(
             return Err(error("HOST_REBIND_TARGET_SESSION_CHANGED"));
         }
         for s in job.scopes.iter().filter(|s| s.confirmed.is_none()) {
-            let mut binding = inbox.host_access_scope(&s.namespace, &s.old)?;
+            let mut binding=if s.old.host_destination.is_none(){inbox.initial_host_scope(&s.namespace,&s.old,&s.expected.native())?}else{inbox.host_access_scope(&s.namespace,&s.old)?};
             binding["destination_digest"] = json!(job.destination.digest);
             host.health(&binding).map_err(error)?;
         }
@@ -572,7 +583,7 @@ fn rebind_action(
                 };
                 inbox.disable_watch(&s.namespace, &s.old)?;
                 if s.claim_wire.is_none() {
-                    inbox.rebind_reports_unblocked(&s.old)?;
+                    if s.old.host_destination.is_some(){inbox.rebind_reports_unblocked(&s.old)?;}
                     let current = executor.block_on(call(
                         &access,
                         "structure.mailbox.get",
@@ -610,7 +621,7 @@ fn rebind_action(
                     executor.block_on(call(&access,"structure.mailbox.pulse",&s.old.workspace_id,json!({"mailbox_id":s.old.mailbox_id,
                         "receiver_id":s.expected.receiver_id,"epoch":s.expected.epoch,"ready":false,"execution_state":"OFFLINE"}),None))?;
                     while let Some((call_id, version, report)) =
-                        inbox.pending_host_report(&identity, &s.namespace, &s.old)?
+                        if s.old.host_destination.is_some(){inbox.pending_host_report(&identity,&s.namespace,&s.old)?}else{None}
                     {
                         executor.block_on(call(&access,"structure.mailbox.report",&s.old.workspace_id,json!({"mailbox_id":s.old.mailbox_id,
                             "receiver_id":s.expected.receiver_id,"epoch":s.expected.epoch,"report":report}),None))?;
@@ -1140,3 +1151,7 @@ pub(crate) fn recovery_cli(config: &Path, request: &Path, recovery: &Path) -> Re
 #[cfg(test)]
 #[path = "participant_rebind_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "participant_initial_host_tests.rs"]
+mod initial_tests;

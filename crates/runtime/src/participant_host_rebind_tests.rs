@@ -481,3 +481,40 @@ fn rebind_drops_old_host_readiness_backoff_without_inventing_delivery_success() 
         .unwrap();
     assert_eq!(second["host"], "NO_CONFIRMED_INVOCATION");
 }
+
+fn inbox_without_host()->(crate::test_support::ProtectedTestDir,KernelIdentity,InboxStore,HostRebind) {
+    let root=crate::test_support::protected_test_dir();let identity=KernelIdentity::create(&root.path().join("identity")).unwrap();
+    let origin="https://example.invalid/";let directory=root.path().join("inbox");create_private_state_directory(&directory).unwrap();
+    let mut store=InboxStore::open_local(&directory,&identity,origin).unwrap();
+    let old=WatchOptions{workspace_id:"w".repeat(43),mailbox_id:"m".repeat(43),membership_id:"g".repeat(43),consumer_id:"original".into(),host_destination:None};
+    let namespace="program:worker:receiver";let binding=store.attach_watch(&identity,namespace,&old).unwrap();
+    let expected=MailboxPins{workspace_id:old.workspace_id.clone(),mailbox_id:old.mailbox_id.clone(),membership_id:old.membership_id.clone(),receiver_id:binding.receiver,epoch:1,destination_digest:old.destination(identity.actor_id(),origin,namespace),binding_version:1,after_sequence:0,after_control_sequence:Some(7)};
+    store.register(&expected).unwrap();
+    let host=HostBinding::new(json!({"host":"CODEX_APP_SERVER","session_id":"selected","conversation_id":"selected"})).unwrap();
+    let mut confirmed=expected.clone();confirmed.epoch+=1;confirmed.binding_version+=1;confirmed.destination_digest=host.digest.clone();
+    let mut new=old.clone();new.host_destination=Some(host.digest.clone());
+    let selection=HostRebind{operation_id:"o".repeat(43),namespace:namespace.into(),old,new,expected,confirmed,host};
+    (root,identity,store,selection)
+}
+#[test]
+fn first_binding_checks_original_program_destination_and_preserves_receive_quarantine() {
+    let (_root,_identity,mut store,selection)=inbox_without_host();
+    let mut wrong=selection.expected.clone();wrong.destination_digest="a".repeat(64);
+    assert!(store.initial_host_scope(&selection.namespace,&selection.old,&wrong).is_err());
+    assert!(store.initial_host_scope("program:other",&selection.old,&selection.expected).is_err());
+    let fault=json!({"code":"STREAM_CONTROL_EVIDENCE_INVALID"});store.quarantine_receive(&selection.old.workspace_id,&selection.old.mailbox_id,&fault).unwrap();
+    store.disable_watch(&selection.namespace,&selection.old).unwrap();
+    store.host_rebind_commit(&selection).unwrap();
+    assert_eq!(store.receive_fault(&selection.old.workspace_id,&selection.old.mailbox_id).unwrap(),Some(fault));
+    let current=store.pins(&selection.old.workspace_id,&selection.old.mailbox_id).unwrap().unwrap();
+    assert_eq!(current.receiver_id,selection.expected.receiver_id);assert_eq!(current.after_control_sequence,Some(7));
+    assert!(store.host_access_scope(&selection.namespace,&selection.new).is_ok());
+}
+#[test]
+fn first_binding_refuses_retired_host_history_without_changing_pins() {
+    let (_root,_identity,mut store,selection)=inbox_without_host();
+    store.db.execute("INSERT INTO inbox_host_retired VALUES(?1,?2,?3,0,0,0)",params![selection.old.workspace_id,selection.old.mailbox_id,"h".repeat(64)]).unwrap();
+    store.disable_watch(&selection.namespace,&selection.old).unwrap();
+    assert_eq!(store.host_rebind_commit(&selection).unwrap_err().code,"HOST_INITIAL_HISTORY_CONFLICT");
+    assert_eq!(store.pins(&selection.old.workspace_id,&selection.old.mailbox_id).unwrap().unwrap().epoch,selection.expected.epoch);
+}

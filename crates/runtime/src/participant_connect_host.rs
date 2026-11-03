@@ -39,6 +39,14 @@ impl HostInvocation {
             "current_session":"LOCAL_CALLER_CONTEXT_VERIFIED","tools_loaded":"NOT_ATTESTED","model_response":"NOT_ATTESTED"}))
     }
 }
+pub(super) struct CompletedFirstHost {
+    pub name:String,
+    pub watch:WatchOptions,
+    pub client_name:String,
+    pub generation:Option<u64>,
+    pub endpoint:PathBuf,
+    pub binding:Value,
+}
 impl Connect {
     /// Entry for a client that ALREADY owns the actual host event channel.
     /// This API does not manufacture that channel for an arbitrary UI/CLI.
@@ -76,6 +84,33 @@ impl Connect {
         // Ephemeral caller evidence must never be cached for another session.
         result["caller_context"]=observation;
         Ok(result)
+    }
+    /// Recognize an explicit completed first binding through the original
+    /// endpoint and an authenticated host-admin observation. No new receiver
+    /// is derived and configuration completion never implies host readiness.
+    pub(super) async fn completed_first_host(&self,request:&ConnectRequest,previous:&Setup,mailbox:&Value)->Result<Option<CompletedFirstHost>> {
+        let Some(name)=request.host.as_ref().or_else(||self.registry.setups.get(&request.setup_id).and_then(|s|s.effective_host.as_ref())) else{return Ok(None);};
+        let Some(host)=self.registry.hosts.get(name).filter(|h|h.participant==request.participant) else{return Ok(None);};
+        let Some(profile)=&previous.profile else{return Ok(None);};
+        let Some(endpoint)=&profile.receive_endpoint_path else{return Ok(None);};
+        let receiver=RuntimeClient::connect(endpoint.clone(),&profile.expected_origin,&profile.expected_actor).await?;
+        let binding=receiver.call(json!({"method":"binding"})).await?;
+        crate::communication_runtime::validate_binding(&binding,&profile.expected_origin,&profile.expected_actor)?;
+        let Some(client_name)=binding["client_name"].as_str().filter(|s|identifier(s)) else{return Ok(None);};
+        let bindings=receiver.call(json!({"method":"bindings"})).await?;
+        let Some(watch)=bindings.as_array().and_then(|items|items.iter().find(|w|w["workspace_id"]==request.workspace_id&&w["mailbox_id"]==mailbox["mailbox_id"]&&w["membership_id"]==mailbox["membership_id"]&&w["host_destination"].is_string())) else{return Ok(None);};
+        let watch:WatchOptions=serde_json::from_value(watch.clone()).map_err(|_|local("FIRST_HOST_BINDING_INVALID"))?;
+        let config=HostConfig{name:name.clone(),adapter:host.adapter.clone(),subscriptions:vec![HostSubscription{client:client_name.into(),client_generation:binding["client_generation"].as_u64(),watch:watch.clone()}]};
+        let key=config.key()?;
+        let status=crate::communication_runtime::call(&host.admin_endpoint,json!({"method":"status"})).await?;
+        if status["ok"]!=true || !status["value"]["engines"].as_array().is_some_and(|engines|engines.iter().any(|e|e["actor_id"]==profile.expected_actor&&e["origin"]==profile.expected_origin&&e["state_binding"]==binding["state_binding"]&&e["engine_digest"]==binding["engine_digest"])) {return Err(local("FIRST_HOST_ORIGINAL_ENGINE_MISMATCH"));}
+        let expected=&config.subscriptions[0];
+        if !status["value"]["hosts"].as_array().is_some_and(|hosts|hosts.iter().any(|h|h["selection_id"]==key&&h["source_bindings"].as_array().is_some_and(|sources|sources.iter().any(|s| {
+            let Ok(mut source)=serde_json::from_value::<HostSubscription>(s.clone()) else{return false;};
+            if source.watch.host_destination.is_none(){source.watch.host_destination=watch.host_destination.clone();}
+            source.client==expected.client&&source.client_generation==expected.client_generation&&source.watch==expected.watch
+        })))) {return Ok(None);}
+        Ok(Some(CompletedFirstHost{name:name.clone(),watch,client_name:client_name.into(),generation:binding["client_generation"].as_u64(),endpoint:endpoint.clone(),binding:crate::communication_runtime::canonical_binding(&binding)}))
     }
     pub async fn register_host(&mut self, name: &str, selected: HostSelection) -> Result<Value> {
         self.require_writer()?;
@@ -148,7 +183,7 @@ impl Connect {
         request: &ConnectRequest,
         registration: &Registration,
         client_name: &str,
-        client_generation: u64,
+        client_generation: Option<u64>,
         watch: WatchOptions,
     ) -> Result<Value> {
         let selected = self
@@ -163,7 +198,7 @@ impl Connect {
             name: name.into(),
             adapter: selected.adapter.clone(),
             subscriptions: vec![HostSubscription {
-                client_generation: Some(client_generation),
+                client_generation,
                 client: client_name.into(),
                 watch,
             }],

@@ -615,3 +615,51 @@ impl Runtime {
         )
     }
 }
+
+/// Read the original derived-client lineage while the runtime is stopped. Do
+/// not materialize derived clients as static roots to make a binding succeed.
+pub(super) fn resolve_rebind_client(directory:&Path,roots:&[ClientConfig],name:&str)->Result<RebindClient> {
+    let saved=if directory.join("derived-clients.state").exists(){Some(Clients::open(directory)?)}else{None};
+    let entries=saved.as_ref().map(|s|s.data.entries.as_slice()).unwrap_or(&[]);
+    let revocations=saved.as_ref().map(|s|s.data.revocations.as_slice()).unwrap_or(&[]);
+    fn walk(name:&str,roots:&[ClientConfig],entries:&[Entry],revocations:&[Revocation],seen:&mut BTreeSet<String>)->Result<RebindClient> {
+        if !identifier(name)||!seen.insert(name.into())||seen.len()>LIMIT {return Err(local("HOST_REBIND_CLIENT_LINEAGE_INVALID"));}
+        if revocations.iter().any(|r|r.target==name||r.removed.iter().any(|e|e.name==name)) {return Err(local("HOST_REBIND_CLIENT_REVOCATION_PENDING"));}
+        let root=roots.iter().filter(|r|r.name==name).collect::<Vec<_>>();
+        let derived=entries.iter().filter(|e|e.name==name).collect::<Vec<_>>();
+        if root.len()+derived.len()!=1{return Err(local("HOST_REBIND_CLIENT_SELECTION_INVALID"));}
+        let resolved=if let Some(root)=root.first(){
+            root.capability.validate()?;
+            RebindClient{engine:root.engine.clone(),namespace:format!("program:{}",root.name),capability:root.capability.clone(),generation:None}
+        }else{
+            let entry=derived[0];let parent=walk(&entry.parent,roots,entries,revocations,seen)?;
+            entry.capability.validate()?;
+            if !entry.capability.is_subset_of(&parent.capability){return Err(local("HOST_REBIND_CLIENT_CAPABILITY_CHANGED"));}
+            RebindClient{engine:parent.engine,namespace:format!("{}:{}",parent.namespace,entry.alias),capability:entry.capability.clone(),generation:Some(entry.generation)}
+        };
+        if resolved.namespace.len()>256{return Err(local("HOST_REBIND_CLIENT_LINEAGE_INVALID"));}
+        Ok(resolved)
+    }
+    walk(name,roots,entries,revocations,&mut BTreeSet::new())
+}
+
+#[cfg(test)]
+mod rebind_selection_tests {
+    use super::*;
+    fn save(directory:&Path,data:Value){
+        let store=SecureStateStore::open(&directory.join("derived-clients.state")).unwrap();store.write_exact(&serde_json::to_vec(&data).unwrap()).unwrap();
+    }
+    #[test]
+    fn first_host_resolver_uses_original_alias_chain_and_refuses_expansion_or_pending_revocation() {
+        let root=crate::test_support::protected_test_dir();let roots=vec![ClientConfig{name:"root".into(),engine:"engine".into(),capability:Capability::owner()}];
+        let first=name("root","one");let second=name(&first,"two");
+        let mut narrow=Capability::owner();narrow.allow_root=false;narrow.operations=["structure.mailbox.get".into()].into();
+        let entries=json!([{"parent":"root","alias":"one","name":first,"capability":narrow,"generation":1},{"parent":first,"alias":"two","name":second,"capability":narrow,"generation":2}]);
+        let mut data=json!({"version":2,"generation":2,"entries":entries,"revocations":[]});save(root.path(),data.clone());
+        let selected=resolve_rebind_client(root.path(),&roots,&second).unwrap();assert_eq!(selected.namespace,"program:root:one:two");assert_eq!(selected.generation,Some(2));
+        data["entries"][1]["capability"]=json!(Capability::owner());save(root.path(),data.clone());
+        assert_eq!(resolve_rebind_client(root.path(),&roots,&second).err().unwrap().code,"HOST_REBIND_CLIENT_CAPABILITY_CHANGED");
+        data["entries"]=entries;data["revocations"]=json!([{"target":"root","binding":"pending","removed":[],"root":null,"ancestors":[],"endpoints":{}}]);save(root.path(),data);
+        assert_eq!(resolve_rebind_client(root.path(),&roots,&second).err().unwrap().code,"HOST_REBIND_CLIENT_REVOCATION_PENDING");
+    }
+}

@@ -138,6 +138,23 @@ impl InboxStore {
         self.host_original_scope(namespace, options, &call)?;
         Ok(call)
     }
+    /// A first host has no historical delivery authority. Validate the exact
+    /// program receiver and reject every retained sign of an earlier host.
+    pub(crate) fn initial_host_scope(&self,namespace:&str,options:&WatchOptions,expected:&MailboxPins)->Result<Value> {
+        self.host_watch_scope(namespace,options)?;
+        let binding:Value=serde_json::from_str(&self.binding).map_err(|_|invalid())?;
+        let origin=binding["origin"].as_str().ok_or_else(invalid)?;
+        if options.host_destination.is_some() || options.destination(&self.actor,origin,namespace)!=expected.destination_digest
+            || self.pins(&options.workspace_id,&options.mailbox_id)?.as_ref().map(pins)!=Some(pins(expected)) {
+            return Err(failure("HOST_INITIAL_SOURCE_MISMATCH"));
+        }
+        for table in ["inbox_host_links","inbox_host_calls","inbox_host_lanes","inbox_host_ready","inbox_host_retired","inbox_host_retired_v2","inbox_host_rebinds"] {
+            let sql=format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE workspace=?1 AND mailbox=?2)");
+            let exists:bool=self.db.query_row(&sql,params![options.workspace_id,options.mailbox_id],|r|r.get(0)).map_err(db_error)?;
+            if exists{return Err(failure("HOST_INITIAL_HISTORY_CONFLICT"));}
+        }
+        Ok(json!({"format":"peerwork.host-access.v1","owner":self.binding,"namespace":namespace,"workspace_id":options.workspace_id,"mailbox_id":options.mailbox_id,"membership_id":options.membership_id,"destination_digest":null}))
+    }
     pub(crate) fn host_rebind_commit(&mut self, selection: &HostRebind) -> Result<Value> {
         self.host_rebind_with_boundary(selection, |_| Ok(()))
     }
@@ -153,8 +170,11 @@ impl InboxStore {
         s.host.validate()?;
         let mut changed = s.old.clone();
         changed.host_destination = Some(s.host.digest.clone());
+        let first=s.old.host_destination.is_none();
+        let owner_binding:Value=serde_json::from_str(&self.binding).map_err(|_|invalid())?;
+        let old_destination=s.old.destination(&self.actor,owner_binding["origin"].as_str().ok_or_else(invalid)?,&s.namespace);
         if changed != s.new
-            || s.old.host_destination.as_deref() != Some(&s.expected.destination_digest)
+            || old_destination != s.expected.destination_digest
             || s.expected.destination_digest == s.host.digest
             || s.confirmed.destination_digest != s.host.digest
             || s.confirmed.epoch != s.expected.epoch.checked_add(1).ok_or_else(invalid)?
@@ -213,7 +233,8 @@ impl InboxStore {
             cursor = after;
         } else {
             self.host_watch_scope(&s.namespace, &s.old)?;
-            let (host, _) = self.host_link(&s.namespace, &s.old)?;
+            if first {self.initial_host_scope(&s.namespace,&s.old,&s.expected)?;}
+            let host=if first{s.expected.destination_digest.clone()}else{self.host_link(&s.namespace,&s.old)?.0};
             if host != s.expected.destination_digest
                 || self
                     .pins(&s.old.workspace_id, &s.old.mailbox_id)?
@@ -238,14 +259,14 @@ impl InboxStore {
             if pending {
                 return Err(failure("HOST_REBIND_FLUSH_ORIGINAL_REPORTS_FIRST"));
             }
-            let descriptor: String = self
+            let descriptor: String = if first{"null".into()}else{self
                 .db
                 .query_row(
                     "SELECT descriptor FROM inbox_host_links WHERE workspace=?1 AND mailbox=?2",
                     params![s.old.workspace_id, s.old.mailbox_id],
                     |r| r.get(0),
                 )
-                .map_err(db_error)?;
+                .map_err(db_error)?};
             let old = serde_json::to_string(&s.old).map_err(|_| invalid())?;
             let oldpins = pins(&s.expected).to_string();
             let allocation = old.len() + descriptor.len() + oldpins.len() + 1024;
@@ -334,7 +355,9 @@ impl InboxStore {
         ));
         tx.execute("UPDATE inbox_mailboxes SET epoch=?3,destination=?4,binding_version=?5 WHERE workspace=?1 AND mailbox=?2",params![s.old.workspace_id,s.old.mailbox_id,s.confirmed.epoch,s.host.digest,s.confirmed.binding_version]).map_err(db_error)?;
         tx.execute("UPDATE inbox_watches SET descriptor=?3,claim_id=?4,claim_wire=NULL WHERE workspace=?1 AND mailbox=?2",params![s.old.workspace_id,s.old.mailbox_id,serde_json::to_string(&s.new).map_err(|_|invalid())?,next]).map_err(db_error)?;
-        tx.execute(
+        if first {
+            tx.execute("INSERT INTO inbox_host_links VALUES(?1,?2,?3,?4,?5,0)",params![s.old.workspace_id,s.old.mailbox_id,s.namespace,s.host.digest,serde_json::to_string(&s.host).map_err(|_|invalid())?]).map_err(db_error)?;
+        }else{tx.execute(
             "UPDATE inbox_host_links SET host=?3,descriptor=?4 WHERE workspace=?1 AND mailbox=?2",
             params![
                 s.old.workspace_id,
@@ -343,7 +366,7 @@ impl InboxStore {
                 serde_json::to_string(&s.host).map_err(|_| invalid())?
             ],
         )
-        .map_err(db_error)?;
+        .map_err(db_error)?;}
         tx.execute("UPDATE inbox_host_rebinds SET phase='COMMITTED' WHERE workspace=?1 AND mailbox=?2 AND version=?3",params![s.old.workspace_id,s.old.mailbox_id,s.expected.binding_version]).map_err(db_error)?;
         tx.commit().map_err(db_error)?;
         boundary("COMMITTED")?;

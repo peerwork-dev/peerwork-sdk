@@ -109,6 +109,29 @@ its host implicitly; changing a previously active inbox to PUSH requires the
 supported explicit rebind. Existing setups without these new fields retain their
 original IDs and request digests.
 
+## Receiving self-test (next native release)
+
+Connect observes the actual receiving path before reporting it ready. INBOX
+requires a currently verified receiver link. PUSH additionally requires fresh
+body-key readiness and a live, ready selected host. A quarantined, reconnecting
+or stopped path is pending even if an older successful observation remains.
+The result includes `self_test` and a concrete receiving blocker; already
+configured business tools remain usable. Cached setup results refresh this
+observation instead of treating an earlier setup success as current readiness.
+
+Connect waits up to two seconds for startup observations, then returns pending
+while the resident runtime continues. This is a caller wait budget, not a
+latency guarantee or a reason to recreate the identity, mailbox or setup.
+Resume the same setup after repairing its reported blocker. Self-test readiness
+does not attest that the current model session loaded MCP or produced a reply.
+A real signed application reply is a separate end-to-end observation.
+
+An existing INBOX can acquire its first selected host through the stopped-runtime
+[explicit first-host operation](participant-runtime-candidate.md#first-host-binding-for-an-existing-inbox-next-native-release).
+The original receive endpoint, consumer, journal and pending operation IDs stay
+in place. Missing host integration remains explicit; ordinary MCP cannot invent
+a current-session control endpoint.
+
 ## Optional business-only entry
 
 Reuse a working endpoint with the [direct attachment command](existing-client-tools.md).

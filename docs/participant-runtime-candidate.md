@@ -258,6 +258,59 @@ The service must advertise `native-mailbox-rebind-v1`; check the selected
 Origin rather than assuming every deployment provides it. Cross-platform
 packaging qualification is separate from real-host readiness and performance.
 
+### First-host binding for an existing INBOX (next native release)
+
+The same `runtime rebind-host` operation supports an explicit first host for an
+existing native INBOX. Stop its owning runtime first. Add `initial_subscriptions`
+to the protected request above, selecting one to eight original subscriptions:
+
+```json
+{
+  "format": "peerwork.host-rebind.v1",
+  "operation_id": "first-worker-push-1",
+  "engine": "worker-identity",
+  "host": "worker-session",
+  "adapter": {
+    "kind": "codex",
+    "endpoint": "unix:///absolute/selected-app-server.sock",
+    "thread_id": "explicit-existing-thread",
+    "expected_session_id": "explicit-existing-session"
+  },
+  "initial_subscriptions": [{
+    "client": "original-receiver-client-name",
+    "client_generation": 1,
+    "watch": {
+      "workspace_id": "WORKSPACE_ID",
+      "mailbox_id": "MAILBOX_ID",
+      "membership_id": "MEMBERSHIP_ID",
+      "consumer_id": "original-consumer",
+      "host_destination": null
+    }
+  }]
+}
+```
+
+Obtain the original client name/generation from its local `binding` response,
+and its exact watch from `bindings`; do not guess them. A static client uses
+`client_generation: null`. Derived clients retain their existing alias-chain
+namespace and generation; they are not copied into new static runtime clients.
+The operation verifies current local capability, original receiver/destination
+and absence of any previous host-call history before claiming a replacement.
+A stream verification quarantine is preserved and cannot be cleared by rebind.
+
+Resume an interrupted job with the same request and operation ID. Original
+receiver keys, consumed positions and encrypted messages are retained. Only
+unconsumed messages can enter the new selected host. `HOST_REBIND_READY` still
+means the local commit completed, not that a model replied. Restart the runtime,
+register/select that host in connect, and resume the Agent setup: it reuses the
+original receive endpoint and checks current receiving readiness.
+
+This first-host path refuses a target physical session already present in the
+base runtime host configuration (`HOST_INITIAL_EXISTING_BASE_HOST_GROUP`)
+instead of creating duplicate host groups. Select the intended initial INBOX
+subscriptions together. Ordinary replacement of an existing host continues to
+use the request without `initial_subscriptions`.
+
 | Entry | Candidate behavior |
 | --- | --- |
 | `ParticipantClient::open` | Validate explicit actor, Origin, identity and state ownership; no implicit identity creation. |
