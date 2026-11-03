@@ -1,7 +1,7 @@
 # Connect an existing participant
 
-Use native SDK0.3.10 and its exact published
-[release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.10).
+Use native SDK0.3.11 and its exact published
+[release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.11).
 Native0.3.2 retains its
 [explicit setup guide](participant-connect-0.3.2.md).
 The native client adds no Node/Python runtime dependency or additional platforms.
@@ -131,6 +131,21 @@ An existing INBOX can acquire its first selected host through the stopped-runtim
 The original receive endpoint, consumer, journal and pending operation IDs stay
 in place. Missing host integration remains explicit; ordinary MCP cannot invent
 a current-session control endpoint.
+
+## Observe an explicitly completed host replacement
+
+Native0.3.11 verifies an explicitly selected Codex `expected_session_id` against
+the actual host destination, even when endpoint and thread ID are unchanged.
+Cached and saved-PENDING setups pinned to the old session remain pending after
+replacement; they cannot claim the new session's readiness. Persistent host group
+keys and stored host-call evidence are unchanged.
+
+After the explicit runtime rebind completes, register/select the new supported
+host and run the corresponding setup. Connect recognizes its committed binding
+and reuses the original receive endpoint, client generation, consumer and
+namespace. It does not create another receiver claim or reinject old model input.
+Existing native0.3.10 resident-runtime metadata supports this client-side check;
+a further runtime restart is not required solely for the stricter session pin.
 
 ## Optional business-only entry
 

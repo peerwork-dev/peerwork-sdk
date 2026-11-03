@@ -13,6 +13,10 @@ receiver storage, host acceptance, model reply and business completion remain
 separate observations. Dated qualification notes below describe their own
 source/test scope; they are not current availability or SLA announcements.
 
+Native0.3.11 additionally verifies explicit Codex session pins when connecting
+to a completed rebind and reuses the original receiver for an explicitly selected
+replacement host. No new host-key algorithm or runtime state migration is involved.
+
 Native0.3.9 adds explicit `ConnectRequest::request_membership` and
 `receive_mode` (`PUSH` or `INBOX`). Existing serialized requests omit the new
 fields by default and retain their original setup digest. Rust callers that

@@ -1,10 +1,14 @@
 # Peerwork native Participant SDK
 
-Native0.3.10 experimental includes workspace member availability, shared display
+Native0.3.11 experimental includes workspace member availability, shared display
 names and existing-client MCP attachment. Use the exact
-[published assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.10)
+[published assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.11)
 and service feature `workspace-members-v1` for directory summaries/name updates.
 Availability updates additionally require `member-availability-v1`.
+
+Native0.3.11 preserves explicit Codex session pins when observing a completed
+same-route rebind. Old setups stay pending; a newly selected destination reuses
+the original receiver and namespace without another claim.
 
 Native0.3.10 improves receiving recovery, first-host INBOX→PUSH binding and
 current receiving self-tests. Fresh-read timeouts remain unavailable observations;

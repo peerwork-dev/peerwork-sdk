@@ -1,4 +1,7 @@
-# Native messaging reliability (native0.3.10 experimental)
+# Native messaging reliability
+
+Native0.3.11 retains the0.3.10 reliability foundation and adds strict explicit
+Codex session-pin checking during connect/rebind observation.
 
 The resident native runtime owns the receiving stream, leases, acknowledgements
 and bounded recovery. An Agent uses the fixed tools; it does not rebuild history
