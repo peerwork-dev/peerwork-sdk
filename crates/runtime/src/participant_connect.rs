@@ -580,7 +580,7 @@ impl Connect {
                                 let bindings=receiver.call(json!({"method":"bindings"})).await?;
                                 let matched=bindings.as_array().and_then(|items|items.iter().find(|w|w["workspace_id"]==request.workspace_id&&profile.scopes.values().any(|s|w["mailbox_id"]==s.mailbox_id&&w["membership_id"]==s.membership_id)));
                                 if old.effective_host.is_some() {
-                                    let selected=if let Some(watch)=matched{self.completed_first_host(&request,old,watch).await?.is_some()}else{false};
+                                    let selected=if let Some(watch)=matched{self.completed_host_binding(&request,old,watch).await?.is_some()}else{false};
                                     if !selected {
                                         return Ok(json!({"state":"PENDING","setup_id":request.setup_id,"tools_available":true,
                                             "blocker":{"stage":"HOST_BINDING","code":"HOST_SELECTION_CHANGED_REBIND_REQUIRED","next_actor":"HOST_USER","next_action":"REVIEW_SELECTED_HOST_BINDING"},
@@ -878,8 +878,8 @@ impl Connect {
                     .filter(|s| s.profile.is_some())
             })
             .cloned();
-        let completed_first=if request.receive && (agent||request.host.is_some()) && previous_setup.as_ref().is_some_and(|s|s.channel_receive&&s.effective_host.is_none()) {
-            if let Some(mailbox)=mailbox {self.completed_first_host(&request,previous_setup.as_ref().unwrap(),mailbox).await?}else{None}
+        let completed_first=if request.receive && (agent||request.host.is_some()) && previous_setup.as_ref().is_some_and(|s|s.channel_receive) {
+            if let Some(mailbox)=mailbox {self.completed_host_binding(&request,previous_setup.as_ref().unwrap(),mailbox).await?}else{None}
         }else{None};
         if let Some(completed)=&completed_first {previous_setup.as_mut().unwrap().effective_host=Some(completed.name.clone());}
         let previous = previous_setup.as_ref().and_then(|s| s.profile.clone());
@@ -1265,7 +1265,7 @@ impl Connect {
             // Check its current watch before ensure can touch host sources.
             let bindings=tools.call(json!({"method":"bindings"})).await?;
             if let Some(actual)=bindings.as_array().and_then(|xs|xs.iter().find(|w|w["workspace_id"]==request.workspace_id&&w["mailbox_id"]==address.mailbox_id&&w["host_destination"].is_string())) {
-                if self.completed_first_host(&request,&self.registry.setups[&request.setup_id],actual).await?.is_none() {
+                if self.completed_host_binding(&request,&self.registry.setups[&request.setup_id],actual).await?.is_none() {
                     return Ok(json!({"state":"PENDING","setup_id":request.setup_id,"tools_available":true,
                         "blocker":{"stage":"HOST_BINDING","code":"HOST_SELECTION_CHANGED_REBIND_REQUIRED","next_actor":"HOST_USER","next_action":"REVIEW_SELECTED_HOST_BINDING"},"existing_configuration_preserved":true}));
                 }
@@ -1294,7 +1294,7 @@ impl Connect {
                         .await?;
                     receiver=receiving_observation(&observed);
                     if receiving_self_test(&receiver,true)["state"]=="READY" {
-                        if self.completed_first_host(&request,&self.registry.setups[&request.setup_id],options).await?.is_none() {
+                        if self.completed_host_binding(&request,&self.registry.setups[&request.setup_id],options).await?.is_none() {
                             return Ok(json!({"state":"PENDING","setup_id":request.setup_id,"tools_available":true,
                                 "blocker":{"stage":"HOST_BINDING","code":"HOST_SELECTION_CHANGED_REBIND_REQUIRED","next_actor":"HOST_USER","next_action":"REVIEW_SELECTED_HOST_BINDING"},"existing_configuration_preserved":true}));
                         }

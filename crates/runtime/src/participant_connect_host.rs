@@ -39,7 +39,7 @@ impl HostInvocation {
             "current_session":"LOCAL_CALLER_CONTEXT_VERIFIED","tools_loaded":"NOT_ATTESTED","model_response":"NOT_ATTESTED"}))
     }
 }
-pub(super) struct CompletedFirstHost {
+pub(super) struct CompletedHostBinding {
     pub name:String,
     pub watch:WatchOptions,
     pub client_name:String,
@@ -48,9 +48,11 @@ pub(super) struct CompletedFirstHost {
     pub binding:Value,
 }
 /// Configured sources alone do not attest their current physical destination.
-fn source_bound_to_host(host:&Value,key:&str,expected:&HostSubscription)->bool {
+fn source_bound_to_host(host:&Value,key:&str,expected:&HostSubscription,adapter:&Value)->bool {
     if host["selection_id"]!=key{return false;}
     let Ok(binding)=crate::participant_inbox::HostBinding::new(host["destination"].clone()) else{return false;};
+    if adapter["kind"]=="codex"&&adapter["expected_session_id"].as_str().is_some_and(|pin|binding.destination["session_id"]!=pin){return false;}
+
     if expected.watch.host_destination.as_deref()!=Some(binding.digest.as_str()){return false;}
     host["source_bindings"].as_array().is_some_and(|sources|sources.iter().any(|s| {
         let Ok(mut source)=serde_json::from_value::<HostSubscription>(s.clone()) else{return false;};
@@ -96,10 +98,10 @@ impl Connect {
         result["caller_context"]=observation;
         Ok(result)
     }
-    /// Recognize an explicit completed first binding through the original
+    /// Recognize an explicitly completed selected host binding through the original
     /// endpoint and an authenticated host-admin observation. No new receiver
     /// is derived and configuration completion never implies host readiness.
-    pub(super) async fn completed_first_host(&self,request:&ConnectRequest,previous:&Setup,mailbox:&Value)->Result<Option<CompletedFirstHost>> {
+    pub(super) async fn completed_host_binding(&self,request:&ConnectRequest,previous:&Setup,mailbox:&Value)->Result<Option<CompletedHostBinding>> {
         let Some(name)=request.host.as_ref().or_else(||self.registry.setups.get(&request.setup_id).and_then(|s|s.effective_host.as_ref())) else{return Ok(None);};
         let Some(host)=self.registry.hosts.get(name).filter(|h|h.participant==request.participant) else{return Ok(None);};
         let Some(profile)=&previous.profile else{return Ok(None);};
@@ -115,8 +117,8 @@ impl Connect {
         let key=config.key()?;
         let status=crate::communication_runtime::call(&host.admin_endpoint,json!({"method":"status"})).await?;
         if status["ok"]!=true || !status["value"]["engines"].as_array().is_some_and(|engines|engines.iter().any(|e|e["actor_id"]==profile.expected_actor&&e["origin"]==profile.expected_origin&&e["state_binding"]==binding["state_binding"]&&e["engine_digest"]==binding["engine_digest"])) {return Err(local("FIRST_HOST_ORIGINAL_ENGINE_MISMATCH"));}
-        if !status["value"]["hosts"].as_array().is_some_and(|hosts|hosts.iter().any(|h|source_bound_to_host(h,&key,&config.subscriptions[0]))) {return Ok(None);}
-        Ok(Some(CompletedFirstHost{name:name.clone(),watch,client_name:client_name.into(),generation:binding["client_generation"].as_u64(),endpoint:endpoint.clone(),binding:crate::communication_runtime::canonical_binding(&binding)}))
+        if !status["value"]["hosts"].as_array().is_some_and(|hosts|hosts.iter().any(|h|source_bound_to_host(h,&key,&config.subscriptions[0],&host.adapter))) {return Ok(None);}
+        Ok(Some(CompletedHostBinding{name:name.clone(),watch,client_name:client_name.into(),generation:binding["client_generation"].as_u64(),endpoint:endpoint.clone(),binding:crate::communication_runtime::canonical_binding(&binding)}))
     }
     pub async fn register_host(&mut self, name: &str, selected: HostSelection) -> Result<Value> {
         self.require_writer()?;
@@ -370,10 +372,23 @@ mod host_source_tests {
         let mut expected=HostSubscription{client:"worker".into(),client_generation:Some(1),watch:WatchOptions{workspace_id:"W".repeat(43),mailbox_id:"M".repeat(43),membership_id:"G".repeat(43),consumer_id:"original".into(),host_destination:Some(a.digest.clone())}};
         let mut source=expected.clone();source.watch.host_destination=None;
         let status=json!({"selection_id":"host-a","destination":a.destination,"source_bindings":[source]});
-        assert!(source_bound_to_host(&status,"host-a",&expected));
+        assert!(source_bound_to_host(&status,"host-a",&expected,&json!({})));
         expected.watch.host_destination=Some(b.digest);
-        assert!(!source_bound_to_host(&status,"host-a",&expected));
+        assert!(!source_bound_to_host(&status,"host-a",&expected,&json!({})));
         let mut missing=status;missing["destination"]=Value::Null;
-        assert!(!source_bound_to_host(&missing,"host-a",&expected));
+        assert!(!source_bound_to_host(&missing,"host-a",&expected,&json!({})));
     }
+    #[test]
+    fn same_route_must_honor_the_selected_codex_session_pin() {
+        let mut adapter=json!({"kind":"codex","endpoint":"ws://127.0.0.1:1","thread_id":"same-thread","expected_session_id":"session-a"});
+        let binding=crate::participant_inbox::HostBinding::new(json!({"host":"CODEX_APP_SERVER","endpoint":"ws://127.0.0.1:1","conversation_id":"same-thread","session_id":"session-b"})).unwrap();
+        let source=HostSubscription{client:"worker".into(),client_generation:None,watch:WatchOptions{workspace_id:"W".repeat(43),mailbox_id:"M".repeat(43),membership_id:"G".repeat(43),consumer_id:"original".into(),host_destination:Some(binding.digest)}};
+        let original=HostConfig{name:"selected".into(),adapter:adapter.clone(),subscriptions:vec![source.clone()]};
+        let key=original.key().unwrap();adapter["expected_session_id"]=json!("session-b");
+        assert_eq!(HostConfig{name:"selected".into(),adapter:adapter.clone(),subscriptions:vec![source.clone()]}.key().unwrap(),key,"persistent group keys must remain unchanged");
+        let host=json!({"selection_id":key,"destination":binding.destination,"source_bindings":[source.clone()]});
+        assert!(!source_bound_to_host(&host,&key,&source,&original.adapter));
+        assert!(source_bound_to_host(&host,&key,&source,&adapter));
+    }
+
 }

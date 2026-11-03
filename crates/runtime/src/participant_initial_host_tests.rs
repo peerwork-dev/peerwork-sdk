@@ -149,12 +149,16 @@ async fn first_push_preserves_static_and_derived_inbox_and_delivers_only_unconsu
         cancel.cancel();running.await.unwrap().unwrap();
         assert_eq!(source.service.counts().await["claim_commands"].as_array().unwrap().len(),2,"one initial claim and one exact replacement claim");
         if let Some(directory)=&source.connect_directory {
-            let replacement=CodexFixture::start();
-            let request=HostRebindRequest{format:"peerwork.host-rebind.v1".into(),operation_id:"replace-first-host".into(),engine:"one".into(),host:"selected-first".into(),adapter:replacement.config(),initial_subscriptions:None};
+            // Same physical group/route, a new explicit Codex session pin.
+            host.approval.store(false,std::sync::atomic::Ordering::SeqCst);
+            let mut replacement=host.config();replacement["expected_session_id"]=json!("replacement-session");
+            *host.actual_session.lock().unwrap()="replacement-session".into();
+            let request=HostRebindRequest{format:"peerwork.host-rebind.v1".into(),operation_id:"replace-first-host".into(),engine:"one".into(),host:"selected-first".into(),adapter:replacement.clone(),initial_subscriptions:None};
             assert_eq!(rebind_host(&source.path,request).await.unwrap()["state"],"HOST_REBIND_READY");
             let target:RuntimeConfig=serde_json::from_value(private_json(&source.path,65536).unwrap()).unwrap();
-            let cancel=KernelCancellationToken::new();let (tx,rx)=tokio::sync::oneshot::channel();let running=tokio::spawn(ipc::serve(target,cancel.clone(),tx));rx.await.unwrap().unwrap();
+            let cancel=KernelCancellationToken::new();let (tx,rx)=tokio::sync::oneshot::channel();let running=tokio::spawn(ipc::serve(target,cancel.clone(),tx));let ready=rx.await.unwrap().unwrap();
             let mut connect=crate::participant_connect::Connect::open(directory).unwrap();
+            let original_endpoint=connect.profile().unwrap().unwrap().receive_endpoint_path;
             for setup_id in ["program-push","push"] {
                 for _ in 0..2 {
                     let original=serde_json::from_value(json!({"setup_id":setup_id,"participant":"worker","workspace_id":source.old.workspace_id,"alias":"project","send":true,"receive":true,"host":"selected-first"})).unwrap();
@@ -164,8 +168,15 @@ async fn first_push_preserves_static_and_derived_inbox_and_delivers_only_unconsu
                     assert!(observed["self_test"].is_null());
                 }
             }
+            connect.register_host("selected-replacement",crate::participant_connect::HostSelection{participant:"worker".into(),admin_endpoint:ready.admin_endpoint.clone(),adapter:replacement}).await.unwrap();
+            let selected=serde_json::from_value(json!({"setup_id":"selected-new-session","participant":"worker","workspace_id":source.old.workspace_id,"alias":"project","send":true,"receive":true,"host":"selected-replacement"})).unwrap();
+            let current=connect.run_agent(selected).await.unwrap();
+            assert_eq!(current["state"],"LOCAL_CONFIGURED","explicitly selected replacement must reuse its already committed binding: {current}");
+            assert_eq!(current["self_test"]["state"],"READY");
+            assert_eq!(connect.profile().unwrap().unwrap().receive_endpoint_path,original_endpoint);
+            assert_eq!(host.calls().iter().filter(|v|matches!(v["method"].as_str(),Some("turn/start"|"turn/steer"))).count(),1,"session selection must not duplicate original model input");
             cancel.cancel();running.await.unwrap().unwrap();
-            assert_eq!(source.service.counts().await["claim_commands"].as_array().unwrap().len(),3,"checking a stale setup must not submit another claim");
+            assert_eq!(source.service.counts().await["claim_commands"].as_array().unwrap().len(),3,"checking or selecting a completed binding must not submit another claim");
         }
     }
 }

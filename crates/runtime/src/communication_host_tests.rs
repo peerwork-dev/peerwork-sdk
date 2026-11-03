@@ -121,6 +121,7 @@ impl FixtureListener {
 pub(crate) struct CodexFixture {
     endpoint: String,
     session: String,
+    pub actual_session: Arc<Mutex<String>>,
     calls: Arc<Mutex<Vec<Value>>>,
     pub approval: Arc<AtomicBool>,
     pub lose_next_ack: Arc<AtomicBool>,
@@ -151,7 +152,8 @@ impl CodexFixture {
             "fixture-{}",
             peerwork_core::crypto::sha256_hex(endpoint.as_bytes())
         );
-        let host_session = session.clone();
+        let actual_session=Arc::new(Mutex::new(session.clone()));
+        let host_session = actual_session.clone();
         let calls = Arc::new(Mutex::new(Vec::new()));
         let log = calls.clone();
         let approval = Arc::new(AtomicBool::new(false));
@@ -212,7 +214,7 @@ impl CodexFixture {
                             for _ in 0..if emit.load(Ordering::SeqCst) { 300 } else { 0 } {
                                 if ws.send(Message::Text(json!({"method":"thread/status/changed","params":{"threadId":"existing-thread"}}).to_string().into())).is_err(){break;}
                             }
-                            json!({"thread":{"id":"existing-thread","sessionId":host_session,"status":{"type":if active||waiting.load(Ordering::SeqCst){"active"}else{"idle"},"activeFlags":if waiting.load(Ordering::SeqCst){vec!["waitingOnApproval"]}else{Vec::<&str>::new()}}}})
+                            json!({"thread":{"id":"existing-thread","sessionId":host_session.lock().unwrap().clone(),"status":{"type":if active||waiting.load(Ordering::SeqCst){"active"}else{"idle"},"activeFlags":if waiting.load(Ordering::SeqCst){vec!["waitingOnApproval"]}else{Vec::<&str>::new()}}}})
                         }
                         "thread/turns/list" => {
                             if query_approval.swap(false, Ordering::SeqCst) {
@@ -255,6 +257,7 @@ impl CodexFixture {
         Self {
             endpoint,
             session,
+            actual_session,
             calls,
             approval,
             lose_next_ack,
