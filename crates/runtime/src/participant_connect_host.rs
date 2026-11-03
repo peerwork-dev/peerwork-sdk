@@ -47,6 +47,17 @@ pub(super) struct CompletedFirstHost {
     pub endpoint:PathBuf,
     pub binding:Value,
 }
+/// Configured sources alone do not attest their current physical destination.
+fn source_bound_to_host(host:&Value,key:&str,expected:&HostSubscription)->bool {
+    if host["selection_id"]!=key{return false;}
+    let Ok(binding)=crate::participant_inbox::HostBinding::new(host["destination"].clone()) else{return false;};
+    if expected.watch.host_destination.as_deref()!=Some(binding.digest.as_str()){return false;}
+    host["source_bindings"].as_array().is_some_and(|sources|sources.iter().any(|s| {
+        let Ok(mut source)=serde_json::from_value::<HostSubscription>(s.clone()) else{return false;};
+        if source.watch.host_destination.is_none(){source.watch.host_destination=Some(binding.digest.clone());}
+        source.client==expected.client&&source.client_generation==expected.client_generation&&source.watch==expected.watch
+    }))
+}
 impl Connect {
     /// Entry for a client that ALREADY owns the actual host event channel.
     /// This API does not manufacture that channel for an arbitrary UI/CLI.
@@ -104,12 +115,7 @@ impl Connect {
         let key=config.key()?;
         let status=crate::communication_runtime::call(&host.admin_endpoint,json!({"method":"status"})).await?;
         if status["ok"]!=true || !status["value"]["engines"].as_array().is_some_and(|engines|engines.iter().any(|e|e["actor_id"]==profile.expected_actor&&e["origin"]==profile.expected_origin&&e["state_binding"]==binding["state_binding"]&&e["engine_digest"]==binding["engine_digest"])) {return Err(local("FIRST_HOST_ORIGINAL_ENGINE_MISMATCH"));}
-        let expected=&config.subscriptions[0];
-        if !status["value"]["hosts"].as_array().is_some_and(|hosts|hosts.iter().any(|h|h["selection_id"]==key&&h["source_bindings"].as_array().is_some_and(|sources|sources.iter().any(|s| {
-            let Ok(mut source)=serde_json::from_value::<HostSubscription>(s.clone()) else{return false;};
-            if source.watch.host_destination.is_none(){source.watch.host_destination=watch.host_destination.clone();}
-            source.client==expected.client&&source.client_generation==expected.client_generation&&source.watch==expected.watch
-        })))) {return Ok(None);}
+        if !status["value"]["hosts"].as_array().is_some_and(|hosts|hosts.iter().any(|h|source_bound_to_host(h,&key,&config.subscriptions[0]))) {return Ok(None);}
         Ok(Some(CompletedFirstHost{name:name.clone(),watch,client_name:client_name.into(),generation:binding["client_generation"].as_u64(),endpoint:endpoint.clone(),binding:crate::communication_runtime::canonical_binding(&binding)}))
     }
     pub async fn register_host(&mut self, name: &str, selected: HostSelection) -> Result<Value> {
@@ -351,5 +357,23 @@ mod tests {
             .code,
             "SELECT_ONE_HOST_ADAPTER"
         );
+    }
+}
+
+#[cfg(test)]
+mod host_source_tests {
+    use super::*;
+    #[test]
+    fn omitted_config_destination_cannot_adopt_a_different_current_host() {
+        let a=crate::participant_inbox::HostBinding::new(json!({"host":"CODEX_APP_SERVER","conversation_id":"a","session_id":"session-a"})).unwrap();
+        let b=crate::participant_inbox::HostBinding::new(json!({"host":"CODEX_APP_SERVER","conversation_id":"b","session_id":"session-b"})).unwrap();
+        let mut expected=HostSubscription{client:"worker".into(),client_generation:Some(1),watch:WatchOptions{workspace_id:"W".repeat(43),mailbox_id:"M".repeat(43),membership_id:"G".repeat(43),consumer_id:"original".into(),host_destination:Some(a.digest.clone())}};
+        let mut source=expected.clone();source.watch.host_destination=None;
+        let status=json!({"selection_id":"host-a","destination":a.destination,"source_bindings":[source]});
+        assert!(source_bound_to_host(&status,"host-a",&expected));
+        expected.watch.host_destination=Some(b.digest);
+        assert!(!source_bound_to_host(&status,"host-a",&expected));
+        let mut missing=status;missing["destination"]=Value::Null;
+        assert!(!source_bound_to_host(&missing,"host-a",&expected));
     }
 }

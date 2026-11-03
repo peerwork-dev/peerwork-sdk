@@ -1260,6 +1260,15 @@ impl Connect {
             let tools = receiver_tools
                 .as_ref()
                 .ok_or_else(|| local("DEFAULT_MAILBOX_REQUIRED"))?;
+            // A saved pending setup may outlive an explicit physical rebind.
+            // Check its current watch before ensure can touch host sources.
+            let bindings=tools.call(json!({"method":"bindings"})).await?;
+            if let Some(actual)=bindings.as_array().and_then(|xs|xs.iter().find(|w|w["workspace_id"]==request.workspace_id&&w["mailbox_id"]==address.mailbox_id&&w["host_destination"].is_string())) {
+                if self.completed_first_host(&request,&self.registry.setups[&request.setup_id],actual).await?.is_none() {
+                    return Ok(json!({"state":"PENDING","setup_id":request.setup_id,"tools_available":true,
+                        "blocker":{"stage":"HOST_BINDING","code":"HOST_SELECTION_CHANGED_REBIND_REQUIRED","next_actor":"HOST_USER","next_action":"REVIEW_SELECTED_HOST_BINDING"},"existing_configuration_preserved":true}));
+                }
+            }
             host_observation = self
                 .ensure_host(
                     name,
@@ -1283,7 +1292,13 @@ impl Connect {
                         .call(json!({"method":"inbox","options":options,"after":0,"limit":1}))
                         .await?;
                     receiver=receiving_observation(&observed);
-                    if receiving_self_test(&receiver,true)["state"]=="READY" {break;}
+                    if receiving_self_test(&receiver,true)["state"]=="READY" {
+                        if self.completed_first_host(&request,&self.registry.setups[&request.setup_id],options).await?.is_none() {
+                            return Ok(json!({"state":"PENDING","setup_id":request.setup_id,"tools_available":true,
+                                "blocker":{"stage":"HOST_BINDING","code":"HOST_SELECTION_CHANGED_REBIND_REQUIRED","next_actor":"HOST_USER","next_action":"REVIEW_SELECTED_HOST_BINDING"},"existing_configuration_preserved":true}));
+                        }
+                        break;
+                    }
                     if receiver["state"]=="BLOCKED"||tokio::time::Instant::now()>=until {
                         return self.record(&request,json!({"state":"PENDING","setup_id":request.setup_id,"tools_available":true,"profile_path":path,
                             "blocker":{"stage":"RECEIVING_SELF_TEST","code":receiving_self_test(&receiver,true)["code"],"next_actor":"RUNTIME","next_action":"INSPECT_RECEIVING_BLOCKER_OR_RESUME_SAME_SETUP"},

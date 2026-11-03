@@ -39,7 +39,10 @@ def main():
             ('peerwork-runtime',['--lib'],'participant_inbox::host_ledger::rebind::tests::first_binding'),
             ('peerwork-runtime',['--lib'],'communication_runtime::derived::rebind_selection_tests'),
             ('peerwork-runtime',['--lib'],'communication_runtime::hosts::initial_selection_tests'),
-            ('peerwork-runtime',['--lib'],'participant_connect::tests')]
+            ('peerwork-runtime',['--lib'],'participant_connect::tests'),
+            ('peerwork-runtime',['--lib'],'participant_connect::host::host_source_tests'),
+            ('peerwork-runtime',['--lib'],'participant::http_tests::connect_'),
+            ('peerwork-runtime',['--lib'],'native_connect_cli_preserves_original_engine_and_attaches_selected_host_without_owner_exchange')]
     files=['crates/core/src/communication.rs','crates/core/tests/native_mail.rs','crates/runtime/src/participant_watch.rs','crates/runtime/src/participant_inbox.rs','crates/runtime/src/participant.rs','crates/runtime/src/kernel_access.rs','crates/runtime/src/transport.rs','crates/runtime/src/structure_intent.rs','crates/runtime/src/participant_reliability_http_tests.rs','tests/participant-service.mjs']
     files += ['Cargo.toml','Cargo.lock','crates/runtime/src/participant_rebind.rs','crates/runtime/src/participant_rebind_tests.rs','crates/runtime/src/participant_initial_host_tests.rs','crates/runtime/src/participant_host_rebind.rs','crates/runtime/src/participant_host_rebind_tests.rs','crates/runtime/src/participant_connect.rs','crates/runtime/src/participant_connect_host.rs','crates/runtime/src/communication_runtime.rs','crates/runtime/src/communication_clients.rs','crates/runtime/src/communication_hosts.rs','tools/test/qualify-mailbox-reliability.py']
     product=Path(os.environ['PEERWORK_STRUCTURE_REFERENCE_ROOT'])

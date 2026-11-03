@@ -130,9 +130,20 @@ async fn first_push_preserves_static_and_derived_inbox_and_delivers_only_unconsu
             let configured=connect.run_agent(request.clone()).await.unwrap();
             assert_eq!(configured["state"],"LOCAL_CONFIGURED","{configured}");
             assert_eq!(connect.profile().unwrap().unwrap().receive_endpoint_path,before,"PUSH must reuse the original receive endpoint");
-            assert_eq!(connect.run_agent(request).await.unwrap()["state"],"LOCAL_CONFIGURED");
+            assert_eq!(connect.run_agent(request.clone()).await.unwrap()["state"],"LOCAL_CONFIGURED");
             let denied=connect.run_agent(serde_json::from_value(source.inbox_request.clone().unwrap()).unwrap()).await.unwrap();
             assert_eq!(denied["blocker"]["code"],"EXISTING_PUSH_RECEIVER_REQUIRES_EXPLICIT_REBIND","cached INBOX setup must not conceal the new host");
+            host.approval.store(true,std::sync::atomic::Ordering::SeqCst);
+            let receiver=RuntimeClient::connect(before.clone().unwrap(),&engine.origin,&engine.expected_actor).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(10),async{loop {
+                let page=receiver.call(json!({"method":"inbox","options":new,"after":0,"limit":1})).await.unwrap();
+                if page["presence"]["host"]["ready"]==false {break;}
+                tokio::time::sleep(Duration::from_millis(30)).await;
+            }}).await.unwrap();
+            let pending=connect.run_agent(request).await.unwrap();
+            assert_eq!(pending["state"],"PENDING","host approval must retain pending setup recovery");
+            assert_eq!(pending["blocker"]["stage"],"RECEIVING_SELF_TEST");
+
         }
 
         cancel.cancel();running.await.unwrap().unwrap();
@@ -144,11 +155,15 @@ async fn first_push_preserves_static_and_derived_inbox_and_delivers_only_unconsu
             let target:RuntimeConfig=serde_json::from_value(private_json(&source.path,65536).unwrap()).unwrap();
             let cancel=KernelCancellationToken::new();let (tx,rx)=tokio::sync::oneshot::channel();let running=tokio::spawn(ipc::serve(target,cancel.clone(),tx));rx.await.unwrap().unwrap();
             let mut connect=crate::participant_connect::Connect::open(directory).unwrap();
-            let original=serde_json::from_value(json!({"setup_id":"push","participant":"worker","workspace_id":source.old.workspace_id,"alias":"project","send":true,"receive":true,"host":"selected-first"})).unwrap();
-            let observed=connect.run_agent(original).await.unwrap();
-            assert_eq!(observed["state"],"PENDING");
-            assert_eq!(observed["blocker"]["code"],"HOST_SELECTION_CHANGED_REBIND_REQUIRED","old setup must not claim the replacement host is its original destination");
-            assert!(observed["self_test"].is_null());
+            for setup_id in ["program-push","push"] {
+                for _ in 0..2 {
+                    let original=serde_json::from_value(json!({"setup_id":setup_id,"participant":"worker","workspace_id":source.old.workspace_id,"alias":"project","send":true,"receive":true,"host":"selected-first"})).unwrap();
+                    let observed=if setup_id=="push"{connect.run_agent(original).await.unwrap()}else{connect.run(original).await.unwrap()};
+                    assert_eq!(observed["state"],"PENDING");
+                    assert_eq!(observed["blocker"]["code"],"HOST_SELECTION_CHANGED_REBIND_REQUIRED","cached and pending old setups must not claim a replacement host is their original destination");
+                    assert!(observed["self_test"].is_null());
+                }
+            }
             cancel.cancel();running.await.unwrap().unwrap();
             assert_eq!(source.service.counts().await["claim_commands"].as_array().unwrap().len(),3,"checking a stale setup must not submit another claim");
         }
