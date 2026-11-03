@@ -472,6 +472,22 @@ impl HttpTransport {
         Ok((ExactHttpResponse{status:bytes.status,wire},bytes.wire))
     }
 
+    /// A typed, non-mutating structure read cannot leave an uncertain business
+    /// submission. Preserve timeout/network/cancellation causes instead of
+    /// classifying every failed HTTP POST as SubmittedUncertain.
+    pub(crate) async fn post_structure_read(&self,signed:&peerwork_core::prepared_command::SignedPreparedCommand,cancel:&CancellationToken)->Result<ExactHttpResponse,TransportError> {
+        if peerwork_core::structure_execution::operation_kind(signed.proof().action_id())!=Some(peerwork_core::structure_execution::StructureOperationKind::Read)
+            || !valid_command_path(signed.proof().path()) || signed.http_body().is_empty() || signed.http_body().len()>262_144 {
+            return Err(TransportError::InvalidOrigin);
+        }
+        let send=self.measured_send(self.client.post(self.endpoint(signed.proof().path())?).header("content-type","application/json").body(signed.http_body().to_vec()).send());
+        let response=tokio::select!{_=cancel.cancelled()=>return Err(TransportError::Cancelled),result=send=>result.map_err(map_network_error)?};
+        let response=read_bounded(response,MAX_COMMAND_RESPONSE_BYTES,cancel).await?;
+        #[cfg(test)]
+        if TEST_DROP_NEXT_SECURE_POST_RESPONSE.swap(false,std::sync::atomic::Ordering::SeqCst){return Err(TransportError::Network);}
+        Ok(response)
+    }
+
     /// Internal primitive only. The caller must first bind a core-authenticated
     /// prepared command to the exact pending SQLite row and pinned discovery.
     pub(crate) async fn post_exact(

@@ -1004,6 +1004,13 @@ mod public_error_tests {
             assert_eq!(details["diagnostic_trust"], "UNVERIFIED_HTTP");
             assert_eq!(details["recovery"], "CORRECT_READ_REQUEST_OR_CONFIGURATION");
         }
+        for status in [408,429,503] {
+            let error=KernelPublicError::from(KernelAccessError::from(C::ReadRejected(status)));
+            let details=error.details.unwrap();
+            assert_eq!(details["retryable"],true);
+            assert_eq!(details["recovery"],"REPEAT_SELECTED_READ_WITH_BACKOFF");
+            assert_eq!(details["intent_persisted"],false);
+        }
         // An HTTP error alone must never settle a saved operation's outcome.
         let saved = KernelPublicError::from(KernelAccessError::from(C::ServerRejected(400)));
         let details = saved.details.unwrap();

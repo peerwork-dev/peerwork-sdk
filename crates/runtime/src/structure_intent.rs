@@ -606,7 +606,9 @@ impl KernelClient {
     /// growing archive of pages/events in the local mutation outbox. Explicit
     /// caller IDs/keys retain the durable historical-query behavior.
     pub(super) async fn submit_structure_read(&self,signed:&SignedPreparedCommand,cancel:&CancellationToken)->Result<KernelAcceptedResult,KernelClientError>{
-        let response=self.transport.post_exact(signed.proof().path(),signed.http_body().to_vec(),cancel).await?;
+        let response=if peerwork_core::structure_execution::operation_kind(signed.proof().action_id())==Some(peerwork_core::structure_execution::StructureOperationKind::Read){
+            self.transport.post_structure_read(signed,cancel).await?
+        }else{self.transport.post_exact(signed.proof().path(),signed.http_body().to_vec(),cancel).await?};
         let proof=verify_http_response_for_prepared(&response.wire,signed.proof(),self.discovery.receipt_public_key());
         if !(200..300).contains(&response.status)&&proof.is_err(){
             let has_receipt=parse_wire_json_bounded(&response.wire,33,1024*1024).is_ok_and(|v|v.get("receipt").is_some());

@@ -34,7 +34,7 @@ def main():
             ('peerwork-runtime',['--lib'],'automatic_native_program_watch_spools_offline_consumes_and_reconnects'),
             ('peerwork-runtime',['--lib'],'runtime_host_dispatch_persists_unknown_and_blocks_only_same_conversation_across_restart'),
             ('peerwork-runtime',['--lib'],'native_bridge_receives_genuine_verified_e2ee_mail_from_shared_runtime')]
-    files=['crates/core/src/communication.rs','crates/core/tests/native_mail.rs','crates/runtime/src/participant_watch.rs','crates/runtime/src/participant_inbox.rs','crates/runtime/src/participant.rs','crates/runtime/src/kernel_access.rs','crates/runtime/src/structure_intent.rs','crates/runtime/src/participant_reliability_http_tests.rs','tests/participant-service.mjs']
+    files=['crates/core/src/communication.rs','crates/core/tests/native_mail.rs','crates/runtime/src/participant_watch.rs','crates/runtime/src/participant_inbox.rs','crates/runtime/src/participant.rs','crates/runtime/src/kernel_access.rs','crates/runtime/src/transport.rs','crates/runtime/src/structure_intent.rs','crates/runtime/src/participant_reliability_http_tests.rs','tests/participant-service.mjs']
     product=Path(os.environ['PEERWORK_STRUCTURE_REFERENCE_ROOT'])
     service_files=[p for directory in ['src','dist-workspace/src'] for p in sorted((product/directory).rglob('*')) if p.is_file()]
     service_files += [product/'package.json',product/'package-lock.json',product/'dist-workspace/tests/fixtures/workspace-postgres-fixture.js']
@@ -44,6 +44,17 @@ def main():
     manifest.write_text(json.dumps({'format':'peerwork.structure-candidate.v1','files':{name:digest for name,digest in service_inputs.items() if name!='dist-workspace/tests/fixtures/workspace-postgres-fixture.js'}}))
     environment['PEERWORK_STRUCTURE_REFERENCE_MANIFEST']=str(manifest.resolve())
     report={'format':'peerwork.mailbox-reliability-qualification.v1','scope':'SYNTHETIC_LOCAL_TEST','production_touched':False,'model_response':'NOT_QUALIFIED_BY_PROGRAM_FIXTURES','source_files':{name:hashlib.sha256((root/name).read_bytes()).hexdigest() for name in files},'service_inputs_sha256':hashlib.sha256(json.dumps(service_inputs,sort_keys=True).encode()).hexdigest(),'checks':[],'state':'RUNNING'}
+    build=['cargo','build','--locked']+(['--offline'] if args.offline else [])+['-p','peerwork-cli','--bin','peerwork']
+    with (args.output/'build-cli.log').open('w') as stream:
+        completed=subprocess.run(build,cwd=root,env=environment,stdout=stream,stderr=stream,timeout=600)
+    if completed.returncode:
+        report['state']='FAILED';report['build_cli_exit']=completed.returncode
+        (args.output/'result.json').write_text(json.dumps(report,indent=2)+'\n');return 1
+    target=Path(environment.get('CARGO_TARGET_DIR',str(root/'target')))
+    if not target.is_absolute():target=root/target
+    binary=target/'debug'/'peerwork'
+    environment['PEERWORK_PARTICIPANT_CLI']=str(binary)
+    report['tested_cli_sha256']=hashlib.sha256(binary.read_bytes()).hexdigest()
     for index,(package,selection,group) in enumerate(groups):
         command=['cargo','test','--locked']+(['--offline'] if args.offline else [])+['-p',package]+selection+([group] if group else [])+['--','--include-ignored','--test-threads=1']
         started=time.monotonic();log=args.output/(str(index)+'.log')
