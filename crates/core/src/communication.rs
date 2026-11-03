@@ -36,6 +36,41 @@ const MAX_SEQUENCE: u64 = 9_007_199_254_740_991;
 #[error("invalid or mismatched native communication evidence")]
 pub struct CommunicationError;
 type Result<T> = std::result::Result<T, CommunicationError>;
+
+/// Stable, body-free failure classes for mailbox recovery. A valid service
+/// signature alone is insufficient to attribute a frame to a selected scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error("{code}", code = self.code())]
+pub enum FrameVerificationError {
+    Format,
+    ServiceProof,
+    Scope,
+    Binding,
+    Time,
+    Digest,
+    Cursor,
+    ItemEvidence,
+    ControlEvidence,
+}
+impl FrameVerificationError {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Format => "STREAM_FRAME_FORMAT_INVALID",
+            Self::ServiceProof => "STREAM_SERVICE_PROOF_INVALID",
+            Self::Scope => "STREAM_SCOPE_MISMATCH",
+            Self::Binding => "STREAM_BINDING_MISMATCH",
+            Self::Time => "STREAM_TIME_WINDOW_INVALID",
+            Self::Digest => "STREAM_FRAME_DIGEST_INVALID",
+            Self::Cursor => "STREAM_CURSOR_INVALID",
+            Self::ItemEvidence => "STREAM_ITEM_EVIDENCE_INVALID",
+            Self::ControlEvidence => "STREAM_CONTROL_EVIDENCE_INVALID",
+        }
+    }
+    pub fn authenticated_scope(self) -> bool {
+        !matches!(self, Self::Format | Self::ServiceProof | Self::Scope)
+    }
+}
+
 fn text(v: &WireValue, key: &str) -> Result<String> {
     v.get(key)
         .and_then(WireValue::as_string)
@@ -726,34 +761,37 @@ fn control(value: &WireValue, audience: &[u16], pins: &MailboxPins, key: &str) -
     }
     Ok(())
 }
-fn page(
+fn page(value: &WireValue, audience: &[u16], actor: &str, pins: &MailboxPins, key: &str) -> Result<VerifiedMailboxPage> {
+    page_detailed(value, audience, actor, pins, key).map_err(|_| CommunicationError)
+}
+fn page_detailed(
     value: &WireValue,
     audience: &[u16],
     actor: &str,
     pins: &MailboxPins,
     key: &str,
-) -> Result<VerifiedMailboxPage> {
-    pins.validate()?;
-    let items = array(value, "items", 32)?;
-    let controls = array(value, "controls", 32)?;
-    let mailbox_frontier = number(value, "mailbox_frontier")?;
-    let checkpoint = number(value, "checkpoint")?;
+) -> std::result::Result<VerifiedMailboxPage, FrameVerificationError> {
+    pins.validate().map_err(|_| FrameVerificationError::Binding)?;
+    let items = array(value, "items", 32).map_err(|_| FrameVerificationError::Format)?;
+    let controls = array(value, "controls", 32).map_err(|_| FrameVerificationError::Format)?;
+    let mailbox_frontier = number(value, "mailbox_frontier").map_err(|_| FrameVerificationError::Cursor)?;
+    let checkpoint = number(value, "checkpoint").map_err(|_| FrameVerificationError::Cursor)?;
     if checkpoint > mailbox_frontier {
-        return Err(CommunicationError);
+        return Err(FrameVerificationError::Cursor);
     }
-    let control_checkpoint = number(value, "control_checkpoint")?;
-    let more = flag(value, "more")?;
-    let controls_more = flag(value, "controls_more")?;
+    let control_checkpoint = number(value, "control_checkpoint").map_err(|_| FrameVerificationError::Cursor)?;
+    let more = flag(value, "more").map_err(|_| FrameVerificationError::Cursor)?;
+    let controls_more = flag(value, "controls_more").map_err(|_| FrameVerificationError::Cursor)?;
     let mut sequence = pins.after_sequence;
     let mut ids = std::collections::BTreeSet::new();
     let mut verified = Vec::with_capacity(items.len());
     for item in items {
-        let next = number(item, "sequence")?;
-        if next <= sequence || !ids.insert(token_field(item, "delivery_id")?) {
-            return Err(CommunicationError);
+        let next = number(item, "sequence").map_err(|_| FrameVerificationError::Cursor)?;
+        if next <= sequence || !ids.insert(token_field(item, "delivery_id").map_err(|_| FrameVerificationError::Cursor)?) {
+            return Err(FrameVerificationError::Cursor);
         }
         sequence = next;
-        verified.push(delivery(item, audience, actor, pins, key)?);
+        verified.push(delivery(item, audience, actor, pins, key).map_err(|_| FrameVerificationError::ItemEvidence)?);
     }
     if checkpoint < sequence
         || more && checkpoint != sequence
@@ -763,19 +801,19 @@ fn page(
             && controls.is_empty()
             && pins.after_control_sequence == Some(control_checkpoint)
     {
-        return Err(CommunicationError);
+        return Err(FrameVerificationError::Cursor);
     }
     let mut control_sequence = pins.after_control_sequence.unwrap_or(0);
     for item in controls {
-        let next = number(item, "sequence")?;
+        let next = number(item, "sequence").map_err(|_| FrameVerificationError::Cursor)?;
         if next <= control_sequence {
-            return Err(CommunicationError);
+            return Err(FrameVerificationError::Cursor);
         }
         control_sequence = next;
-        control(item, audience, pins, key)?;
+        control(item, audience, pins, key).map_err(|_| FrameVerificationError::ControlEvidence)?;
     }
     if control_checkpoint < control_sequence {
-        return Err(CommunicationError);
+        return Err(FrameVerificationError::Cursor);
     }
     Ok(VerifiedMailboxPage {
         mailbox: pins.clone(),
@@ -1008,83 +1046,45 @@ pub struct FramePins<'a> {
     pub expires_at: u64,
 }
 pub fn verify_mailbox_frame(wire: &[u8], expected: &FramePins<'_>) -> Result<VerifiedMailboxPage> {
-    let envelope =
-        parse_wire_json_bounded(wire, 40, MAX_FRAME_BYTES).map_err(|_| CommunicationError)?;
-    bounded_nodes(&envelope)?;
-    exact(&envelope, &["proof", "items", "controls"])?;
-    let proof = verify_typed(&text(&envelope, "proof")?, FRAME_TYPE, expected.service_key)?;
-    exact(
-        &proof,
-        &[
-            "kind",
-            "audience",
-            "stream_id",
-            "actor_id",
-            "workspace_id",
-            "mailbox_id",
-            "receiver_id",
-            "epoch",
-            "destination_digest",
-            "binding_version",
-            "server_time",
-            "mailbox_frontier",
-            "checkpoint",
-            "more",
-            "items_digest",
-            "control_checkpoint",
-            "controls_more",
-            "controls_digest",
-        ],
-    )?;
+    verify_mailbox_frame_detailed(wire, expected).map_err(|_| CommunicationError)
+}
+pub fn verify_mailbox_frame_detailed(wire: &[u8], expected: &FramePins<'_>) -> std::result::Result<VerifiedMailboxPage, FrameVerificationError> {
+    use FrameVerificationError as E;
+    let envelope = parse_wire_json_bounded(wire, 40, MAX_FRAME_BYTES).map_err(|_| E::Format)?;
+    bounded_nodes(&envelope).map_err(|_| E::Format)?;
+    exact(&envelope, &["proof", "items", "controls"]).map_err(|_| E::Format)?;
+    let proof = verify_typed(&text(&envelope, "proof").map_err(|_| E::Format)?, FRAME_TYPE, expected.service_key).map_err(|_| E::ServiceProof)?;
+    exact(&proof, &["kind", "audience", "stream_id", "actor_id", "workspace_id", "mailbox_id", "receiver_id", "epoch", "destination_digest", "binding_version", "server_time", "mailbox_frontier", "checkpoint", "more", "items_digest", "control_checkpoint", "controls_more", "controls_digest"]).map_err(|_| E::Format)?;
     let pins = expected.mailbox;
-    pins.validate()?;
-    if text(&proof, "kind")? != "peerwork.mailbox-frame.v1"
+    let field = |name| text(&proof, name).map_err(|_| E::Scope);
+    if field("kind")? != "peerwork.mailbox-frame.v1"
         || proof.get("audience").and_then(WireValue::as_utf16) != Some(expected.audience)
-        || text(&proof, "stream_id")? != expected.stream_id
-        || text(&proof, "actor_id")? != expected.actor_id
-        || text(&proof, "workspace_id")? != pins.workspace_id
-        || text(&proof, "mailbox_id")? != pins.mailbox_id
-        || text(&proof, "receiver_id")? != pins.receiver_id
-        || number(&proof, "epoch")? != pins.epoch
-        || text(&proof, "destination_digest")? != pins.destination_digest
-        || number(&proof, "binding_version")? != pins.binding_version
-        || number(&proof, "server_time")? < expected.server_time_floor
-        || number(&proof, "server_time")? >= expected.expires_at
-    {
-        return Err(CommunicationError);
+        || field("stream_id")? != expected.stream_id || field("actor_id")? != expected.actor_id
+        || field("workspace_id")? != pins.workspace_id || field("mailbox_id")? != pins.mailbox_id {
+        return Err(E::Scope);
     }
+    pins.validate().map_err(|_| E::Binding)?;
+    if field("receiver_id")? != pins.receiver_id
+        || number(&proof, "epoch").map_err(|_| E::Binding)? != pins.epoch
+        || field("destination_digest")? != pins.destination_digest
+        || number(&proof, "binding_version").map_err(|_| E::Binding)? != pins.binding_version { return Err(E::Binding); }
+    let time = number(&proof, "server_time").map_err(|_| E::Time)?;
+    if time < expected.server_time_floor || time >= expected.expires_at { return Err(E::Time); }
     for (name, hash) in [("items", "items_digest"), ("controls", "controls_digest")] {
-        let value = envelope.get(name).ok_or(CommunicationError)?;
-        if sha256_hex(
-            canonical_wire_value(value, Path::STRUCTURED)
-                .map_err(|_| CommunicationError)?
-                .as_bytes(),
-        ) != text(&proof, hash)?
-        {
-            return Err(CommunicationError);
-        }
+        let value = envelope.get(name).ok_or(E::Digest)?;
+        if sha256_hex(canonical_wire_value(value, Path::STRUCTURED).map_err(|_| E::Digest)?.as_bytes())
+            != text(&proof, hash).map_err(|_| E::Digest)? { return Err(E::Digest); }
     }
     let mut combined = proof.clone();
-    let WireValue::Object(fields) = &mut combined else {
-        return Err(CommunicationError);
-    };
+    let WireValue::Object(fields) = &mut combined else { return Err(E::Format); };
     for name in ["items", "controls"] {
-        fields.push((
-            name.encode_utf16().collect(),
-            envelope.get(name).ok_or(CommunicationError)?.clone(),
-        ));
+        fields.push((name.encode_utf16().collect(), envelope.get(name).ok_or(E::Format)?.clone()));
     }
-    let mut verified = page(
-        &combined,
-        expected.audience,
-        expected.actor_id,
-        pins,
-        expected.service_key,
-    )?;
-    verified.frame_wire =
-        Some(canonical_wire_value(&envelope, Path::STRUCTURED).map_err(|_| CommunicationError)?);
+    let mut verified = page_detailed(&combined, expected.audience, expected.actor_id, pins, expected.service_key)?;
+    verified.frame_wire = Some(canonical_wire_value(&envelope, Path::STRUCTURED).map_err(|_| E::Format)?);
     Ok(verified)
 }
+
 fn bounded_nodes(value: &WireValue) -> Result<()> {
     fn visit(v: &WireValue, left: &mut usize) -> Result<()> {
         if *left == 0 {

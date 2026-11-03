@@ -694,6 +694,12 @@ impl KernelClient {
                     let transient=matches!(error,KernelClientError::Transport(TransportError::Network|TransportError::Timeout|TransportError::SubmittedUncertain))
                         ||matches!(error,KernelClientError::ServerRejected(401|403|500..=599));
                     if transient && attempt==0 && !cancel.is_cancelled() {continue;}
+                    // A fresh read has no durable submission to reconcile.
+                    // Preserve the actual failure instead of returning a
+                    // mutation-shaped PENDING/OUTCOME_UNKNOWN with a fake ID.
+                    if !durable && peerwork_core::structure_execution::operation_kind(&required_text(&command,"action_id")?)==Some(peerwork_core::structure_execution::StructureOperationKind::Read) {
+                        return Err(match error {KernelClientError::ServerRejected(status)=>KernelClientError::ReadRejected(status),other=>other});
+                    }
                     let (code,phase,retryable)=match error {
                         KernelClientError::Store(JournalError::InvalidReceipt)|KernelClientError::InvalidResult=>("VERIFICATION_FAILED","VERIFICATION",false),
                         KernelClientError::Transport(TransportError::Cancelled)=>("CANCELLED","SUBMISSION",true),

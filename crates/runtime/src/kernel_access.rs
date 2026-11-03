@@ -97,14 +97,15 @@ impl From<KernelAccessError> for KernelPublicError {
         use crate::transport::TransportError as T;
         use KernelAccessError as A;
         if let A::Client(C::ReadRejected(status)) = &error {
+            let retryable=matches!(*status,408|429|500..=599);
             return Self {
                 code: "SERVICE_REJECTED",
-                message: "service rejected a fresh read; inspect the request and selected configuration, not mutation recovery",
+                message: "service rejected a fresh read; inspect HTTP status and retryability; no mutation was persisted",
                 details: Some(serde_json::json!({
                     "http_status": status, "phase": "HTTP_REQUEST",
                     "operation_kind": "READ", "intent_persisted": false,
                     "diagnostic_trust": "UNVERIFIED_HTTP", "effect_certainty": "NO_EFFECT",
-                    "retryable": false, "recovery": "CORRECT_READ_REQUEST_OR_CONFIGURATION"
+                    "retryable": retryable, "recovery": if retryable{"REPEAT_SELECTED_READ_WITH_BACKOFF"}else{"CORRECT_READ_REQUEST_OR_CONFIGURATION"}
                 })),
             };
         }

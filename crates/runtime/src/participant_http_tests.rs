@@ -4692,3 +4692,6 @@ async fn workspace_member_send_refuses_ambiguous_names_and_pins_original_recipie
     let error=tools.call(send(b.actor_id())).await.unwrap_err();assert_eq!(error.code,"EXISTING_OPERATION_USE_STATUS_OR_RECOVER");assert_eq!(service.counts().await["actions"]["structure.message.send"],1);
     a.close().await.unwrap();b.close().await.unwrap();owner.close().await.unwrap();
 }
+
+#[path = "participant_reliability_http_tests.rs"]
+mod reliability;

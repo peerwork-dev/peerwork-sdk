@@ -277,3 +277,30 @@ fn receiver_continuity_requires_device_key_and_exact_command_context() {
     missing.as_object_mut().unwrap().remove("claim_command_id");
     assert!(verify_receiver_claim_proof("service-one", &actor, &workspace, &missing).is_err());
 }
+
+#[test]
+fn frame_diagnostics_preserve_trust_boundary_and_failure_stage() {
+    let f=Fixture::new();
+    let key=key_id(&f.service.verifying_key().to_bytes());
+    let expected=FramePins{audience:&f.audience,actor_id:&f.actor,stream_id:&f.stream,mailbox:&f.pins,service_key:&key,server_time_floor:900,expires_at:61000};
+    for (changes,category) in [
+        (json!({"actor_id":"Z".repeat(43)}),FrameVerificationError::Scope),
+        (json!({"epoch":3}),FrameVerificationError::Binding),
+        (json!({"server_time":61000}),FrameVerificationError::Time),
+        (json!({"checkpoint":6}),FrameVerificationError::Cursor),
+    ] {
+        let frame=f.frame(json!([f.item]),json!([]),changes);
+        assert_eq!(verify_mailbox_frame_detailed(frame.to_string().as_bytes(),&expected).unwrap_err(),category);
+    }
+    let good=f.frame(json!([f.item]),json!([]),json!({}));
+    let mut changed=good.clone();changed["proof"]=json!("bad.signature.bytes");
+    assert_eq!(verify_mailbox_frame_detailed(changed.to_string().as_bytes(),&expected).unwrap_err(),FrameVerificationError::ServiceProof);
+    changed=good;changed["items"][0]["created_at"]=json!(101);
+    assert_eq!(verify_mailbox_frame_detailed(changed.to_string().as_bytes(),&expected).unwrap_err(),FrameVerificationError::Digest);
+    let mut bad=f.item.clone();bad["message"]["author_intent"]=json!("bad.signature.bytes");
+    let frame=f.frame(json!([bad]),json!([]),json!({}));
+    assert_eq!(verify_mailbox_frame_detailed(frame.to_string().as_bytes(),&expected).unwrap_err(),FrameVerificationError::ItemEvidence);
+    assert!(!FrameVerificationError::ServiceProof.authenticated_scope());
+    assert!(!FrameVerificationError::Scope.authenticated_scope());
+    assert!(FrameVerificationError::ItemEvidence.authenticated_scope());
+}

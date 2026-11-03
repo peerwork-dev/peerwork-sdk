@@ -21,7 +21,7 @@ TARGETS = {
 GROUPS = ['communication_host::', 'communication_host_owner::tests',
           'communication_local_channel::tests', 'communication_runtime::tests',
           'communication_store::', 'participant_store::tests', 'participant_inbox::tests',
-          'participant_transfer::tests', 'participant_presence::', 'agent_mcp::tests',
+          'participant_transfer::tests', 'participant_presence::', 'participant_watch::reliability_tests', 'agent_mcp::tests',
           'participant_connect::', 'participant_dispatch::tests',
           'agent_tools::tests', 'process_identity::tests',
           'kernel_access::resident_wal_tests',

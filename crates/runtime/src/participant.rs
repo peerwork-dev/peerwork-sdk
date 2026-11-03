@@ -26,7 +26,7 @@ use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
     thread::JoinHandle,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -1297,8 +1297,20 @@ async fn engine_loop(
                     if let Err(e)=context.capability.authorize(&request){let _=reply.send(Err(e));continue;}
                     let access=access.clone();let stop=cancel.clone();let namespace=context.namespace;let actor=identity.actor_id().to_owned();let request_origin=origin.clone();let sources=sources.clone();
                     let handle=jobs.spawn_local(async move{
+                        let started=Instant::now();
                         let r=access.execute_participant_async(&request,&namespace,&actor,&request_origin,false,&stop,&sources).await.map_err(|e|{
-                            let e=KernelPublicError::from(e);ParticipantError{details: None, code:e.code.into(),phase:"REQUEST".into(),effect_certainty:"UNKNOWN".into(),recovery:"REPEAT_SELECTED_READ_OR_CONTROL".into(),operation_id:Some(request.operation_id.clone())}
+                            let e=KernelPublicError::from(e);
+                            let read=crate::participant_actions::kind(&request.action)==Some(StructureOperationKind::Read);
+                            let mut details=e.details.unwrap_or_else(||json!({}));
+                            if read {
+                                details["operation_kind"]=json!("READ");
+                                details["observation"]=json!("UNAVAILABLE");
+                                details["intent_persisted"]=json!(false);
+                                details["elapsed_ms"]=json!(started.elapsed().as_millis().min(u64::MAX as u128) as u64);
+                                if details.get("retryable").is_none(){details["retryable"]=json!(matches!(e.code,"TIMEOUT"|"TRANSPORT_FAILED"));}
+                            }
+                            let recovery=if read{details["recovery"].as_str().unwrap_or(if matches!(e.code,"TIMEOUT"|"TRANSPORT_FAILED"){"REPEAT_SELECTED_READ"}else{"INSPECT_SELECTED_READ_OR_CONFIGURATION"})}else{"REPEAT_SELECTED_READ_OR_CONTROL"}.to_owned();
+                            ParticipantError{details:Some(details),code:e.code.into(),phase:if read{"READ"}else{"REQUEST"}.into(),effect_certainty:if read{"NO_EFFECT"}else{"UNKNOWN"}.into(),recovery,operation_id:if read{None}else{Some(request.operation_id.clone())}}
                         }).and_then(|value|request.verify_result_scope(value));let _=reply.send(r);JobResult::Request
                     });
                     job_kinds.insert(handle.id(),JobKind::Request);

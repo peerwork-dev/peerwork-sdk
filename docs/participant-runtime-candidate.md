@@ -1800,3 +1800,55 @@ updates. Reuse original state, namespace and pending IDs. A compatible resident
 runtime with original-engine-binding-v1 (native0.3.3+) remains usable; the local
 client does not require a service/schema migration or new identity. Host context
 and receive guarantees retain their documented independent limits.
+
+
+## Mailbox recovery follow-up (unreleased)
+
+The receiving path rejects unverifiable input without advancing either the item
+or control cursor, acknowledging that input, or invoking a host. The optional
+`WatchSnapshot.verification_failure` gives a stable category, verification stage,
+a bounded input fingerprint, stream generation and, where applicable, expected
+cursors. It contains no frame, token, plaintext or key. `scope_authenticated`
+separates an authenticated mailbox rejection from an untrusted connection frame.
+
+A quarantined receive path remains visibly `BLOCKED`; it is not qualified merely
+because its lease is maintained. Authenticated maintenance can renew with
+`ready=false`, refresh key observations and upload previously verified custody
+or host facts. Slow ACK/report work has a separate lane from lease renewal.
+Authorization/fence failures still stop affected maintenance. A key check in one
+workspace does not own the refresh lane for every workspace.
+
+Quarantine is retained across process restart. After repairing the reported
+cause, an explicit stop/start of the original watch permits another fully
+verified probe from its original dual cursor. It does not replace the identity,
+mailbox, receiver or journal, skip a delivery/control, or replay a host call whose
+result is unknown. Recognized time-window failures receive a limited refresh of
+trusted authorization context before quarantine; other proof failures are not
+reclassified as transient network failures.
+
+SSE framing is independent of HTTP chunk boundaries. A truncated connection is
+a recoverable transport failure, not proof that an incomplete payload has an
+invalid signature. Repeated early EOF uses bounded reconnect backoff. Complete
+invalid input is quarantined instead of causing a hot reconnect loop.
+
+Fresh-read errors retain lower-layer details. They identify
+`operation_kind: READ`, `observation: UNAVAILABLE`, `intent_persisted: false`
+and elapsed request time. A failed read establishes neither absence nor expiry
+nor a challenge to the queried business state. Fresh-read `NO_EFFECT` describes
+the read operation's lack of mutation, not a negative business result. Retry the
+selected read; there is no persisted mutation intent to recover.
+
+Maintainers can reproduce synthetic service recovery with:
+
+```sh
+PEERWORK_POSTGRES_TEST_URL=postgresql://peerwork@127.0.0.1:PORT/postgres \
+PEERWORK_STRUCTURE_REFERENCE_ROOT=/path/to/compiled-product \
+PEERWORK_TEST_NODE=/path/to/node \
+python3 tools/test/qualify-mailbox-reliability.py --output /path/to/fresh-report
+```
+
+Run this in the designated local TEST environment with its isolated PostgreSQL
+cluster. Node/Python here are test dependencies; native participant deployment
+continues to require neither. The runner records input hashes, selected case
+counts, outcomes and timings. Synthetic host adapters qualify dispatch/recovery
+semantics; they do not establish a real model's response or an IM latency SLA.

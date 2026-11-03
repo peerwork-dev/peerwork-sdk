@@ -15,13 +15,16 @@ const require=createRequire(join(root,'package.json'));
 const {serve}=await import(pathToFileURL(require.resolve('@hono/node-server')));
 const {postgresFixture}=await import(pathToFileURL(join(root,'dist-workspace/tests/fixtures/workspace-postgres-fixture.js')));
 const {createPostgresControlApp}=await import(pathToFileURL(join(root,'dist-workspace/src/workspace-postgres-http.js')));
+const {signTypedJws}=await import(pathToFileURL(join(root,'dist-workspace/src/workspace-jws.js')));
+const {hash,canonicalStructured}=await import(pathToFileURL(join(root,'dist-workspace/src/workspace-contract.js')));
 const f=await postgresFixture();f.clock.now=Date.now();
 let reportQuotaBlocked=false;const reportQuotaLimits=new Map();
 let clockOffset=0;const ticker=setInterval(()=>{f.clock.now=Date.now()+clockOffset;},10);
 const app=createPostgresControlApp(f.kernel,{source:()=> '127.0.0.1'});
 let offline=false,dropAction=null,delayName=null,delayAction=null,release=null,streamDurationOnce=0;
-let rejectNextRebindMailbox=null;
-const counts={commands:0,discovery:0,context:0,journal_reads:0,dropped:0,native_streams:0,delayed:0,claim_commands:[],actions:{}};
+let rejectNextRebindMailbox=null,corruptFrame=null,keyDelayWorkspace=null,delayMailbox=null;
+let keyDelayMs=0,earlyEofCount=0,timeoutAction=null;const timeoutReleases=new Set();
+const counts={commands:0,discovery:0,context:0,journal_reads:0,dropped:0,native_streams:0,corrupted_frames:0,delayed_keys:0,delayed:0,claim_commands:[],actions:{}};
 const commandIds=new Set();
 // Explicit maintainer measurement only. Buffer closed metadata in memory and
 // write once after the fixture stops; never log packets, IDs or request bodies.
@@ -38,6 +41,10 @@ const handle=async request=>{
  const path=new URL(request.url).pathname;
  if(path==='/__test/config'){
   const options=await request.json();
+  if(options.early_eof_count!==undefined){if(!Number.isSafeInteger(options.early_eof_count)||options.early_eof_count<0||options.early_eof_count>16)throw Error('invalid synthetic EOF count');earlyEofCount=options.early_eof_count;}
+  if(options.corrupt_frame!==undefined)corruptFrame=options.corrupt_frame;
+  if(options.key_delay_workspace!==undefined)keyDelayWorkspace=options.key_delay_workspace;
+  if(options.key_delay_ms!==undefined){if(!Number.isSafeInteger(options.key_delay_ms)||options.key_delay_ms<0||options.key_delay_ms>15000)throw Error('invalid synthetic key delay');keyDelayMs=options.key_delay_ms;}
   if(options.offline!==undefined)offline=options.offline;
   if(options.report_quota_blocked!==undefined){
    reportQuotaBlocked=options.report_quota_blocked;
@@ -48,10 +55,12 @@ const handle=async request=>{
   if(options.drop_action!==undefined)dropAction=options.drop_action;
   if(options.reject_next_rebind_mailbox!==undefined)rejectNextRebindMailbox=options.reject_next_rebind_mailbox;
   if(options.delay_name!==undefined)delayName=options.delay_name;
+  if(options.timeout_action!==undefined)timeoutAction=options.timeout_action;
   if(options.delay_action!==undefined)delayAction=options.delay_action;
+  if(options.delay_mailbox!==undefined)delayMailbox=options.delay_mailbox;
   if(options.stream_duration_once_ms!==undefined)streamDurationOnce=options.stream_duration_once_ms;
   if(options.close_connections)setTimeout(()=>server.closeAllConnections(),10);
-  if(options.release){release?.();release=null;delayName=null;}
+  if(options.release){release?.();release=null;delayName=null;timeoutAction=null;for(const fn of timeoutReleases)fn();timeoutReleases.clear();}
   return Response.json({ok:true});
  }
  if(path==='/__test/counts')return Response.json({...counts,unique_commands:commandIds.size,
@@ -68,13 +77,15 @@ const handle=async request=>{
   const envelope=await request.clone().json();
   command=JSON.parse(Buffer.from(envelope.jws.split('.')[1],'base64url').toString('utf8'));
   counts.commands++;commandIds.add(command.command_id);
+  if(command.workspace_id===keyDelayWorkspace&&command.action_id==='structure.mailbox.get'&&keyDelayMs){counts.delayed_keys++;await pause(keyDelayMs);}
   counts.actions[command.action_id]=(counts.actions[command.action_id]??0)+1;
   if(command.action_id==='structure.mailbox.claim')counts.claim_commands.push({command_id:command.command_id,receiver_id:command.body.receiver_id,replace:command.body.replace,expected_epoch:command.body.expected_epoch});
   if(command.action_id==='structure.mailbox.claim'&&command.body.replace===true&&command.body.mailbox_id===rejectNextRebindMailbox){
    rejectNextRebindMailbox=null;
    await f.store.pool.query(`UPDATE "${f.schema}".communication_mailboxes SET epoch=epoch+1,lease_until=0,ready=false WHERE mailbox_id=$1`,[command.body.mailbox_id]);
   }
-  if(delayAction===command.action_id){delayAction=null;counts.delayed++;await new Promise(resolve=>{release=resolve;});}
+  if(timeoutAction===command.action_id)await new Promise(resolve=>{timeoutReleases.add(resolve);});
+  if(delayAction===command.action_id&&(!delayMailbox||command.body.mailbox_id===delayMailbox)){delayAction=null;counts.delayed++;await new Promise(resolve=>{release=resolve;});}
   if(reportQuotaBlocked&&command.action_id==='structure.mailbox.report'){
    const workspace=command.workspace_id;
    if(!reportQuotaLimits.has(workspace)){
@@ -95,13 +106,39 @@ const handle=async request=>{
  }
  if(path==='/api/workspace/v1/structure/communication/stream'&&response.ok){
   counts.native_streams++;
-  if(streamDurationOnce){
-   const duration=streamDurationOnce;streamDurationOnce=0;const reader=response.body.getReader();let closed=false,timer;
-   return new Response(new ReadableStream({start(controller){
-    const close=()=>{if(closed)return;closed=true;clearTimeout(timer);void reader.cancel().catch(()=>{});try{controller.close();}catch{}};
-    timer=setTimeout(close,duration);void(async()=>{try{for(;;){const r=await reader.read();if(closed)return;if(r.done){close();return;}controller.enqueue(r.value);}}catch{close();}})();
-   },cancel(){closed=true;clearTimeout(timer);return reader.cancel().catch(()=>{});}}),{status:response.status,headers:response.headers});
-  }
+  if(earlyEofCount){earlyEofCount--;void response.body.cancel().catch(()=>{});return new Response(new ReadableStream({start(controller){controller.enqueue(new TextEncoder().encode('event: delivery\ndata: {'));controller.close();}}),{status:200,headers:response.headers});}
+  const duration=streamDurationOnce;streamDurationOnce=0;
+  const reader=response.body.getReader();let closed=false,timer,buffer='';const decoder=new TextDecoder(),encoder=new TextEncoder();
+  return new Response(new ReadableStream({start(controller){
+   const close=()=>{if(closed)return;closed=true;clearTimeout(timer);void reader.cancel().catch(()=>{});try{controller.close();}catch{}};
+   if(duration)timer=setTimeout(close,duration);
+   void(async()=>{try{for(;;){const r=await reader.read();if(closed)return;if(r.done){close();return;}
+    buffer+=decoder.decode(r.value,{stream:true});
+    if(buffer.length>3*1024*1024)throw Error('synthetic frame exceeds bound');
+    let end;
+    while((end=buffer.indexOf('\n\n'))>=0){let block=buffer.slice(0,end+2);buffer=buffer.slice(end+2);
+     if(corruptFrame&&block.startsWith('event: delivery\n')){
+      const frame=JSON.parse(block.split('\ndata: ')[1]),proof=JSON.parse(Buffer.from(frame.proof.split('.')[1],'base64url').toString('utf8'));
+      if(proof.mailbox_id===corruptFrame.mailbox_id&&frame.items.length){
+       const mode=corruptFrame.mode;corruptFrame=null;counts.corrupted_frames++;
+       if(mode==='ITEM_PROOF'){frame.items[0].message.author_intent='bad.signature.bytes';proof.items_digest=hash(canonicalStructured(frame.items));}
+       else if(mode==='TIME')proof.server_time=proof.server_time+120000;
+       else if(mode==='UNKNOWN_SCOPE')proof.mailbox_id='X'.repeat(43);
+       else if(mode==='CONTROL_PROOF'){
+        proof.control_checkpoint++;
+        frame.controls=[{sequence:proof.control_checkpoint,kind:'communication.message.withdrawn',target:{},intent_digest:'a'.repeat(64),author_intent:'bad.signature.bytes',source_response:{}}];
+        proof.controls_digest=hash(canonicalStructured(frame.controls));
+       }
+       else if(mode==='DIGEST')proof.items_digest='0'.repeat(64);
+       if(mode==='SIGNATURE'){const parts=frame.proof.split('.');const sig=Buffer.from(parts[2],'base64url');sig[0]^=1;parts[2]=sig.toString('base64url');frame.proof=parts.join('.');}
+       else frame.proof=signTypedJws(proof,'peerwork.mailbox-frame.v1+jws',f.kernel.receiptKey);
+       block='event: delivery\ndata: '+(mode==='MALFORMED'?'{':JSON.stringify(frame))+'\n\n';
+      }
+     }
+     controller.enqueue(encoder.encode(block));
+    }
+   }}catch{close();}})();
+  },cancel(){closed=true;clearTimeout(timer);return reader.cancel().catch(()=>{});}}),{status:response.status,headers:response.headers});
  }
  if(command?.action_id===dropAction&&response.status===200){
   const result=await response.clone().json();
@@ -117,7 +154,7 @@ const server=serve({hostname:'127.0.0.1',port:0,fetch:async request=>{
 await once(server,'listening');
 process.stdout.write(JSON.stringify({origin:`http://127.0.0.1:${server.address().port}`,simulated_link_rtt_ms:linkRttMs,simulated_minimum_uplink_ms:minimumUplink?linkRttMs/2:0})+'\n');
 process.once('SIGTERM',async()=>{
- clearInterval(ticker);release?.();server.closeAllConnections();
+ clearInterval(ticker);release?.();for(const fn of timeoutReleases)fn();timeoutReleases.clear();server.closeAllConnections();
  await new Promise(resolve=>server.close(resolve));await f.close();
  if(timingOutput)writeFileSync(timingOutput,JSON.stringify({format:'peerwork.synthetic-http-timings.v1',timing_basis:'service process monotonic request entry to response headers; excludes SSE body consumption',timings,truncated:timingsTruncated}),{mode:0o600,flag:'wx'});
  process.exit(0);

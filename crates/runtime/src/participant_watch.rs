@@ -11,7 +11,7 @@ use crate::{
 };
 use peerwork_core::{
     communication::{
-        verify_mailbox_frame, FramePins, MailboxPins, VerifiedMailboxPage, MAX_FRAME_BYTES,
+        verify_mailbox_frame_detailed, FramePins, MailboxPins, VerifiedMailboxPage, MAX_FRAME_BYTES,
     },
     crypto::{decode_base64url, sha256_hex},
     wire_json::{canonical_wire_value, parse_wire_json_bounded, WireValue},
@@ -125,6 +125,8 @@ pub struct DeliveryReference {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WatchSnapshot {
     pub reporting_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_failure: Option<Value>,
     pub presence: Value,
     pub workspace_id: String,
     pub mailbox_id: String,
@@ -243,6 +245,13 @@ struct Slot {
     busy: bool,
     control_cancel: Option<KernelCancellationToken>,
     blocked: bool,
+    receive_fault: Option<Value>,
+    time_retries: u8,
+    pulse_busy: bool,
+    lifecycle: u64,
+    pulse_retry_at: Instant,
+    pulse_failures: u8,
+    pulse_cancel: Option<KernelCancellationToken>,
     presence: crate::participant_presence::Presence,
     next_keys: Instant,
     report_retry: Instant,
@@ -266,7 +275,10 @@ impl Slot {
         }
     }
     fn state(&mut self, state: &str, code: Option<String>) {
-        let state = if self.enabled { state } else { "LOCAL_STOPPED" };
+        let (state, code) = if !self.enabled { ("LOCAL_STOPPED", code) }
+            else if self.blocked { ("BLOCKED", self.code.clone().or(code)) }
+            else if self.receive_fault.is_some() { ("BLOCKED", Some("STREAM_VERIFICATION_FAILED".into())) }
+            else { (state, code) };
         if self.state != state || self.code != code {
             self.state = state.into();
             self.code = code;
@@ -278,7 +290,8 @@ impl Slot {
         self.failures = self.failures.saturating_add(1);
         self.retry_at =
             Instant::now() + Duration::from_millis((250u64 << self.failures.min(5)).min(8000));
-        self.blocked = !e.retryable;
+        if !self.blocked && !e.retryable {self.code=Some(e.code.clone());}
+        self.blocked |= !e.retryable;
         self.state(
             if e.retryable {
                 "RECONNECTING"
@@ -455,8 +468,9 @@ async fn call(
 enum JobKind {
     Session,
     Stream,
-    Control(String),
-    Keys,
+    Control(String, u64),
+    Pulse(String, u64),
+    Keys(String),
 }
 enum Work {
     Session(std::result::Result<MailSession, Failure>),
@@ -474,7 +488,7 @@ enum Work {
     Stream(std::result::Result<(), Failure>),
 }
 enum Frame {
-    Fault(u64, String, oneshot::Sender<()>),
+    Fault { generation: u64, keys: Vec<String>, diagnostic: Value, reply: oneshot::Sender<()> },
     Bootstrap(u64, Vec<MailboxPins>, oneshot::Sender<Result<()>>),
     Data {
         generation: u64,
@@ -500,7 +514,11 @@ pub(crate) async fn run(
         },
     };
     for binding in bindings {
-        slots.insert(binding.options.key(), slot(binding));
+        let fault=store.receive_fault(&binding.options.workspace_id,&binding.options.mailbox_id);
+        let mut value=slot(binding);
+        match fault {Ok(fault)=>value.receive_fault=fault,Err(e)=>value.fail(Failure{no_effect:false,code:e.code,retryable:false})}
+        if value.receive_fault.is_some(){value.state("BLOCKED",Some("STREAM_VERIFICATION_FAILED".into()));}
+        slots.insert(value.binding.options.key(),value);
     }
     let mut session: Option<MailSession> = None;
     let mut session_busy = false;
@@ -518,6 +536,7 @@ pub(crate) async fn run(
     let mut tick = tokio::time::interval(Duration::from_millis(50));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut compact_at = Instant::now();
+    let mut last_key_workspace: Option<String> = None;
     loop {
         tokio::select! {
             _=cancel.cancelled()=>break,
@@ -530,7 +549,7 @@ pub(crate) async fn run(
                     use crate::participant_inbox::{HostOperation as Op,HostReply as Reply};
                     let value=(||->Result<Reply>{
                         let selected=slots.get(&options.key()).filter(|s|s.binding.namespace==namespace&&s.binding.options==options);
-                        let live=selected.is_some_and(|s|s.enabled&&s.link_verified&&!s.blocked&&s.lease_until.is_some_and(|until|until>Instant::now()));
+                        let live=selected.is_some_and(|s|s.enabled&&s.link_verified&&!s.blocked&&s.receive_fault.is_none()&&s.lease_until.is_some_and(|until|until>Instant::now()));
                         Ok(match operation{
                             Op::RetirementPlan=>Reply::Retirement(store.host_retirement_plan(&identity,&namespace,&options)?),
                             Op::RetirementCommit(plan)=>{store.host_retirement_commit(&identity,&namespace,&options,&plan)?;Reply::Saved},
@@ -564,7 +583,11 @@ pub(crate) async fn run(
                         // another stop; this same binding remains stopped.
                         if let Some(slot)=slots.get_mut(&options.key()){
                             if slot.binding.namespace!=namespace||slot.binding.options!=options{return Err(error("WATCH_BINDING_MISMATCH"));}
-                            slot.enabled=false;if let Some(c)=slot.control_cancel.take(){c.cancel();}slot.link_verified=false;slot.state("LOCAL_STOPPED",None);
+                            // An explicit stop/start permits a fresh verified probe;
+                            // an ordinary process restart does not erase quarantine.
+                            store.reset_receive_probe(&options.workspace_id,&options.mailbox_id)?;
+                            slot.receive_fault=None;slot.time_retries=0;slot.lifecycle=slot.lifecycle.saturating_add(1);
+                            slot.enabled=false;if let Some(c)=slot.control_cancel.take(){c.cancel();}if let Some(c)=slot.pulse_cancel.take(){c.cancel();}slot.link_verified=false;slot.state("LOCAL_STOPPED",None);
                         }Ok(())
                     });let _=reply.send(stopped);
                 },
@@ -588,7 +611,7 @@ pub(crate) async fn run(
                             if item["opened_message"]["state"]=="KEY_UNAVAILABLE"{if let (Some(id),Some(seq))=(item["opened_message"]["key_id"].as_str(),item["sequence"].as_u64()){store.key_unavailable(&options.workspace_id,&options.mailbox_id,seq,id)?;slot.missing_keys();}}
                         }
                         let next_after=if items.len()==limit{items.last().and_then(|v|v["sequence"].as_u64())}else{None};
-                        Ok(WatchSnapshot{presence:slot.presence.local(),reporting_code:slot.report_code.clone(),workspace_id:options.workspace_id.clone(),mailbox_id:options.mailbox_id.clone(),generation:slot.generation,state:slot.state.clone(),receiver_link_verified:slot.link_verified,model_response:"NOT_ATTESTED".into(),code:slot.code.clone(),checkpoint:cursor.as_ref().map(|c|c.item).unwrap_or(0),control_checkpoint:cursor.and_then(|c|c.control),items,next_after,
+                        Ok(WatchSnapshot{verification_failure:slot.receive_fault.clone(),presence:slot.presence.local(),reporting_code:slot.report_code.clone(),workspace_id:options.workspace_id.clone(),mailbox_id:options.mailbox_id.clone(),generation:slot.generation,state:slot.state.clone(),receiver_link_verified:slot.link_verified,model_response:"NOT_ATTESTED".into(),code:slot.code.clone(),checkpoint:cursor.as_ref().map(|c|c.item).unwrap_or(0),control_checkpoint:cursor.and_then(|c|c.control),items,next_after,
                             receiver_ack_pending:store.receiver_ack_pending(&options.workspace_id,&options.mailbox_id)?,
                             application_ack_pending:!store.acknowledgements(&options.workspace_id,&options.mailbox_id,true)?.is_empty(),stream_id:slot.stream_id.clone(),disconnects:slot.disconnects})
                     })();let _=reply.send(value);
@@ -606,8 +629,28 @@ pub(crate) async fn run(
             },
             frame=frames.recv()=>if let Some(frame)=frame{
                 let (page,stream_id,valid_until,reply)=match frame{
-                    Frame::Fault(generation,key,reply)=>{
-                        if active_generation==Some(generation){if let Some(s)=slots.get_mut(&key){s.fail(Failure{no_effect:false,code:"STREAM_VERIFICATION_FAILED".into(),retryable:false});}}
+                    Frame::Fault{generation,keys,diagnostic,reply}=>{
+                        if active_generation==Some(generation){
+                            // Only an authenticated scope can select a mailbox.
+                            // Unauthenticated input isolates this connection, not
+                            // an attacker-selected routing field.
+                            for (id,s) in slots.iter_mut().filter(|(id,s)|s.enabled && !s.blocked && keys.iter().any(|key|key==*id)) {
+                                s.link_verified=false;
+                                s.presence.version=s.presence.version.saturating_add(1);
+                                s.next_control=Instant::now();
+                                if diagnostic["code"]=="STREAM_TIME_WINDOW_INVALID" && s.time_retries<2 {
+                                    s.time_retries+=1;
+                                    s.state("RECONNECTING",Some("STREAM_TIME_WINDOW_INVALID".into()));
+                                    continue;
+                                }
+                                let saved=store.quarantine_receive(&s.binding.options.workspace_id,&s.binding.options.mailbox_id,&diagnostic);
+                                let _=id;
+                                s.receive_fault=Some(diagnostic.clone());
+                                if let Err(e)=saved{s.blocked=true;s.code=Some(e.code);}
+                                s.next_control=Instant::now();
+                                s.state("BLOCKED",Some("STREAM_VERIFICATION_FAILED".into()));
+                            }
+                        }
                         let _=reply.send(());continue;
                     },
                     Frame::Bootstrap(generation,scopes,reply)=>{
@@ -628,6 +671,7 @@ pub(crate) async fn run(
                 let key=format!("{}:{}",page.mailbox().workspace_id,page.mailbox().mailbox_id);
                 let stored=if tokio::time::Instant::now()>=valid_until{Err(error("STREAM_GRANT_EXPIRED"))}else if let Some(slot)=slots.get_mut(&key){
                     if !slot.binding.pins.as_ref().is_some_and(|p|p.epoch==page.mailbox().epoch&&p.receiver_id==page.mailbox().receiver_id){Err(error("MAILBOX_EPOCH_MISMATCH"))}
+                    else if slot.receive_fault.is_some(){Err(error("STREAM_SCOPE_QUARANTINED"))}
                     else{
                         let ids=page.items().iter().filter_map(|item| match item.message()?.content(){peerwork_core::communication::MessageContent::WorkspaceE2ee{body}=>Some(body.key_id.clone()),_=>None}).collect::<std::collections::BTreeSet<_>>().into_iter().collect::<Vec<_>>();
                         let known=access.cached_mail_keys(&page.mailbox().workspace_id,&ids).unwrap_or_default();
@@ -639,22 +683,29 @@ pub(crate) async fn run(
                         if let Some(p)=slot.binding.pins.as_mut(){p.after_sequence=cursor.item;p.after_control_sequence=cursor.control;}
                         if !slot.link_verified{slot.next_control=Instant::now();slot.presence.version=slot.presence.version.saturating_add(1);}
                         if store.key_missing(&slot.binding.options.workspace_id).unwrap_or(true){slot.missing_keys();}
-                        slot.link_verified=true;slot.stream_id=Some(stream_id);slot.failures=0;slot.state("RECEIVER_LINK_VERIFIED",None);slot.notify();
+                        slot.link_verified=true;slot.stream_id=Some(stream_id);slot.failures=0;slot.time_retries=0;slot.state("RECEIVER_LINK_VERIFIED",None);slot.notify();
                     })}
                 }else{Err(error("WATCH_NOT_FOUND"))};
-                if let Err(e)=&stored{if let Some(slot)=slots.get_mut(&key){slot.fail(Failure{no_effect:false,code:e.code.clone(),retryable:matches!(e.code.as_str(),"INBOX_CAPACITY"|"INBOX_STATE_FAILED"|"INBOX_CURSOR_CONFLICT"|"STREAM_GRANT_EXPIRED")});}}
+                if let Err(e)=&stored{if let Some(slot)=slots.get_mut(&key).filter(|s|s.receive_fault.is_none()){slot.fail(Failure{no_effect:false,code:e.code.clone(),retryable:matches!(e.code.as_str(),"INBOX_CAPACITY"|"INBOX_STATE_FAILED"|"INBOX_CURSOR_CONFLICT"|"STREAM_GRANT_EXPIRED")});}}
                 let _=reply.send(stored);
             },
             work=jobs.join_next_with_id(),if !jobs.is_empty()=>if let Some(work)=work{
                 match work{
                     Err(e)=>{match kinds.remove(&e.id()){
-                        Some(JobKind::Control(key))=>if let Some(s)=slots.get_mut(&key){s.busy=false;s.control_cancel=None;s.fail(Failure::code("WATCH_TASK_FAILED"));},
-                        Some(JobKind::Keys)=>{for s in slots.values_mut().filter(|s|s.enabled){s.presence.keys(json!({"state":"UNKNOWN","key_id":null,"epoch":null,"code":"KEY_TASK_FAILED"}));s.next_keys=Instant::now()+Duration::from_secs(2);s.next_control=Instant::now();s.notify();}},
+                        Some(JobKind::Control(key,generation))=>if let Some(s)=slots.get_mut(&key){s.busy=false;s.control_cancel=None;if s.lifecycle==generation{s.fail(Failure::code("WATCH_TASK_FAILED"));}},
+                        Some(JobKind::Pulse(key,generation))=>if let Some(s)=slots.get_mut(&key){s.pulse_busy=false;s.pulse_cancel=None;if s.lifecycle==generation{s.link_verified=false;s.pulse_retry_at=Instant::now()+Duration::from_secs(1);s.state("RECONNECTING",Some("PULSE_TASK_FAILED".into()));}},
+                        Some(JobKind::Keys(workspace))=>{for s in slots.values_mut().filter(|s|s.enabled&&s.binding.options.workspace_id==workspace){s.presence.keys(json!({"state":"UNKNOWN","key_id":null,"epoch":null,"code":"KEY_TASK_FAILED"}));s.next_keys=Instant::now()+Duration::from_secs(2);s.next_control=Instant::now();s.notify();}},
                         Some(JobKind::Session)=>{session_busy=false;session_retry=Instant::now()+Duration::from_secs(2);},
                         Some(JobKind::Stream)=>{stream_running=false;active_generation=None;if let Some(c)=stream_cancel.take(){c.cancel();}stream_retry=Instant::now()+Duration::from_secs(1);for s in slots.values_mut(){s.link_verified=false;s.state("RECONNECTING",Some("STREAM_TASK_FAILED".into()));}},_=>{},
                     }},
                     Ok((id,work))=>{
-                        kinds.remove(&id);
+                        let kind=kinds.remove(&id);
+                        let stale=match &kind {
+                            Some(JobKind::Control(key,generation))=>slots.get_mut(key).is_some_and(|s|{if s.lifecycle!=*generation{s.busy=false;s.control_cancel=None;true}else{false}}),
+                            Some(JobKind::Pulse(key,generation))=>slots.get_mut(key).is_some_and(|s|{if s.lifecycle!=*generation{s.pulse_busy=false;s.pulse_cancel=None;true}else{false}}),
+                            _=>false,
+                        };
+                        if stale{continue;}
                         match work{
                             Work::Session(value)=>{session_busy=false;match value{Ok(value)=>match store.bind_service(&value.audience,&value.service_key){Ok(())=>session=Some(value),Err(e)=>{for s in slots.values_mut(){s.fail(Failure{no_effect:false,code:e.code.clone(),retryable:false});}}},Err(e)=>{session_retry=Instant::now()+Duration::from_secs(2);for s in slots.values_mut().filter(|s|!s.blocked){if e.retryable{s.state("RECONNECTING",Some(e.code.clone()));}else{s.fail(Failure{no_effect:false,code:e.code.clone(),retryable:false});}}}}},
                             Work::Inspect(key,value)=>if let Some(s)=slots.get_mut(&key){s.busy=false;s.control_cancel=None;match value{
@@ -695,11 +746,14 @@ pub(crate) async fn run(
                                 }
                                 s.fail(e)
                             }}},
-                            Work::Pulse(key,started,version,value)=>if let Some(s)=slots.get_mut(&key){s.busy=false;s.control_cancel=None;match value{Ok(value)=>{
+                            Work::Pulse(key,started,version,value)=>if let Some(s)=slots.get_mut(&key){s.pulse_busy=false;s.pulse_cancel=None;match value{Ok(value)=>{
                                 let m=&value["mailbox"];let ttl=m["lease_until"].as_u64().unwrap_or(0).saturating_sub(m["server_time"].as_u64().unwrap_or(u64::MAX));
                                 let remaining=Duration::from_millis(ttl.min(15000)).saturating_sub(started.elapsed());
-                                if remaining.is_zero(){s.fail(Failure::code("MAILBOX_LEASE_EXPIRED"));}else{s.lease_until=Some(Instant::now()+remaining);s.next_control=Instant::now()+if version==s.presence.version{Duration::from_secs(6)}else{Duration::ZERO};s.failures=0;}
-                            },Err(e)=>{s.lease_until=None;s.fail(e);}}},
+                                if remaining.is_zero(){s.fail(Failure::code("MAILBOX_LEASE_EXPIRED"));}else{s.lease_until=Some(Instant::now()+remaining);s.next_control=Instant::now()+if version==s.presence.version{Duration::from_secs(6)}else{Duration::ZERO};s.pulse_failures=0;s.pulse_retry_at=Instant::now();}
+                            },Err(mut e)=>{s.lease_until=None;s.pulse_failures=s.pulse_failures.saturating_add(1);s.pulse_retry_at=Instant::now()+Duration::from_millis((250u64<<s.pulse_failures.min(4)).min(4000));
+                                if e.code=="MAILBOX_LEASE_EXPIRED"{e.retryable=true;}
+                                if e.retryable{s.link_verified=false;s.state("RECONNECTING",Some(e.code));}else{s.fail(e);}
+                            }}},
                             Work::Ack(key,items,consumed,value)=>if let Some(s)=slots.get_mut(&key){s.busy=false;s.control_cancel=None;match value{Ok(value)=>{
                                 let stage=if consumed{"APPLICATION_CONSUMED"}else{"RECEIVER_STORED"};
                                 let expected=items.iter().map(|(sequence,id)|json!({"sequence":sequence,"delivery_id":id})).collect::<Vec<_>>();
@@ -747,7 +801,7 @@ pub(crate) async fn run(
                                 let fatal=value.as_ref().err().is_some_and(|e|!e.retryable);
                                 if value.is_err(){stream_failures=stream_failures.saturating_add(1);}else{stream_failures=0;}
                                 stream_retry=Instant::now()+Duration::from_millis(if value.is_ok(){50}else{(250u64<<stream_failures.min(5)).min(8000)});
-                                for s in slots.values_mut().filter(|s|!s.blocked){s.link_verified=false;s.disconnects=s.disconnects.saturating_add(1);
+                                for s in slots.values_mut().filter(|s|!s.blocked&&s.receive_fault.is_none()){s.link_verified=false;s.disconnects=s.disconnects.saturating_add(1);
                                     if fatal{s.fail(Failure{no_effect:false,code:code.clone().unwrap_or_else(||"STREAM_VERIFICATION_FAILED".into()),retryable:false});}
                                     else{s.state("RECONNECTING",code.clone());
                                         // Revalidate each fenced mailbox independently after a
@@ -762,7 +816,7 @@ pub(crate) async fn run(
             },
             _=tick.tick(),if !slots.is_empty()=>{},
         }
-        slots.retain(|_, s| s.enabled || s.busy || s.signals.iter().any(|c| !c.is_closed()));
+        slots.retain(|_, s| s.enabled || s.busy || s.pulse_busy || s.signals.iter().any(|c| !c.is_closed()));
         if slots.is_empty() {
             continue;
         }
@@ -795,15 +849,16 @@ pub(crate) async fn run(
         let Some(current) = &session else {
             continue;
         };
-        if !kinds.values().any(|kind| matches!(kind, JobKind::Keys)) {
-            if let Some(s) = slots.values().find(|s| {
-                s.enabled
-                    && !s.blocked
-                    && s.binding.pins.is_some()
-                    && s.lease_until.is_some_and(|until| until > Instant::now())
-                    && Instant::now() >= s.next_keys
-            }) {
+        if kinds.values().filter(|kind| matches!(kind, JobKind::Keys(_))).count() < 2 {
+            let due = |s: &&Slot| s.enabled && !s.blocked && s.binding.pins.is_some()
+                && s.lease_until.is_some_and(|until| until > Instant::now()) && Instant::now() >= s.next_keys
+                && !kinds.values().any(|kind| matches!(kind,JobKind::Keys(ws) if ws==&s.binding.options.workspace_id));
+            let selected = slots.values().filter(due).find(|s| last_key_workspace.as_ref().is_none_or(|last| &s.binding.options.workspace_id > last))
+                .or_else(|| slots.values().find(due));
+            if let Some(s) = selected {
                 let workspace = s.binding.options.workspace_id.clone();
+                last_key_workspace=Some(workspace.clone());
+                let key_workspace=workspace.clone();
                 let mailbox = s.binding.options.mailbox_id.clone();
                 let needed = match store.key_batch(&identity, &workspace) {
                     Ok(ids) => ids,
@@ -835,7 +890,7 @@ pub(crate) async fn run(
                     };
                     Work::Keys(workspace, needed, result)
                 });
-                kinds.insert(handle.id(), JobKind::Keys);
+                kinds.insert(handle.id(), JobKind::Keys(key_workspace));
             }
         }
         for workspace in slots
@@ -849,32 +904,19 @@ pub(crate) async fn run(
         for (key, s) in slots.iter_mut() {
             s.signals.retain(|c| !c.is_closed());
             if s.link_verified && s.lease_until.is_none_or(|at| at <= Instant::now()) {
-                s.link_verified = false;
-                s.state("RECONNECTING", Some("MAILBOX_LEASE_EXPIRED".into()));
+                s.link_verified=false;
+                s.state("RECONNECTING",Some("MAILBOX_LEASE_EXPIRED".into()));
             }
-            if !s.enabled || s.busy || s.blocked || Instant::now() < s.retry_at {
-                continue;
-            }
-            if kinds
-                .values()
-                .filter(|k| matches!(k, JobKind::Control(_)))
-                .count()
-                >= 8
-            {
-                break;
-            }
-            let options = s.binding.options.clone();
-            let access = access.clone();
-            let stop = cancel.child_token();
-            s.control_cancel = Some(stop.clone());
-            let work_key = key.clone();
-            let job = if let Some(pins) = &s.binding.pins {
-                let mut fence = json!({"mailbox_id":pins.mailbox_id,"receiver_id":pins.receiver_id,"epoch":pins.epoch});
-                if Instant::now() >= s.next_control
-                    || s.lease_until
-                        .is_none_or(|at| at <= Instant::now() + Duration::from_secs(3))
-                {
-                    fence["ready"] = json!(s.link_verified && !s.signals.is_empty());
+            if !s.enabled || s.blocked { continue; }
+            let options=s.binding.options.clone();
+            let access=access.clone();
+            let stop=cancel.child_token();
+            let work_key=key.clone();
+            if let Some(pins)=&s.binding.pins {
+                if !s.pulse_busy && kinds.values().filter(|kind|matches!(kind,JobKind::Pulse(..))).count()<8 && Instant::now()>=s.pulse_retry_at && (Instant::now()>=s.next_control || s.lease_until.is_none_or(|at|at<=Instant::now()+Duration::from_secs(3))) {
+                    s.pulse_cancel=Some(stop.clone());
+                    let mut fence=json!({"mailbox_id":pins.mailbox_id,"receiver_id":pins.receiver_id,"epoch":pins.epoch});
+                    fence["ready"] = json!(s.receive_fault.is_none() && s.link_verified && !s.signals.is_empty());
                     if let Some(destination) = &options.host_destination {
                         fence["presence"] = s.presence.wire(
                             destination,
@@ -889,23 +931,36 @@ pub(crate) async fn run(
                     } else {
                         "UNKNOWN"
                     });
-                    Some(jobs.spawn_local(async move {
+                    let handle=jobs.spawn_local(async move {
                         let started = Instant::now();
                         Work::Pulse(
                             work_key,
                             started,
                             presence_version,
-                            call(
+                            match tokio::time::timeout(Duration::from_secs(5), call(
                                 &access,
                                 "structure.mailbox.pulse",
                                 Some(&options.workspace_id),
                                 fence,
                                 &stop,
                             )
-                            .await,
+                            ).await {
+                                Ok(value)=>value,
+                                Err(_)=>Err(Failure::code("PULSE_TIMEOUT")),
+                            },
                         )
-                    }))
-                } else {
+                    });
+                    s.pulse_busy=true;
+                    kinds.insert(handle.id(),JobKind::Pulse(key.clone(),s.lifecycle));
+                    continue;
+
+                }
+            }
+            if s.busy || Instant::now()<s.retry_at || kinds.values().filter(|k|matches!(k,JobKind::Control(..))).count()>=8 {continue;}
+            s.control_cancel=Some(stop.clone());
+            let job=if let Some(pins)=&s.binding.pins {
+                let mut fence=json!({"mailbox_id":pins.mailbox_id,"receiver_id":pins.receiver_id,"epoch":pins.epoch});
+                {
                     let selected = (|| {
                         let consumed = store.acknowledgements(
                             &options.workspace_id,
@@ -1048,7 +1103,7 @@ pub(crate) async fn run(
             };
             if let Some(h) = job {
                 s.busy = true;
-                kinds.insert(h.id(), JobKind::Control(key.clone()));
+                kinds.insert(h.id(), JobKind::Control(key.clone(),s.lifecycle));
             }
         }
         if Instant::now() >= compact_at {
@@ -1067,6 +1122,7 @@ pub(crate) async fn run(
         for s in slots.values().filter(|s| {
             s.enabled
                 && !s.blocked
+                && s.receive_fault.is_none()
                 && s.lease_until
                     .is_some_and(|at| at > Instant::now() + Duration::from_secs(2))
         }) {
@@ -1085,7 +1141,7 @@ pub(crate) async fn run(
             if let Some(c) = &stream_cancel {
                 c.cancel();
             }
-            for s in slots.values_mut().filter(|s| !s.blocked) {
+            for s in slots.values_mut().filter(|s| !s.blocked && s.receive_fault.is_none()) {
                 s.link_verified = false;
                 s.state("RECONNECTING", None);
             }
@@ -1137,6 +1193,13 @@ fn slot(binding: Binding) -> Slot {
         busy: false,
         control_cancel: None,
         blocked: false,
+        receive_fault: None,
+        time_retries: 0,
+        pulse_busy: false,
+        lifecycle: 1,
+        pulse_retry_at: Instant::now(),
+        pulse_failures: 0,
+        pulse_cancel: None,
         presence: Default::default(),
         next_keys: Instant::now(),
         report_retry: Instant::now(),
@@ -1146,6 +1209,45 @@ fn slot(binding: Binding) -> Slot {
     }
 }
 
+/// HTTP chunks are transport fragments, not SSE frame boundaries. Scan each
+/// byte once and bound the unfinished block while draining completed frames.
+#[derive(Default)]
+struct SseBuffer { bytes:Vec<u8>, scan:usize }
+impl SseBuffer {
+    fn append(&mut self,fragment:&[u8]) {self.bytes.extend_from_slice(fragment);}
+    fn next(&mut self)->std::result::Result<Option<Vec<u8>>,&'static str> {
+        let limit=MAX_FRAME_BYTES+8192;
+        if let Some(relative)=self.bytes[self.scan..].windows(2).position(|pair|pair==b"\n\n") {
+            let end=self.scan+relative+2;
+            if end>limit{return Err("STREAM_FRAME_TOO_LARGE");}
+            let block=self.bytes.drain(..end).collect();self.scan=0;return Ok(Some(block));
+        }
+        self.scan=self.bytes.len().saturating_sub(1);
+        if self.bytes.len()>limit{return Err("STREAM_FRAME_TOO_LARGE");}
+        Ok(None)
+    }
+}
+/// Persist a rejection against authenticated local scopes, never against an
+/// unverified routing field. All error paths use this boundary before retry.
+async fn reject_frame(frames:&mpsc::Sender<Frame>,generation:u64,pins:&[MailboxPins],code:&str,wire:&[u8],cancel:&KernelCancellationToken)->Failure {
+    let diagnostic=json!({"code":code,"phase":"FRAME_VERIFICATION","scope_authenticated":false,"stream_generation":generation,"frame_digest":sha256_hex(wire)});
+    let keys=pins.iter().map(|p|format!("{}:{}",p.workspace_id,p.mailbox_id)).collect();
+    let (reply,rx)=oneshot::channel();
+    tokio::select! {_=cancel.cancelled()=>return Failure::code("CANCELLED"),sent=frames.send(Frame::Fault{generation,keys,diagnostic,reply})=>if sent.is_err(){return Failure::code("INBOX_DRIVER_STOPPED");}};
+    tokio::select! {_=cancel.cancelled()=>{},_=rx=>{}};
+    Failure::code("STREAM_SCOPE_VERIFICATION_FAILED")
+}
+fn frame_scope(data:&[u8],pins:&[MailboxPins])->std::result::Result<usize,&'static str> {
+    let malformed=||"STREAM_FRAME_FORMAT_INVALID";
+    let envelope=parse_wire_json_bounded(data,40,MAX_FRAME_BYTES).map_err(|_|malformed())?;
+    let jws=envelope.get("proof").and_then(WireValue::as_string).ok_or_else(malformed)?;
+    if jws.len()>8192 || !jws.is_ascii(){return Err(malformed());}
+    let payload=decode_base64url(jws.split('.').nth(1).ok_or_else(malformed)?).map_err(|_|malformed())?;
+    let routing=parse_wire_json_bounded(&payload,8,8192).map_err(|_|malformed())?;
+    let ws=routing.get("workspace_id").and_then(WireValue::as_string);
+    let mailbox=routing.get("mailbox_id").and_then(WireValue::as_string);
+    pins.iter().position(|p|Some(p.workspace_id.as_str())==ws.as_deref()&&Some(p.mailbox_id.as_str())==mailbox.as_deref()).ok_or("STREAM_SCOPE_MISMATCH")
+}
 async fn stream(
     access: &KernelAccess,
     session: &MailSession,
@@ -1204,20 +1306,17 @@ async fn stream(
         .mailbox_stream(token, cancel)
         .await
         .map_err(|_| Failure::code("STREAM_UNAVAILABLE"))?;
-    let mut buffer = Vec::new();
+    let mut buffer = SseBuffer::default();
     loop {
         let chunk = tokio::select! {_=cancel.cancelled()=>return Ok(()),_=tokio::time::sleep_until(deadline)=>return Ok(()),chunk=response.chunk()=>chunk.map_err(|_|Failure::code("STREAM_DISCONNECTED"))?};
         let Some(chunk) = chunk else {
-            return Ok(());
+            return Err(Failure::code(if buffer.bytes.is_empty(){"STREAM_DISCONNECTED"}else{"STREAM_TRUNCATED"}));
         };
-        if buffer.len() + chunk.len() > MAX_FRAME_BYTES + 8192 {
-            return Err(Failure::code("STREAM_FRAME_TOO_LARGE"));
-        }
-        buffer.extend_from_slice(&chunk);
-        while let Some(end) = buffer.windows(2).position(|w| w == b"\n\n") {
-            let block = buffer.drain(..end + 2).collect::<Vec<_>>();
-            let text = std::str::from_utf8(&block)
-                .map_err(|_| Failure::code("STREAM_ENCODING_INVALID"))?;
+        for fragment in chunk.chunks(8192) {
+            buffer.append(fragment);
+            loop {
+            let block=match buffer.next(){Ok(Some(block))=>block,Ok(None)=>break,Err(code)=>return Err(reject_frame(&frames,generation,&pins,code,&buffer.bytes,cancel).await)};
+            let text=match std::str::from_utf8(&block){Ok(text)=>text,Err(_)=>return Err(reject_frame(&frames,generation,&pins,"STREAM_ENCODING_INVALID",&block,cancel).await)};
             let mut event = "";
             let mut data = "";
             for line in text.lines() {
@@ -1231,33 +1330,9 @@ async fn stream(
             if event != "delivery" {
                 continue;
             }
-            let envelope = parse_wire_json_bounded(data.as_bytes(), 40, MAX_FRAME_BYTES)
-                .map_err(|_| Failure::code("STREAM_FRAME_INVALID"))?;
-            let jws = envelope
-                .get("proof")
-                .and_then(WireValue::as_string)
-                .ok_or_else(|| Failure::code("STREAM_FRAME_INVALID"))?;
-            if jws.len() > 8192 || !jws.is_ascii() {
-                return Err(Failure::code("STREAM_FRAME_INVALID"));
-            }
-            let payload = decode_base64url(
-                jws.split('.')
-                    .nth(1)
-                    .ok_or_else(|| Failure::code("STREAM_FRAME_INVALID"))?,
-            )
-            .map_err(|_| Failure::code("STREAM_FRAME_INVALID"))?;
-            let routing = parse_wire_json_bounded(&payload, 8, 8192)
-                .map_err(|_| Failure::code("STREAM_FRAME_INVALID"))?;
-            let ws = routing.get("workspace_id").and_then(WireValue::as_string);
-            let box_id = routing.get("mailbox_id").and_then(WireValue::as_string);
-            let p = pins
-                .iter_mut()
-                .find(|p| {
-                    Some(p.workspace_id.as_str()) == ws.as_deref()
-                        && Some(p.mailbox_id.as_str()) == box_id.as_deref()
-                })
-                .ok_or_else(|| Failure::code("STREAM_SCOPE_MISMATCH"))?;
-            let page = match verify_mailbox_frame(
+            let index=match frame_scope(data.as_bytes(),&pins){Ok(index)=>index,Err(code)=>return Err(reject_frame(&frames,generation,&pins,code,data.as_bytes(),cancel).await)};
+            let p=&mut pins[index];
+            let page = match verify_mailbox_frame_detailed(
                 data.as_bytes(),
                 &FramePins {
                     audience: &session.audience,
@@ -1270,11 +1345,15 @@ async fn stream(
                 },
             ) {
                 Ok(page) => page,
-                Err(_) => {
+                Err(error) => {
                     let (tx, rx) = oneshot::channel();
-                    let key = format!("{}:{}", p.workspace_id, p.mailbox_id);
-                    tokio::select! {_=cancel.cancelled()=>return Ok(()),sent=frames.send(Frame::Fault(generation,key,tx))=>sent.map_err(|_|Failure::code("INBOX_DRIVER_STOPPED"))?};
+                    let diagnostic=json!({"code":error.code(),"phase":"FRAME_VERIFICATION","scope_authenticated":error.authenticated_scope(),"stream_generation":generation,"frame_digest":sha256_hex(data.as_bytes()),"after_sequence":p.after_sequence,"after_control_sequence":p.after_control_sequence});
+                    let keys=if error.authenticated_scope(){vec![format!("{}:{}",p.workspace_id,p.mailbox_id)]}else{pins.iter().map(|p|format!("{}:{}",p.workspace_id,p.mailbox_id)).collect()};
+                    tokio::select! {_=cancel.cancelled()=>return Ok(()),sent=frames.send(Frame::Fault{generation,keys,diagnostic,reply:tx})=>sent.map_err(|_|Failure::code("INBOX_DRIVER_STOPPED"))?};
                     tokio::select! {_=cancel.cancelled()=>return Ok(()),_=rx=>{}};
+                    if error==peerwork_core::communication::FrameVerificationError::Time {
+                        access.refresh_mailbox_clock(cancel).await.map_err(|e|Failure::code(KernelPublicError::from(e).code))?;
+                    }
                     return Err(Failure::code("STREAM_SCOPE_VERIFICATION_FAILED"));
                 }
             };
@@ -1285,6 +1364,53 @@ async fn stream(
             tokio::select! {_=cancel.cancelled()=>return Ok(()),stored=rx=>stored.map_err(|_|Failure::code("INBOX_DRIVER_STOPPED"))?.map_err(|e|Failure::code(&e.code))?};
             p.after_sequence = checkpoint;
             p.after_control_sequence = Some(control);
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod reliability_tests {
+    use super::*;
+    fn selected()->Slot {
+        slot(Binding{namespace:"program:test".into(),options:WatchOptions{workspace_id:"w".repeat(43),mailbox_id:"m".repeat(43),membership_id:"g".repeat(43),consumer_id:"test".into(),host_destination:None},receiver:"r".repeat(43),claim_id:"c".repeat(43),claim_wire:None,pins:None})
+    }
+    #[test]
+    fn sse_fragmentation_and_coalescing_preserve_frames_and_bound_unfinished_input() {
+        let frame=[b"event: delivery\ndata: ".as_slice(),&vec![b'x';MAX_FRAME_BYTES/2+128],b"\n\n"].concat();
+        let combined=[frame.as_slice(),frame.as_slice()].concat();
+        for chunk_size in [1,17,8192,combined.len()] {
+            let mut buffer=SseBuffer::default();let mut blocks=Vec::new();
+            for chunk in combined.chunks(chunk_size) {
+                for fragment in chunk.chunks(8192) {
+                    buffer.append(fragment);
+                    while let Some(block)=buffer.next().unwrap(){blocks.push(block);}
+                }
+            }
+            assert_eq!(blocks,vec![frame.clone(),frame.clone()]);assert!(buffer.bytes.is_empty());
+        }
+        let mut buffer=SseBuffer::default();let mut rejected=false;
+        for fragment in vec![b'x';MAX_FRAME_BYTES+16384].chunks(8192) {
+            buffer.append(fragment);
+            if buffer.next().is_err(){rejected=true;break;}
+        }
+        assert!(rejected);
+    }
+    #[test]
+    fn unrelated_async_results_cannot_clear_receive_or_authority_quarantine() {
+        let mut s=selected();
+        s.receive_fault=Some(json!({"code":"STREAM_ITEM_EVIDENCE_INVALID"}));
+        s.state("BLOCKED",Some("STREAM_VERIFICATION_FAILED".into()));
+        s.fail(Failure::code("NETWORK_TIMEOUT"));
+        assert!(!s.blocked,"receive quarantine does not prohibit authenticated maintenance");
+        assert_eq!(s.state,"BLOCKED");
+        assert_eq!(s.code.as_deref(),Some("STREAM_VERIFICATION_FAILED"));
+        s.state("RECEIVER_LINK_VERIFIED",None);
+        assert_eq!(s.state,"BLOCKED");
+        let mut s=selected();
+        s.fail(Failure{no_effect:false,code:"MAILBOX_EPOCH_MISMATCH".into(),retryable:false});
+        s.fail(Failure::code("NETWORK_TIMEOUT"));
+        assert!(s.blocked);
+        assert_eq!(s.code.as_deref(),Some("MAILBOX_EPOCH_MISMATCH"));
     }
 }

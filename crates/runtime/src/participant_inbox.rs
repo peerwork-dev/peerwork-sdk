@@ -107,6 +107,7 @@ impl InboxStore {
         db.execute_batch("PRAGMA foreign_keys=ON;
             CREATE TABLE IF NOT EXISTS inbox_service(id INTEGER PRIMARY KEY CHECK(id=1),pins TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS inbox_watches(workspace TEXT NOT NULL,mailbox TEXT NOT NULL,namespace TEXT NOT NULL,descriptor TEXT NOT NULL,receiver TEXT NOT NULL,claim_id TEXT NOT NULL,claim_wire TEXT,enabled INTEGER NOT NULL,PRIMARY KEY(workspace,mailbox));
+            CREATE TABLE IF NOT EXISTS inbox_receive_faults(workspace TEXT NOT NULL,mailbox TEXT NOT NULL,diagnostic TEXT NOT NULL,PRIMARY KEY(workspace,mailbox));
             CREATE TABLE IF NOT EXISTS inbox_receiver_keys(workspace TEXT NOT NULL,mailbox TEXT NOT NULL,sealed BLOB NOT NULL,PRIMARY KEY(workspace,mailbox));
             CREATE INDEX IF NOT EXISTS inbox_watches_active ON inbox_watches(enabled,workspace,mailbox);
             CREATE TABLE IF NOT EXISTS inbox_meta(id INTEGER PRIMARY KEY CHECK(id=1),binding TEXT NOT NULL,allocated INTEGER NOT NULL,rows INTEGER NOT NULL);
@@ -318,6 +319,22 @@ impl InboxStore {
                     && b.options.mailbox_id == options.mailbox_id
             })
             .ok_or_else(invalid)
+    }
+    /// Only bounded diagnostic metadata is retained. No failed frame, token or
+    /// plaintext is stored, and neither delivery cursor is advanced.
+    pub(crate) fn receive_fault(&self, workspace:&str, mailbox:&str) -> Result<Option<Value>> {
+        let wire:Option<String>=self.db.query_row("SELECT diagnostic FROM inbox_receive_faults WHERE workspace=?1 AND mailbox=?2",params![workspace,mailbox],|r|r.get(0)).optional().map_err(db_error)?;
+        wire.map(|wire| {if wire.len()>4096{return Err(invalid());}serde_json::from_str(&wire).map_err(|_|invalid())}).transpose()
+    }
+    pub(crate) fn quarantine_receive(&self, workspace:&str, mailbox:&str, diagnostic:&Value) -> Result<()> {
+        let wire=serde_json::to_string(diagnostic).map_err(|_|invalid())?;
+        if wire.len()>4096{return Err(invalid());}
+        self.db.execute("INSERT INTO inbox_receive_faults VALUES(?1,?2,?3) ON CONFLICT(workspace,mailbox) DO UPDATE SET diagnostic=excluded.diagnostic",params![workspace,mailbox,wire]).map_err(db_error)?;
+        Ok(())
+    }
+    pub(crate) fn reset_receive_probe(&self, workspace:&str, mailbox:&str)->Result<()> {
+        self.db.execute("DELETE FROM inbox_receive_faults WHERE workspace=?1 AND mailbox=?2",params![workspace,mailbox]).map_err(db_error)?;
+        Ok(())
     }
     pub fn disable_watch(
         &mut self,
