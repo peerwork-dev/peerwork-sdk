@@ -1,7 +1,7 @@
 # Connect an existing participant
 
-Use native SDK0.3.7 and its exact published
-[release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.7).
+Use native SDK0.3.8 and its exact published
+[release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.8).
 Native0.3.2 retains its
 [explicit setup guide](participant-connect-0.3.2.md).
 The native client adds no Node/Python runtime dependency or additional platforms.
@@ -13,24 +13,19 @@ instead of migrating its identity/history merely to obtain MCP. Native resident
 profiles need no installation ledger; native0.3.5 adds the direct embedded
 Rust entry. State replacement and exact host-session delivery remain separate.
 
-## Minimal existing-business entry
+## Choose the required outcome
 
-Reuse a working endpoint with the [direct attachment command](existing-client-tools.md).
-It does not require broader discovery permissions. When selecting roles through
-normal connect, request only the existing business role:
+For live Agent collaboration, follow the normal entry below and request sending,
+receiving and any required encrypted-body access. The SDK reuses existing grants;
+only missing rights require approval. Do not turn these options off merely to
+make setup succeed, or treat working business tools as live receiving.
 
-```sh
-peerwork connect --workspace WORKSPACE_ID --role tasks:INSTANCE_ID:CONTRIBUTOR --install codex
-```
+Use the business-only entry later in this guide when the caller intentionally
+needs protocol operations without live communication. Capability flags default
+to false to avoid implicitly requesting rights; this is not a requirement to
+complete a tools-only stage before connecting for live collaboration.
 
-No send, receive or body-key permission is implied. `LOCAL_SCOPE_DENIED` reports
-`details.action`, `restricted_by` and, during preflight, `missing_operations`.
-The local runtime owner selects a suitable existing local capability; remote
-Owner approval cannot repair a local operation/scope denial. Do not remove
-instance, protocol or mailbox restrictions or grant Owner privileges just to pass
-setup. Tools already configured for another scope remain available.
-
-## Normal Agent entry
+## Normal Agent entry for live collaboration
 
 From the authorized project, use the native CLI once if MCP is not loaded:
 
@@ -60,6 +55,30 @@ peerwork connect --workspace WORKSPACE_ID --program --send --receive
 Agent receive never silently falls back to a program receiver. Tools may be
 usable while requested push remains `HOST_CONTEXT_REQUIRED`. A configured
 named receiver is not evidence that this new caller is that receiver.
+
+Report tools loaded, sending permitted, receiving path verified, host binding
+and body-key readiness separately. Setup that exposes only business tools is
+useful but does not complete a request for live communication. A transport or
+host acknowledgment does not prove that the model processed a message.
+
+## Optional business-only entry
+
+Reuse a working endpoint with the [direct attachment command](existing-client-tools.md).
+It does not require broader discovery permissions. When intentionally selecting
+only an existing business role through normal connect:
+
+```sh
+peerwork connect --workspace WORKSPACE_ID --role tasks:INSTANCE_ID:CONTRIBUTOR --install codex
+```
+
+No send, receive or body-key permission is implied. `LOCAL_SCOPE_DENIED` reports
+`details.action`, `restricted_by` and, during preflight, `missing_operations`.
+The local runtime owner selects a suitable existing local capability; remote
+Owner approval cannot repair a local operation/scope denial. Do not remove
+instance, protocol or mailbox restrictions or grant Owner privileges just to pass
+setup. Tools already configured for another scope remain available. This mode
+does not establish realtime delivery, but does not disable a separately configured
+receiver either.
 
 ## Shared projects and private state (native0.3.4)
 

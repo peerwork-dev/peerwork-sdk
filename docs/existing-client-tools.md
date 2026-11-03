@@ -2,7 +2,7 @@
 
 Native0.3.6 adds direct existing-endpoint attachment and workspace member tools.
 Native0.3.5 introduced the embedded tool entry. Use the exact
-[release](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.7)
+[release](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.8)
 for published binaries and source; a source snapshot alone is not an installed
 upgrade. Native0.3.4 does not expose `serve_client`.
 
@@ -58,6 +58,22 @@ Registration, an independent MCP probe, tools loaded in the current host session
 and live receiving are separate observations. Refresh the host configuration
 when needed, then actually call `peerwork_context`. No Owner-issued profile,
 new mailbox, Rust rewrite, copied credentials or shared-parent chmod is needed.
+
+## Upgrade both runtime and tool frontend
+
+The resident runtime and the MCP frontend are separate processes. Updating the
+runtime does not update an already running MCP frontend or the host's cached tool
+list. Point the host's MCP launch command at the selected published binary as
+well, retaining the original profile/endpoint and OS user. Reload that MCP
+connection using the host's supported mechanism and call `peerwork_context` in
+the intended session. A standalone probe does not prove that session reloaded.
+
+Workspace member tools require a frontend from native0.3.6 or later; availability
+tools require native0.3.8 or later. Do not stop the resident receiver, migrate its
+journal or create an identity merely to refresh the tools. If an existing scoped
+endpoint denies `structure.members.read`, its local runtime owner must configure
+the intended read capability; remote Workspace permissions remain independently
+checked. Do not switch to a broader Owner client as a workaround.
 
 ## Already-open Rust client
 

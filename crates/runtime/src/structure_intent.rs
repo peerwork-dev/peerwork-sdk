@@ -702,7 +702,10 @@ impl KernelClient {
                         KernelClientError::ServerRejected(401|403)=>("UNVERIFIED_AUTHORIZATION_RESPONSE","HTTP_RESPONSE",true),
                         KernelClientError::ServerRejected(409)=>("COMMAND_CONFLICT","SUBMISSION",false),
                         _ if transient=>("OUTCOME_UNKNOWN","SUBMISSION",true),
-                        _=>return Err(error),
+                        _=>return Err(match error {
+                            KernelClientError::ServerRejected(status) if !durable => KernelClientError::ReadRejected(status),
+                            other => other,
+                        }),
                     };
                     return Ok(StructureIntentOutcome::Pending{command_id:command_id.clone(),code,phase,retryable,recovery:if durable{"RESUME_SAME_INTENT"}else{"NEW_READ"}});
                 }
@@ -886,6 +889,38 @@ mod collaboration_tests {
         }
     }
     fn data(result:KernelAcceptedResult)->Value{serde_json::from_str(result.structure_result_json.as_deref().unwrap()).unwrap()}
+
+    #[tokio::test]
+    #[ignore="requires a frozen candidate service and synthetic loopback HTTP"]
+    async fn fresh_member_read_http400_has_no_saved_intent_and_corrected_read_succeeds() {
+        let state=crate::test_support::protected_test_dir();
+        let fixture=PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/structure-profile-service.mjs");
+        let mut server=Server(Command::new(std::env::var("PEERWORK_TEST_NODE").expect("test Node required")).arg(fixture)
+            .env("PEERWORK_TEST_STATE",state.path()).env("PEERWORK_STRUCTURE_TEST_DROPS","0")
+            .stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().unwrap());
+        let mut line=String::new();BufReader::new(server.0.stdout.take().unwrap()).read_line(&mut line).unwrap();
+        let origin=serde_json::from_str::<Value>(&line).unwrap()["origin"].as_str().unwrap().to_owned();
+        let mut config=TransportConfig::new(&origin);config.allow_loopback_http=true;
+        let cancel=CancellationToken::new();
+        let identity=KernelIdentity::create(&state.path().join("identity")).unwrap();
+        let authority=peerwork_core::crypto::sha256_hex(identity.actor_id().as_bytes());
+        let path=state.path().join("operations.sqlite");
+        let mut client=KernelClient::open(config,&path,&[],&cancel).await.unwrap();
+        let workspace=call(&mut client,&identity,json!({"action":"structure.workspace.create","body":{"name":"Read diagnostic"},"idempotency_key":"create"})).await.workspace_id.unwrap();
+        let count=|| rusqlite::Connection::open(&path).unwrap().query_row("SELECT count(*) FROM kernel_intents",[],|r|r.get::<_,i64>(0)).unwrap();
+        let before=count();
+        let malformed=json!({"action":"structure.members.read","workspace_id":workspace,"body":{"projection":"COLLABORATION","limit":8}});
+        let error=client.execute_structure_intent(&identity,&authority,&serde_json::to_vec(&malformed).unwrap(),&cancel).await.unwrap_err();
+        assert!(matches!(error,KernelClientError::ReadRejected(400)),"{error:?}");
+        assert_eq!(count(),before,"a fresh failed read must not create a recovery intent");
+        let corrected=data(call(&mut client,&identity,json!({"action":"structure.members.read","workspace_id":workspace,"body":{"view":"COLLABORATION","limit":8}})).await);
+        assert_eq!(corrected["members"].as_array().unwrap().len(),1);
+        assert_eq!(count(),before,"a fresh successful read must not grow mutation history either");
+        let mut durable=malformed;durable["idempotency_key"]=json!("explicit-historical-query");
+        let original=client.execute_structure_intent(&identity,&authority,&serde_json::to_vec(&durable).unwrap(),&cancel).await.unwrap();
+        assert!(matches!(original,StructureIntentOutcome::Pending{recovery:"RESUME_SAME_INTENT",..}),"{original:?}");
+        assert_eq!(count(),before+1,"explicitly durable queries retain their original recovery entry");
+    }
 
     #[tokio::test]
     #[ignore="requires a frozen candidate service and synthetic loopback HTTP"]

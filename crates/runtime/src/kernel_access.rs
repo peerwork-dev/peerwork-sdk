@@ -96,6 +96,18 @@ impl From<KernelAccessError> for KernelPublicError {
         use crate::kernel_intents::JournalError as J;
         use crate::transport::TransportError as T;
         use KernelAccessError as A;
+        if let A::Client(C::ReadRejected(status)) = &error {
+            return Self {
+                code: "SERVICE_REJECTED",
+                message: "service rejected a fresh read; inspect the request and selected configuration, not mutation recovery",
+                details: Some(serde_json::json!({
+                    "http_status": status, "phase": "HTTP_REQUEST",
+                    "operation_kind": "READ", "intent_persisted": false,
+                    "diagnostic_trust": "UNVERIFIED_HTTP", "effect_certainty": "NO_EFFECT",
+                    "retryable": false, "recovery": "CORRECT_READ_REQUEST_OR_CONFIGURATION"
+                })),
+            };
+        }
         if let A::Client(C::ArchiveMigration(code))=&error{return Self{code:*code,message:"archive migration could not proceed; preserve the original operation and inspect the selected source",details:Some(serde_json::json!({"phase":"MIGRATION_PREPARATION","effect_certainty":"NOT_SUBMITTED","retryable":false,"recovery":"INSPECT_SOURCE_AND_RESUME_OR_CORRECT_INPUT"}))};}
         if let A::Client(C::OperationRefused(refusal))=&error{return Self{code:"OPERATION_REJECTED",message:if refusal.phase=="LOCAL_PREPARATION"{"local migration preparation failed; inspect the original code and reuse the verified source capsule"}else{"the service confirmed refusal; inspect the phase, code and recovery details"},details:Some(serde_json::json!(refusal))};}
         if let A::Client(C::HistoryDeliveryBlocked{job_id,workspace_id,code,retryable})=&error{return Self{code:"HISTORY_KEY_DELIVERY_BLOCKED",message:"the selected Owner key-history job needs attention; other job results remain saved",details:Some(serde_json::json!({"phase":"HISTORY_KEY_DELIVERY","job_id":job_id,"workspace_id":workspace_id,"server_code":code,"retryable":retryable,"effect_certainty":"UNKNOWN","recovery":"CONTINUE_OWNER_KEY_WORKER"}))};}
@@ -200,6 +212,7 @@ impl From<KernelAccessError> for KernelPublicError {
             A::Client(C::OperationRefused(_))=>unreachable!("handled above"),
             A::Client(C::IntentNotFound) => ("NOT_FOUND", "saved kernel command was not found"),
             A::Client(C::ServerResource(_))=>unreachable!("handled above"),
+            A::Client(C::ReadRejected(_))=>unreachable!("handled above"),
             A::Client(C::ServerRejected(_)) => (
                 "SERVICE_REJECTED",
                 "kernel service rejected the saved command",
@@ -977,6 +990,27 @@ mod public_error_tests {
         transport::TransportError as T,
     };
     use crate::test_support::protected_test_dir;
+    #[test]
+    fn fresh_read_http_rejection_does_not_request_mutation_recovery() {
+        for status in [400, 404, 422] {
+            let error = KernelPublicError::from(KernelAccessError::from(C::ReadRejected(status)));
+            assert_eq!(error.code, "SERVICE_REJECTED");
+            let details = error.details.unwrap();
+            assert_eq!(details["http_status"], status);
+            assert_eq!(details["operation_kind"], "READ");
+            assert_eq!(details["intent_persisted"], false);
+            assert_eq!(details["effect_certainty"], "NO_EFFECT");
+            assert_eq!(details["diagnostic_trust"], "UNVERIFIED_HTTP");
+            assert_eq!(details["recovery"], "CORRECT_READ_REQUEST_OR_CONFIGURATION");
+        }
+        // An HTTP error alone must never settle a saved operation's outcome.
+        let saved = KernelPublicError::from(KernelAccessError::from(C::ServerRejected(400)));
+        let details = saved.details.unwrap();
+        assert_eq!(details["effect_certainty"], "UNKNOWN");
+        assert_eq!(details["recovery"], "RECONCILE_ORIGINAL_INTENT");
+        let invalid = KernelPublicError::from(KernelAccessError::from(C::Store(J::InvalidReceipt)));
+        assert_eq!(invalid.code, "VERIFICATION_FAILED");
+    }
     #[test]
     fn pending_page_and_index_maintenance_are_offline_and_errors_are_actionable(){
         let state=protected_test_dir();let identity=state.path().join("identity");

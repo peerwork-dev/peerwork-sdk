@@ -91,6 +91,10 @@ pub enum KernelClientError {
     IntentNotFound,
     #[error("server rejected the saved command with HTTP {0}")]
     ServerRejected(u16),
+    /// A fresh read has no saved mutation to reconcile. The HTTP status is
+    /// diagnostic only; it is not a verified receipt or a mutation outcome.
+    #[error("server rejected a fresh read with HTTP {0}")]
+    ReadRejected(u16),
     /// Unverified HTTP diagnostic only: never finalizes a durable operation.
     #[error("server reported resource pressure: {0}; recover the original operation after capacity is available")]
     ServerResource(&'static str),

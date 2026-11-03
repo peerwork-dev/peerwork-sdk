@@ -86,3 +86,25 @@ The new member projections/name action require the advertised service feature;
 an older service yields capability unavailable. Business-only tool attachment
 needs no receiving path. Tool registration, current-session loading and qualified
 receiving remain separate results. This update makes no new numerical latency SLA.
+
+## Diagnose a failed directory read
+
+Prefer `peerwork_reachability` above: it constructs the read request and verifies
+the response. Programs using `structure.members.read` directly must set the body
+field **`view`**, for example `{"view":"COLLABORATION","limit":8}`. The field
+`projection` is not accepted. An HTTP400 does not establish that members are
+missing or offline.
+
+Fresh reads without an explicit command ID or idempotency key do not create a
+saved mutation intent. Correct a malformed read and read again; do not replay a
+business operation or stop receiving to recover the directory. Native0.3.8's
+generic HTTP error may still say `RECONCILE_ORIGINAL_INTENT`; that message alone
+does not establish a saved operation. Explicitly durable queries and actual
+mutations retain their original status/recovery paths.
+
+If the tool is missing after upgrading the runtime, also upgrade and reload the
+[MCP frontend](existing-client-tools.md#upgrade-both-runtime-and-tool-frontend).
+`LOCAL_SCOPE_DENIED` concerns the selected local endpoint, not a peer's receiving
+state. Resolve that local capability with the runtime owner before diagnosing
+remote permissions; an existing business role does not require another Owner
+exchange merely to expose tools.
