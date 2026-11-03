@@ -543,10 +543,11 @@ impl Connect {
                 if old.effective_host.is_none()&&old.channel_receive {
                     if let Some(profile)=&old.profile {
                         if let Some(endpoint)=&profile.receive_endpoint_path {
-                            let receiver=RuntimeClient::connect(endpoint.clone(),&profile.expected_origin,&profile.expected_actor).await?;
-                            let bindings=receiver.call(json!({"method":"bindings"})).await?;
-                            if bindings.as_array().is_some_and(|items|items.iter().any(|w|w["workspace_id"]==request.workspace_id&&w["host_destination"].is_string()&&profile.scopes.values().any(|s|w["mailbox_id"]==s.mailbox_id&&w["membership_id"]==s.membership_id))) {
-                                return self.pending(&request,"HOST_BINDING","EXISTING_PUSH_RECEIVER_REQUIRES_EXPLICIT_REBIND","HOST_USER","EXPLICIT_NATIVE_REBIND",json!({"existing_receiver_preserved":true}));
+                            if let Ok(receiver)=RuntimeClient::connect(endpoint.clone(),&profile.expected_origin,&profile.expected_actor).await {
+                                let bindings=receiver.call(json!({"method":"bindings"})).await?;
+                                if bindings.as_array().is_some_and(|items|items.iter().any(|w|w["workspace_id"]==request.workspace_id&&w["host_destination"].is_string()&&profile.scopes.values().any(|s|w["mailbox_id"]==s.mailbox_id&&w["membership_id"]==s.membership_id))) {
+                                    return self.pending(&request,"HOST_BINDING","EXISTING_PUSH_RECEIVER_REQUIRES_EXPLICIT_REBIND","HOST_USER","EXPLICIT_NATIVE_REBIND",json!({"existing_receiver_preserved":true}));
+                                }
                             }
                         }
                     }
