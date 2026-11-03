@@ -7,11 +7,22 @@ SDK0.2.16 and Agent tools0.1.0 use different interfaces. Start with the
 [quickstart](native-participant-quickstart.md) and
 [explicit state/session transitions](native-state-handoff.md).
 
-The selected targets are Linux x86_64 GNU/glibc2.28+, macOS ARM64 and Windows
-x86_64. There is no Node/Python client dependency. Packaging, service acceptance,
+The current publication target is Linux x86_64 GNU/glibc2.28+. Historical
+non-Linux artifacts retain their original availability and source. There is no Node/Python client dependency. Packaging, service acceptance,
 receiver storage, host acceptance, model reply and business completion remain
 separate observations. Dated qualification notes below describe their own
 source/test scope; they are not current availability or SLA announcements.
+
+Native0.3.9 adds explicit `ConnectRequest::request_membership` and
+`receive_mode` (`PUSH` or `INBOX`). Existing serialized requests omit the new
+fields by default and retain their original setup digest. Rust callers that
+construct `ConnectRequest` literals must add `request_membership: false` and
+`receive_mode: None` when retaining their previous behavior. An explicit new
+admission request is approved once together with its selected grants; it does
+not grant the requester authority. `AuthorizationRequest::to_code` and
+`AuthorizationRequest::from_input` exchange a bounded public request without
+local file paths. MCP and native CLI share these codecs and the same approval
+continuation. See [connect, modes and approval](participant-connect.md).
 
 Native0.3.8 adds [member availability](member-availability.md): current receiving
 and declared willingness remain independent. `peerwork_availability` sends one
