@@ -30,7 +30,7 @@ class NativeGraphTests(unittest.TestCase):
     def test_default_native_artifact_checks_do_not_repeat_semantic_campaigns(self):
         chosen=qualifier.options(['--target','linux-x64-gnu'])
         self.assertEqual(chosen.library_tests,[])
-        chosen=qualifier.options(['--target','darwin-arm64','--library-tests','onboarding_project::'])
+        chosen=qualifier.options(['--target','linux-x64-gnu','--library-tests','onboarding_project::'])
         self.assertEqual(chosen.library_tests,['onboarding_project::'])
 
     def native_inventory(self):

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Three native candidate builds; no Node/Python SDK build or public publication.
+"""Linux native candidate build; no Node/Python SDK build or public publication.
 
 Artifacts are temporary qualification inputs, not a signed/notarized release.
 The installed executable is exercised in synthetic local state only. Service,
@@ -17,8 +17,6 @@ import sys
 
 TARGETS = {
     'linux-x64-gnu': 'x86_64-unknown-linux-gnu',
-    'darwin-arm64': 'aarch64-apple-darwin',
-    'win32-x64-msvc': 'x86_64-pc-windows-msvc',
 }
 GROUPS = ['communication_host::', 'communication_host_owner::tests',
           'communication_local_channel::tests', 'communication_runtime::tests',

@@ -8,7 +8,7 @@ import sys
 import tomllib
 
 TARGETS = ('linux-x64-gnu','linux-arm64-gnu','linux-x64-musl','linux-arm64-musl','darwin-x64','darwin-arm64','win32-x64-msvc')
-NATIVE_TARGETS = ('linux-x64-gnu','darwin-arm64','win32-x64-msvc')
+NATIVE_TARGETS = ('linux-x64-gnu',)
 VERSION = re.compile(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z')
 
 class ReleaseError(ValueError):
@@ -106,7 +106,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root',type=Path,default=Path(__file__).resolve().parents[2])
     sub=parser.add_subparsers(dest='operation',required=True)
-    check_parser=sub.add_parser('check');check_parser.add_argument('--tag');check_parser.add_argument('--plain',action='store_true');check_parser.add_argument('--native',action='store_true',help='Validate only the CLI/core/runtime release and selected three native targets')
+    check_parser=sub.add_parser('check');check_parser.add_argument('--tag');check_parser.add_argument('--plain',action='store_true');check_parser.add_argument('--native',action='store_true',help='Validate only the CLI/core/runtime release and selected Linux native target')
     sync_parser=sub.add_parser('sync');sync_parser.add_argument('--version')
     args=parser.parse_args()
     try:

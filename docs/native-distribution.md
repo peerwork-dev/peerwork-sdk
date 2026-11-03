@@ -8,13 +8,16 @@ tools0.1.0 remain separate interfaces. Do not install an old wheel expecting
 native0.3 operations. Existing state and host selections use the
 [explicit transition paths](native-state-handoff.md).
 
-## Supported distribution targets
+## Current publication scope
 
-| Target | System requirements | Additional client language runtime |
-| --- | --- | --- |
-| Linux x86_64 GNU | glibc2.28+, system libstdc++ and libgcc; exact imported ABI requirements are recorded per artifact | None |
-| macOS ARM64 | macOS11+, system frameworks and C++ runtime | None |
-| Windows x86_64 | Windows10+, native system APIs; selected build statically links the VC runtime | None |
+As of2026-11-03, publication targets Linux x86_64 GNU only. It requires glibc2.28+,
+system libstdc++ and libgcc, with exact imported ABI requirements recorded per
+artifact. No Node or Python client runtime is required.
+
+Default CI and release qualification select only `linux-x64-gnu`. macOS and
+Windows are not release gates. Existing published Windows archives, frozen source
+tags and initial manifests/checksums remain unchanged; a historical artifact is
+not a promise of ongoing non-Linux publication. The macOS queue is deferred.
 
 Archives contain the `peerwork` executable (`peerwork.exe` on Windows), the
 portable `skills/peerwork/SKILL.md`, project license, dependency SBOM and complete
@@ -33,7 +36,7 @@ runtime are prerequisites only when requesting delivery into that host.
 
 ## Build once, qualify, promote the same bytes
 
-The active workflows are source/native checks and deliberate three-target native
+The active workflows are source/native checks and deliberate Linux native
 qualification. The old language-binding distribution, eight-artifact publisher,
 tag-triggered Linux binding builder and full duplicated release matrix have
 been retired. Existing public releases remain available; no workflow silently

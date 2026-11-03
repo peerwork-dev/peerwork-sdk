@@ -8,17 +8,12 @@ on:
       target:
         description: Qualify only this selected target, preserving passed artifacts
         type: choice
-        options: [all, linux-x64-gnu, darwin-arm64, win32-x64-msvc]
-        default: all
+        options: [linux-x64-gnu]
+        default: linux-x64-gnu
       source_commit:
         description: Exact existing source commit; empty uses the workflow commit
         type: string
         default: ''
-      macos_runner:
-        description: Standard arm64 runner image
-        type: choice
-        options: [macos-26, macos-15]
-        default: macos-26
   push:
     branches: [work/native-participant-qualification]
 
@@ -33,11 +28,10 @@ env:
   CARGO_BUILD_JOBS: '1'
   CARGO_INCREMENTAL: '0'
   CARGO_PROFILE_RELEASE_DEBUG: '0'
-  MACOSX_DEPLOYMENT_TARGET: '11.0'
 
 jobs:
   linux:
-    if: ${{ (!inputs.target || inputs.target == 'all' || inputs.target == 'linux-x64-gnu') && !contains(github.event.head_commit.message, '[native:win32-x64-msvc]') }}
+    if: ${{ !inputs.target || inputs.target == 'linux-x64-gnu' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     container:
@@ -91,55 +85,3 @@ jobs:
             target/release
           key: ${{ steps.native-cache.outputs.cache-primary-key }}
 
-  desktop:
-    if: ${{ inputs.target != 'linux-x64-gnu' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        # Development may qualify one changed platform. A normal candidate
-        # push or dispatch still selects all three release targets.
-        include: ${{ fromJSON(inputs.target == 'darwin-arm64' && '[{"target":"darwin-arm64","runner":"macos-26","rustflags":""}]' || (inputs.target == 'win32-x64-msvc' || contains(github.event.head_commit.message, '[native:win32-x64-msvc]')) && '[{"target":"win32-x64-msvc","runner":"windows-2022","rustflags":"-C target-feature=+crt-static"}]' || '[{"target":"darwin-arm64","runner":"macos-26","rustflags":""},{"target":"win32-x64-msvc","runner":"windows-2022","rustflags":"-C target-feature=+crt-static"}]') }}
-    runs-on: ${{ matrix.target == 'darwin-arm64' && (inputs.macos_runner || matrix.runner) || matrix.runner }}
-    timeout-minutes: 60
-    env:
-      RUSTFLAGS: ${{ matrix.rustflags }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          persist-credentials: false
-          ref: ${{ inputs.source_commit || github.sha }}
-      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249
-        with:
-          toolchain: '1.89.0'
-      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
-        id: native-cache
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target/release
-          key: participant-v2-${{ matrix.target }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', '**/build.rs', 'third_party/**') }}-${{ github.sha }}
-          restore-keys: |
-            participant-v2-${{ matrix.target }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', '**/build.rs', 'third_party/**') }}-
-            participant-v2-${{ matrix.target }}-
-      - name: Build and exercise installed native process
-        shell: bash
-        run: |
-          python tests/native-participant-build-contract.py
-          python tests/native-release-policy.py
-          python tools/release/qualify-participant.py --target '${{ matrix.target }}'
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        if: ${{ always() }}
-        with:
-          name: participant-candidate-${{ matrix.target }}
-          path: .participant-ci/${{ matrix.target }}/
-          if-no-files-found: error
-          retention-days: 7
-      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
-        if: ${{ always() && steps.native-cache.outcome == 'success' && steps.native-cache.outputs.cache-hit != 'true' }}
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target/release
-          key: ${{ steps.native-cache.outputs.cache-primary-key }}

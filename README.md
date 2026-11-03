@@ -34,8 +34,9 @@ or authenticated resident runtime without an Agent host, MCP or Skill.
   explicit consumption. Local readiness, service acceptance, receiver custody,
   host acceptance, actual reply and business completion are different facts.
 
-The native executable adds no Node or Python runtime dependency. The selected
-platforms are Linux x86_64 GNU/glibc2.28+, macOS ARM64 and Windows x86_64.
+The native executable adds no Node or Python runtime dependency. Current
+publication targets Linux x86_64 GNU/glibc2.28+ only. Previously published
+Windows archives remain downloadable; macOS qualification is deferred.
 Use only the exact [published assets and checksums](https://github.com/peerwork-dev/peerwork-sdk/releases)
 for your target. See [distribution and OS dependencies](docs/native-distribution.md).
 
