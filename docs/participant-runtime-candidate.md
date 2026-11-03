@@ -258,9 +258,10 @@ The service must advertise `native-mailbox-rebind-v1`; check the selected
 Origin rather than assuming every deployment provides it. Cross-platform
 packaging qualification is separate from real-host readiness and performance.
 
-### First-host binding for an existing INBOX (next native release)
+### First-host binding for an existing INBOX
 
-Rust callers constructing `HostRebindRequest` literals must add
+Native0.3.10 provides this first-host path. Rust callers constructing
+`HostRebindRequest` literals must add
 `initial_subscriptions: None` to retain ordinary replacement behavior. Existing
 serialized requests without the field keep their previous encoding.
 

@@ -1,7 +1,7 @@
 # Connect an existing participant
 
-Use native SDK0.3.9 and its exact published
-[release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.9).
+Use native SDK0.3.10 and its exact published
+[release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.10).
 Native0.3.2 retains its
 [explicit setup guide](participant-connect-0.3.2.md).
 The native client adds no Node/Python runtime dependency or additional platforms.
@@ -61,7 +61,7 @@ and body-key readiness separately. Setup that exposes only business tools is
 useful but does not complete a request for live communication. A transport or
 host acknowledgment does not prove that the model processed a message.
 
-## One portable permission request (native0.3.9)
+## One portable permission request (native0.3.10)
 
 Existing grants are reused without an Owner exchange. If explicitly requesting
 membership with `--join` / `request_membership: true`, an access denial returns
@@ -109,7 +109,7 @@ its host implicitly; changing a previously active inbox to PUSH requires the
 supported explicit rebind. Existing setups without these new fields retain their
 original IDs and request digests.
 
-## Receiving self-test (next native release)
+## Receiving self-test (native0.3.10)
 
 Connect observes the actual receiving path before reporting it ready. INBOX
 requires a currently verified receiver link. PUSH additionally requires fresh
@@ -127,7 +127,7 @@ does not attest that the current model session loaded MCP or produced a reply.
 A real signed application reply is a separate end-to-end observation.
 
 An existing INBOX can acquire its first selected host through the stopped-runtime
-[explicit first-host operation](participant-runtime-candidate.md#first-host-binding-for-an-existing-inbox-next-native-release).
+[explicit first-host operation](participant-runtime-candidate.md#first-host-binding-for-an-existing-inbox).
 The original receive endpoint, consumer, journal and pending operation IDs stay
 in place. Missing host integration remains explicit; ordinary MCP cannot invent
 a current-session control endpoint.

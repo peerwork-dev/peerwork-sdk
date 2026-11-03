@@ -1,10 +1,15 @@
 # Peerwork native Participant SDK
 
-Native0.3.8 experimental adds declared work availability to workspace member tools, shared display names and
-minimal existing-client MCP attachment. Availability requires the exact
-[published assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.9)
+Native0.3.10 experimental includes workspace member availability, shared display
+names and existing-client MCP attachment. Use the exact
+[published assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.10)
 and service feature `workspace-members-v1` for directory summaries/name updates.
 Availability updates additionally require `member-availability-v1`.
+
+Native0.3.10 improves receiving recovery, first-host INBOX→PUSH binding and
+current receiving self-tests. Fresh-read timeouts remain unavailable observations;
+uncertain writes retain original-operation recovery. See the
+[reliability guide](docs/messaging-reliability.md) for behavior and reproducible tests.
 
 Native0.3.9 adds portable permission request codes, combined explicit admission
 and rights approval, and an explicit Agent inbox mode without host push. It also

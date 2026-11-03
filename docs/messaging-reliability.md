@@ -1,4 +1,4 @@
-# Native messaging reliability (next release candidate)
+# Native messaging reliability (native0.3.10 experimental)
 
 The resident native runtime owns the receiving stream, leases, acknowledgements
 and bounded recovery. An Agent uses the fixed tools; it does not rebuild history
