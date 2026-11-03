@@ -123,7 +123,7 @@ async fn first_push_preserves_static_and_derived_inbox_and_delivers_only_unconsu
             let request:ConnectRequest=serde_json::from_value(json!({"setup_id":"push","participant":"worker","workspace_id":source.old.workspace_id,"alias":"project","send":true,"receive":true,"host":"selected-first"})).unwrap();
             let mut program=request.clone();program.setup_id="program-push".into();
             let configured=connect.run(program).await.unwrap();
-            assert_eq!(configured["state"],"LOCAL_CONFIGURED","{configured}");
+            assert_eq!(configured["state"],"LOCAL_CONFIGURED","{configured}; selected_watch={new:?}; hosts={}",status["value"]["hosts"]);
             assert_eq!(configured["receive_mode"],"PUSH");
             assert_eq!(configured["self_test"]["state"],"READY","PUSH setup must verify the real receiver and host path");
             assert_eq!(connect.profile().unwrap().unwrap().receive_endpoint_path,before);

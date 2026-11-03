@@ -906,10 +906,14 @@ async fn run_owned(
             // Input acceptance can change host eligibility immediately. Refresh
             // its observed state before dispatching another eligible message.
             next_health = std::time::Instant::now();
-            set(
-                &status,
-                json!({"state":if unknown{"HOST_RESULT_UNKNOWN"}else{"HOST_ATTACHED"},"last_call_id":call.call_id,"model_response":"NOT_ATTESTED"}),
-            );
+            // Progress must retain the verified physical destination and source
+            // observations. Replacing the entire status here erased them after
+            // the first delivery, making current-host checks unverifiable.
+            if let Ok(mut current)=status.lock() {
+                current["state"]=json!(if unknown{"HOST_RESULT_UNKNOWN"}else{"HOST_ATTACHED"});
+                current["last_call_id"]=json!(call.call_id);
+                current["model_response"]=json!("NOT_ATTESTED");
+            }
             if unknown {
                 close_adapter(adapter).await?;
             }
