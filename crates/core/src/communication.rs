@@ -2,6 +2,9 @@
 //! mailbox delivery are separate proofs; none establishes model execution.
 #[path = "communication_host_report.rs"]
 mod host_report;
+#[path = "communication_events.rs"]
+mod events;
+pub use events::FORMAT as WORKSPACE_EVENT_FORMAT;
 
 use crate::{
     canonical::{canonical, Path},
@@ -579,6 +582,9 @@ fn delivery(
 ) -> Result<VerifiedDelivery> {
     token_field(value, "delivery_id")?;
     number(value, "sequence")?;
+    if value.get("event_source_sequence").is_some() {
+        return events::delivery(value,audience,pins,key);
+    }
     number(value, "created_at")?;
     let kind = text(value, "kind")?;
     let terminal = value.get("terminal_reason").is_some();

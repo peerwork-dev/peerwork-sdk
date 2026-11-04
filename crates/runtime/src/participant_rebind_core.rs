@@ -166,7 +166,7 @@ impl Subscription {
         };
         let mut body = json!({"claim_command_id":self.claim_id,"mailbox_id":self.old.mailbox_id,
             "receiver_id":self.expected.receiver_id,"expected_epoch":self.expected.epoch,
-            "destination_digest":destination,"replace":true});
+            "destination_digest":destination,"replace":true,"event_format":peerwork_core::communication::WORKSPACE_EVENT_FORMAT});
         body["continuity_proof"] = json!(inbox.receiver_proof(identity, &binding, &body)?);
         Ok(json!({"action":"structure.mailbox.claim","workspace_id":self.old.workspace_id,
             "command_id":self.claim_id,"body":body}).to_string())

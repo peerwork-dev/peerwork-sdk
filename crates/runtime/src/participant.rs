@@ -454,7 +454,7 @@ impl Capability {
             }
         } else if r.action == "structure.communication.subscription.set" {
             mailbox(&r.body["mailbox_id"])?;
-            instance(&r.body)?;
+            if !r.body["instance_id"].is_null(){instance(&r.body)?;}
         } else if self.mailbox_ids.is_some()
             && [
                 "structure.mailboxes.read",
@@ -476,7 +476,7 @@ impl Capability {
         {
             mailbox(&r.body["mailbox_id"])?;
         } else if r.action == "structure.communication.subscriptions.read" {
-            instance(&r.body)?;
+            if !r.body["instance_id"].is_null(){instance(&r.body)?;}
         }
         Ok(())
     }

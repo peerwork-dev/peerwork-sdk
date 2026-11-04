@@ -1333,7 +1333,7 @@ dependencies = [
 
 [[package]]
 name = "peerwork-cli"
-version = "0.3.13"
+version = "0.3.14"
 dependencies = [
  "libc",
  "peerwork-core",
@@ -1343,7 +1343,7 @@ dependencies = [
 
 [[package]]
 name = "peerwork-core"
-version = "0.3.13"
+version = "0.3.14"
 dependencies = [
  "aes-gcm 0.10.3",
  "base64 0.22.1",

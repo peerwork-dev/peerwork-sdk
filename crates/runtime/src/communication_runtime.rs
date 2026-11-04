@@ -41,13 +41,15 @@ use tokio::{
     task::JoinSet,
 };
 
-pub(crate) const CONNECT_FEATURES: [&str; 6] = [
+pub(crate) const CONNECT_FEATURES: [&str; 8] = [
     "participant-connect-v1",
     "derived-client-generation-v1",
     "scoped-host-revocation-v1",
     "original-engine-binding-v1",
     "first-host-rebind-v1",
     "protocol-operation-routing-v1",
+    "workspace-collaboration-v1",
+    "workspace-event-delivery-v1",
 ];
 const REQUEST_FORMAT: &str = "peerwork.participant-request.v1";
 const RESPONSE_FORMAT: &str = "peerwork.participant-response.v1";

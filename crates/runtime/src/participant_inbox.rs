@@ -714,7 +714,7 @@ impl InboxStore {
                 format!(
                     "BUSINESS:{}",
                     value
-                        .get("business")
+                        .get("event").or_else(|| value.get("business"))
                         .and_then(|v| v.get("instance_id"))
                         .and_then(WireValue::as_string)
                         .unwrap_or_default()

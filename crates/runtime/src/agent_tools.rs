@@ -21,6 +21,9 @@ use std::{
 pub(crate) mod management;
 #[path="agent_protocol_views.rs"]
 mod protocol_views;
+#[path="agent_subscriptions.rs"]
+mod subscriptions;
+fn subscription_mode()->String{"list".into()}
 
 fn invalid(code: &str) -> ParticipantError {
     ParticipantError::local(code, "AGENT_TOOLS")
@@ -271,6 +274,20 @@ impl AgentSelection {
 #[serde(tag = "tool", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AgentRequest {
     Context,
+    Subscriptions {
+        #[serde(default)] workspace:Option<String>,
+        #[serde(default)] protocol:Option<String>,
+        #[serde(default="subscription_mode")] mode:String,
+        #[serde(default)] operation_id:Option<String>,
+        #[serde(default)] subscription_id:Option<String>,
+        #[serde(default)] stop_handle:Option<String>,
+        #[serde(default)] kinds:Vec<String>,
+        #[serde(default)] actor:Option<String>,
+        #[serde(default)] actions:Vec<String>,
+        #[serde(default)] schemas:Vec<String>,
+        #[serde(default)] expected_revision:Option<u64>,
+        #[serde(default="send_budget")] wait_ms:u64,
+    },
     Manage {
         #[serde(default="management_mode")] mode:String,
         #[serde(default)] operation:Option<String>,
@@ -800,7 +817,7 @@ impl AgentTools {
                     Some(self.receiving().call(json!({"method":"binding"})).await?)
                 } else {None};
                 Ok(
-                    json!({"actor_id":self.client.actor_id(),"origin":self.client.origin(),"maturity":"EXPERIMENTAL","local_engine":if self.client.attached_mode(){"ATTACHED_ORIGINAL_CLIENT"}else{"AUTHENTICATED"},"state_migration_required":false,"versions":{"frontend":env!("CARGO_PKG_VERSION"),"runtime":capabilities.get("sdk_version").cloned().unwrap_or(json!("NOT_REPORTED"))},"remote_or_host_readiness":"NOT_ATTESTED","workspaces":self.profile.workspaces,"scopes":self.profile.scopes,"send_scopes":self.profile.send_scopes,"contacts":self.profile.contacts.keys().collect::<Vec<_>>(),"protocols":self.profile.protocols,"management_views":self.profile.management_views,"protocol_views":self.profile.protocol_views,"bindings":bindings,"receiving_binding":receiving_binding,"capability":capabilities["capability"],"tool_discovery":{"source":"LOADED_MCP_TOOL_SCHEMAS","extra_call_required":false},"next_tools":{"reachability":"peerwork_reachability","send":"peerwork_send","inbox":"peerwork_inbox","protocol":"peerwork_protocol","management":"peerwork_manage"}}),
+                    json!({"actor_id":self.client.actor_id(),"origin":self.client.origin(),"maturity":"EXPERIMENTAL","local_engine":if self.client.attached_mode(){"ATTACHED_ORIGINAL_CLIENT"}else{"AUTHENTICATED"},"state_migration_required":false,"versions":{"frontend":env!("CARGO_PKG_VERSION"),"runtime":capabilities.get("sdk_version").cloned().unwrap_or(json!("NOT_REPORTED"))},"remote_or_host_readiness":"NOT_ATTESTED","workspaces":self.profile.workspaces,"scopes":self.profile.scopes,"send_scopes":self.profile.send_scopes,"contacts":self.profile.contacts.keys().collect::<Vec<_>>(),"protocols":self.profile.protocols,"management_views":self.profile.management_views,"protocol_views":self.profile.protocol_views,"bindings":bindings,"receiving_binding":receiving_binding,"capability":capabilities["capability"],"tool_discovery":{"source":"LOADED_MCP_TOOL_SCHEMAS","extra_call_required":false},"next_tools":{"reachability":"peerwork_reachability","send":"peerwork_send","inbox":"peerwork_inbox","protocol":"peerwork_protocol","management":"peerwork_manage","subscriptions":"peerwork_subscriptions"}}),
                 )
             }
             AgentRequest::Reachability { workspace, actor, cursor, limit, scope, contact } => {
@@ -847,6 +864,7 @@ impl AgentTools {
                     "observation":observation,"model_response":"NOT_ATTESTED","business_completion":"NOT_ATTESTED"}),
                 )
             }
+            request @ AgentRequest::Subscriptions { .. } => self.subscriptions(request).await,
             AgentRequest::MemberName { workspace, name, operation_id, expected_revision } => self.set_member_name(workspace.as_deref(),name,operation_id,expected_revision).await,
             AgentRequest::Availability { workspace,membership_id,state,operation_id,expected_revision,valid_for_ms } => self.set_availability(workspace.as_deref(),membership_id,state,operation_id,expected_revision,valid_for_ms).await,
             AgentRequest::Send {
@@ -1229,6 +1247,9 @@ fn inbox_view(mut value: Value, scope: &str) -> Value {
             let delivery = item["delivery_id"].clone();
             let reference = json!({"sequence":sequence,"delivery_id":delivery});
             let mut message = item["opened_message"].clone();
+            if item["envelope"]["event"].is_object() {
+                message=json!({"state":"EVENT","event":item["envelope"]["event"],"assurance":"SERVICE_ATTESTED_EVENT","can_reply":false});
+            }
             let can_reply = message["state"] == "OPENED"
                 && message["assurance"] == "AUTHOR_SIGNATURE_AND_AEAD"
                 && message["reply_address"].is_object();
@@ -1275,6 +1296,7 @@ pub fn catalog() -> Vec<Value> {
     );
     let budget = json!({"type":"integer","minimum":0,"maximum":5000,"default":1000});
     let mut tools = vec![
+        tool("subscriptions","Subscribe your existing inbox to shared workspace events. Modes: list returns stop handles; subscribe uses a stable operation_id, kinds and optional actor; protocol action events also select protocol alias and actions. No Owner approval for visible facts. Delivery wakes the existing configured host; it does not create a session. Copy a returned stop handle and add a new operation_id to stop future events.",json!({"workspace":text,"protocol":text,"mode":{"type":"string","enum":["list","subscribe","stop"],"default":"list"},"operation_id":text,"subscription_id":text,"stop_handle":text,"kinds":{"type":"array","maxItems":16,"items":{"type":"string","enum":["action.accepted","communication.member.presence.changed","structure.member.availability.changed","structure.protocol.upgraded","structure.member.admitted","structure.member.revoked","structure.grant.assigned","structure.grant.revoked"]}},"actor":text,"actions":{"type":"array","maxItems":32,"items":text},"schemas":{"type":"array","maxItems":16,"items":text},"expected_revision":number,"wait_ms":budget}),&[],false),
         tool("context","Read selected identity, workspaces, available scopes and runtime capabilities. Use the loaded MCP tool schemas for discovery; contacts and aliases are optional. Local authentication does not prove remote/host readiness.",json!({}),&[],true),
         tool("reachability","List workspace members, shared names, receiving status and independently declared willingness to accept work. No contacts required. Select actor ID or exact shared name; pages describe receiving paths, not model activity. Scope/contact are optional configured shortcuts.",json!({"workspace":text,"actor":text,"cursor":text,"limit":page,"scope":text,"contact":text}),&[],true),
         tool("send","Send to a workspace member by actor ID or shared name using to; configured contact aliases remain optional. Ambiguous names require exact actor selection. Preserve operation_id and recover it on uncertainty; acceptance is not a reply.",json!({"workspace":text,"to":text,"contact":text,"operation_id":text,"text":{"type":"string","minLength":1,"maxLength":8192},"wait_ms":budget}),&["operation_id","text"],false),

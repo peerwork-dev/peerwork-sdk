@@ -49,12 +49,14 @@ pub const STRUCTURE_MUTATIONS: &[&str] = &[
     "structure.publication.policy.set",
     "structure.publication.set",
     "structure.record.withdraw",
+    "structure.workspace.collaboration.set",
     "structure.workspace.create",
     "structure.workspace.delete",
 ];
 
 pub const STRUCTURE_READS: &[&str] = &[
     "structure.access.approval.get",
+    "structure.communication.event.get",
     "structure.communication.grant.get",
     "structure.communication.stream.get",
     "structure.communication.subscriptions.read",

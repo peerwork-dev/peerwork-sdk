@@ -312,7 +312,12 @@ fn render(client: &ParticipantClient, options: &WatchOptions, entry: &Value) -> 
         };
         incoming["message"] = json!({"message_id":entry["envelope"]["message"]["message_id"],"sender_actor":entry["envelope"]["message"]["sender_actor"],"content":body});
     } else if kind == "BUSINESS" {
-        incoming["business"] = entry["envelope"]["business"].clone();
+        if entry["envelope"]["event"].is_object() {
+            incoming["event"] = entry["envelope"]["event"].clone();
+            incoming["assurance"] = json!("SERVICE_ATTESTED_EVENT");
+        } else {
+            incoming["business"] = entry["envelope"]["business"].clone();
+        }
         // Preserve selected references, not a repeated original packet/proof.
         if let Some(o) = incoming["business"].as_object_mut() {
             o.remove("source_response");

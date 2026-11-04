@@ -82,7 +82,7 @@ pub struct ConnectRequest {
     pub alias: String,
     #[serde(default = "default_send")]
     pub send: bool,
-    #[serde(default)]
+    #[serde(default = "default_send")]
     pub receive: bool,
     #[serde(default,skip_serializing_if="Option::is_none")]
     pub receive_mode: Option<ReceiveMode>,
@@ -116,7 +116,7 @@ fn missing_runtime_features(caps: &Value) -> Vec<&'static str> {
 fn default_alias() -> String {
     "workspace".into()
 }
-fn default_send() -> bool { false }
+fn default_send() -> bool { true }
 fn is_false(value:&bool)->bool{!*value}
 impl ConnectRequest {
     fn needs_host(&self,agent:bool)->bool {(agent||self.receive_mode==Some(ReceiveMode::Push)) && self.receive_mode!=Some(ReceiveMode::Inbox)}
@@ -1062,7 +1062,7 @@ impl Connect {
             }else{management_views.insert(id,view);}
         }
         let mut metadata=parent.clone();metadata.allow_root=false;metadata.workspace_ids=Some([request.workspace_id.clone()].into());
-        metadata.operations.retain(|a|["structure.members.read","structure.member.name.set","structure.member.availability.set","structure.workspace.get","structure.instance.resolve","participant.time.read"].contains(&a.as_str()));
+        metadata.operations.retain(|a|a.starts_with("structure.")||crate::agent_tools::management::is_workspace_action(a));
         if metadata.operations.contains("structure.members.read") {
             let alias=format!("directory-{}",&sha256_hex(json!([request.participant,request.workspace_id]).to_string().as_bytes())[..40]);
             let value=client.call(json!({"method":"derive","name":alias,"capability":metadata})).await?;
@@ -1074,7 +1074,7 @@ impl Connect {
             previous.as_ref().unwrap().endpoint_path.clone()
         }else{
             let allowed: &[&str]=if communication_requested {&["structure.message.send","structure.message.receipts.read","structure.mailbox.get","structure.members.read"]}
-                else {&["structure.members.read","structure.member.name.set","structure.member.availability.set","structure.workspace.get","structure.instance.resolve","participant.time.read"]};
+                else {&["structure.members.read","structure.member.name.set","structure.member.availability.set","structure.workspace.get","structure.instance.resolve","participant.time.read","structure.mailboxes.read","structure.communication.subscription.set","structure.communication.subscriptions.read","structure.communication.event.get"]};
             capability.operations.retain(|a|allowed.contains(&a.as_str()));
             if !channel_send{capability.operations.remove("structure.message.send");}
             if capability.operations.is_empty()&&parent.operations.contains("participant.time.read"){capability.operations.insert("participant.time.read".into());}
@@ -1526,7 +1526,7 @@ pub fn cli(args: &[String]) -> Value {
             let boolean = [
                 "--send",
                 "--join",
-                "--receive",
+                "--receive", "--tools-only", "--no-send", "--no-receive",
                 "--body-keys",
                 "--allow-loopback-http",
                 "--context",
@@ -1552,7 +1552,7 @@ pub fn cli(args: &[String]) -> Value {
                 "--actor",
                 "--send",
                 "--join",
-                "--receive",
+                "--receive", "--tools-only", "--no-send", "--no-receive",
                 "--body-keys",
                 "--allow-loopback-http",
                 "--context",
@@ -1768,8 +1768,8 @@ pub fn cli(args: &[String]) -> Value {
             participant: handle.clone(),
             workspace_id: required("--workspace")?,
             alias: values.get("--alias").cloned().unwrap_or_else(default_alias),
-            send: values.contains_key("--send"),
-            receive: values.contains_key("--receive"),
+            send: !values.contains_key("--tools-only")&&!values.contains_key("--no-send"),
+            receive: !values.contains_key("--tools-only")&&!values.contains_key("--no-receive"),
             receive_mode: values.get("--receive-mode").map(|v|match v.as_str(){"push"=>Ok(ReceiveMode::Push),"inbox"=>Ok(ReceiveMode::Inbox),_=>Err(local("RECEIVE_MODE_USE_PUSH_OR_INBOX"))}).transpose()?,
             require_body_keys: values.contains_key("--body-keys"),
             request_membership: values.contains_key("--join"),

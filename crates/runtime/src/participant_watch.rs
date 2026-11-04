@@ -818,7 +818,7 @@ pub(crate) async fn run(
                                     }
                                     let epoch=mailbox["epoch"].as_u64().unwrap_or(0);
                                     if epoch>0&&mailbox["receiver_id"]!=s.binding.receiver{s.fail(Failure{no_effect:false,code:"MAILBOX_STATE_RECOVERY_REQUIRED".into(),retryable:false});continue;}
-                                    let mut body=json!({"claim_command_id":s.binding.claim_id,"mailbox_id":s.binding.options.mailbox_id,"receiver_id":s.binding.receiver,"expected_epoch":if epoch==0{None}else{Some(epoch)},"destination_digest":target,"replace":false});
+                                    let mut body=json!({"claim_command_id":s.binding.claim_id,"mailbox_id":s.binding.options.mailbox_id,"receiver_id":s.binding.receiver,"expected_epoch":if epoch==0{None}else{Some(epoch)},"destination_digest":target,"replace":false,"event_format":peerwork_core::communication::WORKSPACE_EVENT_FORMAT});
                                     match store.receiver_proof(&identity,&s.binding,&body){Ok(proof)=>body["continuity_proof"]=json!(proof),Err(e)=>{s.fail(Failure{no_effect:false,code:e.code,retryable:false});continue;}}
                                     let wire=json!({"action":"structure.mailbox.claim","workspace_id":s.binding.options.workspace_id,"command_id":s.binding.claim_id,"body":body}).to_string();
                                     match store.freeze_claim(&s.binding,&wire){Ok(())=>s.binding.claim_wire=Some(wire),Err(e)=>s.fail(Failure{no_effect:false,code:e.code,retryable:false})}

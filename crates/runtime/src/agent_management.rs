@@ -33,6 +33,8 @@ fn operations()->Vec<Operation> {
         op("grant.get","structure.grant.get","protocol","Read selected member's grant for the configured instance.",&["actor_id"],json!({"actor_id":"EXACT_ACTOR_ID"})),
         op("grant.revoke","structure.grant.revoke","protocol","Revoke the exact current member grant, retaining signed historical attribution.",&["actor_id","expected_grant_revision"],json!({"actor_id":"EXACT_ACTOR_ID","expected_grant_revision":1})),
         op("grant.set","structure.grant.set","protocol","Set explicitly selected actions, roles and capabilities for the exact current membership.",&["actor_id","membership_id","expected_grant_revision","actions","protocol_roles","capabilities","expires_at"],json!({"actor_id":"EXACT_ACTOR_ID","membership_id":"EXACT_MEMBERSHIP_ID","expected_grant_revision":null,"actions":["claim"],"protocol_roles":["WORKER"],"capabilities":[],"expires_at":null})),
+        op("event.progress","structure.communication.event.get","workspace","Read one event's frozen audience, receiver/host facts and undelivered reasons. Storage alone does not mean Agent host delivery.",&["event_sequence"],json!({"event_sequence":1,"limit":8})),
+        op("workspace.collaboration","structure.workspace.collaboration.set","workspace","Change the Workspace shared-status visibility policy using its current collaboration revision. Ordinary collaboration requires no extra communication grant.",&["expected_revision","show_presence"],json!({"expected_revision":1,"show_presence":true})),
         op("communication.get","structure.communication.grant.get","workspace","Read one member's communication grant; local aliases do not substitute for membership.",&["actor_id"],json!({"actor_id":"EXACT_ACTOR_ID"})),
         op("communication.set","structure.communication.grant.set","workspace","Explicitly set communication rights for the exact current membership. Ordinary connect uses the consolidated approval path.",&["actor_id","membership_id","expected_revision","send","receive"],json!({"actor_id":"EXACT_ACTOR_ID","membership_id":"EXACT_MEMBERSHIP_ID","expected_revision":null,"send":true,"receive":true})),
         op("member.set","structure.member.set","workspace","Change an explicitly selected member's state using the current workspace revision.",&["actor_id","state","expected_membership_id"],json!({"actor_id":"EXACT_ACTOR_ID","state":"ACTIVE","expected_membership_id":null})),
@@ -92,10 +94,10 @@ impl AgentTools {
         if matches!(mode,"catalog"|"describe") {
             if mode=="describe"&&operation.is_none(){return Err(invalid("MANAGEMENT_OPERATION_REQUIRED"));}
             if id.is_some()||body.is_some()||expected_workspace.is_some()||expected_instance.is_some(){return Err(invalid("DISCOVERY_DOES_NOT_ACCEPT_MUTATION_INPUT"));}
-            let client=self.operation_client(protocol,workspace,None,None)?;
+            let selected_workspace=if let Some(alias)=protocol{self.protocol(alias)?.workspace_id}else{self.selected_workspace(workspace).ok()};
+            let client=selected_workspace.as_deref().map(|ws|self.directory_client(ws)).unwrap_or(&self.client);
             let caps=client.call(json!({"method":"capabilities"})).await?;
             let cap:crate::participant::Capability=serde_json::from_value(caps["capability"].clone()).map_err(|_|invalid("LOCAL_CEILING_INVALID"))?;
-            let selected_workspace=if let Some(alias)=protocol{self.protocol(alias)?.workspace_id}else{self.selected_workspace(workspace).ok()};
             let mut view_caps=std::collections::BTreeMap::new();
             for (id,client) in &self.management_clients {
                 let value=client.call(json!({"method":"capabilities"})).await?;
@@ -144,12 +146,13 @@ impl AgentTools {
                 object.insert("instance_id".into(),json!(instance));
             }
         }
+        if name=="grant.read"&&!object.contains_key("view"){object.insert("view".into(),json!("SUMMARY"));}
         for field in spec.required {if !object.contains_key(*field){let mut e=invalid("MANAGEMENT_FIELD_REQUIRED");e.details=Some(json!({"operation":name,"field":field,"next_action":"DESCRIBE_SELECTED_OPERATION"}));return Err(e);}}
         let (fallback,scope)=match spec.scope {
             "identity" if workspace.is_none()&&protocol.is_none()&&instance_id.is_none()=>(&self.client,Scope::default()),
             "workspace" if name=="protocol.upgrade"&&protocol.is_some()&&instance_id.is_none()=>{let ws=self.protocol(protocol.unwrap())?.workspace_id.ok_or_else(||invalid("WORKSPACE_ALIAS_UNKNOWN"))?;(self.directory_client(&ws),Scope{workspace_id:Some(ws),..Default::default()})},
             "workspace" if protocol.is_none()&&instance_id.is_none()=>{let ws=self.selected_workspace(workspace)?;(self.directory_client(&ws),Scope{workspace_id:Some(ws),..Default::default()})},
-            "protocol" if protocol.is_some()&&instance_id.is_none()=>{let alias=protocol.unwrap();(self.protocol_client(alias)?,self.protocol(alias)?)},
+            "protocol" if protocol.is_some()&&instance_id.is_none()=>{let selected=self.protocol(protocol.unwrap())?;let ws=selected.workspace_id.as_deref().ok_or_else(||invalid("WORKSPACE_ALIAS_UNKNOWN"))?;(self.directory_client(ws),selected)},
             "protocol" if protocol.is_none()&&instance_id.is_some()=>{let ws=self.selected_workspace(workspace)?;(self.directory_client(&ws),Scope{workspace_id:Some(ws),instance_id:instance_id.map(str::to_owned),protocol_digest:protocol_digest.map(str::to_owned)})},
             "protocol"=>return Err(invalid("MANAGEMENT_PROTOCOL_SELECTION_REQUIRED")),
             _=>return Err(invalid("MANAGEMENT_SCOPE_SELECTION_INVALID")),
