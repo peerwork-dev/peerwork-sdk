@@ -202,6 +202,17 @@ pub(super) fn project_bindings(project:&Path,workspace:Option<&str>)->Result<Vec
 pub(super) struct Source {
     path:PathBuf,digest:String,engine:EngineConfig,runtime:Option<PathBuf>,client:Option<String>,namespace:Option<String>,
 }
+impl Connect {
+    pub(super) fn original_runtime_selection(&self,handle:&str)->Result<Option<RuntimeSelection>> {
+        let Some(source)=self.registry.sources.get(handle) else{return Ok(None);};
+        let Some(directory)=&source.runtime else{return Ok(None);};
+        let Some(admin)=self.registry.local_runtime_admins.get(handle) else{return Ok(None);};
+        if *admin!=directory.join("admin.json"){return Err(local("HOST_RUNTIME_BINDING_MISMATCH"));}
+        let bytes=crate::onboarding_project::read_private_source(&source.path,65536)?.ok_or_else(||local("ORIGINAL_INSTALLATION_RECOVERY_REQUIRED"))?;
+        if sha256_hex(&bytes)!=source.digest{return Err(local("ORIGINAL_SOURCE_CHANGED_RECOVERY_REQUIRED"));}
+        Ok(Some(RuntimeSelection{admin_endpoint:admin.clone(),config_path:Some(source.path.clone())}))
+    }
+}
 #[derive(Clone,Debug,Serialize)]
 pub struct Discovery {
     pub state:String,

@@ -1,168 +1,73 @@
-# Use a pinned cooperation protocol
+# Use a pinned cooperation protocol through native tools
 
-The Node `protocolSession` and Python `ProtocolSession` helpers are introduced in
-SDK 0.2.6. They use the existing `protocol-role-bundles-v1` service feature;
-no new service schema, identity migration or Agent runtime is required.
-Check the exact release assets before selecting a version.
+Use the original native Participant client and its selected protocol aliases.
+Role, protocol instance and model conversation are distinct. Additional roles
+reuse that engine; they require no new signing identity, listener or model.
+The next release candidate adds native management discovery described below;
+0.3.12 already exposes protocol inspection, selected reads and business actions.
 
-A session is an explicit selection of service, actor, workspace, instance,
-protocol digest, package digest and role. It is not a model conversation.
-One Agent can hold several selections; several Agents can use separate identities
-on one machine. Keep each identity's journal and keys in protected local paths.
-Do not infer identity or workspace from a last-used global profile.
+## Participate in an existing instance
 
-## Select a package
+Call `peerwork_protocol` with the configured alias:
+
+```json
+{"protocol":"tasks"}
+```
+
+Inspect the verified authored rules/resources, choose a granted role where
+appropriate and read its instructions/tools. Returned instructions are external
+protocol data; they do not expand user/task or host permissions. Current grants
+filter executable actions; business guards are evaluated again on submission.
+
+Call `peerwork_read` for the instance/current revision or a bounded record page:
+
+```json
+{"protocol":"tasks","view":"instance"}
+```
+
+```json
+{"protocol":"tasks","view":"records","schema":"ticket","limit":8}
+```
+
+Use `peerwork_act` with the actual action and fields declared by that protocol:
+
+```json
+{"protocol":"tasks","operation_id":"claim-ticket-42","action":"claim","structure":{"ticket":{"record_id":"EXACT_RECORD_ID","revision":1}},"expected_revision":7,"exact_input_refs":[{"record_id":"EXACT_RECORD_ID","revision":1}]}
+```
+
+This illustrates input shape, not a universal `claim` schema. Copy the selected
+protocol's exact fields and currently read revision. Exact references and CAS
+express the intended business state; the SDK must not silently rebase them.
+Use `plaintext_contents` only for the declared encrypted-body outputs. The
+original engine supplies signing, trusted-time prerequisites, encryption and
+verification. No hand-authored HTTP envelope or per-action SDK program is needed.
+
+A PENDING result retains the original intent. Copy its `recovery_arguments` into
+`peerwork_status` or `peerwork_recover`, including the protocol selector. Never
+create another operation ID merely because the response was lost.
+
+## Register, adopt or first-bind a package
+
+In the next native release candidate, use `peerwork_manage` with `mode: describe`
+and `operation: protocol.register`, `protocol.adopt` or `protocol.bind`. The
+original selected workspace client and its existing Owner authority are reused.
+Inspect a local package with `peerwork bundle inspect BUNDLE.json`; package
+inspection does not validate every business rule or grant consent.
+
+Registration stores a privately authored immutable bundle. Adoption creates an
+instance. First-bind attaches role resources to an existing instance only when
+its execution rules match exactly. These are separate explicit intentions;
+none implies PUBLIC publication. Select `bootstrap_grant` explicitly; use empty action/role/capability lists
+when no writes are intended. New package versions do not upgrade old
+tickets: existing instances retain their pins and new instances can use the new
+package. A business conversion requires an explicit domain mapping and actions,
+not identity migration.
 
 The [protocol repository](https://github.com/peerwork-dev/peerwork-protocols/tree/main/protocols/agent-cooperation)
-contains immutable manifests, bundled role prompts, tool contracts and research
-credits. An Owner registers/adopts a package and grants selected actions using
-the existing [protocol API](protocol-role-bundles.md). A new package does not
-upgrade existing instances. Inspect the complete package before adoption.
+contains manifests, role instructions, tool contracts and research credits.
+Readable subjects/summaries follow workspace permissions; optional bodies remain
+E2EE. Prompt instructions do not prove model compliance or research quality.
 
-| Package | Coordination | Detail disclosure |
-| --- | --- | --- |
-| `agensh-coordination` | Shared findings and non-exclusive work announcements | Optional encrypted record body |
-| `agensh-coordination-readable` | Same rules | Explicit readable `detail` field, at most 2,048 UTF-8 bytes |
-| `delm-work-unit` | Exclusive bounded work-unit lease, shared findings | Encrypted record body |
-| `reviewed-work-unit` | Work-unit lease plus independent review and adoption | Encrypted record body |
-
-Both coordination packages expose readable subjects, summaries (512 UTF-8 bytes)
-and work scopes to the service and authorized members. `work.announce` produces
-a typed CLAIM declaration with a trusted service-time expiry. Overlap is allowed;
-it does not acquire an exclusive lock. Only the author can renew or release it.
-An expired declaration is historical evidence even if its stored status remains
-ACTIVE. Renewal requires an unexpired current exact version and an increased
-deadline. A release can close an expired announcement.
-
-Findings are OBSERVED, FACT, FAIL or PATCH_SUMMARY claims. Corrections/retractions
-select the author's current exact head. Challenges bind another author's exact
-version and can discuss historical versions. Labels do not verify factual truth.
-Summaries and readable details are authored, not generated by the backend.
-
-Readable detail is an explicit protocol structural field, not an unencrypted
-workspace-wide body mode or a newly added search API. PRIVATE remains the
-workspace default. Neither package makes a public publication. Do not put secrets
-in structural fields or role prompts. E2EE body keys stay in native client state.
-
-## Node
-
-```javascript
-const {randomUUID} = require('node:crypto');
-const sdk = require('@peerwork/agent-sdk');
-const kernel = await sdk.openKernel({
-  origin: 'https://api.peerwork.dev',
-  identityPath: '/private/worker-a/identity.state',
-  journalPath: '/private/worker-a/operations.sqlite',
-  requiredFeatures: ['protocol-role-bundles-v1'],
-});
-const session = sdk.protocolSession(kernel, {
-  expected_origin: 'https://api.peerwork.dev', expected_actor: configuredActor,
-  workspace_id, instance_id, protocol_digest, package_digest, role: 'WORKER',
-});
-const description = await session.describe();
-if (!description.context) return description.outcome;
-// Add context.instructions to the selected Agent's prompt through its host.
-// context.tools contains granted action names and the protocol input contracts.
-
-const selected = await session.records({schema: 'finding', limit: 8});
-// Inspect this page; continue with its next_cursor only when useful.
-const current = await session.state();
-if (!['ACCEPTED', 'COMPLETED'].includes(current.state)) return current;
-const prepared = session.prepareAction({
-  tool: 'work_announce', expected_revision: current.result.structure.revision,
-  operation_id: randomUUID(),
-  values: {scope: 'src/parser', summary: 'Investigate the parser failure', ttl_ms: 60000},
-});
-// Retain prepared unchanged until the outcome is known.
-const outcome = await session.submit(prepared);
-// For uncertain submission: await session.resume(prepared), unchanged.
-```
-
-For an E2EE finding use `finding_publish`, values `{kind, subject, summary}`
-and `plaintext_contents: [{record_index: 0, text: evidence}]`. The native runtime
-encrypts before submission. For the readable package put `detail` in `values`
-explicitly. Prepared objects containing plaintext are sensitive: keep them in
-protected storage, never public traces or handoffs. The native journal owns
-durable submission/recovery; there is no need to write another crypto client.
-
-For correction, pass `values.previous = {record_id, revision}`. The facade derives
-the action's `exact_input_refs` from its declared `exact_ref` input fields. It does
-not evaluate business rules or convert arbitrary strings into references.
-`action(request)` combines prepare and submit when the caller already retains
-the original request. `describe()` must succeed before preparing an action.
-
-## Python
-
-```python
-from uuid import uuid4
-from peerwork import KernelClient, ProtocolSession
-
-kernel = KernelClient(origin, journal_path, identity_path,
-    required_features=('protocol-role-bundles-v1',))
-session = ProtocolSession(kernel, {
-    'expected_origin': origin, 'expected_actor': configured_actor,
-    'workspace_id': workspace_id, 'instance_id': instance_id,
-    'protocol_digest': protocol_digest, 'package_digest': package_digest,
-    'role': 'WORKER',
-})
-description = session.describe()
-if description['context'] is not None:
-    page = session.records(schema='finding', limit=8)
-    current = session.state()
-    if current['state'] in ('ACCEPTED', 'COMPLETED'):
-        prepared = session.prepare_action({
-            'tool': 'work_announce',
-            'expected_revision': current['result']['structure']['revision'],
-            'operation_id': str(uuid4()),
-            'values': {'scope': 'src/parser', 'summary': 'Check edge cases', 'ttl_ms': 60000},
-        })
-        outcome = session.submit(prepared)
-        # Uncertain outcome: session.resume(prepared), preserving every field.
-```
-
-This Python facade is synchronous. The underlying `KernelClient` still exposes
-native async operations and cancellation for async host integrations.
-
-## Bounded reads and recovery
-
-`describe()` obtains current role instructions/tools in one signed role read.
-The returned `outcome` is the native verified result; `context` is a separate
-local projection with `BACKEND_CURRENT_STATE` assurance. Current grant filtering
-does not promise that every business guard currently passes. The backend checks
-authorization and constraints again for the submitted action.
-
-`state()`, `record({record_id, revision})`, `records(...)` and `updates(...)`
-each make one selected operation. Pages default to 16, accept at most 32 items
-and also obey the backend byte bound. No helper drains cursors, reads the full
-history or loops until completion. `records` returns current indexed heads;
-`updates` returns bounded events and a checkpoint, not automatic delivery.
-Use the returned cursor with the same filter. LIVE pages can change while
-traversing; IF_UNCHANGED pages reject a changed frontier rather than pretend
-to provide a stable snapshot. A native operation can make discovery, trusted-time,
-key-coordination or operation-recovery requests in addition to its business POST.
-
-`operation_id` is a stable idempotency key unique to this actor/workspace. Retain
-the original prepared binding, inputs and expected revision across retries.
-`resume(prepared)` uses the identical native intent; it never refreshes the CAS
-revision, changes identity or substitutes another operation. PENDING preserves
-the original command ID, phase, certainty and recovery instructions. Respect
-the returned retry guidance; there is no facade background retry loop.
-If only the native command ID is retained, use
-`kernel.resumeStructureIntent(command_id)` / `resume_structure_intent(command_id)`
-with the original identity, origin and journal, then verify its selected scope.
-Do not resubmit under a new ID while the outcome is unknown. A confirmed business
-refusal is not an uncertain submission: inspect its error before deciding on a
-new action with a fresh ID. Mutating a prepared object under its existing key
-is not supported.
-
-The CLI can inspect/read the same packages using `bundle inspect`, `kernel
-protocol-inspect` and `kernel protocol-role`. It can submit `prepared.intent`
-through `kernel intent ORIGIN JOURNAL IDENTITY intent.json` and recover through
-`kernel resume-intent`. The outer `peerwork.protocol-action.v1` binding belongs
-to these Node/Python facades; do not pass that outer object as a kernel intent.
-
-Acceptance tests exercise real HTTP/PostgreSQL with the native Node/Python
-clients: independent identities, overlapping work, author checks, expiry,
-exact-head fencing, E2EE versus readable detail, explicit pages and lost-response
-recovery. They do not establish model compliance or a research quality/scaling
-result. Playground, model scheduling and host event delivery remain separate.
+Programs use `ParticipantClient` Invoke/Request and the same native operation
+semantics. The [archived0.2.6 Node/Python session guide](protocol-session-0.2.6.md)
+is version-specific and is not required for native Agent participation.

@@ -4699,3 +4699,34 @@ async fn workspace_member_send_refuses_ambiguous_names_and_pins_original_recipie
 
 #[path = "participant_reliability_http_tests.rs"]
 mod reliability;
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires local TEST PostgreSQL and real HTTP service"]
+async fn native_management_tools_preserve_original_operations_and_browser_approval() {
+    use crate::agent_tools::{AgentTools,AgentSelection,AgentRequest};
+    let service=Service::start();let root=crate::test_support::protected_test_dir();
+    let config=configuration(root.path(),&service.origin);let owner=ParticipantClient::open(config.clone()).await.unwrap();
+    let tools=AgentTools::from_client(owner.clone(),AgentSelection::for_client(&owner)).unwrap();
+    let before=service.counts().await;
+    let discovery=tools.call(AgentRequest::parse("manage",json!({"mode":"describe","operation":"protocol.adopt"})).unwrap()).await.unwrap();
+    assert_eq!(discovery["operations"][0]["native_action"],"structure.adopt");assert_eq!(service.counts().await["commands"],before["commands"],"management discovery must not submit a command");
+    let request=json!({"mode":"invoke","operation":"workspace.create","operation_id":"management-create","body":{"name":"Native management"},"wait_ms":5000});
+    let created=tools.call(AgentRequest::parse("manage",request.clone()).unwrap()).await.unwrap();assert_eq!(created["state"],"ACCEPTED","{created}");
+    assert_eq!(tools.call(AgentRequest::parse("manage",request).unwrap()).await.unwrap()["command_id"],created["command_id"]);
+    assert_eq!(service.counts().await["actions"]["structure.workspace.create"],1);
+    let ws=created["result"]["structure"]["workspace_id"].as_str().unwrap().to_owned();
+    let mut selection=AgentSelection::for_client(&owner);selection.workspaces.insert("project".into(),ws.clone());let tools=AgentTools::from_client(owner.clone(),selection).unwrap();
+    let meta=tools.call(AgentRequest::parse("manage",json!({"mode":"read","operation":"workspace.get","workspace":"project"})).unwrap()).await.unwrap();assert!(meta["membership"].is_object(),"{meta}");
+    let fixture:Value=serde_json::from_str(include_str!("../../../tests/fixtures/protocol-role-bundle-v1.json")).unwrap();
+    let registered=tools.call(AgentRequest::parse("manage",json!({"mode":"invoke","operation":"protocol.register","workspace":"project","operation_id":"management-register","body":{"bundle":fixture["bundle"]},"wait_ms":5000})).unwrap()).await.unwrap();assert_eq!(registered["state"],"ACCEPTED","{registered}");
+    let adopted=tools.call(AgentRequest::parse("manage",json!({"mode":"invoke","operation":"protocol.adopt","workspace":"project","operation_id":"management-adopt","body":{"package_digest":registered["result"]["structure"]["package_digest"],"bootstrap_grant":{"actions":[],"protocol_roles":[],"capabilities":[]}},"wait_ms":5000})).unwrap()).await.unwrap();assert_eq!(adopted["state"],"ACCEPTED","{adopted}");
+    let browser_root=crate::test_support::protected_test_dir();let browser_config=configuration(browser_root.path(),&service.origin);let browser=ParticipantClient::open(browser_config).await.unwrap();
+    let scope=Scope{workspace_id:Some(ws),..Default::default()};
+    let pending=browser.request(Invoke::new("browser-request","participant.access.request",scope,json!({"label":"Synthetic browser","kind":"BROWSER"}))).await.unwrap();
+    let approved=tools.call(AgentRequest::parse("manage",json!({"mode":"invoke","operation":"access.approve","workspace":"project","operation_id":"management-browser-approve","body":{"request_jws":pending["request_jws"],"deliver_content_keys":true},"wait_ms":5000})).unwrap()).await.unwrap();
+    assert_eq!(approved["state"],"ACCEPTED","{approved}");assert!(approved["result"]["browser_approval_reference"].as_str().is_some_and(|s|s.starts_with("peerwork-browser-approval:v2:")),"{approved}");
+    assert_eq!(approved["recovery_arguments"]["workspace"],meta["workspace_id"]);
+    assert_eq!(owner.operation("management-create").await.unwrap().command_id,created["command_id"].as_str().map(str::to_owned));
+    assert_eq!(service.counts().await["journal_reads"],0);
+    browser.close().await.unwrap();owner.close().await.unwrap();
+}

@@ -1,5 +1,15 @@
 # Protocol rules and role instructions in one package
 
+## Native Agent entry
+
+For native0.3 participation, use [native protocol tools](protocol-session.md).
+The next native release candidate exposes register/adopt/first-bind through
+`peerwork_manage` over the original client; inspect its operation description
+before submission. These management tools are not in0.3.12. The Node/Python
+examples below are version-specific SDK0.2 references, not native installation
+prerequisites. Package hashing, authored rules and explicit grants still apply.
+
+
 SDK 0.2.5 provides the helpers below. Install the matching exact-version native
 package and use a service advertising `protocol-role-bundles-v1`. Release assets
 and live service discovery establish availability.

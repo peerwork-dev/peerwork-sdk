@@ -27,6 +27,7 @@ mod host;
 pub use host::{HostInvocation, HostSelection};
 #[path = "participant_connect_bootstrap.rs"]
 mod bootstrap;
+pub use bootstrap::RuntimeSelection;
 #[path = "participant_connect_codex.rs"]
 mod codex;
 #[path = "participant_connect_discovery.rs"]
@@ -1520,6 +1521,7 @@ pub fn cli(args: &[String]) -> Value {
                 "--project",
                 "--uninstall",
                 "--engine-config",
+                "--runtime-config",
                 "--journal",
                 "--authority",
                 "--request-timeout-ms",
@@ -1574,6 +1576,7 @@ pub fn cli(args: &[String]) -> Value {
             "peerwork connect --workspace WORKSPACE --codex --install codex",
             "peerwork connect --workspace WORKSPACE --codex --codex-chat SELECTED_TITLE --install codex",
             "peerwork connect --workspace WORKSPACE --codex --codex-host REGISTERED_HOST --install codex",
+            "peerwork connect --local ORIGINAL_REGISTRY --participant HANDLE --workspace WORKSPACE --codex --codex-chat TITLE --runtime-config ORIGINAL_DIRECT_RUNTIME.json --admin ORIGINAL_ADMIN.json --install codex",
             "peerwork connect --local DIRECTORY --context",
             "peerwork connect --local ORIGINAL_DIRECTORY --context --confirm-original",
             "peerwork connect --local DIRECTORY --participant OWNER_HANDLE --id APPROVAL_ID --approve-request -",
@@ -1586,10 +1589,12 @@ pub fn cli(args: &[String]) -> Value {
     let result = || -> Result<Value> {
         let mut values = parse(args)?;
         let selected_adapter=host::adapter(&values)?;
+        if values.contains_key("--runtime-config")&&!values.contains_key("--codex"){return Err(local("RUNTIME_CONFIG_REQUIRES_CODEX_ATTACHMENT"));}
+        if values.contains_key("--runtime-config")&&values.contains_key("--engine-config"){return Err(local("SELECT_ORIGINAL_RUNTIME_OR_ENGINE_NOT_BOTH"));}
         if (values.contains_key("--codex-chat")||values.contains_key("--codex-host"))&&!values.contains_key("--codex"){return Err(local("CODEX_CHAT_REQUIRES_CODEX"));}
         if values.contains_key("--codex") {
             if values.contains_key("--codex-chat")&&values.contains_key("--codex-host"){return Err(local("SELECT_ONE_CODEX_DESTINATION"));}
-            if selected_adapter.is_some()||values.contains_key("--host")||values.contains_key("--admin")||values.contains_key("--attach")||values.contains_key("--program")||values.get("--receive-mode").is_some_and(|m|m!="push") {return Err(local("SELECT_ONE_HOST_ADAPTER"));}
+            if selected_adapter.is_some()||values.contains_key("--host")||values.contains_key("--attach")||values.contains_key("--program")||values.get("--receive-mode").is_some_and(|m|m!="push") {return Err(local("SELECT_ONE_HOST_ADAPTER"));}
             values.insert("--receive".into(),"true".into());
         }
         if let Some(mode)=values.get("--receive-mode"){
@@ -1618,9 +1623,6 @@ pub fn cli(args: &[String]) -> Value {
                 } else if values.contains_key("--participant") && !choices.is_empty() {return Err(local("LOCAL_SELECTION_REQUIRED"));}
             }
         }
-        let required = |key: &str| {
-            values.get(key).cloned().ok_or_else(|| local("CONNECT_ARGUMENT_INVALID_SEE_HELP"))
-        };
         let directory = match values.get("--local") {
             Some(path)=>std::path::absolute(path).map_err(|_|local("CONNECT_DIRECTORY_INVALID"))?,
             None=>match installed_directory {Some(path)=>path,None=>discovery::directory(&project)?},
@@ -1636,6 +1638,10 @@ pub fn cli(args: &[String]) -> Value {
         if values.contains_key("--context") {
             return Ok(connect.context());
         }
+        bootstrap::runtime_inputs(&connect,&mut values)?;
+        let required = |key: &str| {
+            values.get(key).cloned().ok_or_else(|| local("CONNECT_ARGUMENT_INVALID_SEE_HELP"))
+        };
         let explicit_engine = bootstrap::engine(&values)?;
         if values.contains_key("--attach")&&explicit_engine.is_some(){return Err(local("ATTACH_REQUIRES_EXISTING_ENDPOINT"));}
         let discovery = if explicit_engine.is_none() && !values.contains_key("--client") {
@@ -1733,7 +1739,7 @@ pub fn cli(args: &[String]) -> Value {
         if selected_adapter.is_some() && !request.receive {
             return Err(local("HOST_SELECTION_REQUIRES_RECEIVE"));
         }
-        if selected_adapter.is_none() && values.contains_key("--admin") {
+        if selected_adapter.is_none() && values.contains_key("--admin") && !values.contains_key("--codex") {
             return Err(local("HOST_SELECTION_REQUIRED"));
         }
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1758,10 +1764,15 @@ pub fn cli(args: &[String]) -> Value {
                     .await?;
             }
             if values.contains_key("--codex") {
+                let config_path=values.get("--runtime-config").map(std::path::absolute).transpose().map_err(|_|local("LOCAL_SELECTION_INVALID"))?;
+                let admin=values.get("--admin").map(std::path::absolute).transpose().map_err(|_|local("HOST_SELECTION_INVALID"))?
+                    .or_else(||config_path.as_ref().and_then(|p|crate::communication_store::private_json(p,65536).ok())
+                        .and_then(|v|v["state_directory"].as_str().map(|d|PathBuf::from(d).join("admin.json"))));
+                let selection=match admin {Some(admin_endpoint)=>Some(RuntimeSelection{admin_endpoint,config_path}),None=>None};
                 // Resume the existing durable attachment before opening a
                 // potentially stopped endpoint through ordinary discovery.
-                let mut result=if let Some(host)=values.get("--codex-host") {connect.attach_codex_host(request,host).await?}
-                    else {connect.attach_codex(request,values.get("--codex-chat").map(String::as_str)).await?};
+                let mut result=if let Some(host)=values.get("--codex-host") {connect.attach_codex_host_with_runtime(request,host,selection).await?}
+                    else {connect.attach_codex_with_runtime(request,values.get("--codex-chat").map(String::as_str),selection).await?};
                 if let Some(spec)=installation {result["integration"]=connect.install(&handle,&required("--workspace")?,spec)?;}
                 return Ok(result);
             }

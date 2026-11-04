@@ -127,13 +127,13 @@ fn main() -> ExitCode {
         },
         [noun,help] if noun=="protocol" && help=="--help" => {
             println!("{}",serde_json::json!({"schema":"peerwork.protocol-workbench-help.v1",
-                "usage":"peerwork protocol compatibility|fixture|simulate|export|plan|apply REQUEST_JSON_FILE",
-                "offline":["fixture","simulate","plan"],"local_cached_export":"export with cached=true verifies the existing local snapshot without HTTP",
+                "usage":"peerwork protocol compatibility|fixture|simulate|plan REQUEST_JSON_FILE",
+                "offline":["compatibility","fixture","simulate","plan"],"retired_online":["export","apply"],
                 "simulation":"Real native protocol evaluator; simulated=true and authoritative=false. Never a commit receipt.",
-                "workflow":"Synthetic fixture or one verified export -> simulate and repair locally -> plan -> fresh revalidation and resumable apply",
+                "workflow":"Author a synthetic fixture -> simulate and repair locally -> inspect the plan. Submit supported current-profile business actions separately through the original Participant client.",
                 "coexistence":"Install a new protocol version in a separate instance; old tickets remain on their exact source.",
                 "privacy":"Real exports and plans contain decrypted business data. Keep them in protected local files; no production private keys are exported.",
-                "apply":"Use one stable operation_id and the exact plan on every resume. Cross-instance steps are not atomic; release old authority before activating a new claim."}));
+                "apply":"Historical online export/apply is retired; these operations return LEGACY_EXECUTION_RETIRED. Offline simulation is not online authorization."}));
             ExitCode::SUCCESS
         },
         [noun,operation,path] if noun=="protocol" && ["compatibility","fixture","simulate","export","plan","apply"].contains(&operation.as_str())=>protocol_workbench_cli(operation,path),

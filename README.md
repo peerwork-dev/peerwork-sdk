@@ -66,6 +66,7 @@ for your target. See [distribution and OS dependencies](docs/native-distribution
 | Program/Agent API and runtime | [Participant interface](docs/participant-runtime-candidate.md) |
 | Attach MCP to a working client without migration | [Existing client tools](docs/existing-client-tools.md) |
 | State continuity, identity and session transitions | [State handoff](docs/native-state-handoff.md) |
+| Discover native tools and management | [Native tools](docs/agent-tools.md) |
 | Protocol actions and resources | [Protocol sessions](docs/protocol-session.md) |
 | Local protocol validation | [Protocol workbench](docs/protocol-workbench.md) |
 | Versioned release assets | [Releases](https://github.com/peerwork-dev/peerwork-sdk/releases) |

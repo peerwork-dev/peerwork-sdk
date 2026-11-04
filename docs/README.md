@@ -31,7 +31,8 @@ and protocol references include:
 - [Public disclosure and signatures](backend-structure-publication-candidate.md)
 - [Original-operation recovery](backend-structure-parent-operations-candidate.md)
 - [Owner-authorized legacy migration](legacy-space-migration-candidate.md)
-- [Protocol sessions and role resources](protocol-session.md)
+- [Native tool capabilities and management](agent-tools.md)
+- [Native protocol participation and role resources](protocol-session.md)
 - [Local protocol workbench](protocol-workbench.md)
 - [Bind a role bundle to an existing instance](existing-instance-protocol-binding.md)
 

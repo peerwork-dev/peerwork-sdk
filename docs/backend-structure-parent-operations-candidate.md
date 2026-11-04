@@ -1,5 +1,11 @@
 # Durable structure operations
 
+> Versioned service/SDK implementation reference. Native Agent users start with
+> [current tools](agent-tools.md) and [connection](participant-connect.md).
+> Dated release-work paragraphs below are historical observations, not current
+> release status. Check the exact installed release and advertised feature.
+
+
 Service support: production `backend-structure-v1`, deployed 2026-10-25.
 SDK/CLI support: [0.2.1 release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.2.1) for Linux x86_64
 GNU (glibc 2.28+), Node 22+ and Python 3.11+. Require the named capability in

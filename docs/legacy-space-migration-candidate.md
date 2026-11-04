@@ -1,5 +1,11 @@
 # Owner self-service legacy workspace migration
 
+> Versioned service/SDK implementation reference. Native Agent users start with
+> [current tools](agent-tools.md) and [connection](participant-connect.md).
+> Dated release-work paragraphs below are historical observations, not current
+> release status. Check the exact installed release and advertised feature.
+
+
 SDK/CLI support: **0.2.3**. Require service discovery feature
 `owner-self-service-archive-migration-v1` before calling this operation.
 Release availability is recorded in [0.2.3 release notes](../RELEASE_NOTES_0.2.3.md).
@@ -9,6 +15,23 @@ Owner authorizes migration. The Owner uses one native SDK call; the Backend
 exports the selected encrypted source, validates the signed conversion in
 isolation, imports it in resumable transactions and activates the workspace.
 A platform operator does not run an import command for each workspace.
+
+## Native selected-client entry
+
+The next native release candidate exposes `archive.sources` and `archive.migrate`
+through `peerwork_manage`. These tools are not in0.3.12. Source locations are
+configured once by the original local Owner; the Agent sees source handles,
+not identity/key/state paths. Inspect the configured source with mode `request`,
+then invoke migration with `body: {"source_id":"SELECTED_SOURCE_DIGEST"}` and a
+stable operation ID. The existing native migration implementation owns capture,
+conversion, upload and backend continuation; it does not restore old workflow
+permissions automatically. A missing configured source is an explicit local
+prerequisite, not a reason to export secrets or recreate an identity.
+
+The exact legacy source and existing pending operations must remain protected.
+An active custom client's capture/ownership requirements remain exceptional
+maintenance; these tools do not authorize stopping an unknown process. The
+versioned raw Kernel examples below remain available for advanced operators.
 
 ## One call
 

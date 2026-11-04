@@ -26,11 +26,14 @@ pub(crate) fn native_error(e: crate::kernel_access::KernelAccessError) -> Value 
 }
 pub(crate) fn accepted(result: KernelAcceptedResult) -> Value {
     let state = result.outcome_state();
-    json!({"state":state,"result":{"command_id":result.command_id,"workspace_id":result.workspace_id,
+    let browser_reference=result.browser_approval_reference();
+    let mut value=json!({"state":state,"result":{"command_id":result.command_id,"workspace_id":result.workspace_id,
         "instance_id":result.instance_id,"protocol_digest":result.protocol_digest,"event_sequence":result.event_sequence,
         "revision":result.revision,"produced_record_ids":result.produced_record_ids,
         "structure":result.structure_result_json.and_then(|v|serde_json::from_str::<Value>(&v).ok()),
-        "opened_contents":result.opened_contents,"opened_messages":result.opened_messages,"local_warnings":result.local_warnings,"key_history":result.key_history}})
+        "opened_contents":result.opened_contents,"opened_messages":result.opened_messages,"local_warnings":result.local_warnings,"key_history":result.key_history}});
+    if let Some(reference)=browser_reference {value["result"]["browser_approval_reference"]=json!(reference);}
+    value
 }
 pub(crate) fn outcome(out: StructureIntentOutcome) -> Value {
     match out {

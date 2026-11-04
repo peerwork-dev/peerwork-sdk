@@ -340,7 +340,10 @@ impl Runtime {
                 Ok(request)if request.method=="stop"&&request.config.is_none()=>Ok(json!({"state":"STOPPING"})),
                 Ok(request)if request.method=="status"&&request.config.is_none()=>{
                     let mut engines=Vec::new();for (name,owner) in &self.owners{engines.push(json!({"name":name,"actor_id":owner.actor_id(),"origin":owner.origin(),"state_binding":owner.state_binding(),"engine_digest":self.engine_bindings.get(owner.state_binding()),"metrics":owner.metrics().await?}));}
-                    Ok(json!({"state":"LOCAL_READY","engines":engines,"hosts":self.hosts.lock().await.statuses(),"pending_client_revocations":self.pending_revocation_status()?,"network_or_host_readiness":"NOT_ATTESTED"}))
+                    let (clients,generations)=self.client_snapshot()?;
+                    let mut receivers=Vec::new();
+                    for (name,client) in clients {let bindings=client.watch_bindings().await?;if !bindings.is_empty(){receivers.push(json!({"client":name,"client_generation":generations.get(&name),"bindings":bindings}));}}
+                    Ok(json!({"state":"LOCAL_READY","engines":engines,"receivers":receivers,"hosts":self.hosts.lock().await.statuses(),"pending_client_revocations":self.pending_revocation_status()?,"network_or_host_readiness":"NOT_ATTESTED"}))
                 },
                 Ok(request)if request.method=="host_ensure"&&request.config.is_some()=>{
                     let (clients,generations)=self.client_snapshot()?;

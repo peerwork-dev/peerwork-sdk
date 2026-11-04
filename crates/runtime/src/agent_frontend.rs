@@ -20,6 +20,8 @@ pub fn help() -> Value {
 "peerwork agent --profile PROFILE.json inbox SCOPE",
 "peerwork agent --profile PROFILE.json status|recover OPERATION_ID",
 "peerwork agent --profile PROFILE.json call TOOL ARGUMENTS_JSON",
+"peerwork agent --profile PROFILE.json manage [describe OPERATION]",
+"peerwork agent --local ORIGINAL_REGISTRY call manage - < BUSINESS_REQUEST.json",
 "peerwork agent --profile PROFILE.json mcp"],"tools":agent_tools::catalog(),"identity":"Protected profile pins a scoped client endpoint, actor and Origin. This frontend never starts an engine or a model.","recovery":"Keep the operation_id. Unknown means recover the original intent, not send a replacement.","scheduling":"Service acceptance does not wait for a Worker reply. Continue independent work; use wait only for a real dependency."})
 }
 fn text(args: &[String]) -> Result<String> {
@@ -48,6 +50,8 @@ fn text(args: &[String]) -> Result<String> {
 fn selection(args: &[String]) -> Result<AgentRequest> {
     let (name, body) = match args {
         [command] if command == "context" => ("context", json!({})),
+        [command] if command == "manage" => ("manage", json!({"mode":"catalog"})),
+        [command, mode, operation] if command=="manage"&&mode=="describe" => ("manage",json!({"mode":"describe","operation":operation})),
         [command, scope] if command == "inbox" => ("inbox", json!({"scope":scope})),
         [command] if command == "reachability" => ("reachability", json!({})),
         [command, scope] if command == "reachability" => ("reachability", json!({"scope":scope})),
@@ -72,7 +76,10 @@ fn selection(args: &[String]) -> Result<AgentRequest> {
         }
         [command, tool, body] if command == "call" => (
             tool.as_str().strip_prefix("peerwork_").unwrap_or(tool),
-            peerwork_core::strict_json::parse_strict_json(body.as_bytes())
+            peerwork_core::strict_json::parse_strict_json(if body=="-" {
+                let mut wire=Vec::new();std::io::stdin().take(512*1024+1).read_to_end(&mut wire).map_err(|_|invalid())?;
+                if wire.len()>512*1024{return Err(invalid());}wire
+            }else{body.as_bytes().to_vec()}.as_slice())
                 .map_err(|_| invalid())?,
         ),
         _ => return Err(invalid()),

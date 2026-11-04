@@ -38,6 +38,7 @@ EXTERNAL_SERVICE_CASES = [
     'participant_connect::discovery::tests::cold_cli_finds_old_installation_defers_host_and_program_mode_remains_explicit',
     'participant_connect::codex::tests::native_codex_attachment_preserves_original_receiver_and_reuses_committed_config',
     'communication_host::tests::official_codex_proxy_reads_existing_thread_without_starting_a_model_turn',
+    'participant_connect::codex::tests::explicit_live_first_attachment_needs_no_restart_and_detects_hidden_receiver',
 ]
 
 def native_test_command(group):

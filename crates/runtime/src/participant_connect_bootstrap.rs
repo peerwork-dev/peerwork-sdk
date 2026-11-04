@@ -3,6 +3,35 @@
 use super::*;
 use crate::communication_runtime::{ClientConfig, EngineConfig, RuntimeConfig};
 
+/// Explicit local-owner selection. Never accepted from ordinary MCP arguments.
+/// Selecting a config authorizes restoring this directly managed runtime; a
+/// supervisor-managed runtime must use its established lifecycle integration.
+#[derive(Clone)]
+pub struct RuntimeSelection {
+    pub admin_endpoint: PathBuf,
+    pub config_path: Option<PathBuf>,
+}
+pub(super) fn runtime_inputs(connect:&Connect,values:&mut BTreeMap<String,String>)->Result<()> {
+    let Some(path)=values.get("--runtime-config") else{return Ok(());};
+    if ["--identity","--engine-state","--journal","--authority","--engine-config"].iter().any(|key|values.contains_key(*key)){
+        return Err(local("SELECT_ORIGINAL_RUNTIME_OR_ENGINE_NOT_BOTH"));
+    }
+    if values.contains_key("--client") || values.get("--participant").is_some_and(|h|connect.registry.participants.contains_key(h))
+        || !values.contains_key("--participant")&&!connect.registry.participants.is_empty(){return Ok(());}
+    let path=std::path::absolute(path).map_err(|_|local("LOCAL_SELECTION_INVALID"))?;
+    let config:RuntimeConfig=serde_json::from_value(crate::communication_store::private_json(&path,65536)
+        .map_err(|_|local("RUNTIME_CONFIG_NOT_PRIVATE"))?).map_err(|_|local("RUNTIME_CONFIG_INVALID"))?;
+    if config.format!="peerwork.participant-runtime.v1"||config.engines.len()!=1||config.clients.len()!=1||!config.state_directory.is_absolute(){return Err(local("ORIGINAL_RUNTIME_CLIENT_SELECTION_REQUIRED"));}
+    let engine=&config.engines[0];let client=&config.clients[0];
+    if client.engine!=engine.name||!identifier(&client.name){return Err(local("RUNTIME_CONFIG_INVALID"));}
+    for(key,value)in [("--client",config.state_directory.join(format!("client-{}.json",client.name)).to_string_lossy().into_owned()),("--origin",engine.origin.clone()),("--actor",engine.expected_actor.clone())]{
+        if values.get(key).is_some_and(|old|old!=&value){return Err(local("LOCAL_SELECTION_CONFLICT"));}
+        values.insert(key.into(),value);
+    }
+    values.entry("--participant".into()).or_insert(format!("identity-{}",&engine.binding_digest()?[..24]));
+    Ok(())
+}
+
 pub(super) fn engine(values: &BTreeMap<String, String>) -> Result<Option<EngineConfig>> {
     let required = |name: &str| {
         values
@@ -267,10 +296,13 @@ async fn launch(
     launch_config(config, selected).await
 }
 async fn launch_config(config: RuntimeConfig, selected: Registration) -> Result<(Registration, PathBuf)> {
+    let path = config.state_directory.join("config.json");
+    launch_at(config, selected, path).await
+}
+async fn launch_at(config: RuntimeConfig, selected: Registration, config_path: PathBuf) -> Result<(Registration, PathBuf)> {
     let runtime_dir = config.state_directory.clone();
     create_private_state_directory(&runtime_dir)
         .map_err(|_| local("RUNTIME_DIRECTORY_NOT_PRIVATE"))?;
-    let config_path = runtime_dir.join("config.json");
     let wire = serde_json::to_vec(&config).map_err(|_| local("RUNTIME_CONFIG_INVALID"))?;
     match std::fs::symlink_metadata(&config_path) {
         Ok(_) => {
@@ -446,10 +478,12 @@ async fn launch_config(config: RuntimeConfig, selected: Registration) -> Result<
 pub(super) struct OwnedRuntime {
     pub config: RuntimeConfig,
     pub registration: Registration,
-    launch: Launch,
+    launch: Option<Launch>,
+    #[serde(default)]
+    config_path: Option<PathBuf>,
 }
 impl OwnedRuntime {
-    pub fn path(&self) -> PathBuf { self.config.state_directory.join("config.json") }
+    pub fn path(&self) -> PathBuf { self.config_path.clone().unwrap_or_else(||self.config.state_directory.join("config.json")) }
     fn load(&self) -> Result<RuntimeConfig> {
         serde_json::from_value(crate::communication_store::private_json(&self.path(),65536)
             .map_err(|_|local("RUNTIME_CONFIG_NOT_PRIVATE"))?).map_err(|_|local("RUNTIME_CONFIG_INVALID"))
@@ -461,14 +495,18 @@ impl OwnedRuntime {
     }
     pub async fn stop(&self) -> Result<()> {
         if serde_json::to_value(self.load()?).ok()!=serde_json::to_value(&self.config).ok(){return Err(local("ORIGINAL_RUNTIME_CONFIG_CHANGED"));}
-        let pid=self.launch.pid.ok_or_else(||local("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))?;
-        if !alive(pid,self.launch.process_token.as_deref())? {return Ok(());}
-        // Only this protected, exact launch may be stopped. No process search,
-        // socket chmod or speculative signal against an external runtime.
+        if let Some(launch)=&self.launch {
+            let pid=launch.pid.ok_or_else(||local("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))?;
+            if !alive(pid,launch.process_token.as_deref())? {return Ok(());}
+        } else if let Ok(_fence)=SecureStateStore::open(&self.config.state_directory.join("runtime.state")) {
+            return Ok(());
+        }
+        // Management authority comes from the selected authenticated admin.
+        // The original ownership fence, not process discovery, proves release.
         let admin=self.config.state_directory.join("admin.json");
         let result=crate::communication_runtime::call(&admin,json!({"method":"stop"})).await;
         for _ in 0..100 {
-            if !alive(pid,self.launch.process_token.as_deref())? {return Ok(());}
+            if let Ok(_fence)=SecureStateStore::open(&self.config.state_directory.join("runtime.state")) {return Ok(());}
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
         if let Err(error)=result {return Err(error);}
@@ -480,17 +518,19 @@ impl OwnedRuntime {
         let marker=self.config.state_directory.join("bootstrap.state");
         {
             let store=SecureStateStore::open(&marker).map_err(|_|local("RUNTIME_LAUNCH_ALREADY_OWNED_OR_UNSAFE"))?;
-            let previous:Launch=serde_json::from_slice(&store.read_exact().map_err(|_|local("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))?.ok_or_else(||local("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))?)
-                .map_err(|_|local("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))?;
+            let previous=store.read_exact().map_err(|_|local("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))?
+                .map(|wire|serde_json::from_slice::<Launch>(&wire).map_err(|_|local("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))).transpose()?;
             let target=sha256_hex(&serde_json::to_vec(committed).map_err(|_|local("RUNTIME_CONFIG_INVALID"))?);
-            if previous.config_digest!=self.launch.config_digest && previous.config_digest!=target {return Err(local("LOCAL_BINDING_CONFLICT"));}
-            if previous.config_digest!=target {
-                if alive(previous.pid.ok_or_else(||local("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))?,previous.process_token.as_deref())? {return Err(local("HOST_REBIND_STOP_RUNTIME_FIRST"));}
+            let original=sha256_hex(&serde_json::to_vec(&self.config).map_err(|_|local("RUNTIME_CONFIG_INVALID"))?);
+            if previous.as_ref().is_some_and(|p|p.config_digest!=original && p.config_digest!=target) {return Err(local("LOCAL_BINDING_CONFLICT"));}
+            if previous.as_ref().is_none_or(|p|p.config_digest!=target) {
+                let _fence=SecureStateStore::open(&committed.state_directory.join("runtime.state")).map_err(|_|local("HOST_REBIND_STOP_RUNTIME_FIRST"))?;
+                if let Some(previous)=&previous {if alive(previous.pid.ok_or_else(||local("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))?,previous.process_token.as_deref())? {return Err(local("HOST_REBIND_STOP_RUNTIME_FIRST"));}}
                 store.write_exact(&serde_json::to_vec(&Launch{config_digest:target,pid:Some(0),process_token:None}).unwrap())
                     .map_err(|_|local("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))?;
             }
         }
-        launch_config(committed.clone(),self.registration.clone()).await?;
+        launch_at(committed.clone(),self.registration.clone(),self.path()).await?;
         Ok(())
     }
 }
@@ -504,7 +544,50 @@ pub(super) fn owned_runtime(connect:&Connect, handle:&str)->Result<OwnedRuntime>
     let launch:Launch=serde_json::from_slice(&SecureStateStore::read_snapshot(&directory.join("bootstrap.state"),65536)
         .map_err(|_|local("LOCAL_RUNTIME_TAKEOVER_REQUIRED"))?).map_err(|_|local("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))?;
     if config.state_directory!=directory || launch.config_digest!=sha256_hex(&serde_json::to_vec(&config).map_err(|_|local("RUNTIME_CONFIG_INVALID"))?) {return Err(local("LOCAL_BINDING_CONFLICT"));}
-    Ok(OwnedRuntime{config,registration,launch})
+    Ok(OwnedRuntime{config,registration,launch:Some(launch),config_path:None})
+}
+
+impl Connect {
+    pub(super) async fn runtime_admin(&mut self, handle:&str, selection:Option<&RuntimeSelection>)->Result<PathBuf> {
+        self.require_writer()?;
+        let client=self.original_client(handle).await?;
+        let binding=client.call(json!({"method":"binding"})).await?;
+        let admin=selection.map(|s|s.admin_endpoint.clone()).or_else(||self.registry.local_runtime_admins.get(handle).cloned())
+            .ok_or_else(||local("EXPLICIT_RUNTIME_ADMIN_SELECTION_REQUIRED"))?;
+        if !admin.is_absolute(){return Err(local("HOST_SELECTION_INVALID"));}
+        let status=crate::communication_runtime::call(&admin,json!({"method":"status"})).await?;
+        if status["ok"]!=true || !status["value"]["engines"].as_array().is_some_and(|engines|engines.iter().any(|e|
+            ["actor_id","origin","engine_digest","state_binding"].iter().all(|field|e[*field]==binding[*field]))) {
+            return Err(local("HOST_RUNTIME_BINDING_MISMATCH"));
+        }
+        self.registry.local_runtime_admins.insert(handle.into(),admin.clone());self.save()?;
+        Ok(admin)
+    }
+    pub(super) async fn runtime_for_attachment(&mut self,handle:&str,selection:Option<&RuntimeSelection>)->Result<OwnedRuntime> {
+        let original=if selection.is_none(){match owned_runtime(self,handle){Ok(runtime)=>return Ok(runtime),Err(error) if error.code=="LOCAL_RUNTIME_TAKEOVER_REQUIRED"=>self.original_runtime_selection(handle)?,Err(error)=>return Err(error)}}else{None};
+        let selection=selection.or(original.as_ref()).ok_or_else(||local("ORIGINAL_RUNTIME_CONFIG_SELECTION_REQUIRED"))?;
+        let path=selection.config_path.as_ref().ok_or_else(||local("ORIGINAL_RUNTIME_CONFIG_SELECTION_REQUIRED"))?;
+        if !path.is_absolute(){return Err(local("LOCAL_SELECTION_INVALID"));}
+        let config:RuntimeConfig=serde_json::from_value(crate::communication_store::private_json(path,65536)
+            .map_err(|_|local("RUNTIME_CONFIG_NOT_PRIVATE"))?).map_err(|_|local("RUNTIME_CONFIG_INVALID"))?;
+        if config.format!="peerwork.participant-runtime.v1" || config.engines.len()!=1 || !config.state_directory.is_absolute()
+            || selection.admin_endpoint!=config.state_directory.join("admin.json") {return Err(local("ORIGINAL_RUNTIME_CONFIG_MISMATCH"));}
+        let registration=self.registry.participants.get(handle).cloned().ok_or_else(||local("LOCAL_SELECTION_REQUIRED"))?;
+        let client=self.original_client(handle).await?;
+        let binding=client.call(json!({"method":"binding"})).await?;
+        let capability=client.call(json!({"method":"capabilities"})).await?;
+        let engine=&config.engines[0];
+        let name=binding["client_name"].as_str().ok_or_else(||local("ORIGINAL_RUNTIME_CONFIG_MISMATCH"))?;
+        let configured=config.clients.iter().find(|c|c.name==name&&c.engine==engine.name).ok_or_else(||local("ORIGINAL_RUNTIME_CONFIG_MISMATCH"))?;
+        if engine.expected_actor!=registration.actor_id || crate::transport::canonical_lifecycle_origin(&engine.origin,engine.allow_loopback_http).map_err(|_|local("ORIGIN_INVALID"))?!=registration.origin
+            || binding["engine_digest"]!=engine.binding_digest()?
+            || serde_json::to_value(&configured.capability).ok().as_ref()!=Some(&capability["capability"])
+            || registration.endpoint_path!=config.state_directory.join(format!("client-{name}.json")) {
+            return Err(local("ORIGINAL_RUNTIME_CONFIG_MISMATCH"));
+        }
+        self.runtime_admin(handle,Some(selection)).await?;
+        Ok(OwnedRuntime{config,registration,launch:None,config_path:Some(path.clone())})
+    }
 }
 
 #[cfg(test)]

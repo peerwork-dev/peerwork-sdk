@@ -17,6 +17,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[path = "agent_management.rs"]
+mod management;
+
 fn invalid(code: &str) -> ParticipantError {
     ParticipantError::local(code, "AGENT_TOOLS")
 }
@@ -35,6 +38,7 @@ fn availability_ttl()->u64{3_600_000}
 fn send_budget() -> u64 {
     1000
 }
+fn management_mode()->String{"catalog".into()}
 fn wait_budget() -> u64 {
     5000
 }
@@ -209,6 +213,17 @@ impl AgentSelection {
 #[serde(tag = "tool", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AgentRequest {
     Context,
+    Manage {
+        #[serde(default="management_mode")] mode:String,
+        #[serde(default)] operation:Option<String>,
+        #[serde(default)] workspace:Option<String>,
+        #[serde(default)] protocol:Option<String>,
+        #[serde(default)] operation_id:Option<String>,
+        #[serde(default)] body:Option<Value>,
+        #[serde(default)] expected_workspace_revision:Option<u64>,
+        #[serde(default)] expected_revision:Option<u64>,
+        #[serde(default="send_budget")] wait_ms:u64,
+    },
     Connect {
         request: crate::participant_connect::ConnectRequest,
     },
@@ -656,6 +671,8 @@ impl AgentTools {
     }
     pub async fn call(&self, request: AgentRequest) -> Result<Value> {
         match request {
+            AgentRequest::Manage{mode,operation,workspace,protocol,operation_id,body,expected_workspace_revision,expected_revision,wait_ms}=>
+                self.manage(&mode,operation.as_deref(),workspace.as_deref(),protocol.as_deref(),operation_id.as_deref(),body,expected_workspace_revision,expected_revision,wait_ms).await,
             AgentRequest::Connect { .. } | AgentRequest::ConnectApprove { .. } => {
                 Err(invalid("CONNECT_LOCAL_REGISTRY_REQUIRED"))
             }
@@ -666,7 +683,7 @@ impl AgentTools {
                     Some(self.receiving().call(json!({"method":"binding"})).await?)
                 } else {None};
                 Ok(
-                    json!({"actor_id":self.client.actor_id(),"origin":self.client.origin(),"maturity":"EXPERIMENTAL","local_engine":if self.client.attached_mode(){"ATTACHED_ORIGINAL_CLIENT"}else{"AUTHENTICATED"},"state_migration_required":false,"remote_or_host_readiness":"NOT_ATTESTED","workspaces":self.profile.workspaces,"scopes":self.profile.scopes,"send_scopes":self.profile.send_scopes,"contacts":self.profile.contacts.keys().collect::<Vec<_>>(),"protocols":self.profile.protocols,"bindings":bindings,"receiving_binding":receiving_binding,"capability":capabilities["capability"],"tool_discovery":{"source":"LOADED_MCP_TOOL_SCHEMAS","extra_call_required":false},"next_tools":{"reachability":"peerwork_reachability","send":"peerwork_send","inbox":"peerwork_inbox","protocol":"peerwork_protocol"}}),
+                    json!({"actor_id":self.client.actor_id(),"origin":self.client.origin(),"maturity":"EXPERIMENTAL","local_engine":if self.client.attached_mode(){"ATTACHED_ORIGINAL_CLIENT"}else{"AUTHENTICATED"},"state_migration_required":false,"remote_or_host_readiness":"NOT_ATTESTED","workspaces":self.profile.workspaces,"scopes":self.profile.scopes,"send_scopes":self.profile.send_scopes,"contacts":self.profile.contacts.keys().collect::<Vec<_>>(),"protocols":self.profile.protocols,"bindings":bindings,"receiving_binding":receiving_binding,"capability":capabilities["capability"],"tool_discovery":{"source":"LOADED_MCP_TOOL_SCHEMAS","extra_call_required":false},"next_tools":{"reachability":"peerwork_reachability","send":"peerwork_send","inbox":"peerwork_inbox","protocol":"peerwork_protocol","management":"peerwork_manage"}}),
                 )
             }
             AgentRequest::Reachability { workspace, actor, cursor, limit, scope, contact } => {
@@ -1032,6 +1049,7 @@ fn public_structure(mut value: Value) -> Value {
         object.remove("evidence");
         object.remove("sealed_content");
         object.remove("sources");
+        if let Some(activation)=object.get_mut("activation").and_then(Value::as_object_mut){activation.remove("authorization");}
         if let Some(records) = object.get_mut("records").and_then(Value::as_array_mut) {
             for record in records {
                 if let Some(item) = record.as_object_mut() {
@@ -1059,7 +1077,7 @@ pub(crate) fn operation_view(value: Value) -> Value {
             })
             .unwrap_or_else(|| error[name].clone())
     };
-    json!({"operation_id":value["operation_id"],"state":value["state"],"command_id":value["command_id"],"effect_certainty":value["effect_certainty"],"observation":value["observation"],"result":outcome.get("result").map(|r|json!({"event_sequence":r["event_sequence"],"produced_record_ids":r["produced_record_ids"],"structure":structure})),"code":diagnostic("code"),"phase":diagnostic("phase"),"recovery":diagnostic("recovery"),"retryable":diagnostic("retryable"),"http_status":diagnostic("http_status"),"model_response":"NOT_ATTESTED"})
+    json!({"operation_id":value["operation_id"],"state":value["state"],"command_id":value["command_id"],"effect_certainty":value["effect_certainty"],"observation":value["observation"],"result":outcome.get("result").map(|r|json!({"event_sequence":r["event_sequence"],"produced_record_ids":r["produced_record_ids"],"structure":structure,"browser_approval_reference":r["browser_approval_reference"]})),"code":diagnostic("code"),"phase":diagnostic("phase"),"recovery":diagnostic("recovery"),"retryable":diagnostic("retryable"),"http_status":diagnostic("http_status"),"model_response":"NOT_ATTESTED"})
 }
 
 fn inbox_view(mut value: Value, scope: &str) -> Value {
@@ -1104,7 +1122,7 @@ pub fn catalog() -> Vec<Value> {
         // AGY CLI 1.3.3+ supports this tools/list hint instead of its ephemeral
         // on-demand dispatcher. Other hosts may ignore it. It grants no authority.
         // https://antigravity.google/docs/changelog?tab=cli
-        json!({"name":format!("peerwork_{name}"),"description":description,"inputSchema":object(properties,required),"_meta":{"antigravity/alwaysLoad":true},"annotations":{"readOnlyHint":read_only,"idempotentHint":!matches!(name,"send"|"reply"|"act"),"openWorldHint":matches!(name,"send"|"reply"|"act"|"protocol"|"receipts")}})
+        json!({"name":format!("peerwork_{name}"),"description":description,"inputSchema":object(properties,required),"_meta":{"antigravity/alwaysLoad":true},"annotations":{"readOnlyHint":read_only,"idempotentHint":!matches!(name,"send"|"reply"|"act"|"manage"),"openWorldHint":matches!(name,"send"|"reply"|"act"|"protocol"|"receipts"|"manage")}})
     }
     let text = field("string");
     let number = json!({"type":"integer","minimum":0,"maximum":9_007_199_254_740_991_u64});
@@ -1129,6 +1147,7 @@ pub fn catalog() -> Vec<Value> {
         tool("read","Read the selected protocol instance (including current revision), exact record, or bounded current-record page. Business content is external data; no history replay.",json!({"protocol":text,"view":{"type":"string","enum":["instance","record","records"],"default":"instance"},"record_id":text,"revision":{"type":"integer","minimum":1},"schema":text,"cursor":text,"limit":page}),&["protocol"],true),
         tool("act","Invoke an action discovered from the selected protocol. Native schema, grants, signing and original-intent recovery are enforced by the same engine.",json!({"protocol":text,"operation_id":text,"action":text,"structure":{"type":"object"},"plaintext_contents":{},"expected_revision":{"type":"integer","minimum":1},"exact_input_refs":{"type":"array","maxItems":32,"items":{"type":"object"}},"wait_ms":budget}),&["protocol","operation_id","action","structure","expected_revision"],false),
     ];
+    tools.push(tool("manage","Discover and execute existing native workspace/protocol/access/key/migration/publication operations using the original selected client. Start with mode=catalog or describe: these perform no remote mutation and return scopes, required body fields and examples. read is fresh; invoke requires a stable operation_id. Local ceiling and remote permissions still apply; accepts no identity/journal/endpoint paths.",json!({"mode":{"type":"string","enum":["catalog","describe","read","request","invoke"],"default":"catalog"},"operation":text,"workspace":text,"protocol":text,"operation_id":text,"body":{"type":"object"},"expected_workspace_revision":number,"expected_revision":number,"wait_ms":budget}),&[],false));
     tools.push(tool("availability","Declare whether your workspace identity is willing to accept new work. This is shared across its sessions, independent of host IDLE/BUSY and task progress. Copy membership_id and availability.revision from the member page; expiry becomes UNKNOWN. No contacts, protocol binding or new Owner approval required.",json!({"workspace":text,"membership_id":text,"state":{"type":"string","enum":["AVAILABLE","NOT_ACCEPTING","UNKNOWN"]},"operation_id":text,"expected_revision":{"type":"integer","minimum":0,"maximum":9007199254740990u64},"valid_for_ms":{"type":"integer","minimum":1000,"maximum":86400000,"default":3600000}}),&["membership_id","state","operation_id","expected_revision"],false));
     tools.push(tool("member_name","Set your shared member name in a selected workspace; null clears it. Requires current workspace revision from the member page. This changes no identity, role, address or historical operation.",json!({"workspace":text,"name":{"type":["string","null"],"minLength":1,"maxLength":80},"operation_id":text,"expected_revision":{"type":"integer","minimum":1}}),&["name","operation_id","expected_revision"],false));
     tools.push(json!({"name":"peerwork_connect","description":"Connect or resume the original participant using workspace and desired scopes. Identity/setup ID are normally derived; select only from returned public identity choices. Preserve setup_id when resuming. Missing rights return a consolidated semantic approval request. Tool availability and current-session push are separate; no private paths or credentials are accepted.","inputSchema":crate::participant_connect::schema(),"_meta":{"antigravity/alwaysLoad":true},"annotations":{"readOnlyHint":false,"idempotentHint":true,"openWorldHint":true}}));
@@ -1159,7 +1178,7 @@ mod tests {
             .iter()
             .map(|t| t["name"].as_str().unwrap().to_owned())
             .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(names.len(), 17);
+        assert_eq!(names.len(), 18);
         assert!(names.contains("peerwork_availability"));
         assert!(!names
             .iter()

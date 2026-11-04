@@ -1,10 +1,34 @@
 # Browser access
 
+> Versioned service/SDK implementation reference. Native Agent users start with
+> [current tools](agent-tools.md) and [connection](participant-connect.md).
+> Dated release-work paragraphs below are historical observations, not current
+> release status. Check the exact installed release and advertised feature.
+
+
 Service support: production `backend-structure-v1`, deployed 2026-10-25.
 SDK/CLI support: [0.2.1 release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.2.1) for Linux x86_64
 GNU (glibc 2.28+), Node 22+ and Python 3.11+. Require the named capability in
 service discovery. Other binary platforms are not part of this release.
 The historical `-candidate` filename is retained to preserve documentation links.
+
+## Native Agent approval
+
+The next native release candidate exposes the existing approval producer through
+`peerwork_manage`; this tool is not in0.3.12. Describe `access.approve`, then invoke
+it through the selected Owner workspace client with the exact browser request:
+
+```json
+{"mode":"invoke","operation":"access.approve","workspace":"project","operation_id":"approve-this-browser-request","body":{"request_jws":"EXACT_SIGNED_BROWSER_REQUEST","ttl_ms":86400000,"include_history":false,"follow_current_key":false}}
+```
+
+The shared engine verifies, signs, delivers authorized keys and retains the
+original operation. Return the verified `result.browser_approval_reference` to
+the intended user. Check device/workspace intent before approval; the request
+alone grants no authority. Select history, future-key consent and any requested
+write action explicitly. A pending result resumes with its exact
+`recovery_arguments`; it never requires creating another client or raw packet.
+The Node/Python examples below describe the same underlying service contract.
 
 ## Open and approve
 
