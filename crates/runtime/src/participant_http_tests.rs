@@ -4289,15 +4289,10 @@ async fn connect_consolidates_missing_rights_and_resumes_without_owner_profile_e
     let mut worker=Connect::open(&root.path().join("worker-local")).unwrap();
     worker.register("worker",Registration{origin:service.origin.clone(),actor_id:worker_config.expected_actor.clone(),endpoint_path:ready.client_endpoints["worker"].clone()}).await.unwrap();
     let request=ConnectRequest{ management: Vec::new(),setup_id:"worker-first".into(),participant:"worker".into(),workspace_id:ws,alias:"project".into(),send:true,receive:true,receive_mode:None,require_body_keys:false,request_membership:false,protocols:Vec::new(),contacts:Vec::new(),host:None};
-    let pending=worker.run(request.clone()).await.unwrap();
-    assert_eq!(pending["blocker"]["code"],"OWNER_APPROVAL_REQUIRED","{pending}");
-    let handoff=pending["details"]["authorization_request"].clone();
-    assert!(!handoff.to_string().contains("endpoint_path"));assert!(!handoff.to_string().contains("profile_path"));
+    let result=worker.run(request.clone()).await.unwrap();
+    assert_eq!(result["state"],"LOCAL_CONFIGURED","{result}");assert_eq!(result["owner_exchange_required"],false);
     let mut owner=Connect::open(&root.path().join("owner-local")).unwrap();
     owner.register("owner",Registration{origin:service.origin.clone(),actor_id:owner_config.expected_actor.clone(),endpoint_path:ready.client_endpoints["owner"].clone()}).await.unwrap();
-    let approved=owner.approve("owner","approve-worker",serde_json::from_value::<AuthorizationRequest>(handoff.clone()).unwrap()).await.unwrap();
-    assert_eq!(approved["state"],"APPROVED","{approved}");
-    let result=worker.run(request.clone()).await.unwrap();assert_eq!(result["state"],"LOCAL_CONFIGURED","{result}");
     let original_profile=worker.profile().unwrap().unwrap();let prior=service.counts().await;
     let mut tools_only=request.clone();tools_only.setup_id="only-existing-tools".into();tools_only.send=false;tools_only.receive=false;
     let configured=worker.run(tools_only).await.unwrap();assert_eq!(configured["state"],"LOCAL_CONFIGURED","{configured}");
@@ -4317,8 +4312,7 @@ async fn connect_consolidates_missing_rights_and_resumes_without_owner_profile_e
     assert_eq!(std::fs::metadata(&registry).unwrap().modified().unwrap(),modified,"unchanged connect rewrote the setup journal");
     let path=PathBuf::from(result["profile_path"].as_str().unwrap());let exact=std::fs::read(&path).unwrap();std::fs::remove_file(&path).unwrap();
     let restored=worker.run(request.clone()).await.unwrap();assert_eq!(restored["state"],"LOCAL_CONFIGURED");assert_eq!(std::fs::read(&path).unwrap(),exact);
-    assert_eq!(owner.approve("owner","approve-worker",serde_json::from_value(handoff).unwrap()).await.unwrap()["state"],"APPROVED");
-    assert_eq!(service.counts().await["actions"]["structure.communication.grant.set"],1);
+    assert!(service.counts().await["actions"]["structure.communication.grant.set"].is_null(),"baseline connection must not create a redundant communication approval");
     let old_profile=worker.profile().unwrap().unwrap();
     let original_endpoint=std::fs::read(&old_profile.endpoint_path).unwrap();
     std::fs::remove_file(&old_profile.endpoint_path).unwrap();
