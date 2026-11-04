@@ -10,6 +10,9 @@ The native client adds no Node/Python runtime dependency or additional platforms
 
 This entry targets the official shared-daemon control
 interface, not `--no-daemon` sessions or arbitrary App/IDE integrations.
+The control protocol is qualified on Linux with daemon0.166.0 and the official
+proxy from CLI0.160.0 and0.166.0. These checks use an isolated loaded thread and
+start no inference turn; they do not qualify a model-response latency SLA.
 
 From an already authorized project, discover loaded conversation titles:
 
