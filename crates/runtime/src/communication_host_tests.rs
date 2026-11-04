@@ -6,62 +6,72 @@ use std::sync::{
 };
 
 #[cfg(unix)]
-pub(crate) fn codex_proxy_fixture(directory: &Path) -> std::path::PathBuf {
+pub(crate) fn codex_proxy_fixture(directory:&Path)->(std::path::PathBuf,CodexFixture) {
     use std::os::unix::fs::PermissionsExt;
-    let executable = directory.join("codex");
-    std::fs::write(&executable, r##"#!/usr/bin/python3
-import sys,json,os
-assert sys.argv[1:] == ['app-server','proxy'], sys.argv
-base=os.path.dirname(os.path.realpath(__file__))
-active=False
-for line in sys.stdin:
-    request=json.loads(line)
-    with open(os.path.join(base,'proxy-calls.jsonl'),'a') as log:log.write(json.dumps(request)+'\n')
-    if 'id' not in request:continue
-    method=request['method']; params=request.get('params',{})
-    if method=='initialize':result={'userAgent':'synthetic-existing-daemon'}
-    elif method=='thread/loaded/list':result={'data':['root','child'],'nextCursor':None}
-    elif method=='thread/read':
-        thread=params['threadId']
-        result={'thread':{'id':thread,'sessionId':'root','name':'Worker' if thread=='child' else 'Master','status':{'type':'active' if active else 'idle','activeFlags':[]}}}
-    elif method=='thread/turns/list':result={'data':[{'id':'existing-turn','status':'inProgress'}]}
-    elif method in ['turn/start','turn/steer']:
-        assert params['threadId']=='child'
-        if method=='turn/steer':assert params['expectedTurnId']=='existing-turn'
-        active=True
-        result={'turnId':'existing-turn','turn':{'id':'existing-turn'}}
-    else:raise AssertionError(method)
-    print(json.dumps({'id':request['id'],'result':result}),flush=True)
-"##).unwrap();
+    let socket=directory.join("codex-control.sock");
+    let fixture=CodexFixture::start_unix(&socket);
+    let executable=directory.join("codex");
+    let source=format!(r##"#!/usr/bin/python3
+import sys,os,socket,select
+assert sys.argv[1:]==['app-server','proxy'],sys.argv
+connection=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
+connection.connect({socket})
+while True:
+    ready,_,_=select.select([sys.stdin.buffer,connection],[],[])
+    if sys.stdin.buffer in ready:
+        data=os.read(sys.stdin.fileno(),8192)
+        if not data:break
+        connection.sendall(data)
+    if connection in ready:
+        data=connection.recv(8192)
+        if not data:break
+        sys.stdout.buffer.write(data);sys.stdout.buffer.flush()
+"##,socket=serde_json::to_string(socket.to_str().unwrap()).unwrap());
+    std::fs::write(&executable,source).unwrap();
     std::fs::set_permissions(&executable,std::fs::Permissions::from_mode(0o700)).unwrap();
-    executable
+    (executable,fixture)
 }
 
 #[cfg(unix)]
 #[test]
-fn codex_control_proxy_discovers_then_delivers_only_to_explicit_existing_child() {
+fn codex_control_proxy_discovers_then_delivers_only_to_explicit_existing_thread() {
     let root=crate::test_support::protected_test_dir();
-    let executable=codex_proxy_fixture(root.path());
+    let (executable,fixture)=codex_proxy_fixture(root.path());
     let runtime=tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
-    let config=json!({"kind":"codex","endpoint":"codex-proxy://local","codex_executable":executable,"thread_id":"child","expected_session_id":"root"});
+    let config=json!({"kind":"codex","endpoint":"codex-proxy://local","codex_executable":executable,"thread_id":"existing-thread","expected_session_id":fixture.session});
     let sessions=codex_sessions(config.clone(),runtime.handle().clone()).unwrap();
-    assert_eq!(sessions["sessions"][1]["thread_id"],"child");
-    assert_eq!(sessions["sessions"][1]["session_id"],"root");
-    let calls=std::fs::read_to_string(root.path().join("proxy-calls.jsonl")).unwrap();
-    assert!(!calls.contains("turn/start")&&!calls.contains("thread/resume"));
+    assert_eq!(sessions["sessions"][0]["thread_id"],"existing-thread");
+    assert_eq!(sessions["sessions"][0]["session_id"],fixture.session);
+    assert!(fixture.calls().iter().all(|c|!matches!(c["method"].as_str(),Some("turn/start"|"thread/resume"))));
     let mut host=Host::open(config.clone(),runtime.handle().clone()).unwrap();
-    assert_eq!(host.destination["conversation_id"],"child");
-    assert_eq!(host.destination["session_id"],"root");
+    assert_eq!(host.destination["conversation_id"],"existing-thread");
+    assert_eq!(host.destination["session_id"],fixture.session);
     for id in ["one","two"] {
         assert_eq!(host.deliver(&json!({}),&json!({"message_id":id,"rendered_text":"synthetic peer input"})).unwrap()["state"],"HOST_ACCEPTED");
     }
     drop(host);
-    let calls:Vec<Value>=std::fs::read_to_string(root.path().join("proxy-calls.jsonl")).unwrap().lines().map(|s|serde_json::from_str(s).unwrap()).collect();
+    let calls=fixture.calls();
     let sends:Vec<_>=calls.iter().filter(|v|matches!(v["method"].as_str(),Some("turn/start"|"turn/steer"))).collect();
     assert_eq!(sends.len(),2);assert_eq!(sends[0]["method"],"turn/start");assert_eq!(sends[1]["method"],"turn/steer");
     assert!(calls.iter().all(|v|!matches!(v["method"].as_str(),Some("thread/start"|"thread/resume"|"turn/interrupt"))));
     let mut wrong=config;wrong["expected_session_id"]=json!("wrong");
     assert!(matches!(Host::open(wrong,runtime.handle().clone()),Err("HOST_BINDING_MISMATCH")));
+}
+
+#[test]
+#[ignore="requires an explicitly selected isolated official Codex daemon and loaded test thread"]
+fn official_codex_proxy_reads_existing_thread_without_starting_a_model_turn() {
+    let path=std::env::var("PEERWORK_CODEX_CONTROL_CONFIG").expect("explicit isolated TEST adapter");
+    let config:Value=serde_json::from_slice(&crate::secure_state::read_private_file_bounded(Path::new(&path),8192).unwrap()).unwrap();
+    let runtime=tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+    let sessions=codex_sessions(config.clone(),runtime.handle().clone()).unwrap();
+    assert!(sessions["sessions"].as_array().unwrap().iter().any(|s|s["thread_id"]==config["thread_id"]&&s["session_id"]==config["expected_session_id"]));
+    let mut host=Host::open(config.clone(),runtime.handle().clone()).unwrap();
+    assert_eq!(host.destination["conversation_id"],config["thread_id"]);
+    assert_eq!(host.destination["session_id"],config["expected_session_id"]);
+    assert_eq!(host.health(&json!({})).unwrap()["ready"],true);
+    // No deliver/turn/start: this qualifies the real control protocol, not an
+    // inference response, idle wake SLA or access to any user's conversation.
 }
 
 #[cfg(unix)]
@@ -255,6 +265,7 @@ impl CodexFixture {
                     let method = value["method"].as_str().unwrap();
                     let result = match method {
                         "initialize" => json!({"userAgent":"synthetic-protocol-fixture"}),
+                        "thread/loaded/list"=>json!({"data":["existing-thread"],"nextCursor":null}),
                         "thread/read" | "thread/resume" => {
                             if emit.load(Ordering::SeqCst)
                                 && waiting.load(Ordering::SeqCst)
@@ -273,7 +284,7 @@ impl CodexFixture {
                             for _ in 0..if emit.load(Ordering::SeqCst) { 300 } else { 0 } {
                                 if ws.send(Message::Text(json!({"method":"thread/status/changed","params":{"threadId":"existing-thread"}}).to_string().into())).is_err(){break;}
                             }
-                            json!({"thread":{"id":"existing-thread","sessionId":host_session.lock().unwrap().clone(),"status":{"type":if active||waiting.load(Ordering::SeqCst){"active"}else{"idle"},"activeFlags":if waiting.load(Ordering::SeqCst){vec!["waitingOnApproval"]}else{Vec::<&str>::new()}}}})
+                            json!({"thread":{"id":"existing-thread","sessionId":host_session.lock().unwrap().clone(),"name":"Worker","status":{"type":if active||waiting.load(Ordering::SeqCst){"active"}else{"idle"},"activeFlags":if waiting.load(Ordering::SeqCst){vec!["waitingOnApproval"]}else{Vec::<&str>::new()}}}})
                         }
                         "thread/turns/list" => {
                             if query_approval.swap(false, Ordering::SeqCst) {

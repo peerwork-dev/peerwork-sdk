@@ -596,16 +596,19 @@ mod tests {
         };
         let engine_file = root.path().join("engine.json");
         write_private(&engine_file, &serde_json::to_vec(&engine).unwrap()).unwrap();
-        codex_proxy_fixture(root.path());
+        let (_proxy_path, proxy_fixture) = codex_proxy_fixture(root.path());
         async fn run(executable: &Path, args: &[String], directory: &Path) -> Value {
-            let output = tokio::process::Command::new(executable)
+            let mut command = tokio::process::Command::new(executable);
+            command
                 .args(args)
                 .env(
                     "PATH",
                     format!("{}:/usr/local/bin:/usr/bin:/bin", directory.display()),
                 )
-                .output()
+                .kill_on_drop(true);
+            let output = tokio::time::timeout(Duration::from_secs(60), command.output())
                 .await
+                .expect("synthetic native attachment deadlocked")
                 .unwrap();
             let value: Value = serde_json::from_slice(&output.stdout)
                 .unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&output.stderr)));
@@ -679,7 +682,7 @@ mod tests {
         attach.push("--codex".into());
         let choices = run(&executable, &attach, root.path()).await;
         assert_eq!(choices["blocker"]["code"], "CODEX_CHAT_SELECTION_REQUIRED");
-        assert_eq!(choices["sessions"].as_array().unwrap().len(), 2);
+        assert_eq!(choices["sessions"].as_array().unwrap().len(), 1);
         let original_launch =
             SecureStateStore::read_snapshot(&local.join("runtime-worker/bootstrap.state"), 65536)
                 .unwrap()
@@ -720,7 +723,7 @@ mod tests {
         assert_eq!(result["state"], "LOCAL_CONFIGURED", "{result}");
         assert_eq!(result["receive_mode"], "PUSH");
         assert_eq!(result["owner_exchange_required"], false);
-        assert_eq!(result["host_selection"]["thread_id"], "child");
+        assert_eq!(result["host_selection"]["thread_id"], "existing-thread");
         assert_eq!(result["model_response"], "NOT_ATTESTED");
         let new_profile = Connect::inspect(&local)
             .unwrap()
@@ -796,10 +799,10 @@ mod tests {
         );
         tokio::time::timeout(Duration::from_secs(10), async {
             loop {
-                let calls = std::fs::read_to_string(root.path().join("proxy-calls.jsonl")).unwrap();
-                let inputs = calls
-                    .lines()
-                    .filter(|line| line.contains("turn/start") || line.contains("turn/steer"))
+                let inputs = proxy_fixture
+                    .calls()
+                    .iter()
+                    .filter(|v| matches!(v["method"].as_str(), Some("turn/start" | "turn/steer")))
                     .count();
                 if inputs == 1 {
                     break;

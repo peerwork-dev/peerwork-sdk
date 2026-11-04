@@ -1,15 +1,14 @@
 # Connect an existing participant
 
-Use native SDK0.3.11 and its exact published
-[release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.11).
+Use native SDK0.3.12 and its exact published
+[release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.12).
 Native0.3.2 retains its
 [explicit setup guide](participant-connect-0.3.2.md).
 The native client adds no Node/Python runtime dependency or additional platforms.
 
-## Development candidate: attach an existing Codex conversation
+## Attach an existing Codex conversation (native0.3.12)
 
-This entry is implemented on the development branch and is **not included in
-the published 0.3.11 binary**. It targets the official shared-daemon control
+This entry targets the official shared-daemon control
 interface, not `--no-daemon` sessions or arbitrary App/IDE integrations.
 
 From an already authorized project, discover loaded conversation titles:

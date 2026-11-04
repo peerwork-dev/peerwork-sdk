@@ -338,7 +338,10 @@ fn rebind_action(
     )
     .map_err(|_| error("HOST_REBIND_STOP_JOURNAL_OWNER_FIRST"))?;
     let mut inbox = InboxStore::open_local(&engine.state_directory, &identity, &origin)?;
-    let executor = tokio::runtime::Builder::new_current_thread()
+    // Existing-session stdio proxies perform IO while Host::open/health run
+    // synchronously. Keep their reactor driven during these maintenance calls.
+    let executor = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
         .enable_all()
         .build()
         .map_err(|_| error("HOST_REBIND_EXECUTOR_FAILED"))?;

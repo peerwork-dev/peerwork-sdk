@@ -1,4 +1,5 @@
-//! JSONL transport to an existing Codex daemon. The only child command is the
+//! Byte transport to an existing Codex daemon. WebSocket framing is performed
+//! by the shared host adapter, including over these stdio proxy pipes. The only child command is the
 //! official control-socket proxy; it never creates a server, thread or model.
 use serde_json::Value;
 use std::{
@@ -7,12 +8,11 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::AsyncWriteExt,
     process::{Child, ChildStdin},
     sync::mpsc,
 };
 type R<T> = Result<T, &'static str>;
-const LIMIT: usize = 2 * 1024 * 1024;
 
 pub(super) fn executable(explicit: Option<&str>) -> R<PathBuf> {
     let path = if let Some(path) = explicit {
@@ -53,7 +53,9 @@ pub(super) fn executable(explicit: Option<&str>) -> R<PathBuf> {
 pub(super) struct Proxy {
     child: Child,
     input: ChildStdin,
-    output: mpsc::Receiver<R<Value>>,
+    output: mpsc::Receiver<std::io::Result<Vec<u8>>>,
+    buffered: std::io::Cursor<Vec<u8>>,
+    deadline: Instant,
     reader: tokio::task::JoinHandle<()>,
     executor: tokio::runtime::Handle,
 }
@@ -68,7 +70,7 @@ impl Proxy {
             }
             command.arg("--sock").arg(socket);
         }
-        let _entered = executor.enter();
+        let entered = executor.enter();
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -77,70 +79,84 @@ impl Proxy {
             .spawn()
             .map_err(|_| "HOST_PROXY_START_FAILED")?;
         let input = child.stdin.take().ok_or("HOST_PROXY_START_FAILED")?;
-        let stdout = child.stdout.take().ok_or("HOST_PROXY_START_FAILED")?;
+        let mut stdout = child.stdout.take().ok_or("HOST_PROXY_START_FAILED")?;
         let (tx, output) = mpsc::channel(8);
         let reader = executor.spawn(async move {
-            let mut source = BufReader::new(stdout);
+            use tokio::io::AsyncReadExt;
             loop {
-                let mut bytes = Vec::new();
-                let result = async {
-                    loop {
-                        let chunk = source.fill_buf().await.map_err(|_| "HOST_DISCONNECTED")?;
-                        if chunk.is_empty() {
-                            return Err("HOST_DISCONNECTED");
-                        }
-                        let end = chunk.iter().position(|b| *b == b'\n');
-                        let used = end.map_or(chunk.len(), |n| n + 1);
-                        if bytes.len() + used > LIMIT {
-                            return Err("HOST_RESPONSE_INVALID");
-                        }
-                        bytes.extend_from_slice(&chunk[..used]);
-                        source.consume(used);
-                        if end.is_some() {
-                            break;
-                        }
+                let mut bytes = vec![0; 8192];
+                let result = match stdout.read(&mut bytes).await {
+                    Ok(0) => Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "HOST_DISCONNECTED",
+                    )),
+                    Ok(n) => {
+                        bytes.truncate(n);
+                        Ok(bytes)
                     }
-                    serde_json::from_slice(&bytes).map_err(|_| "HOST_RESPONSE_INVALID")
-                }
-                .await;
+                    Err(error) => Err(error),
+                };
                 let terminal = result.is_err();
                 if tx.send(result).await.is_err() || terminal {
                     break;
                 }
             }
         });
-        drop(_entered);
+        drop(entered);
         Ok(Self {
             child,
             input,
             output,
+            buffered: std::io::Cursor::new(Vec::new()),
+            deadline: Instant::now() + Duration::from_secs(10),
             reader,
             executor,
         })
     }
-    pub fn write(&mut self, value: Value) -> R<()> {
-        let mut bytes = serde_json::to_vec(&value).map_err(|_| "HOST_INPUT_INVALID")?;
-        if bytes.len() > LIMIT {
-            return Err("HOST_INPUT_TOO_LARGE");
+    pub fn deadline(&mut self, deadline: Instant) {
+        self.deadline = deadline;
+    }
+}
+impl std::io::Read for Proxy {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        if bytes.is_empty() {
+            return Ok(0);
         }
-        bytes.push(b'\n');
+        if self.buffered.position() as usize == self.buffered.get_ref().len() {
+            let remaining = self
+                .deadline
+                .checked_duration_since(Instant::now())
+                .ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::TimedOut, "HOST_ACK_UNKNOWN")
+                })?;
+            let chunk = self.executor.block_on(async {
+                tokio::time::timeout(remaining, self.output.recv())
+                    .await
+                    .map_err(|_| {
+                        std::io::Error::new(std::io::ErrorKind::TimedOut, "HOST_ACK_UNKNOWN")
+                    })?
+                    .ok_or_else(|| {
+                        std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "HOST_DISCONNECTED")
+                    })?
+            })?;
+            self.buffered = std::io::Cursor::new(chunk);
+        }
+        std::io::Read::read(&mut self.buffered, bytes)
+    }
+}
+impl std::io::Write for Proxy {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         self.executor.block_on(async {
-            tokio::time::timeout(Duration::from_secs(10), self.input.write_all(&bytes))
+            tokio::time::timeout(Duration::from_secs(10), self.input.write_all(bytes))
                 .await
-                .map_err(|_| "HOST_ACK_UNKNOWN")?
-                .map_err(|_| "HOST_ACK_UNKNOWN")
+                .map_err(|_| {
+                    std::io::Error::new(std::io::ErrorKind::TimedOut, "HOST_ACK_UNKNOWN")
+                })??;
+            Ok(bytes.len())
         })
     }
-    pub fn read(&mut self, deadline: Instant) -> R<Value> {
-        let remaining = deadline
-            .checked_duration_since(Instant::now())
-            .ok_or("HOST_ACK_UNKNOWN")?;
-        self.executor.block_on(async {
-            tokio::time::timeout(remaining, self.output.recv())
-                .await
-                .map_err(|_| "HOST_ACK_UNKNOWN")?
-                .ok_or("HOST_DISCONNECTED")?
-        })
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 impl Drop for Proxy {

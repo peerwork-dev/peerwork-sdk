@@ -42,25 +42,23 @@ pub(crate) fn random_token() -> R<String> {
 }
 
 enum Socket {
-    Proxy(codex_proxy::Proxy),
+    Proxy(WebSocket<codex_proxy::Proxy>),
     #[cfg(unix)]
     Unix(WebSocket<std::os::unix::net::UnixStream>),
     Tcp(WebSocket<MaybeTlsStream<TcpStream>>),
 }
 impl Socket {
     fn write(&mut self, value: Value) -> R<()> {
-        if let Self::Proxy(proxy) = self { return proxy.write(value); }
         let message = Message::Text(value.to_string().into());
         match self {
             #[cfg(unix)]
             Self::Unix(ws) => ws.send(message),
             Self::Tcp(ws) => ws.send(message),
-            Self::Proxy(_) => unreachable!(),
+            Self::Proxy(ws) => ws.send(message),
         }
         .map_err(|_| "HOST_ACK_UNKNOWN")
     }
     fn read(&mut self, deadline: Instant) -> R<Value> {
-        if let Self::Proxy(proxy) = self { return proxy.read(deadline); }
         loop {
             let remaining = deadline
                 .checked_duration_since(Instant::now())
@@ -69,7 +67,7 @@ impl Socket {
             match self {
                 #[cfg(unix)]
                 Self::Unix(ws) => ws.get_mut().set_read_timeout(Some(remaining)),
-                Self::Proxy(_) => unreachable!(),
+                Self::Proxy(ws) => {ws.get_mut().deadline(deadline);Ok(())},
                 Self::Tcp(ws) => match ws.get_mut() {
                     MaybeTlsStream::Plain(s) => s.set_read_timeout(Some(remaining)),
                     MaybeTlsStream::Rustls(s) => s.sock.set_read_timeout(Some(remaining)),
@@ -81,7 +79,7 @@ impl Socket {
                 #[cfg(unix)]
                 Self::Unix(ws) => ws.read(),
                 Self::Tcp(ws) => ws.read(),
-                Self::Proxy(_) => unreachable!(),
+                Self::Proxy(ws) => ws.read(),
             }
             .map_err(|_| "HOST_ACK_UNKNOWN")?;
             match message {
@@ -120,7 +118,10 @@ impl Codex {
             .max_frame_size(Some(2 * 1024 * 1024));
         if endpoint == "codex-proxy://local" {
             if config.get("auth_token_env").is_some() { return Err("HOST_SELECTION_CONFLICT"); }
-            socket = Socket::Proxy(codex_proxy::Proxy::open(config, executor)?);
+            request = "ws://localhost/".into_client_request().map_err(|_|"HOST_ENDPOINT_INVALID")?;
+            let proxy=codex_proxy::Proxy::open(config,executor)?;
+            socket=Socket::Proxy(tungstenite::client::client_with_config(request,proxy,Some(ws_config))
+                .map_err(|_|"HOST_WEBSOCKET_HANDSHAKE_FAILED")?.0);
         } else if let Some(file) = endpoint.strip_prefix("unix://") {
             #[cfg(unix)]
             {

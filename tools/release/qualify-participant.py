@@ -36,6 +36,8 @@ GROUPS = ['communication_host::', 'communication_host_owner::tests',
 # not in platform-only qualification; ignored IPC/OS tests still run here.
 EXTERNAL_SERVICE_CASES = [
     'participant_connect::discovery::tests::cold_cli_finds_old_installation_defers_host_and_program_mode_remains_explicit',
+    'participant_connect::codex::tests::native_codex_attachment_preserves_original_receiver_and_reuses_committed_config',
+    'communication_host::tests::official_codex_proxy_reads_existing_thread_without_starting_a_model_turn',
 ]
 
 def native_test_command(group):
