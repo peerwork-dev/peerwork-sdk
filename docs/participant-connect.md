@@ -6,6 +6,76 @@ Native0.3.2 retains its
 [explicit setup guide](participant-connect-0.3.2.md).
 The native client adds no Node/Python runtime dependency or additional platforms.
 
+## Development candidate: attach an existing Codex conversation
+
+This entry is implemented on the development branch and is **not included in
+the published 0.3.11 binary**. It targets the official shared-daemon control
+interface, not `--no-daemon` sessions or arbitrary App/IDE integrations.
+
+From an already authorized project, discover loaded conversation titles:
+
+```sh
+peerwork connect --workspace WORKSPACE_ID --codex --install codex
+```
+
+Select the conversation once by its exact title (or exact thread ID if titles
+are ambiguous):
+
+```sh
+peerwork connect --workspace WORKSPACE_ID --codex --codex-chat "Worker 2" --install codex
+```
+
+Use the original `--local` and `--participant` handles when the project does not
+already select that installation. A candidate list is `PENDING` with exit code2;
+it does not change the receiver. Discovery reads bounded loaded-thread metadata,
+not transcripts or workspace history. It never chooses the newest conversation.
+
+The native client uses the trusted `codex` executable on the local user's PATH
+and runs only `codex app-server proxy`. It starts no replacement Codex server,
+conversation or model. The Codex user must already be able to access the daemon;
+cross-user installations retain the existing scoped host bridge. Do not change
+socket permissions or pass identity files to another user to make setup pass.
+Select an already registered Codex bridge/native host by its local handle:
+
+```sh
+peerwork connect --workspace WORKSPACE_ID --codex --codex-host REGISTERED_HOST --install codex
+```
+
+This uses the host owner's registered destination instead of trying to open
+their control socket under the signing user's account. The bridge grant is
+still enforced for the selected identity and mailbox.
+
+For a runtime launched by this Connect installation, the same durable operation
+reads the original **receive** endpoint's binding and subscriptions, stops the
+exact owned runtime, executes the sealed rebind, and restarts from its committed
+configuration. The engine, receiver client/namespace, mailbox, keys, journal and
+pending command IDs stay in their original stores. A runtime without protected
+launch provenance returns `LOCAL_RUNTIME_TAKEOVER_REQUIRED`; an endpoint alone
+does not authorize stopping an unknown external process. A shared host group
+covering additional subscriptions requires an explicit group selection.
+
+Repeat the same command after an interruption. Keep its original arguments and
+operation; do not reset state, invent a new receiver or resend pending commands.
+The SDK reconciles a committed rebind even if its completion response was lost.
+Existing rights require no Owner exchange. For a first connection, include the
+needed `--join`, `--send` and `--body-keys` flags; genuinely missing rights use
+the existing consolidated authorization flow. Attaching an existing INBOX keeps
+its prior requested rights and adds explicitly requested roles/send/key rights.
+The old INBOX setup remains historical; its completed receiver is reused by the
+new PUSH setup rather than derived again.
+
+MCP registration, current-session tool loading, verified receiving/host readiness
+and an actual model reply remain separate results. Installation reports the host
+refresh step when needed. `model_response: NOT_ATTESTED` is not a failed model
+test or a successful PONG. A controlled message/reply test establishes that last
+stage independently.
+
+The official [App Server](https://learn.chatgpt.com/docs/app-server) distinguishes
+thread IDs from live session-tree roots. [Hooks](https://learn.chatgpt.com/docs/hooks)
+can report a parent's session ID for a subagent; they are not an exact-thread
+selection mechanism. Ordinary MCP registration does not itself supply a current
+conversation control channel.
+
 ## Tool access without state takeover
 
 If an existing client already works, [attach tools to that client](existing-client-tools.md)

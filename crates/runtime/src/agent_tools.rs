@@ -662,8 +662,11 @@ impl AgentTools {
             AgentRequest::Context => {
                 let capabilities = self.client.call(json!({"method":"capabilities"})).await?;
                 let bindings = self.receiving().call(json!({"method":"bindings"})).await?;
+                let receiving_binding = if self.receiver.is_some() {
+                    Some(self.receiving().call(json!({"method":"binding"})).await?)
+                } else {None};
                 Ok(
-                    json!({"actor_id":self.client.actor_id(),"origin":self.client.origin(),"maturity":"EXPERIMENTAL","local_engine":if self.client.attached_mode(){"ATTACHED_ORIGINAL_CLIENT"}else{"AUTHENTICATED"},"state_migration_required":false,"remote_or_host_readiness":"NOT_ATTESTED","workspaces":self.profile.workspaces,"scopes":self.profile.scopes,"send_scopes":self.profile.send_scopes,"contacts":self.profile.contacts.keys().collect::<Vec<_>>(),"protocols":self.profile.protocols,"bindings":bindings,"capability":capabilities["capability"],"tool_discovery":{"source":"LOADED_MCP_TOOL_SCHEMAS","extra_call_required":false},"next_tools":{"reachability":"peerwork_reachability","send":"peerwork_send","inbox":"peerwork_inbox","protocol":"peerwork_protocol"}}),
+                    json!({"actor_id":self.client.actor_id(),"origin":self.client.origin(),"maturity":"EXPERIMENTAL","local_engine":if self.client.attached_mode(){"ATTACHED_ORIGINAL_CLIENT"}else{"AUTHENTICATED"},"state_migration_required":false,"remote_or_host_readiness":"NOT_ATTESTED","workspaces":self.profile.workspaces,"scopes":self.profile.scopes,"send_scopes":self.profile.send_scopes,"contacts":self.profile.contacts.keys().collect::<Vec<_>>(),"protocols":self.profile.protocols,"bindings":bindings,"receiving_binding":receiving_binding,"capability":capabilities["capability"],"tool_discovery":{"source":"LOADED_MCP_TOOL_SCHEMAS","extra_call_required":false},"next_tools":{"reachability":"peerwork_reachability","send":"peerwork_send","inbox":"peerwork_inbox","protocol":"peerwork_protocol"}}),
                 )
             }
             AgentRequest::Reachability { workspace, actor, cursor, limit, scope, contact } => {

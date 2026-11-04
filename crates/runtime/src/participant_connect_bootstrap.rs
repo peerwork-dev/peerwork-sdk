@@ -107,7 +107,7 @@ pub(super) fn engine(values: &BTreeMap<String, String>) -> Result<Option<EngineC
         migration_sources: Vec::new(),
     }))
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Launch {
     config_digest: String,
@@ -264,6 +264,9 @@ async fn launch(
     engine: EngineConfig,
 ) -> Result<(Registration, PathBuf)> {
     let (config, selected) = planned(directory, handle, engine)?;
+    launch_config(config, selected).await
+}
+async fn launch_config(config: RuntimeConfig, selected: Registration) -> Result<(Registration, PathBuf)> {
     let runtime_dir = config.state_directory.clone();
     create_private_state_directory(&runtime_dir)
         .map_err(|_| local("RUNTIME_DIRECTORY_NOT_PRIVATE"))?;
@@ -436,6 +439,72 @@ async fn launch(
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     Err(local("RUNTIME_STARTING_REOBSERVE_SAME_BINDING"))
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct OwnedRuntime {
+    pub config: RuntimeConfig,
+    pub registration: Registration,
+    launch: Launch,
+}
+impl OwnedRuntime {
+    pub fn path(&self) -> PathBuf { self.config.state_directory.join("config.json") }
+    fn load(&self) -> Result<RuntimeConfig> {
+        serde_json::from_value(crate::communication_store::private_json(&self.path(),65536)
+            .map_err(|_|local("RUNTIME_CONFIG_NOT_PRIVATE"))?).map_err(|_|local("RUNTIME_CONFIG_INVALID"))
+    }
+    pub fn same_engine(&self, target:&RuntimeConfig)->Result<()> {
+        let mut expected=self.config.clone();expected.hosts=target.hosts.clone();
+        if serde_json::to_value(expected).ok()!=serde_json::to_value(target).ok(){return Err(local("ORIGINAL_RUNTIME_CONFIG_CHANGED"));}
+        Ok(())
+    }
+    pub async fn stop(&self) -> Result<()> {
+        if serde_json::to_value(self.load()?).ok()!=serde_json::to_value(&self.config).ok(){return Err(local("ORIGINAL_RUNTIME_CONFIG_CHANGED"));}
+        let pid=self.launch.pid.ok_or_else(||local("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))?;
+        if !alive(pid,self.launch.process_token.as_deref())? {return Ok(());}
+        // Only this protected, exact launch may be stopped. No process search,
+        // socket chmod or speculative signal against an external runtime.
+        let admin=self.config.state_directory.join("admin.json");
+        let result=crate::communication_runtime::call(&admin,json!({"method":"stop"})).await;
+        for _ in 0..100 {
+            if !alive(pid,self.launch.process_token.as_deref())? {return Ok(());}
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        if let Err(error)=result {return Err(error);}
+        Err(local("ORIGINAL_RUNTIME_STOP_PENDING"))
+    }
+    pub async fn restart(&self, committed:&RuntimeConfig)->Result<()> {
+        self.same_engine(committed)?;
+        if serde_json::to_value(self.load()?).ok()!=serde_json::to_value(committed).ok(){return Err(local("ORIGINAL_RUNTIME_CONFIG_CHANGED"));}
+        let marker=self.config.state_directory.join("bootstrap.state");
+        {
+            let store=SecureStateStore::open(&marker).map_err(|_|local("RUNTIME_LAUNCH_ALREADY_OWNED_OR_UNSAFE"))?;
+            let previous:Launch=serde_json::from_slice(&store.read_exact().map_err(|_|local("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))?.ok_or_else(||local("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))?)
+                .map_err(|_|local("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))?;
+            let target=sha256_hex(&serde_json::to_vec(committed).map_err(|_|local("RUNTIME_CONFIG_INVALID"))?);
+            if previous.config_digest!=self.launch.config_digest && previous.config_digest!=target {return Err(local("LOCAL_BINDING_CONFLICT"));}
+            if previous.config_digest!=target {
+                if alive(previous.pid.ok_or_else(||local("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))?,previous.process_token.as_deref())? {return Err(local("HOST_REBIND_STOP_RUNTIME_FIRST"));}
+                store.write_exact(&serde_json::to_vec(&Launch{config_digest:target,pid:Some(0),process_token:None}).unwrap())
+                    .map_err(|_|local("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))?;
+            }
+        }
+        launch_config(committed.clone(),self.registration.clone()).await?;
+        Ok(())
+    }
+}
+pub(super) fn owned_runtime(connect:&Connect, handle:&str)->Result<OwnedRuntime> {
+    let registration=connect.registry.participants.get(handle).cloned().ok_or_else(||local("LOCAL_SELECTION_REQUIRED"))?;
+    let admin=connect.registry.local_runtime_admins.get(handle).ok_or_else(||local("LOCAL_RUNTIME_TAKEOVER_REQUIRED"))?;
+    let directory=connect.directory.join(format!("runtime-{handle}"));
+    if *admin!=directory.join("admin.json") || registration.endpoint_path!=directory.join("client-bootstrap.json") {return Err(local("LOCAL_RUNTIME_TAKEOVER_REQUIRED"));}
+    let config:RuntimeConfig=serde_json::from_value(crate::communication_store::private_json(&directory.join("config.json"),65536)
+        .map_err(|_|local("RUNTIME_CONFIG_NOT_PRIVATE"))?).map_err(|_|local("RUNTIME_CONFIG_INVALID"))?;
+    let launch:Launch=serde_json::from_slice(&SecureStateStore::read_snapshot(&directory.join("bootstrap.state"),65536)
+        .map_err(|_|local("LOCAL_RUNTIME_TAKEOVER_REQUIRED"))?).map_err(|_|local("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))?;
+    if config.state_directory!=directory || launch.config_digest!=sha256_hex(&serde_json::to_vec(&config).map_err(|_|local("RUNTIME_CONFIG_INVALID"))?) {return Err(local("LOCAL_BINDING_CONFLICT"));}
+    Ok(OwnedRuntime{config,registration,launch})
 }
 
 #[cfg(test)]

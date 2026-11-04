@@ -6,6 +6,65 @@ use std::sync::{
 };
 
 #[cfg(unix)]
+pub(crate) fn codex_proxy_fixture(directory: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let executable = directory.join("codex");
+    std::fs::write(&executable, r##"#!/usr/bin/python3
+import sys,json,os
+assert sys.argv[1:] == ['app-server','proxy'], sys.argv
+base=os.path.dirname(os.path.realpath(__file__))
+active=False
+for line in sys.stdin:
+    request=json.loads(line)
+    with open(os.path.join(base,'proxy-calls.jsonl'),'a') as log:log.write(json.dumps(request)+'\n')
+    if 'id' not in request:continue
+    method=request['method']; params=request.get('params',{})
+    if method=='initialize':result={'userAgent':'synthetic-existing-daemon'}
+    elif method=='thread/loaded/list':result={'data':['root','child'],'nextCursor':None}
+    elif method=='thread/read':
+        thread=params['threadId']
+        result={'thread':{'id':thread,'sessionId':'root','name':'Worker' if thread=='child' else 'Master','status':{'type':'active' if active else 'idle','activeFlags':[]}}}
+    elif method=='thread/turns/list':result={'data':[{'id':'existing-turn','status':'inProgress'}]}
+    elif method in ['turn/start','turn/steer']:
+        assert params['threadId']=='child'
+        if method=='turn/steer':assert params['expectedTurnId']=='existing-turn'
+        active=True
+        result={'turnId':'existing-turn','turn':{'id':'existing-turn'}}
+    else:raise AssertionError(method)
+    print(json.dumps({'id':request['id'],'result':result}),flush=True)
+"##).unwrap();
+    std::fs::set_permissions(&executable,std::fs::Permissions::from_mode(0o700)).unwrap();
+    executable
+}
+
+#[cfg(unix)]
+#[test]
+fn codex_control_proxy_discovers_then_delivers_only_to_explicit_existing_child() {
+    let root=crate::test_support::protected_test_dir();
+    let executable=codex_proxy_fixture(root.path());
+    let runtime=tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+    let config=json!({"kind":"codex","endpoint":"codex-proxy://local","codex_executable":executable,"thread_id":"child","expected_session_id":"root"});
+    let sessions=codex_sessions(config.clone(),runtime.handle().clone()).unwrap();
+    assert_eq!(sessions["sessions"][1]["thread_id"],"child");
+    assert_eq!(sessions["sessions"][1]["session_id"],"root");
+    let calls=std::fs::read_to_string(root.path().join("proxy-calls.jsonl")).unwrap();
+    assert!(!calls.contains("turn/start")&&!calls.contains("thread/resume"));
+    let mut host=Host::open(config.clone(),runtime.handle().clone()).unwrap();
+    assert_eq!(host.destination["conversation_id"],"child");
+    assert_eq!(host.destination["session_id"],"root");
+    for id in ["one","two"] {
+        assert_eq!(host.deliver(&json!({}),&json!({"message_id":id,"rendered_text":"synthetic peer input"})).unwrap()["state"],"HOST_ACCEPTED");
+    }
+    drop(host);
+    let calls:Vec<Value>=std::fs::read_to_string(root.path().join("proxy-calls.jsonl")).unwrap().lines().map(|s|serde_json::from_str(s).unwrap()).collect();
+    let sends:Vec<_>=calls.iter().filter(|v|matches!(v["method"].as_str(),Some("turn/start"|"turn/steer"))).collect();
+    assert_eq!(sends.len(),2);assert_eq!(sends[0]["method"],"turn/start");assert_eq!(sends[1]["method"],"turn/steer");
+    assert!(calls.iter().all(|v|!matches!(v["method"].as_str(),Some("thread/start"|"thread/resume"|"turn/interrupt"))));
+    let mut wrong=config;wrong["expected_session_id"]=json!("wrong");
+    assert!(matches!(Host::open(wrong,runtime.handle().clone()),Err("HOST_BINDING_MISMATCH")));
+}
+
+#[cfg(unix)]
 #[test]
 fn agy_inline_queue_preserves_session_and_does_not_accumulate_message_files() {
     use std::os::unix::fs::PermissionsExt;

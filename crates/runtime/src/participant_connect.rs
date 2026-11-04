@@ -27,6 +27,8 @@ mod host;
 pub use host::{HostInvocation, HostSelection};
 #[path = "participant_connect_bootstrap.rs"]
 mod bootstrap;
+#[path = "participant_connect_codex.rs"]
+mod codex;
 #[path = "participant_connect_discovery.rs"]
 mod discovery;
 pub use discovery::Discovery;
@@ -178,6 +180,8 @@ struct Setup {
 #[derive(Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Registry {
+    #[serde(default)]
+    codex_attachments: BTreeMap<String, codex::Attachment>,
     participants: BTreeMap<String, Registration>,
     setups: BTreeMap<String, Setup>,
     active: Option<String>,
@@ -252,7 +256,7 @@ impl Connect {
             .map_err(|_| local("CONNECT_RECOVERY_REQUIRED"))?,
         };
         if registry.participants.len() > 8
-            || registry.setups.len() > 64
+            || registry.setups.len() > 64 || registry.codex_attachments.len() > 64
             || registry.approvals.len() > 64
             || registry.sources.len() > 8 || registry.trusted_projects.len() > 8 || registry.trusted_project_identities.len()>8 || registry.verified_bindings.len() > 8
         {
@@ -1481,6 +1485,7 @@ pub fn cli(args: &[String]) -> Value {
                 "--context",
                 "--uninstall",
                 "--agy-managed",
+                "--codex",
                 "--trust-project",
                 "--confirm-original",
                 "--program",
@@ -1521,6 +1526,9 @@ pub fn cli(args: &[String]) -> Value {
                 "--ca-root",
                 "--host",
                 "--admin",
+                "--codex",
+                "--codex-chat",
+                "--codex-host",
                 "--codex-endpoint",
                 "--codex-thread",
                 "--codex-session",
@@ -1563,6 +1571,9 @@ pub fn cli(args: &[String]) -> Value {
             "peerwork connect --local DIRECTORY --participant HANDLE --identity IDENTITY --engine-state ORIGINAL_STATE --origin ORIGIN --workspace WORKSPACE --id SETUP_ID --send --receive",
             "peerwork connect --local DIRECTORY --participant HANDLE --client EXISTING_ENDPOINT --origin ORIGIN --actor ACTOR --workspace WORKSPACE --id SETUP_ID --receive",
             "peerwork connect --local DIRECTORY --participant HANDLE --workspace WORKSPACE --id SETUP_ID --send --receive",
+            "peerwork connect --workspace WORKSPACE --codex --install codex",
+            "peerwork connect --workspace WORKSPACE --codex --codex-chat SELECTED_TITLE --install codex",
+            "peerwork connect --workspace WORKSPACE --codex --codex-host REGISTERED_HOST --install codex",
             "peerwork connect --local DIRECTORY --context",
             "peerwork connect --local ORIGINAL_DIRECTORY --context --confirm-original",
             "peerwork connect --local DIRECTORY --participant OWNER_HANDLE --id APPROVAL_ID --approve-request -",
@@ -1575,6 +1586,12 @@ pub fn cli(args: &[String]) -> Value {
     let result = || -> Result<Value> {
         let mut values = parse(args)?;
         let selected_adapter=host::adapter(&values)?;
+        if (values.contains_key("--codex-chat")||values.contains_key("--codex-host"))&&!values.contains_key("--codex"){return Err(local("CODEX_CHAT_REQUIRES_CODEX"));}
+        if values.contains_key("--codex") {
+            if values.contains_key("--codex-chat")&&values.contains_key("--codex-host"){return Err(local("SELECT_ONE_CODEX_DESTINATION"));}
+            if selected_adapter.is_some()||values.contains_key("--host")||values.contains_key("--admin")||values.contains_key("--attach")||values.contains_key("--program")||values.get("--receive-mode").is_some_and(|m|m!="push") {return Err(local("SELECT_ONE_HOST_ADAPTER"));}
+            values.insert("--receive".into(),"true".into());
+        }
         if let Some(mode)=values.get("--receive-mode"){
             if !matches!(mode.as_str(),"push"|"inbox")||!values.contains_key("--receive"){return Err(local("RECEIVE_MODE_REQUIRES_RECEIVE_AND_PUSH_OR_INBOX"));}
             if mode=="inbox"&&(selected_adapter.is_some()||values.contains_key("--host")){return Err(local("INBOX_DOES_NOT_SELECT_HOST"));}
@@ -1739,6 +1756,14 @@ pub fn cli(args: &[String]) -> Value {
                         },
                     )
                     .await?;
+            }
+            if values.contains_key("--codex") {
+                // Resume the existing durable attachment before opening a
+                // potentially stopped endpoint through ordinary discovery.
+                let mut result=if let Some(host)=values.get("--codex-host") {connect.attach_codex_host(request,host).await?}
+                    else {connect.attach_codex(request,values.get("--codex-chat").map(String::as_str)).await?};
+                if let Some(spec)=installation {result["integration"]=connect.install(&handle,&required("--workspace")?,spec)?;}
+                return Ok(result);
             }
             connect.adopt(&handle).await?;
             if !values.contains_key("--local") {discovery::pin_project_binding(&project,&connect,&handle)?;}

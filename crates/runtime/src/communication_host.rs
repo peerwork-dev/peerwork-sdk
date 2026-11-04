@@ -17,6 +17,8 @@ use tungstenite::{
 type R<T> = Result<T, &'static str>;
 #[path = "communication_agy_stdio.rs"]
 mod agy_stdio;
+#[path = "communication_codex_proxy.rs"]
+mod codex_proxy;
 fn text<'a>(v: &'a Value, key: &str) -> R<&'a str> {
     v[key]
         .as_str()
@@ -40,21 +42,25 @@ pub(crate) fn random_token() -> R<String> {
 }
 
 enum Socket {
+    Proxy(codex_proxy::Proxy),
     #[cfg(unix)]
     Unix(WebSocket<std::os::unix::net::UnixStream>),
     Tcp(WebSocket<MaybeTlsStream<TcpStream>>),
 }
 impl Socket {
     fn write(&mut self, value: Value) -> R<()> {
+        if let Self::Proxy(proxy) = self { return proxy.write(value); }
         let message = Message::Text(value.to_string().into());
         match self {
             #[cfg(unix)]
             Self::Unix(ws) => ws.send(message),
             Self::Tcp(ws) => ws.send(message),
+            Self::Proxy(_) => unreachable!(),
         }
         .map_err(|_| "HOST_ACK_UNKNOWN")
     }
     fn read(&mut self, deadline: Instant) -> R<Value> {
+        if let Self::Proxy(proxy) = self { return proxy.read(deadline); }
         loop {
             let remaining = deadline
                 .checked_duration_since(Instant::now())
@@ -63,6 +69,7 @@ impl Socket {
             match self {
                 #[cfg(unix)]
                 Self::Unix(ws) => ws.get_mut().set_read_timeout(Some(remaining)),
+                Self::Proxy(_) => unreachable!(),
                 Self::Tcp(ws) => match ws.get_mut() {
                     MaybeTlsStream::Plain(s) => s.set_read_timeout(Some(remaining)),
                     MaybeTlsStream::Rustls(s) => s.sock.set_read_timeout(Some(remaining)),
@@ -74,6 +81,7 @@ impl Socket {
                 #[cfg(unix)]
                 Self::Unix(ws) => ws.read(),
                 Self::Tcp(ws) => ws.read(),
+                Self::Proxy(_) => unreachable!(),
             }
             .map_err(|_| "HOST_ACK_UNKNOWN")?;
             match message {
@@ -97,17 +105,23 @@ struct Codex {
     session: String,
 }
 impl Codex {
-    fn connect(config: &Value) -> R<Self> {
+    fn channel(config: &Value, executor: tokio::runtime::Handle) -> R<Self> {
         if config.get("command").is_some() || config["managed"] == true {
             return Err("HOST_SELECTION_CONFLICT");
         }
         let endpoint = text(config, "endpoint")?;
+        if endpoint != "codex-proxy://local" && (config.get("codex_executable").is_some() || config.get("control_socket").is_some()) {
+            return Err("HOST_SELECTION_CONFLICT");
+        }
         let mut request;
         let socket;
         let ws_config = WebSocketConfig::default()
             .max_message_size(Some(2 * 1024 * 1024))
             .max_frame_size(Some(2 * 1024 * 1024));
-        if let Some(file) = endpoint.strip_prefix("unix://") {
+        if endpoint == "codex-proxy://local" {
+            if config.get("auth_token_env").is_some() { return Err("HOST_SELECTION_CONFLICT"); }
+            socket = Socket::Proxy(codex_proxy::Proxy::open(config, executor)?);
+        } else if let Some(file) = endpoint.strip_prefix("unix://") {
             #[cfg(unix)]
             {
                 if !Path::new(file).is_absolute() || file.contains(['?', '#']) {
@@ -186,7 +200,7 @@ impl Codex {
         }
         let mut host = Self {
             socket,
-            thread: text(config, "thread_id")?.into(),
+            thread: config["thread_id"].as_str().unwrap_or_default().into(),
             next: 1,
             turn: None,
             execution: "OFFLINE".into(),
@@ -195,6 +209,11 @@ impl Codex {
         };
         host.rpc("initialize",json!({"clientInfo":{"name":"peerwork_runtime","title":"Peerwork runtime","version":"1"},"capabilities":{"experimentalApi":true}}))?;
         host.socket.write(json!({"method":"initialized"}))?;
+        Ok(host)
+    }
+    fn connect(config: &Value, executor: tokio::runtime::Handle) -> R<Self> {
+        text(config, "thread_id")?;
+        let mut host = Self::channel(config, executor)?;
         let current = host.rpc(
             "thread/read",
             json!({"threadId":host.thread,"includeTurns":false}),
@@ -363,6 +382,29 @@ impl Codex {
         Ok(json!({"state":"HOST_ACCEPTED","receipt":id,"model_response":"NOT_ATTESTED"}))
     }
 }
+/// Explicit local-owner discovery. A loaded thread is a candidate, not proof
+/// that it is the caller. The user selects its title/id; hooks are not authority.
+pub(crate) fn codex_sessions(mut config: Value, executor: tokio::runtime::Handle) -> R<Value> {
+    config["thread_id"] = json!("");
+    let mut client = Codex::channel(&config, executor)?;
+    let loaded = client.rpc("thread/loaded/list", json!({"limit":32}))?;
+    let ids = loaded["data"].as_array().ok_or("HOST_RESPONSE_INVALID")?;
+    if ids.len() > 32 { return Err("HOST_RESPONSE_INVALID"); }
+    let mut items = Vec::new();
+    for id in ids {
+        let id = id.as_str().filter(|id| !id.is_empty() && id.len() <= 256).ok_or("HOST_RESPONSE_INVALID")?;
+        let result = client.rpc("thread/read", json!({"threadId":id,"includeTurns":false}))?;
+        let thread = &result["thread"];
+        if thread["id"] != id { return Err("HOST_BINDING_MISMATCH"); }
+        if matches!(thread["status"]["type"].as_str(), Some("idle" | "active")) {
+            let session = text(thread, "sessionId").map_err(|_| "HOST_SESSION_BINDING_UNAVAILABLE")?;
+            items.push(json!({"thread_id":id,"session_id":session,"title":thread["name"],"status":thread["status"]}));
+        }
+    }
+    Ok(json!({"sessions":items,"next_cursor":loaded["nextCursor"],"selection":"EXPLICIT_LOCAL_USER_REQUIRED"}))
+}
+pub(crate) fn codex_executable(explicit: Option<&str>) -> R<std::path::PathBuf> { codex_proxy::executable(explicit) }
+
 fn add_auth(config: &Value, request: &mut tungstenite::handshake::client::Request) -> R<()> {
     if let Some(name) = config["auth_token_env"].as_str() {
         let secret = std::env::var(name).map_err(|_| "HOST_AUTH_TOKEN_REQUIRED")?;
@@ -521,7 +563,7 @@ impl Host {
         let name = name.to_owned();
         let mode = mode.to_owned();
         let codex = if kind == "codex" {
-            Some(Codex::connect(&config)?)
+            Some(Codex::connect(&config, executor.clone())?)
         } else {
             None
         };

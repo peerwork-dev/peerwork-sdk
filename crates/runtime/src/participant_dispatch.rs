@@ -48,6 +48,8 @@ impl HostConfig {
                 "thread_id",
                 "expected_session_id",
                 "auth_token_env",
+                "codex_executable",
+                "control_socket",
             ],
             Some("agy-app") => &[
                 "kind",
