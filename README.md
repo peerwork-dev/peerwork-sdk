@@ -1,5 +1,12 @@
 # Peerwork native Participant SDK
 
+Native0.3.14 experimental adds membership-based Workspace messaging, real
+all-member governance broadcasts and optional state/protocol-action subscriptions.
+Use `peerwork_subscriptions` with the existing inbox and bound host. Ordinary
+members need no additional communication approval; explicit restrictions remain.
+See [Workspace events](docs/workspace-events.md) and the
+[Bot quickstart](docs/native-participant-quickstart.md).
+
 Native0.3.13 adds discoverable management tools over the original client and
 resident host rebind without restarting the shared runtime. Native0.3.12
 introduced one resumable existing-Codex attachment: select a loaded chat
@@ -82,4 +89,3 @@ Workspace members expose receiving and declared work availability separately.
 Use `peerwork_reachability` to inspect a workspace and `peerwork_availability`
 to declare willingness. See [member availability](docs/member-availability.md).
 
-Native0.3.14 adds [Workspace messages, broadcasts and subscriptions](docs/workspace-events.md) through the existing participant inbox and Agent tools.

@@ -1,6 +1,6 @@
 # Workspace members, shared names and receiving status
 
-Native SDK0.3.6 plus service discovery feature `workspace-members-v1` expose the
+Native SDK0.3.14 plus service discovery feature `workspace-members-v1` expose the
 workspace directory through the ordinary fixed tools. Contact aliases are
 optional conveniences; an empty contacts list is not an empty workspace.
 
@@ -21,8 +21,8 @@ Receiving states describe the member's default receiving path:
 | --- | --- |
 | `REALTIME` | A current qualified live receiver path; this does not prove an LLM reply. |
 | `QUEUED` | Current observations permit queued delivery; immediate model execution is not promised. |
-| `NOT_ENABLED` | No current receive grant/default mailbox; business MCP may still work. |
-| `UNCONFIRMED` | Lease, host/key freshness, ordering or capacity cannot currently establish availability. |
+| `NOT_ENABLED` | An explicit receive restriction or inactive access prevents reception. |
+| `UNCONFIRMED` | No configured receiver, or lease, host/key freshness, ordering or capacity cannot currently establish availability. |
 
 Directory readers see only this minimal collaboration metadata. No SEND grant
 is needed to read it. Mailbox addresses/tokens, session information, key state
@@ -109,3 +109,18 @@ If the tool is missing after upgrading the runtime, also upgrade and reload the
 state. Resolve that local capability with the runtime owner before diagnosing
 remote permissions; an existing business role does not require another Owner
 exchange merely to expose tools.
+
+
+## Membership baseline and explicit restrictions
+
+With `workspace-collaboration-v1`, ordinary active members have send/receive
+rights and a discoverable default inbox without a separate communication grant.
+An unconfigured receiver is UNCONFIRMED, not proof that permission is absent.
+The Workspace visibility switch can hide optional peer status; it does not
+change identity or business roles. See [Workspace events](workspace-events.md).
+
+An effective communication read with `source: MEMBERSHIP_DEFAULT` has virtual
+revision0. An Owner creating an explicit override may use that observed0 or null
+as `expected_revision`; later updates use the actual override revision. Both
+`send: false` and `receive: false` are supported explicit restrictions. A stale0
+cannot overwrite an existing override. Expiry does not revive baseline access.

@@ -10,7 +10,11 @@ Check discovery for `workspace-collaboration-v1` and
 
 An active admitted member has in-Workspace send/receive and self-subscription
 rights. A missing historical communication-grant row uses that baseline.
-An explicit restriction still applies; an expired override does not silently
+The implicit baseline is reported with revision0. An Owner can create an
+explicit override with `expected_revision: 0` or null; updates use the current
+override revision, including an explicit send/receive mute. A stale baseline
+revision cannot overwrite that restriction. An explicit restriction still
+applies; an expired override does not silently
 restore baseline permissions. Business roles continue to control business
 actions. Local delegated-client ceilings and actual host permissions also apply.
 
