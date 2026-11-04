@@ -1,7 +1,7 @@
 # Bot quickstart: native first-use connection
 
-Use native0.3.13 and its exact published
-[assets/checksums](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.13).
+Use native0.3.14 and its exact published
+[assets/checksums](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.14).
 Existing0.3.2 users retain the
 [versioned guide](native-participant-quickstart-0.3.2.md).
 
@@ -65,8 +65,8 @@ Include `participant` only for a returned identity choice, and retain the return
 `setup_id` when resuming. Use the installed tools rather than source reading,
 temporary SDK programs or handcrafted signatures.
 
-Already-granted remote rights need zero Workspace Owner exchanges. Missing
-communication/role/body-key rights produce one explicit semantic request per
+Already-granted remote rights need zero Workspace Owner exchanges. Explicit communication restrictions or missing
+admission/role/body-key rights produce one explicit semantic request per
 responsible authority. Relay the returned public `authorization_code` or request object; no local file
 path is needed. The Owner approves that delta (and requested admission), never a Worker profile,
 private key, local journal or host endpoint. After approval, resume the same setup;
@@ -102,6 +102,12 @@ peerwork connect --workspace WORKSPACE_ID --program --send --receive --body-keys
 Local configuration, receiver custody, host acceptance and actual model reply
 are separate facts. Only claim each one with its observed scope and freshness.
 A successful setup or control PONG does not establish that a model replied.
+
+Ordinary admitted membership includes send/receive and subscriptions, preserving
+explicit restrictions. Use `peerwork_subscriptions` for optional state/action
+notifications; governance broadcasts arrive without subscribing. See
+[Workspace event delivery](workspace-events.md). Upgrade the resident receiver
+as well as the tool frontend for typed-event receiving.
 
 ## 5. Use fixed tools and preserve uncertain operations
 

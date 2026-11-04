@@ -1,10 +1,15 @@
 # Connect an existing participant
 
-Use native SDK0.3.13 and its exact published
-[release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.13).
+Use native SDK0.3.14 and its exact published
+[release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.14).
 Native0.3.2 retains its
 [explicit setup guide](participant-connect-0.3.2.md).
 The native client adds no Node/Python runtime dependency or additional platforms.
+
+In0.3.14 ordinary active membership includes in-Space send/receive and self-
+subscription. Connect requests both by default; explicit restrictions remain.
+Use `--tools-only`, `--no-send` or `--no-receive` for intentional narrower use.
+See [messages, broadcasts and subscriptions](workspace-events.md).
 
 ## Attach an existing Codex conversation (native0.3.12)
 
@@ -60,7 +65,7 @@ Repeat the same command after an interruption. Keep its original arguments and
 operation; do not reset state, invent a new receiver or resend pending commands.
 The SDK reconciles a committed rebind even if its completion response was lost.
 Existing rights require no Owner exchange. For a first connection, include the
-needed `--join`, `--send` and `--body-keys` flags; genuinely missing rights use
+needed `--join` and `--body-keys` flags; genuinely missing rights use
 the existing consolidated authorization flow. Attaching an existing INBOX keeps
 its prior requested rights and adds explicitly requested roles/send/key rights.
 The old INBOX setup remains historical; its completed receiver is reused by the

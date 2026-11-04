@@ -419,7 +419,8 @@ fn validate_claim(
         || text(&request, "action").as_deref() != Some("structure.mailbox.claim")
         || text(&request, "workspace_id").as_deref() != Some(&binding.options.workspace_id)
         || text(&request, "command_id").as_deref() != Some(&binding.claim_id)
-        || body.object_len() != Some(7)
+        || body.object_len() != Some(if body.get("event_format").is_some(){8}else{7})
+        || body.get("event_format").is_some() && text(body,"event_format").as_deref()!=Some(peerwork_core::communication::WORKSPACE_EVENT_FORMAT)
         || text(body, "claim_command_id").as_deref() != Some(&binding.claim_id)
         || text(body, "mailbox_id").as_deref() != Some(&binding.options.mailbox_id)
         || text(body, "receiver_id").as_deref() != Some(&binding.receiver)
@@ -1030,6 +1031,7 @@ pub(crate) async fn run(
                         );
                     }
                     let presence_version = s.presence.version;
+                    fence["event_format"]=json!(peerwork_core::communication::WORKSPACE_EVENT_FORMAT);
                     fence["execution_state"] = json!(if s.signals.is_empty() {
                         "OFFLINE"
                     } else {

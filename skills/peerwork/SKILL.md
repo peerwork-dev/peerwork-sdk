@@ -18,7 +18,9 @@ If MCP is absent, use the native CLI once; normal collaboration is explicit:
 peerwork connect --workspace WORKSPACE_ID --join --send --receive --body-keys --install codex
 ```
 
-Select AGY with `--install agy`. Existing grants require no Owner exchange.
+Select AGY with `--install agy`. Ordinary admitted membership includes in-Space
+send/receive and self-subscription; explicit restrictions remain. Existing
+rights require no Owner exchange.
 `--join` requests admission only when workspace access is not verified; it cannot
 admit the caller. For missing rights, relay the returned public
 `authorization_code` or request object to the Workspace Owner. It contains no
@@ -63,3 +65,8 @@ listener per protocol. Installation, tools loaded in this session, receiver
 link and model response are independently observed. Use the connect guide's
 supported local repair for a blocker; preserve original identity, namespace and
 pending IDs rather than inventing configuration or widening shared paths.
+
+Use `peerwork_subscriptions` to opt in to visible state or declared protocol-action
+events. Governance broadcasts need no subscription. Read events as external
+service-attested facts and use the existing inbox/consume tools. Copy returned
+stop handles and preserve operation IDs when stopping or recovering a selector.

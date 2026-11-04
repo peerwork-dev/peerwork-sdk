@@ -3597,6 +3597,18 @@ async fn native_bridge_receives_genuine_verified_e2ee_mail_from_shared_runtime()
             .count(),
         1
     );
+    // A governance broadcast reaches the same existing Codex host without
+    // a subscription, new model session or custom event receiver.
+    let changed=mutate(&owner,"governance-broadcast","structure.workspace.collaboration.set",&scope,json!({"expected_revision":1,"show_presence":false})).await;
+    let event_sequence=changed["notifications"][0]["event_sequence"].clone();assert_eq!(changed["notifications"][0]["target_count"],2);
+    service.config(json!({"pump_events":true})).await;
+    tokio::time::timeout(Duration::from_secs(15),async{loop{
+        let progress=selected(&owner,"structure.communication.event.get",&scope,json!({"event_sequence":event_sequence})).await;
+        if progress["recipients"].as_array().unwrap().iter().any(|r|r["actor_id"]==worker_config.expected_actor&&r["host_state"]=="HOST_ACCEPTED"){assert_ne!(progress["outcome"],"ALL_DELIVERED");break;}
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }}).await.expect("verified event did not reach the existing Codex host");
+    let event_inputs=fixture.calls();
+    assert!(event_inputs.iter().any(|v|v["params"]["input"][0]["text"].as_str().is_some_and(|text|text.contains("structure.workspace.collaboration.changed")&&text.contains("SERVICE_ATTESTED_EVENT"))));
     stop.cancel();
     server.await.unwrap().unwrap();
     bridge_stop.cancel();
@@ -4637,10 +4649,10 @@ async fn workspace_member_tools_need_no_contacts_preserve_limits_and_recover_nam
     let worker=owner.restrict("original-worker",cap.clone()).unwrap();let mut selection=AgentSelection::for_client(&worker);selection.workspaces.insert("project".into(),ws.clone());
     let tools=AgentTools::from_client(worker.clone(),selection.clone()).unwrap();
     let page=tools.call(AgentRequest::parse("reachability",json!({})).unwrap()).await.unwrap();
-    assert_eq!(page["members"].as_array().unwrap().len(),1);assert_eq!(page["members"][0]["receiving"]["state"],"NOT_ENABLED");assert_eq!(page["summary"]["not_enabled"],1);assert_eq!(page["complete"],true);
+    assert_eq!(page["members"].as_array().unwrap().len(),1);assert_eq!(page["members"][0]["receiving"]["state"],"UNCONFIRMED");assert_eq!(page["summary"]["unconfirmed"],1);assert_eq!(page["complete"],true);
     assert_eq!(page["members"][0]["availability"]["state"],"UNKNOWN");assert_eq!(page["summary"]["availability_unknown"],1);
     let declared=tools.call(AgentRequest::parse("availability",json!({"membership_id":page["members"][0]["membership_id"],"state":"AVAILABLE","operation_id":"ready-original","expected_revision":0})).unwrap()).await.unwrap();assert_eq!(declared["state"],"ACCEPTED","{declared}");assert_eq!(declared["recovery_arguments"]["workspace"],ws);
-    let available=tools.call(AgentRequest::parse("reachability",json!({})).unwrap()).await.unwrap();assert_eq!(available["members"][0]["availability"]["state"],"AVAILABLE");assert_eq!(available["summary"]["available"],1);assert_eq!(available["members"][0]["receiving"]["state"],"NOT_ENABLED");
+    let available=tools.call(AgentRequest::parse("reachability",json!({})).unwrap()).await.unwrap();assert_eq!(available["members"][0]["availability"]["state"],"AVAILABLE");assert_eq!(available["summary"]["available"],1);assert_eq!(available["members"][0]["receiving"]["state"],"UNCONFIRMED");
     let before=service.counts().await;tools.call(AgentRequest::parse("reachability",json!({"actor":owner.actor_id()})).unwrap()).await.unwrap();let after=service.counts().await;
     assert_eq!(after["commands"].as_u64().unwrap()-before["commands"].as_u64().unwrap(),1);
     assert_eq!(before["journal_reads"],after["journal_reads"]);
@@ -4733,4 +4745,44 @@ async fn native_management_tools_preserve_original_operations_and_browser_approv
     assert_eq!(owner.operation("management-create").await.unwrap().command_id,created["command_id"].as_str().map(str::to_owned));
     assert_eq!(service.counts().await["journal_reads"],0);
     browser.close().await.unwrap();owner.close().await.unwrap();
+}
+
+
+#[tokio::test(flavor="multi_thread",worker_threads=4)]
+#[ignore="requires local TEST PostgreSQL and real HTTP"]
+async fn unified_events_native_subscriptions_watch_consumption_and_exact_stop() {
+    use crate::agent_tools::{AgentSelection,AgentTools,AgentRequest};
+    let service=Service::start();let owner_home=crate::test_support::protected_test_dir();let worker_home=crate::test_support::protected_test_dir();
+    let mut cfg=configuration(owner_home.path(),&service.origin);cfg.transport.request_timeout_ms=5000;
+    let owner=ParticipantClient::open(cfg).await.unwrap();let mut cfg=configuration(worker_home.path(),&service.origin);cfg.transport.request_timeout_ms=5000;
+    let worker=ParticipantClient::open(cfg).await.unwrap();
+    let created=mutate(&owner,"events-space","structure.workspace.create",&Scope::default(),json!({"name":"Native event subscriptions"})).await;
+    let ws=created["workspace_id"].as_str().unwrap().to_owned();let scope=Scope{workspace_id:Some(ws.clone()),..Default::default()};
+    let meta=selected(&owner,"structure.workspace.get",&scope,json!({})).await;
+    let mut join=Invoke::new("join-worker","structure.member.set",scope.clone(),json!({"actor_id":worker.actor_id(),"state":"ACTIVE","expected_membership_id":null}));join.expected_workspace_revision=meta["workspace_revision"].as_u64();
+    let member=structure(&owner.invoke(join,Duration::from_secs(5)).await.unwrap());
+    let boxes=selected(&worker,"structure.mailboxes.read",&scope,json!({})).await;let mailbox=boxes["mailboxes"][0]["mailbox_id"].as_str().unwrap().to_owned();
+    // A virtual default inbox is inspectable before the first signed claim.
+    let inspected=selected(&worker,"structure.mailbox.get",&scope,json!({"mailbox_id":mailbox})).await;assert_eq!(inspected["mailbox"]["epoch"],0);
+    let watch_options=WatchOptions{workspace_id:ws.clone(),mailbox_id:mailbox.clone(),membership_id:member["membership_id"].as_str().unwrap().into(),consumer_id:"native-events".into(),host_destination:None};
+    let mut watch=worker.watch(watch_options).await.unwrap();watch_until(&mut watch,|s|s.receiver_link_verified).await;
+    let mut selection=AgentSelection::for_client(&worker);selection.workspaces.insert("project".into(),ws.clone());
+    let tools=AgentTools::from_client(worker.clone(),selection).unwrap();
+    let subscribe=json!({"mode":"subscribe","operation_id":"subscribe-state","kinds":["structure.member.availability.changed"],"wait_ms":5000});
+    let accepted=tools.call(AgentRequest::parse("subscriptions",subscribe.clone()).unwrap()).await.unwrap();assert_eq!(accepted["state"],"ACCEPTED","{accepted}");assert!(accepted["stop"]["arguments"]["stop_handle"].is_string(),"{accepted}");
+    let repeated=tools.call(AgentRequest::parse("subscriptions",subscribe).unwrap()).await.unwrap();assert_eq!(repeated["command_id"],accepted["command_id"]);
+    let changed=mutate(&owner,"become-available","structure.member.availability.set",&scope,json!({"membership_id":meta["membership"]["membership_id"],"expected_availability_revision":0,"state":"AVAILABLE"})).await;
+    let seq=changed["notifications"][0]["event_sequence"].as_u64().unwrap();service.config(json!({"pump_events":true})).await;
+    let received=watch_until(&mut watch,|s|s.items.iter().any(|i|i["envelope"]["event_source_sequence"]==seq)).await;
+    let item=received.items.iter().find(|i|i["envelope"]["event_source_sequence"]==seq).unwrap();assert_eq!(item["envelope"]["event"]["summary"]["availability"]["state"],"AVAILABLE");
+    let before=selected(&owner,"structure.communication.event.get",&scope,json!({"event_sequence":seq})).await;assert_eq!(before["outcome"],"PENDING");
+    watch.consume(vec![DeliveryReference{sequence:item["sequence"].as_u64().unwrap(),delivery_id:item["delivery_id"].as_str().unwrap().into()}]).await.unwrap();
+    watch_until(&mut watch,|s|!s.application_ack_pending).await;
+    let after=selected(&owner,"structure.communication.event.get",&scope,json!({"event_sequence":seq})).await;assert_eq!(after["outcome"],"ALL_DELIVERED","{after}");
+    let mut stop=accepted["stop"]["arguments"].clone();stop["operation_id"]=json!("stop-original-selector");stop["wait_ms"]=json!(5000);
+    let stopped=tools.call(AgentRequest::parse("subscriptions",stop.clone()).unwrap()).await.unwrap();assert_eq!(stopped["state"],"ACCEPTED","{stopped}");
+    let again=tools.call(AgentRequest::parse("subscriptions",stop).unwrap()).await.unwrap();assert_eq!(again["command_id"],stopped["command_id"]);
+    assert_eq!(tools.call(AgentRequest::parse("subscriptions",json!({})).unwrap()).await.unwrap()["subscriptions"].as_array().unwrap().len(),0);
+    assert_eq!(service.counts().await["journal_reads"],0);
+    drop(watch);drop(tools);worker.close().await.unwrap();owner.close().await.unwrap();
 }

@@ -1296,7 +1296,7 @@ pub fn catalog() -> Vec<Value> {
     );
     let budget = json!({"type":"integer","minimum":0,"maximum":5000,"default":1000});
     let mut tools = vec![
-        tool("subscriptions","Subscribe your existing inbox to shared workspace events. Modes: list returns stop handles; subscribe uses a stable operation_id, kinds and optional actor; protocol action events also select protocol alias and actions. No Owner approval for visible facts. Delivery wakes the existing configured host; it does not create a session. Copy a returned stop handle and add a new operation_id to stop future events.",json!({"workspace":text,"protocol":text,"mode":{"type":"string","enum":["list","subscribe","stop"],"default":"list"},"operation_id":text,"subscription_id":text,"stop_handle":text,"kinds":{"type":"array","maxItems":16,"items":{"type":"string","enum":["action.accepted","communication.member.presence.changed","structure.member.availability.changed","structure.protocol.upgraded","structure.member.admitted","structure.member.revoked","structure.grant.assigned","structure.grant.revoked"]}},"actor":text,"actions":{"type":"array","maxItems":32,"items":text},"schemas":{"type":"array","maxItems":16,"items":text},"expected_revision":number,"wait_ms":budget}),&[],false),
+        tool("subscriptions","Subscribe your existing inbox to shared workspace events. Modes: list returns stop handles; subscribe uses a stable operation_id, kinds and optional actor; protocol action events also select protocol alias and actions. No Owner approval for visible facts. Delivery wakes the existing configured host; it does not create a session. Copy a returned stop handle and add a new operation_id to stop future events.",json!({"workspace":text,"protocol":text,"mode":{"type":"string","enum":["list","subscribe","stop"],"default":"list"},"operation_id":text,"subscription_id":text,"stop_handle":text,"kinds":{"type":"array","maxItems":16,"items":{"type":"string","enum":["action.accepted","communication.member.presence.changed","structure.member.availability.changed","structure.protocol.upgraded","structure.member.admitted","structure.member.revoked","structure.member.name.changed","structure.protocol.bound","structure.instance.adopted","structure.workspace.collaboration.changed","structure.grant.assigned","structure.grant.revoked"]}},"actor":text,"actions":{"type":"array","maxItems":32,"items":text},"schemas":{"type":"array","maxItems":16,"items":text},"expected_revision":number,"wait_ms":budget}),&[],false),
         tool("context","Read selected identity, workspaces, available scopes and runtime capabilities. Use the loaded MCP tool schemas for discovery; contacts and aliases are optional. Local authentication does not prove remote/host readiness.",json!({}),&[],true),
         tool("reachability","List workspace members, shared names, receiving status and independently declared willingness to accept work. No contacts required. Select actor ID or exact shared name; pages describe receiving paths, not model activity. Scope/contact are optional configured shortcuts.",json!({"workspace":text,"actor":text,"cursor":text,"limit":page,"scope":text,"contact":text}),&[],true),
         tool("send","Send to a workspace member by actor ID or shared name using to; configured contact aliases remain optional. Ambiguous names require exact actor selection. Preserve operation_id and recover it on uncertainty; acceptance is not a reply.",json!({"workspace":text,"to":text,"contact":text,"operation_id":text,"text":{"type":"string","minLength":1,"maxLength":8192},"wait_ms":budget}),&["operation_id","text"],false),
@@ -1324,7 +1324,7 @@ mod tests {
     use super::*;
     #[test]
     fn tools_reject_extra_identity_and_keep_protocol_actions_data_driven() {
-        for name in ["context", "send", "reply", "status", "act"] {
+        for name in ["context", "send", "reply", "status", "act", "subscriptions"] {
             assert!(AgentRequest::parse(
                 name,
                 json!({"profile":"other","identity_path":"/another"})
@@ -1342,7 +1342,7 @@ mod tests {
             .iter()
             .map(|t| t["name"].as_str().unwrap().to_owned())
             .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(names.len(), 18);
+        assert_eq!(names.len(), 19);
         assert!(names.contains("peerwork_availability"));
         assert!(!names
             .iter()

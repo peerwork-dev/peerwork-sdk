@@ -17,6 +17,7 @@ const {postgresFixture}=await import(pathToFileURL(join(root,'dist-workspace/tes
 const {createPostgresControlApp}=await import(pathToFileURL(join(root,'dist-workspace/src/workspace-postgres-http.js')));
 const {signTypedJws}=await import(pathToFileURL(join(root,'dist-workspace/src/workspace-jws.js')));
 const {hash,canonicalStructured}=await import(pathToFileURL(join(root,'dist-workspace/src/workspace-contract.js')));
+const {stepEventDelivery}=await import(pathToFileURL(join(root,'dist-workspace/src/workspace-event-delivery.js')));
 const f=await postgresFixture();f.clock.now=Date.now();
 let reportQuotaBlocked=false;const reportQuotaLimits=new Map();
 let clockOffset=0;const ticker=setInterval(()=>{f.clock.now=Date.now()+clockOffset;},10);
@@ -41,6 +42,7 @@ const handle=async request=>{
  const path=new URL(request.url).pathname;
  if(path==='/__test/config'){
   const options=await request.json();
+  if(options.pump_events){for(let i=0;i<256;i++){const step=await stepEventDelivery(f.kernel);if(step.job_id===null)break;}}
   if(options.early_eof_count!==undefined){if(!Number.isSafeInteger(options.early_eof_count)||options.early_eof_count<0||options.early_eof_count>16)throw Error('invalid synthetic EOF count');earlyEofCount=options.early_eof_count;}
   if(options.corrupt_frame!==undefined)corruptFrame=options.corrupt_frame;
   if(options.key_delay_workspace!==undefined)keyDelayWorkspace=options.key_delay_workspace;

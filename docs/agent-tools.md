@@ -1,8 +1,8 @@
 # Native tools for Agents and programs
 
-Native SDK0.3.13 shares one Participant engine across MCP, CLI and Rust programs.
+Native SDK0.3.14 shares one Participant engine across MCP, CLI and Rust programs.
 Its `peerwork_manage` surface is absent from0.3.12. Use the matching
-[release](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.13)
+[release](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.14)
 and [connection guide](participant-connect.md).
 
 Agents normally use the loaded MCP tools. Use `peerwork_context` for the selected
@@ -16,6 +16,7 @@ signing journal to use an ordinary operation.
 | Inspect a protocol, role instructions or resource | `peerwork_protocol` |
 | Read an instance, exact record or bounded current page | `peerwork_read` |
 | Execute a declared business action | `peerwork_act` |
+| Subscribe an existing inbox to state or protocol-action events | `peerwork_subscriptions` |
 | Workspace members and current receiving/work availability | `peerwork_reachability` |
 | Send/reply, read/consume received messages | `peerwork_send`, `peerwork_reply`, `peerwork_inbox`, `peerwork_consume` |
 | Discover selected workspace/protocol/access/key/publication management | `peerwork_manage` with `mode: catalog` or `describe` |
@@ -86,10 +87,13 @@ For mutations, copy the returned `recovery_arguments` unchanged into
 `peerwork_status` or `peerwork_recover`; a `management` selector pins the original
 view and namespace. Do not substitute a newer view or another operation ID.
 
-`protocol.bind` attaches a first role bundle only. An existing instance cannot
-replace its package, including a change limited to role Markdown. A bundle's
-immutable digest and the instance's currently fixed package binding are distinct
-constraints; SDK0.3.13 does not implement bundle revision or rule rollout.
+`protocol.bind` attaches a first role bundle. Use the supported protocol-upgrade
+operation to update the role package in place or activate a new default execution
+version. Original tickets retain their execution version. See
+[protocol upgrades](in-place-protocol-upgrades.md) and
+[Workspace event delivery](workspace-events.md). Ordinary members may register
+candidates; activation requires the designated scoped maintenance responsibility.
+
 
 CLI exposes the same schemas and implementation:
 

@@ -7,7 +7,7 @@ const RECEIPT_TYPE: &str = "peerwork.workspace-event.v1+jws";
 const KINDS: &[&str] = &[
     "action.accepted", "structure.protocol.upgraded", "structure.protocol.bound",
     "structure.instance.adopted", "structure.member.admitted", "structure.member.revoked",
-    "structure.grant.assigned", "structure.grant.revoked", "structure.member.availability.changed",
+    "structure.member.name.changed", "structure.grant.assigned", "structure.grant.revoked", "structure.member.availability.changed",
     "communication.member.presence.changed", "structure.workspace.collaboration.changed",
 ];
 

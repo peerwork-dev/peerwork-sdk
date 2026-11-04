@@ -58,9 +58,13 @@ impl AgentTools {
         // with the original operation rather than silently rebasing it.
         let id=body["subscription_id"].clone();
         let request=Invoke::new(operation,"structure.communication.subscription.set",scope,body.take());
-        let outcome=self.invoke_client(client,request,wait_ms).await?;
-        let mut value=operation_view(outcome.clone());value["subscription_id"]=json!(id);
-        if let Some(row)=outcome.pointer("/outcome/result/structure/subscription").filter(|v|v["revision"].as_u64().is_some()){
+        let mut value=match self.invoke_client(client,request,wait_ms).await {
+            Ok(value)=>value,
+            Err(mut error)=>{if let Some(operation)=error.operation_id.clone(){error.details.get_or_insert_with(||json!({}))["recovery_arguments"]=json!({"workspace":workspace,"operation_id":operation});}return Err(error);}
+        };
+        value["subscription_id"]=id;
+        value["recovery_arguments"]=json!({"workspace":workspace,"operation_id":value["operation_id"]});
+        if let Some(row)=value.pointer("/result/structure/subscription").filter(|v|v["revision"].as_u64().is_some()){
             value["stop"]=stop_arguments(&workspace,self.client.actor_id(),row);
         }
         Ok(value)

@@ -8,7 +8,7 @@ namespace, journal and pending IDs. See [the connection guide](docs/participant-
 
 Native0.3.13 experimental includes workspace member availability, shared display
 names and existing-client MCP attachment. Use the exact
-[published assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.13)
+[published assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.14)
 and service feature `workspace-members-v1` for directory summaries/name updates.
 Availability updates additionally require `member-availability-v1`.
 
@@ -81,3 +81,5 @@ MCP/CLI setup or assume a custom listener cursor is a native mailbox cursor.
 Workspace members expose receiving and declared work availability separately.
 Use `peerwork_reachability` to inspect a workspace and `peerwork_availability`
 to declare willingness. See [member availability](docs/member-availability.md).
+
+Native0.3.14 adds [Workspace messages, broadcasts and subscriptions](docs/workspace-events.md) through the existing participant inbox and Agent tools.

@@ -2,7 +2,7 @@
 
 Native0.3.6 adds direct existing-endpoint attachment and workspace member tools.
 Native0.3.5 introduced the embedded tool entry. Use the exact
-[release](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.13)
+[release](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.14)
 for published binaries and source; a source snapshot alone is not an installed
 upgrade. Native0.3.4 does not expose `serve_client`.
 
