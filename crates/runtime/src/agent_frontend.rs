@@ -128,7 +128,19 @@ pub fn cli(args: &[String]) -> Value {
                 let profile=connect.profile_for_scope(handle.as_deref(),workspace.as_deref())?;
                 if let Some(profile)=profile {
                     let is_context=matches!(request,AgentRequest::Context);let context=connect.context_for(handle.as_deref(),workspace.as_deref());drop(connect);
-                    let mut value=AgentTools::open(profile).await?.call(request).await?;
+                    let alias=agent_tools::protocol_request_alias(&request).map(str::to_owned);let retry=request.clone();
+                    let result=AgentTools::open(profile).await?.call(request).await;
+                    let mut value=match result {
+                        Err(error)if alias.is_some()&&error.code=="PROTOCOL_OPERATION_ROUTE_EXISTS"=>{
+                            let next=crate::participant_connect::Connect::inspect(&path)?.profile_for_scope(handle.as_deref(),workspace.as_deref())?.ok_or_else(||ParticipantError::local("LOCAL_SELECTION_REQUIRED","CONNECT"))?;
+                            AgentTools::open(next).await?.call(retry).await?
+                        },
+                        Err(error)if alias.is_some()&&agent_tools::refresh_protocol_error(&error)=>{
+                            if let Err(error)=crate::participant_connect::Connect::open(&path)?.refresh_protocol_alias(handle.as_deref(),workspace.as_deref(),alias.as_deref().unwrap(),error.details.as_ref()).await{if !agent_tools::refresh_nonblocking(&error,&retry){return Err(error);}}
+                            let next=crate::participant_connect::Connect::inspect(&path)?.profile_for_scope(handle.as_deref(),workspace.as_deref())?.ok_or_else(||ParticipantError::local("LOCAL_SELECTION_REQUIRED","CONNECT"))?;
+                            AgentTools::open(next).await?.call(retry).await?
+                        },other=>other?,
+                    };
                     if is_context {value["onboarding"]=context;}return Ok(value);
                 }
                 if matches!(request,AgentRequest::Context) {return Ok(connect.context());}

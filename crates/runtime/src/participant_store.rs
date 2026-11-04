@@ -28,6 +28,23 @@ fn storage() -> ParticipantError {
 fn corrupt() -> ParticipantError {
     state_error("STATE_INVALID")
 }
+// High-level protocol IDs are unique for this local Participant and instance,
+// including aliases for that same instance. Mutable defaults/digests do not
+// create another intent. Raw namespace-only invocation never enters this path.
+fn protocol_route_selection(request:&Invoke)->Result<(String,String)>{
+    if request.action!="structure.action"||request.scope.workspace_id.is_none()||request.scope.instance_id.is_none(){return Err(ParticipantError::local("PROTOCOL_ROUTE_SCOPE_INVALID","VALIDATION"));}
+    let route=sha256_hex(json!([request.scope.workspace_id,request.scope.instance_id,request.operation_id]).to_string().as_bytes());
+    let mut semantic=request.clone();semantic.scope.protocol_digest=None;
+    Ok((route,sha256_hex(serde_json::to_vec(&semantic).map_err(|_|corrupt())?.as_slice())))
+}
+fn verify_protocol_route(tx:&rusqlite::Transaction<'_>,session:&str,route:&str,hash:&str,id:&str)->Result<()>{
+    let existing:Option<(String,String)>=tx.query_row("SELECT session,logical_input_hash FROM participant_operations INDEXED BY participant_logical_route WHERE logical_route=?1 AND logical_route IS NOT NULL",[route],|row|Ok((row.get(0)?,row.get(1)?))).optional().map_err(|_|storage())?;
+    if let Some((owner,original))=existing {
+        if original!=hash{return Err(ParticipantError::local("OPERATION_INPUT_CONFLICT","PREPARATION").original(id));}
+        if owner!=session{let mut error=ParticipantError::local("PROTOCOL_OPERATION_ROUTE_EXISTS","PREPARATION").original(id);error.recovery="USE_ORIGINAL_PROTOCOL_VIEW".into();error.details=Some(json!({"next_action":"RELOAD_ORIGINAL_PROTOCOL_VIEW","operation_id_scope":"LOCAL_PARTICIPANT_INSTANCE","effect":"NO_ADDITIONAL_ADMISSION"}));return Err(error);}
+    }
+    Ok(())
+}
 fn state_error(code: &str) -> ParticipantError {
     ParticipantError {
         details: None, code: code.into(),
@@ -51,6 +68,11 @@ impl Store {
             PRIMARY KEY(session,id));
             CREATE INDEX IF NOT EXISTS participant_due ON participant_operations(status,lane,next_retry,session,id);")
             .map_err(|_|storage())?;
+        let columns=db.prepare("PRAGMA table_info(participant_operations)").map_err(|_|storage())?.query_map([],|row|row.get::<_,String>(1)).map_err(|_|storage())?.collect::<std::result::Result<Vec<_>,_>>().map_err(|_|storage())?;
+        if !columns.iter().any(|name|name=="resolved"){db.execute_batch("ALTER TABLE participant_operations ADD COLUMN resolved BLOB").map_err(|_|storage())?;}
+        if !columns.iter().any(|name|name=="logical_route"){db.execute_batch("ALTER TABLE participant_operations ADD COLUMN logical_route TEXT").map_err(|_|storage())?;}
+        if !columns.iter().any(|name|name=="logical_input_hash"){db.execute_batch("ALTER TABLE participant_operations ADD COLUMN logical_input_hash TEXT").map_err(|_|storage())?;}
+        db.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS participant_logical_route ON participant_operations(logical_route) WHERE logical_route IS NOT NULL").map_err(|_|storage())?;
         let binding=json!({"format":"peerwork.participant-store.v1","actor":identity.actor_id(),"key":identity.key_id(),"origin":origin}).to_string();
         db.execute(
             "INSERT OR IGNORE INTO participant_meta VALUES(1,?1,0,0,0)",
@@ -87,6 +109,9 @@ impl Store {
         max_pending: usize,
         max_bytes: usize,
     ) -> Result<Operation> {
+        self.reserve_resolved(session,request,request,identity,max_pending,max_bytes,false)
+    }
+    pub fn reserve_resolved(&mut self,session:&str,request:&Invoke,resolved:&Invoke,identity:&KernelIdentity,max_pending:usize,max_bytes:usize,protocol_route:bool)->Result<Operation>{
         let wire = serde_json::to_string(request).map_err(|_| corrupt())?;
         let hash = sha256_hex(wire.as_bytes());
         if let Some(old) = self.hash(session, &request.operation_id)? {
@@ -104,11 +129,16 @@ impl Store {
             &wire,
         )
         .map_err(|_| corrupt())?;
-        let allocated = sealed.len() + OUTCOME_RESERVE + 1024;
+        if resolved.operation_id!=request.operation_id||resolved.action!=request.action||resolved.scope.workspace_id!=request.scope.workspace_id{return Err(corrupt());}
+        let selected=serde_json::to_string(resolved).map_err(|_|corrupt())?;
+        let selected=if selected==wire{None}else{Some(seal(identity,&self.aad(session,&request.operation_id,&hash,"RESOLVED"),&selected).map_err(|_|corrupt())?)};
+        let allocated = sealed.len() + selected.as_ref().map_or(0,|s|s.len()) + OUTCOME_RESERVE + 1024;
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|_| storage())?;
+        let logical=if protocol_route{Some(protocol_route_selection(request)?)}else{None};
+        if let Some((route,hash))=&logical{verify_protocol_route(&tx,session,route,hash,&request.operation_id)?;}
         let (pending, bytes, rows): (usize, usize, usize) = tx
             .query_row(
                 "SELECT pending,allocated,rows FROM participant_meta WHERE id=1",
@@ -122,7 +152,7 @@ impl Store {
                 "ADMISSION",
             ));
         }
-        let s = &request.scope;
+        let s = &resolved.scope;
         let lane = if crate::participant_actions::maintenance(&request.action) {
             1
         } else {
@@ -132,8 +162,8 @@ impl Store {
         // for earlier clients: it never claims NOT_SUBMITTED after execution
         // may have begun. The returned admission fact below is known before
         // scheduling; current RUNNING is an owner-memory observation only.
-        tx.execute("INSERT INTO participant_operations(session,id,input_hash,action,workspace,instance,protocol,status,input,allocation,lane) VALUES(?1,?2,?3,?4,?5,?6,?7,'PENDING',?8,?9,?10)",
-            params![session,request.operation_id,hash,request.action,s.workspace_id,s.instance_id,s.protocol_digest,sealed,allocated,lane]).map_err(|_|storage())?;
+        tx.execute("INSERT INTO participant_operations(session,id,input_hash,action,workspace,instance,protocol,status,input,allocation,lane,resolved,logical_route,logical_input_hash) VALUES(?1,?2,?3,?4,?5,?6,?7,'PENDING',?8,?9,?10,?11,?12,?13)",
+            params![session,request.operation_id,hash,request.action,s.workspace_id,s.instance_id,s.protocol_digest,sealed,allocated,lane,selected,logical.as_ref().map(|v|&v.0),logical.as_ref().map(|v|&v.1)]).map_err(|_|storage())?;
         tx.execute("UPDATE participant_meta SET pending=pending+1,allocated=allocated+?1,rows=rows+1 WHERE id=1",[allocated]).map_err(|_|storage())?;
         tx.commit().map_err(|_| storage())?;
         // Nothing fallible after durable admission: a failed follow-up read
@@ -146,6 +176,13 @@ impl Store {
             outcome: None,
             observation: "LOCAL_DURABLE".into(),
         })
+    }
+    pub fn bind_protocol_route(&mut self,session:&str,request:&Invoke)->Result<()>{
+        let(route,hash)=protocol_route_selection(request)?;
+        let tx=self.db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_|storage())?;
+        verify_protocol_route(&tx,session,&route,&hash,&request.operation_id)?;
+        tx.execute("UPDATE participant_operations SET logical_route=?3,logical_input_hash=?4 WHERE session=?1 AND id=?2",params![session,request.operation_id,route,hash]).map_err(|_|storage())?;
+        tx.commit().map_err(|_|storage())?;Ok(())
     }
     pub fn existing(
         &self,
@@ -180,16 +217,16 @@ impl Store {
             .map_err(|_| storage())
     }
     pub fn request(&self, session: &str, id: &str, identity: &KernelIdentity) -> Result<Invoke> {
-        let row: Option<(String, Vec<u8>)> = self
+        let row: Option<(String, Vec<u8>, Option<Vec<u8>>)> = self
             .db
             .query_row(
-                "SELECT input_hash,input FROM participant_operations WHERE session=?1 AND id=?2",
+                "SELECT input_hash,input,resolved FROM participant_operations WHERE session=?1 AND id=?2",
                 params![session, id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?,r.get(2)?)),
             )
             .optional()
             .map_err(|_| storage())?;
-        let (hash, sealed) =
+        let (hash, sealed,resolved) =
             row.ok_or_else(|| ParticipantError::local("OPERATION_NOT_FOUND", "OBSERVATION"))?;
         let wire = open(identity, &self.aad(session, id, &hash, "INPUT"), &sealed)
             .map_err(|_| corrupt())?;
@@ -203,7 +240,11 @@ impl Store {
         {
             return Err(corrupt());
         }
-        Ok(request)
+        if let Some(resolved)=resolved {
+            let wire=open(identity,&self.aad(session,id,&hash,"RESOLVED"),&resolved).map_err(|_|corrupt())?;
+            let selected:Invoke=serde_json::from_str(&wire).map_err(|_|corrupt())?;
+            if selected.operation_id!=request.operation_id||selected.action!=request.action||selected.scope.workspace_id!=request.scope.workspace_id{return Err(corrupt());}Ok(selected)
+        }else{Ok(request)}
     }
     pub fn get(&self, session: &str, id: &str, identity: &KernelIdentity) -> Result<Operation> {
         let row:Option<(String,String,Option<Vec<u8>>,Option<String>)>=self.db.query_row("SELECT input_hash,status,outcome,command_id FROM participant_operations WHERE session=?1 AND id=?2",params![session,id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(|_|storage())?;

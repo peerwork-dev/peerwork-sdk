@@ -337,9 +337,16 @@ fn source_author(source:&WireValue,prepared:&VerifiedPreparedCommand)->Result<Ve
 fn record_author(record:&WireValue,author:&VerifiedStructureAuthorIntent,command:&WireValue,prepared:&VerifiedPreparedCommand)->Result<(),VerifyWireReceiptError>{
     let invalid=||VerifyWireReceiptError::Mismatch;
     let source=record.get("source").ok_or_else(invalid)?;
-    if !source_matches(source,author)||!matches!(author.action_id(),"structure.action"|"structure.checkpoint.records")||author.workspace_id()!=prepared.workspace_id()
-        ||author.protocol_digest()!=prepared.protocol_digest()||author.command().get("instance_id")!=command.get("instance_id") {return Err(invalid());}
     let query=command.get("body").ok_or_else(invalid)?;
+    let union=prepared.action_id()=="structure.instance.records.read";
+    let instance=if union{query.get("instance_id")}else{command.get("instance_id")}.ok_or_else(invalid)?;
+    let protocol=if union{ascii_field(record,"protocol_digest")}else{prepared.protocol_digest().map(str::to_owned)};
+    if !source_matches(source,author)||!matches!(author.action_id(),"structure.action"|"structure.checkpoint.records")||author.workspace_id()!=prepared.workspace_id()
+        ||author.protocol_digest()!=protocol.as_deref()||author.command().get("instance_id")!=Some(instance)
+        ||record.get("protocol_digest").is_some_and(|p|p.as_string().as_deref()!=protocol.as_deref()) {return Err(invalid());}
+    let context=execution_context(record.get("execution_context_id"),instance)?;
+    let authored_context=execution_context(author.command().get("body").and_then(|b|b.get("execution_context_id")),instance)?;
+    if context!=authored_context||!union&&context!=execution_context(query.get("execution_context_id"),instance)? {return Err(invalid());}
     if matches!(prepared.action_id(),"structure.record.get"|"structure.publication.prepare.get") && (record.get("record_id")!=query.get("record_id")||record.get("revision")!=query.get("revision")){return Err(invalid());}
     if query.get("schema").is_some_and(|schema|matches!(schema,WireValue::String(_))&&record.get("schema")!=Some(schema)){return Err(invalid());}
     let index=number(source,"record_index").filter(|i|*i<8).ok_or_else(invalid)?;
@@ -376,6 +383,9 @@ fn record_author(record:&WireValue,author:&VerifiedStructureAuthorIntent,command
         if canonical_wire_value(expected,Path::KERNEL).map_err(|_|invalid())?!=canonical_wire_value(actual,Path::KERNEL).map_err(|_|invalid())? {return Err(invalid());}
     }else if !matches!(actual,WireValue::Null){return Err(invalid());}
     Ok(())
+}
+fn execution_context(value:Option<&WireValue>,instance:&WireValue)->Result<String,VerifyWireReceiptError>{
+    let selected=value.unwrap_or(instance).as_string().filter(|s|valid_token(s)).ok_or(VerifyWireReceiptError::Mismatch)?;Ok(selected)
 }
 fn same_checkpoint_value(left:Option<&WireValue>,right:Option<&WireValue>)->bool{
     match(left,right){(Some(left),Some(right))=>match(canonical_wire_value(left,Path::KERNEL),canonical_wire_value(right,Path::KERNEL)){
@@ -438,6 +448,27 @@ fn verify_availability(value:&WireValue,actor:&str,active:bool,now:u64)->Result<
 fn verify_member_directory(result:&WireValue,command:&WireValue,prepared:&VerifiedPreparedCommand)->Result<(),VerifyWireReceiptError>{
     let invalid=||VerifyWireReceiptError::Mismatch;
     let body=command.get("body").ok_or_else(invalid)?;
+    if let Some(requested)=body.get("actor_ids") {
+        let WireValue::Array(requested)=requested else{return Err(invalid());};
+        if ["actor_id","membership_id","name","cursor","limit"].iter().any(|field|body.get(field).is_some()){return Err(invalid());}
+        let actors=exact_actor_ids(requested)?;
+        let Some(WireValue::Array(members))=result.get("members")else{return Err(invalid());};
+        let Some(WireValue::Array(missing))=result.get("missing_actor_ids")else{return Err(invalid());};
+        if result.get("next_cursor")!=Some(&WireValue::Null)||members.len()+missing.len()!=actors.len()||number(result,"observed_at").is_none(){return Err(invalid());}
+        let missing=missing.iter().map(|value|value.as_string().filter(|id|actors.contains(id)).ok_or_else(invalid)).collect::<Result<Vec<_>,_>>()?;
+        if missing.iter().collect::<std::collections::BTreeSet<_>>().len()!=missing.len()||missing!=actors.iter().filter(|actor|missing.contains(actor)).cloned().collect::<Vec<_>>(){return Err(invalid());}
+        let mut rows=members.iter();
+        for actor in actors.iter().filter(|actor|!missing.contains(actor)) {
+            let member=rows.next().ok_or_else(invalid)?;if ascii_field(member,"actor_id").as_ref()!=Some(actor){return Err(invalid());}
+            let mut single=command.clone();let WireValue::Object(command_fields)=&mut single else{return Err(invalid());};
+            let body=command_fields.iter_mut().find(|(key,_)|key.iter().copied().eq("body".encode_utf16())).map(|(_,value)|value).ok_or_else(invalid)?;
+            let WireValue::Object(fields)=body else{return Err(invalid());};
+            fields.retain(|(key,_)|!key.iter().copied().eq("actor_ids".encode_utf16()));fields.push(("actor_id".encode_utf16().collect(),WireValue::String(actor.encode_utf16().collect())));
+            let page=WireValue::Object(vec![("members".encode_utf16().collect(),WireValue::Array(vec![member.clone()])),("observed_at".encode_utf16().collect(),result.get("observed_at").cloned().ok_or_else(invalid)?)]);
+            verify_member_directory(&page,&single,prepared)?;
+        }
+        return Ok(());
+    }
     if prepared.action_id()=="structure.member.availability.set" {
         let value=result.get("availability").ok_or_else(invalid)?;
         let now=number(value,"evaluated_at").ok_or_else(invalid)?;
@@ -527,9 +558,10 @@ fn verify_structure_read_authors(result:&WireValue,command:&WireValue,prepared:&
             source.push(("author_intent".encode_utf16().collect(),result.get("author_intent").cloned().ok_or_else(invalid)?));
             record_author(result,&source_author(&WireValue::Object(source),prepared)?,command,prepared)
         }
-        action @ ("structure.records.read"|"structure.events.read")=>{
+        "structure.grant.get"=>verify_structure_grant(result,command,prepared),
+        action @ ("structure.records.read"|"structure.instance.records.read"|"structure.events.read")=>{
             let WireValue::Object(sources)=result.get("sources").ok_or_else(invalid)? else{return Err(invalid());};
-            let WireValue::Array(items)=result.get(if action=="structure.records.read"{"records"}else{"events"}).ok_or_else(invalid)? else{return Err(invalid());};
+            let WireValue::Array(items)=result.get(if action=="structure.events.read"{"events"}else{"records"}).ok_or_else(invalid)? else{return Err(invalid());};
             if sources.len()>32||items.len()>32||prepared.workspace_id().is_none(){return Err(invalid());}
             let mut authors=std::collections::BTreeMap::new();
             for (name,source) in sources{
@@ -544,12 +576,8 @@ fn verify_structure_read_authors(result:&WireValue,command:&WireValue,prepared:&
             for item in items{
                 let source_key=ascii_field(item,"source_key").ok_or_else(invalid)?;
                 let author=authors.get(&source_key).ok_or_else(invalid)?;used.insert(source_key);
-                if action=="structure.records.read" {record_author(item,author,command,prepared)?;}
-                else if ascii_field(item,"actor_id").as_deref()!=Some(author.actor_id())
-                    ||item.get("summary").and_then(|s|ascii_field(s,"action_id")).as_deref()!=Some(author.action_id()){return Err(invalid());}
-                else if command.get("instance_id").is_some_and(|id|!matches!(id,WireValue::Null))
-                    && (item.get("instance_id")!=command.get("instance_id")
-                        ||author.action_id()!="structure.adopt"&&(author.command().get("instance_id")!=command.get("instance_id")||author.protocol_digest()!=prepared.protocol_digest())){return Err(invalid());}
+                if action!="structure.events.read" {record_author(item,author,command,prepared)?;}
+                else {event_author(item,author,command)?;}
             }
             if used.len()!=authors.len(){return Err(invalid());}
             Ok(())
@@ -557,7 +585,95 @@ fn verify_structure_read_authors(result:&WireValue,command:&WireValue,prepared:&
         _=>Ok(()),
     }
 }
+fn event_author(item:&WireValue,author:&VerifiedStructureAuthorIntent,command:&WireValue)->Result<(),VerifyWireReceiptError>{
+    let invalid=||VerifyWireReceiptError::Mismatch;
+    if ascii_field(item,"actor_id").as_deref()!=Some(author.actor_id())||item.get("summary").and_then(|s|ascii_field(s,"action_id")).as_deref()!=Some(author.action_id()){return Err(invalid());}
+    let body=author.command().get("body").ok_or_else(invalid)?;
+    let authored_instance=author.command().get("instance_id").filter(|id|!matches!(id,WireValue::Null)).or_else(||if matches!(author.action_id(),"structure.protocol.upgrade"|"structure.protocol.bind"){body.get("instance_id")}else{None});
+    // Older workspace-wide pages omitted row scope metadata. Recover that
+    // legacy scope from the authenticated author, never from the reader's
+    // selected digest. Explicit row claims must still match below.
+    let instance=item.get("instance_id").or(authored_instance).filter(|id|!matches!(id,WireValue::Null));
+    if command.get("instance_id").is_some_and(|id|!matches!(id,WireValue::Null)&&Some(id)!=instance){return Err(invalid());}
+    let Some(instance)=instance else{return if authored_instance.is_none()&&["execution_context_id","protocol_digest"].iter().all(|field|item.get(field).is_none_or(|value|matches!(value,WireValue::Null))){Ok(())}else{Err(invalid())};};
+    let context=execution_context(item.get("execution_context_id"),instance)?;
+    let protocol=ascii_field(item,"protocol_digest");
+    if protocol.as_deref().is_some_and(|s|!valid_digest(s)){return Err(invalid());}
+    match author.action_id(){
+        "structure.adopt"=>{if context!=instance.as_string().ok_or_else(invalid)?{return Err(invalid());}},
+        "structure.protocol.upgrade"|"structure.protocol.bind"=>{
+            if body.get("instance_id")!=Some(instance)||body.get("execution_context_id").is_some_and(|c|c.as_string().as_deref()!=Some(context.as_str())){return Err(invalid());}
+            if author.action_id()=="structure.protocol.bind"&&(execution_context(body.get("execution_context_id"),instance)?!=context||ascii_field(body,"protocol_digest").as_deref()!=protocol.as_deref()){return Err(invalid());}
+        },
+        _=>{if author.command().get("instance_id")!=Some(instance)||execution_context(body.get("execution_context_id"),instance)?!=context||protocol.as_ref().is_some_and(|p|Some(p.as_str())!=author.protocol_digest()){return Err(invalid());}},
+    }
+    if let Some(summary)=item.get("summary") {for field in ["execution_context_id","protocol_digest"]{if summary.get(field).is_some_and(|v|Some(v)!=item.get(field)){return Err(invalid());}}}
+    Ok(())
+}
 
+fn verify_structure_grant(result:&WireValue,command:&WireValue,prepared:&VerifiedPreparedCommand)->Result<(),VerifyWireReceiptError>{
+    let invalid=||VerifyWireReceiptError::Mismatch;
+    let query=command.get("body").ok_or_else(invalid)?;
+    if let Some(requested)=query.get("actor_ids") {
+        let WireValue::Array(requested)=requested else{return Err(invalid());};
+        if let WireValue::Object(fields)=query{if fields.iter().any(|(key,_)|!["profile","execution_context_id","actor_ids"].iter().any(|field|key.iter().copied().eq(field.encode_utf16()))){return Err(invalid());}}
+        let actors=exact_actor_ids(requested)?;let Some(WireValue::Array(grants))=result.get("grants")else{return Err(invalid());};
+        // This exact batch is signed current-state CAS metadata only. It
+        // cannot be consumed as proof of roles, actions or effective grants.
+        if grants.len()!=actors.len()||ascii_field(result,"view").as_deref()!=Some("REVISION")||["sources","actions","protocol_roles","capabilities","effective"].iter().any(|field|result.get(field).is_some()){return Err(invalid());}
+        let instance=command.get("instance_id").ok_or_else(invalid)?;
+        if result.get("instance_id")!=Some(instance)||ascii_field(result,"protocol_digest").as_deref()!=prepared.protocol_digest()||execution_context(result.get("execution_context_id"),instance)?!=execution_context(query.get("execution_context_id"),instance)?{return Err(invalid());}
+        for(actor,entry)in actors.iter().zip(grants){if entry.object_len()!=Some(2)||ascii_field(entry,"actor_id").as_ref()!=Some(actor){return Err(invalid());}let grant=entry.get("grant").ok_or_else(invalid)?;if matches!(grant,WireValue::Null){continue;}
+            if grant.object_len()!=Some(2)||ascii_field(grant,"membership_id").is_none_or(|membership|!valid_token(&membership))||number(grant,"grant_revision").is_none_or(|revision|revision==0||revision>9_007_199_254_740_991){return Err(invalid());}
+        }
+        return Ok(());
+    }
+    verify_structure_grant_value(result.get("grant").ok_or_else(invalid)?,result,command,prepared)
+}
+fn exact_actor_ids(values:&[WireValue])->Result<Vec<String>,VerifyWireReceiptError>{
+    let invalid=||VerifyWireReceiptError::Mismatch;if values.is_empty()||values.len()>32{return Err(invalid());}
+    let actors=values.iter().map(|value|value.as_string().filter(|id|valid_token(id)).ok_or_else(invalid)).collect::<Result<Vec<_>,_>>()?;
+    if actors.iter().collect::<std::collections::BTreeSet<_>>().len()!=actors.len(){return Err(invalid());}Ok(actors)
+}
+fn verify_structure_grant_value(grant:&WireValue,result:&WireValue,command:&WireValue,prepared:&VerifiedPreparedCommand)->Result<(),VerifyWireReceiptError>{
+    let invalid=||VerifyWireReceiptError::Mismatch;if matches!(grant,WireValue::Null){return Ok(());}
+    let instance=command.get("instance_id").ok_or_else(invalid)?;let query=command.get("body").ok_or_else(invalid)?;
+    let context=execution_context(query.get("execution_context_id"),instance)?;
+    if query.get("actor_id").is_some_and(|actor|Some(actor)!=grant.get("actor_id")){return Err(invalid());}
+    if grant.get("protocol_digest").is_some_and(|protocol|protocol.as_string().as_deref()!=prepared.protocol_digest()){return Err(invalid());}
+    if execution_context(grant.get("execution_context_id").or_else(||result.get("execution_context_id")),instance)?!=context{return Err(invalid());}
+    let source=grant.get("source").ok_or_else(invalid)?;
+    // Historical legacy grants were service-authoritative without nested
+    // author packets. New contexts must carry the exact granting intent.
+    if source.get("author_intent").is_none(){return if context==instance.as_string().ok_or_else(invalid)?{Ok(())}else{Err(invalid())};}
+    let author=source_author(source,prepared)?;let body=author.command().get("body").ok_or_else(invalid)?;
+    if author.workspace_id()!=prepared.workspace_id(){return Err(invalid());}
+    if author.action_id()=="structure.grant.revoke" {
+        return if author.protocol_digest()==prepared.protocol_digest()&&author.command().get("instance_id")==Some(instance)
+            &&execution_context(body.get("execution_context_id"),instance)?==context&&body.get("actor_id")==grant.get("actor_id")
+            &&ascii_field(grant,"state").as_deref()==Some("REVOKED")&&grant.get("effective")==Some(&WireValue::Bool(false))&&number(body,"expected_grant_revision").and_then(|n|n.checked_add(1))==number(grant,"grant_revision"){Ok(())}else{Err(invalid())};
+    }
+    let bootstrap=author.action_id()=="structure.adopt";
+    let selected=if bootstrap {
+        if context!=instance.as_string().ok_or_else(invalid)?||ascii_field(grant,"actor_id").as_deref()!=Some(author.actor_id()){return Err(invalid());}
+        body.get("bootstrap_grant").ok_or_else(invalid)?
+    }else if author.action_id()=="structure.protocol.upgrade" {
+        if body.get("instance_id")!=Some(instance)||body.get("execution_context_id").is_some_and(|c|c.as_string().as_deref()!=Some(context.as_str())){return Err(invalid());}
+        let Some(WireValue::Array(grants))=body.get("grants")else{return Err(invalid());};if grants.len()>32{return Err(invalid());}
+        let matches:Vec<_>=grants.iter().filter(|g|g.get("actor_id")==grant.get("actor_id")).collect();
+        if matches.len()!=1{return Err(invalid());}matches[0]
+    }else if author.action_id()=="structure.grant.set" {
+        if author.protocol_digest()!=prepared.protocol_digest()||author.command().get("instance_id")!=Some(instance)
+            ||execution_context(body.get("execution_context_id"),instance)?!=context{return Err(invalid());}body
+    }else{return Err(invalid());};
+    if !bootstrap&&(selected.get("actor_id")!=grant.get("actor_id")||selected.get("membership_id")!=grant.get("membership_id"))
+        ||number(selected,"expected_grant_revision").unwrap_or(0).checked_add(1)!=number(grant,"grant_revision") {return Err(invalid());}
+    for key in ["actions","protocol_roles","capabilities"] {
+        let values=|v:Option<&WireValue>|->Result<std::collections::BTreeSet<String>,VerifyWireReceiptError>{if v.is_none(){return Ok(Default::default());}let Some(WireValue::Array(items))=v else{return Err(invalid());};let set:std::collections::BTreeSet<_>=items.iter().map(|v|v.as_string().ok_or_else(invalid)).collect::<Result<_,_>>()?;if set.len()!=items.len(){return Err(invalid());}Ok(set)};
+        if values(selected.get(key))?!=values(grant.get(key))?{return Err(invalid());}
+    }
+    if selected.get("expires_at").unwrap_or(&WireValue::Null)!=grant.get("expires_at").unwrap_or(&WireValue::Null){return Err(invalid());}Ok(())
+}
 fn verify_structure_maintenance(result:&WireValue,command:&WireValue,prepared:&VerifiedPreparedCommand)->Result<(),VerifyWireReceiptError>{
     let invalid=||VerifyWireReceiptError::Mismatch;
     if ascii_field(result,"status").as_deref()==Some("REJECTED_NO_EFFECT") && result.get("maintenance").is_none(){return Ok(());}
@@ -584,6 +700,9 @@ fn verify_structure_maintenance(result:&WireValue,command:&WireValue,prepared:&V
         source_author(source,prepared)?
     };
     let original=author.command();let body=original.get("body").ok_or_else(invalid)?;
+    let instance=original.get("instance_id").ok_or_else(invalid)?;
+    if execution_context(job.get("execution_context_id"),instance)?!=execution_context(body.get("execution_context_id"),instance)?
+        ||!listing&&execution_context(command.get("body").and_then(|b|b.get("execution_context_id")),instance)?!=execution_context(body.get("execution_context_id"),instance)?{return Err(invalid());}
     if author.action_id()!="structure.maintenance.rebuild"||author.workspace_id()!=prepared.workspace_id()
         ||!listing&&(author.protocol_digest()!=prepared.protocol_digest()||original.get("instance_id")!=command.get("instance_id"))
         ||job.get("instance_id")!=original.get("instance_id")

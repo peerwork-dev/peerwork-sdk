@@ -56,6 +56,7 @@ pub struct StructureContentContext {
     pub record_index:u8,
 }
 fn token(v:&str)->bool{v.len()==43&&v.bytes().all(|b|b.is_ascii_alphanumeric()||matches!(b,b'-'|b'_'))}
+pub(crate) fn is_context_token(v:&str)->bool{token(v)}
 impl StructureContentContext {
     pub fn from_author(author:&VerifiedStructureAuthorIntent,record_index:u8)->Result<Self,StructureContentError>{
         if !matches!(author.action_id(),"structure.action"|"structure.checkpoint.records"){return Err(StructureContentError::Invalid);}

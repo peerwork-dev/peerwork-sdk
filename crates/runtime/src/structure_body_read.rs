@@ -24,7 +24,7 @@ impl KernelClient {
     pub(super) fn open_selected_structure_bodies(&self,result:&mut KernelAcceptedResult,action:&str,local_key:&str)
         ->Result<(),KernelClientError>{
         if matches!(action,"structure.message.get"|"structure.mailbox.inbox.read"){return self.open_selected_message_bodies(result,action,local_key);}
-        if result.opened_contents.is_some()||!matches!(action,"structure.record.get"|"structure.publication.prepare.get"|"structure.records.read"){return Ok(());}
+        if result.opened_contents.is_some()||!matches!(action,"structure.record.get"|"structure.publication.prepare.get"|"structure.records.read"|"structure.instance.records.read"){return Ok(());}
         let data=parse_wire_json_bounded(result.structure_result_json.as_deref().ok_or(KernelClientError::InvalidResult)?.as_bytes(),32,1024*1024)
             .map_err(|_|KernelClientError::InvalidResult)?;
         if data.get("status").and_then(WireValue::as_string).as_deref()==Some("REJECTED_NO_EFFECT"){return Ok(());}

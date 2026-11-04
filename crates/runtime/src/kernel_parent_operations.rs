@@ -36,7 +36,7 @@ pub(crate) struct ParentSelection {
     pub wire:Zeroizing<String>,
 }
 fn binding(id:&str,identity:&KernelIdentity,origin:&str,audience:&[u16],authority:&str,kind:&str,workspace:Option<&str>)->Result<String,JournalError>{
-    if !valid_token(id)||!matches!(kind,"INTENT"|"ACCESS"|"PUBLICATION"|"ARCHIVE_MIGRATION"|"ARCHIVE_ARTIFACT")||authority.len()>4096 {
+    if !valid_token(id)||!matches!(kind,"INTENT"|"ACCESS"|"PUBLICATION"|"ARCHIVE_MIGRATION"|"ARCHIVE_ARTIFACT"|"EXECUTION_INTENT"|"EXECUTION_RESOLUTION"|"PROTOCOL_UPGRADE"|"PROTOCOL_UPGRADE_BINDING"|"PROTOCOL_UPGRADE_MEMBERS"|"PROTOCOL_UPGRADE_PLAN")||authority.len()>4096 {
         return Err(JournalError::InvalidIntent);
     }
     let audience=String::from_utf16(audience).map_err(|_|JournalError::InvalidIntent)?;
@@ -111,7 +111,7 @@ impl KernelIntentJournal {
         // replace the winner, even before any signed child packet exists.
         let tx=self.db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let inserted=tx.execute("INSERT INTO kernel_parent_operations VALUES(?1,?2,?3) ON CONFLICT(command_id) DO NOTHING",params![id,aad,sealed])?;
-        if inserted==1&&kind!="ARCHIVE_ARTIFACT" {
+        if inserted==1&&!matches!(kind,"ARCHIVE_ARTIFACT"|"EXECUTION_RESOLUTION"|"PROTOCOL_UPGRADE_BINDING"|"PROTOCOL_UPGRADE_MEMBERS"|"PROTOCOL_UPGRADE_PLAN") {
             tx.execute("INSERT INTO kernel_parent_preparations SELECT ?1,?2 WHERE NOT EXISTS(SELECT 1 FROM kernel_intents WHERE command_id=?1)",params![id,identity.key_id()])?;
         }
         tx.commit()?;
@@ -146,6 +146,16 @@ mod tests{
         let journal=KernelIntentJournal::open(&dir.path().join("operations.sqlite")).unwrap();
         let parent=journal.parent_selection(&id,&identity,"https://example.invalid/",&audience,"authority",Some(&ws)).unwrap().unwrap();
         assert_eq!(parent.kind,"INTENT");assert_eq!(parent.wire.as_str(),secret);
+    }
+    #[test]
+    fn execution_and_upgrade_plans_survive_restart_without_listing_internal_children(){
+        let(dir,identity,mut journal)=fixture();let audience:Vec<u16>="service".encode_utf16().collect();let workspace="w".repeat(43);
+        let kinds=["EXECUTION_INTENT","EXECUTION_RESOLUTION","PROTOCOL_UPGRADE","PROTOCOL_UPGRADE_BINDING","PROTOCOL_UPGRADE_MEMBERS","PROTOCOL_UPGRADE_PLAN"];
+        for(n,kind)in kinds.iter().enumerate(){let id=format!("{n:043}");journal.bind_parent_selection(&id,&identity,"https://example.invalid/",&audience,"authority",kind,Some(&workspace),"{\"selection\":\"frozen\"}").unwrap();assert!(matches!(journal.bind_parent_selection(&id,&identity,"https://example.invalid/",&audience,"authority",kind,Some(&workspace),"changed"),Err(JournalError::IntentConflict)));}
+        assert!(matches!(journal.bind_parent_selection(&"x".repeat(43),&identity,"https://example.invalid/",&audience,"authority","UNKNOWN_KIND",Some(&workspace),"{}"),Err(JournalError::InvalidIntent)));
+        drop(journal);let journal=KernelIntentJournal::open(&dir.path().join("operations.sqlite")).unwrap();
+        for(n,kind)in kinds.iter().enumerate(){let id=format!("{n:043}");let parent=journal.parent_selection(&id,&identity,"https://example.invalid/",&audience,"authority",None).unwrap().unwrap();assert_eq!(&parent.kind,kind);assert_eq!(parent.workspace_id.as_ref(),Some(&workspace));assert_eq!(parent.wire.as_str(),"{\"selection\":\"frozen\"}");assert!(matches!(journal.parent_selection(&id,&identity,"https://example.invalid/",&audience,"authority",Some("different")),Err(JournalError::IntentConflict)));}
+        let page=journal.preparations_page(&identity,"https://example.invalid/",&audience,"authority",None,32).unwrap();let roots:Vec<_>=page["items"].as_array().unwrap().iter().map(|item|item["kind"].as_str().unwrap()).collect();assert_eq!(roots,vec!["EXECUTION_INTENT","PROTOCOL_UPGRADE"]);
     }
     #[test]
     fn swapped_ciphertexts_and_modified_bindings_never_recover(){

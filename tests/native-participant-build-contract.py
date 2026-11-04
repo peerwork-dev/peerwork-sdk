@@ -22,7 +22,7 @@ class NativeGraphTests(unittest.TestCase):
         self.assertIn('--include-ignored', command)
         skipped = [command[i + 1] for i, value in enumerate(command) if value == '--skip']
         self.assertEqual(skipped, qualifier.EXTERNAL_SERVICE_CASES)
-        self.assertEqual(len(skipped), 5)
+        self.assertEqual(len(skipped), 6)
         self.assertTrue(any('connect_management_mcp_uses_immutable_views' in case for case in skipped))
         self.assertIn('cold_cli_finds_old_installation', skipped[0])
         self.assertTrue(any('native_codex_attachment' in case for case in skipped))

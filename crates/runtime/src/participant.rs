@@ -63,7 +63,7 @@ impl ParticipantError {
             operation_id: None,
         }
     }
-    fn original(mut self, id: &str) -> Self {
+    pub(crate) fn original(mut self, id: &str) -> Self {
         self.operation_id = Some(id.into());
         self
     }
@@ -109,7 +109,14 @@ pub struct Invoke {
     pub expected_instance_revision: Option<u64>,
     #[serde(default)]
     pub exact_input_refs: Vec<Value>,
+    /// SDK routing input, not a command header. The selected context is frozen
+    /// in the signed body before submission; exact refs retain business CAS.
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub record_id: Option<String>,
+    #[serde(default,skip_serializing_if="not_selected")]
+    pub default_execution: bool,
 }
+fn not_selected(value:&bool)->bool{!*value}
 impl Invoke {
     pub fn new(
         id: impl Into<String>,
@@ -127,6 +134,8 @@ impl Invoke {
             expected_workspace_revision: None,
             expected_instance_revision: None,
             exact_input_refs: Vec::new(),
+            record_id:None,
+            default_execution:false,
         }
     }
     pub fn validate(&self) -> Result<()> {
@@ -159,6 +168,7 @@ impl Invoke {
             return Err(invalid());
         }
         if self.exact_input_refs.len() > 32
+            ||self.record_id.as_ref().is_some_and(|id|!crate::workspace_urls::token(id))
             || self.exact_input_refs.iter().any(|v| {
                 v.as_object().is_none_or(|o| o.len() != 2)
                     || v["record_id"]
@@ -188,6 +198,8 @@ impl Invoke {
     }
     pub(crate) fn wire(&self, namespace: &str, actor: &str, origin: &str, durable: bool) -> Value {
         let mut v = json!({"action":self.action,"workspace_id":self.scope.workspace_id,"instance_id":self.scope.instance_id,"protocol_digest":self.scope.protocol_digest,"body":self.body,"exact_input_refs":self.exact_input_refs});
+        if let Some(record)=&self.record_id{v["record_id"]=json!(record);}
+        if self.default_execution{v["default_execution"]=json!(true);}
         if self.action == "structure.mailbox.claim" {
             // The device proof authorizes this exact command, including a
             // refused claim. A different operation cannot reuse it at the same
@@ -328,6 +340,12 @@ impl Capability {
         let denied = || self.denied(r);
         if !self.operations.contains(&r.action) {
             return Err(denied());
+        }
+        if r.action=="structure.instance.records.read" {
+            let instance=r.body["instance_id"].as_str().ok_or_else(denied)?;
+            if self.protocol_digests.is_some()||r.scope.protocol_digest.is_some()||r.scope.instance_id.is_some()
+                ||!allows(&self.instance_ids,instance)||r.scope.workspace_id.as_ref().is_none_or(|ws|!allows(&self.workspace_ids,ws)){return Err(denied());}
+            return Ok(());
         }
         if r.action=="structure.members.read" && self.mailbox_ids.is_some() && r.body["view"].as_str().is_some_and(|v|v!="BASIC") { return Err(denied()); }
         let communication = catalog::is_communication_action(&r.action);
@@ -569,6 +587,8 @@ enum Command {
     Invoke {
         context: ReplyContext,
         request: Invoke,
+        resolved: Option<Invoke>,
+        protocol_route: bool,
         reply: oneshot::Sender<Result<Admission>>,
     },
     Request {
@@ -576,6 +596,7 @@ enum Command {
         request: Invoke,
         reply: oneshot::Sender<Result<Value>>,
     },
+    ResolveExecution{context:ReplyContext,request:Invoke,reply:oneshot::Sender<Result<Invoke>>},
     Get {
         context: ReplyContext,
         id: String,
@@ -861,7 +882,21 @@ impl ParticipantClient {
     /// The wait budget covers service acceptance, never a model reply. Once
     /// admitted, dropping this future does not cancel the durable operation.
     pub async fn invoke(&self, request: Invoke, wait_budget: Duration) -> Result<Operation> {
+        self.invoke_resolved(request,None,false,wait_budget).await
+    }
+    pub(crate) async fn invoke_resolved(&self,request:Invoke,resolved:Option<Invoke>,protocol_route:bool,wait_budget:Duration)->Result<Operation>{
         self.capability.authorize(&request)?;
+        if protocol_route&&(request.action!="structure.action"||request.scope.workspace_id.is_none()||request.scope.instance_id.is_none()){return Err(ParticipantError::local("PROTOCOL_ROUTE_SCOPE_INVALID","VALIDATION"));}
+        if let Some(selected)=&resolved {
+            // The caller may retain an already verified routing selection,
+            // but cannot change any business input or explicit selection.
+            let mut semantic=selected.clone();
+            for field in ["execution_context_id","expected_binding_revision"] {
+                if request.body.get(field).is_none(){semantic.body.as_object_mut().ok_or_else(||ParticipantError::local("EXECUTION_SELECTION_INVALID","VALIDATION"))?.remove(field);}
+            }
+            if serde_json::to_value(&semantic).ok()!=serde_json::to_value(&request).ok(){return Err(ParticipantError::local("EXECUTION_SELECTION_INPUT_CONFLICT","VALIDATION").original(&request.operation_id));}
+            self.capability.authorize(selected)?;
+        }
         if crate::participant_actions::kind(&request.action)
             != Some(StructureOperationKind::Mutation)
         {
@@ -875,6 +910,8 @@ impl ParticipantClient {
         self.send(Command::Invoke {
             context: self.context(),
             request,
+            resolved,
+            protocol_route,
             reply: tx,
         })
         .map_err(|error| error.original(&id))?;
@@ -914,6 +951,13 @@ impl ParticipantClient {
             reply: tx,
         })?;
         rx.await.map_err(|_| ParticipantError::unavailable())?
+    }
+    /// Read-only routing for a fresh intent. This does not admit or execute a
+    /// business action; the eventual exact client rechecks its capability.
+    pub async fn resolve_execution(&self,request:Invoke)->Result<Invoke>{
+        request.validate()?;
+        let probe=Invoke::new("execution-selection","structure.protocol.resolve",request.scope.clone(),json!({"view":"inspect"}));self.capability.authorize(&probe)?;
+        let(tx,rx)=oneshot::channel();self.send(Command::ResolveExecution{context:self.context(),request,reply:tx})?;rx.await.map_err(|_|ParticipantError::unavailable())?
     }
     pub async fn operation(&self, id: &str) -> Result<Operation> {
         self.get(id, false).await
@@ -1182,11 +1226,28 @@ enum JobKind {
     Mutation((String, String)),
     Request,
     Refresh,
+    Preparation,
 }
 enum JobResult {
     Mutation(Value),
     Request,
     Refresh,
+    Prepared{context:ReplyContext,original:Invoke,resolved:Result<Invoke>,protocol_route:bool,reply:oneshot::Sender<Result<Admission>>},
+}
+fn admit_request(store:&mut Store,identity:&KernelIdentity,config:&ParticipantConfig,sources:&[MigrationSource],active:&BTreeSet<(String,String)>,waiters:&mut BTreeMap<(String,String),Vec<oneshot::Sender<Operation>>>,context:ReplyContext,original:Invoke,resolved:Invoke,protocol_route:bool)->Result<Admission>{
+    if !context.local_live.load(std::sync::atomic::Ordering::Acquire){return Err(ParticipantError::local("LOCAL_CLIENT_REVOKED","ADMISSION").original(&original.operation_id));}
+    context.capability.authorize(&original)?;
+    if crate::participant_actions::kind(&original.action)!=Some(StructureOperationKind::Mutation){return Err(ParticipantError::local("MUTATION_REQUIRED","VALIDATION"));}
+    let existing=store.existing(&context.namespace,&original,identity)?;
+    let selected=if existing.is_some(){store.request(&context.namespace,&original.operation_id,identity)?}else{resolved};
+    context.capability.authorize(&selected)?;
+    if original.action=="participant.archive.migrate"&&existing.is_none(){
+        if let crate::participant_actions::Selection::Migrate{workspace,source_id,name}=crate::participant_actions::selection(&original,"validation")?{crate::participant_migration::resolve(sources,&workspace,&source_id,"validation",name)?;}
+    }
+    let op=match existing{Some(op)=>{if protocol_route{store.bind_protocol_route(&context.namespace,&original)?;}op},None=>store.reserve_resolved(&context.namespace,&original,&selected,identity,config.max_pending,config.max_stored_bytes,protocol_route)?}.observed_running(active.contains(&(context.namespace.clone(),original.operation_id.clone())));
+    let(done_tx,done_rx)=oneshot::channel();
+    if op.is_terminal(){let _=done_tx.send(op.clone());}else{let list=waiters.entry((context.namespace,original.operation_id)).or_default();list.retain(|w|!w.is_closed());if list.len()<16{list.push(done_tx);}}
+    Ok(Admission{operation:op,completed:done_rx})
 }
 
 async fn engine_loop(
@@ -1234,6 +1295,9 @@ async fn engine_loop(
                 if let Some(completed)=completed{
                     let (id,result)=match completed{Ok((id,result))=>(id,Some(result)),Err(error)=>(error.id(),None)};
                     match job_kinds.remove(&id){
+                        Some(JobKind::Preparation)=>if let Some(JobResult::Prepared{context,original,resolved,protocol_route,reply})=result {
+                            let result=resolved.and_then(|resolved|admit_request(&mut store,&identity,&config,&sources,&active,&mut waiters,context,original,resolved,protocol_route));let _=reply.send(result);
+                        },
                         Some(JobKind::Refresh)=>refresh_running=false,
                         Some(JobKind::Mutation(key))=>{
                             let value=match result{Some(JobResult::Mutation(value))=>value,_=>json!({"state":"FAILED","code":"ENGINE_TASK_FAILED","retryable":false,"effect_certainty":"UNKNOWN","recovery":"OBSERVE_OR_RECOVER_ORIGINAL_OPERATION"})};
@@ -1245,6 +1309,15 @@ async fn engine_loop(
             },
             command=receiver.recv()=>match command{
                 None=>break,
+                Some(Command::ResolveExecution{context,request,reply})=>{
+                    if jobs.len()-usize::from(refresh_running)+retry_persistence.len()>=config.max_inflight{let _=reply.send(Err(ParticipantError::local("NOT_ADMITTED_BUSY","ADMISSION")));continue;}
+                    let access=access.clone();let stop=cancel.clone();let actor=identity.actor_id().to_owned();let origin=origin.clone();
+                    let job=jobs.spawn_local(async move{
+                        let selected=access.prepare_participant_execution(&request,&context.namespace,&actor,&origin,false,&stop).await.map_err(|e|{let e=KernelPublicError::from(e);let mut error=ParticipantError::local(e.code,"EXECUTION_CONTEXT_PREPARATION");error.details=e.details;error});
+                        let selected=selected.and_then(|selected|{if !context.local_live.load(std::sync::atomic::Ordering::Acquire){return Err(ParticipantError::local("LOCAL_CLIENT_REVOKED","ADMISSION"));}let probe=Invoke::new("execution-selection","structure.protocol.resolve",selected.scope.clone(),json!({"view":"inspect"}));context.capability.authorize(&probe)?;Ok(selected)});
+                        let _=reply.send(selected);JobResult::Request
+                    });job_kinds.insert(job.id(),JobKind::Request);
+                },
                 Some(Command::Resident{request,reply})=>{
                     if matches!(&request,crate::participant_rebind::resident::Request::Preflight) {
                         let access=access.clone();let cancel=cancel.clone();
@@ -1269,26 +1342,16 @@ async fn engine_loop(
                     if let Err(e)=authorized{crate::participant_watch::reject(request,e);}
                     else if let Err(e)=watch_tx.try_send(request){crate::participant_watch::reject(e.into_inner(),ParticipantError::local("WATCH_QUEUE_FULL","ADMISSION"));}
                 },
-                Some(Command::Invoke{context,request,reply})=>{
-                    let result=(||{
-                        if !context.local_live.load(std::sync::atomic::Ordering::Acquire){return Err(ParticipantError::local("LOCAL_CLIENT_REVOKED","ADMISSION").original(&request.operation_id));}
-                        context.capability.authorize(&request)?;
-                        if crate::participant_actions::kind(&request.action)!=Some(StructureOperationKind::Mutation){return Err(ParticipantError::local("MUTATION_REQUIRED","VALIDATION"));}
-                        let existing=if request.action=="participant.archive.migrate"{store.existing(&context.namespace,&request,&identity)?}else{None};
-                        if request.action=="participant.archive.migrate"&&existing.is_none(){
-                            if let crate::participant_actions::Selection::Migrate{workspace,source_id,name}=crate::participant_actions::selection(&request,"validation")?{
-                                crate::participant_migration::resolve(&sources,&workspace,&source_id,"validation",name)?;
-                            }
-                        }
-                        let reserving=access.phase(crate::transport::ClientPhase::AdmissionReserve);
-                        let op=match existing{Some(op)=>op,None=>store.reserve(&context.namespace,&request,&identity,config.max_pending,config.max_stored_bytes)?}
-                            .observed_running(active.contains(&(context.namespace.clone(),request.operation_id.clone())));
-                        drop(reserving);
-                        let (done_tx,done_rx)=oneshot::channel();
-                        if op.is_terminal(){let _=done_tx.send(op.clone());}
-                        else{let list=waiters.entry((context.namespace,request.operation_id)).or_default();list.retain(|w|!w.is_closed());if list.len()<16{list.push(done_tx);}}
-                        Ok(Admission{operation:op,completed:done_rx})
-                    })();let _=reply.send(result);
+                Some(Command::Invoke{context,request,resolved,protocol_route,reply})=>{
+                    let existing=match store.existing(&context.namespace,&request,&identity){Ok(existing)=>existing,Err(error)=>{let _=reply.send(Err(error));continue;}};
+                    if !crate::participant_actions::execution_mutation(&request.action)||existing.is_some()||resolved.is_some(){let selected=resolved.unwrap_or_else(||request.clone());let result=admit_request(&mut store,&identity,&config,&sources,&active,&mut waiters,context,request,selected,protocol_route);let _=reply.send(result);continue;}
+                    if let Err(error)=context.capability.authorize(&request){let _=reply.send(Err(error));continue;}
+                    if jobs.len()-usize::from(refresh_running)+retry_persistence.len()>=config.max_inflight{let _=reply.send(Err(ParticipantError::local("NOT_ADMITTED_BUSY","ADMISSION")));continue;}
+                    let access=access.clone();let stop=cancel.clone();let actor=identity.actor_id().to_owned();let origin=origin.clone();
+                    let task=jobs.spawn_local(async move{
+                        let resolved=access.prepare_participant_execution(&request,&context.namespace,&actor,&origin,true,&stop).await.map_err(|error|{let error=KernelPublicError::from(error);let mut e=ParticipantError::local(error.code,"EXECUTION_CONTEXT_PREPARATION");e.details=error.details;e});
+                        JobResult::Prepared{context,original:request,resolved,protocol_route,reply}
+                    });job_kinds.insert(task.id(),JobKind::Preparation);
                 },
                 Some(Command::Get{context,id,recover,reply})=>{
                     let result=(||{let r=store.request(&context.namespace,&id,&identity)?;context.capability.authorize(&r)?;if recover&&!active.contains(&(context.namespace.clone(),id.clone())){store.recover(&context.namespace,&id)?;}store.get(&context.namespace,&id,&identity).map(|op|op.observed_running(active.contains(&(context.namespace.clone(),id.clone()))))})();let _=reply.send(result);
@@ -1326,9 +1389,14 @@ async fn engine_loop(
                     if !context.local_live.load(std::sync::atomic::Ordering::Acquire){let _=reply.send(Err(ParticipantError::local("LOCAL_CLIENT_REVOKED","ADMISSION")));continue;}
                     if jobs.len()-usize::from(refresh_running)+retry_persistence.len()>=config.max_inflight{let _=reply.send(Err(ParticipantError::local("NOT_ADMITTED_BUSY","ADMISSION")));continue;}
                     if let Err(e)=context.capability.authorize(&request){let _=reply.send(Err(e));continue;}
-                    let access=access.clone();let stop=cancel.clone();let namespace=context.namespace;let actor=identity.actor_id().to_owned();let request_origin=origin.clone();let sources=sources.clone();
+                    let access=access.clone();let stop=cancel.clone();let namespace=context.namespace;let capability=context.capability;let live=context.local_live;let actor=identity.actor_id().to_owned();let request_origin=origin.clone();let sources=sources.clone();
                     let handle=jobs.spawn_local(async move{
                         let started=Instant::now();
+                        let request=match access.prepare_participant_execution(&request,&namespace,&actor,&request_origin,false,&stop).await{
+                            Ok(selected)=>selected,Err(error)=>{let error=KernelPublicError::from(error);let mut e=ParticipantError::local(error.code,"EXECUTION_CONTEXT_PREPARATION");e.details=error.details;let _=reply.send(Err(e));return JobResult::Request;}
+                        };
+                        if !live.load(std::sync::atomic::Ordering::Acquire){let _=reply.send(Err(ParticipantError::local("LOCAL_CLIENT_REVOKED","ADMISSION")));return JobResult::Request;}
+                        if let Err(error)=capability.authorize(&request){let _=reply.send(Err(error));return JobResult::Request;}
                         let r=access.execute_participant_async(&request,&namespace,&actor,&request_origin,false,&stop,&sources).await.map_err(|e|{
                             let e=KernelPublicError::from(e);
                             let read=crate::participant_actions::kind(&request.action)==Some(StructureOperationKind::Read);

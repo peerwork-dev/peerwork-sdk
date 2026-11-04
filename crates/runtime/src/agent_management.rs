@@ -23,6 +23,13 @@ fn operations()->Vec<Operation> {
         op("protocol.register","structure.protocol.register","workspace","Register an inspected immutable protocol bundle, without adoption or publication.",&["bundle"],json!({"bundle":"REPLACE_WITH_AUTHORED_BUNDLE_OBJECT"})),
         op("protocol.adopt","structure.adopt","workspace","Create an instance using an explicitly selected bundle or registered package. Existing instances remain pinned. Choose bootstrap_grant explicitly, including an empty actions list if no writes are intended.",&["bootstrap_grant"],json!({"package_digest":"EXACT_REGISTERED_PACKAGE_DIGEST","bootstrap_grant":{"actions":[],"protocol_roles":[],"capabilities":[]}})),
         op("protocol.bind","structure.protocol.bind","workspace","Attach a first role bundle with exactly matching execution rules to an existing instance.",&["instance_id","protocol_digest"],json!({"instance_id":"EXACT_INSTANCE_ID","protocol_digest":"EXACT_EXECUTION_DIGEST","package_digest":"EXACT_REGISTERED_PACKAGE_DIGEST"})),
+        op("protocol.upgrade","participant.protocol.upgrade","workspace","Upgrade an existing instance using a target package digest or authored bundle. The SDK freezes verified current binding CAS once. New execution requires explicit bounded writer grants or read_only:true; recovery retains the original plan.",&["instance_id"],json!({"instance_id":"EXACT_INSTANCE_ID","target_package_digest":"EXACT_REGISTERED_PACKAGE_DIGEST","grants":[{"actor_id":"EXACT_TARGET_ACTOR_ID","actions":["EXPLICIT_TARGET_CREATE_ACTION"],"protocol_roles":["EXPLICIT_TARGET_ROLE"],"capabilities":["EXPLICIT_TARGET_CAPABILITY"],"expires_at":null}]})),
+        op("instance.records.read","structure.instance.records.read","workspace","Read one bounded instance-wide container page across execution contexts; each record retains its own protocol and original author evidence.",&["instance_id"],json!({"instance_id":"EXACT_INSTANCE_ID","limit":8})),
+        op("context.records.read","structure.records.read","protocol","Read one explicitly selected execution context. Omitted execution_context_id retains legacy meaning.",&[],json!({"limit":8})),
+        op("instance.inspect","structure.instance.get","protocol","Read the selected execution state without a business write grant.",&[],json!({})),
+        op("record.inspect","structure.record.get","protocol","Read one exact original record and its authenticated body.",&["record_id","revision"],json!({"record_id":"EXACT_RECORD_ID","revision":1})),
+        op("protocol.inspect","structure.protocol.resolve","protocol","Resolve the selected execution's role/schema before using it.",&[],json!({"view":"inspect","include_resources":false})),
+        op("protocol.resource","structure.protocol.resource.get","protocol","Read one selected package resource.",&["path"],json!({"path":"roles/worker.md"})),
         op("grant.get","structure.grant.get","protocol","Read selected member's grant for the configured instance.",&["actor_id"],json!({"actor_id":"EXACT_ACTOR_ID"})),
         op("grant.revoke","structure.grant.revoke","protocol","Revoke the exact current member grant, retaining signed historical attribution.",&["actor_id","expected_grant_revision"],json!({"actor_id":"EXACT_ACTOR_ID","expected_grant_revision":1})),
         op("grant.set","structure.grant.set","protocol","Set explicitly selected actions, roles and capabilities for the exact current membership.",&["actor_id","membership_id","expected_grant_revision","actions","protocol_roles","capabilities","expires_at"],json!({"actor_id":"EXACT_ACTOR_ID","membership_id":"EXACT_MEMBERSHIP_ID","expected_grant_revision":null,"actions":["claim"],"protocol_roles":["WORKER"],"capabilities":[],"expires_at":null})),
@@ -70,6 +77,9 @@ fn enable_error(mut error:ParticipantError,spec:&Operation,workspace:Option<&str
     }
     error
 }
+pub(super) fn read_enable_error(error:ParticipantError,action:&str,workspace:Option<&str>)->ParticipantError {
+    match operations().into_iter().find(|spec|spec.action==action){Some(spec)=>enable_error(error,&spec,workspace,None),None=>error}
+}
 fn native_kind(spec:&Operation)->StructureOperationKind {
     crate::participant_actions::kind(spec.action).expect("management catalog uses existing native operations")
 }
@@ -82,7 +92,7 @@ impl AgentTools {
         if matches!(mode,"catalog"|"describe") {
             if mode=="describe"&&operation.is_none(){return Err(invalid("MANAGEMENT_OPERATION_REQUIRED"));}
             if id.is_some()||body.is_some()||expected_workspace.is_some()||expected_instance.is_some(){return Err(invalid("DISCOVERY_DOES_NOT_ACCEPT_MUTATION_INPUT"));}
-            let client=self.operation_client(protocol,workspace,None)?;
+            let client=self.operation_client(protocol,workspace,None,None)?;
             let caps=client.call(json!({"method":"capabilities"})).await?;
             let cap:crate::participant::Capability=serde_json::from_value(caps["capability"].clone()).map_err(|_|invalid("LOCAL_CEILING_INVALID"))?;
             let selected_workspace=if let Some(alias)=protocol{self.protocol(alias)?.workspace_id}else{self.selected_workspace(workspace).ok()};
@@ -104,6 +114,7 @@ impl AgentTools {
                 if mode=="describe" {
                     item["required_body_fields"]=json!(spec.required);item["body_example"]=spec.example;
                     item["revision_input"]=json!(if matches!(spec.name,"member.set"|"workspace.delete"){"expected_workspace_revision"}else if spec.name=="maintenance.rebuild"{"expected_revision"}else{"SEE_SELECTED_OPERATION"});
+                    if spec.name=="protocol.upgrade"{item["revision_input"]=json!("SDK_VERIFIED_AND_FROZEN_ONCE");item["selection"]=json!({"instance":"protocol alias or body.instance_id","target":"body.target_package_digest OR body.bundle","old_work":"optional body.record_id selects the original work context before role-only upgrade","authority":"explicit grants[] for a new writable execution; existing grants are never widened implicitly","automatic_metadata":"SDK verifies and freezes current membership_id, grant CAS, package and binding CAS; caller selects meaningful target actions, roles and capabilities","role_only":"same-execution instruction update needs no additional grant","read_only":"optional read_only:true intentionally activates a new execution without writer authority"});}
                     item["scope_inputs"]=match spec.scope {
                         "identity"=>json!({"selectors":[],"workspace_connect_management":"NOT_SUPPORTED"}),
                         "protocol"=>json!({"choose_one":[["protocol"],["workspace","instance_id","protocol_digest"]],"source":"EXACT_VERIFIED_INSTANCES_READ_RESULT","business_role_required":false}),
@@ -126,9 +137,17 @@ impl AgentTools {
         let mut body=body.unwrap_or(json!({}));
         let object=body.as_object_mut().ok_or_else(||invalid("MANAGEMENT_BODY_INVALID"))?;
         if object.contains_key("workspace_id")||object.contains_key("idempotency_key")||object.contains_key("command_id") {return Err(invalid("MANAGEMENT_SCOPE_MUST_USE_SELECTED_CLIENT"));}
+        if name=="protocol.upgrade" {
+            if let Some(alias)=protocol {
+                let selected=self.protocol(alias)?;let instance=selected.instance_id.ok_or_else(||invalid("MANAGEMENT_PROTOCOL_SELECTION_REQUIRED"))?;
+                if object.get("instance_id").is_some_and(|id|id!=&json!(instance)){return Err(invalid("MANAGEMENT_SCOPE_SELECTION_INVALID"));}
+                object.insert("instance_id".into(),json!(instance));
+            }
+        }
         for field in spec.required {if !object.contains_key(*field){let mut e=invalid("MANAGEMENT_FIELD_REQUIRED");e.details=Some(json!({"operation":name,"field":field,"next_action":"DESCRIBE_SELECTED_OPERATION"}));return Err(e);}}
         let (fallback,scope)=match spec.scope {
             "identity" if workspace.is_none()&&protocol.is_none()&&instance_id.is_none()=>(&self.client,Scope::default()),
+            "workspace" if name=="protocol.upgrade"&&protocol.is_some()&&instance_id.is_none()=>{let ws=self.protocol(protocol.unwrap())?.workspace_id.ok_or_else(||invalid("WORKSPACE_ALIAS_UNKNOWN"))?;(self.directory_client(&ws),Scope{workspace_id:Some(ws),..Default::default()})},
             "workspace" if protocol.is_none()&&instance_id.is_none()=>{let ws=self.selected_workspace(workspace)?;(self.directory_client(&ws),Scope{workspace_id:Some(ws),..Default::default()})},
             "protocol" if protocol.is_some()&&instance_id.is_none()=>{let alias=protocol.unwrap();(self.protocol_client(alias)?,self.protocol(alias)?)},
             "protocol" if protocol.is_none()&&instance_id.is_some()=>{let ws=self.selected_workspace(workspace)?;(self.directory_client(&ws),Scope{workspace_id:Some(ws),instance_id:instance_id.map(str::to_owned),protocol_digest:protocol_digest.map(str::to_owned)})},

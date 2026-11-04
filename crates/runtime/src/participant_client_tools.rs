@@ -55,15 +55,16 @@ pub(crate) async fn call(client: &ParticipantClient, watches: &Watches, request:
                 },
                 ClientRequest::Inbox{options,after,limit}=>serde_json::to_value(client.inbox(&options,after,limit).await?).map_err(|_|local("IPC_RESPONSE_INVALID")),
                 ClientRequest::Consume{options,items}=>{client.consume(&options,items).await?;Ok(json!({"state":"LOCAL_CONSUMPTION_RECORDED","remote_ack":"ASYNCHRONOUS","model_response":"NOT_ATTESTED"}))},
-                ClientRequest::Invoke{request,wait_ms}=>{if wait_ms>30_000{return Err(local("WAIT_BUDGET_INVALID"));}serde_json::to_value(client.invoke(request,Duration::from_millis(wait_ms)).await?).map_err(|_|local("IPC_RESPONSE_INVALID"))},
+                ClientRequest::Invoke{request,resolved_request,protocol_route,wait_ms}=>{if wait_ms>30_000{return Err(local("WAIT_BUDGET_INVALID"));}serde_json::to_value(client.invoke_resolved(request,resolved_request,protocol_route,Duration::from_millis(wait_ms)).await?).map_err(|_|local("IPC_RESPONSE_INVALID"))},
                 ClientRequest::Request{request}=>client.request(request).await,
+                ClientRequest::ResolveExecution{request}=>serde_json::to_value(client.resolve_execution(request).await?).map_err(|_|local("IPC_RESPONSE_INVALID")),
                 ClientRequest::Operation{operation_id}=>serde_json::to_value(client.operation(&operation_id).await?).map_err(|_|local("IPC_RESPONSE_INVALID")),
                 ClientRequest::OperationResult{operation_id,selection}=>client.operation_result(&operation_id,selection).await,
                 ClientRequest::Recover{operation_id}=>serde_json::to_value(client.recover(&operation_id).await?).map_err(|_|local("IPC_RESPONSE_INVALID")),
                 ClientRequest::Operations{after,limit}=>client.operations(&after,limit).await,
                 ClientRequest::Bindings=>serde_json::to_value(client.watch_bindings().await?).map_err(|_|local("IPC_RESPONSE_INVALID")),
 
-        ClientRequest::Capabilities => Ok(json!({"format":"peerwork.participant-capability.v1","actor_id":client.actor_id(),"origin":client.origin(),"capability":client.capability(),"admin":false,"maturity":"EXPERIMENTAL","features":["attached-client-tools-v1"],"sdk_version":env!("CARGO_PKG_VERSION")})),
+        ClientRequest::Capabilities => Ok(json!({"format":"peerwork.participant-capability.v1","actor_id":client.actor_id(),"origin":client.origin(),"capability":client.capability(),"admin":false,"maturity":"EXPERIMENTAL","features":["attached-client-tools-v1","protocol-operation-routing-v1"],"sdk_version":env!("CARGO_PKG_VERSION")})),
         ClientRequest::Binding | ClientRequest::Derive { .. } | ClientRequest::RevokeDerived { .. } => Err(local("RESIDENT_RUNTIME_REQUIRED_FOR_ADMINISTRATION")),
     }
 }

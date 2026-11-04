@@ -41,7 +41,14 @@ impl KernelClient {
     pub(crate) async fn execute_structure_intent_until(&mut self,identity:&KernelIdentity,authority:&str,wire:&[u8],cancel:&CancellationToken,deadline:Instant)
         ->Result<StructureIntentOutcome,KernelClientError>{
         let (id,command,durable)=self.structure_command(identity,authority,wire)?;
-        if !durable{return tokio::time::timeout_at(deadline,self.execute_structure_intent_prepared(identity,authority,wire,cancel)).await.map_err(|_|TransportError::Timeout)?;}
+        if !durable{let selected=self.prepare_execution_intent(identity,authority,wire,cancel).await?;return tokio::time::timeout_at(deadline,self.execute_structure_intent_prepared(identity,authority,&selected,cancel)).await.map_err(|_|TransportError::Timeout)?;}
+        let selected=self.prepare_execution_intent(identity,authority,wire,cancel).await?;
+        if self.journal.parent_selection(&id,identity,self.origin(),self.discovery.audience_utf16(),authority,None)?.is_some_and(|p|p.kind=="EXECUTION_INTENT") {
+            let result=tokio::time::timeout_at(deadline,async{
+                if self.journal.verified_pending(&id,identity.key_id(),self.discovery.audience_utf16())?.is_some(){self.resume_saved_structure_intent(identity,authority,&id,None,cancel).await}
+                else{self.execute_structure_intent_prepared(identity,authority,&selected,cancel).await}
+            }).await;return self.parent_result(identity,&id,result);
+        }
         let saved=self.journal.verified_pending(&id,identity.key_id(),self.discovery.audience_utf16())?.is_some();
         let parent=self.journal.parent_selection(&id,identity,self.origin(),self.discovery.audience_utf16(),authority,None)?;
         // Preexisting exact packets remain their own authoritative producer.
@@ -98,9 +105,15 @@ impl KernelClient {
         let parent=parent.ok_or(KernelClientError::IntentNotFound)?;
         match parent.kind.as_str(){
             "INTENT"=>Box::pin(self.execute_structure_intent_until(identity,authority,parent.wire.as_bytes(),cancel,deadline)).await,
+            "EXECUTION_INTENT"=>Box::pin(self.execute_structure_intent_until(identity,authority,parent.wire.as_bytes(),cancel,deadline)).await,
             "PUBLICATION"=>{
                 let selection=serde_json::from_str(&parent.wire).map_err(|_|JournalError::IncompatibleStore)?;
                 Box::pin(self.publish_selected_record_until(identity,authority,selection,cancel,deadline)).await
+            },
+            "PROTOCOL_UPGRADE"=>{
+                let value:serde_json::Value=serde_json::from_str(&parent.wire).map_err(|_|JournalError::IncompatibleStore)?;
+                let selection=serde_json::from_value(value["selection"].clone()).map_err(|_|JournalError::IncompatibleStore)?;
+                self.upgrade_protocol_instance_until(identity,authority,selection,value["idempotency_key"].as_str().ok_or(JournalError::IncompatibleStore)?,cancel,deadline).await
             },
             "ACCESS"=>{
                 let selection=serde_json::from_str(&parent.wire).map_err(|_|JournalError::IncompatibleStore)?;

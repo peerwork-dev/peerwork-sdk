@@ -28,6 +28,8 @@ pub use host::{HostInvocation, HostSelection};
 #[path = "participant_connect_bootstrap.rs"]
 mod bootstrap;
 pub use bootstrap::RuntimeSelection;
+#[path="participant_connect_views.rs"]
+mod protocol_views;
 #[path = "participant_connect_codex.rs"]
 mod codex;
 #[path = "participant_connect_discovery.rs"]
@@ -163,6 +165,8 @@ impl ConnectRequest {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Setup {
+    #[serde(default,skip_serializing_if="BTreeMap::is_empty")]
+    protocol_intents:BTreeMap<String,ProtocolSelection>,
     desired: ConnectRequest,
     registration: Registration,
     digest: String,
@@ -262,7 +266,7 @@ impl Connect {
             .map_err(|_| local("CONNECT_RECOVERY_REQUIRED"))?,
         };
         if registry.participants.len() > 8
-            || registry.setups.len() > 64 || registry.codex_attachments.len() > 64
+            || registry.setups.len() > 64 || registry.codex_attachments.len() > 64||registry.setups.values().any(|s|s.protocol_intents.len()>32)
             || registry.approvals.len() > 64
             || registry.sources.len() > 8 || registry.trusted_projects.len() > 8 || registry.trusted_project_identities.len()>8 || registry.verified_bindings.len() > 8
         {
@@ -480,7 +484,7 @@ impl Connect {
     fn begin_setup(&mut self, request:&ConnectRequest, registration:Registration, agent:bool, effective_host:Option<String>)->Result<()> {
         if self.registry.setups.len()>=64 {return Err(local("SETUP_LIMIT"));}
         let digest=sha256_hex(serde_json::to_vec(request).map_err(|_|local("CONNECT_ARGUMENT_INVALID"))?.as_slice());
-        self.registry.setups.insert(request.setup_id.clone(),Setup {desired:request.clone(),registration,digest,
+        self.registry.setups.insert(request.setup_id.clone(),Setup {protocol_intents:request.protocols.iter().map(|p|(p.alias.clone(),p.clone())).collect(),desired:request.clone(),registration,digest,
             profile:None,key_request:None,key_request_history:vec![],effective_host,channel_send:false,channel_receive:false,
             sender_capability:None,agent_host_required:agent,result:json!({"state":"PENDING","setup_id":request.setup_id})});
         self.save()
@@ -491,7 +495,7 @@ impl Connect {
         self.require_writer()?;
         let selected=self.registry.participants.get(participant).cloned().ok_or_else(||local("LOCAL_SELECTION_REQUIRED"))?;
         self.original_client(participant).await?;
-        let profile=AgentProfile{ management_views: Default::default(),format:"peerwork.agent-profile.v1".into(),endpoint_path:selected.endpoint_path.clone(),
+        let profile=AgentProfile{ protocol_views: Default::default(), management_views: Default::default(),format:"peerwork.agent-profile.v1".into(),endpoint_path:selected.endpoint_path.clone(),
             expected_origin:selected.origin.clone(),expected_actor:selected.actor_id.clone(),workspaces:[(alias.into(),workspace.into())].into(),
             protocols,protocol_endpoints:Default::default(),directory_endpoints:Default::default(),scopes:Default::default(),
             contacts:Default::default(),send_scopes:Default::default(),receive_endpoint_path:None};
@@ -727,8 +731,7 @@ impl Connect {
                 json!({"instance_id":p.instance_id}),
             )
             .await?;
-            let digest = resolved["instance"]["protocol_digest"]
-                .as_str()
+            let digest = resolved["default_binding"]["protocol_digest"].as_str().or_else(||resolved["instance"]["protocol_digest"].as_str())
                 .ok_or_else(|| local("PROTOCOL_RESOLUTION_FAILED"))?
                 .to_owned();
             let selected_scope = Scope {
@@ -740,7 +743,7 @@ impl Connect {
                 &client,
                 "structure.protocol.resolve",
                 selected_scope.clone(),
-                json!({"view":"inspect","include_resources":false}),
+                {let mut body=json!({"view":"inspect","include_resources":false});if let Some(ctx)=resolved["default_binding"]["execution_context_id"].as_str(){body["execution_context_id"]=json!(ctx);}body},
             )
             .await?;
             if binding["bundle_header"].is_null() {
@@ -791,7 +794,7 @@ impl Connect {
                     || !g["protocol_roles"]
                         .as_array()
                         .is_some_and(|rs| rs.iter().any(|v| v == &p.role))
-                    || !wanted.is_subset(&granted)
+                    || !p.actions.is_empty()&&!wanted.is_subset(&granted)
                 {
                     missing.push(json!({"kind":"BUSINESS_ROLE","instance_id":p.instance_id,"protocol_digest":selected_scope.protocol_digest,"role":p.role,"actions":wanted}));
                 }
@@ -970,7 +973,7 @@ impl Connect {
         }
         if let Some(old) = &previous {
             for (name, s) in &old.protocols {
-                if protocols.get(name).is_some_and(|wanted| wanted != s) {
+                if protocols.get(name).is_some_and(|wanted| wanted.workspace_id!=s.workspace_id||wanted.instance_id!=s.instance_id) {
                     return Err(local("PROTOCOL_ALIAS_CONFLICT"));
                 }
                 protocols.entry(name.clone()).or_insert_with(|| s.clone());
@@ -1023,6 +1026,7 @@ impl Connect {
                         p.instance_id,
                         p.role,
                         p.actions
+                        ,selected_scope.protocol_digest,cap.business_actions
                     ])
                     .to_string()
                     .as_bytes()
@@ -1238,7 +1242,8 @@ impl Connect {
             );
         }
         let mut workspaces=previous.as_ref().map(|p|p.workspaces.clone()).unwrap_or_default();workspaces.insert(request.alias.clone(),request.workspace_id.clone());
-        let profile = AgentProfile {
+        let mut profile = AgentProfile {
+            protocol_views:previous.as_ref().map(|p|p.protocol_views.clone()).unwrap_or_default(),
             workspaces, directory_endpoints, management_views, format: "peerwork.agent-profile.v1".into(),
             endpoint_path: endpoint,
             expected_origin: selected.origin.clone(),
@@ -1250,11 +1255,15 @@ impl Connect {
             send_scopes,
             receive_endpoint_path: receive_endpoint,
         };
+        self.extend_protocol_views(&request.participant,previous.as_ref(),&mut profile,&parent,&client).await?;
         profile.validate()?;
         // Persist the trusted derivation before materializing the expendable file.
         {
             let s = self.registry.setups.get_mut(&request.setup_id).unwrap();
             if s.profile.is_none() || (s.agent_host_required && s.desired.receive && !s.channel_receive && channel_receive) {
+                let mut intents=previous_setup.as_ref().map(|old|old.protocol_intents.clone()).unwrap_or_default();
+                if let Some(old)=&previous_setup{for selected in &old.desired.protocols{intents.entry(selected.alias.clone()).or_insert_with(||selected.clone());}}
+                for selected in &request.protocols{intents.insert(selected.alias.clone(),selected.clone());}s.protocol_intents=intents;
                 s.profile = Some(profile.clone());
                 s.channel_send = channel_send;
                 s.channel_receive = channel_receive;

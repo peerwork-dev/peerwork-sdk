@@ -473,13 +473,17 @@ impl KernelAccess {
     pub async fn execute_structure_intent_async(
         &self,intent_wire:&[u8],cancel:&CancellationToken,
     )->Result<crate::kernel_client::StructureIntentOutcome,KernelAccessError>{
+        self.execute_structure_intent_selected_async(intent_wire,cancel,false).await
+    }
+    async fn execute_structure_intent_selected_async(&self,intent_wire:&[u8],cancel:&CancellationToken,frozen:bool)->Result<crate::kernel_client::StructureIntentOutcome,KernelAccessError>{
         let deadline=tokio::time::Instant::now()+Duration::from_secs(30);
         let identity=self.identity()?;
         let authority=self.authority_override.clone().unwrap_or_else(||sha256_hex(identity.actor_id().as_bytes()));
         let mut client=tokio::time::timeout_at(deadline,self.open_session_client(cancel)).await
             .map_err(|_|KernelClientError::Transport(crate::transport::TransportError::Timeout))??;
         let recipient=self.access_recipient_path(client.origin());
-        let mut outcome=client.execute_structure_intent_until(&identity,&authority,intent_wire,cancel,deadline).await?;
+        let mut outcome=if frozen {tokio::time::timeout_at(deadline,client.execute_structure_intent_prepared(&identity,&authority,intent_wire,cancel)).await.map_err(|_|KernelClientError::Transport(crate::transport::TransportError::Timeout))??}
+            else{client.execute_structure_intent_until(&identity,&authority,intent_wire,cancel,deadline).await?};
         let _=tokio::time::timeout_at(deadline,async{
             client.complete_known_structure_outcome(&identity,&authority,&mut outcome,cancel).await;
             client.complete_structure_history_outcome(&identity,&authority,&mut outcome,cancel).await;
@@ -490,6 +494,18 @@ impl KernelAccess {
 
     /// Convenience producers share the resident native session and existing
     /// encrypted parent/packet journals. Never call a synchronous facade here.
+    pub(crate) async fn prepare_participant_execution(&self,request:&crate::participant::Invoke,namespace:&str,actor:&str,origin:&str,durable:bool,cancel:&CancellationToken)->Result<crate::participant::Invoke,KernelAccessError>{
+        if !crate::participant_actions::execution_routed(&request.action){return Ok(request.clone());}
+        let identity=self.identity()?;let authority=self.authority_override.clone().unwrap_or_else(||sha256_hex(identity.actor_id().as_bytes()));
+        let mut client=self.open_session_client(cancel).await?;
+        let publication=request.action=="participant.publication.publish";
+        let mut probe=request.clone();
+        if publication{probe.action="structure.publication.prepare.get".into();probe.body=serde_json::json!({"record_id":request.body["record_id"],"revision":request.body["revision"]});}
+        let wire=probe.wire(namespace,actor,origin,durable&&!publication).to_string();
+        let selected=if durable&&!publication{client.prepare_execution_intent(&identity,&authority,wire.as_bytes(),cancel).await?}else{client.select_execution_intent(&identity,&authority,wire.as_bytes(),cancel).await?};
+        let selected:serde_json::Value=serde_json::from_slice(&selected).map_err(|_|KernelClientError::InvalidResult)?;
+        let mut resolved=request.clone();if !publication{resolved.body=selected["body"].clone();}resolved.scope.protocol_digest=client.execution_protocol_selection(&identity,&selected)?;Ok(resolved)
+    }
     pub(crate) async fn execute_participant_async(
         &self, request: &crate::participant::Invoke, namespace: &str,
         actor: &str, origin: &str, durable: bool, cancel: &CancellationToken,
@@ -499,7 +515,10 @@ impl KernelAccess {
         let wire=request.wire(namespace,actor,origin,durable);
         if !participant_actions::HELPERS.contains(&request.action.as_str()) {
             let wire=wire.to_string();
-            let execution=self.execute_structure_intent_async(wire.as_bytes(),cancel);
+            // Participant admission already elected the exact context. This
+            // also preserves old unresolved rows which intentionally lack a
+            // selector: an upgrade must not retarget their frozen intent.
+            let execution=self.execute_structure_intent_selected_async(wire.as_bytes(),cancel,participant_actions::execution_mutation(&request.action));
             let outcome=if request.action=="structure.message.send"{
                 crate::transport::track_foreground_send(execution).await
             }else{execution.await};
@@ -557,6 +576,7 @@ impl KernelAccess {
                 Selection::Publish(selection)=>client.publish_selected_record_until(&identity,&authority,selection,cancel,deadline).await?,
                 Selection::Rotate(selection)=>client.rotate_structure_content_key(&identity,&authority,selection,cancel).await?,
                 Selection::Coordinate(ws)=>client.coordinate_structure_keys(&identity,&authority,&ws,cancel).await?,
+                Selection::Upgrade(selection)=>client.upgrade_protocol_instance_until(&identity,&authority,selection,wire["idempotency_key"].as_str().ok_or(KernelClientError::InvalidCommand)?,cancel,deadline).await?,
             };
             let _=tokio::time::timeout_at(deadline,client.complete_structure_history_outcome(&identity,&authority,&mut out,cancel)).await;
             Ok::<_,KernelAccessError>(crate::participant_outcome::outcome(out))

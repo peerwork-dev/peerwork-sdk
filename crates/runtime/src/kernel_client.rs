@@ -24,6 +24,11 @@ mod structure_access_client;
 pub use structure_access_client::{StructureAccessRequest,StructureAccessApproval,StructureKeyAcceptance};
 #[path = "structure_parent_client.rs"]
 mod structure_parent_client;
+#[path = "structure_protocol_upgrade.rs"]
+mod structure_protocol_upgrade;
+pub use structure_protocol_upgrade::{ProtocolUpgradeSelection,ProtocolUpgradeGrant};
+#[path = "structure_execution_context.rs"]
+mod structure_execution_context;
 #[path="archive_migration_client.rs"]
 mod archive_migration_client;
 pub use archive_migration_client::ArchiveMigrationSelection;

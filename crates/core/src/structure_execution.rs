@@ -2,6 +2,7 @@
 //! backend; these identifiers never enable local workspace replay.
 
 pub const PROFILE: &str = "backend-structure-v1";
+pub const PROTOCOL_UPGRADE_FEATURE: &str = "protocol-instance-upgrade-v1";
 
 /// Historical Owner checkpoint evidence is authenticated on reads, but is
 /// never a supported online mutation or a locally resumable transport intent.
@@ -42,6 +43,7 @@ pub const STRUCTURE_MUTATIONS: &[&str] = &[
     "structure.migration.source.request",
     "structure.protocol.bind",
     "structure.protocol.register",
+    "structure.protocol.upgrade",
     "structure.publication.entry.set",
     "structure.publication.entry.withdraw",
     "structure.publication.policy.set",
@@ -71,6 +73,7 @@ pub const STRUCTURE_READS: &[&str] = &[
     "structure.instance.get",
     "structure.instance.resolve",
     "structure.instances.read",
+    "structure.instance.records.read",
     "structure.mailbox.get",
     "structure.mailbox.inbox.read",
     "structure.mailboxes.read",
@@ -121,7 +124,7 @@ pub fn is_instance_scoped(action:&str)->bool{
         "structure.record.get"|"structure.record.withdraw"|"structure.records.read"|
         "structure.publication.prepare.get"|"structure.grant.get"|"structure.grant.set"|"structure.grant.revoke"|
         "structure.maintenance.get"|"structure.maintenance.rebuild"|"structure.maintenance.cancel"|
-        "structure.events.read")||action.starts_with("structure.delivery.")&&is_structure_action(action)
+        "structure.events.read"|"structure.instance.records.read")||action.starts_with("structure.delivery.")&&is_structure_action(action)
 }
 pub fn has_body_instance_selector(action:&str)->bool{
     matches!(action,"structure.instance.resolve"|"structure.protocol.resolve"|"structure.protocol.resource.get")

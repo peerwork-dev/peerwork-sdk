@@ -41,12 +41,13 @@ use tokio::{
     task::JoinSet,
 };
 
-pub(crate) const CONNECT_FEATURES: [&str; 5] = [
+pub(crate) const CONNECT_FEATURES: [&str; 6] = [
     "participant-connect-v1",
     "derived-client-generation-v1",
     "scoped-host-revocation-v1",
     "original-engine-binding-v1",
     "first-host-rebind-v1",
+    "protocol-operation-routing-v1",
 ];
 const REQUEST_FORMAT: &str = "peerwork.participant-request.v1";
 const RESPONSE_FORMAT: &str = "peerwork.participant-response.v1";
@@ -252,11 +253,16 @@ pub enum ClientRequest {
     Invoke {
         request: Invoke,
         #[serde(default)]
+        resolved_request: Option<Invoke>,
+        #[serde(default)]
+        protocol_route: bool,
+        #[serde(default)]
         wait_ms: u64,
     },
     Request {
         request: Invoke,
     },
+    ResolveExecution { request:Invoke },
     Operation {
         operation_id: String,
     },

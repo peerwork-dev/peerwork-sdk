@@ -24,12 +24,19 @@ pub(crate) const HELPERS: &[&str] = &[
     "participant.time.read",
     "participant.publication.publish",
     "participant.protocol.offline",
+    "participant.protocol.upgrade",
 ];
 pub(crate) fn maintenance(action: &str) -> bool {
     action == "participant.archive.migrate"
         || action.starts_with("structure.maintenance.")
         || action.starts_with("structure.migration.")
         || action == "structure.workspace.delete"
+}
+pub(crate) fn execution_mutation(action:&str)->bool {
+    matches!(action,"structure.action"|"structure.grant.set"|"structure.grant.revoke"|"structure.maintenance.rebuild"|"structure.maintenance.cancel"|"participant.publication.publish")
+}
+pub(crate) fn execution_routed(action:&str)->bool {
+    execution_mutation(action)||matches!(action,"structure.record.get"|"structure.publication.prepare.get"|"structure.instance.get"|"structure.instance.resolve"|"structure.protocol.resolve"|"structure.protocol.resource.get"|"structure.records.read"|"structure.grant.get"|"structure.maintenance.get")
 }
 pub(crate) fn kind(action: &str) -> Option<StructureOperationKind> {
     match action {
@@ -39,6 +46,7 @@ pub(crate) fn kind(action: &str) -> Option<StructureOperationKind> {
         | "participant.keys.coordinate"
         | "participant.keys.rotate"
         | "participant.publication.publish" => Some(StructureOperationKind::Mutation),
+        "participant.protocol.upgrade" => Some(StructureOperationKind::Mutation),
         "participant.access.request"
         | "participant.archive.sources"
         | "participant.protocol.offline"
@@ -75,6 +83,7 @@ pub(crate) enum Selection {
         operation: String,
         input: Value,
     },
+    Upgrade(crate::kernel_client::ProtocolUpgradeSelection),
 }
 fn invalid() -> ParticipantError {
     ParticipantError::local("HELPER_SELECTION_INVALID", "VALIDATION")
@@ -90,7 +99,8 @@ pub(crate) fn selection(r: &Invoke, idempotency_key: &str) -> Result<Selection> 
         || r.body.as_object().is_none_or(|o| {
             [
                 "workspace_id",
-                "instance_id",
+                // The upgrade helper selects a public existing instance;
+                // identity, authority and private paths remain unavailable.
                 "protocol_digest",
                 "idempotency_key",
                 "command_id",
@@ -130,6 +140,13 @@ pub(crate) fn selection(r: &Invoke, idempotency_key: &str) -> Result<Selection> 
         .filter(|s| crate::workspace_urls::token(s))
         .ok_or_else(invalid)?;
     let publication = r.action == "participant.publication.publish";
+    if r.action=="participant.protocol.upgrade" {
+        if r.scope.instance_id.is_some()||r.scope.protocol_digest.is_some()||r.expected_workspace_revision.is_some(){return Err(invalid());}
+        let mut selected=r.body.clone();selected["workspace_id"]=json!(ws);
+        let selected:crate::kernel_client::ProtocolUpgradeSelection=serde_json::from_value(selected).map_err(|_|invalid())?;
+        selected.validate().map_err(|_|invalid())?;return Ok(Selection::Upgrade(selected));
+    }
+    if r.body.get("instance_id").is_some(){return Err(invalid());}
     if !publication && (r.scope.instance_id.is_some() || r.scope.protocol_digest.is_some()) {
         return Err(invalid());
     }

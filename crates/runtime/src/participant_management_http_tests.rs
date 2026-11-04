@@ -3,7 +3,7 @@ use super::*;
 use crate::{agent_tools::{AgentTools,AgentRequest},communication_runtime as ipc,participant_connect::{Connect,ConnectRequest,Registration}};
 use tokio::io::{AsyncBufRead,AsyncBufReadExt,AsyncWrite,AsyncWriteExt};
 
-async fn mcp<R:AsyncBufRead+Unpin,W:AsyncWrite+Unpin>(reader:&mut R,writer:&mut W,id:u64,tool:&str,arguments:Value)->Value {
+pub(super) async fn mcp<R:AsyncBufRead+Unpin,W:AsyncWrite+Unpin>(reader:&mut R,writer:&mut W,id:u64,tool:&str,arguments:Value)->Value {
     let request=json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":format!("peerwork_{tool}"),"arguments":arguments,
         "_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}});
     writer.write_all(format!("{request}\n").as_bytes()).await.unwrap();writer.flush().await.unwrap();

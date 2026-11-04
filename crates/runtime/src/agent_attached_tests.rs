@@ -38,7 +38,7 @@ async fn attached_tools_keep_original_namespace_permissions_and_client_lifecycle
     assert_eq!(context["bindings"], json!([]));
     assert!(!context.to_string().contains(root.path().to_str().unwrap()));
     assert!(!root.path().join("connect.state").exists());
-    let error = tools.call(AgentRequest::Recover { management: None, workspace: None, operation_id: "missing".into(), protocol: None }).await.unwrap_err();
+    let error = tools.call(AgentRequest::Recover { protocol_view: None, management: None, workspace: None, operation_id: "missing".into(), protocol: None }).await.unwrap_err();
     assert_eq!(error.code, "OPERATION_NOT_FOUND");
     drop(tools);
     assert_eq!(original.local_namespace(), "program:old-worker");
@@ -65,7 +65,7 @@ async fn attached_business_action_uses_original_operation_namespace_and_capabili
         workspace_id: Some("W".repeat(43)), instance_id: Some("I".repeat(43)), protocol_digest: Some("d".repeat(64)),
     });
     let tools = AgentTools::from_client(worker.clone(), selection.clone()).unwrap();
-    let action = || AgentRequest::Act {
+    let action = || AgentRequest::Act { execution_context_id: None,record_id: None,
         protocol: "tasks".into(), operation_id: "same-intent".into(), action: "task.report".into(),
         structure: json!({"kind":"PROGRESS"}), plaintext_contents: None, expected_revision: 1, exact_input_refs: vec![], wait_ms: 0,
     };

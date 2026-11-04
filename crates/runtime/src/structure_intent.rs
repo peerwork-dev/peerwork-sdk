@@ -173,7 +173,7 @@ impl KernelClient {
     /// nonce-bound service time, durable intent and at most two POST attempts.
     /// A pending result always names the original saved operation. The caller
     /// can repeat its idempotency key/request or resume the returned command ID.
-    pub(super) async fn execute_structure_intent_prepared(
+    pub(crate) async fn execute_structure_intent_prepared(
         &mut self,
         identity: &KernelIdentity,
         authority: &str,
@@ -317,6 +317,7 @@ impl KernelClient {
             let mut command=original.clone();set(&mut command,"command_id",string(&base64url(&bytes)));
             set(&mut command,"action_id",string("structure.maintenance.get"));
             set(&mut command,"body",WireValue::Object(vec![("profile".encode_utf16().collect(),string(PROFILE)),("job_id".encode_utf16().collect(),string(&job_id))]));
+            if let Some(selected)=original.get("body").and_then(|b|b.get("execution_context_id")){let mut body=command.get("body").cloned().ok_or(KernelClientError::InvalidResult)?;set(&mut body,"execution_context_id",selected.clone());set(&mut command,"body",body);}
             for field in ["expected_workspace_revision","expected_instance_revision"]{set(&mut command,field,WireValue::Null);}
             set(&mut command,"exact_input_refs",WireValue::Array(Vec::new()));
             set(&mut command,"issued_at",WireValue::Number(context.server_time_ms() as f64));
@@ -368,12 +369,16 @@ impl KernelClient {
         let request = parse_wire_json_bounded(intent_wire, 38, peerwork_core::structure_content::MAX_BODY_REQUEST_BYTES).map_err(|_| invalid())?;
         let WireValue::Object(fields) = &request else { return Err(invalid()); };
         let allowed = ["action", "body", "command_id", "idempotency_key", "workspace_id", "instance_id", "protocol_digest", "plaintext_contents", "plaintext_message",
-            "expected_workspace_revision", "expected_instance_revision", "exact_input_refs"];
+            "expected_workspace_revision", "expected_instance_revision", "exact_input_refs", "record_id", "default_execution"];
         if fields.iter().any(|(key, _)| !allowed.iter().any(|name| key.iter().copied().eq(name.encode_utf16()))) { return Err(invalid()); }
         let action = request.get("action").and_then(WireValue::as_string).ok_or_else(invalid)?;
         if !is_structure_action(&action) { return Err(invalid()); }
+        if action=="structure.protocol.upgrade"||action=="structure.instance.records.read"||request.get("body").and_then(|b|b.get("execution_context_id")).is_some() {
+            if !self.discovery.protocol_features().contains(&peerwork_core::structure_execution::PROTOCOL_UPGRADE_FEATURE.encode_utf16().collect::<Vec<_>>()){return Err(KernelClientError::UnsupportedStructureProfile);}
+            if request.get("body").and_then(|b|b.get("execution_context_id")).is_some_and(|v|v.as_string().is_none_or(|s|!crate::workspace_urls::token(&s))){return Err(invalid());}
+        }
         if action=="structure.member.availability.set"&&!self.discovery.protocol_features().contains(&"member-availability-v1".encode_utf16().collect::<Vec<_>>()){return Err(KernelClientError::UnsupportedStructureProfile);}
-        let member_projection=action=="structure.member.name.set"||action=="structure.members.read"&&request.get("body").is_some_and(|b|["view","actor_id","membership_id","name"].iter().any(|k|b.get(k).is_some_and(|v|!matches!(v,WireValue::Null))));
+        let member_projection=action=="structure.member.name.set"||action=="structure.members.read"&&request.get("body").is_some_and(|b|["view","actor_id","actor_ids","membership_id","name"].iter().any(|k|b.get(k).is_some_and(|v|!matches!(v,WireValue::Null))));
         if member_projection&&!self.discovery.protocol_features().contains(&"workspace-members-v1".encode_utf16().collect::<Vec<_>>()){return Err(KernelClientError::UnsupportedStructureProfile);}
 
         if peerwork_core::structure_execution::is_communication_action(&action)&&!self.discovery.protocol_features().contains(&peerwork_core::communication::FEATURE.encode_utf16().collect::<Vec<_>>()){return Err(KernelClientError::UnsupportedStructureProfile);}

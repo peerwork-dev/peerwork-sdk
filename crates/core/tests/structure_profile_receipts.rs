@@ -222,6 +222,46 @@ fn receipt(signing: &SigningKey, command: &Value, intent: &str, result: &Value) 
 }
 
 #[test]
+fn cross_generation_pages_events_and_upgrade_grants_verify_original_signed_sources() {
+    let reader=SigningKey::from_bytes(&[21;32]);let author=SigningKey::from_bytes(&[41;32]);let service=SigningKey::from_bytes(&[22;32]);let kid=key_id(&service.verifying_key().to_bytes());
+    let wire=serde_json::to_vec(&json!({"semantics":"peerwork.kernel.v1","audience":"structure-test","command_type":"peerwork.kernel-command.v1+jws","receipt_type":"peerwork.kernel-receipt.v1+jws","receipt_public_key":kid,"limits":{}})).unwrap();let discovery=parse_discovery_wire(&wire,wire.len()).unwrap();
+    let prepare=|value:&Value,key:&SigningKey|prepare_signed_command_wire(&parse_wire_json_bounded(&serde_json::to_vec(value).unwrap(),40,180000).unwrap(),key,&discovery,None).unwrap();
+    let context=key_id(&[54;32]);let mut business=command(&author,"structure.action");business["protocol_digest"]=json!("b".repeat(64));business["body"]=json!({"profile":PROFILE,"execution_context_id":context,"action_id":"ticket.revise","structure":{}});let signed=prepare(&business,&author);
+    let source=json!({"actor_id":business["actor_id"],"command_id":business["command_id"],"intent_digest":signed.proof().intent_digest(),"author_intent":signed.jws()});let source_key=format!("{}:{}",business["actor_id"].as_str().unwrap(),business["command_id"].as_str().unwrap());
+    let mut query=command(&reader,"structure.instance.records.read");let instance=query["instance_id"].clone();query["instance_id"]=Value::Null;query["protocol_digest"]=Value::Null;query["body"]=json!({"profile":PROFILE,"instance_id":instance,"limit":32});let selected=prepare(&query,&reader);
+    let record=json!({"record_id":key_id(&[55;32]),"entity_id":key_id(&[56;32]),"revision":1,"schema":"ticket","structure":{},"sealed_content":null,"execution_context_id":context,"protocol_digest":business["protocol_digest"],"source":{"actor_id":business["actor_id"],"command_id":business["command_id"],"intent_digest":signed.proof().intent_digest(),"record_index":0},"source_key":source_key});
+    let page=json!({"profile":PROFILE,"assurance":"BACKEND_CURRENT_STATE","workspace_id":query["workspace_id"],"protocol_digest":null,"records":[record],"sources":{(source_key.clone()):source},"next_cursor":null});
+    let check=|value:&Value|verify_http_response_for_prepared(&receipt(&service,&query,selected.proof().intent_digest(),value),selected.proof(),&kid);
+    check(&page).unwrap();
+    for(field,value)in[("execution_context_id",json!(instance)),("protocol_digest",json!("a".repeat(64))),("sealed_content",json!({"ciphertext":"invented"}))]{let mut changed=page.clone();changed["records"][0][field]=value;assert!(check(&changed).is_err(),"cross-generation row {field}");}
+    let mut events=command(&reader,"structure.events.read");events["body"]=json!({"profile":PROFILE,"execution_context_id":context});let event_query=prepare(&events,&reader);let event_key=sha256_hex(serde_json::to_string(&json!([business["actor_id"],business["workspace_id"],business["command_id"]])).unwrap().as_bytes());
+    let event_page=json!({"profile":PROFILE,"assurance":"BACKEND_CURRENT_STATE","workspace_id":events["workspace_id"],"protocol_digest":events["protocol_digest"],"events":[{"actor_id":business["actor_id"],"instance_id":instance,"protocol_digest":business["protocol_digest"],"execution_context_id":context,"summary":{"action_id":"structure.action"},"source_key":event_key}],"sources":{(event_key.clone()):source}});
+    let check_event=|value:&Value|verify_http_response_for_prepared(&receipt(&service,&events,event_query.proof().intent_digest(),value),event_query.proof(),&kid);
+    check_event(&event_page).unwrap();let mut changed=event_page.clone();changed["events"][0]["execution_context_id"]=instance.clone();assert!(check_event(&changed).is_err());
+    let mut upgrade=command(&author,"structure.protocol.upgrade");upgrade["instance_id"]=Value::Null;upgrade["protocol_digest"]=Value::Null;upgrade["body"]=json!({"profile":PROFILE,"instance_id":instance,"target_package_digest":"c".repeat(64),"expected_package_digest":null,"expected_binding_revision":0,"grants":[{"actor_id":query["actor_id"],"membership_id":key_id(&[57;32]),"expected_grant_revision":null,"actions":["ticket.revise"],"protocol_roles":["WORKER"],"capabilities":["WRITE"],"expires_at":null}]});
+    let second_actor=key_id(&[58;32]);let mut second_selection=upgrade["body"]["grants"][0].clone();second_selection["actor_id"]=json!(second_actor);second_selection["membership_id"]=json!(key_id(&[59;32]));upgrade["body"]["grants"].as_array_mut().unwrap().push(second_selection);let upgrade_signed=prepare(&upgrade,&author);
+    let mut grant_query=command(&reader,"structure.grant.get");grant_query["protocol_digest"]=business["protocol_digest"].clone();grant_query["body"]=json!({"profile":PROFILE,"execution_context_id":context,"actor_id":query["actor_id"]});let grant_selected=prepare(&grant_query,&reader);
+    let grant=json!({"profile":PROFILE,"assurance":"BACKEND_CURRENT_STATE","workspace_id":query["workspace_id"],"protocol_digest":business["protocol_digest"],"grant":{"actor_id":query["actor_id"],"membership_id":key_id(&[57;32]),"grant_revision":1,"state":"ACTIVE","effective":true,"execution_context_id":context,"protocol_digest":business["protocol_digest"],"actions":["ticket.revise"],"protocol_roles":["WORKER"],"capabilities":["WRITE"],"expires_at":null,"source":{"actor_id":upgrade["actor_id"],"command_id":upgrade["command_id"],"intent_digest":upgrade_signed.proof().intent_digest(),"author_intent":upgrade_signed.jws()}}});
+    let check_grant=|value:&Value|verify_http_response_for_prepared(&receipt(&service,&grant_query,grant_selected.proof().intent_digest(),value),grant_selected.proof(),&kid);
+    check_grant(&grant).unwrap();for field in["actions","protocol_roles","capabilities"]{let mut changed=grant.clone();changed["grant"][field]=json!(["invented"]);assert!(check_grant(&changed).is_err(),"upgrade grant {field}");}
+    let mut changed=grant.clone();changed["grant"]["execution_context_id"]=instance.clone();assert!(check_grant(&changed).is_err());
+    let mut batch_query=grant_query.clone();batch_query["body"].as_object_mut().unwrap().remove("actor_id");batch_query["body"]["actor_ids"]=json!([query["actor_id"],second_actor]);let batch_selected=prepare(&batch_query,&reader);
+    let batch=json!({"profile":PROFILE,"assurance":"BACKEND_CURRENT_STATE","workspace_id":query["workspace_id"],"instance_id":instance,"execution_context_id":context,"protocol_digest":business["protocol_digest"],"view":"REVISION","grants":[{"actor_id":query["actor_id"],"grant":{"membership_id":key_id(&[57;32]),"grant_revision":2}},{"actor_id":second_actor,"grant":null}]});
+    let check_batch=|value:&Value|verify_http_response_for_prepared(&receipt(&service,&batch_query,batch_selected.proof().intent_digest(),value),batch_selected.proof(),&kid);check_batch(&batch).unwrap();
+    let mut changed=batch.clone();changed["grants"].as_array_mut().unwrap().pop();assert!(check_batch(&changed).is_err());
+    let mut changed=batch.clone();changed["grants"][0]["grant"]["actions"]=json!(["invented"]);assert!(check_batch(&changed).is_err());
+    let mut changed=batch.clone();changed["grants"][0]["grant"]["grant_revision"]=json!(0);assert!(check_batch(&changed).is_err());
+    let mut changed=batch.clone();changed["sources"]=json!({});assert!(check_batch(&changed).is_err());
+    let mut changed=batch.clone();changed["execution_context_id"]=instance.clone();assert!(check_batch(&changed).is_err());
+    let mut directory=command(&reader,"structure.members.read");directory["instance_id"]=Value::Null;directory["protocol_digest"]=Value::Null;directory["body"]=json!({"profile":PROFILE,"actor_ids":[query["actor_id"],second_actor],"state":"ACTIVE"});let directory_selected=prepare(&directory,&reader);
+    let member=|actor:Value,membership:Value|json!({"actor_id":actor,"membership_id":membership,"state":"ACTIVE","access_active":true});
+    let members=json!({"profile":PROFILE,"assurance":"BACKEND_CURRENT_STATE","workspace_id":query["workspace_id"],"protocol_digest":null,"members":[member(query["actor_id"].clone(),json!(key_id(&[57;32]))),member(json!(second_actor),json!(key_id(&[59;32])))],"missing_actor_ids":[],"observed_at":10,"next_cursor":null});
+    let check_members=|value:&Value|verify_http_response_for_prepared(&receipt(&service,&directory,directory_selected.proof().intent_digest(),value),directory_selected.proof(),&kid);check_members(&members).unwrap();
+    let mut changed=members.clone();changed["members"].as_array_mut().unwrap().pop();assert!(check_members(&changed).is_err());changed["missing_actor_ids"]=json!([second_actor]);check_members(&changed).unwrap();
+    let mut changed=members.clone();let repeated=changed["members"][0].clone();changed["members"][1]=repeated;assert!(check_members(&changed).is_err());
+}
+
+#[test]
 fn structured_receipt_verifies_deep_programs_without_relaxing_legacy_receipts() {
     let identity = SigningKey::from_bytes(&[21; 32]);
     let service = SigningKey::from_bytes(&[22; 32]);

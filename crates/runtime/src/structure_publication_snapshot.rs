@@ -68,7 +68,8 @@ impl KernelClient{
       source["attribution"]=json!({"assurance":"OWNER_ATTESTED_CONVERSION","actor_id":legacy.get("record_actor_id").unwrap_or(&Value::Null),"created_at":legacy.get("created_at").unwrap_or(&Value::Null),"legacy_source":legacy});
      }
      let revision=selection.expected_publication_revision.or_else(||record["publication_revision"].as_u64()).ok_or(KernelClientError::InvalidResult)?;
-     let intent=json!({"action":"structure.publication.entry.set","command_id":id,"workspace_id":selection.workspace_id,"instance_id":selection.instance_id,"protocol_digest":selection.protocol_digest,"body":{"state":"PUBLIC","expected_publication_revision":revision,"source":source,"title":selection.title,"structure":record["structure"],"body":encoded(&text)?,"disclosure":selection.disclosure}});
+     let mut intent=json!({"action":"structure.publication.entry.set","command_id":id,"workspace_id":selection.workspace_id,"instance_id":selection.instance_id,"protocol_digest":record["protocol_digest"].as_str().unwrap_or(&selection.protocol_digest),"body":{"state":"PUBLIC","expected_publication_revision":revision,"source":source,"title":selection.title,"structure":record["structure"],"body":encoded(&text)?,"disclosure":selection.disclosure}});
+     if let Some(context)=record.get("execution_context_id"){intent["body"]["execution_context_id"]=context.clone();}
      match Box::pin(self.execute_structure_intent_prepared(identity,authority,intent.to_string().as_bytes(),cancel)).await{
       Err(KernelClientError::Store(JournalError::IntentConflict))=>Box::pin(self.resume_saved_structure_intent(identity,authority,&id,Some(&selection.workspace_id),cancel)).await,
       other=>other,

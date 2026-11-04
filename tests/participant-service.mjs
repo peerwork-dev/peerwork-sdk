@@ -24,7 +24,7 @@ const app=createPostgresControlApp(f.kernel,{source:()=> '127.0.0.1'});
 let offline=false,dropAction=null,delayName=null,delayAction=null,release=null,streamDurationOnce=0;
 let rejectNextRebindMailbox=null,corruptFrame=null,keyDelayWorkspace=null,delayMailbox=null;
 let keyDelayMs=0,earlyEofCount=0,timeoutAction=null;const timeoutReleases=new Set();
-const counts={commands:0,discovery:0,context:0,journal_reads:0,dropped:0,native_streams:0,corrupted_frames:0,delayed_keys:0,delayed:0,claim_commands:[],actions:{}};
+const counts={commands:0,discovery:0,context:0,journal_reads:0,dropped:0,native_streams:0,corrupted_frames:0,delayed_keys:0,delayed:0,members_batches:0,grant_batches:0,claim_commands:[],actions:{}};
 const commandIds=new Set();
 // Explicit maintainer measurement only. Buffer closed metadata in memory and
 // write once after the fixture stops; never log packets, IDs or request bodies.
@@ -79,6 +79,8 @@ const handle=async request=>{
   counts.commands++;commandIds.add(command.command_id);
   if(command.workspace_id===keyDelayWorkspace&&command.action_id==='structure.mailbox.get'&&keyDelayMs){counts.delayed_keys++;await pause(keyDelayMs);}
   counts.actions[command.action_id]=(counts.actions[command.action_id]??0)+1;
+  if(command.action_id==='structure.members.read'&&Array.isArray(command.body.actor_ids))counts.members_batches++;
+  if(command.action_id==='structure.grant.get'&&Array.isArray(command.body.actor_ids))counts.grant_batches++;
   if(command.action_id==='structure.mailbox.claim')counts.claim_commands.push({command_id:command.command_id,receiver_id:command.body.receiver_id,replace:command.body.replace,expected_epoch:command.body.expected_epoch});
   if(command.action_id==='structure.mailbox.claim'&&command.body.replace===true&&command.body.mailbox_id===rejectNextRebindMailbox){
    rejectNextRebindMailbox=null;

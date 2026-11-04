@@ -140,7 +140,19 @@ impl Tools {
             drop(connect);
             if let Some(profile)=profile {
                 let is_context=matches!(request,AgentRequest::Context);
-                let mut value=AgentTools::open(profile).await?.call(request).await?;
+                let alias=agent_tools::protocol_request_alias(&request).map(str::to_owned);let retry=request.clone();
+                let result=AgentTools::open(profile).await?.call(request).await;
+                let mut value=match result {
+                    Err(error)if alias.is_some()&&error.code=="PROTOCOL_OPERATION_ROUTE_EXISTS"=>{
+                        let next=crate::participant_connect::Connect::inspect(directory)?.profile_for_scope(self.handle.as_deref(),self.workspace.as_deref())?.ok_or_else(||ParticipantError::local("LOCAL_SELECTION_REQUIRED","CONNECT"))?;
+                        AgentTools::open(next).await?.call(retry).await?
+                    },
+                    Err(error)if alias.is_some()&&agent_tools::refresh_protocol_error(&error)=>{
+                        if let Err(error)=crate::participant_connect::Connect::open(directory)?.refresh_protocol_alias(self.handle.as_deref(),self.workspace.as_deref(),alias.as_deref().unwrap(),error.details.as_ref()).await{if !agent_tools::refresh_nonblocking(&error,&retry){return Err(error);}}
+                        let next=crate::participant_connect::Connect::inspect(directory)?.profile_for_scope(self.handle.as_deref(),self.workspace.as_deref())?.ok_or_else(||ParticipantError::local("LOCAL_SELECTION_REQUIRED","CONNECT"))?;
+                        AgentTools::open(next).await?.call(retry).await?
+                    },other=>other?,
+                };
                 if is_context {value["onboarding"]=context;}
                 return Ok(value);
             }
@@ -351,7 +363,7 @@ mod tests {
         assert_eq!(bad.code,"FRONTEND_IDENTITY_PIN_MISMATCH");
     }
     fn profile() -> AgentProfile {
-        AgentProfile { management_views: Default::default(),
+        AgentProfile { protocol_views: Default::default(), management_views: Default::default(),
             workspaces: Default::default(), directory_endpoints: Default::default(), protocol_endpoints: Default::default(),
             send_scopes: Default::default(), receive_endpoint_path: None,
             format: "peerwork.agent-profile.v1".into(),

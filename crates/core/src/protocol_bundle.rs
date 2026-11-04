@@ -48,6 +48,10 @@ fn authored(source:&Value,audience:&[u16],workspace:&str,header:&Value,digest:&s
  if proof.actor_id()!=text(source,"actor_id")?||proof.command_id()!=text(source,"command_id")?||proof.intent_digest()!=text(source,"intent_digest")?||proof.workspace_id()!=Some(workspace){return Err(BundleError)}
  let c=canonical_wire_value(proof.command(),crate::prepared_command::command_canonical_path(proof.command())).map_err(|_|BundleError)?;let c:Value=serde_json::from_str(&c).map_err(|_|BundleError)?;let body=&c["body"];
  if let Some(instance)=binding{
+  if proof.action_id()=="structure.protocol.upgrade" {
+   if body["instance_id"].as_str()!=Some(instance)||body["target_package_digest"].as_str()!=Some(digest){return Err(BundleError)}
+   return Ok(());
+  }
   if proof.action_id()=="structure.protocol.bind"{if body["instance_id"].as_str()!=Some(instance)||body["protocol_digest"]!=header["protocol_digest"]{return Err(BundleError)}}else if proof.action_id()!="structure.adopt"{return Err(BundleError)}
   if let Some(selected)=body["package_digest"].as_str(){if selected!=digest{return Err(BundleError)}}else{same(&build_header(&body["bundle"])?,header)?;}
  }else{
@@ -61,7 +65,13 @@ pub fn verify_result(result:&WireValue,command:&WireValue,audience:&[u16])->Resu
  let c:Value=serde_json::from_str(&canonical_wire_value(command,crate::prepared_command::command_canonical_path(command)).map_err(|_|BundleError)?).map_err(|_|BundleError)?;
  if r["status"].as_str().is_some_and(|s|matches!(s,"REJECTED_NO_EFFECT"|"COMMITTED_RESULT_UNAVAILABLE")){return Ok(())}
  let action=text(&c,"action_id")?;let body=&c["body"];
- if matches!(action,"structure.protocol.register"|"structure.protocol.bind"|"structure.adopt"){
+ if action=="structure.protocol.upgrade" {
+  if r["status"]!="APPLIED"||!matches!(r["upgrade_kind"].as_str(),Some("UNCHANGED"|"ROLE_BUNDLE_UPDATED"|"DEFAULT_ACTIVATED"|"DEFAULT_REACTIVATED"))
+   ||r["instance_id"]!=body["instance_id"]||r["package_digest"]!=body["target_package_digest"]
+   ||body["expected_binding_revision"].as_u64().and_then(|v|v.checked_add(if r["upgrade_kind"]=="UNCHANGED"{0}else{1}))!=r[if body.get("execution_context_id").is_some(){"binding_revision"}else{"default_revision"}].as_u64()
+   ||r["execution_context_id"].as_str().is_none_or(|s|!crate::structure_content::is_context_token(s))
+   ||body.get("execution_context_id").is_some_and(|v|v!=&r["execution_context_id"]){return Err(BundleError)}
+ }else if matches!(action,"structure.protocol.register"|"structure.protocol.bind"|"structure.adopt"){
   if let Some(bundle)=body.get("bundle"){let h=build_header(bundle)?;if text(&r,"package_digest")?!=sha256_hex(encoded(&h)?.as_bytes())||r["protocol_digest"]!=h["protocol_digest"]{return Err(BundleError)}}
   else if let Some(d)=body["package_digest"].as_str(){if text(&r,"package_digest")?!=d{return Err(BundleError)}}
   if action=="structure.protocol.bind"&&(r["instance_id"]!=body["instance_id"]||r["protocol_digest"]!=body["protocol_digest"]){return Err(BundleError)}
@@ -69,8 +79,17 @@ pub fn verify_result(result:&WireValue,command:&WireValue,audience:&[u16])->Resu
   let h=&r["bundle_header"];let d=text(&r,"package_digest")?;
   if sha256_hex(encoded(h)?.as_bytes())!=d||r["protocol_digest"]!=h["protocol_digest"]||sha256_hex(encoded(&json!({"semantics":"peerwork.kernel.v1","manifest":h["manifest"]}))?.as_bytes())!=text(h,"protocol_digest")?{return Err(BundleError)}
   if body["package_digest"].as_str().is_some_and(|selected|selected!=d){return Err(BundleError)}
+  if body["protocol_digest"].as_str().is_some_and(|selected|r["protocol_digest"].as_str()!=Some(selected)){return Err(BundleError)}
   let workspace=text(&c,"workspace_id")?;authored(&r["evidence"]["registration"],audience,workspace,h,d,None)?;
-  if let Some(instance)=body["instance_id"].as_str(){let b=&r["evidence"]["binding"];if b["instance_id"].as_str()!=Some(instance){return Err(BundleError)}authored(&b["source"],audience,workspace,h,d,Some(instance))?;}
+  if let Some(instance)=body["instance_id"].as_str(){let b=&r["evidence"]["binding"];if b["instance_id"].as_str()!=Some(instance){return Err(BundleError)}authored(&b["source"],audience,workspace,h,d,Some(instance))?;
+   if let Some(context)=r.get("execution_context_id") {
+    if b["execution_context_id"]!=*context||b["protocol_digest"]!=r["protocol_digest"]||b["package_digest"]!=r["package_digest"]||b["binding_revision"]!=r["binding_revision"]
+     ||body.get("execution_context_id").is_some_and(|v|v!=context){return Err(BundleError)}
+    let proof=verify_structure_author_intent(text(&b["source"],"author_intent")?,audience).map_err(|_|BundleError)?;
+    let source:Value=serde_json::from_str(&canonical_wire_value(proof.command(),crate::prepared_command::command_canonical_path(proof.command())).map_err(|_|BundleError)?).map_err(|_|BundleError)?;
+    if proof.action_id()=="structure.protocol.upgrade"&&source["body"].get("execution_context_id").is_some_and(|v|v!=context){return Err(BundleError)}
+   }
+  }
   if body["view"].as_str()==Some("runtime"){
    let role=text(body,"role")?;let runtime=&r["runtime"];let declared=&h["roles"][role];
    if runtime["actor_id"]!=c["actor_id"]||runtime["role"]!=body["role"]||runtime["instructions_resource"]!=declared["instructions"]||runtime["context"]!=declared["context"]{return Err(BundleError)}
@@ -98,5 +117,20 @@ pub fn verify_result(result:&WireValue,command:&WireValue,audience:&[u16])->Resu
   let f:Value=serde_json::from_str(include_str!("../../../tests/fixtures/protocol-role-bundle-v1.json")).unwrap();let actual=inspect(&f["bundle"]).unwrap();assert_eq!(actual["package_digest"],f["package_digest"]);assert_eq!(actual["protocol_digest"],f["protocol_digest"]);
   let mut changed=f["bundle"].clone();changed["resources"]["roles/worker.md"]["text"]=json!("different instructions");assert_ne!(inspect(&changed).unwrap()["package_digest"],actual["package_digest"]);
   changed["roles"]["WORKER"]["tools"][0]["action"]=json!("undeclared");assert!(inspect(&changed).is_err());
+ }
+ #[test]fn upgrade_outcome_fences_default_and_selected_bindings_and_preserves_noop(){
+  let wire=|value:&Value|crate::wire_json::parse_wire_json_bounded(&serde_json::to_vec(value).unwrap(),40,180000).unwrap();
+  let instance="I".repeat(43);let context="C".repeat(43);let package="a".repeat(64);
+  let mut command=json!({"action_id":"structure.protocol.upgrade","body":{"instance_id":instance,"expected_binding_revision":7,"expected_package_digest":null,"target_package_digest":package}});
+  let mut result=json!({"status":"APPLIED","upgrade_kind":"DEFAULT_ACTIVATED","instance_id":instance,"execution_context_id":context,"package_digest":package,"binding_revision":1,"default_revision":8});
+  let verify=|result:&Value,command:&Value|verify_result(&wire(result),&wire(command),&[]);
+  verify(&result,&command).unwrap();
+  result["default_revision"]=json!(7);assert!(verify(&result,&command).is_err());
+  result["upgrade_kind"]=json!("UNCHANGED");verify(&result,&command).unwrap();
+  result["default_revision"]=json!(8);assert!(verify(&result,&command).is_err());
+  command["body"]["execution_context_id"]=json!(context);result["upgrade_kind"]=json!("ROLE_BUNDLE_UPDATED");result["binding_revision"]=json!(8);result["default_revision"]=json!(42);
+  verify(&result,&command).unwrap();
+  result["execution_context_id"]=json!("X".repeat(43));assert!(verify(&result,&command).is_err());
+  result["execution_context_id"]=json!(context);result["package_digest"]=json!("b".repeat(64));assert!(verify(&result,&command).is_err());
  }
 }
