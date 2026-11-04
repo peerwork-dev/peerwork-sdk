@@ -1,7 +1,7 @@
 # Bot quickstart: native first-use connection
 
-Use native0.3.12 and its exact published
-[assets/checksums](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.12).
+Use native0.3.13 and its exact published
+[assets/checksums](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.13).
 Existing0.3.2 users retain the
 [versioned guide](native-participant-quickstart-0.3.2.md).
 
@@ -118,7 +118,7 @@ See [connect and recovery](participant-connect.md),
 [program/runtime API](participant-runtime-candidate.md) and
 [state handoff](native-state-handoff.md).
 
-The next native release candidate adds `peerwork_manage` (absent from0.3.12).
+Native0.3.13 adds `peerwork_manage` (absent from0.3.12).
 The loaded schema lists administration operations; use `describe` for the exact
 selected operation, then reuse the original client for workspace/protocol/access/
 key management. See [native tool coverage](agent-tools.md). This avoids raw

@@ -1,7 +1,7 @@
 # Connect an existing participant
 
-Use native SDK0.3.12 and its exact published
-[release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.12).
+Use native SDK0.3.13 and its exact published
+[release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.13).
 Native0.3.2 retains its
 [explicit setup guide](participant-connect-0.3.2.md).
 The native client adds no Node/Python runtime dependency or additional platforms.
@@ -47,14 +47,14 @@ This uses the host owner's registered destination instead of trying to open
 their control socket under the signing user's account. The bridge grant is
 still enforced for the selected identity and mailbox.
 
-For a runtime launched by this Connect installation, the same durable operation
-reads the original **receive** endpoint's binding and subscriptions, stops the
-exact owned runtime, executes the sealed rebind, and restarts from its committed
-configuration. The engine, receiver client/namespace, mailbox, keys, journal and
-pending command IDs stay in their original stores. A runtime without protected
-launch provenance returns `LOCAL_RUNTIME_TAKEOVER_REQUIRED`; an endpoint alone
-does not authorize stopping an unknown external process. A shared host group
-covering additional subscriptions requires an explicit group selection.
+With a0.3.13 resident runtime, the same durable operation reads the original
+**receive** endpoint's binding and subscriptions and changes only the selected
+host scope without restarting the process. The engine, receiver client/namespace,
+mailbox, keys, journal and pending command IDs stay in their original stores.
+An older runtime can use its existing offline transaction with an authorized
+restoration path, as described below. An ordinary client endpoint does not
+authorize stopping an external process. A shared host group covering additional
+subscriptions requires an explicit group selection.
 
 Repeat the same command after an interruption. Keep its original arguments and
 operation; do not reset state, invent a new receiver or resend pending commands.
@@ -78,9 +78,9 @@ can report a parent's session ID for a subagent; they are not an exact-thread
 selection mechanism. Ordinary MCP registration does not itself supply a current
 conversation control channel.
 
-## Explicit original runtimes: next native release candidate
+## Explicit original runtimes and resident rebind (native0.3.13)
 
-This follow-up is not in0.3.12. Selecting an authenticated original runtime admin
+These additions are not in0.3.12. Selecting an authenticated original runtime admin
 is sufficient management authority; a Connect launch receipt is not required.
 For a first receiving path, native host attachment uses the online admin interface
 without stopping the runtime. Actual existing receiver bindings are inspected
@@ -103,7 +103,7 @@ or to restart an uncoordinated shared runtime. Repeating the same invocation
 continues the original attachment. Ordinary tools and management operations do
 not require this maintenance option.
 
-The candidate resident runtime advertises `resident-scope-rebind-v1`. With that
+The0.3.13 resident runtime advertises `resident-scope-rebind-v1`. With that
 feature, the authenticated original admin selection suffices for an existing
 receiver: Connect retains the same engine process and rebinds the selected
 subscriptions through the same sealed operation. No source config pathname is
@@ -121,7 +121,7 @@ first be reconciled with the original claim; it cannot be aborted or retried
 under a new claim. Abort is rejected after a replacement has committed. These
 flags do not start another attachment or select a new destination. Older offline
 attachments retain their original native `runtime recover-host-rebind` interface.
-This remains candidate documentation until the matching artifact is published.
+Use the exact matching release artifact; a source snapshot is not an installed upgrade.
 
 ## Tool access without state takeover
 

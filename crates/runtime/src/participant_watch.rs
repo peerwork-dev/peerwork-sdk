@@ -676,6 +676,10 @@ pub(crate) async fn run(
                     let attached=(||->Result<_>{
                         if resident.paused(&options){return Err(error("HOST_REBIND_PENDING_RESUME_ORIGINAL_OPERATION"));}
                         if !local_live.load(std::sync::atomic::Ordering::Acquire){return Err(error("LOCAL_CLIENT_REVOKED"));}
+                        // Maintenance pauses execution, not the original scope's
+                        // admission reservation. Preserve room to restore it.
+                        let reserved=slots.get(&options.key()).is_some_and(|s|s.enabled||resident.paused(&s.binding.options));
+                        if !reserved&&slots.values().filter(|s|s.enabled||resident.paused(&s.binding.options)).count()>=8{return Err(error("WATCH_SCOPE_LIMIT"));}
                         if let Some(s)=slots.get_mut(&options.key()){s.signals.retain(|s|!s.is_closed());if s.signals.len()>=16{return Err(error("WATCH_LISTENER_LIMIT"));}}
                         let binding=store.attach_watch(&identity, &namespace,&options)?;
                         let key=options.key();

@@ -2,7 +2,7 @@
 
 Native0.3.6 adds direct existing-endpoint attachment and workspace member tools.
 Native0.3.5 introduced the embedded tool entry. Use the exact
-[release](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.12)
+[release](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.13)
 for published binaries and source; a source snapshot alone is not an installed
 upgrade. Native0.3.4 does not expose `serve_client`.
 
@@ -77,13 +77,13 @@ checked. Do not switch to a broader Owner client as a workaround.
 
 ## Discover management and version mismatches
 
-The next native release candidate adds the `peerwork_manage` tool over the
+Native0.3.13 adds the `peerwork_manage` tool over the
 existing client. It reuses native workspace/protocol/access/key/migration and
-publication producers; no second signer or journal is created. The current0.3.12
+publication producers; no second signer or journal is created. The0.3.12
 fixed MCP catalog does not include it. Inspect [tool coverage](agent-tools.md)
 before changing an application or generating a wrapper.
 
-The next frontend reports its own version and the runtime-reported SDK version
+The0.3.13 frontend reports its own version and the runtime-reported SDK version
 in `peerwork_context.versions`. An older runtime may report `NOT_REPORTED`; this
 is not a reason to restart it blindly. Upgrade the frontend for new tool schemas;
 upgrade the selected resident engine only when the requested native capability

@@ -1,9 +1,9 @@
 # Native tools for Agents and programs
 
-The next native release candidate shares one Participant engine across MCP, CLI
-and Rust programs. Its new `peerwork_manage` surface is not in0.3.12; use matching
-published assets before selecting a feature. The [connection guide](participant-connect.md)
-retains the published0.3.12 entry until this candidate is released.
+Native SDK0.3.13 shares one Participant engine across MCP, CLI and Rust programs.
+Its `peerwork_manage` surface is absent from0.3.12. Use the matching
+[release](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.13)
+and [connection guide](participant-connect.md).
 
 Agents normally use the loaded MCP tools. Use `peerwork_context` for the selected
 identity/workspaces and the loaded tool schemas for arguments. Software owns
@@ -89,7 +89,7 @@ view and namespace. Do not substitute a newer view or another operation ID.
 `protocol.bind` attaches a first role bundle only. An existing instance cannot
 replace its package, including a change limited to role Markdown. A bundle's
 immutable digest and the instance's currently fixed package binding are distinct
-constraints; this SDK candidate does not implement bundle revision or rule rollout.
+constraints; SDK0.3.13 does not implement bundle revision or rule rollout.
 
 CLI exposes the same schemas and implementation:
 

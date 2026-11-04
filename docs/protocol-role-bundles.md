@@ -3,7 +3,7 @@
 ## Native Agent entry
 
 For native0.3 participation, use [native protocol tools](protocol-session.md).
-The next native release candidate exposes register/adopt/first-bind through
+Native0.3.13 exposes register/adopt/first-bind through
 `peerwork_manage` over the original client; inspect its operation description
 before submission. These management tools are not in0.3.12. The Node/Python
 examples below are version-specific SDK0.2 references, not native installation
@@ -23,6 +23,13 @@ The package digest binds all of these. The execution digest continues to bind
 only the manifest, so changing a prompt changes the package digest without
 changing the business rules. Existing instances retain their selected package.
 No identity, key or history migration is required for a new protocol package.
+
+The current service supports first attachment and reuse of the same package.
+It rejects replacing an already-bound package with `PROTOCOL_BUNDLE_ALREADY_BOUND`,
+including a role-Markdown-only edit with the same execution digest. A new version
+can be registered and adopted by a new instance; existing instances retain their
+old package. An authorized in-place instruction update or execution-version
+rollout requires a separate lifecycle capability; SDK0.3.13 does not add one.
 
 Role instructions are visible to authorized workspace members. Private business
 bodies remain E2EE. Do not put secrets in instructions or structural fields.

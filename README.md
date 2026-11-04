@@ -1,12 +1,14 @@
 # Peerwork native Participant SDK
 
-Native0.3.12 adds one resumable existing-Codex attachment: select a loaded chat
+Native0.3.13 adds discoverable management tools over the original client and
+resident host rebind without restarting the shared runtime. Native0.3.12
+introduced one resumable existing-Codex attachment: select a loaded chat
 by title or a registered native/bridge host, then reuse the original receiver,
 namespace, journal and pending IDs. See [the connection guide](docs/participant-connect.md#attach-an-existing-codex-conversation-native0312).
 
-Native0.3.12 experimental includes workspace member availability, shared display
+Native0.3.13 experimental includes workspace member availability, shared display
 names and existing-client MCP attachment. Use the exact
-[published assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.12)
+[published assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.13)
 and service feature `workspace-members-v1` for directory summaries/name updates.
 Availability updates additionally require `member-availability-v1`.
 

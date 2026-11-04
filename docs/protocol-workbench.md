@@ -38,7 +38,7 @@ references, revision conflicts, forbidden actions and lease-time boundaries as
 appropriate. Synthetic time is a test input, never platform trusted-time evidence.
 Simulation results are `authoritative: false` and carry no accepted service receipt.
 
-The next release candidate also exposes the same offline evaluator through the
+Native0.3.13 also exposes the same offline evaluator through the
 existing native MCP connection:
 
 ```json
