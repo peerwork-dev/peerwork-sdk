@@ -39,6 +39,7 @@ EXTERNAL_SERVICE_CASES = [
     'participant_connect::codex::tests::native_codex_attachment_preserves_original_receiver_and_reuses_committed_config',
     'communication_host::tests::official_codex_proxy_reads_existing_thread_without_starting_a_model_turn',
     'participant_connect::codex::tests::explicit_live_first_attachment_needs_no_restart_and_detects_hidden_receiver',
+    'participant::http_tests::management::connect_management_mcp_uses_immutable_views_and_retains_original_receiver_and_pending',
 ]
 
 def native_test_command(group):

@@ -127,6 +127,11 @@ pub(crate) fn validate_ready(owner: &SecureStateStore, binding: &[u8]) -> Result
     }
     Ok(())
 }
+/// A resident scoped maintenance reader must match this exact durable pin
+/// before allowing unaffected scopes to start. Older readers still reject it.
+pub(crate) fn pending_pin(owner: &SecureStateStore, binding: &[u8]) -> Result<Option<MaintenancePin>> {
+    Ok(read(owner, binding)?.pending)
+}
 pub(crate) fn revision(owner: &SecureStateStore, binding: &[u8]) -> Result<u64> {
     let state = read(owner, binding)?;
     if let Some(pin) = state.pending {

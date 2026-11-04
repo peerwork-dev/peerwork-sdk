@@ -11,6 +11,8 @@ mod client;
 mod derived;
 #[path = "communication_hosts.rs"]
 mod hosts;
+#[path = "communication_runtime_rebind.rs"]
+mod resident_rebind;
 use crate::{
     communication_host::{random_token, write_private},
     communication_store::{identifier, private_json},
@@ -187,6 +189,8 @@ struct Session {
     watches: Arc<tokio::sync::Mutex<BTreeMap<String, Arc<tokio::sync::Mutex<ProgramWatch>>>>>,
 }
 struct Runtime {
+    config:RuntimeConfig,
+    rebind_tasks:tokio::sync::Mutex<BTreeMap<String,tokio::task::JoinHandle<()>>>,
     owners: BTreeMap<String, ParticipantClient>,
     engine_bindings: BTreeMap<String, String>,
     sessions: std::sync::RwLock<Vec<Session>>,
@@ -335,17 +339,24 @@ impl Runtime {
                 expected_actor: Option<String>,
                 #[serde(default)]
                 expected_origin: Option<String>,
+                #[serde(default)]
+                rebind:Option<crate::participant_rebind::HostRebindRequest>,
+                #[serde(default)]
+                recovery:Option<crate::participant_rebind::HostRebindRecoveryRequest>,
             }
             let value=async{match serde_json::from_value::<AdminRequest>(frame.request){
-                Ok(request)if request.method=="stop"&&request.config.is_none()=>Ok(json!({"state":"STOPPING"})),
-                Ok(request)if request.method=="status"&&request.config.is_none()=>{
+                Ok(request)if request.method=="host_rebind"&&request.config.is_none()&&request.rebind.is_some()=>{
+                    self.start_resident_rebind(request.rebind.unwrap(),request.recovery).await
+                },
+                Ok(request)if request.method=="stop"&&request.config.is_none()&&request.rebind.is_none()&&request.recovery.is_none()=>Ok(json!({"state":"STOPPING"})),
+                Ok(request)if request.method=="status"&&request.config.is_none()&&request.rebind.is_none()&&request.recovery.is_none()=>{
                     let mut engines=Vec::new();for (name,owner) in &self.owners{engines.push(json!({"name":name,"actor_id":owner.actor_id(),"origin":owner.origin(),"state_binding":owner.state_binding(),"engine_digest":self.engine_bindings.get(owner.state_binding()),"metrics":owner.metrics().await?}));}
                     let (clients,generations)=self.client_snapshot()?;
                     let mut receivers=Vec::new();
-                    for (name,client) in clients {let bindings=client.watch_bindings().await?;if !bindings.is_empty(){receivers.push(json!({"client":name,"client_generation":generations.get(&name),"bindings":bindings}));}}
-                    Ok(json!({"state":"LOCAL_READY","engines":engines,"receivers":receivers,"hosts":self.hosts.lock().await.statuses(),"pending_client_revocations":self.pending_revocation_status()?,"network_or_host_readiness":"NOT_ATTESTED"}))
+                    for (name,client) in clients {let bindings=client.watch_bindings().await?;if !bindings.is_empty(){receivers.push(json!({"client":name,"client_generation":generations.get(&name),"actor_id":client.actor_id(),"origin":client.origin(),"state_binding":client.state_binding(),"engine_digest":self.engine_bindings.get(client.state_binding()),"bindings":bindings}));}}
+                    Ok(json!({"state":"LOCAL_READY","sdk_version":env!("CARGO_PKG_VERSION"),"optional_features":["resident-scope-rebind-v1"],"engines":engines,"receivers":receivers,"hosts":self.hosts.lock().await.statuses(),"pending_client_revocations":self.pending_revocation_status()?,"network_or_host_readiness":"NOT_ATTESTED"}))
                 },
-                Ok(request)if request.method=="host_ensure"&&request.config.is_some()=>{
+                Ok(request)if request.method=="host_ensure"&&request.config.is_some()&&request.rebind.is_none()&&request.recovery.is_none()=>{
                     let (clients,generations)=self.client_snapshot()?;
                     let config=request.config.unwrap();
                     if request.expected_actor.is_some()!=request.expected_origin.is_some(){return Err(local("HOST_IDENTITY_PIN_REQUIRED"));}
@@ -385,7 +396,7 @@ impl Runtime {
                     let(cleaned,cleanup_error)=match revoked {Some(job)=>match self.cleanup_revocation(&job).await{Ok(done)=>(done,None),Err(e)=>(false,Some(e))},None=>(true,None)};
                     Ok(json!({"state":if cleaned{"LOCAL_CLIENTS_REVOKED"}else{"LOCAL_CLIENTS_REVOKED_CLEANUP_PENDING"},"count":count,"receiver_cleanup_pending":!cleaned,"cleanup_error":cleanup_error,"original_operations_retained":true,"remote_rights_revoked":false,"inflight_host_results":"RETAINED"}))
                 },
-                ClientRequest::Capabilities=>Ok(json!({"format":"peerwork.participant-capability.v1","actor_id":client.actor_id(),"origin":client.origin(),"capability":client.capability(),"admin":false,"maturity":"EXPERIMENTAL","features":CONNECT_FEATURES})),
+                ClientRequest::Capabilities=>Ok(json!({"format":"peerwork.participant-capability.v1","sdk_version":env!("CARGO_PKG_VERSION"),"actor_id":client.actor_id(),"origin":client.origin(),"capability":client.capability(),"admin":false,"maturity":"EXPERIMENTAL","features":CONNECT_FEATURES})),
                 ClientRequest::Binding=>Ok(json!({"format":"peerwork.local-engine-binding.v1","actor_id":client.actor_id(),"origin":client.origin(),"state_binding":client.state_binding(),"engine_digest":self.engine_bindings.get(client.state_binding()),"namespace":client.local_namespace(),"client_generation":session.generation,"client_name":session.name,"features":CONNECT_FEATURES})),
                 request=>crate::participant_client_tools::call(client,&session.watches,request).await,
             }
@@ -832,6 +843,7 @@ pub async fn serve(
     };
     let pending_revocations = derived.pending();
     let runtime = Arc::new(Runtime {
+        config:config.clone(),rebind_tasks:Default::default(),
         engine_bindings: config.engines.iter().map(|engine| {
             let owner = &owners[&engine.name];
             Ok((owner.state_binding().to_owned(), engine.binding_digest()?))
@@ -849,6 +861,7 @@ pub async fn serve(
     for job in pending_revocations {
         let _ = runtime.cleanup_revocation(&job).await;
     }
+    runtime.resume_resident_rebinds().await?;
     let _ = ready.send(Ok(RuntimeReady {
         state: "LOCAL_READY".into(),
         admin_endpoint: admin_endpoint.clone(),
@@ -867,6 +880,8 @@ pub async fn serve(
     }
     connections.abort_all();
     while connections.join_next().await.is_some() {}
+    let maintenance=std::mem::take(&mut *runtime.rebind_tasks.lock().await);
+    for (_,task) in maintenance {let _=task.await;}
     // A host call may already have reached the selected session. Finish its
     // evidence write while the owning engine remains available.
     let _ = cleanup_job.await;

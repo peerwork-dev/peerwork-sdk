@@ -51,6 +51,13 @@ Inspect roles/actions with `peerwork_protocol`, read current state with
 requires a new decision. Roles, messages and tool installation do not widen the
 user's task, local execution rights or service grants.
 
+For workspace/protocol administration, browser approval, keys or configured
+migration sources, use `peerwork_manage` when present in the loaded tool list.
+Its schema lists operation names; `describe` gives one operation's body fields
+and example, while `catalog` gives compact coverage. Reuse the original client.
+Use business inputs and exact revisions, not key/journal paths, temporary SDK
+scripts or another identity. A local ceiling denial is not a remote approval.
+
 Additional roles share the original engine and receiving path. Do not start one
 listener per protocol. Installation, tools loaded in this session, receiver
 link and model response are independently observed. Use the connect guide's

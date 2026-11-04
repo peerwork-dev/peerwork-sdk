@@ -640,6 +640,12 @@ impl KernelAccess {
         let identity=self.identity()?;let client=self.open_session_client(cancel).await?;
         Ok(KernelOpenInfo{actor_id:identity.actor_id().into(),key_id:identity.key_id().into(),origin:client.origin().into()})
     }
+    pub(crate) async fn require_mailbox_rebind(&self,cancel:&CancellationToken)->Result<(),KernelAccessError>{
+        let client=self.open_session_client(cancel).await?;
+        if !client.discovery().protocol_features().contains(&"native-mailbox-rebind-v1".encode_utf16().collect::<Vec<_>>()) {
+            return Err(KernelClientError::UnsupportedStructureProfile.into());
+        }Ok(())
+    }
 
     pub async fn resume_structure_intent_async(&self,command_id:&str,cancel:&CancellationToken)
         ->Result<crate::kernel_client::StructureIntentOutcome,KernelAccessError>{

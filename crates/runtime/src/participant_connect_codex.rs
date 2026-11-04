@@ -13,12 +13,17 @@ pub(super) struct Attachment {
     selected_chat: String,
     desired: ConnectRequest,
     invocation: ConnectRequest,
-    owned: bootstrap::OwnedRuntime,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    owned: Option<bootstrap::OwnedRuntime>,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    resident_admin: Option<PathBuf>,
     source_binding: Value,
     request: HostRebindRequest,
     committed: Option<RuntimeConfig>,
     #[serde(default)]
     finished: bool,
+    #[serde(default)]
+    aborted: bool,
 }
 fn failure(code: &str) -> ParticipantError {
     local(code)
@@ -55,6 +60,8 @@ fn desired_setup(
     desired.send |= requested.send;
     desired.require_body_keys |= requested.require_body_keys;
     desired.request_membership |= requested.request_membership;
+    for operation in &requested.management {if !desired.management.contains(operation){desired.management.push(operation.clone());}}
+    desired.management.sort();
     desired.receive = true;
     desired.receive_mode = Some(ReceiveMode::Push);
     desired.host = Some(host.into());
@@ -77,7 +84,7 @@ fn validate_committed(job: &Attachment, committed: &RuntimeConfig, outcome: &Val
     if outcome["state"] != "HOST_REBIND_READY" {
         return Err(local("HOST_REBIND_NOT_COMMITTED"));
     }
-    let mut expected = job.owned.config.clone();
+    let mut expected = job.owned.as_ref().ok_or_else(||local("ORIGINAL_RUNTIME_CONFIG_REQUIRED"))?.config.clone();
     if let Some(subscriptions) = &job.request.initial_subscriptions {
         expected
             .hosts
@@ -219,7 +226,7 @@ impl Connect {
             let admin=self.runtime_admin(&request.participant,selection.as_ref()).await?;
             let status=crate::communication_runtime::call(&admin,json!({"method":"status"})).await?;
             let receivers=status["value"]["receivers"].as_array().ok_or_else(||local("RECEIVER_INVENTORY_UNAVAILABLE_USE_ORIGINAL_SETUP"))?;
-            if receivers.iter().any(|r|r["bindings"].as_array().is_some_and(|items|items.iter().any(|w|w["workspace_id"]==request.workspace_id))) {
+            if receivers.iter().any(|r|self.registry.verified_bindings.get(&request.participant).is_some_and(|binding|["actor_id","origin","engine_digest","state_binding"].iter().all(|field|r[*field]==binding[*field]))&&r["bindings"].as_array().is_some_and(|items|items.iter().any(|w|w["workspace_id"]==request.workspace_id))) {
                 return Err(local("ORIGINAL_RECEIVER_SETUP_RECOVERY_REQUIRED"));
             }
             self.register_host(
@@ -243,7 +250,8 @@ impl Connect {
             .and_then(|name| self.registry.hosts.get(name))
             .is_some_and(|h| h.adapter == adapter)
         {
-            let changed = request.send && !setup.desired.send
+            let changed = request.management.iter().any(|operation|!setup.desired.management.contains(operation))
+                || request.send && !setup.desired.send
                 || request.require_body_keys && !setup.desired.require_body_keys
                 || request.request_membership && !setup.desired.request_membership
                 || request
@@ -266,7 +274,15 @@ impl Connect {
             )?;
             return self.run_agent(desired).await;
         }
-        let owned = self.runtime_for_attachment(&request.participant,selection.as_ref()).await?;
+        let admin=self.runtime_admin(&request.participant,selection.as_ref()).await?;
+        let runtime_status=crate::communication_runtime::call(&admin,json!({"method":"status"})).await?;
+        let resident=runtime_status["value"]["optional_features"].as_array().is_some_and(|features|features.iter().any(|feature|feature=="resident-scope-rebind-v1"));
+        let owned=if resident {
+            // An explicitly supplied legacy config must not contradict the
+            // original client, even though live rebind does not need the file.
+            if selection.as_ref().is_some_and(|s|s.config_path.is_some()){self.runtime_for_attachment(&request.participant,selection.as_ref()).await?;}
+            None
+        }else{Some(self.runtime_for_attachment(&request.participant,selection.as_ref()).await?)};
         let profile = setup.profile.as_ref().unwrap();
         let receiver = RuntimeClient::connect(
             profile.receive_endpoint_path.clone().unwrap(),
@@ -301,49 +317,33 @@ impl Connect {
             return Err(local("RECEIVER_SCOPE_SELECTION_REQUIRED"));
         }
         let watch = watches[0].clone();
-        // The live runtime owns the client registry. Read its authenticated
-        // binding now; resolve the original lineage only AFTER stopping it.
-        let engines: Vec<_> = owned
-            .config
-            .engines
-            .iter()
-            .filter(|e| {
-                e.expected_actor == profile.expected_actor
-                    && e.binding_digest().ok().as_deref() == binding["engine_digest"].as_str()
-            })
-            .collect();
-        if engines.len() != 1
-            || self
-                .registry
-                .verified_bindings
-                .get(&request.participant)
-                .is_none_or(|root| {
-                    root["state_binding"] != binding["state_binding"]
-                        || root["engine_digest"] != binding["engine_digest"]
-                })
-        {
+        // Authenticated resident metadata identifies the same engine without
+        // reconstructing a launch config or reopening its client registry.
+        if self.registry.verified_bindings.get(&request.participant).is_none_or(|root|
+            root["state_binding"]!=binding["state_binding"]||root["engine_digest"]!=binding["engine_digest"]) {
             return Err(local("ORIGINAL_RECEIVER_BINDING_MISMATCH"));
         }
-        let engine = engines[0].name.clone();
-        let generation = binding["client_generation"].as_u64();
-        let existing: Vec<_> = owned
-            .config
-            .hosts
-            .iter()
-            .filter(|h| {
-                h.subscriptions.iter().any(|s| {
-                    s.client == name && s.client_generation == generation && s.watch == watch
-                })
-            })
-            .collect();
-        let host = if watch.host_destination.is_some() {
-            if existing.len() != 1 || existing[0].subscriptions.len() != 1 {
-                return Err(local("HOST_GROUP_SELECTION_REQUIRED"));
-            }
-            existing[0].name.clone()
-        } else {
-            format!("codex-{}", &sha256_hex(key.as_bytes())[..24])
+        let engine=if let Some(owned)=&owned {
+            let matches=owned.config.engines.iter().filter(|e|e.expected_actor==profile.expected_actor&&e.binding_digest().ok().as_deref()==binding["engine_digest"].as_str()).collect::<Vec<_>>();
+            if matches.len()!=1{return Err(local("ORIGINAL_RECEIVER_BINDING_MISMATCH"));}matches[0].name.clone()
+        }else{
+            let matches=runtime_status["value"]["engines"].as_array().ok_or_else(||local("HOST_RUNTIME_BINDING_MISMATCH"))?.iter()
+                .filter(|e|["actor_id","origin","state_binding","engine_digest"].iter().all(|field|e[*field]==binding[*field])).collect::<Vec<_>>();
+            if matches.len()!=1{return Err(local("ORIGINAL_RECEIVER_BINDING_MISMATCH"));}
+            matches[0]["name"].as_str().ok_or_else(||local("HOST_RUNTIME_BINDING_MISMATCH"))?.to_owned()
         };
+        let generation=binding["client_generation"].as_u64();
+        let host=if watch.host_destination.is_some() {
+            if let Some(owned)=&owned {
+                let matches=owned.config.hosts.iter().filter(|h|h.subscriptions.iter().any(|source|source.client==name&&source.client_generation==generation&&source.watch==watch)).collect::<Vec<_>>();
+                if matches.len()!=1||matches[0].subscriptions.len()!=1{return Err(local("HOST_GROUP_SELECTION_REQUIRED"));}matches[0].name.clone()
+            }else{
+                let matches=runtime_status["value"]["hosts"].as_array().ok_or_else(||local("HOST_GROUP_SELECTION_REQUIRED"))?.iter().filter(|host|
+                    host["source_bindings"].as_array().is_some_and(|sources|sources.iter().any(|source|source["client"]==name&&source["client_generation"].as_u64()==generation&&serde_json::from_value::<WatchOptions>(source["watch"].clone()).ok().as_ref()==Some(&watch)))).collect::<Vec<_>>();
+                if matches.len()!=1||matches[0]["source_bindings"].as_array().is_none_or(|sources|sources.len()!=1){return Err(local("HOST_GROUP_SELECTION_REQUIRED"));}
+                matches[0]["source_name"].as_str().ok_or_else(||local("HOST_GROUP_SELECTION_REQUIRED"))?.to_owned()
+            }
+        }else{format!("codex-{}",&sha256_hex(key.as_bytes())[..24])};
         let operation_id = format!(
             "attach-{}",
             &sha256_hex(json!([key, binding, adapter, watch]).to_string().as_bytes())[..40]
@@ -356,9 +356,11 @@ impl Connect {
             desired,
             invocation,
             owned,
+            resident_admin:resident.then_some(admin),
             source_binding: binding.clone(),
             committed: None,
             finished: false,
+            aborted: false,
             request: HostRebindRequest {
                 format: "peerwork.host-rebind.v1".into(),
                 operation_id,
@@ -385,26 +387,67 @@ impl Connect {
         self.save()?;
         self.resume_codex(&key, job).await
     }
-    async fn resume_codex(&mut self, key: &str, mut job: Attachment) -> Result<Value> {
+    async fn resume_codex(&mut self, key: &str, job: Attachment) -> Result<Value> {
+        self.resume_codex_with_recovery(key,job,None).await
+    }
+    /// A decision continues the stored attachment; it cannot discover/create a
+    /// new destination or replace the original request after an unknown claim.
+    pub async fn recover_codex_attachment(&mut self,request:ConnectRequest,selected_chat:Option<&str>,decision:crate::participant_rebind::HostRebindRecoveryRequest)->Result<Value>{
+        self.require_writer()?;
+        if decision.format!="peerwork.host-rebind-recovery.v1"||!identifier(&decision.decision_id){return Err(local("HOST_REBIND_RECOVERY_SELECTION_INVALID"));}
+        let key=format!("{}:{}",request.participant,request.workspace_id);
+        let job=self.registry.codex_attachments.get(&key).cloned().ok_or_else(||local("ORIGINAL_CODEX_ATTACHMENT_REQUIRED"))?;
+        if request!=job.invocation{return Err(local("CODEX_ATTACHMENT_SELECTION_CHANGED_RESUME_ORIGINAL"));}
+        if selected_chat.is_some_and(|selected|selected!=job.selected_chat&&job.request.adapter["thread_id"]!=selected){return Err(local("CODEX_ATTACHMENT_SELECTION_CHANGED_RESUME_ORIGINAL"));}
+        self.resume_codex_with_recovery(&key,job,Some(decision)).await
+    }
+    fn attachment_aborted(job:&Attachment)->Value{
+        json!({"state":"ABORTED","operation_id":job.request.operation_id,"recovery":"OBSERVE_ORIGINAL_RECEIVER",
+            "existing_state_preserved":true,"model_response":"NOT_ATTESTED","tools_available":true})
+    }
+    async fn resume_codex_with_recovery(&mut self,key:&str,mut job:Attachment,recovery:Option<crate::participant_rebind::HostRebindRecoveryRequest>)->Result<Value>{
+        if job.aborted{return Ok(Self::attachment_aborted(&job));}
+        let mut runtime_restarted=false;
+        if let Some(admin)=&job.resident_admin {
+            self.adopt(&job.invocation.participant).await?;
+            let mut call=json!({"method":"host_rebind","rebind":job.request});
+            if let Some(recovery)=recovery {call["recovery"]=json!(recovery);}
+            let outcome=crate::communication_runtime::call(admin,call).await?;
+            if outcome["ok"]!=true {let error:crate::participant::ParticipantError=serde_json::from_value(outcome["error"].clone()).map_err(|_|local("HOST_REBIND_STATE_INVALID"))?;
+                return Ok(json!({"state":"PENDING","operation_id":job.request.operation_id,"effect_certainty":error.effect_certainty,"recovery":"RESUME_SAME_ATTACHMENT","blocker":{"stage":"HOST_BINDING","code":error.code,"next_actor":"LOCAL_RUNTIME_OWNER","next_action":"INSPECT_OR_RESUME_ORIGINAL_HOST_BINDING"},"error":error,"tools_available":true,"existing_state_preserved":true}));}
+            let value=&outcome["value"];
+            if value["operation_id"]!=job.request.operation_id{return Err(local("HOST_REBIND_STATE_INVALID"));}
+            if value["state"]=="HOST_REBIND_ABORTED"{
+                job.aborted=true;job.finished=true;
+                self.registry.codex_attachments.insert(key.into(),job.clone());self.save()?;
+                return Ok(Self::attachment_aborted(&job));
+            }
+            if value["state"]!="HOST_REBIND_READY" {
+                let decision_required=value["blocker"]["recovery"]=="EXPLICIT_HOST_REBIND_RECOVERY_DECISION_REQUIRED";
+                return Ok(json!({"state":"PENDING","operation_id":job.request.operation_id,"effect_certainty":value["blocker"].get("effect_certainty").cloned().unwrap_or(json!("UNKNOWN")),"recovery":"RESUME_SAME_ATTACHMENT","blocker":{"stage":"HOST_BINDING","code":value["blocker"].get("code").cloned().unwrap_or(json!("HOST_REBIND_IN_PROGRESS")),"next_actor":if decision_required{"LOCAL_RUNTIME_OWNER"}else{"RUNTIME"},"next_action":if decision_required{"REPEAT_ORIGINAL_CONNECT_WITH_BINDING_RECOVERY_AND_STABLE_DECISION_ID"}else{"RESUME_SAME_CODEX_ATTACHMENT"}},"runtime_restarted":false,"tools_available":true,"existing_state_preserved":true,"binding_operation":value}));
+            }
+        }else{
+            if recovery.is_some(){return Err(local("RESIDENT_ATTACHMENT_RECOVERY_REQUIRED_USE_ORIGINAL_OFFLINE_RECOVERY"));}
+            let owned=job.owned.clone().ok_or_else(||local("ORIGINAL_RUNTIME_CONFIG_REQUIRED"))?;
         if job.committed.is_none() {
             // A rebind may have committed before its response was saved. The
             // sealed rebind job recognizes that case with the original ID.
             let result = async {
                 let current: RuntimeConfig = serde_json::from_value(
-                    crate::communication_store::private_json(&job.owned.path(), 65536)
+                    crate::communication_store::private_json(&owned.path(), 65536)
                         .map_err(|_| local("RUNTIME_CONFIG_NOT_PRIVATE"))?,
                 )
                 .map_err(|_| local("RUNTIME_CONFIG_INVALID"))?;
-                job.owned.same_engine(&current)?;
+                owned.same_engine(&current)?;
                 if serde_json::to_value(&current).ok()
-                    == serde_json::to_value(&job.owned.config).ok()
+                    == serde_json::to_value(&owned.config).ok()
                 {
-                    job.owned.stop().await?;
+                    owned.stop().await?;
                     let client_name = job.source_binding["client_name"]
                         .as_str()
                         .ok_or_else(|| local("ORIGINAL_RECEIVER_BINDING_MISMATCH"))?;
                     let source = crate::communication_runtime::rebind_client(
-                        &job.owned.config,
+                        &owned.config,
                         client_name,
                     )?;
                     if source.namespace != job.source_binding["namespace"]
@@ -414,14 +457,14 @@ impl Connect {
                     }
                 }
                 let outcome =
-                    crate::participant_rebind::rebind_host(&job.owned.path(), job.request.clone())
+                    crate::participant_rebind::rebind_host(&owned.path(), job.request.clone())
                         .await?;
                 let committed: RuntimeConfig = serde_json::from_value(
-                    crate::communication_store::private_json(&job.owned.path(), 65536)
+                    crate::communication_store::private_json(&owned.path(), 65536)
                         .map_err(|_| local("RUNTIME_CONFIG_NOT_PRIVATE"))?,
                 )
                 .map_err(|_| local("RUNTIME_CONFIG_INVALID"))?;
-                job.owned.same_engine(&committed)?;
+                owned.same_engine(&committed)?;
                 validate_committed(&job, &committed, &outcome)?;
                 Ok(committed)
             }
@@ -441,10 +484,13 @@ impl Connect {
                 }
             }
         }
-        if let Err(error) = job.owned.restart(job.committed.as_ref().unwrap()).await {
+        let launch_before=SecureStateStore::read_snapshot(&owned.config.state_directory.join("bootstrap.state"),65536).ok();
+        if let Err(error) = owned.restart(job.committed.as_ref().unwrap()).await {
             return Ok(
                 json!({"state":"PENDING","operation_id":job.request.operation_id,"effect_certainty":"UNKNOWN","recovery":"RESUME_SAME_ATTACHMENT","blocker":{"stage":"RUNTIME_RESTART","code":error.code,"next_action":"RESUME_SAME_CODEX_ATTACHMENT"},"error":error,"existing_state_preserved":true}),
             );
+        }
+        runtime_restarted=launch_before!=SecureStateStore::read_snapshot(&owned.config.state_directory.join("bootstrap.state"),65536).ok();
         }
         let setup = self
             .registry
@@ -480,7 +526,7 @@ impl Connect {
         }
         let selected = HostSelection {
             participant: setup.desired.participant.clone(),
-            admin_endpoint: job.owned.config.state_directory.join("admin.json"),
+            admin_endpoint: job.resident_admin.clone().or_else(||job.owned.as_ref().map(|owned|owned.config.state_directory.join("admin.json"))).ok_or_else(||local("EXPLICIT_RUNTIME_ADMIN_SELECTION_REQUIRED"))?,
             adapter: job.request.adapter.clone(),
         };
         // Same named host can legitimately have a committed replacement; its
@@ -500,6 +546,8 @@ impl Connect {
         result["operation_id"] = json!(job.request.operation_id);
         result["host_selection"] = json!({"basis":"EXPLICIT_LOCAL_SELECTION","thread_id":job.request.adapter.get("thread_id").unwrap_or(&job.request.adapter["destination"]["conversation_id"]),"session_id":job.request.adapter.get("expected_session_id").unwrap_or(&job.request.adapter["destination"]["session_id"])});
         result["model_response"] = json!("NOT_ATTESTED");
+        result["runtime_restarted"]=json!(runtime_restarted);
+        result["binding_mode"]=json!(if job.resident_admin.is_some(){"RESIDENT"}else{"OFFLINE"});
         Ok(result)
     }
 }
@@ -584,7 +632,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(sent.state, "ACCEPTED");
+        let workspaces_before_pending=service.counts().await["workspaces"].as_u64().unwrap();
+        service.config(json!({"drop_action":"structure.workspace.create"})).await;
+        let original_pending=owner.invoke(crate::participant::Invoke::new("original-pending","structure.workspace.create",Scope::default(),json!({"name":"Uncertain original operation"})),Duration::from_secs(1)).await.unwrap();
+        assert!(!original_pending.is_terminal(),"fault must leave a genuine original pending operation");
         owner.close().await.unwrap();
+        service.config(json!({"offline":false})).await;
         let identity_before = sha256_hex(&std::fs::read(&options.identity_path).unwrap());
         let local = root.path().join("connect");
         let executable = PathBuf::from(std::env::var("PEERWORK_PARTICIPANT_CLI").unwrap());
@@ -672,6 +725,13 @@ mod tests {
             "--workspace".into(),
             ws.clone(),
         ];
+        if external {
+            let mut cold=base.clone();cold.extend(["--runtime-config".into(),config_path.to_str().unwrap().into(),"--codex".into()]);
+            let choice=run(&executable,&cold,root.path()).await;
+            assert_eq!(choice["blocker"]["code"],"CODEX_CHAT_SELECTION_REQUIRED","{choice}");
+            assert_eq!(Connect::inspect(&local).unwrap().registry.participants["worker"].endpoint_path,runtime_dir.join("client-original.json"));
+            assert!(!runtime_dir.join("bootstrap.state").exists());
+        }
         let mut initial = base.clone();
         if external{initial.extend(["--client".into(),runtime_dir.join("client-original.json").to_str().unwrap().into(),"--origin".into(),service.origin.clone(),"--actor".into(),options.expected_actor.clone()]);}
         else{initial.extend(["--engine-config".into(),engine_file.to_str().unwrap().into()]);}
@@ -699,9 +759,8 @@ mod tests {
         let choices = run(&executable, &attach, root.path()).await;
         assert_eq!(choices["blocker"]["code"], "CODEX_CHAT_SELECTION_REQUIRED");
         assert_eq!(choices["sessions"].as_array().unwrap().len(), 1);
-        let original_launch = if external{Vec::new()}else{
-            SecureStateStore::read_snapshot(&runtime_dir.join("bootstrap.state"),65536).unwrap().to_vec()
-        };
+        fn launch_bytes(directory:&Path)->Vec<u8>{if !directory.join("bootstrap.state").exists(){Vec::new()}else{SecureStateStore::read_snapshot(&directory.join("bootstrap.state"),65536).unwrap().to_vec()}}
+        let original_launch=launch_bytes(&runtime_dir);
         attach.extend(["--codex-chat".into(), "Worker".into()]);
         // An endpoint alone is not authority to stop an external runtime.
         {
@@ -711,7 +770,7 @@ mod tests {
         }
         let denied = run(&executable, &attach, root.path()).await;
         assert_eq!(
-            denied["error"]["code"], "ORIGINAL_RUNTIME_CONFIG_SELECTION_REQUIRED",
+            denied["error"]["code"], "EXPLICIT_RUNTIME_ADMIN_SELECTION_REQUIRED",
             "{denied}"
         );
         assert!(
@@ -732,6 +791,8 @@ mod tests {
             let mut registry = Connect::open(&local).unwrap();
             registry.registry.local_runtime_admins.insert("worker".into(),runtime_dir.join("admin.json"));registry.save().unwrap();
         }
+        let mut premature=attach.clone();premature.extend(["--binding-recovery".into(),"RETRY_REJECTED".into(),"--decision-id".into(),"not-a-new-attachment".into()]);
+        assert_eq!(run(&executable,&premature,root.path()).await["error"]["code"],"ORIGINAL_CODEX_ATTACHMENT_REQUIRED");
         let mut result = run(&executable, &attach, root.path()).await;
         for _ in 0..20 {
             if result["state"] == "LOCAL_CONFIGURED" {
@@ -783,17 +844,14 @@ mod tests {
         .unwrap();
         assert_eq!(before_config["engines"], new_config["engines"]);
         assert_eq!(before_config["clients"], new_config["clients"]);
-        let launch =
-            SecureStateStore::read_snapshot(&runtime_dir.join("bootstrap.state"), 65536)
-                .unwrap()
-                .to_vec();
-        assert_ne!(launch, original_launch);
+        let launch=launch_bytes(&runtime_dir);
+        if runtime_mode=="published" {assert_ne!(launch,original_launch);assert_eq!(result["runtime_restarted"],true);}
+        else {assert_eq!(launch,original_launch,"resident binding must keep the original process");assert_eq!(result["runtime_restarted"],false);}
+
         let repeated = run(&executable, &attach, root.path()).await;
         assert_eq!(repeated["state"], "LOCAL_CONFIGURED", "{repeated}");
         assert_eq!(
-            SecureStateStore::read_snapshot(&runtime_dir.join("bootstrap.state"), 65536)
-                .unwrap()
-                .as_slice(),
+            launch_bytes(&runtime_dir).as_slice(),
             launch.as_slice(),
             "reentry must not restart again"
         );
@@ -813,9 +871,7 @@ mod tests {
         assert_eq!(recovered["state"], "LOCAL_CONFIGURED", "{recovered}");
         assert_eq!(recovered["operation_id"], result["operation_id"]);
         assert_eq!(
-            SecureStateStore::read_snapshot(&runtime_dir.join("bootstrap.state"), 65536)
-                .unwrap()
-                .as_slice(),
+            launch_bytes(&runtime_dir).as_slice(),
             launch.as_slice()
         );
         tokio::time::timeout(Duration::from_secs(10), async {
@@ -871,6 +927,11 @@ mod tests {
                 .command_id,
             sent.command_id
         );
+        let original=restored.operation("original-pending").await.unwrap();
+        if let Some(command)=original_pending.command_id {assert_eq!(original.command_id.as_deref(),Some(command.as_str()));}
+        let completed=crate::participant::http_tests::wait_terminal(&restored,"original-pending").await;
+        assert_eq!(completed.state,"ACCEPTED");
+        assert_eq!(service.counts().await["workspaces"].as_u64().unwrap(),workspaces_before_pending+1,"the original uncertain create must not be replaced");
         restored.close().await.unwrap();
         assert_eq!(service.counts().await["journal_reads"], 0);
         }
@@ -885,9 +946,18 @@ mod tests {
             let ws=mutate(&owner,"create","structure.workspace.create",&Scope::default(),json!({"name":"Explicit first connection"})).await["workspace_id"].as_str().unwrap().to_owned();
             let scope=Scope{workspace_id:Some(ws.clone()),..Default::default()};let meta=selected(&owner,"structure.workspace.get",&scope,json!({})).await;
             mutate(&owner,"mail","structure.communication.grant.set",&scope,json!({"actor_id":owner.actor_id(),"membership_id":meta["membership"]["membership_id"],"expected_revision":null,"send":true,"receive":true})).await;
-            let key=install_synthetic_key(&options,&ws,&[48;32],None);mutate(&owner,"key","structure.content-key.set",&scope,json!({"key_id":key,"expected_epoch":0,"expected_head_revision":null})).await;owner.close().await.unwrap();
-            let runtime=RuntimeConfig{format:"peerwork.participant-runtime.v1".into(),state_directory:root.path().join("runtime"),engines:vec![ipc::EngineConfig{name:"original".into(),origin:options.origin.clone(),expected_actor:options.expected_actor.clone(),identity_path:options.identity_path.clone(),state_directory:options.state_directory.clone(),journal_path:Some(options.journal_path.clone()),authority:None,allow_loopback_http:true,transport:options.transport.clone(),max_inflight:4,max_pending:16,max_stored_bytes:8*1024*1024,migration_sources:vec![]}],clients:vec![ipc::ClientConfig{name:"original".into(),engine:"original".into(),capability:Capability::owner()}],hosts:vec![]};
+            let key=install_synthetic_key(&options,&ws,&[48;32],None);mutate(&owner,"key","structure.content-key.set",&scope,json!({"key_id":key,"expected_epoch":0,"expected_head_revision":null})).await;
+            let other_root=crate::test_support::protected_test_dir();let other_options=configuration(other_root.path(),&service.origin);
+            let meta=selected(&owner,"structure.workspace.get",&scope,json!({})).await;
+            let mut admit=crate::participant::Invoke::new("admit-other","structure.member.set",scope.clone(),json!({"actor_id":other_options.expected_actor,"state":"ACTIVE","expected_membership_id":null}));admit.expected_workspace_revision=meta["workspace_revision"].as_u64();
+            let admitted=owner.invoke(admit,std::time::Duration::from_secs(5)).await.unwrap();assert_eq!(admitted.state,"ACCEPTED");
+            let other_mailbox=mutate(&owner,"other-mail","structure.communication.grant.set",&scope,json!({"actor_id":other_options.expected_actor,"membership_id":admitted.outcome.as_ref().unwrap()["result"]["structure"]["membership_id"],"expected_revision":null,"send":true,"receive":true})).await["mailbox"].clone();
+            owner.close().await.unwrap();
+            fn engine(name:&str,c:&crate::participant::ParticipantConfig)->ipc::EngineConfig{ipc::EngineConfig{name:name.into(),origin:c.origin.clone(),expected_actor:c.expected_actor.clone(),identity_path:c.identity_path.clone(),state_directory:c.state_directory.clone(),journal_path:Some(c.journal_path.clone()),authority:None,allow_loopback_http:true,transport:c.transport.clone(),max_inflight:4,max_pending:16,max_stored_bytes:8*1024*1024,migration_sources:vec![]}}
+            let runtime=RuntimeConfig{format:"peerwork.participant-runtime.v1".into(),state_directory:root.path().join("runtime"),engines:vec![engine("original",&options),engine("other",&other_options)],clients:vec![ipc::ClientConfig{name:"original".into(),engine:"original".into(),capability:Capability::owner()},ipc::ClientConfig{name:"other".into(),engine:"other".into(),capability:Capability::owner()}],hosts:vec![]};
             let cancel=crate::KernelCancellationToken::new();let(tx,rx)=tokio::sync::oneshot::channel();let serving=tokio::spawn(ipc::serve(runtime.clone(),cancel.clone(),tx));let ready=rx.await.unwrap().unwrap();
+            let other=RuntimeClient::connect(ready.client_endpoints["other"].clone(),&service.origin,&other_options.expected_actor).await.unwrap();
+            other.call(json!({"method":"watch","options":{"workspace_id":ws,"mailbox_id":other_mailbox["mailbox_id"],"membership_id":other_mailbox["membership_id"],"consumer_id":"other-inbox"}})).await.unwrap();
             let mut connect=Connect::open(&root.path().join("connect")).unwrap();connect.register("worker",Registration{origin:service.origin.clone(),actor_id:options.expected_actor.clone(),endpoint_path:ready.client_endpoints["original"].clone()}).await.unwrap();
             let host=CodexFixture::start();connect.register_host("selected",host::HostSelection{participant:"worker".into(),admin_endpoint:ready.admin_endpoint.clone(),adapter:host.config()}).await.unwrap();
             let request:ConnectRequest=serde_json::from_value(json!({"setup_id":"live","participant":"worker","workspace_id":ws,"send":true,"receive":true,"receive_mode":"INBOX"})).unwrap();

@@ -42,11 +42,11 @@ The next release candidate also exposes the same offline evaluator through the
 existing native MCP connection:
 
 ```json
-{"mode":"request","operation":"protocol.offline","body":{"operation":"fixture","input":{"schema":"peerwork.protocol-fixture.v1","protocols":[]}}}
+{"mode":"request","operation":"protocol.offline","body":{"operation":"fixture","input":{"schema":"peerwork.protocol-fixture.v1","protocols":[{"instance_id":"counter","manifest":{"name":"example.counter","display_version":"1","semantics":"peerwork.kernel.v1","dependencies":[],"record_schemas":{},"initial_state":{"count":0},"actions":[{"id":"set","reads":[["count"]],"writes":[["count"]],"revisionEffects":{"control":true,"contentEntities":[]},"variants":[{"when":[],"effects":[{"op":"set","path":["count"],"value":{"from":"literal","value":1}}]}]}]}}]}}}
 ```
 
-Call `peerwork_manage`; replace the empty protocols with the actual business
-fixture above. The shared Participant helper returns its native result envelope;
+Call `peerwork_manage` with that fixture, or replace it with your authored
+business fixture. The shared Participant helper returns its native result envelope;
 use `result.value` as the fixture for a subsequent simulate request. It creates
 no mutation intent and makes no HTTP request. No additional runtime is started.
 

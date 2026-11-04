@@ -23,6 +23,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::Path;
 
+#[path = "participant_rebind_core.rs"]
+mod core;
+#[path = "participant_rebind_resident.rs"]
+pub(crate) mod resident;
+
 const MAX_JOB: usize = 512 * 1024;
 const MAX_DECISIONS: usize = 16;
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -575,124 +580,26 @@ fn rebind_action(
                 continue;
             }
             if job.scopes[index].confirmed.is_none() {
-                let s = &job.scopes[index];
-                let binding = Binding {
-                    namespace: s.namespace.clone(),
-                    options: s.old.clone(),
-                    receiver: s.expected.receiver_id.clone(),
-                    claim_id: s.claim_id.clone(),
-                    claim_wire: None,
-                    pins: Some(s.expected.native()),
-                };
-                inbox.disable_watch(&s.namespace, &s.old)?;
-                if s.claim_wire.is_none() {
-                    if s.old.host_destination.is_some(){inbox.rebind_reports_unblocked(&s.old)?;}
-                    let current = executor.block_on(call(
-                        &access,
-                        "structure.mailbox.get",
-                        &s.old.workspace_id,
-                        json!({"mailbox_id":s.old.mailbox_id}),
-                        None,
-                    ))?;
-                    let refreshed_epoch = if s.refresh_epoch_on_retry {
-                        let epoch = current["mailbox"]["epoch"]
-                            .as_u64()
-                            .filter(|e| *e >= s.expected.epoch)
-                            .ok_or_else(|| error("HOST_REBIND_VERIFIED_MAILBOX_MISMATCH"))?;
-                        epoch
-                    } else {
-                        s.expected.epoch
-                    };
-                    validate_mailbox(
-                        &current["mailbox"],
-                        &s.expected,
-                        &engine.expected_actor,
-                        &s.expected.destination_digest,
-                        refreshed_epoch,
-                        s.expected.binding_version,
-                    )?;
-                    if s.refresh_epoch_on_retry {
-                        let mut pins = s.expected.native();
-                        pins.epoch = refreshed_epoch;
-                        inbox.register(&pins)?;
-                        job.scopes[index].expected = Pins::from(&pins);
-                        job.scopes[index].refresh_epoch_on_retry = false;
+                let scope = &job.scopes[index];
+                inbox.disable_watch(&scope.namespace, &scope.old)?;
+                let mut progress = core::ReplacementProgress::new(scope);
+                while let Some(step) = progress.next(&job.scopes[index], &inbox, &identity)? {
+                    if matches!(&step, core::ReplacementWork::Freeze) {
+                        boundary("REPORTS_FLUSHED")?;
+                    }
+                    let value = executor.block_on(step.execute(&access))?;
+                    let changed = progress.apply(&step, &value, &mut job.scopes[index],
+                        &mut inbox, &identity, &engine.expected_actor, &job.destination.digest)?;
+                    if let Some(name) = step.before_save_boundary() { boundary(name)?; }
+                    if changed {
                         save(&job_store, &identity, &aad, &job)?;
+                        progress.saved();
                     }
-                    let s = &job.scopes[index];
-                    // Renew the original fence even when its old lease expired.
-                    executor.block_on(call(&access,"structure.mailbox.pulse",&s.old.workspace_id,json!({"mailbox_id":s.old.mailbox_id,
-                        "receiver_id":s.expected.receiver_id,"epoch":s.expected.epoch,"ready":false,"execution_state":"OFFLINE"}),None))?;
-                    while let Some((call_id, version, report)) =
-                        if s.old.host_destination.is_some(){inbox.pending_host_report(&identity,&s.namespace,&s.old)?}else{None}
-                    {
-                        executor.block_on(call(&access,"structure.mailbox.report",&s.old.workspace_id,json!({"mailbox_id":s.old.mailbox_id,
-                            "receiver_id":s.expected.receiver_id,"epoch":s.expected.epoch,"report":report}),None))?;
-                        inbox.host_reported(
-                            &s.old.workspace_id,
-                            &s.old.mailbox_id,
-                            &call_id,
-                            version,
-                        )?;
-                    }
-                    boundary("REPORTS_FLUSHED")?;
-                    let mut body = json!({"claim_command_id":s.claim_id,"mailbox_id":s.old.mailbox_id,"receiver_id":s.expected.receiver_id,
-                        "expected_epoch":s.expected.epoch,"destination_digest":job.destination.digest,"replace":true});
-                    body["continuity_proof"] =
-                        json!(inbox.receiver_proof(&identity, &binding, &body)?);
-                    let wire=json!({"action":"structure.mailbox.claim","workspace_id":s.old.workspace_id,"command_id":s.claim_id,"body":body}).to_string();
-                    job.scopes[index].claim_wire = Some(wire);
-                    save(&job_store, &identity, &aad, &job)?;
-                    boundary("CLAIM_FROZEN")?;
+                    if let Some(name) = step.after_save_boundary() { boundary(name)?; }
                 }
-                let s = &job.scopes[index];
-                let wire = s
-                    .claim_wire
-                    .as_deref()
-                    .ok_or_else(|| error("HOST_REBIND_STATE_INVALID"))?;
-                let claimed = executor.block_on(execute(&access, wire, Some(&s.claim_id)))?;
-                let epoch = s
-                    .expected
-                    .epoch
-                    .checked_add(1)
-                    .ok_or_else(|| error("HOST_REBIND_PINS_INVALID"))?;
-                let version = s
-                    .expected
-                    .binding_version
-                    .checked_add(1)
-                    .ok_or_else(|| error("HOST_REBIND_PINS_INVALID"))?;
-                validate_mailbox(
-                    &claimed["mailbox"],
-                    &s.expected,
-                    &engine.expected_actor,
-                    &job.destination.digest,
-                    epoch,
-                    version,
-                )?;
-                boundary("CLAIM_CONFIRMED_BEFORE_SAVE")?;
-                let mut confirmed = s.expected.clone();
-                confirmed.epoch = epoch;
-                confirmed.binding_version = version;
-                confirmed.destination_digest = job.destination.digest.clone();
-                job.scopes[index].confirmed = Some(confirmed);
-                save(&job_store, &identity, &aad, &job)?;
             }
             let s = &job.scopes[index];
-            let mut new = s.old.clone();
-            new.host_destination = Some(job.destination.digest.clone());
-            inbox.host_rebind_commit(&HostRebind {
-                operation_id: job.pin.operation_id.clone(),
-                namespace: s.namespace.clone(),
-                old: s.old.clone(),
-                new,
-                expected: s.expected.native(),
-                confirmed: s
-                    .confirmed
-                    .as_ref()
-                    .ok_or_else(|| error("HOST_REBIND_STATE_INVALID"))?
-                    .native(),
-                host: job.destination.clone(),
-            })?;
+            inbox.host_rebind_commit(&s.local_replacement(&job.pin.operation_id, &job.destination)?)?;
             boundary("LOCAL_COMMITTED_BEFORE_SAVE")?;
             job.scopes[index].committed = true;
             save(&job_store, &identity, &aad, &job)?;
@@ -911,19 +818,7 @@ fn retry_rejected(
     job.decisions.push(recovery.clone());
     Ok(())
 }
-fn abort_job(
-    job: &mut Job,
-    recovery: Option<&HostRebindRecoveryRequest>,
-    store: &SecureStateStore,
-    identity: &KernelIdentity,
-    aad: &str,
-    owner: &SecureStateStore,
-    logical: &[u8],
-    inbox: &mut InboxStore,
-    engine: &crate::communication_runtime::EngineConfig,
-    executor: &tokio::runtime::Runtime,
-    boundary: &mut impl FnMut(&str) -> Result<()>,
-) -> Result<Value> {
+fn begin_abort(job: &mut Job, recovery: Option<&HostRebindRecoveryRequest>, identity: &KernelIdentity, engine: &crate::communication_runtime::EngineConfig) -> Result<()> {
     if job
         .scopes
         .iter()
@@ -969,6 +864,25 @@ fn abort_job(
         let r = recovery.ok_or_else(|| error("HOST_REBIND_ABORT_DECISION_REQUIRED"))?;
         job.aborting = Some(r.decision_id.clone());
         job.decisions.push(r.clone());
+    }
+    Ok(())
+}
+fn abort_job(
+    job: &mut Job,
+    recovery: Option<&HostRebindRecoveryRequest>,
+    store: &SecureStateStore,
+    identity: &KernelIdentity,
+    aad: &str,
+    owner: &SecureStateStore,
+    logical: &[u8],
+    inbox: &mut InboxStore,
+    engine: &crate::communication_runtime::EngineConfig,
+    executor: &tokio::runtime::Runtime,
+    boundary: &mut impl FnMut(&str) -> Result<()>,
+) -> Result<Value> {
+    let newly_frozen = job.aborting.is_none();
+    begin_abort(job, recovery, identity, engine)?;
+    if newly_frozen {
         save(store, identity, aad, job)?;
         boundary("ABORT_FROZEN")?;
     }
@@ -982,35 +896,9 @@ fn abort_job(
                 json!({"mailbox_id":s.old.mailbox_id}),
                 None,
             ))?;
-            let epoch = current["mailbox"]["epoch"]
-                .as_u64()
-                .filter(|v| *v >= s.expected.epoch)
-                .ok_or_else(|| error("HOST_REBIND_VERIFIED_MAILBOX_MISMATCH"))?;
-            validate_mailbox(
-                &current["mailbox"],
-                &s.expected,
-                &engine.expected_actor,
-                &s.expected.destination_digest,
-                epoch,
-                s.expected.binding_version,
-            )?;
-            let mut pins = s.expected.native();
-            pins.epoch = epoch;
-            inbox.register(&pins)?;
+            let epoch = s.abort_inspection(&current, &engine.expected_actor, inbox)?;
             executor.block_on(call(&access,"structure.mailbox.close",&s.old.workspace_id,json!({"mailbox_id":s.old.mailbox_id,"receiver_id":s.expected.receiver_id,"epoch":epoch}),None))?;
-            let claim = token(json!([
-                job.pin.operation_id,
-                job.aborting,
-                index,
-                "abort-watch-restart"
-            ]));
-            inbox.rebind_restore_watch(
-                &s.namespace,
-                &s.old,
-                &s.expected.receiver_id,
-                s.was_enabled,
-                &claim,
-            )?;
+            s.restore_aborted_watch(inbox, &job.pin.operation_id, job.aborting.as_deref(), index)?;
             boundary("ABORT_WATCH_RESTORED")?;
         }
         participant_owner::complete(owner, logical, &job.pin)?;

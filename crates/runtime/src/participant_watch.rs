@@ -168,6 +168,10 @@ impl MailSession {
     }
 }
 pub(crate) enum Command {
+    Resident {
+        request: crate::participant_rebind::resident::Request,
+        reply: oneshot::Sender<Result<Option<crate::participant_rebind::resident::Snapshot>>>,
+    },
     Bindings {
         namespace: String,
         capability: Capability,
@@ -207,6 +211,7 @@ pub(crate) enum Command {
 }
 pub(crate) fn reject(command: Command, e: ParticipantError) {
     match command {
+        Command::Resident { reply, .. } => { let _ = reply.send(Err(e)); },
         Command::Bindings { reply, .. } => {
             let _ = reply.send(Err(e));
         }
@@ -466,6 +471,7 @@ async fn call(
     outcome
 }
 enum JobKind {
+    Resident,
     Session,
     Stream,
     Control(String, u64),
@@ -473,6 +479,7 @@ enum JobKind {
     Keys(String),
 }
 enum Work {
+    Resident(crate::participant_rebind::resident::Completed),
     Session(std::result::Result<MailSession, Failure>),
     Inspect(String, std::result::Result<Value, Failure>),
     Claim(String, std::result::Result<Value, Failure>),
@@ -503,6 +510,7 @@ pub(crate) async fn run(
     identity: Arc<KernelIdentity>,
     origin: String,
     access: Arc<KernelAccess>,
+    mut resident: crate::participant_rebind::resident::Controller,
     mut commands: mpsc::Receiver<Command>,
     cancel: KernelCancellationToken,
 ) {
@@ -519,6 +527,16 @@ pub(crate) async fn run(
         match fault {Ok(fault)=>value.receive_fault=fault,Err(e)=>value.fail(Failure{no_effect:false,code:e.code,retryable:false})}
         if value.receive_fault.is_some(){value.state("BLOCKED",Some("STREAM_VERIFICATION_FAILED".into()));}
         slots.insert(value.binding.options.key(),value);
+    }
+    match resident.paused_bindings(&store) {
+        Ok(bindings)=>for binding in bindings {
+            let _=store.disable_watch(&binding.namespace,&binding.options);
+            let mut value=slot(binding);value.enabled=false;
+            value.receive_fault=store.receive_fault(&value.binding.options.workspace_id,&value.binding.options.mailbox_id).ok().flatten();
+            value.code=Some("HOST_REBIND_PENDING_RESUME_ORIGINAL_OPERATION".into());
+            slots.insert(value.binding.options.key(),value);
+        },
+        Err(problem)=>{resident.record_error(problem);},
     }
     let mut session: Option<MailSession> = None;
     let mut session_busy = false;
@@ -542,12 +560,72 @@ pub(crate) async fn run(
             _=cancel.cancelled()=>break,
             command=commands.recv()=>match command{
                 None=>break,
+                Some(Command::Resident{request,reply})=>{
+                    use crate::participant_rebind::resident::Request as R;
+                    let value=match request {
+                        R::Preflight=>Err(error("HOST_REBIND_PREFLIGHT_OWNER_REQUIRED")),
+                        R::Status=>resident.status(),
+                        R::Lookup(request)=>resident.lookup(&request,&identity),
+                        R::Recover{request,decision}=>resident.recover(&request,&decision,&identity).map(Some),
+                        R::Problem{operation,problem}=>{
+                            if resident.status().ok().flatten().is_some_and(|s|s.request.operation_id==operation){resident.record_error(problem);}
+                            resident.status()
+                        },
+                        R::Prepare(selection)=>resident.prepare(selection,&mut store,&identity).map(Some),
+                        R::Authorize{operation,sources}=>resident.authorize(&operation,sources,&store).and_then(|_|resident.status()),
+                        R::Published{operation}=>{
+                            let bindings=resident.paused_bindings(&store);
+                            let resume=resident.status().ok().flatten().map(|s|s.resume).unwrap_or_default();
+                            match bindings {
+                                Err(e)=>Err(e),
+                                Ok(bindings)=>(||{
+                                    for (index,binding) in bindings.into_iter().enumerate() {
+                                        if !resume.get(index).copied().unwrap_or(false){
+                                            store.disable_watch(&binding.namespace,&binding.options)?;
+                                            slots.remove(&binding.options.key());continue;
+                                        }
+                                        let restored=store.attach_watch(&identity,&binding.namespace,&binding.options)?;
+                                        let mut value=slot(restored);
+                                        value.receive_fault=store.receive_fault(&value.binding.options.workspace_id,&value.binding.options.mailbox_id)?;
+                                        slots.insert(value.binding.options.key(),value);
+                                    }
+                                    resident.published(&operation,&identity).map(Some)
+                                })(),
+                            }
+                        },
+                    };
+                    // A prepared job may already be durable even if the final
+                    // response write failed. Its scope fence always takes effect.
+                    if let Ok(bindings)=resident.paused_bindings(&store) {
+                        for binding in bindings {
+                            if !slots.contains_key(&binding.options.key()) {
+                                let mut value=slot(binding);value.enabled=false;
+                                value.receive_fault=store.receive_fault(&value.binding.options.workspace_id,&value.binding.options.mailbox_id).ok().flatten();
+                                slots.insert(value.binding.options.key(),value);
+                            }
+                        }
+                    }
+                    for s in slots.values_mut().filter(|s|resident.paused(&s.binding.options)) {
+                        if s.enabled {
+                            let _=store.disable_watch(&s.binding.namespace,&s.binding.options);
+                            s.enabled=false;s.lifecycle=s.lifecycle.saturating_add(1);
+                            if let Some(c)=s.control_cancel.take(){c.cancel();}
+                            if let Some(c)=s.pulse_cancel.take(){c.cancel();}
+                        }
+                        s.link_verified=false;s.code=Some("HOST_REBIND_PENDING_RESUME_ORIGINAL_OPERATION".into());
+                        s.state("LOCAL_STOPPED",s.code.clone());
+                    }
+                    let _=reply.send(value);
+                },
                 Some(Command::Bindings{namespace,capability,reply})=>{
                     let selected=slots.values().filter(|s|s.enabled&&s.binding.namespace==namespace&&s.binding.options.authorize(&capability).is_ok()).map(|s|s.binding.options.clone()).collect::<Vec<_>>();let _=reply.send(Ok(selected));
                 },
                 Some(Command::Host{local_live,namespace,options,operation,reply})=>{
                     use crate::participant_inbox::{HostOperation as Op,HostReply as Reply};
                     let value=(||->Result<Reply>{
+                        if resident.paused(&options) && !matches!(&operation,Op::Finish{..}|Op::Status{..}|Op::AccessScope|Op::RetirementCommit(_)) {
+                            return Err(error("HOST_REBIND_PENDING_RESUME_ORIGINAL_OPERATION"));
+                        }
                         let selected=slots.get(&options.key()).filter(|s|s.binding.namespace==namespace&&s.binding.options==options);
                         let live=selected.is_some_and(|s|s.enabled&&s.link_verified&&!s.blocked&&s.receive_fault.is_none()&&s.lease_until.is_some_and(|until|until>Instant::now()));
                         Ok(match operation{
@@ -585,14 +663,18 @@ pub(crate) async fn run(
                             if slot.binding.namespace!=namespace||slot.binding.options!=options{return Err(error("WATCH_BINDING_MISMATCH"));}
                             // An explicit stop/start permits a fresh verified probe;
                             // an ordinary process restart does not erase quarantine.
-                            store.reset_receive_probe(&options.workspace_id,&options.mailbox_id)?;
-                            slot.receive_fault=None;slot.time_retries=0;slot.lifecycle=slot.lifecycle.saturating_add(1);
+                            if !resident.paused(&options) {
+                                store.reset_receive_probe(&options.workspace_id,&options.mailbox_id)?;
+                                slot.receive_fault=None;slot.time_retries=0;
+                            }
+                            slot.lifecycle=slot.lifecycle.saturating_add(1);
                             slot.enabled=false;if let Some(c)=slot.control_cancel.take(){c.cancel();}if let Some(c)=slot.pulse_cancel.take(){c.cancel();}slot.link_verified=false;slot.state("LOCAL_STOPPED",None);
                         }Ok(())
                     });let _=reply.send(stopped);
                 },
                 Some(Command::Attach{local_live,namespace,options,reply})=>{
                     let attached=(||->Result<_>{
+                        if resident.paused(&options){return Err(error("HOST_REBIND_PENDING_RESUME_ORIGINAL_OPERATION"));}
                         if !local_live.load(std::sync::atomic::Ordering::Acquire){return Err(error("LOCAL_CLIENT_REVOKED"));}
                         if let Some(s)=slots.get_mut(&options.key()){s.signals.retain(|s|!s.is_closed());if s.signals.len()>=16{return Err(error("WATCH_LISTENER_LIMIT"));}}
                         let binding=store.attach_watch(&identity, &namespace,&options)?;
@@ -625,6 +707,7 @@ pub(crate) async fn run(
                 },
                 Some(Command::Consume{namespace,options,items,reply})=>{
                     let value=(||->Result<()>{
+                        if resident.paused(&options){return Err(error("HOST_REBIND_PENDING_RESUME_ORIGINAL_OPERATION"));}
                         let slot=slots.get_mut(&options.key()).filter(|s|s.binding.namespace==namespace&&s.binding.options==options).ok_or_else(||error("WATCH_NOT_FOUND"))?;
                         store.consume(&options.workspace_id,&options.mailbox_id,&items.iter().map(|r|(r.sequence,r.delivery_id.clone())).collect::<Vec<_>>())?;
                         // Consumption is durable local work for the ACK queue,
@@ -665,6 +748,7 @@ pub(crate) async fn run(
                         let bootstrap=(||->Result<()>{for p in scopes{
                             let key=format!("{}:{}",p.workspace_id,p.mailbox_id);
                             let slot=slots.get_mut(&key).ok_or_else(||error("WATCH_NOT_FOUND"))?;
+                            if resident.paused(&slot.binding.options){continue;}
                             let current=slot.binding.pins.as_mut().ok_or_else(||error("WATCH_NOT_CLAIMED"))?;
                             if current.epoch!=p.epoch||current.receiver_id!=p.receiver_id{return Err(error("MAILBOX_EPOCH_MISMATCH"));}
                             if current.after_control_sequence.is_none(){let cursor=p.after_control_sequence.ok_or_else(||error("STREAM_GRANT_INVALID"))?;store.bootstrap_control(current,cursor)?;current.after_control_sequence=Some(cursor);}
@@ -677,7 +761,8 @@ pub(crate) async fn run(
                 };
                 let key=format!("{}:{}",page.mailbox().workspace_id,page.mailbox().mailbox_id);
                 let stored=if tokio::time::Instant::now()>=valid_until{Err(error("STREAM_GRANT_EXPIRED"))}else if let Some(slot)=slots.get_mut(&key){
-                    if !slot.binding.pins.as_ref().is_some_and(|p|p.epoch==page.mailbox().epoch&&p.receiver_id==page.mailbox().receiver_id){Err(error("MAILBOX_EPOCH_MISMATCH"))}
+                    if resident.paused(&slot.binding.options){Err(error("HOST_REBIND_PENDING_RESUME_ORIGINAL_OPERATION"))}
+                    else if !slot.binding.pins.as_ref().is_some_and(|p|p.epoch==page.mailbox().epoch&&p.receiver_id==page.mailbox().receiver_id){Err(error("MAILBOX_EPOCH_MISMATCH"))}
                     else if slot.receive_fault.is_some(){Err(error("STREAM_SCOPE_QUARANTINED"))}
                     else{
                         let ids=page.items().iter().filter_map(|item| match item.message()?.content(){peerwork_core::communication::MessageContent::WorkspaceE2ee{body}=>Some(body.key_id.clone()),_=>None}).collect::<std::collections::BTreeSet<_>>().into_iter().collect::<Vec<_>>();
@@ -693,12 +778,13 @@ pub(crate) async fn run(
                         slot.link_verified=true;slot.stream_id=Some(stream_id);slot.failures=0;slot.time_retries=0;slot.state("RECEIVER_LINK_VERIFIED",None);slot.notify();
                     })}
                 }else{Err(error("WATCH_NOT_FOUND"))};
-                if let Err(e)=&stored{if let Some(slot)=slots.get_mut(&key).filter(|s|s.receive_fault.is_none()){slot.fail(Failure{no_effect:false,code:e.code.clone(),retryable:matches!(e.code.as_str(),"INBOX_CAPACITY"|"INBOX_STATE_FAILED"|"INBOX_CURSOR_CONFLICT"|"STREAM_GRANT_EXPIRED")});}}
+                if let Err(e)=&stored{if let Some(slot)=slots.get_mut(&key).filter(|s|s.receive_fault.is_none()&&!resident.paused(&s.binding.options)){slot.fail(Failure{no_effect:false,code:e.code.clone(),retryable:matches!(e.code.as_str(),"INBOX_CAPACITY"|"INBOX_STATE_FAILED"|"INBOX_CURSOR_CONFLICT"|"STREAM_GRANT_EXPIRED")});}}
                 let _=reply.send(stored);
             },
             work=jobs.join_next_with_id(),if !jobs.is_empty()=>if let Some(work)=work{
                 match work{
                     Err(e)=>{match kinds.remove(&e.id()){
+                        Some(JobKind::Resident)=>resident.interrupted(),
                         Some(JobKind::Control(key,generation))=>if let Some(s)=slots.get_mut(&key){s.busy=false;s.control_cancel=None;if s.lifecycle==generation{s.fail(Failure::code("WATCH_TASK_FAILED"));}},
                         Some(JobKind::Pulse(key,generation))=>if let Some(s)=slots.get_mut(&key){s.pulse_busy=false;s.pulse_cancel=None;if s.lifecycle==generation{s.link_verified=false;s.pulse_retry_at=Instant::now()+Duration::from_secs(1);s.state("RECONNECTING",Some("PULSE_TASK_FAILED".into()));}},
                         Some(JobKind::Keys(workspace))=>{for s in slots.values_mut().filter(|s|s.enabled&&s.binding.options.workspace_id==workspace){s.presence.keys(json!({"state":"UNKNOWN","key_id":null,"epoch":null,"code":"KEY_TASK_FAILED"}));s.next_keys=Instant::now()+Duration::from_secs(2);s.next_control=Instant::now();s.notify();}},
@@ -714,6 +800,7 @@ pub(crate) async fn run(
                         };
                         if stale{continue;}
                         match work{
+                            Work::Resident(completed)=>{if let Err(e)=resident.completed(completed,&mut store,&identity){resident.record_error(e);}},
                             Work::Session(value)=>{session_busy=false;match value{Ok(value)=>match store.bind_service(&value.audience,&value.service_key){Ok(())=>session=Some(value),Err(e)=>{for s in slots.values_mut(){s.fail(Failure{no_effect:false,code:e.code.clone(),retryable:false});}}},Err(e)=>{session_retry=Instant::now()+Duration::from_secs(2);for s in slots.values_mut().filter(|s|!s.blocked){if e.retryable{s.state("RECONNECTING",Some(e.code.clone()));}else{s.fail(Failure{no_effect:false,code:e.code.clone(),retryable:false});}}}}},
                             Work::Inspect(key,value)=>if let Some(s)=slots.get_mut(&key){s.busy=false;s.control_cancel=None;match value{
                                 Ok(value)=>{
@@ -823,7 +910,13 @@ pub(crate) async fn run(
             },
             _=tick.tick(),if !slots.is_empty()=>{},
         }
-        slots.retain(|_, s| s.enabled || s.busy || s.pulse_busy || s.signals.iter().any(|c| !c.is_closed()));
+        if !slots.values().any(|s|resident.paused(&s.binding.options)&&(s.busy||s.pulse_busy)) {
+            match resident.next(&mut store,&identity) {
+                Ok(Some(work))=>{let access=access.clone();let handle=jobs.spawn_local(async move{Work::Resident(work.execute(access).await)});kinds.insert(handle.id(),JobKind::Resident);},
+                Ok(None)=>(),Err(e)=>resident.record_error(e),
+            }
+        }
+        slots.retain(|_, s| resident.paused(&s.binding.options) || s.enabled || s.busy || s.pulse_busy || s.signals.iter().any(|c| !c.is_closed()));
         if slots.is_empty() {
             continue;
         }
@@ -914,7 +1007,7 @@ pub(crate) async fn run(
                 s.link_verified=false;
                 s.state("RECONNECTING",Some("MAILBOX_LEASE_EXPIRED".into()));
             }
-            if !s.enabled || s.blocked { continue; }
+            if !s.enabled || s.blocked || resident.paused(&s.binding.options) { continue; }
             let options=s.binding.options.clone();
             let access=access.clone();
             let stop=cancel.child_token();
@@ -1128,6 +1221,7 @@ pub(crate) async fn run(
         let mut selected = Vec::new();
         for s in slots.values().filter(|s| {
             s.enabled
+                && !resident.paused(&s.binding.options)
                 && !s.blocked
                 && s.receive_fault.is_none()
                 && s.lease_until

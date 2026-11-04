@@ -150,6 +150,33 @@ fn ready(store: &mut InboxStore, s: &HostRebind, call: &HostCall) {
         )
         .unwrap();
 }
+
+#[test]
+fn resident_copy_yields_between_pages_and_retains_original_call() {
+    let (_root, identity, mut store, selection, call) = setup(100, false);
+    ready(&mut store, &selection, &call);
+    let old_pins = store.pins(&selection.old.workspace_id, &selection.old.mailbox_id).unwrap().as_ref().map(pins);
+    assert!(store.host_rebind_page(&selection).unwrap().is_none());
+    // One turn copies only one page. Publication and input admission remain
+    // fenced, while the owner can service other scopes before its next turn.
+    let cursor: u64 = store.db.query_row(
+        "SELECT cursor FROM inbox_host_rebinds WHERE workspace=?1 AND mailbox=?2",
+        params![selection.old.workspace_id, selection.old.mailbox_id], |r| r.get(0),
+    ).unwrap();
+    assert_eq!(cursor, 33); // The original unknown call at sequence 1 is not copied.
+    assert_eq!(store.pins(&selection.old.workspace_id, &selection.old.mailbox_id).unwrap().as_ref().map(pins), old_pins);
+    assert_eq!(store.host_rebind_available(&selection.old).unwrap_err().code,
+        "HOST_REBIND_PENDING_RESUME_ORIGINAL_OPERATION");
+    let mut turns = 1;
+    while store.host_rebind_page(&selection).unwrap().is_none() {
+        turns += 1;
+        assert!(turns < 5);
+    }
+    assert_eq!(turns, 3);
+    let original = store.host_original_call(&identity, &selection.namespace, &selection.old, &call.call_id).unwrap();
+    assert_eq!(original.scope, call.scope);
+    assert!(store.host_rebind_page(&selection).unwrap().is_some());
+}
 impl InboxStore {
     fn host_call_for_test(&self, call: &HostCall) -> HostCall {
         let mut call = call.clone();
@@ -517,4 +544,22 @@ fn first_binding_refuses_retired_host_history_without_changing_pins() {
     store.disable_watch(&selection.namespace,&selection.old).unwrap();
     assert_eq!(store.host_rebind_commit(&selection).unwrap_err().code,"HOST_INITIAL_HISTORY_CONFLICT");
     assert_eq!(store.pins(&selection.old.workspace_id,&selection.old.mailbox_id).unwrap().unwrap().epoch,selection.expected.epoch);
+}
+
+#[test]
+fn resident_drain_never_reclassifies_an_open_original_call_or_blocks_another_scope() {
+    let (_root,identity,mut store,selected,original_unknown)=setup(3,true);
+    let item=DeliveryReference{sequence:2,delivery_id:format!("{:043}",2)};
+    let call=store.host_begin(&identity,&selected.namespace,&selected.old,&item,
+        json!({"message_id":"pending-second-input","text":"PRIVATE-PENDING-HOST-FRAME"})).unwrap().unwrap();
+    let before=store.host_original_call(&identity,&selected.namespace,&selected.old,&call.call_id).unwrap();
+    assert_eq!(before.state,"CALL_OPEN");
+    assert_eq!(store.host_scope_drained(&selected.old).unwrap_err().code,"HOST_REBIND_ORIGINAL_CALL_RESULT_PENDING");
+    let mut unrelated=selected.old.clone();unrelated.workspace_id="z".repeat(43);unrelated.mailbox_id="q".repeat(43);
+    store.host_scope_drained(&unrelated).unwrap();
+    assert_eq!(store.host_original_call(&identity,&selected.namespace,&selected.old,&call.call_id).unwrap().state,"CALL_OPEN");
+    store.host_finish(&identity,&selected.namespace,&selected.old,&call,HostOutcome::Unknown{code:"HOST_ACK_UNKNOWN".into()}).unwrap();
+    store.host_scope_drained(&selected.old).unwrap();
+    assert_eq!(store.host_original_call(&identity,&selected.namespace,&selected.old,&original_unknown.call_id).unwrap().state,"RESULT_UNKNOWN");
+    assert_eq!(store.host_original_call(&identity,&selected.namespace,&selected.old,&call.call_id).unwrap().state,"RESULT_UNKNOWN");
 }

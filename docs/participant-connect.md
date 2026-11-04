@@ -78,6 +78,51 @@ can report a parent's session ID for a subagent; they are not an exact-thread
 selection mechanism. Ordinary MCP registration does not itself supply a current
 conversation control channel.
 
+## Explicit original runtimes: next native release candidate
+
+This follow-up is not in0.3.12. Selecting an authenticated original runtime admin
+is sufficient management authority; a Connect launch receipt is not required.
+For a first receiving path, native host attachment uses the online admin interface
+without stopping the runtime. Actual existing receiver bindings are inspected
+before treating missing Connect metadata as an empty installation.
+
+If an older directly managed runtime already has an INBOX, select its original
+protected config once when no trusted local source has recorded it:
+
+```sh
+peerwork connect --local ORIGINAL_REGISTRY --participant worker --workspace WORKSPACE_ID --codex --codex-chat "Worker 2" --runtime-config ORIGINAL_DIRECT_RUNTIME.json --install codex
+```
+
+The config supplies the exact original admin/client selection; a single-client
+runtime can also be registered from that config without hand-entering endpoint,
+actor or journal paths. A conflicting existing selection is never replaced.
+This option authorizes the directly managed runtime's necessary temporary stop
+and restoration through the existing sealed rebind. It creates no identity,
+journal or receiver. Do not use it to bypass an external supervisor's lifecycle
+or to restart an uncoordinated shared runtime. Repeating the same invocation
+continues the original attachment. Ordinary tools and management operations do
+not require this maintenance option.
+
+The candidate resident runtime advertises `resident-scope-rebind-v1`. With that
+feature, the authenticated original admin selection suffices for an existing
+receiver: Connect retains the same engine process and rebinds the selected
+subscriptions through the same sealed operation. No source config pathname is
+required. Unrelated participants continue running; an upstream event connection
+may reconnect, so this is not a claim of uninterrupted network delivery.
+Unknown original host calls stay at their original destination and are not
+replayed into the newly selected conversation.
+
+Normally repeat the unchanged Connect invocation to observe or resume. A verified
+no-effect claim refusal explicitly reports that a recovery decision is required.
+For a resident attachment, repeat the original invocation and add
+`--binding-recovery RETRY_REJECTED --decision-id STABLE_DECISION_ID`, or choose
+`ABORT`. Keep that decision ID on interruption. An unknown remote result must
+first be reconciled with the original claim; it cannot be aborted or retried
+under a new claim. Abort is rejected after a replacement has committed. These
+flags do not start another attachment or select a new destination. Older offline
+attachments retain their original native `runtime recover-host-rebind` interface.
+This remains candidate documentation until the matching artifact is published.
+
 ## Tool access without state takeover
 
 If an existing client already works, [attach tools to that client](existing-client-tools.md)

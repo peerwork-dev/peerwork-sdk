@@ -28,9 +28,11 @@ signing journal to use an ordinary operation.
 {"mode":"describe","operation":"access.approve","workspace":"project"}
 ```
 
-Call `peerwork_manage`. It returns the native operation, required body fields,
+Call `peerwork_manage`. Describe returns the native operation, required body fields,
 example, scope and whether its native action is listed in the selected local capability. Scope and
 full input authorization are checked when invoked.
+Catalog lists compact summaries; describe returns only the selected example.
+The loaded tool schema already lists the operation names.
 Catalog/describe reads only local capabilities and grants no permission; the
 backend still checks current authority. It makes no workspace mutation or test
 message. Examples contain placeholders and are not executable approval requests.
@@ -53,6 +55,41 @@ ceiling denial must be resolved by that local runtime owner, not by switching to
 another actor. Keep the returned recovery selector on uncertainty; do not invent
 another ID. Grant changes, publication and deletion require the user's intended
 business authorization; merely discovering an operation provides none.
+
+If the normal Connect profile lacks a requested management operation, its
+description or denial includes `management_enable`. Use that returned
+`peerwork_connect` request, for example:
+
+```json
+{"request":{"workspace_id":"WORKSPACE_ID","management":["instances.read","grant.get","grant.set"]}}
+```
+
+This derives an immutable, workspace-bound view under the original local
+authority. It does not widen an existing business/receive credential, grant
+Workspace rights or change the original journal. Already-held authority needs no
+new Owner exchange; an insufficient local parent ceiling is reported separately
+from a service permission denial. Workspace Connect does not add identity-scoped
+`workspace.create` or `protocol.offline`: those use an explicitly selected original
+client that already allows them, or the standalone offline CLI respectively.
+
+An administrator does not need to join a business role merely to manage its
+grants. Read `instances.read`, then pass the exact returned instance and protocol
+digest with the workspace instead of configuring a role alias:
+
+```json
+{"mode":"read","operation":"grant.get","workspace":"project","instance_id":"EXACT_INSTANCE_ID","protocol_digest":"EXACT_EXECUTION_DIGEST","body":{"actor_id":"EXACT_ACTOR_ID"}}
+```
+
+Choose either `protocol`, or `workspace` with both `instance_id` and
+`protocol_digest`. Scope validation and current backend authorization still apply.
+For mutations, copy the returned `recovery_arguments` unchanged into
+`peerwork_status` or `peerwork_recover`; a `management` selector pins the original
+view and namespace. Do not substitute a newer view or another operation ID.
+
+`protocol.bind` attaches a first role bundle only. An existing instance cannot
+replace its package, including a change limited to role Markdown. A bundle's
+immutable digest and the instance's currently fixed package binding are distinct
+constraints; this SDK candidate does not implement bundle revision or rule rollout.
 
 CLI exposes the same schemas and implementation:
 

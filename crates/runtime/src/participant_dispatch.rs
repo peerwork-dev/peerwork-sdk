@@ -100,13 +100,34 @@ impl HostConfig {
         Ok(peerwork_core::crypto::sha256_hex(json!({"kind":self.adapter["kind"],"endpoint":self.adapter["endpoint"],"thread":self.adapter["thread_id"],"conversation":self.adapter["conversation_id"],"destination":self.adapter["destination"],"credential":credential}).to_string().as_bytes()))
     }
 }
+type SharedAdapter=Arc<Mutex<std::sync::Weak<Mutex<Host>>>>;
 pub(crate) struct RunningHost {
+    adapter:SharedAdapter,
     pub status: Arc<Mutex<Value>>,
     pub task: tokio::task::JoinHandle<()>,
     pub sources: Arc<Mutex<Vec<(ParticipantClient, WatchOptions)>>>,
     pub changed: Arc<tokio::sync::Notify>,
+    pub cancel: KernelCancellationToken,
+    drain_requested: Arc<Mutex<std::collections::BTreeSet<String>>>,
+    drained: Arc<Mutex<std::collections::BTreeSet<String>>>,
 }
 impl RunningHost {
+    pub(crate) fn borrowed_adapter(&self)->Result<Option<Arc<Mutex<Host>>>> {
+        Ok(self.adapter.lock().map_err(|_|error("HOST_STATE_INVALID"))?.upgrade())
+    }
+
+    pub fn request_drain(&self, keys:&std::collections::BTreeSet<String>)->Result<()> {
+        self.drain_requested.lock().map_err(|_|error("HOST_STATE_INVALID"))?.extend(keys.iter().cloned());
+        let selected=self.sources.lock().map_err(|_|error("HOST_STATE_INVALID"))?.iter()
+            .filter(|(_,w)|!keys.contains(&w.key())).cloned().collect();
+        self.set_sources(selected)?;
+        self.changed.notify_one();Ok(())
+    }
+    pub fn drain_complete(&self, keys:&std::collections::BTreeSet<String>)->Result<bool> {
+        if self.task.is_finished() {return Ok(true);}
+        let drained=self.drained.lock().map_err(|_|error("HOST_STATE_INVALID"))?;
+        Ok(keys.iter().all(|key|drained.contains(key)))
+    }
     pub fn validate_sources(&self, sources: &[(ParticipantClient, WatchOptions)]) -> Result<()> {
         let old = self
             .sources
@@ -148,6 +169,11 @@ impl RunningHost {
             return Ok(());
         }
         *old = sources;
+        let keys=old.iter().map(|(_,w)|w.key()).collect::<Vec<_>>();
+        for key in keys {
+            self.drain_requested.lock().map_err(|_|error("HOST_STATE_INVALID"))?.remove(&key);
+            self.drained.lock().map_err(|_|error("HOST_STATE_INVALID"))?.remove(&key);
+        }
         drop(old);
         self.changed.notify_one();
         Ok(())
@@ -221,14 +247,18 @@ pub(crate) fn start(
         let selected_sources = sources.clone();
         let changed = Arc::new(tokio::sync::Notify::new());
         let signal = changed.clone();
+        let drain_requested=Arc::new(Mutex::new(std::collections::BTreeSet::new()));
+        let drained=Arc::new(Mutex::new(std::collections::BTreeSet::new()));
+        let requested=drain_requested.clone();let acknowledged=drained.clone();
+        let adapter:SharedAdapter=Default::default();let published_adapter=adapter.clone();
         let state = Arc::new(Mutex::new(
             json!({"name":config.name,"state":"CONNECTING","host_ack":"UNCONFIRMED","model_response":"NOT_ATTESTED"}),
         ));
         let status = state.clone();
-        let stop = cancel.clone();
+        let child=cancel.child_token();let stop=child.clone();
         let path = directory.join(format!("host-{key}.state"));
         let task = tokio::spawn(async move {
-            if let Err(e) = run(config, selected_sources, path, status.clone(), stop, signal).await
+            if let Err(e) = run(config, selected_sources, path, status.clone(), stop, signal, requested, acknowledged, published_adapter).await
             {
                 set(
                     &status,
@@ -237,10 +267,12 @@ pub(crate) fn start(
             }
         });
         active.push(RunningHost {
+            adapter,
             status: state,
             task,
             sources,
             changed,
+            cancel:child,drain_requested,drained,
         });
     }
     Ok(active)
@@ -438,6 +470,9 @@ async fn run(
     status: Arc<Mutex<Value>>,
     cancel: KernelCancellationToken,
     changed: Arc<tokio::sync::Notify>,
+    drain_requested: Arc<Mutex<std::collections::BTreeSet<String>>>,
+    drained: Arc<Mutex<std::collections::BTreeSet<String>>>,
+    published_adapter:SharedAdapter,
 ) -> Result<()> {
     let launch_fence = path.with_extension("agy-launch.state");
     let owner = SecureStateStore::open(&path).map_err(|_| error("HOST_STATE_ALREADY_OWNED"))?;
@@ -459,6 +494,7 @@ async fn run(
         &mut adapter,
         changed,
         launch_fence,
+        drain_requested,drained,published_adapter,
     )
     .await;
     let closed = close_adapter(&mut adapter).await;
@@ -499,6 +535,9 @@ async fn run_owned(
     adapter: &mut Option<Arc<Mutex<Host>>>,
     changed: Arc<tokio::sync::Notify>,
     launch_fence: PathBuf,
+    drain_requested: Arc<Mutex<std::collections::BTreeSet<String>>>,
+    drained: Arc<Mutex<std::collections::BTreeSet<String>>>,
+    published_adapter:SharedAdapter,
 ) -> Result<()> {
     let handle = tokio::runtime::Handle::current();
     // The adapter owns only an executor Handle, not a nested runtime. Blocking
@@ -526,6 +565,20 @@ async fn run_owned(
         if let Ok(mut value) = status.lock() {
             value["pending_result_writes"] = json!(pending_finishes.len());
         }
+        // This loop owns physical input IO. Reaching this point proves its
+        // preceding input finished and its result write was attempted. A scope
+        // is acknowledged only when no original result write or cleanup remains.
+        while let Some(result)=maintenance.try_join_next() {
+            if let Ok(mut value)=status.lock(){value["retirement_error"]=result.ok().and_then(|r|r.err()).map(|e|json!(e.code)).unwrap_or(Value::Null);}
+        }
+        if maintenance.is_empty() {
+            let requested=drain_requested.lock().map_err(|_|error("HOST_STATE_INVALID"))?.clone();
+            let selected=sources.lock().map_err(|_|error("HOST_STATE_INVALID"))?.clone();
+            let mut complete=drained.lock().map_err(|_|error("HOST_STATE_INVALID"))?;
+            for key in requested {
+                if !pending_finishes.contains_key(&key) && !selected.iter().any(|(_,w)|w.key()==key) {complete.insert(key);}
+            }
+        }
         if adapter.is_none() {
             let mut options = config.adapter.clone();
             if options["kind"] == "agy-stdio" {
@@ -548,6 +601,7 @@ async fn run_owned(
             };
             let destination = host.destination.clone();
             *adapter = Some(Arc::new(Mutex::new(host)));
+            *published_adapter.lock().map_err(|_|error("HOST_STATE_INVALID"))?=Arc::downgrade(adapter.as_ref().unwrap());
             let binding = HostBinding::new(destination)?;
             let pin = serde_json::to_vec(&binding).map_err(|_| error("HOST_BINDING_INVALID"))?;
             match owner
@@ -991,6 +1045,9 @@ mod tests {
                 Arc::new(Mutex::new(json!({}))),
                 cancel,
                 Arc::new(tokio::sync::Notify::new()),
+                Arc::new(Mutex::new(Default::default())),
+                Arc::new(Mutex::new(Default::default())),
+                Default::default(),
             )
             .await;
             stopping.await.unwrap();

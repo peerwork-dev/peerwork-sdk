@@ -24,38 +24,93 @@ fn operations()->Vec<Operation> {
         op("protocol.adopt","structure.adopt","workspace","Create an instance using an explicitly selected bundle or registered package. Existing instances remain pinned. Choose bootstrap_grant explicitly, including an empty actions list if no writes are intended.",&["bootstrap_grant"],json!({"package_digest":"EXACT_REGISTERED_PACKAGE_DIGEST","bootstrap_grant":{"actions":[],"protocol_roles":[],"capabilities":[]}})),
         op("protocol.bind","structure.protocol.bind","workspace","Attach a first role bundle with exactly matching execution rules to an existing instance.",&["instance_id","protocol_digest"],json!({"instance_id":"EXACT_INSTANCE_ID","protocol_digest":"EXACT_EXECUTION_DIGEST","package_digest":"EXACT_REGISTERED_PACKAGE_DIGEST"})),
         op("grant.get","structure.grant.get","protocol","Read selected member's grant for the configured instance.",&["actor_id"],json!({"actor_id":"EXACT_ACTOR_ID"})),
+        op("grant.revoke","structure.grant.revoke","protocol","Revoke the exact current member grant, retaining signed historical attribution.",&["actor_id","expected_grant_revision"],json!({"actor_id":"EXACT_ACTOR_ID","expected_grant_revision":1})),
         op("grant.set","structure.grant.set","protocol","Set explicitly selected actions, roles and capabilities for the exact current membership.",&["actor_id","membership_id","expected_grant_revision","actions","protocol_roles","capabilities","expires_at"],json!({"actor_id":"EXACT_ACTOR_ID","membership_id":"EXACT_MEMBERSHIP_ID","expected_grant_revision":null,"actions":["claim"],"protocol_roles":["WORKER"],"capabilities":[],"expires_at":null})),
+        op("communication.get","structure.communication.grant.get","workspace","Read one member's communication grant; local aliases do not substitute for membership.",&["actor_id"],json!({"actor_id":"EXACT_ACTOR_ID"})),
+        op("communication.set","structure.communication.grant.set","workspace","Explicitly set communication rights for the exact current membership. Ordinary connect uses the consolidated approval path.",&["actor_id","membership_id","expected_revision","send","receive"],json!({"actor_id":"EXACT_ACTOR_ID","membership_id":"EXACT_MEMBERSHIP_ID","expected_revision":null,"send":true,"receive":true})),
         op("member.set","structure.member.set","workspace","Change an explicitly selected member's state using the current workspace revision.",&["actor_id","state","expected_membership_id"],json!({"actor_id":"EXACT_ACTOR_ID","state":"ACTIVE","expected_membership_id":null})),
         op("access.request","participant.access.request","workspace","Prepare a signed access request; does not approve it.",&["label"],json!({"label":"Project worker"})),
         op("access.approve","participant.access.approve","workspace","Approve the exact signed Agent/browser request. Verify workspace/device and requested rights; future/history keys require explicit consent.",&["request_jws"],json!({"request_jws":"EXACT_SIGNED_REQUEST","ttl_ms":86400000,"include_history":false,"follow_current_key":false})),
         op("keys.prepare","participant.keys.prepare","workspace","Prepare only the selected workspace's authorized current body keys.",&[],json!({})),
+        op("keys.status","participant.keys.status","workspace","Inspect selected body-key availability locally; this is not a remote grant.",&["key_ids"],json!({"key_ids":["EXACT_BODY_KEY_ID"]})),
+        op("keys.accept","participant.keys.accept","workspace","Accept the exact authorized key deliveries from the selected Owner. Current writing-key selection is explicit.",&["owner_id","key_ids"],json!({"owner_id":"EXACT_OWNER_ID","key_ids":["EXACT_BODY_KEY_ID"]})),
         op("keys.rotate","participant.keys.rotate","workspace","Explicit Owner rotation using one durable original operation.",&[],json!({})),
         op("keys.coordinate","participant.keys.coordinate","workspace","Advance authorized Owner key deliveries without altering grants.",&[],json!({})),
         op("archive.sources","participant.archive.sources","workspace","List configured migration source handles; no local secret paths are accepted.",&[],json!({})),
         op("archive.migrate","participant.archive.migrate","workspace","Migrate the selected archived workspace using an already configured source handle. Preserve identity and original operation.",&["source_id"],json!({"source_id":"CONFIGURED_SOURCE_DIGEST"})),
+        op("operations.read","structure.operations.read","workspace","Read one bounded page of admitted backend operations, independent of local unsubmitted intents.",&[],json!({"limit":8})),
+        op("maintenance.cancel","structure.maintenance.cancel","protocol","Explicit Owner cancellation of one maintenance job; cancellation does not undo an activated generation.",&["job_id"],json!({"job_id":"EXACT_JOB_ID"})),
         op("maintenance.get","structure.maintenance.get","protocol","Read one admitted backend maintenance job.",&["job_id"],json!({"job_id":"EXACT_JOB_ID"})),
         op("maintenance.rebuild","structure.maintenance.rebuild","protocol","Request explicit backend maintenance; ordinary reads never require it.",&["expected_event_revision"],json!({"expected_event_revision":1,"ttl_ms":60000})),
         op("publication.publish","participant.publication.publish","protocol","Publish exactly selected content with explicit disclosure consent; never inferred from a PRIVATE record.",&["record_id","revision","title","disclosure","body"],json!({"record_id":"EXACT_RECORD_ID","revision":1,"title":"Release notes","disclosure":"PUBLISH_SELECTED_CONTENT","body":{"from":"RECORD"}})),
-        op("protocol.offline","participant.protocol.offline","identity","Run fixture, simulate, compatibility or plan locally. No legacy online export/apply and no network evidence.",&["operation","input"],json!({"operation":"fixture","input":{"schema":"peerwork.protocol-fixture.v1","protocols":[]}})),
+        op("protocol.offline","participant.protocol.offline","identity","Run fixture, simulate, compatibility or plan locally. No legacy online export/apply and no network evidence.",&["operation","input"],json!({"operation":"fixture","input":{"schema":"peerwork.protocol-fixture.v1","protocols":[{"instance_id":"counter","manifest":{"name":"example.counter","display_version":"1","semantics":"peerwork.kernel.v1","dependencies":[],"record_schemas":{},"initial_state":{"count":0},"actions":[{"id":"set","reads":[["count"]],"writes":[["count"]],"revisionEffects":{"control":true,"contentEntities":[]},"variants":[{"when":[],"effects":[{"op":"set","path":["count"],"value":{"from":"literal","value":1}}]}]}]}}]}})),
     ]
+}
+pub(super) fn names()->Vec<&'static str>{operations().into_iter().map(|spec|spec.name).collect()}
+pub(crate) fn workspace_names()->Vec<&'static str>{operations().into_iter().filter(|spec|spec.scope!="identity").map(|spec|spec.name).collect()}
+pub(crate) fn is_workspace_action(action:&str)->bool{operations().iter().any(|spec|spec.scope!="identity"&&spec.action==action)}
+pub(crate) fn workspace_actions(names:&[String])->Result<std::collections::BTreeSet<String>> {
+    let mut seen=std::collections::BTreeSet::new();let mut actions=std::collections::BTreeSet::new();
+    for name in names {
+        let spec=operations().into_iter().find(|spec|spec.name==name).ok_or_else(||invalid("MANAGEMENT_OPERATION_UNKNOWN"))?;
+        if spec.scope=="identity" {return Err(invalid("IDENTITY_MANAGEMENT_NOT_SUPPORTED_BY_WORKSPACE_CONNECT"));}
+        if !seen.insert(name){return Err(invalid("MANAGEMENT_OPERATION_DUPLICATE"));}
+        actions.insert(spec.action.to_owned());
+    }
+    Ok(actions)
+}
+fn enable_hint(spec:&Operation,workspace:Option<&str>)->Value {
+    if spec.scope=="identity" {return json!({"code":"IDENTITY_MANAGEMENT_NOT_SUPPORTED_BY_WORKSPACE_CONNECT","next_actor":"LOCAL_RUNTIME_OWNER","next_action":"USE_EXPLICITLY_SELECTED_ORIGINAL_IDENTITY_CLIENT"});}
+    json!({"tool":"peerwork_connect","arguments":{"request":{"workspace_id":workspace.unwrap_or("SELECT_WORKSPACE_ID"),"management":[spec.name]}},
+        "frontend_requirement":"LOCAL_REGISTRY_WITH_BOOTSTRAP_AUTHORITY","remote_grants_changed":false,"existing_credentials_widened":false})
+}
+fn enable_error(mut error:ParticipantError,spec:&Operation,workspace:Option<&str>,view:Option<&str>)->ParticipantError {
+    if error.code=="LOCAL_SCOPE_DENIED"&&view.is_none() {
+        error.details.get_or_insert_with(||json!({}))["management_enable"]=enable_hint(spec,workspace);
+    }
+    error
 }
 fn native_kind(spec:&Operation)->StructureOperationKind {
     crate::participant_actions::kind(spec.action).expect("management catalog uses existing native operations")
 }
 impl AgentTools {
-    pub(super) async fn manage(&self,mode:&str,operation:Option<&str>,workspace:Option<&str>,protocol:Option<&str>,id:Option<&str>,body:Option<Value>,expected_workspace:Option<u64>,expected_instance:Option<u64>,wait_ms:u64)->Result<Value> {
+    pub(super) async fn manage(&self,mode:&str,operation:Option<&str>,workspace:Option<&str>,protocol:Option<&str>,instance_id:Option<&str>,protocol_digest:Option<&str>,id:Option<&str>,body:Option<Value>,expected_workspace:Option<u64>,expected_instance:Option<u64>,wait_ms:u64)->Result<Value> {
         if !["catalog","describe","read","request","invoke"].contains(&mode) {return Err(invalid("MANAGEMENT_MODE_INVALID"));}
+        if instance_id.is_some()!=protocol_digest.is_some(){return Err(invalid("MANAGEMENT_INSTANCE_TARGET_PAIR_REQUIRED"));}
+        if protocol.is_some()&&(workspace.is_some()||instance_id.is_some()){return Err(invalid("MANAGEMENT_SCOPE_SELECTION_INVALID"));}
+        if instance_id.is_some_and(|id|!token(id))||protocol_digest.is_some_and(|digest|!crate::participant_migration::digest(digest)){return Err(invalid("MANAGEMENT_INSTANCE_TARGET_INVALID"));}
         if matches!(mode,"catalog"|"describe") {
+            if mode=="describe"&&operation.is_none(){return Err(invalid("MANAGEMENT_OPERATION_REQUIRED"));}
             if id.is_some()||body.is_some()||expected_workspace.is_some()||expected_instance.is_some(){return Err(invalid("DISCOVERY_DOES_NOT_ACCEPT_MUTATION_INPUT"));}
-            let client=self.operation_client(protocol,workspace)?;
+            let client=self.operation_client(protocol,workspace,None)?;
             let caps=client.call(json!({"method":"capabilities"})).await?;
             let cap:crate::participant::Capability=serde_json::from_value(caps["capability"].clone()).map_err(|_|invalid("LOCAL_CEILING_INVALID"))?;
+            let selected_workspace=if let Some(alias)=protocol{self.protocol(alias)?.workspace_id}else{self.selected_workspace(workspace).ok()};
+            let mut view_caps=std::collections::BTreeMap::new();
+            for (id,client) in &self.management_clients {
+                let value=client.call(json!({"method":"capabilities"})).await?;
+                let capability:crate::participant::Capability=serde_json::from_value(value["capability"].clone()).map_err(|_|invalid("LOCAL_CEILING_INVALID"))?;
+                view_caps.insert(id.as_str(),capability);
+            }
             let list=operations().into_iter().filter(|spec|operation.is_none_or(|name|spec.name==name)).map(|spec|{
                 let kind=native_kind(&spec);
-                json!({"operation":spec.name,"native_action":spec.action,"scope":spec.scope,"description":spec.description,
-                    "mode":match kind{StructureOperationKind::Read=>"read",StructureOperationKind::Control=>"request",StructureOperationKind::Mutation=>"invoke"},"required_body_fields":spec.required,"body_example":spec.example,
-                    "local_operation_listed":cap.operations.contains(spec.action),"local_scope_checked":false,"remote_permission":"NOT_ATTESTED",
-                    "revision_input":if spec.name=="member.set"{"expected_workspace_revision"}else if spec.name=="maintenance.rebuild"{"expected_revision"}else{"SEE_SELECTED_OPERATION"}})
+                let view=if spec.scope=="identity"{None}else{selected_workspace.as_deref().and_then(|ws|self.management_client(ws,spec.action)).map(|(id,_)|id)};
+                let view=if cap.operations.contains(spec.action){None}else{view};
+                let selected_cap=view.and_then(|id|view_caps.get(id)).unwrap_or(&cap);
+                let mut item=json!({"operation":spec.name,"native_action":spec.action,"scope":spec.scope,"description":spec.description,
+                    "mode":match kind{StructureOperationKind::Read=>"read",StructureOperationKind::Control=>"request",StructureOperationKind::Mutation=>"invoke"},
+                    "local_operation_listed":selected_cap.operations.contains(spec.action),"management_view":view,"local_scope_checked":false,"remote_permission":"NOT_ATTESTED"});
+                if !selected_cap.operations.contains(spec.action){item["management_enable"]=enable_hint(&spec,selected_workspace.as_deref());}
+                if mode=="describe" {
+                    item["required_body_fields"]=json!(spec.required);item["body_example"]=spec.example;
+                    item["revision_input"]=json!(if matches!(spec.name,"member.set"|"workspace.delete"){"expected_workspace_revision"}else if spec.name=="maintenance.rebuild"{"expected_revision"}else{"SEE_SELECTED_OPERATION"});
+                    item["scope_inputs"]=match spec.scope {
+                        "identity"=>json!({"selectors":[],"workspace_connect_management":"NOT_SUPPORTED"}),
+                        "protocol"=>json!({"choose_one":[["protocol"],["workspace","instance_id","protocol_digest"]],"source":"EXACT_VERIFIED_INSTANCES_READ_RESULT","business_role_required":false}),
+                        _=>json!({"selectors":["workspace"]}),
+                    };
+                }
+                item
             }).collect::<Vec<_>>();
             if list.is_empty(){return Err(invalid("MANAGEMENT_OPERATION_UNKNOWN"));}
             return Ok(json!({"operations":list,"identity":self.client.actor_id(),"origin":self.client.origin(),"source":"NATIVE_OPERATION_CATALOG",
@@ -72,24 +127,37 @@ impl AgentTools {
         let object=body.as_object_mut().ok_or_else(||invalid("MANAGEMENT_BODY_INVALID"))?;
         if object.contains_key("workspace_id")||object.contains_key("idempotency_key")||object.contains_key("command_id") {return Err(invalid("MANAGEMENT_SCOPE_MUST_USE_SELECTED_CLIENT"));}
         for field in spec.required {if !object.contains_key(*field){let mut e=invalid("MANAGEMENT_FIELD_REQUIRED");e.details=Some(json!({"operation":name,"field":field,"next_action":"DESCRIBE_SELECTED_OPERATION"}));return Err(e);}}
-        let (client,scope)=match spec.scope {
-            "identity" if workspace.is_none()&&protocol.is_none()=>(&self.client,Scope::default()),
-            "workspace" if protocol.is_none()=>{let ws=self.selected_workspace(workspace)?;(self.directory_client(&ws),Scope{workspace_id:Some(ws),..Default::default()})},
-            "protocol" if workspace.is_none()=>{let alias=protocol.ok_or_else(||invalid("MANAGEMENT_PROTOCOL_SELECTION_REQUIRED"))?;(self.protocol_client(alias)?,self.protocol(alias)?)},
+        let (fallback,scope)=match spec.scope {
+            "identity" if workspace.is_none()&&protocol.is_none()&&instance_id.is_none()=>(&self.client,Scope::default()),
+            "workspace" if protocol.is_none()&&instance_id.is_none()=>{let ws=self.selected_workspace(workspace)?;(self.directory_client(&ws),Scope{workspace_id:Some(ws),..Default::default()})},
+            "protocol" if protocol.is_some()&&instance_id.is_none()=>{let alias=protocol.unwrap();(self.protocol_client(alias)?,self.protocol(alias)?)},
+            "protocol" if protocol.is_none()&&instance_id.is_some()=>{let ws=self.selected_workspace(workspace)?;(self.directory_client(&ws),Scope{workspace_id:Some(ws),instance_id:instance_id.map(str::to_owned),protocol_digest:protocol_digest.map(str::to_owned)})},
+            "protocol"=>return Err(invalid("MANAGEMENT_PROTOCOL_SELECTION_REQUIRED")),
             _=>return Err(invalid("MANAGEMENT_SCOPE_SELECTION_INVALID")),
         };
+        // An already usable original route keeps its namespace. Explicit new
+        // views only supply operations absent from that route; later views
+        // never capture an action previously admitted by an earlier client.
+        let fallback_caps=fallback.call(json!({"method":"capabilities"})).await?;
+        let fallback_cap:crate::participant::Capability=serde_json::from_value(fallback_caps["capability"].clone()).map_err(|_|invalid("LOCAL_CEILING_INVALID"))?;
+        let mut route_check=Invoke::new("management-route-check",spec.action,scope.clone(),body.clone());
+        route_check.expected_workspace_revision=expected_workspace;route_check.expected_instance_revision=expected_instance;
+        let selected=if spec.scope=="identity"||fallback_cap.authorize(&route_check).is_ok(){None}else{scope.workspace_id.as_deref().and_then(|ws|self.management_client(ws,spec.action))};
+        let (view,client)=selected.map(|(id,client)|(Some(id),client)).unwrap_or((None,fallback));
         if let Some(bundle)=body.get("bundle") {peerwork_core::protocol_bundle::inspect(bundle).map_err(|_|invalid("PROTOCOL_BUNDLE_INVALID"))?;}
         if mode!="invoke" {
             if expected_workspace.is_some()||expected_instance.is_some(){return Err(invalid("READ_DOES_NOT_ACCEPT_MUTATION_REVISION"));}
-            if mode=="read"{return self.read_client(client,spec.action,scope,body).await;}
-            return client.call(json!({"method":"request","request":Invoke::new("agent-management-control",spec.action,scope,body)})).await;
+            if mode=="read"{return self.read_client(client,spec.action,scope.clone(),body).await.map_err(|error|enable_error(error,&spec,scope.workspace_id.as_deref(),view));}
+            return client.call(json!({"method":"request","request":Invoke::new("agent-management-control",spec.action,scope.clone(),body)})).await.map_err(|error|enable_error(error,&spec,scope.workspace_id.as_deref(),view));
         }
         let id=id.ok_or_else(||invalid("MANAGEMENT_OPERATION_ID_REQUIRED"))?;
         let mut recovery=json!({"operation_id":id});
-        if spec.scope=="protocol" {recovery["protocol"]=json!(protocol);}else if spec.scope=="workspace" {recovery["workspace"]=json!(scope.workspace_id);}
-        let mut request=Invoke::new(id,spec.action,scope,body);
+        if let Some(view)=view {recovery["management"]=json!(view);}else if let Some(protocol)=protocol {recovery["protocol"]=json!(protocol);}else if scope.workspace_id.is_some() {recovery["workspace"]=json!(scope.workspace_id);}
+        if matches!(name,"member.set"|"workspace.delete")&&expected_workspace.is_none(){return Err(invalid("EXPECTED_WORKSPACE_REVISION_REQUIRED"));}
+        if name=="maintenance.rebuild"&&expected_instance.is_none(){return Err(invalid("EXPECTED_INSTANCE_REVISION_REQUIRED"));}
+        let mut request=Invoke::new(id,spec.action,scope.clone(),body);
         request.expected_workspace_revision=expected_workspace;request.expected_instance_revision=expected_instance;
-        let mut result=match self.invoke_client(client,request,wait_ms).await {Ok(result)=>result,Err(mut error)=>{error.details.get_or_insert_with(||json!({}))["recovery_arguments"]=recovery;return Err(error);}};
+        let mut result=match self.invoke_client(client,request,wait_ms).await {Ok(result)=>result,Err(error)=>{let mut error=enable_error(error,&spec,scope.workspace_id.as_deref(),view);error.details.get_or_insert_with(||json!({}))["recovery_arguments"]=recovery;return Err(error);}};
         result["recovery_arguments"]=recovery;Ok(result)
     }
 }
@@ -108,8 +176,8 @@ mod tests {
         let catalog=tools.call(AgentRequest::parse("manage",json!({})).unwrap()).await.unwrap();
         assert!(catalog["operations"].as_array().unwrap().iter().any(|o|o["operation"]=="access.approve"));
         assert!(catalog["operations"].as_array().unwrap().iter().all(|o|o["remote_permission"]=="NOT_ATTESTED"));
-        let manifest=json!({"name":"test.counter","display_version":"1","semantics":"peerwork.kernel.v1","dependencies":[],"record_schemas":{},"initial_state":{"count":0},"actions":[{"id":"set","reads":[["count"]],"writes":[["count"]],"revisionEffects":{"control":true,"contentEntities":[]},"variants":[{"when":[],"effects":[{"op":"set","path":["count"],"value":{"from":"literal","value":1}}]}]}]});
-        let fixture=tools.call(AgentRequest::parse("manage",json!({"mode":"request","operation":"protocol.offline","body":{"operation":"fixture","input":{"schema":"peerwork.protocol-fixture.v1","protocols":[{"instance_id":"counter","manifest":manifest}]}}})).unwrap()).await.unwrap();
+        let described=tools.call(AgentRequest::parse("manage",json!({"mode":"describe","operation":"protocol.offline"})).unwrap()).await.unwrap();
+        let fixture=tools.call(AgentRequest::parse("manage",json!({"mode":"request","operation":"protocol.offline","body":described["operations"][0]["body_example"]})).unwrap()).await.unwrap();
         assert_eq!(fixture["result"]["ok"],true,"{fixture}");
         let simulated=tools.call(AgentRequest::parse("manage",json!({"mode":"request","operation":"protocol.offline","body":{"operation":"simulate","input":{"schema":"peerwork.protocol-simulation.v1","fixture":fixture["result"]["value"],"steps":[{"instance_id":"counter","action_id":"set"}]}}})).unwrap()).await.unwrap();
         assert_eq!(simulated["result"]["value"]["steps"][0]["output_state"]["count"],1,"{simulated}");

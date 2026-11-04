@@ -50,6 +50,11 @@ pub(super) fn initialize(db: &Connection) -> Result<()> {
     tx.commit().map_err(db_error)
 }
 impl InboxStore {
+    pub(crate) fn host_scope_drained(&self, options:&WatchOptions)->Result<()> {
+        let open:bool=self.db.query_row("SELECT EXISTS(SELECT 1 FROM inbox_host_calls WHERE workspace=?1 AND mailbox=?2 AND state='CALL_OPEN')",
+            params![options.workspace_id,options.mailbox_id],|r|r.get(0)).map_err(db_error)?;
+        if open{return Err(failure("HOST_REBIND_ORIGINAL_CALL_RESULT_PENDING"));}Ok(())
+    }
     pub(crate) fn host_rebind_available(&self, options: &WatchOptions) -> Result<()> {
         let pending:bool=self.db.query_row("SELECT EXISTS(SELECT 1 FROM inbox_host_rebinds WHERE workspace=?1 AND mailbox=?2 AND phase='COPYING')",params![options.workspace_id,options.mailbox_id],|r|r.get(0)).map_err(db_error)?;
         if pending {
@@ -163,6 +168,22 @@ impl InboxStore {
         s: &HostRebind,
         mut boundary: impl FnMut(&str) -> Result<()>,
     ) -> Result<Value> {
+        self.host_rebind_pages(s, 2049, &mut boundary)?.ok_or_else(|| {
+            failure("HOST_REBIND_COPY_PENDING_RESUME_ORIGINAL_OPERATION")
+        })
+    }
+    /// One bounded local step for the resident watch owner. No network work,
+    /// second connection, or startup recovery runs here. None means the saved
+    /// copy cursor needs another turn; the original binding remains fenced.
+    pub(crate) fn host_rebind_page(&mut self, s: &HostRebind) -> Result<Option<Value>> {
+        self.host_rebind_pages(s, 1, &mut |_| Ok(()))
+    }
+    fn host_rebind_pages(
+        &mut self,
+        s: &HostRebind,
+        pages: usize,
+        boundary: &mut impl FnMut(&str) -> Result<()>,
+    ) -> Result<Option<Value>> {
         s.old.validate()?;
         s.new.validate()?;
         s.expected.validate().map_err(|_| invalid())?;
@@ -223,9 +244,9 @@ impl InboxStore {
                 return Err(failure("HOST_REBIND_ORIGINAL_SELECTION_REQUIRED"));
             }
             if phase == "COMMITTED" {
-                return Ok(
+                return Ok(Some(
                     json!({"state":"LOCAL_REBIND_COMMITTED","operation_id":s.operation_id,"replayed":true,"readiness":"NOT_ATTESTED"}),
-                );
+                ));
             }
             if phase != "COPYING" {
                 return Err(invalid());
@@ -307,7 +328,7 @@ impl InboxStore {
         // Explicit maintenance only. Each copied page and its cursor commit
         // together; attachment stays fenced until the final pointer swap.
         let mut copied_all = false;
-        for _ in 0..=2048 {
+        for _ in 0..pages {
             let rows=self.db.prepare("SELECT sequence FROM inbox_host_lanes WHERE workspace=?1 AND mailbox=?2 AND state='WAITING' AND sequence>?3 ORDER BY sequence LIMIT 32").map_err(db_error)?.query_map(params![s.old.workspace_id,s.old.mailbox_id,cursor],|r|r.get::<_,u64>(0)).map_err(db_error)?.collect::<std::result::Result<Vec<_>,_>>().map_err(db_error)?;
             let tx = self.db.transaction().map_err(db_error)?;
             for sequence in &rows {
@@ -337,9 +358,7 @@ impl InboxStore {
             }
         }
         if !copied_all {
-            return Err(failure(
-                "HOST_REBIND_COPY_PENDING_RESUME_ORIGINAL_OPERATION",
-            ));
+            return Ok(None);
         }
         if self
             .pins(&s.old.workspace_id, &s.old.mailbox_id)?
@@ -370,9 +389,9 @@ impl InboxStore {
         tx.execute("UPDATE inbox_host_rebinds SET phase='COMMITTED' WHERE workspace=?1 AND mailbox=?2 AND version=?3",params![s.old.workspace_id,s.old.mailbox_id,s.expected.binding_version]).map_err(db_error)?;
         tx.commit().map_err(db_error)?;
         boundary("COMMITTED")?;
-        Ok(
+        Ok(Some(
             json!({"state":"LOCAL_REBIND_COMMITTED","operation_id":s.operation_id,"replayed":false,"readiness":"NOT_ATTESTED"}),
-        )
+        ))
     }
 }
 

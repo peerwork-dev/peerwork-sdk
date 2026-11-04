@@ -1175,7 +1175,7 @@ async fn existing_endpoint_attachment_needs_no_discovery_rights_and_keeps_origin
     assert_eq!(profile.endpoint_path,ready.client_endpoints["reader"]);
     assert!(profile.contacts.is_empty()&&profile.scopes.is_empty());
     let tools=AgentTools::open(profile).await.unwrap();
-    let pending=tools.call(AgentRequest::Status{workspace:None,protocol:None,operation_id:"original-pending".into()}).await.unwrap();
+    let pending=tools.call(AgentRequest::Status{ management: None,workspace:None,protocol:None,operation_id:"original-pending".into()}).await.unwrap();
     assert_eq!(pending["command_id"],"old-command");assert_eq!(pending["effect_certainty"],"UNKNOWN");
     let context=tools.call(AgentRequest::Context).await.unwrap();
     assert_eq!(context["capability"],serde_json::to_value(&cfg.clients[1].capability).unwrap());

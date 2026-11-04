@@ -95,7 +95,7 @@ pub(crate) fn configuration(directory: &std::path::Path, origin: &str) -> Partic
     config.transport.request_timeout_ms = 1000;
     config
 }
-async fn wait_terminal(client: &ParticipantClient, id: &str) -> Operation {
+pub(crate) async fn wait_terminal(client: &ParticipantClient, id: &str) -> Operation {
     tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             let op = client.operation(id).await.unwrap();
@@ -3868,7 +3868,7 @@ async fn native_agent_cli_mcp_send_reply_and_cancel_preserve_one_engine_intent()
     }
     let master_scope = mail_scope(&ws, &master_box);
     let worker_scope = mail_scope(&ws, &worker_box);
-    let master_profile = AgentProfile {
+    let master_profile = AgentProfile { management_views: Default::default(),
         workspaces: Default::default(), directory_endpoints: Default::default(), protocol_endpoints: Default::default(),
             send_scopes: Default::default(), receive_endpoint_path: None,
         format: "peerwork.agent-profile.v1".into(),
@@ -3888,7 +3888,7 @@ async fn native_agent_cli_mcp_send_reply_and_cancel_preserve_one_engine_intent()
         )]),
         protocols: BTreeMap::from([("claim".into(), protocol_scope)]),
     };
-    let worker_profile = AgentProfile {
+    let worker_profile = AgentProfile { management_views: Default::default(),
         workspaces: Default::default(), directory_endpoints: Default::default(), protocol_endpoints: Default::default(),
             send_scopes: Default::default(), receive_endpoint_path: None,
         format: "peerwork.agent-profile.v1".into(),
@@ -4027,7 +4027,7 @@ async fn native_agent_cli_mcp_send_reply_and_cancel_preserve_one_engine_intent()
         .unwrap_err();
     assert_eq!(conflict.code, "OPERATION_INPUT_CONFLICT");
     master
-        .call(AgentRequest::Status { workspace: None,
+        .call(AgentRequest::Status { management: None, workspace: None,
             protocol: None,
             operation_id: "cli-ping".into(),
         })
@@ -4119,7 +4119,7 @@ async fn native_agent_cli_mcp_send_reply_and_cancel_preserve_one_engine_intent()
     let recovered = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let v = master
-                .call(AgentRequest::Status { workspace: None,
+                .call(AgentRequest::Status { management: None, workspace: None,
                     protocol: None,
                     operation_id: "mcp-original-cancelled-wait".into(),
                 })
@@ -4276,7 +4276,7 @@ async fn connect_consolidates_missing_rights_and_resumes_without_owner_profile_e
     let running=tokio::spawn(ipc::serve(config,cancel.clone(),tx));let ready=rx.await.unwrap().unwrap();
     let mut worker=Connect::open(&root.path().join("worker-local")).unwrap();
     worker.register("worker",Registration{origin:service.origin.clone(),actor_id:worker_config.expected_actor.clone(),endpoint_path:ready.client_endpoints["worker"].clone()}).await.unwrap();
-    let request=ConnectRequest{setup_id:"worker-first".into(),participant:"worker".into(),workspace_id:ws,alias:"project".into(),send:true,receive:true,receive_mode:None,require_body_keys:false,request_membership:false,protocols:Vec::new(),contacts:Vec::new(),host:None};
+    let request=ConnectRequest{ management: Vec::new(),setup_id:"worker-first".into(),participant:"worker".into(),workspace_id:ws,alias:"project".into(),send:true,receive:true,receive_mode:None,require_body_keys:false,request_membership:false,protocols:Vec::new(),contacts:Vec::new(),host:None};
     let pending=worker.run(request.clone()).await.unwrap();
     assert_eq!(pending["blocker"]["code"],"OWNER_APPROVAL_REQUIRED","{pending}");
     let handoff=pending["details"]["authorization_request"].clone();
@@ -4394,7 +4394,7 @@ async fn connect_send_only_accepts_body_keys_without_mailbox_and_preserves_lease
     worker.register("sender",Registration{origin:service.origin.clone(),actor_id:worker_config.expected_actor.clone(),endpoint_path:ready.client_endpoints["sender"].clone()}).await.unwrap();
     let mut owner=Connect::open(&root.path().join("owner-local")).unwrap();
     owner.register("owner",Registration{origin:service.origin.clone(),actor_id:owner_config.expected_actor.clone(),endpoint_path:ready.client_endpoints["owner"].clone()}).await.unwrap();
-    let request=ConnectRequest{setup_id:"send-first".into(),participant:"sender".into(),workspace_id:ws.clone(),alias:"project".into(),send:true,receive:false,receive_mode:None,require_body_keys:true,request_membership:false,protocols:Vec::new(),contacts:vec![ContactSelection{alias:"owner".into(),actor_id:owner_config.expected_actor.clone()}],host:None};
+    let request=ConnectRequest{ management: Vec::new(),setup_id:"send-first".into(),participant:"sender".into(),workspace_id:ws.clone(),alias:"project".into(),send:true,receive:false,receive_mode:None,require_body_keys:true,request_membership:false,protocols:Vec::new(),contacts:vec![ContactSelection{alias:"owner".into(),actor_id:owner_config.expected_actor.clone()}],host:None};
     let pending=worker.run(request.clone()).await.unwrap();
     assert_eq!(pending["blocker"]["code"],"KEY_AUTHORIZATION_REQUIRED","{pending}");
     let old_handoff=pending["details"]["authorization_request"].clone();
@@ -4653,7 +4653,7 @@ async fn workspace_member_tools_need_no_contacts_preserve_limits_and_recover_nam
     let cancel=KernelCancellationToken::new();let(tx,rx)=tokio::sync::oneshot::channel();let daemon=tokio::spawn(communication_runtime::serve(runtime,cancel.clone(),tx));let ready=rx.await.unwrap().unwrap();
     let client=communication_runtime::RuntimeClient::connect(ready.client_endpoints["worker"].clone(),&service.origin,&cfg.expected_actor).await.unwrap();
     let directory=client.call(json!({"method":"derive","name":"member-directory","capability":cap})).await.unwrap();
-    let profile=AgentProfile{format:"peerwork.agent-profile.v1".into(),endpoint_path:ready.client_endpoints["worker"].clone(),expected_origin:service.origin.clone(),expected_actor:cfg.expected_actor.clone(),workspaces:[("project".into(),ws.clone())].into(),directory_endpoints:[(ws.clone(),std::path::PathBuf::from(directory["endpoint_path"].as_str().unwrap()))].into(),scopes:Default::default(),contacts:Default::default(),protocols:Default::default(),protocol_endpoints:Default::default(),send_scopes:Default::default(),receive_endpoint_path:None};
+    let profile=AgentProfile{ management_views: Default::default(),format:"peerwork.agent-profile.v1".into(),endpoint_path:ready.client_endpoints["worker"].clone(),expected_origin:service.origin.clone(),expected_actor:cfg.expected_actor.clone(),workspaces:[("project".into(),ws.clone())].into(),directory_endpoints:[(ws.clone(),std::path::PathBuf::from(directory["endpoint_path"].as_str().unwrap()))].into(),scopes:Default::default(),contacts:Default::default(),protocols:Default::default(),protocol_endpoints:Default::default(),send_scopes:Default::default(),receive_endpoint_path:None};
     let tools=AgentTools::open(profile).await.unwrap();let page=tools.call(AgentRequest::parse("reachability",json!({})).unwrap()).await.unwrap();
     service.config(json!({"delay_action":"structure.member.name.set"})).await;
     let pending=tools.call(AgentRequest::parse("member_name",json!({"operation_id":"rename-original","name":"Master","expected_revision":page["frontier"]["workspace_revision"]})).unwrap()).await.unwrap();
@@ -4699,6 +4699,8 @@ async fn workspace_member_send_refuses_ambiguous_names_and_pins_original_recipie
 
 #[path = "participant_reliability_http_tests.rs"]
 mod reliability;
+#[path = "participant_management_http_tests.rs"]
+mod management;
 
 #[tokio::test(flavor="multi_thread",worker_threads=2)]
 #[ignore="requires local TEST PostgreSQL and real HTTP service"]

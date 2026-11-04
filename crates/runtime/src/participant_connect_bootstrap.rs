@@ -564,8 +564,10 @@ impl Connect {
         Ok(admin)
     }
     pub(super) async fn runtime_for_attachment(&mut self,handle:&str,selection:Option<&RuntimeSelection>)->Result<OwnedRuntime> {
-        let original=if selection.is_none(){match owned_runtime(self,handle){Ok(runtime)=>return Ok(runtime),Err(error) if error.code=="LOCAL_RUNTIME_TAKEOVER_REQUIRED"=>self.original_runtime_selection(handle)?,Err(error)=>return Err(error)}}else{None};
-        let selection=selection.or(original.as_ref()).ok_or_else(||local("ORIGINAL_RUNTIME_CONFIG_SELECTION_REQUIRED"))?;
+        if selection.is_none(){return owned_runtime(self,handle).map_err(|error|if error.code=="LOCAL_RUNTIME_TAKEOVER_REQUIRED"{local("ORIGINAL_RUNTIME_CONFIG_SELECTION_REQUIRED")}else{error});}
+        // Discovery/admin delegation does not authorize taking over a process
+        // supervised elsewhere. Direct restoration is an explicit local choice.
+        let selection=selection.unwrap();
         let path=selection.config_path.as_ref().ok_or_else(||local("ORIGINAL_RUNTIME_CONFIG_SELECTION_REQUIRED"))?;
         if !path.is_absolute(){return Err(local("LOCAL_SELECTION_INVALID"));}
         let config:RuntimeConfig=serde_json::from_value(crate::communication_store::private_json(path,65536)

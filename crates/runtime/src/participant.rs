@@ -558,6 +558,10 @@ struct ReplyContext {
     capability: Capability,
 }
 enum Command {
+    Resident {
+        request: crate::participant_rebind::resident::Request,
+        reply: oneshot::Sender<Result<Option<crate::participant_rebind::resident::Snapshot>>>,
+    },
     Watch {
         context: ReplyContext,
         request: crate::participant_watch::Command,
@@ -700,7 +704,7 @@ impl ParticipantClient {
                         .read_exact()
                         .map_err(|_| ParticipantError::local("STATE_BINDING_INVALID", "OPEN"))?
                     {
-                        Some(_) => crate::participant_owner::validate_ready(&owner, &binding)?,
+                        Some(_) => (), // Resident recovery validates the exact legacy pin below.
                         None => {
                             // Earlier candidate indexes used only the default
                             // authority. They cannot be silently rebound.
@@ -720,6 +724,9 @@ impl ParticipantClient {
                             })?;
                         }
                     }
+                    let owner = Arc::new(owner);
+                    let resident = crate::participant_rebind::resident::Controller::open(
+                        &config, &identity, &origin, owner.clone())?;
                     let store = Store::open(&config.state_directory, &identity, &origin)?;
                     store.reset_running()?;
                     let inbox = crate::participant_inbox::InboxStore::open_local(
@@ -750,9 +757,10 @@ impl ParticipantClient {
                         runtime,
                         owner,
                         journal_owner,
+                        resident,
                     ))
                 })();
-                let (identity, origin, store, inbox, access, runtime, _owner, _journal_owner) =
+                let (identity, origin, store, inbox, access, runtime, _owner, _journal_owner, resident) =
                     match setup {
                         Ok(v) => v,
                         Err(e) => {
@@ -764,7 +772,7 @@ impl ParticipantClient {
                 let local = tokio::task::LocalSet::new();
                 local.block_on(
                     &runtime,
-                    engine_loop(config, identity, origin, store, inbox, access, rx, stop),
+                    engine_loop(config, identity, origin, store, inbox, access, resident, rx, stop),
                 );
             })
             .map_err(|_| ParticipantError::local("EXECUTOR_FAILED", "OPEN"))?;
@@ -792,6 +800,13 @@ impl ParticipantClient {
     }
     pub fn actor_id(&self) -> &str {
         &self.shared.actor
+    }
+    pub(crate) async fn resident_rebind(&self, request:crate::participant_rebind::resident::Request)
+        ->Result<Option<crate::participant_rebind::resident::Snapshot>> {
+        if self.namespace!="program" {return Err(ParticipantError::local("RUNTIME_OWNER_REQUIRED","HOST_REBIND"));}
+        let (reply,receive)=oneshot::channel();
+        self.send(Command::Resident{request,reply})?;
+        receive.await.map_err(|_|ParticipantError::unavailable())?
     }
     pub fn origin(&self) -> &str {
         &self.shared.origin
@@ -1181,6 +1196,7 @@ async fn engine_loop(
     mut store: Store,
     inbox: crate::participant_inbox::InboxStore,
     access: KernelAccess,
+    resident: crate::participant_rebind::resident::Controller,
     mut receiver: mpsc::Receiver<Command>,
     cancel: KernelCancellationToken,
 ) {
@@ -1193,6 +1209,7 @@ async fn engine_loop(
         identity.clone(),
         origin.clone(),
         access.clone(),
+        resident,
         watch_rx,
         cancel.clone(),
     ));
@@ -1228,10 +1245,24 @@ async fn engine_loop(
             },
             command=receiver.recv()=>match command{
                 None=>break,
+                Some(Command::Resident{request,reply})=>{
+                    if matches!(&request,crate::participant_rebind::resident::Request::Preflight) {
+                        let access=access.clone();let cancel=cancel.clone();
+                        let task=jobs.spawn_local(async move{
+                            let result=access.require_mailbox_rebind(&cancel).await.map(|_|None)
+                                .map_err(|e|ParticipantError::local(crate::kernel_access::KernelPublicError::from(e).code,"HOST_REBIND_PREFLIGHT"));
+                            let _=reply.send(result);JobResult::Request
+                        });job_kinds.insert(task.id(),JobKind::Request);continue;
+                    }
+                    if let Err(problem)=watch_tx.try_send(crate::participant_watch::Command::Resident{request,reply}) {
+                        crate::participant_watch::reject(problem.into_inner(),ParticipantError::local("WATCH_QUEUE_FULL","ADMISSION"));
+                    }
+                },
                 Some(Command::Watch{context,request})=>{
                     // The driver is an internal owner task, not another SDK
                     // client with authority to select arbitrary local profiles.
                     let authorized=match &request{
+                        crate::participant_watch::Command::Resident{..}=>Err(ParticipantError::local("RUNTIME_OWNER_REQUIRED","HOST_REBIND")),
                         crate::participant_watch::Command::Bindings{..}=>Ok(()),
                         crate::participant_watch::Command::Attach{options,..}|crate::participant_watch::Command::Snapshot{options,..}|crate::participant_watch::Command::Consume{options,..}|crate::participant_watch::Command::Stop{options,..}|crate::participant_watch::Command::Host{options,..}=>options.authorize(&context.capability),
                     };

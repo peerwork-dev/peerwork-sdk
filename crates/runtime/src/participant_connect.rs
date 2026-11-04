@@ -1,7 +1,7 @@
 //! Shared, resumable local onboarding. Remote rights remain service-enforced;
 //! the registry contains explicit local selections, never discovered secrets.
 use crate::{
-    agent_tools::{AgentProfile, Contact, MailScope, SendScope},
+    agent_tools::{AgentProfile, Contact, MailScope, SendScope, ManagementView},
     communication_host::write_private,
     communication_runtime::RuntimeClient,
     communication_store::identifier,
@@ -90,6 +90,9 @@ pub struct ConnectRequest {
     pub request_membership: bool,
     #[serde(default)]
     pub protocols: Vec<ProtocolSelection>,
+    /// Explicit local management views, never a request for remote grants.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub management: Vec<String>,
     #[serde(default)]
     pub contacts: Vec<ContactSelection>,
     #[serde(default)]
@@ -121,6 +124,7 @@ impl ConnectRequest {
             || !identifier(&self.alias)
             || !token(&self.workspace_id)
             || self.protocols.len() > 8
+            || self.management.len() > 32
             || self.contacts.len() > 64
             || (self.receive_mode.is_some() && !self.receive)
             || (self.receive_mode==Some(ReceiveMode::Inbox) && self.host.is_some())
@@ -131,6 +135,7 @@ impl ConnectRequest {
         {
             return Err(local("CONNECT_ARGUMENT_INVALID"));
         }
+        crate::agent_tools::management::workspace_actions(&self.management)?;
         let mut aliases = std::collections::BTreeSet::new();
         for p in &self.protocols {
             if !identifier(&p.alias)
@@ -486,14 +491,14 @@ impl Connect {
         self.require_writer()?;
         let selected=self.registry.participants.get(participant).cloned().ok_or_else(||local("LOCAL_SELECTION_REQUIRED"))?;
         self.original_client(participant).await?;
-        let profile=AgentProfile{format:"peerwork.agent-profile.v1".into(),endpoint_path:selected.endpoint_path.clone(),
+        let profile=AgentProfile{ management_views: Default::default(),format:"peerwork.agent-profile.v1".into(),endpoint_path:selected.endpoint_path.clone(),
             expected_origin:selected.origin.clone(),expected_actor:selected.actor_id.clone(),workspaces:[(alias.into(),workspace.into())].into(),
             protocols,protocol_endpoints:Default::default(),directory_endpoints:Default::default(),scopes:Default::default(),
             contacts:Default::default(),send_scopes:Default::default(),receive_endpoint_path:None};
         profile.validate()?;
         if profile.protocols.values().any(|p|p.workspace_id.as_deref()!=Some(workspace)){return Err(local("ATTACH_SCOPE_INVALID"));}
         let setup_id=format!("attach-{}",&sha256_hex(serde_json::to_vec(&profile).map_err(|_|local("AGENT_PROFILE_INVALID"))?.as_slice())[..32]);
-        let request=ConnectRequest{setup_id:setup_id.clone(),participant:participant.into(),workspace_id:workspace.into(),alias:alias.into(),
+        let request=ConnectRequest{ management: Vec::new(),setup_id:setup_id.clone(),participant:participant.into(),workspace_id:workspace.into(),alias:alias.into(),
             send:false,receive:false,receive_mode:None,require_body_keys:false,request_membership:false,protocols:vec![],contacts:vec![],host:None};
         request.validate()?;
         let key=format!("{participant}:{workspace}");
@@ -644,6 +649,12 @@ impl Connect {
             );
         }
         let parent: Capability = serde_json::from_value(caps["capability"].clone()).map_err(|_| local("LOCAL_CEILING_INVALID"))?;
+        let management_actions=crate::agent_tools::management::workspace_actions(&request.management)?;
+        let missing_management:Vec<_>=management_actions.difference(&parent.operations).cloned().collect();
+        if !missing_management.is_empty() {
+            let mut error=local("LOCAL_SCOPE_DENIED");error.phase="AUTHORIZATION".into();error.recovery="REVIEW_EXPLICIT_LOCAL_CAPABILITY".into();
+            error.details=Some(json!({"missing_operations":missing_management,"next_actor":"LOCAL_RUNTIME_OWNER","remote_permission_checked":false,"remote_grants_changed":false}));return Err(error);
+        }
         let communication_requested=request.send||request.receive||!request.contacts.is_empty();
         let mut required=vec!["structure.workspace.get"];
         if communication_requested||request.require_body_keys{required.push("participant.time.read");}
@@ -888,6 +899,15 @@ impl Connect {
         }else{None};
         if let Some(completed)=&completed_first {previous_setup.as_mut().unwrap().effective_host=Some(completed.name.clone());}
         let previous = previous_setup.as_ref().and_then(|s| s.profile.clone());
+        let mut management_views=previous.as_ref().map(|p|p.management_views.clone()).unwrap_or_default();
+        let management_capability=if management_actions.is_empty(){None}else{
+            let mut cap=parent.clone();cap.allow_root=false;cap.workspace_ids=Some([request.workspace_id.clone()].into());cap.operations=management_actions;
+            Some(cap)
+        };
+        let management_id=management_capability.as_ref().map(|cap|format!("management-{}",&sha256_hex(json!([request.participant,request.workspace_id,cap]).to_string().as_bytes())[..40]));
+        if management_id.as_ref().is_some_and(|id|!management_views.contains_key(id))&&management_views.len()>=crate::agent_tools::MAX_MANAGEMENT_VIEWS {
+            return Err(local("MANAGEMENT_VIEW_LIMIT_PRESERVE_ORIGINAL_OPERATIONS"));
+        }
         if request.receive_mode==Some(ReceiveMode::Inbox) && previous_setup.as_ref().is_some_and(|s|s.channel_receive&&s.effective_host.is_some()) {
             return self.pending(&request,"HOST_BINDING","EXISTING_PUSH_RECEIVER_REQUIRES_EXPLICIT_REBIND","HOST_USER","EXPLICIT_NATIVE_REBIND",json!({"existing_receiver_preserved":true}));
         }
@@ -1021,6 +1041,22 @@ impl Connect {
             );
         }
         let mut directory_endpoints=previous.as_ref().map(|p|p.directory_endpoints.clone()).unwrap_or_default();
+        if let (Some(id),Some(capability))=(management_id,management_capability) {
+            let derived=client.call(json!({"method":"derive","name":id,"capability":capability})).await?;
+            let endpoint_path=PathBuf::from(derived["endpoint_path"].as_str().ok_or_else(||local("DERIVED_ENDPOINT_INVALID"))?);
+            let manager=RuntimeClient::connect(endpoint_path.clone(),&selected.origin,&selected.actor_id).await?;
+            let observed=manager.call(json!({"method":"binding"})).await?;
+            let original=client.call(json!({"method":"binding"})).await?;
+            crate::communication_runtime::validate_binding(&observed,&selected.origin,&selected.actor_id)?;
+            if ["engine_digest","state_binding"].iter().any(|field|observed[*field]!=original[*field])
+                || observed["client_generation"]!=derived["client_generation"] {return Err(local("MANAGEMENT_VIEW_BINDING_CHANGED"));}
+            let view=ManagementView{workspace_id:request.workspace_id.clone(),operations:capability.operations,
+                endpoint_path,binding:crate::communication_runtime::canonical_binding(&observed),
+                client_generation:derived["client_generation"].as_u64().filter(|n|*n>0).ok_or_else(||local("DERIVED_CLIENT_GENERATION_REQUIRED"))?};
+            if let Some(previous)=management_views.get(&id) {
+                if serde_json::to_value(previous).ok()!=serde_json::to_value(&view).ok(){return Err(local("MANAGEMENT_VIEW_BINDING_CHANGED"));}
+            }else{management_views.insert(id,view);}
+        }
         let mut metadata=parent.clone();metadata.allow_root=false;metadata.workspace_ids=Some([request.workspace_id.clone()].into());
         metadata.operations.retain(|a|["structure.members.read","structure.member.name.set","structure.member.availability.set","structure.workspace.get","structure.instance.resolve","participant.time.read"].contains(&a.as_str()));
         if metadata.operations.contains("structure.members.read") {
@@ -1203,7 +1239,7 @@ impl Connect {
         }
         let mut workspaces=previous.as_ref().map(|p|p.workspaces.clone()).unwrap_or_default();workspaces.insert(request.alias.clone(),request.workspace_id.clone());
         let profile = AgentProfile {
-            workspaces, directory_endpoints, format: "peerwork.agent-profile.v1".into(),
+            workspaces, directory_endpoints, management_views, format: "peerwork.agent-profile.v1".into(),
             endpoint_path: endpoint,
             expected_origin: selected.origin.clone(),
             expected_actor: selected.actor_id.clone(),
@@ -1463,6 +1499,7 @@ pub fn schema() -> Value {
         "type":"object","additionalProperties":false,"required":["workspace_id"],
         "properties":{"setup_id":{"type":"string"},"participant":{"type":"string"},"workspace_id":{"type":"string"},"alias":{"type":"string","default":"workspace"},"send":{"type":"boolean"},"receive":{"type":"boolean"},"require_body_keys":{"type":"boolean"},"protocols":{"type":"array","maxItems":8,"items":{"type":"object","additionalProperties":false,"required":["alias","instance_id","role"],"properties":{"alias":{"type":"string"},"instance_id":{"type":"string"},"role":{"type":"string"},"actions":{"type":"array","maxItems":64,"items":{"type":"string"}}}}}}}}});
     schema["properties"]["request"]["properties"]["contacts"] = json!({"type":"array","maxItems":64,"items":{"type":"object","additionalProperties":false,"required":["alias","actor_id"],"properties":{"alias":{"type":"string"},"actor_id":{"type":"string"}}}});
+    schema["properties"]["request"]["properties"]["management"]=json!({"type":"array","maxItems":32,"uniqueItems":true,"items":{"type":"string","enum":crate::agent_tools::management::workspace_names()},"description":"Explicitly enable only these existing workspace management operations as a separate immutable local client view. Does not widen existing credentials, grant remote rights or restart the runtime. Identity-scoped workspace.create/protocol.offline are not included."});
     schema["properties"]["request"]["properties"]["send"]["default"] = json!(false);
     schema["properties"]["request"]["properties"]["request_membership"] = json!({"type":"boolean","default":false,"description":"Explicitly request admission if workspace access is not verified. Returns one public request covering membership and the requested rights; Owner approval is still required."});
     schema["properties"]["request"]["properties"]["receive_mode"] = json!({"type":"string","enum":["PUSH","INBOX"],"description":"PUSH (Agent default) requires an actual supported host destination. INBOX explicitly receives for MCP inbox/wait without requiring host push; it never claims automatic model wake or replaces an existing host binding. Requires receive=true."});
@@ -1522,6 +1559,7 @@ pub fn cli(args: &[String]) -> Value {
                 "--uninstall",
                 "--engine-config",
                 "--runtime-config",
+                "--management",
                 "--journal",
                 "--authority",
                 "--request-timeout-ms",
@@ -1531,6 +1569,8 @@ pub fn cli(args: &[String]) -> Value {
                 "--codex",
                 "--codex-chat",
                 "--codex-host",
+                "--binding-recovery",
+                "--decision-id",
                 "--codex-endpoint",
                 "--codex-thread",
                 "--codex-session",
@@ -1576,7 +1616,9 @@ pub fn cli(args: &[String]) -> Value {
             "peerwork connect --workspace WORKSPACE --codex --install codex",
             "peerwork connect --workspace WORKSPACE --codex --codex-chat SELECTED_TITLE --install codex",
             "peerwork connect --workspace WORKSPACE --codex --codex-host REGISTERED_HOST --install codex",
+            "peerwork connect ORIGINAL_ATTACHMENT_ARGUMENTS --binding-recovery RETRY_REJECTED_OR_ABORT --decision-id STABLE_DECISION_ID",
             "peerwork connect --local ORIGINAL_REGISTRY --participant HANDLE --workspace WORKSPACE --codex --codex-chat TITLE --runtime-config ORIGINAL_DIRECT_RUNTIME.json --admin ORIGINAL_ADMIN.json --install codex",
+            "peerwork connect --local ORIGINAL_REGISTRY --participant HANDLE --workspace WORKSPACE --management protocol.register,protocol.adopt,access.approve",
             "peerwork connect --local DIRECTORY --context",
             "peerwork connect --local ORIGINAL_DIRECTORY --context --confirm-original",
             "peerwork connect --local DIRECTORY --participant OWNER_HANDLE --id APPROVAL_ID --approve-request -",
@@ -1589,6 +1631,18 @@ pub fn cli(args: &[String]) -> Value {
     let result = || -> Result<Value> {
         let mut values = parse(args)?;
         let selected_adapter=host::adapter(&values)?;
+        let binding_recovery=match (values.get("--binding-recovery"),values.get("--decision-id")) {
+            (None,None)=>None,
+            (Some(action),Some(decision_id)) if values.contains_key("--codex")&&identifier(decision_id)=>{
+                let action=match action.as_str(){
+                    "RETRY_REJECTED"=>crate::participant_rebind::HostRebindRecoveryAction::RetryRejected,
+                    "ABORT"=>crate::participant_rebind::HostRebindRecoveryAction::Abort,
+                    _=>return Err(local("BINDING_RECOVERY_REQUIRES_RETRY_REJECTED_OR_ABORT")),
+                };
+                Some(crate::participant_rebind::HostRebindRecoveryRequest{format:"peerwork.host-rebind-recovery.v1".into(),decision_id:decision_id.clone(),action})
+            },
+            _=>return Err(local("BINDING_RECOVERY_REQUIRES_CODEX_AND_STABLE_DECISION_ID")),
+        };
         if values.contains_key("--runtime-config")&&!values.contains_key("--codex"){return Err(local("RUNTIME_CONFIG_REQUIRES_CODEX_ATTACHMENT"));}
         if values.contains_key("--runtime-config")&&values.contains_key("--engine-config"){return Err(local("SELECT_ORIGINAL_RUNTIME_OR_ENGINE_NOT_BOTH"));}
         if (values.contains_key("--codex-chat")||values.contains_key("--codex-host"))&&!values.contains_key("--codex"){return Err(local("CODEX_CHAT_REQUIRES_CODEX"));}
@@ -1711,6 +1765,7 @@ pub fn cli(args: &[String]) -> Value {
             require_body_keys: values.contains_key("--body-keys"),
             request_membership: values.contains_key("--join"),
             protocols: Vec::new(),
+            management: values.get("--management").map(|v|v.split(',').map(str::to_owned).collect()).unwrap_or_default(),
             contacts: Vec::new(),
             host: values.get("--host").cloned(),
         };
@@ -1771,7 +1826,8 @@ pub fn cli(args: &[String]) -> Value {
                 let selection=match admin {Some(admin_endpoint)=>Some(RuntimeSelection{admin_endpoint,config_path}),None=>None};
                 // Resume the existing durable attachment before opening a
                 // potentially stopped endpoint through ordinary discovery.
-                let mut result=if let Some(host)=values.get("--codex-host") {connect.attach_codex_host_with_runtime(request,host,selection).await?}
+                let mut result=if let Some(decision)=binding_recovery {connect.recover_codex_attachment(request,values.get("--codex-chat").or_else(||values.get("--codex-host")).map(String::as_str),decision).await?}
+                    else if let Some(host)=values.get("--codex-host") {connect.attach_codex_host_with_runtime(request,host,selection).await?}
                     else {connect.attach_codex_with_runtime(request,values.get("--codex-chat").map(String::as_str),selection).await?};
                 if let Some(spec)=installation {result["integration"]=connect.install(&handle,&required("--workspace")?,spec)?;}
                 return Ok(result);
@@ -1907,7 +1963,7 @@ mod tests {
         let mut reader = Connect::inspect(&directory).unwrap();
         assert_eq!(reader.context()["state"], "NOT_CONFIGURED");
         let error = reader
-            .run(ConnectRequest {
+            .run(ConnectRequest { management: Vec::new(),
                 setup_id: "original".into(),
                 participant: "worker".into(),
                 workspace_id: "W".repeat(43),

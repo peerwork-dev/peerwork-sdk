@@ -351,7 +351,7 @@ mod tests {
         assert_eq!(bad.code,"FRONTEND_IDENTITY_PIN_MISMATCH");
     }
     fn profile() -> AgentProfile {
-        AgentProfile {
+        AgentProfile { management_views: Default::default(),
             workspaces: Default::default(), directory_endpoints: Default::default(), protocol_endpoints: Default::default(),
             send_scopes: Default::default(), receive_endpoint_path: None,
             format: "peerwork.agent-profile.v1".into(),

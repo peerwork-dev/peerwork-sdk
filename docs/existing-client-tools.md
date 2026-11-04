@@ -75,6 +75,20 @@ endpoint denies `structure.members.read`, its local runtime owner must configure
 the intended read capability; remote Workspace permissions remain independently
 checked. Do not switch to a broader Owner client as a workaround.
 
+## Discover management and version mismatches
+
+The next native release candidate adds the `peerwork_manage` tool over the
+existing client. It reuses native workspace/protocol/access/key/migration and
+publication producers; no second signer or journal is created. The current0.3.12
+fixed MCP catalog does not include it. Inspect [tool coverage](agent-tools.md)
+before changing an application or generating a wrapper.
+
+The next frontend reports its own version and the runtime-reported SDK version
+in `peerwork_context.versions`. An older runtime may report `NOT_REPORTED`; this
+is not a reason to restart it blindly. Upgrade the frontend for new tool schemas;
+upgrade the selected resident engine only when the requested native capability
+is actually missing. Host refresh and actual-session invocation remain separate.
+
 ## Already-open Rust client
 
 The program that owns the original client can expose the normal fixed MCP tools:

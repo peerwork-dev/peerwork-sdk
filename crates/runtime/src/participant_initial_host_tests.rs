@@ -232,3 +232,220 @@ async fn first_push_keeps_quarantined_receive_path_blocked_without_host_input() 
     assert!(!host.calls().iter().any(|v|matches!(v["method"].as_str(),Some("turn/start"|"turn/steer"))));
     cancel.cancel();running.await.unwrap().unwrap();
 }
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires synthetic PostgreSQL and real HTTP service"]
+async fn resident_first_host_keeps_original_process_and_other_workspace_available() {
+    for derived in [false,true] {
+        let host=CodexFixture::start();let source=setup(derived,host.config()).await;
+        // The live entry needs the authenticated admin and receive binding,
+        // not a recoverable original configuration filename or launch receipt.
+        std::fs::remove_file(&source.path).unwrap();
+        let cancel=KernelCancellationToken::new();let(tx,rx)=tokio::sync::oneshot::channel();
+        let running=tokio::spawn(ipc::serve(source.runtime.clone(),cancel.clone(),tx));
+        let ready=rx.await.unwrap().unwrap();
+        let root_endpoint=ready.client_endpoints["worker"].clone();
+        let endpoint=ready.client_endpoints[&source.client_name].clone();
+        let endpoint_before=std::fs::read(&endpoint).unwrap();
+        async fn rpc(path:&Path,value:Value)->Value {
+            let out=ipc::call(path,value).await.unwrap();assert_eq!(out["ok"],true,"{out}");out["value"].clone()
+        }
+        let created=rpc(&root_endpoint,json!({"method":"invoke","wait_ms":5000,
+            "request":Invoke::new("other-space","structure.workspace.create",Scope::default(),json!({"name":"Unaffected scope"}))})).await;
+        let workspace=created["outcome"]["result"]["structure"]["workspace_id"].as_str().unwrap().to_owned();
+        let other_scope=Scope{workspace_id:Some(workspace.clone()),..Default::default()};
+        let meta=rpc(&root_endpoint,json!({"method":"request","request":Invoke::new("other-meta","structure.workspace.get",other_scope.clone(),json!({}))})).await;
+        let granted=rpc(&root_endpoint,json!({"method":"invoke","wait_ms":5000,"request":Invoke::new("other-grant","structure.communication.grant.set",other_scope.clone(),
+            json!({"actor_id":source.runtime.engines[0].expected_actor,"membership_id":meta["result"]["structure"]["membership"]["membership_id"],"expected_revision":null,"send":true,"receive":true}))})).await;
+        let mailbox=&granted["outcome"]["result"]["structure"]["mailbox"];
+        let other=WatchOptions{workspace_id:workspace,mailbox_id:mailbox["mailbox_id"].as_str().unwrap().into(),
+            membership_id:mailbox["membership_id"].as_str().unwrap().into(),consumer_id:"other".into(),host_destination:None};
+        rpc(&root_endpoint,json!({"method":"watch","options":other})).await;
+        rpc(&endpoint,json!({"method":"watch","options":source.old})).await;
+        source.service.config(json!({"delay_action":"structure.mailbox.claim","delay_mailbox":source.old.mailbox_id})).await;
+        let mut status=rpc(&ready.admin_endpoint,json!({"method":"host_rebind","rebind":source.request})).await;
+        tokio::time::timeout(Duration::from_secs(15),async{loop{
+            if source.service.counts().await["delayed"].as_u64().unwrap_or(0)>0 {break;}
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }}).await.unwrap();
+        // The selected replacement HTTP request is deliberately still pending.
+        // The same watch driver must establish another workspace's real stream.
+        tokio::time::timeout(Duration::from_secs(10),async{loop{
+            let page=rpc(&root_endpoint,json!({"method":"inbox","options":other,"after":0,"limit":1})).await;
+            if page["receiver_link_verified"]==true{break;}
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }}).await.unwrap();
+        source.service.config(json!({"release":true})).await;
+        let mut reads=0;
+        tokio::time::timeout(Duration::from_secs(45),async{
+            while status["state"]!="HOST_REBIND_READY" {
+                assert!(!running.is_finished(),"resident rebind stopped the runtime");
+                let observed=tokio::time::timeout(Duration::from_secs(5),rpc(&root_endpoint,json!({"method":"request", "request":Invoke::new("other-live-read","structure.workspace.get",other_scope.clone(),json!({}))}))).await.unwrap();
+                assert_eq!(observed["result"]["structure"]["workspace_id"].as_str(),other_scope.workspace_id.as_deref(),"{observed}");reads+=1;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                status=rpc(&ready.admin_endpoint,json!({"method":"host_rebind","rebind":source.request})).await;
+            }
+        }).await.unwrap();
+        assert!(reads>0);assert_eq!(status["runtime_restarted"],false);
+        assert_eq!(std::fs::read(&endpoint).unwrap(),endpoint_before);
+        let repeated=rpc(&ready.admin_endpoint,json!({"method":"host_rebind","rebind":source.request})).await;
+        assert_eq!(repeated["state"],"HOST_REBIND_READY");
+        tokio::time::timeout(Duration::from_secs(15),async{loop{
+            if host.calls().iter().any(|c|matches!(c["method"].as_str(),Some("turn/start"|"turn/steer"))){break;}
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }}).await.unwrap();
+        cancel.cancel();running.await.unwrap().unwrap();
+        // Restart the unchanged original in-memory configuration. The runtime
+        // host store must recover the newly published source without a new claim.
+        let cancel=KernelCancellationToken::new();let(tx,rx)=tokio::sync::oneshot::channel();
+        let running=tokio::spawn(ipc::serve(source.runtime.clone(),cancel.clone(),tx));
+        let ready=rx.await.unwrap().unwrap();
+        assert_eq!(rpc(&ready.admin_endpoint,json!({"method":"host_rebind","rebind":source.request})).await["state"],"HOST_REBIND_READY");
+        cancel.cancel();running.await.unwrap().unwrap();
+        assert_eq!(source.service.counts().await["claim_commands"].as_array().unwrap().len(),3);
+        assert_eq!(host.calls().iter().filter(|c|matches!(c["method"].as_str(),Some("turn/start"|"turn/steer"))).count(),1);
+    }
+}
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires synthetic PostgreSQL and real HTTP service"]
+async fn resident_signed_rejection_keeps_original_scope_and_accepts_explicit_decisions() {
+    async fn rpc(path:&Path,value:Value)->Value {
+        let out=ipc::call(path,value).await.unwrap();assert_eq!(out["ok"],true,"{out}");out["value"].clone()
+    }
+    async fn wait(path:&Path,request:&HostRebindRequest,terminal:&str)->Value {
+        let mut last=Value::Null;
+        let result=tokio::time::timeout(Duration::from_secs(45),async{loop{
+            last=rpc(path,json!({"method":"host_rebind","rebind":request})).await;
+            if last["state"]==terminal || terminal=="REJECTED"&&last["blocker"]["effect_certainty"]=="REJECTED_NO_EFFECT"{return last.clone();}
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }}).await;
+        result.unwrap_or_else(|_|panic!("resident recovery timed out: {last}"))
+    }
+    for abort in [false,true] {
+        let host=CodexFixture::start();let source=setup(false,host.config()).await;
+        source.service.config(json!({"reject_next_rebind_mailbox":source.old.mailbox_id})).await;
+        let cancel=KernelCancellationToken::new();let(tx,rx)=tokio::sync::oneshot::channel();
+        let running=tokio::spawn(ipc::serve(source.runtime.clone(),cancel.clone(),tx));let ready=rx.await.unwrap().unwrap();
+        wait(&ready.admin_endpoint,&source.request,"REJECTED").await;
+        let original_claims=source.service.counts().await["claim_commands"].as_array().unwrap().iter().map(|v|v["command_id"].as_str().unwrap().to_owned()).collect::<std::collections::BTreeSet<_>>();
+        // Administrative business calls remain schedulable even while the
+        // receiver is fenced and waiting for an explicit recovery decision.
+        rpc(&ready.client_endpoints["worker"],json!({"method":"request","request":Invoke::new("during-maintenance","structure.workspace.get",Scope{workspace_id:Some(source.old.workspace_id.clone()),..Default::default()},json!({}))})).await;
+        // Process interruption is a test fault. A restarted new reader must
+        // recover the saved scope; an old reader sees the global pending pin.
+        cancel.cancel();running.await.unwrap().unwrap();
+        let engine=&source.runtime.engines[0];
+        let owner=SecureStateStore::open(&engine.state_directory.join("engine-owner.state")).unwrap();
+        let identity=KernelIdentity::open(&engine.identity_path).unwrap();
+        let origin=crate::transport::canonical_lifecycle_origin(&engine.origin,true).unwrap();
+        let binding=participant_owner::logical_binding(&identity,&origin,&sha256_hex(identity.actor_id().as_bytes()));
+        assert_eq!(participant_owner::validate_ready(&owner,&binding).unwrap_err().code,"OWNER_MAINTENANCE_PENDING_RESUME_ORIGINAL_OPERATION");drop(owner);
+        let cancel=KernelCancellationToken::new();let(tx,rx)=tokio::sync::oneshot::channel();
+        let running=tokio::spawn(ipc::serve(source.runtime.clone(),cancel.clone(),tx));let ready=rx.await.unwrap().unwrap();
+        wait(&ready.admin_endpoint,&source.request,"REJECTED").await;
+        assert_eq!(source.service.counts().await["claim_commands"].as_array().unwrap().iter().map(|v|v["command_id"].as_str().unwrap().to_owned()).collect::<std::collections::BTreeSet<_>>(),original_claims,"restart must replay the same signed refusal, not create another claim");
+        let decision=HostRebindRecoveryRequest{format:"peerwork.host-rebind-recovery.v1".into(),decision_id:"selected-decision".into(),action:if abort{HostRebindRecoveryAction::Abort}else{HostRebindRecoveryAction::RetryRejected}};
+        rpc(&ready.admin_endpoint,json!({"method":"host_rebind","rebind":source.request,"recovery":decision})).await;
+        let terminal=if abort{"HOST_REBIND_ABORTED"}else{"HOST_REBIND_READY"};
+        wait(&ready.admin_endpoint,&source.request,terminal).await;
+        assert_eq!(rpc(&ready.admin_endpoint,json!({"method":"host_rebind","rebind":source.request,"recovery":decision})).await["state"],terminal);
+        if abort {
+            tokio::time::timeout(Duration::from_secs(15),async{loop{
+                let page=rpc(&ready.client_endpoints["worker"],json!({"method":"inbox","options":source.old,"after":0,"limit":32})).await;
+                if page["receiver_link_verified"]==true{break;}
+                tokio::time::sleep(Duration::from_millis(30)).await;
+            }}).await.unwrap();
+            assert!(!host.calls().iter().any(|v|matches!(v["method"].as_str(),Some("turn/start"|"turn/steer"))));
+        }
+        cancel.cancel();running.await.unwrap().unwrap();
+        let store=InboxStore::open_local(&engine.state_directory,&identity,&origin).unwrap();
+        let pins=store.pins(&source.old.workspace_id,&source.old.mailbox_id).unwrap().unwrap();
+        assert_eq!(pins.receiver_id,source.original.receiver_id);
+        assert_eq!(pins.binding_version,source.original.binding_version+u64::from(!abort));
+        let counts=source.service.counts().await;
+        let replacements=counts["claim_commands"].as_array().unwrap().iter().filter(|v|v["replace"]==true).map(|v|v["command_id"].as_str().unwrap()).collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(replacements.len(),if abort{1}else{2});
+    }
+}
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires synthetic PostgreSQL and real HTTP service"]
+async fn resident_unknown_claim_refuses_abort_and_new_id_then_reconciles_original() {
+    let host=CodexFixture::start();let source=setup(false,host.config()).await;
+    let cancel=KernelCancellationToken::new();let(tx,rx)=tokio::sync::oneshot::channel();
+    let running=tokio::spawn(ipc::serve(source.runtime.clone(),cancel.clone(),tx));let ready=rx.await.unwrap().unwrap();
+    source.service.config(json!({"drop_action":"structure.mailbox.claim"})).await;
+    let call=|request:Value|ipc::call(&ready.admin_endpoint,request);
+    let started=call(json!({"method":"host_rebind","rebind":source.request})).await.unwrap();assert_eq!(started["ok"],true,"{started}");
+    tokio::time::timeout(Duration::from_secs(45),async{loop{
+        let status=call(json!({"method":"host_rebind","rebind":source.request})).await.unwrap();
+        if status["value"]["blocker"]["effect_certainty"]=="UNKNOWN"{break;}
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }}).await.unwrap();
+    for (action,code) in [(HostRebindRecoveryAction::Abort,"HOST_REBIND_UNKNOWN_CLAIM_RESUME_ORIGINAL"),(HostRebindRecoveryAction::RetryRejected,"HOST_REBIND_NO_VERIFIED_REJECTED_CLAIM_RESUME_ORIGINAL")] {
+        let decision=HostRebindRecoveryRequest{format:"peerwork.host-rebind-recovery.v1".into(),decision_id:if action==HostRebindRecoveryAction::Abort{"abort"}else{"retry"}.into(),action};
+        tokio::time::timeout(Duration::from_secs(30),async{loop{
+            let value=call(json!({"method":"host_rebind","rebind":source.request,"recovery":decision})).await.unwrap();
+            assert_eq!(value["ok"],false,"{value}");
+            if value["error"]["code"]=="HOST_REBIND_WORK_PENDING_RESUME_DECISION"{tokio::time::sleep(Duration::from_millis(50)).await;continue;}
+            assert_eq!(value["error"]["code"],code,"{value}");break;
+        }}).await.unwrap();
+    }
+    source.service.config(json!({"offline":false})).await;
+    tokio::time::timeout(Duration::from_secs(45),async{loop{
+        let value=call(json!({"method":"host_rebind","rebind":source.request})).await.unwrap();
+        if value["value"]["state"]=="HOST_REBIND_READY"{break;}
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }}).await.unwrap();
+    assert!(!running.is_finished());cancel.cancel();running.await.unwrap().unwrap();
+    let counts=source.service.counts().await;
+    let ids=counts["claim_commands"].as_array().unwrap().iter().filter(|v|v["replace"]==true).map(|v|v["command_id"].as_str().unwrap()).collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(ids.len(),1,"lost response must retain the original replacement command");
+    assert_eq!(counts["dropped"],1);
+}
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires synthetic PostgreSQL and real HTTP service"]
+async fn resident_existing_push_reuses_physical_owner_and_restarts_from_unchanged_base() {
+    async fn rpc(path:&Path,value:Value)->Value {
+        let out=ipc::call(path,value).await.unwrap();assert_eq!(out["ok"],true,"{out}");out["value"].clone()
+    }
+    let host=CodexFixture::start();let source=setup(false,host.config()).await;
+    // Establish the existing PUSH base before starting the resident test.
+    rebind_host(&source.path,source.request.clone()).await.unwrap();
+    let base:RuntimeConfig=serde_json::from_value(private_json(&source.path,65536).unwrap()).unwrap();
+    let cancel=KernelCancellationToken::new();let(tx,rx)=tokio::sync::oneshot::channel();
+    let running=tokio::spawn(ipc::serve(base.clone(),cancel.clone(),tx));let ready=rx.await.unwrap().unwrap();
+    let endpoint=ready.client_endpoints["worker"].clone();let before=std::fs::read(&endpoint).unwrap();
+    tokio::time::timeout(Duration::from_secs(15),async{loop{
+        if host.calls().iter().any(|v|matches!(v["method"].as_str(),Some("turn/start"|"turn/steer"))){break;}
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }}).await.unwrap();
+    *host.actual_session.lock().unwrap()="explicit-replacement".into();
+    let mut adapter=host.config();adapter["expected_session_id"]=json!("explicit-replacement");
+    let request=HostRebindRequest{format:"peerwork.host-rebind.v1".into(),operation_id:"resident-push-replacement".into(),engine:"one".into(),host:"selected-first".into(),adapter,initial_subscriptions:None};
+    let mut last=Value::Null;
+    let result=tokio::time::timeout(Duration::from_secs(45),async{loop{
+        last=rpc(&ready.admin_endpoint,json!({"method":"host_rebind","rebind":request})).await;
+        assert!(!running.is_finished());
+        if last["state"]=="HOST_REBIND_READY"{break;}
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }}).await;
+    assert!(result.is_ok(),"{last}");assert_eq!(std::fs::read(&endpoint).unwrap(),before);
+    let status=rpc(&ready.admin_endpoint,json!({"method":"status"})).await;
+    assert!(status["hosts"].as_array().unwrap().iter().any(|h|h["source_name"]=="selected-first"));
+    cancel.cancel();running.await.unwrap().unwrap();
+    // The original base still names the old session. The durable Hosts store
+    // suppresses exactly that base entry and reconstructs the new dispatcher.
+    let cancel=KernelCancellationToken::new();let(tx,rx)=tokio::sync::oneshot::channel();
+    let running=tokio::spawn(ipc::serve(base,cancel.clone(),tx));let ready=rx.await.unwrap().unwrap();
+    assert_eq!(rpc(&ready.admin_endpoint,json!({"method":"host_rebind","rebind":request})).await["state"],"HOST_REBIND_READY");
+    cancel.cancel();running.await.unwrap().unwrap();
+    let engine=&source.runtime.engines[0];let identity=KernelIdentity::open(&engine.identity_path).unwrap();
+    let origin=crate::transport::canonical_lifecycle_origin(&engine.origin,true).unwrap();
+    let store=InboxStore::open_local(&engine.state_directory,&identity,&origin).unwrap();
+    let pins=store.pins(&source.old.workspace_id,&source.old.mailbox_id).unwrap().unwrap();
+    assert_eq!(pins.receiver_id,source.original.receiver_id);assert_eq!(pins.binding_version,source.original.binding_version+2);
+    assert_eq!(host.calls().iter().filter(|v|matches!(v["method"].as_str(),Some("turn/start"|"turn/steer"))).count(),1,"original accepted input cannot be replayed into the new session");
+}

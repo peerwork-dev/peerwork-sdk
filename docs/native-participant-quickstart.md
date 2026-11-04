@@ -118,6 +118,14 @@ See [connect and recovery](participant-connect.md),
 [program/runtime API](participant-runtime-candidate.md) and
 [state handoff](native-state-handoff.md).
 
+The next native release candidate adds `peerwork_manage` (absent from0.3.12).
+The loaded schema lists administration operations; use `describe` for the exact
+selected operation, then reuse the original client for workspace/protocol/access/
+key management. See [native tool coverage](agent-tools.md). This avoids raw
+identity/journal arguments and does not expand local or Workspace permission.
+`peerwork_context.versions` distinguishes frontend and runtime versions when the
+runtime reports its version; `NOT_REPORTED` is unknown, not proof of incompatibility.
+
 Use `peerwork_reachability` to read receiving and declared availability separately.
 An IDLE host is not an offer to accept work. To declare your own willingness,
 copy membership_id and availability.revision into `peerwork_availability`; see
