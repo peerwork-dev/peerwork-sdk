@@ -35,8 +35,8 @@ and protocol references include:
 - [Native protocol participation and role resources](protocol-session.md)
 - [Local protocol workbench](protocol-workbench.md)
 - [Bind a role bundle to an existing instance](existing-instance-protocol-binding.md)
-- [In-place protocol upgrades](in-place-protocol-upgrades.md): unpublished service
-  and native SDK candidate; keep old work pinned while changing the instance default.
+- [In-place protocol upgrades](in-place-protocol-upgrades.md): native0.3.13
+  and matching service support; keep old work pinned while changing the instance default.
 
 [Archived0.2 language bindings](../README_0.2.16.md) use different entry points.
 Their old `Secure*` APIs and dated results do not establish current service or

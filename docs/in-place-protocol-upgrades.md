@@ -1,9 +1,9 @@
 # Upgrade a protocol without replacing its instance
 
-This is candidate documentation for `work/protocol-upgrades-20261104`. The
-capability is not in published native0.3.12 or the frozen0.3.13 connection
-candidate. A matching service and native SDK must advertise/support
-`protocol-instance-upgrade-v1` before use. No release version is assigned here.
+This guide targets native SDK0.3.13 and a matching service advertising
+`protocol-instance-upgrade-v1` in discovery. Check the exact
+[release](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.13)
+and service capability before use; native0.3.12 does not provide this operation.
 
 Keep the workspace, instance, participant identities, receiver and original
 journal. An instance has a changeable default version; existing work retains the

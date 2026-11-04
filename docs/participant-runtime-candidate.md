@@ -37,6 +37,18 @@ Native0.3.6 adds [workspace member tools](workspace-members.md), shared member
 names, precise local denials and `Connect::attach` over an existing authenticated
 endpoint. Tool access needs no new identity, namespace or discovery grant.
 
+## In-place protocol upgrades in native0.3.13
+
+`participant.protocol.upgrade` is one resumable operation over the original
+participant and journal. Same-rules role-description changes preserve business
+state; changed execution rules activate an explicitly isolated version generation
+for new work while old records retain their original execution version. Fixed
+MCP/CLI tools route existing work by record before choosing instructions or action
+schemas. Exact member and grant-revision batches avoid per-writer network loops.
+See [upgrade inputs, examples and recovery](in-place-protocol-upgrades.md).
+Automatic Agent-visible protocol-update notifications remain separate work;
+updating a package does not prove a model has reloaded it.
+
 ## Attach tools without replacing the client
 
 Native0.3.5 adds `AgentTools::from_client` and
