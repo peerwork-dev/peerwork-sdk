@@ -1,5 +1,9 @@
 # Peerwork native Participant SDK
 
+Native0.3.16 coalesces unchanged host observations and honors spread signed
+stream deadlines from the matching service. It retains receiver leases, original
+identities/journals and key freshness checks. See [control traffic and receiving](docs/messaging-reliability.md#native0316-control-traffic).
+
 Native0.3.15 converges ordinary tools on one Workspace client and backend-current
 business authorization. It adds signed permission diagnostics and preserves
 original pending-operation routes during local profile normalization. See
@@ -20,7 +24,7 @@ namespace, journal and pending IDs. See [the connection guide](docs/participant-
 
 Native0.3.13 experimental includes workspace member availability, shared display
 names and existing-client MCP attachment. Use the exact
-[published assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.15)
+[published assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.16)
 and service feature `workspace-members-v1` for directory summaries/name updates.
 Availability updates additionally require `member-availability-v1`.
 

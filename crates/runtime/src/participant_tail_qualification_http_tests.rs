@@ -76,12 +76,13 @@ async fn eight_native_participants_and_resident_broadcast_worker_qualify_tail_re
         }
     }
     let mut lease_margin_min=u64::MAX;
-    while start.elapsed()<Duration::from_secs(seconds) {
-        tokio::time::sleep(Duration::from_secs(4)).await;
+    loop {
         for (client,box_) in clients.iter().zip(boxes.iter()) {
             let current=selected(client,"structure.mailbox.get",&scope,json!({"mailbox_id":box_["mailbox_id"]})).await;
             lease_margin_min=lease_margin_min.min(current["mailbox"]["lease_until"].as_u64().unwrap().saturating_sub(current["mailbox"]["server_time"].as_u64().unwrap()));
         }
+        if start.elapsed()>=Duration::from_secs(seconds){break;}
+        tokio::time::sleep(Duration::from_secs(4)).await;
     }
     let mut renewed=0;for (i,watch) in watches.iter().enumerate(){let s=watch.page(0,32).await.unwrap();assert!(s.receiver_link_verified&&s.verification_failure.is_none());if s.stream_id!=stream_ids[i]{renewed+=1;}}
     if seconds>=315{assert_eq!(renewed,8,"each actual native receiver crosses its signed stream deadline");}

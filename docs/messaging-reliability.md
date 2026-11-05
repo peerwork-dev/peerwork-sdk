@@ -51,3 +51,31 @@ native runtime and MCP binary do not require them at installation.
 
 Program host fixtures verify delivery and recovery mechanics. They do not prove
 model reply latency, a production percentile SLA or arbitrary UI session control.
+
+
+## Native0.3.16 control traffic
+
+Native0.3.16 retains one shared native runtime for its identities and watched
+mailboxes. Repeated unchanged, current host probes update the local observation
+without forcing a network heartbeat. Changes in readiness, execution, selected
+body key or observation freshness remain promptly due. Key observations are
+uploaded before the previously uploaded observation expires; a stale observation
+cannot become current just by serializing it again.
+
+The matching service spreads signed stream deadlines over240–300 seconds. The
+native receiver follows that verified deadline instead of an extra60-second
+local cap, while the independent15-second receiver lease, current authorization,
+epoch and content-key checks remain. Ordinary native pulse scheduling stays
+approximately six seconds. Longer stream grants do not keep an absent receiver
+online. Existing clients may renew earlier without inheriting the efficiency
+benefit. No new Owner exchange, identity migration or protocol action is needed.
+
+ACKs already batch up to32 entries per mailbox/stage. A short custody coalescing
+window may let application consumption record both facts. Independent actors'
+ACKs remain independently signed. Receiver storage, application consumption,
+host acceptance and a model response remain separate observations.
+
+These are reductions in avoidable work and connection renewal. They do not
+promise a fixed transport P99, host/model response time or a larger production
+connection allowance. Performance qualification must state the actual resource,
+traffic, persistence and SDK/host boundaries.
