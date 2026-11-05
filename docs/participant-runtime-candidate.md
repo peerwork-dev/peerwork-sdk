@@ -1012,6 +1012,20 @@ history. One job is shared across same-workspace scopes, independent of heartbea
 permits and foreground operations. A missing historical message key requests
 only that selected verified delivery's key, within the same bound.
 
+Candidate control-cost optimization (not yet released): unchanged, current
+host/key observations refresh their actual local observation time and travel in
+the next regular heartbeat. Real state/key/freshness transitions make a pulse
+immediately due. Coalescing also tracks the last successfully uploaded key
+observation so a new check cannot wait beyond its existing fifteen-second
+freshness window; stale observations never become fresh merely by serialization.
+
+The candidate receiver honors a service-signed stream deadline up to five
+minutes; legacy short grants retain their shorter deadline. The matching service
+spreads planned renewal over four to five minutes. The independent fifteen-second
+receiver lease and current page authorization remain. Older receivers with a
+sixty-second local cap remain usable but do not obtain the renewal reduction.
+There is no new wire field or migration of identities, inboxes or pending IDs.
+
 READY/NOT_REQUIRED observations refresh every ten seconds; missing/error cases
 retry after two seconds, with a ten-second job budget. Imported keys wake up to
 32 eligible key-blocked lane heads through an index. Permanent immutable-message

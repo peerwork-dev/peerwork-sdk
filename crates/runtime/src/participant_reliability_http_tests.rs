@@ -15,6 +15,9 @@ struct Cohort {
 }
 impl Cohort {
     async fn start(count: usize) -> Self {
+        Self::with_destination(count,None).await
+    }
+    async fn with_destination(count: usize, destination: Option<String>) -> Self {
         let service=Service::start();
         let temp=crate::test_support::protected_test_dir();
         let mut config=configuration(temp.path(),&service.origin);
@@ -28,7 +31,7 @@ impl Cohort {
             let mailbox=mutate(&client,&format!("grant-{index}"),"structure.communication.grant.set",&scope,json!({"actor_id":client.actor_id(),"membership_id":meta["membership"]["membership_id"],"expected_revision":null,"send":true,"receive":true})).await["mailbox"].clone();
             let key=install_synthetic_key(&config,&ws,&[42;32],None);
             mutate(&client,&format!("key-{index}"),"structure.content-key.set",&scope,json!({"key_id":key,"expected_epoch":0,"expected_head_revision":null})).await;
-            let options=WatchOptions{workspace_id:ws,mailbox_id:mailbox["mailbox_id"].as_str().unwrap().into(),membership_id:mailbox["membership_id"].as_str().unwrap().into(),consumer_id:format!("receiver-{index}"),host_destination:None};
+            let options=WatchOptions{workspace_id:ws,mailbox_id:mailbox["mailbox_id"].as_str().unwrap().into(),membership_id:mailbox["membership_id"].as_str().unwrap().into(),consumer_id:format!("receiver-{index}"),host_destination:destination.clone()};
             let mut watch=client.watch(options.clone()).await.unwrap();
             watch_until(&mut watch,|s|s.receiver_link_verified).await;
             members.push(Member{scope,mailbox,options,watch});
@@ -44,6 +47,35 @@ async fn fault(watch:&mut ProgramWatch)->WatchSnapshot {
     tokio::time::timeout(Duration::from_secs(10),async {
         loop {let s=watch.next().await.unwrap();if s.verification_failure.is_some(){return s;}}
     }).await.unwrap()
+}
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires explicit synthetic PostgreSQL and real product HTTP fixture"]
+async fn unchanged_host_probes_coalesce_wire_traffic_without_stopping_the_receiver() {
+    use crate::participant_inbox::{HostBinding,HostOperation};
+    let binding=HostBinding::new(json!({"host":"CODEX_APP_SERVER","conversation_id":"synthetic-control-cost","session_id":"synthetic-probe-session","endpoint":"unix:///synthetic/unused.sock"})).unwrap();
+    let c=Cohort::with_destination(1,Some(binding.digest.clone())).await;
+    c.client.host_operation(&c.members[0].options,HostOperation::Attach(binding)).await.unwrap();
+    let before=c.service.counts().await;
+    let probes=12;
+    for _ in 0..probes {
+        c.client.host_operation(&c.members[0].options,HostOperation::Presence{value:json!({"mode":"LIVE","ready":true,"execution_state":"IDLE"}),observed_at:std::time::Instant::now()}).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let after=c.service.counts().await;
+    let pulses=after["actions"]["structure.mailbox.pulse"].as_u64().unwrap_or(0)-before["actions"]["structure.mailbox.pulse"].as_u64().unwrap_or(0);
+    assert!(pulses<probes,"unchanged host probes must not force one heartbeat each");
+    assert!(c.members[0].watch.page(0,32).await.unwrap().receiver_link_verified);
+    let report=json!({"format":"peerwork.control-cost-probe.v1","state":"PASS","host_observations":probes,"network_pulses":pulses,
+        "command_request_bytes":after["command_request_bytes"].as_u64().unwrap()-before["command_request_bytes"].as_u64().unwrap(),
+        "command_response_bytes":after["command_response_bytes"].as_u64().unwrap()-before["command_response_bytes"].as_u64().unwrap(),
+        "sse_bytes":after["sse_bytes"].as_u64().unwrap()-before["sse_bytes"].as_u64().unwrap(),
+        "scope":"Synthetic host observations to real SDK/HTTP; no Agent session invoked; application payload bytes exclude HTTP/TLS"});
+    if let Ok(path)=std::env::var("PEERWORK_CONTROL_COST_REPORT") {
+        let path=std::path::PathBuf::from(path);assert!(path.is_absolute()&&!path.exists());
+        std::fs::write(path,serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+    }
+    println!("{report}");c.client.close().await.unwrap();
 }
 #[tokio::test(flavor="multi_thread",worker_threads=2)]
 #[ignore="requires explicit synthetic PostgreSQL and real product HTTP fixture"]

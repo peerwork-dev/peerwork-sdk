@@ -9,6 +9,7 @@ pub(crate) struct Presence {
     host_at: Option<Instant>,
     keys: Value,
     pub keys_at: Option<Instant>,
+    pub keys_uploaded_at: Option<Instant>,
 }
 impl Default for Presence {
     fn default() -> Self {
@@ -18,6 +19,7 @@ impl Default for Presence {
             host_at: None,
             keys: json!({"state":"UNKNOWN","key_id":null,"epoch":null}),
             keys_at: None,
+            keys_uploaded_at: None,
         }
     }
 }
@@ -64,6 +66,15 @@ impl Presence {
         }
         self.keys = value;
         self.keys_at = Some(Instant::now());
+    }
+    /// Coalesce unchanged keys only while the last uploaded observation remains
+    /// fresh. A regular6s pulse can otherwise miss the15s boundary when a10s
+    /// key check finishes just after a pulse. Keep1s for scheduling/IO.
+    pub fn next_pulse(&self, regular: Instant) -> Instant {
+        match (self.keys_uploaded_at,self.keys_at) {
+            (Some(uploaded),Some(current)) if current>uploaded => regular.min(uploaded+Duration::from_secs(14)),
+            _=>regular,
+        }
     }
     fn age(at: Option<Instant>) -> u64 {
         at.map(|at| at.elapsed().as_millis().min(60000) as u64)
@@ -118,6 +129,17 @@ mod tests {
         let current=p.version;
         p.host_observed(json!({"mode":"LIVE","ready":true,"execution_state":"IDLE"}),Instant::now()-Duration::from_secs(11)).unwrap();
         assert_eq!(p.version,current+1);assert_eq!(p.local()["host_current"],false);
+    }
+    #[test]
+    fn coalescing_cannot_schedule_new_keys_beyond_the_uploaded_freshness_deadline() {
+        let mut p=Presence::default();let now=Instant::now();let regular=now+Duration::from_secs(6);
+        assert_eq!(p.next_pulse(regular),regular);
+        let prior=now-Duration::from_secs(13);
+        p.keys_uploaded_at=Some(prior);p.keys_at=Some(now);
+        assert_eq!(p.next_pulse(regular),prior+Duration::from_secs(14));
+        p.keys_uploaded_at=p.keys_at;assert_eq!(p.next_pulse(regular),regular);
+        p.keys_uploaded_at=Some(now-Duration::from_secs(16));
+        assert!(p.next_pulse(regular)<now);
     }
 }
 

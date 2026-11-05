@@ -25,7 +25,7 @@ const app=createPostgresControlApp(f.kernel,{source:()=> '127.0.0.1'});
 let offline=false,dropAction=null,delayName=null,delayAction=null,release=null,streamDurationOnce=0;
 let rejectNextRebindMailbox=null,corruptFrame=null,keyDelayWorkspace=null,delayMailbox=null;
 let keyDelayMs=0,earlyEofCount=0,timeoutAction=null;const timeoutReleases=new Set();
-const counts={commands:0,discovery:0,context:0,journal_reads:0,dropped:0,native_streams:0,corrupted_frames:0,delayed_keys:0,delayed:0,members_batches:0,grant_batches:0,claim_commands:[],actions:{}};
+const counts={commands:0,discovery:0,context:0,journal_reads:0,dropped:0,native_streams:0,corrupted_frames:0,delayed_keys:0,delayed:0,members_batches:0,grant_batches:0,claim_commands:[],actions:{},command_request_bytes:0,command_response_bytes:0,sse_bytes:0};
 const commandIds=new Set();
 // Explicit maintainer measurement only. Buffer closed metadata in memory and
 // write once after the fixture stops; never log packets, IDs or request bodies.
@@ -76,7 +76,7 @@ const handle=async request=>{
  if(offline)return new Response('synthetic disconnected link',{status:503});
  let command=null;
  if(path==='/api/workspace/v1/commands'&&request.method==='POST'){
-  const envelope=await request.clone().json();
+  const wire=await request.clone().text();counts.command_request_bytes+=Buffer.byteLength(wire);const envelope=JSON.parse(wire);
   command=JSON.parse(Buffer.from(envelope.jws.split('.')[1],'base64url').toString('utf8'));
   counts.commands++;commandIds.add(command.command_id);
   if(command.workspace_id===keyDelayWorkspace&&command.action_id==='structure.mailbox.get'&&keyDelayMs){counts.delayed_keys++;await pause(keyDelayMs);}
@@ -101,6 +101,7 @@ const handle=async request=>{
  }
  const measured=queryObserver?await queryObserver.measure(()=>app.fetch(request)):null;
  const response=measured?measured.value:await app.fetch(request);
+ if(command)counts.command_response_bytes+=(await response.clone().arrayBuffer()).byteLength;
  if(timingOutput&&command){
   const elapsed=performance.now()-requestStarted;
   let errorCode=null;
@@ -139,7 +140,7 @@ const handle=async request=>{
        block='event: delivery\ndata: '+(mode==='MALFORMED'?'{':JSON.stringify(frame))+'\n\n';
       }
      }
-     controller.enqueue(encoder.encode(block));
+     const outgoing=encoder.encode(block);counts.sse_bytes+=outgoing.length;controller.enqueue(outgoing);
     }
    }}catch{close();}})();
   },cancel(){closed=true;clearTimeout(timer);return reader.cancel().catch(()=>{});}}),{status:response.status,headers:response.headers});

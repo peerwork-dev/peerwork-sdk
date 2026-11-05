@@ -484,7 +484,7 @@ enum Work {
     Session(std::result::Result<MailSession, Failure>),
     Inspect(String, std::result::Result<Value, Failure>),
     Claim(String, std::result::Result<Value, Failure>),
-    Pulse(String, Instant, u64, std::result::Result<Value, Failure>),
+    Pulse(String, Instant, u64, Option<Instant>, std::result::Result<Value, Failure>),
     Keys(String, Vec<String>, std::result::Result<Value, Failure>),
     Ack(
         String,
@@ -845,10 +845,10 @@ pub(crate) async fn run(
                                 }
                                 s.fail(e)
                             }}},
-                            Work::Pulse(key,started,version,value)=>if let Some(s)=slots.get_mut(&key){s.pulse_busy=false;s.pulse_cancel=None;match value{Ok(value)=>{
+                            Work::Pulse(key,started,version,keys_at,value)=>if let Some(s)=slots.get_mut(&key){s.pulse_busy=false;s.pulse_cancel=None;match value{Ok(value)=>{
                                 let m=&value["mailbox"];let ttl=m["lease_until"].as_u64().unwrap_or(0).saturating_sub(m["server_time"].as_u64().unwrap_or(u64::MAX));
                                 let remaining=Duration::from_millis(ttl.min(15000)).saturating_sub(started.elapsed());
-                                if remaining.is_zero(){s.fail(Failure::code("MAILBOX_LEASE_EXPIRED"));}else{s.lease_until=Some(Instant::now()+remaining);s.next_control=Instant::now()+if version==s.presence.version{Duration::from_secs(6)}else{Duration::ZERO};s.pulse_failures=0;s.pulse_retry_at=Instant::now();}
+                                if remaining.is_zero(){s.fail(Failure::code("MAILBOX_LEASE_EXPIRED"));}else{s.lease_until=Some(Instant::now()+remaining);s.presence.keys_uploaded_at=keys_at;s.next_control=s.presence.next_pulse(Instant::now()+if version==s.presence.version{Duration::from_secs(6)}else{Duration::ZERO});s.pulse_failures=0;s.pulse_retry_at=Instant::now();}
                             },Err(mut e)=>{s.lease_until=None;s.pulse_failures=s.pulse_failures.saturating_add(1);s.pulse_retry_at=Instant::now()+Duration::from_millis((250u64<<s.pulse_failures.min(4)).min(4000));
                                 if e.code=="MAILBOX_LEASE_EXPIRED"{e.retryable=true;}
                                 if e.retryable{s.link_verified=false;s.state("RECONNECTING",Some(e.code));}else{s.fail(e);}
@@ -872,7 +872,7 @@ pub(crate) async fn run(
                                 if store.key_missing(&workspace).unwrap_or(true)&&matches!(data["state"].as_str(),Some("READY"|"NOT_REQUIRED")){data["state"]=json!("MISSING");}
                                 let _=store.wake_key_heads(&workspace);
                                 for s in slots.values_mut().filter(|s|s.binding.options.workspace_id==workspace){
-                                    let before=s.presence.version;s.presence.keys(data.clone());s.next_keys=Instant::now()+Duration::from_secs(if matches!(data["state"].as_str(),Some("READY"|"NOT_REQUIRED")){10}else{2});if before!=s.presence.version{s.next_control=Instant::now();}s.notify();
+                                    let before=s.presence.version;s.presence.keys(data.clone());s.next_keys=Instant::now()+Duration::from_secs(if matches!(data["state"].as_str(),Some("READY"|"NOT_REQUIRED")){10}else{2});if before!=s.presence.version{s.next_control=Instant::now();}else{s.next_control=s.presence.next_pulse(s.next_control);}s.notify();
                                 }
                             },
                             Work::Report(key,id,version,value)=>if let Some(s)=slots.get_mut(&key){
@@ -1031,6 +1031,7 @@ pub(crate) async fn run(
                         );
                     }
                     let presence_version = s.presence.version;
+                    let keys_at=options.host_destination.as_ref().and(s.presence.keys_at);
                     fence["event_format"]=json!(peerwork_core::communication::WORKSPACE_EVENT_FORMAT);
                     fence["execution_state"] = json!(if s.signals.is_empty() {
                         "OFFLINE"
@@ -1043,6 +1044,7 @@ pub(crate) async fn run(
                             work_key,
                             started,
                             presence_version,
+                            keys_at,
                             match tokio::time::timeout(Duration::from_secs(5), call(
                                 &access,
                                 "structure.mailbox.pulse",
