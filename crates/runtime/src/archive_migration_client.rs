@@ -175,6 +175,7 @@ fn inspect(
 fn job_failure(id: &str, state: &Value) -> KernelClientError {
     let job = &state["migration"];
     KernelClientError::OperationRefused(Box::new(OperationRefusal {
+        details: None,
         command_id: id.into(),
         server_code: job["error"]["code"]
             .as_str()
@@ -389,6 +390,7 @@ impl KernelClient {
             }),
             Ok(Err(KernelClientError::ArchiveMigration(code))) => Err(
                 KernelClientError::OperationRefused(Box::new(OperationRefusal {
+        details: None,
                     command_id: id.clone(),
                     server_code: code.into(),
                     phase: if self
@@ -691,6 +693,7 @@ impl KernelClient {
             if parsed["ok"] != true {
                 return Err(KernelClientError::OperationRefused(Box::new(
                     OperationRefusal {
+        details: None,
                         command_id: id.into(),
                         server_code: parsed["code"]
                             .as_str()

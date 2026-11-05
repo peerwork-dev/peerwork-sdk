@@ -1,7 +1,7 @@
 //! Shared, resumable local onboarding. Remote rights remain service-enforced;
 //! the registry contains explicit local selections, never discovered secrets.
 use crate::{
-    agent_tools::{AgentProfile, Contact, MailScope, SendScope, ManagementView},
+    agent_tools::{AgentProfile, Contact, MailScope, SendScope},
     communication_host::write_private,
     communication_runtime::RuntimeClient,
     communication_store::identifier,
@@ -660,7 +660,7 @@ impl Connect {
             error.details=Some(json!({"missing_operations":missing_management,"next_actor":"LOCAL_RUNTIME_OWNER","remote_permission_checked":false,"remote_grants_changed":false}));return Err(error);
         }
         let communication_requested=request.send||request.receive||!request.contacts.is_empty();
-        let mut required=vec!["structure.workspace.get"];
+        let mut required=vec!["structure.workspace.get","structure.members.read"];
         if communication_requested||request.require_body_keys{required.push("participant.time.read");}
         if communication_requested{required.push("structure.communication.grant.get");}
         if request.receive{required.push("structure.mailboxes.read");}
@@ -668,7 +668,7 @@ impl Connect {
         if request.send{required.push("structure.message.send");}
         let missing=required.into_iter().filter(|action|!parent.operations.contains(*action)).collect::<Vec<_>>();
         let probe=Invoke::new("connect-local-preflight","structure.workspace.get",Scope{workspace_id:Some(request.workspace_id.clone()),..Default::default()},json!({}));
-        let denied=parent.authorize(&probe).err();
+        let denied=parent.authorize(&probe).and_then(|_|parent.authorize(&Invoke::new("connect-directory-preflight","structure.members.read",probe.scope.clone(),json!({"view":"COLLABORATION","limit":1})))).err();
         if !missing.is_empty()||denied.is_some(){
             let mut error=denied.unwrap_or_else(||local("LOCAL_SCOPE_DENIED"));error.phase="AUTHORIZATION".into();error.recovery="REVIEW_EXPLICIT_LOCAL_CAPABILITY".into();
             let mut details=error.details.take().unwrap_or(json!({}));details["missing_operations"]=json!(missing);details["next_actor"]=json!("LOCAL_RUNTIME_OWNER");details["remote_permission_checked"]=json!(false);error.details=Some(details);return Err(error);
@@ -721,8 +721,6 @@ impl Connect {
             missing.push(json!({"kind":"COMMUNICATION_RECEIVE"}));
         }
         let mut protocols = BTreeMap::new();
-        let mut role_actions: BTreeMap<String, std::collections::BTreeSet<String>> =
-            BTreeMap::new();
         for p in &request.protocols {
             let resolved = read(
                 &client,
@@ -798,8 +796,6 @@ impl Connect {
                 {
                     missing.push(json!({"kind":"BUSINESS_ROLE","instance_id":p.instance_id,"protocol_digest":selected_scope.protocol_digest,"role":p.role,"actions":wanted}));
                 }
-                let actions = wanted.intersection(&granted).cloned().collect();
-                role_actions.insert(p.alias.clone(), actions);
             }
             protocols.insert(p.alias.clone(), selected_scope);
         }
@@ -902,15 +898,7 @@ impl Connect {
         }else{None};
         if let Some(completed)=&completed_first {previous_setup.as_mut().unwrap().effective_host=Some(completed.name.clone());}
         let previous = previous_setup.as_ref().and_then(|s| s.profile.clone());
-        let mut management_views=previous.as_ref().map(|p|p.management_views.clone()).unwrap_or_default();
-        let management_capability=if management_actions.is_empty(){None}else{
-            let mut cap=parent.clone();cap.allow_root=false;cap.workspace_ids=Some([request.workspace_id.clone()].into());cap.operations=management_actions;
-            Some(cap)
-        };
-        let management_id=management_capability.as_ref().map(|cap|format!("management-{}",&sha256_hex(json!([request.participant,request.workspace_id,cap]).to_string().as_bytes())[..40]));
-        if management_id.as_ref().is_some_and(|id|!management_views.contains_key(id))&&management_views.len()>=crate::agent_tools::MAX_MANAGEMENT_VIEWS {
-            return Err(local("MANAGEMENT_VIEW_LIMIT_PRESERVE_ORIGINAL_OPERATIONS"));
-        }
+        let management_views=previous.as_ref().map(|p|p.management_views.clone()).unwrap_or_default();
         if request.receive_mode==Some(ReceiveMode::Inbox) && previous_setup.as_ref().is_some_and(|s|s.channel_receive&&s.effective_host.is_some()) {
             return self.pending(&request,"HOST_BINDING","EXISTING_PUSH_RECEIVER_REQUIRES_EXPLICIT_REBIND","HOST_USER","EXPLICIT_NATIVE_REBIND",json!({"existing_receiver_preserved":true}));
         }
@@ -979,111 +967,24 @@ impl Connect {
                 protocols.entry(name.clone()).or_insert_with(|| s.clone());
             }
         }
-        let mut protocol_endpoints = previous
-            .as_ref()
-            .map(|p| p.protocol_endpoints.clone())
-            .unwrap_or_default();
+        // One ordinary Workspace client inherits only the original parent's
+        // deliberate limits. Server grants are observations, not local policy.
+        // A capability-dependent alias never expands an already issued token.
+        let (capability,endpoint)=self.workspace_client(&request.participant,&request.workspace_id,&parent,&client).await?;
+        let mut protocol_endpoints=previous.as_ref().map(|p|p.protocol_endpoints.clone()).unwrap_or_default();
         for p in &request.protocols {
-            let selected_scope = &protocols[&p.alias];
-            let mut cap = parent.clone();
-            cap.allow_root = false;
-            cap.workspace_ids = Some([request.workspace_id.clone()].into());
-            cap.instance_ids = Some([p.instance_id.clone()].into());
-            cap.protocol_digests = Some([selected_scope.protocol_digest.clone().unwrap()].into());
-            cap.mailbox_ids = Some(Default::default());
-            cap.operations.retain(|s| {
-                [
-                    "structure.action",
-                    "structure.instance.get",
-                    "structure.protocol.resolve",
-                    "structure.protocol.resource.get",
-                    "structure.record.get",
-                    "structure.records.read",
-                ]
-                .contains(&s.as_str())
-            });
-            {
-                cap.business_actions = Some(
-                    role_actions[&p.alias]
-                        .iter()
-                        .filter(|s| {
-                            parent
-                                .business_actions
-                                .as_ref()
-                                .is_none_or(|a| a.contains(*s))
-                        })
-                        .cloned()
-                        .collect(),
-                );
-            }
-            let alias = format!(
-                "role-{}",
-                &sha256_hex(
-                    json!([
-                        request.participant,
-                        request.workspace_id,
-                        p.alias,
-                        p.instance_id,
-                        p.role,
-                        p.actions
-                        ,selected_scope.protocol_digest,cap.business_actions
-                    ])
-                    .to_string()
-                    .as_bytes()
-                )[..40]
-            );
-            let derived = client
-                .call(json!({"method":"derive","name":alias,"capability":cap}))
-                .await?;
-            protocol_endpoints.insert(
-                p.alias.clone(),
-                PathBuf::from(
-                    derived["endpoint_path"]
-                        .as_str()
-                        .ok_or_else(|| local("DERIVED_ENDPOINT_INVALID"))?,
-                ),
-            );
+            let selected_scope=&protocols[&p.alias];
+            let explicit=if !p.actions.is_empty(){p.actions.clone()}else{
+                previous_setup.as_ref().and_then(|old|old.protocol_intents.get(&p.alias)
+                    .or_else(||old.desired.protocols.iter().find(|v|v.alias==p.alias))).map(|v|v.actions.clone()).unwrap_or_default()
+            };
+            let path=self.protocol_endpoint(&request.participant,&p.alias,selected_scope,&explicit,&capability,&endpoint,&client).await?;
+            protocol_endpoints.insert(p.alias.clone(),path);
         }
+        // This existing field is also the Workspace management/read route.
+        // All ordinary tool families share exactly the same credential.
         let mut directory_endpoints=previous.as_ref().map(|p|p.directory_endpoints.clone()).unwrap_or_default();
-        if let (Some(id),Some(capability))=(management_id,management_capability) {
-            let derived=client.call(json!({"method":"derive","name":id,"capability":capability})).await?;
-            let endpoint_path=PathBuf::from(derived["endpoint_path"].as_str().ok_or_else(||local("DERIVED_ENDPOINT_INVALID"))?);
-            let manager=RuntimeClient::connect(endpoint_path.clone(),&selected.origin,&selected.actor_id).await?;
-            let observed=manager.call(json!({"method":"binding"})).await?;
-            let original=client.call(json!({"method":"binding"})).await?;
-            crate::communication_runtime::validate_binding(&observed,&selected.origin,&selected.actor_id)?;
-            if ["engine_digest","state_binding"].iter().any(|field|observed[*field]!=original[*field])
-                || observed["client_generation"]!=derived["client_generation"] {return Err(local("MANAGEMENT_VIEW_BINDING_CHANGED"));}
-            let view=ManagementView{workspace_id:request.workspace_id.clone(),operations:capability.operations,
-                endpoint_path,binding:crate::communication_runtime::canonical_binding(&observed),
-                client_generation:derived["client_generation"].as_u64().filter(|n|*n>0).ok_or_else(||local("DERIVED_CLIENT_GENERATION_REQUIRED"))?};
-            if let Some(previous)=management_views.get(&id) {
-                if serde_json::to_value(previous).ok()!=serde_json::to_value(&view).ok(){return Err(local("MANAGEMENT_VIEW_BINDING_CHANGED"));}
-            }else{management_views.insert(id,view);}
-        }
-        let mut metadata=parent.clone();metadata.allow_root=false;metadata.workspace_ids=Some([request.workspace_id.clone()].into());
-        metadata.operations.retain(|a|a.starts_with("structure.")||crate::agent_tools::management::is_workspace_action(a));
-        if metadata.operations.contains("structure.members.read") {
-            let alias=format!("directory-{}",&sha256_hex(json!([request.participant,request.workspace_id]).to_string().as_bytes())[..40]);
-            let value=client.call(json!({"method":"derive","name":alias,"capability":metadata})).await?;
-            directory_endpoints.insert(request.workspace_id.clone(),PathBuf::from(value["endpoint_path"].as_str().ok_or_else(||local("DERIVED_ENDPOINT_INVALID"))?));
-        }
-        let mut capability=parent.clone();capability.allow_root=false;capability.workspace_ids=Some([request.workspace_id.clone()].into());
-        let endpoint=if !communication_requested&&previous.is_some(){
-            capability=previous_setup.as_ref().and_then(|s|s.sender_capability.clone()).unwrap_or_else(||parent.clone());
-            previous.as_ref().unwrap().endpoint_path.clone()
-        }else{
-            let allowed: &[&str]=if communication_requested {&["structure.message.send","structure.message.receipts.read","structure.mailbox.get","structure.members.read"]}
-                else {&["structure.members.read","structure.member.name.set","structure.member.availability.set","structure.workspace.get","structure.instance.resolve","participant.time.read","structure.mailboxes.read","structure.communication.subscription.set","structure.communication.subscriptions.read","structure.communication.event.get"]};
-            capability.operations.retain(|a|allowed.contains(&a.as_str()));
-            if !channel_send{capability.operations.remove("structure.message.send");}
-            if capability.operations.is_empty()&&parent.operations.contains("participant.time.read"){capability.operations.insert("participant.time.read".into());}
-            capability.validate()?;
-            let alias=format!("{}-{}",if communication_requested{"mail"}else{"tools"},&sha256_hex(json!([request.participant,request.workspace_id]).to_string().as_bytes())[..40]);
-            let child=client.call(json!({"method":"derive","name":alias,"capability":capability,
-                "expected_capability":previous_setup.as_ref().and_then(|s|s.sender_capability.clone())})).await?;
-            PathBuf::from(child["endpoint_path"].as_str().ok_or_else(||local("DERIVED_ENDPOINT_INVALID"))?)
-        };
+        directory_endpoints.insert(request.workspace_id.clone(),endpoint.clone());
         let mut receive_endpoint = previous
             .as_ref()
             .and_then(|p| p.receive_endpoint_path.clone());

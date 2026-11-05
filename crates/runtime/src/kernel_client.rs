@@ -129,12 +129,12 @@ fn classify_http_rejection(status:u16,wire:&[u8])->KernelClientError{
 }
 
 #[derive(Debug,Clone,Serialize)]
-pub struct OperationRefusal{pub command_id:String,pub server_code:String,pub phase:String,pub http_status:Option<u16>,pub retryable:bool,pub recovery:String,pub effect_certainty:&'static str}
+pub struct OperationRefusal{#[serde(skip_serializing_if="Option::is_none")] pub details:Option<serde_json::Value>,pub command_id:String,pub server_code:String,pub phase:String,pub http_status:Option<u16>,pub retryable:bool,pub recovery:String,pub effect_certainty:&'static str}
 impl OperationRefusal{
  pub fn from_verified(result:&KernelAcceptedResult)->Result<Self,KernelClientError>{
   if result.outcome_state()!="REJECTED"{return Err(KernelClientError::InvalidResult);}
   let value:serde_json::Value=serde_json::from_str(result.structure_result_json.as_deref().ok_or(KernelClientError::InvalidResult)?).map_err(|_|KernelClientError::InvalidResult)?;
-  let error=&value["error"];Ok(Self{command_id:result.command_id.clone(),server_code:error["code"].as_str().ok_or(KernelClientError::InvalidResult)?.into(),phase:error["phase"].as_str().ok_or(KernelClientError::InvalidResult)?.into(),http_status:error["http_status"].as_u64().map(|n|n as u16),retryable:false,recovery:error["recovery"].as_str().ok_or(KernelClientError::InvalidResult)?.into(),effect_certainty:"NOT_APPLIED"})
+  let error=&value["error"];Ok(Self{details:error.get("details").cloned(),command_id:result.command_id.clone(),server_code:error["code"].as_str().ok_or(KernelClientError::InvalidResult)?.into(),phase:error["phase"].as_str().ok_or(KernelClientError::InvalidResult)?.into(),http_status:error["http_status"].as_u64().map(|n|n as u16),retryable:false,recovery:error["recovery"].as_str().ok_or(KernelClientError::InvalidResult)?.into(),effect_certainty:"NOT_APPLIED"})
  }
 }
 

@@ -542,6 +542,8 @@ impl ParticipantConfig {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Operation {
+    #[serde(default)]
+    pub scope: Scope,
     pub operation_id: String,
     pub state: String,
     pub command_id: Option<String>,
@@ -1553,6 +1555,7 @@ mod tests {
             ("ADMITTED", "NOT_SUBMITTED", "UNKNOWN"),
         ] {
             let op = Operation {
+                scope: Scope::default(),
                 operation_id: "one".into(),
                 state: state.into(),
                 command_id: None,
@@ -1573,6 +1576,7 @@ mod tests {
             ("REJECTED_NO_EFFECT", "NO_EFFECT"),
         ] {
             let op = Operation {
+                scope: Scope::default(),
                 operation_id: "one".into(),
                 state: state.into(),
                 command_id: None,
@@ -1730,6 +1734,7 @@ mod tests {
                     .try_send(Command::Metrics { reply: unused })
                     .unwrap_or_else(|_| panic!("queue should be empty"));
                 let operation = Operation {
+                    scope: Scope::default(),
                     operation_id: "original".into(),
                     state: "PENDING".into(),
                     command_id: None,

@@ -69,9 +69,7 @@ pub(crate) fn workspace_actions(names:&[String])->Result<std::collections::BTree
     Ok(actions)
 }
 fn enable_hint(spec:&Operation,workspace:Option<&str>)->Value {
-    if spec.scope=="identity" {return json!({"code":"IDENTITY_MANAGEMENT_NOT_SUPPORTED_BY_WORKSPACE_CONNECT","next_actor":"LOCAL_RUNTIME_OWNER","next_action":"USE_EXPLICITLY_SELECTED_ORIGINAL_IDENTITY_CLIENT"});}
-    json!({"tool":"peerwork_connect","arguments":{"request":{"workspace_id":workspace.unwrap_or("SELECT_WORKSPACE_ID"),"management":[spec.name]}},
-        "frontend_requirement":"LOCAL_REGISTRY_WITH_BOOTSTRAP_AUTHORITY","remote_grants_changed":false,"existing_credentials_widened":false})
+    json!({"next_actor":"LOCAL_RUNTIME_OWNER","next_action":"SELECT_ORIGINAL_CLIENT_OR_REVIEW_EXPLICIT_DELEGATION","action":spec.action,"workspace_id":workspace,"remote_grants_changed":false,"existing_credentials_widened":false})
 }
 fn enable_error(mut error:ParticipantError,spec:&Operation,workspace:Option<&str>,view:Option<&str>)->ParticipantError {
     if error.code=="LOCAL_SCOPE_DENIED"&&view.is_none() {

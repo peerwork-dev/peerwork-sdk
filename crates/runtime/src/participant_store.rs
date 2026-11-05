@@ -4,7 +4,7 @@ use crate::{
     communication_store::single_owner_database as database,
     kernel_identity::KernelIdentity,
     kernel_intents::parent_operations::{open, seal},
-    participant::{Capability, Invoke, Operation, ParticipantError, Result},
+    participant::{Capability, Invoke, Operation, Scope, ParticipantError, Result},
 };
 use peerwork_core::crypto::sha256_hex;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
@@ -169,6 +169,7 @@ impl Store {
         // Nothing fallible after durable admission: a failed follow-up read
         // must not misreport an operation the engine can now execute.
         Ok(Operation {
+            scope: request.scope.clone(),
             operation_id: request.operation_id.clone(),
             state: "ADMITTED".into(),
             command_id: None,
@@ -247,8 +248,8 @@ impl Store {
         }else{Ok(request)}
     }
     pub fn get(&self, session: &str, id: &str, identity: &KernelIdentity) -> Result<Operation> {
-        let row:Option<(String,String,Option<Vec<u8>>,Option<String>)>=self.db.query_row("SELECT input_hash,status,outcome,command_id FROM participant_operations WHERE session=?1 AND id=?2",params![session,id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(|_|storage())?;
-        let (hash, status, outcome, command) =
+        let row:Option<(String,String,Option<Vec<u8>>,Option<String>,Option<String>,Option<String>,Option<String>)>=self.db.query_row("SELECT input_hash,status,outcome,command_id,workspace,instance,protocol FROM participant_operations WHERE session=?1 AND id=?2",params![session,id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional().map_err(|_|storage())?;
+        let (hash, status, outcome, command,workspace_id,instance_id,protocol_digest) =
             row.ok_or_else(|| ParticipantError::local("OPERATION_NOT_FOUND", "OBSERVATION"))?;
         let out = outcome
             .map(|bytes| {
@@ -257,9 +258,9 @@ impl Store {
                     .and_then(|v| serde_json::from_str::<Value>(&v).map_err(|_| corrupt()))
             })
             .transpose()?;
-        Ok(Self::operation(id,status,command,out))
+        Ok(Self::operation(id,status,command,out,Scope{workspace_id,instance_id,protocol_digest}))
     }
-    fn operation(id:&str,status:String,command:Option<String>,out:Option<Value>)->Operation {
+    fn operation(id:&str,status:String,command:Option<String>,out:Option<Value>,scope:Scope)->Operation {
         let committed = out
             .as_ref()
             .is_some_and(|v| v["effect_certainty"] == "COMMITTED");
@@ -267,6 +268,7 @@ impl Store {
             .as_ref()
             .is_some_and(|v| v["effect_certainty"] == "NOT_SUBMITTED");
         Operation {
+            scope,
             operation_id: id.into(),
             state: status.clone(),
             command_id: command,
@@ -377,7 +379,7 @@ impl Store {
         // The committed bytes were just sealed from this exact value. Return
         // it without another SELECT/decrypt/parse cycle. Reopens and selected
         // reads still authenticate the durable ciphertext through get().
-        Ok(Self::operation(id,state.into(),command.map(str::to_owned).or(current.command_id),Some(saved)))
+        Ok(Self::operation(id,state.into(),command.map(str::to_owned).or(current.command_id),Some(saved),current.scope))
     }
     pub fn list(
         &self,

@@ -480,7 +480,7 @@ impl HttpTransport {
             || !valid_command_path(signed.proof().path()) || signed.http_body().is_empty() || signed.http_body().len()>262_144 {
             return Err(TransportError::InvalidOrigin);
         }
-        let send=self.measured_send(self.client.post(self.endpoint(signed.proof().path())?).header("content-type","application/json").body(signed.http_body().to_vec()).send());
+        let send=self.measured_send(self.client.post(self.endpoint(signed.proof().path())?).header("content-type","application/json").header("X-Peerwork-Diagnostics","authorization-v1").body(signed.http_body().to_vec()).send());
         let response=tokio::select!{_=cancel.cancelled()=>return Err(TransportError::Cancelled),result=send=>result.map_err(map_network_error)?};
         let response=read_bounded(response,MAX_COMMAND_RESPONSE_BYTES,cancel).await?;
         #[cfg(test)]
@@ -504,6 +504,7 @@ impl HttpTransport {
             .client
             .post(url)
             .header("content-type", "application/json")
+            .header("X-Peerwork-Diagnostics", "authorization-v1")
             .body(body)
             .send());
         let response = tokio::select! {

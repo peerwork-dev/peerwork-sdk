@@ -311,12 +311,31 @@ fn verify_structure_terminal(result:&WireValue,prepared:&VerifiedPreparedCommand
     if committed&&(!crate::structure_execution::is_structure_mutation(prepared.action_id())||ascii_field(result,"effect_certainty").as_deref()!=Some("COMMITTED"))
         ||!committed&&result.get("effect_certainty").is_some_and(|v|v.as_string().as_deref()!=Some("NOT_APPLIED")){return Err(invalid());}
     let error=result.get("error").ok_or_else(invalid)?;let WireValue::Object(error_fields)=error else{return Err(invalid());};
-    if error_fields.iter().any(|(key,_)|!["phase","code","http_status","retryable","recovery"].iter().any(|name|key.iter().copied().eq(name.encode_utf16())))
+    if error_fields.iter().any(|(key,_)|!["phase","code","http_status","retryable","recovery","details"].iter().any(|name|key.iter().copied().eq(name.encode_utf16())))
         ||error.get("retryable")!=Some(&WireValue::Bool(false)){return Err(invalid());}
     let phase=ascii_field(error,"phase").ok_or_else(invalid)?;
     if !["AUTHORIZATION","VALIDATION","EXECUTION","RESULT_ACCESS"].contains(&phase.as_str()){return Err(invalid());}
     for key in ["code","recovery"]{let value=ascii_field(error,key).ok_or_else(invalid)?;if value.is_empty()||value.len()>100||!value.bytes().all(|b|b.is_ascii_uppercase()||b.is_ascii_digit()||b==b'_'){return Err(invalid());}}
     if error.get("http_status").is_some()&&number(error,"http_status").is_none_or(|v|!(400..=599).contains(&v)){return Err(invalid());}
+    if let Some(details)=error.get("details") {
+        if phase!="AUTHORIZATION"||committed{return Err(invalid());}
+        let WireValue::Object(fields)=details else{return Err(invalid());};
+        for(key,value)in fields {
+            let key=String::from_utf16(key).map_err(|_|invalid())?;
+            match key.as_str(){
+                "source" if value.as_string().as_deref()==Some("SERVICE")=>(),
+                "actor_id" if value.as_string().as_deref()==Some(prepared.actor_id())=>(),
+                "action_id" if value.as_string().as_deref()==Some(prepared.action_id())=>(),
+                "reason"|"next_actor"|"next_action"|"business_action"|"required_capability"=>{
+                    let text=value.as_string().ok_or_else(invalid)?;
+                    if text.is_empty()||text.len()>120||!text.bytes().all(|b|b.is_ascii_alphanumeric()||matches!(b,b'_'|b'-'|b'.'|b':'|b'/')){return Err(invalid());}
+                },
+                "grant_revision"|"communication_revision" if number(details,&key).is_some_and(|n|n<=9_007_199_254_740_991)=>(),
+                _=>return Err(invalid()),
+            }
+        }
+        for field in ["source","actor_id","action_id","reason","next_actor","next_action"]{if details.get(field).is_none(){return Err(invalid());}}
+    }
     if committed&&(phase!="RESULT_ACCESS"||ascii_field(error,"code").as_deref()!=Some("OUTCOME_RECORDED_ACCESS_DENIED")||ascii_field(error,"recovery").as_deref()!=Some("REQUEST_ACCESS_AND_READ_ORIGINAL_OUTCOME")){return Err(invalid());}
     Ok(true)
 }
