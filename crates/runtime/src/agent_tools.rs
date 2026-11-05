@@ -626,9 +626,9 @@ impl AgentTools {
         request.expected_workspace_revision=Some(revision);
         let mut result=match self.invoke_client(client,request,1000).await {
             Ok(result)=>result,
-            Err(mut error)=>{if let Some(operation)=error.operation_id.clone(){let details=error.details.get_or_insert_with(||json!({}));details["recovery_arguments"]=json!({"workspace":scope.workspace_id,"operation_id":operation});}return Err(error);}
+            Err(mut error)=>{if let Some(operation)=error.operation_id.clone(){let details=error.details.get_or_insert_with(||json!({}));if details.get("recovery_arguments").is_none(){details["recovery_arguments"]=json!({"workspace":scope.workspace_id,"operation_id":operation});}}return Err(error);}
         };
-        result["recovery_arguments"]=json!({"workspace":scope.workspace_id,"operation_id":result["operation_id"]});Ok(result)
+        if result["recovery_arguments"].is_null(){result["recovery_arguments"]=json!({"workspace":scope.workspace_id,"operation_id":result["operation_id"]});}Ok(result)
     }
     async fn set_availability(&self,selected:Option<&str>,membership:String,state:String,operation_id:String,revision:u64,valid_for_ms:u64)->Result<Value>{
         if !identifier(&operation_id)||!token(&membership)||!matches!(state.as_str(),"AVAILABLE"|"NOT_ACCEPTING"|"UNKNOWN")||revision>=9_007_199_254_740_991||!(1000..=86_400_000).contains(&valid_for_ms){return Err(invalid("AVAILABILITY_ARGUMENT_INVALID"));}
@@ -637,9 +637,9 @@ impl AgentTools {
         let request=Invoke::new(operation_id,"structure.member.availability.set",scope.clone(),json!({"membership_id":membership,"state":state,"expected_availability_revision":revision,"valid_for_ms":valid_for_ms}));
         let mut result=match self.invoke_client(client,request,1000).await{
             Ok(result)=>result,
-            Err(mut error)=>{if let Some(operation)=error.operation_id.clone(){let details=error.details.get_or_insert_with(||json!({}));details["recovery_arguments"]=json!({"workspace":scope.workspace_id,"operation_id":operation});}return Err(error);}
+            Err(mut error)=>{if let Some(operation)=error.operation_id.clone(){let details=error.details.get_or_insert_with(||json!({}));if details.get("recovery_arguments").is_none(){details["recovery_arguments"]=json!({"workspace":scope.workspace_id,"operation_id":operation});}}return Err(error);}
         };
-        result["recovery_arguments"]=json!({"workspace":scope.workspace_id,"operation_id":result["operation_id"]});Ok(result)
+        if result["recovery_arguments"].is_null(){result["recovery_arguments"]=json!({"workspace":scope.workspace_id,"operation_id":result["operation_id"]});}Ok(result)
     }
     async fn send_member(&self, selected:Option<&str>, target:&str, operation_id:String, text:String, wait_ms:u64)->Result<Value>{
         if text.is_empty()||text.len()>8192{return Err(invalid("MESSAGE_TEXT_LIMIT"));}
@@ -771,7 +771,9 @@ impl AgentTools {
             if supported{call["protocol_route"]=json!(true);}else if selected.is_some(){return Err(invalid("PROTOCOL_ROUTING_RUNTIME_UPGRADE_REQUIRED"));}
         }
         if let Some(selected)=selected{call["resolved_request"]=json!(selected);}
-        let value=client.call(call).await?;
+        let value=client.call(call).await.map_err(|mut error|{
+            if let Some(view)=recovery_view{error.details.get_or_insert_with(||json!({}))["recovery_arguments"]=json!({"operation_id":request.operation_id,"recovery_view":view});}error
+        })?;
         let mut value=operation_view(value);
         if let Some(view)=recovery_view{value["recovery_arguments"]=json!({"operation_id":request.operation_id,"recovery_view":view});}
         Ok(value)

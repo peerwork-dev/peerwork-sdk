@@ -1,7 +1,7 @@
 # Connect an existing participant
 
-Use native SDK0.3.14 and its exact published
-[release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.14).
+Use native SDK0.3.15 and its exact published
+[release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.15).
 Native0.3.2 retains its
 [explicit setup guide](participant-connect-0.3.2.md).
 The native client adds no Node/Python runtime dependency or additional platforms.

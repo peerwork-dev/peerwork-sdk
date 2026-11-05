@@ -114,12 +114,18 @@ impl Connect {
     }
     pub async fn refresh_protocol_alias(&mut self,participant:Option<&str>,workspace:Option<&str>,alias:&str,target:Option<&Value>)->Result<Value>{
         self.require_writer()?;let handle=self.selected_handle(participant)?.ok_or_else(||local("LOCAL_SELECTION_REQUIRED"))?;
-        let mut profile=self.profile_for_scope(Some(&handle),workspace)?.ok_or_else(||local("LOCAL_SELECTION_REQUIRED"))?;
-        let old=profile.clone();let scope=profile.protocols.get(alias).cloned().ok_or_else(||local("PROTOCOL_ALIAS_UNKNOWN"))?;
+        let selected_profile=self.profile_for_scope(Some(&handle),workspace)?.ok_or_else(||local("LOCAL_SELECTION_REQUIRED"))?;
+        let scope=selected_profile.protocols.get(alias).cloned().ok_or_else(||local("PROTOCOL_ALIAS_UNKNOWN"))?;
         let ws=scope.workspace_id.clone().ok_or_else(||local("BROKEN_PROTOCOL_BINDING"))?;
         let instance=scope.instance_id.clone().ok_or_else(||local("BROKEN_PROTOCOL_BINDING"))?;
         let active=self.registry.active_by_scope.get(&format!("{handle}:{ws}")).cloned().ok_or_else(||local("BROKEN_BINDING"))?;
+        let active=self.normalize_cached_authority(&active).await?;
+        let mut profile=self.registry.setups[&active].profile.clone().ok_or_else(||local("LOCAL_SELECTION_REQUIRED"))?;
+        let old=profile.clone();
         let original=self.original_client(&handle).await?;let caps=original.call(json!({"method":"capabilities"})).await?;
+        if !missing_runtime_features(&caps).is_empty(){return Err(local("LOCAL_RUNTIME_UPGRADE_REQUIRED"));}
+        if self.registry.setups[&active].result["client_authority_model"]!="SERVICE_CURRENT"&&!Self::explicit_setup(&self.registry.setups[&active]){return Err(local("LOCAL_DELEGATION_PROVENANCE_REQUIRED"));}
+
         let parent:Capability=serde_json::from_value(caps["capability"].clone()).map_err(|_|local("LOCAL_CEILING_INVALID"))?;
         if self.registry.setups[&active].protocol_intents.values().chain(self.registry.setups[&active].desired.protocols.iter()).any(|p|!Self::inherited_explicit_actions(&parent,&p.actions)){return Err(local("EXPLICIT_DELEGATION_PARENT_REQUIRED"));}
         self.extend_protocol_views(&handle,Some(&old),&mut profile,&parent,&original).await?;
@@ -137,6 +143,7 @@ impl Connect {
         profile.protocols.insert(alias.into(),actual.clone());
         profile.protocol_endpoints.insert(alias.into(),path.clone());
         profile.directory_endpoints.insert(ws.clone(),ordinary);
+        self.retain_recovery_views(Some(&old),&mut profile).await?;
         let(id,view)=self.capture_protocol_view(alias,actual,path,false,context,&profile).await?;
         Self::keep_protocol_view(&mut profile,id,view)?;
         self.extend_protocol_views(&handle,None,&mut profile,&parent,&original).await?;

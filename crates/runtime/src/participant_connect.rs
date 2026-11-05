@@ -92,7 +92,8 @@ pub struct ConnectRequest {
     pub request_membership: bool,
     #[serde(default)]
     pub protocols: Vec<ProtocolSelection>,
-    /// Explicit local management views, never a request for remote grants.
+    /// Optional compatibility selection of supported management operations;
+    /// ordinary tools share the original client and never grant remote rights.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub management: Vec<String>,
     #[serde(default)]
@@ -1418,6 +1419,8 @@ async fn read(client: &RuntimeClient, action: &str, scope: Scope, body: Value) -
         };
         let mut error = local(detail["code"].as_str().unwrap_or("CONNECT_READ_FAILED"));
         error.phase = detail["phase"].as_str().unwrap_or("REMOTE_READ").into();
+        error.recovery=detail["recovery"].as_str().unwrap_or("INSPECT_INPUT_OR_CONFIGURATION").into();
+        error.details=detail.get("details").filter(|v|v.is_object()).cloned();
         Err(error)
     }
 }
@@ -1427,8 +1430,10 @@ pub fn schema() -> Value {
         "type":"object","additionalProperties":false,"required":["workspace_id"],
         "properties":{"setup_id":{"type":"string"},"participant":{"type":"string"},"workspace_id":{"type":"string"},"alias":{"type":"string","default":"workspace"},"send":{"type":"boolean"},"receive":{"type":"boolean"},"require_body_keys":{"type":"boolean"},"protocols":{"type":"array","maxItems":8,"items":{"type":"object","additionalProperties":false,"required":["alias","instance_id","role"],"properties":{"alias":{"type":"string"},"instance_id":{"type":"string"},"role":{"type":"string"},"actions":{"type":"array","maxItems":64,"items":{"type":"string"}}}}}}}}});
     schema["properties"]["request"]["properties"]["contacts"] = json!({"type":"array","maxItems":64,"items":{"type":"object","additionalProperties":false,"required":["alias","actor_id"],"properties":{"alias":{"type":"string"},"actor_id":{"type":"string"}}}});
-    schema["properties"]["request"]["properties"]["management"]=json!({"type":"array","maxItems":32,"uniqueItems":true,"items":{"type":"string","enum":crate::agent_tools::management::workspace_names()},"description":"Explicitly enable only these existing workspace management operations as a separate immutable local client view. Does not widen existing credentials, grant remote rights or restart the runtime. Identity-scoped workspace.create/protocol.offline are not included."});
-    schema["properties"]["request"]["properties"]["send"]["default"] = json!(false);
+    schema["properties"]["request"]["properties"]["management"]=json!({"type":"array","maxItems":32,"uniqueItems":true,"items":{"type":"string","enum":crate::agent_tools::management::workspace_names()},"description":"Optional compatibility check of these existing workspace operations on the original client. Ordinary management needs no enable step. Does not change remote grants or explicit parent limits. Identity-scoped workspace.create/protocol.offline are not included."});
+    schema["properties"]["request"]["properties"]["send"]["default"] = json!(default_send());
+    schema["properties"]["request"]["properties"]["receive"]["default"] = json!(default_send());
+    schema["properties"]["request"]["properties"]["protocols"]["items"]["properties"]["actions"]["description"]=json!("Optional explicit local delegation ceiling. Requires a matching ceiling on the original parent client. Omit for ordinary backend-current role authorization.");
     schema["properties"]["request"]["properties"]["request_membership"] = json!({"type":"boolean","default":false,"description":"Explicitly request admission if workspace access is not verified. Returns one public request covering membership and the requested rights; Owner approval is still required."});
     schema["properties"]["request"]["properties"]["receive_mode"] = json!({"type":"string","enum":["PUSH","INBOX"],"description":"PUSH (Agent default) requires an actual supported host destination. INBOX explicitly receives for MCP inbox/wait without requiring host push; it never claims automatic model wake or replaces an existing host binding. Requires receive=true."});
     schema["properties"]["request"]["properties"]["host"] = json!({"type":"string","description":"Existing host-user-approved named destination. Omission does not identify the current session; unknown Agent receive stays pending. No commands, sockets or session paths are accepted."});

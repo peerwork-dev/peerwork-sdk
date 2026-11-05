@@ -326,6 +326,10 @@ fn verify_structure_terminal(result:&WireValue,prepared:&VerifiedPreparedCommand
                 "source" if value.as_string().as_deref()==Some("SERVICE")=>(),
                 "actor_id" if value.as_string().as_deref()==Some(prepared.actor_id())=>(),
                 "action_id" if value.as_string().as_deref()==Some(prepared.action_id())=>(),
+                "execution_context_id"=>{
+                    let text=value.as_string().ok_or_else(invalid)?;
+                    if text.len()!=43||!text.bytes().all(|b|b.is_ascii_alphanumeric()||matches!(b,b'_'|b'-')){return Err(invalid());}
+                },
                 "reason"|"next_actor"|"next_action"|"business_action"|"required_capability"=>{
                     let text=value.as_string().ok_or_else(invalid)?;
                     if text.is_empty()||text.len()>120||!text.bytes().all(|b|b.is_ascii_alphanumeric()||matches!(b,b'_'|b'-'|b'.'|b':'|b'/')){return Err(invalid());}

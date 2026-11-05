@@ -178,7 +178,10 @@ async fn workspace_client_uses_current_grants_without_local_role_refresh(){
     state["setups"][&active]["profile"]=json!(historical);state["setups"][&active]["sender_capability"]=json!(legacy_cap);state["setups"][&active]["result"].as_object_mut().unwrap().remove("client_authority_model");
     let old_path=PathBuf::from(state["setups"][&active]["result"]["profile_path"].as_str().unwrap());crate::onboarding_files::replace(&old_path,&serde_json::to_vec(&historical).unwrap()).unwrap();
     store.write_exact(&serde_json::to_vec(&state).unwrap()).unwrap();drop(store);
-    let mut connect=Connect::open(&registry).unwrap();let normalized=connect.run(request.clone()).await.unwrap();assert_eq!(normalized["state"],"LOCAL_CONFIGURED","{normalized}");assert_eq!(normalized["client_authority_model"],"SERVICE_CURRENT");
+    let mut connect=Connect::open(&registry).unwrap();
+    connect.refresh_protocol_alias(Some("owner"),Some(&ws),"tickets",None).await.unwrap();
+    assert!(!connect.profile_for_scope(Some("owner"),Some(&ws)).unwrap().unwrap().recovery_views.is_empty(),"protocol refresh first must retain old sender recovery");
+    let normalized=connect.run(request.clone()).await.unwrap();assert_eq!(normalized["state"],"LOCAL_CONFIGURED","{normalized}");assert_eq!(normalized["client_authority_model"],"SERVICE_CURRENT");
     let migrated=connect.profile_for_scope(Some("owner"),Some(&ws)).unwrap().unwrap();assert!(!migrated.recovery_views.is_empty());let tools=AgentTools::open(migrated).await.unwrap();
     let status=call(&tools,"status",json!({"operation_id":"legacy-lost-send"})).await;assert_eq!(status["command_id"],send_command);assert!(status["recovery_arguments"]["recovery_view"].is_string());
     let retry=tools.call(AgentRequest::parse("send",json!({"workspace":ws,"to":config.expected_actor,"operation_id":"legacy-lost-send","text":"do not duplicate"})).unwrap()).await.unwrap_err();assert_eq!(retry.code,"EXISTING_OPERATION_USE_STATUS_OR_RECOVER");

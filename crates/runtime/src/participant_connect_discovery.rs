@@ -962,6 +962,9 @@ mod tests {
         assert!(first == second);
         assert!(first.send);
         assert!(first.receive);
+        let public=crate::participant_connect::schema();
+        assert_eq!(public["properties"]["request"]["properties"]["send"]["default"],first.send);
+        assert_eq!(public["properties"]["request"]["properties"]["receive"]["default"],first.receive);
         assert!(!first.setup_id.is_empty());
         assert!(!first.participant.is_empty());
     }

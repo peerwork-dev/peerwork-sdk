@@ -164,8 +164,8 @@ impl AgentTools {
         if name=="maintenance.rebuild"&&expected_instance.is_none(){return Err(invalid("EXPECTED_INSTANCE_REVISION_REQUIRED"));}
         let mut request=Invoke::new(id,spec.action,scope.clone(),body);
         request.expected_workspace_revision=expected_workspace;request.expected_instance_revision=expected_instance;
-        let mut result=match self.invoke_client(client,request,wait_ms).await {Ok(result)=>result,Err(error)=>{let mut error=enable_error(error,&spec,scope.workspace_id.as_deref(),view);error.details.get_or_insert_with(||json!({}))["recovery_arguments"]=recovery;return Err(error);}};
-        result["recovery_arguments"]=recovery;Ok(result)
+        let mut result=match self.invoke_client(client,request,wait_ms).await {Ok(result)=>result,Err(error)=>{let mut error=enable_error(error,&spec,scope.workspace_id.as_deref(),view);let details=error.details.get_or_insert_with(||json!({}));if details.get("recovery_arguments").is_none(){details["recovery_arguments"]=recovery;}return Err(error);}};
+        if result["recovery_arguments"].is_null(){result["recovery_arguments"]=recovery;}Ok(result)
     }
 }
 
