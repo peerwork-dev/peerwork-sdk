@@ -136,3 +136,41 @@ async fn normal_alias_upgrade_routes_old_work_new_roots_and_preserves_original_i
     assert_eq!(service.counts().await["workspaces"],workspace_baseline,"upgrading existing work must not create another workspace");assert_eq!(service.counts().await["journal_reads"],0);
     drop(reader);drop(native);drop(original_client);cw.shutdown().await.unwrap();drop(cw);drop(cr);frontend.await.unwrap().unwrap();stop.cancel();daemon.await.unwrap().unwrap();
 }
+
+#[tokio::test(flavor="multi_thread",worker_threads=4)]
+#[ignore="requires isolated TEST PostgreSQL, product build and real HTTP"]
+async fn workspace_client_uses_current_grants_without_local_role_refresh(){
+    use crate::agent_tools::{AgentTools,AgentRequest};
+    async fn call(tools:&AgentTools,name:&str,args:Value)->Value{tools.call(AgentRequest::parse(name,args).unwrap()).await.unwrap()}
+    let fixture=fixtures();let service=Service::start();let root=crate::test_support::protected_test_dir();let config=configuration(root.path(),&service.origin);
+    let owner=ParticipantClient::open(config.clone()).await.unwrap();
+    let ws=mutate(&owner,"permissions-space","structure.workspace.create",&Scope::default(),json!({"name":"Current authority"})).await["workspace_id"].as_str().unwrap().to_owned();
+    let scope=Scope{workspace_id:Some(ws.clone()),..Default::default()};
+    let membership=selected(&owner,"structure.workspace.get",&scope,json!({})).await["membership"]["membership_id"].as_str().unwrap().to_owned();
+    let registered=mutate(&owner,"permissions-register","structure.protocol.register",&scope,json!({"bundle":fixture["v1"]})).await;
+    let mut bootstrap=fixture["writer1"].clone();bootstrap.as_object_mut().unwrap().remove("expires_at");bootstrap["actions"]=json!(["ticket.create"]);
+    let adopted=mutate(&owner,"permissions-adopt","structure.adopt",&scope,json!({"package_digest":registered["package_digest"],"bootstrap_grant":bootstrap})).await;
+    let instance=adopted["instance_id"].as_str().unwrap().to_owned();owner.close().await.unwrap();
+    let runtime=ipc::RuntimeConfig{format:"peerwork.participant-runtime.v1".into(),state_directory:root.path().join("runtime"),hosts:vec![],engines:vec![ipc::EngineConfig{name:"original".into(),origin:config.origin.clone(),expected_actor:config.expected_actor.clone(),identity_path:config.identity_path.clone(),state_directory:config.state_directory.clone(),journal_path:Some(config.journal_path.clone()),authority:config.authority.clone(),allow_loopback_http:true,transport:config.transport.clone(),max_inflight:8,max_pending:64,max_stored_bytes:32*1024*1024,migration_sources:vec![]}],clients:vec![ipc::ClientConfig{name:"owner".into(),engine:"original".into(),capability:Capability::owner()}]};
+    let stop=crate::KernelCancellationToken::new();let(tx,rx)=tokio::sync::oneshot::channel();let daemon=tokio::spawn(ipc::serve(runtime,stop.clone(),tx));let ready=rx.await.unwrap().unwrap();
+    let mut connect=Connect::open(&root.path().join("registry")).unwrap();connect.register("owner",Registration{origin:service.origin.clone(),actor_id:config.expected_actor.clone(),endpoint_path:ready.client_endpoints["owner"].clone()}).await.unwrap();
+    let request:ConnectRequest=serde_json::from_value(json!({"participant":"owner","workspace_id":ws,"send":false,"receive":false,"protocols":[{"alias":"tickets","instance_id":instance,"role":"WORKER"}]})).unwrap();
+    assert_eq!(connect.run(request).await.unwrap()["state"],"LOCAL_CONFIGURED");
+    let profile=connect.profile_for_scope(Some("owner"),Some(&ws)).unwrap().unwrap();
+    assert_eq!(profile.protocol_endpoints["tickets"],profile.endpoint_path);assert_eq!(profile.directory_endpoints[&ws],profile.endpoint_path);assert!(profile.management_views.is_empty());
+    let tools=AgentTools::open(profile.clone()).await.unwrap();
+    let context=call(&tools,"context",json!({})).await;assert!(context["capability"]["business_actions"].is_null());
+    assert_eq!(call(&tools,"reachability",json!({"workspace":ws})).await["members"].as_array().unwrap().len(),1);
+    let created=call(&tools,"act",json!({"protocol":"tickets","operation_id":"permission-root","action":"ticket.create","structure":{"title":"original"},"expected_revision":1,"wait_ms":5000})).await;assert_eq!(created["state"],"ACCEPTED","{created}");
+    let first=json!({"record_id":created["result"]["produced_record_ids"][0],"revision":1});
+    let update=|id:&str,previous:Value,revision:u64|json!({"protocol":"tickets","operation_id":id,"action":"ticket.update","structure":{"title":"updated","previous":previous},"record_id":previous["record_id"],"exact_input_refs":[previous],"expected_revision":revision,"wait_ms":5000});
+    let denied=call(&tools,"act",update("permission-before",first.clone(),2)).await;assert_eq!(denied["state"],"REJECTED_NO_EFFECT","{denied}");assert_eq!(denied["details"]["reason"],"ACTION_NOT_GRANTED","{denied}");
+    let grant=call(&tools,"manage",json!({"mode":"read","operation":"grant.get","protocol":"tickets","body":{"actor_id":config.expected_actor}})).await;
+    let changed=call(&tools,"manage",json!({"mode":"invoke","operation":"grant.set","protocol":"tickets","operation_id":"permission-add-update","body":{"actor_id":config.expected_actor,"membership_id":membership,"expected_grant_revision":grant["grant"]["grant_revision"],"actions":["ticket.create","ticket.update"],"protocol_roles":["WORKER"],"capabilities":["WRITE"],"expires_at":null},"wait_ms":5000})).await;assert_eq!(changed["state"],"ACCEPTED","{changed}");
+    let updated=call(&tools,"act",update("permission-after",first,2)).await;assert_eq!(updated["state"],"ACCEPTED","{updated}");
+    let revoked=call(&tools,"manage",json!({"mode":"invoke","operation":"grant.revoke","protocol":"tickets","operation_id":"permission-revoke","body":{"actor_id":config.expected_actor,"expected_grant_revision":changed["result"]["structure"]["grant_revision"]},"wait_ms":5000})).await;assert_eq!(revoked["state"],"ACCEPTED","{revoked}");
+    let second=json!({"record_id":updated["result"]["produced_record_ids"][0],"revision":2});
+    let denied=call(&tools,"act",update("permission-after-revoke",second,3)).await;assert_eq!(denied["state"],"REJECTED_NO_EFFECT","{denied}");assert_eq!(denied["details"]["reason"],"GRANT_REVOKED","{denied}");
+    assert_eq!(connect.profile_for_scope(Some("owner"),Some(&ws)).unwrap().unwrap().endpoint_path,profile.endpoint_path);
+    drop(tools);drop(connect);stop.cancel();daemon.await.unwrap().unwrap();
+}

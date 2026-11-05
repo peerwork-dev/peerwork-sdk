@@ -495,7 +495,7 @@ impl Connect {
         self.require_writer()?;
         let selected=self.registry.participants.get(participant).cloned().ok_or_else(||local("LOCAL_SELECTION_REQUIRED"))?;
         self.original_client(participant).await?;
-        let profile=AgentProfile{ protocol_views: Default::default(), management_views: Default::default(),format:"peerwork.agent-profile.v1".into(),endpoint_path:selected.endpoint_path.clone(),
+        let profile=AgentProfile{ recovery_views:Default::default(), protocol_views: Default::default(), management_views: Default::default(),format:"peerwork.agent-profile.v1".into(),endpoint_path:selected.endpoint_path.clone(),
             expected_origin:selected.origin.clone(),expected_actor:selected.actor_id.clone(),workspaces:[(alias.into(),workspace.into())].into(),
             protocols,protocol_endpoints:Default::default(),directory_endpoints:Default::default(),scopes:Default::default(),
             contacts:Default::default(),send_scopes:Default::default(),receive_endpoint_path:None};
@@ -972,12 +972,14 @@ impl Connect {
         // A capability-dependent alias never expands an already issued token.
         let (capability,endpoint)=self.workspace_client(&request.participant,&request.workspace_id,&parent,&client).await?;
         let mut protocol_endpoints=previous.as_ref().map(|p|p.protocol_endpoints.clone()).unwrap_or_default();
+        let mut effective_protocol_intents=BTreeMap::new();
         for p in &request.protocols {
             let selected_scope=&protocols[&p.alias];
             let explicit=if !p.actions.is_empty(){p.actions.clone()}else{
                 previous_setup.as_ref().and_then(|old|old.protocol_intents.get(&p.alias)
                     .or_else(||old.desired.protocols.iter().find(|v|v.alias==p.alias))).map(|v|v.actions.clone()).unwrap_or_default()
             };
+            let mut intent=p.clone();intent.actions=explicit.clone();effective_protocol_intents.insert(p.alias.clone(),intent);
             let path=self.protocol_endpoint(&request.participant,&p.alias,selected_scope,&explicit,&capability,&endpoint,&client).await?;
             protocol_endpoints.insert(p.alias.clone(),path);
         }
@@ -1144,6 +1146,7 @@ impl Connect {
         }
         let mut workspaces=previous.as_ref().map(|p|p.workspaces.clone()).unwrap_or_default();workspaces.insert(request.alias.clone(),request.workspace_id.clone());
         let mut profile = AgentProfile {
+            recovery_views:previous.as_ref().map(|p|p.recovery_views.clone()).unwrap_or_default(),
             protocol_views:previous.as_ref().map(|p|p.protocol_views.clone()).unwrap_or_default(),
             workspaces, directory_endpoints, management_views, format: "peerwork.agent-profile.v1".into(),
             endpoint_path: endpoint,
@@ -1156,6 +1159,7 @@ impl Connect {
             send_scopes,
             receive_endpoint_path: receive_endpoint,
         };
+        self.retain_recovery_views(previous.as_ref(),&mut profile).await?;
         self.extend_protocol_views(&request.participant,previous.as_ref(),&mut profile,&parent,&client).await?;
         profile.validate()?;
         // Persist the trusted derivation before materializing the expendable file.
@@ -1164,7 +1168,7 @@ impl Connect {
             if s.profile.is_none() || (s.agent_host_required && s.desired.receive && !s.channel_receive && channel_receive) {
                 let mut intents=previous_setup.as_ref().map(|old|old.protocol_intents.clone()).unwrap_or_default();
                 if let Some(old)=&previous_setup{for selected in &old.desired.protocols{intents.entry(selected.alias.clone()).or_insert_with(||selected.clone());}}
-                for selected in &request.protocols{intents.insert(selected.alias.clone(),selected.clone());}s.protocol_intents=intents;
+                for(alias,intent)in &effective_protocol_intents{intents.insert(alias.clone(),intent.clone());}s.protocol_intents=intents;
                 s.profile = Some(profile.clone());
                 s.channel_send = channel_send;
                 s.channel_receive = channel_receive;

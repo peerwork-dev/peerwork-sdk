@@ -96,17 +96,10 @@ impl AgentTools {
             let client=selected_workspace.as_deref().map(|ws|self.directory_client(ws)).unwrap_or(&self.client);
             let caps=client.call(json!({"method":"capabilities"})).await?;
             let cap:crate::participant::Capability=serde_json::from_value(caps["capability"].clone()).map_err(|_|invalid("LOCAL_CEILING_INVALID"))?;
-            let mut view_caps=std::collections::BTreeMap::new();
-            for (id,client) in &self.management_clients {
-                let value=client.call(json!({"method":"capabilities"})).await?;
-                let capability:crate::participant::Capability=serde_json::from_value(value["capability"].clone()).map_err(|_|invalid("LOCAL_CEILING_INVALID"))?;
-                view_caps.insert(id.as_str(),capability);
-            }
             let list=operations().into_iter().filter(|spec|operation.is_none_or(|name|spec.name==name)).map(|spec|{
                 let kind=native_kind(&spec);
-                let view=if spec.scope=="identity"{None}else{selected_workspace.as_deref().and_then(|ws|self.management_client(ws,spec.action)).map(|(id,_)|id)};
-                let view=if cap.operations.contains(spec.action){None}else{view};
-                let selected_cap=view.and_then(|id|view_caps.get(id)).unwrap_or(&cap);
+                let view:Option<&str>=None;
+                let selected_cap=&cap;
                 let mut item=json!({"operation":spec.name,"native_action":spec.action,"scope":spec.scope,"description":spec.description,
                     "mode":match kind{StructureOperationKind::Read=>"read",StructureOperationKind::Control=>"request",StructureOperationKind::Mutation=>"invoke"},
                     "local_operation_listed":selected_cap.operations.contains(spec.action),"management_view":view,"local_scope_checked":false,"remote_permission":"NOT_ATTESTED"});
@@ -155,15 +148,9 @@ impl AgentTools {
             "protocol"=>return Err(invalid("MANAGEMENT_PROTOCOL_SELECTION_REQUIRED")),
             _=>return Err(invalid("MANAGEMENT_SCOPE_SELECTION_INVALID")),
         };
-        // An already usable original route keeps its namespace. Explicit new
-        // views only supply operations absent from that route; later views
-        // never capture an action previously admitted by an earlier client.
-        let fallback_caps=fallback.call(json!({"method":"capabilities"})).await?;
-        let fallback_cap:crate::participant::Capability=serde_json::from_value(fallback_caps["capability"].clone()).map_err(|_|invalid("LOCAL_CEILING_INVALID"))?;
-        let mut route_check=Invoke::new("management-route-check",spec.action,scope.clone(),body.clone());
-        route_check.expected_workspace_revision=expected_workspace;route_check.expected_instance_revision=expected_instance;
-        let selected=if spec.scope=="identity"||fallback_cap.authorize(&route_check).is_ok(){None}else{scope.workspace_id.as_deref().and_then(|ws|self.management_client(ws,spec.action))};
-        let (view,client)=selected.map(|(id,client)|(Some(id),client)).unwrap_or((None,fallback));
+        // Historical views are exact recovery routes, never permission fallbacks.
+        let view:Option<&str>=None;
+        let client=fallback;
         if let Some(bundle)=body.get("bundle") {peerwork_core::protocol_bundle::inspect(bundle).map_err(|_|invalid("PROTOCOL_BUNDLE_INVALID"))?;}
         if mode!="invoke" {
             if expected_workspace.is_some()||expected_instance.is_some(){return Err(invalid("READ_DOES_NOT_ACCEPT_MUTATION_REVISION"));}

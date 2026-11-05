@@ -38,7 +38,7 @@ async fn attached_tools_keep_original_namespace_permissions_and_client_lifecycle
     assert_eq!(context["bindings"], json!([]));
     assert!(!context.to_string().contains(root.path().to_str().unwrap()));
     assert!(!root.path().join("connect.state").exists());
-    let error = tools.call(AgentRequest::Recover { protocol_view: None, management: None, workspace: None, operation_id: "missing".into(), protocol: None }).await.unwrap_err();
+    let error = tools.call(AgentRequest::Recover { recovery_view:None, protocol_view: None, management: None, workspace: None, operation_id: "missing".into(), protocol: None }).await.unwrap_err();
     assert_eq!(error.code, "OPERATION_NOT_FOUND");
     drop(tools);
     assert_eq!(original.local_namespace(), "program:old-worker");

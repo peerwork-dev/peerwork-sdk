@@ -638,7 +638,7 @@ async fn qualify_native_reply(mcp_only: bool) {
     // protected profile before starting that host; execution still waits for
     // the scoped runtime endpoint and never opens another signing engine.
     let worker_scope_early = mail_scope(&ws, &worker_box);
-    let early_worker_profile = AgentProfile { protocol_views: Default::default(), management_views: Default::default(),
+    let early_worker_profile = AgentProfile { recovery_views:Default::default(), protocol_views: Default::default(), management_views: Default::default(),
         workspaces: Default::default(), directory_endpoints: Default::default(), protocol_endpoints: Default::default(),
             send_scopes: Default::default(), receive_endpoint_path: None,
         format: "peerwork.agent-profile.v1".into(),
@@ -766,7 +766,7 @@ async fn qualify_native_reply(mcp_only: bool) {
     .unwrap();
     receiver_ready(&master_client, &master_watch).await;
     receiver_ready(&worker_client, &worker_watch).await;
-    let profile = |actor: &str, name: &str, s: MailScope, contacts| AgentProfile { protocol_views: Default::default(), management_views: Default::default(),
+    let profile = |actor: &str, name: &str, s: MailScope, contacts| AgentProfile { recovery_views:Default::default(), protocol_views: Default::default(), management_views: Default::default(),
         workspaces: Default::default(), directory_endpoints: Default::default(), protocol_endpoints: Default::default(),
             send_scopes: Default::default(), receive_endpoint_path: None,
         format: "peerwork.agent-profile.v1".into(),

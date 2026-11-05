@@ -4,6 +4,22 @@ use super::*;
 use crate::agent_tools::{ProtocolView,ProtocolViewScope,MAX_PROTOCOL_VIEWS};
 const READS:&[&str]=&["structure.instance.records.read","structure.instance.get","structure.instance.resolve","structure.protocol.resolve","structure.protocol.resource.get","structure.record.get","structure.records.read"];
 impl Connect {
+    pub(super) async fn retain_recovery_views(&self,previous:Option<&AgentProfile>,profile:&mut AgentProfile)->Result<()>{
+        let Some(previous)=previous else{return Ok(());};
+        let mut paths=vec![(previous.endpoint_path.clone(),previous.selection().workspaces.values().next().cloned().or_else(||previous.scopes.values().next().map(|s|s.workspace_id.clone())).or_else(||previous.send_scopes.values().next().map(|s|s.workspace_id.clone())))];
+        paths.extend(previous.directory_endpoints.iter().map(|(ws,path)|(path.clone(),Some(ws.clone()))));
+        paths.extend(previous.management_views.values().map(|view|(view.endpoint_path.clone(),Some(view.workspace_id.clone()))));
+        for(path,workspace)in paths {
+            let Some(workspace_id)=workspace else{continue;};
+            if path==profile.endpoint_path||profile.directory_endpoints.values().any(|current|current==&path){continue;}
+            let client=RuntimeClient::connect(path.clone(),&profile.expected_origin,&profile.expected_actor).await?;
+            let binding=crate::communication_runtime::canonical_binding(&client.call(json!({"method":"binding"})).await?);
+            let id=format!("recovery-{}",&sha256_hex(binding.to_string().as_bytes())[..40]);
+            if !profile.recovery_views.contains_key(&id)&&profile.recovery_views.len()>=32{return Err(local("RECOVERY_VIEW_LIMIT_PRESERVE_ORIGINAL_OPERATIONS"));}
+            profile.recovery_views.entry(id).or_insert(crate::agent_tools::RecoveryView{workspace_id,endpoint_path:path,binding});
+        }
+        Ok(())
+    }
     pub(super) async fn workspace_client(&self,participant:&str,workspace:&str,parent:&Capability,client:&RuntimeClient)->Result<(Capability,PathBuf)>{
         let mut cap=parent.clone();cap.allow_root=false;cap.workspace_ids=Some([workspace.to_owned()].into());
         let name=format!("workspace-{}",&sha256_hex(json!([participant,workspace,cap]).to_string().as_bytes())[..40]);
@@ -38,12 +54,12 @@ impl Connect {
         else if let Some(allowed)=&cap.protocol_digests {
             if scope.protocol_digest.as_ref().is_none_or(|digest|!allowed.contains(digest)){return Err(local("PROTOCOL_VIEW_SCOPE_INVALID"));}
         }
-        let id=format!("protocol-view-{}",&sha256_hex(json!([alias,read_only,scope,context,binding]).to_string().as_bytes())[..40]);
+        let id=format!("protocol-view-{}",&sha256_hex(json!([alias,read_only,binding]).to_string().as_bytes())[..40]);
         Ok((id,ProtocolView{selected:ProtocolViewScope{alias:alias.into(),scope,execution_context_id:context,read_only,client_generation:binding["client_generation"].as_u64().unwrap_or(0),binding,actions:cap.business_actions},endpoint_path:path}))
     }
     fn keep_protocol_view(profile:&mut AgentProfile,id:String,view:ProtocolView)->Result<()>{
         if !profile.protocol_views.contains_key(&id)&&profile.protocol_views.len()>=MAX_PROTOCOL_VIEWS{return Err(local("PROTOCOL_VIEW_LIMIT_PRESERVE_ORIGINAL_OPERATIONS"));}
-        if let Some(old)=profile.protocol_views.get(&id){if serde_json::to_value(old).ok()!=serde_json::to_value(&view).ok(){return Err(local("PROTOCOL_VIEW_BINDING_CHANGED"));}}
+        if let Some(old)=profile.protocol_views.get(&id){if old.selected.binding!=view.selected.binding||old.endpoint_path!=view.endpoint_path||old.selected.actions!=view.selected.actions||old.selected.read_only!=view.selected.read_only{return Err(local("PROTOCOL_VIEW_BINDING_CHANGED"));}}
         profile.protocol_views.insert(id,view);Ok(())
     }
     pub(super) async fn extend_protocol_views(&self,_participant:&str,previous:Option<&AgentProfile>,profile:&mut AgentProfile,_parent:&Capability,_client:&RuntimeClient)->Result<()>{

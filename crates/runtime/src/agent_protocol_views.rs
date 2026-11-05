@@ -3,9 +3,8 @@ use super::*;
 impl AgentTools {
     pub(super) fn protocol_read_client(&self,alias:&str,action:&str)->Result<&Client>{
         let scope=self.protocol(alias)?;
-        if let Some((_,client))=self.profile.protocol_views.iter().filter(|(_,v)|v.alias==alias&&v.read_only)
-            .filter_map(|(id,v)|self.protocol_view_clients.get(id).map(|client|(v.client_generation,client))).max_by_key(|(generation,_)|*generation){return Ok(client);}
-        Ok(self.management_client(scope.workspace_id.as_deref().unwrap_or(""),action).map(|(_,c)|c).unwrap_or(self.protocol_client(alias)?))
+        let _=action;
+        Ok(self.directory_client(scope.workspace_id.as_deref().ok_or_else(||invalid("WORKSPACE_ALIAS_UNKNOWN"))?))
     }
     pub(super) async fn original_protocol_operation(&self,alias:&str,id:&str)->Result<Option<(&Client,Scope,Option<&str>,Value)>>{
         let target=self.protocol(alias)?;let mut found=None;let mut seen=std::collections::BTreeSet::new();
@@ -13,7 +12,7 @@ impl AgentTools {
             let client=self.protocol_view_clients.get(view_id).ok_or_else(||invalid("PROTOCOL_VIEW_RECOVERY_REQUIRED"))?;
             let binding=view.binding.to_string();if !seen.insert(binding){continue;}
             match client.call(json!({"method":"operation","operation_id":id})).await {
-                Ok(value)=>{if found.is_some(){return Err(invalid("OPERATION_SCOPE_AMBIGUOUS_USE_PROTOCOL_VIEW"));}let scope:Scope=serde_json::from_value(value.get("scope").cloned().unwrap_or_else(||json!(view.scope))).map_err(|_|invalid("ORIGINAL_OPERATION_SCOPE_INVALID"))?;if scope.workspace_id!=target.workspace_id||scope.instance_id!=target.instance_id{return Err(invalid("OPERATION_INPUT_CONFLICT"));}found=Some((client,scope,Some(view_id.as_str()),value));},
+                Ok(value)=>{let scope:Scope=serde_json::from_value(value.get("scope").cloned().unwrap_or_else(||json!(view.scope))).map_err(|_|invalid("ORIGINAL_OPERATION_SCOPE_INVALID"))?;if scope.workspace_id!=target.workspace_id||scope.instance_id!=target.instance_id{continue;}if found.is_some(){return Err(invalid("OPERATION_SCOPE_AMBIGUOUS_USE_PROTOCOL_VIEW"));}found=Some((client,scope,Some(view_id.as_str()),value));},
                 Err(e)if e.code=="OPERATION_NOT_FOUND"=>(),Err(e)=>return Err(e),
             }
         }
@@ -22,7 +21,7 @@ impl AgentTools {
         let binding=if client.attached_mode(){format!("attached:{client:p}")}else{crate::communication_runtime::canonical_binding(&client.call(json!({"method":"binding"})).await?).to_string()};
         if seen.insert(binding) {
             match client.call(json!({"method":"operation","operation_id":id})).await{
-                Ok(value)=>{if found.is_some(){return Err(invalid("OPERATION_SCOPE_AMBIGUOUS_USE_PROTOCOL_VIEW"));}let original:Scope=serde_json::from_value(value.get("scope").cloned().unwrap_or_else(||json!(scope))).map_err(|_|invalid("ORIGINAL_OPERATION_SCOPE_INVALID"))?;if original.workspace_id!=target.workspace_id||original.instance_id!=target.instance_id{return Err(invalid("OPERATION_INPUT_CONFLICT"));}found=Some((client,original,None,value));},
+                Ok(value)=>{let original:Scope=serde_json::from_value(value.get("scope").cloned().unwrap_or_else(||json!(scope))).map_err(|_|invalid("ORIGINAL_OPERATION_SCOPE_INVALID"))?;if original.workspace_id!=target.workspace_id||original.instance_id!=target.instance_id{continue;}if found.is_some(){return Err(invalid("OPERATION_SCOPE_AMBIGUOUS_USE_PROTOCOL_VIEW"));}found=Some((client,original,None,value));},
                 Err(e)if e.code=="OPERATION_NOT_FOUND"=>(),Err(e)=>return Err(e),
             }
         }
