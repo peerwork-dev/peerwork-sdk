@@ -451,9 +451,10 @@ impl Connect {
     fn record(
         &mut self,
         request: &ConnectRequest,
-        result: Value,
+        mut result: Value,
         profile: Option<AgentProfile>,
     ) -> Result<Value> {
+        if profile.as_ref().is_some_and(|p|p.directory_endpoints.get(&request.workspace_id)==Some(&p.endpoint_path)){result["client_authority_model"]=json!("SERVICE_CURRENT");}
         let old = self
             .registry
             .setups
@@ -525,17 +526,22 @@ impl Connect {
     }
     async fn run_mode(&mut self, request: ConnectRequest, agent: bool) -> Result<Value> {
         self.require_writer()?;
-        let request = if agent {self.normalize_agent_request(request)?} else {self.normalize_request(request)?};
+        let mut request = if agent {self.normalize_agent_request(request)?} else {self.normalize_request(request)?};
         let agent=request.needs_host(agent);
         let selected = match self.registry.participants.get(&request.participant) {
             Some(v) => v.clone(),
             None => return Ok(Self::selection_required(&request.setup_id)),
         };
-        let digest = sha256_hex(
+        let mut digest = sha256_hex(
             serde_json::to_vec(&request)
                 .map_err(|_| local("CONNECT_ARGUMENT_INVALID"))?
                 .as_slice(),
         );
+        if let Some(old)=self.registry.setups.get(&request.setup_id){
+            if old.digest!=digest||old.registration!=selected{return Err(local("SETUP_ID_CONFLICT_RESUME_ORIGINAL"));}
+            let normalized=self.normalize_cached_authority(&request.setup_id).await?;
+            if normalized!=request.setup_id{request.setup_id=normalized;digest=sha256_hex(&serde_json::to_vec(&request).map_err(|_|local("CONNECT_ARGUMENT_INVALID"))?);}
+        }
         if let Some(old) = self.registry.setups.get(&request.setup_id) {
             if old.digest != digest || old.registration != selected {
                 return Err(local("SETUP_ID_CONFLICT_RESUME_ORIGINAL"));
@@ -653,6 +659,10 @@ impl Connect {
             );
         }
         let parent: Capability = serde_json::from_value(caps["capability"].clone()).map_err(|_| local("LOCAL_CEILING_INVALID"))?;
+        let explicit=request.protocols.iter().filter(|p|!p.actions.is_empty()).collect::<Vec<_>>();
+        if explicit.iter().any(|p|!Self::inherited_explicit_actions(&parent,&p.actions)){
+            let mut e=local("EXPLICIT_DELEGATION_PARENT_REQUIRED");e.details=Some(json!({"next_actor":"LOCAL_RUNTIME_OWNER","next_action":"SELECT_EXPLICITLY_RESTRICTED_ORIGINAL_CLIENT","remote_grants_changed":false}));return Err(e);
+        }
         let management_actions=crate::agent_tools::management::workspace_actions(&request.management)?;
         let missing_management:Vec<_>=management_actions.difference(&parent.operations).cloned().collect();
         if !missing_management.is_empty() {
@@ -898,6 +908,10 @@ impl Connect {
         }else{None};
         if let Some(completed)=&completed_first {previous_setup.as_mut().unwrap().effective_host=Some(completed.name.clone());}
         let previous = previous_setup.as_ref().and_then(|s| s.profile.clone());
+        if previous_setup.as_ref().is_some_and(|s|s.protocol_intents.values().chain(s.desired.protocols.iter()).any(|p|!Self::inherited_explicit_actions(&parent,&p.actions))){
+            let mut e=local("EXPLICIT_DELEGATION_PARENT_REQUIRED");e.details=Some(json!({"existing_configuration_preserved":true,"next_actor":"LOCAL_RUNTIME_OWNER","next_action":"SELECT_EXPLICITLY_RESTRICTED_ORIGINAL_CLIENT"}));return Err(e);
+        }
+
         let management_views=previous.as_ref().map(|p|p.management_views.clone()).unwrap_or_default();
         if request.receive_mode==Some(ReceiveMode::Inbox) && previous_setup.as_ref().is_some_and(|s|s.channel_receive&&s.effective_host.is_some()) {
             return self.pending(&request,"HOST_BINDING","EXISTING_PUSH_RECEIVER_REQUIRES_EXPLICIT_REBIND","HOST_USER","EXPLICIT_NATIVE_REBIND",json!({"existing_receiver_preserved":true}));

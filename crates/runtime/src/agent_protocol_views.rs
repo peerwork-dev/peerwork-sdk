@@ -29,6 +29,10 @@ impl AgentTools {
         Ok(found)
     }
     pub(super) async fn action_protocol_route(&self,alias:&str,request:&Invoke)->Result<(&Client,Invoke,Option<&str>)>{
+        let fallback=self.protocol_client(alias)?;
+        let value=fallback.call(json!({"method":"capabilities"})).await?;
+        let cap:crate::participant::Capability=serde_json::from_value(value["capability"].clone()).map_err(|_|invalid("LOCAL_CEILING_INVALID"))?;
+        cap.authorize(request)?;
         let reader=self.protocol_read_client(alias,"structure.protocol.resolve")?;
         let selected=reader.call(json!({"method":"resolve_execution","request":request})).await;
         // Old engines retain their old working route; they never claim a new
@@ -38,9 +42,6 @@ impl AgentTools {
             Err(e)if matches!(e.code.as_str(),"IPC_REQUEST_INVALID"|"RESIDENT_RUNTIME_REQUIRED_FOR_ADMINISTRATION")=>return Ok((self.protocol_client(alias)?,request.clone(),None)),
             Err(e)=>return Err(e),
         };
-        let fallback=self.protocol_client(alias)?;
-        let value=fallback.call(json!({"method":"capabilities"})).await?;
-        let cap:crate::participant::Capability=serde_json::from_value(value["capability"].clone()).map_err(|_|invalid("LOCAL_CEILING_INVALID"))?;
         if cap.authorize(&selected).is_ok(){return Ok((fallback,selected,None));}
         // Historical endpoints are recovery authorities, never an alternate
         // authorization route for a new request denied by its selected client.

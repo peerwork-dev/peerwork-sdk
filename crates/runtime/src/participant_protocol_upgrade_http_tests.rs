@@ -27,7 +27,7 @@ async fn normal_alias_upgrade_routes_old_work_new_roots_and_preserves_original_i
     let stop=crate::KernelCancellationToken::new();let(tx,rx)=tokio::sync::oneshot::channel();let daemon=tokio::spawn(ipc::serve(runtime,stop.clone(),tx));let ready=rx.await.unwrap().unwrap();
     let registry=root.path().join("registry");let mut connect=Connect::open(&registry).unwrap();
     connect.register("owner",Registration{origin:service.origin.clone(),actor_id:config.expected_actor.clone(),endpoint_path:ready.client_endpoints["owner"].clone()}).await.unwrap();
-    let request:ConnectRequest=serde_json::from_value(json!({"participant":"owner","workspace_id":ws,"alias":"project","protocols":[{"alias":"tickets","instance_id":instance,"role":"WORKER"},{"alias":"tickets_alt","instance_id":instance,"role":"WORKER"}]})).unwrap();
+    let request:ConnectRequest=serde_json::from_value(json!({"participant":"owner","workspace_id":ws,"alias":"project","send":false,"receive":false,"protocols":[{"alias":"tickets","instance_id":instance,"role":"WORKER"},{"alias":"tickets_alt","instance_id":instance,"role":"WORKER"}]})).unwrap();
     let result=connect.run_agent(request).await.unwrap();assert_eq!(result["state"],"LOCAL_CONFIGURED","{result}");
     let workspace_baseline=service.counts().await["workspaces"].clone();
     let initial=connect.profile_for_scope(Some("owner"),Some(&ws)).unwrap().unwrap();assert!(initial.protocol_views.values().any(|v|v.selected.read_only));
@@ -37,7 +37,7 @@ async fn normal_alias_upgrade_routes_old_work_new_roots_and_preserves_original_i
     let old_args=json!({"protocol":"tickets","operation_id":"old-root","action":"ticket.create","structure":{"title":"old work"},"plaintext_contents":[{"record_index":0,"text":"original old body"}],"expected_revision":1,"wait_ms":5000});
     let first=mcp(&mut cr,&mut cw,1,"act",old_args.clone()).await;assert_eq!(first["state"],"ACCEPTED","{first}");
     let old_record=first["result"]["produced_record_ids"][0].as_str().unwrap().to_owned();let old_ref=json!({"record_id":old_record,"revision":1});
-    let enabled=mcp(&mut cr,&mut cw,2,"connect",json!({"request":{"workspace_id":ws,"management":["protocol.upgrade"]}})).await;assert_eq!(enabled["state"],"LOCAL_CONFIGURED","{enabled}");
+    // Management already uses the ordinary client; no enable/connect ceremony.
     let role=mcp(&mut cr,&mut cw,3,"manage",json!({"mode":"invoke","operation":"protocol.upgrade","protocol":"tickets","operation_id":"role-docs-v1","body":{"bundle":fixture["role1"]},"wait_ms":5000})).await;
     assert_eq!(role["state"],"ACCEPTED","{role}");assert_eq!(role["result"]["structure"]["upgrade_kind"],"ROLE_BUNDLE_UPDATED");assert_eq!(role["result"]["structure"]["revision"],2);
     let reader=ipc::RuntimeClient::connect(initial.protocol_views.values().find(|view|view.selected.read_only).unwrap().endpoint_path.clone(),&service.origin,&config.expected_actor).await.unwrap();
@@ -66,20 +66,19 @@ async fn normal_alias_upgrade_routes_old_work_new_roots_and_preserves_original_i
     assert!(schema["runtime"]["tools"].as_array().unwrap().iter().any(|tool|tool["action"]=="ticket.update"));assert!(!schema["runtime"]["tools"].as_array().unwrap().iter().any(|tool|tool["action"]=="ticket.revise"));
     let current=mcp(&mut cr,&mut cw,call,"read",json!({"protocol":"tickets"})).await;call+=1;assert_eq!(current["execution_context_id"],context2);assert_eq!(current["revision"],1);
     let created=mcp(&mut cr,&mut cw,call,"act",json!({"protocol":"tickets","operation_id":"new-root","action":"ticket.create","structure":{"headline":"new work"},"plaintext_contents":[{"record_index":0,"text":"new generation body"}],"expected_revision":1,"wait_ms":5000})).await;call+=1;assert_eq!(created["state"],"ACCEPTED","{created}");
-    assert!(created["recovery_arguments"]["protocol_view"].is_string());
+    assert!(created["recovery_arguments"]["protocol_view"].is_string()||created["recovery_arguments"]["protocol"]=="tickets");
     // Two independent native frontends finished preparation on opposite sides
     // of the default upgrade. They race the same semantic ID into immutable
     // namespaces. Only one may admit/sign/send, even when both would reject
     // under their frozen version rules (old CAS versus new input schema).
     let latest=Connect::inspect(&registry).unwrap().profile_for_scope(Some("owner"),Some(&ws)).unwrap().unwrap();
-    let new_view=&latest.protocol_views[created["recovery_arguments"]["protocol_view"].as_str().unwrap()];
-    let race_new_client=ipc::RuntimeClient::connect(new_view.endpoint_path.clone(),&service.origin,&config.expected_actor).await.unwrap();
-    let mut race_new=race_old.clone();race_new.scope=new_view.selected.scope.clone();
+    let race_new_client=ipc::RuntimeClient::connect(latest.protocol_endpoints["tickets"].clone(),&service.origin,&config.expected_actor).await.unwrap();
+    let mut race_new=race_old.clone();race_new.scope=Scope{workspace_id:Some(ws.clone()),instance_id:Some(instance.clone()),protocol_digest:Some(protocol2.clone())};
     let race_new_selected=reader.call(json!({"method":"resolve_execution","request":race_new})).await.unwrap();
     let before_race=service.counts().await;let barrier=std::sync::Arc::new(tokio::sync::Barrier::new(2));let old_barrier=barrier.clone();
     let(old_result,new_result)=tokio::join!(async{old_barrier.wait().await;original_client.call(json!({"method":"invoke","request":race_old,"resolved_request":race_old_selected,"protocol_route":true,"wait_ms":5000})).await},async{barrier.wait().await;race_new_client.call(json!({"method":"invoke","request":race_new,"resolved_request":race_new_selected,"protocol_route":true,"wait_ms":5000})).await});
     assert_eq!(usize::from(old_result.is_ok())+usize::from(new_result.is_ok()),1,"old={old_result:?}, new={new_result:?}");
-    let loser=old_result.as_ref().err().or(new_result.as_ref().err()).unwrap();assert_eq!(loser.code,"PROTOCOL_OPERATION_ROUTE_EXISTS");
+    let loser=old_result.as_ref().err().or(new_result.as_ref().err()).unwrap();assert!(matches!(loser.code.as_str(),"PROTOCOL_OPERATION_ROUTE_EXISTS"|"OPERATION_INPUT_CONFLICT"),"{loser:?}");
     assert_eq!(service.counts().await["actions"]["structure.action"].as_u64().unwrap(),before_race["actions"]["structure.action"].as_u64().unwrap()+1);
     let winner=if old_result.is_ok(){&original_client}else{&race_new_client};let winner_request=if old_result.is_ok(){race_old.clone()}else{race_new.clone()};
     let same=winner.call(json!({"method":"invoke","request":winner_request,"protocol_route":true,"wait_ms":5000})).await.unwrap();assert_eq!(same["command_id"],old_result.as_ref().or(new_result.as_ref()).unwrap()["command_id"]);
@@ -155,7 +154,7 @@ async fn workspace_client_uses_current_grants_without_local_role_refresh(){
     let stop=crate::KernelCancellationToken::new();let(tx,rx)=tokio::sync::oneshot::channel();let daemon=tokio::spawn(ipc::serve(runtime,stop.clone(),tx));let ready=rx.await.unwrap().unwrap();
     let mut connect=Connect::open(&root.path().join("registry")).unwrap();connect.register("owner",Registration{origin:service.origin.clone(),actor_id:config.expected_actor.clone(),endpoint_path:ready.client_endpoints["owner"].clone()}).await.unwrap();
     let request:ConnectRequest=serde_json::from_value(json!({"participant":"owner","workspace_id":ws,"send":false,"receive":false,"protocols":[{"alias":"tickets","instance_id":instance,"role":"WORKER"}]})).unwrap();
-    assert_eq!(connect.run(request).await.unwrap()["state"],"LOCAL_CONFIGURED");
+    assert_eq!(connect.run(request.clone()).await.unwrap()["state"],"LOCAL_CONFIGURED");
     let profile=connect.profile_for_scope(Some("owner"),Some(&ws)).unwrap().unwrap();
     assert_eq!(profile.protocol_endpoints["tickets"],profile.endpoint_path);assert_eq!(profile.directory_endpoints[&ws],profile.endpoint_path);assert!(profile.management_views.is_empty());
     let tools=AgentTools::open(profile.clone()).await.unwrap();
@@ -163,11 +162,52 @@ async fn workspace_client_uses_current_grants_without_local_role_refresh(){
     assert_eq!(call(&tools,"reachability",json!({"workspace":ws})).await["members"].as_array().unwrap().len(),1);
     let created=call(&tools,"act",json!({"protocol":"tickets","operation_id":"permission-root","action":"ticket.create","structure":{"title":"original"},"expected_revision":1,"wait_ms":5000})).await;assert_eq!(created["state"],"ACCEPTED","{created}");
     let first=json!({"record_id":created["result"]["produced_record_ids"][0],"revision":1});
+    // Synthesize a released sender-profile shape using real credentials and
+    // a real committed message, then discard the caller's observed response.
+    let original=ipc::RuntimeClient::connect(ready.client_endpoints["owner"].clone(),&service.origin,&config.expected_actor).await.unwrap();
+    let mut legacy_cap=Capability::owner();legacy_cap.allow_root=false;legacy_cap.workspace_ids=Some([ws.clone()].into());legacy_cap.operations.retain(|op|["structure.message.send","structure.message.receipts.read","structure.mailbox.get","structure.members.read"].contains(&op.as_str()));
+    let legacy=original.call(json!({"method":"derive","name":"legacy-sender-fixture","capability":legacy_cap})).await.unwrap();let legacy_path=PathBuf::from(legacy["endpoint_path"].as_str().unwrap());
+    let sender=ipc::RuntimeClient::connect(legacy_path.clone(),&service.origin,&config.expected_actor).await.unwrap();
+    let boxes=original.call(json!({"method":"request","request":Invoke::new("legacy-boxes","structure.mailboxes.read",scope.clone(),json!({}))})).await.unwrap();let mailbox=&boxes["result"]["structure"]["mailboxes"][0];
+    let send=Invoke::new("legacy-lost-send","structure.message.send",scope.clone(),json!({"conversation_id":peerwork_core::crypto::base64url(&[52;32]),"recipients":[{"mailbox_id":mailbox["mailbox_id"],"membership_id":mailbox["membership_id"]}],"content":{"mode":"SOURCE","instance_id":instance,"protocol_digest":profile.protocols["tickets"].protocol_digest,"record_id":first["record_id"],"revision":1}}));
+    let sent=sender.call(json!({"method":"invoke","request":send,"wait_ms":5000})).await.unwrap();assert_eq!(sent["state"],"ACCEPTED","{sent}");let send_command=sent["command_id"].clone();
+    let before=service.counts().await["actions"]["structure.message.send"].clone();
+    let mut historical=profile.clone();historical.endpoint_path=legacy_path;
+    let registry=root.path().join("registry");drop(tools);drop(connect);
+    let store=crate::secure_state::SecureStateStore::open(&registry.join("connect.state")).unwrap();let mut state:Value=serde_json::from_slice(&store.read_exact().unwrap().unwrap()).unwrap();let active=state["active"].as_str().unwrap().to_owned();
+    state["setups"][&active]["profile"]=json!(historical);state["setups"][&active]["sender_capability"]=json!(legacy_cap);state["setups"][&active]["result"].as_object_mut().unwrap().remove("client_authority_model");
+    let old_path=PathBuf::from(state["setups"][&active]["result"]["profile_path"].as_str().unwrap());crate::onboarding_files::replace(&old_path,&serde_json::to_vec(&historical).unwrap()).unwrap();
+    store.write_exact(&serde_json::to_vec(&state).unwrap()).unwrap();drop(store);
+    let mut connect=Connect::open(&registry).unwrap();let normalized=connect.run(request.clone()).await.unwrap();assert_eq!(normalized["state"],"LOCAL_CONFIGURED","{normalized}");assert_eq!(normalized["client_authority_model"],"SERVICE_CURRENT");
+    let migrated=connect.profile_for_scope(Some("owner"),Some(&ws)).unwrap().unwrap();assert!(!migrated.recovery_views.is_empty());let tools=AgentTools::open(migrated).await.unwrap();
+    let status=call(&tools,"status",json!({"operation_id":"legacy-lost-send"})).await;assert_eq!(status["command_id"],send_command);assert!(status["recovery_arguments"]["recovery_view"].is_string());
+    let retry=tools.call(AgentRequest::parse("send",json!({"workspace":ws,"to":config.expected_actor,"operation_id":"legacy-lost-send","text":"do not duplicate"})).unwrap()).await.unwrap_err();assert_eq!(retry.code,"EXISTING_OPERATION_USE_STATUS_OR_RECOVER");
+    assert_eq!(call(&tools,"recover",status["recovery_arguments"].clone()).await["command_id"],send_command);assert_eq!(service.counts().await["actions"]["structure.message.send"],before);
     let update=|id:&str,previous:Value,revision:u64|json!({"protocol":"tickets","operation_id":id,"action":"ticket.update","structure":{"title":"updated","previous":previous},"record_id":previous["record_id"],"exact_input_refs":[previous],"expected_revision":revision,"wait_ms":5000});
     let denied=call(&tools,"act",update("permission-before",first.clone(),2)).await;assert_eq!(denied["state"],"REJECTED_NO_EFFECT","{denied}");assert_eq!(denied["details"]["reason"],"ACTION_NOT_GRANTED","{denied}");
     let grant=call(&tools,"manage",json!({"mode":"read","operation":"grant.get","protocol":"tickets","body":{"actor_id":config.expected_actor}})).await;
     let changed=call(&tools,"manage",json!({"mode":"invoke","operation":"grant.set","protocol":"tickets","operation_id":"permission-add-update","body":{"actor_id":config.expected_actor,"membership_id":membership,"expected_grant_revision":grant["grant"]["grant_revision"],"actions":["ticket.create","ticket.update"],"protocol_roles":["WORKER"],"capabilities":["WRITE"],"expires_at":null},"wait_ms":5000})).await;assert_eq!(changed["state"],"ACCEPTED","{changed}");
     let updated=call(&tools,"act",update("permission-after",first,2)).await;assert_eq!(updated["state"],"ACCEPTED","{updated}");
+    // True delegation is inherited from the original parent, including after
+    // reconnect omits the historical action selection and the alias refreshes.
+    let mut ceiling=Capability::owner();ceiling.allow_root=false;ceiling.workspace_ids=Some([ws.clone()].into());ceiling.business_actions=Some(["ticket.create".into()].into());ceiling.operations.remove("structure.workspace.delete");
+    let narrow=original.call(json!({"method":"derive","name":"explicit-parent-fixture","capability":ceiling})).await.unwrap();
+    let mut restricted=Connect::open(&root.path().join("restricted-registry")).unwrap();restricted.register("worker",Registration{origin:service.origin.clone(),actor_id:config.expected_actor.clone(),endpoint_path:PathBuf::from(narrow["endpoint_path"].as_str().unwrap())}).await.unwrap();
+    let mut chosen:ConnectRequest=serde_json::from_value(json!({"participant":"worker","workspace_id":ws,"send":false,"receive":false,"protocols":[{"alias":"tickets","instance_id":instance,"role":"WORKER","actions":["ticket.create"]}]})).unwrap();
+    assert_eq!(restricted.run(chosen.clone()).await.unwrap()["state"],"LOCAL_CONFIGURED");chosen.setup_id="restricted-reconnect".into();chosen.protocols[0].actions.clear();assert_eq!(restricted.run(chosen).await.unwrap()["state"],"LOCAL_CONFIGURED");
+    restricted.refresh_protocol_alias(Some("worker"),Some(&ws),"tickets",None).await.unwrap();
+    let mut limited_profile=restricted.profile_for_scope(Some("worker"),Some(&ws)).unwrap().unwrap();
+    // Retain a real historical broader management credential as an exact
+    // recovery view. It must never be used for a fresh denied deletion.
+    let mut old_cap=Capability::owner();old_cap.allow_root=false;old_cap.workspace_ids=Some([ws.clone()].into());old_cap.operations=["structure.workspace.delete".into()].into();
+    let old_manager=original.call(json!({"method":"derive","name":"old-manager-fixture","capability":old_cap})).await.unwrap();let old_path=PathBuf::from(old_manager["endpoint_path"].as_str().unwrap());
+    let old=ipc::RuntimeClient::connect(old_path.clone(),&service.origin,&config.expected_actor).await.unwrap();let binding=crate::communication_runtime::canonical_binding(&old.call(json!({"method":"binding"})).await.unwrap());
+    limited_profile.management_views.insert("old-manager".into(),crate::agent_tools::ManagementView{workspace_id:ws.clone(),operations:["structure.workspace.delete".into()].into(),endpoint_path:old_path,client_generation:old_manager["client_generation"].as_u64().unwrap(),binding});
+    let limited=AgentTools::open(limited_profile).await.unwrap();let before_denial=service.counts().await;
+    let denied=limited.call(AgentRequest::parse("act",update("restricted-update",json!({"record_id":updated["result"]["produced_record_ids"][0],"revision":2}),3)).unwrap()).await.unwrap_err();assert_eq!(denied.code,"LOCAL_SCOPE_DENIED");
+    let denied=limited.call(AgentRequest::parse("manage",json!({"mode":"invoke","operation":"workspace.delete","workspace":ws,"operation_id":"restricted-delete","expected_workspace_revision":1,"body":{"confirm_workspace_id":ws},"wait_ms":5000})).unwrap()).await.unwrap_err();assert_eq!(denied.code,"LOCAL_SCOPE_DENIED");
+    let after_denial=service.counts().await;assert_eq!(after_denial["actions"]["structure.action"],before_denial["actions"]["structure.action"]);assert_eq!(after_denial["actions"]["structure.workspace.delete"],before_denial["actions"]["structure.workspace.delete"]);
+    drop(limited);drop(restricted);drop(old);
     let revoked=call(&tools,"manage",json!({"mode":"invoke","operation":"grant.revoke","protocol":"tickets","operation_id":"permission-revoke","body":{"actor_id":config.expected_actor,"expected_grant_revision":changed["result"]["structure"]["grant_revision"]},"wait_ms":5000})).await;assert_eq!(revoked["state"],"ACCEPTED","{revoked}");
     let second=json!({"record_id":updated["result"]["produced_record_ids"][0],"revision":2});
     let denied=call(&tools,"act",update("permission-after-revoke",second,3)).await;assert_eq!(denied["state"],"REJECTED_NO_EFFECT","{denied}");assert_eq!(denied["details"]["reason"],"GRANT_REVOKED","{denied}");

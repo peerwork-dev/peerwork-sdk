@@ -11,6 +11,15 @@ subscription. Connect requests both by default; explicit restrictions remain.
 Use `--tools-only`, `--no-send` or `--no-receive` for intentional narrower use.
 See [messages, broadcasts and subscriptions](workspace-events.md).
 
+## Ordinary client authority (native0.3.15)
+
+Tools, role actions and management share the selected original Workspace client.
+The service checks current business grants; role changes require no local
+permission refresh. Existing ordinary setups normalize locally on Connect,
+preserving receiver/host bindings and original-operation recovery. Explicit
+parent ceilings and historical explicit-action profiles are preserved. See
+[identity, permission diagnostics and recovery](permissions.md).
+
 ## Attach an existing Codex conversation (native0.3.12)
 
 This entry targets the official shared-daemon control
@@ -276,10 +285,10 @@ It does not require broader discovery permissions. When intentionally selecting
 only an existing business role through normal connect:
 
 ```sh
-peerwork connect --workspace WORKSPACE_ID --role tasks:INSTANCE_ID:CONTRIBUTOR --install codex
+peerwork connect --workspace WORKSPACE_ID --tools-only --role tasks:INSTANCE_ID:CONTRIBUTOR --install codex
 ```
 
-No send, receive or body-key permission is implied. `LOCAL_SCOPE_DENIED` reports
+Membership supplies baseline communication rights. This tools-only entry does not establish a receiver or host binding; body-key readiness remains explicit. `LOCAL_SCOPE_DENIED` reports
 `details.action`, `restricted_by` and, during preflight, `missing_operations`.
 The local runtime owner selects a suitable existing local capability; remote
 Owner approval cannot repair a local operation/scope denial. Do not remove

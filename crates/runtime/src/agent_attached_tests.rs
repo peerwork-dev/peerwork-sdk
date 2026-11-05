@@ -58,7 +58,11 @@ async fn attached_tools_keep_original_namespace_permissions_and_client_lifecycle
 #[tokio::test]
 async fn attached_business_action_uses_original_operation_namespace_and_capability() {
     let root = crate::test_support::protected_test_dir();
-    let owner = ParticipantClient::open(config(root.path())).await.unwrap();
+    let config=config(root.path());let identity=KernelIdentity::open(&config.identity_path).unwrap();
+    let mut original=Invoke::new("same-intent","structure.action",Scope{workspace_id:Some("W".repeat(43)),instance_id:Some("I".repeat(43)),protocol_digest:Some("d".repeat(64))},json!({"action_id":"task.report","structure":{"kind":"PROGRESS"}}));original.expected_instance_revision=Some(1);
+    let mut store=Store::open(&config.state_directory,&identity,&config.origin).unwrap();store.reserve("program:original-worker",&original,&identity,64,32*1024*1024).unwrap();
+    store.finish("program:original-worker","same-intent",&identity,&json!({"state":"PENDING","retryable":false,"effect_certainty":"UNKNOWN"})).unwrap();drop(store);
+    let owner = ParticipantClient::open(config).await.unwrap();
     let worker = owner.restrict("original-worker", Capability::owner()).unwrap();
     let mut selection = AgentSelection::for_client(&worker);
     selection.protocols.insert("tasks".into(), Scope {
@@ -69,8 +73,8 @@ async fn attached_business_action_uses_original_operation_namespace_and_capabili
         protocol: "tasks".into(), operation_id: "same-intent".into(), action: "task.report".into(),
         structure: json!({"kind":"PROGRESS"}), plaintext_contents: None, expected_revision: 1, exact_input_refs: vec![], wait_ms: 0,
     };
-    // A local admission is sufficient here: no synthetic service acceptance or
-    // model reply is claimed by this test.
+    // Existing admission reuses its exact original namespace offline. Fresh
+    // execution selection is covered by the real HTTP protocol acceptance.
     let submitted = tools.call(action()).await.unwrap();
     assert_eq!(submitted["operation_id"], "same-intent");
     let original = worker.operation("same-intent").await.unwrap();

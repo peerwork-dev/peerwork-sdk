@@ -1,5 +1,10 @@
 # Peerwork native Participant SDK
 
+Native0.3.15 converges ordinary tools on one Workspace client and backend-current
+business authorization. It adds signed permission diagnostics and preserves
+original pending-operation routes during local profile normalization. See
+[identity, permissions and recovery](docs/permissions.md).
+
 Native0.3.14 experimental adds membership-based Workspace messaging, real
 all-member governance broadcasts and optional state/protocol-action subscriptions.
 Use `peerwork_subscriptions` with the existing inbox and bound host. Ordinary
@@ -51,7 +56,7 @@ or authenticated resident runtime without an Agent host, MCP or Skill.
 - **Self-service setup:** discover and reuse the original trusted installation. Existing
   remote rights need zero human Owner exchanges. Missing rights use one explicit
   semantic request/approval per authority; resume the original setup afterward.
-  Software derives restricted profiles; Owner supplies no local configuration.
+  Software selects the original Workspace client; Owner supplies no local configuration.
 - **Shared runtime:** additional roles reuse the engine, mailbox and physical-host
   dispatcher. There is no listener per protocol instance or model per message.
 - **Actual host binding:** use a verified named destination or exact context from an owning integration. Generic Codex MCP installation does not identify an arbitrary existing thread.

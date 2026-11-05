@@ -158,9 +158,12 @@ arbitrary key files, admin credentials, executables or sockets from tool argumen
 Initial CLI bootstrap selects the original EngineConfig/journal explicitly.
 A copied client endpoint alone does not establish runtime administration.
 
-Same-engine additional roles derive separate restricted clients and reuse the
-mailbox and physical-host dispatcher. New roles do not restart the engine or
-unrelated scopes; role views do not create cross-instance permission unions.
+Native0.3.15 ordinary roles share one Workspace credential and backend-current
+business authority. Roles select tools and execution context; their current
+grants are not persisted as a second local action whitelist. Explicit delegation
+lives on the original parent Capability. Historical scoped profiles and pending
+operation namespaces are retained; see [permissions and recovery](permissions.md).
+New roles reuse the mailbox and dispatcher without restarting unrelated scopes.
 Derived-file repair requires verified original provenance. Revocation fences old
 client generations and durably cleans owned endpoints/subscriptions, while
 original admitted operations and uncertain host facts remain recoverable.

@@ -961,7 +961,7 @@ mod tests {
         let second = c.normalize_request(request).unwrap();
         assert!(first == second);
         assert!(first.send);
-        assert!(!first.receive);
+        assert!(first.receive);
         assert!(!first.setup_id.is_empty());
         assert!(!first.participant.is_empty());
     }

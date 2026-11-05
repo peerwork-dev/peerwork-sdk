@@ -57,21 +57,13 @@ another actor. Keep the returned recovery selector on uncertainty; do not invent
 another ID. Grant changes, publication and deletion require the user's intended
 business authorization; merely discovering an operation provides none.
 
-If the normal Connect profile lacks a requested management operation, its
-description or denial includes `management_enable`. Use that returned
-`peerwork_connect` request, for example:
-
-```json
-{"request":{"workspace_id":"WORKSPACE_ID","management":["instances.read","grant.get","grant.set"]}}
-```
-
-This derives an immutable, workspace-bound view under the original local
-authority. It does not widen an existing business/receive credential, grant
-Workspace rights or change the original journal. Already-held authority needs no
-new Owner exchange; an insufficient local parent ceiling is reported separately
-from a service permission denial. Workspace Connect does not add identity-scoped
-`workspace.create` or `protocol.offline`: those use an explicitly selected original
-client that already allows them, or the standalone offline CLI respectively.
+Ordinary native0.3.15 Connect tools and management share the selected Workspace
+client. Already-held service authority requires no management-enable ceremony.
+A local ceiling denial names the local runtime owner and the existing-client or
+explicit-delegation correction; it does not request another Workspace grant.
+Historical management views remain exact-operation recovery routes. Identity-
+scoped `workspace.create` and offline work still require a selected original
+client that allows them. See [permissions and recovery](permissions.md).
 
 An administrator does not need to join a business role merely to manage its
 grants. Read `instances.read`, then pass the exact returned instance and protocol
