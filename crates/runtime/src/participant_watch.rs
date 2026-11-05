@@ -634,7 +634,7 @@ pub(crate) async fn run(
                             Op::RetirementCommit(plan)=>{store.host_retirement_commit(&identity,&namespace,&options,&plan)?;Reply::Saved},
                             Op::AccessScope=>Reply::AccessScope(store.host_access_scope(&namespace,&options)?),
                             Op::ReconcileDue=>Reply::Call(if live{store.host_reconcile_due(&identity,&namespace,&options)?}else{None}),
-                            Op::Presence{value,observed_at}=>{store.host_scope_check(&namespace,&options)?;let s=slots.get_mut(&options.key()).ok_or_else(||error("WATCH_NOT_FOUND"))?;s.presence.host_observed(value,observed_at)?;s.next_control=Instant::now();s.notify();Reply::Saved},
+                            Op::Presence{value,observed_at}=>{store.host_scope_check(&namespace,&options)?;let s=slots.get_mut(&options.key()).ok_or_else(||error("WATCH_NOT_FOUND"))?;let before=s.presence.version;s.presence.host_observed(value,observed_at)?;if before!=s.presence.version{s.next_control=Instant::now();}s.notify();Reply::Saved},
                             Op::Attach(host)=>{if !local_live.load(std::sync::atomic::Ordering::Acquire){return Err(error("LOCAL_CLIENT_REVOKED"));}if selected.is_none(){return Err(error("WATCH_NOT_FOUND"));}store.host_attach(&namespace,&options,&host)?;Reply::Saved},
                             Op::Due{limit}=>Reply::Due(if live{store.host_due(&namespace,&options,limit)?}else{Vec::new()}),
                             Op::Begin{item,frame}=>{if !local_live.load(std::sync::atomic::Ordering::Acquire){return Err(error("LOCAL_CLIENT_REVOKED"));}if !live{return Err(error("WATCH_NOT_CONNECTED"));}Reply::Call(store.host_begin(&identity,&namespace,&options,&item,frame)?)},
@@ -872,7 +872,7 @@ pub(crate) async fn run(
                                 if store.key_missing(&workspace).unwrap_or(true)&&matches!(data["state"].as_str(),Some("READY"|"NOT_REQUIRED")){data["state"]=json!("MISSING");}
                                 let _=store.wake_key_heads(&workspace);
                                 for s in slots.values_mut().filter(|s|s.binding.options.workspace_id==workspace){
-                                    s.presence.keys(data.clone());s.next_keys=Instant::now()+Duration::from_secs(if matches!(data["state"].as_str(),Some("READY"|"NOT_REQUIRED")){10}else{2});s.next_control=Instant::now();s.notify();
+                                    let before=s.presence.version;s.presence.keys(data.clone());s.next_keys=Instant::now()+Duration::from_secs(if matches!(data["state"].as_str(),Some("READY"|"NOT_REQUIRED")){10}else{2});if before!=s.presence.version{s.next_control=Instant::now();}s.notify();
                                 }
                             },
                             Work::Report(key,id,version,value)=>if let Some(s)=slots.get_mut(&key){
@@ -1355,6 +1355,11 @@ fn frame_scope(data:&[u8],pins:&[MailboxPins])->std::result::Result<usize,&'stat
     let mailbox=routing.get("mailbox_id").and_then(WireValue::as_string);
     pins.iter().position(|p|Some(p.workspace_id.as_str())==ws.as_deref()&&Some(p.mailbox_id.as_str())==mailbox.as_deref()).ok_or("STREAM_SCOPE_MISMATCH")
 }
+// The signed service deadline remains authoritative. Old60s grants retain
+// their original lifetime; extended grants no longer reconnect after60s.
+fn stream_remaining_ms(expires:u64,floor:u64)->u64 {
+    expires.saturating_sub(floor).min(300_000)
+}
 async fn stream(
     access: &KernelAccess,
     session: &MailSession,
@@ -1400,7 +1405,7 @@ async fn stream(
         .as_str()
         .ok_or_else(|| Failure::code("STREAM_GRANT_INVALID"))?;
     let floor = session.now().map_err(|e| Failure::code(&e.code))?;
-    let remaining = expires.saturating_sub(floor).min(60000);
+    let remaining = stream_remaining_ms(expires,floor);
     if remaining == 0 {
         return Err(Failure::code("STREAM_GRANT_EXPIRED"));
     }
@@ -1481,6 +1486,15 @@ mod reliability_tests {
     use super::*;
     fn selected()->Slot {
         slot(Binding{namespace:"program:test".into(),options:WatchOptions{workspace_id:"w".repeat(43),mailbox_id:"m".repeat(43),membership_id:"g".repeat(43),consumer_id:"test".into(),host_destination:None},receiver:"r".repeat(43),claim_id:"c".repeat(43),claim_wire:None,pins:None})
+    }
+    #[test]
+    fn stream_deadline_honors_legacy_short_and_extended_signed_grants() {
+        assert_eq!(stream_remaining_ms(61_000,1_000),60_000);
+        assert_eq!(stream_remaining_ms(301_000,1_000),300_000);
+        assert_eq!(stream_remaining_ms(241_000,1_000),240_000);
+        assert_eq!(stream_remaining_ms(1_000,1_000),0);
+        assert_eq!(stream_remaining_ms(999,1_000),0);
+        assert_eq!(stream_remaining_ms(u64::MAX,1_000),300_000);
     }
     #[test]
     fn sse_fragmentation_and_coalescing_preserve_frames_and_bound_unfinished_input() {

@@ -45,15 +45,25 @@ impl Presence {
                 "HOST_OBSERVATION",
             ));
         }
+        // Refresh the observation's actual time without forcing a network
+        // pulse for an unchanged, still-current host probe. A real state or
+        // freshness transition must be advertised immediately.
+        let now = Instant::now();
+        let was_current = self.host_at.is_some_and(|at| now.duration_since(at) < Duration::from_secs(10));
+        let is_current = now.duration_since(observed_at) < Duration::from_secs(10);
+        if self.host != value || was_current != is_current {
+            self.version = self.version.saturating_add(1);
+        }
         self.host = value;
         self.host_at = Some(observed_at);
-        self.version = self.version.saturating_add(1);
         Ok(())
     }
     pub fn keys(&mut self, value: Value) {
+        if self.keys != value || self.keys_at.is_none_or(|at| at.elapsed() >= Duration::from_secs(15)) {
+            self.version = self.version.saturating_add(1);
+        }
         self.keys = value;
         self.keys_at = Some(Instant::now());
-        self.version = self.version.saturating_add(1);
     }
     fn age(at: Option<Instant>) -> u64 {
         at.map(|at| at.elapsed().as_millis().min(60000) as u64)
@@ -85,6 +95,29 @@ mod tests {
         assert!(p
             .host(json!({"mode":"QUEUED_ONLY","ready":true,"execution_state":"IDLE"}))
             .is_err());
+    }
+    #[test]
+    fn repeated_current_observations_refresh_age_without_forcing_extra_pulses() {
+        let mut p = Presence::default();
+        let host = json!({"mode":"LIVE","ready":true,"execution_state":"IDLE"});
+        let keys = json!({"state":"READY","key_id":"K","epoch":1});
+        p.host(host.clone()).unwrap();p.keys(keys.clone());let initial=p.version;
+        p.host_at=Some(Instant::now()-Duration::from_secs(3));
+        p.keys_at=Some(Instant::now()-Duration::from_secs(3));
+        p.host(host.clone()).unwrap();p.keys(keys.clone());
+        assert_eq!(p.version,initial);
+        assert!(p.wire("d",true)["host_age_ms"].as_u64().unwrap()<1000);
+        assert!(p.wire("d",true)["key_age_ms"].as_u64().unwrap()<1000);
+        p.host(json!({"mode":"LIVE","ready":true,"execution_state":"BUSY"})).unwrap();
+        assert_eq!(p.version,initial+1);
+        p.keys(json!({"state":"READY","key_id":"NEW","epoch":2}));
+        assert_eq!(p.version,initial+2);
+        p.host_at=Some(Instant::now()-Duration::from_secs(11));
+        p.keys_at=Some(Instant::now()-Duration::from_secs(16));
+        p.host(host).unwrap();p.keys(keys);assert_eq!(p.version,initial+4);
+        let current=p.version;
+        p.host_observed(json!({"mode":"LIVE","ready":true,"execution_state":"IDLE"}),Instant::now()-Duration::from_secs(11)).unwrap();
+        assert_eq!(p.version,current+1);assert_eq!(p.local()["host_current"],false);
     }
 }
 
