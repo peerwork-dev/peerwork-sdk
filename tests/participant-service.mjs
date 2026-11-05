@@ -4,7 +4,10 @@ import {createRequire} from 'node:module';
 import {pathToFileURL} from 'node:url';
 import {join} from 'node:path';
 import {once} from 'node:events';
-import {writeFileSync} from 'node:fs';
+import {writeFileSync,mkdtempSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {createServer} from 'node:net';
+import {spawn} from 'node:child_process';
 import {setTimeout as pause} from 'node:timers/promises';
 import {delayFixtureResponse,minimumFixtureDelay} from './fixture-latency.mjs';
 import {observeFixtureQueries} from './fixture-query-metrics.mjs';
@@ -19,13 +22,29 @@ const {signTypedJws}=await import(pathToFileURL(join(root,'dist-workspace/src/wo
 const {hash,canonicalStructured}=await import(pathToFileURL(join(root,'dist-workspace/src/workspace-contract.js')));
 const {stepEventDelivery}=await import(pathToFileURL(join(root,'dist-workspace/src/workspace-event-delivery.js')));
 const f=await postgresFixture();f.clock.now=Date.now();
+let residentWorker=null,workerDirectory=null,workerPort=null;
+async function startResidentWorker(){
+ if(residentWorker)return;
+ const probe=createServer();probe.listen(0,'127.0.0.1');await once(probe,'listening');workerPort=probe.address().port;await new Promise(resolve=>probe.close(resolve));
+ workerDirectory=mkdtempSync(join(tmpdir(),'peerwork-synthetic-worker-'));
+ const seed=join(workerDirectory,'receipt-seed');writeFileSync(seed,Buffer.alloc(32,7),{mode:0o600});
+ const env=Object.fromEntries(Object.entries(process.env).filter(([k])=>!k.startsWith('WORKSPACE_')));
+ Object.assign(env,{WORKSPACE_ROLE:'worker',WORKSPACE_POSTGRES_URL:process.env.PEERWORK_POSTGRES_TEST_URL,WORKSPACE_POSTGRES_SCHEMA:f.schema,WORKSPACE_AUDIENCE:f.kernel.audience,WORKSPACE_RECEIPT_KEY_FILE:seed,HOST:'127.0.0.1',PORT:String(workerPort)});
+ residentWorker=spawn(process.execPath,[join(root,'dist-workspace/src/workspace-postgres-server.js')],{env,stdio:['ignore','ignore','inherit']});
+ const end=Date.now()+10000;
+ for(;;){
+  if(residentWorker.exitCode!==null)throw Error('synthetic resident worker exited');
+  try{if((await fetch('http://127.0.0.1:'+workerPort+'/healthz')).ok)return;}catch{}
+  if(Date.now()>end)throw Error('synthetic resident worker readiness timeout');await pause(25);
+ }
+}
 let reportQuotaBlocked=false;const reportQuotaLimits=new Map();
 let clockOffset=0;const ticker=setInterval(()=>{f.clock.now=Date.now()+clockOffset;},10);
 const app=createPostgresControlApp(f.kernel,{source:()=> '127.0.0.1'});
 let offline=false,dropAction=null,delayName=null,delayAction=null,release=null,streamDurationOnce=0;
 let rejectNextRebindMailbox=null,corruptFrame=null,keyDelayWorkspace=null,delayMailbox=null;
 let keyDelayMs=0,earlyEofCount=0,timeoutAction=null;const timeoutReleases=new Set();
-const counts={commands:0,discovery:0,context:0,journal_reads:0,dropped:0,native_streams:0,corrupted_frames:0,delayed_keys:0,delayed:0,delayed_completed:0,members_batches:0,grant_batches:0,claim_commands:[],actions:{},command_request_bytes:0,command_response_bytes:0,sse_bytes:0};
+const counts={commands:0,discovery:0,context:0,journal_reads:0,dropped:0,native_streams:0,corrupted_frames:0,delayed_keys:0,delayed:0,delayed_completed:0,members_batches:0,grant_batches:0,claim_commands:[],actions:{},ack_batches:{RECEIVER_STORED:{requests:0,items:0,max:0},APPLICATION_CONSUMED:{requests:0,items:0,max:0}},command_request_bytes:0,command_response_bytes:0,sse_bytes:0};
 const commandIds=new Set();
 // Explicit maintainer measurement only. Buffer closed metadata in memory and
 // write once after the fixture stops; never log packets, IDs or request bodies.
@@ -42,6 +61,7 @@ const handle=async request=>{
  const path=new URL(request.url).pathname;
  if(path==='/__test/config'){
   const options=await request.json();
+  if(options.resident_worker===true)await startResidentWorker();
   if(options.pump_events){for(let i=0;i<256;i++){const step=await stepEventDelivery(f.kernel);if(step.job_id===null)break;}}
   if(options.early_eof_count!==undefined){if(!Number.isSafeInteger(options.early_eof_count)||options.early_eof_count<0||options.early_eof_count>16)throw Error('invalid synthetic EOF count');earlyEofCount=options.early_eof_count;}
   if(options.corrupt_frame!==undefined)corruptFrame=options.corrupt_frame;
@@ -65,7 +85,7 @@ const handle=async request=>{
   if(options.release){release?.();release=null;delayName=null;timeoutAction=null;for(const fn of timeoutReleases)fn();timeoutReleases.clear();}
   return Response.json({ok:true});
  }
- if(path==='/__test/counts')return Response.json({...counts,unique_commands:commandIds.size,
+ if(path==='/__test/counts')return Response.json({...counts,unique_commands:commandIds.size,resident_worker_running:residentWorker!==null&&residentWorker.exitCode===null,
   workspaces:Number((await f.store.pool.query(`SELECT count(*) n FROM "${f.schema}".workspaces`)).rows[0].n),
   key_epochs:Number((await f.store.pool.query(`SELECT count(*) n FROM "${f.schema}".structure_content_key_epochs`)).rows[0].n),
   events:Number((await f.store.pool.query(`SELECT count(*) n FROM "${f.schema}".events`)).rows[0].n),
@@ -81,6 +101,9 @@ const handle=async request=>{
   counts.commands++;commandIds.add(command.command_id);
   if(command.workspace_id===keyDelayWorkspace&&command.action_id==='structure.mailbox.get'&&keyDelayMs){counts.delayed_keys++;await pause(keyDelayMs);}
   counts.actions[command.action_id]=(counts.actions[command.action_id]??0)+1;
+  if(command.action_id==='structure.mailbox.ack'){
+   const stage=counts.ack_batches[command.body.stage];if(stage){stage.requests++;stage.items+=command.body.items.length;stage.max=Math.max(stage.max,command.body.items.length);}
+  }
   if(command.action_id==='structure.members.read'&&Array.isArray(command.body.actor_ids))counts.members_batches++;
   if(command.action_id==='structure.grant.get'&&Array.isArray(command.body.actor_ids))counts.grant_batches++;
   if(command.action_id==='structure.mailbox.claim')counts.claim_commands.push({command_id:command.command_id,receiver_id:command.body.receiver_id,replace:command.body.replace,expected_epoch:command.body.expected_epoch});
@@ -161,6 +184,12 @@ await once(server,'listening');
 process.stdout.write(JSON.stringify({origin:`http://127.0.0.1:${server.address().port}`,simulated_link_rtt_ms:linkRttMs,simulated_minimum_uplink_ms:minimumUplink?linkRttMs/2:0})+'\n');
 process.once('SIGTERM',async()=>{
  clearInterval(ticker);release?.();for(const fn of timeoutReleases)fn();timeoutReleases.clear();server.closeAllConnections();
+ if(residentWorker){
+  residentWorker.kill('SIGTERM');
+  const timer=setTimeout(()=>residentWorker.kill('SIGKILL'),3000);timer.unref();
+  if(residentWorker.exitCode===null)await once(residentWorker,'exit');clearTimeout(timer);
+ }
+ if(workerDirectory)rmSync(workerDirectory,{recursive:true,force:true});
  await new Promise(resolve=>server.close(resolve));await f.close();
  if(timingOutput)writeFileSync(timingOutput,JSON.stringify({format:'peerwork.synthetic-http-timings.v1',timing_basis:'service process monotonic request entry to response headers; excludes SSE body consumption',timings,truncated:timingsTruncated}),{mode:0o600,flag:'wx'});
  process.exit(0);

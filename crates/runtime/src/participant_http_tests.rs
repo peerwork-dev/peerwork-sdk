@@ -4705,6 +4705,8 @@ async fn workspace_member_send_refuses_ambiguous_names_and_pins_original_recipie
 
 #[path = "participant_reliability_http_tests.rs"]
 mod reliability;
+#[path = "participant_tail_qualification_http_tests.rs"]
+mod tail_qualification;
 #[path = "participant_management_http_tests.rs"]
 mod management;
 #[path="participant_protocol_upgrade_http_tests.rs"]
