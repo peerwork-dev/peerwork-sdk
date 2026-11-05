@@ -188,6 +188,21 @@ async fn workspace_client_uses_current_grants_without_local_role_refresh(){
     assert_eq!(call(&tools,"recover",status["recovery_arguments"].clone()).await["command_id"],send_command);assert_eq!(service.counts().await["actions"]["structure.message.send"],before);
     let update=|id:&str,previous:Value,revision:u64|json!({"protocol":"tickets","operation_id":id,"action":"ticket.update","structure":{"title":"updated","previous":previous},"record_id":previous["record_id"],"exact_input_refs":[previous],"expected_revision":revision,"wait_ms":5000});
     let denied=call(&tools,"act",update("permission-before",first.clone(),2)).await;assert_eq!(denied["state"],"REJECTED_NO_EFFECT","{denied}");assert_eq!(denied["details"]["reason"],"ACTION_NOT_GRANTED","{denied}");
+    // An action list is a remote permission request, not a local delegation.
+    let mut permission_request=request.clone();permission_request.setup_id="request-update".into();permission_request.protocols[0].actions=vec!["ticket.update".into()];
+    let pending=connect.run(permission_request.clone()).await.unwrap();assert_eq!(pending["blocker"]["code"],"OWNER_APPROVAL_REQUIRED","{pending}");
+    let again=connect.run(permission_request.clone()).await.unwrap();assert_eq!(again["details"]["authorization_request"],pending["details"]["authorization_request"]);
+    let approved=connect.approve("owner","approve-update-once",serde_json::from_value(pending["details"]["authorization_request"].clone()).unwrap()).await.unwrap();assert_eq!(approved["state"],"APPROVED","{approved}");
+    assert_eq!(connect.run(permission_request.clone()).await.unwrap()["state"],"LOCAL_CONFIGURED");
+    connect.refresh_protocol_alias(Some("owner"),Some(&ws),"tickets",None).await.unwrap();
+    assert_eq!(connect.run(permission_request).await.unwrap()["state"],"LOCAL_CONFIGURED");
+    let current=connect.profile_for_scope(Some("owner"),Some(&ws)).unwrap().unwrap();assert_eq!(current.protocol_endpoints["tickets"],current.endpoint_path);assert_eq!(current.endpoint_path,profile.endpoint_path);
+    let current_client=ipc::RuntimeClient::connect(current.endpoint_path.clone(),&service.origin,&config.expected_actor).await.unwrap();assert!(current_client.call(json!({"method":"capabilities"})).await.unwrap()["capability"]["business_actions"].is_null());
+    let waiting_registry=root.path().join("host-pending-registry");let mut waiting=Connect::open(&waiting_registry).unwrap();waiting.register("owner",Registration{origin:service.origin.clone(),actor_id:config.expected_actor.clone(),endpoint_path:ready.client_endpoints["owner"].clone()}).await.unwrap();
+    let mut host_request=request.clone();host_request.setup_id="remote-actions-host-pending".into();host_request.receive=true;host_request.protocols[0].actions=vec!["ticket.update".into()];
+    let pending_host=waiting.run_agent(host_request.clone()).await.unwrap();assert_eq!(pending_host["blocker"]["code"],"HOST_CONTEXT_REQUIRED","{pending_host}");assert_eq!(pending_host["client_authority_model"],"SERVICE_CURRENT");
+    drop(waiting);let mut waiting=Connect::open(&waiting_registry).unwrap();waiting.refresh_protocol_alias(Some("owner"),Some(&ws),"tickets",None).await.unwrap();
+    let pending_host=waiting.run_agent(host_request).await.unwrap();assert_eq!(pending_host["blocker"]["code"],"HOST_CONTEXT_REQUIRED","{pending_host}");assert_eq!(pending_host["client_authority_model"],"SERVICE_CURRENT");drop(waiting);
     let grant=call(&tools,"manage",json!({"mode":"read","operation":"grant.get","protocol":"tickets","body":{"actor_id":config.expected_actor}})).await;
     let changed=call(&tools,"manage",json!({"mode":"invoke","operation":"grant.set","protocol":"tickets","operation_id":"permission-add-update","body":{"actor_id":config.expected_actor,"membership_id":membership,"expected_grant_revision":grant["grant"]["grant_revision"],"actions":["ticket.create","ticket.update"],"protocol_roles":["WORKER"],"capabilities":["WRITE"],"expires_at":null},"wait_ms":5000})).await;assert_eq!(changed["state"],"ACCEPTED","{changed}");
     let updated=call(&tools,"act",update("permission-after",first,2)).await;assert_eq!(updated["state"],"ACCEPTED","{updated}");
@@ -197,6 +212,7 @@ async fn workspace_client_uses_current_grants_without_local_role_refresh(){
     let narrow=original.call(json!({"method":"derive","name":"explicit-parent-fixture","capability":ceiling})).await.unwrap();
     let mut restricted=Connect::open(&root.path().join("restricted-registry")).unwrap();restricted.register("worker",Registration{origin:service.origin.clone(),actor_id:config.expected_actor.clone(),endpoint_path:PathBuf::from(narrow["endpoint_path"].as_str().unwrap())}).await.unwrap();
     let mut chosen:ConnectRequest=serde_json::from_value(json!({"participant":"worker","workspace_id":ws,"send":false,"receive":false,"protocols":[{"alias":"tickets","instance_id":instance,"role":"WORKER","actions":["ticket.create"]}]})).unwrap();
+    let mut outside=chosen.clone();outside.setup_id="outside-parent".into();outside.protocols[0].actions=vec!["ticket.update".into()];let denied=restricted.run(outside).await.unwrap_err();assert_eq!(denied.code,"LOCAL_SCOPE_DENIED");assert_eq!(denied.details.unwrap()["remote_permission_checked"],false);
     assert_eq!(restricted.run(chosen.clone()).await.unwrap()["state"],"LOCAL_CONFIGURED");chosen.setup_id="restricted-reconnect".into();chosen.protocols[0].actions.clear();assert_eq!(restricted.run(chosen).await.unwrap()["state"],"LOCAL_CONFIGURED");
     restricted.refresh_protocol_alias(Some("worker"),Some(&ws),"tickets",None).await.unwrap();
     let mut limited_profile=restricted.profile_for_scope(Some("worker"),Some(&ws)).unwrap().unwrap();

@@ -44,13 +44,17 @@ their actual administrative authority. Selecting a Worker role does not turn
 an Owner into a different participant; use a distinct Actor for distinct remote
 authority or attribution. Business grant checks still apply to Owner actions.
 
-Explicit historical `protocols[].actions` profiles retain their scoped tool
-views and original credentials. They are not silently converted into ordinary
-full clients. Those mixed profiles do not isolate a caller from other broader
-credentials it already holds. A new explicit action ceiling requires a matching
-ceiling on the original parent; otherwise Connect returns
-`EXPLICIT_DELEGATION_PARENT_REQUIRED`, with no remote grant changes. Ordinary
-collaborators do not need this advanced configuration.
+`protocols[].actions` selects the remote actions required for a role. Omit it
+for all declared role actions. Missing rights produce one resumable permission
+request; an action list never installs a local role whitelist. Subsequent service
+grant changes apply without recreating the client. Actual parent restrictions
+still apply: requesting actions outside that ceiling returns `LOCAL_SCOPE_DENIED`.
+
+Historical issued profiles whose action lists created local scoped tool views
+retain those views and original credentials. An unfinished request without an
+issued profile is not a legacy delegation. Reusing a historical delegated profile
+requires its constrained parent (`EXPLICIT_DELEGATION_PARENT_REQUIRED` otherwise).
+Those mixed profiles do not isolate a caller from broader credentials it holds.
 
 ## Read a denial
 

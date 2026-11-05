@@ -5,7 +5,14 @@ use crate::agent_tools::{ProtocolView,ProtocolViewScope,MAX_PROTOCOL_VIEWS};
 const READS:&[&str]=&["structure.instance.records.read","structure.instance.get","structure.instance.resolve","structure.protocol.resolve","structure.protocol.resource.get","structure.record.get","structure.records.read"];
 impl Connect {
     pub(super) fn inherited_explicit_actions(parent:&Capability,actions:&[String])->bool{actions.is_empty()||parent.business_actions.as_ref()==Some(&actions.iter().cloned().collect())}
-    fn explicit_setup(setup:&Setup)->bool{setup.protocol_intents.values().chain(setup.desired.protocols.iter()).any(|p|!p.actions.is_empty())}
+    pub(super) fn explicit_setup(setup:&Setup)->bool{setup.profile.is_some()&&setup.result["client_authority_model"]!="SERVICE_CURRENT"&&setup.protocol_intents.values().chain(setup.desired.protocols.iter()).any(|p|!p.actions.is_empty())}
+    pub(super) fn check_requested_actions(parent:&Capability,protocols:&[ProtocolSelection])->Result<()>{
+        let Some(allowed)=&parent.business_actions else{return Ok(());};
+        let missing:std::collections::BTreeSet<_>=protocols.iter().flat_map(|p|p.actions.iter()).filter(|a|!allowed.contains(*a)).cloned().collect();
+        if missing.is_empty(){return Ok(());}
+        let mut error=local("LOCAL_SCOPE_DENIED");error.phase="AUTHORIZATION".into();error.recovery="REVIEW_EXPLICIT_LOCAL_CAPABILITY".into();
+        error.details=Some(json!({"restricted_by":"business_actions","missing_actions":missing,"next_actor":"LOCAL_RUNTIME_OWNER","remote_permission_checked":false}));Err(error)
+    }
     pub(super) async fn normalize_cached_authority(&mut self,id:&str)->Result<String>{
         let old=self.registry.setups[id].clone();
         if old.result["client_authority_model"]=="SERVICE_CURRENT"||old.profile.is_none()||Self::explicit_setup(&old){return Ok(id.into());}
@@ -127,7 +134,7 @@ impl Connect {
         if self.registry.setups[&active].result["client_authority_model"]!="SERVICE_CURRENT"&&!Self::explicit_setup(&self.registry.setups[&active]){return Err(local("LOCAL_DELEGATION_PROVENANCE_REQUIRED"));}
 
         let parent:Capability=serde_json::from_value(caps["capability"].clone()).map_err(|_|local("LOCAL_CEILING_INVALID"))?;
-        if self.registry.setups[&active].protocol_intents.values().chain(self.registry.setups[&active].desired.protocols.iter()).any(|p|!Self::inherited_explicit_actions(&parent,&p.actions)){return Err(local("EXPLICIT_DELEGATION_PARENT_REQUIRED"));}
+        if Self::explicit_setup(&self.registry.setups[&active])&&self.registry.setups[&active].protocol_intents.values().chain(self.registry.setups[&active].desired.protocols.iter()).any(|p|!Self::inherited_explicit_actions(&parent,&p.actions)){return Err(local("EXPLICIT_DELEGATION_PARENT_REQUIRED"));}
         self.extend_protocol_views(&handle,Some(&old),&mut profile,&parent,&original).await?;
         let desired=self.registry.setups[&active].protocol_intents.get(alias).cloned().or_else(||self.registry.setups[&active].desired.protocols.iter().find(|p|p.alias==alias).cloned());
         let mut query=json!({"instance_id":instance});
@@ -139,7 +146,7 @@ impl Connect {
         let actual=Scope{workspace_id:Some(ws.clone()),instance_id:Some(instance),protocol_digest:Some(protocol)};
         let (cap,ordinary)=self.workspace_client(&handle,&ws,&parent,&original).await?;
         let explicit=desired.as_ref().map(|d|d.actions.as_slice()).unwrap_or_default();
-        let path=self.protocol_endpoint(&handle,alias,&actual,explicit,&cap,&ordinary,&original).await?;
+        let path=if Self::explicit_setup(&self.registry.setups[&active]){self.protocol_endpoint(&handle,alias,&actual,explicit,&cap,&ordinary,&original).await?}else{ordinary.clone()};
         profile.protocols.insert(alias.into(),actual.clone());
         profile.protocol_endpoints.insert(alias.into(),path.clone());
         profile.directory_endpoints.insert(ws.clone(),ordinary);

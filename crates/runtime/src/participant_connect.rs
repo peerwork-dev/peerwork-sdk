@@ -455,12 +455,14 @@ impl Connect {
         mut result: Value,
         profile: Option<AgentProfile>,
     ) -> Result<Value> {
-        if profile.as_ref().is_some_and(|p|p.directory_endpoints.get(&request.workspace_id)==Some(&p.endpoint_path)){result["client_authority_model"]=json!("SERVICE_CURRENT");}
         let old = self
             .registry
             .setups
             .get_mut(&request.setup_id)
             .ok_or_else(|| local("CONNECT_STATE_INVALID"))?;
+        // Authority provenance follows the persisted profile, not transient
+        // setup status or a coincidental endpoint layout.
+        if old.result["client_authority_model"]=="SERVICE_CURRENT"{result["client_authority_model"]=json!("SERVICE_CURRENT");}
         if old.result != result || (old.profile.is_none() && profile.is_some()) {
             old.result = result.clone();
             if profile.is_some() {
@@ -660,10 +662,7 @@ impl Connect {
             );
         }
         let parent: Capability = serde_json::from_value(caps["capability"].clone()).map_err(|_| local("LOCAL_CEILING_INVALID"))?;
-        let explicit=request.protocols.iter().filter(|p|!p.actions.is_empty()).collect::<Vec<_>>();
-        if explicit.iter().any(|p|!Self::inherited_explicit_actions(&parent,&p.actions)){
-            let mut e=local("EXPLICIT_DELEGATION_PARENT_REQUIRED");e.details=Some(json!({"next_actor":"LOCAL_RUNTIME_OWNER","next_action":"SELECT_EXPLICITLY_RESTRICTED_ORIGINAL_CLIENT","remote_grants_changed":false}));return Err(e);
-        }
+        Self::check_requested_actions(&parent,&request.protocols)?;
         let management_actions=crate::agent_tools::management::workspace_actions(&request.management)?;
         let missing_management:Vec<_>=management_actions.difference(&parent.operations).cloned().collect();
         if !missing_management.is_empty() {
@@ -909,7 +908,7 @@ impl Connect {
         }else{None};
         if let Some(completed)=&completed_first {previous_setup.as_mut().unwrap().effective_host=Some(completed.name.clone());}
         let previous = previous_setup.as_ref().and_then(|s| s.profile.clone());
-        if previous_setup.as_ref().is_some_and(|s|s.protocol_intents.values().chain(s.desired.protocols.iter()).any(|p|!Self::inherited_explicit_actions(&parent,&p.actions))){
+        if previous_setup.as_ref().is_some_and(|s|Self::explicit_setup(s)&&s.protocol_intents.values().chain(s.desired.protocols.iter()).any(|p|!Self::inherited_explicit_actions(&parent,&p.actions))){
             let mut e=local("EXPLICIT_DELEGATION_PARENT_REQUIRED");e.details=Some(json!({"existing_configuration_preserved":true,"next_actor":"LOCAL_RUNTIME_OWNER","next_action":"SELECT_EXPLICITLY_RESTRICTED_ORIGINAL_CLIENT"}));return Err(e);
         }
 
@@ -995,7 +994,7 @@ impl Connect {
                     .or_else(||old.desired.protocols.iter().find(|v|v.alias==p.alias))).map(|v|v.actions.clone()).unwrap_or_default()
             };
             let mut intent=p.clone();intent.actions=explicit.clone();effective_protocol_intents.insert(p.alias.clone(),intent);
-            let path=self.protocol_endpoint(&request.participant,&p.alias,selected_scope,&explicit,&capability,&endpoint,&client).await?;
+            let path=if previous_setup.as_ref().is_some_and(Self::explicit_setup){self.protocol_endpoint(&request.participant,&p.alias,selected_scope,&explicit,&capability,&endpoint,&client).await?}else{endpoint.clone()};
             protocol_endpoints.insert(p.alias.clone(),path);
         }
         // This existing field is also the Workspace management/read route.
@@ -1185,6 +1184,7 @@ impl Connect {
                 if let Some(old)=&previous_setup{for selected in &old.desired.protocols{intents.entry(selected.alias.clone()).or_insert_with(||selected.clone());}}
                 for(alias,intent)in &effective_protocol_intents{intents.insert(alias.clone(),intent.clone());}s.protocol_intents=intents;
                 s.profile = Some(profile.clone());
+                if !previous_setup.as_ref().is_some_and(Self::explicit_setup){s.result["client_authority_model"]=json!("SERVICE_CURRENT");}
                 s.channel_send = channel_send;
                 s.channel_receive = channel_receive;
                 s.sender_capability = Some(capability.clone());
@@ -1433,7 +1433,7 @@ pub fn schema() -> Value {
     schema["properties"]["request"]["properties"]["management"]=json!({"type":"array","maxItems":32,"uniqueItems":true,"items":{"type":"string","enum":crate::agent_tools::management::workspace_names()},"description":"Optional compatibility check of these existing workspace operations on the original client. Ordinary management needs no enable step. Does not change remote grants or explicit parent limits. Identity-scoped workspace.create/protocol.offline are not included."});
     schema["properties"]["request"]["properties"]["send"]["default"] = json!(default_send());
     schema["properties"]["request"]["properties"]["receive"]["default"] = json!(default_send());
-    schema["properties"]["request"]["properties"]["protocols"]["items"]["properties"]["actions"]["description"]=json!("Optional explicit local delegation ceiling. Requires a matching ceiling on the original parent client. Omit for ordinary backend-current role authorization.");
+    schema["properties"]["request"]["properties"]["protocols"]["items"]["properties"]["actions"]["description"]=json!("Optional required remote actions for this role. Missing rights use one resumable approval request. This list creates no local action ceiling; original client restrictions are inherited.");
     schema["properties"]["request"]["properties"]["request_membership"] = json!({"type":"boolean","default":false,"description":"Explicitly request admission if workspace access is not verified. Returns one public request covering membership and the requested rights; Owner approval is still required."});
     schema["properties"]["request"]["properties"]["receive_mode"] = json!({"type":"string","enum":["PUSH","INBOX"],"description":"PUSH (Agent default) requires an actual supported host destination. INBOX explicitly receives for MCP inbox/wait without requiring host push; it never claims automatic model wake or replaces an existing host binding. Requires receive=true."});
     schema["properties"]["request"]["properties"]["host"] = json!({"type":"string","description":"Existing host-user-approved named destination. Omission does not identify the current session; unknown Agent receive stays pending. No commands, sockets or session paths are accepted."});
@@ -1852,6 +1852,15 @@ pub fn cli(args: &[String]) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pending_status_retains_persisted_authority_provenance() {
+        let root=crate::test_support::protected_test_dir();let mut connect=Connect::open(root.path()).unwrap();
+        let request:ConnectRequest=serde_json::from_value(json!({"participant":"worker","workspace_id":"W".repeat(43),"setup_id":"pending","send":false,"receive":false})).unwrap();
+        let registration=Registration{origin:"https://example.com".into(),actor_id:"A".repeat(43),endpoint_path:root.path().join("unused-endpoint")};
+        connect.begin_setup(&request,registration,false,None).unwrap();connect.registry.setups.get_mut("pending").unwrap().result["client_authority_model"]=json!("SERVICE_CURRENT");connect.save().unwrap();
+        let result=connect.pending(&request,"HOST_BINDING","HOST_CONTEXT_REQUIRED","HOST_USER","SELECT_HOST",json!({})).unwrap();assert_eq!(result["client_authority_model"],"SERVICE_CURRENT");
+        drop(connect);let reopened=Connect::open(root.path()).unwrap();assert_eq!(reopened.registry.setups["pending"].result["client_authority_model"],"SERVICE_CURRENT");
+    }
     #[test]
     fn cli_inbox_host_conflict_does_not_bootstrap_or_create_local_state() {
         let state=crate::test_support::protected_test_dir();let directory=state.path().join("not-created");
