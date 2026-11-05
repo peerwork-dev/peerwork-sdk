@@ -327,13 +327,17 @@ async fn timed_out_old_ready_pulse_cannot_override_new_not_ready_pulse() {
     tokio::time::timeout(Duration::from_secs(10),async {while c.service.counts().await["delayed"]!=1{tokio::time::sleep(Duration::from_millis(30)).await;}}).await.unwrap();
     c.service.config(json!({"corrupt_frame":{"mailbox_id":c.members[0].mailbox["mailbox_id"],"mode":"ITEM_PROOF"}})).await;
     c.send(0,"poison-before-old-pulse-timeout").await;fault(&mut c.members[0].watch).await;
-    tokio::time::sleep(Duration::from_secs(6)).await;
     let observe=||selected(&c.client,"structure.mailbox.get",&c.members[0].scope,json!({"mailbox_id":c.members[0].mailbox["mailbox_id"]}));
-    let current=observe().await;
-    assert_eq!(current["mailbox"]["state"],"DELAYED");
+    // Synchronize with the newer NOT_READY commit, not a fixed sleep at the
+    // 5s timeout/retry boundary. The old request remains explicitly held.
+    let current=tokio::time::timeout(Duration::from_secs(15),async {
+        loop {let value=observe().await;if value["mailbox"]["state"]=="DELAYED"{break value;}tokio::time::sleep(Duration::from_millis(50)).await;}
+    }).await.expect("newer not-ready pulse did not commit while the old request was held");
     assert!(current["mailbox"]["lease_until"].as_u64().unwrap()>current["mailbox"]["server_time"].as_u64().unwrap());
     c.service.config(json!({"release":true})).await;
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    tokio::time::timeout(Duration::from_secs(5),async {
+        while c.service.counts().await["delayed_completed"].as_u64().unwrap_or(0)<1 {tokio::time::sleep(Duration::from_millis(30)).await;}
+    }).await.expect("released older pulse did not reach the service");
     assert_eq!(observe().await["mailbox"]["state"],"DELAYED","an older server-side pulse must not override newer readiness");
     assert_eq!(c.members[0].watch.page(0,32).await.unwrap().state,"BLOCKED");
     c.client.close().await.unwrap();
