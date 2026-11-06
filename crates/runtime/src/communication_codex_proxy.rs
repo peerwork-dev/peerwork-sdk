@@ -165,6 +165,7 @@ impl std::io::Write for Proxy {
 impl Drop for Proxy {
     fn drop(&mut self) {
         self.reader.abort();
+        let pid=self.child.id();let token=pid.and_then(crate::communication_store::process_token);
         let _ = self.child.start_kill();
         // Reap only the proxy we own, never the daemon it forwards to.
         self.budget.phase("TERMINATING");
@@ -173,7 +174,7 @@ impl Drop for Proxy {
             self.budget.phase("STALLED_TERMINATION");
             // A grace expiry is not termination proof. Keep the enclosing
             // physical-owner fence until the owned proxy is actually reaped.
-            self.executor.block_on(async{loop{if self.child.wait().await.is_ok(){break;}tokio::time::sleep(Duration::from_secs(1)).await;}});
+            self.executor.block_on(async{loop{if self.child.wait().await.is_ok()||pid.is_none_or(|pid|!crate::communication_store::process_alive(pid,token.as_deref())){break;}tokio::time::sleep(Duration::from_secs(1)).await;}});
         }
     }
 }

@@ -336,7 +336,7 @@ struct Credential {
 }
 type Credentials = Arc<BTreeMap<String, Credential>>;
 type CachedStatus=Arc<Mutex<(Value,std::time::Instant)>>;
-fn coordinator_phase(cache:&CachedStatus,phase:&'static str){if let Ok(mut value)=cache.lock(){value.0["health"]["coordinator_phase"]=json!(phase);value.1=std::time::Instant::now();}}
+fn coordinator_phase(cache:&CachedStatus,phase:&'static str){if let Ok(mut value)=cache.lock(){value.0["health"]["coordinator_phase"]=json!(phase);}}
 
 struct Work {
     grants: Vec<BridgeGrant>,
@@ -662,7 +662,9 @@ fn provider_loop(config:Value,executor:tokio::runtime::Handle,progress:crate::co
     while let Some(request)=requests.blocking_recv(){
         let _operation=progress.scope(if request.frame.is_some(){"DELIVER"}else{"HEALTH"});progress.clamp(request.deadline);
         let result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||->R<(Value,Value)>{
-            if progress.remaining().is_err(){return Err("HOST_OPERATION_TIMEOUT");}
+            if progress.remaining().is_err(){
+                return if request.frame.is_some(){Ok((request.destination.clone().unwrap_or(Value::Null),json!({"state":"NOT_SENT","code":"HOST_PREFLIGHT_DEADLINE","proof":"BOUND_HOST_RECONCILIATION"})))}else{Err("HOST_OPERATION_TIMEOUT")};
+            }
             if host.is_none(){
                 let mut selected=config.clone();
                 if selected["kind"]=="codex" {if let Some(expected)=&request.destination{selected["expected_session_id"]=expected["session_id"].clone();}}
@@ -675,7 +677,7 @@ fn provider_loop(config:Value,executor:tokio::runtime::Handle,progress:crate::co
             if let Some(expected)=&request.destination {
                 let mut actual=selected.destination.clone();
                 if actual.get("bridge_id").is_none(){if let Some(id)=expected.get("bridge_id"){actual["bridge_id"]=id.clone();}}
-                if &actual!=expected{return Err("HOST_BINDING_MISMATCH");}
+                if &actual!=expected{return Ok((expected.clone(),json!({"state":"NOT_SENT","code":"HOST_BINDING_MISMATCH","proof":"BOUND_HOST_RECONCILIATION"})));}
                 selected.destination=actual;
             }
             let result=if let Some(frame)=&request.frame {
@@ -981,7 +983,7 @@ async fn serve_limit(mut config:BridgeConfig,cancel:KernelCancellationToken,read
                             Ok(received)=>io=Some(received),
                             Err(code)=>{
                                 health=json!({"ready":false,"execution_state":"UNKNOWN","reason":code});
-                                if let Some(work)=active.take(){finish_pending=Some((work,json!({"state":"RESULT_UNKNOWN","code":code})));}
+                                if let Some(work)=active.take(){finish_pending=Some((work,json!({"state":"NOT_SENT","code":code,"proof":"BOUND_HOST_RECONCILIATION"})));}
                                 next_probe=std::time::Instant::now()+Duration::from_secs(3);
                             }
                         }
@@ -1002,8 +1004,8 @@ async fn serve_limit(mut config:BridgeConfig,cancel:KernelCancellationToken,read
                     }else{
                         health_at=std::time::Instant::now();
                         match result {Ok(value)=>{health=value;retry_attempt=0;},Err(code)=>{progress.failure(code,None);health=json!({"ready":false,"execution_state":"UNKNOWN","reason":code});retry_attempt=retry_attempt.saturating_add(1);}}
-                        let delay=if retry_attempt==0{3000}else{(1000u64<<retry_attempt.min(5)).min(30000)+(retry_attempt as u64*137)%251};
-                        next_probe=std::time::Instant::now()+Duration::from_millis(delay);
+                        let delay=if retry_attempt==0{Duration::from_secs(3)}else{crate::communication_host::operation::retry_delay(retry_attempt,&config.state_directory.to_string_lossy())};
+                        next_probe=std::time::Instant::now()+delay;
                     }
                 },
                 work=rx.recv(),if !worker_cancel.is_cancelled()=>{

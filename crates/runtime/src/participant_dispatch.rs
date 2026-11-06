@@ -270,7 +270,7 @@ pub(crate) fn start(
                 let code=match result {Ok(Err(e))=>e.code,Ok(Ok(()))=>"HOST_DISPATCHER_STOPPED".into(),Err(_)=>"HOST_DISPATCHER_TASK_FAILED".into()};
                 attempts=attempts.saturating_add(1);
                 let permanent=matches!(code.as_str(),"HOST_STATE_INVALID"|"HOST_BINDING_CHANGED_REQUIRES_REVIEW"|"HOST_SUBSCRIPTION_CONFLICT");
-                let delay=Duration::from_millis((1000u64<<attempts.min(5)).min(30000)+(attempts as u64*137)%251);
+                let delay=crate::communication_host::operation::retry_delay(attempts,&path.to_string_lossy());
                 set(&status,json!({"state":if permanent{"BLOCKED"}else{"RECONNECTING"},"code":code,"restart_attempt":attempts,"retry_after_ms":if permanent{Value::Null}else{json!(delay.as_millis() as u64)},"model_response":"NOT_ATTESTED"}));
                 if permanent {tokio::select!{_=stop.cancelled()=>break,_=signal.notified()=>{}}}
                 else {tokio::select!{_=stop.cancelled()=>break,_=signal.notified()=>{},_=tokio::time::sleep(delay)=>{}}}
@@ -566,6 +566,8 @@ async fn run_owned(
     let mut next = 0usize;
     let mut next_health = std::time::Instant::now();
     let mut open_attempts=0u32;
+    let mut current_binding:Option<HostBinding>=None;
+    let mut control:Option<crate::communication_host::RetirementControl>=None;
     let mut next_retire = std::time::Instant::now();
     let mut retirement_scope = 0usize;
     let mut watch_tasks: BTreeMap<String, tokio::task::AbortHandle> = BTreeMap::new();
@@ -622,7 +624,7 @@ async fn run_owned(
                 Ok(host) => host,
                 Err(code) => {
                     open_attempts=open_attempts.saturating_add(1);
-                    let delay=Duration::from_millis((1000u64<<open_attempts.min(5)).min(30000)+(open_attempts as u64*137)%251);
+                    let delay=crate::communication_host::operation::retry_delay(open_attempts,&launch_fence.to_string_lossy());
                     set(&status,json!({"state":"BLOCKED","code":code,"restart_attempt":open_attempts,"retry_after_ms":delay.as_millis() as u64,"model_response":"NOT_ATTESTED"}));
                     tokio::select! {_=cancel.cancelled()=>break,_=changed.notified()=>{},_=tokio::time::sleep(delay)=>{}}
                     continue;
@@ -630,9 +632,11 @@ async fn run_owned(
             };
             open_attempts=0;
             let destination = host.destination.clone();
+            control=Some(host.retirement_control());
             *adapter = Some(Arc::new(Mutex::new(host)));
             *published_adapter.lock().map_err(|_|error("HOST_STATE_INVALID"))?=Arc::downgrade(adapter.as_ref().unwrap());
             let binding = HostBinding::new(destination)?;
+            current_binding=Some(binding.clone());
             let pin = serde_json::to_vec(&binding).map_err(|_| error("HOST_BINDING_INVALID"))?;
             match owner
                 .read_exact()
@@ -687,13 +691,7 @@ async fn run_owned(
                 continue;
             }
             let selected = adapter.as_ref().unwrap().clone();
-            let binding = HostBinding::new(
-                selected
-                    .lock()
-                    .map_err(|_| error("HOST_NOT_READY"))?
-                    .destination
-                    .clone(),
-            )?;
+            let binding=current_binding.as_ref().ok_or_else(||error("HOST_BINDING_INVALID"))?.clone();
             if configured
                 .host_destination
                 .as_ref()
@@ -770,7 +768,7 @@ async fn run_owned(
             };
             let value = observed
                 .clone()
-                .unwrap_or_else(|_| json!({"mode":mode,"ready":false,"execution_state":"UNKNOWN"}));
+                .unwrap_or_else(|code| json!({"mode":mode,"ready":false,"execution_state":"UNKNOWN","reason":code}));
             if let Err(code)=&observed {if let Ok(mut current)=status.lock(){current["state"]=json!("RECONNECTING");current["code"]=json!(code);current["diagnostic"]=progress.snapshot();}}
             if let Ok(mut current)=status.lock(){
                 current["host_observation"]=value.clone();
@@ -824,12 +822,7 @@ async fn run_owned(
         {
             let (client, options) = watches[retirement_scope % watches.len()].clone();
             retirement_scope = (retirement_scope + 1) % watches.len();
-            let peer = adapter
-                .as_ref()
-                .unwrap()
-                .lock()
-                .map_err(|_| error("HOST_NOT_READY"))?
-                .retirement_control();
+            let peer=control.as_ref().ok_or_else(||error("HOST_NOT_READY"))?.cloned();
             maintenance.spawn(async move {
                 let plan = match client
                     .host_operation(&options, HostOperation::RetirementPlan)
@@ -871,11 +864,11 @@ async fn run_owned(
                 };
                 if let Some(call)=original {
                     receipt_probed=true;next=(index+1)%watches.len();
-                    let selected=adapter.as_ref().unwrap().clone();
+                    let selected=control.as_ref().ok_or_else(||error("HOST_NOT_READY"))?.cloned();
                     let binding=call.scope.clone();let id=call.frame["message_id"].as_str().ok_or_else(||error("HOST_FRAME_INVALID"))?.to_owned();let digest=call.frame_digest.clone();
                     // Receipt observation never invokes deliver or creates an
                     // input attempt, even when the previous response was lost.
-                    let observed=tokio::task::spawn_blocking(move||selected.lock().map_err(|_|"BRIDGE_UNAVAILABLE")?.reconcile(&binding,&id,&digest)).await.unwrap_or(Err("BRIDGE_UNAVAILABLE"));
+                    let observed=tokio::task::spawn_blocking(move||selected.reconcile(&binding,&id,&digest)).await.unwrap_or(Err("BRIDGE_UNAVAILABLE"));
                     if let Ok(Some(value))=observed {
                         let outcome=host_outcome("bridge",Ok(value));
                         if !matches!(outcome,HostOutcome::Unknown{..}) {

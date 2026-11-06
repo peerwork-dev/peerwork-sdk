@@ -445,7 +445,7 @@ pub(crate) fn sanitized_health(value:&Value)->Value {
         if v.is_boolean()||v.is_number()||v.as_str().is_some_and(|s|s.len()<=96&&s.bytes().all(|b|b.is_ascii_uppercase()||b.is_ascii_digit()||b==b'_')) {out[key]=v.clone();}
     }
     let mut diagnostic=json!({});
-    for key in ["phase","failure_phase","inflight","elapsed_ms","budget_ms","remaining_ms","last_error_code","original_error_code","rpc_error_code","last_success_at","observed_at"] {
+    for key in ["phase","failure_phase","inflight","elapsed_ms","budget_ms","remaining_ms","last_error_code","original_error_code","rpc_error_code","last_success_at","last_failure_code","last_failure_phase","last_failure_at","observed_at"] {
         let v=&value["diagnostic"][key];
         if v.is_null()||v.is_boolean()||v.is_number()||v.as_str().is_some_and(|s|s.len()<=96&&s.bytes().all(|b|b.is_ascii_uppercase()||b.is_ascii_digit()||b==b'_')) {diagnostic[key]=v.clone();}
     }
@@ -476,6 +476,8 @@ impl Drop for Host {
     }
 }
 impl RetirementControl {
+    pub(crate) fn cloned(&self)->Self{self.host.retirement_control()}
+    pub(crate) fn reconcile(&self,binding:&Value,id:&str,digest:&str)->R<Option<Value>>{self.host.reconcile(binding,id,digest)}
     pub fn retire(&self, plan: &Value) -> R<()> {
         if self.host.config["kind"] != "bridge" {
             return Ok(());
@@ -868,6 +870,7 @@ impl Host {
                     "HOST_ACK_UNKNOWN"
                 }
             })?;
+        let process_token=crate::communication_store::process_token(child.id());
         loop {
             match child.try_wait() {
                 Ok(Some(status)) => {
@@ -878,14 +881,11 @@ impl Host {
                         json!({"state":"HOST_QUEUED","receipt":format!("agy-queue:{}",random_token()?),"execution_state":"UNKNOWN","model_response":"NOT_ATTESTED"}),
                     );
                 }
-                Err(_) => return Err("HOST_ACK_UNKNOWN"),
+                Err(_) => {operation::terminate_helper(&mut child,process_token.as_deref(),&self.progress);return Err("HOST_ACK_UNKNOWN");},
                 _ => {}
             }
             if self.progress.remaining().is_err() {
-                self.progress.phase("TERMINATING");
-                let _ = child.kill();
-                // Retain this physical owner until the owned helper is terminal.
-                let _ = child.wait();
+                operation::terminate_helper(&mut child,process_token.as_deref(),&self.progress);
                 return Err("HOST_ACK_UNKNOWN");
             }
             std::thread::sleep(Duration::from_millis(20));

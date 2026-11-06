@@ -387,6 +387,13 @@ mod tests {
             "RESULT_UNKNOWN"
         );
         assert!(store.host_due(ns, &options, 32).unwrap().is_empty());
+        assert_eq!(store.host_summary(&identity,ns,&options).unwrap()["call_id"],first.call_id);
+        assert!(store.host_summary(&identity,"another-client",&options).is_err());
+        // Model a reused watch namespace without transferring the old call's original scope.
+        store.db.execute("UPDATE inbox_watches SET namespace='program:replacement' WHERE workspace=?1 AND mailbox=?2",params![options.workspace_id,options.mailbox_id]).unwrap();
+        assert_eq!(store.host_summary(&identity,"program:replacement",&options).unwrap()["acceptance_unresolved"],false);
+        store.db.execute("UPDATE inbox_watches SET namespace=?3 WHERE workspace=?1 AND mailbox=?2",params![options.workspace_id,options.mailbox_id,ns]).unwrap();
+        assert_eq!(store.host_summary(&identity,ns,&options).unwrap()["original_destination_digest"],host.digest);
         let mut wrong = first.clone();
         wrong.scope["epoch"] = json!(2);
         assert_eq!(
@@ -637,6 +644,7 @@ pub(super) fn initialize(db: &Connection) -> Result<()> {
     db.execute_batch("CREATE INDEX IF NOT EXISTS inbox_host_gc ON inbox_host_calls(workspace,mailbox,report_pending,state,sequence,call_id);").map_err(db_error)?;
     db.execute_batch("CREATE INDEX IF NOT EXISTS inbox_host_gc_binding ON inbox_host_calls(workspace,mailbox,host,report_pending,state,sequence,call_id);").map_err(db_error)?;
     db.execute_batch("CREATE INDEX IF NOT EXISTS inbox_host_reconcile ON inbox_host_calls(workspace,mailbox,host,state,reconcile_at,call_id);").map_err(db_error)?;
+    db.execute_batch("CREATE INDEX IF NOT EXISTS inbox_host_original_unknown ON inbox_host_calls(workspace,mailbox,state,json_extract(scope,'$.namespace'),json_extract(scope,'$.membership_id'));").map_err(db_error)?;
     db.execute_batch("CREATE INDEX IF NOT EXISTS inbox_host_report_pending ON inbox_host_calls(workspace,mailbox,report_pending,call_id); UPDATE inbox_host_calls SET state='RESULT_UNKNOWN',report_version=report_version+1,report_pending=1,report_code=NULL WHERE state='CALL_OPEN';").map_err(db_error)?;
     Ok(())
 }
@@ -1064,10 +1072,14 @@ impl InboxStore {
         )
     }
     pub fn host_scope_check(&self,namespace:&str,options:&WatchOptions)->Result<()>{self.host_link(namespace,options).map(|_|())}
-    pub fn host_summary(&self,namespace:&str,options:&WatchOptions)->Result<Value>{
+    pub fn host_summary(&self,identity:&KernelIdentity,namespace:&str,options:&WatchOptions)->Result<Value>{
         self.host_watch_scope(namespace,options)?;
-        let pending:Option<(String,u64)>=self.db.query_row("SELECT call_id,sequence FROM inbox_host_calls WHERE workspace=?1 AND mailbox=?2 AND state='RESULT_UNKNOWN' LIMIT 1",params![options.workspace_id,options.mailbox_id],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(db_error)?;
-        Ok(match pending {Some((id,sequence))=>json!({"workspace_id":options.workspace_id,"mailbox_id":options.mailbox_id,"acceptance_unresolved":true,"code":"HOST_ACCEPTANCE_UNRESOLVED","call_id":id,"sequence":sequence}),None=>json!({"workspace_id":options.workspace_id,"mailbox_id":options.mailbox_id,"acceptance_unresolved":false})})
+        let pending:Option<String>=self.db.query_row("SELECT call_id FROM inbox_host_calls WHERE workspace=?1 AND mailbox=?2 AND state='RESULT_UNKNOWN' AND json_extract(scope,'$.namespace')=?3 AND json_extract(scope,'$.membership_id')=?4 LIMIT 1",params![options.workspace_id,options.mailbox_id,namespace,options.membership_id],|r|r.get(0)).optional().map_err(db_error)?;
+        if let Some(id)=pending {
+            let call=self.host_call(identity,&id)?;self.host_original_scope(namespace,options,&call)?;
+            return Ok(json!({"workspace_id":options.workspace_id,"mailbox_id":options.mailbox_id,"acceptance_unresolved":true,"code":"HOST_ACCEPTANCE_UNRESOLVED","call_id":call.call_id,"sequence":call.scope["sequence"],"original_destination_digest":call.scope["destination_digest"],"binding_version":call.scope["binding_version"]}));
+        }
+        Ok(json!({"workspace_id":options.workspace_id,"mailbox_id":options.mailbox_id,"acceptance_unresolved":false}))
     }
     pub fn host_has_unknown(&self,workspace:&str,mailbox:&str)->Result<bool>{self.db.query_row("SELECT EXISTS(SELECT 1 FROM inbox_host_calls WHERE workspace=?1 AND mailbox=?2 AND state='RESULT_UNKNOWN')",params![workspace,mailbox],|r|r.get(0)).map_err(db_error)}
 

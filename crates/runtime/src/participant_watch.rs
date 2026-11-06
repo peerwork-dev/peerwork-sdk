@@ -624,7 +624,7 @@ pub(crate) async fn run(
                 Some(Command::Host{local_live,namespace,options,operation,reply})=>{
                     use crate::participant_inbox::{HostOperation as Op,HostReply as Reply};
                     let value=(||->Result<Reply>{
-                        if resident.paused(&options) && !matches!(&operation,Op::Finish{..}|Op::Status{..}|Op::AccessScope|Op::RetirementCommit(_)) {
+                        if resident.paused(&options) && !matches!(&operation,Op::Finish{..}|Op::Status{..}|Op::Summary|Op::AccessScope|Op::RetirementCommit(_)) {
                             return Err(error("HOST_REBIND_PENDING_RESUME_ORIGINAL_OPERATION"));
                         }
                         let selected=slots.get(&options.key()).filter(|s|s.binding.namespace==namespace&&s.binding.options==options);
@@ -632,7 +632,7 @@ pub(crate) async fn run(
                         Ok(match operation{
                             Op::RetirementPlan=>Reply::Retirement(store.host_retirement_plan(&identity,&namespace,&options)?),
                             Op::RetirementCommit(plan)=>{store.host_retirement_commit(&identity,&namespace,&options,&plan)?;Reply::Saved},
-                            Op::Summary=>Reply::Status(store.host_summary(&namespace,&options)?),
+                            Op::Summary=>Reply::Status(store.host_summary(&identity,&namespace,&options)?),
                             Op::AccessScope=>Reply::AccessScope(store.host_access_scope(&namespace,&options)?),
                             Op::ReconcileDue=>Reply::Call(if live{store.host_reconcile_due(&identity,&namespace,&options)?}else{None}),
                             Op::Presence{value,observed_at}=>{store.host_scope_check(&namespace,&options)?;let s=slots.get_mut(&options.key()).ok_or_else(||error("WATCH_NOT_FOUND"))?;let before=s.presence.version;s.presence.host_observed(value,observed_at)?;if before!=s.presence.version{s.next_control=Instant::now();}s.notify();Reply::Saved},

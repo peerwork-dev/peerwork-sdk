@@ -1069,7 +1069,7 @@ async fn bridge_status_and_receipts_are_responsive_during_stalled_host_io(){
     let receipt=tokio::time::timeout(Duration::from_secs(2),call(&ready,"receipt",&first,json!({"message_id":frame["message_id"],"body_hash":first["frame_digest"]}))).await.unwrap();
     assert_eq!(receipt["state"],"HOST_ACCEPTED");
     fixture.stall_health.store(false,Ordering::SeqCst);
-    assert_eq!(delivery.await.unwrap()["state"],"HOST_ACCEPTED");
+    let result=delivery.await.unwrap();assert_eq!(result["state"],"HOST_ACCEPTED","{result}");
     stop.cancel();task.await.unwrap().unwrap();drop(fixture);
 }
 #[tokio::test(flavor="multi_thread",worker_threads=2)]
@@ -1172,6 +1172,29 @@ async fn cached_bridge_health_remains_available_while_ledger_writer_is_blocked()
     }}).await.unwrap();
     assert!(health["health"]["diagnostic"].is_object());
     db.execute_batch("ROLLBACK").unwrap();drop(db);
-    assert_eq!(delivery.await.unwrap()["state"],"HOST_ACCEPTED");
+    let result=delivery.await.unwrap();assert_eq!(result["state"],"HOST_ACCEPTED","{result}");
+    stop.cancel();task.await.unwrap().unwrap();drop(fixture);
+}
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires real HTTP and controlled ledger contention"]
+async fn expired_budget_after_durable_reservation_is_proven_not_sent(){
+    let fixture=CodexFixture::start();fixture.emit_events.store(false,Ordering::SeqCst);
+    let directory=crate::test_support::protected_test_dir();let state=directory.path().join("bridge");
+    let config=BridgeConfig{format:"peerwork.host-bridge.v1".into(),state_directory:state.clone(),host:fixture.config(),bindings:vec![grant()]};
+    let stop=KernelCancellationToken::new();let(tx,rx)=oneshot::channel();
+    let task=tokio::spawn(serve_limit(config,stop.clone(),tx,Duration::from_millis(750)));let ready=rx.await.unwrap().unwrap();
+    let db=rusqlite::Connection::open(state.join("bridge.sqlite")).unwrap();db.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let(binding,frame)=self::frame(&ready.adapter["destination"],1);let selected=ready.clone();let original=binding.clone();let body=frame.clone();
+    let delivery=tokio::spawn(async move{call(&selected,"deliver",&original,json!({"message":body})).await});
+    tokio::time::timeout(Duration::from_secs(2),async{loop{
+        if call(&ready,"health",&json!({}),json!({})).await["health"]["coordinator_phase"]=="LEDGER_RESERVE"{break;}
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }}).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(1000)).await;db.execute_batch("ROLLBACK").unwrap();drop(db);
+    let outcome=delivery.await.unwrap();assert_eq!(outcome["state"],"NOT_SENT");assert_eq!(outcome["proof"],"BOUND_HOST_RECONCILIATION");
+    assert_eq!(call(&ready,"receipt",&binding,json!({"message_id":frame["message_id"],"body_hash":binding["frame_digest"]})).await["state"],"NOT_SENT");
+    assert_eq!(call(&ready,"deliver",&binding,json!({"message":frame})).await["state"],"NOT_SENT");
+    assert!(!fixture.calls().iter().any(|v|matches!(v["method"].as_str(),Some("turn/start"|"turn/steer"))));
     stop.cancel();task.await.unwrap().unwrap();drop(fixture);
 }

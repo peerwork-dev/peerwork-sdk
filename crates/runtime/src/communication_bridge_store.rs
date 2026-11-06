@@ -218,7 +218,7 @@ impl Store {
         } else {
             None
         };
-        let tx = self.db.transaction().map_err(|_| "BRIDGE_STATE_FAILED")?;
+        let tx = self.db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|_| "BRIDGE_STATE_FAILED")?;
         let (bytes, rows): (usize, usize) = tx
             .query_row(
                 "SELECT allocated,rows FROM bridge_meta WHERE id=1",

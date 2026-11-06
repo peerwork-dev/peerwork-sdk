@@ -359,11 +359,18 @@ impl Drop for AgyStdio {
             {
                 return match result {
                     Ok(status) => (true, status.success()),
-                    Err(_) => (false, false),
+                    Err(_) => {
+                        let _=self.child.start_kill();
+                        loop {if self.child.wait().await.is_ok()||!crate::communication_store::process_alive(self.pid,self.process_token.as_deref()){break;}
+                            if let Some(budget)=&self.aggregate{budget.phase("STALLED_TERMINATION");}tokio::time::sleep(Duration::from_millis(100)).await;}
+                        (true,false)
+                    },
                 };
             }
             let _ = self.child.start_kill();
-            (self.child.wait().await.is_ok(), false)
+            loop {if self.child.wait().await.is_ok()||!crate::communication_store::process_alive(self.pid,self.process_token.as_deref()){break;}
+                if let Some(budget)=&self.aggregate{budget.phase("STALLED_TERMINATION");}tokio::time::sleep(Duration::from_millis(100)).await;}
+            (true, false)
         });
         self.events.take();
         if let Some(reader) = self.reader.take() {
